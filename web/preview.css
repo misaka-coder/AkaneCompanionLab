@@ -1,0 +1,580 @@
+:root {
+  --text-main: #fff8f3;
+  --text-soft: rgba(255, 247, 240, 0.72);
+  --accent: #ffcc47;
+  --panel-bg: rgba(8, 8, 14, 0.72);
+  --panel-border: rgba(255, 255, 255, 0.12);
+  --panel-shadow: 0 18px 48px rgba(0, 0, 0, 0.4);
+  --app-height: 100dvh;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #090a11;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--text-main);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.vn-scene {
+  position: relative;
+  width: 100vw;
+  min-height: 100vh;
+  height: var(--app-height);
+  overflow: hidden;
+  background: #07080d;
+}
+
+.vn-bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center center;
+  opacity: 0;
+  transform: scale(1.025);
+  transition: opacity 1.6s ease, transform 1.6s ease;
+}
+
+.vn-bg.is-visible {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.vn-overlay {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.08)),
+    radial-gradient(circle at 72% 24%, rgba(255, 196, 109, 0.12), transparent 26%),
+    linear-gradient(to bottom, rgba(16, 11, 20, 0.02), rgba(7, 7, 12, 0.18));
+  pointer-events: none;
+}
+
+.vn-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.vn-sprite {
+  width: min(42vw, 760px);
+  max-height: 92vh;
+  object-fit: contain;
+  filter: drop-shadow(0 22px 36px rgba(0, 0, 0, 0.36));
+  animation: breathing 4s ease-in-out infinite;
+  transform: translateY(12px);
+}
+
+@keyframes breathing {
+  0% {
+    transform: translateY(12px);
+  }
+  50% {
+    transform: translateY(3px);
+  }
+  100% {
+    transform: translateY(12px);
+  }
+}
+
+.vn-menu-toggle {
+  position: absolute;
+  top: calc(22px + var(--safe-top));
+  right: calc(26px + var(--safe-right));
+  z-index: 5;
+  width: 58px;
+  height: 58px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(10, 10, 16, 0.34);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.vn-menu-toggle span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(255, 248, 243, 0.92);
+}
+
+.vn-menu-panel {
+  position: absolute;
+  top: calc(92px + var(--safe-top));
+  right: calc(26px + var(--safe-right));
+  z-index: 5;
+  width: min(300px, calc(100vw - 40px));
+  max-height: calc(var(--app-height) - 120px - var(--safe-top) - var(--safe-bottom));
+  overflow: auto;
+  padding: 16px;
+  border-radius: 20px;
+  background: rgba(10, 10, 16, 0.72);
+  border: 1px solid var(--panel-border);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: var(--panel-shadow);
+}
+
+.menu-group + .menu-group {
+  margin-top: 14px;
+}
+
+.menu-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--text-soft);
+  text-transform: uppercase;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scene-chip,
+.emotion-chip,
+.menu-chip,
+.dialogue-action {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-main);
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.scene-chip:hover,
+.emotion-chip:hover,
+.menu-chip:hover,
+.dialogue-action:hover,
+.scene-chip.is-active,
+.emotion-chip.is-active,
+.menu-chip.is-active {
+  background: rgba(255, 204, 71, 0.16);
+  transform: translateY(-1px);
+}
+
+.menu-empty {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.vn-dialogue-shell {
+  position: absolute;
+  left: calc(34px + var(--safe-left));
+  right: calc(34px + var(--safe-right));
+  bottom: calc(12px + var(--safe-bottom));
+  z-index: 4;
+  min-height: 18vh;
+  padding: 18px 28px 14px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--panel-shadow);
+  border-radius: 22px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.vn-nameplate {
+  margin-bottom: 10px;
+}
+
+.vn-nameplate span {
+  display: block;
+  color: var(--accent);
+  font-size: clamp(18px, 1.5vw, 28px);
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.vn-nameplate small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-soft);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+}
+
+.vn-dialogue-line {
+  min-height: 54px;
+  font-size: clamp(16px, 1.5vw, 28px);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.26);
+}
+
+.vn-choice-overlay {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  z-index: 7;
+  width: min(540px, calc(100vw - 48px));
+  display: grid;
+  gap: 12px;
+  transform: translate(-50%, -50%);
+}
+
+.vn-choice-button {
+  width: 100%;
+  border: 1px solid rgba(255, 204, 71, 0.28);
+  border-radius: 16px;
+  padding: 14px 18px;
+  background: rgba(10, 10, 16, 0.84);
+  color: var(--text-main);
+  cursor: pointer;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.28);
+  text-align: center;
+  font-size: clamp(15px, 1.15vw, 19px);
+  line-height: 1.5;
+  transition: background 0.2s ease, transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.vn-choice-button:hover {
+  background: rgba(255, 204, 71, 0.18);
+  border-color: rgba(255, 204, 71, 0.44);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.34);
+  transform: translateY(-2px);
+}
+
+.vn-choice-button:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.vn-dialogue-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.vn-composer {
+  position: absolute;
+  left: calc(34px + var(--safe-left));
+  right: calc(34px + var(--safe-right));
+  bottom: calc(190px + var(--safe-bottom));
+  z-index: 6;
+  display: grid;
+  grid-template-columns: 1fr 160px;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(10, 10, 16, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: var(--panel-shadow);
+  border-radius: 20px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.vn-composer[hidden] {
+  display: none;
+}
+
+.vn-composer input {
+  min-height: 56px;
+  padding: 0 18px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+  outline: none;
+  border-radius: 14px;
+}
+
+.vn-composer input:focus {
+  border-color: rgba(255, 204, 71, 0.52);
+  box-shadow: 0 0 0 3px rgba(255, 204, 71, 0.12);
+}
+
+.vn-composer button {
+  border: none;
+  background: linear-gradient(135deg, #ffe497, #ffc74a);
+  color: #2a1900;
+  font-weight: 700;
+  cursor: pointer;
+  border-radius: 14px;
+}
+
+@media (max-width: 980px) {
+  .vn-menu-panel {
+    width: min(260px, calc(100vw - 24px));
+    top: calc(82px + var(--safe-top));
+    right: calc(12px + var(--safe-right));
+  }
+
+  .vn-sprite {
+    width: min(70vw, 520px);
+    max-height: 82vh;
+  }
+
+  .vn-choice-overlay {
+    top: 42%;
+    width: min(92vw, 460px);
+    gap: 10px;
+  }
+
+  .vn-dialogue-shell {
+    left: calc(14px + var(--safe-left));
+    right: calc(14px + var(--safe-right));
+    bottom: calc(10px + var(--safe-bottom));
+    min-height: 20vh;
+    padding: 16px 16px 12px;
+  }
+
+  .vn-dialogue-line {
+    font-size: clamp(15px, 3.9vw, 22px);
+    min-height: 46px;
+  }
+
+  .vn-composer {
+    left: calc(14px + var(--safe-left));
+    right: calc(14px + var(--safe-right));
+    bottom: calc(188px + var(--safe-bottom));
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .vn-stage {
+    padding: 0 0 142px;
+  }
+
+  .vn-menu-toggle {
+    width: 44px;
+    height: 44px;
+    top: calc(10px + var(--safe-top));
+    right: calc(10px + var(--safe-right));
+  }
+
+  .vn-menu-panel {
+    width: min(228px, calc(100vw - 20px));
+    max-height: min(52vh, 380px);
+    padding: 12px;
+  }
+
+  .vn-sprite {
+    width: min(70vw, 320px);
+    max-height: 48vh;
+    transform: translateY(0);
+    opacity: 0.94;
+  }
+
+  .vn-choice-overlay {
+    top: 31%;
+    width: min(94vw, 420px);
+    gap: 8px;
+  }
+
+  .vn-choice-button {
+    padding: 12px 14px;
+    border-radius: 14px;
+    font-size: clamp(14px, 4vw, 16px);
+  }
+
+  .vn-dialogue-shell {
+    left: calc(10px + var(--safe-left));
+    right: calc(10px + var(--safe-right));
+    bottom: calc(74px + var(--safe-bottom));
+    min-height: 128px;
+    max-height: 30vh;
+    overflow-y: auto;
+    padding: 12px 12px 10px;
+    border-radius: 18px;
+    background: rgba(8, 10, 16, 0.84);
+  }
+
+  .vn-nameplate {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+
+  .vn-nameplate span {
+    font-size: clamp(16px, 4.8vw, 21px);
+  }
+
+  .vn-nameplate small {
+    margin-top: 0;
+    font-size: 11px;
+  }
+
+  .vn-dialogue-line {
+    min-height: 68px;
+    font-size: clamp(14px, 4.15vw, 17px);
+    line-height: 1.62;
+  }
+
+  .vn-dialogue-actions {
+    display: none;
+  }
+
+  .dialogue-action {
+    padding: 7px 12px;
+  }
+
+  .vn-composer {
+    left: calc(10px + var(--safe-left));
+    right: calc(10px + var(--safe-right));
+    bottom: calc(10px + var(--safe-bottom));
+    grid-template-columns: minmax(0, 1fr) 94px;
+    padding: 8px;
+    gap: 8px;
+    border-radius: 18px;
+  }
+
+  .vn-composer input {
+    min-height: 44px;
+    padding: 0 14px;
+    font-size: 14px;
+  }
+
+  .vn-composer button {
+    min-height: 44px;
+    font-size: 15px;
+  }
+
+  .vn-composer input::placeholder {
+    color: rgba(255, 247, 240, 0.52);
+  }
+}
+
+@media (orientation: landscape) and (max-height: 560px) {
+  .vn-stage {
+    justify-content: flex-end;
+    padding-right: min(8vw, 56px);
+    padding-bottom: 82px;
+  }
+
+  .vn-sprite {
+    width: min(24vw, 210px);
+    max-height: 68vh;
+    opacity: 0.9;
+    transform: translateY(0);
+  }
+
+  .vn-menu-toggle {
+    width: 46px;
+    height: 46px;
+    top: calc(10px + var(--safe-top));
+    right: calc(10px + var(--safe-right));
+  }
+
+  .vn-menu-panel {
+    top: calc(62px + var(--safe-top));
+    right: calc(10px + var(--safe-right));
+    width: min(220px, 38vw);
+    max-height: calc(var(--app-height) - 78px - var(--safe-top) - var(--safe-bottom));
+    padding: 12px;
+  }
+
+  .menu-group + .menu-group {
+    margin-top: 10px;
+  }
+
+  .menu-label {
+    margin-bottom: 6px;
+    font-size: 11px;
+  }
+
+  .menu-chip,
+  .dialogue-action {
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+
+  .vn-choice-overlay {
+    left: 35%;
+    top: 34%;
+    width: min(52vw, 420px);
+    gap: 8px;
+  }
+
+  .vn-choice-button {
+    padding: 10px 12px;
+  }
+
+  .vn-dialogue-shell {
+    left: calc(12px + var(--safe-left));
+    right: calc(26vw + 34px);
+    bottom: calc(62px + var(--safe-bottom));
+    min-height: 0;
+    max-height: 30vh;
+    padding: 12px 14px 10px;
+    overflow-y: auto;
+    background: rgba(8, 10, 16, 0.86);
+  }
+
+  .vn-nameplate {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+
+  .vn-nameplate span {
+    font-size: clamp(16px, 2.2vw, 22px);
+  }
+
+  .vn-nameplate small {
+    font-size: 11px;
+  }
+
+  .vn-dialogue-line {
+    min-height: 56px;
+    font-size: clamp(14px, 2.1vw, 18px);
+    line-height: 1.55;
+  }
+
+  .vn-dialogue-actions {
+    display: none;
+  }
+
+  .vn-composer {
+    left: calc(12px + var(--safe-left));
+    right: calc(26vw + 34px);
+    bottom: calc(10px + var(--safe-bottom));
+    grid-template-columns: 1fr 92px;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .vn-composer input,
+  .vn-composer button {
+    min-height: 42px;
+  }
+}

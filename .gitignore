@@ -1,0 +1,51 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python virtual environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data, memories, generated files, and local user assets
+users_data/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+
+# Logs and temporary outputs
+*.log
+test-results/
+.tmp_*/
+.tmp_*
+tmp_*/
+tmp_*.log
+tmp_*.wav
+
+# Local model / tool scratch space
+.cache/
+models/
+downloads/
+
+# Local reference copies not part of the Akane app
+claude_code_annotated/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/

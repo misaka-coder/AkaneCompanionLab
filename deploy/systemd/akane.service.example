@@ -1,0 +1,17 @@
+[Unit]
+Description=Akane Companion Lab
+After=network.target
+
+[Service]
+Type=simple
+User=akane
+Group=akane
+WorkingDirectory=/opt/akane/AkaneCompanionLab
+Environment=COMPANION_HOST=127.0.0.1
+Environment=COMPANION_PORT=9999
+ExecStart=/opt/akane/AkaneCompanionLab/.venv/bin/python /opt/akane/AkaneCompanionLab/launch_akane_memory_v01.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,329 @@
+# config.py - 双核适配版（修正版）
+import os
+from pydantic_settings import BaseSettings
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = str(BASE_DIR / "users_data")
+Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
+
+
+class Settings(BaseSettings):
+    RUN_MODE: str = "CLOUD"
+    PERSONA_CONFIG_PATH: str = ""
+    PERSONA_VARIANT: str = "default"
+    EMBEDDING_PROVIDER: str = "auto"
+    EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-zh-v1.5"
+    EMBEDDING_DEVICE: str = ""
+    EMBEDDING_CACHE_SIZE: int = 2048
+    EMBEDDING_REINDEX_BATCH_SIZE: int = 64
+    ENABLE_VECTOR_MEMORY: bool = False
+    ENABLE_SEMANTIC_MEMORY: bool = True
+    ENABLE_SEMANTIC_REINFORCEMENT: bool = True
+    ROUTER_DEBUG: bool = False
+    VERIFIER_DEBUG: bool = False
+    FINAL_DEBUG: bool = False
+    DRIFT_PROBABILITY: float = 0.20
+    SUMMARY_TRIGGER_COUNT: int = 30
+    SUMMARY_BATCH_SIZE: int = 20
+    RECENT_SUMMARY_LIMIT: int = 5
+    EPISODIC_COMPACT_TRIGGER_COUNT: int = 10
+    EPISODIC_COMPACT_BATCH_SIZE: int = 5
+    EPISODIC_VISIBLE_MAX: int = 10
+    SEMANTIC_VISIBLE_LIMIT: int = 3
+    SEMANTIC_REINFORCEMENT_LOOKBACK: int = 8
+    SEMANTIC_REINFORCEMENT_MIN_OVERLAP: int = 2
+
+    # === 辅助任务配置（原 DeepSeek） ===
+    TEXT_API_KEY: str = ""
+    TEXT_BASE_URL: str = ""
+    TEXT_MODEL_NAME: str = "deepseek-chat"
+    TEXT_API_PROTOCOL: str = "auto"
+
+    # === 辅助任务配置（记忆总结/时间解析/调查员等）===
+    AUX_API_KEY: str = ""
+    AUX_BASE_URL: str = ""
+    AUX_MODEL_NAME: str = "deepseek-chat"
+    AUX_API_PROTOCOL: str = "auto"
+
+    # === 聊天专用配置（若缺失则回退到 TEXT_*） ===
+    CHAT_API_KEY: str = ""
+    CHAT_BASE_URL: str = ""
+    CHAT_MODEL_NAME: str = ""
+    CHAT_API_PROTOCOL: str = "auto"
+
+    # === 视觉配置 ===
+    VISION_API_KEY: str = ""
+    VISION_BASE_URL: str = ""
+    VISION_MODEL_NAME: str = ""
+    VISION_API_PROTOCOL: str = "auto"
+    VISION_ENABLED: bool = True
+    VISION_REQUEST_TIMEOUT: float = 60.0
+    VISION_PROMPT_VERSION: str = "v1"
+    VISION_AUTO_SCENE_OBSERVE: bool = True
+    VISION_AUTO_GIFT_OBSERVE: bool = True
+    VISION_AUTO_OUTFIT_OBSERVE: bool = True
+    VISION_MAX_IMAGE_BYTES: int = 8 * 1024 * 1024
+
+    # === 语音配置 ===
+    TTS_VOICE: str = "zh-CN-XiaoxiaoNeural"
+    TTS_RATE: str = "+6%"
+    TTS_VOLUME: str = "+0%"
+    TTS_PITCH: str = "+4Hz"
+    STREAMING_TTS_ENABLED: bool = True
+    PUBLIC_GUARD_ENABLED: bool = False
+    MAX_CONCURRENT_THINKS: int = 2
+    DAILY_THINK_LIMIT: int = 200
+    PUBLIC_BUSY_MESSAGE: str = "当前体验人数较多，请稍后再试。"
+    PUBLIC_DAILY_LIMIT_MESSAGE: str = "今日体验名额已满，明天再来看看 Akane 吧。"
+
+    # === QQ / NapCat 接入 ===
+    QQ_BRIDGE_ENABLED: bool = False
+    QQ_ONEBOT_HTTP_URL: str = "http://127.0.0.1:3001"
+    QQ_BOT_QQ: str = ""
+    QQ_GROUP_PLAINTEXT_ENABLED: bool = False
+    QQ_GROUP_FOLLOW_TTL_SECONDS: int = 180
+    QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS: int = 180
+    QQ_ATTACHMENT_DEBOUNCE_SECONDS: float = 1.2
+    QQ_ATTACHMENT_READY_WAIT_SECONDS: float = 8.0
+    QQ_REPLY_SEGMENT_DELAY_SECONDS: float = 0.8
+    QQ_ATTACHMENT_DOWNLOAD_TIMEOUT: float = 20.0
+    QQ_ATTACHMENT_MAX_BYTES: int = 20 * 1024 * 1024
+    QQ_TEXT_ATTACHMENT_MAX_READ_BYTES: int = 256 * 1024
+    BACKGROUND_DEFAULT_WORKERS: int = 1
+    BACKGROUND_ATTACHMENT_WORKERS: int = 3
+
+    # === Web 身份模式 ===
+    # owner: 本地主创模式，所有 Web 入口归属同一个主人 profile。
+    # browser: 每个浏览器使用独立匿名 profile，适合公开试玩。
+    # invite: 使用 URL ?invite=xxx 或本地保存的邀请码映射 profile，适合小范围闭测。
+    WEB_IDENTITY_MODE: str = "owner"
+    WEB_OWNER_PROFILE_USER_ID: str = "master"
+
+    MASTER_QQ: int = 1906243651
+    HOST: str = "0.0.0.0"
+    PORT: int = 9999
+
+    @property
+    def DB_PATH(self):
+        return os.path.join(DATA_DIR, "akane_cloud.db")
+
+    class Config:
+        env_file = ".env"
+        extra = "ignore"
+
+
+settings = Settings()
+
+
+def _normalize_web_identity_mode(value: str) -> str:
+    normalized = str(value or "owner").strip().lower()
+    return normalized if normalized in {"owner", "browser", "invite"} else "owner"
+
+
+def reload_settings():
+    global settings
+    global TEXT_API_KEY, TEXT_BASE_URL, TEXT_MODEL_NAME, TEXT_API_PROTOCOL
+    global AUX_API_KEY, AUX_BASE_URL, AUX_MODEL_NAME, AUX_API_PROTOCOL
+    global CHAT_API_KEY, CHAT_BASE_URL, CHAT_MODEL_NAME, CHAT_API_PROTOCOL
+    global VISION_API_KEY, VISION_BASE_URL, VISION_MODEL_NAME, VISION_API_PROTOCOL
+    global VISION_ENABLED, VISION_REQUEST_TIMEOUT, VISION_PROMPT_VERSION, VISION_AUTO_SCENE_OBSERVE, VISION_AUTO_GIFT_OBSERVE, VISION_AUTO_OUTFIT_OBSERVE, VISION_MAX_IMAGE_BYTES
+    global TTS_VOICE, TTS_RATE, TTS_VOLUME, TTS_PITCH, STREAMING_TTS_ENABLED
+    global PUBLIC_GUARD_ENABLED, MAX_CONCURRENT_THINKS, DAILY_THINK_LIMIT, PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE
+    global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ, QQ_GROUP_PLAINTEXT_ENABLED, QQ_GROUP_FOLLOW_TTL_SECONDS, QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS
+    global QQ_ATTACHMENT_DEBOUNCE_SECONDS, QQ_ATTACHMENT_READY_WAIT_SECONDS, QQ_REPLY_SEGMENT_DELAY_SECONDS
+    global QQ_ATTACHMENT_DOWNLOAD_TIMEOUT, QQ_ATTACHMENT_MAX_BYTES, QQ_TEXT_ATTACHMENT_MAX_READ_BYTES
+    global BACKGROUND_DEFAULT_WORKERS, BACKGROUND_ATTACHMENT_WORKERS
+    global WEB_IDENTITY_MODE, WEB_OWNER_PROFILE_USER_ID
+    global RUN_MODE, PERSONA_CONFIG_PATH, PERSONA_VARIANT
+    global EMBEDDING_PROVIDER, EMBEDDING_MODEL_NAME, EMBEDDING_DEVICE, EMBEDDING_CACHE_SIZE, EMBEDDING_REINDEX_BATCH_SIZE
+    global ENABLE_VECTOR_MEMORY, ENABLE_SEMANTIC_MEMORY, ENABLE_SEMANTIC_REINFORCEMENT, ROUTER_DEBUG, VERIFIER_DEBUG, FINAL_DEBUG
+    global DRIFT_PROBABILITY, SUMMARY_TRIGGER_COUNT, SUMMARY_BATCH_SIZE, RECENT_SUMMARY_LIMIT
+    global EPISODIC_COMPACT_TRIGGER_COUNT, EPISODIC_COMPACT_BATCH_SIZE, EPISODIC_VISIBLE_MAX, SEMANTIC_VISIBLE_LIMIT
+    global SEMANTIC_REINFORCEMENT_LOOKBACK, SEMANTIC_REINFORCEMENT_MIN_OVERLAP
+    global MASTER_QQ, PORT, HOST
+
+    settings = Settings()
+
+    TEXT_API_KEY = settings.TEXT_API_KEY or ""
+    TEXT_BASE_URL = settings.TEXT_BASE_URL or ""
+    TEXT_MODEL_NAME = settings.TEXT_MODEL_NAME or "deepseek-chat"
+    TEXT_API_PROTOCOL = settings.TEXT_API_PROTOCOL or "auto"
+
+    AUX_API_KEY = settings.AUX_API_KEY or TEXT_API_KEY
+    AUX_BASE_URL = settings.AUX_BASE_URL or TEXT_BASE_URL
+    AUX_MODEL_NAME = settings.AUX_MODEL_NAME or "deepseek-chat"
+    AUX_API_PROTOCOL = settings.AUX_API_PROTOCOL or TEXT_API_PROTOCOL
+
+    CHAT_API_KEY = settings.CHAT_API_KEY or TEXT_API_KEY
+    CHAT_BASE_URL = settings.CHAT_BASE_URL or TEXT_BASE_URL
+    CHAT_MODEL_NAME = settings.CHAT_MODEL_NAME or TEXT_MODEL_NAME
+    CHAT_API_PROTOCOL = settings.CHAT_API_PROTOCOL or TEXT_API_PROTOCOL
+
+    VISION_API_KEY = settings.VISION_API_KEY or ""
+    VISION_BASE_URL = settings.VISION_BASE_URL or ""
+    VISION_MODEL_NAME = settings.VISION_MODEL_NAME or ""
+    VISION_API_PROTOCOL = settings.VISION_API_PROTOCOL or CHAT_API_PROTOCOL or TEXT_API_PROTOCOL
+    VISION_ENABLED = bool(settings.VISION_ENABLED)
+    VISION_REQUEST_TIMEOUT = float(max(1.0, settings.VISION_REQUEST_TIMEOUT))
+    VISION_PROMPT_VERSION = str(settings.VISION_PROMPT_VERSION or "v1").strip() or "v1"
+    VISION_AUTO_SCENE_OBSERVE = bool(settings.VISION_AUTO_SCENE_OBSERVE)
+    VISION_AUTO_GIFT_OBSERVE = bool(settings.VISION_AUTO_GIFT_OBSERVE)
+    VISION_AUTO_OUTFIT_OBSERVE = bool(settings.VISION_AUTO_OUTFIT_OBSERVE)
+    VISION_MAX_IMAGE_BYTES = max(128 * 1024, int(settings.VISION_MAX_IMAGE_BYTES))
+
+    TTS_VOICE = settings.TTS_VOICE or "zh-CN-XiaoxiaoNeural"
+    TTS_RATE = settings.TTS_RATE or "+6%"
+    TTS_VOLUME = settings.TTS_VOLUME or "+0%"
+    TTS_PITCH = settings.TTS_PITCH or "+4Hz"
+    STREAMING_TTS_ENABLED = bool(settings.STREAMING_TTS_ENABLED)
+    PUBLIC_GUARD_ENABLED = bool(settings.PUBLIC_GUARD_ENABLED)
+    MAX_CONCURRENT_THINKS = max(0, int(settings.MAX_CONCURRENT_THINKS))
+    DAILY_THINK_LIMIT = max(0, int(settings.DAILY_THINK_LIMIT))
+    PUBLIC_BUSY_MESSAGE = (
+        str(settings.PUBLIC_BUSY_MESSAGE or "当前体验人数较多，请稍后再试。").strip()
+        or "当前体验人数较多，请稍后再试。"
+    )
+    PUBLIC_DAILY_LIMIT_MESSAGE = (
+        str(settings.PUBLIC_DAILY_LIMIT_MESSAGE or "今日体验名额已满，明天再来看看 Akane 吧。").strip()
+        or "今日体验名额已满，明天再来看看 Akane 吧。"
+    )
+    QQ_BRIDGE_ENABLED = bool(settings.QQ_BRIDGE_ENABLED)
+    QQ_ONEBOT_HTTP_URL = str(settings.QQ_ONEBOT_HTTP_URL or "http://127.0.0.1:3001").strip().rstrip("/") or "http://127.0.0.1:3001"
+    QQ_BOT_QQ = str(settings.QQ_BOT_QQ or "").strip()
+    QQ_GROUP_PLAINTEXT_ENABLED = bool(settings.QQ_GROUP_PLAINTEXT_ENABLED)
+    QQ_GROUP_FOLLOW_TTL_SECONDS = max(20, int(settings.QQ_GROUP_FOLLOW_TTL_SECONDS))
+    QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS = max(
+        20,
+        int(settings.QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS or settings.QQ_GROUP_FOLLOW_TTL_SECONDS),
+    )
+    QQ_ATTACHMENT_DEBOUNCE_SECONDS = min(5.0, max(0.0, float(settings.QQ_ATTACHMENT_DEBOUNCE_SECONDS)))
+    QQ_ATTACHMENT_READY_WAIT_SECONDS = min(60.0, max(0.0, float(settings.QQ_ATTACHMENT_READY_WAIT_SECONDS)))
+    QQ_REPLY_SEGMENT_DELAY_SECONDS = min(3.0, max(0.0, float(settings.QQ_REPLY_SEGMENT_DELAY_SECONDS)))
+    QQ_ATTACHMENT_DOWNLOAD_TIMEOUT = max(1.0, float(settings.QQ_ATTACHMENT_DOWNLOAD_TIMEOUT))
+    QQ_ATTACHMENT_MAX_BYTES = max(1024, int(settings.QQ_ATTACHMENT_MAX_BYTES))
+    QQ_TEXT_ATTACHMENT_MAX_READ_BYTES = max(1024, int(settings.QQ_TEXT_ATTACHMENT_MAX_READ_BYTES))
+    BACKGROUND_DEFAULT_WORKERS = max(1, int(settings.BACKGROUND_DEFAULT_WORKERS))
+    BACKGROUND_ATTACHMENT_WORKERS = max(1, int(settings.BACKGROUND_ATTACHMENT_WORKERS))
+    WEB_IDENTITY_MODE = _normalize_web_identity_mode(settings.WEB_IDENTITY_MODE)
+    WEB_OWNER_PROFILE_USER_ID = str(settings.WEB_OWNER_PROFILE_USER_ID or "master").strip() or "master"
+
+    RUN_MODE = settings.RUN_MODE
+    PERSONA_CONFIG_PATH = settings.PERSONA_CONFIG_PATH or ""
+    PERSONA_VARIANT = str(settings.PERSONA_VARIANT or "default").strip() or "default"
+    EMBEDDING_PROVIDER = str(settings.EMBEDDING_PROVIDER or "auto").strip().lower() or "auto"
+    EMBEDDING_MODEL_NAME = str(settings.EMBEDDING_MODEL_NAME or "BAAI/bge-small-zh-v1.5").strip() or "BAAI/bge-small-zh-v1.5"
+    EMBEDDING_DEVICE = str(settings.EMBEDDING_DEVICE or "").strip()
+    EMBEDDING_CACHE_SIZE = max(0, int(settings.EMBEDDING_CACHE_SIZE))
+    EMBEDDING_REINDEX_BATCH_SIZE = max(1, int(settings.EMBEDDING_REINDEX_BATCH_SIZE))
+    ENABLE_VECTOR_MEMORY = settings.ENABLE_VECTOR_MEMORY
+    ENABLE_SEMANTIC_MEMORY = bool(settings.ENABLE_SEMANTIC_MEMORY)
+    ENABLE_SEMANTIC_REINFORCEMENT = bool(settings.ENABLE_SEMANTIC_REINFORCEMENT)
+    ROUTER_DEBUG = bool(settings.ROUTER_DEBUG)
+    VERIFIER_DEBUG = bool(settings.VERIFIER_DEBUG)
+    FINAL_DEBUG = bool(settings.FINAL_DEBUG)
+    DRIFT_PROBABILITY = float(max(0.0, min(1.0, settings.DRIFT_PROBABILITY)))
+    SUMMARY_TRIGGER_COUNT = max(1, int(settings.SUMMARY_TRIGGER_COUNT))
+    SUMMARY_BATCH_SIZE = max(1, int(settings.SUMMARY_BATCH_SIZE))
+    RECENT_SUMMARY_LIMIT = max(1, int(settings.RECENT_SUMMARY_LIMIT))
+    EPISODIC_COMPACT_TRIGGER_COUNT = max(1, int(settings.EPISODIC_COMPACT_TRIGGER_COUNT))
+    EPISODIC_COMPACT_BATCH_SIZE = max(1, int(settings.EPISODIC_COMPACT_BATCH_SIZE))
+    EPISODIC_VISIBLE_MAX = max(1, int(settings.EPISODIC_VISIBLE_MAX))
+    SEMANTIC_VISIBLE_LIMIT = max(1, int(settings.SEMANTIC_VISIBLE_LIMIT))
+    SEMANTIC_REINFORCEMENT_LOOKBACK = max(1, int(settings.SEMANTIC_REINFORCEMENT_LOOKBACK))
+    SEMANTIC_REINFORCEMENT_MIN_OVERLAP = max(1, int(settings.SEMANTIC_REINFORCEMENT_MIN_OVERLAP))
+    MASTER_QQ = settings.MASTER_QQ
+    PORT = settings.PORT
+    HOST = settings.HOST
+
+
+# 导出变量（确保不会导出 None）
+TEXT_API_KEY = settings.TEXT_API_KEY or ""
+TEXT_BASE_URL = settings.TEXT_BASE_URL or ""
+TEXT_MODEL_NAME = settings.TEXT_MODEL_NAME or "deepseek-chat"
+TEXT_API_PROTOCOL = settings.TEXT_API_PROTOCOL or "auto"
+
+AUX_API_KEY = settings.AUX_API_KEY or TEXT_API_KEY
+AUX_BASE_URL = settings.AUX_BASE_URL or TEXT_BASE_URL
+AUX_MODEL_NAME = settings.AUX_MODEL_NAME or "deepseek-chat"
+AUX_API_PROTOCOL = settings.AUX_API_PROTOCOL or TEXT_API_PROTOCOL
+
+CHAT_API_KEY = settings.CHAT_API_KEY or TEXT_API_KEY
+CHAT_BASE_URL = settings.CHAT_BASE_URL or TEXT_BASE_URL
+CHAT_MODEL_NAME = settings.CHAT_MODEL_NAME or TEXT_MODEL_NAME
+CHAT_API_PROTOCOL = settings.CHAT_API_PROTOCOL or TEXT_API_PROTOCOL
+
+VISION_API_KEY = settings.VISION_API_KEY or ""
+VISION_BASE_URL = settings.VISION_BASE_URL or ""
+VISION_MODEL_NAME = settings.VISION_MODEL_NAME or ""
+VISION_API_PROTOCOL = settings.VISION_API_PROTOCOL or CHAT_API_PROTOCOL or TEXT_API_PROTOCOL
+VISION_ENABLED = bool(settings.VISION_ENABLED)
+VISION_REQUEST_TIMEOUT = float(max(1.0, settings.VISION_REQUEST_TIMEOUT))
+VISION_PROMPT_VERSION = str(settings.VISION_PROMPT_VERSION or "v1").strip() or "v1"
+VISION_AUTO_SCENE_OBSERVE = bool(settings.VISION_AUTO_SCENE_OBSERVE)
+VISION_AUTO_GIFT_OBSERVE = bool(settings.VISION_AUTO_GIFT_OBSERVE)
+VISION_MAX_IMAGE_BYTES = max(128 * 1024, int(settings.VISION_MAX_IMAGE_BYTES))
+
+TTS_VOICE = settings.TTS_VOICE or "zh-CN-XiaoxiaoNeural"
+TTS_RATE = settings.TTS_RATE or "+6%"
+TTS_VOLUME = settings.TTS_VOLUME or "+0%"
+TTS_PITCH = settings.TTS_PITCH or "+4Hz"
+STREAMING_TTS_ENABLED = bool(settings.STREAMING_TTS_ENABLED)
+PUBLIC_GUARD_ENABLED = bool(settings.PUBLIC_GUARD_ENABLED)
+MAX_CONCURRENT_THINKS = max(0, int(settings.MAX_CONCURRENT_THINKS))
+DAILY_THINK_LIMIT = max(0, int(settings.DAILY_THINK_LIMIT))
+PUBLIC_BUSY_MESSAGE = (
+    str(settings.PUBLIC_BUSY_MESSAGE or "当前体验人数较多，请稍后再试。").strip()
+    or "当前体验人数较多，请稍后再试。"
+)
+PUBLIC_DAILY_LIMIT_MESSAGE = (
+    str(settings.PUBLIC_DAILY_LIMIT_MESSAGE or "今日体验名额已满，明天再来看看 Akane 吧。").strip()
+    or "今日体验名额已满，明天再来看看 Akane 吧。"
+)
+QQ_BRIDGE_ENABLED = bool(settings.QQ_BRIDGE_ENABLED)
+QQ_ONEBOT_HTTP_URL = str(settings.QQ_ONEBOT_HTTP_URL or "http://127.0.0.1:3001").strip().rstrip("/") or "http://127.0.0.1:3001"
+QQ_BOT_QQ = str(settings.QQ_BOT_QQ or "").strip()
+QQ_GROUP_PLAINTEXT_ENABLED = bool(settings.QQ_GROUP_PLAINTEXT_ENABLED)
+QQ_GROUP_FOLLOW_TTL_SECONDS = max(20, int(settings.QQ_GROUP_FOLLOW_TTL_SECONDS))
+QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS = max(
+    20,
+    int(settings.QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS or settings.QQ_GROUP_FOLLOW_TTL_SECONDS),
+)
+QQ_ATTACHMENT_DEBOUNCE_SECONDS = min(5.0, max(0.0, float(settings.QQ_ATTACHMENT_DEBOUNCE_SECONDS)))
+QQ_ATTACHMENT_READY_WAIT_SECONDS = min(60.0, max(0.0, float(settings.QQ_ATTACHMENT_READY_WAIT_SECONDS)))
+QQ_REPLY_SEGMENT_DELAY_SECONDS = min(3.0, max(0.0, float(settings.QQ_REPLY_SEGMENT_DELAY_SECONDS)))
+QQ_ATTACHMENT_DOWNLOAD_TIMEOUT = max(1.0, float(settings.QQ_ATTACHMENT_DOWNLOAD_TIMEOUT))
+QQ_ATTACHMENT_MAX_BYTES = max(1024, int(settings.QQ_ATTACHMENT_MAX_BYTES))
+QQ_TEXT_ATTACHMENT_MAX_READ_BYTES = max(1024, int(settings.QQ_TEXT_ATTACHMENT_MAX_READ_BYTES))
+BACKGROUND_DEFAULT_WORKERS = max(1, int(settings.BACKGROUND_DEFAULT_WORKERS))
+BACKGROUND_ATTACHMENT_WORKERS = max(1, int(settings.BACKGROUND_ATTACHMENT_WORKERS))
+WEB_IDENTITY_MODE = _normalize_web_identity_mode(settings.WEB_IDENTITY_MODE)
+WEB_OWNER_PROFILE_USER_ID = str(settings.WEB_OWNER_PROFILE_USER_ID or "master").strip() or "master"
+
+RUN_MODE = settings.RUN_MODE
+PERSONA_CONFIG_PATH = settings.PERSONA_CONFIG_PATH or ""
+PERSONA_VARIANT = str(settings.PERSONA_VARIANT or "default").strip() or "default"
+EMBEDDING_PROVIDER = str(settings.EMBEDDING_PROVIDER or "auto").strip().lower() or "auto"
+EMBEDDING_MODEL_NAME = str(settings.EMBEDDING_MODEL_NAME or "BAAI/bge-small-zh-v1.5").strip() or "BAAI/bge-small-zh-v1.5"
+EMBEDDING_DEVICE = str(settings.EMBEDDING_DEVICE or "").strip()
+EMBEDDING_CACHE_SIZE = max(0, int(settings.EMBEDDING_CACHE_SIZE))
+EMBEDDING_REINDEX_BATCH_SIZE = max(1, int(settings.EMBEDDING_REINDEX_BATCH_SIZE))
+ENABLE_VECTOR_MEMORY = settings.ENABLE_VECTOR_MEMORY
+ENABLE_SEMANTIC_MEMORY = bool(settings.ENABLE_SEMANTIC_MEMORY)
+ENABLE_SEMANTIC_REINFORCEMENT = bool(settings.ENABLE_SEMANTIC_REINFORCEMENT)
+ROUTER_DEBUG = bool(settings.ROUTER_DEBUG)
+VERIFIER_DEBUG = bool(settings.VERIFIER_DEBUG)
+FINAL_DEBUG = bool(settings.FINAL_DEBUG)
+DRIFT_PROBABILITY = float(max(0.0, min(1.0, settings.DRIFT_PROBABILITY)))
+SUMMARY_TRIGGER_COUNT = max(1, int(settings.SUMMARY_TRIGGER_COUNT))
+SUMMARY_BATCH_SIZE = max(1, int(settings.SUMMARY_BATCH_SIZE))
+RECENT_SUMMARY_LIMIT = max(1, int(settings.RECENT_SUMMARY_LIMIT))
+EPISODIC_COMPACT_TRIGGER_COUNT = max(1, int(settings.EPISODIC_COMPACT_TRIGGER_COUNT))
+EPISODIC_COMPACT_BATCH_SIZE = max(1, int(settings.EPISODIC_COMPACT_BATCH_SIZE))
+EPISODIC_VISIBLE_MAX = max(1, int(settings.EPISODIC_VISIBLE_MAX))
+SEMANTIC_VISIBLE_LIMIT = max(1, int(settings.SEMANTIC_VISIBLE_LIMIT))
+SEMANTIC_REINFORCEMENT_LOOKBACK = max(1, int(settings.SEMANTIC_REINFORCEMENT_LOOKBACK))
+SEMANTIC_REINFORCEMENT_MIN_OVERLAP = max(1, int(settings.SEMANTIC_REINFORCEMENT_MIN_OVERLAP))
+MASTER_QQ = settings.MASTER_QQ
+PORT = settings.PORT
+HOST = settings.HOST

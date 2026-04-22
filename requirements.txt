@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+chromadb
+openai
+requests
+pydantic-settings
+edge-tts
+python-docx
+openpyxl
+pypdf
+reportlab
+tzdata
+yt-dlp

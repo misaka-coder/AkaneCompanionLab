@@ -1,0 +1,1466 @@
+from __future__ import annotations
+
+import tempfile
+import threading
+import unittest
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import patch
+
+import config
+
+from companion_v01.embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
+from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.capability_registry import CapabilityRegistry
+from companion_v01.memory_compaction_service import MemoryCompactionService
+from companion_v01.mode_profiles import ModeProfileRegistry
+from companion_v01.persona_config import PERSONA
+from companion_v01.prompt_builder import PromptBuilder
+from companion_v01.retrieval_service import RetrievalService
+from companion_v01.store import MemoryStore
+from companion_v01.text_utils import render_chat_line, render_chat_timeline, resolve_speaker_name
+from companion_v01.artifact_system import ArtifactContainerService
+from companion_v01.gift_system import GiftSystemService
+from companion_v01.tool_runtime import CancelReminderToolHandler, CheckInventoryToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGiftToolHandler, SetReminderToolHandler, ToolExecutionContext, ToolExecutionResult
+
+
+class TextUtilsSpeakerTests(unittest.TestCase):
+    def test_resolve_speaker_name_supports_npc_roles(self) -> None:
+        self.assertEqual(resolve_speaker_name("assistant"), "Akane")
+        self.assertEqual(resolve_speaker_name("npc:摊主"), "摊主")
+        self.assertEqual(resolve_speaker_name("npc"), "NPC")
+        self.assertEqual(resolve_speaker_name("user"), "User")
+
+    def test_render_chat_timeline_keeps_npc_name_visible(self) -> None:
+        timeline = render_chat_timeline(
+            [
+                {"role": "user", "content": "这个多少钱", "timestamp": 1712400000},
+                {"role": "npc:摊主", "content": "三十文。", "timestamp": 1712400001},
+                {"role": "assistant", "content": "要不要我帮你还价？", "timestamp": 1712400002},
+            ]
+        )
+
+        self.assertIn("User: 这个多少钱", timeline)
+        self.assertIn("摊主: 三十文。", timeline)
+        self.assertIn("Akane: 要不要我帮你还价？", timeline)
+        self.assertIn("日期", timeline)
+
+    def test_render_chat_line_keeps_npc_name_visible(self) -> None:
+        line = render_chat_line(role="npc:老板", content="刚出炉的包子。")
+        self.assertEqual(line, "老板: 刚出炉的包子。")
+
+
+class EngineExtensionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        self.engine.resource_manifest = None
+
+    def test_build_retrieval_debug_payload_includes_selected_memory_snippets(self) -> None:
+        payload = self.engine._build_retrieval_debug_payload(
+            router_output={"need_retrieval": True},
+            router_timing={"mode": "ndjson"},
+            retrieval_result={
+                "filtered_candidate_count": 2,
+                "time_filter": {"matched": False},
+                "fused_hits": [{"source_id": "a"}, {"source_id": "b"}],
+                "memory_snippets": ["snippet A", "snippet B"],
+            },
+            verifier_output={
+                "match_result": "match",
+                "need_retry": False,
+                "selected_indexes": [2, 1, 2],
+            },
+            verifier_timing={"mode": "ndjson"},
+            confirmed_snippets=["snippet B", "snippet A"],
+        )
+
+        self.assertEqual(
+            payload["retrieval_result"]["selected_memory_snippets"],
+            [
+                {"index": 2, "snippet": "snippet B"},
+                {"index": 1, "snippet": "snippet A"},
+            ],
+        )
+
+    def test_build_embedding_provider_falls_back_to_hashed_when_huggingface_unavailable(self) -> None:
+        with patch.object(config, "EMBEDDING_PROVIDER", "huggingface"), patch.object(
+            config, "EMBEDDING_CACHE_SIZE", 0
+        ), patch("companion_v01.engine.HuggingFaceEmbeddingProvider", side_effect=RuntimeError("missing deps")):
+            provider = self.engine._build_embedding_provider()
+
+        self.assertIsInstance(provider, HashedEmbeddingProvider)
+
+    def test_build_embedding_provider_wraps_huggingface_provider_with_cache(self) -> None:
+        class StubHFProvider(BaseEmbeddingProvider):
+            provider_name = "stub_hf"
+            version = "v-test"
+
+            def __init__(self) -> None:
+                super().__init__(dimension=4)
+
+            def embed_text(self, text: str) -> list[float]:
+                return [1.0, 0.0, 0.0, 0.0]
+
+        stub_provider = StubHFProvider()
+        with patch.object(config, "EMBEDDING_PROVIDER", "auto"), patch.object(
+            config, "EMBEDDING_CACHE_SIZE", 32
+        ), patch.object(config, "EMBEDDING_MODEL_NAME", "BAAI/bge-small-zh-v1.5"), patch.object(
+            config, "EMBEDDING_DEVICE", ""
+        ), patch("companion_v01.engine.HuggingFaceEmbeddingProvider", return_value=stub_provider):
+            provider = self.engine._build_embedding_provider()
+
+        self.assertIsInstance(provider, CachedEmbeddingProvider)
+        self.assertIs(provider.inner, stub_provider)
+
+    def test_run_embedding_reindex_batches_raw_summary_and_semantic_records(self) -> None:
+        class StubStore:
+            def count_vectorizable_records(self) -> int:
+                return 4
+
+            def iter_messages_for_vector_reindex(self, batch_size: int):
+                yield [
+                    {
+                        "source_id": "raw-1",
+                        "profile_user_id": "user-1",
+                        "session_id": "session-1",
+                        "seq_no": 1,
+                        "role": "user",
+                        "content": "欢迎回来",
+                        "timestamp": 1,
+                        "date_label": "2026-04-10",
+                        "time_of_day": "morning",
+                        "semantic_tags": ["欢迎", "回来"],
+                    },
+                    {
+                        "source_id": "raw-2",
+                        "profile_user_id": "user-1",
+                        "session_id": "session-1",
+                        "seq_no": 2,
+                        "role": "assistant",
+                        "content": "去上课",
+                        "timestamp": 2,
+                        "date_label": "2026-04-10",
+                        "time_of_day": "morning",
+                        "semantic_tags": ["上课"],
+                    },
+                ]
+
+            def iter_summaries_for_vector_reindex(self, batch_size: int):
+                yield [
+                    {
+                        "summary_id": "summary::1",
+                        "profile_user_id": "user-1",
+                        "session_id": "session-1",
+                        "timestamp": 3,
+                        "date_label": "2026-04-10",
+                        "time_of_day": "afternoon",
+                        "diary_summary": "今天回来了",
+                        "key_events": ["回来", "上课"],
+                        "core_facts": ["等你回来"],
+                        "semantic_tags": ["回来"],
+                        "source_end_seq": 2,
+                    }
+                ]
+
+            def iter_semantic_summaries_for_vector_reindex(self, batch_size: int):
+                yield [
+                    {
+                        "semantic_id": "semantic::1",
+                        "profile_user_id": "user-1",
+                        "session_id": "session-1",
+                        "timestamp": 4,
+                        "date_label": "2026-04-10",
+                        "time_of_day": "night",
+                        "semantic_summary": "用户经常提到上课",
+                        "stable_facts": ["用户会上课"],
+                        "recurring_topics": ["课程"],
+                        "important_people": [],
+                        "open_loops": ["等会回来"],
+                        "semantic_tags": ["上课", "课程"],
+                    }
+                ]
+
+        class StubVectorStore:
+            def __init__(self) -> None:
+                self.collection_name = "akane_memory_test"
+                self.batches: list[list[dict[str, object]]] = []
+
+            def count_entries(self) -> int:
+                return 0
+
+            def upsert_entries(self, entries: list[dict[str, object]]) -> None:
+                self.batches.append(entries)
+
+        self.engine.store = StubStore()
+        self.engine.vector_store = StubVectorStore()
+        self.engine._embedding_reindex_lock = threading.RLock()
+        self.engine._embedding_reindex_status = {
+            "state": "running",
+            "processed": 0,
+            "total": 4,
+            "started_at": 0.0,
+            "finished_at": 0.0,
+            "error": "",
+            "collection_name": "akane_memory_test",
+        }
+
+        with patch.object(config, "EMBEDDING_REINDEX_BATCH_SIZE", 2):
+            self.engine._run_embedding_reindex()
+
+        self.assertEqual(len(self.engine.vector_store.batches), 3)
+        self.assertEqual(self.engine.vector_store.batches[0][0]["source_id"], "raw-1")
+        self.assertEqual(self.engine.vector_store.batches[1][0]["source_id"], "summary::1")
+        self.assertEqual(self.engine.vector_store.batches[2][0]["source_id"], "semantic::1")
+        self.assertEqual(self.engine._embedding_reindex_status["state"], "completed")
+        self.assertEqual(self.engine._embedding_reindex_status["processed"], 4)
+
+    def test_normalize_choices_keeps_short_distinct_items(self) -> None:
+        choices = self.engine._normalize_choices(
+            [
+                {"id": "ask_price", "text": "问问价格"},
+                {"text": "问问价格"},
+                "先继续往前逛",
+                {"label": "故意逗她一下"},
+                {"text": "这个会被截断" * 20},
+            ]
+        )
+
+        self.assertEqual(len(choices), 4)
+        self.assertEqual(choices[0], {"id": "ask_price", "text": "问问价格"})
+        self.assertEqual(choices[1]["id"], "choice_3")
+        self.assertEqual(choices[1]["text"], "先继续往前逛")
+        self.assertEqual(choices[2]["text"], "故意逗她一下")
+        self.assertLessEqual(len(choices[3]["text"]), 40)
+
+    def test_normalize_final_output_keeps_code_snippet_without_markdown_fence(self) -> None:
+        normalized = self.engine._normalize_final_output(
+            result={
+                "emotion": "normal",
+                "speech": "我把示例写给你看。",
+                "code_snippet": "```java\nSystem.out.println(\"hi\");\n```",
+                "memory_tags": "",
+                "status": "final",
+                "score": 0.0,
+                "tool_call": None,
+                "choices": [],
+                "character": {"outfit": "default"},
+                "scene": {"major": "home", "minor": "room", "background": "night", "bgm": ""},
+            },
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "night",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=True,
+            debug_enabled=False,
+        )
+
+        self.assertEqual(normalized["code_snippet"], 'System.out.println("hi");')
+
+    def test_normalize_final_output_wraps_plain_speech_as_single_segment(self) -> None:
+        normalized = self.engine._normalize_final_output(
+            result={
+                "emotion": "normal",
+                "speech": "好的主人。",
+                "speech_segments": [],
+                "code_snippet": "",
+                "memory_tags": "",
+                "status": "final",
+                "score": 0.0,
+                "tool_call": None,
+                "choices": [],
+                "character": {"outfit": "default"},
+                "scene": {"major": "home", "minor": "room", "background": "night", "bgm": ""},
+            },
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "night",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=True,
+            debug_enabled=False,
+        )
+
+        self.assertEqual(normalized["speech"], "好的主人。")
+        self.assertEqual(normalized["speech_segments"], ["好的主人。"])
+
+    def test_normalize_final_output_aggregates_speech_segments_for_memory(self) -> None:
+        normalized = self.engine._normalize_final_output(
+            result={
+                "emotion": "normal",
+                "speech": "",
+                "speech_segments": ["在的，主人。", "晚上好呀。", "你在做什么？"],
+                "code_snippet": "",
+                "memory_tags": "",
+                "status": "final",
+                "score": 0.0,
+                "tool_call": None,
+                "choices": [],
+                "character": {"outfit": "default"},
+                "scene": {"major": "home", "minor": "room", "background": "night", "bgm": ""},
+            },
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "night",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=True,
+            debug_enabled=False,
+        )
+
+        self.assertEqual(normalized["speech"], "在的，主人。\n晚上好呀。\n你在做什么？")
+        self.assertEqual(normalized["speech_segments"], ["在的，主人。", "晚上好呀。", "你在做什么？"])
+
+    def test_normalize_final_output_infers_segments_from_multiline_speech(self) -> None:
+        normalized = self.engine._normalize_final_output(
+            result={
+                "emotion": "normal",
+                "speech": "哼，知道了知道了。\n不就是这样分开说话嘛。\n看好了！",
+                "code_snippet": "",
+                "memory_tags": "",
+                "status": "final",
+                "score": 0.0,
+                "tool_call": None,
+                "choices": [],
+                "character": {"outfit": "default"},
+                "scene": {"major": "home", "minor": "room", "background": "night", "bgm": ""},
+            },
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "night",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=True,
+            debug_enabled=False,
+        )
+
+        self.assertEqual(normalized["speech"], "哼，知道了知道了。\n不就是这样分开说话嘛。\n看好了！")
+        self.assertEqual(normalized["speech_segments"], ["哼，知道了知道了。", "不就是这样分开说话嘛。", "看好了！"])
+
+    def test_should_index_user_record_in_vector_defaults_to_true_for_non_retrieval(self) -> None:
+        self.assertTrue(
+            self.engine._should_index_user_record_in_vector(
+                router_output={"need_retrieval": False, "index_current_message": False}
+            )
+        )
+
+    def test_should_index_user_record_in_vector_respects_false_on_retrieval_branch(self) -> None:
+        self.assertFalse(
+            self.engine._should_index_user_record_in_vector(
+                router_output={"need_retrieval": True, "index_current_message": False}
+            )
+        )
+
+    def test_normalize_npc_tool_call_accepts_common_aliases(self) -> None:
+        normalized = self.engine._normalize_npc_tool_call(
+            {
+                "type": "call_npc",
+                "name": "摊主",
+                "role": "卖菜的",
+                "question": "这个青菜怎么卖？",
+            }
+        )
+
+        self.assertEqual(
+            normalized,
+            {
+                "type": "call_npc",
+                "npc_name": "摊主",
+                "npc_role": "卖菜的",
+                "query": "这个青菜怎么卖？",
+            },
+        )
+
+    def test_normalize_npc_tool_call_rejects_incomplete_payload(self) -> None:
+        self.assertIsNone(self.engine._normalize_npc_tool_call(None))
+        self.assertIsNone(self.engine._normalize_npc_tool_call({"type": "call_npc"}))
+        self.assertIsNone(self.engine._normalize_npc_tool_call({"type": "other", "query": "hi"}))
+
+    def test_build_assistant_dialogue_turn_keeps_preface(self) -> None:
+        turn = self.engine._build_assistant_dialogue_turn("我帮你问问摊主。")
+        self.assertEqual(
+            turn,
+            {
+                "speaker": PERSONA.assistant_name,
+                "speech": "我帮你问问摊主。",
+            },
+        )
+
+    def test_build_dialogue_turns_preserves_preface_npc_and_followup_order(self) -> None:
+        turns = self.engine._build_dialogue_turns(
+            preface_turn={"speaker": PERSONA.assistant_name, "speech": "我来替你问一下。"},
+            npc_turns=[{"speaker": "摊主", "speech": "二十文一串。"}],
+            final_speech="听起来还挺公道的。",
+        )
+
+        self.assertEqual(
+            turns,
+            [
+                {"speaker": PERSONA.assistant_name, "speech": "我来替你问一下。"},
+                {"speaker": "摊主", "speech": "二十文一串。"},
+                {"speaker": PERSONA.assistant_name, "speech": "听起来还挺公道的。"},
+            ],
+        )
+
+    def test_build_dialogue_turns_expands_final_speech_segments(self) -> None:
+        turns = self.engine._build_dialogue_turns(
+            preface_turn=None,
+            npc_turns=[],
+            final_speech="在的，主人。\n晚上好呀。",
+            final_speech_segments=["在的，主人。", "晚上好呀。"],
+        )
+
+        self.assertEqual(
+            turns,
+            [
+                {"speaker": PERSONA.assistant_name, "speech": "在的，主人。"},
+                {"speaker": PERSONA.assistant_name, "speech": "晚上好呀。"},
+            ],
+        )
+
+    def test_build_tool_prompt_context_includes_registered_tools(self) -> None:
+        class StubTool:
+            def build_prompt_instruction(self) -> str:
+                return "- fake_tool：测试用工具。"
+
+        self.engine.tool_handlers = {"fake_tool": StubTool()}
+        prompt = self.engine._build_tool_prompt_context(allow_tool_call=True)
+
+        self.assertIn("当前可调用工具", prompt)
+        self.assertIn("\n- fake_tool", prompt)
+        self.assertIn("fake_tool", prompt)
+        self.assertIn("tool_call 输出 null", prompt)
+        self.assertIn("真正调用工具只能写在 tool_call 字段", prompt)
+
+    def test_normalize_tool_call_dispatches_to_registered_handler(self) -> None:
+        class StubTool:
+            def normalize_call(self, value):
+                if value.get("type") != "fake_tool":
+                    return None
+                return {"type": "fake_tool", "query": "ok"}
+
+        self.engine.tool_handlers = {"fake_tool": StubTool()}
+        normalized = self.engine._normalize_tool_call({"type": "fake_tool", "query": "hello"})
+        self.assertEqual(normalized, {"type": "fake_tool", "query": "ok"})
+
+    def test_promote_narrated_remote_media_tool_call_from_speech(self) -> None:
+        class StubFetchMediaTool:
+            def normalize_call(self, value):
+                if value.get("type") != "fetch_media_from_url":
+                    return None
+                urls = list(value.get("urls") or [])
+                return {"type": "fetch_media_from_url", "urls": urls}
+
+        self.engine.tool_handlers = {"fetch_media_from_url": StubFetchMediaTool()}
+        final_output = {
+            "speech": "好的主人，我直接调用工具。工具调用：fetch_media_from_url，目标链接：https://b23.tv/fwo4WAr。",
+            "tool_call": None,
+        }
+
+        repaired = self.engine._promote_narrated_tool_call(
+            final_output,
+            user_message="再测试一下下载视频？ https://b23.tv/fwo4WAr",
+        )
+
+        self.assertEqual(
+            repaired["tool_call"],
+            {"type": "fetch_media_from_url", "urls": ["https://b23.tv/fwo4WAr"]},
+        )
+
+    def test_promote_narrated_remote_media_tool_call_ignores_explanations(self) -> None:
+        class StubFetchMediaTool:
+            def normalize_call(self, value):
+                if value.get("type") != "fetch_media_from_url":
+                    return None
+                urls = list(value.get("urls") or [])
+                return {"type": "fetch_media_from_url", "urls": urls}
+
+        self.engine.tool_handlers = {"fetch_media_from_url": StubFetchMediaTool()}
+        final_output = {
+            "speech": "这个工具叫 fetch_media_from_url，参数是 url: https://b23.tv/fwo4WAr。",
+            "tool_call": None,
+        }
+
+        repaired = self.engine._promote_narrated_tool_call(
+            final_output,
+            user_message="你这个工具需要传什么参数？",
+        )
+
+        self.assertIsNone(repaired["tool_call"])
+
+    def test_tool_prompt_context_is_filtered_by_client_mode(self) -> None:
+        class StubTool:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def build_prompt_instruction(self) -> str:
+                return f"- {self.name}：测试用工具。"
+
+            def normalize_call(self, value):
+                if value.get("type") != self.name:
+                    return None
+                return {"type": self.name}
+
+        self.engine.tool_handlers = {
+            name: StubTool(name)
+            for name in [
+                "set_reminder",
+                "list_reminders",
+                "cancel_reminder",
+                "manage_persona",
+                "manage_gift",
+                "check_inventory",
+                "manage_artifact",
+                "call_npc",
+                "sync_attachment_workspace",
+                "inspect_attachment",
+                "retry_attachment",
+                "clear_attachment_focus",
+            ]
+        }
+        registry = ModeProfileRegistry()
+        qq_context = registry.resolve_from_payload({"client_mode": "qq_text"})
+        scene_context = registry.resolve_from_payload({"client_mode": "scene_static"})
+
+        qq_prompt = self.engine._build_tool_prompt_context(
+            allow_tool_call=True,
+            client_context=qq_context,
+        )
+        scene_prompt = self.engine._build_tool_prompt_context(
+            allow_tool_call=True,
+            client_context=scene_context,
+        )
+
+        self.assertIn("set_reminder", qq_prompt)
+        self.assertIn("manage_persona", qq_prompt)
+        self.assertIn("sync_attachment_workspace", qq_prompt)
+        self.assertIn("inspect_attachment", qq_prompt)
+        self.assertIn("retry_attachment", qq_prompt)
+        self.assertIn("clear_attachment_focus", qq_prompt)
+        self.assertNotIn("manage_gift", qq_prompt)
+        self.assertNotIn("check_inventory", qq_prompt)
+        self.assertIn("manage_gift", scene_prompt)
+        self.assertIn("check_inventory", scene_prompt)
+        self.assertNotIn("inspect_attachment", scene_prompt)
+        self.assertNotIn("retry_attachment", scene_prompt)
+        self.assertNotIn("sync_attachment_workspace", scene_prompt)
+        self.assertIsNone(
+            self.engine._normalize_tool_call(
+                {"type": "manage_gift"},
+                client_context=qq_context,
+            )
+        )
+        self.assertEqual(
+            self.engine._normalize_tool_call(
+                {"type": "manage_gift"},
+                client_context=scene_context,
+            ),
+            {"type": "manage_gift"},
+        )
+
+    def test_capability_registry_keeps_light_hints_and_hides_inactive_tools(self) -> None:
+        class StubTool:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def build_prompt_instruction(self) -> str:
+                return f"- {self.name}：测试用工具。"
+
+            def normalize_call(self, value):
+                if value.get("type") != self.name:
+                    return None
+                return {"type": self.name}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.engine.store = MemoryStore(Path(temp_dir))
+            self.engine.capability_registry = CapabilityRegistry()
+            self.engine.tool_handlers = {
+                name: StubTool(name)
+                for name in [
+                    "set_reminder",
+                    "list_reminders",
+                    "cancel_reminder",
+                    "manage_persona",
+                    "fetch_media_from_url",
+                    "compose_file",
+                    "read_attachment_section",
+                    "apply_style_to_existing_file",
+                    "inspect_media_info",
+                    "separate_audio_stems",
+                    "clean_voice_track",
+                    "transcribe_media",
+                    "prepare_voice_dataset",
+                    "inspect_generated_file",
+                    "convert_media_file",
+                    "send_file",
+                    "send_generated_file",
+                    "manage_generated_file",
+                ]
+            }
+            qq_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "qq_text"})
+
+            prompt = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=qq_context,
+                profile_user_id="master",
+                session_id="qq_pri_1",
+            )
+
+            self.assertIn("可用能力概览", prompt)
+            self.assertIn("文档", prompt)
+            self.assertIn("音频/视频", prompt)
+            self.assertIn("\n- fetch_media_from_url", prompt)
+            self.assertIn("\n- compose_file", prompt)
+            self.assertNotIn("\n- convert_media_file", prompt)
+            self.assertNotIn("\n- separate_audio_stems", prompt)
+            self.assertNotIn("\n- clean_voice_track", prompt)
+            self.assertNotIn("\n- transcribe_media", prompt)
+            self.assertNotIn("\n- prepare_voice_dataset", prompt)
+            self.assertNotIn("\n- read_attachment_section", prompt)
+            self.assertIsNone(
+                self.engine._normalize_tool_call(
+                    {"type": "convert_media_file", "source_id": "audio_001"},
+                    client_context=qq_context,
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                )
+            )
+
+    def test_capability_registry_expands_media_document_and_generated_tools(self) -> None:
+        class StubTool:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def build_prompt_instruction(self) -> str:
+                return f"- {self.name}：测试用工具。"
+
+            def normalize_call(self, value):
+                if value.get("type") != self.name:
+                    return None
+                return {"type": self.name}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.engine.store = MemoryStore(Path(temp_dir))
+            self.engine.capability_registry = CapabilityRegistry()
+            self.engine.tool_handlers = {
+                name: StubTool(name)
+                for name in [
+                    "set_reminder",
+                    "list_reminders",
+                    "cancel_reminder",
+                    "manage_persona",
+                    "fetch_media_from_url",
+                    "sync_attachment_workspace",
+                    "inspect_attachment",
+                    "retry_attachment",
+                    "clear_attachment_focus",
+                    "compose_file",
+                    "read_attachment_section",
+                    "revise_generated_file",
+                    "apply_style_to_existing_file",
+                    "inspect_media_info",
+                    "separate_audio_stems",
+                    "clean_voice_track",
+                    "transcribe_media",
+                    "prepare_voice_dataset",
+                    "inspect_generated_file",
+                    "convert_media_file",
+                    "send_file",
+                    "send_generated_file",
+                    "manage_generated_file",
+                ]
+            }
+            qq_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "qq_text"})
+            media = self.engine.store.add_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                source="qq",
+                kind="audio",
+                status="ready",
+                origin_name="song.mp3",
+                file_ext=".mp3",
+                detail={"media_info": {"audio": {"codec": "mp3"}}},
+                timestamp=100,
+            )
+            document = self.engine.store.add_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                source="qq",
+                kind="document",
+                status="ready",
+                origin_name="notes.txt",
+                file_ext=".txt",
+                detail={"file_kind": "txt", "text_preview": "hello"},
+                timestamp=110,
+            )
+            self.engine.store.add_generated_file(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                output_title="输出",
+                output_format="mp3",
+                storage_relpath="generated/out.mp3",
+                timestamp=120,
+            )
+
+            prompt = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=qq_context,
+                profile_user_id="master",
+                session_id="qq_pri_1",
+            )
+
+            self.assertIn("\n- sync_attachment_workspace", prompt)
+            self.assertIn("\n- fetch_media_from_url", prompt)
+            self.assertIn("\n- read_attachment_section", prompt)
+            self.assertIn("\n- separate_audio_stems", prompt)
+            self.assertIn("\n- clean_voice_track", prompt)
+            self.assertIn("\n- transcribe_media", prompt)
+            self.assertIn("\n- prepare_voice_dataset", prompt)
+            self.assertIn("\n- convert_media_file", prompt)
+            self.assertIn("\n- inspect_generated_file", prompt)
+            self.assertIn("\n- send_file", prompt)
+            self.assertNotIn("\n- send_generated_file", prompt)
+            self.assertIn("\n- manage_generated_file", prompt)
+            self.assertEqual(
+                self.engine._normalize_tool_call(
+                    {"type": "convert_media_file", "source_id": media["attachment_handle"]},
+                    client_context=qq_context,
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                ),
+                {"type": "convert_media_file"},
+            )
+            self.assertEqual(
+                self.engine._normalize_tool_call(
+                    {"type": "clean_voice_track", "source_id": media["attachment_handle"]},
+                    client_context=qq_context,
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                ),
+                {"type": "clean_voice_track"},
+            )
+            self.assertEqual(
+                self.engine._normalize_tool_call(
+                    {"type": "transcribe_media", "source_ids": [media["attachment_handle"]]},
+                    client_context=qq_context,
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                ),
+                {"type": "transcribe_media"},
+            )
+            self.assertEqual(
+                self.engine._normalize_tool_call(
+                    {"type": "prepare_voice_dataset", "source_ids": [media["attachment_handle"]]},
+                    client_context=qq_context,
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                ),
+                {"type": "prepare_voice_dataset"},
+            )
+            self.assertEqual(
+                self.engine._normalize_tool_call(
+                    {"type": "separate_audio_stems", "source_id": media["attachment_handle"]},
+                    client_context=qq_context,
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                ),
+                {"type": "separate_audio_stems"},
+            )
+
+            self.engine.store.clear_attachment_inbox_items(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                target="all",
+                timestamp=130,
+            )
+            self.engine.store.update_generated_file(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                generated_id=self.engine.store.list_generated_files(
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    statuses=["ready"],
+                    limit=1,
+                )[0]["generated_id"],
+                status="removed",
+                updated_at=140,
+            )
+            prompt_after_clear = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=qq_context,
+                profile_user_id="master",
+                session_id="qq_pri_1",
+            )
+
+            self.assertIn("音频/视频", prompt_after_clear)
+            self.assertIn("\n- fetch_media_from_url", prompt_after_clear)
+            self.assertNotIn("\n- sync_attachment_workspace", prompt_after_clear)
+            self.assertNotIn("\n- read_attachment_section", prompt_after_clear)
+            self.assertNotIn("\n- separate_audio_stems", prompt_after_clear)
+            self.assertNotIn("\n- clean_voice_track", prompt_after_clear)
+            self.assertNotIn("\n- transcribe_media", prompt_after_clear)
+            self.assertNotIn("\n- prepare_voice_dataset", prompt_after_clear)
+            self.assertNotIn("\n- convert_media_file", prompt_after_clear)
+            self.assertNotIn("\n- inspect_generated_file", prompt_after_clear)
+            self.assertNotIn("\n- send_file", prompt_after_clear)
+            self.assertNotIn("\n- manage_generated_file", prompt_after_clear)
+
+    def test_execute_tool_call_dispatches_to_registered_handler(self) -> None:
+        class StubTool:
+            def normalize_call(self, value):
+                if value.get("type") != "fake_tool":
+                    return None
+                return {"type": "fake_tool", "query": "ok"}
+
+            def execute(self, *, call, context):
+                return ToolExecutionResult(
+                    tool_type=call["type"],
+                    followup_context=context.session_id,
+                )
+
+        self.engine.tool_handlers = {"fake_tool": StubTool()}
+        result = self.engine._execute_tool_call(
+            profile_user_id="user-1",
+            session_id="session-1",
+            tool_call={"type": "fake_tool", "query": "hello"},
+            visual_payload={"emotion": "happy"},
+            now_ts=123,
+        )
+
+        self.assertEqual(
+            result,
+            ToolExecutionResult(tool_type="fake_tool", followup_context="session-1"),
+        )
+
+    def test_set_reminder_tool_handler_creates_reminder_and_followup_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            handler = SetReminderToolHandler(store=store)
+            result = handler.execute(
+                call={
+                    "type": "set_reminder",
+                    "content": "复习微积分",
+                    "time_text": "明天晚上八点",
+                    "date_label": "",
+                    "time_of_day": "night",
+                    "hour": 20,
+                    "minute": 0,
+                },
+                context=ToolExecutionContext(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    now_ts=int(datetime(2024, 4, 10, 0, 0).timestamp()),
+                    visual_payload={},
+                ),
+            )
+
+            self.assertEqual(result.tool_type, "set_reminder")
+            self.assertIn("成功设置", result.followup_context)
+            claimed = store.claim_due_reminders(
+                profile_user_id="user-1",
+                session_id="session-1",
+                now_ts=int(datetime(2024, 4, 11, 20, 0).timestamp()),
+            )
+            self.assertEqual(len(claimed), 1)
+            self.assertEqual(claimed[0]["content"], "复习微积分")
+
+    def test_set_reminder_tool_handler_supports_relative_offset_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            handler = SetReminderToolHandler(store=store)
+            now_ts = int(datetime(2024, 4, 10, 12, 0).timestamp())
+            result = handler.execute(
+                call={
+                    "type": "set_reminder",
+                    "content": "喝水",
+                    "time_text": "五分钟后",
+                    "offset_minutes": 5,
+                    "date_label": "",
+                    "time_of_day": "",
+                    "hour": None,
+                    "minute": None,
+                },
+                context=ToolExecutionContext(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    now_ts=now_ts,
+                    visual_payload={},
+                ),
+            )
+
+            claimed = store.claim_due_reminders(
+                profile_user_id="user-1",
+                session_id="session-1",
+                now_ts=now_ts + 5 * 60,
+            )
+            self.assertEqual(result.tool_type, "set_reminder")
+            self.assertEqual(len(claimed), 1)
+            self.assertEqual(claimed[0]["content"], "喝水")
+
+    def test_set_reminder_tool_handler_returns_clarification_context_when_time_is_ambiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            handler = SetReminderToolHandler(store=store)
+            result = handler.execute(
+                call={
+                    "type": "set_reminder",
+                    "content": "收快递",
+                    "time_text": "周末",
+                    "date_label": "",
+                    "time_of_day": "",
+                    "hour": None,
+                    "minute": None,
+                    "offset_minutes": None,
+                },
+                context=ToolExecutionContext(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    now_ts=int(datetime(2024, 4, 10, 12, 0).timestamp()),
+                    visual_payload={},
+                ),
+            )
+
+            self.assertIn("确认更具体的提醒时间", result.followup_context)
+            claimed = store.claim_due_reminders(
+                profile_user_id="user-1",
+                session_id="session-1",
+                now_ts=int(datetime(2024, 4, 20, 12, 0).timestamp()),
+            )
+            self.assertEqual(claimed, [])
+
+    def test_list_reminders_tool_handler_builds_numbered_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            store.add_reminder(
+                profile_user_id="user-1",
+                session_id="session-1",
+                content="喝水",
+                due_ts=int(datetime(2024, 4, 10, 12, 5).timestamp()),
+                raw_time_text="五分钟后",
+            )
+            store.add_reminder(
+                profile_user_id="user-1",
+                session_id="session-1",
+                content="背单词",
+                due_ts=int(datetime(2024, 4, 10, 20, 0).timestamp()),
+                raw_time_text="今晚八点",
+            )
+            handler = ListRemindersToolHandler(store=store)
+
+            result = handler.execute(
+                call={"type": "list_reminders", "status": "pending", "limit": 5},
+                context=ToolExecutionContext(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    now_ts=int(datetime(2024, 4, 10, 12, 0).timestamp()),
+                    visual_payload={},
+                ),
+            )
+
+            self.assertEqual(result.tool_type, "list_reminders")
+            self.assertIn("1.", result.followup_context)
+            self.assertIn("2.", result.followup_context)
+            self.assertIn("喝水", result.followup_context)
+
+    def test_cancel_reminder_tool_handler_cancels_by_target_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            store.add_reminder(
+                profile_user_id="user-1",
+                session_id="session-1",
+                content="喝水",
+                due_ts=int(datetime(2024, 4, 10, 12, 5).timestamp()),
+                raw_time_text="五分钟后",
+            )
+            handler = CancelReminderToolHandler(store=store)
+
+            result = handler.execute(
+                call={"type": "cancel_reminder", "target_text": "喝水"},
+                context=ToolExecutionContext(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    now_ts=int(datetime(2024, 4, 10, 12, 1).timestamp()),
+                    visual_payload={},
+                ),
+            )
+
+            self.assertEqual(result.tool_type, "cancel_reminder")
+            self.assertIn("成功取消", result.followup_context)
+            pending = store.list_reminders(
+                profile_user_id="user-1",
+                session_id="session-1",
+                status="pending",
+            )
+            self.assertEqual(pending, [])
+
+    def test_cancel_reminder_tool_handler_asks_for_clarification_when_match_is_ambiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            store.add_reminder(
+                profile_user_id="user-1",
+                session_id="session-1",
+                content="复习英语",
+                due_ts=int(datetime(2024, 4, 10, 18, 0).timestamp()),
+                raw_time_text="今晚六点",
+            )
+            store.add_reminder(
+                profile_user_id="user-1",
+                session_id="session-1",
+                content="复习高数",
+                due_ts=int(datetime(2024, 4, 10, 20, 0).timestamp()),
+                raw_time_text="今晚八点",
+            )
+            handler = CancelReminderToolHandler(store=store)
+
+            result = handler.execute(
+                call={"type": "cancel_reminder", "target_text": "复习"},
+                context=ToolExecutionContext(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    now_ts=int(datetime(2024, 4, 10, 12, 1).timestamp()),
+                    visual_payload={},
+                ),
+            )
+
+            self.assertIn("确认具体要取消哪一条", result.followup_context)
+
+    def test_check_inventory_tool_handler_reads_recent_pending_gifts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            service = GiftSystemService(root / "gifts", store=store)
+            handler = CheckInventoryToolHandler(gift_service=service)
+
+            service.ingest_upload(
+                profile_user_id="user-1",
+                session_id="session-1",
+                filename="夜色.flac",
+                content_type="audio/flac",
+                content=b"stub-audio",
+                now_ts=100,
+            )
+            service.ingest_upload(
+                profile_user_id="user-1",
+                session_id="session-1",
+                filename="雨声.flac",
+                content_type="audio/flac",
+                content=b"stub-audio",
+                now_ts=101,
+            )
+
+            result = handler.execute(
+                call={"type": "check_inventory", "scope": "pending_recent", "limit": 3},
+                context=ToolExecutionContext(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    now_ts=int(datetime(2024, 4, 10, 12, 1).timestamp()),
+                    visual_payload={},
+                ),
+            )
+
+            self.assertEqual(result.tool_type, "check_inventory")
+            self.assertIn("scope=pending_recent", result.followup_context)
+            self.assertIn("音乐: 雨声", result.followup_context)
+            self.assertEqual(result.stream_events[0]["type"], "inventory_snapshot")
+
+    def test_manage_gift_tool_handler_uses_session_focus(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            service = GiftSystemService(root / "gifts", store=store)
+            handler = ManageGiftToolHandler(gift_service=service)
+
+            asset = service.ingest_upload(
+                profile_user_id="user-1",
+                session_id="session-1",
+                filename="夜色.flac",
+                content_type="audio/flac",
+                content=b"stub-audio",
+                now_ts=100,
+            )
+
+            result = handler.execute(
+                call={"type": "manage_gift", "action": "internalize"},
+                context=ToolExecutionContext(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    now_ts=int(datetime(2024, 4, 10, 12, 1).timestamp()),
+                    visual_payload={},
+                    current_user_source_id="msg::gift_intent",
+                ),
+            )
+
+            updated = store.get_gift_asset(
+                profile_user_id="user-1",
+                asset_id=str(asset["asset_id"]),
+            )
+            session = store.get_session("user-1", "session-1")
+
+            self.assertEqual(result.tool_type, "manage_gift")
+            self.assertIn("已经把礼物", result.followup_context)
+            self.assertEqual(result.stream_events[0]["type"], "gift_updated")
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated["status"], "internalized")
+            self.assertIsNotNone(session)
+            self.assertEqual(session["current_gift_focus_asset_id"], asset["asset_id"])
+
+    def test_manage_artifact_tool_handler_claims_focused_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            gift_service = GiftSystemService(root / "gifts", store=store)
+            artifact_service = ArtifactContainerService(store=store)
+            handler = ManageArtifactToolHandler(artifact_service=artifact_service)
+
+            asset = gift_service.ingest_upload(
+                profile_user_id="user-1",
+                session_id="session-1",
+                filename="akane_shy.png",
+                content_type="image/png",
+                content=b"stub-image",
+                now_ts=100,
+            )
+
+            result = handler.execute(
+                call={
+                    "type": "manage_artifact",
+                    "action": "claim",
+                    "display_name": "shy 水手服",
+                    "collection_key": "daily_wardrobe",
+                    "collection_name": "常服衣柜",
+                    "asset_role": "outfit",
+                },
+                context=ToolExecutionContext(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    now_ts=int(datetime(2024, 4, 10, 12, 1).timestamp()),
+                    visual_payload={},
+                    current_user_source_id="msg::artifact_claim",
+                ),
+            )
+
+            updated = store.get_gift_asset(
+                profile_user_id="user-1",
+                asset_id=str(asset["asset_id"]),
+            )
+
+            self.assertEqual(result.tool_type, "manage_artifact")
+            self.assertEqual(result.stream_events[0]["type"], "artifact_updated")
+            self.assertIn("正式认领", result.followup_context)
+            self.assertIsNotNone(updated)
+            assert updated is not None
+            self.assertEqual(updated["display_name"], "shy 水手服")
+            self.assertEqual(updated["status"], "internalized")
+            self.assertEqual(updated["payload"]["asset_role"], "outfit")
+            self.assertEqual(updated["payload"]["projection_role"], "character")
+            self.assertEqual(updated["payload"]["character_outfit_id"], "daily_wardrobe")
+            self.assertEqual(updated["payload"]["character_emotion_id"], "normal")
+            self.assertEqual(updated["payload"]["collection_key"], "daily_wardrobe")
+            self.assertEqual(updated["source_ids"], ["msg::artifact_claim"])
+
+    def test_consume_due_reminders_uses_llm_speech_and_persists_into_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+            engine.store = MemoryStore(Path(temp_dir))
+            engine.resource_manifest = None
+            engine._upsert_raw_record = lambda record: None
+            engine._schedule_summary_cycle = lambda **kwargs: None
+
+            class StubLLM:
+                def call_chat_json(self, **kwargs):
+                    return {"speech": "喵，我来提醒你，该喝水啦。"}
+
+            engine.llm = StubLLM()
+            engine.store.add_reminder(
+                profile_user_id="user-1",
+                session_id="session-1",
+                content="喝水",
+                due_ts=int(datetime(2024, 4, 10, 12, 5).timestamp()),
+                raw_time_text="五分钟后",
+            )
+
+            notifications = engine.consume_due_reminders(
+                profile_user_id="user-1",
+                session_id="session-1",
+                now_ts=int(datetime(2024, 4, 10, 12, 6).timestamp()),
+            )
+
+            self.assertEqual(len(notifications), 1)
+            self.assertEqual(notifications[0]["speech"], "喵，我来提醒你，该喝水啦。")
+            rows = engine.store.get_unsummarized_messages("session-1")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["role"], "assistant")
+            self.assertEqual(rows[0]["content"], "喵，我来提醒你，该喝水啦。")
+
+    def test_build_memory_snippets_can_render_semantic_summary_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            semantic = store.add_semantic_summary(
+                profile_user_id="user-1",
+                session_id="session-1",
+                timestamp=int(datetime(2026, 4, 10, 20, 0).timestamp()),
+                period_start_ts=int(datetime(2026, 4, 1, 8, 0).timestamp()),
+                period_end_ts=int(datetime(2026, 4, 10, 20, 0).timestamp()),
+                date_label="2026-04-10",
+                time_of_day="night",
+                importance=0.85,
+                semantic_summary="主人最近反复提到课程安排，我记住他这段时间确实在忙学习。",
+                stable_facts=["最近课程很多"],
+                recurring_topics=["上课", "复习"],
+                important_people=["老师"],
+                open_loops=["还要继续复习"],
+                semantic_tags=["课程", "学习"],
+                source_summary_ids=["summary::1"],
+            )
+            service = RetrievalService(
+                store=store,
+                vector_store=object(),
+                llm=object(),
+                prompt_builder=PromptBuilder(PERSONA),
+            )
+
+            snippets = service._build_memory_snippets([{"source_id": semantic["semantic_id"]}])
+
+            self.assertEqual(len(snippets), 1)
+            self.assertIn("长期语义记忆", snippets[0])
+            self.assertIn("反复提到课程安排", snippets[0])
+
+    def test_run_semantic_summary_cycle_creates_semantic_memory_and_marks_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+
+            class StubVectorStore:
+                def __init__(self) -> None:
+                    self.upserts: list[dict[str, str]] = []
+
+                def upsert_entry(self, *, source_id, text, metadata):
+                    self.upserts.append(
+                        {
+                            "source_id": source_id,
+                            "text": text,
+                            "entry_type": metadata.get("entry_type", ""),
+                        }
+                    )
+
+                def upsert_entries(self, entries):
+                    for entry in entries:
+                        self.upsert_entry(
+                            source_id=entry.get("source_id"),
+                            text=entry.get("text"),
+                            metadata=entry.get("metadata") or {},
+                        )
+
+            class StubLLM:
+                def call_aux_json(self, **kwargs):
+                    return {
+                        "semantic_summary": "主人这段时间一直围绕课程和复习安排来回确认，我记住这是近期最稳定的主线。",
+                        "importance": 0.82,
+                        "stable_facts": ["最近在上课", "复习安排很重要"],
+                        "recurring_topics": ["课程", "复习"],
+                        "important_people": ["老师"],
+                        "open_loops": ["还要继续准备考试"],
+                    }
+
+            service = MemoryCompactionService(
+                store=store,
+                vector_store=StubVectorStore(),
+                llm=StubLLM(),
+                prompt_builder=PromptBuilder(PERSONA),
+            )
+
+            for idx in range(5):
+                store.add_summary(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    timestamp=1000 + idx * 100,
+                    date_label="2026-04-10",
+                    time_of_day="afternoon",
+                    period_label=f"阶段{idx + 1}",
+                    event_type="日常",
+                    importance=0.6,
+                    diary_summary=f"第{idx + 1}段摘要，主人提到课程安排。",
+                    key_events=[f"事件{idx + 1}"],
+                    core_facts=["课程", "复习"],
+                    semantic_tags=["课程", "复习"],
+                    source_start_seq=idx * 2 + 1,
+                    source_end_seq=idx * 2 + 2,
+                    source_ids=[f"msg-{idx}"],
+                )
+
+            old_enable = getattr(config, "ENABLE_SEMANTIC_MEMORY", True)
+            old_trigger = getattr(config, "EPISODIC_COMPACT_TRIGGER_COUNT", 10)
+            old_batch = getattr(config, "EPISODIC_COMPACT_BATCH_SIZE", 5)
+            try:
+                config.ENABLE_SEMANTIC_MEMORY = True
+                config.EPISODIC_COMPACT_TRIGGER_COUNT = 5
+                config.EPISODIC_COMPACT_BATCH_SIZE = 5
+
+                service._run_semantic_summary_cycle_with_generation(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    generation=0,
+                )
+            finally:
+                config.ENABLE_SEMANTIC_MEMORY = old_enable
+                config.EPISODIC_COMPACT_TRIGGER_COUNT = old_trigger
+                config.EPISODIC_COMPACT_BATCH_SIZE = old_batch
+                service.close()
+
+            semantic_records = store.get_recent_semantic_summaries("user-1", limit=3)
+            visible_episodic = store.get_visible_episodic_summaries("user-1", limit=10)
+            all_summaries = store.get_recent_summaries("user-1", limit=10)
+
+            self.assertEqual(len(semantic_records), 1)
+            self.assertEqual(visible_episodic, [])
+            self.assertTrue(all(item["is_semanticized"] == 1 for item in all_summaries))
+            self.assertEqual(len(service.vector_store.upserts), 1)
+            self.assertEqual(service.vector_store.upserts[0]["entry_type"], "semantic_summary")
+            self.assertTrue(service.vector_store.upserts[0]["source_id"].startswith("semantic::"))
+
+    def test_run_semantic_summary_cycle_reinforces_existing_semantic_memory_when_overlap_is_high(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+
+            class StubVectorStore:
+                def __init__(self) -> None:
+                    self.upserts: list[dict[str, str]] = []
+
+                def upsert_entry(self, *, source_id, text, metadata):
+                    self.upserts.append(
+                        {
+                            "source_id": source_id,
+                            "text": text,
+                            "entry_type": metadata.get("entry_type", ""),
+                        }
+                    )
+
+                def upsert_entries(self, entries):
+                    for entry in entries:
+                        self.upsert_entry(
+                            source_id=entry.get("source_id"),
+                            text=entry.get("text"),
+                            metadata=entry.get("metadata") or {},
+                        )
+
+            class StubLLM:
+                def call_aux_json(self, **kwargs):
+                    prompt = str(kwargs.get("user_prompt") or "")
+                    if "已有长期语义记忆" in prompt:
+                        return {
+                            "semantic_summary": "主人最近持续在围绕课程和复习安排来回确认，这条学习主线比之前更明确了。",
+                            "importance": 0.9,
+                            "stable_facts": ["最近课程很多", "复习安排很重要"],
+                            "recurring_topics": ["课程", "复习"],
+                            "important_people": ["老师"],
+                            "open_loops": ["还要继续准备考试"],
+                        }
+                    return {
+                        "semantic_summary": "主人最近一直在围绕课程和复习安排打转，我记住这条学习主线还在继续。",
+                        "importance": 0.82,
+                        "stable_facts": ["最近课程很多", "复习安排很重要"],
+                        "recurring_topics": ["课程", "复习"],
+                        "important_people": [],
+                        "open_loops": ["还要继续准备考试"],
+                    }
+
+            existing = store.add_semantic_summary(
+                profile_user_id="user-1",
+                session_id="session-1",
+                timestamp=900,
+                period_start_ts=700,
+                period_end_ts=900,
+                date_label="2026-04-01",
+                time_of_day="night",
+                importance=0.78,
+                semantic_summary="主人最近一直在聊课程和复习安排，我记住学习是这段时间最稳定的主线。",
+                stable_facts=["最近课程很多"],
+                recurring_topics=["课程", "复习"],
+                important_people=[],
+                open_loops=["还要继续复习"],
+                semantic_tags=["课程", "复习", "学习"],
+                source_summary_ids=["summary::old"],
+            )
+
+            service = MemoryCompactionService(
+                store=store,
+                vector_store=StubVectorStore(),
+                llm=StubLLM(),
+                prompt_builder=PromptBuilder(PERSONA),
+            )
+
+            for idx in range(5):
+                store.add_summary(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    timestamp=1000 + idx * 100,
+                    date_label="2026-04-10",
+                    time_of_day="afternoon",
+                    period_label=f"阶段{idx + 1}",
+                    event_type="学习",
+                    importance=0.7,
+                    diary_summary=f"第{idx + 1}段摘要，主人继续提到课程和复习安排。",
+                    key_events=[f"复习事件{idx + 1}"],
+                    core_facts=["课程", "复习"],
+                    semantic_tags=["课程", "复习"],
+                    source_start_seq=idx * 2 + 1,
+                    source_end_seq=idx * 2 + 2,
+                    source_ids=[f"msg-{idx}"],
+                )
+
+            old_enable = getattr(config, "ENABLE_SEMANTIC_MEMORY", True)
+            old_reinforce = getattr(config, "ENABLE_SEMANTIC_REINFORCEMENT", True)
+            old_trigger = getattr(config, "EPISODIC_COMPACT_TRIGGER_COUNT", 10)
+            old_batch = getattr(config, "EPISODIC_COMPACT_BATCH_SIZE", 5)
+            old_lookback = getattr(config, "SEMANTIC_REINFORCEMENT_LOOKBACK", 8)
+            old_overlap = getattr(config, "SEMANTIC_REINFORCEMENT_MIN_OVERLAP", 2)
+            try:
+                config.ENABLE_SEMANTIC_MEMORY = True
+                config.ENABLE_SEMANTIC_REINFORCEMENT = True
+                config.EPISODIC_COMPACT_TRIGGER_COUNT = 5
+                config.EPISODIC_COMPACT_BATCH_SIZE = 5
+                config.SEMANTIC_REINFORCEMENT_LOOKBACK = 5
+                config.SEMANTIC_REINFORCEMENT_MIN_OVERLAP = 2
+
+                service._run_semantic_summary_cycle_with_generation(
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    generation=0,
+                )
+            finally:
+                config.ENABLE_SEMANTIC_MEMORY = old_enable
+                config.ENABLE_SEMANTIC_REINFORCEMENT = old_reinforce
+                config.EPISODIC_COMPACT_TRIGGER_COUNT = old_trigger
+                config.EPISODIC_COMPACT_BATCH_SIZE = old_batch
+                config.SEMANTIC_REINFORCEMENT_LOOKBACK = old_lookback
+                config.SEMANTIC_REINFORCEMENT_MIN_OVERLAP = old_overlap
+                service.close()
+
+            semantic_records = store.get_recent_semantic_summaries("user-1", limit=5)
+            visible_episodic = store.get_visible_episodic_summaries("user-1", limit=10)
+            updated_existing = store.get_semantic_summary_by_id(existing["semantic_id"])
+
+            self.assertEqual(len(semantic_records), 1)
+            self.assertEqual(visible_episodic, [])
+            self.assertEqual(updated_existing["semantic_id"], existing["semantic_id"])
+            self.assertEqual(updated_existing["reinforcement_count"], 2)
+            self.assertGreaterEqual(updated_existing["period_end_ts"], 1400)
+            self.assertIn("老师", updated_existing["important_people"])
+            self.assertEqual(len(updated_existing["source_summary_ids"]), 6)
+            self.assertEqual(len(service.vector_store.upserts), 1)
+            self.assertEqual(service.vector_store.upserts[0]["source_id"], existing["semantic_id"])
+
+
+if __name__ == "__main__":
+    unittest.main()

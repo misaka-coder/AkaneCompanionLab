@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>林翩翩 VN Preview</title>
+    <link rel="stylesheet" href="/preview.css?v=20260407_mobile2" />
+  </head>
+  <body>
+    <div id="preview-app" class="vn-scene" data-time="evening">
+      <div class="vn-bg vn-bg-a is-visible" style="background-image: url('/assets/backgrounds/evening.png');"></div>
+      <div class="vn-bg vn-bg-b"></div>
+      <div class="vn-overlay"></div>
+
+      <div class="vn-stage">
+        <img id="preview-sprite" class="vn-sprite" src="/assets/characters/normal.png" alt="林翩翩" />
+      </div>
+
+      <div id="choice-row" class="vn-choice-overlay" hidden></div>
+
+      <button id="menu-toggle" class="vn-menu-toggle" type="button" aria-label="打开预览菜单">
+        <span></span><span></span><span></span>
+      </button>
+
+      <aside id="menu-panel" class="vn-menu-panel" hidden>
+        <div class="menu-group">
+          <span class="menu-label">场景大类</span>
+          <div id="major-row" class="chip-row"></div>
+        </div>
+        <div class="menu-group">
+          <span class="menu-label">子场景</span>
+          <div id="minor-row" class="chip-row"></div>
+        </div>
+        <div class="menu-group">
+          <span class="menu-label">背景变体</span>
+          <div id="background-row" class="chip-row"></div>
+        </div>
+        <div class="menu-group">
+          <span class="menu-label">服装</span>
+          <div id="outfit-row" class="chip-row"></div>
+        </div>
+        <div class="menu-group">
+          <span class="menu-label">表情</span>
+          <div id="emotion-row" class="chip-row"></div>
+        </div>
+      </aside>
+
+      <section class="vn-dialogue-shell">
+        <div class="vn-nameplate">
+          <span id="speaker-name">林翩翩</span>
+          <small id="bgm-label">BGM: 未设置</small>
+        </div>
+        <div id="dialogue-line" class="vn-dialogue-line">
+          知宥，欢迎回来。这里往后会依着你的话，慢慢换场景、立绘和神情。
+        </div>
+        <div class="vn-dialogue-actions">
+          <button id="input-toggle" class="dialogue-action" type="button">聚焦输入</button>
+          <button id="next-line" class="dialogue-action" type="button">重播台词</button>
+        </div>
+      </section>
+
+      <form id="preview-form" class="vn-composer">
+        <input id="preview-input" type="text" placeholder="输入一句话，试试让林翩翩回答并切换资源……" />
+        <button id="preview-send" type="submit">发送</button>
+      </form>
+
+      <audio id="preview-bgm" loop preload="auto"></audio>
+    </div>
+
+    <script>
+      const appEl = document.getElementById("preview-app");
+      const spriteEl = document.getElementById("preview-sprite");
+      const dialogueEl = document.getElementById("dialogue-line");
+      const speakerNameEl = document.getElementById("speaker-name");
+      const choiceRowEl = document.getElementById("choice-row");
+      const bgmLabelEl = document.getElementById("bgm-label");
+      const menuToggleEl = document.getElementById("menu-toggle");
+      const menuPanelEl = document.getElementById("menu-panel");
+      const inputToggleEl = document.getElementById("input-toggle");
+      const nextLineEl = document.getElementById("next-line");
+      const composerEl = document.getElementById("preview-form");
+      const inputEl = document.getElementById("preview-input");
+      const sendButtonEl = document.getElementById("preview-send");
+      const bgmAudioEl = document.getElementById("preview-bgm");
+      const defaultSpeakerName = speakerNameEl.textContent || "林翩翩";
+
+      const majorRowEl = document.getElementById("major-row");
+      const minorRowEl = document.getElementById("minor-row");
+      const backgroundRowEl = document.getElementById("background-row");
+      const outfitRowEl = document.getElementById("outfit-row");
+      const emotionRowEl = document.getElementById("emotion-row");
+
+      const bgFrames = [
+        document.querySelector(".vn-bg-a"),
+        document.querySelector(".vn-bg-b"),
+      ];
+
+      const state = {
+        manifest: null,
+        major: "",
+        minor: "",
+        background: "",
+        outfit: "",
+        emotion: "",
+        bgm: "",
+        lastSpeech: "知宥，欢迎回来。这里往后会依着你的话，慢慢换场景、立绘和神情。",
+        lastSpeaker: defaultSpeakerName,
+        activeBgIndex: 0,
+        typingToken: 0,
+        sending: false,
+        currentBgmPath: "",
+        bgmNeedsResume: false,
+        availableChoices: [],
+      };
+
+      function syncViewportHeight() {
+        const viewport = window.visualViewport;
+        const height = viewport ? viewport.height : window.innerHeight;
+        document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
+      }
+
+      function inferTimeLabel(backgroundId) {
+        const key = String(backgroundId || "").toLowerCase();
+        if (key.includes("morning")) return "morning";
+        if (key.includes("afternoon")) return "afternoon";
+        if (key.includes("night")) return "night";
+        return "evening";
+      }
+
+      function getMajor(id = state.major) {
+        return state.manifest?.scenes?.majors?.find((item) => item.id === id) || null;
+      }
+
+      function getMinor(majorId = state.major, minorId = state.minor) {
+        const major = getMajor(majorId);
+        return major?.minors?.find((item) => item.id === minorId) || null;
+      }
+
+      function getBackground(backgroundId = state.background) {
+        const minor = getMinor();
+        return minor?.backgrounds?.find((item) => item.id === backgroundId) || null;
+      }
+
+      function getOutfit(outfitId = state.outfit) {
+        return state.manifest?.characters?.outfits?.find((item) => item.id === outfitId) || null;
+      }
+
+      function getEmotion(emotionId = state.emotion) {
+        const outfit = getOutfit();
+        return outfit?.emotions?.find((item) => item.id === emotionId) || null;
+      }
+
+      function getBgmTrack(trackId = state.bgm) {
+        const minor = getMinor();
+        return minor?.bgm_tracks?.find((item) => item.id === trackId) || null;
+      }
+
+      function fillChipRow(target, entries, type, activeValue) {
+        target.innerHTML = "";
+        if (!entries || !entries.length) {
+          const empty = document.createElement("span");
+          empty.className = "menu-empty";
+          empty.textContent = "暂无";
+          target.appendChild(empty);
+          return;
+        }
+
+        entries.forEach((entry) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "menu-chip";
+          button.dataset.type = type;
+          button.dataset.value = entry.id;
+          button.textContent = entry.name || entry.id;
+          button.classList.toggle("is-active", entry.id === activeValue);
+          target.appendChild(button);
+        });
+      }
+
+      function renderMenu() {
+        if (!state.manifest) return;
+
+        const majors = state.manifest.scenes.majors || [];
+        const major = getMajor() || majors[0];
+        const minors = major?.minors || [];
+        const minor = getMinor(major?.id, state.minor) || minors[0];
+        const backgrounds = minor?.backgrounds || [];
+        const outfits = state.manifest.characters.outfits || [];
+        const outfit = getOutfit() || outfits[0];
+        const emotions = outfit?.emotions || [];
+
+        fillChipRow(majorRowEl, majors, "major", major?.id);
+        fillChipRow(minorRowEl, minors, "minor", minor?.id);
+        fillChipRow(backgroundRowEl, backgrounds, "background", state.background);
+        fillChipRow(outfitRowEl, outfits, "outfit", outfit?.id);
+        fillChipRow(emotionRowEl, emotions, "emotion", state.emotion);
+      }
+
+      function renderChoices() {
+        const choices = Array.isArray(state.availableChoices) ? state.availableChoices : [];
+        choiceRowEl.innerHTML = "";
+        if (!choices.length) {
+          choiceRowEl.setAttribute("hidden", "");
+          return;
+        }
+
+        choices.forEach((choice) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "vn-choice-button";
+          button.dataset.choiceId = choice.id || "";
+          button.dataset.choiceText = choice.text || "";
+          button.textContent = choice.text || "";
+          button.disabled = state.sending;
+          choiceRowEl.appendChild(button);
+        });
+        choiceRowEl.removeAttribute("hidden");
+      }
+
+      function setBackground(url, timeKey) {
+        appEl.dataset.time = timeKey;
+        const nextIndex = state.activeBgIndex === 0 ? 1 : 0;
+        bgFrames[nextIndex].style.backgroundImage = `url("${url}")`;
+        bgFrames[nextIndex].classList.add("is-visible");
+        bgFrames[state.activeBgIndex].classList.remove("is-visible");
+        state.activeBgIndex = nextIndex;
+      }
+
+      async function typewrite(text) {
+        state.typingToken += 1;
+        const token = state.typingToken;
+        dialogueEl.textContent = "";
+        for (let i = 0; i < text.length; i += 1) {
+          if (token !== state.typingToken) return;
+          dialogueEl.textContent = text.slice(0, i + 1);
+          await new Promise((resolve) => setTimeout(resolve, 18));
+        }
+      }
+
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      function setSpeakerName(name) {
+        speakerNameEl.textContent = name || defaultSpeakerName;
+      }
+
+      function resolveAssetUrl(path) {
+        if (!path) return "";
+        try {
+          return new URL(path, window.location.href).toString();
+        } catch (_) {
+          return path;
+        }
+      }
+
+      function currentAudioMatches(path) {
+        const resolved = resolveAssetUrl(path);
+        return Boolean(resolved && bgmAudioEl.currentSrc === resolved);
+      }
+
+      async function attemptBgmPlay() {
+        if (!state.currentBgmPath || !bgmAudioEl.src) return;
+        if (!bgmAudioEl.paused && !bgmAudioEl.ended) {
+          state.bgmNeedsResume = false;
+          return;
+        }
+        try {
+          await bgmAudioEl.play();
+          state.bgmNeedsResume = false;
+        } catch (_) {
+          state.bgmNeedsResume = true;
+        }
+      }
+
+      async function resumeBgmIfNeeded() {
+        if (!state.currentBgmPath) return;
+        if (!currentAudioMatches(state.currentBgmPath)) {
+          bgmAudioEl.src = state.currentBgmPath;
+          bgmAudioEl.load();
+        }
+        await attemptBgmPlay();
+      }
+
+      async function syncBgm(track) {
+        const path = track?.path || "";
+        const shouldReload = !path || path !== state.currentBgmPath || !currentAudioMatches(path);
+        state.currentBgmPath = path;
+
+        if (!path) {
+          state.bgmNeedsResume = false;
+          bgmAudioEl.pause();
+          bgmAudioEl.removeAttribute("src");
+          bgmAudioEl.load();
+          return;
+        }
+
+        if (shouldReload) {
+          bgmAudioEl.pause();
+          bgmAudioEl.src = path;
+          bgmAudioEl.load();
+        }
+
+        await attemptBgmPlay();
+      }
+
+      async function applyCurrentVisualState() {
+        const background = getBackground();
+        const emotion = getEmotion();
+        const bgmTrack = getBgmTrack();
+
+        if (background?.path) {
+          setBackground(background.path, inferTimeLabel(background.id));
+        }
+        if (emotion?.path) {
+          spriteEl.src = emotion.path;
+        }
+        bgmLabelEl.textContent = bgmTrack?.name ? `BGM: ${bgmTrack.name}` : "BGM: 未设置";
+        await syncBgm(bgmTrack);
+        renderMenu();
+      }
+
+      function setSending(flag) {
+        state.sending = flag;
+        inputEl.disabled = flag;
+        inputToggleEl.disabled = flag;
+        nextLineEl.disabled = flag;
+        menuToggleEl.disabled = flag;
+        sendButtonEl.disabled = flag;
+        sendButtonEl.textContent = flag ? "发送中" : "发送";
+        document.querySelectorAll(".menu-chip").forEach((button) => {
+          button.disabled = flag;
+        });
+        document.querySelectorAll(".vn-choice-button").forEach((button) => {
+          button.disabled = flag;
+        });
+      }
+
+      function normalizeStateFromManifest() {
+        const defaults = state.manifest.defaults;
+        state.major = state.major || defaults.major;
+        state.minor = state.minor || defaults.minor;
+        state.background = state.background || defaults.background;
+        state.outfit = state.outfit || defaults.outfit;
+        state.emotion = state.emotion || defaults.emotion;
+        state.bgm = state.bgm || defaults.bgm;
+      }
+
+      async function initializeManifest() {
+        const response = await fetch(`/resource-manifest?t=${Date.now()}`, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`manifest http ${response.status}`);
+        }
+        state.manifest = await response.json();
+        normalizeStateFromManifest();
+        renderChoices();
+        await applyCurrentVisualState();
+        state.lastSpeaker = defaultSpeakerName;
+        await typewrite(state.lastSpeech);
+      }
+
+      async function applyPayloadVisual(payload) {
+        if (!state.manifest) return;
+
+        const nextScene = payload?.scene || {};
+        const nextCharacter = payload?.character || {};
+
+        if (nextScene.major && getMajor(nextScene.major)) {
+          state.major = nextScene.major;
+        }
+
+        const availableMinor = getMinor(state.major, nextScene.minor);
+        if (nextScene.minor && availableMinor) {
+          state.minor = nextScene.minor;
+        } else if (!getMinor()) {
+          state.minor = getMajor()?.minors?.[0]?.id || state.manifest.defaults.minor;
+        }
+
+        const minor = getMinor();
+        if (nextScene.background && minor?.backgrounds?.some((item) => item.id === nextScene.background)) {
+          state.background = nextScene.background;
+        } else if (!getBackground()) {
+          state.background = minor?.backgrounds?.[0]?.id || state.manifest.defaults.background;
+        }
+
+        if (nextCharacter.outfit && getOutfit(nextCharacter.outfit)) {
+          state.outfit = nextCharacter.outfit;
+        }
+
+        const outfit = getOutfit();
+        if (payload.emotion && outfit?.emotions?.some((item) => item.id === payload.emotion)) {
+          state.emotion = payload.emotion;
+        } else if (!getEmotion()) {
+          state.emotion = outfit?.emotions?.[0]?.id || state.manifest.defaults.emotion;
+        }
+
+        if (nextScene.bgm && minor?.bgm_tracks?.some((item) => item.id === nextScene.bgm)) {
+          state.bgm = nextScene.bgm;
+        } else if (!getBgmTrack()) {
+          state.bgm = minor?.bgm_tracks?.[0]?.id || "";
+        }
+
+        await applyCurrentVisualState();
+      }
+
+      function buildDialogueTurns(payload) {
+        const directTurns = Array.isArray(payload?.dialogue_turns) ? payload.dialogue_turns : [];
+        const normalized = [];
+
+        directTurns.forEach((turn) => {
+          const speaker = String(turn?.speaker || "").trim();
+          const speech = String(turn?.speech || "").trim();
+          if (!speech) return;
+          normalized.push({
+            speaker: speaker || defaultSpeakerName,
+            speech,
+          });
+        });
+
+        if (normalized.length) {
+          return normalized;
+        }
+
+        const npcTurns = Array.isArray(payload?.npc_turns) ? payload.npc_turns : [];
+        npcTurns.forEach((turn) => {
+          const speaker = String(turn?.speaker || "").trim();
+          const speech = String(turn?.speech || "").trim();
+          if (!speech) return;
+          normalized.push({
+            speaker: speaker || "NPC",
+            speech,
+          });
+        });
+
+        const finalSpeech = String(payload?.speech || "").trim();
+        if (finalSpeech) {
+          normalized.push({
+            speaker: defaultSpeakerName,
+            speech: finalSpeech,
+          });
+        } else if (Array.isArray(payload?.speech_segments)) {
+          payload.speech_segments
+            .map((segment) => String(segment || "").trim())
+            .filter(Boolean)
+            .slice(0, 3)
+            .forEach((speech) => {
+              normalized.push({
+                speaker: defaultSpeakerName,
+                speech,
+              });
+            });
+        }
+
+        return normalized;
+      }
+
+      function getTurnHoldMs(turn, index, total) {
+        if (index >= total - 1) return 0;
+        const speech = String(turn?.speech || "");
+        return Math.min(2200, Math.max(900, 420 + speech.length * 32));
+      }
+
+      async function playDialogueTurns(turns) {
+        if (!Array.isArray(turns) || !turns.length) {
+          state.lastSpeaker = defaultSpeakerName;
+          setSpeakerName(defaultSpeakerName);
+          await typewrite(state.lastSpeech);
+          return;
+        }
+
+        for (let index = 0; index < turns.length; index += 1) {
+          const turn = turns[index];
+          const speaker = turn?.speaker || defaultSpeakerName;
+          const speech = turn?.speech || "";
+          if (!speech) continue;
+          state.lastSpeaker = speaker;
+          state.lastSpeech = speech;
+          setSpeakerName(speaker);
+          await typewrite(speech);
+          const holdMs = getTurnHoldMs(turn, index, turns.length);
+          if (holdMs > 0) {
+            await sleep(holdMs);
+          }
+        }
+      }
+
+      async function sendTurn(message, selectedChoice = null) {
+        const text = String(message || "").trim();
+        if (!text || state.sending) return;
+
+        state.availableChoices = [];
+        renderChoices();
+        setSending(true);
+
+        try {
+          const response = await fetch(`/think_once?t=${Date.now()}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            cache: "no-store",
+            body: JSON.stringify({
+              user_id: "vn_preview_session",
+              real_user_id: "vn_preview_user",
+              message: text,
+              selected_choice: selectedChoice,
+              current_visual: {
+                emotion: state.emotion,
+                character: {
+                  outfit: state.outfit,
+                },
+                scene: {
+                  major: state.major,
+                  minor: state.minor,
+                  background: state.background,
+                  bgm: state.bgm,
+                },
+              },
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          const payload = await response.json();
+          state.lastSpeech = payload.speech || "知宥，我方才有些发怔，你再同我说一遍，好不好？";
+          state.lastSpeaker = defaultSpeakerName;
+          state.availableChoices = Array.isArray(payload.choices) ? payload.choices : [];
+          await applyPayloadVisual(payload);
+          await playDialogueTurns(buildDialogueTurns(payload));
+          renderChoices();
+        } catch (error) {
+          state.lastSpeech = `呜……这一句我没有顺利接住。(${error})`;
+          state.lastSpeaker = defaultSpeakerName;
+          setSpeakerName(defaultSpeakerName);
+          await typewrite(state.lastSpeech);
+          renderChoices();
+          throw error;
+        } finally {
+          setSending(false);
+        }
+      }
+
+      menuToggleEl.addEventListener("click", () => {
+        const hidden = menuPanelEl.hasAttribute("hidden");
+        if (hidden) {
+          menuPanelEl.removeAttribute("hidden");
+        } else {
+          menuPanelEl.setAttribute("hidden", "");
+        }
+      });
+
+      inputToggleEl.addEventListener("click", () => {
+        inputEl.focus();
+      });
+
+      nextLineEl.addEventListener("click", async () => {
+        setSpeakerName(state.lastSpeaker || defaultSpeakerName);
+        await typewrite(state.lastSpeech);
+      });
+
+      bgmAudioEl.addEventListener("playing", () => {
+        state.bgmNeedsResume = false;
+      });
+
+      bgmAudioEl.addEventListener("canplay", () => {
+        if (state.currentBgmPath && (state.bgmNeedsResume || bgmAudioEl.paused)) {
+          void attemptBgmPlay();
+        }
+      });
+
+      window.addEventListener("pointerdown", () => {
+        if (state.bgmNeedsResume || (state.currentBgmPath && bgmAudioEl.paused)) {
+          void resumeBgmIfNeeded();
+        }
+      });
+
+      window.addEventListener("keydown", () => {
+        if (state.bgmNeedsResume || (state.currentBgmPath && bgmAudioEl.paused)) {
+          void resumeBgmIfNeeded();
+        }
+      });
+
+      choiceRowEl.addEventListener("click", async (event) => {
+        const button = event.target.closest(".vn-choice-button");
+        if (!button || state.sending) return;
+        const selectedChoice = {
+          id: button.dataset.choiceId || "",
+          text: button.dataset.choiceText || button.textContent || "",
+        };
+        try {
+          await sendTurn(selectedChoice.text, selectedChoice);
+        } catch (_) {
+        }
+      });
+
+      menuPanelEl.addEventListener("click", async (event) => {
+        const button = event.target.closest(".menu-chip");
+        if (!button || state.sending || !state.manifest) return;
+
+        const { type, value } = button.dataset;
+        if (type === "major") {
+          state.major = value;
+          state.minor = getMajor(value)?.minors?.[0]?.id || state.manifest.defaults.minor;
+          state.background = getMinor(state.major, state.minor)?.backgrounds?.[0]?.id || state.manifest.defaults.background;
+          state.bgm = getMinor(state.major, state.minor)?.bgm_tracks?.[0]?.id || "";
+        } else if (type === "minor") {
+          state.minor = value;
+          state.background = getMinor(state.major, state.minor)?.backgrounds?.[0]?.id || state.manifest.defaults.background;
+          state.bgm = getMinor(state.major, state.minor)?.bgm_tracks?.[0]?.id || "";
+        } else if (type === "background") {
+          state.background = value;
+        } else if (type === "outfit") {
+          state.outfit = value;
+          state.emotion = getOutfit(value)?.emotions?.[0]?.id || state.manifest.defaults.emotion;
+        } else if (type === "emotion") {
+          state.emotion = value;
+        }
+
+        await applyCurrentVisualState();
+      });
+
+      composerEl.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const text = inputEl.value.trim();
+        if (!text || state.sending) return;
+        inputEl.value = "";
+
+        try {
+          await sendTurn(text, null);
+        } catch (error) {
+          inputEl.value = text;
+        }
+      });
+
+      syncViewportHeight();
+      window.addEventListener("resize", syncViewportHeight);
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", syncViewportHeight);
+        window.visualViewport.addEventListener("scroll", syncViewportHeight);
+      }
+
+      initializeManifest().catch(async (error) => {
+        await typewrite(`资源清单加载失败：${error}`);
+      });
+    </script>
+  </body>
+</html>
