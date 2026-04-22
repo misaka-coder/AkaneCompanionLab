@@ -111,6 +111,7 @@ class PromptBuilder:
         mode_prompt_override: str = "",
     ) -> dict[str, Any]:
         fallback = {
+            "tool_call": None,
             "emotion": visual_defaults["emotion"],
             "speech": self.persona.final_fallback_speech,
             "speech_segments": [],
@@ -118,8 +119,6 @@ class PromptBuilder:
             "memory_tags": "",
             "status": "final",
             "score": 0.0,    
-
-            "tool_call": None,  
             "choices": [],
             "character": {
                 "outfit": visual_defaults["outfit"],

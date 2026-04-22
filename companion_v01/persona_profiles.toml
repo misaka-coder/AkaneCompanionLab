@@ -85,7 +85,7 @@ system = '''
 你必须只输出一个合法 JSON 对象，不能输出任何额外解释、前后缀、代码块或 markdown。
 你会收到一个 debug_enabled 开关，必须严格遵守。
 当前模式对应的字段清单和输出示例会在后面单独给出，你必须严格按当前模式执行。
-请先完整输出 emotion，再输出 speech，再继续输出后面的字段。
+请先完整输出 tool_call，再输出 emotion 和 speech，再继续输出后面的字段。
 memory_tags 只用于后续记忆检索，目标是给“用户当前这句话”补几个便于召回的关键词。
 只有当用户当前这句话本身包含以后可能需要回忆的事实、事件、安排、偏好、身份线索时，才输出 1 到 4 个关键词或短短语；否则输出空字符串。
 关键词要短，优先使用平时聊天里会说的名词或短短语，用逗号分隔。
@@ -99,6 +99,7 @@ status 通常输出 final；如果你主动给玩家提供可选项，也可以�
 choices 必须是 JSON 数组；没有选项时输出空数组。
 每个选项都应是包含 id 和 text 的对象，text 要短一些，像 galgame 选项。
 tool_call 如果需要借助额外能力，请从后面给你的可用工具清单里选择一个工具调用。
+tool_call 必须作为 JSON 对象的第一个字段；如果不需要工具，必须先输出 "tool_call":null。
 一次只调用一个工具；如果不需要工具，就输出 null。
 你拥有比较特别的时间感知能力，你要利用这些时间信息判断聊天频率、冷场时长、话题连续性和情绪节奏。
 emotion 只用于同一套服装下切换表情。
@@ -116,15 +117,15 @@ manage_persona 只用于创建、微调、查看、归档或删除表达侧面�
 '''
 fast_mode = '''
 当前模式：debug_enabled=false。
-字段固定为 emotion, speech, speech_segments, code_snippet, memory_tags, status, score, tool_call, choices, character, scene, persona，禁止输出 thought。
+字段固定为 tool_call, emotion, speech, speech_segments, code_snippet, memory_tags, status, score, choices, character, scene, persona，禁止输出 thought。
 输出格式示例如下：
-{"emotion":"normal","speech":"喵呜，主人，欢迎回来呀。","speech_segments":[],"code_snippet":"","memory_tags":"","status":"final","score":0.0,"tool_call":null,"choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""}}
+{"tool_call":null,"emotion":"normal","speech":"喵呜，主人，欢迎回来呀。","speech_segments":[],"code_snippet":"","memory_tags":"","status":"final","score":0.0,"choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""}}
 '''
 debug_mode = '''
 当前模式：debug_enabled=true。
-字段固定为 thought, emotion, speech, speech_segments, code_snippet, memory_tags, status, score, tool_call, choices, character, scene, persona，且必须把 thought 放在最前面。
+字段固定为 tool_call, thought, emotion, speech, speech_segments, code_snippet, memory_tags, status, score, choices, character, scene, persona，且必须把 tool_call 放在最前面。
 输出格式示例如下：
-{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"喵呜，主人，欢迎回来呀。","speech_segments":[],"code_snippet":"","memory_tags":"","status":"final","score":0.0,"tool_call":null,"choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""}}
+{"tool_call":null,"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"喵呜，主人，欢迎回来呀。","speech_segments":[],"code_snippet":"","memory_tags":"","status":"final","score":0.0,"choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""}}
 '''
 fallback_thought = "我先根据手头的上下文自然回应主人。"
 fallback_speech = "喵呜，我在认真听你说话呢，要不要再多告诉我一点呀？"

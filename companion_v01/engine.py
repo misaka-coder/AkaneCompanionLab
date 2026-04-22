@@ -33,7 +33,7 @@ from .prompt_builder import PromptBuilder
 from .prompt_profiles import PromptModule, PromptProfileRegistry
 from .retrieval_service import RetrievalService
 from .resource_manifest import ResourceManifest
-from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler
+from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler
 from .vision_service import VisionObservationService
 from .store import MemoryStore
 from .text_utils import (
@@ -61,6 +61,7 @@ logger = logging.getLogger("akane.engine")
 
 TOOL_PACKS: dict[str, tuple[str, ...]] = {
     "base": (
+        "retrieve_memory",
         "set_reminder",
         "list_reminders",
         "cancel_reminder",
@@ -912,23 +913,20 @@ class AkaneMemoryEngine:
             if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
             else []
         )
-        router_debug_enabled = self._coerce_bool(payload.get("router_debug"))
         verifier_debug_enabled = self._coerce_bool(payload.get("verifier_debug"))
         final_debug_enabled = self._coerce_bool(payload.get("final_debug"))
-        retrieval_pipeline = self._get_retrieval_service().run(
+        retrieval_pipeline = self._get_retrieval_service().run_explicit(
             profile_user_id=profile_user_id,
-            user_message=user_message,
+            original_query=user_message,
             now_ts=now_ts,
-            current_user_record=user_record,
-            recent_raw=recent_raw,
             exclude_source_ids=self._collect_visible_context_source_ids(
                 recent_raw=recent_raw,
                 recent_episodic_summaries=recent_episodic_summaries,
                 recent_semantic_summaries=recent_semantic_summaries,
                 extra_source_ids=[user_record["source_id"]],
             ),
-            router_debug_enabled=router_debug_enabled,
             verifier_debug_enabled=verifier_debug_enabled,
+            route="pre_retrieval",
         )
         router_output = retrieval_pipeline.router_output
         router_timing = retrieval_pipeline.router_timing
@@ -974,7 +972,8 @@ class AkaneMemoryEngine:
             session_id=session_id,
         )
         if tool_call:
-            preface_turn = self._build_assistant_dialogue_turn(final_output.get("speech"))
+            internal_memory_tool = str(tool_call.get("type") or "") == "retrieve_memory"
+            preface_turn = None if internal_memory_tool else self._build_assistant_dialogue_turn(final_output.get("speech"))
             if preface_turn:
                 preface_record = self.store.add_message(
                     profile_user_id=profile_user_id,
@@ -998,6 +997,11 @@ class AkaneMemoryEngine:
                 now_ts=now_ts,
                 current_user_source_id=str(user_record.get("source_id") or ""),
                 client_context=client_context,
+                memory_exclude_source_ids=[
+                    str(hit.get("source_id") or "").strip()
+                    for hit in retrieval_result.get("fused_hits", [])
+                    if str(hit.get("source_id") or "").strip()
+                ],
             )
             if tool_result:
                 tool_turns = list(tool_result.raw_turns)
@@ -1085,7 +1089,7 @@ class AkaneMemoryEngine:
         )
 
         final_output["trace_id"] = trace_id
-        final_output["_debug"] = self._build_retrieval_debug_payload(
+        debug_payload = self._build_retrieval_debug_payload(
             router_output=router_output,
             router_timing=router_timing,
             retrieval_result=retrieval_result,
@@ -1093,6 +1097,9 @@ class AkaneMemoryEngine:
             verifier_timing=verifier_timing,
             confirmed_snippets=confirmed_snippets,
         )
+        if tool_result and isinstance(tool_result.state_updates, dict) and tool_result.state_updates.get("memory_retrieval"):
+            debug_payload["memory_tool"] = tool_result.state_updates.get("memory_retrieval")
+        final_output["_debug"] = debug_payload
         return final_output
 
     def process_turn_stream(self, payload: dict[str, Any]) -> Generator[dict[str, Any], None, None]:
@@ -1133,23 +1140,20 @@ class AkaneMemoryEngine:
             if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
             else []
         )
-        router_debug_enabled = self._coerce_bool(payload.get("router_debug"))
         verifier_debug_enabled = self._coerce_bool(payload.get("verifier_debug"))
         final_debug_enabled = self._coerce_bool(payload.get("final_debug"))
-        retrieval_pipeline = self._get_retrieval_service().run(
+        retrieval_pipeline = self._get_retrieval_service().run_explicit(
             profile_user_id=profile_user_id,
-            user_message=user_message,
+            original_query=user_message,
             now_ts=now_ts,
-            current_user_record=user_record,
-            recent_raw=recent_raw,
             exclude_source_ids=self._collect_visible_context_source_ids(
                 recent_raw=recent_raw,
                 recent_episodic_summaries=recent_episodic_summaries,
                 recent_semantic_summaries=recent_semantic_summaries,
                 extra_source_ids=[user_record["source_id"]],
             ),
-            router_debug_enabled=router_debug_enabled,
             verifier_debug_enabled=verifier_debug_enabled,
+            route="pre_retrieval",
         )
         router_output = retrieval_pipeline.router_output
         router_timing = retrieval_pipeline.router_timing
@@ -1195,7 +1199,8 @@ class AkaneMemoryEngine:
             session_id=session_id,
         )
         if tool_call:
-            preface_turn = self._build_assistant_dialogue_turn(final_output.get("speech"))
+            internal_memory_tool = str(tool_call.get("type") or "") == "retrieve_memory"
+            preface_turn = None if internal_memory_tool else self._build_assistant_dialogue_turn(final_output.get("speech"))
             if preface_turn:
                 preface_record = self.store.add_message(
                     profile_user_id=profile_user_id,
@@ -1219,6 +1224,11 @@ class AkaneMemoryEngine:
                 now_ts=now_ts,
                 current_user_source_id=str(user_record.get("source_id") or ""),
                 client_context=client_context,
+                memory_exclude_source_ids=[
+                    str(hit.get("source_id") or "").strip()
+                    for hit in retrieval_result.get("fused_hits", [])
+                    if str(hit.get("source_id") or "").strip()
+                ],
             )
             if tool_result:
                 tool_turns = list(tool_result.raw_turns)
@@ -1312,7 +1322,7 @@ class AkaneMemoryEngine:
         yield {"type": "final_ui", "payload": ui_final_payload}
 
         final_output["trace_id"] = trace_id
-        final_output["_debug"] = self._build_retrieval_debug_payload(
+        debug_payload = self._build_retrieval_debug_payload(
             router_output=router_output,
             router_timing=router_timing,
             retrieval_result=retrieval_result,
@@ -1320,6 +1330,9 @@ class AkaneMemoryEngine:
             verifier_timing=verifier_timing,
             confirmed_snippets=confirmed_snippets,
         )
+        if tool_result and isinstance(tool_result.state_updates, dict) and tool_result.state_updates.get("memory_retrieval"):
+            debug_payload["memory_tool"] = tool_result.state_updates.get("memory_retrieval")
+        final_output["_debug"] = debug_payload
         yield {"type": "final", "payload": final_output}
 
     def _build_retrieval_debug_payload(
@@ -1461,6 +1474,17 @@ class AkaneMemoryEngine:
             user_prompt=str(generation_context["user_prompt"]),
             fallback=dict(generation_context["fallback"]),
             temperature=0.7,
+            early_tool_call_validator=(
+                lambda call: self._normalize_tool_call(
+                    call,
+                    client_context=client_context,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                )
+                is not None
+            )
+            if bool(generation_context.get("allow_tool_call", allow_tool_call))
+            else None,
         )
         if str(stream_result.error or "").strip():
             yield {
@@ -1532,7 +1556,7 @@ class AkaneMemoryEngine:
             recent_semantic_summaries,
             store=self.store,
         )
-        memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else "(无额外回忆)"
+        memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
         extra_context = str(extra_user_context or "").strip()
         attachment_service = self._get_attachment_inbox_service()
         attachment_focus_context = (
@@ -1737,15 +1761,6 @@ class AkaneMemoryEngine:
         normalized.setdefault("status", "final")
         normalized.setdefault("emotion", visual_defaults["emotion"])
         normalized.setdefault("score", 0.0)
-        speech, speech_segments = self._normalize_speech_payload(
-            speech=normalized.get("speech"),
-            speech_segments=normalized.get("speech_segments"),
-        )
-        normalized["speech"] = speech
-        normalized["speech_segments"] = speech_segments
-        normalized["code_snippet"] = self._normalize_code_snippet(normalized.get("code_snippet"))
-        normalized["memory_tags"] = join_tags(self._normalize_memory_tags(normalized.get("memory_tags")))
-        normalized["choices"] = self._normalize_choices(normalized.get("choices"))
         normalized["tool_call"] = (
             self._normalize_tool_call(
                 normalized.get("tool_call"),
@@ -1756,6 +1771,16 @@ class AkaneMemoryEngine:
             if allow_tool_call
             else None
         )
+        speech, speech_segments = self._normalize_speech_payload(
+            speech=normalized.get("speech"),
+            speech_segments=normalized.get("speech_segments"),
+            fallback_to_default=not bool(normalized.get("tool_call")),
+        )
+        normalized["speech"] = speech
+        normalized["speech_segments"] = speech_segments
+        normalized["code_snippet"] = self._normalize_code_snippet(normalized.get("code_snippet"))
+        normalized["memory_tags"] = join_tags(self._normalize_memory_tags(normalized.get("memory_tags")))
+        normalized["choices"] = self._normalize_choices(normalized.get("choices"))
         persona_service = self._get_persona_card_service()
         current_persona_id = (
             persona_service.get_active_id(profile_user_id=profile_user_id, session_id=session_id)
@@ -1799,6 +1824,7 @@ class AkaneMemoryEngine:
         *,
         speech: Any,
         speech_segments: Any,
+        fallback_to_default: bool = True,
     ) -> tuple[str, list[str]]:
         segments: list[str] = []
         if isinstance(speech_segments, list):
@@ -1818,6 +1844,8 @@ class AkaneMemoryEngine:
 
         text = str(speech or "").replace("\r\n", "\n").replace("\r", "\n").strip()
         if not text:
+            if not fallback_to_default:
+                return "", []
             text = PERSONA.final_fallback_speech
         inferred_segments = [line.strip() for line in text.split("\n") if line.strip()]
         if 1 < len(inferred_segments) <= 3:
@@ -2013,6 +2041,9 @@ class AkaneMemoryEngine:
 
     def _build_tool_handlers(self) -> dict[str, BaseToolHandler]:
         return {
+            "retrieve_memory": RetrieveMemoryToolHandler(
+                retrieve_fn=self._execute_retrieve_memory_tool,
+            ),
             "call_npc": CallNPCToolHandler(
                 npc_runtime=self.npc_runtime,
                 describe_scene=self._describe_tool_scene_context,
@@ -2343,6 +2374,7 @@ class AkaneMemoryEngine:
         now_ts: int,
         current_user_source_id: str = "",
         client_context: ClientProtocolContext | None = None,
+        memory_exclude_source_ids: list[str] | None = None,
     ) -> ToolExecutionResult | None:
         normalized_call = self._normalize_tool_call(
             tool_call,
@@ -2364,6 +2396,8 @@ class AkaneMemoryEngine:
 
         enriched_visual_payload = dict(visual_payload or {})
         enriched_visual_payload["_profile_user_id"] = profile_user_id
+        if memory_exclude_source_ids:
+            enriched_visual_payload["_memory_retrieval_exclude_source_ids"] = list(memory_exclude_source_ids)
         return handler.execute(
             call=normalized_call,
             context=ToolExecutionContext(
@@ -2373,6 +2407,84 @@ class AkaneMemoryEngine:
                 visual_payload=enriched_visual_payload,
                 current_user_source_id=current_user_source_id,
             ),
+        )
+
+    def _execute_retrieve_memory_tool(
+        self,
+        *,
+        call: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
+        query = normalize_text(str(call.get("query") or "")).strip()
+        keywords = [str(item).strip() for item in list(call.get("keywords") or []) if str(item).strip()]
+        time_hint = call.get("time_hint") if isinstance(call.get("time_hint"), dict) else None
+        current_user_record = (
+            self.store.get_message_by_source_id(context.current_user_source_id)
+            if str(context.current_user_source_id or "").strip()
+            else None
+        )
+        original_query = str((current_user_record or {}).get("content") or query)
+        episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
+        semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
+        recent_raw = self.store.get_unsummarized_messages(context.session_id)
+        recent_episodic_summaries = self.store.get_visible_episodic_summaries(context.profile_user_id, limit=episodic_limit)
+        recent_semantic_summaries = (
+            self.store.get_recent_semantic_summaries(context.profile_user_id, limit=semantic_limit)
+            if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
+            else []
+        )
+        extra_excludes = []
+        visual_payload = context.visual_payload if isinstance(context.visual_payload, dict) else {}
+        raw_extra_excludes = visual_payload.get("_memory_retrieval_exclude_source_ids")
+        if isinstance(raw_extra_excludes, list):
+            extra_excludes = [str(item).strip() for item in raw_extra_excludes if str(item).strip()]
+        exclude_source_ids = self._collect_visible_context_source_ids(
+            recent_raw=recent_raw,
+            recent_episodic_summaries=recent_episodic_summaries,
+            recent_semantic_summaries=recent_semantic_summaries,
+            extra_source_ids=[context.current_user_source_id, *extra_excludes],
+        )
+        pipeline = self._get_retrieval_service().run_explicit(
+            profile_user_id=context.profile_user_id,
+            original_query=original_query,
+            now_ts=int(context.now_ts),
+            query=query,
+            keywords=keywords,
+            time_hint=time_hint,
+            exclude_source_ids=exclude_source_ids,
+            verifier_debug_enabled=False,
+            route="post_retrieval",
+        )
+        snippets = [str(item).strip() for item in pipeline.confirmed_snippets if str(item).strip()]
+        if snippets:
+            followup_context = (
+                "你刚刚主动检索了长期记忆。下面是可能回答主人问题的参考记忆：\n"
+                + "\n\n".join(snippets)
+                + "\n\n请基于这些参考记忆自然回应；不要声称系统绝对证明了这些记忆。"
+            )
+        else:
+            followup_context = (
+                "你刚刚主动检索了长期记忆，但这次没有找到足以回答主人问题的相关记忆。"
+                "请自然说明自己没有想起可靠线索，不要编造。"
+            )
+        return ToolExecutionResult(
+            tool_type="retrieve_memory",
+            raw_turns=[],
+            stream_events=[],
+            followup_context=followup_context,
+            state_updates={
+                "memory_retrieval": {
+                    "tool_call": {
+                        "query": query,
+                        "keywords": keywords,
+                        "time_hint": time_hint or {},
+                    },
+                    "retrieval_result": pipeline.retrieval_result,
+                    "verifier_output": pipeline.verifier_output,
+                    "verifier_timing": pipeline.verifier_timing,
+                    "confirmed_snippets": snippets,
+                }
+            },
         )
 
     def _describe_tool_scene_context(self, visual_payload: dict[str, Any]) -> str:

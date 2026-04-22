@@ -40,6 +40,91 @@ class BaseToolHandler:
         raise NotImplementedError
 
 
+class RetrieveMemoryToolHandler(BaseToolHandler):
+    tool_type = "retrieve_memory"
+
+    def __init__(
+        self,
+        *,
+        retrieve_fn: Callable[..., ToolExecutionResult],
+    ) -> None:
+        self.retrieve_fn = retrieve_fn
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- retrieve_memory：当你看完当前原始上下文、阶段摘要、长期语义记忆和可用回忆片段后，"
+            "仍然觉得需要主动回想更早内容时使用。"
+            "这是内部记忆检索工具，不是对用户说出口的话。"
+            "格式为 {\"type\":\"retrieve_memory\",\"query\":\"简短搜索短句\",\"keywords\":[\"关键词\"],"
+            "\"time_hint\":{\"date_label\":\"YYYY-MM-DD\",\"time_of_day\":\"morning|afternoon|night|midnight\"}}。"
+            "query 要写具体实体、地点、人物、事件或偏好，不要写“帮我回忆一下”这类空泛句。"
+            "只有当前可见记忆不足以回答时才调用；如果不需要检索，tool_call 输出 null。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+
+        call_type = str(value.get("type") or "").strip()
+        if call_type != self.tool_type:
+            return None
+
+        query = str(value.get("query") or value.get("rewritten_query") or value.get("prompt") or "").strip()
+        query = normalize_text(query)
+        if not query:
+            return None
+
+        raw_keywords = value.get("keywords")
+        keyword_candidates: list[str] = []
+        if isinstance(raw_keywords, list):
+            keyword_candidates = [str(item or "") for item in raw_keywords]
+        elif isinstance(raw_keywords, str):
+            keyword_candidates = [part for part in re.split(r"[,，;；|、\s]+", raw_keywords) if part]
+
+        keywords: list[str] = []
+        seen: set[str] = set()
+        for item in keyword_candidates:
+            keyword = normalize_text(item).strip("[](){}\"' ")
+            if not keyword or len(keyword) > 32:
+                continue
+            dedupe_key = keyword.lower()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            keywords.append(keyword)
+            if len(keywords) >= 8:
+                break
+
+        time_hint: dict[str, Any] = {}
+        raw_time_hint = value.get("time_hint")
+        if isinstance(raw_time_hint, dict):
+            for key in ("date_label", "time_of_day", "relative_time", "start_ts", "end_ts"):
+                if key not in raw_time_hint:
+                    continue
+                item = raw_time_hint.get(key)
+                if item is None:
+                    continue
+                if key in {"start_ts", "end_ts"}:
+                    try:
+                        time_hint[key] = int(item)
+                    except Exception:
+                        continue
+                else:
+                    text = str(item or "").strip()
+                    if text:
+                        time_hint[key] = text
+
+        return {
+            "type": self.tool_type,
+            "query": query[:200],
+            "keywords": keywords,
+            "time_hint": time_hint,
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        return self.retrieve_fn(call=call, context=context)
+
+
 class CallNPCToolHandler(BaseToolHandler):
     tool_type = "call_npc"
 

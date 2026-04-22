@@ -48,6 +48,8 @@ class ChatJSONStreamResult:
     error: str
     latest_emotion: str
     latest_speech: str
+    stopped_early: bool = False
+    early_tool_call: dict[str, Any] | None = None
 
 
 class _TopLevelJSONStreamTap:
@@ -319,6 +321,7 @@ class LLMRuntime:
         user_prompt: str,
         fallback: dict[str, Any],
         temperature: float = 0.7,
+        early_tool_call_validator: Callable[[dict[str, Any]], bool] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         self._record_metric("chat_stream_calls")
         return self._stream_chat_json(
@@ -327,6 +330,7 @@ class LLMRuntime:
             user_prompt=user_prompt,
             fallback=fallback,
             temperature=temperature,
+            early_tool_call_validator=early_tool_call_validator,
         )
 
     def _call_json(
@@ -448,6 +452,7 @@ class LLMRuntime:
         user_prompt: str,
         fallback: dict[str, Any],
         temperature: float,
+        early_tool_call_validator: Callable[[dict[str, Any]], bool] | None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         import time
 
@@ -456,6 +461,9 @@ class LLMRuntime:
         raw_parts: list[str] = []
         tap = _TopLevelJSONStreamTap()
         start_at = time.perf_counter()
+        stopped_early = False
+        early_tool_call: dict[str, Any] | None = None
+        tool_probe_disabled = False
         try:
             response = bundle.client.chat.completions.create(
                 **self._build_completion_kwargs(
@@ -474,6 +482,18 @@ class LLMRuntime:
                 raw_parts.append(text)
                 for event in tap.feed(text):
                     yield event
+                if not tool_probe_disabled:
+                    probe_state, probe_call = self._try_extract_leading_tool_call("".join(raw_parts))
+                    if probe_state == "object" and isinstance(probe_call, dict):
+                        if early_tool_call_validator is None or early_tool_call_validator(probe_call):
+                            early_tool_call = dict(probe_call)
+                            stopped_early = True
+                            break
+                        tool_probe_disabled = True
+                    elif probe_state in {"null", "none"}:
+                        tool_probe_disabled = True
+                if stopped_early:
+                    break
         except Exception as exc:
             error = str(exc or "").strip()
             self._record_metric("errors")
@@ -481,7 +501,10 @@ class LLMRuntime:
             self._close_stream(response)
 
         raw_text = "".join(raw_parts)
-        parsed = self._extract_json(raw_text)
+        if early_tool_call is not None:
+            parsed = {"tool_call": early_tool_call}
+        else:
+            parsed = self._extract_json(raw_text)
         if not isinstance(parsed, dict):
             parsed = dict(fallback)
         else:
@@ -500,7 +523,86 @@ class LLMRuntime:
             error=error,
             latest_emotion=tap.latest_emotion,
             latest_speech=tap.latest_speech,
+            stopped_early=stopped_early,
+            early_tool_call=early_tool_call,
         )
+
+    def _try_extract_leading_tool_call(self, text: str) -> tuple[str, dict[str, Any] | None]:
+        raw = str(text or "")
+        length = len(raw)
+        idx = self._skip_json_ws(raw, 0)
+        if idx >= length:
+            return "pending", None
+        if raw[idx] != "{":
+            return "none", None
+        idx = self._skip_json_ws(raw, idx + 1)
+        if idx >= length:
+            return "pending", None
+        if raw[idx] != '"':
+            return "pending", None
+        decoder = json.JSONDecoder()
+        try:
+            key, key_end = decoder.raw_decode(raw, idx)
+        except json.JSONDecodeError:
+            return "pending", None
+        if key != "tool_call":
+            return "none", None
+        idx = self._skip_json_ws(raw, key_end)
+        if idx >= length:
+            return "pending", None
+        if raw[idx] != ":":
+            return "pending", None
+        idx = self._skip_json_ws(raw, idx + 1)
+        if idx >= length:
+            return "pending", None
+        if raw.startswith("null", idx):
+            return "null", None
+        if "null".startswith(raw[idx: min(length, idx + 4)]):
+            return "pending", None
+        if raw[idx] != "{":
+            return "none", None
+        value_end = self._find_json_value_end(raw, idx)
+        if value_end is None:
+            return "pending", None
+        try:
+            value = json.loads(raw[idx:value_end])
+        except Exception:
+            return "none", None
+        return ("object", value) if isinstance(value, dict) else ("none", None)
+
+    def _skip_json_ws(self, text: str, start: int) -> int:
+        idx = int(start)
+        while idx < len(text) and text[idx] in " \t\r\n":
+            idx += 1
+        return idx
+
+    def _find_json_value_end(self, text: str, start: int) -> int | None:
+        depth = 0
+        in_string = False
+        escape_pending = False
+        for idx in range(int(start), len(text)):
+            char = text[idx]
+            if in_string:
+                if escape_pending:
+                    escape_pending = False
+                elif char == "\\":
+                    escape_pending = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+                continue
+            if char in "{[":
+                depth += 1
+                continue
+            if char in "}]":
+                depth -= 1
+                if depth == 0:
+                    return idx + 1
+                if depth < 0:
+                    return None
+        return None
 
     def _extract_text(self, response: Any) -> str:
         try:

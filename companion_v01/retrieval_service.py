@@ -215,6 +215,62 @@ class RetrievalService:
             verifier_timing=verifier_timing,
         )
 
+    def run_explicit(
+        self,
+        *,
+        profile_user_id: str,
+        original_query: str,
+        now_ts: int,
+        query: str | None = None,
+        keywords: list[str] | None = None,
+        time_hint: dict[str, Any] | None = None,
+        exclude_source_ids: list[str] | None = None,
+        verifier_debug_enabled: bool | None = None,
+        route: str = "memory_search",
+    ) -> RetrievalPipelineResult:
+        fallback_keywords = extract_semantic_tags(original_query, limit=6)
+        normalized_keywords = self._normalize_keywords(
+            list(keywords or []),
+            fallback=fallback_keywords,
+        )
+        base_time_hint = self._extract_time_hint(user_message=original_query, now_ts=now_ts)
+        normalized_time_hint = self._normalize_time_hint(time_hint, default=base_time_hint)
+        normalized_query = self._normalize_rewritten_query(
+            query or original_query,
+            fallback_query=original_query,
+            keywords=normalized_keywords,
+        )
+        router_output = self._finalize_router_output(
+            need_retrieval=True,
+            route=route or "memory_search",
+            rewritten_query=normalized_query,
+            keywords=normalized_keywords,
+            time_hint=normalized_time_hint,
+            index_current_message=self._should_index_current_message_default(original_query),
+            debug_enabled=False,
+        )
+        retrieval_result, verifier_output, confirmed_snippets, verifier_timing = self._run_retrieval_chain(
+            profile_user_id=profile_user_id,
+            original_query=original_query,
+            now_ts=now_ts,
+            router_output=router_output,
+            exclude_source_ids=list(exclude_source_ids or []),
+            verifier_debug_enabled=verifier_debug_enabled,
+        )
+        return RetrievalPipelineResult(
+            used_retrieval=True,
+            confirmed_snippets=confirmed_snippets,
+            router_output=router_output,
+            router_timing=self._build_shortcut_timing(
+                stage="router",
+                branch="explicit_query",
+                ready_event_type="query",
+            ),
+            retrieval_result=retrieval_result,
+            verifier_output=verifier_output,
+            verifier_timing=verifier_timing,
+        )
+
     def _build_router_output(
         self,
         *,
@@ -1356,6 +1412,22 @@ class RetrievalService:
                 return " ".join(fallback[:6]).strip()
             return normalize_text(fallback_query or "").strip()
         return text
+
+    def _normalize_keywords(self, keywords: list[str], *, fallback: list[str] | None = None, limit: int = 8) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in [*list(keywords or []), *list(fallback or [])]:
+            keyword = normalize_text(str(item or "")).strip()
+            if not keyword:
+                continue
+            dedupe_key = keyword.lower()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            normalized.append(keyword)
+            if len(normalized) >= max(1, int(limit)):
+                break
+        return normalized
 
     def _looks_like_router_task_query(self, text: str) -> bool:
         raw = normalize_text(text or "")

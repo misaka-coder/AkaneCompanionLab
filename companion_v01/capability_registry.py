@@ -143,8 +143,8 @@ class CapabilityRegistry:
             CapabilityModule(
                 name="base",
                 modes=(ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D, ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET),
-                tools=("set_reminder", "list_reminders", "cancel_reminder", "manage_persona"),
-                light_hint="你可以设置/查看/取消提醒，也可以维护自己的表达侧面。",
+                tools=("retrieve_memory", "set_reminder", "list_reminders", "cancel_reminder", "manage_persona"),
+                light_hint="你可以主动检索自己的长期记忆，也可以设置/查看/取消提醒、维护自己的表达侧面。",
                 trigger=_always,
             ),
             CapabilityModule(

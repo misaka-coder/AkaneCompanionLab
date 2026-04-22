@@ -100,10 +100,10 @@ def _print_debug(payload: dict, frame: dict) -> None:
     print(f"session_id: {payload.get('user_id', '')}")
     print(f"user_text: {payload.get('message', '')}")
     print("")
-    print("=== 前置路由输出 ===")
+    print("=== 前置检索控制输出 ===")
     print(json.dumps(debug.get("router_output", {}), ensure_ascii=False, indent=2))
     print("")
-    print("=== 前置路由耗时 ===")
+    print("=== 前置检索控制耗时 ===")
     print(json.dumps(debug.get("router_timing", {}), ensure_ascii=False, indent=2))
     print("")
     print("=== 检索结果摘要 ===")
@@ -115,6 +115,10 @@ def _print_debug(payload: dict, frame: dict) -> None:
     print("=== 检索校验耗时 ===")
     print(json.dumps(debug.get("verifier_timing", {}), ensure_ascii=False, indent=2))
     print("")
+    if debug.get("memory_tool"):
+        print("=== Akane 主动记忆检索工具 ===")
+        print(json.dumps(debug.get("memory_tool", {}), ensure_ascii=False, indent=2))
+        print("")
     print("=== 检索片段（按编号） ===")
     if memory_snippets:
         for index, snippet in enumerate(memory_snippets, start=1):
