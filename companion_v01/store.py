@@ -311,6 +311,54 @@ class MemoryStore:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_files_profile_session_handle
                 ON generated_files(profile_user_id, session_id, generated_handle)
                 WHERE generated_handle != '';
+
+                CREATE TABLE IF NOT EXISTS task_workspaces (
+                    task_id TEXT PRIMARY KEY,
+                    profile_user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    owner TEXT NOT NULL DEFAULT 'Akane',
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    raw_request_json TEXT NOT NULL DEFAULT '{}',
+                    normalized_goal TEXT NOT NULL DEFAULT '',
+                    success_criteria_json TEXT NOT NULL DEFAULT '[]',
+                    constraints_json TEXT NOT NULL DEFAULT '[]',
+                    steps_json TEXT NOT NULL DEFAULT '[]',
+                    artifacts_json TEXT NOT NULL DEFAULT '[]',
+                    pending_question_json TEXT NOT NULL DEFAULT '{}',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    completed_at INTEGER NOT NULL DEFAULT 0,
+                    cleaned_at INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_task_workspaces_profile_session_status
+                ON task_workspaces(profile_user_id, session_id, status, updated_at DESC, created_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_task_workspaces_profile_status
+                ON task_workspaces(profile_user_id, status, updated_at DESC, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS task_workspace_events (
+                    event_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    profile_user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    from_actor TEXT NOT NULL DEFAULT '',
+                    priority TEXT NOT NULL DEFAULT 'normal',
+                    requires_user INTEGER NOT NULL DEFAULT 0,
+                    message TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at INTEGER NOT NULL,
+                    handled_at INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_task_workspace_events_task_time
+                ON task_workspace_events(task_id, created_at ASC);
+
+                CREATE INDEX IF NOT EXISTS idx_task_workspace_events_profile_session_status
+                ON task_workspace_events(profile_user_id, session_id, status, created_at ASC);
                 """
             )
             self._ensure_column(
@@ -513,6 +561,30 @@ class MemoryStore:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_files_profile_session_handle
                 ON generated_files(profile_user_id, session_id, generated_handle)
                 WHERE generated_handle != ''
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_workspaces_profile_session_status
+                ON task_workspaces(profile_user_id, session_id, status, updated_at DESC, created_at DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_workspaces_profile_status
+                ON task_workspaces(profile_user_id, status, updated_at DESC, created_at DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_workspace_events_task_time
+                ON task_workspace_events(task_id, created_at ASC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_workspace_events_profile_session_status
+                ON task_workspace_events(profile_user_id, session_id, status, created_at ASC)
                 """
             )
             self._normalize_legacy_gift_rows(conn=conn)
@@ -2363,6 +2435,361 @@ class MemoryStore:
             ).fetchone()
         return self._row_to_generated_file(dict(row)) if row else None
 
+    def add_task_workspace(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        owner: str = "Akane",
+        status: str = "queued",
+        raw_request: dict[str, Any] | None = None,
+        normalized_goal: str = "",
+        success_criteria: list[Any] | tuple[Any, ...] | None = None,
+        constraints: list[Any] | tuple[Any, ...] | None = None,
+        steps: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        artifacts: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        pending_question: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        timestamp: int | None = None,
+        task_id: str = "",
+    ) -> dict[str, Any]:
+        effective_ts = int(timestamp or time.time())
+        payload = {
+            "task_id": str(task_id or "").strip() or f"task::{uuid.uuid4()}",
+            "profile_user_id": str(profile_user_id),
+            "session_id": str(session_id),
+            "owner": str(owner or "Akane").strip()[:64] or "Akane",
+            "status": self._normalize_task_workspace_status(status),
+            "raw_request_json": json.dumps(raw_request if isinstance(raw_request, dict) else {}, ensure_ascii=False),
+            "normalized_goal": str(normalized_goal or "").strip(),
+            "success_criteria_json": json.dumps(list(success_criteria or []), ensure_ascii=False),
+            "constraints_json": json.dumps(list(constraints or []), ensure_ascii=False),
+            "steps_json": json.dumps(list(steps or []), ensure_ascii=False),
+            "artifacts_json": json.dumps(list(artifacts or []), ensure_ascii=False),
+            "pending_question_json": json.dumps(
+                pending_question if isinstance(pending_question, dict) else {},
+                ensure_ascii=False,
+            ),
+            "metadata_json": json.dumps(metadata if isinstance(metadata, dict) else {}, ensure_ascii=False),
+            "created_at": effective_ts,
+            "updated_at": effective_ts,
+            "completed_at": 0,
+            "cleaned_at": 0,
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO task_workspaces (
+                    task_id, profile_user_id, session_id, owner, status,
+                    raw_request_json, normalized_goal, success_criteria_json, constraints_json,
+                    steps_json, artifacts_json, pending_question_json, metadata_json,
+                    created_at, updated_at, completed_at, cleaned_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["task_id"],
+                    payload["profile_user_id"],
+                    payload["session_id"],
+                    payload["owner"],
+                    payload["status"],
+                    payload["raw_request_json"],
+                    payload["normalized_goal"],
+                    payload["success_criteria_json"],
+                    payload["constraints_json"],
+                    payload["steps_json"],
+                    payload["artifacts_json"],
+                    payload["pending_question_json"],
+                    payload["metadata_json"],
+                    payload["created_at"],
+                    payload["updated_at"],
+                    payload["completed_at"],
+                    payload["cleaned_at"],
+                ),
+            )
+        return self._row_to_task_workspace(payload)
+
+    def get_task_workspace(self, task_id: str) -> dict[str, Any] | None:
+        normalized_id = str(task_id or "").strip()
+        if not normalized_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM task_workspaces
+                WHERE task_id = ?
+                LIMIT 1
+                """,
+                (normalized_id,),
+            ).fetchone()
+        return self._row_to_task_workspace(dict(row)) if row else None
+
+    def list_task_workspaces(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str | None = None,
+        statuses: list[str] | tuple[str, ...] | set[str] | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        query = [
+            """
+            SELECT * FROM task_workspaces
+            WHERE profile_user_id = ?
+            """
+        ]
+        params: list[Any] = [str(profile_user_id)]
+        normalized_session_id = str(session_id or "").strip()
+        if normalized_session_id:
+            query.append("AND session_id = ?")
+            params.append(normalized_session_id)
+        normalized_statuses = self._normalize_task_workspace_status_list(statuses)
+        if normalized_statuses:
+            placeholders = ", ".join("?" for _ in normalized_statuses)
+            query.append(f"AND status IN ({placeholders})")
+            params.extend(normalized_statuses)
+        query.append(
+            """
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT ?
+            """
+        )
+        params.append(max(1, int(limit or 20)))
+        with self._connect() as conn:
+            rows = conn.execute("\n".join(query), tuple(params)).fetchall()
+        return [self._row_to_task_workspace(dict(row)) for row in rows]
+
+    def update_task_workspace(
+        self,
+        *,
+        task_id: str,
+        status: str | None = None,
+        owner: str | None = None,
+        raw_request: dict[str, Any] | None = None,
+        normalized_goal: str | None = None,
+        success_criteria: list[Any] | tuple[Any, ...] | None = None,
+        constraints: list[Any] | tuple[Any, ...] | None = None,
+        steps: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        artifacts: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        pending_question: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        completed_at: int | None = None,
+        cleaned_at: int | None = None,
+        updated_at: int | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_id = str(task_id or "").strip()
+        if not normalized_id:
+            return None
+        fields: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            fields.append("status = ?")
+            params.append(self._normalize_task_workspace_status(status))
+        if owner is not None:
+            fields.append("owner = ?")
+            params.append(str(owner or "Akane").strip()[:64] or "Akane")
+        if raw_request is not None:
+            fields.append("raw_request_json = ?")
+            params.append(json.dumps(raw_request if isinstance(raw_request, dict) else {}, ensure_ascii=False))
+        if normalized_goal is not None:
+            fields.append("normalized_goal = ?")
+            params.append(str(normalized_goal or "").strip())
+        if success_criteria is not None:
+            fields.append("success_criteria_json = ?")
+            params.append(json.dumps(list(success_criteria or []), ensure_ascii=False))
+        if constraints is not None:
+            fields.append("constraints_json = ?")
+            params.append(json.dumps(list(constraints or []), ensure_ascii=False))
+        if steps is not None:
+            fields.append("steps_json = ?")
+            params.append(json.dumps(list(steps or []), ensure_ascii=False))
+        if artifacts is not None:
+            fields.append("artifacts_json = ?")
+            params.append(json.dumps(list(artifacts or []), ensure_ascii=False))
+        if pending_question is not None:
+            fields.append("pending_question_json = ?")
+            params.append(json.dumps(pending_question if isinstance(pending_question, dict) else {}, ensure_ascii=False))
+        if metadata is not None:
+            fields.append("metadata_json = ?")
+            params.append(json.dumps(metadata if isinstance(metadata, dict) else {}, ensure_ascii=False))
+        if completed_at is not None:
+            fields.append("completed_at = ?")
+            params.append(max(0, int(completed_at or 0)))
+        if cleaned_at is not None:
+            fields.append("cleaned_at = ?")
+            params.append(max(0, int(cleaned_at or 0)))
+        fields.append("updated_at = ?")
+        params.append(int(updated_at or time.time()))
+        params.append(normalized_id)
+        with self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT * FROM task_workspaces
+                WHERE task_id = ?
+                LIMIT 1
+                """,
+                (normalized_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            conn.execute(
+                f"""
+                UPDATE task_workspaces
+                SET {", ".join(fields)}
+                WHERE task_id = ?
+                """,
+                tuple(params),
+            )
+            updated = conn.execute(
+                """
+                SELECT * FROM task_workspaces
+                WHERE task_id = ?
+                LIMIT 1
+                """,
+                (normalized_id,),
+            ).fetchone()
+        return self._row_to_task_workspace(dict(updated)) if updated else None
+
+    def append_task_workspace_event(
+        self,
+        *,
+        task_id: str,
+        profile_user_id: str,
+        session_id: str,
+        event_type: str,
+        from_actor: str = "",
+        priority: str = "normal",
+        requires_user: bool = False,
+        message: str = "",
+        payload: dict[str, Any] | None = None,
+        status: str = "pending",
+        timestamp: int | None = None,
+        event_id: str = "",
+    ) -> dict[str, Any]:
+        effective_ts = int(timestamp or time.time())
+        event = {
+            "event_id": str(event_id or "").strip() or f"task_event::{uuid.uuid4()}",
+            "task_id": str(task_id or "").strip(),
+            "profile_user_id": str(profile_user_id),
+            "session_id": str(session_id),
+            "event_type": str(event_type or "").strip()[:64] or "note",
+            "from_actor": str(from_actor or "").strip()[:64],
+            "priority": self._normalize_task_event_priority(priority),
+            "requires_user": 1 if requires_user else 0,
+            "message": str(message or "").strip(),
+            "payload_json": json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False),
+            "status": self._normalize_task_event_status(status),
+            "created_at": effective_ts,
+            "handled_at": 0,
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO task_workspace_events (
+                    event_id, task_id, profile_user_id, session_id, event_type,
+                    from_actor, priority, requires_user, message, payload_json,
+                    status, created_at, handled_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event["event_id"],
+                    event["task_id"],
+                    event["profile_user_id"],
+                    event["session_id"],
+                    event["event_type"],
+                    event["from_actor"],
+                    event["priority"],
+                    event["requires_user"],
+                    event["message"],
+                    event["payload_json"],
+                    event["status"],
+                    event["created_at"],
+                    event["handled_at"],
+                ),
+            )
+        return self._row_to_task_workspace_event(event)
+
+    def list_task_workspace_events(
+        self,
+        *,
+        task_id: str | None = None,
+        profile_user_id: str | None = None,
+        session_id: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        normalized_task_id = str(task_id or "").strip()
+        if normalized_task_id:
+            clauses.append("task_id = ?")
+            params.append(normalized_task_id)
+        normalized_profile = str(profile_user_id or "").strip()
+        if normalized_profile:
+            clauses.append("profile_user_id = ?")
+            params.append(normalized_profile)
+        normalized_session = str(session_id or "").strip()
+        if normalized_session:
+            clauses.append("session_id = ?")
+            params.append(normalized_session)
+        normalized_status = str(status or "").strip()
+        if normalized_status:
+            clauses.append("status = ?")
+            params.append(self._normalize_task_event_status(normalized_status))
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, int(limit or 50)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM task_workspace_events
+                {where_sql}
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return [self._row_to_task_workspace_event(dict(row)) for row in rows]
+
+    def mark_task_workspace_event_handled(
+        self,
+        *,
+        event_id: str,
+        status: str = "handled",
+        handled_at: int | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_id = str(event_id or "").strip()
+        if not normalized_id:
+            return None
+        effective_ts = int(handled_at or time.time())
+        normalized_status = self._normalize_task_event_status(status)
+        with self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT * FROM task_workspace_events
+                WHERE event_id = ?
+                LIMIT 1
+                """,
+                (normalized_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            conn.execute(
+                """
+                UPDATE task_workspace_events
+                SET status = ?, handled_at = ?
+                WHERE event_id = ?
+                """,
+                (normalized_status, effective_ts, normalized_id),
+            )
+            updated = conn.execute(
+                """
+                SELECT * FROM task_workspace_events
+                WHERE event_id = ?
+                LIMIT 1
+                """,
+                (normalized_id,),
+            ).fetchone()
+        return self._row_to_task_workspace_event(dict(updated)) if updated else None
+
     def add_persona_event(
         self,
         *,
@@ -3820,6 +4247,68 @@ class MemoryStore:
             "last_used_at": int(row.get("last_used_at", 0) or 0),
         }
 
+    def _row_to_task_workspace(self, row: dict[str, Any]) -> dict[str, Any]:
+        raw_request = self._safe_json_loads(row.get("raw_request_json"), fallback={})
+        if not isinstance(raw_request, dict):
+            raw_request = {}
+        success_criteria = self._safe_json_loads(row.get("success_criteria_json"), fallback=[])
+        if not isinstance(success_criteria, list):
+            success_criteria = []
+        constraints = self._safe_json_loads(row.get("constraints_json"), fallback=[])
+        if not isinstance(constraints, list):
+            constraints = []
+        steps = self._safe_json_loads(row.get("steps_json"), fallback=[])
+        if not isinstance(steps, list):
+            steps = []
+        artifacts = self._safe_json_loads(row.get("artifacts_json"), fallback=[])
+        if not isinstance(artifacts, list):
+            artifacts = []
+        pending_question = self._safe_json_loads(row.get("pending_question_json"), fallback={})
+        if not isinstance(pending_question, dict):
+            pending_question = {}
+        metadata = self._safe_json_loads(row.get("metadata_json"), fallback={})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return {
+            "task_id": str(row.get("task_id") or ""),
+            "profile_user_id": str(row.get("profile_user_id") or ""),
+            "session_id": str(row.get("session_id") or ""),
+            "owner": str(row.get("owner") or "Akane"),
+            "status": self._normalize_task_workspace_status(row.get("status")),
+            "raw_request": raw_request,
+            "normalized_goal": str(row.get("normalized_goal") or ""),
+            "success_criteria": success_criteria,
+            "constraints": constraints,
+            "steps": steps,
+            "artifacts": artifacts,
+            "pending_question": pending_question,
+            "metadata": metadata,
+            "created_at": int(row.get("created_at", 0) or 0),
+            "updated_at": int(row.get("updated_at", row.get("created_at", 0)) or 0),
+            "completed_at": int(row.get("completed_at", 0) or 0),
+            "cleaned_at": int(row.get("cleaned_at", 0) or 0),
+        }
+
+    def _row_to_task_workspace_event(self, row: dict[str, Any]) -> dict[str, Any]:
+        payload = self._safe_json_loads(row.get("payload_json"), fallback={})
+        if not isinstance(payload, dict):
+            payload = {}
+        return {
+            "event_id": str(row.get("event_id") or ""),
+            "task_id": str(row.get("task_id") or ""),
+            "profile_user_id": str(row.get("profile_user_id") or ""),
+            "session_id": str(row.get("session_id") or ""),
+            "event_type": str(row.get("event_type") or ""),
+            "from_actor": str(row.get("from_actor") or ""),
+            "priority": self._normalize_task_event_priority(row.get("priority")),
+            "requires_user": bool(int(row.get("requires_user", 0) or 0)),
+            "message": str(row.get("message") or ""),
+            "payload": payload,
+            "status": self._normalize_task_event_status(row.get("status")),
+            "created_at": int(row.get("created_at", 0) or 0),
+            "handled_at": int(row.get("handled_at", 0) or 0),
+        }
+
     def _row_to_vision_observation(self, row: dict[str, Any]) -> dict[str, Any]:
         payload = self._safe_json_loads(row.get("observation_json"), fallback={})
         if not isinstance(payload, dict):
@@ -3981,6 +4470,54 @@ class MemoryStore:
             if status not in normalized:
                 normalized.append(status)
         return normalized
+
+    def _normalize_task_workspace_status(self, value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "todo": "queued",
+            "pending": "queued",
+            "working": "running",
+            "done": "completed",
+            "ok": "completed",
+            "error": "failed",
+            "cancelled": "canceled",
+            "deleted": "cleaned",
+            "cleared": "cleaned",
+        }
+        normalized = aliases.get(normalized, normalized)
+        if normalized in {"queued", "running", "waiting_user", "completed", "failed", "canceled", "cleaned"}:
+            return normalized
+        return "queued"
+
+    def _normalize_task_workspace_status_list(
+        self,
+        values: list[str] | tuple[str, ...] | set[str] | None,
+    ) -> list[str]:
+        normalized: list[str] = []
+        for value in values or []:
+            status = self._normalize_task_workspace_status(value)
+            if status not in normalized:
+                normalized.append(status)
+        return normalized
+
+    def _normalize_task_event_status(self, value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "done": "handled",
+            "ok": "handled",
+            "read": "handled",
+            "new": "pending",
+        }
+        normalized = aliases.get(normalized, normalized)
+        if normalized in {"pending", "handled", "dismissed"}:
+            return normalized
+        return "pending"
+
+    def _normalize_task_event_priority(self, value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"low", "normal", "high", "urgent"}:
+            return normalized
+        return "normal"
 
     def _normalize_string_list(self, values: Any) -> list[str]:
         if values is None:
