@@ -430,6 +430,38 @@ class EngineExtensionTests(unittest.TestCase):
             ],
         )
 
+    def test_build_dialogue_turns_accepts_multiple_prefaces(self) -> None:
+        turns = self.engine._build_dialogue_turns(
+            preface_turn=[
+                {"speaker": PERSONA.assistant_name, "speech": "我先查一下。"},
+                {"speaker": PERSONA.assistant_name, "speech": "我再处理下一步。"},
+            ],
+            npc_turns=[],
+            final_speech="整理好了。",
+        )
+
+        self.assertEqual(
+            turns,
+            [
+                {"speaker": PERSONA.assistant_name, "speech": "我先查一下。"},
+                {"speaker": PERSONA.assistant_name, "speech": "我再处理下一步。"},
+                {"speaker": PERSONA.assistant_name, "speech": "整理好了。"},
+            ],
+        )
+
+    def test_tool_call_signature_is_stable_for_duplicate_guard(self) -> None:
+        left = self.engine._tool_call_signature({"type": "fake_tool", "query": "hello", "count": 1})
+        right = self.engine._tool_call_signature({"count": 1, "query": "hello", "type": "fake_tool"})
+
+        self.assertEqual(left, right)
+
+    def test_multi_tool_followup_context_allows_or_blocks_more_tools(self) -> None:
+        allow_context = self.engine._build_multi_tool_followup_context(["第 1 次工具结果：ok"], allow_more=True)
+        block_context = self.engine._build_multi_tool_followup_context(["第 1 次工具结果：ok"], allow_more=False)
+
+        self.assertIn("可以继续在 tool_call 字段调用下一步必要工具", allow_context)
+        self.assertIn("本轮不要再调用工具", block_context)
+
     def test_build_tool_prompt_context_includes_registered_tools(self) -> None:
         class StubTool:
             def build_prompt_instruction(self) -> str:

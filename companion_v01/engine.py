@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -956,25 +957,63 @@ class AkaneMemoryEngine:
         )
         recent_raw_for_turn = list(recent_raw)
         tool_turns: list[dict[str, Any]] = []
-        preface_turn: dict[str, str] | None = None
+        preface_turns: list[dict[str, str]] = []
         tool_result: ToolExecutionResult | None = None
-        final_output = self._promote_narrated_tool_call(
-            final_output,
-            user_message=user_message,
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        )
-        tool_call = self._normalize_tool_call(
-            final_output.get("tool_call"),
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        )
-        if tool_call:
+        tool_results: list[ToolExecutionResult] = []
+        tool_events: list[dict[str, Any]] = []
+        tool_followups: list[str] = []
+        seen_tool_calls: set[str] = set()
+        max_tool_rounds = self._max_tool_rounds()
+        memory_exclude_source_ids = [
+            str(hit.get("source_id") or "").strip()
+            for hit in retrieval_result.get("fused_hits", [])
+            if str(hit.get("source_id") or "").strip()
+        ]
+        for tool_round_index in range(max_tool_rounds):
+            final_output = self._promote_narrated_tool_call(
+                final_output,
+                user_message=user_message,
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
+            tool_call = self._normalize_tool_call(
+                final_output.get("tool_call"),
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
+            if not tool_call:
+                break
+
+            tool_signature = self._tool_call_signature(tool_call)
+            if tool_signature in seen_tool_calls:
+                tool_followups.append(
+                    f"系统刚刚拦截了一次重复工具调用：{self._describe_tool_call_for_prompt(tool_call)}。"
+                    "请基于已经拿到的工具结果自然回应，不要继续重复调用同一个工具。"
+                )
+                final_output = self._build_final_response(
+                    session_id=session_id,
+                    profile_user_id=profile_user_id,
+                    user_message=user_message,
+                    recent_raw=recent_raw_for_turn,
+                    recent_episodic_summaries=recent_episodic_summaries,
+                    recent_semantic_summaries=recent_semantic_summaries,
+                    confirmed_snippets=confirmed_snippets,
+                    now_ts=now_ts,
+                    current_visual_payload=payload.get("current_visual"),
+                    extra_user_context=self._build_multi_tool_followup_context(tool_followups, allow_more=False),
+                    client_context=client_context,
+                    allow_tool_call=False,
+                    final_debug_enabled=final_debug_enabled,
+                )
+                break
+            seen_tool_calls.add(tool_signature)
+
             internal_memory_tool = str(tool_call.get("type") or "") == "retrieve_memory"
             preface_turn = None if internal_memory_tool else self._build_assistant_dialogue_turn(final_output.get("speech"))
             if preface_turn:
+                preface_turns.append(preface_turn)
                 preface_record = self.store.add_message(
                     profile_user_id=profile_user_id,
                     session_id=session_id,
@@ -997,15 +1036,19 @@ class AkaneMemoryEngine:
                 now_ts=now_ts,
                 current_user_source_id=str(user_record.get("source_id") or ""),
                 client_context=client_context,
-                memory_exclude_source_ids=[
-                    str(hit.get("source_id") or "").strip()
-                    for hit in retrieval_result.get("fused_hits", [])
-                    if str(hit.get("source_id") or "").strip()
-                ],
+                memory_exclude_source_ids=memory_exclude_source_ids,
             )
             if tool_result:
-                tool_turns = list(tool_result.raw_turns)
-                for tool_turn in tool_turns:
+                tool_results.append(tool_result)
+                tool_events.extend(list(tool_result.stream_events))
+                if str(tool_result.followup_context or "").strip():
+                    tool_followups.append(
+                        f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n"
+                        f"{str(tool_result.followup_context).strip()}"
+                    )
+                current_tool_turns = list(tool_result.raw_turns)
+                tool_turns.extend(current_tool_turns)
+                for tool_turn in current_tool_turns:
                     speaker = str(tool_turn.get("speaker") or "NPC").strip() or "NPC"
                     speech = str(tool_turn.get("speech") or "").strip()
                     if not speech:
@@ -1022,6 +1065,7 @@ class AkaneMemoryEngine:
                     self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
                     recent_raw_for_turn.append(tool_record)
 
+            allow_more_tools = tool_round_index < max_tool_rounds - 1
             final_output = self._build_final_response(
                 session_id=session_id,
                 profile_user_id=profile_user_id,
@@ -1032,9 +1076,9 @@ class AkaneMemoryEngine:
                 confirmed_snippets=confirmed_snippets,
                 now_ts=now_ts,
                 current_visual_payload=payload.get("current_visual"),
-                extra_user_context=tool_result.followup_context if tool_result else "",
+                extra_user_context=self._build_multi_tool_followup_context(tool_followups, allow_more=allow_more_tools),
                 client_context=client_context,
-                allow_tool_call=False,
+                allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
             )
 
@@ -1046,10 +1090,10 @@ class AkaneMemoryEngine:
             source_id=str(user_record.get("source_id") or ""),
             tool_result=tool_result,
         )
-        final_output["tool_events"] = list(tool_result.stream_events) if tool_result else []
+        final_output["tool_events"] = tool_events
         final_output["npc_turns"] = tool_turns
         final_output["dialogue_turns"] = self._build_dialogue_turns(
-            preface_turn=preface_turn,
+            preface_turn=preface_turns,
             npc_turns=tool_turns,
             final_speech=final_output.get("speech"),
             final_speech_segments=final_output.get("speech_segments"),
@@ -1097,8 +1141,14 @@ class AkaneMemoryEngine:
             verifier_timing=verifier_timing,
             confirmed_snippets=confirmed_snippets,
         )
-        if tool_result and isinstance(tool_result.state_updates, dict) and tool_result.state_updates.get("memory_retrieval"):
-            debug_payload["memory_tool"] = tool_result.state_updates.get("memory_retrieval")
+        memory_tool_updates = [
+            result.state_updates.get("memory_retrieval")
+            for result in tool_results
+            if isinstance(result.state_updates, dict) and result.state_updates.get("memory_retrieval")
+        ]
+        if memory_tool_updates:
+            debug_payload["memory_tool"] = memory_tool_updates[-1]
+            debug_payload["memory_tool_rounds"] = memory_tool_updates
         final_output["_debug"] = debug_payload
         return final_output
 
@@ -1183,25 +1233,63 @@ class AkaneMemoryEngine:
         )
         recent_raw_for_turn = list(recent_raw)
         tool_turns: list[dict[str, Any]] = []
-        preface_turn: dict[str, str] | None = None
+        preface_turns: list[dict[str, str]] = []
         tool_result: ToolExecutionResult | None = None
-        final_output = self._promote_narrated_tool_call(
-            final_output,
-            user_message=user_message,
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        )
-        tool_call = self._normalize_tool_call(
-            final_output.get("tool_call"),
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        )
-        if tool_call:
+        tool_results: list[ToolExecutionResult] = []
+        tool_events: list[dict[str, Any]] = []
+        tool_followups: list[str] = []
+        seen_tool_calls: set[str] = set()
+        max_tool_rounds = self._max_tool_rounds()
+        memory_exclude_source_ids = [
+            str(hit.get("source_id") or "").strip()
+            for hit in retrieval_result.get("fused_hits", [])
+            if str(hit.get("source_id") or "").strip()
+        ]
+        for tool_round_index in range(max_tool_rounds):
+            final_output = self._promote_narrated_tool_call(
+                final_output,
+                user_message=user_message,
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
+            tool_call = self._normalize_tool_call(
+                final_output.get("tool_call"),
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
+            if not tool_call:
+                break
+
+            tool_signature = self._tool_call_signature(tool_call)
+            if tool_signature in seen_tool_calls:
+                tool_followups.append(
+                    f"系统刚刚拦截了一次重复工具调用：{self._describe_tool_call_for_prompt(tool_call)}。"
+                    "请基于已经拿到的工具结果自然回应，不要继续重复调用同一个工具。"
+                )
+                final_output = yield from self._stream_final_response(
+                    session_id=session_id,
+                    profile_user_id=profile_user_id,
+                    user_message=user_message,
+                    recent_raw=recent_raw_for_turn,
+                    recent_episodic_summaries=recent_episodic_summaries,
+                    recent_semantic_summaries=recent_semantic_summaries,
+                    confirmed_snippets=confirmed_snippets,
+                    now_ts=now_ts,
+                    current_visual_payload=payload.get("current_visual"),
+                    extra_user_context=self._build_multi_tool_followup_context(tool_followups, allow_more=False),
+                    client_context=client_context,
+                    allow_tool_call=False,
+                    final_debug_enabled=final_debug_enabled,
+                )
+                break
+            seen_tool_calls.add(tool_signature)
+
             internal_memory_tool = str(tool_call.get("type") or "") == "retrieve_memory"
             preface_turn = None if internal_memory_tool else self._build_assistant_dialogue_turn(final_output.get("speech"))
             if preface_turn:
+                preface_turns.append(preface_turn)
                 preface_record = self.store.add_message(
                     profile_user_id=profile_user_id,
                     session_id=session_id,
@@ -1224,17 +1312,22 @@ class AkaneMemoryEngine:
                 now_ts=now_ts,
                 current_user_source_id=str(user_record.get("source_id") or ""),
                 client_context=client_context,
-                memory_exclude_source_ids=[
-                    str(hit.get("source_id") or "").strip()
-                    for hit in retrieval_result.get("fused_hits", [])
-                    if str(hit.get("source_id") or "").strip()
-                ],
+                memory_exclude_source_ids=memory_exclude_source_ids,
             )
             if tool_result:
-                tool_turns = list(tool_result.raw_turns)
-                for stream_event in tool_result.stream_events:
+                tool_results.append(tool_result)
+                current_events = list(tool_result.stream_events)
+                tool_events.extend(current_events)
+                for stream_event in current_events:
                     yield stream_event
-                for tool_turn in tool_turns:
+                if str(tool_result.followup_context or "").strip():
+                    tool_followups.append(
+                        f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n"
+                        f"{str(tool_result.followup_context).strip()}"
+                    )
+                current_tool_turns = list(tool_result.raw_turns)
+                tool_turns.extend(current_tool_turns)
+                for tool_turn in current_tool_turns:
                     speaker = str(tool_turn.get("speaker") or "NPC").strip() or "NPC"
                     speech = str(tool_turn.get("speech") or "").strip()
                     if not speech:
@@ -1251,6 +1344,7 @@ class AkaneMemoryEngine:
                     self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
                     recent_raw_for_turn.append(tool_record)
 
+            allow_more_tools = tool_round_index < max_tool_rounds - 1
             final_output = yield from self._stream_final_response(
                 session_id=session_id,
                 profile_user_id=profile_user_id,
@@ -1261,9 +1355,9 @@ class AkaneMemoryEngine:
                 confirmed_snippets=confirmed_snippets,
                 now_ts=now_ts,
                 current_visual_payload=payload.get("current_visual"),
-                extra_user_context=tool_result.followup_context if tool_result else "",
+                extra_user_context=self._build_multi_tool_followup_context(tool_followups, allow_more=allow_more_tools),
                 client_context=client_context,
-                allow_tool_call=False,
+                allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
             )
 
@@ -1275,10 +1369,10 @@ class AkaneMemoryEngine:
             source_id=str(user_record.get("source_id") or ""),
             tool_result=tool_result,
         )
-        final_output["tool_events"] = list(tool_result.stream_events) if tool_result else []
+        final_output["tool_events"] = tool_events
         final_output["npc_turns"] = tool_turns
         final_output["dialogue_turns"] = self._build_dialogue_turns(
-            preface_turn=preface_turn,
+            preface_turn=preface_turns,
             npc_turns=tool_turns,
             final_speech=final_output.get("speech"),
             final_speech_segments=final_output.get("speech_segments"),
@@ -1330,8 +1424,14 @@ class AkaneMemoryEngine:
             verifier_timing=verifier_timing,
             confirmed_snippets=confirmed_snippets,
         )
-        if tool_result and isinstance(tool_result.state_updates, dict) and tool_result.state_updates.get("memory_retrieval"):
-            debug_payload["memory_tool"] = tool_result.state_updates.get("memory_retrieval")
+        memory_tool_updates = [
+            result.state_updates.get("memory_retrieval")
+            for result in tool_results
+            if isinstance(result.state_updates, dict) and result.state_updates.get("memory_retrieval")
+        ]
+        if memory_tool_updates:
+            debug_payload["memory_tool"] = memory_tool_updates[-1]
+            debug_payload["memory_tool_rounds"] = memory_tool_updates
         final_output["_debug"] = debug_payload
         yield {"type": "final", "payload": final_output}
 
@@ -1918,13 +2018,15 @@ class AkaneMemoryEngine:
     def _build_dialogue_turns(
         self,
         *,
-        preface_turn: dict[str, str] | None,
+        preface_turn: dict[str, str] | list[dict[str, str]] | None,
         npc_turns: list[dict[str, Any]],
         final_speech: Any,
         final_speech_segments: Any = None,
     ) -> list[dict[str, str]]:
         turns: list[dict[str, str]] = []
-        if preface_turn:
+        if isinstance(preface_turn, list):
+            turns.extend([turn for turn in preface_turn if isinstance(turn, dict)])
+        elif preface_turn:
             turns.append(preface_turn)
 
         for npc_turn in npc_turns:
@@ -1955,6 +2057,49 @@ class AkaneMemoryEngine:
                 continue
             normalized.append(turn)
         return normalized
+
+    def _max_tool_rounds(self) -> int:
+        raw_value = getattr(config, "MAX_TOOL_ROUNDS", 3)
+        try:
+            value = int(raw_value)
+        except Exception:
+            value = 3
+        return max(1, min(5, value))
+
+    def _tool_call_signature(self, tool_call: dict[str, Any]) -> str:
+        try:
+            return json.dumps(tool_call, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            return repr(sorted((str(key), str(value)) for key, value in dict(tool_call or {}).items()))
+
+    def _describe_tool_call_for_prompt(self, tool_call: dict[str, Any]) -> str:
+        tool_type = str(tool_call.get("type") or "unknown").strip() or "unknown"
+        details = {
+            str(key): value
+            for key, value in dict(tool_call or {}).items()
+            if key != "type" and value not in (None, "", [], {})
+        }
+        if not details:
+            return tool_type
+        try:
+            return f"{tool_type} {json.dumps(details, ensure_ascii=False, sort_keys=True, default=str)[:500]}"
+        except Exception:
+            return f"{tool_type} {details!r}"[:500]
+
+    def _build_multi_tool_followup_context(self, tool_followups: list[str], *, allow_more: bool) -> str:
+        lines: list[str] = ["【本轮工具执行记录】"]
+        if tool_followups:
+            lines.extend([str(item).strip() for item in tool_followups if str(item).strip()])
+        else:
+            lines.append("(暂时没有可用的工具结果。)")
+        if allow_more:
+            lines.append(
+                "如果任务还没完成，可以继续在 tool_call 字段调用下一步必要工具；"
+                "如果结果已经足够，请将 tool_call 设为 null，并自然回复主人。"
+            )
+        else:
+            lines.append("本轮不要再调用工具，请将 tool_call 设为 null，并基于已有结果自然回复主人。")
+        return "\n\n".join(lines)
 
     def _normalize_memory_tags(self, value: Any) -> list[str]:
         raw_items: list[str] = []
