@@ -139,6 +139,62 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
                 ["task_created", "task_completed", "task_cleaned"],
             )
 
+    def test_service_build_prompt_context_renders_open_task_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store)
+            task = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="帮我把视频整理成文档。",
+                normalized_goal="下载视频、转写音频、整理 Markdown。",
+                steps=[
+                    {"title": "下载视频", "status": "done", "note": "video_001 已进工作台"},
+                    {"title": "转写音频", "status": "running"},
+                ],
+                artifacts=[{"id": "video_001", "kind": "video", "title": "测试视频"}],
+                timestamp=300,
+            )
+            service.append_event(
+                task_id=task["task_id"],
+                event_type="tool_artifacts_recorded",
+                from_actor="tool:fetch_media_from_url",
+                message="fetch_media_from_url 产出了 1 个可继续使用的产物。",
+                status="handled",
+                timestamp=310,
+            )
+
+            context = service.build_prompt_context(
+                profile_user_id="master",
+                session_id="qq-private",
+            )
+
+            self.assertIn("【当前任务工作区】", context)
+            self.assertIn("下载视频、转写音频、整理 Markdown", context)
+            self.assertIn("下载视频(done)", context)
+            self.assertIn("video_001(video / 测试视频)", context)
+            self.assertIn("tool_artifacts_recorded", context)
+
+    def test_service_build_prompt_context_ignores_closed_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store)
+            task = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="已经完成的任务。",
+                normalized_goal="已经完成的任务。",
+                timestamp=300,
+            )
+            service.complete_task(task_id=task["task_id"], timestamp=310)
+
+            context = service.build_prompt_context(
+                profile_user_id="master",
+                session_id="qq-private",
+            )
+
+            self.assertEqual(context, "")
+
 
 class ManageTaskWorkspaceToolHandlerTests(unittest.TestCase):
     def test_handler_creates_updates_asks_completes_and_cleans_task(self) -> None:

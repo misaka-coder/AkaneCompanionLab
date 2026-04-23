@@ -154,6 +154,92 @@ class TaskWorkspaceService:
             limit=limit,
         )
 
+    def build_prompt_context(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        task_limit: int = 2,
+        step_limit: int = 6,
+        artifact_limit: int = 8,
+        event_limit: int = 3,
+    ) -> str:
+        """Render active task state as compact working context for Akane."""
+
+        tasks = self.list_tasks(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            statuses=["running", "waiting_user", "queued"],
+            limit=max(1, int(task_limit or 2)),
+        )
+        if not tasks:
+            return ""
+
+        lines = [
+            "【当前任务工作区】",
+            "这里记录的是当前会话里还没收尾的多步任务；它用于接续工作，不等同于长期记忆。",
+        ]
+        for index, task in enumerate(tasks, start=1):
+            task_id = str(task.get("task_id") or "").strip()
+            status = str(task.get("status") or "").strip() or "running"
+            goal = str(task.get("normalized_goal") or "").strip()
+            if not goal:
+                raw_request = task.get("raw_request") if isinstance(task.get("raw_request"), dict) else {}
+                goal = str(raw_request.get("text") or "").strip()
+            lines.append(f"\n任务 {index}: {task_id or '(无 id)'}")
+            lines.append(f"- 状态: {status}")
+            if goal:
+                lines.append(f"- 目标: {goal[:240]}")
+
+            steps = [step for step in list(task.get("steps") or []) if isinstance(step, dict)]
+            if steps:
+                rendered_steps: list[str] = []
+                for step in steps[: max(1, int(step_limit or 6))]:
+                    title = str(step.get("title") or step.get("name") or step.get("id") or "未命名步骤").strip()
+                    step_status = str(step.get("status") or "queued").strip()
+                    note = str(step.get("note") or "").strip()
+                    rendered = f"{title}({step_status})"
+                    if note:
+                        rendered += f": {note[:80]}"
+                    rendered_steps.append(rendered)
+                if len(steps) > len(rendered_steps):
+                    rendered_steps.append(f"...还有 {len(steps) - len(rendered_steps)} 步")
+                lines.append("- 步骤: " + "；".join(rendered_steps))
+
+            artifacts = [artifact for artifact in list(task.get("artifacts") or []) if isinstance(artifact, dict)]
+            if artifacts:
+                rendered_artifacts: list[str] = []
+                for artifact in artifacts[: max(1, int(artifact_limit or 8))]:
+                    artifact_id = str(artifact.get("id") or artifact.get("generated_handle") or artifact.get("attachment_handle") or "").strip()
+                    title = str(artifact.get("title") or "").strip()
+                    kind = str(artifact.get("kind") or "").strip()
+                    label = artifact_id or title or "未命名产物"
+                    suffix_parts = [part for part in [kind, title if title and title != label else ""] if part]
+                    rendered_artifacts.append(label + (f"({' / '.join(suffix_parts)})" if suffix_parts else ""))
+                if len(artifacts) > len(rendered_artifacts):
+                    rendered_artifacts.append(f"...还有 {len(artifacts) - len(rendered_artifacts)} 个")
+                lines.append("- 可用产物: " + "；".join(rendered_artifacts))
+
+            pending_question = task.get("pending_question") if isinstance(task.get("pending_question"), dict) else {}
+            question = str(pending_question.get("text") or pending_question.get("question") or "").strip()
+            if question:
+                lines.append(f"- 等待用户确认: {question[:200]}")
+
+            recent_events = self.list_events(task_id=task_id, limit=50)[-max(0, int(event_limit or 3)) :] if task_id else []
+            rendered_events: list[str] = []
+            for event in recent_events:
+                if not isinstance(event, dict):
+                    continue
+                event_type = str(event.get("event_type") or "").strip()
+                message = str(event.get("message") or "").strip()
+                if event_type or message:
+                    rendered_events.append(f"{event_type or 'event'}: {message[:120]}")
+            if rendered_events:
+                lines.append("- 最近事件: " + "；".join(rendered_events))
+
+        lines.append("\n如果任务已经完成或用户确认不需要继续，请使用 manage_task_workspace 更新、完成或清理工作区。")
+        return "\n".join(lines)
+
     def mark_event_handled(
         self,
         *,

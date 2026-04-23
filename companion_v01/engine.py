@@ -1717,6 +1717,18 @@ class AkaneMemoryEngine:
             )
             else ""
         )
+        task_workspace_service = self._get_task_workspace_service()
+        task_workspace_context = (
+            task_workspace_service.build_prompt_context(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
+            if (
+                task_workspace_service is not None
+                and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
+            )
+            else ""
+        )
         pending_gift_context = (
             self.gift_service.build_pending_prompt_context(
                 profile_user_id=profile_user_id,
@@ -1789,6 +1801,7 @@ class AkaneMemoryEngine:
                 if prompt_profile.includes(PromptModule.CLIENT_MODE)
                 else "",
                 extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",
+                task_workspace_context,
                 attachment_focus_context,
                 generated_file_context,
                 pending_gift_context,
