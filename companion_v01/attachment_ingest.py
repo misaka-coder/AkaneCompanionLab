@@ -901,6 +901,11 @@ class AttachmentIngestService:
         lowered = text.lower()
         if "playlist" in lowered or "合集" in text:
             return "这个链接更像播放列表/合集，当前只支持单个视频或音频链接。"
+        if "could not copy" in lowered and "cookie database" in lowered:
+            return (
+                "yt-dlp 没能复制浏览器 Cookie 数据库，通常是浏览器仍在运行并锁住了 Cookie 文件；"
+                "请完全关闭对应浏览器后台进程后重试，或改用 REMOTE_MEDIA_YTDLP_COOKIEFILE 指向导出的 cookies.txt。"
+            )
         if "yt-dlp" in lowered:
             return text[:240]
         if "attachment handle allocation failed" in lowered or (

@@ -658,6 +658,26 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertEqual(options["cookiesfrombrowser"], ("edge", "Default", None, None))
             self.assertNotIn("cookiefile", options)
 
+    def test_remote_media_browser_cookie_copy_error_is_actionable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+            )
+
+            message = service._humanize_remote_fetch_error(
+                "ERROR: Could not copy Chrome cookie database. See "
+                "https://github.com/yt-dlp/yt-dlp/issues/7271 for more info"
+            )
+
+            self.assertIn("浏览器仍在运行", message)
+            self.assertIn("REMOTE_MEDIA_YTDLP_COOKIEFILE", message)
+
     def _wait_for_status(
         self,
         store: MemoryStore,
