@@ -34,7 +34,8 @@ from .prompt_builder import PromptBuilder
 from .prompt_profiles import PromptModule, PromptProfileRegistry
 from .retrieval_service import RetrievalService
 from .resource_manifest import ResourceManifest
-from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler
+from .task_workspace import TaskWorkspaceService
+from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler
 from .vision_service import VisionObservationService
 from .store import MemoryStore
 from .text_utils import (
@@ -67,6 +68,7 @@ TOOL_PACKS: dict[str, tuple[str, ...]] = {
         "list_reminders",
         "cancel_reminder",
         "manage_persona",
+        "manage_task_workspace",
     ),
     "web_scene": (
         "call_npc",
@@ -160,6 +162,7 @@ class AkaneMemoryEngine:
             public_path_builder=self.gift_service._build_public_path,
         )
         self.persona_card_service = PersonaCardService(store=self.store)
+        self.task_workspace_service = TaskWorkspaceService(store=self.store)
         self.generated_file_service = GeneratedFileService(
             base_dir=self.base_dir / "generated_files",
             store=self.store,
@@ -528,6 +531,17 @@ class AkaneMemoryEngine:
             return None
         service = PersonaCardService(store=store)
         self.persona_card_service = service
+        return service
+
+    def _get_task_workspace_service(self) -> TaskWorkspaceService | None:
+        service = getattr(self, "task_workspace_service", None)
+        if service is not None:
+            return service
+        store = getattr(self, "store", None)
+        if store is None:
+            return None
+        service = TaskWorkspaceService(store=store)
+        self.task_workspace_service = service
         return service
 
     def _get_attachment_inbox_service(self) -> AttachmentInboxService | None:
@@ -2264,6 +2278,9 @@ class AkaneMemoryEngine:
             ),
             "manage_persona": ManagePersonaToolHandler(
                 persona_service=self.persona_card_service,
+            ),
+            "manage_task_workspace": ManageTaskWorkspaceToolHandler(
+                task_workspace_service=self._get_task_workspace_service(),
             ),
         }
 
