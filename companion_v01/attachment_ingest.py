@@ -742,7 +742,34 @@ class AttachmentIngestService:
         cookiefile = str(getattr(config, "REMOTE_MEDIA_YTDLP_COOKIEFILE", "") or "").strip()
         if cookiefile:
             options["cookiefile"] = str(Path(cookiefile).expanduser())
+        else:
+            browser_spec = self._parse_ytdlp_browser_cookie_spec(
+                str(getattr(config, "REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER", "") or "").strip()
+            )
+            if browser_spec is not None:
+                options["cookiesfrombrowser"] = browser_spec
         return options
+
+    def _parse_ytdlp_browser_cookie_spec(self, value: str) -> tuple[str, str | None, str | None, str | None] | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        container: str | None = None
+        if "::" in raw:
+            raw, container = raw.split("::", 1)
+            container = container.strip() or None
+        profile: str | None = None
+        if ":" in raw:
+            raw, profile = raw.split(":", 1)
+            profile = profile.strip() or None
+        keyring: str | None = None
+        if "+" in raw:
+            raw, keyring = raw.split("+", 1)
+            keyring = keyring.strip().upper() or None
+        browser = raw.strip().lower()
+        if not browser:
+            return None
+        return (browser, profile, keyring, container)
 
     def _locate_downloaded_remote_media_file(self, *, target_dir: Path, handle: str) -> Path | None:
         ignored_suffixes = {

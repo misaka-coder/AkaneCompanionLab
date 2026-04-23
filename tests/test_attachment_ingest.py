@@ -638,6 +638,26 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertIn("平台风控", message)
             self.assertIn("REMOTE_MEDIA_YTDLP_COOKIEFILE", message)
 
+    def test_ytdlp_common_options_support_browser_cookies(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+            )
+
+            with patch("companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIEFILE", ""):
+                with patch("companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER", "edge:Default"):
+                    options = service._yt_dlp_common_options(timeout=12.0)
+
+            self.assertEqual(options["socket_timeout"], 12.0)
+            self.assertEqual(options["cookiesfrombrowser"], ("edge", "Default", None, None))
+            self.assertNotIn("cookiefile", options)
+
     def _wait_for_status(
         self,
         store: MemoryStore,
