@@ -4,9 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.store import MemoryStore
 from companion_v01.task_workspace import TaskWorkspaceService
-from companion_v01.tool_runtime import ManageTaskWorkspaceToolHandler, ToolExecutionContext
+from companion_v01.tool_runtime import ManageTaskWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult
 
 
 class TaskWorkspaceStoreTests(unittest.TestCase):
@@ -275,6 +276,131 @@ class ManageTaskWorkspaceToolHandlerTests(unittest.TestCase):
 
             self.assertEqual(result.state_updates["task_id"], task["task_id"])
             self.assertEqual(service.get_task(task["task_id"])["artifacts"][0]["id"], "gen_009")
+
+
+class TaskWorkspaceEngineIntegrationTests(unittest.TestCase):
+    def test_engine_records_generated_tool_artifacts_on_latest_open_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store)
+            task = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="把视频转写成 Markdown。",
+                normalized_goal="下载视频、转写并生成 Markdown。",
+                timestamp=500,
+            )
+            engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+            engine.store = store
+            engine.task_workspace_service = service
+
+            events, followup = engine._record_tool_result_artifacts_in_task_workspace(
+                profile_user_id="master",
+                session_id="qq-private",
+                now_ts=520,
+                tool_result=ToolExecutionResult(
+                    tool_type="compose_file",
+                    stream_events=[
+                        {
+                            "type": "generated_file_ready",
+                            "generated_file": {
+                                "generated_id": "generated::001",
+                                "generated_handle": "gen_001",
+                                "status": "ready",
+                                "output_title": "视频转写稿",
+                                "output_format": "md",
+                                "file_ext": "md",
+                                "file_size": 1234,
+                                "created_by_tool": "compose_file",
+                            },
+                            "send_to_user": True,
+                        }
+                    ],
+                    followup_context="已生成 gen_001。",
+                ),
+            )
+
+            self.assertEqual(events[0]["type"], "task_workspace_artifacts_recorded")
+            self.assertIn("gen_001", followup)
+            updated = service.get_task(task["task_id"])
+            self.assertIsNotNone(updated)
+            assert updated is not None
+            self.assertEqual(updated["status"], "running")
+            self.assertEqual(updated["artifacts"][0]["id"], "gen_001")
+            self.assertEqual(updated["artifacts"][0]["source"], "generated_file")
+            workspace_events = service.list_events(task_id=task["task_id"])
+            self.assertEqual(workspace_events[-1]["event_type"], "tool_artifacts_recorded")
+
+            duplicate_events, duplicate_followup = engine._record_tool_result_artifacts_in_task_workspace(
+                profile_user_id="master",
+                session_id="qq-private",
+                now_ts=530,
+                tool_result=ToolExecutionResult(
+                    tool_type="send_file",
+                    stream_events=[
+                        {
+                            "type": "generated_file_ready",
+                            "generated_file": {
+                                "generated_id": "generated::001",
+                                "generated_handle": "gen_001",
+                                "output_title": "视频转写稿",
+                                "output_format": "md",
+                            },
+                        }
+                    ],
+                ),
+            )
+            self.assertEqual(duplicate_events, [])
+            self.assertEqual(duplicate_followup, "")
+            self.assertEqual(len(service.get_task(task["task_id"])["artifacts"]), 1)
+
+    def test_engine_records_remote_media_attachment_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store)
+            task = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="下载视频素材。",
+                normalized_goal="通过链接获取视频素材。",
+                timestamp=600,
+            )
+            engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+            engine.store = store
+            engine.task_workspace_service = service
+
+            events, followup = engine._record_tool_result_artifacts_in_task_workspace(
+                profile_user_id="master",
+                session_id="qq-private",
+                now_ts=620,
+                tool_result=ToolExecutionResult(
+                    tool_type="fetch_media_from_url",
+                    stream_events=[
+                        {
+                            "type": "attachment_remote_media_ready",
+                            "item": {
+                                "attachment_id": "attachment::001",
+                                "attachment_handle": "video_001",
+                                "status": "ready",
+                                "kind": "video",
+                                "summary_title": "测试视频",
+                                "origin_name": "test.mp4",
+                                "file_ext": ".mp4",
+                                "file_size": 2048,
+                                "source": "remote_url",
+                            },
+                        }
+                    ],
+                ),
+            )
+
+            self.assertEqual(events[0]["type"], "task_workspace_artifacts_recorded")
+            self.assertIn("video_001", followup)
+            updated = service.get_task(task["task_id"])
+            self.assertIsNotNone(updated)
+            assert updated is not None
+            self.assertEqual(updated["artifacts"][0]["id"], "video_001")
+            self.assertEqual(updated["artifacts"][0]["source"], "attachment_inbox")
 
 
 if __name__ == "__main__":
