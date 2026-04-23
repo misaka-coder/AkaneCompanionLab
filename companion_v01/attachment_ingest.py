@@ -89,6 +89,12 @@ AUDIO_MEDIA_SUFFIXES = {
 REMOTE_MEDIA_DEFAULT_TIMEOUT = 180.0
 REMOTE_MEDIA_DEFAULT_MAX_BYTES = 1024 * 1024 * 1024
 REMOTE_MEDIA_DEFAULT_MAX_URLS = 8
+REMOTE_MEDIA_DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/123.0.0.0 Safari/537.36"
+)
+REMOTE_MEDIA_DEFAULT_REFERER = "https://www.bilibili.com/"
 
 
 @dataclass(frozen=True)
@@ -577,8 +583,12 @@ class AttachmentIngestService:
             "no_warnings": True,
             "noplaylist": True,
             "skip_download": True,
-            "socket_timeout": float(getattr(config, "REMOTE_MEDIA_DOWNLOAD_TIMEOUT", REMOTE_MEDIA_DEFAULT_TIMEOUT) or REMOTE_MEDIA_DEFAULT_TIMEOUT),
         }
+        options.update(
+            self._yt_dlp_common_options(
+                timeout=float(getattr(config, "REMOTE_MEDIA_DOWNLOAD_TIMEOUT", REMOTE_MEDIA_DEFAULT_TIMEOUT) or REMOTE_MEDIA_DEFAULT_TIMEOUT)
+            )
+        )
         try:
             with YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -679,7 +689,6 @@ class AttachmentIngestService:
             "noplaylist": True,
             "overwrites": True,
             "outtmpl": {"default": str(target_dir / f"{handle}.%(ext)s")},
-            "socket_timeout": timeout,
             "cachedir": False,
             "writesubtitles": False,
             "writeautomaticsub": False,
@@ -688,6 +697,7 @@ class AttachmentIngestService:
             "restrictfilenames": False,
             "windowsfilenames": False,
         }
+        options.update(self._yt_dlp_common_options(timeout=timeout))
         if ffmpeg_path:
             options["ffmpeg_location"] = str(Path(ffmpeg_path).parent)
         if max_bytes > 0:
@@ -707,6 +717,32 @@ class AttachmentIngestService:
         if max_bytes > 0 and downloaded.stat().st_size > max_bytes:
             raise RuntimeError(f"下载后的媒体文件过大，当前限制为 {max_bytes} bytes。")
         return downloaded
+
+    def _yt_dlp_common_options(self, *, timeout: float | None = None) -> dict[str, Any]:
+        user_agent = (
+            str(getattr(config, "REMOTE_MEDIA_YTDLP_USER_AGENT", "") or "").strip()
+            or REMOTE_MEDIA_DEFAULT_USER_AGENT
+        )
+        referer = (
+            str(getattr(config, "REMOTE_MEDIA_YTDLP_REFERER", "") or "").strip()
+            or REMOTE_MEDIA_DEFAULT_REFERER
+        )
+        headers = {
+            "User-Agent": user_agent,
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+        if referer:
+            headers["Referer"] = referer
+        options: dict[str, Any] = {
+            "http_headers": headers,
+        }
+        if timeout is not None:
+            options["socket_timeout"] = timeout
+        cookiefile = str(getattr(config, "REMOTE_MEDIA_YTDLP_COOKIEFILE", "") or "").strip()
+        if cookiefile:
+            options["cookiefile"] = str(Path(cookiefile).expanduser())
+        return options
 
     def _locate_downloaded_remote_media_file(self, *, target_dir: Path, handle: str) -> Path | None:
         ignored_suffixes = {
@@ -848,8 +884,15 @@ class AttachmentIngestService:
             return "这个链接当前下载器还不认识，可能不是公开可抓取的媒体页面。"
         if "private" in lowered or "login" in lowered or "sign in" in lowered:
             return "这个链接可能需要登录、会员或额外权限，当前不能直接抓取。"
+        if "412" in lowered or "precondition failed" in lowered:
+            return (
+                "远端拒绝了这次媒体信息请求，像是平台风控或前置校验失败；"
+                "可以稍后重试、换原始公开链接，或在 .env 配置 REMOTE_MEDIA_YTDLP_COOKIEFILE 后再试。"
+            )
         if "403" in lowered or "forbidden" in lowered:
             return "远端拒绝了这次下载请求，可能有权限或地区限制。"
+        if "cookie" in lowered and ("not found" in lowered or "no such file" in lowered or "cannot" in lowered):
+            return "配置的 yt-dlp Cookie 文件不可用，请检查 REMOTE_MEDIA_YTDLP_COOKIEFILE 路径是否正确。"
         if "404" in lowered or "not found" in lowered:
             return "这个链接对应的页面或媒体文件似乎不存在了。"
         if "timeout" in lowered or "timed out" in lowered:

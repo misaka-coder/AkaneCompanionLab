@@ -586,28 +586,57 @@ class AttachmentIngestTests(unittest.TestCase):
                     return None
 
             fake_module = types.SimpleNamespace(YoutubeDL=FakeYoutubeDL)
+            cookiefile = root / "bilibili-cookies.txt"
+            cookiefile.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
             with patch.dict(sys.modules, {"yt_dlp": fake_module}):
-                with patch.object(service, "_locate_downloaded_remote_media_file", return_value=downloaded_target):
-                    result = service._download_remote_media_with_yt_dlp(
-                        descriptor=RemoteMediaDescriptor(
-                            source_url="https://b23.tv/demo",
-                            webpage_url="https://www.bilibili.com/video/BVdemo",
-                            title="测试视频",
-                            ext="mp4",
-                            mime_type="video/mp4",
-                            kind="file",
-                            download_mode="yt_dlp",
-                            extractor="BiliBili",
-                            extractor_key="BiliBili",
-                        ),
-                        target_dir=downloaded_target.parent,
-                        handle="file_001",
-                        timeout=30.0,
-                        max_bytes=0,
-                    )
+                with patch("companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIEFILE", str(cookiefile)):
+                    with patch("companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_REFERER", "https://www.bilibili.com/"):
+                        with patch.object(service, "_locate_downloaded_remote_media_file", return_value=downloaded_target):
+                            result = service._download_remote_media_with_yt_dlp(
+                                descriptor=RemoteMediaDescriptor(
+                                    source_url="https://b23.tv/demo",
+                                    webpage_url="https://www.bilibili.com/video/BVdemo",
+                                    title="测试视频",
+                                    ext="mp4",
+                                    mime_type="video/mp4",
+                                    kind="file",
+                                    download_mode="yt_dlp",
+                                    extractor="BiliBili",
+                                    extractor_key="BiliBili",
+                                ),
+                                target_dir=downloaded_target.parent,
+                                handle="file_001",
+                                timeout=30.0,
+                                max_bytes=0,
+                            )
 
             self.assertEqual(result, downloaded_target)
             self.assertNotIn("format", captured_options)
+            self.assertEqual(captured_options["socket_timeout"], 30.0)
+            self.assertEqual(captured_options["cookiefile"], str(cookiefile))
+            headers = captured_options["http_headers"]
+            self.assertIn("Mozilla/5.0", headers["User-Agent"])
+            self.assertEqual(headers["Referer"], "https://www.bilibili.com/")
+
+    def test_remote_media_412_error_suggests_cookiefile_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+            )
+
+            message = service._humanize_remote_fetch_error(
+                "[BiliBili] 1ZJ6qBvEnZ: Unable to download JSON metadata: "
+                "HTTP Error 412: Precondition Failed"
+            )
+
+            self.assertIn("平台风控", message)
+            self.assertIn("REMOTE_MEDIA_YTDLP_COOKIEFILE", message)
 
     def _wait_for_status(
         self,
