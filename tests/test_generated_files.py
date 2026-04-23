@@ -387,6 +387,14 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertIn("gen_001", result.followup_context)
             self.assertTrue(result.stream_events[0]["send_to_user"])
 
+    def test_compose_file_instruction_discourages_verbal_only_promises(self) -> None:
+        handler = ComposeFileToolHandler(generated_file_service=object())
+        instruction = handler.build_prompt_instruction()
+
+        self.assertIn("开始/继续/直接做", instruction)
+        self.assertIn("不要只口头答应", instruction)
+        self.assertIn("tool_call 调用 compose_file", instruction)
+
     def test_convert_media_file_creates_generated_audio(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

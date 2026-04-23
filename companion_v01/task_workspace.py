@@ -178,6 +178,7 @@ class TaskWorkspaceService:
         lines = [
             "【当前任务工作区】",
             "这里记录的是当前会话里还没收尾的多步任务；它用于接续工作，不等同于长期记忆。",
+            "重要：任务工作区只是白板，不代表任务已经执行。用户说“开始/继续/直接做”时，请调用真正的处理工具推进，不要只口头承诺或汇报计划。",
         ]
         for index, task in enumerate(tasks, start=1):
             task_id = str(task.get("task_id") or "").strip()
@@ -237,7 +238,7 @@ class TaskWorkspaceService:
             if rendered_events:
                 lines.append("- 最近事件: " + "；".join(rendered_events))
 
-        lines.append("\n如果任务已经完成或用户确认不需要继续，请使用 manage_task_workspace 更新、完成或清理工作区。")
+        lines.append("\n如果任务已经完成或用户确认不需要继续，请使用 manage_task_workspace 更新、完成或清理工作区；如果任务还没实际产生产物，请先调用对应处理工具。")
         return "\n".join(lines)
 
     def mark_event_handled(

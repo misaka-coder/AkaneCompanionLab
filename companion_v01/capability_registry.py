@@ -144,7 +144,7 @@ class CapabilityRegistry:
                 name="base",
                 modes=(ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D, ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET),
                 tools=("retrieve_memory", "set_reminder", "list_reminders", "cancel_reminder", "manage_persona", "manage_task_workspace"),
-                light_hint="你可以主动检索自己的长期记忆，也可以设置/查看/取消提醒、维护自己的表达侧面；遇到多步任务时可以建立任务工作区来跟踪目标、步骤、产物和清理。",
+                light_hint="你可以主动检索长期记忆，也可以设置/查看/取消提醒、维护表达侧面；任务工作区只用于复杂多步任务的进度记录，不能替代真正执行工具。",
                 trigger=_always,
             ),
             CapabilityModule(
@@ -165,7 +165,7 @@ class CapabilityRegistry:
                 name="conversation_file_authoring",
                 modes=qq_and_desktop,
                 tools=("compose_file",),
-                light_hint="即使没有附件，你也可以把当前对话中已经整理好的内容生成文件发给用户。",
+                light_hint="即使没有附件，你也可以把当前对话中已经整理好的内容直接生成文件发给用户；用户说开始/直接做/生成时，不要只口头承诺。",
                 trigger=_always,
             ),
             CapabilityModule(

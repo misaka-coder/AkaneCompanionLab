@@ -1067,6 +1067,8 @@ class ComposeFileToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- compose_file：当用户要你把临时附件、已生成文件或当前对话内容整理成一个新文件时使用。"
+            "如果用户明确要求生成/导出文件，或在已有任务后说“开始/继续/直接做”，不要只口头答应，"
+            "应立刻在 tool_call 调用 compose_file。"
             "格式为 {\"type\":\"compose_file\",\"source_ids\":[\"file_001\",\"gen_001\"],"
             "\"task\":\"要整理/改写/导出的目标\",\"output_format\":\"md|txt|docx|xlsx|pdf|json|csv|html\","
             "\"output_title\":\"文件标题\",\"structure\":\"summary|table|report|notes|custom\","
@@ -2478,7 +2480,8 @@ class ManageTaskWorkspaceToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- manage_task_workspace：当一件事明显需要多步跟踪、产物登记、等待用户确认或事后清理工作记忆时使用。"
-            "不要为一句话能完成的小事创建任务。"
+            "不要为一句话能完成的小事创建任务；创建/更新任务工作区不等于执行任务，"
+            "如果下一步已经明确，应继续调用真正的处理工具（如 compose_file、convert_media_file、transcribe_media），不要只向用户汇报计划。"
             "格式为 {\"type\":\"manage_task_workspace\",\"action\":\"create|update_steps|add_artifact|ask_user|complete|cleanup|inspect\","
             "\"task_id\":\"可选；省略时默认处理最近的未完成任务\",\"goal\":\"任务目标\","
             "\"steps\":[{\"id\":\"step_1\",\"title\":\"步骤\",\"status\":\"queued|running|done|failed|waiting_user\"}],"

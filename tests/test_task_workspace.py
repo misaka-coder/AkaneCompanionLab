@@ -174,6 +174,8 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
             self.assertIn("下载视频(done)", context)
             self.assertIn("video_001(video / 测试视频)", context)
             self.assertIn("tool_artifacts_recorded", context)
+            self.assertIn("任务工作区只是白板", context)
+            self.assertIn("调用真正的处理工具", context)
 
     def test_service_build_prompt_context_ignores_closed_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -202,6 +204,9 @@ class ManageTaskWorkspaceToolHandlerTests(unittest.TestCase):
             store = MemoryStore(Path(temp_dir))
             service = TaskWorkspaceService(store)
             handler = ManageTaskWorkspaceToolHandler(task_workspace_service=service)
+            instruction = handler.build_prompt_instruction()
+            self.assertIn("创建/更新任务工作区不等于执行任务", instruction)
+            self.assertIn("真正的处理工具", instruction)
             context = ToolExecutionContext(
                 profile_user_id="master",
                 session_id="qq-private",
