@@ -143,15 +143,15 @@ class CapabilityRegistry:
             CapabilityModule(
                 name="base",
                 modes=(ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D, ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET),
-                tools=("retrieve_memory", "set_reminder", "list_reminders", "cancel_reminder", "manage_persona", "manage_task_workspace"),
-                light_hint="你可以主动检索长期记忆，也可以设置/查看/取消提醒、维护表达侧面；任务工作区只用于复杂多步任务的进度记录，不能替代真正执行工具。",
+                tools=("retrieve_memory", "set_reminder", "list_reminders", "cancel_reminder", "manage_persona", "manage_task_workspace", "delegate_task"),
+                light_hint="你可以主动检索长期记忆，也可以设置/查看/取消提醒、维护表达侧面；短任务直接调用工具完成，复杂多步任务可以记录到任务工作区，也可以委派给后台工坊分担。",
                 trigger=_always,
             ),
             CapabilityModule(
                 name="remote_media_fetch",
                 modes=qq_and_desktop,
                 tools=("fetch_media_from_url",),
-                light_hint="你也可以先把公开音频/视频链接下载进当前工作台，再继续转写、转码或发送。",
+                light_hint="你也可以先把公开音频/视频链接下载进当前工作台；如果用户只要原视频/原音频，下载后直接发送原文件，不要多做转写、转码或净化。",
                 trigger=_always,
             ),
             CapabilityModule(
@@ -179,7 +179,12 @@ class CapabilityRegistry:
                 name="media_workbench",
                 modes=qq_and_desktop,
                 tools=("inspect_media_info", "separate_audio_stems", "clean_voice_track", "transcribe_media", "prepare_voice_dataset", "convert_media_file"),
-                light_hint="你可以查看音频/视频规格，进行人声/伴奏分离、人声净化、转写文字稿/字幕、语音训练素材切片，并继续做转码、截取、调音量、淡入淡出和调速。",
+                light_hint=(
+                    "音频/视频任务按需求自由组合：视频总结通常先 transcribe_media 得到转写稿再 compose_file；"
+                    "字幕任务优先 transcribe_media 输出 srt/vtt；训练素材可按需要组合 convert_media_file 提音频、"
+                    "separate_audio_stems 分离人声、clean_voice_track 降噪净化、prepare_voice_dataset 切片打包；"
+                    "用户只要原文件时只发送原文件，不要额外处理。"
+                ),
                 trigger=_has_media_context,
             ),
             CapabilityModule(

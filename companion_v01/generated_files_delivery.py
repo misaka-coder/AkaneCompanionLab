@@ -21,6 +21,7 @@ def send_generated_file(
     generated_files: list[dict[str, Any]] = []
     unresolved: list[str] = []
     missing_on_disk: list[str] = []
+    ambiguous_targets: list[str] = []
 
     for item in resolved_targets:
         generated = service._resolve_generated_file(
@@ -29,7 +30,17 @@ def send_generated_file(
             target=item,
         )
         if generated is None:
-            unresolved.append(item)
+            ambiguous_label = format_generated_file_ambiguity(
+                service,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                target=item,
+                statuses=["ready"],
+            )
+            if ambiguous_label:
+                ambiguous_targets.append(ambiguous_label)
+            else:
+                unresolved.append(item)
             continue
 
         absolute_path = service.absolute_path(generated)
@@ -55,11 +66,19 @@ def send_generated_file(
             "send_to_user": False,
             "unresolved": unresolved,
             "missing_on_disk": missing_on_disk,
-            "error": "generated_file_not_found" if unresolved else "generated_file_missing_on_disk",
+            "ambiguous_targets": ambiguous_targets,
+            "error": (
+                "generated_file_ambiguous"
+                if ambiguous_targets
+                else "generated_file_not_found"
+                if unresolved
+                else "generated_file_missing_on_disk"
+            ),
             "followup_context": service._build_send_followup_missing(
                 requested_targets=resolved_targets,
                 unresolved=unresolved,
                 missing_on_disk=missing_on_disk,
+                ambiguous_targets=ambiguous_targets,
             ),
         }
 
@@ -70,10 +89,12 @@ def send_generated_file(
         "send_to_user": True,
         "unresolved": unresolved,
         "missing_on_disk": missing_on_disk,
+        "ambiguous_targets": ambiguous_targets,
         "followup_context": service._build_send_followup_batch(
             generated_files=generated_files,
             unresolved=unresolved,
             missing_on_disk=missing_on_disk,
+            ambiguous_targets=ambiguous_targets,
         ),
     }
 
@@ -91,6 +112,7 @@ def send_file(
     files: list[dict[str, Any]] = []
     unresolved: list[str] = []
     missing_on_disk: list[str] = []
+    ambiguous_targets: list[str] = []
 
     for item in resolved_targets:
         file_ref, error = service._resolve_sendable_file(
@@ -102,6 +124,24 @@ def send_file(
         if file_ref is None:
             if error == "missing_on_disk":
                 missing_on_disk.append(item)
+            elif error == "ambiguous_generated_file":
+                ambiguous_label = format_generated_file_ambiguity(
+                    service,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    target=item,
+                    statuses=["ready"],
+                )
+                ambiguous_targets.append(ambiguous_label or item)
+            elif error == "ambiguous_attachment_file":
+                ambiguity = service.attachment_service.format_attachment_ambiguity(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    target=item,
+                    kind="any",
+                    statuses=["ready"],
+                )
+                ambiguous_targets.append(ambiguity or item)
             else:
                 unresolved.append(item)
             continue
@@ -113,12 +153,20 @@ def send_file(
             "files": [],
             "unresolved": unresolved,
             "missing_on_disk": missing_on_disk,
+            "ambiguous_targets": ambiguous_targets,
             "send_to_user": False,
-            "error": "file_not_found" if unresolved else "file_missing_on_disk",
+            "error": (
+                "file_target_ambiguous"
+                if ambiguous_targets
+                else "file_not_found"
+                if unresolved
+                else "file_missing_on_disk"
+            ),
             "followup_context": service._build_send_file_followup_missing(
                 requested_targets=resolved_targets,
                 unresolved=unresolved,
                 missing_on_disk=missing_on_disk,
+                ambiguous_targets=ambiguous_targets,
             ),
         }
 
@@ -127,11 +175,13 @@ def send_file(
         "files": files,
         "unresolved": unresolved,
         "missing_on_disk": missing_on_disk,
+        "ambiguous_targets": ambiguous_targets,
         "send_to_user": True,
         "followup_context": service._build_send_file_followup_batch(
             files=files,
             unresolved=unresolved,
             missing_on_disk=missing_on_disk,
+            ambiguous_targets=ambiguous_targets,
         ),
     }
 
@@ -539,6 +589,61 @@ def resolve_generated_file_any_status(
     )
 
 
+def find_generated_file_ambiguity_candidates(
+    service: Any,
+    *,
+    profile_user_id: str,
+    session_id: str,
+    target: str,
+    statuses: list[str] | tuple[str, ...] | set[str] | None,
+) -> list[dict[str, Any]]:
+    normalized = str(target or "").strip()
+    if not normalized:
+        return []
+    matches = service.store.find_generated_file_matches(
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        query=normalized,
+        statuses=statuses,
+        limit=8,
+    )
+    if not matches:
+        return []
+    best_rank = int(matches[0].get("_match_rank") or 99)
+    if best_rank <= 2:
+        return []
+    candidates = [
+        {key: value for key, value in item.items() if key != "_match_rank"}
+        for item in matches
+        if int(item.get("_match_rank") or 99) == best_rank
+    ]
+    return candidates if len(candidates) > 1 else []
+
+
+def format_generated_file_ambiguity(
+    service: Any,
+    *,
+    profile_user_id: str,
+    session_id: str,
+    target: str,
+    statuses: list[str] | tuple[str, ...] | set[str] | None,
+) -> str:
+    candidates = find_generated_file_ambiguity_candidates(
+        service,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        target=target,
+        statuses=statuses,
+    )
+    if not candidates:
+        return ""
+    labels = [
+        service._generated_display_name(item)
+        for item in candidates[:4]
+    ]
+    return f"{target} -> {'、'.join(label for label in labels if label)}"
+
+
 def normalize_targets(service: Any, value: list[str] | tuple[str, ...] | set[str] | str | None) -> list[str]:
     if value is None:
         return []
@@ -636,7 +741,7 @@ def resolve_sendable_file(
         target=normalized,
         timestamp=timestamp,
     )
-    if generated is not None or generated_error == "missing_on_disk":
+    if generated is not None or generated_error in {"missing_on_disk", "ambiguous_generated_file"}:
         return generated, generated_error
     return service._resolve_attachment_sendable_file(
         profile_user_id=profile_user_id,
@@ -693,6 +798,14 @@ def resolve_generated_sendable_file(
         target=target,
     )
     if generated is None:
+        if find_generated_file_ambiguity_candidates(
+            service,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            target=target,
+            statuses=["ready"],
+        ):
+            return None, "ambiguous_generated_file"
         return None, "not_found"
     return service._generated_item_to_sendable_file(generated, timestamp=timestamp)
 
@@ -711,6 +824,15 @@ def resolve_attachment_sendable_file(
         kind="any",
     )
     if attachment is None:
+        ambiguity = service.attachment_service.format_attachment_ambiguity(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            target=target,
+            kind="any",
+            statuses=["ready"],
+        )
+        if ambiguity:
+            return None, "ambiguous_attachment_file"
         return None, "not_found"
     return service._attachment_item_to_sendable_file(attachment)
 
@@ -1177,6 +1299,7 @@ def resolve_generated_style_source(
     if generated is None:
         return None
     content_card = generated.get("content_card") if isinstance(generated.get("content_card"), dict) else {}
+    media_info = content_card.get("media_info") if isinstance(content_card.get("media_info"), dict) else {}
     absolute_path = service.absolute_path(generated)
     return {
         "source_type": "generated",
@@ -1189,6 +1312,7 @@ def resolve_generated_style_source(
         "absolute_path": absolute_path,
         "extra_source_ids": list(generated.get("source_ids") or []),
         "version_no": int(generated.get("version_no") or 1),
+        "media_info": media_info,
     }
 
 
@@ -1214,6 +1338,7 @@ def resolve_attachment_style_source(
         except Exception:
             source_path = None
     detail = attachment.get("detail") if isinstance(attachment.get("detail"), dict) else {}
+    media_info = detail.get("media_info") if isinstance(detail.get("media_info"), dict) else {}
     title = (
         str(attachment.get("summary_title") or "").strip()
         or str(attachment.get("origin_name") or "").strip()
@@ -1236,6 +1361,7 @@ def resolve_attachment_style_source(
         "absolute_path": source_path,
         "extra_source_ids": [],
         "version_no": 0,
+        "media_info": media_info,
     }
 
 

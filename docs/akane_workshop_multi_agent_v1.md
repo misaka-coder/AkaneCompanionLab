@@ -301,3 +301,22 @@ Do not start with all agents at once.
 - Questions and risks return to Akane.
 - Akane decides final delivery and cleanup.
 
+## 15. Implementation Status (2026-04-23)
+
+The first implementation slice is now in code. It focuses on a usable control
+plane plus one constrained worker loop, not a full multi-worker swarm.
+
+Done:
+
+- Added `TaskWorkerService` as the background workshop executor.
+- Added `delegate_task` so Akane can hand complex tasks to `document_agent`, `media_agent`, `speech_agent`, or `resource_agent`.
+- Worker prompts include task workspace, attachment workspace, generated file workspace, and recent tool feedback.
+- Workers use a restricted tool pool and cannot directly send files to users.
+- Tool outputs flow back into generated resources / attachment workspace and are recorded on the task workspace.
+- Worker completion, blocking, tool execution, and round-limit events are written as task events for Akane to see later.
+
+Current boundary:
+
+- V1 runs one delegated worker task at a time per background lane.
+- Final user-facing explanation and delivery still belong to Akane.
+- If a task needs active notification without a new user message, that should be added later at the client/gateway layer.

@@ -116,6 +116,111 @@ class AttachmentInboxTests(unittest.TestCase):
             self.assertEqual(created["attachment_handle"], "img_002")
             self.assertEqual(created["sequence_no"], 2)
 
+    def test_store_find_attachment_prefers_exact_handle_over_fuzzy_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            exact = store.add_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="document",
+                origin_name="voice.wav",
+                timestamp=100,
+            )
+            store.update_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=exact["attachment_id"],
+                status="ready",
+                summary_title="原始人声",
+                short_hint="第一份附件。",
+                updated_at=110,
+            )
+            fuzzy = store.add_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="document",
+                origin_name="notes.txt",
+                timestamp=120,
+            )
+            store.update_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=fuzzy["attachment_id"],
+                status="ready",
+                summary_title="关于 file_001 的处理说明",
+                short_hint="第二份附件。",
+                updated_at=130,
+            )
+
+            found = store.find_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                query="file_001",
+                statuses=["ready"],
+            )
+
+            self.assertIsNotNone(found)
+            self.assertEqual(found["attachment_id"], exact["attachment_id"])
+            self.assertEqual(found["attachment_handle"], "file_001")
+
+    def test_store_find_attachment_matches_exposes_ambiguous_fuzzy_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            first = store.add_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="menu-breakfast.png",
+                timestamp=100,
+            )
+            second = store.add_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="menu-dinner.png",
+                timestamp=110,
+            )
+            store.update_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=first["attachment_id"],
+                status="ready",
+                summary_title="早餐菜单图",
+                short_hint="上面有咖啡和吐司。",
+                updated_at=120,
+            )
+            store.update_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=second["attachment_id"],
+                status="ready",
+                summary_title="晚餐菜单图",
+                short_hint="上面有牛排和汤。",
+                updated_at=130,
+            )
+
+            found = store.find_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                query="菜单图",
+                kind="image",
+                statuses=["ready"],
+            )
+            matches = store.find_attachment_inbox_item_matches(
+                profile_user_id="user",
+                session_id="session",
+                query="菜单图",
+                kind="image",
+                statuses=["ready"],
+            )
+
+            self.assertIsNone(found)
+            self.assertEqual([item["attachment_handle"] for item in matches[:2]], ["img_002", "img_001"])
+
     def test_service_prompt_renders_detail_index_and_pending(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))
@@ -369,6 +474,109 @@ class AttachmentInboxTests(unittest.TestCase):
             self.assertIn("移除了 1 个附件", cleared.followup_context)
             self.assertEqual(cleared.stream_events[0]["type"], "attachment_focus_cleared")
 
+    def test_inspect_attachment_requests_confirmation_for_ambiguous_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = AttachmentInboxService(store=store)
+            first = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="breakfast-menu.png",
+                timestamp=100,
+            )
+            second = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="dinner-menu.png",
+                timestamp=101,
+            )
+            service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=first["attachment_id"],
+                summary_title="早餐菜单图",
+                short_hint="有咖啡、吐司和果酱。",
+                timestamp=110,
+            )
+            service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=second["attachment_id"],
+                summary_title="晚餐菜单图",
+                short_hint="有汤、牛排和沙拉。",
+                timestamp=111,
+            )
+
+            result = service.inspect_attachment(
+                profile_user_id="user",
+                session_id="session",
+                target="菜单图",
+                kind="image",
+                timestamp=120,
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertIn("多个候选", result["followup_context"])
+            self.assertIn("img_001", result["followup_context"])
+            self.assertIn("img_002", result["followup_context"])
+
+    def test_read_attachment_section_requests_confirmation_for_ambiguous_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = AttachmentInboxService(store=store)
+            first = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="document",
+                origin_name="voice.txt",
+                timestamp=100,
+            )
+            second = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="document",
+                origin_name="voice_clean.txt",
+                timestamp=101,
+            )
+            service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=first["attachment_id"],
+                summary_title="原始人声说明",
+                short_hint="第一份文本。",
+                detail={"text_preview": "原始人声内容"},
+                timestamp=110,
+            )
+            service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=second["attachment_id"],
+                summary_title="降噪人声说明",
+                short_hint="第二份文本。",
+                detail={"text_preview": "降噪人声内容"},
+                timestamp=111,
+            )
+
+            result = service.read_section(
+                profile_user_id="user",
+                session_id="session",
+                target="人声说明",
+                section="全文",
+                kind="document",
+                timestamp=120,
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertIn("多个候选", result["followup_context"])
+            self.assertIn("file_001", result["followup_context"])
+            self.assertIn("file_002", result["followup_context"])
+
     def test_read_attachment_section_expands_line_range(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))
@@ -559,6 +767,57 @@ class AttachmentInboxTests(unittest.TestCase):
                 [item["attachment_handle"] for item in remaining],
                 ["img_004", "img_002"],
             )
+
+    def test_clear_attachment_focus_requests_confirmation_for_ambiguous_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = AttachmentInboxService(store=store)
+            first = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="menu-1.png",
+                timestamp=100,
+            )
+            second = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="menu-2.png",
+                timestamp=101,
+            )
+            service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=first["attachment_id"],
+                summary_title="早餐菜单图",
+                short_hint="第一张菜单图。",
+                timestamp=110,
+            )
+            service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=second["attachment_id"],
+                summary_title="晚餐菜单图",
+                short_hint="第二张菜单图。",
+                timestamp=111,
+            )
+
+            result = service.clear_focus(
+                profile_user_id="user",
+                session_id="session",
+                targets=["菜单图"],
+                kind="image",
+                reason="测试歧义确认",
+                timestamp=120,
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertIn("多个候选", result["followup_context"])
+            self.assertIn("img_001", result["followup_context"])
+            self.assertIn("img_002", result["followup_context"])
 
     def test_sync_workspace_tool_handler_returns_focused_cards(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

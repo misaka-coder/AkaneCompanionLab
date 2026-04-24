@@ -50,6 +50,43 @@ python launch_akane_memory_v01.py
 - 资源调试页：`http://127.0.0.1:9998/resource-preview`
 - 健康检查：`http://127.0.0.1:9998/health`
 
+## 测试
+
+推荐每次大改前先跑这条快速回归命令：
+
+```powershell
+python -m unittest tests.quick_regression_suite
+```
+
+如果你在 Windows 上更习惯脚本入口，也可以直接跑：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_quick_regression.ps1
+```
+
+QQ 工坊能力和本机依赖自检：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_qq_workshop_self_check.ps1
+```
+
+能力路网说明见 `docs/qq_workshop_capabilities_v1.md`。
+
+这组快速套件会优先检查：
+
+- `tests/test_resource_visibility_contract.py`
+  - 附件区 / 生成区 / 任务工作区边界
+  - 图片视觉卡、媒体规格卡、端到端资源可见性链路
+- 附件歧义确认
+- 生成文件歧义确认
+- 精确 handle 发送不会被歧义目标干扰
+
+完整回归仍然建议再跑一轮：
+
+```powershell
+python -m unittest discover tests
+```
+
 ## 说明
 
 - 当前主界面已经切到通用 gal 壳，前端不再绑定某个固定人物。

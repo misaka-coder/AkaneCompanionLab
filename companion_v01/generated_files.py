@@ -1921,12 +1921,14 @@ class GeneratedFileService:
         generated_files: list[dict[str, Any]],
         unresolved: list[str],
         missing_on_disk: list[str],
+        ambiguous_targets: list[str] | None = None,
     ) -> str:
         return generated_files_cards.build_send_followup_batch(
             self,
             generated_files=generated_files,
             unresolved=unresolved,
             missing_on_disk=missing_on_disk,
+            ambiguous_targets=ambiguous_targets,
         )
 
     def _build_send_followup_missing(
@@ -1935,12 +1937,14 @@ class GeneratedFileService:
         requested_targets: list[str],
         unresolved: list[str],
         missing_on_disk: list[str],
+        ambiguous_targets: list[str] | None = None,
     ) -> str:
         return generated_files_cards.build_send_followup_missing(
             self,
             requested_targets=requested_targets,
             unresolved=unresolved,
             missing_on_disk=missing_on_disk,
+            ambiguous_targets=ambiguous_targets,
         )
 
     def _build_send_file_followup_batch(
@@ -1949,12 +1953,14 @@ class GeneratedFileService:
         files: list[dict[str, Any]],
         unresolved: list[str],
         missing_on_disk: list[str],
+        ambiguous_targets: list[str] | None = None,
     ) -> str:
         return generated_files_cards.build_send_file_followup_batch(
             self,
             files=files,
             unresolved=unresolved,
             missing_on_disk=missing_on_disk,
+            ambiguous_targets=ambiguous_targets,
         )
 
     def _build_send_file_followup_missing(
@@ -1963,12 +1969,14 @@ class GeneratedFileService:
         requested_targets: list[str],
         unresolved: list[str],
         missing_on_disk: list[str],
+        ambiguous_targets: list[str] | None = None,
     ) -> str:
         return generated_files_cards.build_send_file_followup_missing(
             self,
             requested_targets=requested_targets,
             unresolved=unresolved,
             missing_on_disk=missing_on_disk,
+            ambiguous_targets=ambiguous_targets,
         )
 
     def _sendable_file_label(self, file_ref: dict[str, Any]) -> str:

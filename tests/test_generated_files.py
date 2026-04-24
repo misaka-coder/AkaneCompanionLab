@@ -87,6 +87,151 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertIsNotNone(found)
             self.assertIn(found["generated_handle"], {"gen_001", "gen_002"})
 
+    def test_find_generated_file_prefers_exact_title_over_newer_partial_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            vocal = store.add_generated_file(
+                profile_user_id="user",
+                session_id="session",
+                output_title="昔涟_人声",
+                output_format="flac",
+                storage_relpath="user/session/vocal.flac",
+                timestamp=100,
+            )
+            denoised = store.add_generated_file(
+                profile_user_id="user",
+                session_id="session",
+                output_title="昔涟_人声_降噪",
+                output_format="flac",
+                storage_relpath="user/session/vocal_denoised.flac",
+                timestamp=200,
+            )
+
+            found = store.find_generated_file(
+                profile_user_id="user",
+                session_id="session",
+                query="昔涟_人声",
+                statuses=["ready"],
+            )
+
+            self.assertIsNotNone(found)
+            self.assertEqual(found["generated_id"], vocal["generated_id"])
+            self.assertNotEqual(found["generated_id"], denoised["generated_id"])
+
+    def test_find_generated_file_prefers_exact_handle_over_similar_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            target = store.add_generated_file(
+                profile_user_id="user",
+                session_id="session",
+                generated_handle="gen_033",
+                output_title="原始人声",
+                output_format="flac",
+                storage_relpath="user/session/vocal.flac",
+                timestamp=100,
+            )
+            store.add_generated_file(
+                profile_user_id="user",
+                session_id="session",
+                generated_handle="gen_035",
+                output_title="这是 gen_033 的降噪版",
+                output_format="flac",
+                storage_relpath="user/session/vocal_denoised.flac",
+                timestamp=200,
+            )
+
+            found = store.find_generated_file(
+                profile_user_id="user",
+                session_id="session",
+                query="gen_033",
+                statuses=["ready"],
+            )
+
+            self.assertIsNotNone(found)
+            self.assertEqual(found["generated_id"], target["generated_id"])
+            self.assertEqual(found["generated_handle"], "gen_033")
+
+    def test_find_generated_file_requires_confirmation_for_ambiguous_fuzzy_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            store.add_generated_file(
+                profile_user_id="user",
+                session_id="session",
+                output_title="昔涟_人声",
+                output_format="flac",
+                storage_relpath="user/session/vocal.flac",
+                timestamp=100,
+            )
+            store.add_generated_file(
+                profile_user_id="user",
+                session_id="session",
+                output_title="昔涟_人声_降噪",
+                output_format="flac",
+                storage_relpath="user/session/vocal_denoised.flac",
+                timestamp=200,
+            )
+
+            found = store.find_generated_file(
+                profile_user_id="user",
+                session_id="session",
+                query="人声",
+                statuses=["ready"],
+            )
+
+            self.assertIsNone(found)
+
+    def test_generated_prompt_context_exposes_media_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root)
+            attachment_service = AttachmentInboxService(store=store)
+            generated_service = GeneratedFileService(
+                base_dir=root / "generated_files",
+                store=store,
+                attachment_service=attachment_service,
+            )
+            store.add_generated_file(
+                profile_user_id="user",
+                session_id="session",
+                output_title="昔涟_人声",
+                output_format="flac",
+                storage_relpath="user/session/vocal.flac",
+                file_size=17425491,
+                content_card={
+                    "summary": "从 file_016 分离出人声轨。",
+                    "source": {"handle": "file_016", "title": "昔涟"},
+                    "separation": {"stem_role": "vocals"},
+                    "media_info": {
+                        "format_name": "flac",
+                        "duration_seconds": 192.0,
+                        "file_size": 17425491,
+                        "audio": {
+                            "codec": "flac",
+                            "sample_rate": 48000,
+                            "channels": 2,
+                            "bit_rate": 1411000,
+                        },
+                    },
+                },
+                summary="从 file_016 分离出人声轨。",
+                created_by_tool="separate_audio_stems",
+                timestamp=100,
+            )
+
+            context = generated_service.build_prompt_context(
+                profile_user_id="user",
+                session_id="session",
+                limit=3,
+            )
+
+            self.assertIn("大小：", context)
+            self.assertIn("来源工具：separate_audio_stems", context)
+            self.assertIn("来源：file_016", context)
+            self.assertIn("音轨角色：vocals", context)
+            self.assertIn("媒体规格：格式：flac", context)
+            self.assertIn("时长：3:12", context)
+            self.assertIn("音频：编码 flac，48000Hz，2声道，1.41Mbps。", context)
+
     def test_compose_file_creates_markdown_from_attachment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -462,6 +607,11 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertEqual(generated["mime_type"], "audio/mpeg")
             self.assertEqual(generated["created_by_tool"], "convert_media_file")
             self.assertTrue(Path(generated["absolute_path"]).exists())
+            media_info = (generated.get("content_card") or {}).get("media_info", {})
+            self.assertEqual(media_info.get("format_name"), "mp3")
+            self.assertEqual((media_info.get("audio") or {}).get("sample_rate"), 44100)
+            self.assertEqual((media_info.get("audio") or {}).get("channels"), 2)
+            self.assertEqual((media_info.get("audio") or {}).get("bit_rate"), 192000)
             command = mocked_run.call_args.args[0]
             self.assertIn("-b:a", command)
             self.assertIn("192k", command)
@@ -718,6 +868,8 @@ class GeneratedFileTests(unittest.TestCase):
                 for item in generated_files
             ]
             self.assertEqual(roles, ["vocals", "instrumental"])
+            self.assertEqual((generated_files[0].get("content_card") or {}).get("media_info", {}).get("format_name"), "wav")
+            self.assertEqual((generated_files[1].get("content_card") or {}).get("media_info", {}).get("format_name"), "wav")
             self.assertIn("人声 / 伴奏分离", result["followup_context"])
 
     def test_separate_audio_stems_tool_handler_emits_two_generated_events(self) -> None:
@@ -832,6 +984,10 @@ class GeneratedFileTests(unittest.TestCase):
                 (generated.get("content_card") or {}).get("voice_cleaning", {}).get("backend_used"),
                 "deepfilternet",
             )
+            media_info = (generated.get("content_card") or {}).get("media_info", {})
+            self.assertEqual(media_info.get("format_name"), "wav")
+            self.assertEqual((media_info.get("audio") or {}).get("sample_rate"), 48000)
+            self.assertEqual((media_info.get("audio") or {}).get("channels"), 1)
             self.assertIn("AI 净化", result["followup_context"])
 
     def test_clean_voice_track_tool_handler_emits_generated_event(self) -> None:
@@ -1255,6 +1411,22 @@ class GeneratedFileTests(unittest.TestCase):
         self.assertIn("trim_silence", instruction)
         self.assertIn("fade_out_seconds", instruction)
         self.assertIn("speed_ratio", instruction)
+        self.assertIn("只有用户要音频轨、后续人声处理、训练素材或统一媒体规格时才提音频", instruction)
+        self.assertIn("如果用户只要原视频，改用 send_file 发送原文件", instruction)
+
+    def test_media_tool_instructions_explain_video_task_routing_without_fixed_pipeline(self) -> None:
+        transcribe_instruction = TranscribeMediaToolHandler(generated_file_service=object()).build_prompt_instruction()
+        dataset_instruction = PrepareVoiceDatasetToolHandler(generated_file_service=object()).build_prompt_instruction()
+
+        self.assertIn("如果用户要字幕文件，优先用 srt 或 vtt", transcribe_instruction)
+        self.assertIn("这个工具负责转写，不负责总结", transcribe_instruction)
+        self.assertIn("如果用户只要原视频/原音频，不要为了回复而转写", transcribe_instruction)
+        self.assertIn("训练素材任务可以分多步组合", dataset_instruction)
+        self.assertIn("先 convert_media_file 提音频", dataset_instruction)
+        self.assertIn("再 separate_audio_stems 拿人声", dataset_instruction)
+        self.assertIn("再 clean_voice_track 降噪", dataset_instruction)
+        self.assertIn("最后 prepare_voice_dataset 切片打包", dataset_instruction)
+        self.assertIn("不要把这些步骤用于只要原文件的请求", dataset_instruction)
 
     def test_compose_file_applies_xlsx_formatting(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1622,6 +1794,128 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertEqual(result["files"][0]["name"], "clip.mp4")
             self.assertEqual(result["files"][1]["handle"], "gen_001")
             self.assertIn("2 个已有文件", result["followup_context"])
+
+    def test_send_file_requests_confirmation_for_ambiguous_generated_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            attachment_service = AttachmentInboxService(store=store)
+            generated_service = GeneratedFileService(
+                base_dir=root / "generated_files",
+                store=store,
+                attachment_service=attachment_service,
+            )
+            first = generated_service.compose_file(
+                profile_user_id="user",
+                session_id="session",
+                source_targets=[],
+                task="写一份原始人声说明",
+                output_format="txt",
+                output_title="昔涟_人声",
+                content_markdown="原始人声文件",
+                send_to_user=False,
+                timestamp=100,
+            )["generated"]
+            second = generated_service.compose_file(
+                profile_user_id="user",
+                session_id="session",
+                source_targets=[],
+                task="写一份降噪人声说明",
+                output_format="txt",
+                output_title="昔涟_人声_降噪",
+                content_markdown="降噪人声文件",
+                send_to_user=False,
+                timestamp=110,
+            )["generated"]
+
+            result = generated_service.send_file(
+                profile_user_id="user",
+                session_id="session",
+                targets=["人声"],
+                timestamp=130,
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error"], "file_target_ambiguous")
+            self.assertIn("存在多个候选", result["followup_context"])
+            self.assertIn(first["generated_handle"], result["followup_context"])
+            self.assertIn(second["generated_handle"], result["followup_context"])
+
+    def test_send_file_keeps_generated_exact_send_when_attachment_target_is_ambiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            attachment_root = root / "attachments"
+            first_path = attachment_root / "master" / "menu-breakfast.png"
+            second_path = attachment_root / "master" / "menu-dinner.png"
+            first_path.parent.mkdir(parents=True, exist_ok=True)
+            first_path.write_bytes(b"img1")
+            second_path.write_bytes(b"img2")
+            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
+            generated_service = GeneratedFileService(
+                base_dir=root / "generated_files",
+                store=store,
+                attachment_service=attachment_service,
+            )
+            first = attachment_service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="menu-breakfast.png",
+                storage_relpath="master/menu-breakfast.png",
+                timestamp=90,
+            )
+            second = attachment_service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="menu-dinner.png",
+                storage_relpath="master/menu-dinner.png",
+                timestamp=91,
+            )
+            attachment_service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=first["attachment_id"],
+                summary_title="早餐菜单图",
+                short_hint="第一张菜单图。",
+                timestamp=95,
+            )
+            attachment_service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=second["attachment_id"],
+                summary_title="晚餐菜单图",
+                short_hint="第二张菜单图。",
+                timestamp=96,
+            )
+            generated_service.compose_file(
+                profile_user_id="user",
+                session_id="session",
+                source_targets=[],
+                task="写一份小结",
+                output_format="txt",
+                output_title="小结",
+                content_markdown="生成内容",
+                send_to_user=False,
+                timestamp=100,
+            )
+
+            result = generated_service.send_file(
+                profile_user_id="user",
+                session_id="session",
+                targets=["菜单图", "gen_001"],
+                timestamp=130,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual([item["handle"] for item in result["files"]], ["gen_001"])
+            self.assertIn("存在多个候选", result["followup_context"])
+            self.assertIn("img_001", result["followup_context"])
+            self.assertIn("img_002", result["followup_context"])
+            self.assertIn("gen_001", result["followup_context"])
 
     def test_send_file_tool_handler_emits_generic_file_events(self) -> None:
         class FakeGeneratedService:

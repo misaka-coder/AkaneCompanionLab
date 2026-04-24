@@ -166,19 +166,20 @@ class TaskWorkspaceService:
     ) -> str:
         """Render active task state as compact working context for Akane."""
 
-        tasks = self.list_tasks(
+        tasks = self._list_prompt_tasks(
             profile_user_id=profile_user_id,
             session_id=session_id,
-            statuses=["running", "waiting_user", "queued"],
-            limit=max(1, int(task_limit or 2)),
+            active_limit=max(1, int(task_limit or 2)),
+            handoff_limit=2,
         )
         if not tasks:
             return ""
 
         lines = [
             "【当前任务工作区】",
-            "这里记录的是当前会话里还没收尾的多步任务；它用于接续工作，不等同于长期记忆。",
+            "这里记录的是当前会话里还没收尾的多步任务，或刚完成但还需要你接手汇报/交付的后台任务；它用于接续工作，不等同于长期记忆。",
             "重要：任务工作区只是白板，不代表任务已经执行。用户说“开始/继续/直接做”时，请调用真正的处理工具推进，不要只口头承诺或汇报计划。",
+            "如果看到后台工坊交接状态，请按交接摘要和建议接手自然继续：完成就确认/交付，阻塞就问清问题，部分完成就说明现有成果并继续推进。",
         ]
         for index, task in enumerate(tasks, start=1):
             task_id = str(task.get("task_id") or "").strip()
@@ -191,6 +192,20 @@ class TaskWorkspaceService:
             lines.append(f"- 状态: {status}")
             if goal:
                 lines.append(f"- 目标: {goal[:240]}")
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            workshop = metadata.get("workshop") if isinstance(metadata.get("workshop"), dict) else {}
+            assigned_agent = str(workshop.get("assigned_agent") or "").strip()
+            workshop_status = str(workshop.get("status") or "").strip()
+            workshop_bits = []
+            if assigned_agent:
+                workshop_bits.append(assigned_agent)
+            if workshop_status:
+                workshop_bits.append(workshop_status)
+            if workshop_bits:
+                lines.append("- 后台工坊: " + " / ".join(workshop_bits))
+            brief = str(workshop.get("brief") or "").strip()
+            if brief:
+                lines.append(f"- 工坊说明: {brief[:200]}")
 
             steps = [step for step in list(task.get("steps") or []) if isinstance(step, dict)]
             if steps:
@@ -221,6 +236,14 @@ class TaskWorkspaceService:
                     rendered_artifacts.append(f"...还有 {len(artifacts) - len(rendered_artifacts)} 个")
                 lines.append("- 可用产物: " + "；".join(rendered_artifacts))
 
+            handoff = self.get_task_handoff(task)
+            if handoff:
+                lines.extend(self.render_handoff_lines(handoff, bullet="- "))
+
+            frontstage_lines = self.render_frontstage_status_lines(task, handoff=handoff, bullet="- ")
+            if frontstage_lines:
+                lines.extend(frontstage_lines)
+
             pending_question = task.get("pending_question") if isinstance(task.get("pending_question"), dict) else {}
             question = str(pending_question.get("text") or pending_question.get("question") or "").strip()
             if question:
@@ -240,6 +263,254 @@ class TaskWorkspaceService:
 
         lines.append("\n如果任务已经完成或用户确认不需要继续，请使用 manage_task_workspace 更新、完成或清理工作区；如果任务还没实际产生产物，请先调用对应处理工具。")
         return "\n".join(lines)
+
+    def _list_prompt_tasks(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        active_limit: int,
+        handoff_limit: int = 2,
+    ) -> list[dict[str, Any]]:
+        active_tasks = self.list_tasks(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            statuses=["running", "waiting_user", "queued"],
+            limit=max(1, int(active_limit or 2)),
+        )
+        seen_ids = {
+            str(task.get("task_id") or "").strip()
+            for task in active_tasks
+            if str(task.get("task_id") or "").strip()
+        }
+        if handoff_limit <= 0:
+            return active_tasks
+
+        pending_events = self.store.list_task_workspace_events(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            status="pending",
+            limit=max(8, int(handoff_limit or 2) * 8),
+        )
+        handoff_tasks: list[dict[str, Any]] = []
+        for event in reversed(pending_events):
+            task_id = str(event.get("task_id") or "").strip()
+            if not task_id or task_id in seen_ids:
+                continue
+            task = self.get_task(task_id)
+            if task is None:
+                continue
+            status = str(task.get("status") or "").strip().lower()
+            if status in {"cleaned", "canceled"}:
+                continue
+            seen_ids.add(task_id)
+            handoff_tasks.append(task)
+            if len(handoff_tasks) >= max(1, int(handoff_limit or 2)):
+                break
+        return [*active_tasks, *handoff_tasks]
+
+    def get_task_handoff(self, task: dict[str, Any]) -> dict[str, Any]:
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        workshop = metadata.get("workshop") if isinstance(metadata.get("workshop"), dict) else {}
+        handoff = workshop.get("handoff") if isinstance(workshop.get("handoff"), dict) else {}
+        if handoff:
+            return dict(handoff)
+
+        task_id = str(task.get("task_id") or "").strip()
+        if not task_id:
+            return {}
+        events = self.list_events(task_id=task_id, status="pending", limit=20)
+        if not events:
+            events = self.list_events(task_id=task_id, limit=20)
+        for event in reversed(events):
+            if not isinstance(event, dict):
+                continue
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            event_handoff = payload.get("handoff") if isinstance(payload.get("handoff"), dict) else {}
+            if event_handoff:
+                return dict(event_handoff)
+        return {}
+
+    def render_handoff_lines(self, handoff: dict[str, Any], *, bullet: str = "- ") -> list[str]:
+        if not isinstance(handoff, dict) or not handoff:
+            return []
+        lines: list[str] = []
+        status = str(handoff.get("status") or "").strip()
+        if status:
+            status_labels = {
+                "completed": "完成，等待 Akane 交付/确认",
+                "blocked": "阻塞，等待用户回答",
+                "partial": "部分完成，等待 Akane 接手推进",
+            }
+            lines.append(f"{bullet}交接状态: {status_labels.get(status, status)}")
+        summary = str(handoff.get("summary") or "").strip()
+        if summary:
+            lines.append(f"{bullet}交接摘要: {summary[:240]}")
+        completed = self._render_handoff_text_items(handoff.get("completed_steps"), limit=6)
+        if completed:
+            lines.append(f"{bullet}已完成: " + "；".join(completed))
+        active = self._render_handoff_text_items(handoff.get("active_steps"), limit=6)
+        if active:
+            lines.append(f"{bullet}还在推进: " + "；".join(active))
+        blocked = self._render_handoff_text_items(handoff.get("blocked_steps"), limit=4)
+        if blocked:
+            lines.append(f"{bullet}卡住位置: " + "；".join(blocked))
+        remaining = self._render_handoff_text_items(handoff.get("remaining_steps"), limit=6)
+        if remaining:
+            lines.append(f"{bullet}仍需处理: " + "；".join(remaining))
+        artifacts = self._render_handoff_artifacts(handoff.get("artifacts"), limit=8)
+        if artifacts:
+            lines.append(f"{bullet}可交付产物: " + "；".join(artifacts))
+        question = str(handoff.get("user_question") or "").strip()
+        if question:
+            lines.append(f"{bullet}需要问用户: {question[:220]}")
+        instruction = str(handoff.get("akane_instruction") or "").strip()
+        if instruction:
+            lines.append(f"{bullet}建议接手: {instruction[:280]}")
+        return lines
+
+    def _render_handoff_text_items(self, value: Any, *, limit: int) -> list[str]:
+        raw_items = value if isinstance(value, list) else []
+        rendered: list[str] = []
+        for item in raw_items:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            rendered.append(text[:160])
+            if len(rendered) >= max(1, int(limit or 1)):
+                break
+        return rendered
+
+    def _render_handoff_artifacts(self, value: Any, *, limit: int) -> list[str]:
+        raw_items = value if isinstance(value, list) else []
+        rendered: list[str] = []
+        for item in raw_items:
+            if isinstance(item, dict):
+                artifact_id = str(item.get("id") or item.get("handle") or "").strip()
+                title = str(item.get("title") or "").strip()
+                kind = str(item.get("kind") or "").strip()
+                label = artifact_id or title
+                if not label:
+                    continue
+                suffix = " / ".join(part for part in [kind, title if title and title != label else ""] if part)
+                rendered.append(label + (f"({suffix})" if suffix else ""))
+            else:
+                text = str(item or "").strip()
+                if text:
+                    rendered.append(text[:160])
+            if len(rendered) >= max(1, int(limit or 1)):
+                break
+        return rendered
+
+    def render_frontstage_status_lines(
+        self,
+        task: dict[str, Any],
+        *,
+        handoff: dict[str, Any] | None = None,
+        bullet: str = "- ",
+    ) -> list[str]:
+        """Render user-facing guidance for Akane without replacing task facts."""
+
+        if not isinstance(task, dict) or not task:
+            return []
+        effective_handoff = handoff if isinstance(handoff, dict) else self.get_task_handoff(task)
+        pending_question = task.get("pending_question") if isinstance(task.get("pending_question"), dict) else {}
+        question = str(pending_question.get("text") or pending_question.get("question") or "").strip()
+        status = str(task.get("status") or "").strip().lower()
+        handoff_status = str((effective_handoff or {}).get("status") or "").strip().lower()
+        next_action = str((effective_handoff or {}).get("next_action") or "").strip().lower()
+        artifacts = [artifact for artifact in list(task.get("artifacts") or []) if isinstance(artifact, dict)]
+        steps = [step for step in list(task.get("steps") or []) if isinstance(step, dict)]
+
+        if question or status == "waiting_user" or handoff_status == "blocked":
+            prompt_question = question or str((effective_handoff or {}).get("user_question") or "").strip()
+            lines = [f"{bullet}前台状态: 等待用户确认"]
+            if prompt_question:
+                lines.append(f"{bullet}前台回应: 直接问用户：{prompt_question[:220]} 不要复述后台日志或工具错误。")
+            else:
+                lines.append(f"{bullet}前台回应: 说明后台需要用户补充信息，用用户能回答的话问清楚；不要复述技术日志。")
+            return lines
+
+        if status == "completed" or handoff_status == "completed":
+            artifact_labels = self._render_task_artifact_labels(artifacts, limit=4)
+            lines = [f"{bullet}前台状态: 后台已完成，等待 Akane 确认/交付"]
+            if next_action == "send_to_user":
+                detail = "，".join(artifact_labels) if artifact_labels else "结果"
+                lines.append(f"{bullet}前台回应: 可以简短说明已经做好，并用 send_file 精确发送 {detail}；发送后再询问是否清理任务工作区。")
+            elif next_action == "report_only" and not artifact_labels:
+                lines.append(f"{bullet}前台回应: 自然说明已经处理完；如果用户还需要文件，再根据资源区或生成区继续处理。")
+            else:
+                detail = "，".join(artifact_labels) if artifact_labels else "结果"
+                lines.append(f"{bullet}前台回应: 自然说明已经做好 {detail}，询问是否现在发给用户，或在用户已明确要结果时直接发送。")
+            return lines
+
+        if handoff_status == "partial":
+            completed = self._render_handoff_text_items((effective_handoff or {}).get("completed_steps"), limit=4)
+            active = self._render_handoff_text_items((effective_handoff or {}).get("active_steps"), limit=4)
+            remaining = self._render_handoff_text_items((effective_handoff or {}).get("remaining_steps"), limit=4)
+            pieces = []
+            if completed:
+                pieces.append("已完成 " + "、".join(completed))
+            if active:
+                pieces.append("正在 " + "、".join(active))
+            if remaining:
+                pieces.append("还剩 " + "、".join(remaining))
+            summary = "；".join(pieces) if pieces else "已有一部分结果，后续还没收尾"
+            return [
+                f"{bullet}前台状态: 后台部分完成，仍需接手推进",
+                f"{bullet}前台回应: 用户问进度时简短说明：{summary}；可询问是否先发送现有成果，或继续后台处理。",
+            ]
+
+        if status in {"queued", "running"}:
+            active_steps = self._render_steps_by_status(steps, {"running"}, limit=3)
+            queued_steps = self._render_steps_by_status(steps, {"queued"}, limit=3)
+            done_steps = self._render_steps_by_status(steps, {"done", "completed"}, limit=3)
+            current = "、".join(active_steps or queued_steps)
+            if not current:
+                current = "后台任务" if status == "running" else "等待后台开始"
+            details = []
+            if done_steps:
+                details.append("已完成 " + "、".join(done_steps))
+            if active_steps:
+                details.append("正在 " + "、".join(active_steps))
+            elif queued_steps:
+                details.append("排队/待处理 " + "、".join(queued_steps))
+            detail_text = "；".join(details) or current
+            front_status = "后台正在处理" if status == "running" or active_steps else "后台已排队"
+            return [
+                f"{bullet}前台状态: {front_status}",
+                f"{bullet}前台回应: 用户问“好了没/到哪了”时，只说当前进度：{detail_text}；不要编造完成，也不要长篇解释内部 task_id。",
+            ]
+
+        return []
+
+    def _render_steps_by_status(self, steps: list[dict[str, Any]], statuses: set[str], *, limit: int) -> list[str]:
+        rendered: list[str] = []
+        for step in steps:
+            status = str(step.get("status") or "").strip().lower()
+            if status not in statuses:
+                continue
+            title = str(step.get("title") or step.get("name") or step.get("id") or "").strip()
+            if title:
+                rendered.append(title[:120])
+            if len(rendered) >= max(1, int(limit or 1)):
+                break
+        return rendered
+
+    def _render_task_artifact_labels(self, artifacts: list[dict[str, Any]], *, limit: int) -> list[str]:
+        labels: list[str] = []
+        for artifact in artifacts:
+            artifact_id = str(artifact.get("id") or artifact.get("generated_handle") or artifact.get("attachment_handle") or "").strip()
+            title = str(artifact.get("title") or "").strip()
+            label = artifact_id or title
+            if not label:
+                continue
+            if title and title != label:
+                label = f"{label}({title[:60]})"
+            labels.append(label[:120])
+            if len(labels) >= max(1, int(limit or 1)):
+                break
+        return labels
 
     def mark_event_handled(
         self,

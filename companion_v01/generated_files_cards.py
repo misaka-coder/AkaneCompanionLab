@@ -188,11 +188,12 @@ def build_audio_separation_followup(
         handle = str(generated.get("generated_handle") or "").strip()
         title = str(generated.get("output_title") or handle or "生成文件").strip()
         absolute_path = str(generated.get("absolute_path") or "").strip()
+        size_label = _format_size_from_item(service, generated)
         card = generated.get("content_card") if isinstance(generated.get("content_card"), dict) else {}
         separation = card.get("separation") if isinstance(card.get("separation"), dict) else {}
         stem_role = str(separation.get("stem_role") or "").strip().lower()
         role_label = "人声" if stem_role == "vocals" else "伴奏" if stem_role == "instrumental" else (stem_role or "分离轨")
-        lines.append(f"- {role_label}：{handle}《{title}》")
+        lines.append(f"- {role_label}：{handle}《{title}》" + (f"，大小：{size_label}" if size_label else ""))
         if absolute_path:
             lines.append(f"  本地路径：{absolute_path}")
     if send_to_user:
@@ -217,6 +218,7 @@ def build_voice_clean_followup(
     handle = str(generated.get("generated_handle") or "").strip()
     title = str(generated.get("output_title") or handle or "净化结果").strip()
     path = str(generated.get("absolute_path") or "").strip()
+    size_label = _format_size_from_item(service, generated)
     mode_label = {
         "denoise": "降噪净化",
         "dereverb": "去混响净化",
@@ -229,6 +231,8 @@ def build_voice_clean_followup(
         f"输出结果：{handle}《{title}》。",
         f"本次后端：{backend_label}。",
     ]
+    if size_label:
+        lines.append(f"文件大小：{size_label}。")
     if path:
         lines.append(f"本地路径：{path}")
     if send_to_user:
@@ -488,14 +492,18 @@ def build_send_followup(service: Any, *, generated: dict[str, Any]) -> str:
     title = str(generated.get("output_title") or "生成文件").strip()
     output_format = str(generated.get("output_format") or "").strip()
     path = str(generated.get("absolute_path") or "").strip()
-    return "\n".join(
+    size_label = _format_size_from_item(service, generated)
+    lines = [f"你刚刚已经请求把生成文件 {handle}《{title}》（{output_format}）再次发送给用户。"]
+    if size_label:
+        lines.append(f"文件大小：{size_label}。")
+    lines.extend(
         [
-            f"你刚刚已经请求把生成文件 {handle}《{title}》（{output_format}）再次发送给用户。",
             f"本地路径：{path}",
             "当前客户端如果支持发送文件，系统会尝试上传它；如果发送失败，你可以告诉用户文件还在但发送失败。",
             "请基于这个既成事实自然回应，不要重复调用 send_generated_file。",
         ]
     )
+    return "\n".join(lines)
 
 
 def build_send_followup_batch(
@@ -504,6 +512,7 @@ def build_send_followup_batch(
     generated_files: list[dict[str, Any]],
     unresolved: list[str],
     missing_on_disk: list[str],
+    ambiguous_targets: list[str] | None = None,
 ) -> str:
     if len(generated_files) == 1:
         lines = [build_send_followup(service, generated=generated_files[0])]
@@ -516,13 +525,17 @@ def build_send_followup_batch(
             title = str(generated.get("output_title") or "生成文件").strip()
             output_format = str(generated.get("output_format") or "").strip()
             path = str(generated.get("absolute_path") or "").strip()
-            lines.append(f"- {handle}《{title}》（{output_format}）")
+            size_label = _format_size_from_item(service, generated)
+            suffix = f"，大小：{size_label}" if size_label else ""
+            lines.append(f"- {handle}《{title}》（{output_format}{suffix}）")
             if path:
                 lines.append(f"  本地路径：{path}")
         lines.append("当前客户端如果支持发送文件，系统会尝试依次上传这些文件。")
         lines.append("请基于这个既成事实自然回应，不要重复调用 send_generated_file。")
     if unresolved:
         lines.append(f"这些目标没有找到：{', '.join(unresolved[:8])}。")
+    if ambiguous_targets:
+        lines.append("这些目标不够明确，存在多个生成文件候选，请让用户确认：" + "；".join(ambiguous_targets[:5]) + "。")
     if missing_on_disk:
         lines.append(f"这些生成文件记录还在，但本地文件缺失：{', '.join(missing_on_disk[:8])}。")
     return "\n".join(lines)
@@ -534,13 +547,16 @@ def build_send_followup_missing(
     requested_targets: list[str],
     unresolved: list[str],
     missing_on_disk: list[str],
+    ambiguous_targets: list[str] | None = None,
 ) -> str:
     requested_label = ", ".join(requested_targets[:8]) or "最近生成文件"
     lines = [
-        f"你刚刚想再次发送这些生成文件：{requested_label}，但这次没有成功定位到可发送的文件。",
+        f"你刚刚想再次发送这些生成文件：{requested_label}，但这次没有成功定位到明确唯一的可发送文件。",
     ]
     if unresolved:
         lines.append(f"这些目标没有找到：{', '.join(unresolved[:8])}。")
+    if ambiguous_targets:
+        lines.append("这些目标不够明确，存在多个生成文件候选，请让用户确认：" + "；".join(ambiguous_targets[:5]) + "。")
     if missing_on_disk:
         lines.append(f"这些文件的记录还在，但本地文件已经不存在：{', '.join(missing_on_disk[:8])}。")
     lines.append("请自然告诉用户哪些文件没找到，或让用户明确指出想要哪一个，不要重复调用 send_generated_file。")
@@ -553,19 +569,27 @@ def build_send_file_followup_batch(
     files: list[dict[str, Any]],
     unresolved: list[str],
     missing_on_disk: list[str],
+    ambiguous_targets: list[str] | None = None,
 ) -> str:
     if len(files) == 1:
         file_ref = files[0]
-        lines = [
-            f"你刚刚已经请求把 {service._sendable_file_label(file_ref)} 发送给用户。",
-            f"本地路径：{file_ref.get('absolute_path') or ''}",
-            "当前客户端如果支持发送文件，系统会尝试上传它；如果发送失败，你可以告诉用户文件还在但发送失败。",
-            "请基于这个既成事实自然回应，不要重复调用 send_file。",
-        ]
+        size_label = _format_size_from_item(service, file_ref)
+        lines = [f"你刚刚已经请求把 {service._sendable_file_label(file_ref)} 发送给用户。"]
+        if size_label:
+            lines.append(f"文件大小：{size_label}。")
+        lines.extend(
+            [
+                f"本地路径：{file_ref.get('absolute_path') or ''}",
+                "当前客户端如果支持发送文件，系统会尝试上传它；如果发送失败，你可以告诉用户文件还在但发送失败。",
+                "请基于这个既成事实自然回应，不要重复调用 send_file。",
+            ]
+        )
     else:
         lines = [f"你刚刚已经请求把 {len(files)} 个已有文件发送给用户。"]
         for file_ref in files[:10]:
-            lines.append(f"- {service._sendable_file_label(file_ref)}")
+            size_label = _format_size_from_item(service, file_ref)
+            suffix = f"，大小：{size_label}" if size_label else ""
+            lines.append(f"- {service._sendable_file_label(file_ref)}{suffix}")
             path = str(file_ref.get("absolute_path") or "").strip()
             if path:
                 lines.append(f"  本地路径：{path}")
@@ -573,6 +597,8 @@ def build_send_file_followup_batch(
         lines.append("请基于这个既成事实自然回应，不要重复调用 send_file。")
     if unresolved:
         lines.append(f"这些目标没有找到：{', '.join(unresolved[:8])}。")
+    if ambiguous_targets:
+        lines.append("这些目标不够明确，存在多个候选，请让用户确认：" + "；".join(ambiguous_targets[:5]) + "。")
     if missing_on_disk:
         lines.append(f"这些文件记录还在，但本地文件缺失：{', '.join(missing_on_disk[:8])}。")
     return "\n".join(lines)
@@ -584,13 +610,16 @@ def build_send_file_followup_missing(
     requested_targets: list[str],
     unresolved: list[str],
     missing_on_disk: list[str],
+    ambiguous_targets: list[str] | None = None,
 ) -> str:
     requested_label = ", ".join(requested_targets[:8]) or "最近文件"
     lines = [
-        f"你刚刚想发送这些已有文件：{requested_label}，但这次没有成功定位到可发送的文件。",
+        f"你刚刚想发送这些已有文件：{requested_label}，但这次没有成功定位到明确唯一的可发送文件。",
     ]
     if unresolved:
         lines.append(f"这些目标没有找到：{', '.join(unresolved[:8])}。")
+    if ambiguous_targets:
+        lines.append("这些目标不够明确，存在多个候选，请让用户确认：" + "；".join(ambiguous_targets[:5]) + "。")
     if missing_on_disk:
         lines.append(f"这些文件记录还在，但本地文件已经不存在：{', '.join(missing_on_disk[:8])}。")
     lines.append("请自然告诉用户哪些文件没找到，或让用户明确指出想要哪一个，不要重复调用 send_file。")
@@ -603,6 +632,60 @@ def generated_display_name(item: dict[str, Any]) -> str:
     if handle and title:
         return f"{handle}《{title}》"
     return handle or title or "生成文件"
+
+
+def _format_size_from_item(service: Any, item: dict[str, Any]) -> str:
+    size = item.get("file_size")
+    if isinstance(size, int) and size > 0:
+        return service._format_file_size(size)
+    try:
+        parsed = int(size or 0)
+    except Exception:
+        parsed = 0
+    return service._format_file_size(parsed) if parsed > 0 else ""
+
+
+def _render_media_info_lines(service: Any, media_info: dict[str, Any], *, prefix: str = "  ") -> list[str]:
+    if not isinstance(media_info, dict) or not media_info:
+        return []
+    lines: list[str] = []
+    format_name = str(media_info.get("format_name") or "").strip()
+    duration = service._format_duration_label(media_info.get("duration_seconds"))
+    file_size = service._format_file_size(media_info.get("file_size")) if isinstance(media_info.get("file_size"), int) else ""
+    basics = []
+    if format_name:
+        basics.append(f"格式：{format_name}")
+    if duration:
+        basics.append(f"时长：{duration}")
+    if file_size:
+        basics.append(f"大小：{file_size}")
+    if basics:
+        lines.append(prefix + "媒体规格：" + "；".join(basics))
+    audio = media_info.get("audio") if isinstance(media_info.get("audio"), dict) else {}
+    if audio:
+        audio_bits = [
+            f"编码 {audio.get('codec') or '未知'}",
+            f"{audio.get('sample_rate')}Hz" if audio.get("sample_rate") else "",
+            f"{audio.get('channels')}声道" if audio.get("channels") else "",
+        ]
+        bitrate = service._format_bitrate(audio.get("bit_rate"))
+        if bitrate:
+            audio_bits.append(bitrate)
+        lines.append(prefix + "音频：" + "，".join(bit for bit in audio_bits if bit) + "。")
+    video = media_info.get("video") if isinstance(media_info.get("video"), dict) else {}
+    if video:
+        video_bits = [
+            f"编码 {video.get('codec') or '未知'}",
+            f"{video.get('width') or '?'}x{video.get('height') or '?'}",
+        ]
+        fps = video.get("fps")
+        if isinstance(fps, (int, float)) and fps > 0:
+            video_bits.append(f"{fps:g}fps")
+        bitrate = service._format_bitrate(video.get("bit_rate"))
+        if bitrate:
+            video_bits.append(bitrate)
+        lines.append(prefix + "视频：" + "，".join(bit for bit in video_bits if bit) + "。")
+    return lines
 
 
 def render_generated_summary_inspection(service: Any, *, generated: dict[str, Any], path: Path) -> str:
@@ -679,9 +762,55 @@ def render_generated_prompt_item(service: Any, item: dict[str, Any]) -> list[str
     delivery = str(item.get("delivery_status") or "").strip()
     card = item.get("content_card") if isinstance(item.get("content_card"), dict) else {}
     summary = str(item.get("summary") or card.get("summary") or "").strip()
-    lines = [f"- {handle}：{title}.{output_format}（状态：{status}，发送：{delivery}）"]
+    size_label = _format_size_from_item(service, item)
+    created_by = str(item.get("created_by_tool") or "").strip()
+    meta_parts = [f"状态：{status}", f"发送：{delivery}"]
+    if size_label:
+        meta_parts.append(f"大小：{size_label}")
+    if created_by:
+        meta_parts.append(f"来源工具：{created_by}")
+    lines = [f"- {handle}：{title}.{output_format}（{'，'.join(meta_parts)}）"]
     if summary:
         lines.append(f"  摘要：{summary[:240]}")
+    source = card.get("source") if isinstance(card.get("source"), dict) else {}
+    if source:
+        source_handle = str(source.get("handle") or "").strip()
+        source_title = str(source.get("title") or "").strip()
+        if source_handle or source_title:
+            lines.append(f"  来源：{source_handle}《{source_title}》")
+    separation = card.get("separation") if isinstance(card.get("separation"), dict) else {}
+    if separation:
+        stem_role = str(separation.get("stem_role") or "").strip()
+        if stem_role:
+            lines.append(f"  音轨角色：{stem_role}")
+        separation_output_format = str(separation.get("output_format") or "").strip()
+        mode = str(separation.get("mode") or "").strip()
+        if mode or separation_output_format:
+            lines.append(f"  处理信息：separation mode={mode or 'unknown'}，output={separation_output_format or 'unknown'}")
+    voice_cleaning = card.get("voice_cleaning") if isinstance(card.get("voice_cleaning"), dict) else {}
+    if voice_cleaning:
+        mode = str(voice_cleaning.get("mode") or "").strip()
+        backend = str(voice_cleaning.get("backend_used") or "").strip()
+        if mode or backend:
+            lines.append(f"  净化信息：mode={mode or 'unknown'}，backend={backend or 'unknown'}")
+    conversion = card.get("conversion") if isinstance(card.get("conversion"), dict) else {}
+    if conversion:
+        bits = []
+        if conversion.get("output_format"):
+            bits.append(f"output={conversion.get('output_format')}")
+        if conversion.get("bitrate"):
+            bits.append(f"bitrate={conversion.get('bitrate')}")
+        if conversion.get("sample_rate"):
+            bits.append(f"sample_rate={conversion.get('sample_rate')}")
+        if conversion.get("channels"):
+            bits.append(f"channels={conversion.get('channels')}")
+        if conversion.get("start_seconds") or conversion.get("end_seconds"):
+            bits.append(f"range={conversion.get('start_seconds')}-{conversion.get('end_seconds')}")
+        if bits:
+            lines.append("  转换信息：" + "，".join(str(bit) for bit in bits))
+    media_info = card.get("media_info") if isinstance(card.get("media_info"), dict) else {}
+    if media_info:
+        lines.extend(_render_media_info_lines(service, media_info))
     preview = str(card.get("content_preview") or "").strip()
     if preview:
         lines.append(f"  内容预览：{preview[:320]}")

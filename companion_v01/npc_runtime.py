@@ -70,6 +70,7 @@ class GenericNPCRuntime:
             user_prompt=user_prompt,
             fallback=fallback,
             temperature=0.4,
+            prompt_cache_key="aux:generic_npc",
         )
 
         speech = str(result.get("speech") or fallback_speech).strip() or fallback_speech

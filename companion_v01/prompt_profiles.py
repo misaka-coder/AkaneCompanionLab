@@ -113,7 +113,7 @@ class PromptProfileRegistry:
                     "\n[SYSTEM FORMAT REQUIREMENTS - STRICTLY FOLLOW; DO NOT EMBODY]\n"
                     "你必须只输出一个合法 JSON 对象，不能输出任何额外解释、前后缀、代码块或 markdown。\n"
                     "当前是 QQ 文字聊天模式。你会收到当前模式对应的字段清单和输出示例，必须严格按当前模式执行。\n"
-                    "请先完整输出 emotion，再输出 speech，再继续输出后面的字段。\n"
+                    "请先完整输出 emotion，再输出 speech 和 speech_segments，紧接着输出 tool_call，再继续输出后面的字段。\n"
                     "memory_tags 只用于后续记忆检索，目标是给“用户当前这句话”补几个便于召回的关键词。\n"
                     "只有当用户当前这句话本身包含以后可能需要回忆的事实、事件、安排、偏好、身份线索时，才输出 1 到 4 个关键词或短短语；否则输出空字符串。\n"
                     "关键词要短，优先使用平时聊天里会说的名词或短短语，用逗号分隔。\n"
@@ -126,6 +126,7 @@ class PromptProfileRegistry:
                     "choices 必须是 JSON 数组；没有选项时输出空数组。\n"
                     "每个选项都应是包含 id 和 text 的对象，text 要短一些。\n"
                     "tool_call 如果需要借助额外能力，请从后面给你的可用工具清单里选择一个工具调用。\n"
+                    "tool_call 必须放在 speech_segments 字段之后；如果不需要工具，输出 null。\n"
                     "一次只调用一个工具；如果不需要工具，就输出 null。\n"
                     "你拥有比较特别的时间感知能力，你要利用这些时间信息判断聊天频率、冷场时长、话题连续性和情绪节奏。\n"
                     "persona.active 表示当前表达侧面 id；保持当前值表示延续，写其它已有 id 表示切换，写空字符串或 default 表示回到默认表达。\n"
@@ -134,15 +135,15 @@ class PromptProfileRegistry:
                 ),
                 fast_mode_prompt=(
                     "\n当前模式：qq_text，debug_enabled=false。\n"
-                    "字段固定为 emotion, speech, speech_segments, code_snippet, memory_tags, status, score, tool_call, choices, persona。\n"
+                    "字段固定为 emotion, speech, speech_segments, tool_call, code_snippet, memory_tags, status, score, choices, persona。\n"
                     "输出格式示例如下：\n"
-                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"code_snippet":"","memory_tags":"","status":"final","score":0.0,"tool_call":null,"choices":[],"persona":{"active":""}}\n'
+                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"code_snippet":"","memory_tags":"","status":"final","score":0.0,"choices":[],"persona":{"active":""}}\n'
                 ),
                 debug_mode_prompt=(
                     "\n当前模式：qq_text，debug_enabled=true。\n"
-                    "字段固定为 emotion, speech, speech_segments, code_snippet, memory_tags, status, score, tool_call, choices, persona。\n"
+                    "字段固定为 emotion, speech, speech_segments, tool_call, code_snippet, memory_tags, status, score, choices, persona。\n"
                     "输出格式示例如下：\n"
-                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"code_snippet":"","memory_tags":"","status":"final","score":0.0,"tool_call":null,"choices":[],"persona":{"active":""}}\n'
+                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"code_snippet":"","memory_tags":"","status":"final","score":0.0,"choices":[],"persona":{"active":""}}\n'
                 ),
             ),
         }

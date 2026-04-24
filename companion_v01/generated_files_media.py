@@ -920,6 +920,172 @@ def format_bitrate(value: Any) -> str:
     return f"{value / 1000:.0f}kbps"
 
 
+def parse_bitrate_value(value: Any) -> int | None:
+    text = str(value or "").strip().lower().replace(" ", "")
+    if not text:
+        return None
+    multiplier = 1
+    if text.endswith(("kbps", "kbit/s")):
+        multiplier = 1000
+        text = text.split("k", 1)[0]
+    elif text.endswith(("mbps", "mbit/s")):
+        multiplier = 1_000_000
+        text = text.split("m", 1)[0]
+    elif text.endswith("k"):
+        multiplier = 1000
+        text = text[:-1]
+    elif text.endswith("m"):
+        multiplier = 1_000_000
+        text = text[:-1]
+    try:
+        parsed = float(text)
+    except Exception:
+        return None
+    if parsed <= 0:
+        return None
+    return int(parsed * multiplier)
+
+
+def generated_media_codec_for_format(output_format: str) -> str:
+    normalized = str(output_format or "").strip().lower().lstrip(".")
+    aliases = {
+        "mp3": "mp3",
+        "wav": "pcm_s16le",
+        "flac": "flac",
+        "m4a": "aac",
+        "aac": "aac",
+        "ogg": "vorbis",
+        "opus": "opus",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def fallback_wav_media_info(path: Path) -> dict[str, Any]:
+    try:
+        with wave.open(str(path), "rb") as reader:
+            channels = int(reader.getnchannels() or 0)
+            sample_rate = int(reader.getframerate() or 0)
+            sample_width = int(reader.getsampwidth() or 0)
+            frames = int(reader.getnframes() or 0)
+    except Exception:
+        return {}
+    duration = round(frames / float(sample_rate), 3) if sample_rate > 0 else None
+    bit_rate = sample_rate * channels * sample_width * 8 if sample_rate > 0 and channels > 0 and sample_width > 0 else None
+    return {
+        "duration_seconds": duration,
+        "audio": {
+            "codec": "pcm_s16le" if sample_width == 2 else "pcm",
+            "sample_rate": sample_rate or None,
+            "channels": channels or None,
+            "bit_rate": bit_rate,
+            "duration_seconds": duration,
+        },
+    }
+
+
+def build_generated_media_info_projection(
+    service: Any,
+    *,
+    output_path: Path,
+    output_format: str,
+    source: dict[str, Any] | None = None,
+    hints: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the lightweight media card shown in the generated-file workbench."""
+    normalized_format = str(output_format or output_path.suffix.lstrip(".")).strip().lower()
+    hints = hints if isinstance(hints, dict) else {}
+    source = source if isinstance(source, dict) else {}
+    source_media = source.get("media_info") if isinstance(source.get("media_info"), dict) else {}
+    source_audio = source_media.get("audio") if isinstance(source_media.get("audio"), dict) else {}
+    source_video = source_media.get("video") if isinstance(source_media.get("video"), dict) else {}
+
+    wav_info = fallback_wav_media_info(output_path) if normalized_format == "wav" else {}
+    wav_audio = wav_info.get("audio") if isinstance(wav_info.get("audio"), dict) else {}
+
+    duration = (
+        service._safe_float(hints.get("duration_seconds"))
+        if hints.get("duration_seconds") is not None
+        else None
+    )
+    if isinstance(duration, (int, float)) and duration <= 0:
+        duration = None
+    if duration is None:
+        duration = service._safe_float(wav_info.get("duration_seconds"))
+    if isinstance(duration, (int, float)) and duration <= 0:
+        duration = None
+    if duration is None:
+        duration = service._safe_float(source_media.get("duration_seconds"))
+    if isinstance(duration, (int, float)) and duration <= 0:
+        duration = None
+
+    sample_rate = service._safe_int(hints.get("sample_rate"))
+    if sample_rate is None:
+        sample_rate = service._safe_int(wav_audio.get("sample_rate"))
+    if sample_rate is None:
+        sample_rate = service._safe_int(source_audio.get("sample_rate"))
+    if isinstance(sample_rate, int) and sample_rate <= 0:
+        sample_rate = None
+
+    channels = service._safe_int(hints.get("channels"))
+    if channels is None:
+        channels = service._safe_int(wav_audio.get("channels"))
+    if channels is None:
+        channels = service._safe_int(source_audio.get("channels"))
+    if isinstance(channels, int) and channels <= 0:
+        channels = None
+
+    bit_rate = service._safe_int(hints.get("bit_rate"))
+    if bit_rate is None:
+        bit_rate = parse_bitrate_value(hints.get("bitrate"))
+    if bit_rate is None:
+        bit_rate = service._safe_int(wav_audio.get("bit_rate"))
+    if bit_rate is None and normalized_format == "wav" and sample_rate and channels:
+        bit_rate = int(sample_rate) * int(channels) * 16
+    if isinstance(bit_rate, int) and bit_rate <= 0:
+        bit_rate = None
+
+    file_size = None
+    try:
+        file_size = int(output_path.stat().st_size)
+    except Exception:
+        file_size = service._safe_int(hints.get("file_size"))
+
+    audio: dict[str, Any] | None = None
+    if normalized_format in {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"} or source_audio or sample_rate or channels:
+        audio = {
+            "codec": str(hints.get("codec") or wav_audio.get("codec") or generated_media_codec_for_format(normalized_format)).strip(),
+            "sample_rate": sample_rate,
+            "channels": channels,
+            "channel_layout": str(source_audio.get("channel_layout") or "").strip(),
+            "bit_rate": bit_rate,
+            "duration_seconds": round(float(duration), 3) if duration is not None else None,
+        }
+
+    video: dict[str, Any] | None = None
+    if normalized_format in {"mp4", "mov", "mkv", "webm", "avi"} or source_video:
+        video = {
+            "codec": str(hints.get("video_codec") or source_video.get("codec") or "").strip(),
+            "width": service._safe_int(hints.get("width")) or source_video.get("width"),
+            "height": service._safe_int(hints.get("height")) or source_video.get("height"),
+            "fps": service._safe_float(hints.get("fps")) or source_video.get("fps"),
+            "bit_rate": service._safe_int(hints.get("video_bit_rate")) or source_video.get("bit_rate"),
+            "duration_seconds": round(float(duration), 3) if duration is not None else None,
+        }
+
+    return {
+        "format_name": str(hints.get("format_name") or normalized_format or output_path.suffix.lstrip(".")).strip(),
+        "format_long_name": str(hints.get("format_long_name") or "").strip(),
+        "duration_seconds": round(float(duration), 3) if duration is not None else None,
+        "file_size": file_size,
+        "bit_rate": bit_rate,
+        "audio": audio,
+        "video": video,
+        "audio_streams": [audio] if audio else [],
+        "video_streams": [video] if video else [],
+        "projection_source": "generated_file_lightweight",
+    }
+
+
 def convert_media_file(
     service: Any,
     *,
@@ -1085,6 +1251,18 @@ def convert_media_file(
     source_ids = [str(source.get("source_id") or "").strip()]
     source_ids.extend(str(item or "").strip() for item in list(source.get("extra_source_ids") or []))
     source_ids = [item for item in source_ids if item]
+    source_media = source.get("media_info") if isinstance(source.get("media_info"), dict) else {}
+    source_duration = service._safe_float(source_media.get("duration_seconds"))
+    duration_hint = service._safe_float(media_options.get("output_duration_seconds"))
+    duration_already_adjusted = duration_hint is not None and duration_hint > 0
+    if duration_hint is None:
+        duration_hint = service._safe_float(media_options.get("duration_seconds"))
+    if (duration_hint is None or duration_hint <= 0) and source_duration is not None:
+        start_offset = service._safe_float(media_options.get("start_seconds")) or 0.0
+        duration_hint = max(0.0, source_duration - start_offset)
+    speed_ratio = service._safe_float(media_options.get("speed_ratio")) or 1.0
+    if duration_hint is not None and duration_hint > 0 and speed_ratio > 0 and not duration_already_adjusted:
+        duration_hint = round(duration_hint / speed_ratio, 3)
     content_card = {
         "type": "media_conversion",
         "summary": f"把 {source.get('handle') or source.get('title') or '媒体文件'} 转换为 {normalized_format}。",
@@ -1111,6 +1289,19 @@ def convert_media_file(
             "speed_ratio": media_options.get("speed_ratio"),
         },
     }
+    content_card["media_info"] = build_generated_media_info_projection(
+        service,
+        output_path=output_path,
+        output_format=normalized_format,
+        source=source,
+        hints={
+            "duration_seconds": duration_hint,
+            "sample_rate": int(sample_rate or 0),
+            "channels": int(channels or 0),
+            "bitrate": bitrate,
+            "file_size": output_path.stat().st_size,
+        },
+    )
     generated = service.store.add_generated_file(
         profile_user_id=profile_user_id,
         session_id=session_id,
@@ -1385,6 +1576,15 @@ def separate_audio_stems(
                     "output_format": normalized_format,
                 },
             }
+            content_card["media_info"] = build_generated_media_info_projection(
+                service,
+                output_path=output_path,
+                output_format=normalized_format,
+                source=source,
+                hints={
+                    "file_size": output_path.stat().st_size,
+                },
+            )
             generated = service.store.add_generated_file(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -1648,6 +1848,7 @@ def clean_voice_track(
         source_ids = [str(source.get("source_id") or "").strip()]
         source_ids.extend(str(item or "").strip() for item in list(source.get("extra_source_ids") or []))
         source_ids = [item for item in source_ids if item]
+        source_media = source.get("media_info") if isinstance(source.get("media_info"), dict) else {}
         content_card = {
             "type": "voice_cleaning",
             "summary": (
@@ -1669,6 +1870,18 @@ def clean_voice_track(
                 "post_filter": bool(post_filter),
             },
         }
+        content_card["media_info"] = build_generated_media_info_projection(
+            service,
+            output_path=output_path,
+            output_format=normalized_format,
+            source=source,
+            hints={
+                "duration_seconds": source_media.get("duration_seconds"),
+                "sample_rate": 48000,
+                "channels": 1,
+                "file_size": output_path.stat().st_size,
+            },
+        )
         generated = service.store.add_generated_file(
             profile_user_id=profile_user_id,
             session_id=session_id,

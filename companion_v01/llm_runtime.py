@@ -5,6 +5,7 @@ import re
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Generator
+from urllib.parse import urlparse
 
 import config
 from services.llm_client import build_llm_client
@@ -282,9 +283,17 @@ class LLMRuntime:
         user_prompt: str,
         fallback: dict[str, Any],
         temperature: float = 0.2,
+        prompt_cache_key: str = "",
     ) -> dict[str, Any]:
         self._record_metric("aux_json_calls")
-        return self._call_json(bundle=self.aux, system_prompt=system_prompt, user_prompt=user_prompt, fallback=fallback, temperature=temperature)
+        return self._call_json(
+            bundle=self.aux,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            fallback=fallback,
+            temperature=temperature,
+            prompt_cache_key=prompt_cache_key,
+        )
 
     def call_chat_json(
         self,
@@ -293,9 +302,17 @@ class LLMRuntime:
         user_prompt: str,
         fallback: dict[str, Any],
         temperature: float = 0.7,
+        prompt_cache_key: str = "",
     ) -> dict[str, Any]:
         self._record_metric("chat_json_calls")
-        return self._call_json(bundle=self.chat, system_prompt=system_prompt, user_prompt=user_prompt, fallback=fallback, temperature=temperature)
+        return self._call_json(
+            bundle=self.chat,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            fallback=fallback,
+            temperature=temperature,
+            prompt_cache_key=prompt_cache_key,
+        )
 
     def call_aux_ndjson(
         self,
@@ -304,6 +321,7 @@ class LLMRuntime:
         user_prompt: str,
         on_event: Callable[[dict[str, Any]], bool] | None = None,
         temperature: float = 0.2,
+        prompt_cache_key: str = "",
     ) -> NDJSONCallResult:
         self._record_metric("aux_ndjson_calls")
         return self._call_ndjson(
@@ -312,6 +330,7 @@ class LLMRuntime:
             user_prompt=user_prompt,
             on_event=on_event,
             temperature=temperature,
+            prompt_cache_key=prompt_cache_key,
         )
 
     def stream_chat_json(
@@ -322,6 +341,7 @@ class LLMRuntime:
         fallback: dict[str, Any],
         temperature: float = 0.7,
         early_tool_call_validator: Callable[[dict[str, Any]], bool] | None = None,
+        prompt_cache_key: str = "",
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         self._record_metric("chat_stream_calls")
         return self._stream_chat_json(
@@ -331,6 +351,7 @@ class LLMRuntime:
             fallback=fallback,
             temperature=temperature,
             early_tool_call_validator=early_tool_call_validator,
+            prompt_cache_key=prompt_cache_key,
         )
 
     def _call_json(
@@ -341,16 +362,19 @@ class LLMRuntime:
         user_prompt: str,
         fallback: dict[str, Any],
         temperature: float,
+        prompt_cache_key: str,
     ) -> dict[str, Any]:
         try:
-            response = bundle.client.chat.completions.create(
-                **self._build_completion_kwargs(
+            response = self._create_completion(
+                bundle=bundle,
+                payload=self._build_completion_kwargs(
                     bundle=bundle,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     temperature=temperature,
                     json_mode=True,
-                )
+                    prompt_cache_key=prompt_cache_key,
+                ),
             )
             content = self._extract_text(response)
             parsed = self._extract_json(content)
@@ -369,6 +393,7 @@ class LLMRuntime:
         user_prompt: str,
         on_event: Callable[[dict[str, Any]], bool] | None,
         temperature: float,
+        prompt_cache_key: str,
     ) -> NDJSONCallResult:
         import time
 
@@ -381,14 +406,16 @@ class LLMRuntime:
         stop_event_type = ""
         error = ""
         try:
-            response = bundle.client.chat.completions.create(
-                model=bundle.model,
-                temperature=temperature,
-                stream=True,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+            response = self._create_completion(
+                bundle=bundle,
+                payload=self._build_completion_kwargs(
+                    bundle=bundle,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=temperature,
+                    stream=True,
+                    prompt_cache_key=prompt_cache_key,
+                ),
             )
             for chunk in response:
                 text = self._extract_stream_text(chunk)
@@ -453,6 +480,7 @@ class LLMRuntime:
         fallback: dict[str, Any],
         temperature: float,
         early_tool_call_validator: Callable[[dict[str, Any]], bool] | None,
+        prompt_cache_key: str,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         import time
 
@@ -465,15 +493,17 @@ class LLMRuntime:
         early_tool_call: dict[str, Any] | None = None
         tool_probe_disabled = False
         try:
-            response = bundle.client.chat.completions.create(
-                **self._build_completion_kwargs(
+            response = self._create_completion(
+                bundle=bundle,
+                payload=self._build_completion_kwargs(
                     bundle=bundle,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     temperature=temperature,
                     stream=True,
                     json_mode=True,
-                )
+                    prompt_cache_key=prompt_cache_key,
+                ),
             )
             for chunk in response:
                 text = self._extract_stream_text(chunk)
@@ -619,6 +649,7 @@ class LLMRuntime:
         temperature: float,
         stream: bool = False,
         json_mode: bool = False,
+        prompt_cache_key: str = "",
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": bundle.model,
@@ -632,11 +663,106 @@ class LLMRuntime:
             payload["stream"] = True
         if json_mode and self._should_use_response_json_mode(bundle):
             payload["response_format"] = {"type": "json_object"}
+        payload.update(
+            self._build_prompt_cache_kwargs(
+                bundle=bundle,
+                prompt_cache_key=prompt_cache_key,
+            )
+        )
         return payload
 
     def _should_use_response_json_mode(self, bundle: ModelBundle) -> bool:
         protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
         return protocol == "ollama"
+
+    def _build_prompt_cache_kwargs(
+        self,
+        *,
+        bundle: ModelBundle,
+        prompt_cache_key: str,
+    ) -> dict[str, Any]:
+        if not self._should_send_prompt_cache_hints(bundle):
+            return {}
+
+        payload: dict[str, Any] = {}
+        normalized_key = self._normalize_prompt_cache_key(prompt_cache_key)
+        normalized_retention = self._normalize_prompt_cache_retention(getattr(config, "PROMPT_CACHE_RETENTION", ""))
+        if normalized_key:
+            payload["prompt_cache_key"] = normalized_key
+        if normalized_retention:
+            payload["prompt_cache_retention"] = normalized_retention
+        return payload
+
+    def _should_send_prompt_cache_hints(self, bundle: ModelBundle) -> bool:
+        if not bool(getattr(config, "PROMPT_CACHE_HINTS_ENABLED", True)):
+            return False
+        protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        if protocol != "openai":
+            return False
+        if bool(getattr(config, "PROMPT_CACHE_HINTS_FORCE", False)):
+            return True
+        base_url = str(getattr(bundle.client, "base_url", "") or "").strip()
+        return self._looks_like_official_openai_base_url(base_url)
+
+    def _looks_like_official_openai_base_url(self, base_url: str) -> bool:
+        raw = str(base_url or "").strip()
+        if not raw:
+            return True
+        try:
+            parsed = urlparse(raw)
+        except Exception:
+            return False
+        hostname = str(parsed.hostname or "").strip().lower()
+        if not hostname:
+            return False
+        return hostname == "api.openai.com" or hostname.endswith(".openai.com")
+
+    def _normalize_prompt_cache_key(self, prompt_cache_key: Any) -> str:
+        raw = str(prompt_cache_key or "").strip().strip(":")
+        if not raw:
+            return ""
+        namespace = str(getattr(config, "PROMPT_CACHE_NAMESPACE", "akane") or "").strip().strip(":")
+        return f"{namespace}:{raw}" if namespace else raw
+
+    def _normalize_prompt_cache_retention(self, value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        return raw if raw in {"in_memory", "24h"} else ""
+
+    def _create_completion(self, *, bundle: ModelBundle, payload: dict[str, Any]) -> Any:
+        try:
+            return bundle.client.chat.completions.create(**payload)
+        except TypeError:
+            stripped = self._without_prompt_cache_hints(payload)
+            if stripped != payload:
+                return bundle.client.chat.completions.create(**stripped)
+            raise
+        except Exception as exc:
+            if self._should_retry_without_prompt_cache_hints(exc):
+                stripped = self._without_prompt_cache_hints(payload)
+                if stripped != payload:
+                    return bundle.client.chat.completions.create(**stripped)
+            raise
+
+    def _without_prompt_cache_hints(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if "prompt_cache_key" not in payload and "prompt_cache_retention" not in payload:
+            return dict(payload)
+        sanitized = dict(payload)
+        sanitized.pop("prompt_cache_key", None)
+        sanitized.pop("prompt_cache_retention", None)
+        return sanitized
+
+    def _should_retry_without_prompt_cache_hints(self, exc: Exception) -> bool:
+        message = str(exc or "").strip().lower()
+        if not message:
+            return False
+        return (
+            "prompt_cache_key" in message
+            or "prompt_cache_retention" in message
+            or "unexpected keyword" in message
+            or "extra_forbidden" in message
+            or "unknown parameter" in message
+            or "unrecognized request argument" in message
+        )
 
     def _extract_stream_text(self, chunk: Any) -> str:
         try:

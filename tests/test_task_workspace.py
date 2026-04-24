@@ -176,6 +176,10 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
             self.assertIn("tool_artifacts_recorded", context)
             self.assertIn("任务工作区只是白板", context)
             self.assertIn("调用真正的处理工具", context)
+            self.assertIn("前台状态: 后台正在处理", context)
+            self.assertIn("用户问“好了没/到哪了”时，只说当前进度", context)
+            self.assertIn("已完成 下载视频", context)
+            self.assertIn("正在 转写音频", context)
 
     def test_service_build_prompt_context_ignores_closed_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -197,6 +201,107 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
 
             self.assertEqual(context, "")
 
+    def test_service_build_prompt_context_keeps_completed_task_with_pending_worker_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store)
+            task = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="把音频整理成终稿。",
+                normalized_goal="生成终稿并等待 Akane 发给用户。",
+                artifacts=[{"id": "gen_002", "kind": "md", "title": "终稿"}],
+                metadata={
+                    "workshop": {
+                        "assigned_agent": "document_agent",
+                        "status": "running",
+                        "brief": "先生成初稿，再整理成终稿。",
+                    }
+                },
+                timestamp=300,
+            )
+            service.complete_task(task_id=task["task_id"], timestamp=310)
+            service.update_task(
+                task_id=task["task_id"],
+                metadata={
+                    "workshop": {
+                        "assigned_agent": "document_agent",
+                        "status": "done",
+                        "brief": "先生成初稿，再整理成终稿。",
+                    }
+                },
+                timestamp=311,
+            )
+            service.append_event(
+                task_id=task["task_id"],
+                event_type="worker_completed",
+                from_actor="document_agent",
+                priority="high",
+                message="终稿已经准备好，请 Akane 确认后统一发给用户。",
+                status="pending",
+                timestamp=312,
+            )
+
+            context = service.build_prompt_context(
+                profile_user_id="master",
+                session_id="qq-private",
+            )
+
+            self.assertIn("【当前任务工作区】", context)
+            self.assertIn("生成终稿并等待 Akane 发给用户", context)
+            self.assertIn("状态: completed", context)
+            self.assertIn("后台工坊: document_agent / done", context)
+            self.assertIn("工坊说明: 先生成初稿，再整理成终稿", context)
+            self.assertIn("gen_002(md / 终稿)", context)
+            self.assertIn("worker_completed", context)
+            self.assertIn("前台状态: 后台已完成，等待 Akane 确认/交付", context)
+            self.assertIn("询问是否现在发给用户", context)
+
+    def test_service_build_prompt_context_renders_blocked_frontstage_question(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store)
+            task = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="整理视频成字幕。",
+                normalized_goal="整理视频成字幕。",
+                status="waiting_user",
+                steps=[{"title": "确认字幕格式", "status": "waiting_user"}],
+                metadata={
+                    "workshop": {
+                        "assigned_agent": "media_agent",
+                        "status": "blocked",
+                        "handoff": {
+                            "status": "blocked",
+                            "summary": "缺少字幕导出格式。",
+                            "user_question": "需要你指定字幕导出 srt 还是 vtt。",
+                            "next_action": "ask_user",
+                        },
+                    }
+                },
+                timestamp=300,
+            )
+            service.update_task(
+                task_id=task["task_id"],
+                status="waiting_user",
+                pending_question={
+                    "text": "需要你指定字幕导出 srt 还是 vtt。",
+                    "reason": "缺少字幕格式。",
+                },
+                timestamp=310,
+            )
+
+            context = service.build_prompt_context(
+                profile_user_id="master",
+                session_id="qq-private",
+            )
+
+            self.assertIn("交接状态: 阻塞，等待用户回答", context)
+            self.assertIn("前台状态: 等待用户确认", context)
+            self.assertIn("直接问用户：需要你指定字幕导出 srt 还是 vtt。", context)
+            self.assertIn("不要复述后台日志或工具错误", context)
+
 
 class ManageTaskWorkspaceToolHandlerTests(unittest.TestCase):
     def test_handler_creates_updates_asks_completes_and_cleans_task(self) -> None:
@@ -207,6 +312,7 @@ class ManageTaskWorkspaceToolHandlerTests(unittest.TestCase):
             instruction = handler.build_prompt_instruction()
             self.assertIn("创建/更新任务工作区不等于执行任务", instruction)
             self.assertIn("真正的处理工具", instruction)
+            self.assertIn("好了没/现在到哪了/还在跑吗", instruction)
             context = ToolExecutionContext(
                 profile_user_id="master",
                 session_id="qq-private",
@@ -337,6 +443,41 @@ class ManageTaskWorkspaceToolHandlerTests(unittest.TestCase):
 
             self.assertEqual(result.state_updates["task_id"], task["task_id"])
             self.assertEqual(service.get_task(task["task_id"])["artifacts"][0]["id"], "gen_009")
+
+    def test_handler_inspect_returns_frontstage_progress_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store)
+            handler = ManageTaskWorkspaceToolHandler(task_workspace_service=service)
+            task = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="把视频转写并总结。",
+                normalized_goal="把视频转写并总结。",
+                status="running",
+                steps=[
+                    {"title": "转写视频", "status": "done"},
+                    {"title": "整理总结", "status": "running"},
+                ],
+                artifacts=[{"id": "gen_001", "kind": "md", "title": "视频转写稿"}],
+                metadata={"workshop": {"assigned_agent": "media_agent", "status": "running"}},
+                timestamp=500,
+            )
+
+            result = handler.execute(
+                call={"type": "manage_task_workspace", "action": "inspect", "task_id": task["task_id"]},
+                context=ToolExecutionContext(
+                    profile_user_id="master",
+                    session_id="qq-private",
+                    now_ts=520,
+                    visual_payload={},
+                ),
+            )
+
+            self.assertIn("前台状态: 后台正在处理", result.followup_context)
+            self.assertIn("已完成 转写视频", result.followup_context)
+            self.assertIn("正在 整理总结", result.followup_context)
+            self.assertIn("不要长篇解释内部 task_id", result.followup_context)
 
 
 class TaskWorkspaceEngineIntegrationTests(unittest.TestCase):

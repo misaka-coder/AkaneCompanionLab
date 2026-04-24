@@ -31,12 +31,7 @@ class PromptBuilder:
             if forced_retrieval_hint
             else ""
         )
-        user_prompt = (
-            f"debug_enabled={str(debug_enabled).lower()}\n"
-            f"当前时间：{datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M')}\n"
-            f"最近上下文（仅包含紧邻当前消息之前的局部窗口，不包含当前用户这句话；这部分内容也会直接提供给主回复模型）：\n{recent_context_text or '(无)'}\n\n"
-            f"当前用户消息（带时间标签）：\n{current_message_text}\n\n"
-            f"{forced_hint_text}"
+        instruction_text = (
             "请先判断：这句话是在接当前话题，还是在向过去要事实。\n"
             "接前文、当下闲聊、当前观点、新的当下话题，通常 need_retrieval=false；问昨天买了什么、之前去过哪里、上次说过什么，通常 need_retrieval=true。\n"
             "注意：接当前话题不等于一定不检索。如果用户虽然在接前文，但让 Akane 回想、再想想、帮忙想起、补全若干旧事实或模糊实体，应判为 need_retrieval=true。\n"
@@ -56,6 +51,14 @@ class PromptBuilder:
             "只有 need_retrieval=true 时，才顺手判断这条原始消息是否会干扰未来 raw 向量检索；普通对话让 index_current_message=true，明显的记忆测试句才设为 false。\n\n"
             "请严格按 NDJSON 输出：第一行 decision；若 need_retrieval=true 再输出第二行 query；只有 debug_enabled=true 时才允许最后输出 debug。每个事件对象输出完就立刻换行。"
         )
+        user_prompt = (
+            f"debug_enabled={str(debug_enabled).lower()}\n"
+            f"{forced_hint_text}"
+            f"{instruction_text}\n\n"
+            f"当前时间：{datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M')}\n"
+            f"最近上下文（仅包含紧邻当前消息之前的局部窗口，不包含当前用户这句话；这部分内容也会直接提供给主回复模型）：\n{recent_context_text or '(无)'}\n\n"
+            f"当前用户消息（带时间标签）：\n{current_message_text}\n"
+        )
         return system_prompt, user_prompt
 
     def build_verifier_prompts(
@@ -72,19 +75,22 @@ class PromptBuilder:
         system_prompt = self.persona.verifier_system_prompt + (
             self.persona.verifier_debug_mode_prompt if debug_enabled else self.persona.verifier_fast_mode_prompt
         )
-        user_prompt = (
-            f"debug_enabled={str(debug_enabled).lower()}\n"
-            f"当前时间：{datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M')}\n"
-            f"用户原始问题：{original_query}\n"
-            f"检索改写问题：{rewritten_query}\n"
-            f"检索关键词：{keywords_json}\n"
-            f"路由时间线索：{time_hint_json}\n"
-            f"检索到的记忆片段（编号从 1 开始）：\n{snippets_text}\n\n"
+        instruction_text = (
             "选择片段时，不只看内容相关，也要看时间是否和用户问题一致；如果用户明显在问昨天、上次、前几天，而片段时间明显冲突，就不要轻易选中。\n"
             "如果只是轻微模糊或口语化时间表达，不要过度苛刻。\n\n"
             "如果需要 retry，retry_query 必须是更具体的搜索短句，不要写成任务指令或反问句。\n"
             "retry_query 应继承“检索改写问题”和“检索关键词”里的具体实体，不要退化成“请回忆一下具体的事情或话题”“主人对什么有执念”这类空泛问题。\n\n"
             "请严格按 NDJSON 输出：第一行 decision；若 match=true 再输出第二行 selection；若 mismatch 且 need_retry=true 再输出第二行 retry；只有 debug_enabled=true 时才允许最后输出 debug。每个事件对象输出完就立刻换行。"
+        )
+        user_prompt = (
+            f"debug_enabled={str(debug_enabled).lower()}\n"
+            f"{instruction_text}\n\n"
+            f"用户原始问题：{original_query}\n"
+            f"检索改写问题：{rewritten_query}\n"
+            f"检索关键词：{keywords_json}\n"
+            f"路由时间线索：{time_hint_json}\n"
+            f"检索到的记忆片段（编号从 1 开始）：\n{snippets_text}\n\n"
+            f"当前时间：{datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M')}\n"
         )
         return system_prompt, user_prompt
 
@@ -111,10 +117,10 @@ class PromptBuilder:
         mode_prompt_override: str = "",
     ) -> dict[str, Any]:
         fallback = {
-            "tool_call": None,
             "emotion": visual_defaults["emotion"],
             "speech": self.persona.final_fallback_speech,
             "speech_segments": [],
+            "tool_call": None,
             "code_snippet": "",
             "memory_tags": "",
             "status": "final",
@@ -158,17 +164,17 @@ class PromptBuilder:
 
         user_prompt = (
             f"debug_enabled={str(debug_enabled).lower()}\n"
-            f"当前时间：{datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M')}\n\n"
-            f"用户原始消息：\n{current_message_text}\n\n"
-            f"当前会话中所有未总结的原始消息：\n{raw_text or '(无)'}\n\n"
-            f"最近可见的阶段摘要（5~10条弹性窗口）：\n{episodic_summary_text or '(无)'}\n\n"
-            f"较长期的语义记忆（最多3条）：\n{semantic_summary_text or '(无)'}\n\n"
-            f"可用回忆片段：\n{memory_text}\n\n"
-            f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
+            f"{self.persona.final_user_prompt_suffix}\n\n"
             f"可用视觉资源：\n{resource_context}\n\n"
-            f"{extra_context}\n\n"
             f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
-            + self.persona.final_user_prompt_suffix
+            f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
+            f"较长期的语义记忆（最多3条）：\n{semantic_summary_text or '(无)'}\n\n"
+            f"最近可见的阶段摘要（5~10条弹性窗口）：\n{episodic_summary_text or '(无)'}\n\n"
+            f"当前会话中所有未总结的原始消息：\n{raw_text or '(无)'}\n\n"
+            f"可用回忆片段：\n{memory_text}\n\n"
+            f"{extra_context}\n\n"
+            f"用户原始消息：\n{current_message_text}\n\n"
+            f"当前时间：{datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M')}\n"
         )
         return {
             "debug_enabled": debug_enabled,

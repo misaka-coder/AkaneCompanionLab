@@ -377,6 +377,7 @@ class RetrievalService:
                 debug_enabled=debug_enabled,
             ),
             temperature=0.1,
+            prompt_cache_key="aux:router",
         )
         if not ndjson_result.events or router_state.get("need_retrieval") is None:
             return dict(fallback), self._summarize_ndjson_timing(
@@ -717,6 +718,7 @@ class RetrievalService:
                 debug_enabled=debug_enabled,
             ),
             temperature=0.1,
+            prompt_cache_key="aux:verifier",
         )
         if not ndjson_result.events or verifier_state.get("need_retry") is None:
             return dict(fallback_output), self._summarize_ndjson_timing(

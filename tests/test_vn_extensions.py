@@ -651,8 +651,10 @@ class EngineExtensionTests(unittest.TestCase):
             )
 
             self.assertIn("可用能力概览", prompt)
+            self.assertIn("短任务直接调用工具完成", prompt)
             self.assertIn("文档", prompt)
             self.assertIn("音频/视频", prompt)
+            self.assertIn("如果用户只要原视频/原音频，下载后直接发送原文件", prompt)
             self.assertIn("\n- fetch_media_from_url", prompt)
             self.assertIn("\n- compose_file", prompt)
             self.assertNotIn("\n- convert_media_file", prompt)
@@ -763,6 +765,10 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("\n- convert_media_file", prompt)
             self.assertIn("\n- inspect_generated_file", prompt)
             self.assertIn("\n- send_file", prompt)
+            self.assertIn("视频总结通常先 transcribe_media 得到转写稿再 compose_file", prompt)
+            self.assertIn("字幕任务优先 transcribe_media 输出 srt/vtt", prompt)
+            self.assertIn("训练素材可按需要组合 convert_media_file 提音频", prompt)
+            self.assertIn("用户只要原文件时只发送原文件", prompt)
             self.assertNotIn("\n- send_generated_file", prompt)
             self.assertIn("\n- manage_generated_file", prompt)
             self.assertEqual(

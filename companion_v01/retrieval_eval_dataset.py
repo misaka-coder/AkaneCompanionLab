@@ -188,6 +188,7 @@ def generate_eval_query(
         user_prompt=user_prompt,
         fallback=fallback,
         temperature=0.4,
+        prompt_cache_key="aux:retrieval_eval_query",
     )
     query = normalize_text(result.get("query") or fallback["query"])
     if not query:

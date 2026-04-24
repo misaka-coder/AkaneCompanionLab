@@ -2002,9 +2002,39 @@ class MemoryStore:
         kind: str | None = None,
         statuses: list[str] | tuple[str, ...] | set[str] | None = None,
     ) -> dict[str, Any] | None:
+        matches = self.find_attachment_inbox_item_matches(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            query=query,
+            kind=kind,
+            statuses=statuses,
+            limit=12,
+        )
+        if not matches:
+            return None
+        best_rank = int(matches[0].get("_match_rank") or 99)
+        top_matches = [
+            item
+            for item in matches
+            if int(item.get("_match_rank") or 99) == best_rank
+        ]
+        if len(top_matches) > 1 and best_rank >= 2:
+            return None
+        return {key: value for key, value in matches[0].items() if key != "_match_rank"}
+
+    def find_attachment_inbox_item_matches(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        query: str,
+        kind: str | None = None,
+        statuses: list[str] | tuple[str, ...] | set[str] | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
         normalized_query = str(query or "").strip()
         if not normalized_query:
-            return None
+            return []
         normalized_statuses = self._normalize_attachment_status_list(statuses)
         clauses = [
             "profile_user_id = ?",
@@ -2021,12 +2051,17 @@ class MemoryStore:
             clauses.append("kind = ?")
             params.append(normalized_kind)
 
-        like_query = f"%{normalized_query.lower()}%"
+        lowered_query = normalized_query.lower()
+        like_query = f"%{lowered_query}%"
         clauses.append(
             """
             (
                 attachment_id = ?
+                OR LOWER(attachment_id) = ?
                 OR attachment_handle = ?
+                OR LOWER(attachment_handle) = ?
+                OR LOWER(origin_name) = ?
+                OR LOWER(summary_title) = ?
                 OR LOWER(origin_name) LIKE ?
                 OR LOWER(summary_title) LIKE ?
                 OR LOWER(short_hint) LIKE ?
@@ -2034,18 +2069,66 @@ class MemoryStore:
             )
             """
         )
-        params.extend([normalized_query, normalized_query, like_query, like_query, like_query, normalized_query])
+        params.extend(
+            [
+                normalized_query,
+                lowered_query,
+                normalized_query,
+                lowered_query,
+                lowered_query,
+                lowered_query,
+                like_query,
+                like_query,
+                like_query,
+                normalized_query,
+            ]
+        )
         with self._connect() as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 f"""
-                SELECT * FROM attachment_inbox_items
+                SELECT *,
+                    CASE
+                        WHEN attachment_id = ? OR LOWER(attachment_id) = ? THEN 0
+                        WHEN attachment_handle = ? OR LOWER(attachment_handle) = ? THEN 0
+                        WHEN CAST(sequence_no AS TEXT) = ? THEN 1
+                        WHEN LOWER(summary_title) = ? OR LOWER(origin_name) = ? THEN 2
+                        WHEN LOWER(summary_title) LIKE ? OR LOWER(origin_name) LIKE ? THEN 3
+                        WHEN LOWER(short_hint) LIKE ? THEN 4
+                        ELSE 5
+                    END AS match_rank
+                FROM attachment_inbox_items
                 WHERE {" AND ".join(clauses)}
-                ORDER BY updated_at DESC, created_at DESC
-                LIMIT 1
+                ORDER BY
+                    match_rank ASC,
+                    updated_at DESC,
+                    created_at DESC
+                LIMIT ?
                 """,
-                tuple(params),
-            ).fetchone()
-        return self._row_to_attachment_inbox_item(dict(row)) if row else None
+                tuple(
+                    [
+                        normalized_query,
+                        lowered_query,
+                        normalized_query,
+                        lowered_query,
+                        normalized_query,
+                        lowered_query,
+                        lowered_query,
+                        like_query,
+                        like_query,
+                        like_query,
+                    ]
+                    + params
+                    + [max(1, int(limit or 10))]
+                ),
+            ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            raw = dict(row)
+            match_rank = int(raw.pop("match_rank", 99) or 99)
+            item = self._row_to_attachment_inbox_item(raw)
+            item["_match_rank"] = match_rank
+            output.append(item)
+        return output
 
     def clear_attachment_inbox_items(
         self,
@@ -2400,9 +2483,39 @@ class MemoryStore:
         query: str,
         statuses: list[str] | tuple[str, ...] | set[str] | None = None,
     ) -> dict[str, Any] | None:
+        matches = self.find_generated_file_matches(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            query=query,
+            statuses=statuses,
+            limit=12,
+        )
+        if not matches:
+            return None
+        best_rank = int(matches[0].get("_match_rank") or 99)
+        if best_rank <= 2:
+            return {key: value for key, value in matches[0].items() if key != "_match_rank"}
+        top_matches = [
+            item
+            for item in matches
+            if int(item.get("_match_rank") or 99) == best_rank
+        ]
+        if len(top_matches) > 1:
+            return None
+        return {key: value for key, value in matches[0].items() if key != "_match_rank"}
+
+    def find_generated_file_matches(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        query: str,
+        statuses: list[str] | tuple[str, ...] | set[str] | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
         normalized_query = str(query or "").strip()
         if not normalized_query:
-            return None
+            return []
         normalized_statuses = self._normalize_generated_status_list(statuses)
         clauses = ["profile_user_id = ?", "session_id = ?"]
         params: list[Any] = [str(profile_user_id), str(session_id)]
@@ -2410,30 +2523,76 @@ class MemoryStore:
             placeholders = ", ".join("?" for _ in normalized_statuses)
             clauses.append(f"status IN ({placeholders})")
             params.extend(normalized_statuses)
-        like_query = f"%{normalized_query.lower()}%"
+        lowered_query = normalized_query.lower()
+        like_query = f"%{lowered_query}%"
         clauses.append(
             """
             (
                 generated_id = ?
+                OR LOWER(generated_id) = ?
                 OR generated_handle = ?
+                OR LOWER(generated_handle) = ?
+                OR LOWER(output_title) = ?
                 OR LOWER(output_title) LIKE ?
                 OR LOWER(summary) LIKE ?
                 OR CAST(sequence_no AS TEXT) = ?
             )
             """
         )
-        params.extend([normalized_query, normalized_query, like_query, like_query, normalized_query])
+        params.extend([
+            normalized_query,
+            lowered_query,
+            normalized_query,
+            lowered_query,
+            lowered_query,
+            like_query,
+            like_query,
+            normalized_query,
+        ])
         with self._connect() as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 f"""
-                SELECT * FROM generated_files
+                SELECT *,
+                    CASE
+                        WHEN generated_id = ? OR LOWER(generated_id) = ? THEN 0
+                        WHEN generated_handle = ? OR LOWER(generated_handle) = ? THEN 0
+                        WHEN CAST(sequence_no AS TEXT) = ? THEN 1
+                        WHEN LOWER(output_title) = ? THEN 2
+                        WHEN LOWER(output_title) LIKE ? THEN 3
+                        WHEN LOWER(summary) LIKE ? THEN 4
+                        ELSE 5
+                    END AS match_rank
+                FROM generated_files
                 WHERE {" AND ".join(clauses)}
-                ORDER BY updated_at DESC, created_at DESC
-                LIMIT 1
+                ORDER BY
+                    match_rank ASC,
+                    updated_at DESC,
+                    created_at DESC
+                LIMIT ?
                 """,
-                tuple(params),
-            ).fetchone()
-        return self._row_to_generated_file(dict(row)) if row else None
+                tuple(
+                    [
+                        normalized_query,
+                        lowered_query,
+                        normalized_query,
+                        lowered_query,
+                        normalized_query,
+                        lowered_query,
+                        like_query,
+                        like_query,
+                    ]
+                    + params
+                    + [max(1, int(limit or 10))]
+                ),
+            ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            raw = dict(row)
+            match_rank = int(raw.pop("match_rank", 99) or 99)
+            item = self._row_to_generated_file(raw)
+            item["_match_rank"] = match_rank
+            output.append(item)
+        return output
 
     def add_task_workspace(
         self,

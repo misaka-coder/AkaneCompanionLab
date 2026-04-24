@@ -70,6 +70,77 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(payload["response_format"], {"type": "json_object"})
         self.assertIs(payload["stream"], True)
 
+    def test_llm_runtime_adds_prompt_cache_hints_for_official_openai(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.openai.com/v1"),
+            model="gpt-5",
+        )
+
+        with patch("config.PROMPT_CACHE_HINTS_ENABLED", True), patch("config.PROMPT_CACHE_HINTS_FORCE", False):
+            with patch("config.PROMPT_CACHE_NAMESPACE", "akane"), patch("config.PROMPT_CACHE_RETENTION", "24h"):
+                payload = runtime._build_completion_kwargs(
+                    bundle=bundle,
+                    system_prompt="system",
+                    user_prompt="user",
+                    temperature=0.1,
+                    prompt_cache_key="chat:final",
+                )
+
+        self.assertEqual(payload["prompt_cache_key"], "akane:chat:final")
+        self.assertEqual(payload["prompt_cache_retention"], "24h")
+
+    def test_llm_runtime_skips_prompt_cache_hints_for_non_openai_base_url_by_default(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-chat",
+        )
+
+        with patch("config.PROMPT_CACHE_HINTS_ENABLED", True), patch("config.PROMPT_CACHE_HINTS_FORCE", False):
+            with patch("config.PROMPT_CACHE_NAMESPACE", "akane"), patch("config.PROMPT_CACHE_RETENTION", "24h"):
+                payload = runtime._build_completion_kwargs(
+                    bundle=bundle,
+                    system_prompt="system",
+                    user_prompt="user",
+                    temperature=0.1,
+                    prompt_cache_key="chat:final",
+                )
+
+        self.assertNotIn("prompt_cache_key", payload)
+        self.assertNotIn("prompt_cache_retention", payload)
+
+    def test_llm_runtime_retries_without_prompt_cache_hints_when_client_rejects_them(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        calls: list[dict[str, object]] = []
+
+        def fake_create(**kwargs):
+            calls.append(dict(kwargs))
+            if "prompt_cache_key" in kwargs or "prompt_cache_retention" in kwargs:
+                raise TypeError("unexpected keyword argument 'prompt_cache_key'")
+            return {"ok": True}
+
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))),
+            model="gpt-5",
+        )
+
+        result = runtime._create_completion(
+            bundle=bundle,
+            payload={
+                "model": "gpt-5",
+                "messages": [],
+                "prompt_cache_key": "akane:chat:final",
+                "prompt_cache_retention": "24h",
+            },
+        )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(calls), 2)
+        self.assertIn("prompt_cache_key", calls[0])
+        self.assertNotIn("prompt_cache_key", calls[1])
+        self.assertNotIn("prompt_cache_retention", calls[1])
+
 
 if __name__ == "__main__":
     unittest.main()

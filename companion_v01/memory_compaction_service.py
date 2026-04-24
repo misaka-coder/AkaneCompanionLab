@@ -244,6 +244,7 @@ class MemoryCompactionService:
             user_prompt=user_prompt,
             fallback=fallback,
             temperature=0.2,
+            prompt_cache_key="aux:summary",
         )
         if not isinstance(result.get("key_events"), list):
             result["key_events"] = fallback["key_events"]
@@ -275,6 +276,7 @@ class MemoryCompactionService:
             user_prompt=user_prompt,
             fallback=fallback,
             temperature=0.2,
+            prompt_cache_key="aux:semantic_summary",
         )
         normalized = dict(result or {})
         normalized["semantic_summary"] = str(normalized.get("semantic_summary") or fallback["semantic_summary"]).strip() or fallback["semantic_summary"]
@@ -388,6 +390,7 @@ class MemoryCompactionService:
             user_prompt=user_prompt,
             fallback=fallback,
             temperature=0.2,
+            prompt_cache_key="aux:semantic_reinforcement",
         )
         normalized = dict(result or {})
         normalized["semantic_summary"] = str(normalized.get("semantic_summary") or fallback["semantic_summary"]).strip() or fallback["semantic_summary"]

@@ -991,6 +991,7 @@ class FetchMediaFromUrlToolHandler(BaseToolHandler):
             "如果用户说“再试一次/重新下载/继续试”，且最近对话里有明确链接，也应带上那个链接重新调用。"
             "它只负责把公开可访问的媒体链接下载成临时附件，不会直接总结、转写或转码；"
             "下载成功后，这些素材会像普通 audio_001/file_001 一样进入临时附件工作台，之后再继续用 inspect_attachment、inspect_media_info、transcribe_media、convert_media_file 或 send_file。"
+            "如果用户只是要原视频/原音频或“把链接里的文件发我”，下载成功后直接 send_file 对应 handle，不要顺手转写、提音频或压缩。"
             "不要用它处理需要登录、付费、会员、DRM 或整条播放列表/合集的链接。"
         )
 
@@ -1272,6 +1273,7 @@ class ConvertMediaFileToolHandler(BaseToolHandler):
             "它适合普通非加密音频转码、压缩体积、截取片段、音量标准化、整体音量增减、自动去掉头尾静音、淡入淡出、调速、从 mp4/mov/mkv/webm 等视频提取音轨；不要用于 kgm/ncm/qmc 等平台加密或专有缓存格式的解密。"
             "start_time、end_time、normalize_volume、volume_gain_db、trim_silence、fade_in_seconds、fade_out_seconds、speed_ratio、bitrate、sample_rate、channels 都是可选项：用户没指定时不要硬填。"
             "如果只是转 mp3，通常只填 source_id、output_format、output_title 即可；如果是语音识别/统一语音规格，可考虑 wav、sample_rate=16000、channels=1；音乐文件通常保留原采样率和声道更自然。"
+            "视频任务里只有用户要音频轨、后续人声处理、训练素材或统一媒体规格时才提音频；如果用户只要原视频，改用 send_file 发送原文件。"
             "如果用户说“声音忽大忽小/调正常/更舒服”，优先用 normalize_volume；如果用户说“太小声/放大一点”，用正数 volume_gain_db（如 3 或 6）；如果用户说“太吵/压低一点”，用负数 volume_gain_db（如 -3 或 -6）。"
             "如果用户说“把前后空白切掉/去掉开头结尾静音”，可填 trim_silence=true；如果用户说“截一段/加淡入淡出/放慢或加速”，再填写对应字段。"
         )
@@ -1657,6 +1659,7 @@ class TranscribeMediaToolHandler(BaseToolHandler):
             "如果用户要字幕文件，优先用 srt 或 vtt；如果要后续总结、会议纪要、内容梳理，优先用 md 并保留时间戳。"
             "音频较吵、歌曲伴奏很重或人声不清时，可先调用 separate_audio_stems / clean_voice_track，再对生成的人声结果调用 transcribe_media。"
             "这个工具负责转写，不负责总结；转写完成后如果用户要总结内容，再基于生成的转写稿继续用 compose_file。"
+            "如果用户只要原视频/原音频，不要为了回复而转写；直接发送原文件即可。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -1827,6 +1830,7 @@ class PrepareVoiceDatasetToolHandler(BaseToolHandler):
             "\"clean_first\":false,\"normalize_volume\":false,\"send_to_user\":true}。"
             "这个工具会把多个来源统一成训练用 wav、按停顿切片、生成 manifest.json 和 zip 批次；摘要会列出过短、过长、音量偏低、可能爆音等片段文件名，方便后续和用户一起筛。"
             "它适合处理已经分离/净化后的人声轨，也可以直接处理普通语音音频或带音轨视频；如果用户还没做人声分离/净化，且需要更干净素材，可先调用 separate_audio_stems 或 clean_voice_track。"
+            "训练素材任务可以分多步组合：必要时先 convert_media_file 提音频，再 separate_audio_stems 拿人声，再 clean_voice_track 降噪，最后 prepare_voice_dataset 切片打包；不要把这些步骤用于只要原文件的请求。"
             "用户没指定细节时，profile=gpt_sovits 就够了，不要硬填一堆参数。"
         )
 
@@ -2482,6 +2486,7 @@ class ManageTaskWorkspaceToolHandler(BaseToolHandler):
             "- manage_task_workspace：当一件事明显需要多步跟踪、产物登记、等待用户确认或事后清理工作记忆时使用。"
             "不要为一句话能完成的小事创建任务；创建/更新任务工作区不等于执行任务，"
             "如果下一步已经明确，应继续调用真正的处理工具（如 compose_file、convert_media_file、transcribe_media），不要只向用户汇报计划。"
+            "当用户问“好了没/现在到哪了/还在跑吗”时，可以 inspect 最近任务并基于任务工作区简短说明进度；不要新建任务。"
             "格式为 {\"type\":\"manage_task_workspace\",\"action\":\"create|update_steps|add_artifact|ask_user|complete|cleanup|inspect\","
             "\"task_id\":\"可选；省略时默认处理最近的未完成任务\",\"goal\":\"任务目标\","
             "\"steps\":[{\"id\":\"step_1\",\"title\":\"步骤\",\"status\":\"queued|running|done|failed|waiting_user\"}],"
@@ -2775,14 +2780,55 @@ class ManageTaskWorkspaceToolHandler(BaseToolHandler):
         steps = task.get("steps") if isinstance(task.get("steps"), list) else []
         artifacts = task.get("artifacts") if isinstance(task.get("artifacts"), list) else []
         pending_question = task.get("pending_question") if isinstance(task.get("pending_question"), dict) else {}
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        workshop = metadata.get("workshop") if isinstance(metadata.get("workshop"), dict) else {}
+        recent_events = self.task_workspace_service.list_events(task_id=str(task.get("task_id") or ""), limit=50)
         lines = [
             f"你刚刚查看了任务工作区：{self._task_label(task)}。",
             f"状态：{task.get('status')}",
             f"步骤数：{len(steps)}",
             f"产物数：{len(artifacts)}",
         ]
+        assigned_agent = str(workshop.get("assigned_agent") or "").strip()
+        workshop_status = str(workshop.get("status") or "").strip()
+        if assigned_agent or workshop_status:
+            lines.append(f"后台工坊：{assigned_agent or '未指定'} / {workshop_status or 'unknown'}")
+        if steps:
+            rendered_steps = []
+            for step in steps[:4]:
+                if not isinstance(step, dict):
+                    continue
+                title = str(step.get("title") or step.get("name") or step.get("id") or "未命名步骤").strip()
+                status = str(step.get("status") or "queued").strip()
+                if title:
+                    rendered_steps.append(f"{title}({status})")
+            if rendered_steps:
+                lines.append("当前步骤：" + "；".join(rendered_steps))
+        if artifacts:
+            rendered_artifacts = []
+            for artifact in artifacts[:4]:
+                if not isinstance(artifact, dict):
+                    continue
+                artifact_id = str(artifact.get("id") or "").strip()
+                title = str(artifact.get("title") or "").strip()
+                if artifact_id or title:
+                    rendered_artifacts.append(artifact_id or title)
+            if rendered_artifacts:
+                lines.append("当前产物：" + "；".join(rendered_artifacts))
+        handoff = self.task_workspace_service.get_task_handoff(task)
+        if handoff:
+            lines.extend(self.task_workspace_service.render_handoff_lines(handoff, bullet=""))
+        frontstage_lines = self.task_workspace_service.render_frontstage_status_lines(task, handoff=handoff, bullet="")
+        if frontstage_lines:
+            lines.extend(frontstage_lines)
         if pending_question.get("text"):
             lines.append(f"待确认问题：{pending_question.get('text')}")
+        if recent_events:
+            latest = recent_events[-1]
+            latest_type = str(latest.get("event_type") or "").strip()
+            latest_message = str(latest.get("message") or "").strip()
+            if latest_type or latest_message:
+                lines.append(f"最近事件：{latest_type or 'event'}: {latest_message[:160]}")
         lines.append("请根据用户是否正在询问任务进展，决定是否自然说明；不要重复调用 inspect。")
         return "\n".join(lines)
 

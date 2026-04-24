@@ -251,19 +251,26 @@ class AttachmentInboxService:
     ) -> dict[str, Any]:
         effective_ts = int(timestamp or time.time())
         targets = self._normalize_targets(focus_targets)
-        active_items = self.store.list_attachment_inbox_items(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            statuses=list(ACTIVE_ATTACHMENT_STATUSES),
-            kind=kind,
-            limit=200,
-        )
         resolved: list[dict[str, Any]] = []
         unresolved: list[str] = []
+        ambiguous_targets: list[str] = []
         for target in targets:
-            item = self._resolve_target_from_items(target=target, items=active_items, kind=kind)
+            resolution = self._resolve_target_result(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                target=target,
+                kind=kind,
+            )
+            item = resolution.get("item") if isinstance(resolution, dict) else None
             if item is None:
-                unresolved.append(target)
+                ambiguity = self._format_ambiguity_target(
+                    target=target,
+                    items=list(resolution.get("ambiguous_matches") or []) if isinstance(resolution, dict) else [],
+                )
+                if ambiguity:
+                    ambiguous_targets.append(ambiguity)
+                else:
+                    unresolved.append(target)
                 continue
             item_id = str(item.get("attachment_id") or "").strip()
             if item_id and item_id not in {str(existing.get("attachment_id") or "") for existing in resolved}:
@@ -283,10 +290,12 @@ class AttachmentInboxService:
             "ok": bool(synced or not targets),
             "focused": synced,
             "unresolved": unresolved,
+            "ambiguous_targets": ambiguous_targets,
             "overflow": overflow,
             "followup_context": self._build_workspace_followup(
                 focused=synced,
                 unresolved=unresolved,
+                ambiguous_targets=ambiguous_targets,
                 overflow=overflow,
                 reason=reason,
             ),
@@ -301,17 +310,30 @@ class AttachmentInboxService:
         kind: str = "any",
         timestamp: int | None = None,
     ) -> dict[str, Any]:
-        item = self._resolve_target(
+        resolution = self._resolve_target_result(
             profile_user_id=profile_user_id,
             session_id=session_id,
             target=target,
             kind=kind,
         )
+        item = resolution.get("item") if isinstance(resolution, dict) else None
         if item is None:
+            ambiguity = self._format_ambiguity_target(
+                target=str(target or "").strip(),
+                items=list(resolution.get("ambiguous_matches") or []) if isinstance(resolution, dict) else [],
+            )
             return {
                 "ok": False,
                 "item": None,
-                "followup_context": "你刚刚想查看某个附件，但当前没有找到明确匹配的图片或文件。请自然向用户确认是哪一个。",
+                "ambiguous_targets": [ambiguity] if ambiguity else [],
+                "followup_context": (
+                    "你刚刚想查看某个附件，但当前没有找到明确匹配的图片或文件。请自然向用户确认是哪一个。"
+                    if not ambiguity
+                    else (
+                        "你刚刚想查看某个附件，但当前有多个候选，请让用户确认："
+                        f"{ambiguity}。不要自己替用户决定。"
+                    )
+                ),
             }
 
         touched = self.store.update_attachment_inbox_item(
@@ -337,18 +359,31 @@ class AttachmentInboxService:
         kind: str = "any",
         timestamp: int | None = None,
     ) -> dict[str, Any]:
-        item = self._resolve_target(
+        resolution = self._resolve_target_result(
             profile_user_id=profile_user_id,
             session_id=session_id,
             target=target,
             kind=kind,
         )
+        item = resolution.get("item") if isinstance(resolution, dict) else None
         if item is None:
+            ambiguity = self._format_ambiguity_target(
+                target=str(target or "").strip(),
+                items=list(resolution.get("ambiguous_matches") or []) if isinstance(resolution, dict) else [],
+            )
             return {
                 "ok": False,
                 "item": None,
                 "content": "",
-                "followup_context": "你刚刚想展开读取附件的一部分，但当前没有找到明确匹配的图片或文件。请自然向用户确认是哪一个。",
+                "ambiguous_targets": [ambiguity] if ambiguity else [],
+                "followup_context": (
+                    "你刚刚想展开读取附件的一部分，但当前没有找到明确匹配的图片或文件。请自然向用户确认是哪一个。"
+                    if not ambiguity
+                    else (
+                        "你刚刚想展开读取附件的一部分，但当前有多个候选，请让用户确认："
+                        f"{ambiguity}。不要自己替用户决定。"
+                    )
+                ),
             }
 
         touched = self.store.update_attachment_inbox_item(
@@ -397,6 +432,47 @@ class AttachmentInboxService:
             kind=kind,
         )
 
+    def find_attachment_matches(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        target: str,
+        kind: str = "any",
+        statuses: list[str] | tuple[str, ...] | set[str] | None = None,
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        items = self.store.find_attachment_inbox_item_matches(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            query=str(target or "").strip(),
+            kind=kind,
+            statuses=list(statuses) if statuses is not None else list(ACTIVE_ATTACHMENT_STATUSES),
+            limit=limit,
+        )
+        return [{key: value for key, value in item.items() if key != "_match_rank"} for item in items]
+
+    def format_attachment_ambiguity(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        target: str,
+        kind: str = "any",
+        statuses: list[str] | tuple[str, ...] | set[str] | None = None,
+    ) -> str:
+        resolution = self._resolve_target_result(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            target=target,
+            kind=kind,
+            statuses=list(statuses) if statuses is not None else list(ACTIVE_ATTACHMENT_STATUSES),
+        )
+        return self._format_ambiguity_target(
+            target=str(target or "").strip(),
+            items=list(resolution.get("ambiguous_matches") or []) if isinstance(resolution, dict) else [],
+        )
+
     def resolve_storage_path(self, item: dict[str, Any]) -> Path | None:
         """Return the original stored file path for an inbox item, if safe.
 
@@ -420,6 +496,7 @@ class AttachmentInboxService:
         effective_ts = int(timestamp or time.time())
         normalized_targets = self._normalize_targets(targets)
         unresolved: list[str] = []
+        ambiguous_targets: list[str] = []
         if normalized_targets:
             lowered_targets = {item.lower() for item in normalized_targets}
             if lowered_targets & {"all", "全部", "*"}:
@@ -431,23 +508,25 @@ class AttachmentInboxService:
                     timestamp=effective_ts,
                 )
             else:
-                active_items = self.store.list_attachment_inbox_items(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    statuses=list(ACTIVE_ATTACHMENT_STATUSES),
-                    kind=kind,
-                    limit=200,
-                )
                 resolved: list[dict[str, Any]] = []
                 seen_ids: set[str] = set()
                 for item_target in normalized_targets:
-                    item = self._resolve_target_from_items(
+                    resolution = self._resolve_target_result(
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
                         target=item_target,
-                        items=active_items,
                         kind=kind,
                     )
+                    item = resolution.get("item") if isinstance(resolution, dict) else None
                     if item is None:
-                        unresolved.append(item_target)
+                        ambiguity = self._format_ambiguity_target(
+                            target=item_target,
+                            items=list(resolution.get("ambiguous_matches") or []) if isinstance(resolution, dict) else [],
+                        )
+                        if ambiguity:
+                            ambiguous_targets.append(ambiguity)
+                        else:
+                            unresolved.append(item_target)
                         continue
                     item_id = str(item.get("attachment_id") or "").strip()
                     if item_id and item_id not in seen_ids:
@@ -478,9 +557,18 @@ class AttachmentInboxService:
                 "ok": False,
                 "cleared": [],
                 "unresolved": unresolved,
+                "ambiguous_targets": ambiguous_targets,
                 "followup_context": (
                     "你刚刚想移除临时附件焦点，但没有找到可移除的附件。"
-                    f"{missing}请自然继续对话，不要重复调用工具。"
+                    + (missing if missing else "")
+                    + (
+                        "这些目标不够明确，存在多个候选，请让用户确认："
+                        + "；".join(ambiguous_targets[:5])
+                        + "。"
+                        if ambiguous_targets
+                        else ""
+                    )
+                    + "请自然继续对话，不要重复调用工具。"
                 ),
             }
 
@@ -493,9 +581,18 @@ class AttachmentInboxService:
             "ok": True,
             "cleared": cleared,
             "unresolved": unresolved,
+            "ambiguous_targets": ambiguous_targets,
             "followup_context": (
                 f"你刚刚已经从临时附件焦点中移除了 {len(cleared)} 个附件"
-                f"（{names}）。{missing}{suffix}这些附件不会继续注入上下文，也不会作为礼物或长期记忆保存。"
+                f"（{names}）。{missing}"
+                + (
+                    "这些目标不够明确，存在多个候选，请让用户确认："
+                    + "；".join(ambiguous_targets[:5])
+                    + "。"
+                    if ambiguous_targets
+                    else ""
+                )
+                + f"{suffix}这些附件不会继续注入上下文，也不会作为礼物或长期记忆保存。"
                 "请自然继续回应，不要重复调用工具。"
             ),
         }
@@ -508,23 +605,51 @@ class AttachmentInboxService:
         target: str,
         kind: str,
     ) -> dict[str, Any] | None:
-        normalized_target = str(target or "").strip()
-        if not normalized_target or normalized_target in {"current", "latest", "最近", "当前"}:
-            items = self.store.list_attachment_inbox_items(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                statuses=list(ACTIVE_ATTACHMENT_STATUSES),
-                kind=kind,
-                limit=1,
-            )
-            return items[0] if items else None
-        return self.store.find_attachment_inbox_item(
+        result = self._resolve_target_result(
             profile_user_id=profile_user_id,
             session_id=session_id,
-            query=normalized_target,
+            target=target,
             kind=kind,
-            statuses=list(ACTIVE_ATTACHMENT_STATUSES),
         )
+        item = result.get("item") if isinstance(result, dict) else None
+        return item if isinstance(item, dict) else None
+
+    def _resolve_target_result(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        target: str,
+        kind: str,
+        statuses: list[str] | tuple[str, ...] | set[str] | None = None,
+    ) -> dict[str, Any]:
+        normalized_target = str(target or "").strip()
+        lowered_target = normalized_target.lower()
+        normalized_statuses = list(statuses) if statuses is not None else list(ACTIVE_ATTACHMENT_STATUSES)
+        items = self.store.list_attachment_inbox_items(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            statuses=normalized_statuses,
+            limit=200,
+        )
+        if not normalized_target or lowered_target in {"current", "latest", "最近", "当前"}:
+            kind_filtered = self._filter_items_by_target_kind(items, normalized_target, kind)
+            item = self._latest_item(kind_filtered)
+            return {"item": item, "ambiguous_matches": []}
+
+        matches = self._find_target_matches_from_items(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            target=normalized_target,
+            items=items,
+            kind=kind,
+            statuses=normalized_statuses,
+        )
+        if not matches:
+            return {"item": None, "ambiguous_matches": []}
+        if len(matches) > 1:
+            return {"item": None, "ambiguous_matches": matches}
+        return {"item": matches[0], "ambiguous_matches": []}
 
     def _load_attachment_items_by_id(
         self,
@@ -555,46 +680,107 @@ class AttachmentInboxService:
         items: list[dict[str, Any]],
         kind: str,
     ) -> dict[str, Any] | None:
+        matches = self._find_target_matches_from_items_local(
+            target=target,
+            items=items,
+            kind=kind,
+        )
+        return matches[0] if len(matches) == 1 else None
+
+    def _find_target_matches_from_items(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        target: str,
+        items: list[dict[str, Any]],
+        kind: str,
+        statuses: list[str] | tuple[str, ...] | set[str] | None,
+    ) -> list[dict[str, Any]]:
+        local_matches = self._find_target_matches_from_items_local(
+            target=target,
+            items=items,
+            kind=kind,
+        )
+        if local_matches:
+            return local_matches
+
+        raw_matches = self.store.find_attachment_inbox_item_matches(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            query=str(target or "").strip(),
+            kind=kind,
+            statuses=statuses,
+            limit=8,
+        )
+        if not raw_matches:
+            return []
+        item_by_id = {
+            str(item.get("attachment_id") or "").strip(): item
+            for item in items
+            if str(item.get("attachment_id") or "").strip()
+        }
+        matches: list[dict[str, Any]] = []
+        for match in raw_matches:
+            item_id = str(match.get("attachment_id") or "").strip()
+            resolved = item_by_id.get(item_id)
+            if resolved is not None:
+                matches.append(dict(resolved, _match_rank=match.get("_match_rank")))
+        if not matches:
+            return []
+        best_rank = int(matches[0].get("_match_rank") or 99)
+        top_matches = [
+            {key: value for key, value in item.items() if key != "_match_rank"}
+            for item in matches
+            if int(item.get("_match_rank") or 99) == best_rank
+        ]
+        return self._dedupe_attachment_items(top_matches)
+
+    def _find_target_matches_from_items_local(
+        self,
+        *,
+        target: str,
+        items: list[dict[str, Any]],
+        kind: str,
+    ) -> list[dict[str, Any]]:
         normalized = str(target or "").strip()
         if not normalized:
-            return None
+            return []
         lowered = normalized.lower()
         kind_filtered = self._filter_items_by_target_kind(items, normalized, kind)
+
+        exact_matches = [
+            item
+            for item in items
+            if normalized == str(item.get("attachment_id") or "").strip()
+            or lowered == str(item.get("attachment_handle") or "").strip().lower()
+        ]
+        if exact_matches:
+            return self._dedupe_attachment_items(exact_matches[:1])
+
         if lowered in {"current", "latest", "最近", "当前", "最后一张", "最后一个"}:
-            return self._latest_item(kind_filtered)
+            latest = self._latest_item(kind_filtered)
+            return [latest] if latest is not None else []
         if lowered in {"oldest", "first", "最早", "第一张", "第一个"}:
-            return self._oldest_item(kind_filtered)
+            oldest = self._oldest_item(kind_filtered)
+            return [oldest] if oldest is not None else []
 
         reverse_index = self._parse_reverse_ordinal(normalized)
         if reverse_index is not None:
             ordered = self._sort_by_sequence(kind_filtered)
             if 1 <= reverse_index <= len(ordered):
-                return ordered[-reverse_index]
+                return [ordered[-reverse_index]]
+            return []
 
-        sequence_no = self._parse_sequence_no(normalized)
+        sequence_no = self._parse_sequence_no(normalized) if self._looks_like_sequence_reference(normalized) else None
         if sequence_no is not None:
-            for item in kind_filtered:
-                if int(item.get("sequence_no") or 0) == sequence_no:
-                    return item
-
-        for item in items:
-            if normalized == str(item.get("attachment_id") or "").strip():
-                return item
-            if lowered == str(item.get("attachment_handle") or "").strip().lower():
-                return item
-
-        for item in kind_filtered:
-            haystack = " ".join(
-                [
-                    str(item.get("attachment_handle") or ""),
-                    str(item.get("origin_name") or ""),
-                    str(item.get("summary_title") or ""),
-                    str(item.get("short_hint") or ""),
-                ]
-            ).lower()
-            if lowered and lowered in haystack:
-                return item
-        return None
+            sequence_matches = [
+                item
+                for item in kind_filtered
+                if int(item.get("sequence_no") or 0) == sequence_no
+            ]
+            return self._dedupe_attachment_items(sequence_matches)
+        return []
 
     def _auto_focus_recent_batch(
         self,
@@ -1238,6 +1424,7 @@ class AttachmentInboxService:
         *,
         focused: list[dict[str, Any]],
         unresolved: list[str],
+        ambiguous_targets: list[str],
         overflow: list[dict[str, Any]],
         reason: str,
     ) -> str:
@@ -1260,6 +1447,8 @@ class AttachmentInboxService:
                 )
         if unresolved:
             lines.append(f"没有找到这些目标：{', '.join(unresolved[:5])}。")
+        if ambiguous_targets:
+            lines.append("这些目标不够明确，存在多个候选，请让用户确认：" + "；".join(ambiguous_targets[:5]) + "。")
         if overflow:
             lines.append(
                 f"本次目标超过工作台软上限 {WORKSPACE_MAX_TARGETS} 个，以下目标没有展开："
@@ -1398,6 +1587,27 @@ class AttachmentInboxService:
                 targets.append(text[:120])
         return targets
 
+    def _dedupe_attachment_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        output: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for item in items:
+            item_id = str(item.get("attachment_id") or "").strip()
+            if item_id and item_id in seen_ids:
+                continue
+            if item_id:
+                seen_ids.add(item_id)
+            output.append(item)
+        return output
+
+    def _format_ambiguity_target(self, *, target: str, items: list[dict[str, Any]]) -> str:
+        if not items:
+            return ""
+        labels = [self._compact_item_label(item) for item in items[:4]]
+        labels = [label for label in labels if label]
+        if not labels:
+            return ""
+        return f"{target} -> {'、'.join(labels)}"
+
     def _filter_items_by_target_kind(
         self,
         items: list[dict[str, Any]],
@@ -1467,6 +1677,17 @@ class AttachmentInboxService:
             return int(match.group(1))
         chinese = self._parse_chinese_number(text)
         return chinese
+
+    def _looks_like_sequence_reference(self, target: str) -> bool:
+        text = str(target or "").strip().lower()
+        if not text:
+            return False
+        text = re.sub(r"\s+", "", text)
+        if re.fullmatch(r"(?:第)?\d+(?:张图|个文件|份文档|段音频|张|个|份|段|图|文件|文档|音频)?", text):
+            return True
+        if re.fullmatch(r"(?:第)?[一二两三四五六七八九十]+(?:张图|个文件|份文档|段音频|张|个|份|段|图|文件|文档|音频)?", text):
+            return True
+        return False
 
     def _parse_reverse_ordinal(self, target: str) -> int | None:
         text = str(target or "").strip()

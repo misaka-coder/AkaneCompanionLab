@@ -35,6 +35,8 @@ from .prompt_profiles import PromptModule, PromptProfileRegistry
 from .retrieval_service import RetrievalService
 from .resource_manifest import ResourceManifest
 from .task_workspace import TaskWorkspaceService
+from .task_worker import TaskWorkerService
+from .task_worker_tool import DelegateTaskToolHandler
 from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler
 from .vision_service import VisionObservationService
 from .store import MemoryStore
@@ -69,6 +71,7 @@ TOOL_PACKS: dict[str, tuple[str, ...]] = {
         "cancel_reminder",
         "manage_persona",
         "manage_task_workspace",
+        "delegate_task",
     ),
     "web_scene": (
         "call_npc",
@@ -200,6 +203,15 @@ class AkaneMemoryEngine:
             vector_store=self.vector_store,
             llm=self.llm,
             prompt_builder=self.prompt_builder,
+        )
+        self.task_worker_service = TaskWorkerService(
+            llm=self.llm,
+            task_workspace_service=self.task_workspace_service,
+            background_tasks=self.background_tasks,
+            tool_handlers_provider=lambda: getattr(self, "tool_handlers", {}) or {},
+            attachment_context_builder=self._build_task_worker_attachment_context,
+            generated_context_builder=self._build_task_worker_generated_context,
+            record_tool_artifacts=self._record_tool_result_artifacts_in_task_workspace,
         )
         self.tool_handlers = self._build_tool_handlers()
         self.capability_registry = CapabilityRegistry()
@@ -542,6 +554,25 @@ class AkaneMemoryEngine:
             return None
         service = TaskWorkspaceService(store=store)
         self.task_workspace_service = service
+        return service
+
+    def _get_task_worker_service(self) -> TaskWorkerService | None:
+        service = getattr(self, "task_worker_service", None)
+        if service is not None:
+            return service
+        task_workspace_service = self._get_task_workspace_service()
+        if task_workspace_service is None:
+            return None
+        service = TaskWorkerService(
+            llm=self.llm,
+            task_workspace_service=task_workspace_service,
+            background_tasks=getattr(self, "background_tasks", None),
+            tool_handlers_provider=lambda: getattr(self, "tool_handlers", {}) or {},
+            attachment_context_builder=self._build_task_worker_attachment_context,
+            generated_context_builder=self._build_task_worker_generated_context,
+            record_tool_artifacts=self._record_tool_result_artifacts_in_task_workspace,
+        )
+        self.task_worker_service = service
         return service
 
     def _get_attachment_inbox_service(self) -> AttachmentInboxService | None:
@@ -1555,6 +1586,7 @@ class AkaneMemoryEngine:
             user_prompt=str(generation_context["user_prompt"]),
             fallback=dict(generation_context["fallback"]),
             temperature=0.7,
+            prompt_cache_key="chat:final",
         )
         return self._normalize_final_output(
             result=result,
@@ -1607,6 +1639,7 @@ class AkaneMemoryEngine:
             user_prompt=str(generation_context["user_prompt"]),
             fallback=dict(generation_context["fallback"]),
             temperature=0.7,
+            prompt_cache_key="chat:final",
             early_tool_call_validator=(
                 lambda call: self._normalize_tool_call(
                     call,
@@ -1709,6 +1742,7 @@ class AkaneMemoryEngine:
             generated_file_service.build_prompt_context(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                limit=8,
             )
             if (
                 generated_file_service is not None
@@ -2528,6 +2562,9 @@ class AkaneMemoryEngine:
             "manage_task_workspace": ManageTaskWorkspaceToolHandler(
                 task_workspace_service=self._get_task_workspace_service(),
             ),
+            "delegate_task": DelegateTaskToolHandler(
+                task_worker_service=self._get_task_worker_service(),
+            ),
         }
 
     def _resolve_tool_handlers(
@@ -2689,6 +2726,28 @@ class AkaneMemoryEngine:
                 "按有效模式输出即可。"
             )
         return "\n".join(lines)
+
+    def _build_task_worker_attachment_context(self, profile_user_id: str, session_id: str) -> str:
+        service = self._get_attachment_inbox_service()
+        if service is None:
+            return ""
+        return service.build_prompt_context(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            detail_limit=8,
+            index_limit=24,
+            pending_limit=8,
+        )
+
+    def _build_task_worker_generated_context(self, profile_user_id: str, session_id: str) -> str:
+        service = self._get_generated_file_service()
+        if service is None:
+            return ""
+        return service.build_prompt_context(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            limit=8,
+        )
 
     def _normalize_tool_call(
         self,
@@ -3045,6 +3104,7 @@ class AkaneMemoryEngine:
             ),
             fallback={"speech": fallback_speech},
             temperature=0.85,
+            prompt_cache_key="chat:reminder_notification",
         )
         speech = normalize_text(str(result.get("speech") or fallback_speech))
         return speech[:120] if speech else fallback_speech

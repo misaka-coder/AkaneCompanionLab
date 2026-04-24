@@ -222,6 +222,7 @@ class GiftSystemService:
                 ),
                 fallback=fallback,
                 temperature=0.55,
+                prompt_cache_key="aux:gift_transient_image_reply",
             )
         except Exception:
             return str(fallback["assistant_line"])
@@ -581,6 +582,7 @@ class GiftSystemService:
                 ),
                 fallback=fallback,
                 temperature=0.35,
+                prompt_cache_key="aux:gift_image_metadata",
             )
         except Exception:
             return fallback

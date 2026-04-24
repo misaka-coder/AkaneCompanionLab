@@ -201,6 +201,42 @@ system = "semantic reinforcement system"
             self.assertIn("extra", result["user_prompt"])
             self.assertIn("persona refs", result["user_prompt"])
 
+    def test_final_output_schema_places_tool_call_after_speech_segments(self) -> None:
+        persona = load_persona_config()
+        builder = PromptBuilder(persona)
+
+        self.assertIn("字段固定为 emotion, speech, speech_segments, tool_call", persona.final_fast_mode_prompt)
+        self.assertIn('"speech":"喵呜，主人，欢迎回来呀。","speech_segments":[],"tool_call":null', persona.final_fast_mode_prompt)
+        self.assertIn("字段固定为 thought, emotion, speech, speech_segments, tool_call", persona.final_debug_mode_prompt)
+        self.assertIn('"speech":"喵呜，主人，欢迎回来呀。","speech_segments":[],"tool_call":null', persona.final_debug_mode_prompt)
+        self.assertIn("tool_call 必须放在 speech_segments 字段之后", persona.final_system_prompt)
+
+        result = builder.build_final_generation_context(
+            now_ts=1712400000,
+            raw_text="User: hi",
+            current_message_text="User: hi",
+            episodic_summary_text="",
+            semantic_summary_text="",
+            memory_text="",
+            current_visual_context="",
+            resource_context="",
+            extra_context="",
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "bgm",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=True,
+            tool_prompt_context="",
+            debug_enabled=False,
+        )
+        fallback_keys = list(result["fallback"].keys())
+        self.assertLess(fallback_keys.index("speech_segments"), fallback_keys.index("tool_call"))
+        self.assertEqual(fallback_keys[:4], ["emotion", "speech", "speech_segments", "tool_call"])
+
 
 if __name__ == "__main__":
     unittest.main()
