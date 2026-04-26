@@ -34,10 +34,11 @@ from .prompt_builder import PromptBuilder
 from .prompt_profiles import PromptModule, PromptProfileRegistry
 from .retrieval_service import RetrievalService
 from .resource_manifest import ResourceManifest
+from .sticker_assets import StickerAssetService
 from .task_workspace import TaskWorkspaceService
 from .task_worker import TaskWorkerService
 from .task_worker_tool import DelegateTaskToolHandler
-from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler
+from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler
 from .vision_service import VisionObservationService
 from .store import MemoryStore
 from .text_utils import (
@@ -96,6 +97,7 @@ TOOL_PACKS: dict[str, tuple[str, ...]] = {
         "prepare_voice_dataset",
         "inspect_generated_file",
         "send_file",
+        "send_sticker",
         "send_generated_file",
         "manage_generated_file",
     ),
@@ -174,6 +176,12 @@ class AkaneMemoryEngine:
         self.gift_assets = self.gift_service
         self.npc_runtime = GenericNPCRuntime(self.base_dir / "generic_npc_memory_v01", self.llm)
         self.resource_manifest = resource_manifest
+        sticker_assets_dir = (
+            Path(getattr(resource_manifest, "assets_dir"))
+            if resource_manifest is not None and getattr(resource_manifest, "assets_dir", None)
+            else Path(__file__).resolve().parent.parent / "web" / "assets"
+        )
+        self.sticker_assets = StickerAssetService(assets_dir=sticker_assets_dir)
         self.vision_service = VisionObservationService(
             self.base_dir / "vision_cache",
             store=self.store,
@@ -741,6 +749,79 @@ class AkaneMemoryEngine:
             timestamp=timestamp,
         )
 
+    def ingest_desktop_pet_audio_attachment(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        source_path: Path | str,
+        origin_name: str = "",
+        mime_type: str = "",
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        service = self._get_attachment_ingest_service()
+        if service is None:
+            raise RuntimeError("attachment ingest service unavailable")
+        return service.ingest_local_file(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            source_path=source_path,
+            origin_name=origin_name,
+            mime_type=mime_type,
+            kind="audio",
+            source="desktop_pet",
+            timestamp=timestamp,
+        )
+
+    def resolve_desktop_pet_audio_attachment(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        target: str,
+    ) -> tuple[dict[str, Any], Path] | None:
+        service = self._get_attachment_inbox_service()
+        if service is None:
+            return None
+        item = service.resolve_attachment(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            target=target,
+            kind="audio",
+        )
+        if not item or str(item.get("status") or "") != "ready" or str(item.get("kind") or "") != "audio":
+            return None
+        source_path = service.resolve_storage_path(item)
+        if source_path is None:
+            return None
+        return item, source_path
+
+    def resolve_desktop_pet_generated_audio(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        target: str,
+    ) -> tuple[dict[str, Any], Path] | None:
+        service = self._get_generated_file_service()
+        if service is None:
+            return None
+        item = service._resolve_generated_file(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            target=target,
+        )
+        if not item or str(item.get("status") or "") != "ready":
+            return None
+        path = service.absolute_path(item)
+        if not path.exists() or not path.is_file():
+            return None
+        ext = str(item.get("file_ext") or item.get("output_format") or path.suffix.lstrip(".")).strip().lower().lstrip(".")
+        mime_type = str(item.get("mime_type") or "").strip().lower()
+        if ext not in {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"} and not mime_type.startswith("audio/"):
+            return None
+        return item, path
+
     def prefetch_remote_media_links_for_message(
         self,
         *,
@@ -930,6 +1011,7 @@ class AkaneMemoryEngine:
         now_ts = int(payload.get("timestamp") or time.time())
         date_label = timestamp_to_date_label(now_ts)
         time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
+        turn_extra_user_context = self._build_turn_extra_user_context(payload, client_context)
 
         self.consume_due_reminders(
             profile_user_id=profile_user_id,
@@ -996,7 +1078,7 @@ class AkaneMemoryEngine:
             confirmed_snippets=confirmed_snippets,
             now_ts=now_ts,
             current_visual_payload=payload.get("current_visual"),
-            extra_user_context=str(payload.get("extra_context") or ""),
+            extra_user_context=turn_extra_user_context,
             client_context=client_context,
             final_debug_enabled=final_debug_enabled,
         )
@@ -1047,7 +1129,10 @@ class AkaneMemoryEngine:
                     confirmed_snippets=confirmed_snippets,
                     now_ts=now_ts,
                     current_visual_payload=payload.get("current_visual"),
-                    extra_user_context=self._build_multi_tool_followup_context(tool_followups, allow_more=False),
+                    extra_user_context=self._merge_extra_user_context(
+                        turn_extra_user_context,
+                        self._build_multi_tool_followup_context(tool_followups, allow_more=False),
+                    ),
                     client_context=client_context,
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
@@ -1131,7 +1216,10 @@ class AkaneMemoryEngine:
                 confirmed_snippets=confirmed_snippets,
                 now_ts=now_ts,
                 current_visual_payload=payload.get("current_visual"),
-                extra_user_context=self._build_multi_tool_followup_context(tool_followups, allow_more=allow_more_tools),
+                extra_user_context=self._merge_extra_user_context(
+                    turn_extra_user_context,
+                    self._build_multi_tool_followup_context(tool_followups, allow_more=allow_more_tools),
+                ),
                 client_context=client_context,
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
@@ -1216,6 +1304,7 @@ class AkaneMemoryEngine:
         now_ts = int(payload.get("timestamp") or time.time())
         date_label = timestamp_to_date_label(now_ts)
         time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
+        turn_extra_user_context = self._build_turn_extra_user_context(payload, client_context)
 
         self.consume_due_reminders(
             profile_user_id=profile_user_id,
@@ -1282,7 +1371,7 @@ class AkaneMemoryEngine:
             confirmed_snippets=confirmed_snippets,
             now_ts=now_ts,
             current_visual_payload=payload.get("current_visual"),
-            extra_user_context=str(payload.get("extra_context") or ""),
+            extra_user_context=turn_extra_user_context,
             client_context=client_context,
             final_debug_enabled=final_debug_enabled,
         )
@@ -1333,7 +1422,10 @@ class AkaneMemoryEngine:
                     confirmed_snippets=confirmed_snippets,
                     now_ts=now_ts,
                     current_visual_payload=payload.get("current_visual"),
-                    extra_user_context=self._build_multi_tool_followup_context(tool_followups, allow_more=False),
+                    extra_user_context=self._merge_extra_user_context(
+                        turn_extra_user_context,
+                        self._build_multi_tool_followup_context(tool_followups, allow_more=False),
+                    ),
                     client_context=client_context,
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
@@ -1419,7 +1511,10 @@ class AkaneMemoryEngine:
                 confirmed_snippets=confirmed_snippets,
                 now_ts=now_ts,
                 current_visual_payload=payload.get("current_visual"),
-                extra_user_context=self._build_multi_tool_followup_context(tool_followups, allow_more=allow_more_tools),
+                extra_user_context=self._merge_extra_user_context(
+                    turn_extra_user_context,
+                    self._build_multi_tool_followup_context(tool_followups, allow_more=allow_more_tools),
+                ),
                 client_context=client_context,
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
@@ -1844,6 +1939,7 @@ class AkaneMemoryEngine:
             if text
         ]
         merged_extra_context = "\n\n".join(extra_context_sections) if extra_context_sections else "(无额外上下文)"
+        desktop_pet_character_only = client_context.effective_mode == ClientMode.DESKTOP_PET
 
         visual_defaults = (
             self.resource_manifest.build_runtime_manifest(
@@ -1861,11 +1957,30 @@ class AkaneMemoryEngine:
                 "emotion": "normal",
             }
         )
+        if desktop_pet_character_only and self.resource_manifest and current_visual_context_payload:
+            try:
+                current_visual_defaults = self.resource_manifest.normalize_visual_output(
+                    json.loads(json.dumps(current_visual_context_payload)),
+                    extra_character_outfits=user_character_outfits,
+                )
+                visual_defaults = dict(visual_defaults)
+                visual_defaults["outfit"] = str(
+                    current_visual_defaults.get("character", {}).get("outfit") or visual_defaults["outfit"]
+                )
+                visual_defaults["emotion"] = str(current_visual_defaults.get("emotion") or visual_defaults["emotion"])
+            except Exception as exc:
+                logger.warning("desktop pet current visual defaults failed: %s", exc)
         resource_context = (
-            self.resource_manifest.build_prompt_context(
-                extra_bgm_tracks=user_bgm_tracks,
-                extra_scene_groups=user_scene_groups,
-                extra_character_outfits=user_character_outfits,
+            (
+                self.resource_manifest.build_character_prompt_context(
+                    extra_character_outfits=user_character_outfits,
+                )
+                if desktop_pet_character_only
+                else self.resource_manifest.build_prompt_context(
+                    extra_bgm_tracks=user_bgm_tracks,
+                    extra_scene_groups=user_scene_groups,
+                    extra_character_outfits=user_character_outfits,
+                )
             )
             if self.resource_manifest and prompt_profile.includes(PromptModule.RESOURCE_MANIFEST)
             else "当前没有额外的视觉资源。"
@@ -1877,6 +1992,7 @@ class AkaneMemoryEngine:
                 current_visual_payload=current_visual_payload,
                 visual_payload=current_visual_context_payload,
                 runtime_projection=runtime_projection,
+                character_only=desktop_pet_character_only,
             )
             if prompt_profile.includes(PromptModule.CURRENT_VISUAL_STATE)
             else "(当前客户端模式不需要完整演出状态。)"
@@ -1908,6 +2024,10 @@ class AkaneMemoryEngine:
             system_prompt_override=prompt_profile.system_prompt_override,
             mode_prompt_override=prompt_profile.mode_prompt_override(debug_enabled=debug_enabled),
         )
+        if desktop_pet_character_only and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
+            fallback_payload = generation_context.get("fallback")
+            if isinstance(fallback_payload, dict):
+                fallback_payload["activity"] = None
         generation_context["allow_tool_call"] = effective_allow_tool_call
         generation_context["prompt_profile"] = prompt_profile.to_public_dict()
         return generation_context
@@ -1951,6 +2071,10 @@ class AkaneMemoryEngine:
             if allow_tool_call
             else None
         )
+        if client_context.effective_mode == ClientMode.DESKTOP_PET and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
+            normalized["activity"] = self._normalize_activity_action(normalized.get("activity"))
+        else:
+            normalized.pop("activity", None)
         speech, speech_segments = self._normalize_speech_payload(
             speech=normalized.get("speech"),
             speech_segments=normalized.get("speech_segments"),
@@ -1977,6 +2101,11 @@ class AkaneMemoryEngine:
         if not isinstance(normalized.get("character"), dict):
             normalized["character"] = {"outfit": visual_defaults["outfit"]}
         normalized["character"].setdefault("outfit", visual_defaults["outfit"])
+        if client_context.effective_mode == ClientMode.DESKTOP_PET:
+            # Desktop pet outfit is controlled by the local tray setting.
+            # The model may choose an emotion, but should not silently move the pet
+            # into a different outfit than the one the user selected.
+            normalized["character"]["outfit"] = visual_defaults["outfit"]
         if not isinstance(normalized.get("scene"), dict):
             normalized["scene"] = {
                 "major": visual_defaults["major"],
@@ -2085,6 +2214,25 @@ class AkaneMemoryEngine:
                     lines = lines[:-1]
                 normalized = "\n".join(lines).strip()
         return normalized[:4000]
+
+    def _normalize_activity_action(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        action = str(value.get("action") or "").strip().lower()
+        if action not in {"play", "pause", "resume", "stop"}:
+            return None
+        target = str(value.get("target") or "current").strip()[:80] or "current"
+        normalized: dict[str, Any] = {
+            "action": action,
+            "target": target,
+        }
+        source_id = str(value.get("source_id") or value.get("source") or value.get("handle") or "").strip()
+        if source_id:
+            normalized["source_id"] = source_id[:80]
+        activity_type = str(value.get("type") or value.get("activity_type") or "").strip().lower()
+        if activity_type in {"audio_playback", "vocal_performance"}:
+            normalized["type"] = activity_type
+        return normalized
 
     def _build_assistant_dialogue_turn(self, speech: Any) -> dict[str, str] | None:
         text = str(speech or "").strip()
@@ -2546,6 +2694,9 @@ class AkaneMemoryEngine:
             "send_generated_file": SendGeneratedFileToolHandler(
                 generated_file_service=self._get_generated_file_service()
             ),
+            "send_sticker": SendStickerToolHandler(
+                sticker_service=self.sticker_assets,
+            ),
             "manage_generated_file": ManageGeneratedFileToolHandler(
                 generated_file_service=self._get_generated_file_service()
             ),
@@ -2710,6 +2861,146 @@ class AkaneMemoryEngine:
         lines.append("如果不需要工具，tool_call 输出 null。一次只调用一个工具。")
         return "\n".join(lines)
 
+    def _build_turn_extra_user_context(
+        self,
+        payload: dict[str, Any] | None,
+        client_context: ClientProtocolContext | None,
+    ) -> str:
+        source = payload if isinstance(payload, dict) else {}
+        return self._merge_extra_user_context(
+            str(source.get("extra_context") or ""),
+            self._build_desktop_context_prompt(source.get("desktop_context"), client_context),
+            self._build_desktop_activity_prompt(
+                source.get("desktop_activity") or source.get("current_activity"),
+                client_context,
+            ),
+        )
+
+    def _merge_extra_user_context(self, *parts: Any) -> str:
+        return "\n\n".join(str(part or "").strip() for part in parts if str(part or "").strip())
+
+    def _build_desktop_context_prompt(
+        self,
+        desktop_context: Any,
+        client_context: ClientProtocolContext | None,
+    ) -> str:
+        if (
+            client_context is None
+            or client_context.effective_mode != ClientMode.DESKTOP_PET
+            or not client_context.has_capability(ClientCapability.DESKTOP_CONTEXT)
+        ):
+            return ""
+        if not isinstance(desktop_context, dict) or desktop_context.get("enabled") is False:
+            return ""
+
+        foreground = desktop_context.get("foreground") if isinstance(desktop_context.get("foreground"), dict) else {}
+        title = self._sanitize_desktop_context_text(foreground.get("title"), 180)
+        process_name = self._sanitize_desktop_context_text(foreground.get("process_name"), 80)
+        source = self._sanitize_desktop_context_text(foreground.get("source"), 40)
+
+        clipboard_payload = desktop_context.get("clipboard")
+        clipboard_text = ""
+        clipboard_included = False
+        if isinstance(clipboard_payload, dict) and clipboard_payload.get("included") is True:
+            clipboard_included = True
+            clipboard_text = self._sanitize_desktop_context_text(clipboard_payload.get("text"), 500)
+
+        lines = [
+            "【桌面上下文（临时，不写入长期记忆）】",
+        ]
+        if title or process_name:
+            if source == "foreground":
+                window_label = "当前前台窗口"
+            elif source == "last_external_window":
+                window_label = "最近外部前台窗口"
+            elif source == "nearby_process":
+                window_label = "桌面上可见窗口线索"
+            else:
+                window_label = "桌宠附近窗口线索"
+            window_text = title or "未知标题"
+            if process_name:
+                window_text += f"（进程：{process_name}）"
+            lines.append(f"- {window_label}：{window_text}")
+        else:
+            lines.append("- 当前窗口：未知，勿猜测。")
+        if clipboard_included and clipboard_text:
+            lines.append(f"- 剪贴板文本（最多截断 500 字）：{clipboard_text}")
+        return "\n".join(lines)
+
+    def _sanitize_desktop_context_text(self, value: Any, limit: int) -> str:
+        text = " ".join(str(value or "").replace("\x00", " ").split())
+        if limit > 0 and len(text) > limit:
+            return text[:limit]
+        return text
+
+    def _build_desktop_activity_prompt(
+        self,
+        activity: Any,
+        client_context: ClientProtocolContext | None,
+    ) -> str:
+        if (
+            client_context is None
+            or client_context.effective_mode != ClientMode.DESKTOP_PET
+            or not client_context.has_capability(ClientCapability.AUDIO_PLAYBACK)
+        ):
+            return ""
+        if not isinstance(activity, dict):
+            return ""
+
+        activity_type = str(activity.get("type") or "").strip().lower()
+        if activity_type not in {"audio_playback", "vocal_performance"}:
+            return ""
+
+        title = self._sanitize_desktop_context_text(activity.get("title"), 120) or "未命名音频"
+        source_id = self._sanitize_desktop_context_text(activity.get("source_id") or activity.get("handle"), 60)
+        status = str(activity.get("status") or "").strip().lower() or "unknown"
+        progress = self._format_activity_time(activity.get("progress_seconds"))
+        duration = self._format_activity_time(activity.get("duration_seconds"))
+
+        status_label = {
+            "ready": "已放在手边，尚未播放",
+            "running": "正在播放",
+            "paused": "已暂停",
+            "interrupted": "因主人发来消息已暂停",
+            "stopped": "已停止",
+            "completed": "已播放结束",
+        }.get(status, status or "未知")
+
+        lines = [
+            "【当前桌宠活动】",
+            f"- 类型：{'Akane 表演/唱歌' if activity_type == 'vocal_performance' else '普通音频播放'}",
+            f"- 音频：{title}" + (f"（{source_id}）" if source_id else ""),
+            f"- 状态：{status_label}",
+        ]
+        if progress:
+            timing = f"进度 {progress}"
+            if duration:
+                timing += f" / {duration}"
+            lines.append(f"- {timing}")
+        if activity_type == "audio_playback":
+            lines.append(
+                "- 普通音频不会因为本轮消息自动暂停；如果你想控制播放，请输出 activity action。"
+            )
+        elif status == "interrupted":
+            lines.append(
+                "- 主人发消息时表演已暂停；如果你想继续表演，需要输出 activity action，而不是假装仍在继续。"
+            )
+        lines.append(
+            '- 可选 activity 输出：{"action":"play|pause|resume|stop","target":"current","source_id":"可选 file/audio/gen handle"}；不需要控制时输出 null。'
+        )
+        return "\n".join(lines)
+
+    def _format_activity_time(self, value: Any) -> str:
+        try:
+            seconds = max(0, int(round(float(value))))
+        except Exception:
+            return ""
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
     def _build_client_mode_prompt_context(self, client_context: ClientProtocolContext | None) -> str:
         if client_context is None:
             return ""
@@ -2725,6 +3016,16 @@ class AkaneMemoryEngine:
                 f"请求模式 {public.get('degraded_from')} 已降级为 {public.get('effective_mode')}；"
                 "按有效模式输出即可。"
             )
+        if public.get("effective_mode") == ClientMode.DESKTOP_PET.value:
+            lines.append(
+                "桌宠只实际渲染 character.outfit 与 emotion；scene/bgm 不会在桌宠端表现。"
+                "请优先保持当前服装，只从当前服装可用表情中选择 emotion。"
+            )
+            if client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
+                lines.append(
+                    "桌宠支持轻量 activity 控制：只有当【当前桌宠活动】存在且你确实要控制播放时，"
+                    "才输出 activity；否则 activity 输出 null。不要在 speech 里假装已经播放、暂停或继续。"
+                )
         return "\n".join(lines)
 
     def _build_task_worker_attachment_context(self, profile_user_id: str, session_id: str) -> str:
@@ -3149,6 +3450,7 @@ class AkaneMemoryEngine:
         current_visual_payload: Any,
         visual_payload: dict[str, Any] | None = None,
         runtime_projection: dict[str, Any] | None = None,
+        character_only: bool = False,
     ) -> str:
         if not self.resource_manifest:
             return "当前没有额外的演出状态参考。"
@@ -3160,6 +3462,11 @@ class AkaneMemoryEngine:
         if not effective_visual_payload:
             return "当前没有额外的演出状态参考。"
         effective_runtime_projection = runtime_projection or self._get_user_runtime_projection(profile_user_id)
+        if character_only:
+            return self.resource_manifest.describe_character_visual_state(
+                effective_visual_payload,
+                extra_character_outfits=list(effective_runtime_projection.get("extra_character_outfits") or []),
+            )
         return self.resource_manifest.describe_visual_state(
             effective_visual_payload,
             extra_bgm_tracks=list(effective_runtime_projection.get("extra_bgm_tracks") or []),

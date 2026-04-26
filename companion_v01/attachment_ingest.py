@@ -180,6 +180,65 @@ class AttachmentIngestService:
             )
         return created_items
 
+    def ingest_local_file(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        source_path: Path | str,
+        origin_name: str = "",
+        mime_type: str = "",
+        kind: str = "",
+        source: str = "local",
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        """Synchronously copy a trusted local file into the attachment inbox."""
+
+        effective_ts = int(timestamp or time.time())
+        local_path = Path(source_path)
+        if not local_path.exists() or not local_path.is_file():
+            raise FileNotFoundError(str(local_path))
+
+        clean_name = self._clean_filename(origin_name or local_path.name)
+        guessed_mime = str(mime_type or mimetypes.guess_type(clean_name or str(local_path))[0] or "").strip()
+        suffix = local_path.suffix.lower() or Path(clean_name).suffix.lower()
+        normalized_kind = self._normalize_kind(kind)
+        if not kind:
+            normalized_kind = "audio" if suffix in AUDIO_MEDIA_SUFFIXES or guessed_mime.startswith("audio/") else "file"
+
+        item = self.attachment_service.create_pending(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            source=str(source or "local").strip() or "local",
+            kind=normalized_kind,
+            origin_name=clean_name,
+            mime_type=guessed_mime,
+            file_ext=suffix,
+            file_size=local_path.stat().st_size,
+            source_event_id="",
+            source_message_id="",
+            timestamp=effective_ts,
+        )
+        self._process_qq_attachment(
+            item,
+            {
+                "path": str(local_path),
+                "origin_name": clean_name,
+                "mime_type": guessed_mime,
+                "file_ext": suffix,
+                "kind": normalized_kind,
+            },
+            effective_ts,
+        )
+        return (
+            self.store.get_attachment_inbox_item(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                attachment_id=str(item.get("attachment_id") or ""),
+            )
+            or item
+        )
+
     def _process_qq_attachment(
         self,
         item: dict[str, Any],

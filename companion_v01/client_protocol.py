@@ -56,6 +56,7 @@ DESKTOP_PET_DEFAULT_CAPABILITIES = (
     ClientCapability.DESKTOP_CONTEXT.value,
     ClientCapability.TOUCH_EVENT.value,
     ClientCapability.FILE_DROP.value,
+    ClientCapability.AUDIO_PLAYBACK.value,
     ClientCapability.TTS.value,
     ClientCapability.CHOICES.value,
     ClientCapability.TOOL_ACTIONS.value,

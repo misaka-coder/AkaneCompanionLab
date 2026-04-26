@@ -92,10 +92,29 @@ class PromptProfileRegistry:
                 modules=(
                     PromptModule.CLIENT_MODE.value,
                     PromptModule.EXTRA_CONTEXT.value,
+                    PromptModule.CURRENT_VISUAL_STATE.value,
+                    PromptModule.RESOURCE_MANIFEST.value,
+                    PromptModule.OUTFIT_OBSERVATION.value,
                     PromptModule.PENDING_GIFTS.value,
                     PromptModule.FOCUSED_GIFT_OBSERVATION.value,
                     PromptModule.PERSONA.value,
                     PromptModule.TOOLS.value,
+                ),
+                fast_mode_prompt=(
+                    "\n当前模式：desktop_pet，debug_enabled=false。\n"
+                    "字段固定为 emotion, speech, speech_segments, tool_call, code_snippet, memory_tags, status, score, choices, character, scene, persona, activity，禁止输出 thought。\n"
+                    "activity 只用于桌宠播放控制；没有播放/暂停/继续/停止意图时输出 null。\n"
+                    'activity 格式为 {"action":"play|pause|resume|stop","target":"current","source_id":"可选 file/audio/gen handle"}，不要用关键词硬触发，也不要在 speech 里假装动作已经执行。\n'
+                    "输出格式示例如下：\n"
+                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"code_snippet":"","memory_tags":"","status":"final","score":0.0,"choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"activity":null}\n'
+                ),
+                debug_mode_prompt=(
+                    "\n当前模式：desktop_pet，debug_enabled=true。\n"
+                    "字段固定为 thought, emotion, speech, speech_segments, tool_call, code_snippet, memory_tags, status, score, choices, character, scene, persona, activity，且必须把 tool_call 放在 speech_segments 后面。\n"
+                    "activity 只用于桌宠播放控制；没有播放/暂停/继续/停止意图时输出 null。\n"
+                    'activity 格式为 {"action":"play|pause|resume|stop","target":"current","source_id":"可选 file/audio/gen handle"}，不要用关键词硬触发，也不要在 speech 里假装动作已经执行。\n'
+                    "输出格式示例如下：\n"
+                    '{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"code_snippet":"","memory_tags":"","status":"final","score":0.0,"choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"activity":null}\n'
                 ),
             ),
             ClientMode.QQ_TEXT: PromptProfile(

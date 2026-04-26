@@ -4,13 +4,16 @@ import json
 import logging
 import asyncio
 import importlib.util
+import mimetypes
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import tracemalloc
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -78,6 +81,7 @@ public_guard = PublicThinkGuard(
     ),
 )
 qq_gateway = NapCatQQGateway()
+DESKTOP_PET_AUDIO_SUFFIXES = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus"}
 
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
@@ -330,6 +334,11 @@ async def qq_napcat_event(request: Request) -> JSONResponse:
             context,
             list(frame.get("tool_events") or []),
         )
+        await asyncio.to_thread(
+            qq_gateway.send_stickers,
+            context,
+            list(frame.get("tool_events") or []),
+        )
         for item in list(file_send_result.get("results") or []):
             generated_id = str(item.get("generated_id") or "").strip()
             if not generated_id:
@@ -417,6 +426,38 @@ async def live2d_preview():
 async def resource_manifest(request: Request):
     _, profile_user_id = _resolve_identity_from_query(request)
     return JSONResponse(engine.build_resource_manifest(profile_user_id=profile_user_id))
+
+
+@app.get("/task-workspace/status")
+async def task_workspace_status(request: Request):
+    started_at = time.perf_counter()
+    session_id, profile_user_id = _resolve_identity_from_query(request)
+    scope = str(request.query_params.get("scope") or "profile").strip().lower() or "profile"
+    limit = max(1, min(50, int(request.query_params.get("limit") or 20)))
+    query_session_id = session_id if scope == "session" else None
+
+    try:
+        service = getattr(engine, "task_workspace_service", None)
+        if service is None and hasattr(engine, "_get_task_workspace_service"):
+            service = engine._get_task_workspace_service()
+        items = (
+            service.list_status_summaries(
+                profile_user_id=profile_user_id,
+                session_id=query_session_id,
+                limit=limit,
+            )
+            if service is not None
+            else []
+        )
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        runtime_metrics.observe_request("task_workspace_status", duration_ms=duration_ms, ok=False)
+        _log_event("task_workspace_status_error", session_id=session_id, profile_user_id=profile_user_id, message=str(exc))
+        raise
+
+    duration_ms = (time.perf_counter() - started_at) * 1000
+    runtime_metrics.observe_request("task_workspace_status", duration_ms=duration_ms, ok=True)
+    return JSONResponse({"items": items}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/app-config")
@@ -791,6 +832,304 @@ async def reset() -> dict[str, str]:
     return {"status": "reset"}
 
 
+@app.post("/asr")
+async def asr(request: Request):
+    started_at = time.perf_counter()
+    try:
+        form = await request.form()
+    except Exception as exc:
+        runtime_metrics.observe_request("asr", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "multipart_parse_failed",
+                "message": f"无法读取录音上传内容：{str(exc)[:160]}",
+            },
+            status_code=400,
+        )
+
+    upload = form.get("file") or form.get("audio")
+    if upload is None or not hasattr(upload, "read"):
+        runtime_metrics.observe_request("asr", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        return JSONResponse(
+            {"ok": False, "error": "missing_file", "message": "没有收到录音文件。"},
+            status_code=400,
+        )
+
+    audio_bytes = await upload.read()
+    max_bytes = int(float(getattr(config, "ASR_MAX_UPLOAD_MB", 20)) * 1024 * 1024)
+    if len(audio_bytes) > max_bytes:
+        runtime_metrics.observe_request("asr", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        return JSONResponse(
+            {"ok": False, "error": "audio_too_large", "message": "录音太长啦，先说短一点试试。"},
+            status_code=413,
+        )
+    if len(audio_bytes) < 512:
+        runtime_metrics.observe_request("asr", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        return JSONResponse({"ok": False, "error": "audio_too_short", "message": "录音太短啦，我没听清。"})
+
+    filename = str(getattr(upload, "filename", "") or "akane_voice_input.webm")
+    language = str(form.get("language") or "zh").strip()
+    try:
+        result = await asyncio.to_thread(
+            _run_asr_transcription,
+            audio_bytes=audio_bytes,
+            filename=filename,
+            language=language,
+            content_type=str(getattr(upload, "content_type", "") or ""),
+        )
+    except Exception as exc:
+        runtime_metrics.observe_request("asr", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        _log_event("asr_error", message=str(exc)[:240])
+        return JSONResponse(
+            {"ok": False, "error": "asr_failed", "message": f"语音识别失败：{str(exc)[:160]}"},
+            status_code=500,
+        )
+
+    duration_ms = (time.perf_counter() - started_at) * 1000
+    runtime_metrics.observe_request("asr", duration_ms=duration_ms, ok=bool(result.get("ok")))
+    _log_event(
+        "asr_complete",
+        ok=bool(result.get("ok")),
+        duration_ms=round(duration_ms, 1),
+        text_length=len(str(result.get("text") or "")),
+        error=str(result.get("error") or ""),
+    )
+    status_code = 200 if result.get("ok") else int(result.get("_status_code") or 200)
+    result.pop("_status_code", None)
+    return JSONResponse(result, status_code=status_code)
+
+
+def _run_asr_transcription(*, audio_bytes: bytes, filename: str, language: str, content_type: str) -> dict[str, object]:
+    if importlib.util.find_spec("faster_whisper") is None:
+        return {
+            "ok": False,
+            "error": "faster_whisper_not_found",
+            "message": "本机还没有安装 faster-whisper，暂时不能语音识别。",
+            "_status_code": 503,
+        }
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        return {
+            "ok": False,
+            "error": "ffmpeg_not_found",
+            "message": "本机没有找到 ffmpeg，暂时不能处理录音。",
+            "_status_code": 503,
+        }
+
+    service = engine._get_generated_file_service()
+    if service is None:
+        return {
+            "ok": False,
+            "error": "asr_service_unavailable",
+            "message": "语音识别服务暂时不可用。",
+            "_status_code": 503,
+        }
+
+    suffix = _safe_audio_suffix(filename, content_type)
+    with tempfile.TemporaryDirectory(prefix="akane_asr_") as tmp:
+        work_dir = Path(tmp)
+        source_path = work_dir / f"input{suffix}"
+        prepared_path = work_dir / "prepared.wav"
+        source_path.write_bytes(audio_bytes)
+
+        prepared = service._prepare_transcription_input(
+            ffmpeg_path=ffmpeg_path,
+            source_path=source_path,
+            prepared_path=prepared_path,
+        )
+        if not prepared.get("ok"):
+            return {
+                "ok": False,
+                "error": "audio_prepare_failed",
+                "message": f"录音预处理失败：{str(prepared.get('error') or '')[:160]}",
+            }
+
+        model_size = service._normalize_whisper_model_size(
+            getattr(config, "ASR_WHISPER_MODEL_SIZE", getattr(config, "WHISPER_MODEL_SIZE", "small"))
+        )
+        device = service._normalize_whisper_device(
+            getattr(config, "ASR_WHISPER_DEVICE", getattr(config, "WHISPER_DEVICE", "auto"))
+        )
+        compute_type = service._normalize_whisper_compute_type(
+            getattr(config, "ASR_WHISPER_COMPUTE_TYPE", getattr(config, "WHISPER_COMPUTE_TYPE", "auto"))
+        )
+        normalized_language = service._normalize_transcript_language(language or getattr(config, "ASR_LANGUAGE", "zh"))
+        model = service._load_faster_whisper_model(
+            model_size=model_size,
+            device=device,
+            compute_type=compute_type,
+        )
+        transcript = service._transcribe_prepared_audio(
+            model=model,
+            audio_path=prepared_path,
+            source={
+                "source_type": "desktop_pet_voice",
+                "source_id": "desktop_pet_voice",
+                "handle": "voice_input",
+                "title": filename,
+                "absolute_path": source_path,
+                "input_ext": suffix.lstrip("."),
+            },
+            source_index=1,
+            language=normalized_language,
+            vad_filter=bool(getattr(config, "ASR_VAD_FILTER", True)),
+        )
+
+    if transcript.get("status") != "ready":
+        return {
+            "ok": False,
+            "error": "transcribe_failed",
+            "message": str(transcript.get("error") or "语音识别失败")[:160],
+        }
+
+    text = " ".join(str(transcript.get("text") or "").split()).strip()
+    if not text:
+        return {"ok": False, "error": "no_speech", "message": "没听清，可以再说一次。"}
+
+    return {
+        "ok": True,
+        "text": text,
+        "language": transcript.get("language") or normalized_language,
+        "duration_seconds": transcript.get("duration_seconds"),
+    }
+
+
+def _safe_audio_suffix(filename: str, content_type: str) -> str:
+    suffix = Path(str(filename or "")).suffix.lower()
+    if suffix in {".webm", ".ogg", ".oga", ".mp3", ".wav", ".m4a", ".mp4", ".aac", ".opus"}:
+        return suffix
+    mime = str(content_type or "").lower()
+    if "ogg" in mime or "opus" in mime:
+        return ".ogg"
+    if "mp4" in mime or "m4a" in mime:
+        return ".m4a"
+    if "wav" in mime:
+        return ".wav"
+    return ".webm"
+
+
+@app.post("/desktop-pet/attachments/audio")
+async def desktop_pet_upload_audio(request: Request):
+    started_at = time.perf_counter()
+    try:
+        form = await request.form()
+    except Exception as exc:
+        runtime_metrics.observe_request("desktop_pet_audio_upload", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        raise HTTPException(status_code=400, detail=f"Invalid multipart form: {exc}") from exc
+
+    upload = form.get("file") or form.get("audio")
+    if upload is None or not hasattr(upload, "read"):
+        runtime_metrics.observe_request("desktop_pet_audio_upload", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        raise HTTPException(status_code=400, detail="Missing audio file")
+
+    session_id, profile_user_id = _resolve_identity_from_form_or_query(request, form)
+    filename = _safe_upload_filename(str(getattr(upload, "filename", "") or "akane_audio.mp3"))
+    content_type = str(getattr(upload, "content_type", "") or mimetypes.guess_type(filename)[0] or "").strip()
+    suffix = Path(filename).suffix.lower()
+    if suffix not in DESKTOP_PET_AUDIO_SUFFIXES and not content_type.startswith("audio/"):
+        runtime_metrics.observe_request("desktop_pet_audio_upload", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        raise HTTPException(status_code=400, detail="Only audio files are supported")
+
+    audio_bytes = await upload.read()
+    max_bytes = int(getattr(config, "DESKTOP_PET_AUDIO_UPLOAD_MAX_BYTES", 200 * 1024 * 1024) or (200 * 1024 * 1024))
+    if not audio_bytes:
+        runtime_metrics.observe_request("desktop_pet_audio_upload", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        raise HTTPException(status_code=400, detail="Audio file is empty")
+    if len(audio_bytes) > max_bytes:
+        runtime_metrics.observe_request("desktop_pet_audio_upload", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        raise HTTPException(status_code=413, detail=f"Audio file is too large, limit is {max_bytes} bytes")
+
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".audio") as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+        item = await asyncio.to_thread(
+            engine.ingest_desktop_pet_audio_attachment,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            source_path=tmp_path,
+            origin_name=filename,
+            mime_type=content_type,
+            timestamp=int(time.time()),
+        )
+    except Exception as exc:
+        runtime_metrics.observe_request("desktop_pet_audio_upload", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        _log_event("desktop_pet_audio_upload_error", session_id=session_id, profile_user_id=profile_user_id, message=str(exc))
+        raise HTTPException(status_code=500, detail=f"Audio upload failed: {exc}") from exc
+    finally:
+        if tmp_path:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    duration_ms = (time.perf_counter() - started_at) * 1000
+    runtime_metrics.observe_request("desktop_pet_audio_upload", duration_ms=duration_ms, ok=True)
+    _log_event(
+        "desktop_pet_audio_uploaded",
+        session_id=session_id,
+        profile_user_id=profile_user_id,
+        handle=str(item.get("attachment_handle") or ""),
+        filename=filename,
+        size=len(audio_bytes),
+        duration_ms=round(duration_ms, 1),
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "attachment": _build_desktop_audio_attachment_payload(
+                item,
+                request=request,
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+            ),
+        }
+    )
+
+
+@app.get("/desktop-pet/attachments/{attachment_handle}/content")
+async def desktop_pet_attachment_content(request: Request, attachment_handle: str):
+    session_id, profile_user_id = _resolve_identity_from_query(request)
+    resolved = engine.resolve_desktop_pet_audio_attachment(
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        target=attachment_handle,
+    )
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Audio attachment not found")
+    item, path = resolved
+    media_type = str(item.get("mime_type") or mimetypes.guess_type(str(path))[0] or "application/octet-stream")
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=str(item.get("origin_name") or item.get("summary_title") or path.name),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/desktop-pet/generated/{generated_handle}/content")
+async def desktop_pet_generated_audio_content(request: Request, generated_handle: str):
+    session_id, profile_user_id = _resolve_identity_from_query(request)
+    resolved = engine.resolve_desktop_pet_generated_audio(
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        target=generated_handle,
+    )
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Generated audio not found")
+    item, path = resolved
+    media_type = str(item.get("mime_type") or mimetypes.guess_type(str(path))[0] or "application/octet-stream")
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=str(item.get("output_title") or item.get("generated_handle") or path.name),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.post("/tts")
 async def tts(request: Request):
     started_at = time.perf_counter()
@@ -930,6 +1269,57 @@ async def think_once(request: Request):
     runtime_metrics.observe_request("think_once", duration_ms=duration_ms, ok=True)
     _log_turn_result("think_once", payload, frame, duration_ms)
     return JSONResponse(frame)
+
+
+def _resolve_identity_from_form_or_query(request: Request, form) -> tuple[str, str]:
+    session_id = str(
+        form.get("user_id")
+        or form.get("session_id")
+        or request.query_params.get("user_id")
+        or request.query_params.get("session_id")
+        or "default_session"
+    )
+    profile_user_id = str(form.get("real_user_id") or request.query_params.get("real_user_id") or session_id)
+    return session_id, profile_user_id
+
+
+def _safe_upload_filename(value: str) -> str:
+    name = Path(str(value or "").replace("\\", "/")).name.strip()
+    if not name:
+        return "akane_audio.mp3"
+    cleaned = "".join(ch for ch in name if ch not in {"\x00", "\r", "\n"}).strip()
+    return cleaned[:180] or "akane_audio.mp3"
+
+
+def _build_desktop_audio_attachment_payload(
+    item: dict,
+    *,
+    request: Request,
+    session_id: str,
+    profile_user_id: str,
+) -> dict:
+    detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+    media_info = detail.get("media_info") if isinstance(detail.get("media_info"), dict) else {}
+    handle = str(item.get("attachment_handle") or item.get("attachment_id") or "").strip()
+    title = str(item.get("summary_title") or item.get("origin_name") or handle or "未命名音频").strip()
+    path_handle = quote(handle, safe="")
+    query = (
+        f"user_id={quote(str(session_id), safe='')}"
+        f"&real_user_id={quote(str(profile_user_id), safe='')}"
+    )
+    return {
+        "attachment_id": str(item.get("attachment_id") or ""),
+        "handle": handle,
+        "source_id": handle,
+        "title": title,
+        "origin_name": str(item.get("origin_name") or ""),
+        "mime_type": str(item.get("mime_type") or ""),
+        "file_ext": str(item.get("file_ext") or ""),
+        "size_bytes": int(item.get("file_size") or 0),
+        "duration_seconds": media_info.get("duration_seconds"),
+        "status": str(item.get("status") or ""),
+        "url": f"/desktop-pet/attachments/{path_handle}/content?{query}",
+    }
 
 
 def _resolve_identity_from_query(request: Request) -> tuple[str, str]:

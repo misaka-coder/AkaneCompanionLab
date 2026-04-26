@@ -461,6 +461,43 @@ class NapCatQQGateway:
             "results": results,
         }
 
+    def send_stickers(self, context: QQMessageContext, tool_events: list[dict[str, Any]] | None) -> dict[str, Any]:
+        events = [event for event in tool_events or [] if isinstance(event, dict)]
+        targets: list[dict[str, Any]] = []
+        for event in events:
+            if str(event.get("type") or "") != "sticker_ready":
+                continue
+            if not bool(event.get("send_to_user")):
+                continue
+            sticker = event.get("sticker") if isinstance(event.get("sticker"), dict) else {}
+            path = str(sticker.get("absolute_path") or "").strip()
+            if not path:
+                continue
+            targets.append(
+                {
+                    "sticker_id": str(sticker.get("id") or "").strip(),
+                    "path": path,
+                    "name": str(sticker.get("display_name") or Path(path).stem).strip(),
+                }
+            )
+        if not targets:
+            return {"ok": True, "count": 0, "results": []}
+
+        results: list[dict[str, Any]] = []
+        for target in targets:
+            result = self.send_image(
+                context,
+                image_path=str(target.get("path") or ""),
+                name=str(target.get("name") or ""),
+            )
+            result["sticker_id"] = str(target.get("sticker_id") or "")
+            results.append(result)
+        return {
+            "ok": all(bool(result.get("ok")) for result in results),
+            "count": len(results),
+            "results": results,
+        }
+
     def send_reply(self, context: QQMessageContext, message: str) -> dict[str, Any]:
         clean_message = str(message or "").strip()
         if not context.target_id or not clean_message:
@@ -479,6 +516,41 @@ class NapCatQQGateway:
             return {"ok": True, "action": action, "data": data}
         except Exception as exc:
             return {"ok": False, "action": action, "reason": str(exc)}
+
+    def send_image(self, context: QQMessageContext, *, image_path: str, name: str = "") -> dict[str, Any]:
+        clean_path = str(image_path or "").strip()
+        if not context.target_id or not clean_path:
+            return {"ok": False, "reason": "empty_target_or_image"}
+
+        path_obj = Path(clean_path)
+        if not path_obj.exists():
+            return {"ok": False, "reason": "image_not_found", "file": clean_path}
+
+        action = "send_group_msg" if context.is_group else "send_private_msg"
+        base_payload = {"group_id": context.target_id} if context.is_group else {"user_id": context.target_id}
+        file_candidates = [path_obj.resolve().as_uri(), str(path_obj.resolve())]
+        last_error = ""
+        for file_value in file_candidates:
+            payload = {
+                **base_payload,
+                "message": [
+                    {
+                        "type": "image",
+                        "data": {
+                            "file": file_value,
+                            "summary": name or path_obj.name,
+                        },
+                    }
+                ],
+            }
+            try:
+                response = requests.post(f"{self.onebot_http_url}/{action}", json=payload, timeout=20)
+                response.raise_for_status()
+                data = response.json()
+                return {"ok": True, "action": action, "data": data, "file": clean_path}
+            except Exception as exc:
+                last_error = str(exc)
+        return {"ok": False, "action": action, "reason": last_error, "file": clean_path}
 
     def send_file(self, context: QQMessageContext, *, file_path: str, name: str = "") -> dict[str, Any]:
         clean_path = str(file_path or "").strip()

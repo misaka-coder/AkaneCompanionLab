@@ -43,6 +43,24 @@ powershell -ExecutionPolicy Bypass -File .\start_akane_preview.ps1 -Port 10098
 python launch_akane_memory_v01.py
 ```
 
+## 桌宠模式
+
+桌宠是 Akane 的桌面陪伴客户端，不是新的大脑。它共享 `profile_user_id=master`，但使用独立 `session_id`，用于桌面上的轻量陪伴、输入、分段气泡和后台任务完成提醒。
+
+启动时先开后端：
+
+```powershell
+python launch_akane_memory_v01.py
+```
+
+再开桌宠：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start_akane_desktop_pet.ps1
+```
+
+Windows 上也可以双击 `启动_Akane桌宠.bat`。更多说明见 `docs/desktop_pet_v01.md`。
+
 ## 本地访问
 
 - 主界面：`http://127.0.0.1:9998/`

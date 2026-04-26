@@ -169,6 +169,13 @@ class CapabilityRegistry:
                 trigger=_always,
             ),
             CapabilityModule(
+                name="sticker_pack",
+                modes=(ClientMode.QQ_TEXT,),
+                tools=("send_sticker",),
+                light_hint="你有一组 Akane 表情包；聊天氛围适合时可以发送一张表情包，但不要为了展示功能而频繁发送。",
+                trigger=_always,
+            ),
+            CapabilityModule(
                 name="document_workbench",
                 modes=qq_and_desktop,
                 tools=("read_attachment_section", "compose_file", "revise_generated_file", "apply_style_to_existing_file"),

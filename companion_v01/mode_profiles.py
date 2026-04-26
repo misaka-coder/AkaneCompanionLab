@@ -52,7 +52,7 @@ class ModeProfileRegistry:
                 mode=ClientMode.DESKTOP_PET,
                 output_profile=ClientMode.DESKTOP_PET.value,
                 renderer_profile=ClientMode.DESKTOP_PET.value,
-                implemented=False,
+                implemented=True,
                 required_capabilities=(ClientCapability.SPEECH_SEGMENTS.value,),
             ),
             ClientMode.QQ_TEXT: ModeProfile(

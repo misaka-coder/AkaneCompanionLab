@@ -294,6 +294,30 @@ class ResourceManifest:
 
         return "\n".join(lines) if lines else "当前没有额外的视觉资源。"
 
+    def build_character_prompt_context(
+        self,
+        *,
+        extra_character_outfits: list[dict[str, Any]] | None = None,
+    ) -> str:
+        manifest = self.build_runtime_manifest(
+            extra_character_outfits=extra_character_outfits,
+        )
+        lines: list[str] = [
+            "桌宠模式只渲染角色服装立绘和表情，不渲染场景、背景或 BGM。",
+            "输出时优先沿用当前 character.outfit，只在同一套服装下选择可用 emotion；确实需要换衣服时才切换 character.outfit。",
+        ]
+
+        outfit_lines: list[str] = []
+        for outfit in manifest["characters"]["outfits"]:
+            outfit_label = self._format_resource_label(outfit)
+            emotions = ", ".join(self._format_resource_label(emotion) for emotion in outfit["emotions"]) or "(无)"
+            outfit_lines.append(f"- {outfit_label} -> 表情: {emotions}")
+        if outfit_lines:
+            lines.append("可用服装与表情：")
+            lines.extend(outfit_lines)
+
+        return "\n".join(lines) if outfit_lines else "当前没有额外的角色视觉资源。"
+
     def normalize_visual_output(
         self,
         result: dict[str, Any],
@@ -382,6 +406,33 @@ class ResourceManifest:
             f"表情: {self._format_resource_label(emotion) if emotion else normalized['emotion']}",
             f"BGM: {self._format_resource_label(bgm) if bgm else (normalized['scene']['bgm'] or '未设置')}",
         ]
+        return "；".join(parts)
+
+    def describe_character_visual_state(
+        self,
+        result: dict[str, Any],
+        *,
+        extra_character_outfits: list[dict[str, Any]] | None = None,
+    ) -> str:
+        bundle = self.resolve_visual_bundle(
+            result,
+            extra_character_outfits=extra_character_outfits,
+        )
+        normalized = bundle["normalized"]
+        outfit = bundle["outfit"]
+        emotion = bundle["emotion"]
+        available_emotions = (
+            ", ".join(self._format_resource_label(item) for item in outfit["emotions"])
+            if outfit
+            else ""
+        )
+
+        parts = [
+            f"服装: {self._format_resource_label(outfit) if outfit else normalized['character']['outfit']}",
+            f"表情: {self._format_resource_label(emotion) if emotion else normalized['emotion']}",
+        ]
+        if available_emotions:
+            parts.append(f"当前服装可用表情: {available_emotions}")
         return "；".join(parts)
 
     def resolve_visual_bundle(

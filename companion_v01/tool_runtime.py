@@ -2319,6 +2319,99 @@ class SendGeneratedFileToolHandler(SendFileToolHandler):
         )
 
 
+class SendStickerToolHandler(BaseToolHandler):
+    tool_type = "send_sticker"
+
+    def __init__(self, *, sticker_service) -> None:
+        self.sticker_service = sticker_service
+
+    def build_prompt_instruction(self) -> str:
+        sticker_list = self.sticker_service.build_prompt_list()
+        return (
+            "- send_sticker：当你想给用户发送 Akane 表情包图片时使用。"
+            f"可用表情：{sticker_list or '（当前没有可用表情）'}。"
+            "格式为 {\"type\":\"send_sticker\",\"sticker\":\"biexiao|haoxingfu|tanshou|turan_chuxian|wainao|zaoba|zhuangsha|zhuangsi\"}。"
+            "它只负责发表情包，不生成文件、不修改附件；适合开心、吐槽、装傻、装死、突然冒泡等轻量情绪回应。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        target = (
+            value.get("sticker")
+            if value.get("sticker") is not None
+            else value.get("sticker_id")
+            if value.get("sticker_id") is not None
+            else value.get("name")
+            if value.get("name") is not None
+            else value.get("label")
+        )
+        sticker = str(target or "").strip()
+        if not sticker:
+            return None
+        return {
+            "type": self.tool_type,
+            "sticker": sticker[:80],
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        target = str(call.get("sticker") or "").strip()
+        resolution = self.sticker_service.resolve(target)
+        if not resolution.ok or not isinstance(resolution.sticker, dict):
+            candidates = list(resolution.candidates or [])
+            if candidates:
+                candidate_text = "、".join(
+                    f"{item.get('id')}({item.get('display_name')})" for item in candidates[:8]
+                )
+                return ToolExecutionResult(
+                    tool_type=self.tool_type,
+                    followup_context=(
+                        f"你刚刚想发送表情包“{target}”，但匹配到多个候选：{candidate_text}。"
+                        "请让用户确认具体要哪一个，或改用准确 sticker id。"
+                    ),
+                )
+            return ToolExecutionResult(
+                tool_type=self.tool_type,
+                followup_context=(
+                    f"你刚刚想发送表情包“{target}”，但没有找到对应资源。"
+                    f"当前可用：{self.sticker_service.build_prompt_list() or '无'}。"
+                    "请自然告诉用户可以换一个表情名。"
+                ),
+            )
+
+        sticker = dict(resolution.sticker)
+        if not bool(sticker.get("exists")):
+            return ToolExecutionResult(
+                tool_type=self.tool_type,
+                followup_context=(
+                    f"你找到了表情包“{sticker.get('display_name') or target}”，"
+                    "但本地 PNG 文件不存在，暂时发不出去。请自然告诉用户资源文件缺失。"
+                ),
+            )
+
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "sticker_ready",
+                    "sticker": {
+                        "id": sticker.get("id"),
+                        "display_name": sticker.get("display_name"),
+                        "absolute_path": sticker.get("absolute_path"),
+                        "public_path": sticker.get("public_path"),
+                    },
+                    "send_to_user": True,
+                }
+            ],
+            followup_context=(
+                f"你刚刚已经选择发送表情包“{sticker.get('display_name') or target}”。"
+                "请用很短的一句话自然衔接，不要描述文件路径。"
+            ),
+        )
+
+
 class InspectGeneratedFileToolHandler(BaseToolHandler):
     tool_type = "inspect_generated_file"
 

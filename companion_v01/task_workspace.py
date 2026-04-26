@@ -331,6 +331,165 @@ class TaskWorkspaceService:
                 return dict(event_handoff)
         return {}
 
+    def list_status_summaries(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return compact read-only task summaries for passive frontends."""
+
+        max_items = max(1, min(50, int(limit or 20)))
+        tasks = self.list_tasks(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            statuses=["queued", "running", "waiting_user", "completed", "failed"],
+            limit=max_items,
+        )
+        task_map: dict[str, dict[str, Any]] = {}
+        for task in tasks:
+            task_id = str(task.get("task_id") or "").strip()
+            if task_id:
+                task_map[task_id] = task
+
+        pending_events = self.store.list_task_workspace_events(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            status="pending",
+            limit=max(20, max_items * 2),
+        )
+        for event in reversed(pending_events):
+            task_id = str(event.get("task_id") or "").strip()
+            if not task_id or task_id in task_map:
+                continue
+            task = self.get_task(task_id)
+            if not task:
+                continue
+            status = str(task.get("status") or "").strip().lower()
+            if status in {"cleaned", "canceled"}:
+                continue
+            task_map[task_id] = task
+            if len(task_map) >= max_items * 2:
+                break
+
+        sorted_tasks = sorted(
+            task_map.values(),
+            key=lambda item: int(item.get("updated_at") or item.get("created_at") or 0),
+            reverse=True,
+        )
+        summaries: list[dict[str, Any]] = []
+        for task in sorted_tasks:
+            summary = self._build_task_status_summary(task)
+            if summary:
+                summaries.append(summary)
+            if len(summaries) >= max_items:
+                break
+        return summaries
+
+    def _build_task_status_summary(self, task: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(task.get("task_id") or "").strip()
+        if not task_id:
+            return {}
+
+        handoff = self.get_task_handoff(task)
+        state = self._resolve_status_summary_state(task, handoff)
+        title = self._build_status_summary_title(task)
+        summary = self._build_status_summary_text(task, handoff, state)
+        compact_handoff = {
+            "state": state,
+            "next_action": self._truncate_text(handoff.get("next_action") if isinstance(handoff, dict) else "", 80),
+            "artifacts": self._compact_status_summary_artifacts(task, handoff, limit=8),
+        }
+
+        return {
+            "task_id": task_id,
+            "status": state,
+            "title": title,
+            "summary": summary,
+            "handoff": compact_handoff,
+            "updated_at": int(task.get("updated_at") or task.get("created_at") or 0),
+        }
+
+    def _resolve_status_summary_state(self, task: dict[str, Any], handoff: dict[str, Any]) -> str:
+        handoff_status = str((handoff or {}).get("status") or "").strip().lower()
+        if handoff_status in {"completed", "blocked", "partial"}:
+            return handoff_status
+
+        task_status = str(task.get("status") or "").strip().lower()
+        if task_status == "waiting_user":
+            return "blocked"
+        return task_status or "running"
+
+    def _build_status_summary_title(self, task: dict[str, Any]) -> str:
+        title = str(task.get("normalized_goal") or "").strip()
+        if not title:
+            raw_request = task.get("raw_request") if isinstance(task.get("raw_request"), dict) else {}
+            title = str(raw_request.get("text") or "").strip()
+        return self._truncate_text(title or str(task.get("task_id") or "后台任务"), 120)
+
+    def _build_status_summary_text(self, task: dict[str, Any], handoff: dict[str, Any], state: str) -> str:
+        summary = str((handoff or {}).get("summary") or "").strip()
+        if summary:
+            return self._truncate_text(summary, 240)
+
+        pending_question = task.get("pending_question") if isinstance(task.get("pending_question"), dict) else {}
+        question = str(pending_question.get("text") or pending_question.get("question") or "").strip()
+        if question:
+            return self._truncate_text(question, 240)
+
+        defaults = {
+            "completed": "后台任务已完成。",
+            "blocked": "后台任务需要用户确认后才能继续。",
+            "partial": "后台任务已完成一部分，仍需要接手判断下一步。",
+            "running": "后台任务正在处理。",
+            "queued": "后台任务已排队。",
+            "failed": "后台任务执行失败。",
+        }
+        return defaults.get(state, "后台任务状态已更新。")
+
+    def _compact_status_summary_artifacts(
+        self,
+        task: dict[str, Any],
+        handoff: dict[str, Any],
+        *,
+        limit: int,
+    ) -> list[str]:
+        raw_items = (handoff or {}).get("artifacts") if isinstance(handoff, dict) else []
+        if not isinstance(raw_items, list) or not raw_items:
+            raw_items = task.get("artifacts") if isinstance(task.get("artifacts"), list) else []
+
+        rendered: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            if isinstance(item, dict):
+                text = str(
+                    item.get("id")
+                    or item.get("handle")
+                    or item.get("generated_handle")
+                    or item.get("attachment_handle")
+                    or item.get("title")
+                    or ""
+                ).strip()
+            else:
+                text = str(item or "").strip()
+            if not text:
+                continue
+            text = self._truncate_text(text, 120)
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            rendered.append(text)
+            if len(rendered) >= max(1, int(limit or 1)):
+                break
+        return rendered
+
+    def _truncate_text(self, value: Any, limit: int) -> str:
+        text = str(value or "").strip()
+        max_len = max(1, int(limit or 1))
+        return text[:max_len]
+
     def render_handoff_lines(self, handoff: dict[str, Any], *, bullet: str = "- ") -> list[str]:
         if not isinstance(handoff, dict) or not handoff:
             return []

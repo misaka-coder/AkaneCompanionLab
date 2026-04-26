@@ -1,0 +1,392 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --overlay-side-gap: 12px;
+  --overlay-bottom-gap: 18px;
+  --bubble-safe-top: clamp(48px, 10vh, 72px);
+  --pet-bottom-padding: clamp(34px, 8vh, 48px);
+}
+
+html, body {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: "Microsoft YaHei", "PingFang SC", "Source Han Sans SC", sans-serif;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+body.drag-audio-over::after {
+  content: "把音频放到 Akane 手边";
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--overlay-bottom-gap) + 58px);
+  z-index: 70;
+  transform: translateX(-50%);
+  width: min(310px, calc(100vw - 28px));
+  padding: 12px 16px;
+  border: 1px dashed rgba(217, 132, 88, 0.58);
+  border-radius: 18px;
+  background: rgba(255, 248, 240, 0.92);
+  color: #7a4638;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 12px 30px rgba(60, 20, 10, 0.16);
+  backdrop-filter: blur(10px);
+}
+
+/* ── Sprite container ── */
+#sprite-container {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: var(--bubble-safe-top) 0 var(--pet-bottom-padding);
+  -webkit-app-region: no-drag;
+  pointer-events: none;
+}
+
+/* Two overlapping img layers for smooth crossfade */
+#sprite-container .sprite-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: var(--bubble-safe-top) 0 var(--pet-bottom-padding);
+  pointer-events: none;
+}
+
+#sprite-container .sprite-layer img {
+  max-width: min(100%, 380px);
+  max-height: 100%;
+  object-fit: contain;
+  transform: scale(1.08);
+  transform-origin: bottom center;
+  transition: opacity 0.6s ease;
+  pointer-events: auto;
+}
+
+#sprite-container .sprite-layer.front {
+  z-index: 2;
+}
+
+#sprite-container .sprite-layer.back {
+  z-index: 1;
+}
+
+#sprite-container .sprite-layer img.fading-out {
+  opacity: 0;
+}
+
+/* ── Stable overlay layer ── */
+#overlay-root {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  padding: 12px var(--overlay-side-gap) var(--overlay-bottom-gap);
+  pointer-events: none;
+}
+
+/* ── Speech bubble ── */
+#speech-bubble {
+  position: absolute;
+  top: clamp(28px, 7vh, 48px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(340px, calc(100vw - (var(--overlay-side-gap) * 2)));
+  min-width: min(220px, calc(100vw - (var(--overlay-side-gap) * 2)));
+  max-height: 126px;
+  padding: 10px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 210, 180, 0.34);
+  background:
+    linear-gradient(180deg, rgba(255, 250, 245, 0.97), rgba(255, 242, 232, 0.92));
+  color: #5c3a2e;
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.22s ease, visibility 0.22s ease;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+  box-shadow: 0 10px 28px rgba(60, 20, 10, 0.14);
+  backdrop-filter: blur(8px);
+}
+
+#speech-bubble.visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Custom scrollbar for bubble */
+#speech-bubble::-webkit-scrollbar {
+  width: 6px;
+}
+
+#speech-bubble::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#speech-bubble::-webkit-scrollbar-thumb {
+  background: rgba(200, 150, 130, 0.4);
+  border-radius: 999px;
+}
+
+/* ── Sticker overlay ── */
+#sticker-overlay {
+  position: absolute;
+  top: clamp(106px, 25vh, 152px);
+  right: var(--overlay-side-gap);
+  z-index: 34;
+  width: min(132px, 32vw);
+  min-height: 84px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px) scale(0.96) rotate(1deg);
+  transition:
+    opacity 0.22s ease,
+    visibility 0.22s ease,
+    transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+}
+
+#sticker-overlay.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1) rotate(0deg);
+}
+
+#sticker-overlay img {
+  max-width: 100%;
+  max-height: 128px;
+  object-fit: contain;
+  filter: drop-shadow(0 10px 20px rgba(60, 20, 10, 0.22));
+}
+
+#sticker-overlay .sticker-label {
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 250, 245, 0.86);
+  color: rgba(92, 58, 46, 0.82);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 6px 16px rgba(60, 20, 10, 0.12);
+  backdrop-filter: blur(8px);
+}
+
+/* ── Chat input / voice ── */
+#chat-input-wrap {
+  position: absolute;
+  left: 50%;
+  bottom: var(--overlay-bottom-gap);
+  width: min(344px, calc(100vw - (var(--overlay-side-gap) * 2)));
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+}
+
+#chat-input-container {
+  flex: 1;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, visibility 0.2s ease, transform 0.2s ease;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+}
+
+#chat-input-container.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+#chat-input {
+  width: 100%;
+  height: 42px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 210, 180, 0.36);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 250, 245, 0.96), rgba(255, 242, 232, 0.9));
+  color: #5c3a2e;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  outline: none;
+  resize: none;
+  min-height: 44px;
+  max-height: 96px;
+  overflow: hidden;
+  scrollbar-width: none;
+  box-shadow: 0 8px 22px rgba(60, 20, 10, 0.12);
+  backdrop-filter: blur(8px);
+}
+
+#chat-input::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+#chat-input:focus {
+  border-color: rgba(240, 160, 120, 0.6);
+  box-shadow: 0 4px 20px rgba(200, 120, 80, 0.16);
+}
+
+#chat-input::placeholder {
+  color: rgba(100, 60, 40, 0.36);
+}
+
+#voice-record-button {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border: 1px solid rgba(255, 210, 180, 0.42);
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.95), rgba(255, 229, 210, 0.9));
+  color: #7a4638;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 8px 22px rgba(60, 20, 10, 0.13);
+  backdrop-filter: blur(8px);
+  -webkit-app-region: no-drag;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+}
+
+#voice-record-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 26px rgba(60, 20, 10, 0.17);
+}
+
+#voice-record-button.recording {
+  color: #fff7f2;
+  background:
+    radial-gradient(circle at 35% 25%, rgba(255, 190, 165, 0.98), rgba(216, 84, 70, 0.94));
+  box-shadow: 0 0 0 5px rgba(216, 84, 70, 0.14), 0 10px 26px rgba(90, 20, 18, 0.22);
+}
+
+#voice-record-button.processing {
+  cursor: wait;
+  opacity: 0.82;
+}
+
+#voice-record-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
+}
+
+/* ── Settings prompt ── */
+#settings-prompt {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.18s ease, visibility 0.18s ease;
+  -webkit-app-region: no-drag;
+}
+
+#settings-prompt.visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+#settings-prompt-panel {
+  width: min(260px, calc(100vw - 32px));
+  padding: 14px;
+  border: 1px solid rgba(255, 210, 180, 0.4);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 250, 245, 0.98), rgba(255, 242, 232, 0.94));
+  box-shadow: 0 12px 32px rgba(60, 20, 10, 0.18);
+  backdrop-filter: blur(10px);
+}
+
+#settings-prompt-title {
+  display: block;
+  margin-bottom: 9px;
+  color: #5c3a2e;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#settings-prompt-input {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid rgba(255, 210, 180, 0.45);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.68);
+  color: #5c3a2e;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+}
+
+#settings-prompt-input:focus {
+  border-color: rgba(240, 160, 120, 0.72);
+  box-shadow: 0 0 0 3px rgba(240, 160, 120, 0.16);
+}
+
+#settings-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+#settings-prompt-actions button {
+  min-width: 56px;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 210, 180, 0.42);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.54);
+  color: #5c3a2e;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+#settings-prompt-save {
+  background: rgba(255, 225, 205, 0.82);
+}
