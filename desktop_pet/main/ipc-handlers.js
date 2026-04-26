@@ -1,4 +1,4 @@
-const { ipcMain } = require("electron");
+const { clipboard, ipcMain, shell } = require("electron");
 const { loadSettings, updateSettings } = require("./settings-store");
 const { collectDesktopContext } = require("./desktop-context");
 
@@ -8,6 +8,8 @@ const IPC_CHANNELS = [
   "get-desktop-context",
   "move-window",
   "show-context-menu",
+  "open-external",
+  "copy-text",
   "minimize-window",
   "close-window",
 ];
@@ -40,6 +42,22 @@ function registerIpcHandlers(mainWindow, { onSettingsChanged, onContextMenuReque
 
   ipcMain.handle("show-context-menu", () => {
     if (onContextMenuRequested) onContextMenuRequested();
+  });
+
+  ipcMain.handle("open-external", async (_event, url) => {
+    const target = String(url || "").trim();
+    if (!target || !/^(https?:|file:)/i.test(target)) {
+      return { ok: false, error: "invalid_url" };
+    }
+    await shell.openExternal(target);
+    return { ok: true };
+  });
+
+  ipcMain.handle("copy-text", (_event, value) => {
+    const text = String(value || "");
+    if (!text) return { ok: false, error: "empty_text" };
+    clipboard.writeText(text);
+    return { ok: true };
   });
 
   ipcMain.handle("minimize-window", () => {

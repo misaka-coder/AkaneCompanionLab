@@ -24,7 +24,14 @@ contextBridge.exposeInMainWorld("akaneAPI", {
     ipcRenderer.on("voice-shortcut-toggle", listener);
     return () => ipcRenderer.removeListener("voice-shortcut-toggle", listener);
   },
+  onWorkspacePanelToggle: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on("workspace-panel-toggle", listener);
+    return () => ipcRenderer.removeListener("workspace-panel-toggle", listener);
+  },
   showContextMenu: () => ipcRenderer.invoke("show-context-menu"),
+  openExternal: (url) => ipcRenderer.invoke("open-external", url),
+  copyText: (value) => ipcRenderer.invoke("copy-text", value),
   moveWindow: (dx, dy) => ipcRenderer.invoke("move-window", dx, dy),
   minimizeWindow: () => ipcRenderer.invoke("minimize-window"),
   closeWindow: () => ipcRenderer.invoke("close-window"),

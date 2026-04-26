@@ -3,6 +3,7 @@ import { SpeechBubble } from "./ui/SpeechBubble.js";
 import { ChatInput } from "./ui/ChatInput.js";
 import { DragHandler } from "./ui/DragHandler.js";
 import { StickerOverlay } from "./ui/StickerOverlay.js";
+import { WorkspacePanel } from "./ui/WorkspacePanel.js";
 import { BackendClient } from "./services/BackendClient.js";
 import { SessionManager } from "./services/SessionManager.js";
 import { TaskWatcher } from "./services/TaskWatcher.js";
@@ -38,6 +39,7 @@ const settingsPromptTitleEl = document.getElementById("settings-prompt-title");
 const settingsPromptInputEl = document.getElementById("settings-prompt-input");
 const settingsPromptCancelEl = document.getElementById("settings-prompt-cancel");
 const settingsPromptSaveEl = document.getElementById("settings-prompt-save");
+const workspacePanelRootEl = document.getElementById("workspace-panel-root");
 
 let sending = false;
 let currentEmotion = DEFAULT_EMOTION;
@@ -81,6 +83,12 @@ const activityRuntime = new ActivityRuntime({
   audioEl: activityAudioPlayerEl,
   backendClient: client,
   getIdentity: () => identity,
+  onNotice: (text) => showLocalNotice(text),
+});
+const workspacePanel = new WorkspacePanel(workspacePanelRootEl, {
+  backendClient: client,
+  getIdentity: () => identity,
+  getCurrentActivity: () => activityRuntime.getCurrentActivity(),
   onNotice: (text) => showLocalNotice(text),
 });
 
@@ -291,6 +299,10 @@ function setupMainProcessEvents() {
 
   window.akaneAPI.onVoiceShortcutToggle?.(() => {
     void toggleVoiceRecording();
+  });
+
+  window.akaneAPI.onWorkspacePanelToggle?.(() => {
+    void workspacePanel.toggle();
   });
 }
 
@@ -551,7 +563,8 @@ function canShowPassiveReminder() {
     petState === PET_STATES.IDLE &&
     presentation.canAcceptPassive() &&
     !chatInput.isVisible() &&
-    !isSettingsPromptVisible()
+    !isSettingsPromptVisible() &&
+    !workspacePanel.isVisible()
   );
 }
 

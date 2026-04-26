@@ -82,6 +82,46 @@ class EngineExtensionTests(unittest.TestCase):
             ],
         )
 
+    def test_resolve_pre_retrieval_enabled_prefers_payload_override(self) -> None:
+        with patch.object(config, "PRE_RETRIEVAL_DEFAULT_ENABLED", True):
+            self.assertFalse(self.engine._resolve_pre_retrieval_enabled(payload={"pre_retrieval_enabled": False}))
+            self.assertTrue(self.engine._resolve_pre_retrieval_enabled(payload={"pre_retrieval_enabled": True}))
+            self.assertTrue(self.engine._resolve_pre_retrieval_enabled(payload={}))
+
+        with patch.object(config, "PRE_RETRIEVAL_DEFAULT_ENABLED", False):
+            self.assertFalse(self.engine._resolve_pre_retrieval_enabled(payload={}))
+            self.assertTrue(self.engine._resolve_pre_retrieval_enabled(payload={"pre_retrieval_enabled": "true"}))
+
+    def test_build_skipped_pre_retrieval_pipeline_returns_skip_defaults(self) -> None:
+        class StubRetrievalService:
+            def _extract_time_hint(self, *, user_message: str, now_ts: int) -> dict[str, object]:
+                return {"date_label": None, "time_of_day": "night", "relative_time": None}
+
+            def _build_shortcut_timing(self, *, stage: str, branch: str, ready_event_type: str | None) -> dict[str, object]:
+                return {
+                    "stage": stage,
+                    "branch": branch,
+                    "mode": "shortcut",
+                    "ready_event_type": ready_event_type,
+                }
+
+        self.engine._retrieval_service = StubRetrievalService()
+        self.engine._get_retrieval_service = lambda: self.engine._retrieval_service
+
+        pipeline = self.engine._build_skipped_pre_retrieval_pipeline(
+            user_message="今天随便聊聊",
+            now_ts=123,
+            reason="本轮已关闭前置检索，直接基于当前可见上下文回复。",
+        )
+
+        self.assertFalse(pipeline.used_retrieval)
+        self.assertEqual(pipeline.router_output["route"], "pre_retrieval_disabled")
+        self.assertFalse(pipeline.router_output["need_retrieval"])
+        self.assertEqual(pipeline.router_timing["branch"], "pre_retrieval_disabled")
+        self.assertEqual(pipeline.verifier_output["match_result"], "skip")
+        self.assertEqual(pipeline.retrieval_result["fused_hits"], [])
+        self.assertEqual(pipeline.confirmed_snippets, [])
+
     def test_build_embedding_provider_falls_back_to_hashed_when_huggingface_unavailable(self) -> None:
         with patch.object(config, "EMBEDDING_PROVIDER", "huggingface"), patch.object(
             config, "EMBEDDING_CACHE_SIZE", 0

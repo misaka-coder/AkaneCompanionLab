@@ -25,6 +25,7 @@ from .llm_runtime import LLMRuntime
 from .memory_compaction_service import MemoryCompactionService
 from .memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
+from .desktop_music_timeline import DesktopMusicTimelineService
 from .mode_profiles import ModeProfileRegistry
 from .npc_runtime import GenericNPCRuntime
 from .output_adapters import OutputAdapterRegistry
@@ -33,6 +34,7 @@ from .persona_system import PersonaCardService
 from .prompt_builder import PromptBuilder
 from .prompt_profiles import PromptModule, PromptProfileRegistry
 from .retrieval_service import RetrievalService
+from .retrieval_types import RetrievalPipelineResult
 from .resource_manifest import ResourceManifest
 from .sticker_assets import StickerAssetService
 from .task_workspace import TaskWorkspaceService
@@ -150,6 +152,7 @@ class AkaneMemoryEngine:
         self.background_tasks = BackgroundTaskRunner(
             {
                 "attachment": int(getattr(config, "BACKGROUND_ATTACHMENT_WORKERS", 3) or 3),
+                "timeline": int(getattr(config, "BACKGROUND_TIMELINE_WORKERS", 1) or 1),
             },
             default_workers=int(getattr(config, "BACKGROUND_DEFAULT_WORKERS", 1) or 1),
         )
@@ -172,6 +175,11 @@ class AkaneMemoryEngine:
             base_dir=self.base_dir / "generated_files",
             store=self.store,
             attachment_service=self.attachment_inbox_service,
+        )
+        self.desktop_music_timeline_service = DesktopMusicTimelineService(
+            store=self.store,
+            generated_file_service=self.generated_file_service,
+            background_tasks=self.background_tasks,
         )
         self.gift_assets = self.gift_service
         self.npc_runtime = GenericNPCRuntime(self.base_dir / "generic_npc_memory_v01", self.llm)
@@ -636,6 +644,22 @@ class AkaneMemoryEngine:
         self.generated_file_service = service
         return service
 
+    def _get_desktop_music_timeline_service(self) -> DesktopMusicTimelineService | None:
+        service = getattr(self, "desktop_music_timeline_service", None)
+        if service is not None:
+            return service
+        store = getattr(self, "store", None)
+        generated_file_service = self._get_generated_file_service()
+        if store is None or generated_file_service is None:
+            return None
+        service = DesktopMusicTimelineService(
+            store=store,
+            generated_file_service=generated_file_service,
+            background_tasks=getattr(self, "background_tasks", None),
+        )
+        self.desktop_music_timeline_service = service
+        return service
+
     def _get_retrieval_service(self) -> RetrievalService:
         retrieval_service = getattr(self, "retrieval_service", None)
         if retrieval_service is None:
@@ -698,6 +722,107 @@ class AkaneMemoryEngine:
             if lowered in {"false", "0", "no", "off"}:
                 return False
         return None
+
+    def _resolve_pre_retrieval_enabled(self, *, payload: dict[str, Any]) -> bool:
+        override = self._coerce_bool(payload.get("pre_retrieval_enabled"))
+        if override is not None:
+            return bool(override)
+        return bool(getattr(config, "PRE_RETRIEVAL_DEFAULT_ENABLED", True))
+
+    def _build_skipped_pre_retrieval_pipeline(
+        self,
+        *,
+        user_message: str,
+        now_ts: int,
+        reason: str,
+    ) -> RetrievalPipelineResult:
+        retrieval_service = self._get_retrieval_service()
+        try:
+            time_hint = retrieval_service._extract_time_hint(user_message=user_message, now_ts=now_ts)
+        except Exception:
+            time_hint = {
+                "date_label": None,
+                "time_of_day": detect_time_of_day_from_text(user_message),
+                "relative_time": None,
+            }
+        return RetrievalPipelineResult(
+            used_retrieval=False,
+            confirmed_snippets=[],
+            router_output={
+                "need_retrieval": False,
+                "route": "pre_retrieval_disabled",
+                "rewritten_query": "",
+                "keywords": [],
+                "time_hint": dict(time_hint or {}),
+                "index_current_message": True,
+                "reason": str(reason or "").strip(),
+                "confidence": 1.0,
+            },
+            router_timing=retrieval_service._build_shortcut_timing(
+                stage="router",
+                branch="pre_retrieval_disabled",
+                ready_event_type="decision",
+            ),
+            retrieval_result={
+                "filtered_candidate_count": 0,
+                "time_filter": {
+                    "date_label": None,
+                    "time_of_day": None,
+                    "relative_time": None,
+                    "matched": False,
+                },
+                "fused_hits": [],
+                "memory_snippets": [],
+            },
+            verifier_output={
+                "match_result": "skip",
+                "match_score": 0.0,
+                "need_retry": False,
+                "selected_indexes": [],
+                "retry_query": "",
+                "retry_keywords": [],
+                "retry_time_hint": None,
+                "reason": str(reason or "").strip(),
+            },
+            verifier_timing={
+                "mode": "skip",
+                "attempts": [],
+                "selected_attempt": None,
+            },
+        )
+
+    def _run_pre_retrieval_pipeline(
+        self,
+        *,
+        payload: dict[str, Any],
+        profile_user_id: str,
+        user_message: str,
+        now_ts: int,
+        recent_raw: list[dict[str, Any]],
+        recent_episodic_summaries: list[dict[str, Any]],
+        recent_semantic_summaries: list[dict[str, Any]],
+        current_user_source_id: str,
+        verifier_debug_enabled: bool | None,
+    ) -> RetrievalPipelineResult:
+        if not self._resolve_pre_retrieval_enabled(payload=payload):
+            return self._build_skipped_pre_retrieval_pipeline(
+                user_message=user_message,
+                now_ts=now_ts,
+                reason="本轮已关闭前置检索，直接基于当前可见上下文回复。",
+            )
+        return self._get_retrieval_service().run_explicit(
+            profile_user_id=profile_user_id,
+            original_query=user_message,
+            now_ts=now_ts,
+            exclude_source_ids=self._collect_visible_context_source_ids(
+                recent_raw=recent_raw,
+                recent_episodic_summaries=recent_episodic_summaries,
+                recent_semantic_summaries=recent_semantic_summaries,
+                extra_source_ids=[current_user_source_id],
+            ),
+            verifier_debug_enabled=verifier_debug_enabled,
+            route="pre_retrieval",
+        )
 
     def _should_index_user_record_in_vector(self, *, router_output: dict[str, Any]) -> bool:
         if not bool(router_output.get("need_retrieval")):
@@ -821,6 +946,365 @@ class AkaneMemoryEngine:
         if ext not in {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"} and not mime_type.startswith("audio/"):
             return None
         return item, path
+
+    def resolve_desktop_pet_attachment_file(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        target: str,
+    ) -> tuple[dict[str, Any], Path] | None:
+        service = self._get_attachment_inbox_service()
+        if service is None:
+            return None
+        item = service.resolve_attachment(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            target=target,
+            kind="any",
+        )
+        if not item or str(item.get("status") or "") != "ready":
+            return None
+        source_path = service.resolve_storage_path(item)
+        if source_path is None or not source_path.exists() or not source_path.is_file():
+            return None
+        return item, source_path
+
+    def resolve_desktop_pet_generated_file(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        target: str,
+    ) -> tuple[dict[str, Any], Path] | None:
+        service = self._get_generated_file_service()
+        if service is None:
+            return None
+        item = service._resolve_generated_file(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            target=target,
+        )
+        if not item or str(item.get("status") or "") != "ready":
+            return None
+        path = service.absolute_path(item)
+        if not path.exists() or not path.is_file():
+            return None
+        return item, path
+
+    def build_desktop_pet_workspace_panel(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        limit: int = 24,
+    ) -> dict[str, Any]:
+        max_items = max(1, min(60, int(limit or 24)))
+        attachment_service = self._get_attachment_inbox_service()
+        generated_service = self._get_generated_file_service()
+        task_service = self._get_task_workspace_service()
+
+        files: list[dict[str, Any]] = []
+        if attachment_service is not None:
+            attachments = self.store.list_attachment_inbox_items(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                statuses=["ready", "pending_observation", "failed"],
+                limit=max_items,
+            )
+            files = [self._desktop_workspace_attachment_card(item) for item in attachments]
+
+        outputs: list[dict[str, Any]] = []
+        if generated_service is not None:
+            generated = self.store.list_generated_files(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                statuses=["ready", "failed"],
+                limit=max_items,
+            )
+            outputs = [self._desktop_workspace_generated_card(item) for item in generated]
+
+        tasks: list[dict[str, Any]] = []
+        if task_service is not None:
+            task_items = task_service.list_status_summaries(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                limit=min(12, max_items),
+            )
+            tasks = [self._desktop_workspace_task_card(item) for item in task_items]
+
+        return {
+            "ok": True,
+            "updated_at": int(time.time()),
+            "sections": {
+                "files": files,
+                "outputs": outputs,
+                "tasks": tasks,
+            },
+            "counts": {
+                "files": len(files),
+                "outputs": len(outputs),
+                "tasks": len(tasks),
+            },
+        }
+
+    def manage_desktop_pet_workspace_panel(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        action: str,
+        item_type: str = "",
+        target: str = "",
+    ) -> dict[str, Any]:
+        normalized_action = str(action or "").strip().lower()
+        normalized_type = str(item_type or "").strip().lower()
+        normalized_target = str(target or "").strip()
+        now_ts = int(time.time())
+
+        if normalized_action not in {"clear", "hide", "archive", "clear_completed_tasks"}:
+            return {"ok": False, "error": "unsupported_action", "managed": []}
+
+        if normalized_action == "clear_completed_tasks":
+            return self._clear_desktop_workspace_completed_tasks(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                timestamp=now_ts,
+            )
+
+        if normalized_type in {"attachment", "file", "source"}:
+            if not normalized_target:
+                return {"ok": False, "error": "missing_target", "managed": []}
+            cleared = self.store.clear_attachment_inbox_items(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                target=normalized_target,
+                timestamp=now_ts,
+            )
+            return {
+                "ok": bool(cleared),
+                "managed": [self._desktop_workspace_attachment_card(item) for item in cleared],
+                "action": "clear",
+                "item_type": "attachment",
+            }
+
+        if normalized_type in {"generated", "output"}:
+            service = self._get_generated_file_service()
+            if service is None:
+                return {"ok": False, "error": "generated_service_unavailable", "managed": []}
+            result = service.manage_generated_files(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                action="archive",
+                targets=[normalized_target],
+                reason="用户从桌宠手边物品面板收起。",
+                timestamp=now_ts,
+            )
+            return {
+                "ok": bool(result.get("ok")),
+                "managed": [self._desktop_workspace_generated_card(item) for item in list(result.get("managed") or [])],
+                "unresolved": list(result.get("unresolved") or []),
+                "action": "archive",
+                "item_type": "generated",
+            }
+
+        if normalized_type == "task":
+            service = self._get_task_workspace_service()
+            if service is None:
+                return {"ok": False, "error": "task_service_unavailable", "managed": []}
+            task = service.get_task(normalized_target)
+            if not task:
+                return {"ok": False, "error": "task_not_found", "managed": []}
+            status = str(task.get("status") or "").strip().lower()
+            if status not in {"completed", "failed", "canceled", "waiting_user"}:
+                return {"ok": False, "error": "task_not_clearable", "managed": []}
+            cleaned = service.cleanup_task(
+                task_id=normalized_target,
+                mode="desktop_panel",
+                reason="用户从桌宠手边物品面板清理。",
+                timestamp=now_ts,
+            )
+            return {
+                "ok": bool(cleaned),
+                "managed": [self._desktop_workspace_task_card(cleaned)] if cleaned else [],
+                "action": "clear",
+                "item_type": "task",
+            }
+
+        return {"ok": False, "error": "unsupported_item_type", "managed": []}
+
+    def prepare_desktop_music_timeline(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        activity: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        service = self._get_desktop_music_timeline_service()
+        if service is None:
+            return {"ok": False, "error": "timeline_service_unavailable", "timeline": None}
+        return service.prepare_timeline(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            activity=activity,
+        )
+
+    def _clear_desktop_workspace_completed_tasks(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        timestamp: int,
+    ) -> dict[str, Any]:
+        service = self._get_task_workspace_service()
+        if service is None:
+            return {"ok": False, "error": "task_service_unavailable", "managed": []}
+        tasks = self.store.list_task_workspaces(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            statuses=["completed", "failed", "canceled"],
+            limit=50,
+        )
+        managed: list[dict[str, Any]] = []
+        for task in tasks:
+            task_id = str(task.get("task_id") or "").strip()
+            if not task_id:
+                continue
+            cleaned = service.cleanup_task(
+                task_id=task_id,
+                mode="desktop_panel_batch",
+                reason="用户从桌宠手边物品面板清理已完成任务。",
+                timestamp=timestamp,
+            )
+            if cleaned:
+                managed.append(self._desktop_workspace_task_card(cleaned))
+        return {
+            "ok": True,
+            "managed": managed,
+            "action": "clear_completed_tasks",
+            "item_type": "task",
+        }
+
+    def _desktop_workspace_attachment_card(self, item: dict[str, Any]) -> dict[str, Any]:
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        media_info = detail.get("media_info") if isinstance(detail.get("media_info"), dict) else {}
+        handle = str(item.get("attachment_handle") or item.get("attachment_id") or "").strip()
+        title = self._clip_desktop_workspace_text(
+            item.get("summary_title") or item.get("origin_name") or handle or "手边文件",
+            80,
+        )
+        kind = str(item.get("kind") or "file").strip().lower()
+        ext = str(item.get("file_ext") or "").strip().lower().lstrip(".")
+        status = str(item.get("status") or "").strip().lower()
+        return {
+            "item_type": "attachment",
+            "id": handle,
+            "handle": handle,
+            "title": title,
+            "subtitle": self._desktop_workspace_attachment_subtitle(kind, ext),
+            "kind": kind,
+            "format": ext,
+            "status": status,
+            "status_label": self._desktop_workspace_status_label(status),
+            "size_bytes": int(item.get("file_size") or 0),
+            "duration_seconds": media_info.get("duration_seconds"),
+            "updated_at": int(item.get("updated_at") or item.get("created_at") or 0),
+            "can_open": status == "ready",
+            "can_clear": status in {"ready", "pending_observation", "failed"},
+        }
+
+    def _desktop_workspace_generated_card(self, item: dict[str, Any]) -> dict[str, Any]:
+        handle = str(item.get("generated_handle") or item.get("generated_id") or "").strip()
+        output_format = str(item.get("output_format") or item.get("file_ext") or "").strip().lower().lstrip(".")
+        status = str(item.get("status") or "").strip().lower()
+        title = self._clip_desktop_workspace_text(item.get("output_title") or handle or "Akane 做好的东西", 80)
+        return {
+            "item_type": "generated",
+            "id": handle,
+            "handle": handle,
+            "title": title,
+            "subtitle": f"{self._desktop_workspace_format_label(output_format)} · Akane 做好的东西",
+            "format": output_format,
+            "status": status,
+            "status_label": self._desktop_workspace_status_label(status),
+            "size_bytes": int(item.get("file_size") or 0),
+            "updated_at": int(item.get("updated_at") or item.get("created_at") or 0),
+            "can_open": status == "ready",
+            "can_clear": status in {"ready", "failed"},
+        }
+
+    def _desktop_workspace_task_card(self, item: dict[str, Any] | None) -> dict[str, Any]:
+        task = item if isinstance(item, dict) else {}
+        task_id = str(task.get("task_id") or "").strip()
+        status = str(task.get("status") or "").strip().lower()
+        title = self._clip_desktop_workspace_text(task.get("title") or "后台任务", 80)
+        summary = self._clip_desktop_workspace_text(task.get("summary") or "", 120)
+        return {
+            "item_type": "task",
+            "id": task_id,
+            "handle": task_id,
+            "title": title,
+            "subtitle": summary or "后台任务",
+            "status": status,
+            "status_label": self._desktop_workspace_status_label(status),
+            "updated_at": int(task.get("updated_at") or 0),
+            "can_open": False,
+            "can_clear": status in {"completed", "failed", "canceled"},
+        }
+
+    def _desktop_workspace_attachment_subtitle(self, kind: str, ext: str) -> str:
+        kind_label = {
+            "image": "图片",
+            "audio": "音频",
+            "document": "文档",
+            "file": "文件",
+        }.get(kind, "文件")
+        format_label = self._desktop_workspace_format_label(ext)
+        return f"{kind_label} · {format_label}" if format_label else kind_label
+
+    def _desktop_workspace_format_label(self, value: str) -> str:
+        text = str(value or "").strip().lower().lstrip(".")
+        if not text:
+            return ""
+        labels = {
+            "md": "Markdown",
+            "txt": "文本",
+            "docx": "Word",
+            "xlsx": "Excel",
+            "pdf": "PDF",
+            "json": "JSON",
+            "csv": "CSV",
+            "html": "HTML",
+            "zip": "压缩包",
+            "mp3": "MP3",
+            "wav": "WAV",
+            "flac": "FLAC",
+            "m4a": "M4A",
+            "aac": "AAC",
+            "ogg": "OGG",
+            "opus": "OPUS",
+        }
+        return labels.get(text, text.upper())
+
+    def _desktop_workspace_status_label(self, status: str) -> str:
+        return {
+            "ready": "已放好",
+            "pending_observation": "整理中",
+            "failed": "失败",
+            "queued": "排队中",
+            "running": "进行中",
+            "waiting_user": "等确认",
+            "blocked": "等确认",
+            "partial": "部分完成",
+            "completed": "已完成",
+            "canceled": "已取消",
+            "cleaned": "已收起",
+        }.get(str(status or "").strip().lower(), str(status or "").strip() or "未知")
+
+    def _clip_desktop_workspace_text(self, value: Any, limit: int) -> str:
+        text = " ".join(str(value or "").replace("\x00", " ").split()).strip()
+        max_len = max(1, int(limit or 1))
+        return text[:max_len]
 
     def prefetch_remote_media_links_for_message(
         self,
@@ -1043,18 +1527,16 @@ class AkaneMemoryEngine:
         )
         verifier_debug_enabled = self._coerce_bool(payload.get("verifier_debug"))
         final_debug_enabled = self._coerce_bool(payload.get("final_debug"))
-        retrieval_pipeline = self._get_retrieval_service().run_explicit(
+        retrieval_pipeline = self._run_pre_retrieval_pipeline(
+            payload=payload,
             profile_user_id=profile_user_id,
-            original_query=user_message,
+            user_message=user_message,
             now_ts=now_ts,
-            exclude_source_ids=self._collect_visible_context_source_ids(
-                recent_raw=recent_raw,
-                recent_episodic_summaries=recent_episodic_summaries,
-                recent_semantic_summaries=recent_semantic_summaries,
-                extra_source_ids=[user_record["source_id"]],
-            ),
+            recent_raw=recent_raw,
+            recent_episodic_summaries=recent_episodic_summaries,
+            recent_semantic_summaries=recent_semantic_summaries,
+            current_user_source_id=str(user_record.get("source_id") or ""),
             verifier_debug_enabled=verifier_debug_enabled,
-            route="pre_retrieval",
         )
         router_output = retrieval_pipeline.router_output
         router_timing = retrieval_pipeline.router_timing
@@ -1336,18 +1818,16 @@ class AkaneMemoryEngine:
         )
         verifier_debug_enabled = self._coerce_bool(payload.get("verifier_debug"))
         final_debug_enabled = self._coerce_bool(payload.get("final_debug"))
-        retrieval_pipeline = self._get_retrieval_service().run_explicit(
+        retrieval_pipeline = self._run_pre_retrieval_pipeline(
+            payload=payload,
             profile_user_id=profile_user_id,
-            original_query=user_message,
+            user_message=user_message,
             now_ts=now_ts,
-            exclude_source_ids=self._collect_visible_context_source_ids(
-                recent_raw=recent_raw,
-                recent_episodic_summaries=recent_episodic_summaries,
-                recent_semantic_summaries=recent_semantic_summaries,
-                extra_source_ids=[user_record["source_id"]],
-            ),
+            recent_raw=recent_raw,
+            recent_episodic_summaries=recent_episodic_summaries,
+            recent_semantic_summaries=recent_semantic_summaries,
+            current_user_source_id=str(user_record.get("source_id") or ""),
             verifier_debug_enabled=verifier_debug_enabled,
-            route="pre_retrieval",
         )
         router_output = retrieval_pipeline.router_output
         router_timing = retrieval_pipeline.router_timing
@@ -2867,12 +3347,16 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext | None,
     ) -> str:
         source = payload if isinstance(payload, dict) else {}
+        session_id = str(source.get("user_id") or source.get("session_id") or "default_session")
+        profile_user_id = str(source.get("real_user_id") or source.get("profile_user_id") or session_id)
         return self._merge_extra_user_context(
             str(source.get("extra_context") or ""),
             self._build_desktop_context_prompt(source.get("desktop_context"), client_context),
             self._build_desktop_activity_prompt(
                 source.get("desktop_activity") or source.get("current_activity"),
                 client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
             ),
         )
 
@@ -2937,6 +3421,9 @@ class AkaneMemoryEngine:
         self,
         activity: Any,
         client_context: ClientProtocolContext | None,
+        *,
+        profile_user_id: str = "",
+        session_id: str = "",
     ) -> str:
         if (
             client_context is None
@@ -2988,7 +3475,49 @@ class AkaneMemoryEngine:
         lines.append(
             '- 可选 activity 输出：{"action":"play|pause|resume|stop","target":"current","source_id":"可选 file/audio/gen handle"}；不需要控制时输出 null。'
         )
-        return "\n".join(lines)
+        activity_prompt = "\n".join(lines)
+        timeline_prompt = self._build_desktop_music_timeline_prompt(
+            activity,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+        )
+        return self._merge_extra_user_context(activity_prompt, timeline_prompt)
+
+    def _build_desktop_music_timeline_prompt(
+        self,
+        activity: dict[str, Any],
+        *,
+        profile_user_id: str = "",
+        session_id: str = "",
+    ) -> str:
+        if not profile_user_id or not session_id:
+            return ""
+        service = self._get_desktop_music_timeline_service()
+        if service is None:
+            return ""
+        status = str(activity.get("status") or "").strip().lower()
+        progress_seconds = self._safe_activity_seconds(activity.get("progress_seconds"))
+        should_prepare = status in {"running", "paused", "interrupted"} or progress_seconds > 0
+        if should_prepare:
+            try:
+                service.prepare_timeline(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    activity=activity,
+                )
+            except Exception:
+                pass
+        return service.build_prompt_projection(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            activity=activity,
+        )
+
+    def _safe_activity_seconds(self, value: Any) -> float:
+        try:
+            return max(0.0, float(value or 0))
+        except Exception:
+            return 0.0
 
     def _format_activity_time(self, value: Any) -> str:
         try:

@@ -45,6 +45,14 @@ function buildContextMenu(mainWindow, { onSettingsChanged, refreshMenu } = {}) {
         sendRendererEvent(mainWindow, "reload-sprite");
       },
     },
+    {
+      label: "手边物品",
+      click: () => {
+        if (!mainWindow.isVisible()) mainWindow.show();
+        mainWindow.focus();
+        sendRendererEvent(mainWindow, "workspace-panel-toggle");
+      },
+    },
     { type: "separator" },
     {
       label: "设置后端地址",

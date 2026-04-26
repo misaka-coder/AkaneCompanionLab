@@ -460,6 +460,70 @@ async def task_workspace_status(request: Request):
     return JSONResponse({"items": items}, headers={"Cache-Control": "no-store"})
 
 
+@app.get("/desktop-pet/workspace/summary")
+async def desktop_pet_workspace_summary(request: Request):
+    started_at = time.perf_counter()
+    session_id, profile_user_id = _resolve_identity_from_query(request)
+    limit = max(1, min(60, int(request.query_params.get("limit") or 24)))
+    try:
+        payload = await asyncio.to_thread(
+            engine.build_desktop_pet_workspace_panel,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            limit=limit,
+        )
+        _decorate_desktop_workspace_urls(
+            payload,
+            session_id=session_id,
+            profile_user_id=profile_user_id,
+        )
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        runtime_metrics.observe_request("desktop_pet_workspace_summary", duration_ms=duration_ms, ok=False)
+        _log_event("desktop_pet_workspace_summary_error", session_id=session_id, profile_user_id=profile_user_id, message=str(exc))
+        raise HTTPException(status_code=500, detail=f"Workspace summary failed: {exc}") from exc
+
+    duration_ms = (time.perf_counter() - started_at) * 1000
+    runtime_metrics.observe_request("desktop_pet_workspace_summary", duration_ms=duration_ms, ok=True)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/desktop-pet/workspace/action")
+async def desktop_pet_workspace_action(request: Request):
+    started_at = time.perf_counter()
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        runtime_metrics.observe_request("desktop_pet_workspace_action", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payload must be an object")
+
+    session_id, profile_user_id = _resolve_identity_from_payload(payload)
+    action = str(payload.get("action") or "").strip()
+    item_type = str(payload.get("item_type") or payload.get("type") or "").strip()
+    target = str(payload.get("target") or payload.get("id") or payload.get("handle") or "").strip()
+    try:
+        result = await asyncio.to_thread(
+            engine.manage_desktop_pet_workspace_panel,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            action=action,
+            item_type=item_type,
+            target=target,
+        )
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        runtime_metrics.observe_request("desktop_pet_workspace_action", duration_ms=duration_ms, ok=False)
+        _log_event("desktop_pet_workspace_action_error", session_id=session_id, profile_user_id=profile_user_id, message=str(exc))
+        raise HTTPException(status_code=500, detail=f"Workspace action failed: {exc}") from exc
+
+    duration_ms = (time.perf_counter() - started_at) * 1000
+    runtime_metrics.observe_request("desktop_pet_workspace_action", duration_ms=duration_ms, ok=bool(result.get("ok")))
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/app-config")
 async def app_config():
     return JSONResponse(
@@ -1130,6 +1194,88 @@ async def desktop_pet_generated_audio_content(request: Request, generated_handle
     )
 
 
+@app.get("/desktop-pet/workspace/attachments/{attachment_handle}/content")
+async def desktop_pet_workspace_attachment_content(request: Request, attachment_handle: str):
+    session_id, profile_user_id = _resolve_identity_from_query(request)
+    resolved = engine.resolve_desktop_pet_attachment_file(
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        target=attachment_handle,
+    )
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    item, path = resolved
+    media_type = str(item.get("mime_type") or mimetypes.guess_type(str(path))[0] or "application/octet-stream")
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=str(item.get("origin_name") or item.get("summary_title") or path.name),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/desktop-pet/workspace/generated/{generated_handle}/content")
+async def desktop_pet_workspace_generated_content(request: Request, generated_handle: str):
+    session_id, profile_user_id = _resolve_identity_from_query(request)
+    resolved = engine.resolve_desktop_pet_generated_file(
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        target=generated_handle,
+    )
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Generated file not found")
+    item, path = resolved
+    media_type = str(item.get("mime_type") or mimetypes.guess_type(str(path))[0] or "application/octet-stream")
+    filename = str(item.get("output_title") or item.get("generated_handle") or path.stem)
+    file_ext = str(item.get("file_ext") or item.get("output_format") or path.suffix.lstrip(".")).strip().lstrip(".")
+    if file_ext and not filename.lower().endswith(f".{file_ext.lower()}"):
+        filename = f"{filename}.{file_ext}"
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=filename,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/desktop-pet/music-timeline/prepare")
+async def desktop_pet_prepare_music_timeline(request: Request):
+    started_at = time.perf_counter()
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        runtime_metrics.observe_request("desktop_pet_music_timeline_prepare", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {exc}") from exc
+
+    session_id, profile_user_id = _resolve_identity_from_payload(payload if isinstance(payload, dict) else {})
+    activity = None
+    if isinstance(payload, dict):
+        activity = payload.get("activity") or payload.get("desktop_activity") or payload.get("current_activity")
+    try:
+        result = await asyncio.to_thread(
+            engine.prepare_desktop_music_timeline,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            activity=activity if isinstance(activity, dict) else None,
+        )
+    except Exception as exc:
+        runtime_metrics.observe_request("desktop_pet_music_timeline_prepare", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+        _log_event("desktop_pet_music_timeline_prepare_error", session_id=session_id, profile_user_id=profile_user_id, message=str(exc))
+        raise HTTPException(status_code=500, detail=f"Timeline prepare failed: {exc}") from exc
+
+    duration_ms = (time.perf_counter() - started_at) * 1000
+    runtime_metrics.observe_request("desktop_pet_music_timeline_prepare", duration_ms=duration_ms, ok=bool(result.get("ok")))
+    _log_event(
+        "desktop_pet_music_timeline_prepare",
+        session_id=session_id,
+        profile_user_id=profile_user_id,
+        ok=bool(result.get("ok")),
+        status=str((result.get("timeline") or {}).get("status") or ""),
+        duration_ms=round(duration_ms, 1),
+    )
+    return JSONResponse(result)
+
+
 @app.post("/tts")
 async def tts(request: Request):
     started_at = time.perf_counter()
@@ -1320,6 +1466,33 @@ def _build_desktop_audio_attachment_payload(
         "status": str(item.get("status") or ""),
         "url": f"/desktop-pet/attachments/{path_handle}/content?{query}",
     }
+
+
+def _decorate_desktop_workspace_urls(
+    payload: dict,
+    *,
+    session_id: str,
+    profile_user_id: str,
+) -> None:
+    if not isinstance(payload, dict):
+        return
+    query = (
+        f"user_id={quote(str(session_id), safe='')}"
+        f"&real_user_id={quote(str(profile_user_id), safe='')}"
+    )
+    sections = payload.get("sections") if isinstance(payload.get("sections"), dict) else {}
+    for item in list(sections.get("files") or []):
+        if not isinstance(item, dict) or not item.get("can_open"):
+            continue
+        handle = str(item.get("handle") or item.get("id") or "").strip()
+        if handle:
+            item["url"] = f"/desktop-pet/workspace/attachments/{quote(handle, safe='')}/content?{query}"
+    for item in list(sections.get("outputs") or []):
+        if not isinstance(item, dict) or not item.get("can_open"):
+            continue
+        handle = str(item.get("handle") or item.get("id") or "").strip()
+        if handle:
+            item["url"] = f"/desktop-pet/workspace/generated/{quote(handle, safe='')}/content?{query}"
 
 
 def _resolve_identity_from_query(request: Request) -> tuple[str, str]:

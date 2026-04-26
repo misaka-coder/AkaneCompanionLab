@@ -1,5 +1,6 @@
 const AUDIO_EXTENSIONS = new Set(["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"]);
 const ACTION_DEDUPE_MS = 1200;
+const TIMELINE_PREPARE_DEDUPE_MS = 30 * 1000;
 
 class ActivityRuntime {
   constructor({ audioEl, backendClient, getIdentity, onNotice } = {}) {
@@ -12,6 +13,8 @@ class ActivityRuntime {
     this._latestByRole = new Map();
     this._lastActionSignature = "";
     this._lastActionAt = 0;
+    this._lastTimelinePrepareSignature = "";
+    this._lastTimelinePrepareAt = 0;
 
     if (this._audioEl) {
       this._audioEl.addEventListener("timeupdate", () => this._syncProgress());
@@ -83,8 +86,16 @@ class ActivityRuntime {
       activity.duration_seconds = Number(this._current.duration_seconds);
     }
     if (this._current.attachment_id) activity.attachment_id = this._current.attachment_id;
+    if (this._current.attachment_handle) activity.attachment_handle = this._current.attachment_handle;
     if (this._current.generated_id) activity.generated_id = this._current.generated_id;
+    if (this._current.generated_handle) activity.generated_handle = this._current.generated_handle;
     if (this._current.source_kind) activity.source_kind = this._current.source_kind;
+    if (this._current.role) activity.role = this._current.role;
+    if (this._current.timeline_id) activity.timeline_id = this._current.timeline_id;
+    if (this._current.timeline_status) activity.timeline_status = this._current.timeline_status;
+    if (Number.isFinite(Number(this._current.timeline_ready_until_seconds))) {
+      activity.timeline_ready_until_seconds = Number(this._current.timeline_ready_until_seconds);
+    }
     return activity;
   }
 
@@ -139,6 +150,7 @@ class ActivityRuntime {
     }
     await this._audioEl.play();
     this._markStatus("running");
+    this._prepareTimelineForCurrent();
   }
 
   async _resume() {
@@ -149,6 +161,7 @@ class ActivityRuntime {
     this._ensureAudioSource();
     await this._audioEl.play();
     this._markStatus("running");
+    this._prepareTimelineForCurrent();
   }
 
   _pause({ nextStatus }) {
@@ -182,6 +195,7 @@ class ActivityRuntime {
       source_kind: "attachment",
       source_id: sourceId,
       attachment_id: String(attachment?.attachment_id || "").trim(),
+      attachment_handle: String(attachment?.handle || attachment?.attachment_handle || sourceId).trim(),
       title,
       url: this._backendClient.resolveUrl(attachment?.url || ""),
       duration_seconds: this._finiteNumber(attachment?.duration_seconds),
@@ -194,7 +208,12 @@ class ActivityRuntime {
   _resolveTarget(action) {
     const sourceId = String(action.source_id || "").trim();
     if (sourceId) {
-      return this._targets.get(sourceId) || this._targets.get(sourceId.toLowerCase()) || this._targetFromGeneratedHandle(sourceId);
+      return (
+        this._targets.get(sourceId) ||
+        this._targets.get(sourceId.toLowerCase()) ||
+        this._targetFromGeneratedHandle(sourceId) ||
+        this._targetFromAttachmentHandle(sourceId)
+      );
     }
 
     const targetText = String(action.target || "").trim().toLowerCase();
@@ -203,6 +222,8 @@ class ActivityRuntime {
       if (direct) return direct;
       const generated = this._targetFromGeneratedHandle(action.target || targetText);
       if (generated) return generated;
+      const attachment = this._targetFromAttachmentHandle(action.target || targetText);
+      if (attachment) return attachment;
       if (["instrumental", "accompaniment", "伴奏", "伴奏轨"].includes(targetText)) {
         return this._latestByRole.get("instrumental") || null;
       }
@@ -211,6 +232,44 @@ class ActivityRuntime {
       }
     }
     return this._current;
+  }
+
+  async _prepareTimelineForCurrent() {
+    if (!this._current?.source_id || !this._backendClient?.prepareMusicTimeline) return;
+    const identity = this._getIdentity?.();
+    if (!identity?.profileUserId || !identity?.sessionId) return;
+
+    const signature = [
+      identity.profileUserId,
+      identity.sessionId,
+      this._current.source_kind || "",
+      this._current.source_id || "",
+      this._current.generated_handle || "",
+      this._current.attachment_id || "",
+    ].join("|");
+    const now = Date.now();
+    if (signature === this._lastTimelinePrepareSignature && now - this._lastTimelinePrepareAt < TIMELINE_PREPARE_DEDUPE_MS) {
+      return;
+    }
+    this._lastTimelinePrepareSignature = signature;
+    this._lastTimelinePrepareAt = now;
+
+    try {
+      const result = await this._backendClient.prepareMusicTimeline({
+        profileUserId: identity.profileUserId,
+        sessionId: identity.sessionId,
+        activity: this.getCurrentActivity(),
+      });
+      const timeline = result?.timeline;
+      if (!timeline || !this._current) return;
+      const sourceId = String(timeline.source_id || "").trim();
+      if (sourceId && sourceId !== String(this._current.source_id || "").trim()) return;
+      this._current.timeline_id = String(timeline.timeline_id || "").trim();
+      this._current.timeline_status = String(timeline.status || "").trim();
+      this._current.timeline_ready_until_seconds = this._finiteNumber(timeline.ready_until_seconds);
+    } catch (error) {
+      console.warn("[AkanePet] music timeline prepare failed:", error);
+    }
   }
 
   _targetFromGeneratedHandle(value) {
@@ -229,6 +288,30 @@ class ActivityRuntime {
         profileUserId: identity.profileUserId,
         sessionId: identity.sessionId,
         generatedHandle: handle,
+      }),
+      duration_seconds: null,
+      progress_seconds: 0,
+    };
+    this._rememberTarget(target);
+    return target;
+  }
+
+  _targetFromAttachmentHandle(value) {
+    const handle = String(value || "").trim();
+    if (!/^(audio|file)_\d+$/i.test(handle)) return null;
+    const identity = this._getIdentity?.();
+    if (!identity?.profileUserId || !identity?.sessionId || !this._backendClient?.buildAttachmentAudioUrl) return null;
+    const target = {
+      type: "audio_playback",
+      status: "ready",
+      source_kind: "attachment",
+      source_id: handle,
+      attachment_handle: handle,
+      title: handle,
+      url: this._backendClient.buildAttachmentAudioUrl({
+        profileUserId: identity.profileUserId,
+        sessionId: identity.sessionId,
+        attachmentHandle: handle,
       }),
       duration_seconds: null,
       progress_seconds: 0,
@@ -287,6 +370,7 @@ class ActivityRuntime {
     const keys = [
       target.source_id,
       target.attachment_id,
+      target.attachment_handle,
       target.generated_id,
       target.generated_handle,
     ]

@@ -6,6 +6,8 @@
 const THINK_TIMEOUT_MS = 5 * 60 * 1000;
 const ASR_TIMEOUT_MS = 2 * 60 * 1000;
 const AUDIO_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+const MUSIC_TIMELINE_TIMEOUT_MS = 20 * 1000;
+const WORKSPACE_TIMEOUT_MS = 30 * 1000;
 
 class BackendClient {
   /**
@@ -36,6 +38,16 @@ class BackendClient {
       real_user_id: String(profileUserId || ""),
     });
     return this.resolveUrl(`/desktop-pet/generated/${handle}/content?${query.toString()}`);
+  }
+
+  buildAttachmentAudioUrl({ profileUserId, sessionId, attachmentHandle }) {
+    const handle = encodeURIComponent(String(attachmentHandle || "").trim());
+    if (!handle) return "";
+    const query = new URLSearchParams({
+      user_id: String(sessionId || ""),
+      real_user_id: String(profileUserId || ""),
+    });
+    return this.resolveUrl(`/desktop-pet/attachments/${handle}/content?${query.toString()}`);
   }
 
   /**
@@ -234,6 +246,92 @@ class BackendClient {
       throw new Error(message);
     }
     return payload || { ok: false, error: "invalid_audio_upload_response" };
+  }
+
+  async prepareMusicTimeline({ profileUserId, sessionId, activity }) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), MUSIC_TIMELINE_TIMEOUT_MS);
+
+    let response;
+    try {
+      response = await fetch(`${this.baseUrl}/desktop-pet/music-timeline/prepare?t=${Date.now()}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        signal: controller.signal,
+        body: JSON.stringify({
+          user_id: sessionId,
+          real_user_id: profileUserId,
+          activity: activity || null,
+        }),
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) {
+      const message = payload?.detail || payload?.message || payload?.error || `Timeline prepare failed: HTTP ${response.status}`;
+      throw new Error(message);
+    }
+    return payload || { ok: false, error: "invalid_timeline_prepare_response" };
+  }
+
+  async fetchWorkspaceSummary({ profileUserId, sessionId, limit = 24 }) {
+    const query = new URLSearchParams({
+      user_id: String(sessionId || ""),
+      real_user_id: String(profileUserId || ""),
+      limit: String(limit || 24),
+      t: String(Date.now()),
+    });
+    const response = await fetch(`${this.baseUrl}/desktop-pet/workspace/summary?${query.toString()}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`Workspace summary failed: HTTP ${response.status}`);
+    }
+    return response.json();
+  }
+
+  async workspaceAction({ profileUserId, sessionId, action, itemType = "", target = "" }) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), WORKSPACE_TIMEOUT_MS);
+
+    let response;
+    try {
+      response = await fetch(`${this.baseUrl}/desktop-pet/workspace/action?t=${Date.now()}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        signal: controller.signal,
+        body: JSON.stringify({
+          user_id: sessionId,
+          real_user_id: profileUserId,
+          action,
+          item_type: itemType,
+          target,
+        }),
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) {
+      const message = payload?.detail || payload?.message || payload?.error || `Workspace action failed: HTTP ${response.status}`;
+      throw new Error(message);
+    }
+    return payload || { ok: false, error: "invalid_workspace_action_response" };
   }
 }
 

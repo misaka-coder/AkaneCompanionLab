@@ -390,3 +390,321 @@ body.drag-audio-over::after {
 #settings-prompt-save {
   background: rgba(255, 225, 205, 0.82);
 }
+
+/* ── Akane hand tray / workspace panel ── */
+#workspace-panel-root {
+  position: absolute;
+  inset: 0;
+  z-index: 58;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 14px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(8px) scale(0.985);
+  transition:
+    opacity 0.2s ease,
+    visibility 0.2s ease,
+    transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  -webkit-app-region: no-drag;
+}
+
+#workspace-panel-root.visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.workspace-panel {
+  position: relative;
+  width: min(100%, 338px);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(246, 196, 170, 0.58);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 24% 0%, rgba(255, 236, 198, 0.9), transparent 34%),
+    radial-gradient(circle at 100% 18%, rgba(216, 198, 255, 0.36), transparent 32%),
+    linear-gradient(145deg, rgba(255, 252, 246, 0.97), rgba(255, 236, 224, 0.95) 62%, rgba(250, 224, 214, 0.96));
+  color: #54362d;
+  box-shadow:
+    0 20px 54px rgba(74, 35, 20, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.74);
+  backdrop-filter: blur(18px);
+}
+
+.workspace-panel__glow {
+  position: absolute;
+  top: -80px;
+  right: -70px;
+  width: 170px;
+  height: 170px;
+  border-radius: 999px;
+  background: rgba(244, 167, 136, 0.26);
+  filter: blur(14px);
+  pointer-events: none;
+}
+
+.workspace-panel__header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 18px 12px;
+}
+
+.workspace-panel__eyebrow {
+  margin-bottom: 2px;
+  color: rgba(130, 82, 67, 0.56);
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.workspace-panel__header h2 {
+  color: #4f3128;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.workspace-panel__subtitle {
+  margin-top: 7px;
+  color: rgba(94, 60, 48, 0.68);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.workspace-panel__icon-btn {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border: 1px solid rgba(170, 110, 92, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.48);
+  color: rgba(82, 52, 43, 0.75);
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 7px 18px rgba(74, 35, 20, 0.08);
+}
+
+.workspace-panel__stats {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 6px;
+  padding: 0 18px 12px;
+}
+
+.workspace-panel__stats span {
+  flex: 1;
+  padding: 7px 6px;
+  border: 1px solid rgba(255, 210, 180, 0.4);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.38);
+  color: rgba(92, 58, 46, 0.72);
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.workspace-panel__body {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 14px 14px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(180, 124, 102, 0.38) transparent;
+}
+
+.workspace-panel__body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.workspace-panel__body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.workspace-panel__body::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(180, 124, 102, 0.34);
+}
+
+.workspace-section {
+  margin-top: 12px;
+}
+
+.workspace-section:first-child {
+  margin-top: 0;
+}
+
+.workspace-section__title-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 0 4px 8px;
+}
+
+.workspace-section__title-row h3 {
+  color: rgba(82, 52, 43, 0.94);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.workspace-section__title-row p {
+  margin-top: 2px;
+  color: rgba(92, 58, 46, 0.54);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.workspace-section__grid {
+  display: grid;
+  gap: 8px;
+}
+
+.workspace-card {
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(255, 210, 180, 0.42);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 246, 236, 0.42));
+  box-shadow:
+    0 9px 24px rgba(74, 35, 20, 0.09),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.workspace-card--activity {
+  background:
+    linear-gradient(135deg, rgba(255, 247, 235, 0.74), rgba(245, 225, 255, 0.38));
+}
+
+.workspace-card__mark {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 35% 20%, rgba(255, 255, 255, 0.96), rgba(255, 219, 194, 0.78));
+  color: #9a5e48;
+  font-size: 15px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68);
+}
+
+.workspace-card__content {
+  min-width: 0;
+  flex: 1;
+}
+
+.workspace-card__topline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.workspace-card h4 {
+  min-width: 0;
+  color: #56382e;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-card__topline span {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(255, 235, 222, 0.76);
+  color: rgba(115, 72, 58, 0.76);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.workspace-card p {
+  margin-top: 3px;
+  color: rgba(92, 58, 46, 0.58);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.workspace-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.workspace-card__actions button,
+.workspace-panel__ghost-btn {
+  border: 1px solid rgba(180, 120, 94, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.48);
+  color: rgba(82, 52, 43, 0.8);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.workspace-card__actions button {
+  padding: 6px 9px;
+}
+
+.workspace-card__actions button:hover,
+.workspace-panel__ghost-btn:hover,
+.workspace-panel__icon-btn:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 250, 246, 0.78);
+  box-shadow: 0 8px 18px rgba(74, 35, 20, 0.1);
+}
+
+.workspace-panel__footer {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid rgba(255, 220, 198, 0.46);
+  background: rgba(255, 249, 242, 0.42);
+}
+
+.workspace-panel__ghost-btn {
+  flex: 1;
+  padding: 9px 10px;
+}
+
+.workspace-panel__empty {
+  margin: 12px 2px;
+  padding: 22px 16px;
+  border: 1px dashed rgba(190, 130, 104, 0.28);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.34);
+  color: rgba(92, 58, 46, 0.62);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}

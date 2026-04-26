@@ -129,14 +129,17 @@ class ClientProtocolTests(unittest.TestCase):
         self.assertNotIn("不要输出 scene", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("thought", profile.mode_prompt_override(debug_enabled=True).split("字段固定为", 1)[-1].split("。", 1)[0])
 
-    def test_future_desktop_prompt_profile_excludes_scene_specific_modules(self) -> None:
+    def test_desktop_prompt_profile_excludes_scene_observations_but_keeps_pet_context(self) -> None:
         profile = PromptProfileRegistry().get(ClientMode.DESKTOP_PET)
 
         self.assertTrue(profile.includes(PromptModule.CLIENT_MODE))
+        self.assertTrue(profile.includes(PromptModule.CURRENT_VISUAL_STATE))
+        self.assertTrue(profile.includes(PromptModule.RESOURCE_MANIFEST))
+        self.assertTrue(profile.includes(PromptModule.OUTFIT_OBSERVATION))
+        self.assertTrue(profile.includes(PromptModule.PENDING_GIFTS))
+        self.assertTrue(profile.includes(PromptModule.FOCUSED_GIFT_OBSERVATION))
         self.assertTrue(profile.includes(PromptModule.PERSONA))
         self.assertTrue(profile.includes(PromptModule.TOOLS))
-        self.assertFalse(profile.includes(PromptModule.CURRENT_VISUAL_STATE))
-        self.assertFalse(profile.includes(PromptModule.RESOURCE_MANIFEST))
         self.assertFalse(profile.includes(PromptModule.SCENE_OBSERVATION))
 
 
