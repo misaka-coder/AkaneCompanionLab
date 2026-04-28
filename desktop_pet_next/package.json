@@ -1,0 +1,22 @@
+{
+  "name": "akane-desktop-pet-next",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Tauri/WebView2 prototype shell for Akane desktop pet.",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "doctor": "node ./scripts/doctor.mjs",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 1421",
+    "tauri": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/tauri-with-cargo-path.ps1"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-http": "^2.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "vite": "^6.0.0"
+  }
+}

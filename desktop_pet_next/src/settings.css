@@ -1,0 +1,386 @@
+:root {
+  color-scheme: light;
+  font-family:
+    "Microsoft YaHei", "PingFang SC", "Source Han Sans SC", "Segoe UI", system-ui, sans-serif;
+  background: #f4f7fb;
+  color: #314052;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background:
+    linear-gradient(180deg, #f8fbff 0%, #eef4fb 54%, #f7f4f0 100%);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.settings-shell {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 720px);
+  margin: 0 auto;
+  padding: 18px;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 0 10px;
+  border-bottom: 1px solid rgb(120 150 190 / 0.22);
+}
+
+.settings-header h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 750;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.settings-header p,
+.detail-line,
+.settings-footer {
+  margin: 4px 0 0;
+  color: rgb(49 64 82 / 0.64);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.resource-alert {
+  padding: 8px 10px;
+  border: 1px solid rgb(190 150 95 / 0.28);
+  border-radius: 8px;
+  color: #72552f;
+  background: rgb(255 244 224 / 0.66);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.resource-alert[data-status="info"] {
+  color: #405169;
+  border-color: rgb(136 162 198 / 0.28);
+  background: rgb(255 255 255 / 0.48);
+}
+
+.session-card {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 54px;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 8px;
+  border: 1px solid rgb(136 162 198 / 0.2);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.42);
+}
+
+.session-card span {
+  color: rgb(49 64 82 / 0.6);
+  font-size: 12px;
+}
+
+.session-card strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #314052;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-section {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgb(120 150 190 / 0.18);
+}
+
+.settings-section h2 {
+  margin: 0;
+  color: #405169;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.field-row,
+.range-row {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.field-row {
+  grid-template-columns: 48px minmax(0, 1fr) 54px;
+}
+
+.range-row {
+  grid-template-columns: 48px minmax(0, 1fr) 54px;
+}
+
+.field-row span,
+.range-row span {
+  color: rgb(49 64 82 / 0.68);
+  font-size: 12px;
+}
+
+.field-row input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid rgb(136 162 198 / 0.42);
+  border-radius: 8px;
+  outline: none;
+  color: #314052;
+  background: rgb(255 255 255 / 0.72);
+}
+
+.field-row input:focus {
+  border-color: rgb(91 146 194 / 0.74);
+  box-shadow: 0 0 0 3px rgb(91 146 194 / 0.12);
+}
+
+.range-row input {
+  width: 100%;
+  accent-color: #6f9eca;
+}
+
+.range-row output {
+  color: rgb(49 64 82 / 0.64);
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+button {
+  min-height: 32px;
+  border: 1px solid rgb(136 162 198 / 0.42);
+  border-radius: 8px;
+  color: #314052;
+  background: rgb(255 255 255 / 0.62);
+  cursor: pointer;
+  transition:
+    transform 0.12s ease,
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  border-color: rgb(91 146 194 / 0.62);
+  background: rgb(255 255 255 / 0.9);
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+button:disabled:hover {
+  transform: none;
+  border-color: rgb(136 162 198 / 0.42);
+  background: rgb(255 255 255 / 0.62);
+}
+
+.primary-button {
+  min-width: 68px;
+  color: #244a66;
+  border-color: rgb(111 158 202 / 0.48);
+  background: rgb(111 158 202 / 0.18);
+}
+
+.danger-button {
+  color: #a84a4a;
+  border-color: rgb(190 95 95 / 0.34);
+}
+
+.danger-button:hover {
+  background: rgb(190 95 95 / 0.12);
+}
+
+.button-grid,
+.toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.toggle-grid label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid rgb(136 162 198 / 0.22);
+  border-radius: 8px;
+  color: rgb(49 64 82 / 0.76);
+  background: rgb(255 255 255 / 0.42);
+  font-size: 12px;
+}
+
+.toggle-grid input {
+  accent-color: #6f9eca;
+}
+
+.chip-row,
+.emotion-grid,
+.outfit-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.chip-row button,
+.emotion-grid button {
+  min-height: 28px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.chip-row button.active,
+.emotion-grid button.active {
+  color: #244a66;
+  border-color: rgb(111 158 202 / 0.58);
+  background: rgb(111 158 202 / 0.2);
+  font-weight: 700;
+}
+
+.emotion-grid {
+  max-height: 142px;
+  overflow-y: auto;
+  color: rgb(49 64 82 / 0.56);
+  font-size: 12px;
+  scrollbar-width: thin;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.metric {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid rgb(136 162 198 / 0.18);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.42);
+}
+
+.metric span,
+.outfit-card span,
+.outfit-card small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric span {
+  color: rgb(49 64 82 / 0.55);
+  font-size: 10px;
+}
+
+.metric strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #314052;
+  font-size: 12px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outfit-list {
+  max-height: 178px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.outfit-card {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+  width: calc(50% - 4px);
+  min-height: 72px;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.outfit-card strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #314052;
+  font-size: 13px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outfit-card span,
+.outfit-card small {
+  color: rgb(49 64 82 / 0.58);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.outfit-card.active {
+  border-color: rgb(111 158 202 / 0.58);
+  background: rgb(111 158 202 / 0.18);
+}
+
+.settings-footer {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 10px;
+  word-break: break-word;
+}
+
+@media (max-width: 420px) {
+  .settings-shell {
+    padding: 14px;
+  }
+
+  .settings-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .field-row,
+  .range-row,
+  .session-card,
+  .button-grid,
+  .toggle-grid,
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .outfit-card {
+    width: 100%;
+  }
+
+  .range-row output {
+    text-align: left;
+  }
+}

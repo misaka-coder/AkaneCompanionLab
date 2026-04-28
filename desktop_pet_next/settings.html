@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Akane Next 设置</title>
+  </head>
+  <body>
+    <main class="settings-shell">
+      <header class="settings-header">
+        <div>
+          <h1>Akane Next</h1>
+          <p id="settings-summary">正在读取设置</p>
+        </div>
+        <button id="open-input" class="primary-button" type="button">输入</button>
+      </header>
+
+      <section class="settings-section">
+        <h2>日常</h2>
+        <div class="field-row">
+          <span>后端</span>
+          <input id="backend-url" type="text" spellcheck="false" />
+          <button id="save-backend" type="button">保存</button>
+        </div>
+        <div class="field-row">
+          <span>服装</span>
+          <input id="outfit" type="text" spellcheck="false" />
+          <button id="save-outfit" type="button">保存</button>
+        </div>
+        <div id="resource-alert" class="resource-alert" hidden></div>
+        <div class="toggle-grid">
+          <label><input id="restore-latest" type="checkbox" /> 启动恢复上一轮</label>
+        </div>
+        <div class="session-card">
+          <span>会话</span>
+          <strong id="session-id">-</strong>
+          <button id="copy-session" type="button">复制</button>
+        </div>
+        <p id="activity-status" class="detail-line">状态：同步中</p>
+        <div class="button-grid">
+          <button id="new-session" type="button">新对话</button>
+          <button id="stop-reply" type="button" disabled>停止回复</button>
+          <button id="open-workspace" type="button">手边物品</button>
+          <button id="check-connection" type="button">检查连接</button>
+          <button id="reload-resources" type="button">重载立绘</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2>外观</h2>
+        <label class="range-row">
+          <span>大小</span>
+          <input id="scale" type="range" min="0.75" max="1.45" step="0.05" />
+          <output id="scale-output">100%</output>
+        </label>
+        <div id="scale-presets" class="chip-row"></div>
+
+        <label class="range-row">
+          <span>透明度</span>
+          <input id="opacity" type="range" min="0.55" max="1" step="0.05" />
+          <output id="opacity-output">100%</output>
+        </label>
+        <div id="opacity-presets" class="chip-row"></div>
+
+        <div class="toggle-grid">
+          <label><input id="always-on-top" type="checkbox" /> 置顶</label>
+          <label><input id="skip-taskbar" type="checkbox" /> 隐藏任务栏</label>
+        </div>
+        <div class="button-grid">
+          <button id="reset-visuals" type="button">恢复外观</button>
+          <button id="reset-placement" type="button">重置位置</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2>语音</h2>
+        <div class="toggle-grid">
+          <label><input id="voice-enabled" type="checkbox" /> 回复朗读</label>
+          <label><input id="voice-input-enabled" type="checkbox" /> 语音输入</label>
+        </div>
+        <label class="range-row">
+          <span>音量</span>
+          <input id="voice-volume" type="range" min="0" max="1" step="0.05" />
+          <output id="voice-volume-output">85%</output>
+        </label>
+        <div class="button-grid">
+          <button id="test-tts" type="button">测试语音</button>
+          <button id="stop-tts" type="button">停止语音</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2>桌面上下文</h2>
+        <div class="toggle-grid">
+          <label><input id="desktop-context-enabled" type="checkbox" /> 前台窗口感知</label>
+          <label><input id="clipboard-context-enabled" type="checkbox" /> 剪贴板文本</label>
+        </div>
+        <p id="desktop-context-note" class="detail-line">只在发送消息时临时附带。</p>
+      </section>
+
+      <section class="settings-section">
+        <h2>资源</h2>
+        <p id="resource-details" class="detail-line">Resources: Unknown</p>
+        <div id="resource-metrics" class="metric-grid"></div>
+        <div id="outfit-list" class="outfit-list"></div>
+      </section>
+
+      <section class="settings-section">
+        <h2>表情</h2>
+        <div id="emotion-grid" class="emotion-grid"></div>
+      </section>
+
+      <section class="settings-section">
+        <h2>调试</h2>
+        <div class="toggle-grid">
+          <label><input id="hit-test" type="checkbox" /> Hit-Test</label>
+          <label><input id="hitbox-overlay" type="checkbox" /> Hitbox</label>
+        </div>
+        <div class="button-grid">
+          <button id="toggle-webgl" type="button">WebGL</button>
+          <button id="probe-click-through" type="button">穿透 5s</button>
+          <button id="reset-window" type="button">重置位置</button>
+          <button id="close-pet" class="danger-button" type="button">退出桌宠</button>
+        </div>
+      </section>
+
+      <footer class="settings-footer">
+        <span id="connection-status">Backend: Unknown</span>
+        <span id="runtime-status">Ready</span>
+      </footer>
+    </main>
+    <script type="module" src="/src/settings.js"></script>
+  </body>
+</html>
