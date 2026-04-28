@@ -19,6 +19,7 @@ const els = {
   taskCount: document.querySelector("#task-count"),
   content: document.querySelector("#workspace-content"),
   session: document.querySelector("#workspace-session"),
+  updated: document.querySelector("#workspace-updated"),
   status: document.querySelector("#workspace-status")
 };
 
@@ -37,6 +38,7 @@ async function boot() {
 }
 
 function bindUi() {
+  els.refresh.title = "刷新手边物品 (F5 / Ctrl+R)";
   els.refresh.addEventListener("click", () => {
     void refreshWorkspace();
   });
@@ -139,10 +141,12 @@ async function refreshWorkspace({ reload = true } = {}) {
       sessionId
     });
     renderPayload(payload || {});
+    setUpdated(Date.now());
     setStatus("已刷新");
   } catch (error) {
-    renderEmpty("手边物品暂时打不开。");
+    renderEmpty("手边物品暂时打不开，等后端回来后再刷新。");
     setAlert(`确认后端已经启动：${formatError(error)}`, "error");
+    setUpdated(Date.now(), { failed: true });
     setStatus("刷新失败");
   } finally {
     loading = false;
@@ -180,7 +184,7 @@ function renderPayload(payload) {
   setAlert("");
 
   if (!files.length && !outputs.length && !tasks.length) {
-    renderEmpty("现在手边还很清爽。");
+    renderEmpty("现在手边还很清爽，没有文件、成果或任务。");
     return;
   }
 
@@ -296,6 +300,20 @@ function updateIdentityUi() {
   const short = sessionId ? `${sessionId.slice(0, 10)}…${sessionId.slice(-6)}` : "-";
   els.session.textContent = `Session: ${short}`;
   els.session.title = sessionId;
+}
+
+function setUpdated(value, { failed = false } = {}) {
+  const timestamp = Number(value || 0);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    els.updated.textContent = "Last refresh: -";
+    return;
+  }
+  const label = failed ? "Last attempt" : "Last refresh";
+  els.updated.textContent = `${label}: ${new Date(timestamp).toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  })}`;
 }
 
 function setAlert(message, status = "info") {

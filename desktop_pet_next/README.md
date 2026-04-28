@@ -32,7 +32,7 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 - Minimal TTS output is available from the settings window: replies can be read aloud through the existing `/tts` endpoint, with enable/disable, volume, test, and stop controls.
 - Minimal voice input is available from the chat input: click the `麦` button or hold `Ctrl+Shift+Space` while the pet window is focused to record, then `/asr` transcribes into the input box for manual confirmation.
 - Minimal desktop context is available behind settings toggles: foreground-window sensing is on by default, clipboard text is off by default, and both are only attached transiently to `/think`.
-- A read-only Workspace/hand-tray window is available from the compact menu and settings window. It fetches `/desktop-pet/workspace/summary` and shows files, generated outputs, and tasks without running file actions yet.
+- A read-only Workspace/hand-tray window is available from the compact menu and settings window. It fetches `/desktop-pet/workspace/summary`, shows files/generated outputs/tasks, has manual refresh, and records the latest refresh time without running file actions yet.
 - Replies can be interrupted from the compact menu or the settings window. Stopping a reply aborts/invalidates the active `/think` turn, clears queued TTS, and returns the portrait motion to idle; local click bubbles no longer make the stop control look active.
 - Long plain `speech` replies are split client-side into smaller bubble segments when the backend does not provide `speech_segments`.
 - The settings window exposes a startup restore toggle for `latest_final_json`, so daily testing can choose whether to restore the previous reply on launch.
@@ -73,7 +73,7 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 | Settings/resource panel | Partial | Daily settings, resource diagnostics, connection check, appearance reset, and status separation are present; full debug panel remains deferred. |
 | Voice input / ASR | Partial | Focused-window recording button/shortcut calls `/asr` and fills the input box. Global shortcut and richer recorder panel are deferred. |
 | Desktop context | Partial | Foreground-window context is cached through a lightweight native probe and attached to `/think`; clipboard text is optional and off by default. |
-| Workspace / hand tray | Partial | Independent read-only Tauri window lists files, generated outputs, and tasks from `/desktop-pet/workspace/summary`. File actions and Activity Runtime remain deferred. |
+| Workspace / hand tray | Partial | Independent read-only Tauri window lists files, generated outputs, tasks, empty states, and latest refresh time from `/desktop-pet/workspace/summary`. File actions and Activity Runtime remain deferred. |
 | Activity runtime / BGM / file actions | Deferred | Not part of the current Next daily baseline. |
 | Task reminders | Deferred | Keep out until background/runtime behavior is settled. |
 | Live2D | Deferred | Canvas/WebGL probe only; full renderer later. |
@@ -111,6 +111,24 @@ npm run tauri -- build
 
 The build command is only a packaging smoke test for the Next prototype. It does not replace the Electron stable app.
 
+After packaging, launch the release exe directly:
+
+```powershell
+npm run start:release
+```
+
+Or run the script by itself:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-next.ps1
+```
+
+If the release exe is missing, rebuild first with `npm run tauri -- build`, or run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-next.ps1 -BuildIfMissing
+```
+
 ## Daily Smoke Test
 
 Use this quick pass after changing the Next prototype:
@@ -136,6 +154,7 @@ Manual checks:
 - `停止` interrupts text, queued TTS, and current voice playback.
 - `麦` records, `/asr` fills text into the input box, and does not auto-send.
 - Settings changes for backend/session/voice/context are reflected in the Workspace window after refresh or snapshot sync.
+- Workspace manual refresh updates counts, empty states, and latest refresh/attempt time.
 - Backend offline state shows a light local-standby message, keeps local click reactions working, and retries quietly while the app stays open.
 - `退出` closes the pet plus settings/workspace child windows.
 - `npm run doctor` reports Node/npm/Rust/WebView2/backend readiness without changing the machine.
