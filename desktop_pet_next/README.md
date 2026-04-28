@@ -28,7 +28,7 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 - Enter sending is IME-aware, so Chinese composition will not accidentally submit the input.
 - Sent text is kept in a lightweight in-memory input history; use Up/Down in the input to recall or return to the current draft.
 - If `/think` fails or times out, the submitted text is restored into the input box for retry/editing.
-- Speech bubbles can be manually closed from the bubble itself, and the visible bubble is included in native hit-test regions.
+- Speech bubbles are compact head-top bubbles with a small tail, and they stay non-interactive so they do not block the menu/settings buttons.
 - Minimal TTS output is available from the settings window: replies can be read aloud through the existing `/tts` endpoint, with enable/disable, volume, test, and stop controls.
 - Minimal voice input is available from the chat input: click the `麦` button or hold `Ctrl+Shift+Space` while the pet window is focused to record, then `/asr` transcribes into the input box for manual confirmation.
 - Minimal desktop context is available behind settings toggles: foreground-window sensing is on by default, clipboard text is off by default, and both are only attached transiently to `/think`.
@@ -66,7 +66,7 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 | Double-click text input | Done | IME-aware Enter send, Escape hide, empty blur auto-hide. |
 | Input reliability | Done | Failed sends restore the submitted text; Up/Down recalls recent sent lines. |
 | `/think` dialogue | Done | Uses `client_mode = desktop_pet` and `speech_segments`/`tts` capabilities. |
-| Bubble presentation | Done | `speech_segments` take priority; long `speech` is split client-side; visible bubbles can be closed manually. |
+| Bubble presentation | Done | `speech_segments` take priority; long `speech` is split client-side; bubbles stay compact near the portrait head. |
 | Reply interrupt | Done | Stops active turn, queued TTS, and current voice playback. |
 | Minimal TTS | Done | Reply read-aloud toggle, volume, test, stop. |
 | Session controls | Done | Independent session ID, new session, startup restore toggle, session ID copy. |
@@ -132,7 +132,7 @@ Manual checks:
 - Repeated single-clicks refresh local lines and expressions immediately without enabling `停止`.
 - Input Up/Down recalls recent sent messages; a failed send restores the submitted text for retry.
 - `/think` replies display segments without duplicating `speech`.
-- Visible bubbles can be closed manually and still keep hit-test regions sane.
+- Head-top bubbles stay non-interactive and do not block menu/settings controls.
 - `停止` interrupts text, queued TTS, and current voice playback.
 - `麦` records, `/asr` fills text into the input box, and does not auto-send.
 - Settings changes for backend/session/voice/context are reflected in the Workspace window after refresh or snapshot sync.

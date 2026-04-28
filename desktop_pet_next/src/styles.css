@@ -139,29 +139,28 @@ textarea {
 .bubble {
   position: absolute;
   left: 50%;
-  top: var(--bubble-safe-top);
+  top: calc(36px * var(--pet-scale));
+  z-index: 7;
   box-sizing: border-box;
-  width: min(calc(318px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
-  min-width: min(calc(210px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
-  max-height: calc(126px * var(--pet-scale));
+  width: min(calc(250px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
+  min-width: min(calc(158px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
   transform: translateX(-50%) translateY(-4px);
-  padding: calc(10px * var(--pet-scale)) calc(38px * var(--pet-scale)) calc(10px * var(--pet-scale))
-    calc(16px * var(--pet-scale));
+  padding: calc(8px * var(--pet-scale)) calc(13px * var(--pet-scale));
   border: 1px solid rgb(180 200 230 / 0.38);
-  border-radius: calc(16px * var(--pet-scale));
+  border-radius: calc(14px * var(--pet-scale));
   color: #3a4858;
   background:
     linear-gradient(180deg, rgb(242 247 255 / 0.96), rgb(228 238 252 / 0.92));
-  box-shadow: 0 10px 28px rgb(20 30 50 / 0.12);
+  box-shadow: 0 8px 22px rgb(20 30 50 / 0.12);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
-  font-size: calc(14px * var(--pet-scale));
-  line-height: 1.55;
+  font-size: calc(13px * var(--pet-scale));
+  line-height: 1.5;
   text-align: left;
   white-space: pre-wrap;
   word-break: normal;
   overflow-wrap: anywhere;
-  overflow-y: auto;
+  overflow: visible;
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
@@ -174,53 +173,37 @@ textarea {
 .bubble.visible {
   opacity: 1;
   visibility: visible;
-  pointer-events: auto;
   transform: translateX(-50%) translateY(0);
 }
 
 .bubble-text {
   display: block;
+  max-height: calc(82px * var(--pet-scale));
+  overflow-y: auto;
 }
 
-.bubble-close {
+.bubble::after {
+  content: "";
   position: absolute;
-  top: calc(7px * var(--pet-scale));
-  right: calc(8px * var(--pet-scale));
-  display: grid;
-  place-items: center;
-  width: calc(22px * var(--pet-scale));
-  height: calc(22px * var(--pet-scale));
-  min-height: 0;
-  padding: 0;
-  border: 1px solid rgb(180 200 230 / 0.34);
-  border-radius: 999px;
-  color: rgb(58 72 88 / 0.54);
-  background: rgb(255 255 255 / 0.36);
-  cursor: pointer;
-  line-height: 1;
-  transition:
-    background 0.14s ease,
-    border-color 0.14s ease,
-    color 0.14s ease,
-    transform 0.14s ease;
+  left: 58%;
+  bottom: calc(-6px * var(--pet-scale));
+  width: calc(12px * var(--pet-scale));
+  height: calc(12px * var(--pet-scale));
+  border-right: 1px solid rgb(180 200 230 / 0.34);
+  border-bottom: 1px solid rgb(180 200 230 / 0.34);
+  background: rgb(228 238 252 / 0.94);
+  transform: translateX(-50%) rotate(45deg);
 }
 
-.bubble-close:hover {
-  color: rgb(58 72 88 / 0.78);
-  border-color: rgb(140 175 220 / 0.52);
-  background: rgb(255 255 255 / 0.66);
-  transform: translateY(-1px);
-}
-
-.bubble::-webkit-scrollbar {
+.bubble-text::-webkit-scrollbar {
   width: 6px;
 }
 
-.bubble::-webkit-scrollbar-track {
+.bubble-text::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.bubble::-webkit-scrollbar-thumb {
+.bubble-text::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: rgb(140 165 205 / 0.42);
 }
@@ -714,7 +697,6 @@ textarea {
 }
 
 .hitbox-overlay-shape[data-kind="debug-menu"],
-.hitbox-overlay-shape[data-kind="bubble"],
 .hitbox-overlay-shape[data-kind="chat-form"] {
   border-color: rgb(142 220 150 / 0.78);
   background: rgb(142 220 150 / 0.12);

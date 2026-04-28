@@ -255,7 +255,6 @@ const els = {
   stopReply: document.querySelector("#stop-reply"),
   bubble: document.querySelector("#bubble"),
   bubbleText: document.querySelector("#bubble-text"),
-  bubbleClose: document.querySelector("#bubble-close"),
   chatForm: document.querySelector("#chat-form"),
   chatInput: document.querySelector("#chat-input"),
   voiceRecordButton: document.querySelector("#voice-record-button"),
@@ -406,12 +405,6 @@ function bindUi() {
     event.stopPropagation();
     void toggleVoiceRecording();
   });
-  els.bubbleClose.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    hideBubble();
-  });
-
   els.toggle.addEventListener("click", (event) => {
     event.stopPropagation();
     toggleMenuNear(els.toggle);
@@ -434,13 +427,13 @@ function bindUi() {
   });
 
   window.addEventListener("contextmenu", (event) => {
-    if (event.target.closest("#debug-menu, #chat-form, #bubble")) return;
+    if (event.target.closest("#debug-menu, #chat-form")) return;
     event.preventDefault();
     openContextMenu(event);
   });
 
   window.addEventListener("pointerdown", (event) => {
-    if (!event.target.closest("#debug-menu, #debug-toggle, #chat-form, #bubble")) closeMenu();
+    if (!event.target.closest("#debug-menu, #debug-toggle, #chat-form")) closeMenu();
   });
 
   window.addEventListener("keydown", (event) => {
@@ -1570,7 +1563,6 @@ function collectHitRegions() {
 
   addElementHitRegion(regions, els.toggle, "debug-toggle");
   addElementHitRegion(regions, els.close, "close-button");
-  if (els.bubble.classList.contains("visible")) addElementHitRegion(regions, els.bubble, "bubble");
   if (!els.chatForm.hidden) addElementHitRegion(regions, els.chatForm, "chat-form");
   if (!els.menu.hidden) addElementHitRegion(regions, els.menu, "debug-menu");
 
