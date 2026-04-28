@@ -139,26 +139,30 @@ textarea {
 .bubble {
   position: absolute;
   left: 50%;
-  top: calc(16px * var(--pet-scale));
+  top: calc(8px * var(--pet-scale));
   z-index: 7;
   box-sizing: border-box;
-  width: fit-content;
-  min-width: min(calc(72px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
-  max-width: min(calc(236px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
+  display: inline-block;
+  width: max-content;
+  min-width: 0;
+  max-width: min(calc(220px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
+  height: auto;
+  min-height: 0;
+  max-height: calc(78px * var(--pet-scale));
   transform: translateX(-50%) translateY(-4px);
-  padding: calc(7px * var(--pet-scale)) calc(12px * var(--pet-scale));
+  padding: calc(4px * var(--pet-scale)) calc(10px * var(--pet-scale));
   border: 1px solid rgb(180 200 230 / 0.38);
-  border-radius: calc(13px * var(--pet-scale));
+  border-radius: calc(11px * var(--pet-scale));
   color: #3a4858;
   background:
     linear-gradient(180deg, rgb(242 247 255 / 0.96), rgb(228 238 252 / 0.92));
   box-shadow: 0 8px 22px rgb(20 30 50 / 0.12);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
-  font-size: calc(12.5px * var(--pet-scale));
-  line-height: 1.46;
+  font-size: calc(12px * var(--pet-scale));
+  line-height: 1.34;
   text-align: left;
-  white-space: pre-wrap;
+  white-space: normal;
   word-break: normal;
   overflow-wrap: anywhere;
   overflow: visible;
@@ -179,8 +183,22 @@ textarea {
 
 .bubble-text {
   display: block;
-  max-height: calc(64px * var(--pet-scale));
+  max-height: calc(54px * var(--pet-scale));
   overflow-y: auto;
+}
+
+.bubble[data-size="short"] {
+  padding-block: calc(3px * var(--pet-scale));
+  border-radius: calc(10px * var(--pet-scale));
+}
+
+.bubble[data-size="short"] .bubble-text {
+  max-height: none;
+  overflow: visible;
+}
+
+.bubble[data-size="long"] {
+  max-width: min(calc(236px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
 }
 
 .bubble::after {

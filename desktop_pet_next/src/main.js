@@ -2551,7 +2551,18 @@ function hideBubble(token = null) {
 }
 
 function setBubbleContent(text) {
-  els.bubbleText.textContent = String(text || "");
+  const value = String(text || "").trim();
+  els.bubbleText.textContent = value;
+  els.bubble.dataset.size = getBubbleSizeForText(value);
+}
+
+function getBubbleSizeForText(text) {
+  const value = String(text || "");
+  if (!value) return "empty";
+  const lineCount = value.split(/\r?\n/u).length;
+  if (value.length <= 18 && lineCount <= 1) return "short";
+  if (value.length >= 50 || lineCount >= 3) return "long";
+  return "medium";
 }
 
 function setPetMotion(motion, { durationMs = 0 } = {}) {
