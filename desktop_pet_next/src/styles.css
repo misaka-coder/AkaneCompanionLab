@@ -166,6 +166,7 @@ textarea {
   word-break: normal;
   overflow-wrap: anywhere;
   overflow: visible;
+  isolation: isolate;
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
@@ -182,6 +183,8 @@ textarea {
 }
 
 .bubble-text {
+  position: relative;
+  z-index: 2;
   display: block;
   max-height: calc(54px * var(--pet-scale));
   overflow-y: auto;
@@ -205,9 +208,10 @@ textarea {
   content: "";
   position: absolute;
   left: 58%;
-  bottom: calc(-6px * var(--pet-scale));
-  width: calc(12px * var(--pet-scale));
-  height: calc(12px * var(--pet-scale));
+  bottom: calc(-7px * var(--pet-scale));
+  z-index: 1;
+  width: calc(10px * var(--pet-scale));
+  height: calc(10px * var(--pet-scale));
   border-right: 1px solid rgb(180 200 230 / 0.34);
   border-bottom: 1px solid rgb(180 200 230 / 0.34);
   background: rgb(228 238 252 / 0.94);
