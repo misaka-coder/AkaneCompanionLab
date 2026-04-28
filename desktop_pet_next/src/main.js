@@ -19,6 +19,8 @@ const PROFILE_USER_ID = "master";
 const DEFAULT_OUTFIT = "猫娘";
 const DEFAULT_EMOTION = "正常";
 const CLIENT_MODE = "desktop_pet";
+const DESKTOP_HEALTH_PATH = "/desktop-pet/health";
+const LEGACY_HEALTH_PATH = "/health";
 const BASE_CAPABILITIES = ["speech_segments", "tts"];
 const THINK_TIMEOUT_MS = 5 * 60 * 1000;
 const TTS_TIMEOUT_MS = 45 * 1000;
@@ -178,6 +180,21 @@ const bundledOutfit = buildBundledOutfit();
 const resourceState = {
   health: "unknown",
   healthMessage: "Not checked",
+  healthEndpoint: LEGACY_HEALTH_PATH,
+  contractVersion: "",
+  contractSource: "unknown",
+  capabilities: [],
+  endpoints: {},
+  tts: {
+    enabled: null,
+    endpoint: "/tts",
+    responseMediaType: "audio/mpeg"
+  },
+  asr: {
+    available: null,
+    endpoint: "/asr",
+    uploadField: "file"
+  },
   manifest: null,
   outfit: bundledOutfit,
   source: "bundled",
@@ -804,12 +821,19 @@ function buildSettingsSnapshot() {
     resource: {
       health: resourceState.health,
       healthMessage: resourceState.healthMessage,
+      healthEndpoint: resourceState.healthEndpoint,
+      contractVersion: resourceState.contractVersion,
+      contractSource: resourceState.contractSource,
+      capabilities: Array.isArray(resourceState.capabilities) ? [...resourceState.capabilities] : [],
+      endpoints: { ...(resourceState.endpoints || {}) },
+      tts: { ...(resourceState.tts || {}) },
+      asr: { ...(resourceState.asr || {}) },
       source: resourceState.source,
       activeOutfit: activeOutfit.id || DEFAULT_OUTFIT,
       activeOutfitName: activeOutfit.name || activeOutfit.id || DEFAULT_OUTFIT,
       requestedOutfit: state.outfit || DEFAULT_OUTFIT,
-      defaultOutfit: String(resourceState.manifest?.defaults?.outfit || DEFAULT_OUTFIT),
-      defaultEmotion: String(resourceState.manifest?.defaults?.emotion || DEFAULT_EMOTION),
+      defaultOutfit: getManifestDefaultOutfit(resourceState.manifest),
+      defaultEmotion: getManifestDefaultEmotion(resourceState.manifest),
       emotionCount: emotions.length,
       outfits: getAvailableOutfits().map(serializeOutfit).filter((item) => item.id),
       emotions: emotions.map(serializeEmotion).filter((item) => item.id),
@@ -1316,17 +1340,17 @@ async function transcribeVoiceBlob(blob) {
       requestInit.connectTimeout = 30_000;
     }
 
-    const response = await backendFetch(`${state.backendUrl}/asr?t=${Date.now()}`, requestInit);
+    const response = await backendFetch(buildBackendEndpointUrl("asr", "/asr", { t: Date.now() }), requestInit);
     if (token !== voiceInputToken) return;
     const payload = await readJsonResponse(response);
     if (token !== voiceInputToken) return;
     if (!response.ok) {
-      throw new Error(payload?.message || payload?.error || `ASR HTTP ${response.status}`);
+      throw new Error(extractBackendErrorMessage(payload) || `ASR HTTP ${response.status}`);
     }
 
     const text = String(payload?.text || payload?.transcript || "").trim();
     if (!payload?.ok || !text) {
-      throw new Error(payload?.message || payload?.error || "没听清，可以再说一次。");
+      throw new Error(extractBackendErrorMessage(payload) || "没听清，可以再说一次。");
     }
 
     setChatInputText(text, { append: Boolean(els.chatInput.value.trim()) });
@@ -1356,6 +1380,45 @@ async function readJsonResponse(response) {
   } catch {
     return null;
   }
+}
+
+async function readBackendErrorMessage(response, fallback = "请求失败") {
+  const statusText = response?.status ? `HTTP ${response.status}` : fallback;
+  const contentType = String(response?.headers?.get?.("content-type") || "").toLowerCase();
+  try {
+    if (contentType.includes("json")) {
+      const payload = await response.json();
+      return extractBackendErrorMessage(payload) || statusText;
+    }
+    const text = String(await response.text()).trim();
+    if (text.startsWith("{")) {
+      try {
+        const payload = JSON.parse(text);
+        const message = extractBackendErrorMessage(payload);
+        if (message) return message;
+      } catch {
+        // Fall back to text below.
+      }
+    }
+    return text ? friendlyErrorMessage(text) : statusText;
+  } catch {
+    return statusText;
+  }
+}
+
+function extractBackendErrorMessage(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const detail = payload.detail;
+  if (typeof detail === "string" && detail.trim()) return detail.trim();
+  if (detail && typeof detail === "object") {
+    const detailMessage = extractBackendErrorMessage(detail);
+    if (detailMessage) return detailMessage;
+  }
+  for (const key of ["message", "error", "reason"]) {
+    const value = String(payload[key] || "").trim();
+    if (value) return value;
+  }
+  return "";
 }
 
 function setVoiceInputState(nextState) {
@@ -1857,25 +1920,78 @@ async function reloadCharacterResources({ startup = false, userTriggered = false
 }
 
 async function checkBackendHealth() {
+  const query = new URLSearchParams({
+    user_id: state.sessionId || "desktop_pet_next_health",
+    real_user_id: PROFILE_USER_ID,
+    t: String(Date.now())
+  });
+
   try {
-    const response = await backendFetch(`${state.backendUrl}/health?t=${Date.now()}`, {
+    const response = await backendFetch(`${state.backendUrl}${DESKTOP_HEALTH_PATH}?${query.toString()}`, {
       method: "GET",
       cache: "no-store",
       connectTimeout: 3500
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
+    const payload = await readJsonResponse(response);
+    applyBackendHealthPayload(payload, { endpoint: DESKTOP_HEALTH_PATH, contractSource: "desktop_pet" });
     resourceState.health = "online";
     resourceState.healthMessage = "Connected";
     clearBackendRetry();
     updateConnectionStatus();
     return true;
   } catch (error) {
+    return checkLegacyBackendHealth(error);
+  }
+}
+
+async function checkLegacyBackendHealth(primaryError) {
+  try {
+    const response = await backendFetch(`${state.backendUrl}${LEGACY_HEALTH_PATH}?t=${Date.now()}`, {
+      method: "GET",
+      cache: "no-store",
+      connectTimeout: 3500
+    });
+    if (!response.ok) throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
+    const payload = await readJsonResponse(response);
+    applyBackendHealthPayload(payload, { endpoint: LEGACY_HEALTH_PATH, contractSource: "legacy" });
+    resourceState.health = "online";
+    resourceState.healthMessage = "Connected (legacy health)";
+    clearBackendRetry();
+    updateConnectionStatus();
+    return true;
+  } catch (legacyError) {
     resourceState.health = "offline";
-    resourceState.healthMessage = formatError(error);
+    resourceState.healthMessage = formatError(primaryError || legacyError);
+    resourceState.healthEndpoint = DESKTOP_HEALTH_PATH;
+    resourceState.contractSource = "unavailable";
     scheduleBackendRetry();
     updateConnectionStatus();
     return false;
   }
+}
+
+function applyBackendHealthPayload(payload, { endpoint, contractSource } = {}) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const tts = data.tts && typeof data.tts === "object" ? data.tts : {};
+  const asr = data.asr && typeof data.asr === "object" ? data.asr : {};
+  resourceState.healthEndpoint = endpoint || LEGACY_HEALTH_PATH;
+  resourceState.contractVersion = String(data.contract_version || data.contractVersion || "");
+  resourceState.contractSource = contractSource || (resourceState.contractVersion ? "desktop_pet" : "legacy");
+  resourceState.capabilities = Array.isArray(data.capabilities)
+    ? data.capabilities.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  resourceState.endpoints = data.endpoints && typeof data.endpoints === "object" ? { ...data.endpoints } : {};
+  resourceState.tts = {
+    enabled: typeof tts.enabled === "boolean" ? tts.enabled : null,
+    endpoint: String(tts.endpoint || resourceState.endpoints.tts || "/tts"),
+    responseMediaType: String(tts.response_media_type || tts.responseMediaType || "audio/mpeg")
+  };
+  resourceState.asr = {
+    available: Boolean(resourceState.endpoints.asr || asr.endpoint || resourceState.capabilities.includes("asr")),
+    endpoint: String(asr.endpoint || resourceState.endpoints.asr || "/asr"),
+    uploadField: String(asr.upload_field || asr.uploadField || "file")
+  };
 }
 
 function scheduleBackendRetry(delay = BACKEND_RETRY_MS) {
@@ -1907,21 +2023,23 @@ async function fetchResourceManifest() {
     real_user_id: PROFILE_USER_ID,
     t: String(Date.now())
   });
-  const response = await backendFetch(`${state.backendUrl}/resource-manifest?${query.toString()}`, {
+  const response = await backendFetch(buildBackendEndpointUrl("resource_manifest", "/resource-manifest", query), {
     method: "GET",
     cache: "no-store",
     connectTimeout: 5000
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (!response.ok) throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
   return response.json();
 }
 
 function applyResourceManifest(manifest) {
+  syncResourceContractFromManifest(manifest);
   const outfits = Array.isArray(manifest?.characters?.outfits) ? manifest.characters.outfits : [];
+  const defaultOutfit = getManifestDefaultOutfit(manifest);
   const outfit =
     findEntry(outfits, state.outfit) ||
+    findEntry(outfits, defaultOutfit) ||
     findEntry(outfits, DEFAULT_OUTFIT) ||
-    findEntry(outfits, manifest?.defaults?.outfit) ||
     outfits[0] ||
     null;
 
@@ -1957,6 +2075,46 @@ function applyResourceManifest(manifest) {
   state.outfit = resourceState.outfit.id;
 }
 
+function syncResourceContractFromManifest(manifest) {
+  const desktop = getDesktopManifestContract(manifest);
+  if (!desktop) return;
+  resourceState.contractVersion = String(
+    desktop.contract_version || desktop.contractVersion || resourceState.contractVersion || ""
+  );
+  if (resourceState.contractVersion) {
+    resourceState.contractSource = "desktop_pet";
+  }
+}
+
+function getDesktopManifestContract(manifest) {
+  const clients = manifest?.clients;
+  if (!clients || typeof clients !== "object") return null;
+  const desktop = clients.desktop_pet;
+  return desktop && typeof desktop === "object" ? desktop : null;
+}
+
+function getManifestDefaultOutfit(manifest) {
+  const desktop = getDesktopManifestContract(manifest);
+  return String(
+    desktop?.default_outfit ||
+      desktop?.defaultOutfit ||
+      manifest?.defaults?.desktop_pet_outfit ||
+      manifest?.defaults?.outfit ||
+      DEFAULT_OUTFIT
+  );
+}
+
+function getManifestDefaultEmotion(manifest) {
+  const desktop = getDesktopManifestContract(manifest);
+  return String(
+    desktop?.default_emotion ||
+      desktop?.defaultEmotion ||
+      manifest?.defaults?.desktop_pet_emotion ||
+      manifest?.defaults?.emotion ||
+      DEFAULT_EMOTION
+  );
+}
+
 function useBundledResources() {
   resourceState.manifest = null;
   resourceState.outfit = bundledOutfit;
@@ -1968,7 +2126,7 @@ function useBundledResources() {
 async function ensureBackendSession({ restoreLatest = false } = {}) {
   if (resourceState.health !== "online") return null;
   try {
-    const response = await backendFetch(`${state.backendUrl}/sessions/ensure?t=${Date.now()}`, {
+    const response = await backendFetch(buildBackendEndpointUrl("session_ensure", "/sessions/ensure", { t: Date.now() }), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
@@ -1980,7 +2138,7 @@ async function ensureBackendSession({ restoreLatest = false } = {}) {
       })
     });
 
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
     const bundle = await response.json();
     if (restoreLatest && restoreLatestReply(bundle)) {
       setRuntimeStatus("已恢复上一轮回复", { mode: "idle" });
@@ -2254,7 +2412,7 @@ async function* sendThinkStream(message, turnToken) {
 
   let response;
   try {
-    response = await backendFetch(`${state.backendUrl}/think?t=${Date.now()}`, requestInit);
+    response = await backendFetch(buildBackendEndpointUrl("think", "/think", { t: Date.now() }), requestInit);
   } finally {
     window.clearTimeout(timeoutId);
     if (thinkController === controller) thinkController = null;
@@ -2262,7 +2420,7 @@ async function* sendThinkStream(message, turnToken) {
 
   if (!isTurnActive(turnToken)) return;
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+    throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
   }
 
   const raw = await response.text();
@@ -2585,6 +2743,10 @@ function queueTtsItems(items, signature = "") {
     .map((item) => normalizeTtsText(item))
     .filter(Boolean);
   if (!state.voiceEnabled || !normalized.length) return;
+  if (resourceState.tts?.enabled === false) {
+    setRuntimeStatus("后端语音暂未开启", { mode: "error" });
+    return;
+  }
   if (signature && signature === lastTtsSignature) return;
 
   stopTts({ resetSignature: false });
@@ -2648,8 +2810,8 @@ async function playTtsText(text, token) {
       requestInit.signal = controller.signal;
     }
 
-    const response = await backendFetch(`${state.backendUrl}/tts?t=${Date.now()}`, requestInit);
-    if (!response.ok) throw new Error(`TTS HTTP ${response.status}`);
+    const response = await backendFetch(buildBackendEndpointUrl("tts", "/tts", { t: Date.now() }), requestInit);
+    if (!response.ok) throw new Error(await readBackendErrorMessage(response, `TTS HTTP ${response.status}`));
 
     const arrayBuffer = await response.arrayBuffer();
     if (token !== ttsToken || controller.signal.aborted) return;
@@ -2772,6 +2934,36 @@ function backendFetch(input, init) {
   return window.fetch(input, init);
 }
 
+function buildBackendEndpointUrl(name, fallbackPath, params = null) {
+  const endpoint = getBackendEndpoint(name, fallbackPath);
+  const base = `${state.backendUrl.replace(/\/+$/, "")}/`;
+  const url = new URL(endpoint, base);
+  const entries =
+    params instanceof URLSearchParams
+      ? [...params.entries()]
+      : Object.entries(params || {});
+  for (const [key, value] of entries) {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  return url.toString();
+}
+
+function getBackendEndpoint(name, fallbackPath) {
+  const endpoints = resourceState.endpoints && typeof resourceState.endpoints === "object" ? resourceState.endpoints : {};
+  const specialized =
+    name === "tts"
+      ? resourceState.tts?.endpoint
+      : name === "asr"
+        ? resourceState.asr?.endpoint
+        : "";
+  const value = String(specialized || endpoints[name] || fallbackPath || "").trim();
+  if (!value) return "/";
+  if (/^https?:\/\//i.test(value)) return value;
+  return value.startsWith("/") ? value : `/${value}`;
+}
+
 function setStatus(message, { transient = true, durationMs = 1800 } = {}) {
   setRuntimeStatus(message);
   showBubbleText(message, { transient, durationMs, kind: "status" });
@@ -2800,8 +2992,9 @@ function updateConnectionStatus() {
   const outfit = getActiveOutfit();
   const count = getActiveEmotions().length;
   const source = resourceState.source === "manifest" ? "后端资源" : "本地资源";
-  els.connectionStatus.textContent = `后端：${healthLabel} · ${source} · ${outfit.id}(${count})`;
-  els.connectionStatus.title = "点击重新检查后端与资源";
+  const contract = resourceState.contractVersion || (resourceState.contractSource === "legacy" ? "legacy" : "");
+  els.connectionStatus.textContent = `后端：${healthLabel}${contract ? ` · ${contract}` : ""} · ${source} · ${outfit.id}(${count})`;
+  els.connectionStatus.title = `点击重新检查后端与资源${resourceState.healthEndpoint ? ` · ${resourceState.healthEndpoint}` : ""}`;
   updateMenuLabels();
 }
 

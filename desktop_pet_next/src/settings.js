@@ -290,6 +290,7 @@ function applySnapshot(snapshot) {
   els.toggleWebgl.textContent = view.webglEnabled ? "隐藏 WebGL" : "WebGL";
   els.stopTts.disabled = !snapshot.tts?.active;
   els.stopReply.disabled = !isReplyActive(snapshot);
+  els.testTts.disabled = resource.tts?.enabled === false;
   els.testTts.textContent = state.voiceEnabled ? "测试语音" : "开启并测试";
 }
 
@@ -316,9 +317,10 @@ function renderResourceDetails() {
   const source = sourceLabel(resource.source);
   const session = resource.sessionShort ? ` · 会话 ${resource.sessionShort}` : "";
   const outfits = Array.isArray(resource.outfits) && resource.outfits.length ? ` · 可用服装 ${resource.outfits.length}` : "";
+  const contract = resource.contractVersion ? ` · ${resource.contractVersion}` : "";
   const loadedAt = formatLoadedAt(resource.loadedAt);
   els.resourceDetails.textContent =
-    `${source} · ${resource.activeOutfit || DEFAULT_OUTFIT} · ${resource.emotionCount || 0} 表情${outfits}${session}${loadedAt}`;
+    `${source}${contract} · ${resource.activeOutfit || DEFAULT_OUTFIT} · ${resource.emotionCount || 0} 表情${outfits}${session}${loadedAt}`;
 }
 
 function renderResourceAlert() {
@@ -332,6 +334,8 @@ function renderResourceAlert() {
     messages.push(resource.retrying ? "后端离线，当前使用本地立绘，并会轻量重试。" : "后端离线，当前使用本地立绘。");
   } else if (health === "checking") {
     messages.push("正在检查后端与资源。");
+  } else if (health === "online" && resource.contractSource === "legacy") {
+    messages.push("后端已连接，但尚未提供桌宠健康契约，当前使用旧健康检查兼容。");
   } else if (isFallback) {
     messages.push("当前使用本地立绘。");
   }
@@ -358,9 +362,15 @@ function renderResourceMetrics() {
   const resource = view.resource || {};
   const missingRequired = Array.isArray(resource.missingRequired) ? resource.missingRequired.length : 0;
   const missingRecommended = Array.isArray(resource.missingRecommended) ? resource.missingRecommended.length : 0;
+  const tts = resource.tts && typeof resource.tts === "object" ? resource.tts : {};
+  const asr = resource.asr && typeof resource.asr === "object" ? resource.asr : {};
   const rows = [
     ["来源", sourceLabel(resource.source)],
     ["后端", healthLabel(resource.health)],
+    ["契约", resource.contractVersion || (resource.contractSource === "legacy" ? "legacy" : "-")],
+    ["健康入口", resource.healthEndpoint || "-"],
+    ["TTS", tts.enabled === false ? "关闭" : tts.endpoint || "/tts"],
+    ["ASR", asr.available === false ? "未声明" : asr.endpoint || "/asr"],
     ["服装", resource.activeOutfit || DEFAULT_OUTFIT],
     ["表情", `${resource.emotionCount || 0}`],
     ["基础缺失", `${missingRequired}`],
@@ -434,7 +444,8 @@ function renderEmotionGrid() {
 
 function buildConnectionLine(resource) {
   const source = sourceLabel(resource.source);
-  return `后端：${healthLabel(resource.health)} · ${source} · ${resource.activeOutfit || DEFAULT_OUTFIT}`;
+  const contract = resource.contractVersion || (resource.contractSource === "legacy" ? "legacy" : "");
+  return `后端：${healthLabel(resource.health)}${contract ? ` · ${contract}` : ""} · ${source} · ${resource.activeOutfit || DEFAULT_OUTFIT}`;
 }
 
 function buildDesktopContextNote(state) {

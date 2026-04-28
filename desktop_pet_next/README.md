@@ -20,6 +20,8 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 - The menu shows resource source, active outfit, expression count, session suffix, and a manifest-driven emotion preview grid.
 - Emotion preview is temporary and non-persistent; it restores the previous expression and does not change the dialogue state.
 - Backend offline or manifest failures are surfaced in the settings window, with bundled catgirl assets used as the visible fallback and a quiet reconnect retry while the Tauri app stays open.
+- Backend health now prefers `/desktop-pet/health`, falls back to legacy `/health`, and surfaces the desktop-pet contract version plus TTS/ASR endpoint status in settings.
+- `/resource-manifest` desktop-pet metadata (`clients.desktop_pet`) is used for default outfit/emotion hints when available.
 - Minimal `/think` dialogue loop with `client_mode = desktop_pet`, `speech_segments`/`tts` capabilities, and optional `desktop_context` when the context toggle is enabled.
 - Single-click the portrait to show a local line without calling the backend. Local reactions can refresh themselves immediately, while active backend replies and TTS are still protected.
 - Local single-click reactions temporarily switch expression and then return to `正常`, so they do not restore the previous backend reply expression.
@@ -48,7 +50,7 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 ## Deferred
 
 - Full Electron feature migration.
-- Backend protocol changes.
+- Large backend protocol rewrites beyond the lightweight desktop-pet contract.
 - Live2D renderer integration.
 - Activity runtime, global ASR shortcut, task reminders, and full debug/workbench panels.
 - Web scene Tauri wrapper.
@@ -70,7 +72,7 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 | Reply interrupt | Done | Stops active turn, queued TTS, and current voice playback. |
 | Minimal TTS | Done | Reply read-aloud toggle, volume, test, stop. |
 | Session controls | Done | Independent session ID, new session, startup restore toggle, session ID copy. |
-| Settings/resource panel | Partial | Daily settings, resource diagnostics, connection check, appearance reset, and status separation are present; full debug panel remains deferred. |
+| Settings/resource panel | Partial | Daily settings, resource diagnostics, backend contract/TTS/ASR status, connection check, appearance reset, and status separation are present; full debug panel remains deferred. |
 | Voice input / ASR | Partial | Focused-window recording button/shortcut calls `/asr` and fills the input box. Global shortcut and richer recorder panel are deferred. |
 | Desktop context | Partial | Foreground-window context is cached through a lightweight native probe and attached to `/think`; clipboard text is optional and off by default. |
 | Workspace / hand tray | Partial | Independent read-only Tauri window lists files, generated outputs, tasks, empty states, and latest refresh time from `/desktop-pet/workspace/summary`. File actions and Activity Runtime remain deferred. |
