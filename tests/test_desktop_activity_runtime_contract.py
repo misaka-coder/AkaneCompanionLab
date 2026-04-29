@@ -62,6 +62,25 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("普通音频不会因为本轮消息自动暂停", prompt)
         self.assertNotIn("主人发消息时表演已暂停", prompt)
 
+    def test_audio_playback_prompt_includes_current_lyric_without_backend_terms(self) -> None:
+        prompt = self.engine._build_desktop_activity_prompt(
+            {
+                "type": "audio_playback",
+                "status": "running",
+                "title": "雨夜的小歌.mp3",
+                "source_id": "file_012",
+                "lyric_previous": "雨落在窗边",
+                "lyric_current": "你把灯光留给我",
+                "lyric_next": "我就轻轻唱下去",
+            },
+            _desktop_context(),
+        )
+
+        self.assertIn("当前歌词：你把灯光留给我", prompt)
+        self.assertIn("上一句歌词：雨落在窗边", prompt)
+        self.assertIn("下一句歌词：我就轻轻唱下去", prompt)
+        self.assert_no_music_backend_terms(prompt)
+
     def test_desktop_audio_capability_discourages_task_workspace_for_playback_control(self) -> None:
         prompt = self.engine._build_client_mode_prompt_context(_desktop_context())
 
@@ -87,7 +106,7 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("状态：因主人发来消息已暂停", prompt)
         self.assertIn("进度 01:17 / 03:25", prompt)
         self.assertIn("如果你想继续表演，需要输出 activity action", prompt)
-        self.assertIn('"action":"play|pause|resume|stop"', prompt)
+        self.assertIn('"action":"play|pause|resume|stop|previous|next"', prompt)
 
     def test_activity_prompt_frames_action_as_request_not_success_receipt(self) -> None:
         prompt = self.engine._build_desktop_activity_prompt(
@@ -452,6 +471,40 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
 
         self.assertEqual(service.prepared_activity["source_id"], "audio_001")
         self.assertIn("歌词线索还没准备好", prompt)
+        self.assert_no_music_backend_terms(prompt)
+
+    def test_local_lyric_activity_skips_backend_timeline_prepare(self) -> None:
+        class PrepareAwareTimelineService:
+            def __init__(self):
+                self.prepared_activity = None
+
+            def prepare_timeline(self, *, profile_user_id: str, session_id: str, activity: dict):
+                self.prepared_activity = dict(activity)
+                return {"ok": True, "timeline": None, "scheduled": True}
+
+            def build_prompt_projection(self, *, profile_user_id: str, session_id: str, activity: dict):
+                return "【当前音乐位置】\n- 这首歌的歌词线索还没准备好。"
+
+        service = PrepareAwareTimelineService()
+        self.engine.desktop_music_timeline_service = service
+        prompt = self.engine._build_desktop_activity_prompt(
+            {
+                "type": "audio_playback",
+                "status": "running",
+                "title": "带歌词的歌.flac",
+                "source_id": "audio_lrc",
+                "lyric_current": "这句是本地歌词",
+                "lyric_next": "下一句也在本地",
+                "progress_seconds": 12,
+            },
+            _desktop_context(),
+            profile_user_id="master",
+            session_id="desktop_pet_test",
+        )
+
+        self.assertIsNone(service.prepared_activity)
+        self.assertIn("当前歌词：这句是本地歌词", prompt)
+        self.assertNotIn("歌词线索还没准备好", prompt)
         self.assert_no_music_backend_terms(prompt)
 
     def test_ready_audio_does_not_start_timeline_prepare(self) -> None:

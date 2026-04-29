@@ -71,6 +71,8 @@ const PROACTIVE_WAKE_DEFAULT_SEC = 30;
 const PROACTIVE_WAKE_MIN_SEC = 15;
 const PROACTIVE_WAKE_MAX_SEC = 600;
 const PROACTIVE_WAKE_RETRY_MS = 5000;
+const MUSIC_TIMELINE_POLL_MS = 8000;
+const MUSIC_TIMELINE_RETRY_MS = 30000;
 const CLIPBOARD_TEXT_LIMIT = 600;
 const BACKEND_RETRY_MS = 30 * 1000;
 const VOICE_MIME_TYPES = [
@@ -81,6 +83,7 @@ const VOICE_MIME_TYPES = [
   "audio/mp4"
 ];
 const MUSIC_FILE_EXTENSIONS = new Set(["mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "webm"]);
+const MUSIC_LYRIC_EXTENSIONS = new Set(["lrc"]);
 const MIN_RECORDING_MS = 700;
 const SEGMENT_MIN_MS = 1200;
 const SEGMENT_MAX_MS = 4500;
@@ -205,6 +208,9 @@ let hitSyncFrame = 0;
 let pendingHitSyncForce = false;
 let lastHitRegionSignature = "";
 let settingsSnapshotTimer = 0;
+let musicSnapshotTimer = 0;
+let musicTimelineTimer = 0;
+let musicTimelineSourceId = "";
 let ttsToken = 0;
 let ttsController = null;
 let ttsObjectUrl = "";
@@ -293,6 +299,7 @@ const els = {
   nextMusic: document.querySelector("#next-music"),
   toggleMusic: document.querySelector("#toggle-music"),
   stopMusic: document.querySelector("#stop-music"),
+  clearMusicQueue: document.querySelector("#clear-music-queue"),
   resourceDetails: document.querySelector("#resource-details"),
   emotionGrid: document.querySelector("#emotion-grid"),
   connectionStatus: document.querySelector("#connection-status"),
@@ -462,10 +469,10 @@ function bindUi() {
     void handleMusicEnded();
   });
   els.musicPlayer.addEventListener("error", () => {
-    const name = getMusicDisplayName();
-    stopMusic({ silent: true });
-    setRuntimeStatus(`音乐播放失败${name ? `：${name}` : ""}`, { mode: "error" });
-    showBubbleText("这首歌好像没放出来……", { transient: true, durationMs: 2200, kind: "music" });
+    void handleMusicPlaybackError();
+  });
+  els.musicPlayer.addEventListener("timeupdate", () => {
+    if (musicTrack) scheduleMusicSnapshot();
   });
 
   window.addEventListener("contextmenu", (event) => {
@@ -611,6 +618,10 @@ function bindUi() {
 
   els.stopMusic.addEventListener("click", () => {
     stopMusic({ announce: true });
+  });
+
+  els.clearMusicQueue.addEventListener("click", () => {
+    clearMusicQueue({ announce: true });
   });
 
   els.closeMenuButton.addEventListener("click", () => {
@@ -825,11 +836,20 @@ async function handleSettingsCommand(payload) {
     case "nextMusic":
       await playNextMusicTrack();
       break;
+    case "playMusicTrack":
+      await playMusicTrackBySourceId(payload.value);
+      break;
+    case "removeMusicTrack":
+      await removeMusicTrackBySourceId(payload.value);
+      break;
     case "toggleMusic":
       await toggleMusicPlayback();
       break;
     case "stopMusic":
       stopMusic({ announce: true });
+      break;
+    case "clearMusicQueue":
+      clearMusicQueue({ announce: true });
       break;
     case "setAlwaysOnTop":
       await setAlwaysOnTop(Boolean(payload.value));
@@ -888,6 +908,14 @@ function scheduleSettingsSnapshot(delay = 40) {
   if (!isTauriRuntime) return;
   window.clearTimeout(settingsSnapshotTimer);
   settingsSnapshotTimer = window.setTimeout(() => {
+    void broadcastSettingsSnapshot();
+  }, delay);
+}
+
+function scheduleMusicSnapshot(delay = 420) {
+  if (!isTauriRuntime || musicSnapshotTimer) return;
+  musicSnapshotTimer = window.setTimeout(() => {
+    musicSnapshotTimer = 0;
     void broadcastSettingsSnapshot();
   }, delay);
 }
@@ -3420,13 +3448,18 @@ function showMusicDropHint() {
 
 async function handleDroppedFiles(paths) {
   const files = Array.isArray(paths) ? paths.map((item) => String(item || "")).filter(Boolean) : [];
-  const audioPaths = files.filter(isSupportedMusicPath);
-  if (!audioPaths.length) {
-    showBubbleText("这个暂时不像能播放的音频文件。", { transient: true, durationMs: 2400, kind: "music" });
-    setRuntimeStatus("拖入的文件不是支持的音频格式", { mode: "error" });
+  const items = buildDroppedAudioItems(files);
+  if (!items.length) {
+    const hasLyrics = files.some(isSupportedLyricPath);
+    showBubbleText(hasLyrics ? "歌词收到啦，再把同名音频一起拖来。" : "这个暂时不像能播放的音频文件。", {
+      transient: true,
+      durationMs: 2400,
+      kind: "music"
+    });
+    setRuntimeStatus(hasLyrics ? "拖入的是歌词文件，等待同名音频" : "拖入的文件不是支持的音频格式", { mode: "error" });
     return;
   }
-  await addDroppedAudioFiles(audioPaths);
+  await addDroppedAudioFiles(items);
 }
 
 function isSupportedMusicPath(path) {
@@ -3434,18 +3467,58 @@ function isSupportedMusicPath(path) {
   return MUSIC_FILE_EXTENSIONS.has(extension);
 }
 
-async function addDroppedAudioFiles(paths) {
+function isSupportedLyricPath(path) {
+  const extension = String(path || "").split(/[\\/]/u).pop()?.split(".").pop()?.toLowerCase() || "";
+  return MUSIC_LYRIC_EXTENSIONS.has(extension);
+}
+
+function buildDroppedAudioItems(files) {
+  const lyricMap = new Map();
+  for (const path of files.filter(isSupportedLyricPath)) {
+    const key = pathStemKey(path);
+    if (key && !lyricMap.has(key)) lyricMap.set(key, path);
+  }
+  return files
+    .filter(isSupportedMusicPath)
+    .map((path) => ({
+      path,
+      lyricPath: lyricMap.get(pathStemKey(path)) || ""
+    }));
+}
+
+function pathStemKey(path) {
+  const name = String(path || "").split(/[\\/]/u).pop() || "";
+  const dotIndex = name.lastIndexOf(".");
+  return (dotIndex > 0 ? name.slice(0, dotIndex) : name).trim().toLowerCase();
+}
+
+async function addDroppedAudioFiles(items) {
   if (!isTauriRuntime) return;
+  const audioItems = Array.isArray(items)
+    ? items
+        .map((item) => {
+          if (typeof item === "string") return { path: item, lyricPath: "" };
+          return {
+            path: String(item?.path || ""),
+            lyricPath: String(item?.lyricPath || "")
+          };
+        })
+        .filter((item) => item.path)
+    : [];
+  if (!audioItems.length) return;
   musicLoading = true;
   updateActivityControls();
   scheduleSettingsSnapshot();
-  setRuntimeStatus(paths.length > 1 ? `正在准备 ${paths.length} 首音乐` : "正在准备音乐", { mode: "music" });
+  setRuntimeStatus(audioItems.length > 1 ? `正在准备 ${audioItems.length} 首音乐` : "正在准备音乐", { mode: "music" });
   try {
     const tracks = [];
     const errors = [];
-    for (const path of paths) {
+    for (const item of audioItems) {
       try {
-        const asset = await invoke("prepare_audio_asset", { path });
+        const asset = await invoke("prepare_audio_asset", {
+          path: item.path,
+          lyricPath: item.lyricPath || null
+        });
         tracks.push(normalizeMusicTrack(asset));
       } catch (error) {
         errors.push(formatError(error));
@@ -3506,6 +3579,7 @@ async function playMusicQueueIndex(index, { message = "" } = {}) {
   const queueLabel = getMusicQueueLabel();
   setRuntimeStatus(`播放中：${name}${queueLabel ? ` · ${queueLabel}` : ""}`, { mode: "music" });
   if (message) showBubbleText(message, { transient: true, durationMs: 2400, kind: "music" });
+  scheduleBackendMusicTimeline(musicTrack, { immediate: true });
   updateActivityControls();
   scheduleSettingsSnapshot();
   return true;
@@ -3533,10 +3607,81 @@ async function playPreviousMusicTrack() {
   });
 }
 
+async function playMusicTrackBySourceId(sourceId) {
+  const index = findMusicTrackIndexBySourceId(sourceId);
+  if (index < 0) {
+    showBubbleText("这首不在当前队列里。", { transient: true, durationMs: 1800, kind: "music" });
+    return false;
+  }
+  if (index === musicQueueIndex) {
+    if (musicPaused) await toggleMusicPlayback();
+    return true;
+  }
+  return playMusicQueueIndex(index, {
+    message: `切到这首：《${musicQueue[index].displayName}》。`
+  });
+}
+
+async function removeMusicTrackBySourceId(sourceId) {
+  const index = findMusicTrackIndexBySourceId(sourceId);
+  if (index < 0) {
+    showBubbleText("队列里找不到这首啦。", { transient: true, durationMs: 1800, kind: "music" });
+    return false;
+  }
+
+  const removed = musicQueue[index];
+  const wasCurrent = index === musicQueueIndex;
+  musicQueue.splice(index, 1);
+
+  if (!musicQueue.length) {
+    stopMusic({ announce: true, silent: false });
+    return true;
+  }
+
+  if (wasCurrent) {
+    const nextIndex = Math.min(index, musicQueue.length - 1);
+    await playMusicQueueIndex(nextIndex, {
+      message: `已移除《${removed.displayName}》，接着放《${musicQueue[nextIndex].displayName}》。`
+    });
+    return true;
+  }
+
+  if (index < musicQueueIndex) musicQueueIndex -= 1;
+  const text = `已从队列移除：《${removed.displayName}》。`;
+  setRuntimeStatus(text, { mode: musicPlaying ? "music" : "music-paused" });
+  showBubbleText(text, { transient: true, durationMs: 2000, kind: "music" });
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+  return true;
+}
+
 async function handleMusicEnded() {
   if (!musicTrack) return;
   if (await playNextMusicTrack({ auto: true })) return;
   stopMusic({ ended: true });
+}
+
+async function handleMusicPlaybackError() {
+  if (!musicTrack) return;
+  const failed = musicTrack;
+  const failedIndex = musicQueueIndex;
+  const name = getMusicDisplayName();
+  if (musicQueue.length > 1 && failedIndex >= 0) {
+    musicQueue.splice(failedIndex, 1);
+    const nextIndex = Math.min(failedIndex, musicQueue.length - 1);
+    try {
+      await playMusicQueueIndex(nextIndex, {
+        message: `《${name}》暂时放不了，先跳到《${musicQueue[nextIndex].displayName}》。`
+      });
+      return;
+    } catch (error) {
+      setRuntimeStatus(`音乐播放失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
+    }
+  }
+  stopMusic({ silent: true });
+  setRuntimeStatus(`音乐播放失败${name ? `：${name}` : ""}`, { mode: "error" });
+  showBubbleText("这首歌好像没放出来……", { transient: true, durationMs: 2200, kind: "music" });
+  if (failed?.displayName) scheduleSettingsSnapshot();
 }
 
 async function toggleMusicPlayback() {
@@ -3576,6 +3721,7 @@ function stopMusic({ announce = false, ended = false, silent = false } = {}) {
   musicTrack = null;
   musicQueue = [];
   musicQueueIndex = -1;
+  clearBackendMusicTimelineTimer();
   if (els.musicPlayer) {
     resetMusicElement();
   }
@@ -3589,6 +3735,14 @@ function stopMusic({ announce = false, ended = false, silent = false } = {}) {
   }
   updateActivityControls();
   scheduleSettingsSnapshot();
+}
+
+function clearMusicQueue({ announce = false } = {}) {
+  if (!musicTrack && !musicQueue.length) {
+    showBubbleText("队列现在是空的。", { transient: true, durationMs: 1600, kind: "music" });
+    return;
+  }
+  stopMusic({ announce });
 }
 
 function setMusicEmotion(active) {
@@ -3607,6 +3761,8 @@ function normalizeMusicTrack(asset) {
   const value = asset && typeof asset === "object" ? asset : {};
   const fileName = String(value.fileName || "audio");
   const cachedPath = String(value.cachedPath || "");
+  const lyricFileName = String(value.lyricFileName || "").trim();
+  const lyrics = parseLrcText(value.lyricText || "");
   return {
     originalPath: String(value.originalPath || ""),
     cachedPath,
@@ -3614,12 +3770,275 @@ function normalizeMusicTrack(asset) {
     fileName,
     displayName: String(value.displayName || value.fileName || "未命名音乐"),
     extension: String(value.extension || "").toLowerCase(),
-    sizeBytes: Number(value.sizeBytes || 0)
+    sizeBytes: Number(value.sizeBytes || 0),
+    lyricFileName,
+    lyricLineCount: lyrics.length,
+    lyrics,
+    backendAttachment: null,
+    timeline: null,
+    timelineStatus: lyrics.length ? "skipped_lrc" : "idle",
+    timelineQuality: "",
+    timelineError: "",
+    timelineLyrics: [],
+    timelineLyricLineCount: 0,
+    timelineUpdatedAt: 0,
+    timelineLoading: false
   };
+}
+
+function shouldUseBackendMusicTimeline(track) {
+  if (!isTauriRuntime || !track?.cachedPath) return false;
+  return !hasLocalMusicLyrics(track);
+}
+
+function hasLocalMusicLyrics(track) {
+  return Number(track?.lyricLineCount || 0) > 0 || (Array.isArray(track?.lyrics) && track.lyrics.length > 0);
+}
+
+function clearBackendMusicTimelineTimer() {
+  window.clearTimeout(musicTimelineTimer);
+  musicTimelineTimer = 0;
+  musicTimelineSourceId = "";
+}
+
+function scheduleBackendMusicTimeline(track, { immediate = false, delayMs = null } = {}) {
+  window.clearTimeout(musicTimelineTimer);
+  musicTimelineTimer = 0;
+  musicTimelineSourceId = "";
+  if (!shouldUseBackendMusicTimeline(track)) return;
+  if (track.timelineStatus === "ready" && Array.isArray(track.timelineLyrics) && track.timelineLyrics.length) return;
+
+  const sourceId = String(track.sourceId || "").trim();
+  if (!sourceId) return;
+  musicTimelineSourceId = sourceId;
+  const delay = immediate ? 700 : Number.isFinite(delayMs) ? Math.max(1200, delayMs) : MUSIC_TIMELINE_POLL_MS;
+  musicTimelineTimer = window.setTimeout(() => {
+    musicTimelineTimer = 0;
+    if (!musicTrack || musicTrack.sourceId !== sourceId || musicTimelineSourceId !== sourceId) return;
+    void ensureBackendMusicTimeline(musicTrack);
+  }, delay);
+}
+
+async function ensureBackendMusicTimeline(track, { force = false } = {}) {
+  if (!track || musicTrack?.sourceId !== track.sourceId || !shouldUseBackendMusicTimeline(track)) return;
+  if (track.timelineLoading) return;
+  if (!force && track.timelineStatus === "ready" && Array.isArray(track.timelineLyrics) && track.timelineLyrics.length) return;
+
+  track.timelineLoading = true;
+  if (!track.timelineStatus || track.timelineStatus === "idle") track.timelineStatus = "uploading";
+  track.timelineError = "";
+  scheduleSettingsSnapshot();
+
+  try {
+    if (!track.backendAttachment?.handle) {
+      track.backendAttachment = await uploadMusicTrackForTimeline(track);
+      track.timelineStatus = "pending";
+      scheduleSettingsSnapshot();
+    }
+
+    const result = await prepareBackendMusicTimeline(track);
+    applyBackendMusicTimeline(track, result);
+
+    if (musicTrack?.sourceId !== track.sourceId) return;
+    if (track.timelineStatus === "ready") {
+      setRuntimeStatus(`后端歌词线索已准备好：${track.timelineLyricLineCount || 0} 行`, {
+        mode: musicPlaying ? "music" : musicPaused ? "music-paused" : null
+      });
+      return;
+    }
+    if (track.timelineStatus === "pending" || track.timelineStatus === "processing") {
+      scheduleBackendMusicTimeline(track, { delayMs: MUSIC_TIMELINE_POLL_MS });
+      return;
+    }
+    scheduleBackendMusicTimeline(track, { delayMs: MUSIC_TIMELINE_RETRY_MS });
+  } catch (error) {
+    if (musicTrack?.sourceId === track.sourceId) {
+      track.timelineStatus = "failed";
+      track.timelineError = friendlyErrorMessage(formatError(error));
+      scheduleBackendMusicTimeline(track, { delayMs: MUSIC_TIMELINE_RETRY_MS });
+    }
+  } finally {
+    track.timelineLoading = false;
+    scheduleSettingsSnapshot();
+  }
+}
+
+async function uploadMusicTrackForTimeline(track) {
+  const assetUrl = convertFileSrc(track.cachedPath);
+  const assetResponse = await window.fetch(assetUrl);
+  if (!assetResponse.ok) {
+    throw new Error(`读取本地音频失败：HTTP ${assetResponse.status}`);
+  }
+
+  let blob = await assetResponse.blob();
+  const mimeType = blob.type || inferMusicMimeType(track);
+  if (mimeType && blob.type !== mimeType) {
+    blob = new Blob([blob], { type: mimeType });
+  }
+
+  const form = new FormData();
+  form.append("file", blob, track.fileName || "akane_music.audio");
+  form.append("user_id", state.sessionId || "desktop_pet_next");
+  form.append("session_id", state.sessionId || "desktop_pet_next");
+  form.append("real_user_id", state.profileUserId || PROFILE_USER_ID);
+
+  const response = await backendFetch(
+    buildBackendEndpointUrl("desktop_audio_upload", "/desktop-pet/attachments/audio", { t: Date.now() }),
+    {
+      method: "POST",
+      cache: "no-store",
+      body: form,
+      connectTimeout: 60_000
+    }
+  );
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(extractBackendErrorMessage(payload) || `音频上传失败：HTTP ${response.status}`);
+  }
+  const attachment = normalizeBackendAttachment(payload?.attachment);
+  if (!payload?.ok || !attachment.handle) {
+    throw new Error(extractBackendErrorMessage(payload) || "后端没有返回可用音频附件");
+  }
+  return attachment;
+}
+
+async function prepareBackendMusicTimeline(track) {
+  const activity = buildDesktopMusicActivity();
+  if (!activity) throw new Error("当前没有可分析的音乐");
+  const attachment = track.backendAttachment || {};
+  const payload = {
+    user_id: state.sessionId || "desktop_pet_next",
+    session_id: state.sessionId || "desktop_pet_next",
+    real_user_id: state.profileUserId || PROFILE_USER_ID,
+    activity: {
+      ...activity,
+      attachment_handle: attachment.handle || activity.attachment_handle || "",
+      attachment_id: attachment.attachmentId || activity.attachment_id || "",
+      handle: attachment.handle || activity.handle || "current"
+    }
+  };
+  const response = await backendFetch(
+    buildBackendEndpointUrl("desktop_music_timeline_prepare", "/desktop-pet/music-timeline/prepare", { t: Date.now() }),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify(payload),
+      connectTimeout: 60_000
+    }
+  );
+  const result = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(extractBackendErrorMessage(result) || `音乐歌词线索准备失败：HTTP ${response.status}`);
+  }
+  if (!result?.ok) {
+    throw new Error(extractBackendErrorMessage(result) || "后端暂时找不到这首音乐");
+  }
+  return result;
+}
+
+function applyBackendMusicTimeline(track, result) {
+  const timeline = result?.timeline && typeof result.timeline === "object" ? result.timeline : null;
+  if (!timeline) {
+    track.timelineStatus = result?.ok ? "pending" : "failed";
+    track.timelineError = extractBackendErrorMessage(result);
+    return;
+  }
+  const status = String(timeline.status || "pending").trim().toLowerCase() || "pending";
+  track.timeline = timeline;
+  track.timelineStatus = status;
+  track.timelineQuality = String(timeline.quality || "").trim();
+  track.timelineUpdatedAt = Number(timeline.updated_at || Date.now() / 1000) || 0;
+  track.timelineError = extractBackendErrorMessage(timeline) || extractBackendErrorMessage(result);
+  const lines = status === "ready" ? normalizeTimelineLyricSegments(timeline.segments) : [];
+  track.timelineLyrics = lines;
+  track.timelineLyricLineCount = lines.length || Number(timeline.segment_count || 0) || 0;
+}
+
+function normalizeBackendAttachment(payload) {
+  const value = payload && typeof payload === "object" ? payload : {};
+  const handle = String(value.handle || value.attachment_handle || value.source_id || value.attachment_id || "").trim();
+  return {
+    attachmentId: String(value.attachment_id || value.attachmentId || "").trim(),
+    handle,
+    sourceId: String(value.source_id || handle).trim(),
+    title: String(value.title || value.origin_name || "").trim(),
+    url: String(value.url || "").trim(),
+    mimeType: String(value.mime_type || value.mimeType || "").trim(),
+    sizeBytes: Number(value.size_bytes || value.sizeBytes || 0)
+  };
+}
+
+function normalizeTimelineLyricSegments(segments) {
+  return (Array.isArray(segments) ? segments : [])
+    .map((segment) => {
+      const text = String(segment?.text || "").replace(/\s+/gu, " ").trim();
+      if (!text) return null;
+      const start = Number(segment.start ?? segment.start_seconds ?? segment.timeSeconds ?? 0);
+      const end = Number(segment.end ?? segment.end_seconds ?? start);
+      return {
+        timeSeconds: Number.isFinite(start) ? Math.max(0, start) : 0,
+        endSeconds: Number.isFinite(end) ? Math.max(0, end) : Number.isFinite(start) ? Math.max(0, start) : 0,
+        text
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.timeSeconds - right.timeSeconds)
+    .filter((line, index, source) => {
+      const previous = source[index - 1];
+      return !previous || previous.timeSeconds !== line.timeSeconds || previous.text !== line.text;
+    });
+}
+
+function inferMusicMimeType(track) {
+  const extension = String(track?.extension || "").toLowerCase();
+  return (
+    {
+      mp3: "audio/mpeg",
+      wav: "audio/wav",
+      flac: "audio/flac",
+      ogg: "audio/ogg",
+      oga: "audio/ogg",
+      opus: "audio/ogg",
+      m4a: "audio/mp4",
+      aac: "audio/aac",
+      webm: "audio/webm"
+    }[extension] || "application/octet-stream"
+  );
 }
 
 function getMusicDisplayName() {
   return String(musicTrack?.displayName || musicTrack?.fileName || "").trim();
+}
+
+function parseLrcText(value) {
+  const text = String(value || "").replace(/\r\n?/gu, "\n");
+  if (!text.trim()) return [];
+  const lines = [];
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const matches = [...line.matchAll(/\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/gu)];
+    if (!matches.length) continue;
+    const lyricText = line.replace(/\[[^\]]+\]/gu, "").trim();
+    if (!lyricText) continue;
+    for (const match of matches) {
+      const minutes = Number(match[1] || 0);
+      const seconds = Number(match[2] || 0);
+      const fraction = String(match[3] || "");
+      const millis = fraction ? Number(fraction.padEnd(3, "0").slice(0, 3)) : 0;
+      const timeSeconds = minutes * 60 + seconds + millis / 1000;
+      if (Number.isFinite(timeSeconds)) {
+        lines.push({ timeSeconds, text: lyricText });
+      }
+    }
+  }
+  return lines
+    .sort((left, right) => left.timeSeconds - right.timeSeconds)
+    .filter((line, index, source) => {
+      const previous = source[index - 1];
+      return !previous || previous.timeSeconds !== line.timeSeconds || previous.text !== line.text;
+    });
 }
 
 function resetMusicElement() {
@@ -3657,7 +4076,14 @@ function summarizeMusicTrack(track) {
     fileName: track.fileName,
     displayName: track.displayName,
     extension: track.extension,
-    sizeBytes: track.sizeBytes
+    sizeBytes: track.sizeBytes,
+    lyricFileName: track.lyricFileName || "",
+    lyricLineCount: Number(track.lyricLineCount || 0),
+    timelineStatus: track.timelineStatus || "",
+    timelineQuality: track.timelineQuality || "",
+    timelineLyricLineCount: Number(track.timelineLyricLineCount || 0),
+    timelineLoading: Boolean(track.timelineLoading),
+    backendAttachmentHandle: track.backendAttachment?.handle || ""
   };
 }
 
@@ -3667,11 +4093,42 @@ function findMusicTrackIndexBySourceId(sourceId) {
   return musicQueue.findIndex((track) => track?.sourceId === normalized);
 }
 
+function buildCurrentLyricSnapshot(timeSeconds = Number(els.musicPlayer?.currentTime || 0)) {
+  const lrcLines = Array.isArray(musicTrack?.lyrics) ? musicTrack.lyrics : [];
+  const timelineLines = Array.isArray(musicTrack?.timelineLyrics) ? musicTrack.timelineLyrics : [];
+  const source = lrcLines.length ? "lrc" : timelineLines.length ? "timeline" : "";
+  const lines = source === "lrc" ? lrcLines : timelineLines;
+  if (!lines.length) return null;
+  let currentIndex = -1;
+  const currentTime = Number.isFinite(timeSeconds) ? Math.max(0, timeSeconds) : 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].timeSeconds <= currentTime + 0.12) currentIndex = index;
+    else break;
+  }
+  const current = currentIndex >= 0 ? lines[currentIndex] : null;
+  const previous = currentIndex > 0 ? lines[currentIndex - 1] : null;
+  const next = lines[Math.max(0, currentIndex + 1)] || null;
+  return {
+    source,
+    fileName: source === "lrc" ? musicTrack.lyricFileName || "" : musicTrack.timeline?.transcript_generated_handle || "",
+    quality: source === "timeline" ? musicTrack.timelineQuality || "" : "",
+    lineCount: lines.length,
+    index: currentIndex,
+    timeSeconds: current?.timeSeconds ?? 0,
+    text: current?.text || "",
+    previousText: previous?.text || "",
+    nextText: next?.text || ""
+  };
+}
+
 function buildMusicSnapshot() {
   const previous = getPreviousMusicTrack();
   const next = getNextMusicTrack();
+  const progress = Number(els.musicPlayer?.currentTime || 0);
+  const duration = Number(els.musicPlayer?.duration || 0);
+  const currentLyric = buildCurrentLyricSnapshot(progress);
   return {
-    track: musicTrack ? { ...musicTrack } : null,
+    track: summarizeMusicTrack(musicTrack),
     queue: musicQueue.map(summarizeMusicTrack).filter(Boolean),
     queueIndex: musicQueueIndex,
     queueCount: musicQueue.length,
@@ -3680,6 +4137,9 @@ function buildMusicSnapshot() {
     hasNext: hasNextMusicTrack(),
     previousDisplayName: previous?.displayName || "",
     nextDisplayName: next?.displayName || "",
+    progressSeconds: Number.isFinite(progress) ? Math.max(0, progress) : 0,
+    durationSeconds: Number.isFinite(duration) ? Math.max(0, duration) : 0,
+    currentLyric,
     playing: musicPlaying,
     paused: musicPaused,
     loading: musicLoading,
@@ -3700,6 +4160,7 @@ function buildDesktopMusicActivity() {
   if (!musicTrack) return null;
   const currentTime = Number(els.musicPlayer?.currentTime || 0);
   const duration = Number(els.musicPlayer?.duration || 0);
+  const currentLyric = buildCurrentLyricSnapshot(currentTime);
   return {
     type: "audio_playback",
     title: getMusicDisplayName() || "未命名音乐",
@@ -3711,11 +4172,22 @@ function buildDesktopMusicActivity() {
     source_kind: "local_file",
     file_name: musicTrack.fileName,
     extension: musicTrack.extension,
+    attachment_handle: musicTrack.backendAttachment?.handle || "",
+    attachment_id: musicTrack.backendAttachment?.attachmentId || "",
+    timeline_id: musicTrack.timeline?.timeline_id || "",
+    timeline_status: musicTrack.timelineStatus || "",
+    timeline_quality: musicTrack.timelineQuality || "",
     queue_count: musicQueue.length,
     queue_index: musicQueueIndex >= 0 ? musicQueueIndex + 1 : 0,
     queue_titles: musicQueue.map((track) => track.displayName).filter(Boolean).slice(0, 8),
     previous_title: getPreviousMusicTrack()?.displayName || "",
-    next_title: getNextMusicTrack()?.displayName || ""
+    next_title: getNextMusicTrack()?.displayName || "",
+    lyric_file_name: currentLyric?.fileName || "",
+    lyric_line_count: currentLyric?.lineCount || 0,
+    lyric_index: currentLyric?.index ?? -1,
+    lyric_current: currentLyric?.text || "",
+    lyric_previous: currentLyric?.previousText || "",
+    lyric_next: currentLyric?.nextText || ""
   };
 }
 
@@ -3967,6 +4439,9 @@ function updateActivityControls() {
   }
   if (els.stopMusic) {
     els.stopMusic.disabled = !musicTrack && !musicLoading;
+  }
+  if (els.clearMusicQueue) {
+    els.clearMusicQueue.disabled = musicLoading || (!musicTrack && !musicQueue.length);
   }
   if (els.previousMusic) {
     els.previousMusic.disabled = musicLoading || !hasPreviousMusicTrack();

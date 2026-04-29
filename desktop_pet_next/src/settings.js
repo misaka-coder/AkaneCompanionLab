@@ -46,10 +46,13 @@ const els = {
   testTts: document.querySelector("#test-tts"),
   stopTts: document.querySelector("#stop-tts"),
   musicStatus: document.querySelector("#music-status"),
+  musicLyric: document.querySelector("#music-lyric"),
+  musicQueue: document.querySelector("#music-queue"),
   previousMusic: document.querySelector("#previous-music"),
   nextMusic: document.querySelector("#next-music"),
   toggleMusic: document.querySelector("#toggle-music"),
   stopMusic: document.querySelector("#stop-music"),
+  clearMusicQueue: document.querySelector("#clear-music-queue"),
   desktopContextEnabled: document.querySelector("#desktop-context-enabled"),
   clipboardContextEnabled: document.querySelector("#clipboard-context-enabled"),
   screenVisionEnabled: document.querySelector("#screen-vision-enabled"),
@@ -206,6 +209,15 @@ function bindUi() {
   els.nextMusic.addEventListener("click", () => sendCommand("nextMusic"));
   els.toggleMusic.addEventListener("click", () => sendCommand("toggleMusic"));
   els.stopMusic.addEventListener("click", () => sendCommand("stopMusic"));
+  els.clearMusicQueue.addEventListener("click", () => sendCommand("clearMusicQueue"));
+  els.musicQueue.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-music-action]");
+    if (!button) return;
+    const sourceId = String(button.closest("[data-source-id]")?.dataset.sourceId || "").trim();
+    if (!sourceId) return;
+    if (button.dataset.musicAction === "play") sendCommand("playMusicTrack", sourceId);
+    if (button.dataset.musicAction === "remove") sendCommand("removeMusicTrack", sourceId);
+  });
   els.desktopContextEnabled.addEventListener("change", () =>
     sendCommand("setDesktopContextEnabled", els.desktopContextEnabled.checked)
   );
@@ -659,12 +671,13 @@ function renderMusicStatus(music) {
   const queueCount = Number(payload.queueCount || 0);
   const queueIndex = Number(payload.queueIndex || -1);
   const queueLabel = queueCount > 1 && queueIndex >= 0 ? `（${queueIndex + 1}/${queueCount}）` : "";
+  const progressLabel = formatMusicProgress(payload.progressSeconds, payload.durationSeconds);
   if (payload.loading) {
     els.musicStatus.textContent = "正在准备音乐……";
   } else if (payload.playing) {
-    els.musicStatus.textContent = `正在播放：${name || "未命名音乐"}${queueLabel}`;
+    els.musicStatus.textContent = `正在播放：${name || "未命名音乐"}${queueLabel}${progressLabel ? ` · ${progressLabel}` : ""}`;
   } else if (payload.paused) {
-    els.musicStatus.textContent = `已暂停：${name || "未命名音乐"}${queueLabel}`;
+    els.musicStatus.textContent = `已暂停：${name || "未命名音乐"}${queueLabel}${progressLabel ? ` · ${progressLabel}` : ""}`;
   } else {
     els.musicStatus.textContent = hasTrack
       ? `已停止：${name || "未命名音乐"}${queueLabel}`
@@ -674,7 +687,117 @@ function renderMusicStatus(music) {
   els.nextMusic.disabled = Boolean(payload.loading) || !payload.hasNext;
   els.toggleMusic.disabled = !hasTrack || Boolean(payload.loading);
   els.stopMusic.disabled = !hasTrack && !payload.loading;
+  els.clearMusicQueue.disabled = Boolean(payload.loading) || (!hasTrack && !queueCount);
   els.toggleMusic.textContent = payload.playing ? "暂停音乐" : hasTrack ? "继续播放" : "播放/暂停";
+  renderMusicLyric(payload, hasTrack);
+  renderMusicQueue(payload);
+}
+
+function renderMusicLyric(payload, hasTrack) {
+  const lyric = payload.currentLyric && typeof payload.currentLyric === "object" ? payload.currentLyric : {};
+  const line = String(lyric.text || "").trim();
+  const next = String(lyric.nextText || "").trim();
+  const track = payload.track && typeof payload.track === "object" ? payload.track : {};
+  const lineCount = Number(track.lyricLineCount || lyric.lineCount || track.timelineLyricLineCount || 0);
+  const timelineStatus = String(track.timelineStatus || "").trim();
+  if (line) {
+    els.musicLyric.textContent = `歌词：${line}`;
+  } else if (next && hasTrack) {
+    els.musicLyric.textContent = `下一句：${next}`;
+  } else if (hasTrack && lineCount > 0) {
+    els.musicLyric.textContent = `已载入歌词 ${lineCount} 行，等待歌曲开始。`;
+  } else if (hasTrack && (track.timelineLoading || ["uploading", "pending", "processing"].includes(timelineStatus))) {
+    els.musicLyric.textContent = "正在准备后端歌词线索……";
+  } else if (hasTrack && timelineStatus === "failed") {
+    els.musicLyric.textContent = "后端歌词线索暂时没准备好，当前只显示播放状态。";
+  } else if (hasTrack) {
+    els.musicLyric.textContent = "没有找到同名 .lrc，后端会尝试准备歌词线索。";
+  } else {
+    els.musicLyric.textContent = "歌词会显示在这里。";
+  }
+}
+
+function renderMusicQueue(payload) {
+  const queue = Array.isArray(payload.queue) ? payload.queue : [];
+  els.musicQueue.replaceChildren();
+  if (!queue.length) {
+    const empty = document.createElement("div");
+    empty.className = "music-queue-empty";
+    empty.textContent = "队列还空着，把音乐拖给桌宠就会出现在这里。";
+    els.musicQueue.append(empty);
+    return;
+  }
+
+  const currentId = String(payload.track?.sourceId || "").trim();
+  for (const [index, track] of queue.entries()) {
+    const sourceId = String(track.sourceId || "").trim();
+    const isCurrent = sourceId && sourceId === currentId;
+    const row = document.createElement("article");
+    row.className = "music-queue-item";
+    if (isCurrent) row.classList.add("is-current");
+    row.dataset.sourceId = sourceId;
+
+    const mark = document.createElement("span");
+    mark.className = "music-queue-index";
+    mark.textContent = String(index + 1);
+
+    const body = document.createElement("div");
+    body.className = "music-queue-body";
+    const title = document.createElement("strong");
+    title.textContent = String(track.displayName || track.fileName || "未命名音乐");
+    const meta = document.createElement("span");
+    meta.textContent = [
+      isCurrent ? "当前" : "",
+      track.extension ? track.extension.toUpperCase() : "",
+      track.lyricLineCount ? `LRC ${track.lyricLineCount} 行` : "",
+      track.timelineLyricLineCount ? `后端 ${track.timelineLyricLineCount} 行` : "",
+      track.timelineLoading || ["uploading", "pending", "processing"].includes(String(track.timelineStatus || "")) ? "准备歌词中" : "",
+      formatSize(track.sizeBytes)
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    body.append(title, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "music-queue-actions";
+    const play = document.createElement("button");
+    play.type = "button";
+    play.dataset.musicAction = "play";
+    play.textContent = isCurrent ? "当前" : "播放";
+    play.disabled = isCurrent || !sourceId;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.dataset.musicAction = "remove";
+    remove.textContent = "移除";
+    remove.disabled = !sourceId;
+    actions.append(play, remove);
+
+    row.append(mark, body, actions);
+    els.musicQueue.append(row);
+  }
+}
+
+function formatMusicProgress(progressValue, durationValue) {
+  const progress = Number(progressValue || 0);
+  const duration = Number(durationValue || 0);
+  if (!Number.isFinite(progress) || progress <= 0) return "";
+  const current = formatDuration(progress);
+  if (!Number.isFinite(duration) || duration <= 0) return current;
+  return `${current}/${formatDuration(duration)}`;
+}
+
+function formatDuration(value) {
+  const total = Math.max(0, Math.floor(Number(value || 0)));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatSize(bytes) {
+  const size = Number(bytes || 0);
+  if (!Number.isFinite(size) || size <= 0) return "";
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function updateScreenVisionIntervalControls(state) {

@@ -34,8 +34,9 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 - Speech bubbles are compact head-top bubbles with a small tail, and they stay non-interactive so they do not block the menu/settings buttons.
 - Minimal TTS output is available from the settings window: replies can be read aloud through the existing `/tts` endpoint, with enable/disable, volume, test, and stop controls.
 - Minimal voice input is available from the chat input: click the `麦` button or hold `Ctrl+Shift+Space` while the pet window is focused to record, then `/asr` transcribes into the input box for manual confirmation.
-- Minimal local music queue playback is available: drag one or more `mp3`, `wav`, `flac`, `ogg`, `m4a`, `aac`, `opus`, or `webm` files onto Akane to play them from the Tauri cache. The quick menu and settings window can go previous/next, pause/resume, or stop music, and the portrait switches to `听歌中` while playing.
-- Current local music status is attached to `/think` while a track is loaded, including title, queue position, next track, play/pause state, progress, and duration. Akane can naturally refer to the song queue, and simple current-track `activity` actions can pause, resume, stop, previous, next, or switch by `source_id`.
+- Minimal local music queue playback is available: drag one or more `mp3`, `wav`, `flac`, `ogg`, `m4a`, `aac`, `opus`, or `webm` files onto Akane to play them from the Tauri cache. The quick menu, settings window, and hand-tray window can go previous/next, pause/resume, stop, and manage queue items; the portrait switches to `听歌中` while playing.
+- Same-name `.lrc` lyrics are picked up automatically when a local music file is dragged in, and dragging audio plus matching `.lrc` together also works. If there is no `.lrc`, the Next shell uploads the local audio to the existing backend music-timeline pipeline so vocal separation/ASR can prepare nearby lyric lines in the background. Settings and hand-tray windows show the current lyric line while playback progresses.
+- Current local music status is attached to `/think` while a track is loaded, including title, queue position, next track, play/pause state, progress, duration, and the current/nearby lyric lines from either local `.lrc` or backend timeline. Akane can naturally refer to the song queue, and simple current-track `activity` actions can pause, resume, stop, previous, next, or switch by `source_id`.
 - Minimal desktop context is available behind settings toggles: foreground-window sensing is on by default, clipboard text is off by default, and both are only attached transiently to `/think`.
 - Experimental screen vision is available behind the `看屏幕` settings toggle. Summary mode asks WebView2 for screen-share permission, compresses a few frames into a short clip, sends them to `/desktop-pet/vision/clip`, and lets `/think` read only the latest short-term screen impressions.
 - Direct screen-vision mode keeps only the latest 1-5 compressed screenshots in the Tauri pet and sends them temporarily with proactive `/think`; new frames replace old frames, and the images are not persisted as memory.
@@ -77,7 +78,7 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 | Bubble presentation | Done | `speech_segments` take priority; long `speech` is split client-side; bubbles stay compact near the portrait head. |
 | Reply interrupt | Done | Stops active turn, queued TTS, and current voice playback. |
 | Minimal TTS | Done | Reply read-aloud toggle, volume, test, stop. |
-| Local music playback | Done | Drag one or more audio files onto Akane to play as a queue; quick menu/settings can previous/next, pause/resume, and stop; queue state is available to `/think`. |
+| Local music playback | Done | Drag one or more audio files onto Akane to play as a queue; matching `.lrc` lyrics are shown in settings/hand tray, and songs without `.lrc` can use the backend vocal timeline/ASR pipeline; quick menu/settings/hand tray can previous/next, pause/resume, stop, play queue items, and remove queue items; queue and lyric state are available to `/think`. |
 | Session controls | Done | Independent session ID, new session, startup restore toggle, session ID copy. |
 | Settings/resource panel | Partial | Daily settings, resource diagnostics, backend contract/TTS/ASR status, connection check, appearance reset, and status separation are present; full debug panel remains deferred. |
 | Voice input / ASR | Partial | Focused-window recording button/shortcut calls `/asr` and fills the input box. Global shortcut and richer recorder panel are deferred. |
@@ -163,8 +164,9 @@ Manual checks:
 - `/think` replies display segments without duplicating `speech`.
 - Head-top bubbles stay non-interactive and do not block menu/settings controls.
 - `停止` interrupts text, queued TTS, and current voice playback.
-- Drag one or more local audio files onto Akane; music starts, expression switches to `听歌中`, auto-next works, and menu/settings previous/next/pause/resume/stop controls work.
-- Ask or wait for a reply while music is loaded; Akane can reference the current track and queue state without needing the full Activity Runtime.
+- Drag one or more local audio files onto Akane; music starts, expression switches to `听歌中`, auto-next works, and menu/settings/hand-tray previous/next/pause/resume/stop plus queue item controls work.
+- Put a same-name `.lrc` beside a local audio file, then drag the audio in; settings and hand tray show the current lyric as playback moves.
+- Ask or wait for a reply while music is loaded; Akane can reference the current track, queue state, and nearby lyrics without needing the full Activity Runtime.
 - `麦` records, `/asr` fills text into the input box, and does not auto-send.
 - Settings changes for backend/session/voice/context are reflected in the Workspace window after refresh or snapshot sync.
 - Workspace manual refresh updates counts, empty states, and latest refresh/attempt time.

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-DESKTOP_PET_AUDIO_EXTENSIONS = {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"}
+DESKTOP_PET_AUDIO_EXTENSIONS = {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "webm"}
 
 
 def ingest_desktop_pet_audio_attachment(

@@ -97,6 +97,35 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("calc(318px * var(--pet-scale))", styles)
         self.assertIn("calc(324px * var(--pet-scale))", styles)
 
+    def test_next_music_queue_has_visible_management_surfaces(self) -> None:
+        main_source = _read("desktop_pet_next/src/main.js")
+        settings_source = _read("desktop_pet_next/src/settings.js")
+        workspace_source = _read("desktop_pet_next/src/workspace.js")
+        settings_html = _read("desktop_pet_next/settings.html")
+        workspace_html = _read("desktop_pet_next/workspace.html")
+
+        self.assertIn("playMusicTrackBySourceId", main_source)
+        self.assertIn("removeMusicTrackBySourceId", main_source)
+        self.assertIn("parseLrcText", main_source)
+        self.assertIn("buildCurrentLyricSnapshot", main_source)
+        self.assertIn("lyric_current", main_source)
+        self.assertIn("scheduleBackendMusicTimeline", main_source)
+        self.assertIn("uploadMusicTrackForTimeline", main_source)
+        self.assertIn("prepareBackendMusicTimeline", main_source)
+        self.assertIn("/desktop-pet/attachments/audio", main_source)
+        self.assertIn("/desktop-pet/music-timeline/prepare", main_source)
+        self.assertIn("timelineLyricLineCount", main_source)
+        self.assertIn('"playMusicTrack"', main_source)
+        self.assertIn('"removeMusicTrack"', main_source)
+        self.assertIn('id="music-lyric"', settings_html)
+        self.assertIn('id="music-queue"', settings_html)
+        self.assertIn("renderMusicLyric", settings_source)
+        self.assertIn("renderMusicQueue", settings_source)
+        self.assertIn('id="workspace-music"', workspace_html)
+        self.assertIn("renderMusicPanel", workspace_source)
+        self.assertIn("buildMusicLyricText", workspace_source)
+        self.assertIn("SETTINGS_COMMAND_EVENT", workspace_source)
+
 
 if __name__ == "__main__":
     unittest.main()

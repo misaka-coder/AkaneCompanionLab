@@ -37,6 +37,7 @@ const DEFAULT_PROFILE_USER_ID: &str = "master";
 const DEFAULT_OUTFIT: &str = "猫娘";
 const DEFAULT_EMOTION: &str = "正常";
 const MAX_AUDIO_FILE_BYTES: u64 = 300 * 1024 * 1024;
+const MAX_LYRIC_FILE_BYTES: u64 = 512 * 1024;
 const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "webm",
 ];
@@ -152,6 +153,8 @@ struct PreparedAudioAsset {
     display_name: String,
     extension: String,
     size_bytes: u64,
+    lyric_file_name: Option<String>,
+    lyric_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -244,7 +247,11 @@ fn get_desktop_context_snapshot() -> DesktopContextSnapshot {
 }
 
 #[tauri::command]
-fn prepare_audio_asset(app: AppHandle, path: String) -> Result<PreparedAudioAsset, String> {
+fn prepare_audio_asset(
+    app: AppHandle,
+    path: String,
+    lyric_path: Option<String>,
+) -> Result<PreparedAudioAsset, String> {
     let source_path = PathBuf::from(path.trim());
     if !source_path.is_file() {
         return Err("拖入的不是可播放文件。".to_string());
@@ -289,6 +296,7 @@ fn prepare_audio_asset(app: AppHandle, path: String) -> Result<PreparedAudioAsse
         .and_then(|value| value.to_str())
         .unwrap_or(file_name.as_str())
         .to_string();
+    let lyric = read_lyric_asset(&source_path, lyric_path.as_deref());
 
     Ok(PreparedAudioAsset {
         original_path: source_path.to_string_lossy().to_string(),
@@ -297,7 +305,66 @@ fn prepare_audio_asset(app: AppHandle, path: String) -> Result<PreparedAudioAsse
         display_name,
         extension,
         size_bytes: metadata.len(),
+        lyric_file_name: lyric.as_ref().map(|item| item.0.clone()),
+        lyric_text: lyric.map(|item| item.1),
     })
+}
+
+fn read_lyric_asset(audio_path: &PathBuf, explicit_path: Option<&str>) -> Option<(String, String)> {
+    let path = explicit_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| find_adjacent_lyric_path(audio_path))?;
+    if !path.is_file() {
+        return None;
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if extension != "lrc" {
+        return None;
+    }
+    let metadata = fs::metadata(&path).ok()?;
+    if metadata.len() == 0 || metadata.len() > MAX_LYRIC_FILE_BYTES {
+        return None;
+    }
+    let bytes = fs::read(&path).ok()?;
+    let text = String::from_utf8_lossy(&bytes)
+        .trim_start_matches('\u{feff}')
+        .to_string();
+    if text.trim().is_empty() {
+        return None;
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("lyrics.lrc")
+        .to_string();
+    Some((file_name, text))
+}
+
+fn find_adjacent_lyric_path(audio_path: &PathBuf) -> Option<PathBuf> {
+    let parent = audio_path.parent()?;
+    let stem = audio_path.file_stem()?.to_str()?;
+    for entry in fs::read_dir(parent).ok()? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let path_stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("");
+        let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+        if path_stem.eq_ignore_ascii_case(stem) && extension.eq_ignore_ascii_case("lrc") {
+            return Some(path);
+        }
+    }
+    None
 }
 
 #[tauri::command]

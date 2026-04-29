@@ -770,6 +770,7 @@ class DesktopMusicTimelineService:
     def _public_timeline(self, timeline: dict[str, Any] | None) -> dict[str, Any] | None:
         if not timeline:
             return None
+        segments = list(timeline.get("segments") or [])
         return {
             "timeline_id": timeline.get("timeline_id"),
             "source_id": timeline.get("source_id"),
@@ -778,6 +779,8 @@ class DesktopMusicTimelineService:
             "ready_until_seconds": timeline.get("ready_until_seconds"),
             "transcript_generated_handle": timeline.get("transcript_generated_handle"),
             "updated_at": timeline.get("updated_at"),
+            "segment_count": len(segments),
+            "segments": segments[:1200] if str(timeline.get("status") or "") == "ready" else [],
         }
 
     def _safe_seconds(self, value: Any) -> float:

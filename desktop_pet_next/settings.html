@@ -104,12 +104,15 @@
       <section class="settings-section">
         <h2>音乐</h2>
         <p id="music-status" class="detail-line">把音频文件拖到 Akane 身上就可以播放。</p>
+        <p id="music-lyric" class="music-lyric">歌词会显示在这里。</p>
         <div class="button-grid">
           <button id="previous-music" type="button" disabled>上一首</button>
           <button id="next-music" type="button" disabled>下一首</button>
           <button id="toggle-music" type="button" disabled>播放/暂停</button>
           <button id="stop-music" type="button" disabled>停止音乐</button>
+          <button id="clear-music-queue" type="button" disabled>清空队列</button>
         </div>
+        <div id="music-queue" class="music-queue" aria-live="polite"></div>
       </section>
 
       <section class="settings-section">

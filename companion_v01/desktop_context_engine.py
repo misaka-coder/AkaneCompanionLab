@@ -190,6 +190,26 @@ def build_desktop_activity_prompt(
                 ]
                 if titles:
                     lines.append(f"- 队列概况：{'；'.join(titles)}")
+        lyric_current = sanitize_desktop_context_text(
+            activity.get("lyric_current") or activity.get("lyricCurrent"),
+            120,
+        )
+        lyric_previous = sanitize_desktop_context_text(
+            activity.get("lyric_previous") or activity.get("lyricPrevious"),
+            100,
+        )
+        lyric_next = sanitize_desktop_context_text(
+            activity.get("lyric_next") or activity.get("lyricNext"),
+            100,
+        )
+        if lyric_current:
+            lines.append(f"- 当前歌词：{lyric_current}")
+        elif lyric_next:
+            lines.append(f"- 下一句歌词：{lyric_next}")
+        if lyric_previous:
+            lines.append(f"- 上一句歌词：{lyric_previous}")
+        if lyric_next and lyric_current:
+            lines.append(f"- 下一句歌词：{lyric_next}")
     if activity_type == "audio_playback":
         lines.append(
             "- 普通音频不会因为本轮消息自动暂停；如果你想控制播放，请输出 activity action。"
@@ -199,7 +219,7 @@ def build_desktop_activity_prompt(
             "- 主人发消息时表演已暂停；如果你想继续表演，需要输出 activity action，而不是假装仍在继续。"
         )
     lines.append(
-        '- 可选 activity 输出：{"action":"play|pause|resume|stop","target":"current","source_id":"可选 file/audio/gen handle"}；不需要控制时输出 null。'
+        '- 可选 activity 输出：{"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"可选 file/audio/gen handle"}；不需要控制时输出 null。'
     )
     lines.append(
         "- activity 是给桌宠执行的请求，不是执行成功回执；speech 里不要说已经播放、已经暂停或已经继续，"
@@ -226,6 +246,13 @@ def build_desktop_music_timeline_prompt(
     session_id: str = "",
 ) -> str:
     if not profile_user_id or not session_id:
+        return ""
+    if (
+        activity.get("lyric_current")
+        or activity.get("lyricCurrent")
+        or activity.get("lyric_next")
+        or activity.get("lyricNext")
+    ):
         return ""
     service = engine._get_desktop_music_timeline_service()
     if service is None:
