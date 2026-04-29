@@ -8,6 +8,7 @@
     "check": "node ./scripts/validate-character-pack.mjs",
     "check:sample": "node ./scripts/validate-character-pack.mjs ./characters/akane_sample",
     "export": "node ./scripts/export-character-pack.mjs",
-    "export:sample": "node ./scripts/export-character-pack.mjs ./characters/akane_sample"
+    "export:sample": "node ./scripts/export-character-pack.mjs ./characters/akane_sample",
+    "import": "node ./scripts/import-character-pack.mjs"
   }
 }

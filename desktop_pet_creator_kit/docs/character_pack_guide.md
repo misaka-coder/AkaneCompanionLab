@@ -124,8 +124,24 @@ The zip contains the pack folder, an `akane-export.json` manifest, and a small
 `INSTALL.md` handoff note. This is the first delivery shape for paid setup or
 creator handoff.
 
+## Import
+
+From `desktop_pet_creator_kit/`:
+
+```powershell
+npm run import -- ./dist/my_character.zip
+```
+
+The importer extracts to a temporary folder, validates the pack, then installs
+it into `characters/<pack_id>/`. Existing packs are not overwritten unless
+`--force` is provided:
+
+```powershell
+npm run import -- ./dist/my_character.zip --as my_character_v2 --force
+```
+
 ## Next Planned Slices
 
 1. Move backend persona loading into the pack.
-2. Add import/install polish for creator-delivered zip packs.
-3. Add paid-delivery checklist docs.
+2. Add paid-delivery checklist docs.
+3. Add runtime zip install flow from the settings window.

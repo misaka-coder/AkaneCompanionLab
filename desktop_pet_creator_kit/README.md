@@ -44,6 +44,20 @@ To export another pack:
 npm run export -- ./characters/my_character
 ```
 
+## Import A Pack
+
+To install an exported zip into `characters/`:
+
+```powershell
+npm run import -- ./dist/akane_sample.zip
+```
+
+To install it under a new folder name or overwrite an existing pack:
+
+```powershell
+npm run import -- ./dist/akane_sample.zip --as my_character --force
+```
+
 ## Try Another Pack In The App
 
 Copy `templates/character_pack/` into `characters/<your_pack_id>/`, edit

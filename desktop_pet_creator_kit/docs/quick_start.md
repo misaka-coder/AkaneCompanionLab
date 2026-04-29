@@ -49,6 +49,17 @@ npm run export -- ./characters/my_character
 The export command runs the validator first, then writes a zip file into
 `desktop_pet_creator_kit/dist/`.
 
+## Import A Character Pack
+
+From the Creator Kit folder:
+
+```powershell
+npm run import -- ./dist/my_character.zip
+```
+
+Use `--as new_pack_id` to install under a different folder name, and `--force`
+to overwrite an existing pack after validation passes.
+
 ## Create A Second Pack
 
 Copy the template folder:
