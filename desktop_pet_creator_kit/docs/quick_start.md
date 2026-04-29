@@ -38,6 +38,17 @@ To check a copied template pack:
 npm run check -- ./templates/character_pack
 ```
 
+## Export A Character Pack
+
+From the Creator Kit folder:
+
+```powershell
+npm run export -- ./characters/my_character
+```
+
+The export command runs the validator first, then writes a zip file into
+`desktop_pet_creator_kit/dist/`.
+
 ## Create A Second Pack
 
 Copy the template folder:
@@ -72,10 +83,11 @@ After editing, restart the Tauri dev app.
 
 ## Current Limit
 
-The sample metadata is wired into the client, and the desktop pet scans pack
+The desktop pet discovers character folders at dev/build time, and scans pack
 assets from:
 
 `desktop_pet_creator_kit/characters/akane_sample/assets/characters/<outfit>/<emotion>.png`
 
-If that folder has no images, the app falls back to the bundled
-`desktop_pet_next/src/assets/characters/猫娘/` folder.
+Replace `akane_sample` with the active pack folder. If that folder has no
+images, the app falls back to the bundled `desktop_pet_next/src/assets/characters/猫娘/`
+folder.

@@ -106,8 +106,26 @@ npm run check -- ./characters/my_character
 The current checks cover required metadata, click-line shape, asset directory
 layout, and default outfit/default emotion consistency.
 
+## Export
+
+From `desktop_pet_creator_kit/`:
+
+```powershell
+npm run export -- ./characters/my_character
+```
+
+The exporter validates the pack first, then writes:
+
+```text
+dist/my_character.zip
+```
+
+The zip contains the pack folder, an `akane-export.json` manifest, and a small
+`INSTALL.md` handoff note. This is the first delivery shape for paid setup or
+creator handoff.
+
 ## Next Planned Slices
 
 1. Move backend persona loading into the pack.
-2. Build a zip/export workflow for paid Creator Kit delivery.
-3. Add import/install polish for creator-delivered zip packs.
+2. Add import/install polish for creator-delivered zip packs.
+3. Add paid-delivery checklist docs.

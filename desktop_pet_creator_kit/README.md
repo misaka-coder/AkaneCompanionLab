@@ -29,6 +29,21 @@ That checks `characters/akane_sample/` by default. To check another copied pack:
 npm run check -- ./templates/character_pack
 ```
 
+## Export A Pack
+
+From this folder:
+
+```powershell
+npm run export
+```
+
+That validates and exports `characters/akane_sample/` into `dist/akane_sample.zip`.
+To export another pack:
+
+```powershell
+npm run export -- ./characters/my_character
+```
+
 ## Try Another Pack In The App
 
 Copy `templates/character_pack/` into `characters/<your_pack_id>/`, edit
@@ -51,8 +66,8 @@ The first Creator Kit slice is intentionally small:
 
 The desktop client still reuses the existing `desktop_pet_next` code. If a
 character pack has no external images yet, the app falls back to the bundled
-catgirl assets. Pack selection, backend persona loading, and installer polish
-come later.
+catgirl assets. Runtime zip import, backend persona loading, and installer
+polish come later.
 
 ## Product Hypothesis
 
