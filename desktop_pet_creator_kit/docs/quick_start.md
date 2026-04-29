@@ -23,6 +23,11 @@ The desktop pet reads the first sample character metadata from:
 Every folder under `desktop_pet_creator_kit/characters/` appears in the
 settings window's character-pack selector.
 
+The kit currently includes two samples:
+
+- `akane_sample`
+- `mika_sample`
+
 ## Check The Character Pack
 
 From the Creator Kit folder:
@@ -59,6 +64,8 @@ npm run import -- ./dist/my_character.zip
 
 Use `--as new_pack_id` to install under a different folder name, and `--force`
 to overwrite an existing pack after validation passes.
+
+For paid handoff work, see `docs/paid_delivery_checklist.md`.
 
 ## Create A Second Pack
 

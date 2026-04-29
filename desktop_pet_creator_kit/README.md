@@ -8,6 +8,8 @@ current prototype without forking the whole Tauri app.
 
 - `characters/akane_sample/`
   - The first runtime character pack used by `desktop_pet_next`.
+- `characters/mika_sample/`
+  - A second no-art sample used to verify multi-pack selection and delivery.
 - `templates/character_pack/`
   - A copyable starter pack for a new character.
 - `docs/`
@@ -76,6 +78,8 @@ The first Creator Kit slice is intentionally small:
 - external character images under `assets/characters/<outfit>/<emotion>.png`
 - a local pack validator
 - a settings-window character pack selector
+- a second sample character pack
+- a paid delivery checklist
 - setup and replacement docs
 
 The desktop client still reuses the existing `desktop_pet_next` code. If a
