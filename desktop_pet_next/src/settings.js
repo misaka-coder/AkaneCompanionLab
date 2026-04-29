@@ -13,6 +13,9 @@ const OPACITY_PRESETS = [1, 0.85, 0.7, 0.55];
 const els = {
   summary: document.querySelector("#settings-summary"),
   title: document.querySelector(".settings-header h1"),
+  characterPack: document.querySelector("#character-pack"),
+  saveCharacterPack: document.querySelector("#save-character-pack"),
+  characterPackList: document.querySelector("#character-pack-list"),
   characterDetails: document.querySelector("#character-details"),
   characterMetrics: document.querySelector("#character-metrics"),
   openInput: document.querySelector("#open-input"),
@@ -121,6 +124,8 @@ async function boot() {
 function bindUi() {
   els.openInput.addEventListener("click", () => sendCommand("openInput"));
   els.saveBackend.addEventListener("click", () => saveBackendUrl());
+  els.saveCharacterPack.addEventListener("click", () => saveCharacterPack());
+  els.characterPack.addEventListener("change", () => updateCharacterPackButton());
   els.backendUrl.addEventListener("keydown", (event) => {
     if (event.isComposing) return;
     if (event.key === "Enter") {
@@ -248,6 +253,13 @@ function saveBackendUrl() {
   sendCommand("setBackendUrl", normalizeBackendUrl(els.backendUrl.value));
 }
 
+function saveCharacterPack() {
+  const value = String(els.characterPack.value || "").trim();
+  if (!value) return;
+  setStatus("正在应用角色包");
+  sendCommand("setCharacterPack", value);
+}
+
 function saveOutfit() {
   sendCommand("setOutfit", normalizeOutfitName(els.outfit.value));
 }
@@ -298,6 +310,7 @@ function applySnapshot(snapshot) {
   const voiceVolume = clamp(Number(state.voiceVolume ?? 0.85), 0, 1);
 
   setInputIfIdle(els.backendUrl, state.backendUrl || DEFAULT_BACKEND_URL);
+  renderCharacterPackSelect();
   setInputIfIdle(els.outfit, state.outfit || resource.activeOutfit || DEFAULT_OUTFIT);
   els.scale.value = String(scale);
   els.opacity.value = String(opacity);
@@ -327,6 +340,7 @@ function applySnapshot(snapshot) {
   renderPresetChips();
   renderCharacterDetails();
   renderCharacterMetrics();
+  renderCharacterPackList();
   renderResourceAlert();
   renderResourceDetails();
   renderResourceMetrics();
@@ -378,8 +392,70 @@ function renderCharacterDetails() {
   const source = String(character.source || "内置角色包");
   document.title = `${appName} 设置`;
   if (els.title) els.title.textContent = appName;
-  els.characterDetails.textContent = `${appName} · ${name} · ${id} · ${schema}`;
+  const pack = String(character.packId || "-");
+  els.characterDetails.textContent = `${appName} · ${name} · ${id} · ${pack} · ${schema}`;
   els.characterDetails.title = source;
+}
+
+function renderCharacterPackSelect() {
+  if (!els.characterPack) return;
+  const packs = getCharacterPacks();
+  const active = getActiveCharacterPackId();
+  if (!packs.length) {
+    els.characterPack.replaceChildren(new Option("暂无角色包", ""));
+    els.characterPack.disabled = true;
+    updateCharacterPackButton();
+    return;
+  }
+
+  els.characterPack.disabled = false;
+  els.characterPack.replaceChildren(
+    ...packs.map((pack) => {
+      const label = `${pack.appName || pack.name || pack.id} · ${pack.id}`;
+      return new Option(label, pack.id);
+    })
+  );
+  if (active) {
+    els.characterPack.value = active;
+  }
+  updateCharacterPackButton();
+}
+
+function renderCharacterPackList() {
+  if (!els.characterPackList) return;
+  const packs = getCharacterPacks();
+  if (!packs.length) {
+    els.characterPackList.textContent = "暂无角色包。";
+    return;
+  }
+
+  const active = getActiveCharacterPackId();
+  els.characterPackList.replaceChildren(
+    ...packs.map((pack) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "character-pack-card";
+      button.classList.toggle("active", pack.id === active || Boolean(pack.selected));
+      button.dataset.characterPack = pack.id;
+      button.addEventListener("click", () => {
+        els.characterPack.value = pack.id;
+        updateCharacterPackButton();
+      });
+      button.append(
+        buildText("strong", pack.appName || pack.name || pack.id),
+        buildText("span", `${pack.name || pack.characterId || "-"} · ${pack.defaultOutfit || "-"}`),
+        buildText("small", `${pack.defaultEmotion || "-"} · ${pack.assetSource || "-"}`)
+      );
+      return button;
+    })
+  );
+}
+
+function updateCharacterPackButton() {
+  if (!els.saveCharacterPack || !els.characterPack) return;
+  const active = getActiveCharacterPackId();
+  const selected = String(els.characterPack.value || "").trim();
+  els.saveCharacterPack.disabled = !selected || selected === active;
 }
 
 function renderCharacterMetrics() {
@@ -406,6 +482,15 @@ function renderCharacterMetrics() {
       return item;
     })
   );
+}
+
+function getCharacterPacks() {
+  const packs = Array.isArray(view.character?.availablePacks) ? view.character.availablePacks : [];
+  return packs.filter((pack) => pack && typeof pack === "object" && pack.id);
+}
+
+function getActiveCharacterPackId() {
+  return String(view.character?.packId || view.state?.characterPackId || "").trim();
 }
 
 function renderResourceDetails() {

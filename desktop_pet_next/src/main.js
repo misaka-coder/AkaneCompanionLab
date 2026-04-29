@@ -17,7 +17,9 @@ import {
   RECOMMENDED_EMOTIONS,
   SESSION_DISPLAY_TITLE,
   TTS_TEST_TEXT,
-  buildCharacterSnapshot
+  buildCharacterSnapshot,
+  getActiveCharacterPackId,
+  selectCharacterPack
 } from "./character-profile.js";
 import "./styles.css";
 
@@ -27,7 +29,7 @@ const bundledCharacterAssets = import.meta.glob("./assets/characters/猫娘/*.{p
   query: "?url"
 });
 const characterPackCharacterAssets = import.meta.glob(
-  "../../desktop_pet_creator_kit/characters/akane_sample/assets/characters/**/*.{png,jpg,jpeg,webp}",
+  "../../desktop_pet_creator_kit/characters/*/assets/characters/**/*.{png,jpg,jpeg,webp}",
   {
     eager: true,
     import: "default",
@@ -119,6 +121,7 @@ const DEFAULT_STATE = {
   clickThrough: false,
   backendUrl: DEFAULT_BACKEND_URL,
   profileUserId: PROFILE_USER_ID,
+  characterPackId: getActiveCharacterPackId(),
   sessionId: "",
   outfit: DEFAULT_OUTFIT,
   currentEmotion: DEFAULT_EMOTION,
@@ -318,6 +321,7 @@ async function boot() {
 
   try {
     const loaded = await invoke("load_pet_state");
+    if (syncStoredCharacterPackBeforeBoot(loaded)) return;
     Object.assign(state, normalizeState(loaded));
     applyVisualState();
     await reloadCharacterResources({ startup: true });
@@ -335,6 +339,18 @@ async function boot() {
   } catch (error) {
     setStatus(`Tauri init failed: ${formatError(error)}`);
   }
+}
+
+function syncStoredCharacterPackBeforeBoot(loadedState) {
+  const savedPackId = String(loadedState?.characterPackId || "").trim();
+  if (!savedPackId || savedPackId === getActiveCharacterPackId()) return false;
+  const previousPackId = getActiveCharacterPackId();
+  const pack = selectCharacterPack(savedPackId);
+  if (pack.packId !== previousPackId) {
+    window.location.reload();
+    return true;
+  }
+  return false;
 }
 
 function bindUi() {
@@ -745,6 +761,9 @@ async function handleSettingsCommand(payload) {
     case "setOutfit":
       await updateOutfit(payload.value);
       break;
+    case "setCharacterPack":
+      await updateCharacterPack(payload.value);
+      break;
     case "setScale":
       updateVisualScale(Number(payload.value), { commitNow: true });
       break;
@@ -895,6 +914,7 @@ function buildSettingsSnapshot() {
       alwaysOnTop: state.alwaysOnTop,
       backendUrl: state.backendUrl,
       profileUserId: state.profileUserId,
+      characterPackId: state.characterPackId,
       sessionId: state.sessionId,
       outfit: state.outfit,
       currentEmotion: state.currentEmotion,
@@ -984,6 +1004,7 @@ function normalizeState(value) {
     clickThrough: false,
     backendUrl: normalizeBackendUrl(incoming.backendUrl),
     profileUserId: PROFILE_USER_ID,
+    characterPackId: normalizeCharacterPackId(incoming.characterPackId),
     sessionId: String(incoming.sessionId || "").trim() || generateSessionId(),
     outfit: normalizeOutfitName(incoming.outfit),
     currentEmotion: resolveEmotionEntry(incoming.currentEmotion).id,
@@ -2033,6 +2054,26 @@ async function updateOutfit(value) {
   scheduleSave(0);
   setStatus(`服装已设置：${state.outfit}`);
   await reloadCharacterResources({ userTriggered: true });
+}
+
+async function updateCharacterPack(value) {
+  const previousPackId = state.characterPackId || getActiveCharacterPackId();
+  const pack = selectCharacterPack(value);
+  state.characterPackId = pack.packId;
+  state.outfit = pack.profile.appearance.defaultOutfit;
+  state.currentEmotion = pack.profile.appearance.defaultEmotion;
+
+  if (pack.packId === previousPackId) {
+    scheduleSave(0);
+    setStatus(`角色包已是：${pack.profile.identity.name}`);
+    return;
+  }
+
+  setStatus(`角色包已切换为 ${pack.profile.identity.name}，正在应用。`, { durationMs: 2400 });
+  if (isTauriRuntime) {
+    await saveNow();
+  }
+  window.setTimeout(() => window.location.reload(), 180);
 }
 
 async function setAlwaysOnTop(enabled) {
@@ -4121,11 +4162,14 @@ function getDefaultLocalOutfit() {
 
 function buildCharacterPackOutfits() {
   const grouped = new Map();
+  const activePackId = getActiveCharacterPackId();
   for (const [path, url] of Object.entries(characterPackCharacterAssets)) {
-    const match = path.match(/\/assets\/characters\/([^/]+)\/([^/]+)\.(png|jpe?g|webp)$/i);
+    const match = path.match(/\/characters\/([^/]+)\/assets\/characters\/([^/]+)\/([^/]+)\.(png|jpe?g|webp)$/i);
     if (!match) continue;
-    const outfitId = decodeURIComponent(match[1] || "").trim();
-    const emotionId = decodeURIComponent(match[2] || "").trim();
+    const packId = decodeURIComponent(match[1] || "").trim();
+    const outfitId = decodeURIComponent(match[2] || "").trim();
+    const emotionId = decodeURIComponent(match[3] || "").trim();
+    if (packId !== activePackId) continue;
     if (!outfitId || !emotionId || !url) continue;
     const entry = grouped.get(outfitId) || [];
     entry.push({
@@ -4345,6 +4389,10 @@ function resizeCanvasToDisplaySize(canvas) {
 
 function normalizeBackendUrl(url) {
   return String(url || "").trim().replace(/\/+$/, "") || DEFAULT_BACKEND_URL;
+}
+
+function normalizeCharacterPackId(value) {
+  return selectCharacterPack(value || getActiveCharacterPackId()).packId;
 }
 
 function normalizeOutfitName(value) {

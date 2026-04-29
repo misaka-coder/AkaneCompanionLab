@@ -6,6 +6,15 @@ A character pack should describe who the pet is without requiring code edits.
 The first runtime contract is deliberately small so the desktop pet can become
 configurable before the engine is fully split.
 
+Runtime packs live under:
+
+```text
+desktop_pet_creator_kit/characters/<pack_id>/
+```
+
+The settings window discovers those folders at build/dev time and lets you
+select the active pack.
+
 ## Required Files
 
 ```text
@@ -99,6 +108,6 @@ layout, and default outfit/default emotion consistency.
 
 ## Next Planned Slices
 
-1. Add a pack selector in settings.
-2. Move backend persona loading into the pack.
-3. Build a zip/export workflow for paid Creator Kit delivery.
+1. Move backend persona loading into the pack.
+2. Build a zip/export workflow for paid Creator Kit delivery.
+3. Add import/install polish for creator-delivered zip packs.

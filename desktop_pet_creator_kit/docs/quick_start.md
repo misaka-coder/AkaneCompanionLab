@@ -20,6 +20,9 @@ The desktop pet reads the first sample character metadata from:
 
 `desktop_pet_creator_kit/characters/akane_sample/character.json`
 
+Every folder under `desktop_pet_creator_kit/characters/` appears in the
+settings window's character-pack selector.
+
 ## Check The Character Pack
 
 From the Creator Kit folder:
@@ -34,6 +37,24 @@ To check a copied template pack:
 ```powershell
 npm run check -- ./templates/character_pack
 ```
+
+## Create A Second Pack
+
+Copy the template folder:
+
+```powershell
+Copy-Item -Recurse templates/character_pack characters/my_character
+```
+
+Then edit:
+
+```text
+characters/my_character/character.json
+characters/my_character/persona.md
+```
+
+Restart or reload the desktop pet, open settings, and choose the new pack from
+the character-pack selector.
 
 ## What You Can Change First
 

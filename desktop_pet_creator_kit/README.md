@@ -29,6 +29,12 @@ That checks `characters/akane_sample/` by default. To check another copied pack:
 npm run check -- ./templates/character_pack
 ```
 
+## Try Another Pack In The App
+
+Copy `templates/character_pack/` into `characters/<your_pack_id>/`, edit
+`character.json`, then run the desktop pet. The settings window lists every
+folder under `characters/` as a selectable character pack.
+
 ## First MVP Boundary
 
 The first Creator Kit slice is intentionally small:
@@ -40,6 +46,7 @@ The first Creator Kit slice is intentionally small:
 - basic asset contract notes
 - external character images under `assets/characters/<outfit>/<emotion>.png`
 - a local pack validator
+- a settings-window character pack selector
 - setup and replacement docs
 
 The desktop client still reuses the existing `desktop_pet_next` code. If a

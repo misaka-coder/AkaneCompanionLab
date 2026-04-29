@@ -1,4 +1,13 @@
-import runtimeCharacterProfile from "../../desktop_pet_creator_kit/characters/akane_sample/character.json";
+const characterProfileModules = import.meta.glob(
+  "../../desktop_pet_creator_kit/characters/*/character.json",
+  {
+    eager: true,
+    import: "default"
+  }
+);
+
+const CHARACTER_PACK_STORAGE_KEY = "akane-next-character-pack-id";
+const DEFAULT_CHARACTER_PACK_ID = "akane_sample";
 
 const FALLBACK_PROFILE = {
   schema_version: "akane.character.v0.1",
@@ -32,14 +41,17 @@ const FALLBACK_PROFILE = {
   },
   assets: {
     runtime_source: "desktop_pet_next bundled assets",
-    bundled_outfit: "猫娘"
+    asset_root: "assets",
+    bundled_outfit: "猫娘",
+    portrait_glob: ""
   }
 };
 
-export const CHARACTER_PROFILE_SOURCE =
-  "desktop_pet_creator_kit/characters/akane_sample/character.json";
+const characterPacks = buildCharacterPackRegistry();
+let activeCharacterPackId = resolveInitialCharacterPackId();
 
-export const CHARACTER_PROFILE = normalizeCharacterProfile(runtimeCharacterProfile);
+export const CHARACTER_PROFILE_SOURCE = getActiveCharacterPack().source;
+export const CHARACTER_PROFILE = getActiveCharacterProfile();
 export const CHARACTER_ID = CHARACTER_PROFILE.identity.id;
 export const CHARACTER_NAME = CHARACTER_PROFILE.identity.name;
 export const APP_DISPLAY_NAME = CHARACTER_PROFILE.identity.appName;
@@ -58,25 +70,133 @@ export const TTS_TEST_TEXT = CHARACTER_PROFILE.dialogue.ttsTestText;
 export const CHARACTER_ASSET_ROOT = CHARACTER_PROFILE.assets.assetRoot;
 export const CHARACTER_PORTRAIT_GLOB = CHARACTER_PROFILE.assets.portraitGlob;
 
+export function getActiveCharacterPack() {
+  return resolveCharacterPack(activeCharacterPackId);
+}
+
+export function getActiveCharacterPackId() {
+  return getActiveCharacterPack().packId;
+}
+
+export function getActiveCharacterProfile() {
+  return getActiveCharacterPack().profile;
+}
+
+export function selectCharacterPack(value, { persist = true } = {}) {
+  const pack = resolveCharacterPack(value);
+  activeCharacterPackId = pack.packId;
+  if (persist) {
+    writeStoredCharacterPackId(pack.packId);
+  }
+  return pack;
+}
+
+export function listCharacterPacks() {
+  const activeId = getActiveCharacterPackId();
+  return characterPacks.map((pack) => ({
+    id: pack.packId,
+    characterId: pack.profile.identity.id,
+    name: pack.profile.identity.name,
+    appName: pack.profile.identity.appName,
+    userTitle: pack.profile.identity.userTitle,
+    schemaVersion: pack.profile.schemaVersion,
+    source: pack.source,
+    defaultOutfit: pack.profile.appearance.defaultOutfit,
+    defaultEmotion: pack.profile.appearance.defaultEmotion,
+    assetSource: pack.profile.assets.runtimeSource,
+    selected: pack.packId === activeId
+  }));
+}
+
 export function buildCharacterSnapshot() {
+  const pack = getActiveCharacterPack();
+  const profile = pack.profile;
   return {
-    schemaVersion: CHARACTER_PROFILE.schemaVersion,
-    source: CHARACTER_PROFILE_SOURCE,
-    id: CHARACTER_ID,
-    name: CHARACTER_NAME,
-    appName: APP_DISPLAY_NAME,
-    userTitle: USER_TITLE,
-    defaultOutfit: DEFAULT_OUTFIT,
-    defaultEmotion: DEFAULT_EMOTION,
-    musicEmotion: MUSIC_EMOTION,
-    requiredEmotionCount: REQUIRED_EMOTIONS.length,
-    recommendedEmotionCount: RECOMMENDED_EMOTIONS.length,
-    localLineCount: LOCAL_CLICK_LINES.length,
-    assetSource: CHARACTER_PROFILE.assets.runtimeSource,
-    assetRoot: CHARACTER_PROFILE.assets.assetRoot,
-    portraitGlob: CHARACTER_PROFILE.assets.portraitGlob,
-    bundledOutfit: CHARACTER_PROFILE.assets.bundledOutfit
+    schemaVersion: profile.schemaVersion,
+    source: pack.source,
+    packId: pack.packId,
+    availablePacks: listCharacterPacks(),
+    id: profile.identity.id,
+    name: profile.identity.name,
+    appName: profile.identity.appName,
+    userTitle: profile.identity.userTitle,
+    defaultOutfit: profile.appearance.defaultOutfit,
+    defaultEmotion: profile.appearance.defaultEmotion,
+    musicEmotion: profile.appearance.musicEmotion,
+    requiredEmotionCount: profile.appearance.requiredEmotions.length,
+    recommendedEmotionCount: profile.appearance.recommendedEmotions.length,
+    localLineCount: profile.dialogue.localClickLines.length,
+    assetSource: profile.assets.runtimeSource,
+    assetRoot: profile.assets.assetRoot,
+    portraitGlob: profile.assets.portraitGlob,
+    bundledOutfit: profile.assets.bundledOutfit
   };
+}
+
+function buildCharacterPackRegistry() {
+  const entries = Object.entries(characterProfileModules)
+    .map(([source, profile]) => {
+      const packId = getPackIdFromSource(source);
+      return {
+        packId,
+        source,
+        profile: normalizeCharacterProfile(profile)
+      };
+    })
+    .filter((pack) => pack.packId);
+
+  if (!entries.length) {
+    entries.push({
+      packId: DEFAULT_CHARACTER_PACK_ID,
+      source: "fallback",
+      profile: normalizeCharacterProfile(FALLBACK_PROFILE)
+    });
+  }
+
+  return entries.sort((a, b) => {
+    if (a.packId === DEFAULT_CHARACTER_PACK_ID) return -1;
+    if (b.packId === DEFAULT_CHARACTER_PACK_ID) return 1;
+    return a.profile.identity.name.localeCompare(b.profile.identity.name, "zh-CN");
+  });
+}
+
+function resolveInitialCharacterPackId() {
+  const stored = readStoredCharacterPackId();
+  return resolveCharacterPack(stored).packId;
+}
+
+function resolveCharacterPack(value) {
+  const raw = String(value || "").trim();
+  const normalized = normalizePackKey(raw);
+  const match =
+    characterPacks.find((pack) => pack.packId === raw) ||
+    characterPacks.find((pack) => normalizePackKey(pack.packId) === normalized) ||
+    characterPacks.find((pack) => pack.profile.identity.id === raw) ||
+    characterPacks.find((pack) => normalizePackKey(pack.profile.identity.id) === normalized) ||
+    characterPacks.find((pack) => pack.packId === DEFAULT_CHARACTER_PACK_ID) ||
+    characterPacks[0];
+  return match;
+}
+
+function getPackIdFromSource(source) {
+  const match = String(source || "").match(/\/characters\/([^/]+)\/character\.json$/);
+  return decodeURIComponent(match?.[1] || "").trim();
+}
+
+function readStoredCharacterPackId() {
+  try {
+    return window.localStorage.getItem(CHARACTER_PACK_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStoredCharacterPackId(value) {
+  try {
+    window.localStorage.setItem(CHARACTER_PACK_STORAGE_KEY, String(value || ""));
+  } catch {
+    // Local storage can be unavailable in restrictive browser contexts.
+  }
 }
 
 function normalizeCharacterProfile(value) {
@@ -166,4 +286,8 @@ function normalizeEmotionAliases(value, defaultEmotion) {
   if (!aliases.confused) aliases.confused = ["困惑", defaultEmotion].filter(Boolean);
   if (!aliases.music) aliases.music = [defaultEmotion];
   return aliases;
+}
+
+function normalizePackKey(value) {
+  return String(value || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
 }

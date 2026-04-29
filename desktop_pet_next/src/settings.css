@@ -142,7 +142,8 @@ input {
   font-size: 12px;
 }
 
-.field-row input {
+.field-row input,
+.field-row select {
   width: 100%;
   min-width: 0;
   height: 32px;
@@ -154,7 +155,8 @@ input {
   background: rgb(255 255 255 / 0.72);
 }
 
-.field-row input:focus {
+.field-row input:focus,
+.field-row select:focus {
   border-color: rgb(91 146 194 / 0.74);
   box-shadow: 0 0 0 3px rgb(91 146 194 / 0.12);
 }
@@ -257,7 +259,8 @@ button:disabled:hover {
 
 .chip-row,
 .emotion-grid,
-.outfit-list {
+.outfit-list,
+.character-pack-list {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
@@ -304,7 +307,9 @@ button:disabled:hover {
 
 .metric span,
 .outfit-card span,
-.outfit-card small {
+.outfit-card small,
+.character-pack-card span,
+.character-pack-card small {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -326,13 +331,15 @@ button:disabled:hover {
   white-space: nowrap;
 }
 
-.outfit-list {
+.outfit-list,
+.character-pack-list {
   max-height: 178px;
   overflow-y: auto;
   scrollbar-width: thin;
 }
 
-.outfit-card {
+.outfit-card,
+.character-pack-card {
   display: grid;
   gap: 3px;
   align-content: start;
@@ -342,7 +349,8 @@ button:disabled:hover {
   text-align: left;
 }
 
-.outfit-card strong {
+.outfit-card strong,
+.character-pack-card strong {
   min-width: 0;
   overflow: hidden;
   color: #314052;
@@ -353,13 +361,16 @@ button:disabled:hover {
 }
 
 .outfit-card span,
-.outfit-card small {
+.outfit-card small,
+.character-pack-card span,
+.character-pack-card small {
   color: rgb(49 64 82 / 0.58);
   font-size: 11px;
   line-height: 1.3;
 }
 
-.outfit-card.active {
+.outfit-card.active,
+.character-pack-card.active {
   border-color: rgb(111 158 202 / 0.58);
   background: rgb(111 158 202 / 0.18);
 }
@@ -390,7 +401,8 @@ button:disabled:hover {
     grid-template-columns: 1fr;
   }
 
-  .outfit-card {
+  .outfit-card,
+  .character-pack-card {
     width: 100%;
   }
 
