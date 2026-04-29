@@ -79,9 +79,26 @@ assets/characters/winter/normal.png
 
 This creates two outfits: `default` and `winter`.
 
+## Validation
+
+From `desktop_pet_creator_kit/`:
+
+```powershell
+npm run check
+```
+
+The validator checks `characters/akane_sample/` by default. To check a copied
+pack:
+
+```powershell
+npm run check -- ./characters/my_character
+```
+
+The current checks cover required metadata, click-line shape, asset directory
+layout, and default outfit/default emotion consistency.
+
 ## Next Planned Slices
 
-1. Add a pack validator.
-2. Add a pack selector in settings.
-3. Move backend persona loading into the pack.
-4. Build a zip/export workflow for paid Creator Kit delivery.
+1. Add a pack selector in settings.
+2. Move backend persona loading into the pack.
+3. Build a zip/export workflow for paid Creator Kit delivery.

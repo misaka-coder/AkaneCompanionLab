@@ -1,0 +1,11 @@
+{
+  "name": "akane-desktop-pet-creator-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Creator-facing character pack tools for Akane desktop pet.",
+  "scripts": {
+    "check": "node ./scripts/validate-character-pack.mjs",
+    "check:sample": "node ./scripts/validate-character-pack.mjs ./characters/akane_sample"
+  }
+}

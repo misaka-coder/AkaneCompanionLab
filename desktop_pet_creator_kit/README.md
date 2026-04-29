@@ -12,6 +12,22 @@ current prototype without forking the whole Tauri app.
   - A copyable starter pack for a new character.
 - `docs/`
   - Quick start and character-pack authoring notes.
+- `scripts/`
+  - Local validation tools for creator-facing character packs.
+
+## Check A Pack
+
+From this folder:
+
+```powershell
+npm run check
+```
+
+That checks `characters/akane_sample/` by default. To check another copied pack:
+
+```powershell
+npm run check -- ./templates/character_pack
+```
 
 ## First MVP Boundary
 
@@ -22,11 +38,14 @@ The first Creator Kit slice is intentionally small:
 - default outfit and emotion
 - local click lines
 - basic asset contract notes
+- external character images under `assets/characters/<outfit>/<emotion>.png`
+- a local pack validator
 - setup and replacement docs
 
-The desktop client still reuses the existing `desktop_pet_next` code and bundled
-catgirl assets. Full external asset import, package validation, and installer
-polish come later.
+The desktop client still reuses the existing `desktop_pet_next` code. If a
+character pack has no external images yet, the app falls back to the bundled
+catgirl assets. Pack selection, backend persona loading, and installer polish
+come later.
 
 ## Product Hypothesis
 

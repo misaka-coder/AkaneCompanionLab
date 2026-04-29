@@ -20,6 +20,21 @@ The desktop pet reads the first sample character metadata from:
 
 `desktop_pet_creator_kit/characters/akane_sample/character.json`
 
+## Check The Character Pack
+
+From the Creator Kit folder:
+
+```powershell
+cd desktop_pet_creator_kit
+npm run check
+```
+
+To check a copied template pack:
+
+```powershell
+npm run check -- ./templates/character_pack
+```
+
 ## What You Can Change First
 
 For the first MVP, the safest fields to edit are:
