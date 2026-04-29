@@ -62,6 +62,14 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("普通音频不会因为本轮消息自动暂停", prompt)
         self.assertNotIn("主人发消息时表演已暂停", prompt)
 
+    def test_desktop_audio_capability_discourages_task_workspace_for_playback_control(self) -> None:
+        prompt = self.engine._build_client_mode_prompt_context(_desktop_context())
+
+        self.assertIn("桌宠支持轻量 activity 控制", prompt)
+        self.assertIn("activity 是执行请求，不是完成回执", prompt)
+        self.assertIn("不要在 speech 里假装已经播放、暂停或继续", prompt)
+        self.assertIn("播放、暂停、继续、切歌这类轻量桌宠播放控制不要创建任务工作区", prompt)
+
     def test_vocal_performance_interrupted_prompt_requires_activity_action(self) -> None:
         prompt = self.engine._build_desktop_activity_prompt(
             {
@@ -80,6 +88,33 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("进度 01:17 / 03:25", prompt)
         self.assertIn("如果你想继续表演，需要输出 activity action", prompt)
         self.assertIn('"action":"play|pause|resume|stop"', prompt)
+
+    def test_activity_prompt_frames_action_as_request_not_success_receipt(self) -> None:
+        prompt = self.engine._build_desktop_activity_prompt(
+            {
+                "type": "audio_playback",
+                "status": "paused",
+                "title": "手边的歌.flac",
+                "source_id": "audio_008",
+                "progress_seconds": 61,
+            },
+            _desktop_context(),
+        )
+
+        self.assertIn("activity 是给桌宠执行的请求，不是执行成功回执", prompt)
+        self.assertIn("speech 里不要说已经播放、已经暂停或已经继续", prompt)
+        self.assertIn("切换到某个具体音频时，play 应尽量带 source_id", prompt)
+        self.assertIn("只继续当前音频时，用 resume + target=current", prompt)
+
+    def test_desktop_prompt_profile_keeps_activity_as_execution_request(self) -> None:
+        profile = self.engine._get_prompt_profile_registry().get(ClientMode.DESKTOP_PET)
+        fast_prompt = profile.mode_prompt_override(debug_enabled=False)
+        debug_prompt = profile.mode_prompt_override(debug_enabled=True)
+
+        for prompt in (fast_prompt, debug_prompt):
+            self.assertIn("activity 只用于桌宠播放控制", prompt)
+            self.assertIn("activity 是执行请求，不是完成回执", prompt)
+            self.assertIn("不要在 speech 里假装动作已经执行", prompt)
 
     def test_activity_prompt_is_desktop_audio_capability_only(self) -> None:
         activity = {

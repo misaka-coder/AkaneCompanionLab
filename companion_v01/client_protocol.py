@@ -20,6 +20,7 @@ class ClientCapability(str, Enum):
     STATIC_SPRITE = "static_sprite"
     LIVE2D = "live2d"
     DESKTOP_CONTEXT = "desktop_context"
+    SCREEN_VISION = "screen_vision"
     TOUCH_EVENT = "touch_event"
     FILE_DROP = "file_drop"
     AUDIO_PLAYBACK = "audio_playback"
@@ -54,6 +55,7 @@ DESKTOP_PET_DEFAULT_CAPABILITIES = (
     ClientCapability.SPEECH_SEGMENTS.value,
     ClientCapability.LIVE2D.value,
     ClientCapability.DESKTOP_CONTEXT.value,
+    ClientCapability.SCREEN_VISION.value,
     ClientCapability.TOUCH_EVENT.value,
     ClientCapability.FILE_DROP.value,
     ClientCapability.AUDIO_PLAYBACK.value,

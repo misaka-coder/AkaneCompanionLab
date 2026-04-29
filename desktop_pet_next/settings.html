@@ -16,6 +16,12 @@
       </header>
 
       <section class="settings-section">
+        <h2>角色包</h2>
+        <p id="character-details" class="detail-line">Character: Unknown</p>
+        <div id="character-metrics" class="metric-grid"></div>
+      </section>
+
+      <section class="settings-section">
         <h2>日常</h2>
         <div class="field-row">
           <span>后端</span>
@@ -90,10 +96,48 @@
       </section>
 
       <section class="settings-section">
+        <h2>音乐</h2>
+        <p id="music-status" class="detail-line">把音频文件拖到 Akane 身上就可以播放。</p>
+        <div class="button-grid">
+          <button id="previous-music" type="button" disabled>上一首</button>
+          <button id="next-music" type="button" disabled>下一首</button>
+          <button id="toggle-music" type="button" disabled>播放/暂停</button>
+          <button id="stop-music" type="button" disabled>停止音乐</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
         <h2>桌面上下文</h2>
         <div class="toggle-grid">
           <label><input id="desktop-context-enabled" type="checkbox" /> 前台窗口感知</label>
           <label><input id="clipboard-context-enabled" type="checkbox" /> 剪贴板文本</label>
+          <label><input id="screen-vision-enabled" type="checkbox" /> 看屏幕</label>
+          <label><input id="proactive-wake-enabled" type="checkbox" /> 主动搭话</label>
+        </div>
+        <div class="field-row">
+          <span>看屏幕模式</span>
+          <select id="screen-vision-mode">
+            <option value="summary">省调用：先整理屏幕印象</option>
+            <option value="direct">更同步：Akane 直看最近截图</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <span>搭话间隔</span>
+          <input id="proactive-wake-interval" type="number" min="15" max="600" step="5" />
+          <span>秒</span>
+        </div>
+        <div id="screen-vision-interval-row" class="field-row">
+          <span>视觉间隔</span>
+          <input id="screen-vision-interval" type="number" min="15" max="600" step="5" />
+          <button id="apply-vision-recommendation" type="button">推荐</button>
+        </div>
+        <div class="field-row">
+          <span>截图帧数</span>
+          <input id="screen-vision-frame-count" type="number" min="1" max="5" step="1" />
+          <span>张</span>
+        </div>
+        <div class="button-grid">
+          <button id="clear-screen-vision" type="button">清空屏幕印象</button>
         </div>
         <p id="desktop-context-note" class="detail-line">只在发送消息时临时附带。</p>
       </section>

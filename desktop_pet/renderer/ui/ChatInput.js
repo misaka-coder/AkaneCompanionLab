@@ -87,10 +87,21 @@ class ChatInput {
   }
 
   _autoResize() {
-    this._input.style.height = "42px";
-    const maxHeight = 96;
+    const minHeight = this._readCssPx("--chat-input-min-height", 42);
+    const maxHeight = this._readCssPx("--chat-input-max-height", 96);
+    this._input.style.height = `${minHeight}px`;
     const nextHeight = Math.min(this._input.scrollHeight, maxHeight);
-    this._input.style.height = `${Math.max(42, nextHeight)}px`;
+    this._input.style.height = `${Math.max(minHeight, nextHeight)}px`;
+  }
+
+  refreshLayout() {
+    this._autoResize();
+  }
+
+  _readCssPx(name, fallback) {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue(name);
+    const value = Number.parseFloat(raw);
+    return Number.isFinite(value) ? value : fallback;
   }
 
   destroy() {

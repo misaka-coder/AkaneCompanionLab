@@ -36,6 +36,10 @@ const DEFAULT_BACKEND_URL: &str = "http://127.0.0.1:9999";
 const DEFAULT_PROFILE_USER_ID: &str = "master";
 const DEFAULT_OUTFIT: &str = "猫娘";
 const DEFAULT_EMOTION: &str = "正常";
+const MAX_AUDIO_FILE_BYTES: u64 = 300 * 1024 * 1024;
+const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
+    "mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "webm",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -67,6 +71,18 @@ struct PetState {
     desktop_context_enabled: bool,
     #[serde(default)]
     clipboard_context_enabled: bool,
+    #[serde(default)]
+    screen_vision_enabled: bool,
+    #[serde(default = "default_screen_vision_mode")]
+    screen_vision_mode: String,
+    #[serde(default)]
+    proactive_wake_enabled: bool,
+    #[serde(default = "default_proactive_wake_interval_sec")]
+    proactive_wake_interval_sec: u32,
+    #[serde(default = "default_screen_vision_interval_sec")]
+    screen_vision_interval_sec: u32,
+    #[serde(default = "default_screen_vision_frame_count")]
+    screen_vision_frame_count: u32,
     #[serde(default = "default_hit_test_enabled")]
     hit_test_enabled: bool,
     #[serde(default)]
@@ -96,6 +112,12 @@ impl Default for PetState {
             voice_volume: 0.85,
             desktop_context_enabled: true,
             clipboard_context_enabled: false,
+            screen_vision_enabled: false,
+            screen_vision_mode: default_screen_vision_mode(),
+            proactive_wake_enabled: false,
+            proactive_wake_interval_sec: default_proactive_wake_interval_sec(),
+            screen_vision_interval_sec: default_screen_vision_interval_sec(),
+            screen_vision_frame_count: default_screen_vision_frame_count(),
             hit_test_enabled: true,
             hitbox_overlay: false,
         }
@@ -119,6 +141,17 @@ struct DesktopContextSnapshot {
     captured_at: u128,
     platform: String,
     foreground: ForegroundWindowInfo,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreparedAudioAsset {
+    original_path: String,
+    cached_path: String,
+    file_name: String,
+    display_name: String,
+    extension: String,
+    size_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -208,6 +241,63 @@ fn get_desktop_context_snapshot() -> DesktopContextSnapshot {
         platform: std::env::consts::OS.to_string(),
         foreground: collect_foreground_window(),
     }
+}
+
+#[tauri::command]
+fn prepare_audio_asset(app: AppHandle, path: String) -> Result<PreparedAudioAsset, String> {
+    let source_path = PathBuf::from(path.trim());
+    if !source_path.is_file() {
+        return Err("拖入的不是可播放文件。".to_string());
+    }
+
+    let extension = source_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if !SUPPORTED_AUDIO_EXTENSIONS.contains(&extension.as_str()) {
+        return Err("暂时只支持 mp3 / wav / flac / ogg / m4a / aac / opus / webm。".to_string());
+    }
+
+    let metadata = fs::metadata(&source_path).map_err(|error| error.to_string())?;
+    if metadata.len() == 0 {
+        return Err("这个音频文件是空的。".to_string());
+    }
+    if metadata.len() > MAX_AUDIO_FILE_BYTES {
+        return Err("音频文件有点太大了，先控制在 300MB 以内吧。".to_string());
+    }
+
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| error.to_string())?
+        .join("audio");
+    fs::create_dir_all(&cache_dir).map_err(|error| error.to_string())?;
+
+    let cached_file_name = format!("track_{}.{}", current_time_millis(), extension);
+    let cached_path = cache_dir.join(cached_file_name);
+    fs::copy(&source_path, &cached_path).map_err(|error| error.to_string())?;
+
+    let file_name = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("audio")
+        .to_string();
+    let display_name = source_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(file_name.as_str())
+        .to_string();
+
+    Ok(PreparedAudioAsset {
+        original_path: source_path.to_string_lossy().to_string(),
+        cached_path: cached_path.to_string_lossy().to_string(),
+        file_name,
+        display_name,
+        extension,
+        size_bytes: metadata.len(),
+    })
 }
 
 #[tauri::command]
@@ -488,6 +578,10 @@ fn normalize_pet_state(state: &mut PetState) {
         state.current_emotion = DEFAULT_EMOTION.to_string();
     }
     state.voice_volume = clamp(state.voice_volume, 0.0, 1.0);
+    state.screen_vision_mode = normalize_screen_vision_mode(&state.screen_vision_mode);
+    state.proactive_wake_interval_sec = state.proactive_wake_interval_sec.clamp(15, 600);
+    state.screen_vision_interval_sec = state.screen_vision_interval_sec.clamp(15, 600);
+    state.screen_vision_frame_count = state.screen_vision_frame_count.clamp(1, 5);
 }
 
 fn default_hit_test_enabled() -> bool {
@@ -508,6 +602,29 @@ fn default_voice_input_enabled() -> bool {
 
 fn default_desktop_context_enabled() -> bool {
     true
+}
+
+fn default_screen_vision_mode() -> String {
+    "summary".to_string()
+}
+
+fn normalize_screen_vision_mode(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "direct" => "direct".to_string(),
+        _ => "summary".to_string(),
+    }
+}
+
+fn default_proactive_wake_interval_sec() -> u32 {
+    30
+}
+
+fn default_screen_vision_interval_sec() -> u32 {
+    25
+}
+
+fn default_screen_vision_frame_count() -> u32 {
+    4
 }
 
 #[cfg(windows)]
@@ -810,6 +927,7 @@ fn main() {
             load_pet_state,
             save_pet_state,
             get_desktop_context_snapshot,
+            prepare_audio_asset,
             apply_window_state,
             set_visual_scale,
             set_always_on_top,

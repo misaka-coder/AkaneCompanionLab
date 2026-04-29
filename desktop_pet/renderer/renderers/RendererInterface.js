@@ -15,7 +15,7 @@ class RendererInterface {
   /**
    * Show a specific emotion for a given outfit.
    * @param {string} emotion - canonical emotion id (e.g. "normal", "shy")
-   * @param {string} outfit - outfit id (e.g. "水手服", "睡衣")
+   * @param {string} outfit - outfit id (e.g. "猫娘")
    * @param {string} backendUrl - base URL for asset loading
    */
   async showEmotion(emotion, outfit, backendUrl) {

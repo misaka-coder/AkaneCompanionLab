@@ -159,6 +159,20 @@ input {
   box-shadow: 0 0 0 3px rgb(91 146 194 / 0.12);
 }
 
+.field-row.is-disabled {
+  opacity: 0.5;
+}
+
+.field-row.is-disabled span {
+  color: rgb(49 64 82 / 0.42);
+}
+
+.field-row input:disabled {
+  color: rgb(49 64 82 / 0.45);
+  border-color: rgb(136 162 198 / 0.24);
+  background: rgb(230 236 244 / 0.5);
+}
+
 .range-row input {
   width: 100%;
   accent-color: #6f9eca;

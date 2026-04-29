@@ -303,6 +303,7 @@ class LLMRuntime:
         fallback: dict[str, Any],
         temperature: float = 0.7,
         prompt_cache_key: str = "",
+        user_images: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self._record_metric("chat_json_calls")
         return self._call_json(
@@ -312,6 +313,7 @@ class LLMRuntime:
             fallback=fallback,
             temperature=temperature,
             prompt_cache_key=prompt_cache_key,
+            user_images=user_images,
         )
 
     def call_aux_ndjson(
@@ -342,6 +344,7 @@ class LLMRuntime:
         temperature: float = 0.7,
         early_tool_call_validator: Callable[[dict[str, Any]], bool] | None = None,
         prompt_cache_key: str = "",
+        user_images: list[dict[str, Any]] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         self._record_metric("chat_stream_calls")
         return self._stream_chat_json(
@@ -352,6 +355,7 @@ class LLMRuntime:
             temperature=temperature,
             early_tool_call_validator=early_tool_call_validator,
             prompt_cache_key=prompt_cache_key,
+            user_images=user_images,
         )
 
     def _call_json(
@@ -363,6 +367,7 @@ class LLMRuntime:
         fallback: dict[str, Any],
         temperature: float,
         prompt_cache_key: str,
+        user_images: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         try:
             response = self._create_completion(
@@ -374,6 +379,7 @@ class LLMRuntime:
                     temperature=temperature,
                     json_mode=True,
                     prompt_cache_key=prompt_cache_key,
+                    user_images=user_images,
                 ),
             )
             content = self._extract_text(response)
@@ -481,6 +487,7 @@ class LLMRuntime:
         temperature: float,
         early_tool_call_validator: Callable[[dict[str, Any]], bool] | None,
         prompt_cache_key: str,
+        user_images: list[dict[str, Any]] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         import time
 
@@ -503,6 +510,7 @@ class LLMRuntime:
                     stream=True,
                     json_mode=True,
                     prompt_cache_key=prompt_cache_key,
+                    user_images=user_images,
                 ),
             )
             for chunk in response:
@@ -650,13 +658,20 @@ class LLMRuntime:
         stream: bool = False,
         json_mode: bool = False,
         prompt_cache_key: str = "",
+        user_images: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        user_content: str | list[dict[str, Any]]
+        image_items = self._normalize_user_image_items(user_images)
+        if image_items:
+            user_content = [{"type": "text", "text": user_prompt}, *image_items]
+        else:
+            user_content = user_prompt
         payload: dict[str, Any] = {
             "model": bundle.model,
             "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": user_content},
             ],
         }
         if stream:
@@ -670,6 +685,19 @@ class LLMRuntime:
             )
         )
         return payload
+
+    def _normalize_user_image_items(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        items: list[dict[str, Any]] = []
+        for raw in value[:5]:
+            if not isinstance(raw, dict):
+                continue
+            url = str(raw.get("data_url") or raw.get("dataUrl") or raw.get("url") or "").strip()
+            if not url.startswith("data:image/"):
+                continue
+            items.append({"type": "image_url", "image_url": {"url": url}})
+        return items
 
     def _should_use_response_json_mode(self, bundle: ModelBundle) -> bool:
         protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()

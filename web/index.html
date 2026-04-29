@@ -10,7 +10,7 @@
     <link rel="preload" as="fetch" href="/assets/live2d/koharu/hiyori_free_t08.model3.json" crossorigin />
     <link rel="preload" as="fetch" href="/assets/live2d/koharu/hiyori_free_t08.moc3" crossorigin />
     <link rel="preload" as="image" href="/assets/live2d/koharu/hiyori_free_t08.2048/texture_00.png" />
-    <link rel="stylesheet" href="/styles.css?v=20260418_live2d_persistent1" />
+    <link rel="stylesheet" href="/styles.css?v=20260427_avatar_scale1" />
   </head>
   <body>
     <div id="app" class="scene" data-time="night" data-history-open="false">
@@ -146,10 +146,10 @@
             </div>
             <label class="avatar-size-control" for="avatar-size-range">
               <span class="avatar-size-control__row">
-                <span>Live2D 大小</span>
-                <span id="avatar-size-label">100%</span>
+                <span>角色大小</span>
+                <span id="avatar-size-label">120%</span>
               </span>
-              <input id="avatar-size-range" type="range" min="80" max="160" step="5" value="100" />
+              <input id="avatar-size-range" type="range" min="80" max="180" step="5" value="120" />
             </label>
           </section>
 
@@ -267,11 +267,11 @@
             app.setAttribute("data-time", "evening");
           }
           if (bg && !bg.style.backgroundImage) {
-            bg.style.backgroundImage = 'url("/assets/backgrounds/evening.png")';
+            bg.style.backgroundImage = 'url("/assets/scenes/街道/黄昏街道.png")';
             bg.className += " is-visible";
           }
           if (sprite && !sprite.getAttribute("src")) {
-            sprite.setAttribute("src", "/assets/characters/%E6%B0%B4%E6%89%8B%E6%9C%8D/normal.png");
+            sprite.setAttribute("src", "/assets/characters/猫娘/正常.png");
             sprite.className += " is-ready";
           }
         }
@@ -295,6 +295,6 @@
         }
       })();
     </script>
-    <script type="module" src="/app.js?v=20260418_emotion_motion1"></script>
+    <script type="module" src="/app.js?v=20260427_avatar_scale1"></script>
   </body>
 </html>

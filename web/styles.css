@@ -16,6 +16,7 @@
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
+  --avatar-scale: 1.2;
 }
 
 * {
@@ -1684,7 +1685,7 @@ body {
   min-width: 220px;
   max-height: 82vh;
   margin-bottom: -4vh;
-  transform: scale(1.1);
+  transform: scale(var(--avatar-scale, 1.2));
   transform-origin: center bottom;
 }
 
@@ -1859,7 +1860,7 @@ body {
     width: min(48vw, 260px);
     min-width: 140px;
     margin-bottom: -2.2vh;
-    transform: scale(1.06);
+    transform: scale(var(--avatar-scale, 1.2));
   }
 
   .sprite-frame::before {
@@ -2843,7 +2844,7 @@ body {
     min-width: 220px;
     max-height: 58vh;
     margin-bottom: 14.5vh;
-    transform: scale(1.06);
+    transform: scale(var(--avatar-scale, 1.2));
   }
 
   .sprite-frame::before {
@@ -2987,7 +2988,7 @@ body {
 }
 
 .scene[data-avatar-mode="live2d"] .sprite-frame {
-  transform: scale(var(--avatar-scale, 1));
+  transform: scale(var(--avatar-scale, 1.2));
   transform-origin: center bottom;
 }
 

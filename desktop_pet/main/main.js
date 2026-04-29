@@ -1,9 +1,12 @@
 const { app, BrowserWindow, globalShortcut } = require("electron");
-const { createWindow } = require("./window");
+const { createWindow, applyPetScaleBounds } = require("./window");
 const { createTray } = require("./tray");
 const { registerIpcHandlers } = require("./ipc-handlers");
 const { loadSettings } = require("./settings-store");
 const { attachDesktopContextTracker, refreshDesktopContextTracker } = require("./desktop-context");
+const { getMenuWindow } = require("./menu-window");
+const { getWorkspaceWindow } = require("./workspace-window");
+const { getSettingsWindow } = require("./settings-window");
 
 const VOICE_INPUT_SHORTCUT = "CommandOrControl+Shift+Space";
 
@@ -45,7 +48,20 @@ app.on("activate", () => {
 function notifySettingsChanged(settings) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.setOpacity(settings.opacity);
+    applyPetScaleBounds(mainWindow, settings);
     mainWindow.webContents.send("settings-changed", settings);
+  }
+  const menuWin = getMenuWindow();
+  if (menuWin) {
+    menuWin.webContents.send("settings-changed", settings);
+  }
+  const workspaceWin = getWorkspaceWindow();
+  if (workspaceWin) {
+    workspaceWin.webContents.send("settings-changed", settings);
+  }
+  const settingsWin = getSettingsWindow();
+  if (settingsWin) {
+    settingsWin.webContents.send("settings-changed", settings);
   }
   if (tray && typeof tray.refreshMenu === "function") {
     tray.refreshMenu();

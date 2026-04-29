@@ -1,6 +1,6 @@
 const { Tray, Menu, nativeImage, app } = require("electron");
 const path = require("path");
-const { OPACITY_VALUES, loadSettings, updateSettings } = require("./settings-store");
+const { loadSettings, updateSettings, PET_SCALE_VALUES } = require("./settings-store");
 
 function createTray(mainWindow, { onSettingsChanged } = {}) {
   const trayIcon = createTrayIcon();
@@ -26,6 +26,7 @@ function createTray(mainWindow, { onSettingsChanged } = {}) {
 
 function buildContextMenu(mainWindow, { onSettingsChanged, refreshMenu } = {}) {
   const settings = loadSettings();
+  const petScale = Number(settings.petScale || 1);
   return Menu.buildFromTemplate([
     {
       label: "显示 / 隐藏",
@@ -53,86 +54,32 @@ function buildContextMenu(mainWindow, { onSettingsChanged, refreshMenu } = {}) {
         sendRendererEvent(mainWindow, "workspace-panel-toggle");
       },
     },
-    { type: "separator" },
     {
-      label: "设置后端地址",
-      click: () => requestRendererPrompt(mainWindow, {
-        key: "backendUrl",
-        title: "设置后端地址",
-        value: settings.backendUrl,
-      }),
+      label: "状态预览器",
+      click: () => {
+        if (!mainWindow.isVisible()) mainWindow.show();
+        sendRendererEvent(mainWindow, "debug-panel-toggle");
+      },
     },
     {
-      label: "设置服装名",
-      click: () => requestRendererPrompt(mainWindow, {
-        key: "outfit",
-        title: "设置服装名",
-        value: settings.outfit,
-      }),
+      label: "设置",
+      click: () => {
+        if (!mainWindow.isVisible()) mainWindow.show();
+        sendRendererEvent(mainWindow, "settings-panel-toggle");
+      },
     },
     {
-      label: "透明度",
-      submenu: OPACITY_VALUES.map((opacity) => ({
-        label: `${Math.round(opacity * 100)}%`,
+      label: "大小",
+      submenu: PET_SCALE_VALUES.map((value) => ({
+        label: `${Math.round(value * 100)}%`,
         type: "radio",
-        checked: settings.opacity === opacity,
+        checked: Math.abs(petScale - value) < 0.001,
         click: () => {
-          const nextSettings = updateSettings({ opacity });
-          mainWindow.setOpacity(nextSettings.opacity);
-          if (onSettingsChanged) onSettingsChanged(nextSettings);
+          const next = updateSettings({ petScale: value });
+          if (onSettingsChanged) onSettingsChanged(next);
           if (refreshMenu) refreshMenu();
         },
       })),
-    },
-    {
-      label: "语音播放 开/关",
-      type: "checkbox",
-      checked: settings.voiceEnabled,
-      click: () => {
-        const nextSettings = updateSettings({ voiceEnabled: !settings.voiceEnabled });
-        if (onSettingsChanged) onSettingsChanged(nextSettings);
-        if (refreshMenu) refreshMenu();
-      },
-    },
-    {
-      label: "语音输入 开/关",
-      type: "checkbox",
-      checked: settings.voiceInputEnabled,
-      click: () => {
-        const nextSettings = updateSettings({ voiceInputEnabled: !settings.voiceInputEnabled });
-        if (onSettingsChanged) onSettingsChanged(nextSettings);
-        if (refreshMenu) refreshMenu();
-      },
-    },
-    {
-      label: "语音输入快捷键：Ctrl+Shift+Space",
-      enabled: false,
-    },
-    { type: "separator" },
-    {
-      label: "桌面上下文 开/关",
-      type: "checkbox",
-      checked: settings.desktopContextEnabled,
-      click: () => {
-        const nextSettings = updateSettings({ desktopContextEnabled: !settings.desktopContextEnabled });
-        if (onSettingsChanged) onSettingsChanged(nextSettings);
-        if (refreshMenu) refreshMenu();
-      },
-    },
-    {
-      label: "剪贴板上下文 开/关",
-      type: "checkbox",
-      enabled: settings.desktopContextEnabled,
-      checked: settings.clipboardContextEnabled,
-      click: () => {
-        const nextSettings = updateSettings({ clipboardContextEnabled: !settings.clipboardContextEnabled });
-        if (onSettingsChanged) onSettingsChanged(nextSettings);
-        if (refreshMenu) refreshMenu();
-      },
-    },
-    {
-      label: "上下文只在发送消息时临时附带",
-      enabled: false,
     },
     { type: "separator" },
     {
@@ -154,12 +101,6 @@ function createTrayIcon() {
     );
   }
   return trayIcon.isEmpty() ? nativeImage.createEmpty() : trayIcon.resize({ width: 16, height: 16 });
-}
-
-function requestRendererPrompt(mainWindow, payload) {
-  if (!mainWindow.isVisible()) mainWindow.show();
-  mainWindow.focus();
-  sendRendererEvent(mainWindow, "settings-prompt", payload);
 }
 
 function sendRendererEvent(mainWindow, channel, payload) {

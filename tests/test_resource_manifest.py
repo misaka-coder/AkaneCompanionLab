@@ -98,6 +98,62 @@ class ResourceManifestTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in living_room["backgrounds"]], ["evening"])
         self.assertEqual([item["id"] for item in bedroom["bgm_tracks"]], ["evening"])
 
+    def test_compact_scene_file_names_remain_true_background_ids(self) -> None:
+        temp_dir, assets = self.make_assets_root()
+        self.addCleanup(temp_dir.cleanup)
+
+        write_bytes(assets / "scenes" / "家" / "夜晚卧室.png")
+        write_bytes(assets / "scenes" / "家" / "白天卧室.png")
+        write_bytes(assets / "scenes" / "家" / "白天客厅.png")
+        write_bytes(assets / "scenes" / "街道" / "黄昏街道.png")
+        write_bytes(assets / "bgm" / "default" / "default" / "evening.ogg")
+        write_bytes(assets / "characters" / "猫娘" / "正常.png")
+
+        manifest = ResourceManifest(assets)
+        payload = manifest.refresh()
+
+        home = next(item for item in payload["scenes"]["majors"] if item["id"] == "家")
+        default_room = next(item for item in home["minors"] if item["id"] == "default")
+        street = next(item for item in payload["scenes"]["majors"] if item["id"] == "街道")
+
+        self.assertEqual(
+            {item["id"] for item in default_room["backgrounds"]},
+            {"夜晚卧室", "白天卧室", "白天客厅"},
+        )
+        self.assertEqual(street["minors"][0]["id"], "default")
+        self.assertEqual(street["minors"][0]["backgrounds"][0]["id"], "黄昏街道")
+
+        exact_background = manifest.normalize_visual_output(
+            {
+                "emotion": "normal",
+                "character": {"outfit": "猫娘"},
+                "scene": {"major": "家", "minor": "default", "background": "夜晚卧室"},
+            }
+        )
+        exact_background_with_wrong_minor = manifest.normalize_visual_output(
+            {
+                "emotion": "normal",
+                "character": {"outfit": "猫娘"},
+                "scene": {"major": "家", "minor": "卧室", "background": "夜晚卧室"},
+            }
+        )
+        street_evening = manifest.normalize_visual_output(
+            {
+                "emotion": "normal",
+                "character": {"outfit": "猫娘"},
+                "scene": {"major": "街道", "minor": "default", "background": "黄昏街道"},
+            }
+        )
+        prompt_context = manifest.build_prompt_context()
+
+        self.assertEqual(exact_background["scene"]["minor"], "default")
+        self.assertEqual(exact_background["scene"]["background"], "夜晚卧室")
+        self.assertEqual(exact_background_with_wrong_minor["scene"]["minor"], "default")
+        self.assertEqual(exact_background_with_wrong_minor["scene"]["background"], "夜晚卧室")
+        self.assertEqual(street_evening["scene"]["background"], "黄昏街道")
+        self.assertIn("夜晚卧室", prompt_context)
+        self.assertIn("不要把未列出的文件名自行拆成新场景", prompt_context)
+
     def test_flat_background_fallback_stays_available_alongside_scene_tree(self) -> None:
         temp_dir, assets = self.make_assets_root()
         self.addCleanup(temp_dir.cleanup)
@@ -144,6 +200,47 @@ class ResourceManifestTests(unittest.TestCase):
         self.assertEqual(normalized["emotion"], "normal")
         self.assertEqual(normalized["scene"]["background"], "evening")
         self.assertEqual(normalized["scene"]["bgm"], "evening")
+
+    def test_common_emotion_aliases_resolve_to_available_chinese_character_assets(self) -> None:
+        temp_dir, assets = self.make_assets_root()
+        self.addCleanup(temp_dir.cleanup)
+
+        write_bytes(assets / "scenes" / "home" / "default" / "night.png")
+        write_meta(
+            assets / "characters" / "猫娘" / "meta.json",
+            {
+                "default_emotion": "正常",
+            },
+        )
+        write_bytes(assets / "characters" / "猫娘" / "正常.png")
+        write_bytes(assets / "characters" / "猫娘" / "开心.png")
+        write_bytes(assets / "characters" / "猫娘" / "得意.png")
+        write_bytes(assets / "characters" / "猫娘" / "脸红.png")
+
+        manifest = ResourceManifest(assets)
+        manifest.refresh()
+
+        cases = {
+            "normal": "正常",
+            "happy": "开心",
+            "smug": "得意",
+            "shy": "脸红",
+        }
+        for requested, expected in cases.items():
+            with self.subTest(requested=requested):
+                normalized = manifest.normalize_visual_output(
+                    {
+                        "emotion": requested,
+                        "character": {"outfit": "猫娘"},
+                        "scene": {
+                            "major": "home",
+                            "minor": "default",
+                            "background": "night",
+                        },
+                    }
+                )
+
+                self.assertEqual(normalized["emotion"], expected)
 
     def test_custom_resource_names_and_notes_are_ai_readable(self) -> None:
         temp_dir, assets = self.make_assets_root()

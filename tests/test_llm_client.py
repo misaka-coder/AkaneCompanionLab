@@ -70,6 +70,30 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(payload["response_format"], {"type": "json_object"})
         self.assertIs(payload["stream"], True)
 
+    def test_llm_runtime_can_attach_user_images_to_chat_prompt(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.example.test/v1"),
+            model="vision-chat",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user text",
+            temperature=0.1,
+            user_images=[
+                {"data_url": "data:image/jpeg;base64,abc"},
+                {"data_url": "https://example.test/not-inline.jpg"},
+            ],
+        )
+
+        content = payload["messages"][1]["content"]
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[0], {"type": "text", "text": "user text"})
+        self.assertEqual(content[1], {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}})
+        self.assertEqual(len(content), 2)
+
     def test_llm_runtime_adds_prompt_cache_hints_for_official_openai(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(

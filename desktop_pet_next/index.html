@@ -10,6 +10,7 @@
       <main class="stage" aria-label="Akane desktop pet">
         <canvas id="webgl-probe" class="webgl-probe" aria-hidden="true"></canvas>
         <audio id="voice-player" preload="auto"></audio>
+        <audio id="music-player" preload="metadata"></audio>
         <div id="hitbox-overlay" class="hitbox-overlay" aria-hidden="true"></div>
 
         <button id="debug-toggle" class="icon-button debug-toggle" title="菜单" type="button">
@@ -62,6 +63,10 @@
             <button id="stop-reply" type="button" disabled>停止</button>
             <button id="new-session" type="button">新对话</button>
             <button id="reload-resources" type="button">重载立绘</button>
+            <button id="previous-music" type="button" disabled>上一首</button>
+            <button id="next-music" type="button" disabled>下一首</button>
+            <button id="toggle-music" type="button" disabled>音乐</button>
+            <button id="stop-music" type="button" disabled>停歌</button>
             <button id="close-window-menu" class="danger-button" type="button">退出</button>
           </li>
           <li id="connection-status" class="connection-status">Backend: Unknown</li>

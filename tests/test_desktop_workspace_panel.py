@@ -151,6 +151,160 @@ class DesktopWorkspacePanelTests(unittest.TestCase):
             )
             self.assertEqual(engine.store.get_task_workspace(task["task_id"])["status"], "cleaned")
 
+    def test_panel_single_item_actions_require_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            engine = _make_workspace_engine(Path(temp_dir))
+
+            for item_type in ("attachment", "generated", "task"):
+                result = engine.manage_desktop_pet_workspace_panel(
+                    profile_user_id="master",
+                    session_id="desktop_pet_test",
+                    action="clear",
+                    item_type=item_type,
+                    target="",
+                )
+
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"], "missing_target")
+                self.assertEqual(result["managed"], [])
+
+    def test_workspace_location_resolvers_return_local_ready_files_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            engine = _make_workspace_engine(root)
+            attachment_path = root / "attachments" / "master" / "desktop_pet_test" / "source.txt"
+            attachment_path.parent.mkdir(parents=True, exist_ok=True)
+            attachment_path.write_text("source", encoding="utf-8")
+            generated_path = root / "generated" / "master" / "desktop_pet_test" / "result.md"
+            generated_path.parent.mkdir(parents=True, exist_ok=True)
+            generated_path.write_text("# result", encoding="utf-8")
+
+            attachment = engine.store.add_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                source="desktop_pet",
+                kind="file",
+                status="ready",
+                origin_name="source.txt",
+                file_ext="txt",
+                storage_relpath="master/desktop_pet_test/source.txt",
+                summary_title="源文件",
+                timestamp=100,
+            )
+            generated = engine.store.add_generated_file(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                output_title="生成结果",
+                output_format="md",
+                storage_relpath="master/desktop_pet_test/result.md",
+                created_by_tool="compose_file",
+                timestamp=110,
+            )
+
+            attachment_resolved = engine.resolve_desktop_pet_attachment_file(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                target=attachment["attachment_handle"],
+            )
+            generated_resolved = engine.resolve_desktop_pet_generated_file(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                target=generated["generated_handle"],
+            )
+
+            self.assertIsNotNone(attachment_resolved)
+            self.assertIsNotNone(generated_resolved)
+            self.assertEqual(attachment_resolved[1], attachment_path.resolve())
+            self.assertEqual(generated_resolved[1], generated_path.resolve())
+
+            engine.manage_desktop_pet_workspace_panel(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                action="clear",
+                item_type="attachment",
+                target=attachment["attachment_handle"],
+            )
+            engine.manage_desktop_pet_workspace_panel(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                action="clear",
+                item_type="generated",
+                target=generated["generated_handle"],
+            )
+
+            self.assertIsNone(
+                engine.resolve_desktop_pet_attachment_file(
+                    profile_user_id="master",
+                    session_id="desktop_pet_test",
+                    target=attachment["attachment_handle"],
+                )
+            )
+            self.assertIsNone(
+                engine.resolve_desktop_pet_generated_file(
+                    profile_user_id="master",
+                    session_id="desktop_pet_test",
+                    target=generated["generated_handle"],
+                )
+            )
+
+    def test_clear_files_action_clears_sources_and_generated_without_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            engine = _make_workspace_engine(Path(temp_dir))
+            attachment = engine.store.add_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                source="desktop_pet",
+                kind="file",
+                status="ready",
+                origin_name="source.txt",
+                file_ext="txt",
+                summary_title="源文件",
+                timestamp=100,
+            )
+            generated = engine.store.add_generated_file(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                output_title="生成结果",
+                output_format="md",
+                storage_relpath="master/desktop_pet_test/result.md",
+                created_by_tool="compose_file",
+                timestamp=110,
+            )
+            task = engine.store.add_task_workspace(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                status="completed",
+                normalized_goal="不要被一键文件清理影响",
+                timestamp=120,
+            )
+
+            result = engine.manage_desktop_pet_workspace_panel(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                action="clear_files",
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["action"], "clear_files")
+            self.assertEqual(len(result["managed"]), 2)
+            self.assertEqual(
+                engine.store.get_attachment_inbox_item(
+                    profile_user_id="master",
+                    session_id="desktop_pet_test",
+                    attachment_id=attachment["attachment_id"],
+                )["status"],
+                "cleared",
+            )
+            self.assertEqual(
+                engine.store.get_generated_file(
+                    profile_user_id="master",
+                    session_id="desktop_pet_test",
+                    generated_id=generated["generated_id"],
+                )["status"],
+                "removed",
+            )
+            self.assertEqual(engine.store.get_task_workspace(task["task_id"])["status"], "completed")
+
 
 if __name__ == "__main__":
     unittest.main()

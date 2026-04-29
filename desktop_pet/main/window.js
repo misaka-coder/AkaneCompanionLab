@@ -1,15 +1,15 @@
 const { BrowserWindow, screen } = require("electron");
 const path = require("path");
-const { loadSettings, updateSettings } = require("./settings-store");
+const { loadSettings, updateSettings, normalizePetScale } = require("./settings-store");
 
-const DEFAULT_WIDTH = 360;
-const DEFAULT_HEIGHT = 620;
-const MIN_USABLE_WIDTH = 340;
-const MIN_USABLE_HEIGHT = 600;
+const BASE_WIDTH = 340;
+const BASE_HEIGHT = 560;
+const MIN_USABLE_WIDTH = 255;
+const MIN_USABLE_HEIGHT = 420;
 
 function createWindow() {
   const settings = loadSettings();
-  const bounds = resolveWindowBounds(settings.windowBounds);
+  const bounds = resolveWindowBounds(settings.windowBounds, settings.petScale);
 
   const win = new BrowserWindow({
     width: bounds.width,
@@ -22,7 +22,7 @@ function createWindow() {
     skipTaskbar: false,
     resizable: true,
     minWidth: MIN_USABLE_WIDTH,
-    minHeight: 460,
+    minHeight: MIN_USABLE_HEIGHT,
     hasShadow: false,
     backgroundColor: "#00000000",
     webPreferences: {
@@ -40,18 +40,32 @@ function createWindow() {
   return win;
 }
 
-function resolveWindowBounds(savedBounds) {
-  const normalized = normalizeSavedBounds(savedBounds);
-  if (normalized && isWindowOnScreen(normalized)) {
-    return fitBoundsToWorkArea(normalized);
-  }
-  return getDefaultWindowBounds();
+function getPetWindowSize(scale) {
+  const normalized = normalizePetScale(scale);
+  return {
+    width: Math.round(BASE_WIDTH * normalized),
+    height: Math.round(BASE_HEIGHT * normalized),
+  };
 }
 
-function getDefaultWindowBounds() {
+function resolveWindowBounds(savedBounds, scale = 1) {
+  const targetSize = getPetWindowSize(scale);
+  const normalized = normalizeSavedBounds(savedBounds);
+  if (normalized && isWindowOnScreen(normalized)) {
+    return fitBoundsToWorkArea({
+      ...targetSize,
+      x: normalized.x + normalized.width - targetSize.width,
+      y: normalized.y + normalized.height - targetSize.height,
+    });
+  }
+  return getDefaultWindowBounds(scale);
+}
+
+function getDefaultWindowBounds(scale = 1) {
   const workArea = screen.getPrimaryDisplay().workArea;
-  const width = Math.min(DEFAULT_WIDTH, workArea.width);
-  const height = Math.min(DEFAULT_HEIGHT, workArea.height);
+  const size = getPetWindowSize(scale);
+  const width = Math.min(size.width, workArea.width);
+  const height = Math.min(size.height, workArea.height);
   return {
     width,
     height,
@@ -100,6 +114,23 @@ function isWindowOnScreen(bounds) {
   });
 }
 
+function applyPetScaleBounds(win, settings) {
+  if (!win || win.isDestroyed()) return null;
+  const current = win.getBounds();
+  const size = getPetWindowSize(settings?.petScale);
+  if (current.width === size.width && current.height === size.height) {
+    return current;
+  }
+  const next = fitBoundsToWorkArea({
+    ...size,
+    x: current.x + current.width - size.width,
+    y: current.y + current.height - size.height,
+  });
+  win.setBounds(next);
+  updateSettings({ windowBounds: next });
+  return next;
+}
+
 function registerWindowBoundsPersistence(win) {
   let saveTimer = 0;
 
@@ -121,4 +152,4 @@ function registerWindowBoundsPersistence(win) {
   });
 }
 
-module.exports = { createWindow };
+module.exports = { createWindow, applyPetScaleBounds, getPetWindowSize };

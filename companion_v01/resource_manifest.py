@@ -29,6 +29,28 @@ EMOTION_ALIASES = {
     "sumg": "smug",
     "cry": "cry",
 }
+EMOTION_FALLBACK_CANDIDATES = {
+    "normal": ["正常", "normal"],
+    "idle": ["正常", "normal"],
+    "quiet": ["正常", "normal"],
+    "happy": ["开心", "卖萌", "得意", "smug", "normal"],
+    "joy": ["开心", "卖萌", "得意", "smug", "normal"],
+    "smile": ["开心", "卖萌", "得意", "smug", "normal"],
+    "smug": ["得意", "smug", "开心", "normal"],
+    "sumg": ["得意", "smug", "开心", "normal"],
+    "shy": ["脸红", "求摸摸", "shy", "normal"],
+    "embarrassed": ["脸红", "shy", "normal"],
+    "cry": ["困困", "无语", "cry", "sad", "normal"],
+    "sad": ["困困", "无语", "cry", "normal"],
+    "angry": ["气鼓鼓", "angry", "normal"],
+    "thinking": ["思考中", "困惑", "normal"],
+    "confused": ["困惑", "思考中", "normal"],
+    "listening": ["侧耳听", "正常", "normal"],
+    "music": ["听歌中", "开心", "normal"],
+    "sleepy": ["困困", "打哈欠", "normal"],
+    "tired": ["困困", "打哈欠", "normal"],
+    "pet": ["被摸头", "求摸摸", "开心", "normal"],
+}
 BACKGROUND_ALIASES = {
     "morning": "morning",
     "sunrise": "morning",
@@ -170,6 +192,21 @@ def _normalize_emotion_id(name: Any) -> str:
     return _canon_emotion(raw) or raw
 
 
+def _emotion_candidate_ids(name: Any) -> list[str]:
+    raw = str(name or "").strip()
+    candidates: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in candidates:
+            candidates.append(text)
+
+    add(_normalize_emotion_id(raw))
+    for item in EMOTION_FALLBACK_CANDIDATES.get(_normalize_key(raw), []):
+        add(item)
+    return candidates
+
+
 def _is_known_background_token(name: Any) -> bool:
     key = _normalize_key(name)
     return key in BACKGROUND_ALIASES or str(name or "").strip() in BACKGROUND_PRIORITY
@@ -264,6 +301,7 @@ class ResourceManifest:
                 bg_ids = ", ".join(self._format_resource_label(background) for background in minor["backgrounds"]) or "(无)"
                 scene_lines.append(f"- {scene_label} -> 背景: {bg_ids}")
         if scene_lines:
+            lines.append("场景输出规则：scene.major/minor/background 使用清单列出的名称或 id，不要把未列出的文件名自行拆成新场景。")
             lines.append("可用场景与背景：")
             lines.extend(scene_lines)
 
@@ -338,13 +376,31 @@ class ResourceManifest:
         if not isinstance(result.get("character"), dict):
             result["character"] = {}
 
+        requested_background_id = result["scene"].get("background")
         major_id = str(result["scene"].get("major") or defaults["major"])
         major = self._find_major(manifest, major_id) or self._find_major(manifest, defaults["major"])
         minor_id = str(result["scene"].get("minor") or defaults["minor"])
-        minor = self._find_minor(major, minor_id) or self._find_minor(major, defaults["minor"]) or major["minors"][0]
+        minor = self._find_minor(major, minor_id)
+        inferred_minor_background: tuple[dict[str, Any], dict[str, Any]] | None = None
+        if minor is None:
+            inferred_minor_background = self._find_background_across_minors(major, requested_background_id)
+        minor = (
+            minor
+            or (inferred_minor_background[0] if inferred_minor_background else None)
+            or self._find_minor(major, defaults["minor"])
+            or major["minors"][0]
+        )
 
-        background_id = self._normalize_background_id(result["scene"].get("background"))
-        background = self._find_background(minor, background_id)
+        background_id = self._normalize_background_id(requested_background_id)
+        background = (
+            inferred_minor_background[1]
+            if inferred_minor_background and inferred_minor_background[0]["id"] == minor["id"]
+            else self._find_background(minor, background_id)
+        )
+        if background is None:
+            inferred_minor_background = self._find_background_across_minors(major, requested_background_id)
+            if inferred_minor_background is not None:
+                minor, background = inferred_minor_background
         if background is None:
             background = self._find_background(minor, defaults["background"]) or minor["backgrounds"][0]
 
@@ -352,9 +408,9 @@ class ResourceManifest:
         outfit = self._find_outfit(manifest, outfit_id) or self._find_outfit(manifest, defaults["outfit"]) or manifest["characters"]["outfits"][0]
 
         emotion_id = _normalize_emotion_id(str(result.get("emotion") or defaults["emotion"])) or defaults["emotion"]
-        emotion = self._find_emotion(outfit, emotion_id)
+        emotion = self._find_emotion_with_aliases(outfit, emotion_id)
         if emotion is None:
-            emotion = self._find_emotion(outfit, defaults["emotion"]) or outfit["emotions"][0]
+            emotion = self._find_emotion_with_aliases(outfit, defaults["emotion"]) or outfit["emotions"][0]
 
         bgm_id = str(result["scene"].get("bgm") or "")
         bgm = self._find_bgm(minor, bgm_id)
@@ -600,7 +656,10 @@ class ResourceManifest:
             if not _is_image(path):
                 continue
 
-            raw_minor_name, raw_background_name = self._split_legacy_scene_stem(path.stem)
+            raw_minor_name, raw_background_name = self._split_legacy_scene_stem(
+                path.stem,
+                major_name=major_dir.name,
+            )
             minor_meta = _load_meta(major_dir / f"{raw_minor_name}.meta.json")
             minor_id = str(minor_meta.get("id") or raw_minor_name)
             group = grouped.setdefault(
@@ -1175,13 +1234,16 @@ class ResourceManifest:
                 names.append(value)
         return names or [raw_name]
 
-    def _split_legacy_scene_stem(self, stem: str) -> tuple[str, str]:
+    def _split_legacy_scene_stem(self, stem: str, *, major_name: str = "") -> tuple[str, str]:
         for separator in ("_", "-", " "):
             if separator not in stem:
                 continue
             prefix, suffix = stem.rsplit(separator, 1)
             if prefix and _is_known_background_token(suffix):
                 return prefix, suffix
+            if suffix and _is_known_background_token(prefix):
+                minor = suffix if suffix != major_name else "default"
+                return minor, prefix
         return ("default", stem)
 
     def _strip_internal_fields(self, value: Any) -> Any:
@@ -1225,7 +1287,54 @@ class ResourceManifest:
         if match is not None:
             return match
         normalized = self._normalize_background_id(background_id)
-        return self._find_entry_in_list(minor["backgrounds"], normalized)
+        match = self._find_entry_in_list(minor["backgrounds"], normalized)
+        if match is not None:
+            return match
+
+        lookup = _normalize_key(background_id)
+        minor_label = str(minor.get("name") or minor.get("id") or "").strip()
+        for background in minor.get("backgrounds") or []:
+            background_label = str(background.get("name") or background.get("id") or "").strip()
+            values = [
+                f"{background_label}{minor_label}",
+                f"{minor_label}{background_label}",
+            ]
+            if any(lookup == _normalize_key(value) for value in values if value):
+                return background
+        return None
+
+    def _find_background_across_minors(
+        self,
+        major: dict[str, Any] | None,
+        background_id: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        if not major or not background_id:
+            return None
+        raw = str(background_id or "").strip()
+        normalized = self._normalize_background_id(raw)
+        for minor in major.get("minors") or []:
+            for candidate in (raw, normalized):
+                match = self._find_background(minor, candidate)
+                if match is not None:
+                    return minor, match
+
+        lookup = _normalize_key(raw)
+        if not lookup:
+            return None
+        for minor in major.get("minors") or []:
+            for background in minor.get("backgrounds") or []:
+                background_label = str(background.get("name") or background.get("id") or "").strip()
+                minor_label = str(minor.get("name") or minor.get("id") or "").strip()
+                values = [
+                    str(background.get("id") or ""),
+                    background_label,
+                    f"{background_label}{minor_label}",
+                    f"{minor_label}{background_label}",
+                ]
+                values.extend(str(alias or "") for alias in background.get("aliases") or [])
+                if any(lookup == _normalize_key(value) for value in values if value):
+                    return minor, background
+        return None
 
     def _find_bgm(self, minor: dict[str, Any], bgm_id: str | None) -> dict[str, Any] | None:
         if not bgm_id:
@@ -1241,6 +1350,15 @@ class ResourceManifest:
 
     def _find_emotion(self, outfit: dict[str, Any], emotion_id: str) -> dict[str, Any] | None:
         return self._find_entry_in_list(outfit["emotions"], emotion_id)
+
+    def _find_emotion_with_aliases(self, outfit: dict[str, Any], emotion_id: str) -> dict[str, Any] | None:
+        if not outfit:
+            return None
+        for candidate in _emotion_candidate_ids(emotion_id):
+            match = self._find_emotion(outfit, candidate)
+            if match is not None:
+                return match
+        return None
 
     def _normalize_background_id(self, value: Any) -> str:
         background_id = str(value or "").strip()

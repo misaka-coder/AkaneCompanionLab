@@ -1,8 +1,24 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import {
+  APP_DISPLAY_NAME,
+  CHARACTER_NAME,
+  COMMON_EMOTION_CANDIDATES,
+  DEFAULT_EMOTION,
+  DEFAULT_OUTFIT,
+  INPUT_PLACEHOLDER,
+  LOCAL_CLICK_LINES,
+  MUSIC_EMOTION,
+  PROACTIVE_WAKE_PROMPT,
+  REQUIRED_EMOTIONS,
+  RECOMMENDED_EMOTIONS,
+  SESSION_DISPLAY_TITLE,
+  TTS_TEST_TEXT,
+  buildCharacterSnapshot
+} from "./character-profile.js";
 import "./styles.css";
 
 const bundledCharacterAssets = import.meta.glob("./assets/characters/猫娘/*.{png,jpg,jpeg,webp}", {
@@ -16,17 +32,35 @@ const appWindow = isTauriRuntime ? getCurrentWindow() : null;
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const PROFILE_USER_ID = "master";
-const DEFAULT_OUTFIT = "猫娘";
-const DEFAULT_EMOTION = "正常";
 const CLIENT_MODE = "desktop_pet";
 const DESKTOP_HEALTH_PATH = "/desktop-pet/health";
 const LEGACY_HEALTH_PATH = "/health";
 const BASE_CAPABILITIES = ["speech_segments", "tts"];
+const AUDIO_PLAYBACK_CAPABILITY = "audio_playback";
 const THINK_TIMEOUT_MS = 5 * 60 * 1000;
 const TTS_TIMEOUT_MS = 45 * 1000;
 const ASR_TIMEOUT_MS = 2 * 60 * 1000;
 const DESKTOP_CONTEXT_POLL_MS = 1500;
 const DESKTOP_CONTEXT_MAX_AGE_MS = 2 * 60 * 1000;
+const SCREEN_VISION_FRAME_INTERVAL_MS = 1500;
+const DEFAULT_SCREEN_VISION_FRAMES_PER_CLIP = 4;
+const SCREEN_VISION_MAX_EDGE = 960;
+const SCREEN_VISION_JPEG_QUALITY = 0.64;
+const SCREEN_VISION_SAMPLE_WIDTH = 32;
+const SCREEN_VISION_SAMPLE_HEIGHT = 18;
+const DEFAULT_SCREEN_VISION_INTERVAL_SEC = 25;
+const SCREEN_VISION_INTERVAL_MIN_SEC = 15;
+const SCREEN_VISION_INTERVAL_MAX_SEC = 600;
+const SCREEN_VISION_FRAME_COUNT_MIN = 1;
+const SCREEN_VISION_FRAME_COUNT_MAX = 5;
+const DEFAULT_SCREEN_VISION_MODE = "summary";
+const SCREEN_VISION_MODES = new Set(["summary", "direct"]);
+const SCREEN_VISION_DIFF_THRESHOLD = 10;
+const SCREEN_VISION_FORCE_AFTER_SKIPS = 2;
+const PROACTIVE_WAKE_DEFAULT_SEC = 30;
+const PROACTIVE_WAKE_MIN_SEC = 15;
+const PROACTIVE_WAKE_MAX_SEC = 600;
+const PROACTIVE_WAKE_RETRY_MS = 5000;
 const CLIPBOARD_TEXT_LIMIT = 600;
 const BACKEND_RETRY_MS = 30 * 1000;
 const VOICE_MIME_TYPES = [
@@ -36,6 +70,7 @@ const VOICE_MIME_TYPES = [
   "audio/ogg",
   "audio/mp4"
 ];
+const MUSIC_FILE_EXTENSIONS = new Set(["mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "webm"]);
 const MIN_RECORDING_MS = 700;
 const SEGMENT_MIN_MS = 1200;
 const SEGMENT_MAX_MS = 4500;
@@ -50,23 +85,6 @@ const SCALE_PRESETS = [0.85, 1, 1.15, 1.3];
 const OPACITY_PRESETS = [1, 0.85, 0.7, 0.55];
 const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
-const REQUIRED_EMOTIONS = ["正常"];
-const RECOMMENDED_EMOTIONS = [
-  "思考中",
-  "侧耳听",
-  "听歌中",
-  "困惑",
-  "开心",
-  "得意",
-  "求摸摸",
-  "被摸头",
-  "困困",
-  "打哈欠",
-  "卖萌",
-  "气鼓鼓",
-  "无语",
-  "偷吃被抓"
-];
 const PET_HIT_POLYGON = [
   [32, 0],
   [72, 0],
@@ -79,76 +97,6 @@ const PET_HIT_POLYGON = [
   [0, 78],
   [8, 36],
   [18, 12]
-];
-
-const COMMON_EMOTION_CANDIDATES = {
-  normal: ["正常", "normal"],
-  idle: ["正常", "normal"],
-  neutral: ["正常", "normal"],
-  quiet: ["正常", "normal"],
-  thinking: ["思考中", "困惑", "正常"],
-  think: ["思考中", "困惑", "正常"],
-  confused: ["困惑", "思考中", "正常"],
-  puzzled: ["困惑", "思考中", "正常"],
-  question: ["困惑", "思考中", "正常"],
-  happy: ["开心", "卖萌", "得意", "正常"],
-  joy: ["开心", "卖萌", "得意", "正常"],
-  smile: ["开心", "卖萌", "得意", "正常"],
-  success: ["开心", "卖萌", "得意", "正常"],
-  completed: ["开心", "卖萌", "得意", "正常"],
-  done: ["开心", "卖萌", "得意", "正常"],
-  cute: ["卖萌", "开心", "正常"],
-  moe: ["卖萌", "开心", "正常"],
-  smug: ["得意", "开心", "正常"],
-  sumg: ["得意", "开心", "正常"],
-  proud: ["得意", "开心", "正常"],
-  shy: ["脸红", "求摸摸", "正常"],
-  blush: ["脸红", "求摸摸", "正常"],
-  embarrassed: ["脸红", "正常"],
-  cry: ["困困", "无语", "正常"],
-  dizzy: ["无语", "困惑", "正常"],
-  sad: ["困困", "无语", "正常"],
-  speechless: ["无语", "正常"],
-  angry: ["气鼓鼓", "无语", "正常"],
-  pout: ["气鼓鼓", "正常"],
-  sleeping: ["困困", "打哈欠", "正常"],
-  sleepy: ["困困", "打哈欠", "正常"],
-  tired: ["困困", "打哈欠", "正常"],
-  yawn: ["打哈欠", "困困", "正常"],
-  yawning: ["打哈欠", "困困", "正常"],
-  listening: ["侧耳听", "正常"],
-  hearing: ["侧耳听", "正常"],
-  recording: ["侧耳听", "正常"],
-  asr: ["侧耳听", "正常"],
-  music: ["听歌中", "开心", "正常"],
-  music_listening: ["听歌中", "开心", "正常"],
-  pet: ["被摸头", "求摸摸", "开心", "正常"],
-  headpat: ["被摸头", "求摸摸", "开心", "正常"],
-  pat: ["被摸头", "求摸摸", "开心", "正常"],
-  snack: ["偷吃被抓", "正常"],
-  hungry: ["偷吃被抓", "正常"],
-  yandere: ["病娇", "正常"]
-};
-
-const LOCAL_CLICK_LINES = [
-  { text: "嗯？我在哦。", emotion: "正常" },
-  { text: "主人叫我吗？", emotion: "侧耳听" },
-  { text: "嘿嘿，今天也一起努力吧。", emotion: "开心" },
-  { text: "摸头可以，但不能把我当按钮。", emotion: "被摸头" },
-  { text: "再点一下我就要装作很忙了。", emotion: "得意" },
-  { text: "欸？有什么新计划吗？", emotion: "困惑" },
-  { text: "喵。只喵一下哦。", emotion: "卖萌" },
-  { text: "可以夸我一句再走吗？", emotion: "求摸摸" },
-  { text: "哼，戳太快了啦。", emotion: "气鼓鼓" },
-  { text: "我刚刚可没有偷吃。", emotion: "偷吃被抓" },
-  { text: "等、等一下，突然被点到会害羞的。", emotion: "脸红" },
-  { text: "我在认真思考被戳的意义。", emotion: "思考中" },
-  { text: "今天的心情适合放一首轻快的歌。", emotion: "听歌中" },
-  { text: "有点困，但还是会陪你。", emotion: "困困" },
-  { text: "哈啊……不是无聊，是在省电。", emotion: "打哈欠" },
-  { text: "这下我真的要把你记到小本本上了。", emotion: "无语" },
-  { text: "再戳一下，我就默认你是在撒娇。", emotion: "得意" },
-  { text: "主人今天也很努力，我看见了。", emotion: "开心" }
 ];
 
 const DEFAULT_STATE = {
@@ -172,6 +120,12 @@ const DEFAULT_STATE = {
   voiceVolume: 0.85,
   desktopContextEnabled: true,
   clipboardContextEnabled: false,
+  screenVisionEnabled: false,
+  screenVisionMode: DEFAULT_SCREEN_VISION_MODE,
+  proactiveWakeEnabled: false,
+  proactiveWakeIntervalSec: PROACTIVE_WAKE_DEFAULT_SEC,
+  screenVisionIntervalSec: DEFAULT_SCREEN_VISION_INTERVAL_SEC,
+  screenVisionFrameCount: DEFAULT_SCREEN_VISION_FRAMES_PER_CLIP,
   hitTestEnabled: true,
   hitboxOverlay: false
 };
@@ -216,6 +170,7 @@ let replyDisplayActive = false;
 let segmentTimer = 0;
 let lastTurnSignature = "";
 let lastTurnTextKey = "";
+let lastActivityActionSignature = "";
 let motionTimer = 0;
 let transientEmotionTimer = 0;
 let transientEmotionToken = 0;
@@ -244,6 +199,14 @@ let ttsActive = false;
 let ttsQueue = [];
 let lastTtsSignature = "";
 let resolveTtsWait = null;
+let musicTrack = null;
+let musicQueue = [];
+let musicQueueIndex = -1;
+let musicPlaying = false;
+let musicPaused = false;
+let musicLoading = false;
+let musicEmotionActive = false;
+let musicDropHover = false;
 let voiceInputState = "idle";
 let voiceRecorder = null;
 let voiceStream = null;
@@ -254,6 +217,23 @@ let voiceShortcutHeld = false;
 let asrController = null;
 let voiceInputToken = 0;
 let desktopContextPollTimer = 0;
+let proactiveWakeTimer = 0;
+let proactiveWakeLastAt = 0;
+let proactiveWakeRunning = false;
+let screenVisionTimer = 0;
+let screenVisionStream = null;
+let screenVisionVideo = null;
+let screenVisionCanvas = null;
+let screenVisionSampleCanvas = null;
+let screenVisionFrames = [];
+let screenVisionRecentFrames = [];
+let screenVisionLastSample = null;
+let screenVisionLastForegroundKey = "";
+let screenVisionLastSubmitAt = 0;
+let screenVisionSkippedClips = 0;
+let screenVisionStatus = "off";
+let screenVisionError = "";
+let screenVisionActiveClipId = "";
 let backendRetryTimer = 0;
 let lastDesktopForeground = null;
 
@@ -263,6 +243,7 @@ const els = {
   hitbox: document.querySelector("#pet-hitbox"),
   petImage: document.querySelector("#pet-image"),
   menu: document.querySelector("#debug-menu"),
+  menuTitle: document.querySelector("#debug-menu .menu-head strong"),
   menuSummary: document.querySelector("#menu-summary"),
   toggle: document.querySelector("#debug-toggle"),
   close: document.querySelector("#close-window"),
@@ -295,11 +276,16 @@ const els = {
   reset: document.querySelector("#reset-window"),
   reloadResources: document.querySelector("#reload-resources"),
   closeMenuButton: document.querySelector("#close-window-menu"),
+  previousMusic: document.querySelector("#previous-music"),
+  nextMusic: document.querySelector("#next-music"),
+  toggleMusic: document.querySelector("#toggle-music"),
+  stopMusic: document.querySelector("#stop-music"),
   resourceDetails: document.querySelector("#resource-details"),
   emotionGrid: document.querySelector("#emotion-grid"),
   connectionStatus: document.querySelector("#connection-status"),
   status: document.querySelector("#runtime-status"),
   voicePlayer: document.querySelector("#voice-player"),
+  musicPlayer: document.querySelector("#music-player"),
   canvas: document.querySelector("#webgl-probe")
 };
 
@@ -308,6 +294,7 @@ boot();
 
 async function boot() {
   bindUi();
+  applyCharacterChrome();
   applyVisualState();
   updateConnectionStatus();
 
@@ -328,10 +315,13 @@ async function boot() {
     await invoke("apply_window_state", { state });
     await syncNativeHitTest({ force: true });
     await registerWindowListeners();
+    await registerFileDropHandlers();
     await registerSettingsBridge();
     scheduleSave(0);
     void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
     scheduleDesktopContextPoll();
+    scheduleScreenVisionCapture({ immediate: true });
+    scheduleProactiveWake();
   } catch (error) {
     setStatus(`Tauri init failed: ${formatError(error)}`);
   }
@@ -441,6 +431,15 @@ function bindUi() {
   });
   els.stopReply.addEventListener("click", () => {
     interruptReply({ announce: true });
+  });
+  els.musicPlayer.addEventListener("ended", () => {
+    void handleMusicEnded();
+  });
+  els.musicPlayer.addEventListener("error", () => {
+    const name = getMusicDisplayName();
+    stopMusic({ silent: true });
+    setRuntimeStatus(`音乐播放失败${name ? `：${name}` : ""}`, { mode: "error" });
+    showBubbleText("这首歌好像没放出来……", { transient: true, durationMs: 2200, kind: "music" });
   });
 
   window.addEventListener("contextmenu", (event) => {
@@ -572,6 +571,22 @@ function bindUi() {
     void reloadCharacterResources({ userTriggered: true });
   });
 
+  els.previousMusic.addEventListener("click", () => {
+    void playPreviousMusicTrack();
+  });
+
+  els.nextMusic.addEventListener("click", () => {
+    void playNextMusicTrack();
+  });
+
+  els.toggleMusic.addEventListener("click", () => {
+    void toggleMusicPlayback();
+  });
+
+  els.stopMusic.addEventListener("click", () => {
+    stopMusic({ announce: true });
+  });
+
   els.closeMenuButton.addEventListener("click", () => {
     void closePetWindow();
   });
@@ -661,13 +676,34 @@ async function registerWindowListeners() {
   window.addEventListener("beforeunload", () => {
     unlistenFns.forEach((unlisten) => unlisten());
     window.clearTimeout(desktopContextPollTimer);
+    window.clearTimeout(proactiveWakeTimer);
+    stopScreenVisionCapture({ clearRemote: false });
     window.clearTimeout(backendRetryTimer);
     window.clearTimeout(transientEmotionTimer);
     if (thinkController) thinkController.abort();
     if (asrController) asrController.abort();
     stopTts();
+    stopMusic({ silent: true });
     cleanupVoiceRecorder();
   });
+}
+
+async function registerFileDropHandlers() {
+  if (!appWindow?.onDragDropEvent) return;
+  unlistenFns.push(await appWindow.onDragDropEvent((event) => {
+    const payload = event?.payload || {};
+    const type = String(payload.type || "").toLowerCase();
+    if (type === "drop") {
+      musicDropHover = false;
+      void handleDroppedFiles(payload.paths || []);
+      return;
+    }
+    if (type === "over" || type === "enter") {
+      showMusicDropHint();
+      return;
+    }
+    musicDropHover = false;
+  }));
 }
 
 async function registerSettingsBridge() {
@@ -720,6 +756,27 @@ async function handleSettingsCommand(payload) {
     case "setClipboardContextEnabled":
       setClipboardContextEnabled(Boolean(payload.value));
       break;
+    case "setScreenVisionEnabled":
+      await setScreenVisionEnabled(Boolean(payload.value));
+      break;
+    case "setScreenVisionMode":
+      setScreenVisionMode(payload.value);
+      break;
+    case "setProactiveWakeEnabled":
+      setProactiveWakeEnabled(Boolean(payload.value));
+      break;
+    case "setProactiveWakeIntervalSec":
+      setProactiveWakeIntervalSec(Number(payload.value));
+      break;
+    case "setScreenVisionIntervalSec":
+      setScreenVisionIntervalSec(Number(payload.value));
+      break;
+    case "setScreenVisionFrameCount":
+      setScreenVisionFrameCount(Number(payload.value));
+      break;
+    case "clearScreenVision":
+      await clearScreenVisionWorkspace();
+      break;
     case "setRestoreLatestOnStartup":
       setRestoreLatestOnStartup(Boolean(payload.value));
       break;
@@ -732,6 +789,18 @@ async function handleSettingsCommand(payload) {
       break;
     case "testTts":
       await testTts();
+      break;
+    case "previousMusic":
+      await playPreviousMusicTrack();
+      break;
+    case "nextMusic":
+      await playNextMusicTrack();
+      break;
+    case "toggleMusic":
+      await toggleMusicPlayback();
+      break;
+    case "stopMusic":
+      stopMusic({ announce: true });
       break;
     case "setAlwaysOnTop":
       await setAlwaysOnTop(Boolean(payload.value));
@@ -777,6 +846,15 @@ async function handleSettingsCommand(payload) {
   scheduleSettingsSnapshot();
 }
 
+function applyCharacterChrome() {
+  document.title = APP_DISPLAY_NAME;
+  if (els.menuTitle) els.menuTitle.textContent = APP_DISPLAY_NAME;
+  if (els.chatInput) els.chatInput.placeholder = INPUT_PLACEHOLDER;
+  if (els.hitbox) els.hitbox.setAttribute("aria-label", CHARACTER_NAME);
+  if (els.petImage) els.petImage.alt = CHARACTER_NAME;
+  if (els.close) els.close.title = `关闭 ${APP_DISPLAY_NAME}`;
+}
+
 function scheduleSettingsSnapshot(delay = 40) {
   if (!isTauriRuntime) return;
   window.clearTimeout(settingsSnapshotTimer);
@@ -799,6 +877,7 @@ function buildSettingsSnapshot() {
   const emotions = getActiveEmotions();
   const issues = buildResourceIssues(activeOutfit, emotions);
   return {
+    character: buildCharacterSnapshot(),
     state: {
       scale: state.scale,
       opacity: state.opacity,
@@ -815,6 +894,13 @@ function buildSettingsSnapshot() {
       voiceVolume: state.voiceVolume,
       desktopContextEnabled: state.desktopContextEnabled,
       clipboardContextEnabled: state.clipboardContextEnabled,
+      screenVisionEnabled: state.screenVisionEnabled,
+      screenVisionMode: state.screenVisionMode,
+      proactiveWakeEnabled: state.proactiveWakeEnabled,
+      proactiveWakeIntervalSec: state.proactiveWakeIntervalSec,
+      screenVisionIntervalSec: state.screenVisionIntervalSec,
+      screenVisionFrameCount: state.screenVisionFrameCount,
+      recommendedScreenVisionIntervalSec: recommendedScreenVisionIntervalSec(state.proactiveWakeIntervalSec),
       hitTestEnabled: state.hitTestEnabled,
       hitboxOverlay: state.hitboxOverlay
     },
@@ -849,6 +935,16 @@ function buildSettingsSnapshot() {
       sending,
       speaking: ttsActive,
       voiceInput: voiceInputState,
+      musicPlaying,
+      musicPaused,
+      screenVision: screenVisionStatus,
+      screenVisionMode: state.screenVisionMode,
+      screenVisionClipId: screenVisionActiveClipId,
+      screenVisionError,
+      screenVisionFrameBufferSize: screenVisionRecentFrames.length,
+      proactiveWake: state.proactiveWakeEnabled ? "enabled" : "off",
+      proactiveWakeRunning,
+      proactiveWakeLastAt,
       bubbleVisible: els.bubble.classList.contains("visible"),
       bubbleKind,
       replyDisplayActive
@@ -857,6 +953,7 @@ function buildSettingsSnapshot() {
       active: ttsActive,
       queueLength: ttsQueue.length
     },
+    music: buildMusicSnapshot(),
     webglEnabled: els.stage.classList.contains("show-webgl")
   };
 }
@@ -888,9 +985,52 @@ function normalizeState(value) {
     clipboardContextEnabled: Boolean(
       incoming.clipboardContextEnabled ?? DEFAULT_STATE.clipboardContextEnabled
     ),
+    screenVisionEnabled: Boolean(incoming.screenVisionEnabled ?? DEFAULT_STATE.screenVisionEnabled),
+    screenVisionMode: normalizeScreenVisionMode(incoming.screenVisionMode ?? DEFAULT_STATE.screenVisionMode),
+    proactiveWakeEnabled: Boolean(incoming.proactiveWakeEnabled ?? DEFAULT_STATE.proactiveWakeEnabled),
+    proactiveWakeIntervalSec: normalizeProactiveWakeIntervalSec(
+      incoming.proactiveWakeIntervalSec ?? DEFAULT_STATE.proactiveWakeIntervalSec
+    ),
+    screenVisionIntervalSec: normalizeScreenVisionIntervalSec(
+      incoming.screenVisionIntervalSec ?? DEFAULT_STATE.screenVisionIntervalSec
+    ),
+    screenVisionFrameCount: normalizeScreenVisionFrameCount(
+      incoming.screenVisionFrameCount ?? DEFAULT_STATE.screenVisionFrameCount
+    ),
     hitTestEnabled: Boolean(incoming.hitTestEnabled ?? DEFAULT_STATE.hitTestEnabled),
     hitboxOverlay: Boolean(incoming.hitboxOverlay ?? DEFAULT_STATE.hitboxOverlay)
   };
+}
+
+function normalizeScreenVisionMode(value) {
+  const mode = String(value || DEFAULT_SCREEN_VISION_MODE).trim().toLowerCase();
+  return SCREEN_VISION_MODES.has(mode) ? mode : DEFAULT_SCREEN_VISION_MODE;
+}
+
+function normalizeProactiveWakeIntervalSec(value) {
+  return Math.round(clamp(Number(value || PROACTIVE_WAKE_DEFAULT_SEC), PROACTIVE_WAKE_MIN_SEC, PROACTIVE_WAKE_MAX_SEC));
+}
+
+function normalizeScreenVisionIntervalSec(value) {
+  return Math.round(
+    clamp(Number(value || DEFAULT_SCREEN_VISION_INTERVAL_SEC), SCREEN_VISION_INTERVAL_MIN_SEC, SCREEN_VISION_INTERVAL_MAX_SEC)
+  );
+}
+
+function normalizeScreenVisionFrameCount(value) {
+  return Math.round(
+    clamp(
+      Number(value || DEFAULT_SCREEN_VISION_FRAMES_PER_CLIP),
+      SCREEN_VISION_FRAME_COUNT_MIN,
+      SCREEN_VISION_FRAME_COUNT_MAX
+    )
+  );
+}
+
+function recommendedScreenVisionIntervalSec(wakeIntervalSec) {
+  const raw = normalizeProactiveWakeIntervalSec(wakeIntervalSec) * 0.75;
+  const rounded = Math.round(raw / 5) * 5;
+  return normalizeScreenVisionIntervalSec(rounded);
 }
 
 function isLegacyWindowSize(width, height, scale) {
@@ -975,6 +1115,7 @@ function setVoiceInputEnabled(enabled) {
 function setVoiceVolume(value) {
   state.voiceVolume = clamp(Number(value), 0, 1);
   if (els.voicePlayer) els.voicePlayer.volume = state.voiceVolume;
+  if (els.musicPlayer) els.musicPlayer.volume = state.voiceVolume;
   scheduleSave(0);
   scheduleSettingsSnapshot();
 }
@@ -1000,6 +1141,91 @@ function setClipboardContextEnabled(enabled) {
   setRuntimeStatus(state.clipboardContextEnabled ? "剪贴板上下文已开启" : "剪贴板上下文已关闭", {
     mode: "idle"
   });
+  scheduleSettingsSnapshot();
+}
+
+async function setScreenVisionEnabled(enabled) {
+  state.screenVisionEnabled = Boolean(enabled);
+  screenVisionError = "";
+  if (state.screenVisionEnabled) {
+    screenVisionStatus = "starting";
+    setRuntimeStatus("正在请求屏幕权限", { mode: "idle" });
+    const started = await ensureScreenVisionCapture();
+    if (started) {
+      scheduleScreenVisionCapture({ immediate: true });
+      setRuntimeStatus("看屏幕已开启", { mode: "idle" });
+    } else {
+      state.screenVisionEnabled = false;
+      await clearScreenVisionWorkspace({ quiet: true });
+      setRuntimeStatus(`看屏幕开启失败：${screenVisionError || "未获得屏幕权限"}`, { mode: "error" });
+    }
+  } else {
+    stopScreenVisionCapture();
+    await clearScreenVisionWorkspace({ quiet: true });
+    setRuntimeStatus("看屏幕已关闭", { mode: "idle" });
+  }
+  scheduleSave(0);
+  scheduleSettingsSnapshot();
+}
+
+function setScreenVisionMode(value) {
+  state.screenVisionMode = normalizeScreenVisionMode(value);
+  screenVisionLastSubmitAt = 0;
+  screenVisionSkippedClips = 0;
+  scheduleSave(0);
+  setRuntimeStatus(
+    state.screenVisionMode === "direct"
+      ? `看屏幕模式：${CHARACTER_NAME} 直看最近截图`
+      : "看屏幕模式：先整理屏幕印象",
+    { mode: "idle" }
+  );
+  scheduleSettingsSnapshot();
+}
+
+function setProactiveWakeEnabled(enabled) {
+  state.proactiveWakeEnabled = Boolean(enabled);
+  if (state.proactiveWakeEnabled) {
+    scheduleProactiveWake({ immediate: false });
+    setRuntimeStatus("主动搭话已开启", { mode: "idle" });
+  } else {
+    window.clearTimeout(proactiveWakeTimer);
+    proactiveWakeTimer = 0;
+    proactiveWakeRunning = false;
+    setRuntimeStatus("主动搭话已关闭", { mode: "idle" });
+  }
+  scheduleSave(0);
+  scheduleSettingsSnapshot();
+}
+
+function setProactiveWakeIntervalSec(value) {
+  state.proactiveWakeIntervalSec = normalizeProactiveWakeIntervalSec(value);
+  const recommended = recommendedScreenVisionIntervalSec(state.proactiveWakeIntervalSec);
+  if (!Number.isFinite(Number(state.screenVisionIntervalSec))) {
+    state.screenVisionIntervalSec = recommended;
+  }
+  scheduleSave(0);
+  scheduleProactiveWake({ immediate: false });
+  setRuntimeStatus(`主动搭话间隔：${state.proactiveWakeIntervalSec} 秒`, { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setScreenVisionIntervalSec(value) {
+  state.screenVisionIntervalSec = normalizeScreenVisionIntervalSec(value);
+  scheduleSave(0);
+  setRuntimeStatus(`视觉摘要间隔：${state.screenVisionIntervalSec} 秒`, { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setScreenVisionFrameCount(value) {
+  state.screenVisionFrameCount = normalizeScreenVisionFrameCount(value);
+  if (screenVisionFrames.length > state.screenVisionFrameCount) {
+    screenVisionFrames = screenVisionFrames.slice(-state.screenVisionFrameCount);
+  }
+  if (screenVisionRecentFrames.length > state.screenVisionFrameCount) {
+    screenVisionRecentFrames = screenVisionRecentFrames.slice(-state.screenVisionFrameCount);
+  }
+  scheduleSave(0);
+  setRuntimeStatus(`屏幕帧数：${state.screenVisionFrameCount} 张`, { mode: "idle" });
   scheduleSettingsSnapshot();
 }
 
@@ -1510,7 +1736,7 @@ function showLocalInteraction() {
   localInteractionTimer = window.setTimeout(() => {
     if (token !== localInteractionToken || sending) return;
     localInteractionActive = false;
-    setPetEmotion(DEFAULT_EMOTION, { persist: false });
+    setPetEmotion(musicPlaying ? MUSIC_EMOTION : DEFAULT_EMOTION, { persist: false });
   }, 2700);
 }
 
@@ -1866,6 +2092,7 @@ async function startNewSession() {
   state.sessionId = generateSessionId();
   lastTurnSignature = "";
   lastTurnTextKey = "";
+  lastActivityActionSignature = "";
   cancelEmotionPreview({ restore: false });
   closeMenu();
   setPetEmotion(DEFAULT_EMOTION);
@@ -2134,7 +2361,7 @@ async function ensureBackendSession({ restoreLatest = false } = {}) {
       body: JSON.stringify({
         user_id: state.sessionId,
         real_user_id: PROFILE_USER_ID,
-        display_title: "Tauri Next 桌宠对话"
+        display_title: SESSION_DISPLAY_TITLE
       })
     });
 
@@ -2246,6 +2473,275 @@ async function collectClipboardContext() {
   }
 }
 
+function scheduleScreenVisionCapture({ immediate = false } = {}) {
+  window.clearTimeout(screenVisionTimer);
+  screenVisionTimer = 0;
+  if (!isTauriRuntime || !state.screenVisionEnabled) {
+    screenVisionStatus = state.screenVisionEnabled ? screenVisionStatus : "off";
+    return;
+  }
+
+  const delay = immediate ? 0 : SCREEN_VISION_FRAME_INTERVAL_MS;
+  screenVisionTimer = window.setTimeout(async () => {
+    screenVisionTimer = 0;
+    await captureScreenVisionFrame();
+    scheduleScreenVisionCapture();
+  }, delay);
+}
+
+async function ensureScreenVisionCapture() {
+  if (screenVisionStream && screenVisionVideo) {
+    screenVisionStatus = "watching";
+    return true;
+  }
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    screenVisionStatus = "unsupported";
+    screenVisionError = "当前 WebView 不支持屏幕捕获";
+    return false;
+  }
+  try {
+    screenVisionStream = await navigator.mediaDevices.getDisplayMedia({
+      audio: false,
+      video: {
+        frameRate: { ideal: 2, max: 4 },
+        width: { max: 1280 },
+        height: { max: 720 }
+      }
+    });
+    const [track] = screenVisionStream.getVideoTracks();
+    if (track) {
+      track.addEventListener("ended", () => {
+        stopScreenVisionCapture({ clearRemote: true });
+        state.screenVisionEnabled = false;
+        scheduleSave(0);
+        scheduleSettingsSnapshot();
+      });
+    }
+    screenVisionVideo = document.createElement("video");
+    screenVisionVideo.muted = true;
+    screenVisionVideo.playsInline = true;
+    screenVisionVideo.srcObject = screenVisionStream;
+    await screenVisionVideo.play();
+    screenVisionCanvas = document.createElement("canvas");
+    screenVisionSampleCanvas = document.createElement("canvas");
+    screenVisionStatus = "watching";
+    screenVisionError = "";
+    return true;
+  } catch (error) {
+    screenVisionStatus = "error";
+    screenVisionError = formatError(error).slice(0, 160);
+    stopScreenVisionCapture({ clearRemote: false });
+    return false;
+  }
+}
+
+async function captureScreenVisionFrame() {
+  if (!state.screenVisionEnabled) return;
+  if (!(await ensureScreenVisionCapture())) return;
+  if (!screenVisionVideo?.videoWidth || !screenVisionVideo?.videoHeight) return;
+
+  const frame = readCompressedScreenVisionFrame();
+  if (!frame) return;
+  const frameCount = normalizeScreenVisionFrameCount(state.screenVisionFrameCount);
+  pushScreenVisionRecentFrame(frame, frameCount);
+  if (state.screenVisionMode === "direct") {
+    screenVisionStatus = "watching";
+    scheduleSettingsSnapshot(120);
+    return;
+  }
+  screenVisionFrames.push(frame);
+  if (screenVisionFrames.length > frameCount) {
+    screenVisionFrames = screenVisionFrames.slice(-frameCount);
+  }
+  if (screenVisionFrames.length < frameCount) return;
+
+  const now = Date.now();
+  if (now - screenVisionLastSubmitAt < state.screenVisionIntervalSec * 1000) return;
+  await maybeSubmitScreenVisionClip();
+}
+
+function pushScreenVisionRecentFrame(frame, frameCount = normalizeScreenVisionFrameCount(state.screenVisionFrameCount)) {
+  if (!frame) return;
+  screenVisionRecentFrames.push(frame);
+  if (screenVisionRecentFrames.length > frameCount) {
+    screenVisionRecentFrames = screenVisionRecentFrames.slice(-frameCount);
+  }
+}
+
+function latestDesktopScreenFramesForThink() {
+  if (!state.screenVisionEnabled || state.screenVisionMode !== "direct") return [];
+  const frameCount = normalizeScreenVisionFrameCount(state.screenVisionFrameCount);
+  return screenVisionRecentFrames.slice(-frameCount).map((frame) => ({
+    captured_at: frame.captured_at,
+    width: frame.width,
+    height: frame.height,
+    data_url: frame.data_url
+  }));
+}
+
+function readCompressedScreenVisionFrame() {
+  const sourceWidth = screenVisionVideo.videoWidth;
+  const sourceHeight = screenVisionVideo.videoHeight;
+  if (!sourceWidth || !sourceHeight) return null;
+  const scale = Math.min(1, SCREEN_VISION_MAX_EDGE / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+  screenVisionCanvas.width = width;
+  screenVisionCanvas.height = height;
+  const ctx = screenVisionCanvas.getContext("2d", { alpha: false });
+  if (!ctx) return null;
+  ctx.drawImage(screenVisionVideo, 0, 0, width, height);
+
+  const sample = sampleScreenVisionFrame(screenVisionCanvas);
+  const dataUrl = screenVisionCanvas.toDataURL("image/jpeg", SCREEN_VISION_JPEG_QUALITY);
+  return {
+    captured_at: Math.floor(Date.now() / 1000),
+    width,
+    height,
+    data_url: dataUrl,
+    sample
+  };
+}
+
+function sampleScreenVisionFrame(sourceCanvas) {
+  screenVisionSampleCanvas.width = SCREEN_VISION_SAMPLE_WIDTH;
+  screenVisionSampleCanvas.height = SCREEN_VISION_SAMPLE_HEIGHT;
+  const sampleCtx = screenVisionSampleCanvas.getContext("2d", { alpha: false });
+  if (!sampleCtx) return [];
+  sampleCtx.drawImage(sourceCanvas, 0, 0, SCREEN_VISION_SAMPLE_WIDTH, SCREEN_VISION_SAMPLE_HEIGHT);
+  const data = sampleCtx.getImageData(0, 0, SCREEN_VISION_SAMPLE_WIDTH, SCREEN_VISION_SAMPLE_HEIGHT).data;
+  const sample = [];
+  for (let i = 0; i < data.length; i += 4) {
+    sample.push(Math.round((data[i] + data[i + 1] + data[i + 2]) / 3));
+  }
+  return sample;
+}
+
+async function maybeSubmitScreenVisionClip() {
+  if (screenVisionStatus === "uploading" || screenVisionStatus === "observing") {
+    return;
+  }
+  const frames = screenVisionFrames.slice(-normalizeScreenVisionFrameCount(state.screenVisionFrameCount));
+  const first = frames[0];
+  const last = frames[frames.length - 1];
+  const foreground = normalizeForegroundContext(lastDesktopForeground) || emptyForegroundContext("unavailable");
+  const foregroundKey = `${foreground.process_name}|${foreground.title}`;
+  const diff = screenVisionLastSample ? sampleDifference(screenVisionLastSample, last.sample) : 100;
+  const foregroundChanged = foregroundKey && foregroundKey !== screenVisionLastForegroundKey;
+  const shouldSubmit =
+    foregroundChanged ||
+    diff >= SCREEN_VISION_DIFF_THRESHOLD ||
+    screenVisionSkippedClips >= SCREEN_VISION_FORCE_AFTER_SKIPS;
+
+  if (!shouldSubmit) {
+    screenVisionSkippedClips += 1;
+    screenVisionFrames = frames.slice(-1);
+    screenVisionStatus = "quiet";
+    scheduleSettingsSnapshot(120);
+    return;
+  }
+
+  screenVisionLastSample = last.sample;
+  screenVisionLastForegroundKey = foregroundKey;
+  screenVisionLastSubmitAt = Date.now();
+  screenVisionSkippedClips = 0;
+  screenVisionStatus = "uploading";
+  scheduleSettingsSnapshot(120);
+
+  try {
+    const response = await backendFetch(buildBackendEndpointUrl("screen_vision_clip", "/desktop-pet/vision/clip", { t: Date.now() }), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      connectTimeout: 20_000,
+      body: JSON.stringify({
+        user_id: state.sessionId,
+        real_user_id: PROFILE_USER_ID,
+        mode: "background",
+        foreground,
+        captured_start_ts: first.captured_at,
+        captured_end_ts: last.captured_at,
+        frames: frames.map((frame) => ({
+          captured_at: frame.captured_at,
+          width: frame.width,
+          height: frame.height,
+          data_url: frame.data_url
+        }))
+      })
+    });
+    if (!response.ok) throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
+    const payload = await response.json();
+    screenVisionActiveClipId = String(payload?.clip?.clip_id || "");
+    screenVisionStatus = "watching";
+    screenVisionError = "";
+  } catch (error) {
+    screenVisionStatus = "error";
+    screenVisionError = formatError(error).slice(0, 160);
+  } finally {
+    screenVisionFrames = frames.slice(-1);
+    scheduleSettingsSnapshot();
+  }
+}
+
+function sampleDifference(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || !left.length || left.length !== right.length) return 100;
+  let total = 0;
+  for (let i = 0; i < left.length; i += 1) {
+    total += Math.abs(Number(left[i] || 0) - Number(right[i] || 0));
+  }
+  return total / left.length;
+}
+
+function stopScreenVisionCapture({ clearRemote = true } = {}) {
+  window.clearTimeout(screenVisionTimer);
+  screenVisionTimer = 0;
+  if (screenVisionStream) {
+    for (const track of screenVisionStream.getTracks()) {
+      try {
+        track.stop();
+      } catch {
+        // Ignore capture cleanup errors.
+      }
+    }
+  }
+  screenVisionStream = null;
+  screenVisionVideo = null;
+  screenVisionCanvas = null;
+  screenVisionSampleCanvas = null;
+  screenVisionFrames = [];
+  screenVisionRecentFrames = [];
+  screenVisionLastSample = null;
+  screenVisionLastForegroundKey = "";
+  screenVisionSkippedClips = 0;
+  screenVisionStatus = "off";
+  screenVisionActiveClipId = "";
+  if (clearRemote) {
+    void clearScreenVisionWorkspace({ quiet: true });
+  }
+}
+
+async function clearScreenVisionWorkspace({ quiet = false } = {}) {
+  screenVisionActiveClipId = "";
+  try {
+    await backendFetch(buildBackendEndpointUrl("screen_vision_clear", "/desktop-pet/vision/clear", { t: Date.now() }), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      connectTimeout: 5000,
+      body: JSON.stringify({
+        user_id: state.sessionId,
+        real_user_id: PROFILE_USER_ID,
+        scope: "session"
+      })
+    });
+    if (!quiet) setRuntimeStatus("屏幕印象已清空", { mode: "idle" });
+  } catch (error) {
+    if (!quiet) setRuntimeStatus(`清空失败：${formatError(error)}`, { mode: "error" });
+  } finally {
+    scheduleSettingsSnapshot();
+  }
+}
+
 function normalizeForegroundContext(value) {
   if (!value || typeof value !== "object") return null;
   return {
@@ -2295,13 +2791,14 @@ function interruptReply({ announce = false } = {}) {
   clearLocalInteraction();
   lastTurnSignature = "";
   lastTurnTextKey = "";
+  lastActivityActionSignature = "";
   window.clearTimeout(bubbleTimer);
   window.clearTimeout(segmentTimer);
   bubbleToken += 1;
   bubbleKind = "none";
   replyDisplayActive = false;
 
-  if (state.currentEmotion === "思考中") {
+  if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
     setPetEmotion(DEFAULT_EMOTION);
   }
   setPetMotion("idle");
@@ -2367,7 +2864,7 @@ async function sendMessage(text) {
   } finally {
     if (isTurnActive(turnToken)) {
       sending = false;
-      if (state.currentEmotion === "思考中") {
+      if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
         setPetEmotion(DEFAULT_EMOTION);
       }
       if (!els.bubble.classList.contains("visible")) {
@@ -2382,7 +2879,83 @@ async function sendMessage(text) {
   }
 }
 
-async function* sendThinkStream(message, turnToken) {
+function scheduleProactiveWake({ immediate = false, delayMs = null } = {}) {
+  window.clearTimeout(proactiveWakeTimer);
+  proactiveWakeTimer = 0;
+  if (!isTauriRuntime || !state.proactiveWakeEnabled) return;
+  const baseDelay = Number.isFinite(Number(delayMs))
+    ? Number(delayMs)
+    : immediate
+      ? 1000
+      : state.proactiveWakeIntervalSec * 1000;
+  const jitter = immediate || Number.isFinite(Number(delayMs)) ? 1 : 0.85 + Math.random() * 0.3;
+  proactiveWakeTimer = window.setTimeout(() => {
+    proactiveWakeTimer = 0;
+    void runProactiveWake();
+  }, Math.max(1000, Math.round(baseDelay * jitter)));
+}
+
+async function runProactiveWake() {
+  if (!state.proactiveWakeEnabled) return;
+  if (!canStartProactiveWake()) {
+    scheduleProactiveWake({ delayMs: PROACTIVE_WAKE_RETRY_MS });
+    return;
+  }
+  await sendProactiveWake();
+  scheduleProactiveWake();
+}
+
+function canStartProactiveWake() {
+  if (proactiveWakeRunning || sending || ttsActive || ttsQueue.length > 0 || replyDisplayActive) return false;
+  if (voiceInputState === "recording" || voiceInputState === "processing") return false;
+  if (!els.chatForm.hidden || !els.menu.hidden) return false;
+  if (localInteractionActive) return false;
+  const bubbleVisible = els.bubble.classList.contains("visible");
+  if (bubbleVisible && !["status", "vision", "none"].includes(bubbleKind)) return false;
+  return true;
+}
+
+async function sendProactiveWake() {
+  const turnToken = ++activeTurnToken;
+  proactiveWakeRunning = true;
+  sending = true;
+  lastTurnSignature = "";
+  lastTurnTextKey = "";
+  scheduleSettingsSnapshot();
+
+  try {
+    if (resourceState.health !== "online") {
+      const healthy = await reloadCharacterResources({ silent: true });
+      if (!healthy) return;
+    }
+    if (!isTurnActive(turnToken)) return;
+    const stream = sendThinkStream(PROACTIVE_WAKE_PROMPT, turnToken, {
+      turnKind: "desktop_pet_proactive",
+      transientUserMessage: true,
+      desktopScreenFrames: latestDesktopScreenFramesForThink()
+    });
+    await processThinkStream(stream, turnToken);
+    proactiveWakeLastAt = Date.now();
+  } catch (error) {
+    if (!isTurnActive(turnToken) || isAbortLike(error)) return;
+    setRuntimeStatus(`主动搭话暂时失败：${formatError(error)}`, { mode: "error" });
+  } finally {
+    proactiveWakeRunning = false;
+    if (isTurnActive(turnToken)) {
+      sending = false;
+      if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
+        setPetEmotion(DEFAULT_EMOTION);
+      }
+      if (!els.bubble.classList.contains("visible")) {
+        setPetMotion("idle");
+      }
+      updateActivityControls();
+      scheduleSettingsSnapshot();
+    }
+  }
+}
+
+async function* sendThinkStream(message, turnToken, options = {}) {
   const controller = new AbortController();
   thinkController = controller;
   const timeoutId = window.setTimeout(() => controller.abort(), THINK_TIMEOUT_MS);
@@ -2396,11 +2969,14 @@ async function* sendThinkStream(message, turnToken) {
       user_id: state.sessionId,
       real_user_id: PROFILE_USER_ID,
       message,
+      turn_kind: String(options.turnKind || ""),
+      transient_user_message: Boolean(options.transientUserMessage),
       client_mode: CLIENT_MODE,
       client_capabilities: buildClientCapabilities(),
       current_visual: buildCurrentVisual(),
       desktop_context: desktopContext,
-      desktop_activity: null
+      desktop_screen_frames: Array.isArray(options.desktopScreenFrames) ? options.desktopScreenFrames : [],
+      desktop_activity: buildDesktopMusicActivity()
     })
   };
 
@@ -2486,6 +3062,7 @@ function renderPayload(
 ) {
   if (!payload || typeof payload !== "object") return false;
   applyPayloadEmotion(payload, { persist: persistEmotion });
+  applyPayloadActivity(payload);
 
   const segments = normalizeSegments(payload.speech_segments || payload.segments);
   if (segments.length > 0) {
@@ -2526,6 +3103,47 @@ function applyPayloadEmotion(payload, { persist = true } = {}) {
   if (emotion) setPetEmotion(emotion, { persist });
 }
 
+function applyPayloadActivity(payload) {
+  const activity = payload?.activity;
+  if (!activity || typeof activity !== "object" || !musicTrack) return;
+  const action = String(activity.action || "").trim().toLowerCase();
+  const target = String(activity.target || activity.handle || "current").trim().toLowerCase();
+  const sourceId = String(activity.source_id || activity.sourceId || "").trim();
+  const requestedIndex = sourceId ? findMusicTrackIndexBySourceId(sourceId) : -1;
+  const targetsCurrent =
+    ["current", "", "local_music_current"].includes(target) ||
+    sourceId === musicTrack.sourceId ||
+    requestedIndex >= 0;
+  if (!targetsCurrent) return;
+  const signature = `${action}:${target}:${sourceId}:${musicTrack.sourceId}`;
+  if (signature === lastActivityActionSignature) return;
+  lastActivityActionSignature = signature;
+
+  if ((action === "next" || action === "skip") && hasNextMusicTrack()) {
+    void playNextMusicTrack();
+  } else if ((action === "previous" || action === "prev") && hasPreviousMusicTrack()) {
+    void playPreviousMusicTrack();
+  } else if (action === "play" && requestedIndex >= 0 && requestedIndex !== musicQueueIndex) {
+    void playMusicQueueIndex(requestedIndex, {
+      message: `切到这首：《${musicQueue[requestedIndex].displayName}》。`
+    });
+  } else if (action === "pause" && musicPlaying) {
+    els.musicPlayer.pause();
+    musicPlaying = false;
+    musicPaused = true;
+    setMusicEmotion(false);
+    setRuntimeStatus(`音乐已暂停：${getMusicDisplayName()}`, { mode: "music-paused" });
+  } else if ((action === "resume" || action === "play") && musicPaused) {
+    void toggleMusicPlayback();
+  } else if (action === "stop") {
+    stopMusic({ announce: false });
+  } else {
+    return;
+  }
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+}
+
 function normalizeSegments(value) {
   if (!Array.isArray(value)) return [];
   return value
@@ -2540,6 +3158,8 @@ function normalizeSegments(value) {
 function buildClientCapabilities() {
   const capabilities = [...BASE_CAPABILITIES];
   if (state.desktopContextEnabled) capabilities.push("desktop_context");
+  if (state.screenVisionEnabled && state.screenVisionMode === "summary") capabilities.push("screen_vision");
+  if (musicTrack) capabilities.push(AUDIO_PLAYBACK_CAPABILITY);
   return capabilities;
 }
 
@@ -2738,6 +3358,316 @@ function setPetMotion(motion, { durationMs = 0 } = {}) {
   }
 }
 
+function showMusicDropHint() {
+  if (musicDropHover) return;
+  musicDropHover = true;
+  setRuntimeStatus(`把音频拖给 ${CHARACTER_NAME} 就可以播放`, { mode: "idle" });
+  if (!sending && !replyDisplayActive) {
+    showBubbleText("要放这首吗？", { transient: true, durationMs: 1400, kind: "music" });
+  }
+}
+
+async function handleDroppedFiles(paths) {
+  const files = Array.isArray(paths) ? paths.map((item) => String(item || "")).filter(Boolean) : [];
+  const audioPaths = files.filter(isSupportedMusicPath);
+  if (!audioPaths.length) {
+    showBubbleText("这个暂时不像能播放的音频文件。", { transient: true, durationMs: 2400, kind: "music" });
+    setRuntimeStatus("拖入的文件不是支持的音频格式", { mode: "error" });
+    return;
+  }
+  await addDroppedAudioFiles(audioPaths);
+}
+
+function isSupportedMusicPath(path) {
+  const extension = String(path || "").split(/[\\/]/u).pop()?.split(".").pop()?.toLowerCase() || "";
+  return MUSIC_FILE_EXTENSIONS.has(extension);
+}
+
+async function addDroppedAudioFiles(paths) {
+  if (!isTauriRuntime) return;
+  musicLoading = true;
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+  setRuntimeStatus(paths.length > 1 ? `正在准备 ${paths.length} 首音乐` : "正在准备音乐", { mode: "music" });
+  try {
+    const tracks = [];
+    const errors = [];
+    for (const path of paths) {
+      try {
+        const asset = await invoke("prepare_audio_asset", { path });
+        tracks.push(normalizeMusicTrack(asset));
+      } catch (error) {
+        errors.push(formatError(error));
+      }
+    }
+    if (!tracks.length) {
+      throw new Error(errors[0] || "没有可播放的音频文件");
+    }
+    await enqueueMusicTracks(tracks);
+  } catch (error) {
+    stopMusic({ silent: true });
+    setRuntimeStatus(`音乐准备失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
+    showBubbleText("这首好像暂时放不了。", { transient: true, durationMs: 2200, kind: "music" });
+  } finally {
+    musicLoading = false;
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+  }
+}
+
+async function enqueueMusicTracks(tracks) {
+  const items = Array.isArray(tracks) ? tracks.filter((track) => track?.cachedPath) : [];
+  if (!items.length) return;
+  const shouldStart = !musicTrack || musicQueueIndex < 0 || !musicQueue.length;
+  if (shouldStart) {
+    musicQueue = items;
+    musicQueueIndex = 0;
+    await playMusicQueueIndex(0, {
+      message: items.length > 1 ? `收到，先放《${items[0].displayName}》。` : `收到，放《${items[0].displayName}》。`
+    });
+    return;
+  }
+
+  musicQueue.push(...items);
+  const text = items.length > 1 ? `已加入 ${items.length} 首，队列现在 ${musicQueue.length} 首。` : `已加入队列：《${items[0].displayName}》。`;
+  setRuntimeStatus(text, { mode: "music" });
+  showBubbleText(text, { transient: true, durationMs: 2400, kind: "music" });
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+}
+
+async function playMusicQueueIndex(index, { message = "" } = {}) {
+  if (index < 0 || index >= musicQueue.length) return false;
+  resetMusicElement();
+  musicQueueIndex = index;
+  musicTrack = musicQueue[index];
+  if (!musicTrack.cachedPath) throw new Error("缺少可播放音频路径");
+
+  els.musicPlayer.src = convertFileSrc(musicTrack.cachedPath);
+  els.musicPlayer.currentTime = 0;
+  els.musicPlayer.volume = state.voiceVolume;
+  await els.musicPlayer.play();
+
+  musicPlaying = true;
+  musicPaused = false;
+  setMusicEmotion(true);
+  const name = getMusicDisplayName();
+  const queueLabel = getMusicQueueLabel();
+  setRuntimeStatus(`播放中：${name}${queueLabel ? ` · ${queueLabel}` : ""}`, { mode: "music" });
+  if (message) showBubbleText(message, { transient: true, durationMs: 2400, kind: "music" });
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+  return true;
+}
+
+async function playNextMusicTrack({ auto = false } = {}) {
+  if (!hasNextMusicTrack()) {
+    if (!auto) showBubbleText("后面没有下一首啦。", { transient: true, durationMs: 1800, kind: "music" });
+    return false;
+  }
+  const next = musicQueue[musicQueueIndex + 1];
+  return playMusicQueueIndex(musicQueueIndex + 1, {
+    message: auto ? `下一首，《${next.displayName}》。` : `切到下一首：《${next.displayName}》。`
+  });
+}
+
+async function playPreviousMusicTrack() {
+  if (!hasPreviousMusicTrack()) {
+    showBubbleText("前面没有上一首啦。", { transient: true, durationMs: 1800, kind: "music" });
+    return false;
+  }
+  const previous = musicQueue[musicQueueIndex - 1];
+  return playMusicQueueIndex(musicQueueIndex - 1, {
+    message: `切回上一首：《${previous.displayName}》。`
+  });
+}
+
+async function handleMusicEnded() {
+  if (!musicTrack) return;
+  if (await playNextMusicTrack({ auto: true })) return;
+  stopMusic({ ended: true });
+}
+
+async function toggleMusicPlayback() {
+  if (!musicTrack) {
+    showBubbleText("把音频文件拖给我就能放啦。", { transient: true, durationMs: 2200, kind: "music" });
+    setRuntimeStatus("等待拖入音频文件", { mode: "idle" });
+    return;
+  }
+  if (musicPlaying) {
+    els.musicPlayer.pause();
+    musicPlaying = false;
+    musicPaused = true;
+    setMusicEmotion(false);
+    setRuntimeStatus(`音乐已暂停：${getMusicDisplayName()}`, { mode: "music-paused" });
+  } else {
+    try {
+      await els.musicPlayer.play();
+      musicPlaying = true;
+      musicPaused = false;
+      setMusicEmotion(true);
+      const queueLabel = getMusicQueueLabel();
+      setRuntimeStatus(`播放中：${getMusicDisplayName()}${queueLabel ? ` · ${queueLabel}` : ""}`, { mode: "music" });
+    } catch (error) {
+      setRuntimeStatus(`音乐继续失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
+    }
+  }
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+}
+
+function stopMusic({ announce = false, ended = false, silent = false } = {}) {
+  const hadTrack = Boolean(musicTrack);
+  const name = getMusicDisplayName();
+  musicPlaying = false;
+  musicPaused = false;
+  musicLoading = false;
+  musicTrack = null;
+  musicQueue = [];
+  musicQueueIndex = -1;
+  if (els.musicPlayer) {
+    resetMusicElement();
+  }
+  setMusicEmotion(false);
+  if (!silent && hadTrack) {
+    const message = ended ? `《${name}》放完啦。` : `已停止音乐${name ? `：${name}` : ""}`;
+    setRuntimeStatus(message, { mode: ended ? "idle" : "stopped" });
+    if (announce || ended) {
+      showBubbleText(ended ? "这首放完啦。" : "音乐停好啦。", { transient: true, durationMs: 1900, kind: "music" });
+    }
+  }
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+}
+
+function setMusicEmotion(active) {
+  if (active) {
+    musicEmotionActive = true;
+    setPetEmotion(MUSIC_EMOTION, { persist: false });
+    return;
+  }
+  if (musicEmotionActive && state.currentEmotion === resolveEmotionEntry(MUSIC_EMOTION).id) {
+    setPetEmotion(DEFAULT_EMOTION, { persist: false });
+  }
+  musicEmotionActive = false;
+}
+
+function normalizeMusicTrack(asset) {
+  const value = asset && typeof asset === "object" ? asset : {};
+  const fileName = String(value.fileName || "audio");
+  const cachedPath = String(value.cachedPath || "");
+  return {
+    originalPath: String(value.originalPath || ""),
+    cachedPath,
+    sourceId: `local:${fileName}:${simpleHash(cachedPath || fileName)}`,
+    fileName,
+    displayName: String(value.displayName || value.fileName || "未命名音乐"),
+    extension: String(value.extension || "").toLowerCase(),
+    sizeBytes: Number(value.sizeBytes || 0)
+  };
+}
+
+function getMusicDisplayName() {
+  return String(musicTrack?.displayName || musicTrack?.fileName || "").trim();
+}
+
+function resetMusicElement() {
+  if (!els.musicPlayer) return;
+  els.musicPlayer.pause();
+  els.musicPlayer.removeAttribute("src");
+  els.musicPlayer.load();
+}
+
+function hasPreviousMusicTrack() {
+  return musicQueueIndex > 0 && musicQueueIndex < musicQueue.length;
+}
+
+function hasNextMusicTrack() {
+  return musicQueueIndex >= 0 && musicQueueIndex < musicQueue.length - 1;
+}
+
+function getPreviousMusicTrack() {
+  return hasPreviousMusicTrack() ? musicQueue[musicQueueIndex - 1] : null;
+}
+
+function getNextMusicTrack() {
+  return hasNextMusicTrack() ? musicQueue[musicQueueIndex + 1] : null;
+}
+
+function getMusicQueueLabel() {
+  if (!musicQueue.length || musicQueueIndex < 0) return "";
+  return musicQueue.length > 1 ? `${musicQueueIndex + 1}/${musicQueue.length}` : "";
+}
+
+function summarizeMusicTrack(track) {
+  if (!track || typeof track !== "object") return null;
+  return {
+    sourceId: track.sourceId,
+    fileName: track.fileName,
+    displayName: track.displayName,
+    extension: track.extension,
+    sizeBytes: track.sizeBytes
+  };
+}
+
+function findMusicTrackIndexBySourceId(sourceId) {
+  const normalized = String(sourceId || "").trim();
+  if (!normalized) return -1;
+  return musicQueue.findIndex((track) => track?.sourceId === normalized);
+}
+
+function buildMusicSnapshot() {
+  const previous = getPreviousMusicTrack();
+  const next = getNextMusicTrack();
+  return {
+    track: musicTrack ? { ...musicTrack } : null,
+    queue: musicQueue.map(summarizeMusicTrack).filter(Boolean),
+    queueIndex: musicQueueIndex,
+    queueCount: musicQueue.length,
+    queueLabel: getMusicQueueLabel(),
+    hasPrevious: hasPreviousMusicTrack(),
+    hasNext: hasNextMusicTrack(),
+    previousDisplayName: previous?.displayName || "",
+    nextDisplayName: next?.displayName || "",
+    playing: musicPlaying,
+    paused: musicPaused,
+    loading: musicLoading,
+    displayName: getMusicDisplayName()
+  };
+}
+
+function simpleHash(value) {
+  const text = String(value || "");
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function buildDesktopMusicActivity() {
+  if (!musicTrack) return null;
+  const currentTime = Number(els.musicPlayer?.currentTime || 0);
+  const duration = Number(els.musicPlayer?.duration || 0);
+  return {
+    type: "audio_playback",
+    title: getMusicDisplayName() || "未命名音乐",
+    source_id: musicTrack.sourceId || "local_music_current",
+    handle: "current",
+    status: musicPlaying ? "running" : musicPaused ? "paused" : "stopped",
+    progress_seconds: Number.isFinite(currentTime) ? Math.max(0, currentTime) : 0,
+    duration_seconds: Number.isFinite(duration) ? Math.max(0, duration) : 0,
+    source_kind: "local_file",
+    file_name: musicTrack.fileName,
+    extension: musicTrack.extension,
+    queue_count: musicQueue.length,
+    queue_index: musicQueueIndex >= 0 ? musicQueueIndex + 1 : 0,
+    queue_titles: musicQueue.map((track) => track.displayName).filter(Boolean).slice(0, 8),
+    previous_title: getPreviousMusicTrack()?.displayName || "",
+    next_title: getNextMusicTrack()?.displayName || ""
+  };
+}
+
 function queueTtsItems(items, signature = "") {
   const normalized = (Array.isArray(items) ? items : [items])
     .map((item) => normalizeTtsText(item))
@@ -2761,7 +3691,7 @@ async function testTts() {
   if (!state.voiceEnabled) {
     setVoiceEnabled(true);
   }
-  queueTtsItems(["Akane Next：语音播放测试。"], `test:${Date.now()}`);
+  queueTtsItems([TTS_TEST_TEXT], `test:${Date.now()}`);
 }
 
 function stopTts({ resetSignature = true } = {}) {
@@ -2980,6 +3910,19 @@ function updateActivityControls() {
   if (els.stopReply) {
     els.stopReply.disabled = !isReplyActive();
   }
+  if (els.toggleMusic) {
+    els.toggleMusic.disabled = !musicTrack || musicLoading;
+    els.toggleMusic.textContent = musicPlaying ? "暂停音乐" : musicTrack ? "继续音乐" : "音乐";
+  }
+  if (els.stopMusic) {
+    els.stopMusic.disabled = !musicTrack && !musicLoading;
+  }
+  if (els.previousMusic) {
+    els.previousMusic.disabled = musicLoading || !hasPreviousMusicTrack();
+  }
+  if (els.nextMusic) {
+    els.nextMusic.disabled = musicLoading || !hasNextMusicTrack();
+  }
 }
 
 function updateConnectionStatus() {
@@ -3004,7 +3947,7 @@ function setTransientEmotion(emotion, { durationMs = 2400 } = {}) {
   const resolved = setPetEmotion(emotion, { persist: false });
   transientEmotionTimer = window.setTimeout(() => {
     if (token !== transientEmotionToken || sending || ttsActive || voiceInputState === "recording") return;
-    setPetEmotion(DEFAULT_EMOTION, { persist: false });
+    setPetEmotion(musicPlaying ? MUSIC_EMOTION : DEFAULT_EMOTION, { persist: false });
   }, durationMs);
   return resolved;
 }

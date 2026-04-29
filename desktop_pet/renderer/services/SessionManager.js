@@ -12,7 +12,8 @@ const OUTFIT_KEY = "akane_pet_outfit_v1";
 
 const SHARED_PROFILE_USER_ID = "master";
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
-const DEFAULT_OUTFIT = "水手服";
+const DEFAULT_OUTFIT = "猫娘";
+const OBSOLETE_OUTFITS = new Set(["水手服", "睡衣"]);
 
 class SessionManager {
   constructor() {
@@ -116,7 +117,9 @@ class SessionManager {
   }
 
   _normalizeOutfit(outfit) {
-    return String(outfit || "").trim() || DEFAULT_OUTFIT;
+    const normalized = String(outfit || "").trim();
+    if (!normalized || OBSOLETE_OUTFITS.has(normalized)) return DEFAULT_OUTFIT;
+    return normalized;
   }
 }
 

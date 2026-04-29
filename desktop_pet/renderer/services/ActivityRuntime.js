@@ -1,13 +1,17 @@
 const AUDIO_EXTENSIONS = new Set(["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"]);
 const ACTION_DEDUPE_MS = 1200;
 const TIMELINE_PREPARE_DEDUPE_MS = 30 * 1000;
+const AUDIO_READY_TIMEOUT_MS = 15000;
+const PLAY_CONFIRM_TIMEOUT_MS = 2800;
+const PLAY_RETRY_DELAYS_MS = [0, 350, 900];
 
 class ActivityRuntime {
-  constructor({ audioEl, backendClient, getIdentity, onNotice } = {}) {
+  constructor({ audioEl, backendClient, getIdentity, onNotice, onStatusChange } = {}) {
     this._audioEl = audioEl;
     this._backendClient = backendClient;
     this._getIdentity = getIdentity;
     this._onNotice = onNotice;
+    this._onStatusChange = onStatusChange;
     this._current = null;
     this._targets = new Map();
     this._latestByRole = new Map();
@@ -15,9 +19,14 @@ class ActivityRuntime {
     this._lastActionAt = 0;
     this._lastTimelinePrepareSignature = "";
     this._lastTimelinePrepareAt = 0;
+    this._playRequestId = 0;
+    this._lastProgressEmitAt = 0;
 
     if (this._audioEl) {
-      this._audioEl.addEventListener("timeupdate", () => this._syncProgress());
+      this._audioEl.preload = "auto";
+      this._audioEl.volume = 1;
+      this._audioEl.muted = false;
+      this._audioEl.addEventListener("timeupdate", () => this._syncProgress({ emit: true }));
       this._audioEl.addEventListener("loadedmetadata", () => this._syncDuration());
       this._audioEl.addEventListener("ended", () => this._markCompleted());
       this._audioEl.addEventListener("play", () => this._markStatus("running"));
@@ -140,15 +149,24 @@ class ActivityRuntime {
       this._notice("现在手边还没有可播放的音频。");
       return;
     }
+    const switchingTarget = this._current && this._current !== next;
+    const requestId = this._beginAudioTransition(next);
     this._current = next;
     if (["audio_playback", "vocal_performance"].includes(action.type)) {
       this._current.type = action.type;
     }
-    this._ensureAudioSource();
-    if (Number.isFinite(Number(action.start_seconds))) {
-      this._audioEl.currentTime = Math.max(0, Number(action.start_seconds));
+    await this._ensureAudioSourceReady({ resetSource: switchingTarget });
+    if (requestId !== this._playRequestId) return;
+    const startSeconds = this._resolvePlayStartSeconds(action, { switchingTarget });
+    if (Number.isFinite(startSeconds)) {
+      this._seekTo(startSeconds);
     }
-    await this._audioEl.play();
+    const played = await this._playWithConfirmation({
+      requestId,
+      startSeconds: Number.isFinite(startSeconds) ? startSeconds : null,
+      allowReload: true,
+    });
+    if (!played) return;
     this._markStatus("running");
     this._prepareTimelineForCurrent();
   }
@@ -158,14 +176,22 @@ class ActivityRuntime {
       this._notice("现在手边还没有可继续播放的音频。");
       return;
     }
-    this._ensureAudioSource();
-    await this._audioEl.play();
+    const requestId = ++this._playRequestId;
+    await this._ensureAudioSourceReady();
+    if (requestId !== this._playRequestId) return;
+    const played = await this._playWithConfirmation({
+      requestId,
+      startSeconds: this._current.progress_seconds || this._audioEl.currentTime || 0,
+      allowReload: true,
+    });
+    if (!played) return;
     this._markStatus("running");
     this._prepareTimelineForCurrent();
   }
 
   _pause({ nextStatus }) {
     if (!this._current) return;
+    this._playRequestId += 1;
     this._syncProgress();
     this._audioEl?.pause();
     this._markStatus(nextStatus || "paused");
@@ -173,6 +199,7 @@ class ActivityRuntime {
 
   _stop() {
     if (!this._current) return;
+    this._playRequestId += 1;
     this._syncProgress();
     this._audioEl?.pause();
     if (this._audioEl) {
@@ -363,6 +390,7 @@ class ActivityRuntime {
       this._audioEl.removeAttribute("src");
       this._audioEl.load();
     }
+    this._emitStatusChange();
   }
 
   _rememberTarget(target) {
@@ -392,21 +420,196 @@ class ActivityRuntime {
     return "";
   }
 
-  _ensureAudioSource() {
+  _beginAudioTransition(next) {
+    const requestId = ++this._playRequestId;
+    if (this._audioEl && this._current && this._current !== next) {
+      this._syncProgress();
+      this._audioEl.pause();
+    }
+    return requestId;
+  }
+
+  async _ensureAudioSourceReady({ resetSource = false } = {}) {
     if (!this._audioEl || !this._current?.url) {
       throw new Error("missing_audio_source");
     }
-    if (this._audioEl.src !== this._current.url) {
-      this._audioEl.src = this._current.url;
+    const desiredUrl = this._normalizeAudioUrl(this._current.url);
+    const activeUrl = this._normalizeAudioUrl(this._audioEl.currentSrc || this._audioEl.src || "");
+    if (resetSource || !activeUrl || activeUrl !== desiredUrl) {
+      this._audioEl.pause();
+      this._audioEl.src = desiredUrl;
       this._audioEl.load();
+    }
+    await this._waitForAudioReady(1, AUDIO_READY_TIMEOUT_MS);
+  }
+
+  async _waitForAudioReady(minReadyState = 2, timeoutMs = AUDIO_READY_TIMEOUT_MS) {
+    if (!this._audioEl) throw new Error("missing_audio_element");
+    if (this._audioEl.readyState >= minReadyState) return;
+    await new Promise((resolve, reject) => {
+      const timeoutId = window.setTimeout(() => {
+        cleanup();
+        reject(new Error("audio_load_timeout"));
+      }, timeoutMs);
+      const cleanup = () => {
+        window.clearTimeout(timeoutId);
+        this._audioEl.removeEventListener("loadedmetadata", onReady);
+        this._audioEl.removeEventListener("canplay", onReady);
+        this._audioEl.removeEventListener("canplaythrough", onReady);
+        this._audioEl.removeEventListener("error", onError);
+      };
+      const onReady = () => {
+        if (this._audioEl.readyState < minReadyState) return;
+        cleanup();
+        resolve();
+      };
+      const onError = () => {
+        cleanup();
+        reject(new Error("audio_load_error"));
+      };
+      this._audioEl.addEventListener("loadedmetadata", onReady, { once: true });
+      this._audioEl.addEventListener("canplay", onReady, { once: true });
+      this._audioEl.addEventListener("canplaythrough", onReady, { once: true });
+      this._audioEl.addEventListener("error", onError, { once: true });
+    });
+  }
+
+  async _playWithConfirmation({ requestId, startSeconds = null, allowReload = true }) {
+    if (!this._audioEl || !this._current?.url) throw new Error("missing_audio_source");
+    const desiredUrl = this._normalizeAudioUrl(this._current.url);
+    let lastError = null;
+
+    for (let attempt = 0; attempt < PLAY_RETRY_DELAYS_MS.length; attempt += 1) {
+      if (requestId !== this._playRequestId) return false;
+      const delay = PLAY_RETRY_DELAYS_MS[attempt];
+      if (delay > 0) await this._sleep(delay);
+      if (requestId !== this._playRequestId) return false;
+
+      try {
+        if (attempt > 0 && allowReload) {
+          this._audioEl.pause();
+          this._audioEl.src = desiredUrl;
+          this._audioEl.load();
+          await this._waitForAudioReady(1, AUDIO_READY_TIMEOUT_MS);
+          if (Number.isFinite(Number(startSeconds))) {
+            this._seekTo(Number(startSeconds));
+          }
+        }
+
+        this._audioEl.muted = false;
+        this._audioEl.volume = 1;
+        await this._waitForAudioReady(2, AUDIO_READY_TIMEOUT_MS);
+        const before = Number(this._audioEl.currentTime) || 0;
+        await this._audioEl.play();
+        const confirmed = await this._waitForPlaybackProgress({
+          requestId,
+          startTime: before,
+          timeoutMs: PLAY_CONFIRM_TIMEOUT_MS,
+        });
+        if (confirmed) return true;
+        lastError = new Error("audio_play_no_progress");
+      } catch (error) {
+        lastError = error;
+        console.warn(`[AkanePet] audio play attempt ${attempt + 1} failed:`, error);
+      }
+    }
+
+    throw lastError || new Error("audio_play_failed");
+  }
+
+  async _waitForPlaybackProgress({ requestId, startTime, timeoutMs }) {
+    if (!this._audioEl) return false;
+    const initial = Number(startTime) || 0;
+    const startedAt = Date.now();
+    return new Promise((resolve) => {
+      const cleanup = () => {
+        window.clearInterval(intervalId);
+        window.clearTimeout(timeoutId);
+        this._audioEl.removeEventListener("playing", check);
+        this._audioEl.removeEventListener("timeupdate", check);
+        this._audioEl.removeEventListener("error", fail);
+        this._audioEl.removeEventListener("stalled", fail);
+      };
+      const hasProgress = () => {
+        const current = Number(this._audioEl.currentTime) || 0;
+        return !this._audioEl.paused && current > initial + 0.04;
+      };
+      const check = () => {
+        if (requestId !== this._playRequestId) {
+          cleanup();
+          resolve(false);
+          return;
+        }
+        if (hasProgress()) {
+          cleanup();
+          resolve(true);
+        }
+      };
+      const fail = () => {
+        cleanup();
+        resolve(false);
+      };
+      const timeoutId = window.setTimeout(fail, timeoutMs);
+      const intervalId = window.setInterval(check, 120);
+      this._audioEl.addEventListener("playing", check);
+      this._audioEl.addEventListener("timeupdate", check);
+      this._audioEl.addEventListener("error", fail, { once: true });
+      this._audioEl.addEventListener("stalled", fail, { once: true });
+      check();
+    });
+  }
+
+  _resolvePlayStartSeconds(action, { switchingTarget }) {
+    if (Number.isFinite(Number(action.start_seconds))) {
+      return Math.max(0, Number(action.start_seconds));
+    }
+    if (switchingTarget) return 0;
+    const status = String(this._current?.status || "").toLowerCase();
+    if (status === "completed" || status === "stopped" || this._audioEl?.ended) {
+      return 0;
+    }
+    if (status === "paused" || status === "interrupted") {
+      const progress = Number(this._current?.progress_seconds ?? this._audioEl?.currentTime);
+      return Number.isFinite(progress) ? Math.max(0, progress) : null;
+    }
+    return null;
+  }
+
+  _seekTo(seconds) {
+    if (!this._audioEl) return;
+    try {
+      this._audioEl.currentTime = Math.max(0, Number(seconds) || 0);
+    } catch (error) {
+      console.warn("[AkanePet] audio seek failed:", error);
     }
   }
 
-  _syncProgress() {
+  _normalizeAudioUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    try {
+      return new URL(raw, window.location.href).href;
+    } catch {
+      return raw;
+    }
+  }
+
+  _sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+  }
+
+  _syncProgress({ emit = false } = {}) {
     if (!this._current || !this._audioEl) return;
     const currentTime = Number(this._audioEl.currentTime);
     if (Number.isFinite(currentTime)) {
-      this._current.progress_seconds = Math.max(0, Math.round(currentTime));
+      const nextProgress = Math.max(0, Math.round(currentTime));
+      const changed = nextProgress !== this._current.progress_seconds;
+      this._current.progress_seconds = nextProgress;
+      const now = Date.now();
+      if (emit && changed && this._current.status === "running" && now - this._lastProgressEmitAt >= 1000) {
+        this._lastProgressEmitAt = now;
+        this._emitStatusChange();
+      }
     }
   }
 
@@ -426,7 +629,13 @@ class ActivityRuntime {
 
   _markStatus(status) {
     if (!this._current) return;
+    const previous = this._current.status;
     this._current.status = status;
+    if (previous !== status) this._emitStatusChange();
+  }
+
+  _emitStatusChange() {
+    this._onStatusChange?.(this.getCurrentActivity());
   }
 
   _normalizeAction(value) {

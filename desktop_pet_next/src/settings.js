@@ -1,18 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 
+import { APP_DISPLAY_NAME, CHARACTER_NAME, DEFAULT_EMOTION, DEFAULT_OUTFIT } from "./character-profile.js";
 import "./settings.css";
 
 const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
-const DEFAULT_OUTFIT = "猫娘";
-const DEFAULT_EMOTION = "正常";
 const SCALE_PRESETS = [0.85, 1, 1.15, 1.3];
 const OPACITY_PRESETS = [1, 0.85, 0.7, 0.55];
 
 const els = {
   summary: document.querySelector("#settings-summary"),
+  title: document.querySelector(".settings-header h1"),
+  characterDetails: document.querySelector("#character-details"),
+  characterMetrics: document.querySelector("#character-metrics"),
   openInput: document.querySelector("#open-input"),
   backendUrl: document.querySelector("#backend-url"),
   saveBackend: document.querySelector("#save-backend"),
@@ -40,8 +42,22 @@ const els = {
   voiceVolumeOutput: document.querySelector("#voice-volume-output"),
   testTts: document.querySelector("#test-tts"),
   stopTts: document.querySelector("#stop-tts"),
+  musicStatus: document.querySelector("#music-status"),
+  previousMusic: document.querySelector("#previous-music"),
+  nextMusic: document.querySelector("#next-music"),
+  toggleMusic: document.querySelector("#toggle-music"),
+  stopMusic: document.querySelector("#stop-music"),
   desktopContextEnabled: document.querySelector("#desktop-context-enabled"),
   clipboardContextEnabled: document.querySelector("#clipboard-context-enabled"),
+  screenVisionEnabled: document.querySelector("#screen-vision-enabled"),
+  screenVisionMode: document.querySelector("#screen-vision-mode"),
+  proactiveWakeEnabled: document.querySelector("#proactive-wake-enabled"),
+  proactiveWakeInterval: document.querySelector("#proactive-wake-interval"),
+  screenVisionIntervalRow: document.querySelector("#screen-vision-interval-row"),
+  screenVisionInterval: document.querySelector("#screen-vision-interval"),
+  screenVisionFrameCount: document.querySelector("#screen-vision-frame-count"),
+  applyVisionRecommendation: document.querySelector("#apply-vision-recommendation"),
+  clearScreenVision: document.querySelector("#clear-screen-vision"),
   desktopContextNote: document.querySelector("#desktop-context-note"),
   alwaysOnTop: document.querySelector("#always-on-top"),
   skipTaskbar: document.querySelector("#skip-taskbar"),
@@ -63,8 +79,10 @@ const els = {
 
 const view = {
   state: null,
+  character: null,
   resource: null,
   active: null,
+  music: null,
   webglEnabled: false,
   scaleTimer: 0,
   opacityTimer: 0
@@ -179,12 +197,38 @@ function bindUi() {
   });
   els.testTts.addEventListener("click", () => sendCommand("testTts"));
   els.stopTts.addEventListener("click", () => sendCommand("stopTts"));
+  els.previousMusic.addEventListener("click", () => sendCommand("previousMusic"));
+  els.nextMusic.addEventListener("click", () => sendCommand("nextMusic"));
+  els.toggleMusic.addEventListener("click", () => sendCommand("toggleMusic"));
+  els.stopMusic.addEventListener("click", () => sendCommand("stopMusic"));
   els.desktopContextEnabled.addEventListener("change", () =>
     sendCommand("setDesktopContextEnabled", els.desktopContextEnabled.checked)
   );
   els.clipboardContextEnabled.addEventListener("change", () =>
     sendCommand("setClipboardContextEnabled", els.clipboardContextEnabled.checked)
   );
+  els.screenVisionEnabled.addEventListener("change", () =>
+    sendCommand("setScreenVisionEnabled", els.screenVisionEnabled.checked)
+  );
+  els.screenVisionMode.addEventListener("change", () => sendCommand("setScreenVisionMode", els.screenVisionMode.value));
+  els.proactiveWakeEnabled.addEventListener("change", () =>
+    sendCommand("setProactiveWakeEnabled", els.proactiveWakeEnabled.checked)
+  );
+  els.proactiveWakeInterval.addEventListener("change", () =>
+    sendCommand("setProactiveWakeIntervalSec", Number(els.proactiveWakeInterval.value))
+  );
+  els.screenVisionInterval.addEventListener("change", () =>
+    sendCommand("setScreenVisionIntervalSec", Number(els.screenVisionInterval.value))
+  );
+  els.screenVisionFrameCount.addEventListener("change", () =>
+    sendCommand("setScreenVisionFrameCount", Number(els.screenVisionFrameCount.value))
+  );
+  els.applyVisionRecommendation.addEventListener("click", () => {
+    const recommended = Number(view.state?.recommendedScreenVisionIntervalSec || 25);
+    els.screenVisionInterval.value = String(recommended);
+    sendCommand("setScreenVisionIntervalSec", recommended);
+  });
+  els.clearScreenVision.addEventListener("click", () => sendCommand("clearScreenVision"));
   els.hitTest.addEventListener("change", () => sendCommand("setHitTestEnabled", els.hitTest.checked));
   els.hitboxOverlay.addEventListener("change", () => sendCommand("setHitboxOverlay", els.hitboxOverlay.checked));
 
@@ -241,8 +285,10 @@ async function sendCommand(command, value = null) {
 function applySnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return;
   view.state = { ...(view.state || {}), ...(snapshot.state || {}) };
+  view.character = { ...(view.character || {}), ...(snapshot.character || {}) };
   view.resource = { ...(view.resource || {}), ...(snapshot.resource || {}) };
   view.active = { ...(view.active || {}), ...(snapshot.active || {}) };
+  view.music = snapshot.music || view.music || null;
   view.webglEnabled = Boolean(snapshot.webglEnabled);
 
   const state = view.state || {};
@@ -268,10 +314,19 @@ function applySnapshot(snapshot) {
   els.desktopContextEnabled.checked = Boolean(state.desktopContextEnabled ?? true);
   els.clipboardContextEnabled.checked = Boolean(state.clipboardContextEnabled);
   els.clipboardContextEnabled.disabled = !els.desktopContextEnabled.checked;
+  els.screenVisionEnabled.checked = Boolean(state.screenVisionEnabled);
+  els.screenVisionMode.value = String(state.screenVisionMode || "summary");
+  els.proactiveWakeEnabled.checked = Boolean(state.proactiveWakeEnabled);
+  setInputIfIdle(els.proactiveWakeInterval, state.proactiveWakeIntervalSec || 30);
+  setInputIfIdle(els.screenVisionInterval, state.screenVisionIntervalSec || state.recommendedScreenVisionIntervalSec || 25);
+  setInputIfIdle(els.screenVisionFrameCount, state.screenVisionFrameCount || 4);
+  updateScreenVisionIntervalControls(state);
   els.hitTest.checked = Boolean(state.hitTestEnabled);
   els.hitboxOverlay.checked = Boolean(state.hitboxOverlay);
 
   renderPresetChips();
+  renderCharacterDetails();
+  renderCharacterMetrics();
   renderResourceAlert();
   renderResourceDetails();
   renderResourceMetrics();
@@ -279,11 +334,12 @@ function applySnapshot(snapshot) {
   renderEmotionGrid();
 
   const source = sourceLabel(resource.source);
-  els.summary.textContent = `${resource.activeOutfit || DEFAULT_OUTFIT} · ${source} · ${state.currentEmotion || DEFAULT_EMOTION}`;
+  els.summary.textContent = `${view.character?.name || CHARACTER_NAME} · ${resource.activeOutfit || DEFAULT_OUTFIT} · ${source} · ${state.currentEmotion || DEFAULT_EMOTION}`;
   els.sessionId.textContent = state.sessionId || "-";
   els.sessionId.title = state.sessionId || "";
   els.copySession.disabled = !state.sessionId;
   els.activityStatus.textContent = buildActivityLine(snapshot);
+  renderMusicStatus(view.music);
   els.desktopContextNote.textContent = buildDesktopContextNote(state);
   els.connectionStatus.textContent = buildConnectionLine(resource);
   els.runtimeStatus.textContent = snapshot.runtimeStatus || "Ready";
@@ -308,6 +364,46 @@ function renderChips(container, values, key, activeValue) {
       button.textContent = `${Math.round(value * 100)}%`;
       button.classList.toggle("active", Math.abs(value - activeValue) < 0.001);
       return button;
+    })
+  );
+}
+
+function renderCharacterDetails() {
+  if (!els.characterDetails) return;
+  const character = view.character || {};
+  const name = String(character.name || CHARACTER_NAME);
+  const id = String(character.id || "-");
+  const appName = String(character.appName || APP_DISPLAY_NAME || name);
+  const schema = String(character.schemaVersion || "-");
+  const source = String(character.source || "内置角色包");
+  document.title = `${appName} 设置`;
+  if (els.title) els.title.textContent = appName;
+  els.characterDetails.textContent = `${appName} · ${name} · ${id} · ${schema}`;
+  els.characterDetails.title = source;
+}
+
+function renderCharacterMetrics() {
+  if (!els.characterMetrics) return;
+  const character = view.character || {};
+  const rows = [
+    ["称呼", character.userTitle || "-"],
+    ["默认服装", character.defaultOutfit || DEFAULT_OUTFIT],
+    ["默认表情", character.defaultEmotion || DEFAULT_EMOTION],
+    ["音乐表情", character.musicEmotion || "-"],
+    ["本地台词", `${character.localLineCount || 0}`],
+    ["资源模式", character.assetSource || "-"]
+  ];
+
+  els.characterMetrics.replaceChildren(
+    ...rows.map(([label, value]) => {
+      const item = document.createElement("div");
+      item.className = "metric";
+      const key = document.createElement("span");
+      key.textContent = label;
+      const data = document.createElement("strong");
+      data.textContent = value;
+      item.append(key, data);
+      return item;
     })
   );
 }
@@ -449,11 +545,65 @@ function buildConnectionLine(resource) {
 }
 
 function buildDesktopContextNote(state) {
-  if (state.desktopContextEnabled === false) return "已关闭，不会向 /think 附带桌面上下文。";
-  if (state.clipboardContextEnabled) {
-    return "发送消息时临时附带最近前台窗口和剪贴板文本。";
+  if (state.desktopContextEnabled === false && !state.screenVisionEnabled && !state.proactiveWakeEnabled) {
+    return "已关闭，不会向 /think 附带桌面上下文。";
   }
-  return "发送消息时临时附带最近前台窗口；剪贴板默认不读取。";
+  const screenVision =
+    state.screenVisionEnabled && state.screenVisionMode === "direct"
+      ? "看屏幕会保留最近几张临时画面，用新画面顶掉旧画面。"
+      : state.screenVisionEnabled
+        ? "看屏幕会维护最近几条短期印象，不写入长期记忆。"
+        : "";
+  const visionMode =
+    state.screenVisionEnabled && state.screenVisionMode === "direct"
+      ? "直看模式会在主动搭话时把最近截图临时发给主模型，用完即丢。"
+      : "";
+  const proactive = state.proactiveWakeEnabled
+    ? `${view.character?.name || CHARACTER_NAME} 会约每 ${state.proactiveWakeIntervalSec || 30} 秒醒来一次；视觉摘要建议 ${state.recommendedScreenVisionIntervalSec || 25} 秒，可手动覆盖。`
+    : "";
+  if (state.clipboardContextEnabled) {
+    return ["发送消息时临时附带最近前台窗口和剪贴板文本。", screenVision, visionMode, proactive].filter(Boolean).join(" ");
+  }
+  return ["发送消息时临时附带最近前台窗口；剪贴板默认不读取。", screenVision, visionMode, proactive].filter(Boolean).join(" ");
+}
+
+function renderMusicStatus(music) {
+  const payload = music && typeof music === "object" ? music : {};
+  const name = String(payload.displayName || payload.track?.displayName || payload.track?.fileName || "").trim();
+  const hasTrack = Boolean(payload.track || name);
+  const queueCount = Number(payload.queueCount || 0);
+  const queueIndex = Number(payload.queueIndex || -1);
+  const queueLabel = queueCount > 1 && queueIndex >= 0 ? `（${queueIndex + 1}/${queueCount}）` : "";
+  if (payload.loading) {
+    els.musicStatus.textContent = "正在准备音乐……";
+  } else if (payload.playing) {
+    els.musicStatus.textContent = `正在播放：${name || "未命名音乐"}${queueLabel}`;
+  } else if (payload.paused) {
+    els.musicStatus.textContent = `已暂停：${name || "未命名音乐"}${queueLabel}`;
+  } else {
+    els.musicStatus.textContent = hasTrack
+      ? `已停止：${name || "未命名音乐"}${queueLabel}`
+      : `把一首或多首 mp3 / wav / flac / ogg / m4a 等音频文件拖到 ${view.character?.name || CHARACTER_NAME} 身上就可以播放。`;
+  }
+  els.previousMusic.disabled = Boolean(payload.loading) || !payload.hasPrevious;
+  els.nextMusic.disabled = Boolean(payload.loading) || !payload.hasNext;
+  els.toggleMusic.disabled = !hasTrack || Boolean(payload.loading);
+  els.stopMusic.disabled = !hasTrack && !payload.loading;
+  els.toggleMusic.textContent = payload.playing ? "暂停音乐" : hasTrack ? "继续播放" : "播放/暂停";
+}
+
+function updateScreenVisionIntervalControls(state) {
+  const directMode = String(state.screenVisionMode || "summary") === "direct";
+  const disabled = directMode;
+  els.screenVisionInterval.disabled = disabled;
+  els.applyVisionRecommendation.disabled = disabled;
+  els.screenVisionIntervalRow.classList.toggle("is-disabled", disabled);
+  const title = disabled
+    ? "直看模式不生成后台视觉摘要，视觉间隔只影响“先整理屏幕印象”模式。"
+    : "视觉间隔只影响“先整理屏幕印象”模式下的后台摘要频率。";
+  els.screenVisionIntervalRow.title = title;
+  els.screenVisionInterval.title = title;
+  els.applyVisionRecommendation.title = title;
 }
 
 function buildActivityLine(snapshot) {
@@ -463,8 +613,13 @@ function buildActivityLine(snapshot) {
   if (active.sending || mode === "thinking") parts.push("思考中");
   if (mode === "replying" || (active.replyDisplayActive && !active.sending)) parts.push("回复显示中");
   if (active.speaking || mode === "speaking") parts.push("语音播放中");
+  if (active.musicPlaying || snapshot?.music?.playing) parts.push("音乐播放中");
+  if (active.musicPaused || snapshot?.music?.paused) parts.push("音乐暂停");
   if (active.voiceInput === "recording") parts.push("语音录制中");
   if (active.voiceInput === "processing") parts.push("语音识别中");
+  if (active.screenVision === "watching" || active.screenVision === "observing") parts.push("看屏幕中");
+  if (active.screenVision === "uploading") parts.push("整理屏幕印象");
+  if (active.proactiveWakeRunning) parts.push("主动搭话中");
   if (active.bubbleVisible) parts.push("气泡显示中");
   if (!parts.length) parts.push(modeLabel(mode));
   return `状态：${parts.filter(Boolean).join(" · ")}`;
@@ -480,7 +635,9 @@ function modeLabel(mode) {
     listening: "语音录制中",
     thinking: "思考中",
     replying: "回复显示中",
-    speaking: "语音播放中"
+    speaking: "语音播放中",
+    music: "音乐播放中",
+    "music-paused": "音乐暂停"
   }[mode] || "空闲";
 }
 

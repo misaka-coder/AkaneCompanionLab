@@ -4,6 +4,11 @@ const FETCH_TIMEOUT_MS = 8000;
 const MAX_SEEN_RECORDS = 120;
 const SEEN_STORAGE_KEY = "akane_pet_task_reminders_seen_v1";
 const REMINDER_STATES = new Set(["completed", "blocked", "partial"]);
+const LIGHTWEIGHT_AUDIO_TASK_PATTERNS = [
+  /^(播放|放|放一下|播放一下)(歌曲|音乐|音频|这首歌|当前歌曲|当前音乐)?$/,
+  /^(继续|恢复|暂停|停止|切换|切)(播放|歌曲|音乐|音频|歌)?$/,
+  /^(听歌|放歌|切歌)$/,
+];
 
 class TaskWatcher {
   /**
@@ -95,6 +100,7 @@ class TaskWatcher {
     for (const item of Array.isArray(items) ? items : []) {
       const state = this._getReminderState(item);
       if (!REMINDER_STATES.has(state)) continue;
+      if (this._isLightweightAudioTask(item)) continue;
 
       const key = this._buildDedupeKey(item, state);
       if (!key || this._seen[key] || this._queue.some((entry) => entry.key === key)) {
@@ -135,6 +141,14 @@ class TaskWatcher {
     if (!title) return "后台任务";
     const shortTitle = title.length > 22 ? `${title.slice(0, 22)}...` : title;
     return `「${shortTitle}」`;
+  }
+
+  _isLightweightAudioTask(item) {
+    const title = normalizeTaskTitle(item?.title || item?.summary || "");
+    if (!title || title.length > 16) return false;
+    const artifacts = item?.handoff?.artifacts || item?.artifacts || [];
+    if (Array.isArray(artifacts) && artifacts.length > 0) return false;
+    return LIGHTWEIGHT_AUDIO_TASK_PATTERNS.some((pattern) => pattern.test(title));
   }
 
   _scheduleNextPoll() {
@@ -178,6 +192,12 @@ class TaskWatcher {
       // localStorage may be unavailable; in-memory dedupe still works.
     }
   }
+}
+
+function normalizeTaskTitle(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[「」《》【】"'“”‘’\s，。！？!?、：:；;,.]+/g, "");
 }
 
 export { TaskWatcher };

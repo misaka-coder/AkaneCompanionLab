@@ -20,7 +20,7 @@ from .store import MemoryStore
 
 logger = logging.getLogger("akane.vision")
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
-PROMPT_STYLE_REVISION = "atmo3"
+PROMPT_STYLE_REVISION = "atmo4"
 
 
 @dataclass(frozen=True)
@@ -291,6 +291,54 @@ class VisionObservationService:
             "model_name": str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
             "observation": observation,
         }
+
+    def analyze_screen_clip(
+        self,
+        *,
+        frames: list[dict[str, Any]],
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if self._client is None:
+            raise RuntimeError("视觉模型尚未配置。")
+        usable_frames = [
+            frame
+            for frame in list(frames or [])[:6]
+            if isinstance(frame, dict) and str(frame.get("data_url") or "").startswith("data:image/")
+        ]
+        if not usable_frames:
+            raise RuntimeError("没有可用的屏幕帧。")
+
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": self._build_screen_clip_user_instruction(context or {}, usable_frames),
+            }
+        ]
+        for frame in usable_frames:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": str(frame.get("data_url") or "")},
+                }
+            )
+
+        response = self._client.chat.completions.create(
+            model=str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
+            messages=[
+                {
+                    "role": "system",
+                    "content": self._build_screen_clip_system_instruction(),
+                },
+                {
+                    "role": "user",
+                    "content": content,
+                },
+            ],
+            temperature=0.45,
+        )
+        raw_text = self._coerce_response_text(response)
+        payload = self._extract_json_dict(raw_text)
+        return self._normalize_screen_clip_observation(payload)
 
     def _build_client(self) -> Any | None:
         if not bool(getattr(config, "VISION_ENABLED", True)):
@@ -853,6 +901,53 @@ class VisionObservationService:
         lines.append("请输出严格 JSON。")
         return "\n".join(lines)
 
+    def _build_screen_clip_system_instruction(self) -> str:
+        return (
+            "你像 Akane 坐在主人旁边时的一双眼睛。"
+            "你会看到几眼连续的近况，请把这几秒里能确认的事情整理成一个 JSON 对象。"
+            "字段固定为 summary, current_state, visible_text, concrete_details, changes, topics, mood_tags, salience, sensitive, confidence, uncertainty。"
+            "summary 写 1 句中文，像递给 Akane 的第一眼印象：具体、轻微有温度，但不要替 Akane 开口说话。"
+            "summary 尽量包含能确认的事实，例如软件/网页/游戏名、窗口标题、主体内容、按钮、卡片、代码、角色动作或视频内容。"
+            "不要用“画面不断变化”“出现人物”“屏幕上有内容”这类空泛描述替代具体观察，也不要写成冷冰冰的监控日志。"
+            "current_state 写当前最后一帧能确认的具体状态，例如停在某个网页、编辑器、游戏战斗/菜单、视频画面、聊天窗口。"
+            "visible_text 写 0 到 6 条能看清的屏幕文字、标题、按钮、文件名或代码关键词；看不清就不要猜。"
+            "concrete_details 写 2 到 6 条可见细节，例如左侧列表、右侧视频推荐、终端输出、卡牌名称、角色姿势、弹窗内容。"
+            "changes 写 0 到 4 条这几帧之间发生的具体变化。"
+            "topics 和 mood_tags 各写 1 到 6 个短词。"
+            "salience 是 0 到 1，表示这段画面多值得 Akane 主动轻轻提一句；只有能看出具体内容时才给 0.45 以上。"
+            "如果只能确认很泛的东西，请 summary 明确写“看不清具体内容，只能确认……”，salience 不超过 0.2。"
+            "如果像密码、隐私聊天、支付、证件、敏感个人信息，sensitive 设为 true，summary 只写泛化描述，不要复述细节。"
+            "confidence 是 0 到 1。不确定的内容放进 uncertainty。"
+            "不要臆造看不见的剧情，不要输出 JSON 之外的文字。"
+        )
+
+    def _build_screen_clip_user_instruction(
+        self,
+        context: dict[str, Any],
+        frames: list[dict[str, Any]],
+    ) -> str:
+        foreground = context.get("foreground") if isinstance(context.get("foreground"), dict) else {}
+        title = str(foreground.get("title") or "").strip()
+        process_name = str(foreground.get("process_name") or foreground.get("processName") or "").strip()
+        start_ts = int(context.get("captured_start_ts") or 0)
+        end_ts = int(context.get("captured_end_ts") or 0)
+        duration = max(0, end_ts - start_ts)
+        lines = [
+            f"这是一组连续看见的近况，共 {len(frames)} 次。",
+        ]
+        if duration:
+            lines.append(f"大约覆盖 {duration} 秒。")
+        if title or process_name:
+            label = title or "未知标题"
+            if process_name:
+                label += f"（{process_name}）"
+            lines.append(f"当前窗口线索：{label}")
+        lines.append("请串联这些瞬间，描述这几秒里主人正在看的具体内容。")
+        lines.append("优先提取可读文字、窗口标题、网页标题、按钮、代码关键词、游戏界面、视频标题、卡片/角色/弹窗等具体证据。")
+        lines.append("如果看不清，请直接承认看不清，不要用空泛描述假装有信息。")
+        lines.append("请输出严格 JSON。")
+        return "\n".join(lines)
+
     def _current_prompt_version(self) -> str:
         base_version = str(getattr(config, "VISION_PROMPT_VERSION", "v1") or "v1").strip() or "v1"
         if base_version.endswith(f"-{PROMPT_STYLE_REVISION}"):
@@ -926,6 +1021,42 @@ class VisionObservationService:
         if observation_type == "outfit":
             card["appearance_traits"] = _list("appearance_traits", fallback_key="salient_traits")
         return card
+
+    def _normalize_screen_clip_observation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        def _list(key: str) -> list[str]:
+            raw = payload.get(key)
+            if isinstance(raw, list):
+                items = [str(item).strip() for item in raw if str(item).strip()]
+            elif isinstance(raw, str):
+                items = [part.strip() for part in raw.replace("，", ",").split(",") if part.strip()]
+            else:
+                items = []
+            deduped: list[str] = []
+            for item in items:
+                if item not in deduped:
+                    deduped.append(item)
+            return deduped[:6]
+
+        def _float(key: str, default: float) -> float:
+            try:
+                value = float(payload.get(key))
+            except Exception:
+                value = default
+            return max(0.0, min(1.0, value))
+
+        return {
+            "summary": str(payload.get("summary") or "").strip()[:260],
+            "current_state": str(payload.get("current_state") or payload.get("state") or "").strip()[:220],
+            "visible_text": _list("visible_text")[:6],
+            "concrete_details": _list("concrete_details")[:6],
+            "changes": _list("changes")[:4],
+            "topics": _list("topics"),
+            "mood_tags": _list("mood_tags"),
+            "salience": _float("salience", 0.0),
+            "sensitive": bool(payload.get("sensitive")),
+            "confidence": _float("confidence", 0.5),
+            "uncertainty": _list("uncertainty")[:4],
+        }
 
     def _format_observation_prompt(self, *, heading: str, observation: dict[str, Any]) -> str:
         card = dict(observation.get("observation") or {})

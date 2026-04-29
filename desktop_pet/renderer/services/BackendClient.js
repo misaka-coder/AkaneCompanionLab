@@ -8,6 +8,7 @@ const ASR_TIMEOUT_MS = 2 * 60 * 1000;
 const AUDIO_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const MUSIC_TIMELINE_TIMEOUT_MS = 20 * 1000;
 const WORKSPACE_TIMEOUT_MS = 30 * 1000;
+const QUICK_CHECK_TIMEOUT_MS = 5000;
 
 class BackendClient {
   /**
@@ -28,6 +29,42 @@ class BackendClient {
     if (!this.baseUrl) return raw;
     if (raw.startsWith("/")) return `${this.baseUrl}${raw}`;
     return `${this.baseUrl}/${raw.replace(/^\/+/, "")}`;
+  }
+
+  async fetchHealth() {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), QUICK_CHECK_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(`${this.baseUrl}/health?t=${Date.now()}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (!response.ok) {
+      throw new Error(`Health check failed: HTTP ${response.status}`);
+    }
+    return response.json();
+  }
+
+  async fetchAppConfig() {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), QUICK_CHECK_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(`${this.baseUrl}/app-config?t=${Date.now()}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (!response.ok) {
+      throw new Error(`App config check failed: HTTP ${response.status}`);
+    }
+    return response.json();
   }
 
   buildGeneratedAudioUrl({ profileUserId, sessionId, generatedHandle }) {
@@ -332,6 +369,35 @@ class BackendClient {
       throw new Error(message);
     }
     return payload || { ok: false, error: "invalid_workspace_action_response" };
+  }
+
+  async fetchWorkspaceItemLocation({ profileUserId, sessionId, itemType, target }) {
+    const normalizedType = String(itemType || "").trim().toLowerCase();
+    const handle = encodeURIComponent(String(target || "").trim());
+    if (!handle) return { ok: false, error: "missing_target" };
+    const endpoint =
+      normalizedType === "generated" || normalizedType === "output"
+        ? `/desktop-pet/workspace/generated/${handle}/location`
+        : `/desktop-pet/workspace/attachments/${handle}/location`;
+    const query = new URLSearchParams({
+      user_id: String(sessionId || ""),
+      real_user_id: String(profileUserId || ""),
+      t: String(Date.now()),
+    });
+    const response = await fetch(`${this.baseUrl}${endpoint}?${query.toString()}`, {
+      cache: "no-store",
+    });
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) {
+      const message = payload?.detail || payload?.message || payload?.error || `Workspace location failed: HTTP ${response.status}`;
+      throw new Error(message);
+    }
+    return payload || { ok: false, error: "invalid_workspace_location_response" };
   }
 }
 

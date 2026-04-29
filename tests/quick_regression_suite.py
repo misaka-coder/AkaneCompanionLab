@@ -5,8 +5,10 @@ import unittest
 
 QUICK_TESTS = [
     "tests.test_resource_visibility_contract",
+    "tests.test_scene_frontend_contract",
     "tests.test_desktop_activity_runtime_contract",
     "tests.test_desktop_workspace_panel",
+    "tests.test_desktop_pet_frontend_contract",
     "tests.test_attachment_inbox.AttachmentInboxTests.test_inspect_attachment_requests_confirmation_for_ambiguous_target",
     "tests.test_generated_files.GeneratedFileTests.test_send_file_requests_confirmation_for_ambiguous_generated_name",
     "tests.test_generated_files.GeneratedFileTests.test_send_file_keeps_generated_exact_send_when_attachment_target_is_ambiguous",

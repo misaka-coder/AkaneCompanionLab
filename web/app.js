@@ -90,13 +90,14 @@ const VISUAL_STATE_STORAGE_KEY_PREFIX = "gal_shell.visual_state.v1.";
 const VOICE_ENABLED_STORAGE_KEY = "gal_shell.voice_enabled.v1";
 const AVATAR_MODE_STORAGE_KEY = "gal_shell.avatar_mode.v1";
 const AVATAR_SIZE_STORAGE_KEY = "gal_shell.avatar_size.v1";
+const DEFAULT_AVATAR_SCALE = 1.2;
 const GIFT_AUDIO_EXTENSIONS = [".mp3", ".ogg", ".wav", ".m4a", ".flac"];
 const GIFT_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"];
 const GIFT_METADATA_REFRESH_DELAY_MS = 1200;
 const GIFT_METADATA_REFRESH_MAX_ATTEMPTS = 8;
 const ARTIFACT_CONTAINER_ORDER = ["music_box", "album"];
-const FALLBACK_BACKGROUND_PATH = "/assets/backgrounds/evening.png";
-const FALLBACK_SPRITE_PATH = "/assets/characters/%E6%B0%B4%E6%89%8B%E6%9C%8D/normal.png";
+const FALLBACK_BACKGROUND_PATH = "/assets/scenes/街道/黄昏街道.png";
+const FALLBACK_SPRITE_PATH = "/assets/characters/猫娘/正常.png";
 
 const STATUS_LABELS = {
   idle: "状态 待机",
@@ -129,7 +130,7 @@ const state = {
   instantText: false,
   avatarMode: "static",
   avatarModeLoading: false,
-  avatarScale: 1,
+  avatarScale: DEFAULT_AVATAR_SCALE,
   audioUnlocked: false,
   voiceEnabled: true,
   streamingTtsEnabled: true,
@@ -425,9 +426,9 @@ function persistAvatarModePreference(mode) {
 function normalizeAvatarScale(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
-    return 1;
+    return DEFAULT_AVATAR_SCALE;
   }
-  return Math.max(0.8, Math.min(1.6, numeric));
+  return Math.max(0.8, Math.min(1.8, numeric));
 }
 
 function loadAvatarScalePreference() {
@@ -439,9 +440,12 @@ function loadAvatarScalePreference() {
 
   try {
     const stored = getLocalStorage()?.getItem(AVATAR_SIZE_STORAGE_KEY);
+    if (!stored) {
+      return DEFAULT_AVATAR_SCALE;
+    }
     return normalizeAvatarScale(stored);
   } catch {
-    return 1;
+    return DEFAULT_AVATAR_SCALE;
   }
 }
 

@@ -1,12 +1,24 @@
 class WorkspacePanel {
-  constructor(root, { backendClient, getIdentity, getCurrentActivity, onNotice } = {}) {
+  constructor(root, { backendClient, getIdentity, getCurrentActivity, onNotice, onActivityAction, standalone = false } = {}) {
     this._root = root;
     this._backendClient = backendClient;
     this._getIdentity = getIdentity;
     this._getCurrentActivity = getCurrentActivity;
     this._onNotice = onNotice;
+    this._onActivityAction = onActivityAction;
+    this._standalone = standalone;
     this._visible = false;
     this._items = new Map();
+    this._lastPayload = null;
+    this._dragOffsetX = 0;
+    this._dragOffsetY = 0;
+    this._dragging = false;
+    this._dragStartX = 0;
+    this._dragStartY = 0;
+
+    this._onDragStart = this._onDragStart.bind(this);
+    this._onDragMove = this._onDragMove.bind(this);
+    this._onDragEnd = this._onDragEnd.bind(this);
 
     this._root.addEventListener("click", (event) => {
       void this._handleClick(event);
@@ -33,6 +45,8 @@ class WorkspacePanel {
 
   async open() {
     this._visible = true;
+    this._dragOffsetX = 0;
+    this._dragOffsetY = 0;
     this._root.classList.add("visible");
     this._root.setAttribute("aria-hidden", "false");
     this._root.tabIndex = -1;
@@ -60,11 +74,17 @@ class WorkspacePanel {
         sessionId: identity.sessionId,
         limit: 24,
       });
-      this._renderPayload(payload || {});
+      this._lastPayload = payload || {};
+      this._renderPayload(this._lastPayload);
     } catch (error) {
       console.warn("[AkanePet] workspace panel refresh failed:", error);
       this._renderShell({ error: "手边物品暂时打不开，确认后端已经启动。" });
     }
+  }
+
+  updateActivity() {
+    if (!this._visible) return;
+    this._renderPayload(this._lastPayload || {});
   }
 
   _renderShell({ loading = false, error = "" } = {}) {
@@ -89,6 +109,7 @@ class WorkspacePanel {
         </main>
       </section>
     `;
+    this._attachDrag();
   }
 
   _renderPayload(payload) {
@@ -134,10 +155,11 @@ class WorkspacePanel {
         </main>
         <footer class="workspace-panel__footer">
           <button type="button" class="workspace-panel__ghost-btn" data-action="refresh">刷新</button>
-          <button type="button" class="workspace-panel__ghost-btn" data-action="clear-completed">清理完成任务</button>
+          <button type="button" class="workspace-panel__ghost-btn" data-action="clear-files">清理文件筐</button>
         </footer>
       </section>
     `;
+    this._attachDrag();
   }
 
   _renderActivity(activity) {
@@ -146,6 +168,7 @@ class WorkspacePanel {
     const progress = this._formatTime(activity.progress_seconds);
     const duration = this._formatTime(activity.duration_seconds);
     const timeText = progress ? `${progress}${duration ? ` / ${duration}` : ""}` : "刚刚放在手边";
+    const buttons = this._renderActivityButtons(activity);
     return `
       <section class="workspace-section workspace-section--activity">
         <div class="workspace-section__title-row">
@@ -159,9 +182,36 @@ class WorkspacePanel {
           <div class="workspace-card__content">
             <h4>${title}</h4>
             <p>${status} · ${this._escape(timeText)}</p>
+            ${buttons}
           </div>
         </article>
       </section>
+    `;
+  }
+
+  _renderActivityButtons(activity) {
+    const status = String(activity?.status || "").toLowerCase();
+    const buttons = [];
+    if (status === "running") {
+      buttons.push({ action: "pause", label: "暂停" });
+      buttons.push({ action: "stop", label: "停止", variant: "danger" });
+    } else if (status === "paused" || status === "interrupted") {
+      buttons.push({ action: "resume", label: "继续", variant: "primary" });
+      buttons.push({ action: "stop", label: "停止", variant: "danger" });
+    } else if (status === "completed") {
+      buttons.push({ action: "play", label: "重播", variant: "primary" });
+    } else {
+      buttons.push({ action: "play", label: "播放", variant: "primary" });
+    }
+    return `
+      <div class="workspace-card__actions workspace-card__actions--activity">
+        ${buttons
+          .map((button) => {
+            const className = button.variant ? ` class="workspace-card__action--${this._escapeAttr(button.variant)}"` : "";
+            return `<button type="button"${className} data-action="activity-control" data-activity-action="${this._escapeAttr(button.action)}">${this._escape(button.label)}</button>`;
+          })
+          .join("")}
+      </div>
     `;
   }
 
@@ -204,7 +254,7 @@ class WorkspacePanel {
           </div>
           <p>${this._escape(meta || "放在 Akane 手边")}</p>
           <div class="workspace-card__actions">
-            ${item.can_open ? '<button type="button" data-action="open-item">打开</button>' : ""}
+            ${item.can_open ? '<button type="button" data-action="open-item">打开位置</button>' : ""}
             <button type="button" data-action="copy-item">复制编号</button>
             ${item.can_clear ? '<button type="button" data-action="clear-item">收起来</button>' : ""}
           </div>
@@ -214,7 +264,8 @@ class WorkspacePanel {
   }
 
   async _handleClick(event) {
-    const action = event.target?.dataset?.action;
+    const actionTarget = event.target?.closest?.("[data-action]") || event.target;
+    const action = actionTarget?.dataset?.action;
     if (!action) return;
     event.preventDefault();
 
@@ -226,12 +277,16 @@ class WorkspacePanel {
       await this.refresh();
       return;
     }
-    if (action === "clear-completed") {
-      await this._clearCompletedTasks();
+    if (action === "clear-files") {
+      await this._clearFiles();
+      return;
+    }
+    if (action === "activity-control") {
+      await this._handleActivityControl(actionTarget?.dataset?.activityAction);
       return;
     }
 
-    const card = event.target.closest?.("[data-key]");
+    const card = actionTarget.closest?.("[data-key]");
     const key = card?.dataset?.key || "";
     const item = this._items.get(key);
     if (!item) return;
@@ -244,14 +299,44 @@ class WorkspacePanel {
     }
   }
 
+  async _handleActivityControl(action) {
+    const name = String(action || "").trim().toLowerCase();
+    if (!["play", "pause", "resume", "stop"].includes(name)) return;
+    try {
+      const result = await this._onActivityAction?.({ action: name });
+      if (result && result.ok === false) {
+        this._notice("播放器暂时没接上，再点一次试试。");
+      }
+    } catch (error) {
+      console.warn("[AkanePet] workspace activity control failed:", error);
+      this._notice("播放器控制失败了。");
+    }
+  }
+
   async _openItem(item) {
-    const url = this._backendClient.resolveUrl(item.url || "");
-    if (!url) {
-      this._notice("这个物品暂时不能直接打开。");
+    const identity = this._getIdentity?.();
+    if (!identity?.profileUserId || !identity?.sessionId) {
+      this._notice("会话还没准备好。");
       return;
     }
-    const result = await window.akaneAPI?.openExternal?.(url);
-    if (!result?.ok) this._notice("打开失败了，可能是系统拦截了。");
+    try {
+      const location = await this._backendClient.fetchWorkspaceItemLocation({
+        profileUserId: identity.profileUserId,
+        sessionId: identity.sessionId,
+        itemType: item.item_type,
+        target: item.handle || item.id,
+      });
+      const filePath = String(location?.path || "").trim();
+      if (!location?.ok || !filePath) {
+        this._notice("这个物品暂时找不到本地位置。");
+        return;
+      }
+      const result = await window.akaneAPI?.showItemInFolder?.(filePath);
+      if (!result?.ok) this._notice("打开所在位置失败了，可能是系统拦截了。");
+    } catch (error) {
+      console.warn("[AkanePet] workspace open location failed:", error);
+      this._notice("打开所在位置失败了。");
+    }
   }
 
   async _copyItem(item) {
@@ -284,21 +369,21 @@ class WorkspacePanel {
     }
   }
 
-  async _clearCompletedTasks() {
+  async _clearFiles() {
     const identity = this._getIdentity?.();
     if (!identity?.profileUserId || !identity?.sessionId) return;
     try {
       const result = await this._backendClient.workspaceAction({
         profileUserId: identity.profileUserId,
         sessionId: identity.sessionId,
-        action: "clear_completed_tasks",
+        action: "clear_files",
       });
       const count = Array.isArray(result?.managed) ? result.managed.length : 0;
-      this._notice(count ? `清理了 ${count} 个完成任务。` : "没有需要清理的完成任务。");
+      this._notice(count ? `清理了 ${count} 个源文件和生成文件。` : "文件筐已经很清爽。");
       await this.refresh();
     } catch (error) {
-      console.warn("[AkanePet] workspace clear completed failed:", error);
-      this._notice("清理完成任务失败了。");
+      console.warn("[AkanePet] workspace clear files failed:", error);
+      this._notice("清理文件筐失败了。");
     }
   }
 
@@ -355,6 +440,76 @@ class WorkspacePanel {
   _notice(text) {
     const message = String(text || "").trim();
     if (message) this._onNotice?.(message);
+  }
+
+  _attachDrag() {
+    if (this._standalone) return;
+    const panel = this._root.querySelector(".workspace-panel");
+    if (!panel) return;
+    const rootRect = this._root.getBoundingClientRect();
+    const panelW = panel.offsetWidth || 338;
+    const panelH = panel.offsetHeight || 400;
+    if (!this._dragOffsetX && !this._dragOffsetY) {
+      this._dragOffsetX = Math.round((rootRect.width - panelW) / 2);
+      this._dragOffsetY = Math.round((rootRect.height - panelH) / 2);
+    }
+    panel.style.left = `${this._dragOffsetX}px`;
+    panel.style.top = `${this._dragOffsetY}px`;
+    const header = panel.querySelector(".workspace-panel__header");
+    if (!header) return;
+    header.style.cursor = "grab";
+    header.addEventListener("mousedown", this._onDragStart);
+  }
+
+  _onDragStart(event) {
+    if (event.button !== 0) return;
+    const target = event.target;
+    if (target.closest?.("button, input, [data-action]")) return;
+    event.preventDefault();
+    this._dragging = true;
+    this._dragStartX = event.clientX - this._dragOffsetX;
+    this._dragStartY = event.clientY - this._dragOffsetY;
+    const panel = this._root.querySelector(".workspace-panel");
+    if (panel) {
+      panel.style.cursor = "grabbing";
+      panel.style.transition = "none";
+    }
+    const header = this._root.querySelector(".workspace-panel__header");
+    if (header) header.style.cursor = "grabbing";
+    document.addEventListener("mousemove", this._onDragMove);
+    document.addEventListener("mouseup", this._onDragEnd);
+  }
+
+  _onDragMove(event) {
+    if (!this._dragging) return;
+    const panel = this._root.querySelector(".workspace-panel");
+    const rootRect = this._root.getBoundingClientRect();
+    if (!panel) return;
+    const panelW = panel.offsetWidth;
+    const panelH = panel.offsetHeight;
+
+    const maxX = Math.max(0, rootRect.width - panelW);
+    const maxY = Math.max(0, rootRect.height - panelH);
+    const dx = event.clientX - this._dragStartX;
+    const dy = event.clientY - this._dragStartY;
+
+    this._dragOffsetX = Math.round(Math.max(0, Math.min(dx, maxX)));
+    this._dragOffsetY = Math.round(Math.max(0, Math.min(dy, maxY)));
+    panel.style.left = `${this._dragOffsetX}px`;
+    panel.style.top = `${this._dragOffsetY}px`;
+  }
+
+  _onDragEnd() {
+    this._dragging = false;
+    const panel = this._root.querySelector(".workspace-panel");
+    if (panel) {
+      panel.style.cursor = "";
+      panel.style.transition = "";
+    }
+    const header = this._root.querySelector(".workspace-panel__header");
+    if (header) header.style.cursor = "grab";
+    document.removeEventListener("mousemove", this._onDragMove);
+    document.removeEventListener("mouseup", this._onDragEnd);
   }
 
   _escape(value) {

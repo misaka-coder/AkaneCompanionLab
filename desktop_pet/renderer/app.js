@@ -3,13 +3,16 @@ import { SpeechBubble } from "./ui/SpeechBubble.js";
 import { ChatInput } from "./ui/ChatInput.js";
 import { DragHandler } from "./ui/DragHandler.js";
 import { StickerOverlay } from "./ui/StickerOverlay.js";
-import { WorkspacePanel } from "./ui/WorkspacePanel.js";
+
+import { ContextMenu } from "./ui/ContextMenu.js";
 import { BackendClient } from "./services/BackendClient.js";
 import { SessionManager } from "./services/SessionManager.js";
 import { TaskWatcher } from "./services/TaskWatcher.js";
 import { PresentationController } from "./services/PresentationController.js";
 import { VoiceRecorder, VoiceRecorderError } from "./services/VoiceRecorder.js";
 import { ActivityRuntime } from "./services/ActivityRuntime.js";
+import { PetLifeController } from "./services/PetLifeController.js";
+import { HealthCheckService } from "./services/HealthCheckService.js";
 import { DEFAULT_EMOTION, resolveEmotion } from "./services/EmotionMapper.js";
 
 const CAPABILITIES = ["speech_segments", "tool_actions", "tts", "desktop_context", "file_drop", "audio_playback"];
@@ -25,6 +28,7 @@ const PET_STATES = {
   THINKING: "thinking",
   SPEAKING: "speaking",
 };
+const DEFAULT_PET_SCALE = 1;
 
 const spriteContainer = document.getElementById("sprite-container");
 const speechBubbleEl = document.getElementById("speech-bubble");
@@ -39,7 +43,8 @@ const settingsPromptTitleEl = document.getElementById("settings-prompt-title");
 const settingsPromptInputEl = document.getElementById("settings-prompt-input");
 const settingsPromptCancelEl = document.getElementById("settings-prompt-cancel");
 const settingsPromptSaveEl = document.getElementById("settings-prompt-save");
-const workspacePanelRootEl = document.getElementById("workspace-panel-root");
+
+const contextMenuRootEl = document.getElementById("context-menu-root");
 
 let sending = false;
 let currentEmotion = DEFAULT_EMOTION;
@@ -48,13 +53,26 @@ let rendererReady = false;
 let settingsPromptResolve = null;
 let resourceManifest = null;
 let voiceInputEnabled = true;
+let currentOpacity = 1;
+let currentPetScale = DEFAULT_PET_SCALE;
 let desktopContextEnabled = true;
 let clipboardContextEnabled = false;
 let voiceShortcutHeld = false;
+let petLife = null;
+let healthReport = null;
+let healthCheckRunning = false;
 
 const sessionManager = new SessionManager();
 let identity = null;
 const client = new BackendClient(sessionManager.getBackendUrl());
+const healthCheck = new HealthCheckService({
+  backendClient: client,
+  getIdentity: () => identity,
+  getManifest: () => resourceManifest,
+  getOutfit: () => sessionManager.getOutfit(),
+  getVoiceEnabled: () => presentation?.isVoiceEnabled?.() !== false,
+  getVoiceInputEnabled: () => voiceInputEnabled,
+});
 
 const renderer = new StaticSpriteRenderer();
 const bubble = new SpeechBubble(speechBubbleEl);
@@ -77,19 +95,47 @@ const presentation = new PresentationController({
   onPetStateChange: (state) => setPetState(state),
   onEmotionChange: (emotion) => {
     currentEmotion = emotion || DEFAULT_EMOTION;
+    publishDebugState();
+  },
+});
+petLife = new PetLifeController({
+  getAvailableEmotions: () => getAvailableEmotionIds(),
+  getCurrentEmotion: () => currentEmotion,
+  onEmotion: (emotion) => {
+    presentation.dispatch({
+      type: "change_emotion",
+      source: "system",
+      emotion: normalizeEmotionForCurrentOutfit(emotion),
+    });
   },
 });
 const activityRuntime = new ActivityRuntime({
   audioEl: activityAudioPlayerEl,
   backendClient: client,
   getIdentity: () => identity,
-  onNotice: (text) => showLocalNotice(text),
+  onNotice: (text) => showActivityNotice(text),
+  onStatusChange: (activity) => {
+    const status = String(activity?.status || "").toLowerCase();
+    petLife?.setMusicActive(status === "running");
+    publishCurrentActivityState(activity);
+  },
 });
-const workspacePanel = new WorkspacePanel(workspacePanelRootEl, {
-  backendClient: client,
-  getIdentity: () => identity,
-  getCurrentActivity: () => activityRuntime.getCurrentActivity(),
-  onNotice: (text) => showLocalNotice(text),
+// Workspace panel is now a standalone window — see workspace-window.js / workspace.js
+
+const contextMenu = new ContextMenu(contextMenuRootEl, {
+  getSettings: () => ({
+    backendUrl: sessionManager.getBackendUrl(),
+    outfit: sessionManager.getOutfit(),
+    opacity: currentOpacity,
+    petScale: currentPetScale,
+    voiceEnabled: presentation.isVoiceEnabled(),
+    voiceInputEnabled,
+    desktopContextEnabled,
+    clipboardContextEnabled,
+  }),
+  onAction: (action, value) => {
+    void handleContextMenuAction(action, value);
+  },
 });
 
 let dragHandler = null;
@@ -99,7 +145,20 @@ let dragDepth = 0;
 spriteContainer.addEventListener("contextmenu", (event) => {
   if (!renderer.isOpaqueAtPoint(event.clientX, event.clientY)) return;
   event.preventDefault();
-  window.akaneAPI?.showContextMenu?.();
+  window.akaneAPI?.openContextMenu?.({
+    screenX: event.screenX,
+    screenY: event.screenY,
+    settings: {
+      backendUrl: sessionManager.getBackendUrl(),
+      outfit: sessionManager.getOutfit(),
+      opacity: currentOpacity,
+      petScale: currentPetScale,
+      voiceEnabled: presentation.isVoiceEnabled(),
+      voiceInputEnabled,
+      desktopContextEnabled,
+      clipboardContextEnabled,
+    },
+  });
 });
 
 function showThinking() {
@@ -109,6 +168,8 @@ function showThinking() {
 function setPetState(state) {
   petState = state;
   document.body.dataset.petState = state;
+  petLife?.setPetState(state);
+  publishDebugState();
   if (state === PET_STATES.IDLE) {
     window.setTimeout(() => {
       taskWatcher?.flush();
@@ -145,6 +206,14 @@ function applyPetSettings(settings, { reloadSprite = false } = {}) {
   if (typeof settings.clipboardContextEnabled === "boolean") {
     clipboardContextEnabled = settings.clipboardContextEnabled;
   }
+  if (typeof settings.opacity === "number") {
+    currentOpacity = Math.max(0.3, Math.min(1, settings.opacity));
+  }
+  if (typeof settings.petScale === "number") {
+    currentPetScale = normalizePetScale(settings.petScale);
+    document.documentElement.style.setProperty("--pet-scale", currentPetScale.toFixed(2));
+    chatInput.refreshLayout?.();
+  }
   client.setBaseUrl(sessionManager.getBackendUrl());
 
   const spriteSourceChanged =
@@ -154,8 +223,10 @@ function applyPetSettings(settings, { reloadSprite = false } = {}) {
   if (rendererReady && (reloadSprite || spriteSourceChanged)) {
     void refreshResourceManifest({ force: true }).finally(() => {
       presentation.dispatch({ type: "change_emotion", emotion: currentEmotion, reload: true });
+      publishDebugState();
     });
   }
+  publishDebugState();
 }
 
 async function refreshResourceManifest({ force = false } = {}) {
@@ -172,6 +243,7 @@ async function refreshResourceManifest({ force = false } = {}) {
       renderer.setManifest(resourceManifest);
       currentEmotion = normalizeEmotionForCurrentOutfit(currentEmotion);
       logKnownEmotions(resourceManifest, sessionManager.getOutfit());
+      publishDebugState();
     }
   } catch (error) {
     console.warn("[AkanePet] resource manifest load failed:", error);
@@ -225,6 +297,11 @@ function buildCurrentVisual() {
     scene: {},
     available_emotions: emotions.map((item) => item.id),
   };
+}
+
+function getAvailableEmotionIds() {
+  const outfitEntry = findManifestOutfit(resourceManifest, sessionManager.getOutfit());
+  return listManifestEmotions(outfitEntry).map((item) => item.id);
 }
 
 function normalizeEmotionForCurrentOutfit(emotion) {
@@ -302,8 +379,166 @@ function setupMainProcessEvents() {
   });
 
   window.akaneAPI.onWorkspacePanelToggle?.(() => {
-    void workspacePanel.toggle();
+    window.akaneAPI.toggleWorkspacePanel?.(identity || {});
   });
+
+  window.akaneAPI.onDebugPanelToggle?.(() => {
+    window.akaneAPI.toggleDebugPanel?.();
+    window.setTimeout(() => publishDebugState(), 120);
+  });
+
+  window.akaneAPI.onSettingsPanelToggle?.(() => {
+    window.akaneAPI.toggleSettingsPanel?.();
+  });
+
+  window.akaneAPI.onWorkspaceActivityStateRequest?.(() => {
+    publishCurrentActivityState();
+  });
+
+  window.akaneAPI.onWorkspaceActivityAction?.((action) => {
+    void handleWorkspaceActivityAction(action);
+  });
+
+  window.akaneAPI.onDebugStateRequest?.(() => {
+    publishDebugState();
+  });
+
+  window.akaneAPI.onDebugAction?.((action) => {
+    void handleDebugAction(action);
+  });
+
+  window.akaneAPI.onMenuAction?.((action, value) => {
+    void handleContextMenuAction(action, value);
+  });
+}
+
+function publishCurrentActivityState(activity = null) {
+  const payload = activity || activityRuntime.getCurrentActivity();
+  window.akaneAPI?.publishWorkspaceActivityState?.(payload);
+  publishDebugState();
+}
+
+function buildDebugState() {
+  const outfitEntry = findManifestOutfit(resourceManifest, sessionManager.getOutfit());
+  const lastResolution = renderer.getLastResolution?.() || null;
+  return {
+    profileUserId: identity?.profileUserId || "master",
+    sessionId: identity?.sessionId || "",
+    backendUrl: sessionManager.getBackendUrl(),
+    outfit: String(outfitEntry?.id || sessionManager.getOutfit() || "").trim(),
+    petState,
+    lifeMotion: document.body.dataset.lifeMotion || "idle",
+    currentEmotion,
+    resolvedEmotion: lastResolution?.id || currentEmotion,
+    spriteSource: lastResolution?.source || "",
+    voiceEnabled: presentation.isVoiceEnabled(),
+    voiceInputEnabled,
+    petScale: currentPetScale,
+    desktopContextEnabled,
+    clipboardContextEnabled,
+    currentActivity: activityRuntime.getCurrentActivity(),
+    healthReport,
+    healthCheckRunning,
+    availableEmotions: listManifestEmotions(outfitEntry).map((item) => ({
+      id: item.id,
+      name: item.name || item.id,
+      aliases: item.aliases || [],
+    })),
+    updatedAt: Date.now(),
+  };
+}
+
+function publishDebugState() {
+  window.akaneAPI?.publishDebugState?.(buildDebugState());
+}
+
+async function handleWorkspaceActivityAction(action) {
+  const name = String(action?.action || action || "").trim().toLowerCase();
+  if (!["play", "pause", "resume", "stop"].includes(name)) return;
+  await activityRuntime.applyAction({
+    action: name,
+    target: "current",
+  });
+  publishCurrentActivityState();
+}
+
+async function handleDebugAction(action) {
+  const type = String(action?.type || action?.action || "").trim().toLowerCase();
+  if (type === "preview-emotion") {
+    const emotion = String(action?.emotion || "").trim();
+    if (!emotion) return;
+    presentation.dispatch({
+      type: "change_emotion",
+      source: "system",
+      emotion: normalizeEmotionForCurrentOutfit(emotion),
+    });
+    publishDebugState();
+    return;
+  }
+
+  if (type === "test-bubble") {
+    showLocalNotice("状态预览器：气泡测试正常。");
+    return;
+  }
+
+  if (type === "test-tts") {
+    const text = "状态预览器：语音播放测试。";
+    showLocalNotice(text);
+    presentation.dispatch({
+      type: "play_tts",
+      source: "formal",
+      text,
+      force: true,
+    });
+    return;
+  }
+
+  if (type === "refresh") {
+    publishDebugState();
+    return;
+  }
+
+  if (type === "run-health-check") {
+    await runHealthCheck({ announce: true });
+  }
+}
+
+async function runHealthCheck({ announce = false } = {}) {
+  if (healthCheckRunning) return healthReport;
+  healthCheckRunning = true;
+  publishDebugState();
+  try {
+    healthReport = await healthCheck.run();
+    if (announce && healthReport?.status && healthReport.status !== "ok") {
+      petLife?.showMoment("confused");
+      showLocalNotice(healthReport.summary || "启动自检发现需要确认的项目。");
+    }
+    publishDebugState();
+    return healthReport;
+  } catch (error) {
+    healthReport = {
+      status: "error",
+      summary: "启动自检执行失败。",
+      items: [
+        {
+          id: "health_check",
+          label: "启动自检",
+          status: "error",
+          message: String(error?.message || error || "自检失败"),
+        },
+      ],
+      checkedAt: Date.now(),
+    };
+    if (announce) {
+      petLife?.showMoment("confused");
+      showLocalNotice("启动自检执行失败，可以打开状态预览器看看。");
+    }
+    publishDebugState();
+    return healthReport;
+  } finally {
+    healthCheckRunning = false;
+    publishDebugState();
+  }
 }
 
 async function promptAndSaveSetting(payload) {
@@ -411,18 +646,22 @@ async function toggleVoiceRecording() {
 
 async function startVoiceRecording() {
   if (!voiceInputEnabled) {
+    petLife?.showMoment("confused");
     showLocalNotice("语音输入现在是关闭的，可以在托盘菜单里打开。");
     return;
   }
   if (sending) {
+    petLife?.showMoment("confused");
     showLocalNotice("我正在回复这轮消息，等一下再听你说。");
     return;
   }
 
   try {
     await voiceRecorder.start();
+    petLife?.setListeningActive(true);
     showLocalNotice("正在听……");
   } catch (error) {
+    petLife?.setListeningActive(false);
     showVoiceError(error);
   }
 }
@@ -432,12 +671,15 @@ async function stopVoiceRecording() {
   try {
     audioBlob = await voiceRecorder.stop();
   } catch (error) {
+    petLife?.setListeningActive(false);
     showVoiceError(error);
     return;
   }
+  petLife?.setListeningActive(false);
   if (!audioBlob) return;
 
   voiceRecorder.setProcessing(true);
+  petLife?.showMoment("thinking", { durationMs: 1400 });
   showLocalNotice("我在识别语音……");
   try {
     const result = await client.transcribeAudio({
@@ -450,6 +692,7 @@ async function stopVoiceRecording() {
       return;
     }
     chatInput.setText(String(result.text || "").trim());
+    petLife?.showMoment("success");
     showLocalNotice("我听写好了，主人确认一下再发送。");
   } catch (error) {
     showVoiceError(error);
@@ -475,7 +718,7 @@ function updateVoiceRecordButton(state) {
   }
 }
 
-function showLocalNotice(text) {
+function showLocalNotice(text, { state = "idle" } = {}) {
   const message = String(text || "").trim();
   if (!message) return;
   presentation.dispatch({
@@ -484,10 +727,25 @@ function showLocalNotice(text) {
     text: message,
     key: `system_notice:${message}`,
     queue: false,
+    state,
   });
 }
 
+function showActivityNotice(text) {
+  const message = String(text || "").trim();
+  if (!message) return;
+  if (/失败|没|没有|不是|不可|拦截|超时|错误/.test(message)) {
+    petLife?.showMoment("confused");
+  } else if (/正在|我在/.test(message)) {
+    petLife?.showMoment("thinking", { durationMs: 1400 });
+  } else if (/已|好啦|完成|放在手边/.test(message)) {
+    petLife?.showMoment("success");
+  }
+  showLocalNotice(message);
+}
+
 function showVoiceError(error) {
+  petLife?.showMoment("confused");
   const code = error instanceof VoiceRecorderError ? error.code : "";
   const message = String(error?.message || error || "").trim();
   const fallback = code === "too_short" ? "录音太短啦，我没听清。" : "语音输入失败了。";
@@ -527,13 +785,17 @@ async function handleAudioDrop(event) {
   const files = Array.from(event.dataTransfer?.files || []);
   const audioFile = files.find((file) => activityRuntime.canAcceptFile(file));
   if (!audioFile) {
+    petLife?.showMoment("confused");
     showLocalNotice("拖进来的文件不是可播放音频。");
     return;
   }
   try {
     await activityRuntime.handleDroppedAudio(audioFile);
+    window.akaneAPI.notifyWorkspaceChanged?.();
+    publishCurrentActivityState();
   } catch (error) {
     console.warn("[AkanePet] audio drop failed:", error);
+    petLife?.showMoment("confused");
     showLocalNotice(String(error?.message || "音频拖拽处理失败。"));
   }
 }
@@ -555,6 +817,7 @@ function showLocalInteraction() {
   const index = Math.floor(Math.random() * LOCAL_CLICK_LINES.length);
   const text = LOCAL_CLICK_LINES[index];
   presentation.dispatch({ type: "local_reaction", text });
+  petLife?.reactToClick();
 }
 
 function canShowPassiveReminder() {
@@ -563,13 +826,14 @@ function canShowPassiveReminder() {
     petState === PET_STATES.IDLE &&
     presentation.canAcceptPassive() &&
     !chatInput.isVisible() &&
-    !isSettingsPromptVisible() &&
-    !workspacePanel.isVisible()
+    !isSettingsPromptVisible()
   );
 }
 
-function showTaskReminder(text) {
+function showTaskReminder(text, item = null) {
   if (!text || !canShowPassiveReminder()) return;
+  const state = String(item?.handoff?.state || item?.status || "").trim().toLowerCase();
+  petLife?.showMoment(state === "blocked" ? "confused" : "success");
   presentation.dispatch({ type: "task_notice", text });
 }
 
@@ -625,7 +889,9 @@ async function processStream(gen) {
 
   function applyActivity(payload) {
     if (!payload?.activity) return;
-    void activityRuntime.applyAction(payload.activity);
+    void activityRuntime.applyAction(payload.activity).finally(() => {
+      publishCurrentActivityState();
+    });
   }
 
   for await (const event of gen) {
@@ -722,6 +988,7 @@ async function sendMessage(text) {
 
   try {
     const currentActivity = activityRuntime.interruptForUserMessage();
+    publishCurrentActivityState(currentActivity);
     const desktopContext = await collectDesktopContextForTurn();
     const gen = client.sendMessage({
       profileUserId: identity.profileUserId,
@@ -750,8 +1017,64 @@ async function sendMessage(text) {
   }
 }
 
+// ── Context menu actions ──
+async function handleContextMenuAction(action, value) {
+  switch (action) {
+    case "toggle-window":
+      window.akaneAPI?.minimizeWindow?.();
+      break;
+    case "reload-sprite":
+      await reloadSprite();
+      break;
+    case "workspace-panel":
+      window.akaneAPI.toggleWorkspacePanel?.(identity || {});
+      break;
+    case "debug-panel":
+      window.akaneAPI.toggleDebugPanel?.();
+      window.setTimeout(() => publishDebugState(), 120);
+      break;
+    case "settings-panel":
+      window.akaneAPI.toggleSettingsPanel?.();
+      break;
+    case "prompt-backend":
+      await promptAndSaveSetting({ key: "backendUrl", title: "后端地址", value: sessionManager.getBackendUrl() });
+      break;
+    case "prompt-outfit":
+      await promptAndSaveSetting({ key: "outfit", title: "服装名", value: sessionManager.getOutfit() });
+      break;
+    case "set-opacity":
+      await window.akaneAPI?.setSettings?.({ opacity: parseFloat(value) || 1 });
+      break;
+    case "set-pet-scale":
+      await window.akaneAPI?.setSettings?.({ petScale: normalizePetScale(value) });
+      break;
+    case "toggle-voice":
+      await window.akaneAPI?.setSettings?.({ voiceEnabled: !presentation.isVoiceEnabled() });
+      break;
+    case "toggle-voice-input":
+      await window.akaneAPI?.setSettings?.({ voiceInputEnabled: !voiceInputEnabled });
+      break;
+    case "toggle-desktop-ctx":
+      await window.akaneAPI?.setSettings?.({ desktopContextEnabled: !desktopContextEnabled });
+      break;
+    case "toggle-clipboard-ctx":
+      await window.akaneAPI?.setSettings?.({ clipboardContextEnabled: !clipboardContextEnabled });
+      break;
+    case "quit":
+      window.akaneAPI?.closeWindow?.();
+      break;
+  }
+}
+
+function normalizePetScale(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return DEFAULT_PET_SCALE;
+  return Math.max(0.75, Math.min(1.45, numeric));
+}
+
 // ── Init ──
 async function init() {
+  let backendConnectionFailed = false;
   const settings = await loadPetSettings();
   identity = sessionManager.init(settings);
   applyPetSettings(settings);
@@ -804,6 +1127,7 @@ async function init() {
       });
     }
   } catch (error) {
+    backendConnectionFailed = true;
     presentation.dispatch({
       type: "show_bubble",
       source: "system",
@@ -816,11 +1140,12 @@ async function init() {
     getBackendUrl: () => sessionManager.getBackendUrl(),
     getIdentity: () => identity,
     canNotify: () => canShowPassiveReminder(),
-    onNotify: (message) => {
-      showTaskReminder(message);
+    onNotify: (message, item) => {
+      showTaskReminder(message, item);
     },
   });
   taskWatcher.start();
+  void runHealthCheck({ announce: !backendConnectionFailed });
 }
 
 init();

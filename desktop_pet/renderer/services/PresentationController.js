@@ -194,6 +194,7 @@ class PresentationController {
       text,
       queue: false,
       key: event.key || `local_reaction:${text}`,
+      state: "idle",
     });
   }
 

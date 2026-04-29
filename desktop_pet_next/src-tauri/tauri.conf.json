@@ -25,12 +25,16 @@
         "resizable": false,
         "shadow": false,
         "center": true,
-        "dragDropEnabled": false,
+        "dragDropEnabled": true,
         "backgroundColor": "#00000000"
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPCACHE/audio/**"]
+      }
     }
   },
   "bundle": {

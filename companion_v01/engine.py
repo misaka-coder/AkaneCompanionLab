@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Generator
-from urllib.parse import urlparse
 
 import config
 
@@ -17,15 +15,20 @@ from .attachment_inbox import AttachmentInboxService
 from .attachment_ingest import AttachmentIngestService
 from .background_tasks import BackgroundTaskRunner
 from .capability_registry import CapabilityRegistry, CapabilitySelection, CapabilitySnapshot, is_document_attachment, is_document_generated_file, is_media_attachment, is_media_generated_file
+from . import desktop_pet_engine
 from .embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
 from .generated_files import GeneratedFileService
+from . import gift_engine
 from .gift_system import GiftSystemService
+from . import media_bridge_engine
 from .huggingface_provider import HuggingFaceEmbeddingProvider
 from .llm_runtime import LLMRuntime
 from .memory_compaction_service import MemoryCompactionService
 from .memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
 from .desktop_music_timeline import DesktopMusicTimelineService
+from .desktop_screen_vision import DesktopScreenVisionWorkspace
+from . import desktop_context_engine
 from .mode_profiles import ModeProfileRegistry
 from .npc_runtime import GenericNPCRuntime
 from .output_adapters import OutputAdapterRegistry
@@ -33,14 +36,20 @@ from .persona_config import PERSONA
 from .persona_system import PersonaCardService
 from .prompt_builder import PromptBuilder
 from .prompt_profiles import PromptModule, PromptProfileRegistry
+from . import final_output_engine
+from . import reminder_engine
 from .retrieval_service import RetrievalService
 from .retrieval_types import RetrievalPipelineResult
+from . import retrieval_engine
 from .resource_manifest import ResourceManifest
 from .sticker_assets import StickerAssetService
 from .task_workspace import TaskWorkspaceService
+from . import task_workspace_engine
 from .task_worker import TaskWorkerService
 from .task_worker_tool import DelegateTaskToolHandler
+from . import tool_orchestration_engine
 from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler
+from . import visual_context_engine
 from .vision_service import VisionObservationService
 from .store import MemoryStore
 from .text_utils import (
@@ -197,6 +206,11 @@ class AkaneMemoryEngine:
             gift_assets_dir=self.base_dir / "user_assets",
             on_observation_ready=self.vision_observation_router.handle,
         )
+        self.desktop_screen_vision = DesktopScreenVisionWorkspace(
+            vision_service=self.vision_service,
+            max_ready_per_session=int(getattr(config, "DESKTOP_SCREEN_VISION_MAX_CLIPS", 5) or 5),
+            ttl_sec=int(getattr(config, "DESKTOP_SCREEN_VISION_TTL_SEC", 15 * 60) or (15 * 60)),
+        )
         self.attachment_ingest_service = AttachmentIngestService(
             base_dir=self.base_dir / "attachment_inbox_files",
             store=self.store,
@@ -250,36 +264,20 @@ class AkaneMemoryEngine:
         self.vector_store.reset()
         self.gift_service.reset()
         self.vision_service.reset()
+        self.desktop_screen_vision.reset()
         self.npc_runtime.reset()
 
     def build_resource_manifest(self, *, profile_user_id: str = "") -> dict[str, Any]:
-        if not self.resource_manifest:
-            return {
-                "schema_version": 2,
-                "scenes": {"majors": []},
-                "characters": {"outfits": []},
-                "defaults": {},
-            }
-        self.resource_manifest.refresh()
-        runtime_projection = self._get_user_runtime_projection(profile_user_id)
-        return self.resource_manifest.build_runtime_manifest(
-            extra_bgm_tracks=list(runtime_projection.get("extra_bgm_tracks") or []),
-            extra_scene_groups=list(runtime_projection.get("extra_scene_groups") or []),
-            extra_character_outfits=list(runtime_projection.get("extra_character_outfits") or []),
+        return visual_context_engine.build_resource_manifest(
+            self,
+            profile_user_id=profile_user_id,
         )
 
     def list_gift_assets(self, *, profile_user_id: str, media_kind: str = "all", limit: int = 50) -> list[dict[str, Any]]:
-        normalized_media_kind = str(media_kind or "").strip().lower() or "all"
-        asset_type = {
-            "bgm": "audio",
-            "audio": "audio",
-            "image": "image",
-            "photo": "image",
-            "all": None,
-        }.get(normalized_media_kind, None)
-        return self.gift_service.list_assets(
+        return gift_engine.list_gift_assets(
+            self,
             profile_user_id=profile_user_id,
-            asset_type=asset_type,
+            media_kind=media_kind,
             limit=limit,
         )
 
@@ -293,7 +291,8 @@ class AkaneMemoryEngine:
         content: bytes,
         now_ts: int | None = None,
     ) -> dict[str, Any]:
-        asset = self.gift_service.ingest_upload(
+        return gift_engine.upload_gift_asset(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             filename=filename,
@@ -301,12 +300,6 @@ class AkaneMemoryEngine:
             content=content,
             now_ts=now_ts,
         )
-        if str(asset.get("asset_type") or "").strip().lower() == "image":
-            try:
-                self.vision_service.schedule_gift_observation(asset=asset)
-            except Exception as exc:
-                logger.warning("schedule gift observation after upload failed: %s", exc)
-        return asset
 
     def apply_gift_action(
         self,
@@ -317,7 +310,8 @@ class AkaneMemoryEngine:
         action: str,
         timestamp: int | None = None,
     ) -> dict[str, Any] | None:
-        return self.gift_service.apply_action(
+        return gift_engine.apply_gift_action(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             asset_id=asset_id,
@@ -333,32 +327,13 @@ class AkaneMemoryEngine:
         asset_id: str,
         timestamp: int | None = None,
     ) -> dict[str, Any] | None:
-        asset = self.gift_service.resolve_focus_asset(
+        return gift_engine.observe_gift_image_once(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             asset_id=asset_id,
-        )
-        if asset is None:
-            return None
-        if str(asset.get("asset_type") or "").strip().lower() != "image":
-            raise ValueError("only image gifts can be observed without saving")
-
-        observation = self.vision_service.analyze_gift_once(asset=asset)
-        assistant_line = self.gift_service.build_transient_image_reply(
-            asset=asset,
-            observation=observation,
-        )
-        discarded = self.gift_service.discard_asset(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            asset_id=str(asset.get("asset_id") or asset_id),
             timestamp=timestamp,
         )
-        return {
-            "assistant_line": assistant_line,
-            "asset": discarded or asset,
-            "observation": dict((observation or {}).get("observation") or {}),
-        }
 
     def list_gift_inventory(
         self,
@@ -368,7 +343,8 @@ class AkaneMemoryEngine:
         scope: str = "pending_recent",
         limit: int = 5,
     ) -> dict[str, Any]:
-        return self.gift_service.list_inventory(
+        return gift_engine.list_gift_inventory(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             scope=scope,
@@ -382,7 +358,8 @@ class AkaneMemoryEngine:
         preview_limit: int = 3,
         include_empty: bool = True,
     ) -> list[dict[str, Any]]:
-        return self.artifact_service.list_containers(
+        return gift_engine.list_artifact_containers(
+            self,
             profile_user_id=profile_user_id,
             preview_limit=preview_limit,
             include_empty=include_empty,
@@ -396,7 +373,8 @@ class AkaneMemoryEngine:
         container_key: str = "",
         limit: int = 50,
     ) -> dict[str, Any]:
-        return self.artifact_service.list_container_items(
+        return gift_engine.list_artifacts_in_container(
+            self,
             profile_user_id=profile_user_id,
             container_type=container_type,
             container_key=container_key,
@@ -680,25 +658,12 @@ class AkaneMemoryEngine:
         recent_semantic_summaries: list[dict[str, Any]],
         extra_source_ids: list[str] | None = None,
     ) -> list[str]:
-        visible_ids: list[str] = []
-        seen: set[str] = set()
-
-        def add_source_id(value: Any) -> None:
-            source_id = str(value or "").strip()
-            if not source_id or source_id in seen:
-                return
-            seen.add(source_id)
-            visible_ids.append(source_id)
-
-        for source_id in extra_source_ids or []:
-            add_source_id(source_id)
-        for row in recent_raw or []:
-            add_source_id(row.get("source_id"))
-        for summary in recent_episodic_summaries or []:
-            add_source_id(summary.get("source_id") or summary.get("summary_id"))
-        for semantic_summary in recent_semantic_summaries or []:
-            add_source_id(semantic_summary.get("source_id") or semantic_summary.get("semantic_id"))
-        return visible_ids
+        return retrieval_engine.collect_visible_context_source_ids(
+            recent_raw=recent_raw,
+            recent_episodic_summaries=recent_episodic_summaries,
+            recent_semantic_summaries=recent_semantic_summaries,
+            extra_source_ids=extra_source_ids,
+        )
 
     def _get_compaction_service(self) -> MemoryCompactionService:
         compaction_service = getattr(self, "compaction_service", None)
@@ -724,10 +689,7 @@ class AkaneMemoryEngine:
         return None
 
     def _resolve_pre_retrieval_enabled(self, *, payload: dict[str, Any]) -> bool:
-        override = self._coerce_bool(payload.get("pre_retrieval_enabled"))
-        if override is not None:
-            return bool(override)
-        return bool(getattr(config, "PRE_RETRIEVAL_DEFAULT_ENABLED", True))
+        return retrieval_engine.resolve_pre_retrieval_enabled(self, payload=payload)
 
     def _build_skipped_pre_retrieval_pipeline(
         self,
@@ -736,59 +698,11 @@ class AkaneMemoryEngine:
         now_ts: int,
         reason: str,
     ) -> RetrievalPipelineResult:
-        retrieval_service = self._get_retrieval_service()
-        try:
-            time_hint = retrieval_service._extract_time_hint(user_message=user_message, now_ts=now_ts)
-        except Exception:
-            time_hint = {
-                "date_label": None,
-                "time_of_day": detect_time_of_day_from_text(user_message),
-                "relative_time": None,
-            }
-        return RetrievalPipelineResult(
-            used_retrieval=False,
-            confirmed_snippets=[],
-            router_output={
-                "need_retrieval": False,
-                "route": "pre_retrieval_disabled",
-                "rewritten_query": "",
-                "keywords": [],
-                "time_hint": dict(time_hint or {}),
-                "index_current_message": True,
-                "reason": str(reason or "").strip(),
-                "confidence": 1.0,
-            },
-            router_timing=retrieval_service._build_shortcut_timing(
-                stage="router",
-                branch="pre_retrieval_disabled",
-                ready_event_type="decision",
-            ),
-            retrieval_result={
-                "filtered_candidate_count": 0,
-                "time_filter": {
-                    "date_label": None,
-                    "time_of_day": None,
-                    "relative_time": None,
-                    "matched": False,
-                },
-                "fused_hits": [],
-                "memory_snippets": [],
-            },
-            verifier_output={
-                "match_result": "skip",
-                "match_score": 0.0,
-                "need_retry": False,
-                "selected_indexes": [],
-                "retry_query": "",
-                "retry_keywords": [],
-                "retry_time_hint": None,
-                "reason": str(reason or "").strip(),
-            },
-            verifier_timing={
-                "mode": "skip",
-                "attempts": [],
-                "selected_attempt": None,
-            },
+        return retrieval_engine.build_skipped_pre_retrieval_pipeline(
+            self,
+            user_message=user_message,
+            now_ts=now_ts,
+            reason=reason,
         )
 
     def _run_pre_retrieval_pipeline(
@@ -804,31 +718,21 @@ class AkaneMemoryEngine:
         current_user_source_id: str,
         verifier_debug_enabled: bool | None,
     ) -> RetrievalPipelineResult:
-        if not self._resolve_pre_retrieval_enabled(payload=payload):
-            return self._build_skipped_pre_retrieval_pipeline(
-                user_message=user_message,
-                now_ts=now_ts,
-                reason="本轮已关闭前置检索，直接基于当前可见上下文回复。",
-            )
-        return self._get_retrieval_service().run_explicit(
+        return retrieval_engine.run_pre_retrieval_pipeline(
+            self,
+            payload=payload,
             profile_user_id=profile_user_id,
-            original_query=user_message,
+            user_message=user_message,
             now_ts=now_ts,
-            exclude_source_ids=self._collect_visible_context_source_ids(
-                recent_raw=recent_raw,
-                recent_episodic_summaries=recent_episodic_summaries,
-                recent_semantic_summaries=recent_semantic_summaries,
-                extra_source_ids=[current_user_source_id],
-            ),
+            recent_raw=recent_raw,
+            recent_episodic_summaries=recent_episodic_summaries,
+            recent_semantic_summaries=recent_semantic_summaries,
+            current_user_source_id=current_user_source_id,
             verifier_debug_enabled=verifier_debug_enabled,
-            route="pre_retrieval",
         )
 
     def _should_index_user_record_in_vector(self, *, router_output: dict[str, Any]) -> bool:
-        if not bool(router_output.get("need_retrieval")):
-            return True
-        normalized = self._coerce_bool(router_output.get("index_current_message"))
-        return True if normalized is None else bool(normalized)
+        return retrieval_engine.should_index_user_record_in_vector(self, router_output=router_output)
 
     def _apply_user_vector_index_policy(
         self,
@@ -836,13 +740,11 @@ class AkaneMemoryEngine:
         user_record: dict[str, Any],
         router_output: dict[str, Any],
     ) -> dict[str, Any]:
-        should_index = self._should_index_user_record_in_vector(router_output=router_output)
-        if bool(user_record.get("index_in_vector", True)) != should_index:
-            user_record["index_in_vector"] = should_index
-            self.store.update_message_index_in_vector(user_record["source_id"], should_index)
-        else:
-            user_record["index_in_vector"] = should_index
-        return user_record
+        return retrieval_engine.apply_user_vector_index_policy(
+            self,
+            user_record=user_record,
+            router_output=router_output,
+        )
 
     def _schedule_summary_cycle(self, *, profile_user_id: str, session_id: str) -> None:
         self._get_compaction_service().schedule_summary_cycle(
@@ -884,17 +786,13 @@ class AkaneMemoryEngine:
         mime_type: str = "",
         timestamp: int | None = None,
     ) -> dict[str, Any]:
-        service = self._get_attachment_ingest_service()
-        if service is None:
-            raise RuntimeError("attachment ingest service unavailable")
-        return service.ingest_local_file(
+        return desktop_pet_engine.ingest_desktop_pet_audio_attachment(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             source_path=source_path,
             origin_name=origin_name,
             mime_type=mime_type,
-            kind="audio",
-            source="desktop_pet",
             timestamp=timestamp,
         )
 
@@ -905,21 +803,12 @@ class AkaneMemoryEngine:
         session_id: str,
         target: str,
     ) -> tuple[dict[str, Any], Path] | None:
-        service = self._get_attachment_inbox_service()
-        if service is None:
-            return None
-        item = service.resolve_attachment(
+        return desktop_pet_engine.resolve_desktop_pet_audio_attachment(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             target=target,
-            kind="audio",
         )
-        if not item or str(item.get("status") or "") != "ready" or str(item.get("kind") or "") != "audio":
-            return None
-        source_path = service.resolve_storage_path(item)
-        if source_path is None:
-            return None
-        return item, source_path
 
     def resolve_desktop_pet_generated_audio(
         self,
@@ -928,24 +817,12 @@ class AkaneMemoryEngine:
         session_id: str,
         target: str,
     ) -> tuple[dict[str, Any], Path] | None:
-        service = self._get_generated_file_service()
-        if service is None:
-            return None
-        item = service._resolve_generated_file(
+        return desktop_pet_engine.resolve_desktop_pet_generated_audio(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             target=target,
         )
-        if not item or str(item.get("status") or "") != "ready":
-            return None
-        path = service.absolute_path(item)
-        if not path.exists() or not path.is_file():
-            return None
-        ext = str(item.get("file_ext") or item.get("output_format") or path.suffix.lstrip(".")).strip().lower().lstrip(".")
-        mime_type = str(item.get("mime_type") or "").strip().lower()
-        if ext not in {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"} and not mime_type.startswith("audio/"):
-            return None
-        return item, path
 
     def resolve_desktop_pet_attachment_file(
         self,
@@ -954,21 +831,12 @@ class AkaneMemoryEngine:
         session_id: str,
         target: str,
     ) -> tuple[dict[str, Any], Path] | None:
-        service = self._get_attachment_inbox_service()
-        if service is None:
-            return None
-        item = service.resolve_attachment(
+        return desktop_pet_engine.resolve_desktop_pet_attachment_file(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             target=target,
-            kind="any",
         )
-        if not item or str(item.get("status") or "") != "ready":
-            return None
-        source_path = service.resolve_storage_path(item)
-        if source_path is None or not source_path.exists() or not source_path.is_file():
-            return None
-        return item, source_path
 
     def resolve_desktop_pet_generated_file(
         self,
@@ -977,20 +845,12 @@ class AkaneMemoryEngine:
         session_id: str,
         target: str,
     ) -> tuple[dict[str, Any], Path] | None:
-        service = self._get_generated_file_service()
-        if service is None:
-            return None
-        item = service._resolve_generated_file(
+        return desktop_pet_engine.resolve_desktop_pet_generated_file(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             target=target,
         )
-        if not item or str(item.get("status") or "") != "ready":
-            return None
-        path = service.absolute_path(item)
-        if not path.exists() or not path.is_file():
-            return None
-        return item, path
 
     def build_desktop_pet_workspace_panel(
         self,
@@ -999,54 +859,12 @@ class AkaneMemoryEngine:
         session_id: str,
         limit: int = 24,
     ) -> dict[str, Any]:
-        max_items = max(1, min(60, int(limit or 24)))
-        attachment_service = self._get_attachment_inbox_service()
-        generated_service = self._get_generated_file_service()
-        task_service = self._get_task_workspace_service()
-
-        files: list[dict[str, Any]] = []
-        if attachment_service is not None:
-            attachments = self.store.list_attachment_inbox_items(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                statuses=["ready", "pending_observation", "failed"],
-                limit=max_items,
-            )
-            files = [self._desktop_workspace_attachment_card(item) for item in attachments]
-
-        outputs: list[dict[str, Any]] = []
-        if generated_service is not None:
-            generated = self.store.list_generated_files(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                statuses=["ready", "failed"],
-                limit=max_items,
-            )
-            outputs = [self._desktop_workspace_generated_card(item) for item in generated]
-
-        tasks: list[dict[str, Any]] = []
-        if task_service is not None:
-            task_items = task_service.list_status_summaries(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                limit=min(12, max_items),
-            )
-            tasks = [self._desktop_workspace_task_card(item) for item in task_items]
-
-        return {
-            "ok": True,
-            "updated_at": int(time.time()),
-            "sections": {
-                "files": files,
-                "outputs": outputs,
-                "tasks": tasks,
-            },
-            "counts": {
-                "files": len(files),
-                "outputs": len(outputs),
-                "tasks": len(tasks),
-            },
-        }
+        return desktop_pet_engine.build_desktop_pet_workspace_panel(
+            self,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            limit=limit,
+        )
 
     def manage_desktop_pet_workspace_panel(
         self,
@@ -1057,81 +875,14 @@ class AkaneMemoryEngine:
         item_type: str = "",
         target: str = "",
     ) -> dict[str, Any]:
-        normalized_action = str(action or "").strip().lower()
-        normalized_type = str(item_type or "").strip().lower()
-        normalized_target = str(target or "").strip()
-        now_ts = int(time.time())
-
-        if normalized_action not in {"clear", "hide", "archive", "clear_completed_tasks"}:
-            return {"ok": False, "error": "unsupported_action", "managed": []}
-
-        if normalized_action == "clear_completed_tasks":
-            return self._clear_desktop_workspace_completed_tasks(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                timestamp=now_ts,
-            )
-
-        if normalized_type in {"attachment", "file", "source"}:
-            if not normalized_target:
-                return {"ok": False, "error": "missing_target", "managed": []}
-            cleared = self.store.clear_attachment_inbox_items(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                target=normalized_target,
-                timestamp=now_ts,
-            )
-            return {
-                "ok": bool(cleared),
-                "managed": [self._desktop_workspace_attachment_card(item) for item in cleared],
-                "action": "clear",
-                "item_type": "attachment",
-            }
-
-        if normalized_type in {"generated", "output"}:
-            service = self._get_generated_file_service()
-            if service is None:
-                return {"ok": False, "error": "generated_service_unavailable", "managed": []}
-            result = service.manage_generated_files(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                action="archive",
-                targets=[normalized_target],
-                reason="用户从桌宠手边物品面板收起。",
-                timestamp=now_ts,
-            )
-            return {
-                "ok": bool(result.get("ok")),
-                "managed": [self._desktop_workspace_generated_card(item) for item in list(result.get("managed") or [])],
-                "unresolved": list(result.get("unresolved") or []),
-                "action": "archive",
-                "item_type": "generated",
-            }
-
-        if normalized_type == "task":
-            service = self._get_task_workspace_service()
-            if service is None:
-                return {"ok": False, "error": "task_service_unavailable", "managed": []}
-            task = service.get_task(normalized_target)
-            if not task:
-                return {"ok": False, "error": "task_not_found", "managed": []}
-            status = str(task.get("status") or "").strip().lower()
-            if status not in {"completed", "failed", "canceled", "waiting_user"}:
-                return {"ok": False, "error": "task_not_clearable", "managed": []}
-            cleaned = service.cleanup_task(
-                task_id=normalized_target,
-                mode="desktop_panel",
-                reason="用户从桌宠手边物品面板清理。",
-                timestamp=now_ts,
-            )
-            return {
-                "ok": bool(cleaned),
-                "managed": [self._desktop_workspace_task_card(cleaned)] if cleaned else [],
-                "action": "clear",
-                "item_type": "task",
-            }
-
-        return {"ok": False, "error": "unsupported_item_type", "managed": []}
+        return desktop_pet_engine.manage_desktop_pet_workspace_panel(
+            self,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            action=action,
+            item_type=item_type,
+            target=target,
+        )
 
     def prepare_desktop_music_timeline(
         self,
@@ -1140,171 +891,169 @@ class AkaneMemoryEngine:
         session_id: str,
         activity: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        service = self._get_desktop_music_timeline_service()
-        if service is None:
-            return {"ok": False, "error": "timeline_service_unavailable", "timeline": None}
-        return service.prepare_timeline(
+        return desktop_pet_engine.prepare_desktop_music_timeline(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             activity=activity,
         )
 
-    def _clear_desktop_workspace_completed_tasks(
+    def submit_desktop_screen_vision_clip(
         self,
         *,
         profile_user_id: str,
         session_id: str,
-        timestamp: int,
+        frames: list[dict[str, Any]],
+        foreground: dict[str, Any] | None = None,
+        captured_start_ts: int | None = None,
+        captured_end_ts: int | None = None,
+        mode: str = "",
     ) -> dict[str, Any]:
-        service = self._get_task_workspace_service()
-        if service is None:
-            return {"ok": False, "error": "task_service_unavailable", "managed": []}
-        tasks = self.store.list_task_workspaces(
+        return self.desktop_screen_vision.submit_clip(
             profile_user_id=profile_user_id,
             session_id=session_id,
-            statuses=["completed", "failed", "canceled"],
-            limit=50,
+            frames=frames,
+            foreground=foreground,
+            captured_start_ts=captured_start_ts,
+            captured_end_ts=captured_end_ts,
+            mode=mode,
         )
-        managed: list[dict[str, Any]] = []
-        for task in tasks:
-            task_id = str(task.get("task_id") or "").strip()
-            if not task_id:
+
+    def list_desktop_screen_vision_observations(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        limit: int = 3,
+        include_pending: bool = False,
+    ) -> list[dict[str, Any]]:
+        return self.desktop_screen_vision.list_latest(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            limit=limit,
+            include_pending=include_pending,
+        )
+
+    def get_desktop_screen_vision_clip(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        clip_id: str,
+    ) -> dict[str, Any] | None:
+        return self.desktop_screen_vision.get_clip(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            clip_id=clip_id,
+        )
+
+    def clear_desktop_screen_vision_observations(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.desktop_screen_vision.clear(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+        )
+
+    def build_desktop_screen_vision_context(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        limit: int = 3,
+    ) -> str:
+        return self.desktop_screen_vision.build_prompt_context(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            limit=limit,
+        )
+
+    def build_desktop_screen_vision_reaction(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        clip_id: str,
+    ) -> dict[str, Any]:
+        observation = self.desktop_screen_vision.get_clip(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            clip_id=clip_id,
+        )
+        if not observation:
+            return {"ok": False, "skip": True, "reason": "not_found"}
+        if str(observation.get("status") or "") != "ready":
+            return {"ok": True, "skip": True, "reason": "not_ready", "clip": observation}
+        return self.desktop_screen_vision.build_reaction_with_llm(
+            llm=self.llm,
+            observation=observation,
+        )
+
+    def _is_transient_user_turn(self, payload: dict[str, Any]) -> bool:
+        turn_kind = str(payload.get("turn_kind") or payload.get("client_turn_kind") or "").strip().lower()
+        return bool(payload.get("transient_user_message")) or turn_kind in {
+            "desktop_pet_proactive",
+            "proactive",
+        }
+
+    def _build_transient_user_record(
+        self,
+        *,
+        user_message: str,
+        now_ts: int,
+        date_label: str,
+        time_of_day: str,
+    ) -> dict[str, Any]:
+        return {
+            "source_id": "",
+            "role": "user",
+            "content": user_message,
+            "timestamp": now_ts,
+            "date_label": date_label,
+            "time_of_day": time_of_day,
+            "semantic_tags": [],
+        }
+
+    def _extract_desktop_screen_frame_images(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        frames = payload.get("desktop_screen_frames") if isinstance(payload, dict) else None
+        if not isinstance(frames, list):
+            return []
+        images: list[dict[str, Any]] = []
+        for item in frames[-5:]:
+            if not isinstance(item, dict):
                 continue
-            cleaned = service.cleanup_task(
-                task_id=task_id,
-                mode="desktop_panel_batch",
-                reason="用户从桌宠手边物品面板清理已完成任务。",
-                timestamp=timestamp,
+            data_url = str(item.get("data_url") or item.get("dataUrl") or "").strip()
+            if not data_url.startswith("data:image/") or len(data_url) > 2_000_000:
+                continue
+            images.append(
+                {
+                    "data_url": data_url,
+                    "captured_at": int(item.get("captured_at") or item.get("capturedAt") or 0),
+                    "width": int(float(item.get("width") or 0)),
+                    "height": int(float(item.get("height") or 0)),
+                }
             )
-            if cleaned:
-                managed.append(self._desktop_workspace_task_card(cleaned))
-        return {
-            "ok": True,
-            "managed": managed,
-            "action": "clear_completed_tasks",
-            "item_type": "task",
-        }
+        return images
 
-    def _desktop_workspace_attachment_card(self, item: dict[str, Any]) -> dict[str, Any]:
-        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
-        media_info = detail.get("media_info") if isinstance(detail.get("media_info"), dict) else {}
-        handle = str(item.get("attachment_handle") or item.get("attachment_id") or "").strip()
-        title = self._clip_desktop_workspace_text(
-            item.get("summary_title") or item.get("origin_name") or handle or "手边文件",
-            80,
-        )
-        kind = str(item.get("kind") or "file").strip().lower()
-        ext = str(item.get("file_ext") or "").strip().lower().lstrip(".")
-        status = str(item.get("status") or "").strip().lower()
-        return {
-            "item_type": "attachment",
-            "id": handle,
-            "handle": handle,
-            "title": title,
-            "subtitle": self._desktop_workspace_attachment_subtitle(kind, ext),
-            "kind": kind,
-            "format": ext,
-            "status": status,
-            "status_label": self._desktop_workspace_status_label(status),
-            "size_bytes": int(item.get("file_size") or 0),
-            "duration_seconds": media_info.get("duration_seconds"),
-            "updated_at": int(item.get("updated_at") or item.get("created_at") or 0),
-            "can_open": status == "ready",
-            "can_clear": status in {"ready", "pending_observation", "failed"},
-        }
-
-    def _desktop_workspace_generated_card(self, item: dict[str, Any]) -> dict[str, Any]:
-        handle = str(item.get("generated_handle") or item.get("generated_id") or "").strip()
-        output_format = str(item.get("output_format") or item.get("file_ext") or "").strip().lower().lstrip(".")
-        status = str(item.get("status") or "").strip().lower()
-        title = self._clip_desktop_workspace_text(item.get("output_title") or handle or "Akane 做好的东西", 80)
-        return {
-            "item_type": "generated",
-            "id": handle,
-            "handle": handle,
-            "title": title,
-            "subtitle": f"{self._desktop_workspace_format_label(output_format)} · Akane 做好的东西",
-            "format": output_format,
-            "status": status,
-            "status_label": self._desktop_workspace_status_label(status),
-            "size_bytes": int(item.get("file_size") or 0),
-            "updated_at": int(item.get("updated_at") or item.get("created_at") or 0),
-            "can_open": status == "ready",
-            "can_clear": status in {"ready", "failed"},
-        }
-
-    def _desktop_workspace_task_card(self, item: dict[str, Any] | None) -> dict[str, Any]:
-        task = item if isinstance(item, dict) else {}
-        task_id = str(task.get("task_id") or "").strip()
-        status = str(task.get("status") or "").strip().lower()
-        title = self._clip_desktop_workspace_text(task.get("title") or "后台任务", 80)
-        summary = self._clip_desktop_workspace_text(task.get("summary") or "", 120)
-        return {
-            "item_type": "task",
-            "id": task_id,
-            "handle": task_id,
-            "title": title,
-            "subtitle": summary or "后台任务",
-            "status": status,
-            "status_label": self._desktop_workspace_status_label(status),
-            "updated_at": int(task.get("updated_at") or 0),
-            "can_open": False,
-            "can_clear": status in {"completed", "failed", "canceled"},
-        }
-
-    def _desktop_workspace_attachment_subtitle(self, kind: str, ext: str) -> str:
-        kind_label = {
-            "image": "图片",
-            "audio": "音频",
-            "document": "文档",
-            "file": "文件",
-        }.get(kind, "文件")
-        format_label = self._desktop_workspace_format_label(ext)
-        return f"{kind_label} · {format_label}" if format_label else kind_label
-
-    def _desktop_workspace_format_label(self, value: str) -> str:
-        text = str(value or "").strip().lower().lstrip(".")
-        if not text:
+    def _build_desktop_screen_frame_prompt_context(self, frames: list[dict[str, Any]]) -> str:
+        usable = [frame for frame in frames if str(frame.get("data_url") or "").startswith("data:image/")]
+        if not usable:
             return ""
-        labels = {
-            "md": "Markdown",
-            "txt": "文本",
-            "docx": "Word",
-            "xlsx": "Excel",
-            "pdf": "PDF",
-            "json": "JSON",
-            "csv": "CSV",
-            "html": "HTML",
-            "zip": "压缩包",
-            "mp3": "MP3",
-            "wav": "WAV",
-            "flac": "FLAC",
-            "m4a": "M4A",
-            "aac": "AAC",
-            "ogg": "OGG",
-            "opus": "OPUS",
-        }
-        return labels.get(text, text.upper())
-
-    def _desktop_workspace_status_label(self, status: str) -> str:
-        return {
-            "ready": "已放好",
-            "pending_observation": "整理中",
-            "failed": "失败",
-            "queued": "排队中",
-            "running": "进行中",
-            "waiting_user": "等确认",
-            "blocked": "等确认",
-            "partial": "部分完成",
-            "completed": "已完成",
-            "canceled": "已取消",
-            "cleaned": "已收起",
-        }.get(str(status or "").strip().lower(), str(status or "").strip() or "未知")
-
-    def _clip_desktop_workspace_text(self, value: Any, limit: int) -> str:
-        text = " ".join(str(value or "").replace("\x00", " ").split()).strip()
-        max_len = max(1, int(limit or 1))
-        return text[:max_len]
+        first_ts = int(usable[0].get("captured_at") or 0)
+        last_ts = int(usable[-1].get("captured_at") or 0)
+        duration = max(0, last_ts - first_ts)
+        duration_text = f"，大约是最近 {duration} 秒里的变化" if duration > 0 else ""
+        return "\n".join(
+            [
+                "【刚才一起看到的情况】",
+                f"你刚才在主人旁边看了几眼{duration_text}。",
+                "请优先贴着能看清的具体内容回应，像一起看视频、打游戏或做事时顺着眼前的小事接话。",
+                "不要只泛泛地说主人看得认真或还在看同一个东西；看不清的地方就轻轻带过，别把拿不准的内容说死，也不要解释自己是怎么看到的。",
+            ]
+        )
 
     def prefetch_remote_media_links_for_message(
         self,
@@ -1314,28 +1063,11 @@ class AkaneMemoryEngine:
         message: str,
         timestamp: int | None = None,
     ) -> dict[str, Any]:
-        """Deterministically fetch explicit media links before the final reply.
-
-        This prevents recent failed attempts in chat history from making the
-        model answer "it failed again" without actually trying the current URL.
-        """
-        urls = self._extract_prefetchable_remote_media_urls(message)
-        if not urls and self._message_requests_remote_media_retry(message):
-            urls = self._recent_prefetchable_remote_media_urls(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            )
-        if not urls:
-            return {}
-        if not self._message_requests_remote_media_fetch(message, urls=urls):
-            return {}
-        service = self._get_attachment_ingest_service()
-        if service is None:
-            return {}
-        return service.fetch_media_from_urls(
+        return media_bridge_engine.prefetch_remote_media_links_for_message(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
-            urls=urls,
+            message=message,
             timestamp=timestamp,
         )
 
@@ -1346,107 +1078,21 @@ class AkaneMemoryEngine:
         session_id: str,
         limit: int = 24,
     ) -> list[str]:
-        messages = self.store.get_session_messages(
+        return media_bridge_engine.recent_prefetchable_remote_media_urls(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             limit=limit,
         )
-        for item in reversed(messages):
-            urls = self._extract_prefetchable_remote_media_urls(str(item.get("content") or ""))
-            if urls:
-                return urls[:6]
-        return []
 
     def _message_requests_remote_media_retry(self, message: str) -> bool:
-        raw_text = str(message or "")
-        text = normalize_text(raw_text).lower()
-        if not text:
-            return False
-        retry_markers = (
-            "再试",
-            "重试",
-            "重新试",
-            "重新下载",
-            "再下载",
-            "再来一次",
-            "试一次",
-            "继续试",
-            "完整报错",
-            "报错",
-            "一字不落",
-        )
-        media_markers = (
-            "下载",
-            "链接",
-            "视频",
-            "音频",
-            "素材",
-            "工具",
-            "报错",
-            "工作台",
-        )
-        haystacks = (raw_text, text)
-        has_retry = any(marker in haystack for haystack in haystacks for marker in retry_markers)
-        has_media = any(marker in haystack for haystack in haystacks for marker in media_markers)
-        return has_retry and has_media
+        return media_bridge_engine.message_requests_remote_media_retry(message)
 
     def _extract_prefetchable_remote_media_urls(self, message: str) -> list[str]:
-        text = str(message or "")
-        if not text:
-            return []
-        candidates = re.findall(r"https?://[^\s<>\]）)\"'，。；、]+", text)
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for candidate in candidates:
-            url = candidate.rstrip(".,!?;:，。！？；：")
-            parsed = urlparse(url)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                continue
-            if url in seen:
-                continue
-            seen.add(url)
-            normalized.append(url)
-            if len(normalized) >= 6:
-                break
-        return normalized
+        return media_bridge_engine.extract_prefetchable_remote_media_urls(message)
 
     def _message_requests_remote_media_fetch(self, message: str, *, urls: list[str]) -> bool:
-        text = normalize_text(message).lower()
-        if not urls:
-            return False
-        intent_keywords = (
-            "下载",
-            "拉进",
-            "拉到",
-            "获取",
-            "转写",
-            "转录",
-            "字幕",
-            "总结",
-            "处理",
-            "视频",
-            "音频",
-            "媒体",
-            "这个链接",
-            "链接",
-        )
-        if any(keyword in text for keyword in intent_keywords):
-            return True
-        known_media_hosts = (
-            "b23.tv",
-            "bilibili.com",
-            "youtube.com",
-            "youtu.be",
-            "douyin.com",
-            "iesdouyin.com",
-            "ixigua.com",
-            "kuaishou.com",
-        )
-        for url in urls:
-            host = urlparse(url).netloc.lower()
-            if any(host == known or host.endswith("." + known) for known in known_media_hosts):
-                return True
-        return False
+        return media_bridge_engine.message_requests_remote_media_fetch(message, urls=urls)
 
     def wait_for_qq_attachments_settled(
         self,
@@ -1456,10 +1102,8 @@ class AkaneMemoryEngine:
         attachment_ids: list[str],
         timeout_seconds: float = 8.0,
     ) -> dict[str, Any]:
-        service = self._get_attachment_inbox_service()
-        if service is None:
-            return {"ok": True, "ready": [], "failed": [], "pending": [], "missing": []}
-        return service.wait_for_attachments_settled(
+        return media_bridge_engine.wait_for_qq_attachments_settled(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             attachment_ids=attachment_ids,
@@ -1475,10 +1119,8 @@ class AkaneMemoryEngine:
         delivery_status: str,
         timestamp: int | None = None,
     ) -> dict[str, Any] | None:
-        service = self._get_generated_file_service()
-        if service is None:
-            return None
-        return service.mark_delivery_status(
+        return media_bridge_engine.mark_generated_file_delivery(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
             generated_id=generated_id,
@@ -1496,6 +1138,13 @@ class AkaneMemoryEngine:
         date_label = timestamp_to_date_label(now_ts)
         time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
         turn_extra_user_context = self._build_turn_extra_user_context(payload, client_context)
+        desktop_screen_images = self._extract_desktop_screen_frame_images(payload)
+        if desktop_screen_images:
+            turn_extra_user_context = self._merge_extra_user_context(
+                turn_extra_user_context,
+                self._build_desktop_screen_frame_prompt_context(desktop_screen_images),
+            )
+        transient_user_turn = self._is_transient_user_turn(payload)
 
         self.consume_due_reminders(
             profile_user_id=profile_user_id,
@@ -1504,19 +1153,29 @@ class AkaneMemoryEngine:
             current_visual_payload=payload.get("current_visual"),
         )
 
-        user_record = self.store.add_message(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            role="user",
-            content=user_message,
-            timestamp=now_ts,
-            date_label=date_label,
-            time_of_day=time_of_day,
-            semantic_tags=extract_semantic_tags(user_message),
-        )
-        self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
+        if transient_user_turn:
+            user_record = self._build_transient_user_record(
+                user_message=user_message,
+                now_ts=now_ts,
+                date_label=date_label,
+                time_of_day=time_of_day,
+            )
+        else:
+            user_record = self.store.add_message(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                role="user",
+                content=user_message,
+                timestamp=now_ts,
+                date_label=date_label,
+                time_of_day=time_of_day,
+                semantic_tags=extract_semantic_tags(user_message),
+            )
+            self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
 
         recent_raw = self.store.get_unsummarized_messages(session_id)
+        if transient_user_turn:
+            recent_raw = [*recent_raw, user_record]
         episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
         semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
         recent_episodic_summaries = self.store.get_visible_episodic_summaries(profile_user_id, limit=episodic_limit)
@@ -1544,11 +1203,12 @@ class AkaneMemoryEngine:
         verifier_output = retrieval_pipeline.verifier_output
         confirmed_snippets = retrieval_pipeline.confirmed_snippets
         verifier_timing = retrieval_pipeline.verifier_timing
-        user_record = self._apply_user_vector_index_policy(
-            user_record=user_record,
-            router_output=router_output,
-        )
-        self._upsert_raw_record(user_record)
+        if not transient_user_turn:
+            user_record = self._apply_user_vector_index_policy(
+                user_record=user_record,
+                router_output=router_output,
+            )
+            self._upsert_raw_record(user_record)
 
         final_output = self._build_final_response(
             session_id=session_id,
@@ -1562,6 +1222,7 @@ class AkaneMemoryEngine:
             current_visual_payload=payload.get("current_visual"),
             extra_user_context=turn_extra_user_context,
             client_context=client_context,
+            user_images=desktop_screen_images,
             final_debug_enabled=final_debug_enabled,
         )
         recent_raw_for_turn = list(recent_raw)
@@ -1616,6 +1277,7 @@ class AkaneMemoryEngine:
                         self._build_multi_tool_followup_context(tool_followups, allow_more=False),
                     ),
                     client_context=client_context,
+                    user_images=desktop_screen_images,
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
                 )
@@ -1703,6 +1365,7 @@ class AkaneMemoryEngine:
                     self._build_multi_tool_followup_context(tool_followups, allow_more=allow_more_tools),
                 ),
                 client_context=client_context,
+                user_images=desktop_screen_images,
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
             )
@@ -1725,7 +1388,7 @@ class AkaneMemoryEngine:
         )
         memory_tags = self._normalize_memory_tags(final_output.get("memory_tags"))
         final_output["memory_tags"] = join_tags(memory_tags)
-        if memory_tags:
+        if memory_tags and not transient_user_turn:
             user_record = self._apply_memory_tags_to_user_record(
                 user_record=user_record,
                 memory_tags=memory_tags,
@@ -1787,6 +1450,13 @@ class AkaneMemoryEngine:
         date_label = timestamp_to_date_label(now_ts)
         time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
         turn_extra_user_context = self._build_turn_extra_user_context(payload, client_context)
+        desktop_screen_images = self._extract_desktop_screen_frame_images(payload)
+        if desktop_screen_images:
+            turn_extra_user_context = self._merge_extra_user_context(
+                turn_extra_user_context,
+                self._build_desktop_screen_frame_prompt_context(desktop_screen_images),
+            )
+        transient_user_turn = self._is_transient_user_turn(payload)
 
         self.consume_due_reminders(
             profile_user_id=profile_user_id,
@@ -1795,19 +1465,29 @@ class AkaneMemoryEngine:
             current_visual_payload=payload.get("current_visual"),
         )
 
-        user_record = self.store.add_message(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            role="user",
-            content=user_message,
-            timestamp=now_ts,
-            date_label=date_label,
-            time_of_day=time_of_day,
-            semantic_tags=extract_semantic_tags(user_message),
-        )
-        self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
+        if transient_user_turn:
+            user_record = self._build_transient_user_record(
+                user_message=user_message,
+                now_ts=now_ts,
+                date_label=date_label,
+                time_of_day=time_of_day,
+            )
+        else:
+            user_record = self.store.add_message(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                role="user",
+                content=user_message,
+                timestamp=now_ts,
+                date_label=date_label,
+                time_of_day=time_of_day,
+                semantic_tags=extract_semantic_tags(user_message),
+            )
+            self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
 
         recent_raw = self.store.get_unsummarized_messages(session_id)
+        if transient_user_turn:
+            recent_raw = [*recent_raw, user_record]
         episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
         semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
         recent_episodic_summaries = self.store.get_visible_episodic_summaries(profile_user_id, limit=episodic_limit)
@@ -1835,11 +1515,12 @@ class AkaneMemoryEngine:
         verifier_output = retrieval_pipeline.verifier_output
         confirmed_snippets = retrieval_pipeline.confirmed_snippets
         verifier_timing = retrieval_pipeline.verifier_timing
-        user_record = self._apply_user_vector_index_policy(
-            user_record=user_record,
-            router_output=router_output,
-        )
-        self._upsert_raw_record(user_record)
+        if not transient_user_turn:
+            user_record = self._apply_user_vector_index_policy(
+                user_record=user_record,
+                router_output=router_output,
+            )
+            self._upsert_raw_record(user_record)
 
         final_output = yield from self._stream_final_response(
             session_id=session_id,
@@ -1853,6 +1534,7 @@ class AkaneMemoryEngine:
             current_visual_payload=payload.get("current_visual"),
             extra_user_context=turn_extra_user_context,
             client_context=client_context,
+            user_images=desktop_screen_images,
             final_debug_enabled=final_debug_enabled,
         )
         recent_raw_for_turn = list(recent_raw)
@@ -1907,6 +1589,7 @@ class AkaneMemoryEngine:
                         self._build_multi_tool_followup_context(tool_followups, allow_more=False),
                     ),
                     client_context=client_context,
+                    user_images=desktop_screen_images,
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
                 )
@@ -1996,6 +1679,7 @@ class AkaneMemoryEngine:
                     self._build_multi_tool_followup_context(tool_followups, allow_more=allow_more_tools),
                 ),
                 client_context=client_context,
+                user_images=desktop_screen_images,
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
             )
@@ -2018,7 +1702,7 @@ class AkaneMemoryEngine:
         )
         memory_tags = self._normalize_memory_tags(final_output.get("memory_tags"))
         final_output["memory_tags"] = join_tags(memory_tags)
-        if memory_tags:
+        if memory_tags and not transient_user_turn:
             user_record = self._apply_memory_tags_to_user_record(
                 user_record=user_record,
                 memory_tags=memory_tags,
@@ -2138,6 +1822,7 @@ class AkaneMemoryEngine:
         current_visual_payload: Any = None,
         extra_user_context: str = "",
         client_context: ClientProtocolContext | None = None,
+        user_images: list[dict[str, Any]] | None = None,
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
     ) -> dict[str, Any]:
@@ -2162,6 +1847,7 @@ class AkaneMemoryEngine:
             fallback=dict(generation_context["fallback"]),
             temperature=0.7,
             prompt_cache_key="chat:final",
+            user_images=user_images,
         )
         return self._normalize_final_output(
             result=result,
@@ -2187,6 +1873,7 @@ class AkaneMemoryEngine:
         current_visual_payload: Any = None,
         extra_user_context: str = "",
         client_context: ClientProtocolContext | None = None,
+        user_images: list[dict[str, Any]] | None = None,
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
@@ -2215,6 +1902,7 @@ class AkaneMemoryEngine:
             fallback=dict(generation_context["fallback"]),
             temperature=0.7,
             prompt_cache_key="chat:final",
+            user_images=user_images,
             early_tool_call_validator=(
                 lambda call: self._normalize_tool_call(
                     call,
@@ -2437,19 +2125,33 @@ class AkaneMemoryEngine:
                 "emotion": "normal",
             }
         )
-        if desktop_pet_character_only and self.resource_manifest and current_visual_context_payload:
+        if self.resource_manifest and current_visual_context_payload:
             try:
                 current_visual_defaults = self.resource_manifest.normalize_visual_output(
                     json.loads(json.dumps(current_visual_context_payload)),
+                    extra_bgm_tracks=user_bgm_tracks,
+                    extra_scene_groups=user_scene_groups,
                     extra_character_outfits=user_character_outfits,
                 )
                 visual_defaults = dict(visual_defaults)
-                visual_defaults["outfit"] = str(
-                    current_visual_defaults.get("character", {}).get("outfit") or visual_defaults["outfit"]
-                )
-                visual_defaults["emotion"] = str(current_visual_defaults.get("emotion") or visual_defaults["emotion"])
+                if desktop_pet_character_only:
+                    visual_defaults["outfit"] = str(
+                        current_visual_defaults.get("character", {}).get("outfit") or visual_defaults["outfit"]
+                    )
+                    visual_defaults["emotion"] = str(current_visual_defaults.get("emotion") or visual_defaults["emotion"])
+                else:
+                    current_scene = current_visual_defaults.get("scene") if isinstance(current_visual_defaults, dict) else {}
+                    current_character = current_visual_defaults.get("character") if isinstance(current_visual_defaults, dict) else {}
+                    if isinstance(current_scene, dict):
+                        visual_defaults["major"] = str(current_scene.get("major") or visual_defaults["major"])
+                        visual_defaults["minor"] = str(current_scene.get("minor") or visual_defaults["minor"])
+                        visual_defaults["background"] = str(current_scene.get("background") or visual_defaults["background"])
+                        visual_defaults["bgm"] = str(current_scene.get("bgm") or visual_defaults["bgm"])
+                    if isinstance(current_character, dict):
+                        visual_defaults["outfit"] = str(current_character.get("outfit") or visual_defaults["outfit"])
+                    visual_defaults["emotion"] = str(current_visual_defaults.get("emotion") or visual_defaults["emotion"])
             except Exception as exc:
-                logger.warning("desktop pet current visual defaults failed: %s", exc)
+                logger.warning("current visual defaults failed: %s", exc)
         resource_context = (
             (
                 self.resource_manifest.build_character_prompt_context(
@@ -2523,90 +2225,16 @@ class AkaneMemoryEngine:
         debug_enabled: bool,
         client_context: ClientProtocolContext | None = None,
     ) -> dict[str, Any]:
-        client_context = client_context or self._resolve_client_protocol_context({})
-        raw_result = result if isinstance(result, dict) else {}
-        normalized = dict(raw_result or {})
-        persona_request_present = "persona" in raw_result
-        persona_request_active = ""
-        raw_persona = raw_result.get("persona")
-        if isinstance(raw_persona, dict):
-            persona_request_active = str(raw_persona.get("active") or "").strip()
-        elif persona_request_present:
-            persona_request_active = str(raw_persona or "").strip()
-        if debug_enabled:
-            thought = str(normalized.get("thought") or "").strip()
-            normalized["thought"] = thought or PERSONA.final_fallback_thought
-        else:
-            normalized.pop("thought", None)
-        normalized.setdefault("status", "final")
-        normalized.setdefault("emotion", visual_defaults["emotion"])
-        normalized.setdefault("score", 0.0)
-        normalized["tool_call"] = (
-            self._normalize_tool_call(
-                normalized.get("tool_call"),
-                client_context=client_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            )
-            if allow_tool_call
-            else None
+        return final_output_engine.normalize_final_output(
+            self,
+            result=result,
+            visual_defaults=visual_defaults,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            allow_tool_call=allow_tool_call,
+            debug_enabled=debug_enabled,
+            client_context=client_context,
         )
-        if client_context.effective_mode == ClientMode.DESKTOP_PET and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
-            normalized["activity"] = self._normalize_activity_action(normalized.get("activity"))
-        else:
-            normalized.pop("activity", None)
-        speech, speech_segments = self._normalize_speech_payload(
-            speech=normalized.get("speech"),
-            speech_segments=normalized.get("speech_segments"),
-            fallback_to_default=not bool(normalized.get("tool_call")),
-        )
-        normalized["speech"] = speech
-        normalized["speech_segments"] = speech_segments
-        normalized["code_snippet"] = self._normalize_code_snippet(normalized.get("code_snippet"))
-        normalized["memory_tags"] = join_tags(self._normalize_memory_tags(normalized.get("memory_tags")))
-        normalized["choices"] = self._normalize_choices(normalized.get("choices"))
-        persona_service = self._get_persona_card_service()
-        current_persona_id = (
-            persona_service.get_active_id(profile_user_id=profile_user_id, session_id=session_id)
-            if persona_service is not None and profile_user_id and session_id
-            else ""
-        )
-        normalized["persona"] = {
-            "active": persona_request_active if persona_request_present else current_persona_id,
-        }
-        normalized["_persona_request"] = {
-            "present": bool(persona_request_present),
-            "active": persona_request_active,
-        }
-        if not isinstance(normalized.get("character"), dict):
-            normalized["character"] = {"outfit": visual_defaults["outfit"]}
-        normalized["character"].setdefault("outfit", visual_defaults["outfit"])
-        if client_context.effective_mode == ClientMode.DESKTOP_PET:
-            # Desktop pet outfit is controlled by the local tray setting.
-            # The model may choose an emotion, but should not silently move the pet
-            # into a different outfit than the one the user selected.
-            normalized["character"]["outfit"] = visual_defaults["outfit"]
-        if not isinstance(normalized.get("scene"), dict):
-            normalized["scene"] = {
-                "major": visual_defaults["major"],
-                "minor": visual_defaults["minor"],
-                "background": visual_defaults["background"],
-                "bgm": visual_defaults["bgm"],
-            }
-        normalized["scene"].setdefault("major", visual_defaults["major"])
-        normalized["scene"].setdefault("minor", visual_defaults["minor"])
-        normalized["scene"].setdefault("background", visual_defaults["background"])
-        normalized["scene"].setdefault("bgm", visual_defaults["bgm"])
-        if self.resource_manifest:
-            runtime_projection = self._get_user_runtime_projection(profile_user_id)
-            normalized = self.resource_manifest.normalize_visual_output(
-                normalized,
-                extra_bgm_tracks=list(runtime_projection.get("extra_bgm_tracks") or []),
-                extra_scene_groups=list(runtime_projection.get("extra_scene_groups") or []),
-                extra_character_outfits=list(runtime_projection.get("extra_character_outfits") or []),
-            )
-        normalized = self._get_output_adapter_registry().normalize(normalized, client_context)
-        return normalized
 
     def _normalize_speech_payload(
         self,
@@ -2615,31 +2243,11 @@ class AkaneMemoryEngine:
         speech_segments: Any,
         fallback_to_default: bool = True,
     ) -> tuple[str, list[str]]:
-        segments: list[str] = []
-        if isinstance(speech_segments, list):
-            for item in speech_segments:
-                value = item
-                if isinstance(item, dict):
-                    value = item.get("speech") or item.get("text") or ""
-                text = " ".join(str(value or "").replace("\r\n", "\n").replace("\r", "\n").splitlines()).strip()
-                if not text:
-                    continue
-                segments.append(text[:500])
-                if len(segments) >= 3:
-                    break
-
-        if segments:
-            return "\n".join(segments), segments
-
-        text = str(speech or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-        if not text:
-            if not fallback_to_default:
-                return "", []
-            text = PERSONA.final_fallback_speech
-        inferred_segments = [line.strip() for line in text.split("\n") if line.strip()]
-        if 1 < len(inferred_segments) <= 3:
-            return "\n".join(inferred_segments), inferred_segments
-        return text, [text]
+        return final_output_engine.normalize_speech_payload(
+            speech=speech,
+            speech_segments=speech_segments,
+            fallback_to_default=fallback_to_default,
+        )
 
     def _apply_persona_state_to_final_output(
         self,
@@ -2651,77 +2259,24 @@ class AkaneMemoryEngine:
         source_id: str = "",
         tool_result: ToolExecutionResult | None = None,
     ) -> dict[str, Any]:
-        normalized = dict(final_output or {})
-        request = normalized.pop("_persona_request", {})
-        request_present = bool(request.get("present")) if isinstance(request, dict) else False
-        requested_active = str(request.get("active") or "").strip() if isinstance(request, dict) else ""
-        persona_tool_changed = bool(
-            tool_result
-            and isinstance(tool_result.state_updates, dict)
-            and tool_result.state_updates.get("persona_state_changed")
-        )
-        persona_service = self._get_persona_card_service()
-        if persona_service is None:
-            existing_persona = normalized.get("persona")
-            active_id = str(existing_persona.get("active") or "").strip() if isinstance(existing_persona, dict) else ""
-            normalized["persona"] = {"active": active_id}
-            return normalized
-        state = persona_service.apply_final_persona_request(
+        return final_output_engine.apply_persona_state_to_final_output(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
-            requested_active=requested_active,
-            request_present=request_present,
-            allow_transition=not persona_tool_changed,
-            timestamp=now_ts,
+            final_output=final_output,
+            now_ts=now_ts,
             source_id=source_id,
+            tool_result=tool_result,
         )
-        normalized["persona"] = {
-            "active": str(state.get("active_id") or ""),
-        }
-        return normalized
 
     def _normalize_code_snippet(self, value: Any) -> str:
-        text = str(value or "")
-        if not text.strip():
-            return ""
-        normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-        if normalized.startswith("```") and normalized.endswith("```"):
-            lines = normalized.splitlines()
-            if len(lines) >= 2:
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                normalized = "\n".join(lines).strip()
-        return normalized[:4000]
+        return final_output_engine.normalize_code_snippet(value)
 
     def _normalize_activity_action(self, value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
-            return None
-        action = str(value.get("action") or "").strip().lower()
-        if action not in {"play", "pause", "resume", "stop"}:
-            return None
-        target = str(value.get("target") or "current").strip()[:80] or "current"
-        normalized: dict[str, Any] = {
-            "action": action,
-            "target": target,
-        }
-        source_id = str(value.get("source_id") or value.get("source") or value.get("handle") or "").strip()
-        if source_id:
-            normalized["source_id"] = source_id[:80]
-        activity_type = str(value.get("type") or value.get("activity_type") or "").strip().lower()
-        if activity_type in {"audio_playback", "vocal_performance"}:
-            normalized["type"] = activity_type
-        return normalized
+        return final_output_engine.normalize_activity_action(value)
 
     def _build_assistant_dialogue_turn(self, speech: Any) -> dict[str, str] | None:
-        text = str(speech or "").strip()
-        if not text:
-            return None
-        return {
-            "speaker": PERSONA.assistant_name,
-            "speech": text,
-        }
+        return final_output_engine.build_assistant_dialogue_turn(speech)
 
     def _build_dialogue_turns(
         self,
@@ -2731,68 +2286,21 @@ class AkaneMemoryEngine:
         final_speech: Any,
         final_speech_segments: Any = None,
     ) -> list[dict[str, str]]:
-        turns: list[dict[str, str]] = []
-        if isinstance(preface_turn, list):
-            turns.extend([turn for turn in preface_turn if isinstance(turn, dict)])
-        elif preface_turn:
-            turns.append(preface_turn)
-
-        for npc_turn in npc_turns:
-            speaker = str(npc_turn.get("speaker") or "NPC").strip() or "NPC"
-            speech = str(npc_turn.get("speech") or "").strip()
-            if not speech:
-                continue
-            turns.append(
-                {
-                    "speaker": speaker,
-                    "speech": speech,
-                }
-            )
-
-        if isinstance(final_speech_segments, list) and final_speech_segments:
-            for segment in final_speech_segments:
-                final_turn = self._build_assistant_dialogue_turn(segment)
-                if final_turn:
-                    turns.append(final_turn)
-        else:
-            final_turn = self._build_assistant_dialogue_turn(final_speech)
-            if final_turn:
-                turns.append(final_turn)
-
-        normalized: list[dict[str, str]] = []
-        for turn in turns:
-            if normalized and normalized[-1] == turn:
-                continue
-            normalized.append(turn)
-        return normalized
+        return final_output_engine.build_dialogue_turns(
+            preface_turn=preface_turn,
+            npc_turns=npc_turns,
+            final_speech=final_speech,
+            final_speech_segments=final_speech_segments,
+        )
 
     def _max_tool_rounds(self) -> int:
-        raw_value = getattr(config, "MAX_TOOL_ROUNDS", 3)
-        try:
-            value = int(raw_value)
-        except Exception:
-            value = 3
-        return max(1, min(5, value))
+        return tool_orchestration_engine.max_tool_rounds()
 
     def _tool_call_signature(self, tool_call: dict[str, Any]) -> str:
-        try:
-            return json.dumps(tool_call, ensure_ascii=False, sort_keys=True, default=str)
-        except Exception:
-            return repr(sorted((str(key), str(value)) for key, value in dict(tool_call or {}).items()))
+        return tool_orchestration_engine.tool_call_signature(tool_call)
 
     def _describe_tool_call_for_prompt(self, tool_call: dict[str, Any]) -> str:
-        tool_type = str(tool_call.get("type") or "unknown").strip() or "unknown"
-        details = {
-            str(key): value
-            for key, value in dict(tool_call or {}).items()
-            if key != "type" and value not in (None, "", [], {})
-        }
-        if not details:
-            return tool_type
-        try:
-            return f"{tool_type} {json.dumps(details, ensure_ascii=False, sort_keys=True, default=str)[:500]}"
-        except Exception:
-            return f"{tool_type} {details!r}"[:500]
+        return tool_orchestration_engine.describe_tool_call_for_prompt(tool_call)
 
     def _record_tool_result_artifacts_in_task_workspace(
         self,
@@ -2802,72 +2310,13 @@ class AkaneMemoryEngine:
         tool_result: ToolExecutionResult,
         now_ts: int,
     ) -> tuple[list[dict[str, Any]], str]:
-        tool_type = str(getattr(tool_result, "tool_type", "") or "").strip()
-        if not tool_type or tool_type == "manage_task_workspace":
-            return [], ""
-        artifacts = self._extract_task_workspace_artifacts_from_tool_events(
-            tool_type=tool_type,
-            stream_events=list(getattr(tool_result, "stream_events", []) or []),
+        return task_workspace_engine.record_tool_result_artifacts_in_task_workspace(
+            self,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            tool_result=tool_result,
+            now_ts=now_ts,
         )
-        if not artifacts:
-            return [], ""
-        service = self._get_task_workspace_service()
-        if service is None:
-            return [], ""
-        try:
-            tasks = service.list_tasks(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                statuses=["running", "waiting_user", "queued"],
-                limit=1,
-            )
-            if not tasks:
-                return [], ""
-            task = tasks[0]
-            task_id = str(task.get("task_id") or "").strip()
-            if not task_id:
-                return [], ""
-            existing_artifacts = [dict(item) for item in list(task.get("artifacts") or []) if isinstance(item, dict)]
-            merged_artifacts, added_artifacts = self._merge_task_workspace_artifacts(
-                existing=existing_artifacts,
-                additions=artifacts,
-            )
-            if not added_artifacts:
-                return [], ""
-            status_update = "running" if str(task.get("status") or "") == "queued" else None
-            updated = service.update_task(
-                task_id=task_id,
-                status=status_update,
-                artifacts=merged_artifacts,
-                timestamp=now_ts,
-            )
-            service.append_event(
-                task_id=task_id,
-                event_type="tool_artifacts_recorded",
-                from_actor=f"tool:{tool_type}",
-                message=f"{tool_type} 产出了 {len(added_artifacts)} 个可继续使用的产物。",
-                payload={"tool_type": tool_type, "artifacts": added_artifacts},
-                status="handled",
-                timestamp=now_ts,
-            )
-        except Exception:
-            logger.exception("Failed to record tool artifacts in task workspace")
-            return [], ""
-
-        compact_task = self._compact_task_workspace_for_event(updated or task)
-        labels = "、".join(str(item.get("id") or item.get("title") or "").strip() for item in added_artifacts[:6])
-        followup = (
-            f"系统已把这次工具产物登记到当前任务工作区 {compact_task.get('task_id') or task_id}"
-            f"：{labels or '新产物'}。后续可以继续引用这些产物，不需要重复登记。"
-        )
-        return [
-            {
-                "type": "task_workspace_artifacts_recorded",
-                "task": compact_task,
-                "artifacts": added_artifacts,
-                "tool_type": tool_type,
-            }
-        ], followup
 
     def _extract_task_workspace_artifacts_from_tool_events(
         self,
@@ -2875,27 +2324,10 @@ class AkaneMemoryEngine:
         tool_type: str,
         stream_events: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        artifacts: list[dict[str, Any]] = []
-        for event in stream_events:
-            if not isinstance(event, dict):
-                continue
-            event_type = str(event.get("type") or "").strip()
-            if event_type == "generated_file_ready":
-                artifact = self._task_workspace_artifact_from_generated_file(
-                    generated=event.get("generated_file"),
-                    tool_type=tool_type,
-                    send_to_user=bool(event.get("send_to_user")),
-                )
-                if artifact:
-                    artifacts.append(artifact)
-            elif event_type == "attachment_remote_media_ready":
-                artifact = self._task_workspace_artifact_from_attachment_item(
-                    item=event.get("item"),
-                    tool_type=tool_type,
-                )
-                if artifact:
-                    artifacts.append(artifact)
-        return artifacts
+        return task_workspace_engine.extract_task_workspace_artifacts_from_tool_events(
+            tool_type=tool_type,
+            stream_events=stream_events,
+        )
 
     def _task_workspace_artifact_from_generated_file(
         self,
@@ -2904,33 +2336,11 @@ class AkaneMemoryEngine:
         tool_type: str,
         send_to_user: bool,
     ) -> dict[str, Any] | None:
-        if not isinstance(generated, dict):
-            return None
-        handle = str(generated.get("generated_handle") or "").strip()
-        generated_id = str(generated.get("generated_id") or "").strip()
-        artifact_id = handle or generated_id
-        if not artifact_id:
-            return None
-        title = str(generated.get("output_title") or handle or "生成文件").strip()
-        output_format = str(generated.get("output_format") or generated.get("file_ext") or "file").strip().lower()
-        artifact = {
-            "id": artifact_id,
-            "kind": output_format or "file",
-            "title": title[:120],
-            "status": str(generated.get("status") or "ready").strip() or "ready",
-            "source": "generated_file",
-            "tool": tool_type,
-            "send_to_user": bool(send_to_user),
-        }
-        if generated_id:
-            artifact["generated_id"] = generated_id
-        if handle:
-            artifact["generated_handle"] = handle
-        for key in ("file_ext", "file_size", "created_by_tool", "version_of_generated_id", "version_no"):
-            value = generated.get(key)
-            if value not in (None, "", [], {}):
-                artifact[key] = value
-        return artifact
+        return task_workspace_engine.task_workspace_artifact_from_generated_file(
+            generated=generated,
+            tool_type=tool_type,
+            send_to_user=send_to_user,
+        )
 
     def _task_workspace_artifact_from_attachment_item(
         self,
@@ -2938,33 +2348,10 @@ class AkaneMemoryEngine:
         item: Any,
         tool_type: str,
     ) -> dict[str, Any] | None:
-        if not isinstance(item, dict):
-            return None
-        handle = str(item.get("attachment_handle") or "").strip()
-        attachment_id = str(item.get("attachment_id") or "").strip()
-        artifact_id = handle or attachment_id
-        if not artifact_id:
-            return None
-        title = str(item.get("summary_title") or item.get("origin_name") or handle or "临时素材").strip()
-        kind = str(item.get("kind") or item.get("file_ext") or "file").strip().lower()
-        artifact = {
-            "id": artifact_id,
-            "kind": kind or "file",
-            "title": title[:120],
-            "status": str(item.get("status") or "ready").strip() or "ready",
-            "source": "attachment_inbox",
-            "tool": tool_type,
-            "source_type": str(item.get("source") or "").strip(),
-        }
-        if attachment_id:
-            artifact["attachment_id"] = attachment_id
-        if handle:
-            artifact["attachment_handle"] = handle
-        for key in ("origin_name", "file_ext", "file_size", "mime_type"):
-            value = item.get(key)
-            if value not in (None, "", [], {}):
-                artifact[key] = value
-        return artifact
+        return task_workspace_engine.task_workspace_artifact_from_attachment_item(
+            item=item,
+            tool_type=tool_type,
+        )
 
     def _merge_task_workspace_artifacts(
         self,
@@ -2972,56 +2359,22 @@ class AkaneMemoryEngine:
         existing: list[dict[str, Any]],
         additions: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        merged = [dict(item) for item in existing if isinstance(item, dict)]
-        seen: set[str] = set()
-        for item in merged:
-            identity = self._task_workspace_artifact_identity(item)
-            if identity:
-                seen.add(identity)
-        added: list[dict[str, Any]] = []
-        for artifact in additions:
-            if not isinstance(artifact, dict):
-                continue
-            identity = self._task_workspace_artifact_identity(artifact)
-            if not identity or identity in seen:
-                continue
-            compact = dict(artifact)
-            merged.append(compact)
-            added.append(compact)
-            seen.add(identity)
-        return merged, added
+        return task_workspace_engine.merge_task_workspace_artifacts(
+            existing=existing,
+            additions=additions,
+        )
 
     def _task_workspace_artifact_identity(self, artifact: dict[str, Any]) -> str:
-        for key in ("id", "generated_handle", "generated_id", "attachment_handle", "attachment_id"):
-            value = str(artifact.get(key) or "").strip()
-            if value:
-                return value
-        title = str(artifact.get("title") or "").strip()
-        kind = str(artifact.get("kind") or "").strip()
-        return f"title:{kind}:{title}" if title else ""
+        return task_workspace_engine.task_workspace_artifact_identity(artifact)
 
     def _compact_task_workspace_for_event(self, task: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "task_id": str(task.get("task_id") or ""),
-            "status": str(task.get("status") or ""),
-            "normalized_goal": str(task.get("normalized_goal") or "")[:200],
-            "artifact_count": len(list(task.get("artifacts") or [])),
-        }
+        return task_workspace_engine.compact_task_workspace_for_event(task)
 
     def _build_multi_tool_followup_context(self, tool_followups: list[str], *, allow_more: bool) -> str:
-        lines: list[str] = ["【本轮工具执行记录】"]
-        if tool_followups:
-            lines.extend([str(item).strip() for item in tool_followups if str(item).strip()])
-        else:
-            lines.append("(暂时没有可用的工具结果。)")
-        if allow_more:
-            lines.append(
-                "如果任务还没完成，可以继续在 tool_call 字段调用下一步必要工具；"
-                "如果结果已经足够，请将 tool_call 设为 null，并自然回复主人。"
-            )
-        else:
-            lines.append("本轮不要再调用工具，请将 tool_call 设为 null，并基于已有结果自然回复主人。")
-        return "\n\n".join(lines)
+        return tool_orchestration_engine.build_multi_tool_followup_context(
+            tool_followups,
+            allow_more=allow_more,
+        )
 
     def _normalize_memory_tags(self, value: Any) -> list[str]:
         raw_items: list[str] = []
@@ -3346,76 +2699,24 @@ class AkaneMemoryEngine:
         payload: dict[str, Any] | None,
         client_context: ClientProtocolContext | None,
     ) -> str:
-        source = payload if isinstance(payload, dict) else {}
-        session_id = str(source.get("user_id") or source.get("session_id") or "default_session")
-        profile_user_id = str(source.get("real_user_id") or source.get("profile_user_id") or session_id)
-        return self._merge_extra_user_context(
-            str(source.get("extra_context") or ""),
-            self._build_desktop_context_prompt(source.get("desktop_context"), client_context),
-            self._build_desktop_activity_prompt(
-                source.get("desktop_activity") or source.get("current_activity"),
-                client_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            ),
+        return desktop_context_engine.build_turn_extra_user_context(
+            self,
+            payload,
+            client_context,
         )
 
     def _merge_extra_user_context(self, *parts: Any) -> str:
-        return "\n\n".join(str(part or "").strip() for part in parts if str(part or "").strip())
+        return desktop_context_engine.merge_extra_user_context(*parts)
 
     def _build_desktop_context_prompt(
         self,
         desktop_context: Any,
         client_context: ClientProtocolContext | None,
     ) -> str:
-        if (
-            client_context is None
-            or client_context.effective_mode != ClientMode.DESKTOP_PET
-            or not client_context.has_capability(ClientCapability.DESKTOP_CONTEXT)
-        ):
-            return ""
-        if not isinstance(desktop_context, dict) or desktop_context.get("enabled") is False:
-            return ""
-
-        foreground = desktop_context.get("foreground") if isinstance(desktop_context.get("foreground"), dict) else {}
-        title = self._sanitize_desktop_context_text(foreground.get("title"), 180)
-        process_name = self._sanitize_desktop_context_text(foreground.get("process_name"), 80)
-        source = self._sanitize_desktop_context_text(foreground.get("source"), 40)
-
-        clipboard_payload = desktop_context.get("clipboard")
-        clipboard_text = ""
-        clipboard_included = False
-        if isinstance(clipboard_payload, dict) and clipboard_payload.get("included") is True:
-            clipboard_included = True
-            clipboard_text = self._sanitize_desktop_context_text(clipboard_payload.get("text"), 500)
-
-        lines = [
-            "【桌面上下文（临时，不写入长期记忆）】",
-        ]
-        if title or process_name:
-            if source == "foreground":
-                window_label = "当前前台窗口"
-            elif source == "last_external_window":
-                window_label = "最近外部前台窗口"
-            elif source == "nearby_process":
-                window_label = "桌面上可见窗口线索"
-            else:
-                window_label = "桌宠附近窗口线索"
-            window_text = title or "未知标题"
-            if process_name:
-                window_text += f"（进程：{process_name}）"
-            lines.append(f"- {window_label}：{window_text}")
-        else:
-            lines.append("- 当前窗口：未知，勿猜测。")
-        if clipboard_included and clipboard_text:
-            lines.append(f"- 剪贴板文本（最多截断 500 字）：{clipboard_text}")
-        return "\n".join(lines)
+        return desktop_context_engine.build_desktop_context_prompt(desktop_context, client_context)
 
     def _sanitize_desktop_context_text(self, value: Any, limit: int) -> str:
-        text = " ".join(str(value or "").replace("\x00", " ").split())
-        if limit > 0 and len(text) > limit:
-            return text[:limit]
-        return text
+        return desktop_context_engine.sanitize_desktop_context_text(value, limit)
 
     def _build_desktop_activity_prompt(
         self,
@@ -3425,63 +2726,13 @@ class AkaneMemoryEngine:
         profile_user_id: str = "",
         session_id: str = "",
     ) -> str:
-        if (
-            client_context is None
-            or client_context.effective_mode != ClientMode.DESKTOP_PET
-            or not client_context.has_capability(ClientCapability.AUDIO_PLAYBACK)
-        ):
-            return ""
-        if not isinstance(activity, dict):
-            return ""
-
-        activity_type = str(activity.get("type") or "").strip().lower()
-        if activity_type not in {"audio_playback", "vocal_performance"}:
-            return ""
-
-        title = self._sanitize_desktop_context_text(activity.get("title"), 120) or "未命名音频"
-        source_id = self._sanitize_desktop_context_text(activity.get("source_id") or activity.get("handle"), 60)
-        status = str(activity.get("status") or "").strip().lower() or "unknown"
-        progress = self._format_activity_time(activity.get("progress_seconds"))
-        duration = self._format_activity_time(activity.get("duration_seconds"))
-
-        status_label = {
-            "ready": "已放在手边，尚未播放",
-            "running": "正在播放",
-            "paused": "已暂停",
-            "interrupted": "因主人发来消息已暂停",
-            "stopped": "已停止",
-            "completed": "已播放结束",
-        }.get(status, status or "未知")
-
-        lines = [
-            "【当前桌宠活动】",
-            f"- 类型：{'Akane 表演/唱歌' if activity_type == 'vocal_performance' else '普通音频播放'}",
-            f"- 音频：{title}" + (f"（{source_id}）" if source_id else ""),
-            f"- 状态：{status_label}",
-        ]
-        if progress:
-            timing = f"进度 {progress}"
-            if duration:
-                timing += f" / {duration}"
-            lines.append(f"- {timing}")
-        if activity_type == "audio_playback":
-            lines.append(
-                "- 普通音频不会因为本轮消息自动暂停；如果你想控制播放，请输出 activity action。"
-            )
-        elif status == "interrupted":
-            lines.append(
-                "- 主人发消息时表演已暂停；如果你想继续表演，需要输出 activity action，而不是假装仍在继续。"
-            )
-        lines.append(
-            '- 可选 activity 输出：{"action":"play|pause|resume|stop","target":"current","source_id":"可选 file/audio/gen handle"}；不需要控制时输出 null。'
-        )
-        activity_prompt = "\n".join(lines)
-        timeline_prompt = self._build_desktop_music_timeline_prompt(
+        return desktop_context_engine.build_desktop_activity_prompt(
+            self,
             activity,
+            client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
         )
-        return self._merge_extra_user_context(activity_prompt, timeline_prompt)
 
     def _build_desktop_music_timeline_prompt(
         self,
@@ -3490,72 +2741,21 @@ class AkaneMemoryEngine:
         profile_user_id: str = "",
         session_id: str = "",
     ) -> str:
-        if not profile_user_id or not session_id:
-            return ""
-        service = self._get_desktop_music_timeline_service()
-        if service is None:
-            return ""
-        status = str(activity.get("status") or "").strip().lower()
-        progress_seconds = self._safe_activity_seconds(activity.get("progress_seconds"))
-        should_prepare = status in {"running", "paused", "interrupted"} or progress_seconds > 0
-        if should_prepare:
-            try:
-                service.prepare_timeline(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    activity=activity,
-                )
-            except Exception:
-                pass
-        return service.build_prompt_projection(
+        return desktop_context_engine.build_desktop_music_timeline_prompt(
+            self,
+            activity,
             profile_user_id=profile_user_id,
             session_id=session_id,
-            activity=activity,
         )
 
     def _safe_activity_seconds(self, value: Any) -> float:
-        try:
-            return max(0.0, float(value or 0))
-        except Exception:
-            return 0.0
+        return desktop_context_engine.safe_activity_seconds(value)
 
     def _format_activity_time(self, value: Any) -> str:
-        try:
-            seconds = max(0, int(round(float(value))))
-        except Exception:
-            return ""
-        hours, remainder = divmod(seconds, 3600)
-        minutes, secs = divmod(remainder, 60)
-        if hours:
-            return f"{hours}:{minutes:02d}:{secs:02d}"
-        return f"{minutes:02d}:{secs:02d}"
+        return desktop_context_engine.format_activity_time(value)
 
     def _build_client_mode_prompt_context(self, client_context: ClientProtocolContext | None) -> str:
-        if client_context is None:
-            return ""
-        public = client_context.to_public_dict()
-        lines = [
-            "【客户端模式】",
-            f"当前有效模式：{public.get('effective_mode')}",
-            f"输出 profile：{public.get('output_profile')}",
-            "本轮只需要遵循当前 profile 的输出字段；不要在台词里解释这些系统字段。",
-        ]
-        if public.get("degraded_from"):
-            lines.append(
-                f"请求模式 {public.get('degraded_from')} 已降级为 {public.get('effective_mode')}；"
-                "按有效模式输出即可。"
-            )
-        if public.get("effective_mode") == ClientMode.DESKTOP_PET.value:
-            lines.append(
-                "桌宠只实际渲染 character.outfit 与 emotion；scene/bgm 不会在桌宠端表现。"
-                "请优先保持当前服装，只从当前服装可用表情中选择 emotion。"
-            )
-            if client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
-                lines.append(
-                    "桌宠支持轻量 activity 控制：只有当【当前桌宠活动】存在且你确实要控制播放时，"
-                    "才输出 activity；否则 activity 输出 null。不要在 speech 里假装已经播放、暂停或继续。"
-                )
-        return "\n".join(lines)
+        return desktop_context_engine.build_client_mode_prompt_context(client_context)
 
     def _build_task_worker_attachment_context(self, profile_user_id: str, session_id: str) -> str:
         service = self._get_attachment_inbox_service()
@@ -3587,22 +2787,13 @@ class AkaneMemoryEngine:
         profile_user_id: str = "",
         session_id: str = "",
     ) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
-            return None
-
-        tool_type = str(value.get("type") or "").strip()
-        if not tool_type:
-            return None
-
-        handlers = self._resolve_tool_handlers(
+        return tool_orchestration_engine.normalize_tool_call(
+            self,
+            value,
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
         )
-        handler = handlers.get(tool_type)
-        if handler is None:
-            return None
-        return handler.normalize_call(value)
 
     def _promote_narrated_tool_call(
         self,
@@ -3613,53 +2804,14 @@ class AkaneMemoryEngine:
         profile_user_id: str = "",
         session_id: str = "",
     ) -> dict[str, Any]:
-        """Recover when the model narrates a tool call in speech instead of JSON.
-
-        The model occasionally says "工具调用：fetch_media_from_url ..." in speech
-        while leaving tool_call as null. Only the JSON field is executable, so we
-        promote this very narrow remote-media case when the user's current message
-        clearly asks for download/retry work.
-        """
-        existing = self._normalize_tool_call(
-            final_output.get("tool_call"),
+        return tool_orchestration_engine.promote_narrated_tool_call(
+            self,
+            final_output,
+            user_message=user_message,
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
         )
-        if existing:
-            return final_output
-
-        speech_parts = [str(final_output.get("speech") or "")]
-        segments = final_output.get("speech_segments")
-        if isinstance(segments, list):
-            speech_parts.extend(str(item or "") for item in segments)
-        speech = "\n".join(part for part in speech_parts if part).strip()
-        if not speech:
-            return final_output
-        narrated_tool = "fetch_media_from_url" in speech or (
-            "工具调用" in speech and ("链接" in speech or "url" in speech.lower())
-        )
-        if not narrated_tool:
-            return final_output
-
-        urls = self._extract_prefetchable_remote_media_urls(str(user_message or ""))
-        retry_requested = self._message_requests_remote_media_retry(user_message)
-        if not urls and retry_requested:
-            urls = self._recent_prefetchable_remote_media_urls(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            )
-        if not urls:
-            return final_output
-        if not retry_requested and not self._message_requests_remote_media_fetch(user_message, urls=urls):
-            return final_output
-
-        repaired = dict(final_output)
-        repaired["tool_call"] = {
-            "type": "fetch_media_from_url",
-            "urls": urls,
-        }
-        return repaired
 
     def _execute_tool_call(
         self,
@@ -3673,37 +2825,16 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext | None = None,
         memory_exclude_source_ids: list[str] | None = None,
     ) -> ToolExecutionResult | None:
-        normalized_call = self._normalize_tool_call(
-            tool_call,
-            client_context=client_context,
+        return tool_orchestration_engine.execute_tool_call(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
-        )
-        if not normalized_call:
-            return None
-
-        handlers = self._resolve_tool_handlers(
+            tool_call=tool_call,
+            visual_payload=visual_payload,
+            now_ts=now_ts,
+            current_user_source_id=current_user_source_id,
             client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        )
-        handler = handlers.get(str(normalized_call.get("type") or ""))
-        if handler is None:
-            return None
-
-        enriched_visual_payload = dict(visual_payload or {})
-        enriched_visual_payload["_profile_user_id"] = profile_user_id
-        if memory_exclude_source_ids:
-            enriched_visual_payload["_memory_retrieval_exclude_source_ids"] = list(memory_exclude_source_ids)
-        return handler.execute(
-            call=normalized_call,
-            context=ToolExecutionContext(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                now_ts=now_ts,
-                visual_payload=enriched_visual_payload,
-                current_user_source_id=current_user_source_id,
-            ),
+            memory_exclude_source_ids=memory_exclude_source_ids,
         )
 
     def _execute_retrieve_memory_tool(
@@ -3712,89 +2843,14 @@ class AkaneMemoryEngine:
         call: dict[str, Any],
         context: ToolExecutionContext,
     ) -> ToolExecutionResult:
-        query = normalize_text(str(call.get("query") or "")).strip()
-        keywords = [str(item).strip() for item in list(call.get("keywords") or []) if str(item).strip()]
-        time_hint = call.get("time_hint") if isinstance(call.get("time_hint"), dict) else None
-        current_user_record = (
-            self.store.get_message_by_source_id(context.current_user_source_id)
-            if str(context.current_user_source_id or "").strip()
-            else None
-        )
-        original_query = str((current_user_record or {}).get("content") or query)
-        episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
-        semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
-        recent_raw = self.store.get_unsummarized_messages(context.session_id)
-        recent_episodic_summaries = self.store.get_visible_episodic_summaries(context.profile_user_id, limit=episodic_limit)
-        recent_semantic_summaries = (
-            self.store.get_recent_semantic_summaries(context.profile_user_id, limit=semantic_limit)
-            if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
-            else []
-        )
-        extra_excludes = []
-        visual_payload = context.visual_payload if isinstance(context.visual_payload, dict) else {}
-        raw_extra_excludes = visual_payload.get("_memory_retrieval_exclude_source_ids")
-        if isinstance(raw_extra_excludes, list):
-            extra_excludes = [str(item).strip() for item in raw_extra_excludes if str(item).strip()]
-        exclude_source_ids = self._collect_visible_context_source_ids(
-            recent_raw=recent_raw,
-            recent_episodic_summaries=recent_episodic_summaries,
-            recent_semantic_summaries=recent_semantic_summaries,
-            extra_source_ids=[context.current_user_source_id, *extra_excludes],
-        )
-        pipeline = self._get_retrieval_service().run_explicit(
-            profile_user_id=context.profile_user_id,
-            original_query=original_query,
-            now_ts=int(context.now_ts),
-            query=query,
-            keywords=keywords,
-            time_hint=time_hint,
-            exclude_source_ids=exclude_source_ids,
-            verifier_debug_enabled=False,
-            route="post_retrieval",
-        )
-        snippets = [str(item).strip() for item in pipeline.confirmed_snippets if str(item).strip()]
-        if snippets:
-            followup_context = (
-                "你刚刚主动检索了长期记忆。下面是可能回答主人问题的参考记忆：\n"
-                + "\n\n".join(snippets)
-                + "\n\n请基于这些参考记忆自然回应；不要声称系统绝对证明了这些记忆。"
-            )
-        else:
-            followup_context = (
-                "你刚刚主动检索了长期记忆，但这次没有找到足以回答主人问题的相关记忆。"
-                "请自然说明自己没有想起可靠线索，不要编造。"
-            )
-        return ToolExecutionResult(
-            tool_type="retrieve_memory",
-            raw_turns=[],
-            stream_events=[],
-            followup_context=followup_context,
-            state_updates={
-                "memory_retrieval": {
-                    "tool_call": {
-                        "query": query,
-                        "keywords": keywords,
-                        "time_hint": time_hint or {},
-                    },
-                    "retrieval_result": pipeline.retrieval_result,
-                    "verifier_output": pipeline.verifier_output,
-                    "verifier_timing": pipeline.verifier_timing,
-                    "confirmed_snippets": snippets,
-                }
-            },
+        return retrieval_engine.execute_retrieve_memory_tool(
+            self,
+            call=call,
+            context=context,
         )
 
     def _describe_tool_scene_context(self, visual_payload: dict[str, Any]) -> str:
-        if self.resource_manifest:
-            profile_user_id = str(visual_payload.get("_profile_user_id") or "").strip()
-            runtime_projection = self._get_user_runtime_projection(profile_user_id) if profile_user_id else {}
-            return self.resource_manifest.describe_visual_state(
-                visual_payload,
-                extra_bgm_tracks=list(runtime_projection.get("extra_bgm_tracks") or []),
-                extra_scene_groups=list(runtime_projection.get("extra_scene_groups") or []),
-                extra_character_outfits=list(runtime_projection.get("extra_character_outfits") or []),
-            )
-        return "当前场景未设置"
+        return visual_context_engine.describe_tool_scene_context(self, visual_payload)
 
     def _normalize_npc_tool_call(self, value: Any) -> dict[str, str] | None:
         handlers = getattr(self, "tool_handlers", {}) or {}
@@ -3843,35 +2899,14 @@ class AkaneMemoryEngine:
         current_visual_payload: Any = None,
         limit: int = 3,
     ) -> list[dict[str, Any]]:
-        effective_now_ts = int(now_ts or time.time())
-        due_records = self.store.claim_due_reminders(
+        return reminder_engine.consume_due_reminders(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
-            now_ts=effective_now_ts,
+            now_ts=now_ts,
+            current_visual_payload=current_visual_payload,
             limit=limit,
         )
-        if not due_records:
-            return []
-
-        visual_payload = self._resolve_current_visual_payload(
-            session_id=session_id,
-            current_visual_payload=current_visual_payload,
-        )
-        notifications = [
-            self._build_reminder_notification_payload(
-                reminder=record,
-                visual_payload=visual_payload,
-            )
-            for record in due_records
-        ]
-        for notification in notifications:
-            self._persist_due_reminder_notification(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                notification=notification,
-                now_ts=effective_now_ts,
-            )
-        return notifications
 
     def _build_reminder_notification_payload(
         self,
@@ -3879,36 +2914,11 @@ class AkaneMemoryEngine:
         reminder: dict[str, Any],
         visual_payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        visual = self._coerce_visual_payload(visual_payload or {}) or {
-            "emotion": "normal",
-            "character": {},
-            "scene": {},
-        }
-        speech = self._generate_reminder_notification_speech(
+        return reminder_engine.build_reminder_notification_payload(
+            self,
             reminder=reminder,
-            visual_payload=visual,
+            visual_payload=visual_payload,
         )
-        return {
-            "reminder_id": reminder["reminder_id"],
-            "source": "reminder",
-            "emotion": str(visual.get("emotion") or "normal"),
-            "speech": speech,
-            "memory_tags": "",
-            "status": "final",
-            "score": 0.0,
-            "tool_call": None,
-            "choices": [],
-            "character": dict(visual.get("character") or {}),
-            "scene": dict(visual.get("scene") or {}),
-            "dialogue_turns": [
-                {
-                    "speaker": PERSONA.assistant_name,
-                    "speech": speech,
-                }
-            ],
-            "due_ts": int(reminder["due_ts"]),
-            "fired_at": int(reminder.get("fired_at") or reminder["due_ts"]),
-        }
 
     def _generate_reminder_notification_speech(
         self,
@@ -3916,28 +2926,11 @@ class AkaneMemoryEngine:
         reminder: dict[str, Any],
         visual_payload: dict[str, Any],
     ) -> str:
-        fallback_speech = self._format_reminder_notification(reminder)
-        visual_context = self._describe_tool_scene_context(visual_payload)
-        result = self.llm.call_chat_json(
-            system_prompt=(
-                "你是 Akane。现在有一条已经到时间的提醒需要你自然地说出口。"
-                "你只输出一个合法 JSON 对象，字段固定为 speech。"
-                "speech 要像 Akane 当下自然想起这件事后对用户说的一句提醒，口吻亲近、简短、自然。"
-                "只需要 1 到 2 句，不要解释系统原理，不要说自己忘记了，也不要输出多余字段。"
-            ),
-            user_prompt=(
-                f"当前演出状态：{visual_context}\n"
-                f"提醒内容：{str(reminder.get('content') or '').strip()}\n"
-                f"原始提醒时间说法：{str(reminder.get('raw_time_text') or '').strip() or '(未提供)'}\n"
-                f"当前时间：{timestamp_to_datetime_label(int(reminder.get('fired_at') or reminder.get('due_ts') or time.time()))}\n"
-                "请用 Akane 的语气说一句现在该提醒用户的话。"
-            ),
-            fallback={"speech": fallback_speech},
-            temperature=0.85,
-            prompt_cache_key="chat:reminder_notification",
+        return reminder_engine.generate_reminder_notification_speech(
+            self,
+            reminder=reminder,
+            visual_payload=visual_payload,
         )
-        speech = normalize_text(str(result.get("speech") or fallback_speech))
-        return speech[:120] if speech else fallback_speech
 
     def _persist_due_reminder_notification(
         self,
@@ -3947,29 +2940,16 @@ class AkaneMemoryEngine:
         notification: dict[str, Any],
         now_ts: int,
     ) -> None:
-        speech = str(notification.get("speech") or "").strip()
-        if not speech:
-            return
-        reminder_ts = int(notification.get("fired_at") or now_ts)
-        record = self.store.add_message(
+        reminder_engine.persist_due_reminder_notification(
+            self,
             profile_user_id=profile_user_id,
             session_id=session_id,
-            role="assistant",
-            content=speech,
-            timestamp=reminder_ts,
-            date_label=timestamp_to_date_label(reminder_ts),
-            time_of_day=infer_time_of_day(reminder_ts),
-            semantic_tags=extract_semantic_tags(speech),
+            notification=notification,
+            now_ts=now_ts,
         )
-        self._upsert_raw_record(record)
-        self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
 
     def _format_reminder_notification(self, reminder: dict[str, Any]) -> str:
-        content = str(reminder.get("content") or "").strip()
-        raw_time_text = str(reminder.get("raw_time_text") or "").strip()
-        if raw_time_text:
-            return f"喵呜，到时间啦。你之前让我在{raw_time_text}提醒你“{content}”，现在该去做啦。"
-        return f"喵呜，到时间啦。你之前让我提醒你的事是“{content}”，现在该去做啦。"
+        return reminder_engine.format_reminder_notification(reminder)
 
     def _build_current_visual_context(
         self,
@@ -3981,26 +2961,14 @@ class AkaneMemoryEngine:
         runtime_projection: dict[str, Any] | None = None,
         character_only: bool = False,
     ) -> str:
-        if not self.resource_manifest:
-            return "当前没有额外的演出状态参考。"
-
-        effective_visual_payload = visual_payload or self._resolve_current_visual_payload(
+        return visual_context_engine.build_current_visual_context(
+            self,
+            profile_user_id=profile_user_id,
             session_id=session_id,
             current_visual_payload=current_visual_payload,
-        )
-        if not effective_visual_payload:
-            return "当前没有额外的演出状态参考。"
-        effective_runtime_projection = runtime_projection or self._get_user_runtime_projection(profile_user_id)
-        if character_only:
-            return self.resource_manifest.describe_character_visual_state(
-                effective_visual_payload,
-                extra_character_outfits=list(effective_runtime_projection.get("extra_character_outfits") or []),
-            )
-        return self.resource_manifest.describe_visual_state(
-            effective_visual_payload,
-            extra_bgm_tracks=list(effective_runtime_projection.get("extra_bgm_tracks") or []),
-            extra_scene_groups=list(effective_runtime_projection.get("extra_scene_groups") or []),
-            extra_character_outfits=list(effective_runtime_projection.get("extra_character_outfits") or []),
+            visual_payload=visual_payload,
+            runtime_projection=runtime_projection,
+            character_only=character_only,
         )
 
     def _schedule_visual_observations_for_payload(
@@ -4010,87 +2978,35 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str,
     ) -> None:
-        if not isinstance(payload, dict):
-            return
-
-        visual_payload = self._coerce_visual_payload(payload)
-        runtime_projection = self._get_user_runtime_projection(profile_user_id)
-        if visual_payload:
-            try:
-                self.vision_service.schedule_scene_observation(
-                    visual_payload=visual_payload,
-                    extra_bgm_tracks=list(runtime_projection.get("extra_bgm_tracks") or []),
-                    extra_scene_groups=list(runtime_projection.get("extra_scene_groups") or []),
-                    extra_character_outfits=list(runtime_projection.get("extra_character_outfits") or []),
-                )
-            except Exception as exc:
-                logger.warning("schedule scene observation failed: %s", exc)
-            try:
-                self.vision_service.schedule_outfit_observation(
-                    visual_payload=visual_payload,
-                    extra_bgm_tracks=list(runtime_projection.get("extra_bgm_tracks") or []),
-                    extra_scene_groups=list(runtime_projection.get("extra_scene_groups") or []),
-                    extra_character_outfits=list(runtime_projection.get("extra_character_outfits") or []),
-                )
-            except Exception as exc:
-                logger.warning("schedule outfit observation failed: %s", exc)
-
-        try:
-            focused_gift = self.gift_service.resolve_focus_asset(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                asset_id="",
-            )
-            if focused_gift:
-                self.vision_service.schedule_gift_observation(asset=focused_gift)
-        except Exception as exc:
-            logger.warning("schedule gift observation failed: %s", exc)
+        visual_context_engine.schedule_visual_observations_for_payload(
+            self,
+            payload=payload,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+        )
 
     def _handle_ready_visual_observation(
         self,
         target,
         observation: dict[str, Any],
     ) -> None:
-        self.vision_observation_router.handle(target, observation)
+        visual_context_engine.handle_ready_visual_observation(self, target, observation)
 
     def _get_user_runtime_projection(self, profile_user_id: str) -> dict[str, Any]:
-        normalized = str(profile_user_id or "").strip()
-        if not normalized:
-            return {
-                "extra_bgm_tracks": [],
-                "extra_scene_groups": [],
-                "extra_character_outfits": [],
-            }
-        return self.gift_service.build_runtime_projection(profile_user_id=normalized)
+        return visual_context_engine.get_user_runtime_projection(self, profile_user_id)
 
     def _get_user_bgm_tracks(self, profile_user_id: str) -> list[dict[str, Any]]:
-        return list(self._get_user_runtime_projection(profile_user_id).get("extra_bgm_tracks") or [])
+        return visual_context_engine.get_user_bgm_tracks(self, profile_user_id)
 
     def _resolve_current_visual_payload(self, *, session_id: str, current_visual_payload: Any) -> dict[str, Any] | None:
-        if isinstance(current_visual_payload, dict):
-            payload = self._coerce_visual_payload(current_visual_payload)
-            if payload:
-                return payload
-
-        latest_eval = self.store.get_latest_eval_turn(session_id)
-        if not latest_eval:
-            return None
-        final_json = latest_eval.get("final_json")
-        if not isinstance(final_json, dict):
-            return None
-        return self._coerce_visual_payload(final_json)
+        return visual_context_engine.resolve_current_visual_payload(
+            self,
+            session_id=session_id,
+            current_visual_payload=current_visual_payload,
+        )
 
     def _coerce_visual_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        scene = payload.get("scene")
-        character = payload.get("character")
-        emotion = payload.get("emotion")
-        if not isinstance(scene, dict) and not isinstance(character, dict) and emotion is None:
-            return None
-        return {
-            "emotion": str(emotion or ""),
-            "character": character if isinstance(character, dict) else {},
-            "scene": scene if isinstance(scene, dict) else {},
-        }
+        return visual_context_engine.coerce_visual_payload(payload)
 
     def _render_current_message_line(
         self,

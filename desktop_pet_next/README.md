@@ -5,6 +5,7 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 ## Scope
 
 - Transparent, frameless, always-on-top Tauri window using the Electron pet's 340x560 base size.
+- Minimal Creator Kit character metadata is loaded from `../desktop_pet_creator_kit/characters/akane_sample/character.json`.
 - Catgirl Akane static portraits are copied into this prototype package.
 - Dragging is limited to an approximate portrait hit region.
 - Window position and size are persisted through Rust-side app config storage.
@@ -33,7 +34,12 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 - Speech bubbles are compact head-top bubbles with a small tail, and they stay non-interactive so they do not block the menu/settings buttons.
 - Minimal TTS output is available from the settings window: replies can be read aloud through the existing `/tts` endpoint, with enable/disable, volume, test, and stop controls.
 - Minimal voice input is available from the chat input: click the `麦` button or hold `Ctrl+Shift+Space` while the pet window is focused to record, then `/asr` transcribes into the input box for manual confirmation.
+- Minimal local music queue playback is available: drag one or more `mp3`, `wav`, `flac`, `ogg`, `m4a`, `aac`, `opus`, or `webm` files onto Akane to play them from the Tauri cache. The quick menu and settings window can go previous/next, pause/resume, or stop music, and the portrait switches to `听歌中` while playing.
+- Current local music status is attached to `/think` while a track is loaded, including title, queue position, next track, play/pause state, progress, and duration. Akane can naturally refer to the song queue, and simple current-track `activity` actions can pause, resume, stop, previous, next, or switch by `source_id`.
 - Minimal desktop context is available behind settings toggles: foreground-window sensing is on by default, clipboard text is off by default, and both are only attached transiently to `/think`.
+- Experimental screen vision is available behind the `看屏幕` settings toggle. Summary mode asks WebView2 for screen-share permission, compresses a few frames into a short clip, sends them to `/desktop-pet/vision/clip`, and lets `/think` read only the latest short-term screen impressions.
+- Direct screen-vision mode keeps only the latest 1-5 compressed screenshots in the Tauri pet and sends them temporarily with proactive `/think`; new frames replace old frames, and the images are not persisted as memory.
+- Proactive wake is available behind the `主动搭话` settings toggle. Wake interval, screen-vision interval, and screen frame count are numeric settings; the settings window also shows a recommended vision interval based on the wake interval.
 - A read-only Workspace/hand-tray window is available from the compact menu and settings window. It fetches `/desktop-pet/workspace/summary`, shows files/generated outputs/tasks, has manual refresh, and records the latest refresh time without running file actions yet.
 - Replies can be interrupted from the compact menu or the settings window. Stopping a reply aborts/invalidates the active `/think` turn, clears queued TTS, and returns the portrait motion to idle; local click bubbles no longer make the stop control look active.
 - Long plain `speech` replies are split client-side into smaller bubble segments when the backend does not provide `speech_segments`.
@@ -71,10 +77,13 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 | Bubble presentation | Done | `speech_segments` take priority; long `speech` is split client-side; bubbles stay compact near the portrait head. |
 | Reply interrupt | Done | Stops active turn, queued TTS, and current voice playback. |
 | Minimal TTS | Done | Reply read-aloud toggle, volume, test, stop. |
+| Local music playback | Done | Drag one or more audio files onto Akane to play as a queue; quick menu/settings can previous/next, pause/resume, and stop; queue state is available to `/think`. |
 | Session controls | Done | Independent session ID, new session, startup restore toggle, session ID copy. |
 | Settings/resource panel | Partial | Daily settings, resource diagnostics, backend contract/TTS/ASR status, connection check, appearance reset, and status separation are present; full debug panel remains deferred. |
 | Voice input / ASR | Partial | Focused-window recording button/shortcut calls `/asr` and fills the input box. Global shortcut and richer recorder panel are deferred. |
 | Desktop context | Partial | Foreground-window context is cached through a lightweight native probe and attached to `/think`; clipboard text is optional and off by default. |
+| Screen vision | Partial | Optional `看屏幕` toggle supports summary mode through `/desktop-pet/vision/clip` and direct mode that sends only the latest 1-5 screenshots with proactive `/think`; neither path writes long-term memory. |
+| Proactive wake | Partial | Optional `主动搭话` toggle wakes Akane on a numeric interval and routes the final line through the main `/think` chain with transient visual context. |
 | Workspace / hand tray | Partial | Independent read-only Tauri window lists files, generated outputs, tasks, empty states, and latest refresh time from `/desktop-pet/workspace/summary`. File actions and Activity Runtime remain deferred. |
 | Activity runtime / BGM / file actions | Deferred | Not part of the current Next daily baseline. |
 | Task reminders | Deferred | Keep out until background/runtime behavior is settled. |
@@ -154,9 +163,12 @@ Manual checks:
 - `/think` replies display segments without duplicating `speech`.
 - Head-top bubbles stay non-interactive and do not block menu/settings controls.
 - `停止` interrupts text, queued TTS, and current voice playback.
+- Drag one or more local audio files onto Akane; music starts, expression switches to `听歌中`, auto-next works, and menu/settings previous/next/pause/resume/stop controls work.
+- Ask or wait for a reply while music is loaded; Akane can reference the current track and queue state without needing the full Activity Runtime.
 - `麦` records, `/asr` fills text into the input box, and does not auto-send.
 - Settings changes for backend/session/voice/context are reflected in the Workspace window after refresh or snapshot sync.
 - Workspace manual refresh updates counts, empty states, and latest refresh/attempt time.
+- With `主动搭话` enabled, Akane can wake on the configured interval and speak through `/think` while using recent short-term screen impressions.
 - Backend offline state shows a light local-standby message, keeps local click reactions working, and retries quietly while the app stays open.
 - `退出` closes the pet plus settings/workspace child windows.
 - `npm run doctor` reports Node/npm/Rust/WebView2/backend readiness without changing the machine.

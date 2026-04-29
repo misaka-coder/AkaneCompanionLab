@@ -4,8 +4,9 @@ const path = require("path");
 
 const DEFAULT_SETTINGS = {
   backendUrl: "http://127.0.0.1:9999",
-  outfit: "水手服",
+  outfit: "猫娘",
   opacity: 1,
+  petScale: 1,
   voiceEnabled: false,
   voiceInputEnabled: true,
   desktopContextEnabled: true,
@@ -13,6 +14,9 @@ const DEFAULT_SETTINGS = {
 };
 
 const OPACITY_VALUES = [1, 0.85, 0.7];
+const PET_SCALE_VALUES = [0.85, 1, 1.15, 1.3];
+const MIN_PET_SCALE = 0.75;
+const MAX_PET_SCALE = 1.45;
 
 function getSettingsPath() {
   return path.join(app.getPath("userData"), "akane-pet-settings.json");
@@ -48,13 +52,15 @@ function normalizeSettings(raw) {
   const backendUrl = String(source.backendUrl || "").trim().replace(/\/+$/, "");
   if (backendUrl) settings.backendUrl = backendUrl;
 
-  const outfit = String(source.outfit || "").trim();
+  const outfit = normalizeOutfit(source.outfit);
   if (outfit) settings.outfit = outfit;
 
   const opacity = Number(source.opacity);
   if (OPACITY_VALUES.includes(opacity)) {
     settings.opacity = opacity;
   }
+
+  settings.petScale = normalizePetScale(source.petScale);
 
   if (typeof source.voiceEnabled === "boolean") {
     settings.voiceEnabled = source.voiceEnabled;
@@ -75,6 +81,20 @@ function normalizeSettings(raw) {
   return settings;
 }
 
+function normalizePetScale(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.petScale;
+  const clamped = Math.max(MIN_PET_SCALE, Math.min(MAX_PET_SCALE, numeric));
+  return Math.round(clamped * 100) / 100;
+}
+
+function normalizeOutfit(value) {
+  const outfit = String(value || "").trim();
+  if (!outfit) return "";
+  if (["水手服", "睡衣"].includes(outfit)) return DEFAULT_SETTINGS.outfit;
+  return outfit;
+}
+
 function normalizeBounds(value) {
   if (!value || typeof value !== "object") return null;
 
@@ -92,6 +112,8 @@ function normalizeBounds(value) {
 module.exports = {
   DEFAULT_SETTINGS,
   OPACITY_VALUES,
+  PET_SCALE_VALUES,
+  normalizePetScale,
   loadSettings,
   saveSettings,
   updateSettings,
