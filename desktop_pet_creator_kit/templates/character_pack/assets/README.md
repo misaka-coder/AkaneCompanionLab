@@ -1,6 +1,14 @@
 # Character Assets
 
-Put portrait and expression assets here later.
+Put portrait and expression assets here:
 
-The first runtime slice still uses bundled client assets; this directory
-documents the intended pack structure.
+```text
+assets/
+  characters/
+    default/
+      normal.png
+      happy.png
+      thinking.png
+```
+
+The runtime expects `assets/characters/<outfit>/<emotion>.png`.

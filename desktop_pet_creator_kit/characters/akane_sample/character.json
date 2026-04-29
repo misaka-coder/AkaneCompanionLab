@@ -103,8 +103,9 @@
     "yandere": ["病娇", "正常"]
   },
   "assets": {
-    "runtime_source": "desktop_pet_next bundled assets",
+    "runtime_source": "character pack assets, with desktop_pet_next bundled fallback",
+    "asset_root": "assets",
     "bundled_outfit": "猫娘",
-    "portrait_glob": "desktop_pet_next/src/assets/characters/猫娘/*.png"
+    "portrait_glob": "assets/characters/<outfit>/<emotion>.png"
   }
 }

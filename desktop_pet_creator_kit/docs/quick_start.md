@@ -36,6 +36,10 @@ After editing, restart the Tauri dev app.
 
 ## Current Limit
 
-The sample metadata is wired into the client, but the portrait images still come
-from the bundled `desktop_pet_next/src/assets/characters/猫娘/` folder. Full
-external asset import is planned for the next slice.
+The sample metadata is wired into the client, and the desktop pet scans pack
+assets from:
+
+`desktop_pet_creator_kit/characters/akane_sample/assets/characters/<outfit>/<emotion>.png`
+
+If that folder has no images, the app falls back to the bundled
+`desktop_pet_next/src/assets/characters/猫娘/` folder.

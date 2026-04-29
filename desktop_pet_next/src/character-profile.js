@@ -55,6 +55,8 @@ export const PROACTIVE_WAKE_PROMPT = CHARACTER_PROFILE.dialogue.proactiveWakePro
 export const INPUT_PLACEHOLDER = CHARACTER_PROFILE.dialogue.inputPlaceholder;
 export const SESSION_DISPLAY_TITLE = CHARACTER_PROFILE.dialogue.sessionDisplayTitle;
 export const TTS_TEST_TEXT = CHARACTER_PROFILE.dialogue.ttsTestText;
+export const CHARACTER_ASSET_ROOT = CHARACTER_PROFILE.assets.assetRoot;
+export const CHARACTER_PORTRAIT_GLOB = CHARACTER_PROFILE.assets.portraitGlob;
 
 export function buildCharacterSnapshot() {
   return {
@@ -71,6 +73,8 @@ export function buildCharacterSnapshot() {
     recommendedEmotionCount: RECOMMENDED_EMOTIONS.length,
     localLineCount: LOCAL_CLICK_LINES.length,
     assetSource: CHARACTER_PROFILE.assets.runtimeSource,
+    assetRoot: CHARACTER_PROFILE.assets.assetRoot,
+    portraitGlob: CHARACTER_PROFILE.assets.portraitGlob,
     bundledOutfit: CHARACTER_PROFILE.assets.bundledOutfit
   };
 }
@@ -119,6 +123,7 @@ function normalizeCharacterProfile(value) {
     emotionAliases: normalizeEmotionAliases(source.emotion_aliases || fallback.emotion_aliases, defaultEmotion),
     assets: {
       runtimeSource: cleanText(assets.runtime_source, fallback.assets.runtime_source),
+      assetRoot: cleanText(assets.asset_root, "assets"),
       bundledOutfit: cleanText(assets.bundled_outfit, defaultOutfit),
       portraitGlob: cleanText(assets.portrait_glob, "")
     }

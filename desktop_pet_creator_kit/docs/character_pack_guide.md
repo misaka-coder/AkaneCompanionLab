@@ -14,6 +14,10 @@ my_character/
   character.toml
   persona.md
   assets/
+    characters/
+      default/
+        normal.png
+        happy.png
 ```
 
 `character.json` is the current runtime file.
@@ -56,10 +60,28 @@ that emotion is `正常`.
 Recommended emotion aliases let the backend use English intent labels like
 `thinking`, `happy`, or `music` while the asset names stay creator-friendly.
 
+## Asset Layout
+
+The current desktop runtime scans:
+
+```text
+assets/characters/<outfit>/<emotion>.png
+```
+
+Each folder under `assets/characters/` becomes a selectable outfit. Each image
+inside that folder becomes an emotion id. For example:
+
+```text
+assets/characters/default/normal.png
+assets/characters/default/happy.png
+assets/characters/winter/normal.png
+```
+
+This creates two outfits: `default` and `winter`.
+
 ## Next Planned Slices
 
-1. Load external portrait assets from the character pack.
-2. Add a pack validator.
-3. Add a pack selector in settings.
-4. Move backend persona loading into the pack.
-5. Build a zip/export workflow for paid Creator Kit delivery.
+1. Add a pack validator.
+2. Add a pack selector in settings.
+3. Move backend persona loading into the pack.
+4. Build a zip/export workflow for paid Creator Kit delivery.

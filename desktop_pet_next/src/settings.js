@@ -662,7 +662,11 @@ function buildText(tagName, text) {
 }
 
 function sourceLabel(source) {
-  return source === "manifest" ? "后端资源" : "本地资源";
+  return {
+    manifest: "后端资源",
+    character_pack: "角色包资源",
+    bundled: "内置资源"
+  }[String(source || "")] || "本地资源";
 }
 
 function healthLabel(health) {

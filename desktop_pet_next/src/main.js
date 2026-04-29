@@ -26,6 +26,14 @@ const bundledCharacterAssets = import.meta.glob("./assets/characters/猫娘/*.{p
   import: "default",
   query: "?url"
 });
+const characterPackCharacterAssets = import.meta.glob(
+  "../../desktop_pet_creator_kit/characters/akane_sample/assets/characters/**/*.{png,jpg,jpeg,webp}",
+  {
+    eager: true,
+    import: "default",
+    query: "?url"
+  }
+);
 
 const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 const appWindow = isTauriRuntime ? getCurrentWindow() : null;
@@ -131,6 +139,8 @@ const DEFAULT_STATE = {
 };
 
 const bundledOutfit = buildBundledOutfit();
+const characterPackOutfits = buildCharacterPackOutfits();
+const localOutfits = characterPackOutfits.length ? characterPackOutfits : [bundledOutfit];
 const resourceState = {
   health: "unknown",
   healthMessage: "Not checked",
@@ -150,8 +160,8 @@ const resourceState = {
     uploadField: "file"
   },
   manifest: null,
-  outfit: bundledOutfit,
-  source: "bundled",
+  outfit: getDefaultLocalOutfit(),
+  source: getLocalResourceSource(),
   loadedAt: 0
 };
 
@@ -1265,7 +1275,7 @@ function renderResourceDetails() {
   const activeOutfit = getActiveOutfit();
   const outfits = getManifestOutfits();
   const count = getActiveEmotions().length;
-  const source = resourceState.source === "manifest" ? "后端资源" : "本地资源";
+  const source = resourceSourceLabel(resourceState.source);
   const requested =
     state.outfit && activeOutfit.id && state.outfit !== activeOutfit.id ? ` · 请求 ${state.outfit}` : "";
   const outfitHint = outfits.length > 1 ? ` · 可用服装 ${outfits.length}` : "";
@@ -2344,10 +2354,10 @@ function getManifestDefaultEmotion(manifest) {
 
 function useBundledResources() {
   resourceState.manifest = null;
-  resourceState.outfit = bundledOutfit;
-  resourceState.source = "bundled";
+  resourceState.outfit = findEntry(localOutfits, state.outfit) || getDefaultLocalOutfit();
+  resourceState.source = getLocalResourceSource();
   resourceState.loadedAt = Date.now();
-  if (!state.outfit) state.outfit = bundledOutfit.id;
+  if (!state.outfit) state.outfit = resourceState.outfit.id;
 }
 
 async function ensureBackendSession({ restoreLatest = false } = {}) {
@@ -3934,7 +3944,7 @@ function updateConnectionStatus() {
   }[resourceState.health] || "未知";
   const outfit = getActiveOutfit();
   const count = getActiveEmotions().length;
-  const source = resourceState.source === "manifest" ? "后端资源" : "本地资源";
+  const source = resourceSourceLabel(resourceState.source);
   const contract = resourceState.contractVersion || (resourceState.contractSource === "legacy" ? "legacy" : "");
   els.connectionStatus.textContent = `后端：${healthLabel}${contract ? ` · ${contract}` : ""} · ${source} · ${outfit.id}(${count})`;
   els.connectionStatus.title = `点击重新检查后端与资源${resourceState.healthEndpoint ? ` · ${resourceState.healthEndpoint}` : ""}`;
@@ -3979,7 +3989,7 @@ function resolveEmotionEntry(value) {
     const match = findEntry(emotions, candidate);
     if (match) return match;
   }
-  return findEntry(emotions, DEFAULT_EMOTION) || findEntry(emotions, "normal") || emotions[0] || bundledOutfit.emotions[0];
+  return findEntry(emotions, DEFAULT_EMOTION) || findEntry(emotions, "normal") || emotions[0] || getDefaultLocalOutfit().emotions[0];
 }
 
 function buildEmotionCandidates(value) {
@@ -4018,12 +4028,12 @@ function buildCurrentVisual() {
 }
 
 function getActiveOutfit() {
-  return resourceState.outfit || bundledOutfit;
+  return resourceState.outfit || getDefaultLocalOutfit();
 }
 
 function getActiveEmotions() {
   const emotions = Array.isArray(getActiveOutfit()?.emotions) ? getActiveOutfit().emotions : [];
-  return emotions.length ? emotions : bundledOutfit.emotions;
+  return emotions.length ? emotions : getDefaultLocalOutfit().emotions;
 }
 
 function getManifestOutfits() {
@@ -4034,7 +4044,7 @@ function getManifestOutfits() {
 
 function getAvailableOutfits() {
   const outfits = getManifestOutfits();
-  return outfits.length ? outfits : [bundledOutfit];
+  return outfits.length ? outfits : localOutfits;
 }
 
 function serializeOutfit(outfit) {
@@ -4093,6 +4103,56 @@ function buildResourceIssues(outfit, emotions = listOutfitEmotions(outfit)) {
   };
 }
 
+function resourceSourceLabel(source) {
+  return {
+    manifest: "后端资源",
+    character_pack: "角色包资源",
+    bundled: "内置资源"
+  }[String(source || "")] || "本地资源";
+}
+
+function getLocalResourceSource() {
+  return characterPackOutfits.length ? "character_pack" : "bundled";
+}
+
+function getDefaultLocalOutfit() {
+  return findEntry(localOutfits, DEFAULT_OUTFIT) || localOutfits[0] || bundledOutfit;
+}
+
+function buildCharacterPackOutfits() {
+  const grouped = new Map();
+  for (const [path, url] of Object.entries(characterPackCharacterAssets)) {
+    const match = path.match(/\/assets\/characters\/([^/]+)\/([^/]+)\.(png|jpe?g|webp)$/i);
+    if (!match) continue;
+    const outfitId = decodeURIComponent(match[1] || "").trim();
+    const emotionId = decodeURIComponent(match[2] || "").trim();
+    if (!outfitId || !emotionId || !url) continue;
+    const entry = grouped.get(outfitId) || [];
+    entry.push({
+      id: emotionId,
+      name: emotionId,
+      aliases: [],
+      url: String(url || ""),
+      path
+    });
+    grouped.set(outfitId, entry);
+  }
+
+  return [...grouped.entries()]
+    .map(([outfitId, emotions]) => ({
+      id: outfitId,
+      name: outfitId,
+      aliases: [],
+      emotions: sortEmotions(emotions)
+    }))
+    .filter((outfit) => outfit.emotions.length)
+    .sort((a, b) => {
+      if (a.id === DEFAULT_OUTFIT) return -1;
+      if (b.id === DEFAULT_OUTFIT) return 1;
+      return a.id.localeCompare(b.id, "zh-CN");
+    });
+}
+
 function buildBundledOutfit() {
   const emotions = Object.entries(bundledCharacterAssets)
     .map(([path, url]) => {
@@ -4105,11 +4165,7 @@ function buildBundledOutfit() {
       };
     })
     .filter((item) => item.id && item.url)
-    .sort((a, b) => {
-      if (a.id === DEFAULT_EMOTION) return -1;
-      if (b.id === DEFAULT_EMOTION) return 1;
-      return a.id.localeCompare(b.id, "zh-CN");
-    });
+    .sort(compareEmotionEntries);
 
   return {
     id: DEFAULT_OUTFIT,
@@ -4117,6 +4173,16 @@ function buildBundledOutfit() {
     aliases: [],
     emotions
   };
+}
+
+function sortEmotions(emotions) {
+  return [...emotions].sort(compareEmotionEntries);
+}
+
+function compareEmotionEntries(a, b) {
+  if (a.id === DEFAULT_EMOTION) return -1;
+  if (b.id === DEFAULT_EMOTION) return 1;
+  return String(a.id || "").localeCompare(String(b.id || ""), "zh-CN");
 }
 
 function findEntry(items, value) {

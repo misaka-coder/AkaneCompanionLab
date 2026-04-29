@@ -35,6 +35,7 @@ tts_test_text = "Akane Next：语音播放测试。"
 proactive_wake_prompt = "主人暂时没有说话。你像坐在旁边陪他一样，参考刚才看见的情况自然接话。"
 
 [assets]
-runtime_source = "desktop_pet_next bundled assets"
+runtime_source = "character pack assets, with desktop_pet_next bundled fallback"
+asset_root = "assets"
 bundled_outfit = "猫娘"
-portrait_glob = "desktop_pet_next/src/assets/characters/猫娘/*.png"
+portrait_glob = "assets/characters/<outfit>/<emotion>.png"

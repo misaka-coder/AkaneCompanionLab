@@ -21,5 +21,6 @@ proactive_wake_prompt = "主人暂时没有说话。你像坐在旁边陪他一�
 
 [assets]
 runtime_source = "replace me"
+asset_root = "assets"
 bundled_outfit = "default"
-portrait_glob = "assets/characters/default/*.png"
+portrait_glob = "assets/characters/<outfit>/<emotion>.png"

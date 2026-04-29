@@ -32,7 +32,8 @@
   },
   "assets": {
     "runtime_source": "replace me",
+    "asset_root": "assets",
     "bundled_outfit": "default",
-    "portrait_glob": "assets/characters/default/*.png"
+    "portrait_glob": "assets/characters/<outfit>/<emotion>.png"
   }
 }
