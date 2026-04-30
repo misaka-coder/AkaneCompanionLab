@@ -114,6 +114,10 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("prepareBackendMusicTimeline", main_source)
         self.assertIn("/desktop-pet/attachments/audio", main_source)
         self.assertIn("/desktop-pet/music-timeline/prepare", main_source)
+        self.assertIn("importDroppedFilesToWorkspace", main_source)
+        self.assertIn("/desktop-pet/workspace/import-local", main_source)
+        self.assertIn("WORKSPACE_REFRESH_EVENT", main_source)
+        self.assertIn("showFileDropHint", main_source)
         self.assertIn("timelineLyricLineCount", main_source)
         self.assertIn('"playMusicTrack"', main_source)
         self.assertIn('"removeMusicTrack"', main_source)
@@ -124,6 +128,8 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('id="workspace-music"', workspace_html)
         self.assertIn("renderMusicPanel", workspace_source)
         self.assertIn("buildMusicLyricText", workspace_source)
+        self.assertIn("WORKSPACE_REFRESH_EVENT", workspace_source)
+        self.assertIn("scheduleWorkspaceRefresh(120)", workspace_source)
         self.assertIn("SETTINGS_COMMAND_EVENT", workspace_source)
 
     def test_next_settings_can_install_creator_kit_character_pack_zips(self) -> None:

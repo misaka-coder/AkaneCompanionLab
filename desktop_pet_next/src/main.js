@@ -100,6 +100,7 @@ const SCALE_PRESETS = [0.85, 1, 1.15, 1.3];
 const OPACITY_PRESETS = [1, 0.85, 0.7, 0.55];
 const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
+const WORKSPACE_REFRESH_EVENT = "akane-next-workspace-refresh";
 const PET_HIT_POLYGON = [
   [32, 0],
   [72, 0],
@@ -230,6 +231,7 @@ let musicPaused = false;
 let musicLoading = false;
 let musicEmotionActive = false;
 let musicDropHover = false;
+let workspaceImporting = false;
 let voiceInputState = "idle";
 let voiceRecorder = null;
 let voiceStream = null;
@@ -732,7 +734,7 @@ async function registerFileDropHandlers() {
       return;
     }
     if (type === "over" || type === "enter") {
-      showMusicDropHint();
+      showFileDropHint();
       return;
     }
     musicDropHover = false;
@@ -3475,29 +3477,132 @@ function setPetMotion(motion, { durationMs = 0 } = {}) {
   }
 }
 
-function showMusicDropHint() {
+function showFileDropHint() {
   if (musicDropHover) return;
   musicDropHover = true;
-  setRuntimeStatus(`把音频拖给 ${getProfileIdentityText("name", CHARACTER_NAME)} 就可以播放`, { mode: "idle" });
+  setRuntimeStatus(`把文件拖给 ${getProfileIdentityText("name", CHARACTER_NAME)}，会先放进手边工作台`, { mode: "idle" });
   if (!sending && !replyDisplayActive) {
-    showBubbleText("要放这首吗？", { transient: true, durationMs: 1400, kind: "music" });
+    showBubbleText("递给我就行。", { transient: true, durationMs: 1400, kind: "status" });
   }
 }
 
 async function handleDroppedFiles(paths) {
   const files = Array.isArray(paths) ? paths.map((item) => String(item || "")).filter(Boolean) : [];
+  if (!files.length) return;
   const items = buildDroppedAudioItems(files);
+  let importResult = null;
+  let importError = "";
+  try {
+    importResult = await importDroppedFilesToWorkspace(files);
+  } catch (error) {
+    importError = friendlyErrorMessage(formatError(error));
+  }
+
   if (!items.length) {
-    const hasLyrics = files.some(isSupportedLyricPath);
-    showBubbleText(hasLyrics ? "歌词收到啦，再把同名音频一起拖来。" : "这个暂时不像能播放的音频文件。", {
+    const imported = Number(importResult?.imported || 0);
+    if (imported > 0) {
+      const skipped = Number(importResult?.skipped_count || 0);
+      setRuntimeStatus(
+        skipped > 0 ? `已放进手边：${imported} 个文件，跳过 ${skipped} 个` : `已放进手边：${imported} 个文件`,
+        { mode: "idle" }
+      );
+      showBubbleText(imported > 1 ? `收到 ${imported} 个文件，放到手边了。` : "文件收到啦，放到手边了。", {
+        transient: true,
+        durationMs: 2400,
+        kind: "status"
+      });
+      return;
+    }
+
+    showBubbleText(importError || "这个文件暂时还不能放进手边。", {
       transient: true,
       durationMs: 2400,
-      kind: "music"
+      kind: "status"
     });
-    setRuntimeStatus(hasLyrics ? "拖入的是歌词文件，等待同名音频" : "拖入的文件不是支持的音频格式", { mode: "error" });
+    setRuntimeStatus(importError || "拖入的文件不是当前支持的类型", { mode: "error" });
     return;
   }
+  if (importResult?.imported) {
+    showBubbleText(
+      files.length > items.length
+        ? `音乐会播放，另外 ${Number(importResult.imported || 0)} 个文件也放进手边了。`
+        : "音乐收到啦，也放进手边工作台了。",
+      { transient: true, durationMs: 2200, kind: "music" }
+    );
+  } else if (importError) {
+    setRuntimeStatus(`手边导入失败，但音乐可以继续准备：${importError}`, { mode: "music" });
+  }
   await addDroppedAudioFiles(items);
+}
+
+async function importDroppedFilesToWorkspace(paths) {
+  const normalizedPaths = Array.isArray(paths)
+    ? paths.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  if (!normalizedPaths.length) return null;
+  if (workspaceImporting) return null;
+  workspaceImporting = true;
+  try {
+    const sessionId = state.sessionId || generateSessionId();
+    if (!state.sessionId) {
+      state.sessionId = sessionId;
+      scheduleSave(0);
+      scheduleSettingsSnapshot();
+      void ensureBackendSession();
+    }
+    const response = await backendFetch(
+      buildBackendEndpointUrl("desktop_workspace_import_local", "/desktop-pet/workspace/import-local", { t: Date.now() }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          user_id: sessionId,
+          session_id: sessionId,
+          real_user_id: state.profileUserId || PROFILE_USER_ID,
+          paths: normalizedPaths,
+          recursive: false,
+          max_files: 40
+        }),
+        connectTimeout: 60_000
+      }
+    );
+    const payload = await readJsonResponse(response);
+    if (!response.ok) {
+      throw new Error(extractBackendErrorMessage(payload) || `手边导入失败：HTTP ${response.status}`);
+    }
+    if (!payload?.ok && !Number(payload?.imported || 0)) {
+      throw new Error(extractBackendErrorMessage(payload) || summarizeWorkspaceImportSkipped(payload) || "没有可导入的文件");
+    }
+    await notifyWorkspaceRefresh();
+    return payload;
+  } finally {
+    workspaceImporting = false;
+  }
+}
+
+function summarizeWorkspaceImportSkipped(payload) {
+  const first = Array.isArray(payload?.skipped) ? payload.skipped[0] : null;
+  const reason = String(first?.reason || "").trim();
+  if (!reason) return "";
+  const labels = {
+    unsupported_type: "这个文件类型暂时还不支持",
+    empty_file: "文件是空的",
+    file_too_large: "文件太大了",
+    not_found: "没有找到这个路径",
+    directory_scan_limit: "这个文件夹太大了，先挑具体文件给我",
+    max_files_reached: "一次给的文件有点多，已经达到上限"
+  };
+  return labels[reason] || "文件暂时不能导入手边";
+}
+
+async function notifyWorkspaceRefresh() {
+  if (!isTauriRuntime) return;
+  try {
+    await emit(WORKSPACE_REFRESH_EVENT, { t: Date.now() });
+  } catch {
+    // The workspace window may not be open yet.
+  }
 }
 
 function isSupportedMusicPath(path) {

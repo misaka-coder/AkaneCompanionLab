@@ -6,6 +6,7 @@ import "./workspace.css";
 
 const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
+const WORKSPACE_REFRESH_EVENT = "akane-next-workspace-refresh";
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const PROFILE_USER_ID = "master";
 const SUMMARY_LIMIT = 24;
@@ -88,6 +89,9 @@ async function bindStateSync() {
   try {
     await listen(SETTINGS_SNAPSHOT_EVENT, (event) => {
       applySettingsSnapshot(event.payload);
+    });
+    await listen(WORKSPACE_REFRESH_EVENT, () => {
+      scheduleWorkspaceRefresh(120);
     });
     await sendCommand("requestSnapshot");
   } catch {
