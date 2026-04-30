@@ -667,13 +667,15 @@ function renderResourceAlert() {
   const messages = [];
 
   if (health === "offline") {
-    messages.push(resource.retrying ? "后端离线，当前使用本地立绘，并会轻量重试。" : "后端离线，当前使用本地立绘。");
+    messages.push(
+      resource.retrying ? "后端离线，当前使用本地兜底立绘，并会轻量重试。" : "后端离线，当前使用本地兜底立绘。"
+    );
   } else if (health === "checking") {
-    messages.push("正在检查后端与资源。");
+    messages.push("正在检查后端与角色包资源清单。");
   } else if (health === "online" && resource.contractSource === "legacy") {
     messages.push("后端已连接，但尚未提供桌宠健康契约，当前使用旧健康检查兼容。");
   } else if (isFallback) {
-    messages.push("当前使用本地立绘。");
+    messages.push("未使用统一资源清单，当前使用本地可见立绘。");
   }
 
   if (missingRequired.length) {
@@ -1014,10 +1016,10 @@ function buildText(tagName, text) {
 
 function sourceLabel(source) {
   return {
-    manifest: "后端资源",
-    character_pack: "角色包资源",
-    bundled: "内置资源"
-  }[String(source || "")] || "本地资源";
+    manifest: "当前角色包",
+    character_pack: "本地角色包",
+    bundled: "内置兜底"
+  }[String(source || "")] || "本地兜底";
 }
 
 function healthLabel(health) {

@@ -7,7 +7,7 @@ current prototype without forking the whole Tauri app.
 ## Current Shape
 
 - `characters/akane_sample/`
-  - The first runtime character pack used by `desktop_pet_next`.
+  - The first runtime character pack used by `desktop_pet_next`, including the Akane catgirl portrait set.
 - `characters/mika_sample/`
   - A second no-art sample used to verify multi-pack selection and delivery.
 - `templates/character_pack/`
@@ -109,9 +109,10 @@ The first Creator Kit slice is intentionally small:
 - a paid delivery checklist
 - setup and replacement docs
 
-The desktop client still reuses the existing `desktop_pet_next` code. If a
-character pack has no external images yet, the app falls back to the bundled
-catgirl assets. Runtime zip import, backend persona loading, and installer
+The desktop client still reuses the existing `desktop_pet_next` code. Character
+packs with images are now the desktop pet's primary resource source. If a pack
+has no images yet, the app falls back to local visible art so creators can still
+test metadata while preparing assets. Backend persona loading and installer
 polish come later.
 
 ## Product Hypothesis

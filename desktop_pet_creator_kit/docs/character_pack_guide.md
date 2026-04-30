@@ -149,7 +149,8 @@ creator handoff.
 
 ## Samples
 
-- `characters/akane_sample/` is the main Akane runtime sample.
+- `characters/akane_sample/` is the main Akane runtime sample and includes the
+  catgirl portrait set used by the desktop pet.
 - `characters/mika_sample/` is a second no-art sample for checking multi-pack
   selection, export, import, and paid-delivery flow without requiring a new art
   set.

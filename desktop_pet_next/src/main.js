@@ -1124,7 +1124,7 @@ function updateMenuLabels() {
   els.hitboxOverlayToggle.textContent = state.hitboxOverlay ? "Hitbox: on" : "Hitbox: off";
   if (els.menuSummary) {
     const outfit = getActiveOutfit();
-    const source = resourceState.source === "manifest" ? "后端资源" : "本地资源";
+    const source = resourceSourceLabel(resourceState.source);
     els.menuSummary.textContent = `${outfit.id || DEFAULT_OUTFIT} · ${source} · ${state.currentEmotion || DEFAULT_EMOTION}`;
   }
   renderPresetChips();
@@ -4633,10 +4633,10 @@ function buildResourceIssues(outfit, emotions = listOutfitEmotions(outfit)) {
 
 function resourceSourceLabel(source) {
   return {
-    manifest: "后端资源",
-    character_pack: "角色包资源",
-    bundled: "内置资源"
-  }[String(source || "")] || "本地资源";
+    manifest: "当前角色包",
+    character_pack: "本地角色包",
+    bundled: "内置兜底"
+  }[String(source || "")] || "本地兜底";
 }
 
 function getLocalResourceSource() {

@@ -9,17 +9,17 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 - Catgirl Akane static portraits are copied into this prototype package.
 - Dragging is limited to an approximate portrait hit region.
 - Window position and size are persisted through Rust-side app config storage.
-- The right-click menu in the pet window is now a compact quick menu for input, settings, new session, resource reload, and exit, so it no longer covers the portrait.
+- The right-click menu in the pet window is now a compact quick menu for input, settings, new session, character-resource reload, and exit, so it no longer covers the portrait.
 - Scale, opacity, outfit, backend check, always-on-top, taskbar visibility, reset, close, WebGL probe, and temporary click-through probe are exposed from an independent Tauri settings window.
 - The settings window can install Creator Kit exported character-pack zip files into `desktop_pet_creator_kit/characters/`, open that folder, and copy the last installed pack path; newly installed packs become selectable after restart or rebuild because pack discovery is currently build/dev-time.
 - Scale and opacity have Electron-style quick presets in addition to sliders.
-- The settings window includes a resource panel that lists manifest outfits, active outfit, resource source, backend status, emotion count, and missing required/recommended expressions.
+- The settings window includes a resource panel that lists current character-pack outfits, active outfit, resource source, backend status, emotion count, and missing required/recommended expressions.
 - Outfit cards can switch the active outfit; switching reloads `/resource-manifest` and persists the selected outfit.
 - Windows native hit-test is available behind the `Hit-Test: on/off` menu switch. It uses an approximate portrait polygon plus control rectangles so blank transparent areas can pass through to windows underneath.
 - `Hitbox: on/off` draws the current hit regions for tuning the portrait polygon and menu/input regions.
 - A visible close button is also available in the top-right corner of the prototype window.
 - Character resources are loaded from `/resource-manifest` when the backend is available. Desktop-pet requests include the active Creator Kit `character_pack_id`, so the backend resource prompt and the visible pet use the same character-pack outfit/emotion list. Bundled catgirl assets remain the offline fallback.
-- The menu shows resource source, active outfit, expression count, session suffix, and a manifest-driven emotion preview grid.
+- The menu shows resource source, active outfit, expression count, session suffix, and a character-pack-driven emotion preview grid.
 - Emotion preview is temporary and non-persistent; it restores the previous expression and does not change the dialogue state.
 - Backend offline or manifest failures are surfaced in the settings window, with bundled catgirl assets used as the visible fallback and a quiet reconnect retry while the Tauri app stays open.
 - Backend health now prefers `/desktop-pet/health`, falls back to legacy `/health`, and surfaces the desktop-pet contract version plus TTS/ASR endpoint status in settings.
@@ -52,7 +52,7 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 - Local single-click lines temporarily change expression and then restore the previous expression without persisting the local expression.
 - `新对话` creates a fresh independent `sessionId` while keeping `profileUserId = master`.
 - `speech_segments` are displayed one segment at a time and take precedence over `speech`.
-- The menu displays backend/resource status, and `重载立绘` rechecks health plus `/resource-manifest`.
+- The menu displays backend/resource status, and `重载资源` rechecks health plus `/resource-manifest`.
 - The WebGL probe only verifies transparent Canvas/WebGL viability. It is not a Live2D integration yet.
 
 ## Deferred
