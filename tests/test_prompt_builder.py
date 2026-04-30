@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from companion_v01.persona_config import load_persona_config
-from companion_v01.prompt_blocks import build_desktop_pet_system_prompt
+from companion_v01.prompt_blocks import build_desktop_pet_system_prompt, build_qq_text_system_prompt
 from companion_v01.prompt_builder import PromptBuilder
 from companion_v01.prompt_profiles import PromptProfileRegistry
 from companion_v01.client_protocol import ClientMode
@@ -253,10 +253,23 @@ system = "semantic reinforcement system"
 
         self.assertIn("desktop_pet 桌宠模式", prompt)
         self.assertIn("只能从本轮给你的角色包资源清单里选择服装和表情", prompt)
+        self.assertIn("当用户明确要求你生成、转换、发送或处理文件", prompt)
         self.assertIn("activity 是给桌宠执行的请求", prompt)
         self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", prompt)
         self.assertNotIn("scene.major 表示场景大类", prompt)
         self.assertNotIn("像 galgame 选项", prompt)
+        self.assertNotIn("QQ 文字聊天模式", prompt)
+
+    def test_qq_text_system_prompt_is_block_composed_and_text_scoped(self) -> None:
+        prompt = build_qq_text_system_prompt()
+
+        self.assertIn("当前是 QQ 文字聊天模式", prompt)
+        self.assertIn("当用户明确要求你生成、转换、发送或处理文件", prompt)
+        self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", prompt)
+        self.assertNotIn("desktop_pet 桌宠模式", prompt)
+        self.assertNotIn("scene.major 表示场景大类", prompt)
+        self.assertNotIn("character.outfit 表示服装大类", prompt)
+        self.assertNotIn("activity 是给桌宠执行的请求", prompt)
 
     def test_desktop_pet_profile_override_removes_generic_scene_rules_from_final_prompt(self) -> None:
         persona = load_persona_config()

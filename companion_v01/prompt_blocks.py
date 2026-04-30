@@ -6,6 +6,42 @@ from dataclasses import dataclass
 CURRENT_ASSISTANT_STATE_MARKER = "[CURRENT ASSISTANT STATE - EMBODY THIS]"
 
 
+COMMON_RESPONSE_BLOCKS = (
+    "json_object_only",
+    "mode_schema_contract",
+    "field_order",
+    "memory_tags",
+    "reply_bubbles",
+    "code_snippet",
+    "status_choices",
+    "tool_call",
+    "tool_execution_intent",
+    "time_awareness",
+    "persona_state",
+)
+
+SCENE_STATIC_SYSTEM_BLOCKS = (
+    *COMMON_RESPONSE_BLOCKS,
+    "scene_visual_resources",
+    "current_assistant_state",
+)
+
+SCENE_LIVE2D_SYSTEM_BLOCKS = SCENE_STATIC_SYSTEM_BLOCKS
+
+DESKTOP_PET_SYSTEM_BLOCKS = (
+    *COMMON_RESPONSE_BLOCKS,
+    "desktop_pet_visual",
+    "desktop_pet_activity",
+    "current_assistant_state",
+)
+
+QQ_TEXT_SYSTEM_BLOCKS = (
+    *COMMON_RESPONSE_BLOCKS,
+    "qq_text_mode",
+    "current_assistant_state",
+)
+
+
 @dataclass(frozen=True)
 class PromptBlock:
     id: str
@@ -28,6 +64,18 @@ class PromptBlockRegistry:
                     "你必须只输出一个合法 JSON 对象，不能输出任何额外解释、前后缀、代码块或 markdown。"
                 ),
             ),
+            "mode_schema_contract": PromptBlock(
+                id="mode_schema_contract",
+                text=(
+                    "你会收到当前模式对应的字段清单和输出示例，必须严格按当前模式执行。"
+                ),
+            ),
+            "field_order": PromptBlock(
+                id="field_order",
+                text=(
+                    "请先完整输出 emotion，再输出 speech 和 speech_segments，紧接着输出 tool_call，再继续输出后面的字段。"
+                ),
+            ),
             "reply_bubbles": PromptBlock(
                 id="reply_bubbles",
                 text=(
@@ -40,7 +88,8 @@ class PromptBlockRegistry:
                 id="memory_tags",
                 text=(
                     "memory_tags 只用于后续记忆检索，目标是给“用户当前这句话”补几个便于召回的关键词。\n"
-                    "只有当用户当前这句话本身包含以后可能需要回忆的事实、事件、安排、偏好、身份线索时，才输出 1 到 4 个关键词或短短语；否则输出空字符串。"
+                    "只有当用户当前这句话本身包含以后可能需要回忆的事实、事件、安排、偏好、身份线索时，才输出 1 到 4 个关键词或短短语；否则输出空字符串。\n"
+                    "关键词要短，优先使用平时聊天里会说的名词或短短语，用逗号分隔。"
                 ),
             ),
             "tool_call": PromptBlock(
@@ -55,7 +104,30 @@ class PromptBlockRegistry:
                 id="code_snippet",
                 text=(
                     "如果用户明确在问编程、代码、语法、算法或调试问题，可以额外输出 code_snippet。\n"
-                    "code_snippet 只放纯代码或纯示例文本，不要带 markdown 代码块围栏；没有代码时输出空字符串。"
+                    "code_snippet 只放纯代码或纯示例文本，不要带 markdown 代码块围栏；没有代码时输出空字符串。\n"
+                    "这类情况下，speech 负责自然解释，code_snippet 负责真正的示例。"
+                ),
+            ),
+            "status_choices": PromptBlock(
+                id="status_choices",
+                text=(
+                    "status 通常输出 final；如果你主动给用户提供可选项，也可以输出 choice。\n"
+                    "choices 必须是 JSON 数组；没有选项时输出空数组。\n"
+                    "每个选项都应是包含 id 和 text 的对象，text 要短一些。"
+                ),
+            ),
+            "tool_execution_intent": PromptBlock(
+                id="tool_execution_intent",
+                text=(
+                    "当用户明确要求你生成、转换、发送或处理文件，或在已有任务后说“开始、继续、直接做”时，优先调用对应工具，不要只口头说明“我现在开始”。\n"
+                    "任务工作区只是记录进度，不能替代真正执行。\n"
+                    "当系统把工具结果交还给你时，如果任务仍然缺少下一步必要处理，可以继续在 tool_call 中调用下一步工具；如果结果已经足够，就把 tool_call 设为 null 并自然回复。"
+                ),
+            ),
+            "time_awareness": PromptBlock(
+                id="time_awareness",
+                text=(
+                    "你拥有比较特别的时间感知能力，你要利用这些时间信息判断聊天频率、冷场时长、话题连续性和情绪节奏。"
                 ),
             ),
             "persona_state": PromptBlock(
@@ -63,6 +135,16 @@ class PromptBlockRegistry:
                 text=(
                     "persona.active 表示当前表达侧面 id；保持当前值表示延续，写其它已有 id 表示切换，写空字符串或 default 表示回到默认表达。\n"
                     "manage_persona 只用于创建、微调、查看、归档或删除表达侧面卡片本身。"
+                ),
+            ),
+            "scene_visual_resources": PromptBlock(
+                id="scene_visual_resources",
+                text=(
+                    "当前是 Web 场景模式。emotion 只用于同一套服装下切换表情；character.outfit 表示服装大类。\n"
+                    "scene.major 表示场景大类，scene.minor 表示子场景，scene.background 表示该子场景下的背景变体，scene.bgm 表示背景音乐。\n"
+                    "只能从本轮给你的可用资源里选择，不要编造不存在的背景、服装、表情或 BGM。\n"
+                    "资源清单里如果给了显示名、别名、说明，你可以按这些可读名字理解资源；输出时优先写稳定 id。\n"
+                    "你会额外收到一个“当前演出状态”作为本轮的基准参考；如果语气、话题、事件推进已经明显更适合新的演出状态，请自然切换。"
                 ),
             ),
             "desktop_pet_visual": PromptBlock(
@@ -80,6 +162,13 @@ class PromptBlockRegistry:
                     "activity 只用于桌宠播放控制；没有播放、暂停、继续、停止、上一首、下一首或切换音频的真实意图时输出 null。\n"
                     'activity 格式为 {"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"可选 file/audio/gen handle"}。\n'
                     "activity 是给桌宠执行的请求，不是完成回执；不要在 speech 里假装动作已经播放、暂停或继续。"
+                ),
+            ),
+            "qq_text_mode": PromptBlock(
+                id="qq_text_mode",
+                text=(
+                    "当前是 QQ 文字聊天模式。QQ 端只发送文字、气泡、文件或工具结果，不渲染 character、scene、background、BGM 或桌宠 activity。\n"
+                    "不要输出只对 Web 场景或桌宠渲染有意义的演出规划。"
                 ),
             ),
             "current_assistant_state": PromptBlock(
@@ -100,15 +189,17 @@ class PromptBlockRegistry:
         return "\n\n".join(parts)
 
 
+def build_system_prompt(*block_ids: str) -> str:
+    return PromptBlockRegistry().compose(*block_ids)
+
+
+def build_scene_static_system_prompt() -> str:
+    return build_system_prompt(*SCENE_STATIC_SYSTEM_BLOCKS)
+
+
 def build_desktop_pet_system_prompt() -> str:
-    return PromptBlockRegistry().compose(
-        "json_object_only",
-        "reply_bubbles",
-        "memory_tags",
-        "code_snippet",
-        "tool_call",
-        "persona_state",
-        "desktop_pet_visual",
-        "desktop_pet_activity",
-        "current_assistant_state",
-    )
+    return build_system_prompt(*DESKTOP_PET_SYSTEM_BLOCKS)
+
+
+def build_qq_text_system_prompt() -> str:
+    return build_system_prompt(*QQ_TEXT_SYSTEM_BLOCKS)
