@@ -23,6 +23,7 @@ class ClientModeArchitectureDocsTests(unittest.TestCase):
             "PromptProfileRegistry",
             "CapabilityRegistry",
             "OutputAdapterRegistry",
+            "DesktopPetOutputAdapter",
             "SCENE_STATIC_SYSTEM_BLOCKS",
             "DESKTOP_PET_SYSTEM_BLOCKS",
             "QQ_TEXT_SYSTEM_BLOCKS",

@@ -174,7 +174,7 @@ Files:
 
 `final_output_engine.py` handles common fallback, speech normalization, tool call normalization, persona request normalization, visual defaults, and desktop `activity`.
 
-`output_adapters.py` trims or annotates the output for a client. QQ already removes scene and character rendering fields. Desktop pet currently keeps compatibility fields after final normalization; if desktop output should become leaner later, add a dedicated `DesktopPetOutputAdapter`.
+`output_adapters.py` trims or annotates the output for a client. QQ removes scene and character rendering fields. Desktop pet uses `DesktopPetOutputAdapter` to keep `character.outfit`, `emotion`, speech fields, tools, persona, and `activity`, while removing Web-only `scene`, `live2d`, and `pet` renderer fields from the response payload.
 
 Important rule:
 

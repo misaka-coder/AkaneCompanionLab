@@ -101,11 +101,28 @@ class QQTextOutputAdapter(OutputAdapter):
         return self._annotate(normalized, context)
 
 
+class DesktopPetOutputAdapter(OutputAdapter):
+    def normalize_output(self, output: dict[str, Any], context: ClientProtocolContext) -> dict[str, Any]:
+        normalized = dict(output or {})
+        normalized.pop("scene", None)
+        normalized.pop("live2d", None)
+        normalized.pop("pet", None)
+
+        character = normalized.get("character")
+        if isinstance(character, dict):
+            outfit = str(character.get("outfit") or character.get("outfit_id") or "").strip()
+            normalized["character"] = {"outfit": outfit} if outfit else {}
+        else:
+            normalized.pop("character", None)
+        return self._annotate(normalized, context)
+
+
 class OutputAdapterRegistry:
     def __init__(self) -> None:
         self._adapters: dict[ClientMode, OutputAdapter] = {
             ClientMode.SCENE_STATIC: SceneStaticOutputAdapter(),
             ClientMode.QQ_TEXT: QQTextOutputAdapter(),
+            ClientMode.DESKTOP_PET: DesktopPetOutputAdapter(),
         }
 
     def normalize(self, output: dict[str, Any], context: ClientProtocolContext) -> dict[str, Any]:

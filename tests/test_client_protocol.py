@@ -85,6 +85,33 @@ class ClientProtocolTests(unittest.TestCase):
         self.assertNotIn("last_scene", output["_runtime_state"])
         self.assertNotIn("last_character", output["_runtime_state"])
 
+    def test_desktop_pet_adapter_strips_web_fields_but_keeps_character_and_activity(self) -> None:
+        context = ModeProfileRegistry().resolve_from_payload({"client_mode": "desktop_pet"})
+        output = OutputAdapterRegistry().normalize(
+            {
+                "emotion": "happy",
+                "speech": "主人，我在。",
+                "scene": {"major": "home", "minor": "room", "background": "night", "bgm": "quiet"},
+                "character": {"outfit": "猫娘", "sprite": "legacy_sprite"},
+                "live2d": {"model": "akane"},
+                "pet": {"motion": "idle"},
+                "activity": {"action": "pause", "target": "current"},
+            },
+            context,
+        )
+
+        self.assertEqual(output["client_mode"], "desktop_pet")
+        self.assertEqual(output["character"], {"outfit": "猫娘"})
+        self.assertEqual(output["activity"], {"action": "pause", "target": "current"})
+        self.assertNotIn("scene", output)
+        self.assertNotIn("live2d", output)
+        self.assertNotIn("pet", output)
+        self.assertEqual(output["_runtime_state"]["last_character"]["outfit_id"], "猫娘")
+        self.assertEqual(output["_runtime_state"]["last_character"]["expression_id"], "happy")
+        self.assertNotIn("last_scene", output["_runtime_state"])
+        self.assertNotIn("last_live2d", output["_runtime_state"])
+        self.assertNotIn("last_pet", output["_runtime_state"])
+
     def test_scene_static_prompt_profile_keeps_full_scene_modules(self) -> None:
         context = ModeProfileRegistry().resolve_from_payload({"client_mode": "scene_static"})
         profile = PromptProfileRegistry().resolve(context)

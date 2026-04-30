@@ -12,17 +12,13 @@ from companion_v01.desktop_pet_contract import (
     decorate_resource_manifest_for_desktop_pet,
 )
 from companion_v01.final_output_engine import normalize_final_output
+from companion_v01.output_adapters import OutputAdapterRegistry
 from companion_v01.resource_manifest import ResourceManifest
 
 
 def write_bytes(path: Path, content: bytes = b"stub") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
-
-
-class FakeOutputAdapterRegistry:
-    def normalize(self, payload, _client_context):
-        return payload
 
 
 class FakeEngine:
@@ -48,7 +44,7 @@ class FakeEngine:
         return None
 
     def _get_output_adapter_registry(self):
-        return FakeOutputAdapterRegistry()
+        return OutputAdapterRegistry()
 
     def _get_user_runtime_projection(self, _profile_user_id):
         return {
@@ -182,6 +178,11 @@ class DesktopPetBackendContractTests(unittest.TestCase):
 
         self.assertIn(normalized["emotion"], {"开心", "害羞"})
         self.assertNotEqual(normalized["emotion"], "思考中")
+        self.assertEqual(normalized["client_mode"], "desktop_pet")
+        self.assertEqual(normalized["character"], {"outfit": "猫娘"})
+        self.assertNotIn("scene", normalized)
+        self.assertNotIn("last_scene", normalized["_runtime_state"])
+        self.assertEqual(normalized["_runtime_state"]["last_character"]["outfit_id"], "猫娘")
 
 
 if __name__ == "__main__":
