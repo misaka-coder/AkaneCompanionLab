@@ -39,6 +39,22 @@ standard image folders. After that, put the default portrait at:
 characters/my_character/assets/characters/default/normal.png
 ```
 
+If you already have expression images, create a draft pack directly from the
+image folder:
+
+```powershell
+npm run create -- --from-images ./raw_images --id my_character --name Mika --export
+```
+
+Image file names become emotion ids, so `正常.png`, `开心.webp`, and
+`思考中.jpg` become selectable emotions. Direct child folders become outfit
+folders. `--export` writes the installable zip after validation. The shorthand
+form is:
+
+```powershell
+npm run draft -- ./raw_images --id my_character --name Mika --export
+```
+
 ## Check A Pack
 
 From this folder:
@@ -102,7 +118,7 @@ The first Creator Kit slice is intentionally small:
 - a character-pack creator command
 - local click lines
 - basic asset contract notes
-- external character images under `assets/characters/<outfit>/<emotion>.png`
+- external character images under `assets/characters/<outfit>/<emotion>.<png|jpg|jpeg|webp>`
 - a local pack validator
 - a settings-window character pack selector
 - a second sample character pack

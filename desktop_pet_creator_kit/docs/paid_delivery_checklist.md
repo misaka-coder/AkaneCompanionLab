@@ -18,7 +18,7 @@ pet delivery.
 
 - Create a new folder under `characters/<pack_id>/`.
 - Fill `character.json`, `character.toml`, and `persona.md`.
-- Put portraits under `assets/characters/<outfit>/<emotion>.png`.
+- Put portraits under `assets/characters/<outfit>/<emotion>.<png|jpg|jpeg|webp>`.
 - Run:
 
 ```powershell

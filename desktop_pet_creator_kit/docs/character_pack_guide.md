@@ -12,8 +12,8 @@ Runtime packs live under:
 desktop_pet_creator_kit/characters/<pack_id>/
 ```
 
-The settings window discovers those folders at build/dev time and lets you
-select the active pack.
+The settings window refreshes those folders at runtime and lets you select the
+active pack.
 
 ## Create Command
 
@@ -31,6 +31,29 @@ finish with a warning that the app will use bundled fallback art.
 The pack id should be a stable folder id such as `my_character`. Outfit and
 emotion names can be creator-facing names such as `猫娘` or `正常`, because those
 map directly to image folders and file names.
+
+If the creator already has expression images, draft the pack from that folder:
+
+```powershell
+npm run create -- --from-images ./raw_images --id my_character --name Mika --export
+```
+
+The source folder can contain image files directly for the default outfit, and
+direct child folders for additional outfits:
+
+```text
+raw_images/
+  正常.png
+  开心.webp
+  思考中.jpg
+  睡衣/
+    normal.png
+    sleepy.png
+```
+
+File names become emotion ids. The command copies the images, infers default
+and music emotions when possible, writes metadata/persona drafts, validates the
+pack, and exports a zip when `--export` is present.
 
 ## Required Files
 
@@ -91,7 +114,7 @@ Recommended emotion aliases let the backend use English intent labels like
 The current desktop runtime scans:
 
 ```text
-assets/characters/<outfit>/<emotion>.png
+assets/characters/<outfit>/<emotion>.<png|jpg|jpeg|webp>
 ```
 
 Each folder under `assets/characters/` becomes a selectable outfit. Each image

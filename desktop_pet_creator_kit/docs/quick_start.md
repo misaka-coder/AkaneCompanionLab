@@ -68,6 +68,23 @@ Then put the default portrait image here:
 characters/my_character/assets/characters/default/normal.png
 ```
 
+If you already have a folder of expression images, you can draft the pack in one
+step:
+
+```powershell
+npm run create -- --from-images ./raw_images --id my_character --name Mika --export
+```
+
+The command copies supported images (`png`, `jpg`, `jpeg`, `webp`) into the
+pack, infers emotion ids from file names, writes `character.json`,
+`character.toml`, `persona.md`, validates the result, and exports a zip when
+`--export` is present. Direct child folders under `raw_images` become outfit
+folders. You can also use the shorthand:
+
+```powershell
+npm run draft -- ./raw_images --id my_character --name Mika --export
+```
+
 ## Check The Character Pack
 
 From the Creator Kit folder:
@@ -106,8 +123,8 @@ Use `--as new_pack_id` to install under a different folder name, and `--force`
 to overwrite an existing pack after validation passes.
 
 In the Tauri settings window, you can also use `导入 zip` or drag an exported
-Creator Kit zip onto the character-pack area. The current runtime discovers
-newly installed packs after the desktop pet refreshes its runtime pack list.
+Creator Kit zip onto the character-pack area. The desktop pet refreshes the
+runtime pack list after import and can apply the new pack immediately.
 
 For paid handoff work, see `docs/paid_delivery_checklist.md`.
 For install testing, see `docs/install_and_test.md`.
@@ -122,8 +139,8 @@ characters/my_character/character.toml
 characters/my_character/persona.md
 ```
 
-Restart or reload the desktop pet, open settings, and choose the new pack from
-the character-pack selector.
+Reload resources or reopen settings, then choose the new pack from the
+character-pack selector.
 
 ## What You Can Change First
 
@@ -137,14 +154,15 @@ For the first MVP, the safest fields to edit are:
 - `appearance.default_outfit`
 - `appearance.default_emotion`
 
-After editing, restart the Tauri dev app.
+After editing metadata or replacing images, use `重载资源` or reopen the app if
+the current WebView has cached an older asset.
 
 ## Current Limit
 
-The desktop pet discovers character folders at dev/build time, and scans pack
-assets from:
+The desktop pet refreshes character folders at runtime, and scans pack assets
+from:
 
-`desktop_pet_creator_kit/characters/akane_sample/assets/characters/<outfit>/<emotion>.png`
+`desktop_pet_creator_kit/characters/akane_sample/assets/characters/<outfit>/<emotion>.<png|jpg|jpeg|webp>`
 
 Replace `akane_sample` with the active pack folder. If that folder has no
 images, the app falls back to the bundled `desktop_pet_next/src/assets/characters/猫娘/`

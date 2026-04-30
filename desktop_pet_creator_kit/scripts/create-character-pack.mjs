@@ -8,9 +8,11 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 const SCHEMA_VERSION = "akane.character.v0.1";
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const kitRoot = path.resolve(scriptDir, "..");
 const validatorPath = path.join(scriptDir, "validate-character-pack.mjs");
+const exporterPath = path.join(scriptDir, "export-character-pack.mjs");
 const DEFAULT_CHARACTERS_DIR = path.join(kitRoot, "characters");
 
 async function main() {
@@ -32,18 +34,28 @@ async function main() {
     throw new Error(`Pack already exists: ${targetDir}. Re-run with --force to overwrite it.`);
   }
 
+  const imageDraft = answers.fromImages
+    ? await buildImageDraft({
+        sourceDir: path.resolve(process.cwd(), answers.fromImages),
+        defaultOutfit: answers.outfit,
+        preferredEmotion: answers.emotion,
+        preferredMusicEmotion: answers.musicEmotion
+      })
+    : null;
+
   const pack = buildPack({
     id: packId,
     name: answers.name,
     appName: answers.appName,
     userTitle: answers.userTitle,
-    outfit: answers.outfit,
-    emotion: answers.emotion,
-    musicEmotion: answers.musicEmotion
+    outfit: imageDraft?.defaultOutfit || answers.outfit,
+    emotion: imageDraft?.defaultEmotion || answers.emotion,
+    musicEmotion: imageDraft?.musicEmotion || answers.musicEmotion,
+    availableEmotions: imageDraft?.allEmotions || []
   });
 
   if (answers.dryRun) {
-    printPreview({ pack, targetDir, outfit: answers.outfit, emotion: answers.emotion });
+    printPreview({ pack, targetDir, imageDraft });
     return;
   }
 
@@ -55,11 +67,15 @@ async function main() {
   await writePack({
     targetDir,
     pack,
-    outfit: answers.outfit,
-    emotion: answers.emotion
+    outfit: pack.appearance.default_outfit,
+    emotion: pack.appearance.default_emotion,
+    imageDraft
   });
   runValidator(targetDir);
-  printResult({ pack, targetDir, outfit: answers.outfit, emotion: answers.emotion });
+  if (answers.exportZip) {
+    runExporter(targetDir);
+  }
+  printResult({ pack, targetDir, imageDraft, exportZip: answers.exportZip });
 }
 
 function parseArgs(args) {
@@ -71,8 +87,10 @@ function parseArgs(args) {
     outfit: "",
     emotion: "",
     musicEmotion: "",
+    fromImages: "",
     to: "",
     force: false,
+    exportZip: false,
     dryRun: false,
     help: false
   };
@@ -85,6 +103,10 @@ function parseArgs(args) {
     }
     if (arg === "--dry-run") {
       options.dryRun = true;
+      continue;
+    }
+    if (arg === "--export") {
+      options.exportZip = true;
       continue;
     }
     if (arg === "--help" || arg === "-h") {
@@ -100,6 +122,7 @@ function parseArgs(args) {
       "--outfit": "outfit",
       "--emotion": "emotion",
       "--music-emotion": "musicEmotion",
+      "--from-images": "fromImages",
       "--to": "to"
     };
     const key = valueArgs[arg];
@@ -135,13 +158,26 @@ async function collectOptions(options) {
     const id = defaults.id || (await ask(rl, "Pack id / folder name", "my_character"));
     const suggestedName = defaults.name || titleFromId(id);
     const name = defaults.name || (await ask(rl, "Character name", suggestedName));
+    const appName = options.appName || (await ask(rl, "App display name", `${name} Pet`));
+    const userTitle = options.userTitle || (await ask(rl, "User title", "主人"));
+    const outfit = options.outfit || (await ask(rl, "Default outfit folder", "default"));
+    if (options.fromImages) {
+      return normalizeDefaults({
+        ...options,
+        id,
+        name,
+        appName,
+        userTitle,
+        outfit
+      });
+    }
     return normalizeDefaults({
       ...options,
       id,
       name,
-      appName: options.appName || (await ask(rl, "App display name", `${name} Pet`)),
-      userTitle: options.userTitle || (await ask(rl, "User title", "主人")),
-      outfit: options.outfit || (await ask(rl, "Default outfit folder", "default")),
+      appName,
+      userTitle,
+      outfit,
       emotion: options.emotion || (await ask(rl, "Default emotion image name", "normal")),
       musicEmotion: options.musicEmotion || (await ask(rl, "Music emotion image name", "listening"))
     });
@@ -154,9 +190,10 @@ function normalizeDefaults(options) {
   const id = sanitizePackId(options.id);
   const name = String(options.name || titleFromId(id) || "").trim();
   const appName = String(options.appName || (name ? `${name} Pet` : "")).trim();
+  const hasImageSource = Boolean(options.fromImages);
   const outfit = sanitizeAssetId(options.outfit || "default");
-  const emotion = sanitizeAssetId(options.emotion || "normal");
-  const musicEmotion = sanitizeAssetId(options.musicEmotion || "listening");
+  const emotion = options.emotion ? sanitizeAssetId(options.emotion) : hasImageSource ? "" : "normal";
+  const musicEmotion = options.musicEmotion ? sanitizeAssetId(options.musicEmotion) : hasImageSource ? "" : "listening";
 
   return {
     ...options,
@@ -166,7 +203,8 @@ function normalizeDefaults(options) {
     userTitle: String(options.userTitle || "主人").trim(),
     outfit,
     emotion,
-    musicEmotion
+    musicEmotion,
+    fromImages: String(options.fromImages || "").trim()
   };
 }
 
@@ -175,7 +213,12 @@ async function ask(rl, label, fallback) {
   return answer.trim() || fallback;
 }
 
-function buildPack({ id, name, appName, userTitle, outfit, emotion, musicEmotion }) {
+function buildPack({ id, name, appName, userTitle, outfit, emotion, musicEmotion, availableEmotions = [] }) {
+  const recommended = buildRecommendedEmotions({
+    availableEmotions,
+    emotion,
+    musicEmotion
+  });
   return {
     schema_version: SCHEMA_VERSION,
     identity: {
@@ -189,19 +232,16 @@ function buildPack({ id, name, appName, userTitle, outfit, emotion, musicEmotion
       default_emotion: emotion,
       music_emotion: musicEmotion,
       required_emotions: [emotion],
-      recommended_emotions: uniqueStrings(["thinking", "happy", "confused", musicEmotion])
+      recommended_emotions: recommended
     },
     dialogue: {
       input_placeholder: `和 ${name} 说点什么……`,
       session_display_title: `${name} 桌宠对话`,
       tts_test_text: `${name}：语音播放测试。`,
       proactive_wake_prompt: `${userTitle}暂时没有说话。你像坐在旁边陪伴一样，参考刚才看见的情况自然接话。`,
-      local_click_lines: [
-        { text: "我在哦。", emotion },
-        { text: "有什么新计划吗？", emotion }
-      ]
+      local_click_lines: buildLocalClickLines({ emotion, availableEmotions })
     },
-    emotion_aliases: buildEmotionAliases({ emotion, musicEmotion }),
+    emotion_aliases: buildEmotionAliases({ emotion, musicEmotion, availableEmotions }),
     assets: {
       runtime_source: "character pack assets, with desktop_pet_next bundled fallback",
       asset_root: "assets",
@@ -211,30 +251,163 @@ function buildPack({ id, name, appName, userTitle, outfit, emotion, musicEmotion
   };
 }
 
-function buildEmotionAliases({ emotion, musicEmotion }) {
+function buildRecommendedEmotions({ availableEmotions, emotion, musicEmotion }) {
+  const detected = uniqueStrings(availableEmotions);
+  if (!detected.length) {
+    return uniqueStrings(["thinking", "happy", "confused", musicEmotion]);
+  }
+  return uniqueStrings([
+    findEmotion(detected, ["思考中", "thinking", "think"]),
+    findEmotion(detected, ["开心", "happy", "joy"]),
+    findEmotion(detected, ["困惑", "confused", "question"]),
+    musicEmotion,
+    ...detected.filter((item) => item !== emotion)
+  ]).filter(Boolean);
+}
+
+function buildLocalClickLines({ emotion, availableEmotions }) {
+  const happy = findEmotion(availableEmotions, ["开心", "happy", "joy", "得意", "proud"]);
+  const thinking = findEmotion(availableEmotions, ["思考中", "thinking", "think", "困惑", "confused"]);
+  return [
+    { text: "我在哦。", emotion },
+    { text: "有什么新计划吗？", emotion: thinking || emotion },
+    { text: "今天也一起稳稳推进吧。", emotion: happy || emotion }
+  ];
+}
+
+function buildEmotionAliases({ emotion, musicEmotion, availableEmotions = [] }) {
+  const normal = findEmotion(availableEmotions, ["正常", "normal", "默认", "default", "idle", "平静"]) || emotion;
+  const thinking = findEmotion(availableEmotions, ["思考中", "thinking", "think", "困惑", "confused"]) || normal;
+  const happy = findEmotion(availableEmotions, ["开心", "happy", "joy", "得意", "proud"]) || normal;
+  const confused = findEmotion(availableEmotions, ["困惑", "confused", "question", "思考中", "thinking"]) || normal;
+  const music = findEmotion(availableEmotions, [musicEmotion, "听歌中", "listening", "music", "开心", "happy"]) || musicEmotion || normal;
   return {
-    normal: uniqueStrings([emotion, "normal"]),
-    thinking: uniqueStrings(["thinking", emotion, "normal"]),
-    happy: uniqueStrings(["happy", emotion, "normal"]),
-    confused: uniqueStrings(["confused", emotion, "normal"]),
-    music: uniqueStrings([musicEmotion, "happy", emotion, "normal"])
+    normal: uniqueStrings([normal, "normal"]),
+    idle: uniqueStrings([normal, "normal"]),
+    thinking: uniqueStrings([thinking, normal, "thinking", "normal"]),
+    think: uniqueStrings([thinking, normal, "thinking", "normal"]),
+    happy: uniqueStrings([happy, normal, "happy", "normal"]),
+    joy: uniqueStrings([happy, normal, "happy", "normal"]),
+    confused: uniqueStrings([confused, thinking, normal, "confused", "normal"]),
+    question: uniqueStrings([confused, thinking, normal, "confused", "normal"]),
+    music: uniqueStrings([music, happy, normal, "music", "normal"]),
+    listening: uniqueStrings([music, normal, "listening", "normal"])
   };
 }
 
-async function writePack({ targetDir, pack, outfit, emotion }) {
+async function writePack({ targetDir, pack, outfit, emotion, imageDraft = null }) {
   await fs.mkdir(path.join(targetDir, "assets", "characters", outfit), { recursive: true });
   await fs.writeFile(path.join(targetDir, "character.json"), `${JSON.stringify(pack, null, 2)}\n`);
   await fs.writeFile(path.join(targetDir, "character.toml"), buildToml(pack));
-  await fs.writeFile(path.join(targetDir, "persona.md"), buildPersona(pack));
+  await fs.writeFile(path.join(targetDir, "persona.md"), buildPersona(pack, { imageDraft }));
   await fs.writeFile(path.join(targetDir, "assets", "README.md"), buildAssetsReadme());
   await fs.writeFile(
     path.join(targetDir, "assets", "characters", "README.md"),
     buildCharactersReadme()
   );
-  await fs.writeFile(
-    path.join(targetDir, "assets", "characters", outfit, "README.md"),
-    buildOutfitReadme({ outfit, emotion })
-  );
+  if (imageDraft) {
+    await copyImageDraft(targetDir, imageDraft);
+    for (const draftOutfit of imageDraft.outfits) {
+      await fs.writeFile(
+        path.join(targetDir, "assets", "characters", draftOutfit.id, "README.md"),
+        buildOutfitReadme({
+          outfit: draftOutfit.id,
+          emotion: draftOutfit.id === imageDraft.defaultOutfit ? imageDraft.defaultEmotion : draftOutfit.images[0]?.emotion || emotion,
+          files: draftOutfit.images.map((image) => image.targetName)
+        })
+      );
+    }
+    return;
+  }
+  await fs.writeFile(path.join(targetDir, "assets", "characters", outfit, "README.md"), buildOutfitReadme({ outfit, emotion }));
+}
+
+async function buildImageDraft({ sourceDir, defaultOutfit, preferredEmotion, preferredMusicEmotion }) {
+  const stat = await fs.stat(sourceDir).catch(() => null);
+  if (!stat?.isDirectory()) {
+    throw new Error(`Image source folder does not exist: ${sourceDir}`);
+  }
+
+  const outfits = [];
+  const usedOutfits = new Set();
+  const rootImages = await collectImageFiles(sourceDir);
+  if (rootImages.length) {
+    outfits.push(buildDraftOutfit(uniqueAssetId(defaultOutfit, usedOutfits), rootImages));
+  }
+
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const outfitDir = path.join(sourceDir, entry.name);
+    const images = await collectImageFiles(outfitDir);
+    if (!images.length) continue;
+    outfits.push(buildDraftOutfit(uniqueAssetId(entry.name, usedOutfits), images));
+  }
+
+  if (!outfits.length) {
+    throw new Error(`No supported images found in ${sourceDir}. Supported: png, jpg, jpeg, webp.`);
+  }
+
+  const requestedOutfit = sanitizeAssetId(defaultOutfit);
+  const defaultOutfitEntry = outfits.find((outfit) => outfit.id === requestedOutfit) || outfits[0];
+  const defaultEmotions = defaultOutfitEntry.images.map((image) => image.emotion);
+  const allEmotions = uniqueStrings(outfits.flatMap((outfit) => outfit.images.map((image) => image.emotion)));
+  const defaultEmotion =
+    findEmotion(defaultEmotions, [preferredEmotion, "正常", "normal", "默认", "default", "idle", "平静"]) ||
+    defaultEmotions[0];
+  const musicEmotion =
+    findEmotion(defaultEmotions, [preferredMusicEmotion, "听歌中", "listening", "music", "开心", "happy"]) ||
+    preferredMusicEmotion ||
+    findEmotion(defaultEmotions, ["开心", "happy"]) ||
+    defaultEmotion;
+
+  return {
+    sourceDir,
+    defaultOutfit: defaultOutfitEntry.id,
+    defaultEmotion,
+    musicEmotion,
+    allEmotions,
+    outfits
+  };
+}
+
+async function collectImageFiles(sourceDir) {
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile())
+    .filter((entry) => IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase()))
+    .map((entry) => ({
+      name: entry.name,
+      sourcePath: path.join(sourceDir, entry.name),
+      extension: path.extname(entry.name).toLowerCase()
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+}
+
+function buildDraftOutfit(rawOutfitId, images) {
+  const used = new Set();
+  return {
+    id: sanitizeAssetId(rawOutfitId),
+    images: images.map((image) => {
+      const rawEmotion = path.basename(image.name, path.extname(image.name));
+      const emotion = uniqueAssetId(sanitizeAssetId(rawEmotion), used);
+      return {
+        ...image,
+        emotion,
+        targetName: `${emotion}${image.extension}`
+      };
+    })
+  };
+}
+
+async function copyImageDraft(targetDir, imageDraft) {
+  for (const outfit of imageDraft.outfits) {
+    const outfitDir = path.join(targetDir, "assets", "characters", outfit.id);
+    await fs.mkdir(outfitDir, { recursive: true });
+    for (const image of outfit.images) {
+      await fs.copyFile(image.sourcePath, path.join(outfitDir, image.targetName));
+    }
+  }
 }
 
 function buildToml(pack) {
@@ -280,7 +453,10 @@ function buildToml(pack) {
   ].join("\n");
 }
 
-function buildPersona(pack) {
+function buildPersona(pack, { imageDraft = null } = {}) {
+  const draftLine = imageDraft
+    ? `This draft was generated from ${imageDraft.allEmotions.length} expression image(s). Replace the notes below with the character's real voice before paid delivery.`
+    : "The current desktop runtime does not load this file yet. It is kept as the future backend persona source.";
   return [
     `# ${pack.identity.name} Persona`,
     "",
@@ -296,7 +472,7 @@ function buildPersona(pack) {
     "",
     "Add background, preferences, habits, and repeated motifs here.",
     "",
-    "The current desktop runtime does not load this file yet. It is kept as the future backend persona source.",
+    draftLine,
     ""
   ].join("\n");
 }
@@ -338,20 +514,17 @@ function buildCharactersReadme() {
   ].join("\n");
 }
 
-function buildOutfitReadme({ outfit, emotion }) {
+function buildOutfitReadme({ outfit, emotion, files = [] }) {
+  const visibleFiles = uniqueStrings(files.length ? files : [`${emotion}.png`, "thinking.png", "happy.png", "confused.png", "listening.png"]).slice(0, 12);
   return [
     `# ${outfit}`,
     "",
-    `Put the default portrait at \`${emotion}.png\`.`,
+    `Default emotion id: \`${emotion}\`.`,
     "",
-    "Optional recommended files:",
+    "Expression files in this outfit use their file names as emotion ids:",
     "",
     "```text",
-    `${emotion}.png`,
-    "thinking.png",
-    "happy.png",
-    "confused.png",
-    "listening.png",
+    ...visibleFiles,
     "```",
     ""
   ].join("\n");
@@ -367,16 +540,33 @@ function runValidator(targetDir) {
   }
 }
 
-function printPreview({ pack, targetDir, outfit, emotion }) {
+function runExporter(targetDir) {
+  const result = spawnSync(process.execPath, [exporterPath, targetDir], {
+    cwd: kitRoot,
+    encoding: "utf8",
+    stdio: "pipe"
+  });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.status !== 0) {
+    process.exit(result.status || 1);
+  }
+}
+
+function printPreview({ pack, targetDir, imageDraft }) {
   console.log("Akane Creator Kit character pack create preview");
   console.log(`Pack: ${targetDir}`);
   console.log(`Character: ${pack.identity.name} (${pack.identity.id})`);
-  console.log(`Default art slot: assets/characters/${outfit}/${emotion}.png`);
+  console.log(`Default art slot: assets/characters/${pack.appearance.default_outfit}/${pack.appearance.default_emotion}.*`);
+  if (imageDraft) {
+    console.log(`Image source: ${imageDraft.sourceDir}`);
+    console.log(`Images: ${imageDraft.allEmotions.length}`);
+  }
   console.log("");
   console.log(JSON.stringify(pack, null, 2));
 }
 
-function printResult({ pack, targetDir, outfit, emotion }) {
+function printResult({ pack, targetDir, imageDraft, exportZip }) {
   const relativeToCharacters = path.relative(DEFAULT_CHARACTERS_DIR, targetDir);
   const defaultCommandsPath =
     relativeToCharacters && !relativeToCharacters.startsWith("..") && !path.isAbsolute(relativeToCharacters)
@@ -387,17 +577,24 @@ function printResult({ pack, targetDir, outfit, emotion }) {
   console.log("Akane Creator Kit character pack create");
   console.log(`Pack: ${targetDir}`);
   console.log(`Character: ${pack.identity.name} (${pack.identity.id})`);
-  console.log(`Next image: ${path.join(targetDir, "assets", "characters", outfit, `${emotion}.png`)}`);
+  if (imageDraft) {
+    console.log(`Imported images: ${imageDraft.allEmotions.length}`);
+  } else {
+    console.log(`Next image: ${path.join(targetDir, "assets", "characters", pack.appearance.default_outfit, `${pack.appearance.default_emotion}.png`)}`);
+  }
   console.log("");
   console.log("Next commands:");
   console.log(`  npm run check -- ${defaultCommandsPath}`);
-  console.log(`  npm run export -- ${defaultCommandsPath}`);
+  if (!exportZip) {
+    console.log(`  npm run export -- ${defaultCommandsPath}`);
+  }
 }
 
 function printUsage() {
   console.log("Usage:");
   console.log("  npm run create");
   console.log("  npm run create -- --id my_character --name Mika");
+  console.log("  npm run create -- --from-images ./raw_images --id my_character --name Mika --export");
   console.log("  npm run create -- --id my_character --name Mika --user-title 主人 --force");
   console.log("");
   console.log("Options:");
@@ -408,8 +605,10 @@ function printUsage() {
   console.log("  --outfit <id>             Default outfit folder. Defaults to default.");
   console.log("  --emotion <id>            Default emotion image name. Defaults to normal.");
   console.log("  --music-emotion <id>      Music emotion image name. Defaults to listening.");
+  console.log("  --from-images <dir>       Copy image files into the pack and infer emotion ids from file names.");
   console.log("  --to <dir>                Parent directory. Defaults to ./characters.");
   console.log("  --force                   Overwrite an existing pack folder.");
+  console.log("  --export                  Export a zip after creating and validating the pack.");
   console.log("  --dry-run                 Print the generated metadata without writing files.");
 }
 
@@ -453,6 +652,36 @@ function sanitizeAssetId(value) {
     .replace(/\s+/g, "_")
     .replace(/^\.+|\.+$/g, "")
     .replace(/^_+|_+$/g, "") || "default";
+}
+
+function uniqueAssetId(value, used) {
+  const base = sanitizeAssetId(value);
+  let candidate = base;
+  let index = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}_${index}`;
+    index += 1;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
+function findEmotion(emotions, candidates) {
+  const list = uniqueStrings(emotions);
+  const wanted = (Array.isArray(candidates) ? candidates : [candidates]).filter(Boolean);
+  for (const candidate of wanted) {
+    const raw = String(candidate || "").trim();
+    const match = list.find((item) => item === raw);
+    if (match) return match;
+    const key = normalizeLookupKey(raw);
+    const normalizedMatch = list.find((item) => normalizeLookupKey(item) === key);
+    if (normalizedMatch) return normalizedMatch;
+  }
+  return "";
+}
+
+function normalizeLookupKey(value) {
+  return String(value || "").trim().toLowerCase().replace(/[-_\s]+/g, "");
 }
 
 function titleFromId(value) {
