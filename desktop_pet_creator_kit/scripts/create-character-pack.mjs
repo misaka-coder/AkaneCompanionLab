@@ -456,7 +456,7 @@ function buildToml(pack) {
 function buildPersona(pack, { imageDraft = null } = {}) {
   const draftLine = imageDraft
     ? `This draft was generated from ${imageDraft.allEmotions.length} expression image(s). Replace the notes below with the character's real voice before paid delivery.`
-    : "The current desktop runtime does not load this file yet. It is kept as the future backend persona source.";
+    : "The desktop-pet backend reads this file for the selected character pack. Keep the notes concise and usable as prompt reference.";
   return [
     `# ${pack.identity.name} Persona`,
     "",

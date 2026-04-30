@@ -74,7 +74,9 @@ my_character/
 `character.toml` is the future authoring shape and mirrors the same fields in a
 more creator-friendly format.
 
-`persona.md` is reference text for later backend persona extraction.
+`persona.md` is desktop-pet persona reference text. In `desktop_pet` mode the
+backend reads it, together with `character.json`, and adds it to the final prompt
+for the selected pack only. QQ and Web modes keep their separate prompt profiles.
 
 ## Minimal Runtime Fields
 
@@ -201,5 +203,5 @@ has an `打开目录` helper for opening the install folder after import.
 
 ## Next Planned Slices
 
-1. Move backend persona loading into the pack.
-2. Add buyer-facing setup notes for non-developer delivery.
+1. Add buyer-facing setup notes for non-developer delivery.
+2. Polish installer and import feedback for non-technical creators.

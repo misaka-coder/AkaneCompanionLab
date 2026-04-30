@@ -594,6 +594,51 @@ class AkaneMemoryEngine:
                         return value
         return ""
 
+    def _build_desktop_pet_character_pack_prompt_context(
+        self,
+        *,
+        character_pack_id: str,
+        resource_manifest: ResourceManifest | None = None,
+    ) -> dict[str, str]:
+        service = getattr(self, "desktop_pet_character_resources", None)
+        if service is None or not character_pack_id:
+            return {"system_context": "", "reference_context": "", "active_id": ""}
+        builder = getattr(service, "build_persona_prompt_context", None)
+        if builder is None:
+            return {"system_context": "", "reference_context": "", "active_id": ""}
+        try:
+            context = builder(
+                character_pack_id,
+                resource_manifest=resource_manifest,
+            )
+        except Exception as exc:
+            logger.warning("desktop pet character pack prompt context failed: %s", exc)
+            return {"system_context": "", "reference_context": "", "active_id": ""}
+        return context if isinstance(context, dict) else {"system_context": "", "reference_context": "", "active_id": ""}
+
+    @staticmethod
+    def _merge_prompt_persona_contexts(*contexts: dict[str, Any]) -> dict[str, str]:
+        system_parts: list[str] = []
+        reference_parts: list[str] = []
+        active_id = ""
+        for context in contexts:
+            if not isinstance(context, dict):
+                continue
+            system_context = str(context.get("system_context") or "").strip()
+            reference_context = str(context.get("reference_context") or "").strip()
+            current_active_id = str(context.get("active_id") or "").strip()
+            if system_context:
+                system_parts.append(system_context)
+            if reference_context:
+                reference_parts.append(reference_context)
+            if current_active_id:
+                active_id = current_active_id
+        return {
+            "system_context": "\n\n".join(system_parts),
+            "reference_context": "\n\n".join(reference_parts),
+            "active_id": active_id,
+        }
+
     def _get_persona_card_service(self) -> PersonaCardService | None:
         service = getattr(self, "persona_card_service", None)
         if service is not None:
@@ -1196,6 +1241,7 @@ class AkaneMemoryEngine:
 
     def process_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
         client_context = self._resolve_client_protocol_context(payload)
+        turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
         session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
@@ -1290,6 +1336,7 @@ class AkaneMemoryEngine:
             extra_user_context=turn_extra_user_context,
             client_context=client_context,
             resource_manifest=turn_resource_manifest,
+            character_pack_id=turn_character_pack_id,
             user_images=desktop_screen_images,
             final_debug_enabled=final_debug_enabled,
         )
@@ -1346,6 +1393,7 @@ class AkaneMemoryEngine:
                     ),
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
+                    character_pack_id=turn_character_pack_id,
                     user_images=desktop_screen_images,
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
@@ -1435,6 +1483,7 @@ class AkaneMemoryEngine:
                 ),
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
+                character_pack_id=turn_character_pack_id,
                 user_images=desktop_screen_images,
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
@@ -1513,6 +1562,7 @@ class AkaneMemoryEngine:
 
     def process_turn_stream(self, payload: dict[str, Any]) -> Generator[dict[str, Any], None, None]:
         client_context = self._resolve_client_protocol_context(payload)
+        turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
         session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
@@ -1607,6 +1657,7 @@ class AkaneMemoryEngine:
             extra_user_context=turn_extra_user_context,
             client_context=client_context,
             resource_manifest=turn_resource_manifest,
+            character_pack_id=turn_character_pack_id,
             user_images=desktop_screen_images,
             final_debug_enabled=final_debug_enabled,
         )
@@ -1663,6 +1714,7 @@ class AkaneMemoryEngine:
                     ),
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
+                    character_pack_id=turn_character_pack_id,
                     user_images=desktop_screen_images,
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
@@ -1754,6 +1806,7 @@ class AkaneMemoryEngine:
                 ),
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
+                character_pack_id=turn_character_pack_id,
                 user_images=desktop_screen_images,
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
@@ -1899,6 +1952,7 @@ class AkaneMemoryEngine:
         extra_user_context: str = "",
         client_context: ClientProtocolContext | None = None,
         resource_manifest: ResourceManifest | None = None,
+        character_pack_id: str = "",
         user_images: list[dict[str, Any]] | None = None,
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
@@ -1916,6 +1970,7 @@ class AkaneMemoryEngine:
             extra_user_context=extra_user_context,
             client_context=client_context,
             resource_manifest=resource_manifest,
+            character_pack_id=character_pack_id,
             allow_tool_call=allow_tool_call,
             final_debug_enabled=final_debug_enabled,
         )
@@ -1953,6 +2008,7 @@ class AkaneMemoryEngine:
         extra_user_context: str = "",
         client_context: ClientProtocolContext | None = None,
         resource_manifest: ResourceManifest | None = None,
+        character_pack_id: str = "",
         user_images: list[dict[str, Any]] | None = None,
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
@@ -1970,6 +2026,7 @@ class AkaneMemoryEngine:
             extra_user_context=extra_user_context,
             client_context=client_context,
             resource_manifest=resource_manifest,
+            character_pack_id=character_pack_id,
             allow_tool_call=allow_tool_call,
             final_debug_enabled=final_debug_enabled,
         )
@@ -2031,6 +2088,7 @@ class AkaneMemoryEngine:
         extra_user_context: str = "",
         client_context: ClientProtocolContext | None = None,
         resource_manifest: ResourceManifest | None = None,
+        character_pack_id: str = "",
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
     ) -> dict[str, Any]:
@@ -2167,6 +2225,18 @@ class AkaneMemoryEngine:
             )
             if persona_service is not None and prompt_profile.includes(PromptModule.PERSONA)
             else {"system_context": "", "reference_context": "", "active_id": ""}
+        )
+        character_pack_persona_context = (
+            self._build_desktop_pet_character_pack_prompt_context(
+                character_pack_id=character_pack_id,
+                resource_manifest=resource_manifest,
+            )
+            if desktop_pet_character_only and prompt_profile.includes(PromptModule.PERSONA)
+            else {"system_context": "", "reference_context": "", "active_id": ""}
+        )
+        persona_context = self._merge_prompt_persona_contexts(
+            character_pack_persona_context,
+            persona_context,
         )
         visual_observation_sections = [
             text

@@ -2,9 +2,9 @@
 
 Akane is the first sample character for the Creator Kit.
 
-This file is creator-facing reference text. The current `desktop_pet_next` slice
-does not load it into the backend persona yet; it documents the intended package
-boundary for later extraction.
+This file is creator-facing reference text. The `desktop_pet` backend loads it
+for the selected character pack, so it should describe the voice and boundaries
+that Akane should keep during desktop-pet replies.
 
 ## Voice
 
@@ -14,6 +14,6 @@ boundary for later extraction.
 
 ## Product Note
 
-For the first Creator Kit MVP, this character pack only drives client-side
-identity, defaults, and local click interactions. Backend persona loading will
-be a later phase.
+For the first Creator Kit MVP, this character pack drives desktop identity,
+defaults, local click interactions, available expressions, and the desktop-pet
+persona prompt. Web resources and QQ prompt behavior remain separate.

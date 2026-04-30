@@ -126,10 +126,11 @@ The first Creator Kit slice is intentionally small:
 - setup and replacement docs
 
 The desktop client still reuses the existing `desktop_pet_next` code. Character
-packs with images are now the desktop pet's primary resource source. If a pack
+packs with images are now the desktop pet's primary resource source. The backend
+also reads the selected pack's `character.json` and `persona.md` for
+`desktop_pet` prompts, while QQ and Web keep their own prompt profiles. If a pack
 has no images yet, the app falls back to local visible art so creators can still
-test metadata while preparing assets. Backend persona loading and installer
-polish come later.
+test metadata while preparing assets. Installer polish comes later.
 
 ## Product Hypothesis
 

@@ -151,6 +151,8 @@ For the first MVP, the safest fields to edit are:
 - `identity.user_title`
 - `dialogue.input_placeholder`
 - `dialogue.local_click_lines`
+- `persona.md`
+- `emotion_aliases`
 - `appearance.default_outfit`
 - `appearance.default_emotion`
 

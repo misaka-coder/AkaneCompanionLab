@@ -2,5 +2,6 @@
 
 Write the character's voice, relationship boundary, and world notes here.
 
-The first Creator Kit slice does not load this into the backend yet, but future
-versions will use this file as the character-pack persona source.
+The desktop-pet backend reads this file for the selected character pack and uses
+it as reference text in `desktop_pet` prompts. Keep it concise and practical:
+voice, address style, relationship boundary, and a few strong do/don't notes.

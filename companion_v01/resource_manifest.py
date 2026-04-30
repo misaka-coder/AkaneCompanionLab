@@ -192,7 +192,11 @@ def _normalize_emotion_id(name: Any) -> str:
     return _canon_emotion(raw) or raw
 
 
-def _emotion_candidate_ids(name: Any) -> list[str]:
+def _emotion_candidate_ids(
+    name: Any,
+    *,
+    emotion_aliases: dict[str, list[str]] | None = None,
+) -> list[str]:
     raw = str(name or "").strip()
     candidates: list[str] = []
 
@@ -203,6 +207,8 @@ def _emotion_candidate_ids(name: Any) -> list[str]:
 
     add(_normalize_emotion_id(raw))
     for item in EMOTION_FALLBACK_CANDIDATES.get(_normalize_key(raw), []):
+        add(item)
+    for item in (emotion_aliases or {}).get(_normalize_key(raw), []):
         add(item)
     return candidates
 
@@ -247,10 +253,31 @@ def _coerce_string_list(value: Any) -> list[str]:
     return []
 
 
+def _coerce_emotion_alias_map(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    alias_map: dict[str, list[str]] = {}
+    for key, aliases in value.items():
+        normalized_key = _normalize_key(key)
+        if not normalized_key:
+            continue
+        items = _coerce_string_list(aliases)
+        if items:
+            alias_map[normalized_key] = list(dict.fromkeys(items))
+    return alias_map
+
+
 class ResourceManifest:
-    def __init__(self, assets_dir: Path, public_prefix: str = "/assets"):
+    def __init__(
+        self,
+        assets_dir: Path,
+        public_prefix: str = "/assets",
+        *,
+        emotion_aliases: dict[str, list[str]] | None = None,
+    ):
         self.assets_dir = Path(assets_dir)
         self.public_prefix = self._normalize_public_prefix(public_prefix)
+        self.emotion_aliases = _coerce_emotion_alias_map(emotion_aliases or {})
         self._manifest: dict[str, Any] | None = None
 
     def refresh(self) -> dict[str, Any]:
@@ -1396,7 +1423,10 @@ class ResourceManifest:
     def _find_emotion_with_aliases(self, outfit: dict[str, Any], emotion_id: str) -> dict[str, Any] | None:
         if not outfit:
             return None
-        for candidate in _emotion_candidate_ids(emotion_id):
+        for candidate in _emotion_candidate_ids(
+            emotion_id,
+            emotion_aliases=self.emotion_aliases,
+        ):
             match = self._find_emotion(outfit, candidate)
             if match is not None:
                 return match
