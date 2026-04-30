@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 import config
 from services.tts_client import EdgeTTSClient
 from .engine import AkaneMemoryEngine
+from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .public_guard import PublicThinkGuard
 from .qq_gateway import NapCatQQGateway
 from .resource_manifest import ResourceManifest
@@ -74,12 +75,17 @@ APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
 WEB_DIR = PROJECT_DIR / "web"
 ASSETS_DIR = WEB_DIR / "assets"
+CREATOR_KIT_CHARACTERS_DIR = PROJECT_DIR / "desktop_pet_creator_kit" / "characters"
 MODULES_DIR = WEB_DIR / "modules"
 VENDOR_DIR = WEB_DIR / "vendor"
 resources = ResourceManifest(ASSETS_DIR)
+desktop_pet_character_resources = DesktopPetCharacterResourceService(
+    characters_dir=CREATOR_KIT_CHARACTERS_DIR,
+)
 engine = AkaneMemoryEngine(
     Path(config.DATA_DIR) / "akane_memory_v01",
     resource_manifest=resources,
+    desktop_pet_character_resources=desktop_pet_character_resources,
 )
 USER_ASSETS_DIR = engine.gift_assets.base_dir
 tts_client = EdgeTTSClient(
@@ -102,6 +108,12 @@ qq_gateway = NapCatQQGateway()
 
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
+if CREATOR_KIT_CHARACTERS_DIR.exists():
+    app.mount(
+        "/desktop-pet-character-packs",
+        StaticFiles(directory=str(CREATOR_KIT_CHARACTERS_DIR)),
+        name="desktop_pet_character_packs",
+    )
 if USER_ASSETS_DIR.exists():
     app.mount("/user-assets", StaticFiles(directory=str(USER_ASSETS_DIR)), name="user-assets")
 

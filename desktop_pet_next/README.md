@@ -18,12 +18,12 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 - Windows native hit-test is available behind the `Hit-Test: on/off` menu switch. It uses an approximate portrait polygon plus control rectangles so blank transparent areas can pass through to windows underneath.
 - `Hitbox: on/off` draws the current hit regions for tuning the portrait polygon and menu/input regions.
 - A visible close button is also available in the top-right corner of the prototype window.
-- Character resources are loaded from `/resource-manifest` when the backend is available, with bundled catgirl assets as an offline fallback.
+- Character resources are loaded from `/resource-manifest` when the backend is available. Desktop-pet requests include the active Creator Kit `character_pack_id`, so the backend resource prompt and the visible pet use the same character-pack outfit/emotion list. Bundled catgirl assets remain the offline fallback.
 - The menu shows resource source, active outfit, expression count, session suffix, and a manifest-driven emotion preview grid.
 - Emotion preview is temporary and non-persistent; it restores the previous expression and does not change the dialogue state.
 - Backend offline or manifest failures are surfaced in the settings window, with bundled catgirl assets used as the visible fallback and a quiet reconnect retry while the Tauri app stays open.
 - Backend health now prefers `/desktop-pet/health`, falls back to legacy `/health`, and surfaces the desktop-pet contract version plus TTS/ASR endpoint status in settings.
-- `/resource-manifest` desktop-pet metadata (`clients.desktop_pet`) is used for default outfit/emotion hints when available.
+- `/resource-manifest` desktop-pet metadata (`clients.desktop_pet`) is used for default outfit/emotion hints when available, while Web resources continue to live under `web/assets`.
 - Minimal `/think` dialogue loop with `client_mode = desktop_pet`, `speech_segments`/`tts` capabilities, and optional `desktop_context` when the context toggle is enabled.
 - Single-click the portrait to show a local line without calling the backend. Local reactions can refresh themselves immediately, while active backend replies and TTS are still protected.
 - Local single-click reactions temporarily switch expression and then return to `正常`, so they do not restore the previous backend reply expression.

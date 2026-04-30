@@ -105,6 +105,12 @@ assets/characters/winter/normal.png
 
 This creates two outfits: `default` and `winter`.
 
+For the desktop pet, these character-pack assets are the resource source for
+both sides of the runtime loop: the frontend displays images from the selected
+pack, and the backend uses the same pack manifest to tell the AI which emotions
+are available. Web resources under `web/assets` remain separate and continue to
+serve the Web client.
+
 ## Validation
 
 From `desktop_pet_creator_kit/`:

@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse, Response
 
 from ..desktop_pet_contract import (
     DESKTOP_PET_CONTRACT_VERSION,
+    DESKTOP_PET_DEFAULT_EMOTION,
+    DESKTOP_PET_DEFAULT_OUTFIT,
     build_desktop_pet_health_payload,
     decorate_resource_manifest_for_desktop_pet,
 )
@@ -65,12 +67,30 @@ def build_core_router(
     @router.get("/resource-manifest")
     async def resource_manifest(request: Request) -> JSONResponse:
         session_id, profile_user_id = resolve_identity_from_query(request)
-        manifest = engine.build_resource_manifest(profile_user_id=profile_user_id)
+        client_mode = str(
+            request.query_params.get("client")
+            or request.query_params.get("client_mode")
+            or ""
+        )
+        character_pack_id = str(
+            request.query_params.get("character_pack_id")
+            or request.query_params.get("characterPackId")
+            or ""
+        )
+        preferred_outfit = str(request.query_params.get("outfit") or "")
+        preferred_emotion = str(request.query_params.get("emotion") or "")
+        manifest = engine.build_resource_manifest(
+            profile_user_id=profile_user_id,
+            client_mode=client_mode,
+            character_pack_id=character_pack_id,
+        )
         return JSONResponse(
             decorate_resource_manifest_for_desktop_pet(
                 manifest,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                preferred_outfit=preferred_outfit or DESKTOP_PET_DEFAULT_OUTFIT,
+                preferred_emotion=preferred_emotion or DESKTOP_PET_DEFAULT_EMOTION,
             ),
             headers={"Cache-Control": "no-store"},
         )

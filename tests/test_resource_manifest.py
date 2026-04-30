@@ -552,6 +552,40 @@ class ResourceManifestTests(unittest.TestCase):
         self.assertIn("水手服", prompt_context)
         self.assertIn("quiet", prompt_context)
 
+    def test_character_only_assets_get_default_scene_and_custom_public_prefix(self) -> None:
+        temp_dir, assets = self.make_assets_root()
+        self.addCleanup(temp_dir.cleanup)
+
+        write_bytes(assets / "characters" / "猫娘" / "开心.png")
+        write_bytes(assets / "characters" / "猫娘" / "害羞.png")
+
+        manifest = ResourceManifest(
+            assets,
+            public_prefix="/desktop-pet-character-packs/demo_pack/assets",
+        )
+        payload = manifest.refresh()
+        outfit = payload["characters"]["outfits"][0]
+
+        self.assertEqual(payload["defaults"]["major"], "default")
+        self.assertEqual(payload["defaults"]["outfit"], "猫娘")
+        self.assertEqual([item["id"] for item in outfit["emotions"]], ["害羞", "开心"])
+        self.assertTrue(
+            outfit["emotions"][0]["path"].startswith(
+                "/desktop-pet-character-packs/demo_pack/assets/characters/猫娘/"
+            )
+        )
+
+        normalized = manifest.normalize_visual_output(
+            {
+                "emotion": "thinking",
+                "character": {"outfit": "猫娘"},
+                "scene": {},
+            }
+        )
+
+        self.assertEqual(normalized["character"]["outfit"], "猫娘")
+        self.assertIn(normalized["emotion"], {"害羞", "开心"})
+
 
 if __name__ == "__main__":
     unittest.main()

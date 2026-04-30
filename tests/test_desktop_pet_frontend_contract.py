@@ -130,6 +130,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         settings_source = _read("desktop_pet_next/src/settings.js")
         settings_html = _read("desktop_pet_next/settings.html")
         tauri_source = _read("desktop_pet_next/src-tauri/src/main.rs")
+        main_source = _read("desktop_pet_next/src/main.js")
 
         self.assertIn('id="character-pack-zip"', settings_html)
         self.assertIn('id="choose-character-pack-zip"', settings_html)
@@ -145,6 +146,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("install_character_pack_zip_file", tauri_source)
         self.assertIn("open_path_in_file_manager", tauri_source)
         self.assertIn("DEFAULT_CHARACTER_PACK_ID", tauri_source)
+        self.assertIn("character_pack_id: getCurrentCharacterPackId()", main_source)
+        self.assertIn("client: CLIENT_MODE", main_source)
+        self.assertIn("function getCurrentCharacterPackId()", main_source)
 
 
 if __name__ == "__main__":

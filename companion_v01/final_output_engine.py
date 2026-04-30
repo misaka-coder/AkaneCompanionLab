@@ -17,8 +17,10 @@ def normalize_final_output(
     allow_tool_call: bool,
     debug_enabled: bool,
     client_context: ClientProtocolContext | None = None,
+    resource_manifest: Any = None,
 ) -> dict[str, Any]:
     client_context = client_context or engine._resolve_client_protocol_context({})
+    manifest_service = resource_manifest or engine.resource_manifest
     raw_result = result if isinstance(result, dict) else {}
     normalized = dict(raw_result or {})
     persona_request_present = "persona" in raw_result
@@ -91,9 +93,9 @@ def normalize_final_output(
     normalized["scene"].setdefault("minor", visual_defaults["minor"])
     normalized["scene"].setdefault("background", visual_defaults["background"])
     normalized["scene"].setdefault("bgm", visual_defaults["bgm"])
-    if engine.resource_manifest:
+    if manifest_service:
         runtime_projection = engine._get_user_runtime_projection(profile_user_id)
-        normalized = engine.resource_manifest.normalize_visual_output(
+        normalized = manifest_service.normalize_visual_output(
             normalized,
             extra_bgm_tracks=list(runtime_projection.get("extra_bgm_tracks") or []),
             extra_scene_groups=list(runtime_projection.get("extra_scene_groups") or []),

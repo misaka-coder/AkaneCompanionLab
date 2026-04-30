@@ -143,7 +143,12 @@ MODE_TOOL_PACKS: dict[ClientMode, tuple[str, ...]] = {
 
 
 class AkaneMemoryEngine:
-    def __init__(self, base_dir: Path, resource_manifest: ResourceManifest | None = None):
+    def __init__(
+        self,
+        base_dir: Path,
+        resource_manifest: ResourceManifest | None = None,
+        desktop_pet_character_resources: Any = None,
+    ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.store = MemoryStore(self.base_dir)
@@ -193,6 +198,7 @@ class AkaneMemoryEngine:
         self.gift_assets = self.gift_service
         self.npc_runtime = GenericNPCRuntime(self.base_dir / "generic_npc_memory_v01", self.llm)
         self.resource_manifest = resource_manifest
+        self.desktop_pet_character_resources = desktop_pet_character_resources
         sticker_assets_dir = (
             Path(getattr(resource_manifest, "assets_dir"))
             if resource_manifest is not None and getattr(resource_manifest, "assets_dir", None)
@@ -267,10 +273,21 @@ class AkaneMemoryEngine:
         self.desktop_screen_vision.reset()
         self.npc_runtime.reset()
 
-    def build_resource_manifest(self, *, profile_user_id: str = "") -> dict[str, Any]:
+    def build_resource_manifest(
+        self,
+        *,
+        profile_user_id: str = "",
+        client_mode: str = "",
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
+        resource_manifest = self._resolve_resource_manifest_for_client(
+            client_mode=client_mode,
+            character_pack_id=character_pack_id,
+        )
         return visual_context_engine.build_resource_manifest(
             self,
             profile_user_id=profile_user_id,
+            resource_manifest=resource_manifest,
         )
 
     def list_gift_assets(self, *, profile_user_id: str, media_kind: str = "all", limit: int = 50) -> list[dict[str, Any]]:
@@ -527,6 +544,55 @@ class AkaneMemoryEngine:
 
     def _resolve_client_protocol_context(self, payload: dict[str, Any] | None) -> ClientProtocolContext:
         return self._get_mode_profile_registry().resolve_from_payload(payload)
+
+    def _resolve_resource_manifest_for_client(
+        self,
+        *,
+        client_mode: str = "",
+        character_pack_id: str = "",
+    ) -> ResourceManifest | None:
+        raw_mode = client_mode.value if isinstance(client_mode, ClientMode) else str(client_mode or "").strip()
+        mode = ClientMode.DESKTOP_PET if raw_mode == ClientMode.DESKTOP_PET.value else None
+        if mode != ClientMode.DESKTOP_PET:
+            return self.resource_manifest
+
+        service = getattr(self, "desktop_pet_character_resources", None)
+        if service is None:
+            return self.resource_manifest
+        manifest = service.get_manifest(character_pack_id) if character_pack_id else None
+        return manifest or self.resource_manifest
+
+    def _resolve_turn_resource_manifest(
+        self,
+        payload: dict[str, Any],
+        client_context: ClientProtocolContext,
+    ) -> ResourceManifest | None:
+        if client_context.effective_mode != ClientMode.DESKTOP_PET:
+            return self.resource_manifest
+        return self._resolve_resource_manifest_for_client(
+            client_mode=client_context.effective_mode.value,
+            character_pack_id=self._resolve_payload_character_pack_id(payload),
+        )
+
+    @staticmethod
+    def _resolve_payload_character_pack_id(payload: dict[str, Any]) -> str:
+        for key in ("character_pack_id", "characterPackId", "character_pack"):
+            value = str((payload or {}).get(key) or "").strip()
+            if value:
+                return value
+        current_visual = (payload or {}).get("current_visual")
+        if isinstance(current_visual, dict):
+            for key in ("character_pack_id", "characterPackId", "character_pack"):
+                value = str(current_visual.get(key) or "").strip()
+                if value:
+                    return value
+            character = current_visual.get("character")
+            if isinstance(character, dict):
+                for key in ("character_pack_id", "characterPackId", "character_pack", "pack_id"):
+                    value = str(character.get(key) or "").strip()
+                    if value:
+                        return value
+        return ""
 
     def _get_persona_card_service(self) -> PersonaCardService | None:
         service = getattr(self, "persona_card_service", None)
@@ -1130,6 +1196,7 @@ class AkaneMemoryEngine:
 
     def process_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
         client_context = self._resolve_client_protocol_context(payload)
+        turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
         session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
         profile_user_id = str(payload.get("real_user_id") or session_id)
@@ -1222,6 +1289,7 @@ class AkaneMemoryEngine:
             current_visual_payload=payload.get("current_visual"),
             extra_user_context=turn_extra_user_context,
             client_context=client_context,
+            resource_manifest=turn_resource_manifest,
             user_images=desktop_screen_images,
             final_debug_enabled=final_debug_enabled,
         )
@@ -1277,6 +1345,7 @@ class AkaneMemoryEngine:
                         self._build_multi_tool_followup_context(tool_followups, allow_more=False),
                     ),
                     client_context=client_context,
+                    resource_manifest=turn_resource_manifest,
                     user_images=desktop_screen_images,
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
@@ -1365,6 +1434,7 @@ class AkaneMemoryEngine:
                     self._build_multi_tool_followup_context(tool_followups, allow_more=allow_more_tools),
                 ),
                 client_context=client_context,
+                resource_manifest=turn_resource_manifest,
                 user_images=desktop_screen_images,
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
@@ -1393,11 +1463,12 @@ class AkaneMemoryEngine:
                 user_record=user_record,
                 memory_tags=memory_tags,
             )
-        self._schedule_visual_observations_for_payload(
-            payload=final_output,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        )
+        if client_context.effective_mode != ClientMode.DESKTOP_PET:
+            self._schedule_visual_observations_for_payload(
+                payload=final_output,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
 
         assistant_record = self.store.add_message(
             profile_user_id=profile_user_id,
@@ -1442,6 +1513,7 @@ class AkaneMemoryEngine:
 
     def process_turn_stream(self, payload: dict[str, Any]) -> Generator[dict[str, Any], None, None]:
         client_context = self._resolve_client_protocol_context(payload)
+        turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
         session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
         profile_user_id = str(payload.get("real_user_id") or session_id)
@@ -1534,6 +1606,7 @@ class AkaneMemoryEngine:
             current_visual_payload=payload.get("current_visual"),
             extra_user_context=turn_extra_user_context,
             client_context=client_context,
+            resource_manifest=turn_resource_manifest,
             user_images=desktop_screen_images,
             final_debug_enabled=final_debug_enabled,
         )
@@ -1589,6 +1662,7 @@ class AkaneMemoryEngine:
                         self._build_multi_tool_followup_context(tool_followups, allow_more=False),
                     ),
                     client_context=client_context,
+                    resource_manifest=turn_resource_manifest,
                     user_images=desktop_screen_images,
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
@@ -1679,6 +1753,7 @@ class AkaneMemoryEngine:
                     self._build_multi_tool_followup_context(tool_followups, allow_more=allow_more_tools),
                 ),
                 client_context=client_context,
+                resource_manifest=turn_resource_manifest,
                 user_images=desktop_screen_images,
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
@@ -1707,11 +1782,12 @@ class AkaneMemoryEngine:
                 user_record=user_record,
                 memory_tags=memory_tags,
             )
-        self._schedule_visual_observations_for_payload(
-            payload=final_output,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        )
+        if client_context.effective_mode != ClientMode.DESKTOP_PET:
+            self._schedule_visual_observations_for_payload(
+                payload=final_output,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
 
         ui_final_payload = dict(final_output)
 
@@ -1822,6 +1898,7 @@ class AkaneMemoryEngine:
         current_visual_payload: Any = None,
         extra_user_context: str = "",
         client_context: ClientProtocolContext | None = None,
+        resource_manifest: ResourceManifest | None = None,
         user_images: list[dict[str, Any]] | None = None,
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
@@ -1838,6 +1915,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             extra_user_context=extra_user_context,
             client_context=client_context,
+            resource_manifest=resource_manifest,
             allow_tool_call=allow_tool_call,
             final_debug_enabled=final_debug_enabled,
         )
@@ -1855,6 +1933,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             client_context=client_context,
+            resource_manifest=resource_manifest,
             allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
             debug_enabled=bool(generation_context["debug_enabled"]),
         )
@@ -1873,6 +1952,7 @@ class AkaneMemoryEngine:
         current_visual_payload: Any = None,
         extra_user_context: str = "",
         client_context: ClientProtocolContext | None = None,
+        resource_manifest: ResourceManifest | None = None,
         user_images: list[dict[str, Any]] | None = None,
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
@@ -1889,6 +1969,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             extra_user_context=extra_user_context,
             client_context=client_context,
+            resource_manifest=resource_manifest,
             allow_tool_call=allow_tool_call,
             final_debug_enabled=final_debug_enabled,
         )
@@ -1930,6 +2011,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             client_context=client_context,
+            resource_manifest=resource_manifest,
             allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
             debug_enabled=bool(generation_context["debug_enabled"]),
         )
@@ -1948,6 +2030,7 @@ class AkaneMemoryEngine:
         current_visual_payload: Any = None,
         extra_user_context: str = "",
         client_context: ClientProtocolContext | None = None,
+        resource_manifest: ResourceManifest | None = None,
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
     ) -> dict[str, Any]:
@@ -1964,11 +2047,13 @@ class AkaneMemoryEngine:
             else final_debug_enabled
         )
         debug_enabled = bool(requested_debug_enabled and prompt_profile.supports_thought_debug)
-        manifest = self.resource_manifest.refresh() if self.resource_manifest else None
+        resource_manifest = resource_manifest or self.resource_manifest
+        manifest = resource_manifest.refresh() if resource_manifest else None
         runtime_projection = self._get_user_runtime_projection(profile_user_id)
         user_bgm_tracks = list(runtime_projection.get("extra_bgm_tracks") or [])
         user_scene_groups = list(runtime_projection.get("extra_scene_groups") or [])
         user_character_outfits = list(runtime_projection.get("extra_character_outfits") or [])
+        desktop_pet_character_only = client_context.effective_mode == ClientMode.DESKTOP_PET
         raw_text = render_chat_timeline(recent_raw)
         current_message_text = self._render_current_message_line(
             current_user_record=recent_raw[-1] if recent_raw else {
@@ -2046,7 +2131,7 @@ class AkaneMemoryEngine:
                 extra_scene_groups=user_scene_groups,
                 extra_character_outfits=user_character_outfits,
             )
-            if prompt_profile.includes(PromptModule.SCENE_OBSERVATION)
+            if prompt_profile.includes(PromptModule.SCENE_OBSERVATION) and not desktop_pet_character_only
             else ""
         )
         outfit_observation_context = (
@@ -2056,7 +2141,7 @@ class AkaneMemoryEngine:
                 extra_scene_groups=user_scene_groups,
                 extra_character_outfits=user_character_outfits,
             )
-            if prompt_profile.includes(PromptModule.OUTFIT_OBSERVATION)
+            if prompt_profile.includes(PromptModule.OUTFIT_OBSERVATION) and not desktop_pet_character_only
             else ""
         )
         focused_gift = (
@@ -2107,10 +2192,8 @@ class AkaneMemoryEngine:
             if text
         ]
         merged_extra_context = "\n\n".join(extra_context_sections) if extra_context_sections else "(无额外上下文)"
-        desktop_pet_character_only = client_context.effective_mode == ClientMode.DESKTOP_PET
-
         visual_defaults = (
-            self.resource_manifest.build_runtime_manifest(
+            resource_manifest.build_runtime_manifest(
                 extra_bgm_tracks=user_bgm_tracks,
                 extra_scene_groups=user_scene_groups,
                 extra_character_outfits=user_character_outfits,
@@ -2125,9 +2208,9 @@ class AkaneMemoryEngine:
                 "emotion": "normal",
             }
         )
-        if self.resource_manifest and current_visual_context_payload:
+        if resource_manifest and current_visual_context_payload:
             try:
-                current_visual_defaults = self.resource_manifest.normalize_visual_output(
+                current_visual_defaults = resource_manifest.normalize_visual_output(
                     json.loads(json.dumps(current_visual_context_payload)),
                     extra_bgm_tracks=user_bgm_tracks,
                     extra_scene_groups=user_scene_groups,
@@ -2154,17 +2237,17 @@ class AkaneMemoryEngine:
                 logger.warning("current visual defaults failed: %s", exc)
         resource_context = (
             (
-                self.resource_manifest.build_character_prompt_context(
+                resource_manifest.build_character_prompt_context(
                     extra_character_outfits=user_character_outfits,
                 )
                 if desktop_pet_character_only
-                else self.resource_manifest.build_prompt_context(
+                else resource_manifest.build_prompt_context(
                     extra_bgm_tracks=user_bgm_tracks,
                     extra_scene_groups=user_scene_groups,
                     extra_character_outfits=user_character_outfits,
                 )
             )
-            if self.resource_manifest and prompt_profile.includes(PromptModule.RESOURCE_MANIFEST)
+            if resource_manifest and prompt_profile.includes(PromptModule.RESOURCE_MANIFEST)
             else "当前没有额外的视觉资源。"
         )
         current_visual_context = (
@@ -2175,6 +2258,7 @@ class AkaneMemoryEngine:
                 visual_payload=current_visual_context_payload,
                 runtime_projection=runtime_projection,
                 character_only=desktop_pet_character_only,
+                resource_manifest=resource_manifest,
             )
             if prompt_profile.includes(PromptModule.CURRENT_VISUAL_STATE)
             else "(当前客户端模式不需要完整演出状态。)"
@@ -2224,6 +2308,7 @@ class AkaneMemoryEngine:
         allow_tool_call: bool,
         debug_enabled: bool,
         client_context: ClientProtocolContext | None = None,
+        resource_manifest: ResourceManifest | None = None,
     ) -> dict[str, Any]:
         return final_output_engine.normalize_final_output(
             self,
@@ -2234,6 +2319,7 @@ class AkaneMemoryEngine:
             allow_tool_call=allow_tool_call,
             debug_enabled=debug_enabled,
             client_context=client_context,
+            resource_manifest=resource_manifest,
         )
 
     def _normalize_speech_payload(
@@ -2960,6 +3046,7 @@ class AkaneMemoryEngine:
         visual_payload: dict[str, Any] | None = None,
         runtime_projection: dict[str, Any] | None = None,
         character_only: bool = False,
+        resource_manifest: ResourceManifest | None = None,
     ) -> str:
         return visual_context_engine.build_current_visual_context(
             self,
@@ -2969,6 +3056,7 @@ class AkaneMemoryEngine:
             visual_payload=visual_payload,
             runtime_projection=runtime_projection,
             character_only=character_only,
+            resource_manifest=resource_manifest,
         )
 
     def _schedule_visual_observations_for_payload(

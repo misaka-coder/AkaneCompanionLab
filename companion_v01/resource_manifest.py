@@ -248,8 +248,9 @@ def _coerce_string_list(value: Any) -> list[str]:
 
 
 class ResourceManifest:
-    def __init__(self, assets_dir: Path):
+    def __init__(self, assets_dir: Path, public_prefix: str = "/assets"):
         self.assets_dir = Path(assets_dir)
+        self.public_prefix = self._normalize_public_prefix(public_prefix)
         self._manifest: dict[str, Any] | None = None
 
     def refresh(self) -> dict[str, Any]:
@@ -545,6 +546,9 @@ class ResourceManifest:
         outfits = self._scan_character_tree(characters_root)
         if not outfits:
             outfits = [self._default_outfit()]
+
+        if not scenes:
+            scenes = [self._default_scene()]
 
         scenes = self._sort_entries(scenes)
         outfits = self._sort_entries(outfits)
@@ -925,7 +929,7 @@ class ResourceManifest:
             "name": str(meta.get("name") or name_hint or _humanize(raw_id if raw_id != canonical_id else canonical_id)),
             "description": str(meta.get("description") or ""),
             **self._build_entry_extras(meta, asset_path=path),
-            "path": f"/assets/{path.relative_to(self.assets_dir).as_posix()}",
+            "path": self._asset_public_path(path),
             "_meta": meta,
             "_fallback_priority": BACKGROUND_PRIORITY.get(canonical_id, 99),
         }
@@ -940,7 +944,7 @@ class ResourceManifest:
             "name": str(meta.get("name") or _humanize(raw_id)),
             "description": str(meta.get("description") or ""),
             **self._build_entry_extras(meta, asset_path=path),
-            "path": f"/assets/{path.relative_to(self.assets_dir).as_posix()}",
+            "path": self._asset_public_path(path),
             "_meta": meta,
             "_fallback_priority": BACKGROUND_PRIORITY.get(track_id, 99),
         }
@@ -955,7 +959,7 @@ class ResourceManifest:
             "name": str(meta.get("name") or EMOTION_LABELS.get(canonical_id, _humanize(canonical_id))),
             "description": str(meta.get("description") or ""),
             **self._build_entry_extras(meta, asset_path=path),
-            "path": f"/assets/{path.relative_to(self.assets_dir).as_posix()}",
+            "path": self._asset_public_path(path),
             "_meta": meta,
             "_fallback_priority": EMOTION_PRIORITY.get(canonical_id, 99),
         }
@@ -1273,6 +1277,44 @@ class ResourceManifest:
             ],
             "_fallback_priority": DEFAULT_OUTFIT_PRIORITY["default"],
         }
+
+    def _default_scene(self) -> dict[str, Any]:
+        return {
+            "id": "default",
+            "name": "默认场景",
+            "description": "",
+            "minors": [
+                {
+                    "id": "default",
+                    "name": "默认",
+                    "description": "",
+                    "backgrounds": [
+                        {
+                            "id": "default",
+                            "name": "默认背景",
+                            "description": "",
+                            "path": "",
+                        }
+                    ],
+                    "bgm_tracks": [],
+                    "_fallback_priority": 99,
+                }
+            ],
+            "_fallback_priority": 99,
+        }
+
+    @staticmethod
+    def _normalize_public_prefix(value: str) -> str:
+        prefix = str(value or "").strip().replace("\\", "/")
+        if not prefix:
+            return ""
+        return f"/{prefix.strip('/')}"
+
+    def _asset_public_path(self, path: Path) -> str:
+        relative = path.relative_to(self.assets_dir).as_posix()
+        if not self.public_prefix:
+            return relative
+        return f"{self.public_prefix}/{relative}"
 
     def _find_major(self, manifest: dict[str, Any], major_id: str) -> dict[str, Any] | None:
         return self._find_entry_in_list(manifest["scenes"]["majors"], major_id)

@@ -6,17 +6,23 @@ from typing import Any
 logger = logging.getLogger("akane.engine")
 
 
-def build_resource_manifest(engine: Any, *, profile_user_id: str = "") -> dict[str, Any]:
-    if not engine.resource_manifest:
+def build_resource_manifest(
+    engine: Any,
+    *,
+    profile_user_id: str = "",
+    resource_manifest: Any = None,
+) -> dict[str, Any]:
+    manifest_service = resource_manifest or engine.resource_manifest
+    if not manifest_service:
         return {
             "schema_version": 2,
             "scenes": {"majors": []},
             "characters": {"outfits": []},
             "defaults": {},
         }
-    engine.resource_manifest.refresh()
+    manifest_service.refresh()
     runtime_projection = get_user_runtime_projection(engine, profile_user_id)
-    return engine.resource_manifest.build_runtime_manifest(
+    return manifest_service.build_runtime_manifest(
         extra_bgm_tracks=list(runtime_projection.get("extra_bgm_tracks") or []),
         extra_scene_groups=list(runtime_projection.get("extra_scene_groups") or []),
         extra_character_outfits=list(runtime_projection.get("extra_character_outfits") or []),
@@ -45,8 +51,10 @@ def build_current_visual_context(
     visual_payload: dict[str, Any] | None = None,
     runtime_projection: dict[str, Any] | None = None,
     character_only: bool = False,
+    resource_manifest: Any = None,
 ) -> str:
-    if not engine.resource_manifest:
+    manifest_service = resource_manifest or engine.resource_manifest
+    if not manifest_service:
         return "当前没有额外的演出状态参考。"
 
     effective_visual_payload = visual_payload or resolve_current_visual_payload(
@@ -58,11 +66,11 @@ def build_current_visual_context(
         return "当前没有额外的演出状态参考。"
     effective_runtime_projection = runtime_projection or get_user_runtime_projection(engine, profile_user_id)
     if character_only:
-        return engine.resource_manifest.describe_character_visual_state(
+        return manifest_service.describe_character_visual_state(
             effective_visual_payload,
             extra_character_outfits=list(effective_runtime_projection.get("extra_character_outfits") or []),
         )
-    return engine.resource_manifest.describe_visual_state(
+    return manifest_service.describe_visual_state(
         effective_visual_payload,
         extra_bgm_tracks=list(effective_runtime_projection.get("extra_bgm_tracks") or []),
         extra_scene_groups=list(effective_runtime_projection.get("extra_scene_groups") or []),

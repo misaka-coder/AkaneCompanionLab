@@ -2327,6 +2327,10 @@ async function fetchResourceManifest() {
   const query = new URLSearchParams({
     user_id: state.sessionId,
     real_user_id: PROFILE_USER_ID,
+    client: CLIENT_MODE,
+    character_pack_id: getCurrentCharacterPackId(),
+    outfit: state.outfit || DEFAULT_OUTFIT,
+    emotion: state.currentEmotion || DEFAULT_EMOTION,
     t: String(Date.now())
   });
   const response = await backendFetch(buildBackendEndpointUrl("resource_manifest", "/resource-manifest", query), {
@@ -3051,6 +3055,7 @@ async function* sendThinkStream(message, turnToken, options = {}) {
       turn_kind: String(options.turnKind || ""),
       transient_user_message: Boolean(options.transientUserMessage),
       client_mode: CLIENT_MODE,
+      character_pack_id: getCurrentCharacterPackId(),
       client_capabilities: buildClientCapabilities(),
       current_visual: buildCurrentVisual(),
       desktop_context: desktopContext,
@@ -4528,9 +4533,12 @@ function buildCurrentVisual() {
   const outfit = getActiveOutfit();
   const emotions = getActiveEmotions();
   const emotion = resolveEmotionEntry(state.currentEmotion).id;
+  const characterPackId = getCurrentCharacterPackId();
   return {
+    character_pack_id: characterPackId,
     emotion,
     character: {
+      character_pack_id: characterPackId,
       outfit: outfit.id,
       available_emotions: emotions.map((item) => ({
         id: item.id,
@@ -4541,6 +4549,10 @@ function buildCurrentVisual() {
     scene: {},
     available_emotions: emotions.map((item) => item.id)
   };
+}
+
+function getCurrentCharacterPackId() {
+  return state.characterPackId || getActiveCharacterPackId();
 }
 
 function getActiveOutfit() {

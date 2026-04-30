@@ -91,8 +91,11 @@ def resolve_payload(payload: dict) -> tuple[str, str]:
 
 class BackendRouteModuleTests(unittest.TestCase):
     def test_core_router_decorates_resource_manifest_for_desktop_pet(self) -> None:
-        engine = SimpleNamespace(
-            build_resource_manifest=lambda **_kwargs: {
+        captured: dict[str, Any] = {}
+
+        def build_resource_manifest(**kwargs):
+            captured.update(kwargs)
+            return {
                 "schema_version": 2,
                 "characters": {
                     "outfits": [
@@ -105,6 +108,9 @@ class BackendRouteModuleTests(unittest.TestCase):
                 },
                 "defaults": {"outfit": "cat", "emotion": "normal"},
             }
+
+        engine = SimpleNamespace(
+            build_resource_manifest=build_resource_manifest
         )
         app = FastAPI()
         app.include_router(
@@ -115,10 +121,15 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        response = TestClient(app).get("/resource-manifest?profileUserId=master&user_id=desktop")
+        response = TestClient(app).get(
+            "/resource-manifest?profileUserId=master&user_id=desktop"
+            "&client=desktop_pet&character_pack_id=mika_pack"
+        )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
+        self.assertEqual(captured["client_mode"], "desktop_pet")
+        self.assertEqual(captured["character_pack_id"], "mika_pack")
         self.assertEqual(payload["clients"]["desktop_pet"]["contract_version"], DESKTOP_PET_RESOURCE_CONTRACT_VERSION)
         self.assertEqual(payload["clients"]["desktop_pet"]["default_outfit"], "cat")
 

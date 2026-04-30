@@ -1,13 +1,61 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
+from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.desktop_pet_contract import (
     DESKTOP_PET_CONTRACT_VERSION,
     build_desktop_pet_error_payload,
     build_desktop_pet_health_payload,
     decorate_resource_manifest_for_desktop_pet,
 )
+from companion_v01.final_output_engine import normalize_final_output
+from companion_v01.resource_manifest import ResourceManifest
+
+
+def write_bytes(path: Path, content: bytes = b"stub") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+
+
+class FakeOutputAdapterRegistry:
+    def normalize(self, payload, _client_context):
+        return payload
+
+
+class FakeEngine:
+    def __init__(self, resource_manifest: ResourceManifest) -> None:
+        self.resource_manifest = resource_manifest
+
+    def _resolve_client_protocol_context(self, _payload):
+        return ClientProtocolContext(
+            requested_mode=ClientMode.DESKTOP_PET,
+            effective_mode=ClientMode.DESKTOP_PET,
+        )
+
+    def _normalize_tool_call(self, *_args, **_kwargs):
+        return None
+
+    def _normalize_memory_tags(self, _value):
+        return []
+
+    def _normalize_choices(self, _value):
+        return []
+
+    def _get_persona_card_service(self):
+        return None
+
+    def _get_output_adapter_registry(self):
+        return FakeOutputAdapterRegistry()
+
+    def _get_user_runtime_projection(self, _profile_user_id):
+        return {
+            "extra_bgm_tracks": [],
+            "extra_scene_groups": [],
+            "extra_character_outfits": [],
+        }
 
 
 class DesktopPetBackendContractTests(unittest.TestCase):
@@ -98,6 +146,42 @@ class DesktopPetBackendContractTests(unittest.TestCase):
         self.assertEqual(payload["contract_version"], DESKTOP_PET_CONTRACT_VERSION)
         self.assertEqual(payload["error"], "tts_failed")
         self.assertTrue(payload["retryable"])
+
+    def test_final_output_can_normalize_against_desktop_pack_manifest(self) -> None:
+        web_temp = tempfile.TemporaryDirectory()
+        desktop_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(web_temp.cleanup)
+        self.addCleanup(desktop_temp.cleanup)
+
+        web_assets = Path(web_temp.name) / "assets"
+        desktop_assets = Path(desktop_temp.name) / "assets"
+        write_bytes(web_assets / "characters" / "猫娘" / "思考中.png")
+        write_bytes(desktop_assets / "characters" / "猫娘" / "开心.png")
+        write_bytes(desktop_assets / "characters" / "猫娘" / "害羞.png")
+
+        web_manifest = ResourceManifest(web_assets)
+        desktop_manifest = ResourceManifest(
+            desktop_assets,
+            public_prefix="/desktop-pet-character-packs/demo/assets",
+        )
+        desktop_defaults = desktop_manifest.refresh()["defaults"]
+
+        normalized = normalize_final_output(
+            FakeEngine(web_manifest),
+            result={
+                "emotion": "thinking",
+                "speech": "我想一想。",
+                "character": {"outfit": "猫娘"},
+                "scene": {},
+            },
+            visual_defaults=desktop_defaults,
+            allow_tool_call=False,
+            debug_enabled=False,
+            resource_manifest=desktop_manifest,
+        )
+
+        self.assertIn(normalized["emotion"], {"开心", "害羞"})
+        self.assertNotEqual(normalized["emotion"], "思考中")
 
 
 if __name__ == "__main__":
