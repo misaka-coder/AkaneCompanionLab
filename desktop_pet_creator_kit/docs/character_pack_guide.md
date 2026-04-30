@@ -173,12 +173,10 @@ npm run import -- ./dist/my_character.zip --as my_character_v2 --force
 
 The Tauri settings window has the same first install path for Creator Kit
 exported zips. Use `导入 zip` or drag a zip onto the character-pack area. New
-packs are available after the app restarts or the dev/build process refreshes
-the `characters/` folder. The settings window also has an `打开目录` helper for
-opening the install folder after import.
+packs are refreshed and applied at runtime after import. The settings window also
+has an `打开目录` helper for opening the install folder after import.
 
 ## Next Planned Slices
 
 1. Move backend persona loading into the pack.
-2. Add runtime zip install flow from the settings window.
-3. Add buyer-facing setup notes for non-developer delivery.
+2. Add buyer-facing setup notes for non-developer delivery.

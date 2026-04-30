@@ -56,9 +56,8 @@ Open the Tauri settings window, then use the character-pack area:
 - `打开目录` opens `desktop_pet_creator_kit/characters/`.
 - `复制路径` copies the last installed pack path.
 
-The current runtime discovers character folders at app start/build time. After
-installing a new zip, close and restart the Tauri dev app, or rebuild the
-release app, before selecting the new pack.
+After installing a new zip from the settings window, the desktop pet refreshes
+the runtime character-pack list and applies the imported pack without restarting.
 
 ## Validation
 

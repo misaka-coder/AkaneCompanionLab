@@ -33,7 +33,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPCACHE/audio/**"]
+        "scope": ["$APPCACHE/audio/**", "../../desktop_pet_creator_kit/characters/**"]
       }
     }
   },

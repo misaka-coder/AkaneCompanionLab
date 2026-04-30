@@ -387,9 +387,8 @@ function handleCharacterPackInstallResult(result) {
   const warning = Array.isArray(result?.warnings) && result.warnings.length ? ` · ${result.warnings[0]}` : "";
   view.lastCharacterImportPath = String(result?.installedPath || "").trim();
   els.copyCharacterPackPath.disabled = !view.lastCharacterImportPath;
-  setCharacterImportStatus(
-    `${name} 已安装到 characters/${packId}${warning} · 关闭并重新启动桌宠，或重新 build 后可选择`
-  );
+  setCharacterImportStatus(`${name} 已安装到 characters/${packId}${warning} · 正在刷新并应用`);
+  void sendCommand("refreshCharacterPacks", { selectPackId: packId, apply: true });
 }
 
 function saveOutfit() {

@@ -107,7 +107,7 @@ to overwrite an existing pack after validation passes.
 
 In the Tauri settings window, you can also use `导入 zip` or drag an exported
 Creator Kit zip onto the character-pack area. The current runtime discovers
-newly installed packs after restart or rebuild.
+newly installed packs after the desktop pet refreshes its runtime pack list.
 
 For paid handoff work, see `docs/paid_delivery_checklist.md`.
 For install testing, see `docs/install_and_test.md`.

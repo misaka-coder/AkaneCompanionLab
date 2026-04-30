@@ -175,6 +175,34 @@ struct CharacterPackInstallResult {
     warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CharacterPackRegistryItem {
+    id: String,
+    source: String,
+    installed_path: String,
+    asset_count: usize,
+    profile: serde_json::Value,
+    outfits: Vec<CharacterPackOutfitAsset>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CharacterPackOutfitAsset {
+    id: String,
+    name: String,
+    emotions: Vec<CharacterPackEmotionAsset>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CharacterPackEmotionAsset {
+    id: String,
+    name: String,
+    path: String,
+    size_bytes: u64,
+}
+
 #[derive(Debug, Clone)]
 struct ZipEntry {
     name: String,
@@ -433,6 +461,87 @@ fn open_character_packs_folder() -> Result<(), String> {
     open_path_in_file_manager(&characters_dir)
 }
 
+#[tauri::command]
+fn list_character_packs() -> Result<Vec<CharacterPackRegistryItem>, String> {
+    let characters_dir = creator_kit_characters_dir()?;
+    if !characters_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut packs = Vec::new();
+    for entry in fs::read_dir(&characters_dir).map_err(|error| error.to_string())? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let pack_dir = entry.path();
+        if !pack_dir.is_dir() {
+            continue;
+        }
+
+        let Some(raw_id) = pack_dir.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let pack_id = sanitize_pack_id(raw_id);
+        if pack_id.is_empty() {
+            continue;
+        }
+
+        let character_path = pack_dir.join("character.json");
+        if !character_path.is_file() {
+            continue;
+        }
+        let Ok(raw_profile) = fs::read_to_string(&character_path) else {
+            continue;
+        };
+        let Ok(profile) = serde_json::from_str::<serde_json::Value>(&raw_profile) else {
+            continue;
+        };
+        let Ok(character) = serde_json::from_value::<CharacterPackJson>(profile.clone()) else {
+            continue;
+        };
+
+        let asset_root = character
+            .assets
+            .asset_root
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("assets");
+        let outfits = list_character_pack_outfits(&pack_dir, asset_root);
+        let asset_count = outfits.iter().map(|outfit| outfit.emotions.len()).sum();
+        packs.push(CharacterPackRegistryItem {
+            id: pack_id,
+            source: character_path.to_string_lossy().to_string(),
+            installed_path: pack_dir.to_string_lossy().to_string(),
+            asset_count,
+            profile,
+            outfits,
+        });
+    }
+
+    packs.sort_by(|a, b| {
+        if a.id == DEFAULT_CHARACTER_PACK_ID {
+            return std::cmp::Ordering::Less;
+        }
+        if b.id == DEFAULT_CHARACTER_PACK_ID {
+            return std::cmp::Ordering::Greater;
+        }
+        let a_name = a
+            .profile
+            .pointer("/identity/name")
+            .and_then(|value| value.as_str())
+            .unwrap_or(a.id.as_str());
+        let b_name = b
+            .profile
+            .pointer("/identity/name")
+            .and_then(|value| value.as_str())
+            .unwrap_or(b.id.as_str());
+        a_name.cmp(b_name)
+    });
+
+    Ok(packs)
+}
+
 fn read_lyric_asset(audio_path: &PathBuf, explicit_path: Option<&str>) -> Option<(String, String)> {
     let path = explicit_path
         .map(str::trim)
@@ -521,7 +630,7 @@ fn install_character_pack_zip(
                 .filter(|entry| entry.name.starts_with(&format!("{root}/")))
                 .filter(|entry| !entry.name.ends_with('/'))
                 .count(),
-            requires_restart: true,
+            requires_restart: false,
             warnings: validation.warnings,
         })
     })();
@@ -753,6 +862,68 @@ fn has_any_emotion_image(characters_dir: &Path) -> bool {
         }
     }
     false
+}
+
+fn list_character_pack_outfits(pack_dir: &Path, asset_root: &str) -> Vec<CharacterPackOutfitAsset> {
+    let Ok(asset_root_dir) = safe_child_path(pack_dir, asset_root) else {
+        return Vec::new();
+    };
+    let characters_dir = asset_root_dir.join("characters");
+    let Ok(outfits) = fs::read_dir(characters_dir) else {
+        return Vec::new();
+    };
+
+    let mut result = Vec::new();
+    for outfit in outfits.flatten() {
+        let outfit_dir = outfit.path();
+        if !outfit_dir.is_dir() {
+            continue;
+        }
+        let Some(outfit_id) = outfit_dir.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let emotions = list_character_pack_emotions(&outfit_dir);
+        if emotions.is_empty() {
+            continue;
+        }
+        result.push(CharacterPackOutfitAsset {
+            id: outfit_id.to_string(),
+            name: outfit_id.to_string(),
+            emotions,
+        });
+    }
+
+    result.sort_by(|a, b| a.id.cmp(&b.id));
+    result
+}
+
+fn list_character_pack_emotions(outfit_dir: &Path) -> Vec<CharacterPackEmotionAsset> {
+    let Ok(files) = fs::read_dir(outfit_dir) else {
+        return Vec::new();
+    };
+
+    let mut emotions = Vec::new();
+    for file in files.flatten() {
+        let path = file.path();
+        if !path.is_file() || !is_supported_character_image(&path) {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let size_bytes = fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        emotions.push(CharacterPackEmotionAsset {
+            id: stem.to_string(),
+            name: stem.to_string(),
+            path: path.to_string_lossy().to_string(),
+            size_bytes,
+        });
+    }
+
+    emotions.sort_by(|a, b| a.id.cmp(&b.id));
+    emotions
 }
 
 fn has_emotion_image_file(outfit_dir: &Path) -> bool {
@@ -1583,6 +1754,7 @@ fn main() {
             save_pet_state,
             get_desktop_context_snapshot,
             prepare_audio_asset,
+            list_character_packs,
             install_character_pack_zip_file,
             install_character_pack_zip_bytes,
             open_character_packs_folder,

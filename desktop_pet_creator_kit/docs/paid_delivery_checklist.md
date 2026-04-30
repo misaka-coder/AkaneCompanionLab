@@ -49,10 +49,10 @@ tar -tf dist\<pack_id>.zip
 
 - Send the zip file.
 - Send installation notes or provide a remote setup session.
-- Tell the buyer that the current pack is discovered at app build/dev time.
-- Tell the buyer they can import from the settings window or with
-  `npm run import`, then restart or rebuild before selecting a newly installed
-  pack.
+- Tell the buyer that packs imported from the settings window are refreshed and
+  applied at runtime.
+- Tell the buyer they can also import with `npm run import`, then use the
+  settings window to refresh/apply the installed pack.
 
 ## Acceptance Test
 

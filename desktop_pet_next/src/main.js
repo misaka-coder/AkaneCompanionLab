@@ -19,7 +19,9 @@ import {
   TTS_TEST_TEXT,
   buildCharacterSnapshot,
   getActiveCharacterPackId,
-  selectCharacterPack
+  getActiveCharacterProfile,
+  selectCharacterPack,
+  setRuntimeCharacterPacks
 } from "./character-profile.js";
 import "./styles.css";
 
@@ -145,8 +147,10 @@ const DEFAULT_STATE = {
 };
 
 const bundledOutfit = buildBundledOutfit();
-const characterPackOutfits = buildCharacterPackOutfits();
-const localOutfits = characterPackOutfits.length ? characterPackOutfits : [bundledOutfit];
+let runtimeCharacterPacks = [];
+let runtimeCharacterPackOutfits = [];
+let characterPackOutfits = buildCharacterPackOutfits();
+let localOutfits = buildLocalOutfits();
 const resourceState = {
   health: "unknown",
   healthMessage: "Not checked",
@@ -327,9 +331,13 @@ async function boot() {
   }
 
   try {
+    await refreshRuntimeCharacterPacks({ silent: true });
     const loaded = await invoke("load_pet_state");
-    if (syncStoredCharacterPackBeforeBoot(loaded)) return;
     Object.assign(state, normalizeState(loaded));
+    const pack = selectCharacterPack(state.characterPackId, { persist: false });
+    state.characterPackId = pack.packId;
+    refreshLocalResourceAssets();
+    applyCharacterChrome();
     applyVisualState();
     await reloadCharacterResources({ startup: true });
     setPetEmotion(state.currentEmotion, { persist: false, force: true });
@@ -346,18 +354,6 @@ async function boot() {
   } catch (error) {
     setStatus(`Tauri init failed: ${formatError(error)}`);
   }
-}
-
-function syncStoredCharacterPackBeforeBoot(loadedState) {
-  const savedPackId = String(loadedState?.characterPackId || "").trim();
-  if (!savedPackId || savedPackId === getActiveCharacterPackId()) return false;
-  const previousPackId = getActiveCharacterPackId();
-  const pack = selectCharacterPack(savedPackId);
-  if (pack.packId !== previousPackId) {
-    window.location.reload();
-    return true;
-  }
-  return false;
 }
 
 function bindUi() {
@@ -775,6 +771,9 @@ async function handleSettingsCommand(payload) {
     case "setCharacterPack":
       await updateCharacterPack(payload.value);
       break;
+    case "refreshCharacterPacks":
+      await refreshCharacterPacksFromSettings(payload.value);
+      break;
     case "setScale":
       updateVisualScale(Number(payload.value), { commitNow: true });
       break;
@@ -896,12 +895,14 @@ async function handleSettingsCommand(payload) {
 }
 
 function applyCharacterChrome() {
-  document.title = APP_DISPLAY_NAME;
-  if (els.menuTitle) els.menuTitle.textContent = APP_DISPLAY_NAME;
-  if (els.chatInput) els.chatInput.placeholder = INPUT_PLACEHOLDER;
-  if (els.hitbox) els.hitbox.setAttribute("aria-label", CHARACTER_NAME);
-  if (els.petImage) els.petImage.alt = CHARACTER_NAME;
-  if (els.close) els.close.title = `关闭 ${APP_DISPLAY_NAME}`;
+  const appName = getProfileIdentityText("appName", APP_DISPLAY_NAME);
+  const name = getProfileIdentityText("name", CHARACTER_NAME);
+  document.title = appName;
+  if (els.menuTitle) els.menuTitle.textContent = appName;
+  if (els.chatInput) els.chatInput.placeholder = getProfileText("inputPlaceholder", INPUT_PLACEHOLDER);
+  if (els.hitbox) els.hitbox.setAttribute("aria-label", name);
+  if (els.petImage) els.petImage.alt = name;
+  if (els.close) els.close.title = `关闭 ${appName}`;
 }
 
 function scheduleSettingsSnapshot(delay = 40) {
@@ -973,9 +974,9 @@ function buildSettingsSnapshot() {
       tts: { ...(resourceState.tts || {}) },
       asr: { ...(resourceState.asr || {}) },
       source: resourceState.source,
-      activeOutfit: activeOutfit.id || DEFAULT_OUTFIT,
-      activeOutfitName: activeOutfit.name || activeOutfit.id || DEFAULT_OUTFIT,
-      requestedOutfit: state.outfit || DEFAULT_OUTFIT,
+      activeOutfit: activeOutfit.id || getProfileDefaultOutfit(),
+      activeOutfitName: activeOutfit.name || activeOutfit.id || getProfileDefaultOutfit(),
+      requestedOutfit: state.outfit || getProfileDefaultOutfit(),
       defaultOutfit: getManifestDefaultOutfit(resourceState.manifest),
       defaultEmotion: getManifestDefaultEmotion(resourceState.manifest),
       emotionCount: emotions.length,
@@ -1108,7 +1109,7 @@ function applyVisualState() {
   els.opacityOutput.value = `${Math.round(state.opacity * 100)}%`;
   if (els.voicePlayer) els.voicePlayer.volume = state.voiceVolume;
   els.backendUrl.value = state.backendUrl;
-  els.outfit.value = state.outfit || DEFAULT_OUTFIT;
+  els.outfit.value = state.outfit || getProfileDefaultOutfit();
   els.stage.classList.toggle("show-hitbox-overlay", state.hitboxOverlay);
   updateVoiceRecordButton();
   updateMenuLabels();
@@ -1125,7 +1126,7 @@ function updateMenuLabels() {
   if (els.menuSummary) {
     const outfit = getActiveOutfit();
     const source = resourceSourceLabel(resourceState.source);
-    els.menuSummary.textContent = `${outfit.id || DEFAULT_OUTFIT} · ${source} · ${state.currentEmotion || DEFAULT_EMOTION}`;
+    els.menuSummary.textContent = `${outfit.id || getProfileDefaultOutfit()} · ${source} · ${state.currentEmotion || getProfileDefaultEmotion()}`;
   }
   renderPresetChips();
   renderResourceDetails();
@@ -1234,7 +1235,7 @@ function setScreenVisionMode(value) {
   scheduleSave(0);
   setRuntimeStatus(
     state.screenVisionMode === "direct"
-      ? `看屏幕模式：${CHARACTER_NAME} 直看最近截图`
+      ? `看屏幕模式：${getProfileIdentityText("name", CHARACTER_NAME)} 直看最近截图`
       : "看屏幕模式：先整理屏幕印象",
     { mode: "idle" }
   );
@@ -1329,7 +1330,7 @@ function renderResourceDetails() {
     state.outfit && activeOutfit.id && state.outfit !== activeOutfit.id ? ` · 请求 ${state.outfit}` : "";
   const outfitHint = outfits.length > 1 ? ` · 可用服装 ${outfits.length}` : "";
   const sessionHint = state.sessionId ? ` · 会话 ${shortId(state.sessionId)}` : "";
-  els.resourceDetails.textContent = `${source} · ${activeOutfit.id || DEFAULT_OUTFIT} · ${count} 表情${requested}${outfitHint}${sessionHint}`;
+  els.resourceDetails.textContent = `${source} · ${activeOutfit.id || getProfileDefaultOutfit()} · ${count} 表情${requested}${outfitHint}${sessionHint}`;
 }
 
 function renderEmotionGrid() {
@@ -1338,7 +1339,7 @@ function renderEmotionGrid() {
   const signature = emotions
     .map((emotion) => `${emotion.id}:${emotion.name || ""}`)
     .join("|");
-  const active = state.currentEmotion || DEFAULT_EMOTION;
+  const active = state.currentEmotion || getProfileDefaultEmotion();
   const gridSignature = `${signature}::${active}`;
   if (els.emotionGrid.dataset.signature === gridSignature) return;
   els.emotionGrid.dataset.signature = gridSignature;
@@ -1795,7 +1796,7 @@ function showLocalInteraction() {
   localInteractionTimer = window.setTimeout(() => {
     if (token !== localInteractionToken || sending) return;
     localInteractionActive = false;
-    setPetEmotion(musicPlaying ? MUSIC_EMOTION : DEFAULT_EMOTION, { persist: false });
+    setPetEmotion(musicPlaying ? getProfileMusicEmotion() : getProfileDefaultEmotion(), { persist: false });
   }, 2700);
 }
 
@@ -1806,21 +1807,22 @@ function clearLocalInteraction() {
 }
 
 function pickLocalClickLine() {
-  if (LOCAL_CLICK_LINES.length <= 1) {
+  const lines = getProfileLocalClickLines();
+  if (lines.length <= 1) {
     lastLocalClickIndex = 0;
-    return LOCAL_CLICK_LINES[0];
+    return lines[0];
   }
-  let index = Math.floor(Math.random() * LOCAL_CLICK_LINES.length);
+  let index = Math.floor(Math.random() * lines.length);
   if (index === lastLocalClickIndex) {
-    index = (index + 1 + Math.floor(Math.random() * (LOCAL_CLICK_LINES.length - 1))) % LOCAL_CLICK_LINES.length;
+    index = (index + 1 + Math.floor(Math.random() * (lines.length - 1))) % lines.length;
   }
   lastLocalClickIndex = index;
-  return LOCAL_CLICK_LINES[index];
+  return lines[index];
 }
 
 function previewEmotion(emotion) {
   if (sending || !emotion) return;
-  const previous = previewEmotionRestore || state.currentEmotion || DEFAULT_EMOTION;
+  const previous = previewEmotionRestore || state.currentEmotion || getProfileDefaultEmotion();
   const token = ++previewEmotionToken;
   window.clearTimeout(previewEmotionTimer);
   previewEmotionRestore = previous;
@@ -2076,12 +2078,39 @@ async function updateOutfitFromInput() {
 
 async function updateOutfit(value) {
   const outfit = normalizeOutfitName(value);
-  state.outfit = outfit || DEFAULT_OUTFIT;
+  state.outfit = outfit || getProfileDefaultOutfit();
   els.outfit.value = state.outfit;
   cancelEmotionPreview({ restore: true });
   scheduleSave(0);
   setStatus(`服装已设置：${state.outfit}`);
   await reloadCharacterResources({ userTriggered: true });
+}
+
+async function refreshCharacterPacksFromSettings(value) {
+  const options = value && typeof value === "object" ? value : { selectPackId: value };
+  const refreshed = await refreshRuntimeCharacterPacks({ userTriggered: true });
+  const selectPackId = String(options.selectPackId || "").trim();
+  if (refreshed && selectPackId && options.apply !== false) {
+    await updateCharacterPack(selectPackId);
+    return;
+  }
+  if (refreshed) {
+    setStatus("角色包列表已刷新。", { durationMs: 1600 });
+  }
+}
+
+async function refreshRuntimeCharacterPacks({ userTriggered = false, silent = false } = {}) {
+  if (!isTauriRuntime) return false;
+  const packs = await tauriCall("list_character_packs", {}, { quiet: true });
+  if (!Array.isArray(packs)) {
+    if (!silent && userTriggered) setStatus("角色包列表刷新失败。", { durationMs: 1800 });
+    return false;
+  }
+  runtimeCharacterPacks = packs;
+  setRuntimeCharacterPacks(packs);
+  refreshLocalResourceAssets();
+  scheduleSettingsSnapshot();
+  return true;
 }
 
 async function updateCharacterPack(value) {
@@ -2090,10 +2119,13 @@ async function updateCharacterPack(value) {
   state.characterPackId = pack.packId;
   state.outfit = pack.profile.appearance.defaultOutfit;
   state.currentEmotion = pack.profile.appearance.defaultEmotion;
+  refreshLocalResourceAssets();
+  applyCharacterChrome();
 
   if (pack.packId === previousPackId) {
     scheduleSave(0);
     setStatus(`角色包已是：${pack.profile.identity.name}`);
+    await reloadCharacterResources({ userTriggered: true });
     return;
   }
 
@@ -2101,7 +2133,8 @@ async function updateCharacterPack(value) {
   if (isTauriRuntime) {
     await saveNow();
   }
-  window.setTimeout(() => window.location.reload(), 180);
+  await reloadCharacterResources({ userTriggered: true });
+  void ensureBackendSession();
 }
 
 async function setAlwaysOnTop(enabled) {
@@ -2174,7 +2207,7 @@ async function startNewSession() {
   lastActivityActionSignature = "";
   cancelEmotionPreview({ restore: false });
   closeMenu();
-  setPetEmotion(DEFAULT_EMOTION);
+  setPetEmotion(getProfileDefaultEmotion());
   setRuntimeStatus("新对话", { mode: "idle" });
   showBubbleText("新的对话已经准备好了。", { transient: true, durationMs: 2400 });
   scheduleSave(0);
@@ -2192,7 +2225,7 @@ async function reloadCharacterResources({ startup = false, userTriggered = false
   const healthy = await checkBackendHealth();
   if (!healthy) {
     useBundledResources();
-    setPetEmotion(state.currentEmotion || DEFAULT_EMOTION, { force: true });
+    setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { force: true });
     scheduleBackendRetry();
     const message = "本地待机中：后端暂时连不上。";
     if (!silent && (startup || userTriggered)) showBubbleText(message, { transient: true, durationMs: 3200 });
@@ -2204,7 +2237,7 @@ async function reloadCharacterResources({ startup = false, userTriggered = false
     clearBackendRetry();
     const manifest = await fetchResourceManifest();
     applyResourceManifest(manifest);
-    setPetEmotion(state.currentEmotion || DEFAULT_EMOTION, { force: true });
+    setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { force: true });
     const count = getActiveEmotions().length;
     const message = `资源已加载：${getActiveOutfit().id} / ${count}`;
     if (!silent && userTriggered) showBubbleText(message, { transient: true });
@@ -2215,7 +2248,7 @@ async function reloadCharacterResources({ startup = false, userTriggered = false
   } catch (error) {
     resourceState.healthMessage = formatError(error);
     useBundledResources();
-    setPetEmotion(state.currentEmotion || DEFAULT_EMOTION, { force: true });
+    setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { force: true });
     const message = `资源暂时没拉到：${friendlyErrorMessage(formatError(error))}`;
     if (!silent && (startup || userTriggered)) showBubbleText(message, { transient: true, durationMs: 3600 });
     setRuntimeStatus(message, { mode: "error" });
@@ -2329,8 +2362,8 @@ async function fetchResourceManifest() {
     real_user_id: PROFILE_USER_ID,
     client: CLIENT_MODE,
     character_pack_id: getCurrentCharacterPackId(),
-    outfit: state.outfit || DEFAULT_OUTFIT,
-    emotion: state.currentEmotion || DEFAULT_EMOTION,
+    outfit: state.outfit || getProfileDefaultOutfit(),
+    emotion: state.currentEmotion || getProfileDefaultEmotion(),
     t: String(Date.now())
   });
   const response = await backendFetch(buildBackendEndpointUrl("resource_manifest", "/resource-manifest", query), {
@@ -2349,7 +2382,7 @@ function applyResourceManifest(manifest) {
   const outfit =
     findEntry(outfits, state.outfit) ||
     findEntry(outfits, defaultOutfit) ||
-    findEntry(outfits, DEFAULT_OUTFIT) ||
+    findEntry(outfits, getProfileDefaultOutfit()) ||
     outfits[0] ||
     null;
 
@@ -2375,8 +2408,8 @@ function applyResourceManifest(manifest) {
   resourceState.manifest = manifest;
   resourceState.outfit = {
     ...outfit,
-    id: String(outfit.id || DEFAULT_OUTFIT),
-    name: String(outfit.name || outfit.id || DEFAULT_OUTFIT),
+    id: String(outfit.id || getProfileDefaultOutfit()),
+    name: String(outfit.name || outfit.id || getProfileDefaultOutfit()),
     aliases: Array.isArray(outfit.aliases) ? outfit.aliases : [],
     emotions
   };
@@ -2410,7 +2443,7 @@ function getManifestDefaultOutfit(manifest) {
       desktop?.defaultOutfit ||
       manifest?.defaults?.desktop_pet_outfit ||
       manifest?.defaults?.outfit ||
-      DEFAULT_OUTFIT
+      getProfileDefaultOutfit()
   );
 }
 
@@ -2421,7 +2454,7 @@ function getManifestDefaultEmotion(manifest) {
       desktop?.defaultEmotion ||
       manifest?.defaults?.desktop_pet_emotion ||
       manifest?.defaults?.emotion ||
-      DEFAULT_EMOTION
+      getProfileDefaultEmotion()
   );
 }
 
@@ -2444,7 +2477,7 @@ async function ensureBackendSession({ restoreLatest = false } = {}) {
       body: JSON.stringify({
         user_id: state.sessionId,
         real_user_id: PROFILE_USER_ID,
-        display_title: SESSION_DISPLAY_TITLE
+        display_title: getProfileText("sessionDisplayTitle", SESSION_DISPLAY_TITLE)
       })
     });
 
@@ -2882,7 +2915,7 @@ function interruptReply({ announce = false } = {}) {
   replyDisplayActive = false;
 
   if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
-    setPetEmotion(DEFAULT_EMOTION);
+    setPetEmotion(getProfileDefaultEmotion());
   }
   setPetMotion("idle");
 
@@ -2948,7 +2981,7 @@ async function sendMessage(text) {
     if (isTurnActive(turnToken)) {
       sending = false;
       if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
-        setPetEmotion(DEFAULT_EMOTION);
+        setPetEmotion(getProfileDefaultEmotion());
       }
       if (!els.bubble.classList.contains("visible")) {
         setPetMotion("idle");
@@ -3012,7 +3045,7 @@ async function sendProactiveWake() {
       if (!healthy) return;
     }
     if (!isTurnActive(turnToken)) return;
-    const stream = sendThinkStream(PROACTIVE_WAKE_PROMPT, turnToken, {
+    const stream = sendThinkStream(getProfileText("proactiveWakePrompt", PROACTIVE_WAKE_PROMPT), turnToken, {
       turnKind: "desktop_pet_proactive",
       transientUserMessage: true,
       desktopScreenFrames: latestDesktopScreenFramesForThink()
@@ -3027,7 +3060,7 @@ async function sendProactiveWake() {
     if (isTurnActive(turnToken)) {
       sending = false;
       if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
-        setPetEmotion(DEFAULT_EMOTION);
+        setPetEmotion(getProfileDefaultEmotion());
       }
       if (!els.bubble.classList.contains("visible")) {
         setPetMotion("idle");
@@ -3445,7 +3478,7 @@ function setPetMotion(motion, { durationMs = 0 } = {}) {
 function showMusicDropHint() {
   if (musicDropHover) return;
   musicDropHover = true;
-  setRuntimeStatus(`把音频拖给 ${CHARACTER_NAME} 就可以播放`, { mode: "idle" });
+  setRuntimeStatus(`把音频拖给 ${getProfileIdentityText("name", CHARACTER_NAME)} 就可以播放`, { mode: "idle" });
   if (!sending && !replyDisplayActive) {
     showBubbleText("要放这首吗？", { transient: true, durationMs: 1400, kind: "music" });
   }
@@ -3753,11 +3786,11 @@ function clearMusicQueue({ announce = false } = {}) {
 function setMusicEmotion(active) {
   if (active) {
     musicEmotionActive = true;
-    setPetEmotion(MUSIC_EMOTION, { persist: false });
+    setPetEmotion(getProfileMusicEmotion(), { persist: false });
     return;
   }
-  if (musicEmotionActive && state.currentEmotion === resolveEmotionEntry(MUSIC_EMOTION).id) {
-    setPetEmotion(DEFAULT_EMOTION, { persist: false });
+  if (musicEmotionActive && state.currentEmotion === resolveEmotionEntry(getProfileMusicEmotion()).id) {
+    setPetEmotion(getProfileDefaultEmotion(), { persist: false });
   }
   musicEmotionActive = false;
 }
@@ -4219,7 +4252,7 @@ async function testTts() {
   if (!state.voiceEnabled) {
     setVoiceEnabled(true);
   }
-  queueTtsItems([TTS_TEST_TEXT], `test:${Date.now()}`);
+  queueTtsItems([getProfileText("ttsTestText", TTS_TEST_TEXT)], `test:${Date.now()}`);
 }
 
 function stopTts({ resetSignature = true } = {}) {
@@ -4478,7 +4511,7 @@ function setTransientEmotion(emotion, { durationMs = 2400 } = {}) {
   const resolved = setPetEmotion(emotion, { persist: false });
   transientEmotionTimer = window.setTimeout(() => {
     if (token !== transientEmotionToken || sending || ttsActive || voiceInputState === "recording") return;
-    setPetEmotion(musicPlaying ? MUSIC_EMOTION : DEFAULT_EMOTION, { persist: false });
+    setPetEmotion(musicPlaying ? getProfileMusicEmotion() : getProfileDefaultEmotion(), { persist: false });
   }, durationMs);
   return resolved;
 }
@@ -4510,7 +4543,7 @@ function resolveEmotionEntry(value) {
     const match = findEntry(emotions, candidate);
     if (match) return match;
   }
-  return findEntry(emotions, DEFAULT_EMOTION) || findEntry(emotions, "normal") || emotions[0] || getDefaultLocalOutfit().emotions[0];
+  return findEntry(emotions, getProfileDefaultEmotion()) || findEntry(emotions, "normal") || emotions[0] || getDefaultLocalOutfit().emotions[0];
 }
 
 function buildEmotionCandidates(value) {
@@ -4523,8 +4556,8 @@ function buildEmotionCandidates(value) {
 
   add(raw);
   const key = normalizeEntryKey(raw);
-  for (const item of COMMON_EMOTION_CANDIDATES[key] || []) add(item);
-  add(DEFAULT_EMOTION);
+  for (const item of getProfileEmotionAliases()[key] || []) add(item);
+  add(getProfileDefaultEmotion());
   add("normal");
   return result;
 }
@@ -4549,6 +4582,45 @@ function buildCurrentVisual() {
     scene: {},
     available_emotions: emotions.map((item) => item.id)
   };
+}
+
+function getProfileDefaultOutfit() {
+  return String(getActiveCharacterProfile()?.appearance?.defaultOutfit || DEFAULT_OUTFIT).trim() || DEFAULT_OUTFIT;
+}
+
+function getProfileDefaultEmotion() {
+  return String(getActiveCharacterProfile()?.appearance?.defaultEmotion || DEFAULT_EMOTION).trim() || DEFAULT_EMOTION;
+}
+
+function getProfileMusicEmotion() {
+  return String(getActiveCharacterProfile()?.appearance?.musicEmotion || MUSIC_EMOTION).trim() || getProfileDefaultEmotion();
+}
+
+function getProfileRequiredEmotions() {
+  const values = getActiveCharacterProfile()?.appearance?.requiredEmotions;
+  return Array.isArray(values) && values.length ? values : [getProfileDefaultEmotion()];
+}
+
+function getProfileRecommendedEmotions() {
+  const values = getActiveCharacterProfile()?.appearance?.recommendedEmotions;
+  return Array.isArray(values) ? values : RECOMMENDED_EMOTIONS;
+}
+
+function getProfileEmotionAliases() {
+  return getActiveCharacterProfile()?.emotionAliases || COMMON_EMOTION_CANDIDATES;
+}
+
+function getProfileLocalClickLines() {
+  const lines = getActiveCharacterProfile()?.dialogue?.localClickLines;
+  return Array.isArray(lines) && lines.length ? lines : LOCAL_CLICK_LINES;
+}
+
+function getProfileText(key, fallback) {
+  return String(getActiveCharacterProfile()?.dialogue?.[key] || fallback || "").trim();
+}
+
+function getProfileIdentityText(key, fallback) {
+  return String(getActiveCharacterProfile()?.identity?.[key] || fallback || "").trim();
 }
 
 function getCurrentCharacterPackId() {
@@ -4626,8 +4698,8 @@ function buildResourceIssues(outfit, emotions = listOutfitEmotions(outfit)) {
       .filter(Boolean)
   );
   return {
-    missingRequired: REQUIRED_EMOTIONS.filter((item) => !keys.has(normalizeEntryKey(item))),
-    missingRecommended: RECOMMENDED_EMOTIONS.filter((item) => !keys.has(normalizeEntryKey(item)))
+    missingRequired: getProfileRequiredEmotions().filter((item) => !keys.has(normalizeEntryKey(item))),
+    missingRecommended: getProfileRecommendedEmotions().filter((item) => !keys.has(normalizeEntryKey(item)))
   };
 }
 
@@ -4640,11 +4712,58 @@ function resourceSourceLabel(source) {
 }
 
 function getLocalResourceSource() {
-  return characterPackOutfits.length ? "character_pack" : "bundled";
+  return runtimeCharacterPackOutfits.length || characterPackOutfits.length ? "character_pack" : "bundled";
 }
 
 function getDefaultLocalOutfit() {
-  return findEntry(localOutfits, DEFAULT_OUTFIT) || localOutfits[0] || bundledOutfit;
+  return findEntry(localOutfits, getProfileDefaultOutfit()) || localOutfits[0] || bundledOutfit;
+}
+
+function refreshLocalResourceAssets() {
+  runtimeCharacterPackOutfits = buildRuntimeCharacterPackOutfits();
+  characterPackOutfits = buildCharacterPackOutfits();
+  localOutfits = buildLocalOutfits();
+  if (resourceState.source !== "manifest") {
+    resourceState.outfit = findEntry(localOutfits, state.outfit) || getDefaultLocalOutfit();
+    resourceState.source = getLocalResourceSource();
+    resourceState.loadedAt = Date.now();
+  }
+}
+
+function buildLocalOutfits() {
+  const outfits = [...runtimeCharacterPackOutfits, ...characterPackOutfits];
+  return outfits.length ? outfits : [bundledOutfit];
+}
+
+function buildRuntimeCharacterPackOutfits() {
+  const activePackId = getCurrentCharacterPackId();
+  const pack = runtimeCharacterPacks.find((item) => String(item?.id || item?.packId || "").trim() === activePackId);
+  const outfits = Array.isArray(pack?.outfits) ? pack.outfits : [];
+  return outfits
+    .map((outfit) => {
+      const outfitId = String(outfit?.id || outfit?.name || "").trim();
+      const emotions = (Array.isArray(outfit?.emotions) ? outfit.emotions : [])
+        .map((emotion) => {
+          const id = String(emotion?.id || emotion?.name || "").trim();
+          const path = String(emotion?.path || "").trim();
+          return {
+            id,
+            name: String(emotion?.name || id).trim(),
+            aliases: [],
+            url: path && isTauriRuntime ? convertFileSrc(path) : path,
+            path
+          };
+        })
+        .filter((emotion) => emotion.id && emotion.url);
+      return {
+        id: outfitId,
+        name: String(outfit?.name || outfitId).trim(),
+        aliases: [],
+        emotions: sortEmotions(emotions)
+      };
+    })
+    .filter((outfit) => outfit.id && outfit.emotions.length)
+    .sort(compareOutfitEntries);
 }
 
 function buildCharacterPackOutfits() {
@@ -4677,11 +4796,7 @@ function buildCharacterPackOutfits() {
       emotions: sortEmotions(emotions)
     }))
     .filter((outfit) => outfit.emotions.length)
-    .sort((a, b) => {
-      if (a.id === DEFAULT_OUTFIT) return -1;
-      if (b.id === DEFAULT_OUTFIT) return 1;
-      return a.id.localeCompare(b.id, "zh-CN");
-    });
+    .sort(compareOutfitEntries);
 }
 
 function buildBundledOutfit() {
@@ -4710,9 +4825,17 @@ function sortEmotions(emotions) {
   return [...emotions].sort(compareEmotionEntries);
 }
 
+function compareOutfitEntries(a, b) {
+  const defaultOutfit = getProfileDefaultOutfit();
+  if (a.id === defaultOutfit) return -1;
+  if (b.id === defaultOutfit) return 1;
+  return String(a.id || "").localeCompare(String(b.id || ""), "zh-CN");
+}
+
 function compareEmotionEntries(a, b) {
-  if (a.id === DEFAULT_EMOTION) return -1;
-  if (b.id === DEFAULT_EMOTION) return 1;
+  const defaultEmotion = getProfileDefaultEmotion();
+  if (a.id === defaultEmotion) return -1;
+  if (b.id === defaultEmotion) return 1;
   return String(a.id || "").localeCompare(String(b.id || ""), "zh-CN");
 }
 
@@ -4883,7 +5006,7 @@ function normalizeCharacterPackId(value) {
 }
 
 function normalizeOutfitName(value) {
-  return String(value || "").trim() || DEFAULT_OUTFIT;
+  return String(value || "").trim() || getProfileDefaultOutfit();
 }
 
 function generateSessionId() {

@@ -47,7 +47,8 @@ const FALLBACK_PROFILE = {
   }
 };
 
-const characterPacks = buildCharacterPackRegistry();
+const staticCharacterPacks = buildCharacterPackRegistry();
+let characterPacks = [...staticCharacterPacks];
 let activeCharacterPackId = resolveInitialCharacterPackId();
 
 export const CHARACTER_PROFILE_SOURCE = getActiveCharacterPack().source;
@@ -101,11 +102,25 @@ export function listCharacterPacks() {
     userTitle: pack.profile.identity.userTitle,
     schemaVersion: pack.profile.schemaVersion,
     source: pack.source,
+    installedPath: pack.installedPath || "",
+    assetCount: Number(pack.assetCount || 0),
     defaultOutfit: pack.profile.appearance.defaultOutfit,
     defaultEmotion: pack.profile.appearance.defaultEmotion,
     assetSource: pack.profile.assets.runtimeSource,
     selected: pack.packId === activeId
   }));
+}
+
+export function setRuntimeCharacterPacks(items) {
+  const runtimePacks = (Array.isArray(items) ? items : [])
+    .map(normalizeRuntimeCharacterPack)
+    .filter((pack) => pack.packId);
+  const merged = new Map();
+  for (const pack of staticCharacterPacks) merged.set(pack.packId, pack);
+  for (const pack of runtimePacks) merged.set(pack.packId, pack);
+  characterPacks = sortCharacterPacks([...merged.values()]);
+  activeCharacterPackId = resolveCharacterPack(activeCharacterPackId || readStoredCharacterPackId()).packId;
+  return listCharacterPacks();
 }
 
 export function buildCharacterSnapshot() {
@@ -153,11 +168,7 @@ function buildCharacterPackRegistry() {
     });
   }
 
-  return entries.sort((a, b) => {
-    if (a.packId === DEFAULT_CHARACTER_PACK_ID) return -1;
-    if (b.packId === DEFAULT_CHARACTER_PACK_ID) return 1;
-    return a.profile.identity.name.localeCompare(b.profile.identity.name, "zh-CN");
-  });
+  return sortCharacterPacks(entries);
 }
 
 function resolveInitialCharacterPackId() {
@@ -181,6 +192,27 @@ function resolveCharacterPack(value) {
 function getPackIdFromSource(source) {
   const match = String(source || "").match(/\/characters\/([^/]+)\/character\.json$/);
   return decodeURIComponent(match?.[1] || "").trim();
+}
+
+function normalizeRuntimeCharacterPack(item) {
+  const source = item && typeof item === "object" ? item : {};
+  const profile = normalizeCharacterProfile(source.profile || {});
+  const packId = cleanText(source.id || source.packId || profile.identity.id, "");
+  return {
+    packId,
+    source: cleanText(source.source, `runtime:${packId}`),
+    installedPath: cleanText(source.installedPath, ""),
+    assetCount: Number(source.assetCount || 0),
+    profile
+  };
+}
+
+function sortCharacterPacks(packs) {
+  return packs.sort((a, b) => {
+    if (a.packId === DEFAULT_CHARACTER_PACK_ID) return -1;
+    if (b.packId === DEFAULT_CHARACTER_PACK_ID) return 1;
+    return a.profile.identity.name.localeCompare(b.profile.identity.name, "zh-CN");
+  });
 }
 
 function readStoredCharacterPackId() {
