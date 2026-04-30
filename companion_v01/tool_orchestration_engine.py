@@ -170,6 +170,9 @@ def execute_tool_call(
     enriched_visual_payload["_profile_user_id"] = profile_user_id
     if memory_exclude_source_ids:
         enriched_visual_payload["_memory_retrieval_exclude_source_ids"] = list(memory_exclude_source_ids)
+    client_mode = ""
+    if client_context is not None:
+        client_mode = str(getattr(client_context.effective_mode, "value", client_context.effective_mode) or "")
     return handler.execute(
         call=normalized_call,
         context=ToolExecutionContext(
@@ -178,5 +181,6 @@ def execute_tool_call(
             now_ts=now_ts,
             visual_payload=enriched_visual_payload,
             current_user_source_id=current_user_source_id,
+            client_mode=client_mode,
         ),
     )

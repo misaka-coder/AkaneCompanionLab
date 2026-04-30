@@ -2785,6 +2785,16 @@ class AkaneMemoryEngine:
             for hint in selection.light_hints:
                 lines.append(f"- {hint}")
             lines.append("")
+        if client_context and client_context.effective_mode == ClientMode.DESKTOP_PET and "send_file" in selection.tool_names:
+            lines.extend(
+                [
+                    "【桌宠文件交付】",
+                    "- send_file 在桌宠里表示把已有文件交给手边工作台；如果用户明确说“打开”“显示位置”“放桌面”“复制路径”，"
+                    "先完成必要的生成/转换，再对目标 handle 调用 send_file，并加 delivery_action："
+                    "open、reveal、save_desktop 或 copy_path。只是让用户拿到文件时，可以不填 delivery_action。",
+                    "",
+                ]
+            )
         lines.append("【当前可调用工具】")
         for handler in handlers.values():
             lines.append(handler.build_prompt_instruction())

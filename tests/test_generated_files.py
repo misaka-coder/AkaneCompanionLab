@@ -1963,6 +1963,47 @@ class GeneratedFileTests(unittest.TestCase):
         self.assertEqual(result.stream_events[1]["file"]["generated_id"], "generated::1")
         self.assertIn("send_file ok", result.followup_context)
 
+    def test_send_file_tool_handler_carries_desktop_delivery_action(self) -> None:
+        class FakeGeneratedService:
+            def send_file(self, **kwargs):
+                return {
+                    "ok": True,
+                    "files": [
+                        {
+                            "source_type": "generated",
+                            "source_id": "generated::1",
+                            "generated_id": "generated::1",
+                            "handle": "gen_001",
+                            "absolute_path": "C:/tmp/out.txt",
+                            "name": "out.txt",
+                        }
+                    ],
+                    "followup_context": "send_file ok",
+                }
+
+        handler = SendFileToolHandler(generated_file_service=FakeGeneratedService())
+        call = handler.normalize_call(
+            {
+                "type": "send_file",
+                "target": "gen_001",
+                "delivery_action": "save_desktop",
+            }
+        )
+        context = ToolExecutionContext(
+            profile_user_id="user",
+            session_id="session",
+            now_ts=130,
+            visual_payload={},
+            client_mode="desktop_pet",
+        )
+
+        result = handler.execute(call=call or {}, context=context)
+
+        self.assertEqual(result.stream_events[0]["delivery_action"], "save_desktop")
+        self.assertEqual(result.stream_events[0]["client_mode"], "desktop_pet")
+        self.assertEqual(result.stream_events[0]["desktop_delivery"]["action"], "save_desktop")
+        self.assertEqual(result.stream_events[0]["desktop_delivery"]["handle"], "gen_001")
+
     def test_inspect_generated_file_reads_text_content(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

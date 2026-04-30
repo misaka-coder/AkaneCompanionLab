@@ -17,6 +17,7 @@ class ToolExecutionContext:
     now_ts: int
     visual_payload: dict[str, Any]
     current_user_source_id: str = ""
+    client_mode: str = ""
 
 
 @dataclass
@@ -2251,6 +2252,12 @@ class SendFileToolHandler(BaseToolHandler):
             "type": self.tool_type,
             "target": targets[0] if targets else "latest",
             "targets": targets,
+            "delivery_action": self._normalize_delivery_action(
+                value.get("delivery_action")
+                or value.get("desktop_action")
+                or value.get("handoff_action")
+                or value.get("action")
+            ),
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -2263,22 +2270,47 @@ class SendFileToolHandler(BaseToolHandler):
         )
         events = []
         files = result.get("files") if isinstance(result, dict) else None
+        delivery_action = self._normalize_delivery_action(call.get("delivery_action"))
         if bool(result.get("ok")) and isinstance(files, list):
             for file_ref in files:
                 if not isinstance(file_ref, dict):
                     continue
-                events.append(
-                    {
-                        "type": "file_ready",
-                        "file": file_ref,
-                        "send_to_user": True,
+                event = {
+                    "type": "file_ready",
+                    "file": file_ref,
+                    "send_to_user": True,
+                    "client_mode": context.client_mode,
+                }
+                if delivery_action:
+                    event["delivery_action"] = delivery_action
+                    event["desktop_delivery"] = {
+                        "action": delivery_action,
+                        "path": str(file_ref.get("absolute_path") or ""),
+                        "name": str(file_ref.get("name") or file_ref.get("title") or ""),
+                        "handle": str(file_ref.get("handle") or ""),
                     }
+                events.append(
+                    event
                 )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=events,
             followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
         )
+
+    def _normalize_delivery_action(self, value: Any) -> str:
+        text = str(value or "").strip().lower().replace("-", "_")
+        if text in {"", "default", "send", "workspace", "hand_off", "handoff"}:
+            return ""
+        if text in {"open", "open_file", "打开"}:
+            return "open"
+        if text in {"reveal", "show", "show_in_folder", "show_folder", "folder", "location", "定位", "位置"}:
+            return "reveal"
+        if text in {"save_desktop", "export_desktop", "desktop", "save_to_desktop", "存桌面", "放桌面"}:
+            return "save_desktop"
+        if text in {"copy_path", "path", "clipboard", "复制路径"}:
+            return "copy_path"
+        return ""
 
 
 class SendGeneratedFileToolHandler(SendFileToolHandler):
@@ -2301,16 +2333,27 @@ class SendGeneratedFileToolHandler(SendFileToolHandler):
         )
         events = []
         generated_files = result.get("generated_files") if isinstance(result, dict) else None
+        delivery_action = self._normalize_delivery_action(call.get("delivery_action"))
         if bool(result.get("ok")) and isinstance(generated_files, list):
             for generated in generated_files:
                 if not isinstance(generated, dict):
                     continue
-                events.append(
-                    {
-                        "type": "generated_file_ready",
-                        "generated_file": generated,
-                        "send_to_user": True,
+                event = {
+                    "type": "generated_file_ready",
+                    "generated_file": generated,
+                    "send_to_user": True,
+                    "client_mode": context.client_mode,
+                }
+                if delivery_action:
+                    event["delivery_action"] = delivery_action
+                    event["desktop_delivery"] = {
+                        "action": delivery_action,
+                        "path": str(generated.get("absolute_path") or ""),
+                        "name": str(generated.get("output_title") or generated.get("generated_handle") or ""),
+                        "handle": str(generated.get("generated_handle") or ""),
                     }
+                events.append(
+                    event
                 )
         return ToolExecutionResult(
             tool_type=self.tool_type,

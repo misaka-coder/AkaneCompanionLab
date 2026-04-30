@@ -758,8 +758,20 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("\n- convert_media_file", prompt_with_media)
             self.assertIn("\n- transcribe_media", prompt_with_media)
             self.assertIn("\n- send_file", prompt_with_media)
+            self.assertIn("【桌宠文件交付】", prompt_with_media)
+            self.assertIn("delivery_action", prompt_with_media)
             self.assertNotIn("\n- send_sticker", prompt_with_media)
             self.assertNotIn("\n- manage_gift", prompt_with_media)
+
+            qq_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "qq_text"})
+            qq_prompt_with_media = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=qq_context,
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+            )
+            self.assertIn("\n- send_file", qq_prompt_with_media)
+            self.assertNotIn("【桌宠文件交付】", qq_prompt_with_media)
             self.assertEqual(
                 self.engine._normalize_tool_call(
                     {"type": "convert_media_file", "source_id": media["attachment_handle"]},

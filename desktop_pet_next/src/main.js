@@ -273,6 +273,7 @@ let workspaceTaskWatchPrimed = false;
 let workspaceTaskStatusCache = new Map();
 let workspaceTaskWatchKey = "";
 const workspaceTaskAnnounced = new Set();
+let desktopFileDeliveryHandled = new Set();
 let lastDesktopForeground = null;
 
 const els = {
@@ -2929,6 +2930,7 @@ function interruptReply({ announce = false } = {}) {
   lastTurnSignature = "";
   lastTurnTextKey = "";
   lastActivityActionSignature = "";
+  desktopFileDeliveryHandled.clear();
   window.clearTimeout(bubbleTimer);
   window.clearTimeout(segmentTimer);
   bubbleToken += 1;
@@ -2982,6 +2984,7 @@ async function sendMessage(text) {
   clearLocalInteraction();
   lastTurnSignature = "";
   lastTurnTextKey = "";
+  desktopFileDeliveryHandled.clear();
   showThinking();
   scheduleSettingsSnapshot();
 
@@ -3058,6 +3061,7 @@ async function sendProactiveWake() {
   sending = true;
   lastTurnSignature = "";
   lastTurnTextKey = "";
+  desktopFileDeliveryHandled.clear();
   scheduleSettingsSnapshot();
 
   try {
@@ -3169,6 +3173,8 @@ async function processThinkStream(stream, turnToken) {
       applyPayloadEmotion(event);
     } else if (type === "speech_chunk") {
       partialSpeech += String(event?.text || "");
+    } else if (type === "file_ready" || type === "generated_file_ready") {
+      void handleDesktopFileDeliveryEvent(event);
     } else if (type === "final" || type === "final_ui") {
       const payload = event?.payload || event;
       if (renderPayload(payload)) rendered = true;
@@ -3201,6 +3207,7 @@ function renderPayload(
   if (!payload || typeof payload !== "object") return false;
   applyPayloadEmotion(payload, { persist: persistEmotion });
   applyPayloadActivity(payload);
+  applyPayloadFileDeliveries(payload);
 
   const segments = normalizeSegments(payload.speech_segments || payload.segments);
   if (segments.length > 0) {
@@ -3280,6 +3287,134 @@ function applyPayloadActivity(payload) {
   }
   updateActivityControls();
   scheduleSettingsSnapshot();
+}
+
+function applyPayloadFileDeliveries(payload) {
+  const events = Array.isArray(payload?.tool_events) ? payload.tool_events : [];
+  for (const event of events) {
+    const type = String(event?.type || "").trim().toLowerCase();
+    if (type === "file_ready" || type === "generated_file_ready") {
+      void handleDesktopFileDeliveryEvent(event);
+    }
+  }
+}
+
+async function handleDesktopFileDeliveryEvent(event) {
+  if (!event || typeof event !== "object" || !event.send_to_user) return;
+  const fileRef = resolveDesktopFileDeliveryRef(event);
+  if (!fileRef) return;
+  const action = normalizeDesktopDeliveryAction(
+    event.delivery_action || event.desktop_delivery?.action || event.handoff_action
+  );
+  const key = desktopFileDeliveryEventKey(event, fileRef, action);
+  if (!key || desktopFileDeliveryHandled.has(key)) return;
+  desktopFileDeliveryHandled.add(key);
+
+  await notifyWorkspaceRefresh();
+  if (!action) {
+    setRuntimeStatus(`文件已放到手边：${fileRef.name || fileRef.handle || "成果"}`, { mode: "idle" });
+    return;
+  }
+
+  let filePath = String(event.desktop_delivery?.path || fileRef.path || "").trim();
+  if (!filePath && fileRef.handle) {
+    try {
+      filePath = await fetchWorkspaceItemLocation({
+        itemType: fileRef.itemType,
+        handle: fileRef.handle
+      });
+    } catch {
+      filePath = "";
+    }
+  }
+  if (!filePath) {
+    setRuntimeStatus("文件已生成，但暂时找不到本地路径", { mode: "error" });
+    showBubbleText("文件做好了，但本地位置暂时没摸到。", { transient: true, durationMs: 2400, kind: "error" });
+    return;
+  }
+
+  const displayName = fileRef.name || fileRef.handle || "文件";
+  if (action === "open") {
+    const result = await tauriCall("open_local_file", { path: filePath }, { quiet: true });
+    announceDesktopFileDeliveryResult(result !== null, `已打开：${displayName}`, "文件做好了，我打开给你看啦。", "打开文件失败了。");
+  } else if (action === "reveal") {
+    const result = await tauriCall("show_item_in_folder", { path: filePath }, { quiet: true });
+    announceDesktopFileDeliveryResult(result !== null, `已定位：${displayName}`, "文件位置打开啦。", "打开文件位置失败了。");
+  } else if (action === "save_desktop") {
+    const result = await tauriCall(
+      "export_file_to_desktop",
+      { path: filePath, fileName: buildDesktopDeliveryFileName(fileRef) },
+      { quiet: true }
+    );
+    const exportedPath = String(result?.path || "").trim();
+    announceDesktopFileDeliveryResult(
+      result !== null,
+      exportedPath ? `已保存到桌面：${exportedPath}` : `已保存到桌面：${displayName}`,
+      "文件已经放到桌面 Akane Outputs 里啦。",
+      "保存到桌面失败了。"
+    );
+  } else if (action === "copy_path") {
+    try {
+      await navigator.clipboard.writeText(filePath);
+      announceDesktopFileDeliveryResult(true, "文件路径已复制", "文件路径复制好了。", "");
+    } catch {
+      announceDesktopFileDeliveryResult(false, "", "", "复制文件路径失败了。");
+    }
+  }
+}
+
+function resolveDesktopFileDeliveryRef(event) {
+  const type = String(event?.type || "").trim().toLowerCase();
+  const raw = type === "generated_file_ready"
+    ? event.generated_file
+    : event.file || event.generated_file;
+  if (!raw || typeof raw !== "object") return null;
+  const sourceType = String(raw.source_type || (type === "generated_file_ready" ? "generated" : "")).trim().toLowerCase();
+  const handle = String(raw.handle || raw.generated_handle || raw.attachment_handle || "").trim();
+  return {
+    itemType: sourceType === "generated" || raw.generated_id || raw.generated_handle ? "generated" : "attachment",
+    handle,
+    path: String(raw.absolute_path || raw.path || raw.file_path || "").trim(),
+    name: String(raw.name || raw.output_title || raw.title || raw.origin_name || handle || "").trim(),
+    format: String(raw.file_ext || raw.output_format || raw.format || "").trim().replace(/^\.+/, "")
+  };
+}
+
+function desktopFileDeliveryEventKey(event, fileRef, action) {
+  const id = String(
+    fileRef.path ||
+      event?.file?.source_id ||
+      event?.generated_file?.generated_id ||
+      fileRef.handle ||
+      ""
+  ).trim();
+  return id ? `${String(event?.type || "")}:${action || "workspace"}:${id}` : "";
+}
+
+function normalizeDesktopDeliveryAction(value) {
+  const text = String(value || "").trim().toLowerCase().replace(/-/g, "_");
+  if (["open", "open_file"].includes(text)) return "open";
+  if (["reveal", "show", "show_in_folder", "show_folder", "folder", "location"].includes(text)) return "reveal";
+  if (["save_desktop", "export_desktop", "save_to_desktop", "desktop"].includes(text)) return "save_desktop";
+  if (["copy_path", "path", "clipboard"].includes(text)) return "copy_path";
+  return "";
+}
+
+function buildDesktopDeliveryFileName(fileRef) {
+  const name = String(fileRef?.name || fileRef?.handle || "akane-output").trim() || "akane-output";
+  const format = String(fileRef?.format || "").trim().replace(/^\.+/, "");
+  if (!format || name.toLowerCase().endsWith(`.${format.toLowerCase()}`)) return name;
+  return `${name}.${format}`;
+}
+
+function announceDesktopFileDeliveryResult(ok, statusText, bubbleText, errorText) {
+  if (ok) {
+    setRuntimeStatus(statusText, { mode: "idle" });
+    if (bubbleText) showBubbleText(bubbleText, { transient: true, durationMs: 2600, kind: "status" });
+  } else {
+    setRuntimeStatus(errorText || "文件交付失败", { mode: "error" });
+    if (errorText) showBubbleText(errorText, { transient: true, durationMs: 2600, kind: "error" });
+  }
 }
 
 function normalizeSegments(value) {
