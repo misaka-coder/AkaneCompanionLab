@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { APP_DISPLAY_NAME, CHARACTER_NAME, DEFAULT_EMOTION, DEFAULT_OUTFIT } from "./character-profile.js";
 import "./settings.css";
@@ -7,14 +8,22 @@ import "./settings.css";
 const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
+const MAX_CHARACTER_PACK_ZIP_BYTES = 300 * 1024 * 1024;
 const SCALE_PRESETS = [0.85, 1, 1.15, 1.3];
 const OPACITY_PRESETS = [1, 0.85, 0.7, 0.55];
+const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
+const appWindow = isTauriRuntime ? getCurrentWindow() : null;
 
 const els = {
   summary: document.querySelector("#settings-summary"),
   title: document.querySelector(".settings-header h1"),
   characterPack: document.querySelector("#character-pack"),
   saveCharacterPack: document.querySelector("#save-character-pack"),
+  characterPackZip: document.querySelector("#character-pack-zip"),
+  chooseCharacterPackZip: document.querySelector("#choose-character-pack-zip"),
+  overwriteCharacterPack: document.querySelector("#overwrite-character-pack"),
+  characterImportDropzone: document.querySelector("#character-import-dropzone"),
+  characterImportStatus: document.querySelector("#character-import-status"),
   characterPackList: document.querySelector("#character-pack-list"),
   characterDetails: document.querySelector("#character-details"),
   characterMetrics: document.querySelector("#character-metrics"),
@@ -98,6 +107,7 @@ boot();
 
 async function boot() {
   bindUi();
+  await bindNativeDropHandlers();
   renderPresetChips();
 
   try {
@@ -129,6 +139,27 @@ function bindUi() {
   els.saveBackend.addEventListener("click", () => saveBackendUrl());
   els.saveCharacterPack.addEventListener("click", () => saveCharacterPack());
   els.characterPack.addEventListener("change", () => updateCharacterPackButton());
+  els.chooseCharacterPackZip.addEventListener("click", () => els.characterPackZip.click());
+  els.characterPackZip.addEventListener("change", () => {
+    const file = els.characterPackZip.files?.[0];
+    if (file) {
+      void importCharacterPackZipFile(file);
+    }
+    els.characterPackZip.value = "";
+  });
+  els.characterImportDropzone.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    els.characterImportDropzone.classList.add("is-dragging");
+  });
+  els.characterImportDropzone.addEventListener("dragleave", () => {
+    els.characterImportDropzone.classList.remove("is-dragging");
+  });
+  els.characterImportDropzone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    els.characterImportDropzone.classList.remove("is-dragging");
+    const file = [...(event.dataTransfer?.files || [])].find((item) => isZipName(item.name));
+    if (file) void importCharacterPackZipFile(file);
+  });
   els.backendUrl.addEventListener("keydown", (event) => {
     if (event.isComposing) return;
     if (event.key === "Enter") {
@@ -261,6 +292,31 @@ function bindUi() {
   els.closePet.addEventListener("click", () => sendCommand("closePet"));
 }
 
+async function bindNativeDropHandlers() {
+  if (!appWindow?.onDragDropEvent) return;
+  try {
+    await appWindow.onDragDropEvent((event) => {
+      const payload = event?.payload || {};
+      const type = String(payload.type || "").toLowerCase();
+      if (type === "drop") {
+        els.characterImportDropzone.classList.remove("is-dragging");
+        const zipPath = (payload.paths || []).find((item) => isZipName(item));
+        if (zipPath) {
+          void importCharacterPackZipPath(zipPath);
+        }
+        return;
+      }
+      if (type === "over" || type === "enter") {
+        els.characterImportDropzone.classList.add("is-dragging");
+        return;
+      }
+      els.characterImportDropzone.classList.remove("is-dragging");
+    });
+  } catch {
+    // Native drag/drop is a convenience path; the file input still works.
+  }
+}
+
 function saveBackendUrl() {
   sendCommand("setBackendUrl", normalizeBackendUrl(els.backendUrl.value));
 }
@@ -270,6 +326,61 @@ function saveCharacterPack() {
   if (!value) return;
   setStatus("正在应用角色包");
   sendCommand("setCharacterPack", value);
+}
+
+async function importCharacterPackZipFile(file) {
+  if (!file || !isZipName(file.name)) {
+    setCharacterImportStatus("请选择 .zip 角色包");
+    return;
+  }
+  if (file.size > MAX_CHARACTER_PACK_ZIP_BYTES) {
+    setCharacterImportStatus("角色包 zip 暂时请控制在 300MB 以内");
+    return;
+  }
+
+  setCharacterImportStatus(`正在导入：${file.name}`);
+  els.chooseCharacterPackZip.disabled = true;
+  try {
+    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    const result = await invoke("install_character_pack_zip_bytes", {
+      fileName: file.name,
+      bytes,
+      overwrite: els.overwriteCharacterPack.checked
+    });
+    handleCharacterPackInstallResult(result);
+  } catch (error) {
+    setCharacterImportStatus(`导入失败：${formatError(error)}`);
+  } finally {
+    els.chooseCharacterPackZip.disabled = false;
+  }
+}
+
+async function importCharacterPackZipPath(path) {
+  if (!isZipName(path)) {
+    setCharacterImportStatus("拖入的不是 .zip 角色包");
+    return;
+  }
+
+  setCharacterImportStatus(`正在导入：${shortPath(path)}`);
+  els.chooseCharacterPackZip.disabled = true;
+  try {
+    const result = await invoke("install_character_pack_zip_file", {
+      path,
+      overwrite: els.overwriteCharacterPack.checked
+    });
+    handleCharacterPackInstallResult(result);
+  } catch (error) {
+    setCharacterImportStatus(`导入失败：${formatError(error)}`);
+  } finally {
+    els.chooseCharacterPackZip.disabled = false;
+  }
+}
+
+function handleCharacterPackInstallResult(result) {
+  const packId = String(result?.packId || "").trim();
+  const name = String(result?.characterName || result?.characterId || packId || "角色包").trim();
+  const warning = Array.isArray(result?.warnings) && result.warnings.length ? ` · ${result.warnings[0]}` : "";
+  setCharacterImportStatus(`${name} 已安装${warning} · 重启/重新构建后可选择`);
 }
 
 function saveOutfit() {
@@ -910,6 +1021,22 @@ function setInputIfIdle(input, value) {
 
 function setStatus(message) {
   els.runtimeStatus.textContent = message;
+}
+
+function setCharacterImportStatus(message) {
+  if (els.characterImportStatus) {
+    els.characterImportStatus.textContent = message;
+  }
+  setStatus(message);
+}
+
+function isZipName(value) {
+  return String(value || "").trim().toLowerCase().endsWith(".zip");
+}
+
+function shortPath(value) {
+  const text = String(value || "").replace(/\\/g, "/");
+  return text.split("/").filter(Boolean).pop() || text;
 }
 
 function normalizeBackendUrl(url) {

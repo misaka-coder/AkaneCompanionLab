@@ -11,6 +11,7 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 - Window position and size are persisted through Rust-side app config storage.
 - The right-click menu in the pet window is now a compact quick menu for input, settings, new session, resource reload, and exit, so it no longer covers the portrait.
 - Scale, opacity, outfit, backend check, always-on-top, taskbar visibility, reset, close, WebGL probe, and temporary click-through probe are exposed from an independent Tauri settings window.
+- The settings window can install Creator Kit exported character-pack zip files into `desktop_pet_creator_kit/characters/`; newly installed packs become selectable after restart or rebuild because pack discovery is currently build/dev-time.
 - Scale and opacity have Electron-style quick presets in addition to sliders.
 - The settings window includes a resource panel that lists manifest outfits, active outfit, resource source, backend status, emotion count, and missing required/recommended expressions.
 - Outfit cards can switch the active outfit; switching reloads `/resource-manifest` and persists the selected outfit.
@@ -169,6 +170,7 @@ Manual checks:
 - Ask or wait for a reply while music is loaded; Akane can reference the current track, queue state, and nearby lyrics without needing the full Activity Runtime.
 - `麦` records, `/asr` fills text into the input box, and does not auto-send.
 - Settings changes for backend/session/voice/context are reflected in the Workspace window after refresh or snapshot sync.
+- Import a Creator Kit exported character-pack zip from settings; it installs into `desktop_pet_creator_kit/characters/` and reports that a restart/rebuild is needed before selecting the new pack.
 - Workspace manual refresh updates counts, empty states, and latest refresh/attempt time.
 - With `主动搭话` enabled, Akane can wake on the configured interval and speak through `/think` while using recent short-term screen impressions.
 - Backend offline state shows a light local-standby message, keeps local click reactions working, and retries quietly while the app stays open.

@@ -126,6 +126,22 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("buildMusicLyricText", workspace_source)
         self.assertIn("SETTINGS_COMMAND_EVENT", workspace_source)
 
+    def test_next_settings_can_install_creator_kit_character_pack_zips(self) -> None:
+        settings_source = _read("desktop_pet_next/src/settings.js")
+        settings_html = _read("desktop_pet_next/settings.html")
+        tauri_source = _read("desktop_pet_next/src-tauri/src/main.rs")
+
+        self.assertIn('id="character-pack-zip"', settings_html)
+        self.assertIn('id="choose-character-pack-zip"', settings_html)
+        self.assertIn("importCharacterPackZipFile", settings_source)
+        self.assertIn("install_character_pack_zip_bytes", settings_source)
+        self.assertIn("install_character_pack_zip_file", settings_source)
+        self.assertIn("onDragDropEvent", settings_source)
+        self.assertIn("fn install_character_pack_zip", tauri_source)
+        self.assertIn("install_character_pack_zip_bytes", tauri_source)
+        self.assertIn("install_character_pack_zip_file", tauri_source)
+        self.assertIn("DEFAULT_CHARACTER_PACK_ID", tauri_source)
+
 
 if __name__ == "__main__":
     unittest.main()

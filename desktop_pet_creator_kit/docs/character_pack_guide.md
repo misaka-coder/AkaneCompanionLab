@@ -147,6 +147,11 @@ it into `characters/<pack_id>/`. Existing packs are not overwritten unless
 npm run import -- ./dist/my_character.zip --as my_character_v2 --force
 ```
 
+The Tauri settings window has the same first install path for Creator Kit
+exported zips. Use `导入 zip` or drag a zip onto the character-pack area. New
+packs are available after the app restarts or the dev/build process refreshes
+the `characters/` folder.
+
 ## Next Planned Slices
 
 1. Move backend persona loading into the pack.

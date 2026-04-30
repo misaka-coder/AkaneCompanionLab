@@ -22,6 +22,12 @@
           <select id="character-pack"></select>
           <button id="save-character-pack" type="button">应用</button>
         </div>
+        <div id="character-import-dropzone" class="character-import-dropzone">
+          <input id="character-pack-zip" type="file" accept=".zip,application/zip" hidden />
+          <button id="choose-character-pack-zip" type="button">导入 zip</button>
+          <label><input id="overwrite-character-pack" type="checkbox" /> 覆盖同名</label>
+          <span id="character-import-status">等待导入</span>
+        </div>
         <p id="character-details" class="detail-line">Character: Unknown</p>
         <div id="character-metrics" class="metric-grid"></div>
         <div id="character-pack-list" class="character-pack-list"></div>

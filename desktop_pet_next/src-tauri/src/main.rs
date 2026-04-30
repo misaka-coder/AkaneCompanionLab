@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
 
@@ -34,10 +34,12 @@ const BASE_WIDTH: f64 = 340.0;
 const BASE_HEIGHT: f64 = 560.0;
 const DEFAULT_BACKEND_URL: &str = "http://127.0.0.1:9999";
 const DEFAULT_PROFILE_USER_ID: &str = "master";
+const DEFAULT_CHARACTER_PACK_ID: &str = "akane_sample";
 const DEFAULT_OUTFIT: &str = "猫娘";
 const DEFAULT_EMOTION: &str = "正常";
 const MAX_AUDIO_FILE_BYTES: u64 = 300 * 1024 * 1024;
 const MAX_LYRIC_FILE_BYTES: u64 = 512 * 1024;
+const MAX_CHARACTER_PACK_ZIP_BYTES: usize = 300 * 1024 * 1024;
 const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "webm",
 ];
@@ -57,6 +59,8 @@ struct PetState {
     click_through: bool,
     backend_url: String,
     profile_user_id: String,
+    #[serde(default = "default_character_pack_id")]
+    character_pack_id: String,
     session_id: String,
     outfit: String,
     current_emotion: String,
@@ -104,6 +108,7 @@ impl Default for PetState {
             click_through: false,
             backend_url: DEFAULT_BACKEND_URL.to_string(),
             profile_user_id: DEFAULT_PROFILE_USER_ID.to_string(),
+            character_pack_id: DEFAULT_CHARACTER_PACK_ID.to_string(),
             session_id: String::new(),
             outfit: DEFAULT_OUTFIT.to_string(),
             current_emotion: DEFAULT_EMOTION.to_string(),
@@ -155,6 +160,66 @@ struct PreparedAudioAsset {
     size_bytes: u64,
     lyric_file_name: Option<String>,
     lyric_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CharacterPackInstallResult {
+    pack_id: String,
+    character_id: String,
+    character_name: String,
+    installed_path: String,
+    file_count: usize,
+    requires_restart: bool,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ZipEntry {
+    name: String,
+    data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CharacterPackJson {
+    schema_version: String,
+    identity: CharacterPackIdentity,
+    appearance: CharacterPackAppearance,
+    dialogue: CharacterPackDialogue,
+    #[serde(default)]
+    assets: CharacterPackAssets,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CharacterPackIdentity {
+    id: String,
+    name: String,
+    app_name: String,
+    user_title: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CharacterPackAppearance {
+    default_outfit: String,
+    default_emotion: String,
+    #[serde(default)]
+    required_emotions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CharacterPackDialogue {
+    local_click_lines: Vec<CharacterPackClickLine>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CharacterPackClickLine {
+    text: String,
+    emotion: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct CharacterPackAssets {
+    asset_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -310,6 +375,56 @@ fn prepare_audio_asset(
     })
 }
 
+#[tauri::command]
+fn install_character_pack_zip_file(
+    app: AppHandle,
+    path: String,
+    overwrite: bool,
+) -> Result<CharacterPackInstallResult, String> {
+    let zip_path = PathBuf::from(path.trim());
+    if !zip_path.is_file() {
+        return Err("请选择一个角色包 zip 文件。".to_string());
+    }
+    if !zip_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .eq_ignore_ascii_case("zip")
+    {
+        return Err("角色包文件需要是 .zip。".to_string());
+    }
+    let metadata = fs::metadata(&zip_path).map_err(|error| error.to_string())?;
+    if metadata.len() == 0 {
+        return Err("这个 zip 文件是空的。".to_string());
+    }
+    if metadata.len() as usize > MAX_CHARACTER_PACK_ZIP_BYTES {
+        return Err("角色包 zip 暂时请控制在 300MB 以内。".to_string());
+    }
+
+    let bytes = fs::read(&zip_path).map_err(|error| error.to_string())?;
+    install_character_pack_zip(app, bytes, overwrite)
+}
+
+#[tauri::command]
+fn install_character_pack_zip_bytes(
+    app: AppHandle,
+    file_name: String,
+    bytes: Vec<u8>,
+    overwrite: bool,
+) -> Result<CharacterPackInstallResult, String> {
+    if !file_name.trim().to_ascii_lowercase().ends_with(".zip") {
+        return Err("角色包文件需要是 .zip。".to_string());
+    }
+    if bytes.is_empty() {
+        return Err("这个 zip 文件是空的。".to_string());
+    }
+    if bytes.len() > MAX_CHARACTER_PACK_ZIP_BYTES {
+        return Err("角色包 zip 暂时请控制在 300MB 以内。".to_string());
+    }
+
+    install_character_pack_zip(app, bytes, overwrite)
+}
+
 fn read_lyric_asset(audio_path: &PathBuf, explicit_path: Option<&str>) -> Option<(String, String)> {
     let path = explicit_path
         .map(str::trim)
@@ -347,6 +462,432 @@ fn read_lyric_asset(audio_path: &PathBuf, explicit_path: Option<&str>) -> Option
     Some((file_name, text))
 }
 
+fn install_character_pack_zip(
+    app: AppHandle,
+    bytes: Vec<u8>,
+    overwrite: bool,
+) -> Result<CharacterPackInstallResult, String> {
+    let entries = read_stored_zip_entries(&bytes)?;
+    let root = detect_character_pack_root(&entries)?;
+    let pack_id = sanitize_pack_id(
+        Path::new(&root)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(root.as_str()),
+    );
+    if pack_id.is_empty() {
+        return Err("角色包 zip 缺少有效的包名。".to_string());
+    }
+
+    let temp_root = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| error.to_string())?
+        .join(format!("character_pack_import_{}", current_time_millis()));
+    let temp_pack_dir = temp_root.join(&pack_id);
+    let characters_dir = creator_kit_characters_dir()?;
+    let destination = safe_child_path(&characters_dir, &pack_id)?;
+
+    if destination.exists() && !overwrite {
+        return Err(format!("角色包 {pack_id} 已存在。勾选覆盖同名后再导入。"));
+    }
+
+    let install_result = (|| {
+        extract_character_pack_entries(&entries, &root, &temp_pack_dir)?;
+        let validation = validate_imported_character_pack(&temp_pack_dir)?;
+
+        fs::create_dir_all(&characters_dir).map_err(|error| error.to_string())?;
+        if destination.exists() {
+            assert_safe_remove_target(&characters_dir, &destination)?;
+            fs::remove_dir_all(&destination).map_err(|error| error.to_string())?;
+        }
+        fs::rename(&temp_pack_dir, &destination).map_err(|error| error.to_string())?;
+
+        Ok(CharacterPackInstallResult {
+            pack_id,
+            character_id: validation.character_id,
+            character_name: validation.character_name,
+            installed_path: destination.to_string_lossy().to_string(),
+            file_count: entries
+                .iter()
+                .filter(|entry| entry.name.starts_with(&format!("{root}/")))
+                .filter(|entry| !entry.name.ends_with('/'))
+                .count(),
+            requires_restart: true,
+            warnings: validation.warnings,
+        })
+    })();
+
+    let _ = fs::remove_dir_all(&temp_root);
+    install_result
+}
+
+#[derive(Debug)]
+struct CharacterPackValidation {
+    character_id: String,
+    character_name: String,
+    warnings: Vec<String>,
+}
+
+fn read_stored_zip_entries(bytes: &[u8]) -> Result<Vec<ZipEntry>, String> {
+    if bytes.len() < 22 {
+        return Err("zip 文件不完整。".to_string());
+    }
+
+    let eocd = find_zip_eocd(bytes)?;
+    let entry_count = read_u16(bytes, eocd + 10)? as usize;
+    let central_dir_offset = read_u32(bytes, eocd + 16)? as usize;
+    let mut offset = central_dir_offset;
+    let mut entries = Vec::new();
+
+    for _ in 0..entry_count {
+        if read_u32(bytes, offset)? != 0x0201_4b50 {
+            return Err("zip 中央目录无效。".to_string());
+        }
+
+        let flags = read_u16(bytes, offset + 8)?;
+        if flags & 0x0001 != 0 {
+            return Err("暂不支持加密 zip。".to_string());
+        }
+        let method = read_u16(bytes, offset + 10)?;
+        if method != 0 {
+            return Err("暂只支持 Creator Kit 导出的角色包 zip。".to_string());
+        }
+
+        let compressed_size = read_u32(bytes, offset + 20)? as usize;
+        let uncompressed_size = read_u32(bytes, offset + 24)? as usize;
+        let name_len = read_u16(bytes, offset + 28)? as usize;
+        let extra_len = read_u16(bytes, offset + 30)? as usize;
+        let comment_len = read_u16(bytes, offset + 32)? as usize;
+        let local_header_offset = read_u32(bytes, offset + 42)? as usize;
+        let name_start = offset + 46;
+        let name_end = name_start.saturating_add(name_len);
+        let name = normalize_zip_path(
+            std::str::from_utf8(
+                bytes
+                    .get(name_start..name_end)
+                    .ok_or_else(|| "zip 文件名范围无效。".to_string())?,
+            )
+            .map_err(|_| "zip 文件名需要是 UTF-8。".to_string())?,
+        )?;
+
+        if read_u32(bytes, local_header_offset)? != 0x0403_4b50 {
+            return Err("zip 本地文件头无效。".to_string());
+        }
+        let local_name_len = read_u16(bytes, local_header_offset + 26)? as usize;
+        let local_extra_len = read_u16(bytes, local_header_offset + 28)? as usize;
+        let data_offset = local_header_offset
+            .saturating_add(30)
+            .saturating_add(local_name_len)
+            .saturating_add(local_extra_len);
+        let data_end = data_offset.saturating_add(compressed_size);
+        let data = bytes
+            .get(data_offset..data_end)
+            .ok_or_else(|| "zip 文件内容范围无效。".to_string())?
+            .to_vec();
+        if data.len() != uncompressed_size {
+            return Err(format!("zip 条目大小不匹配：{name}"));
+        }
+
+        entries.push(ZipEntry { name, data });
+        offset = offset
+            .saturating_add(46)
+            .saturating_add(name_len)
+            .saturating_add(extra_len)
+            .saturating_add(comment_len);
+    }
+
+    Ok(entries)
+}
+
+fn find_zip_eocd(bytes: &[u8]) -> Result<usize, String> {
+    let min = bytes.len().saturating_sub(0xffff + 22);
+    let max = bytes.len().saturating_sub(22);
+    for offset in (min..=max).rev() {
+        if read_u32(bytes, offset)? == 0x0605_4b50 {
+            return Ok(offset);
+        }
+    }
+    Err("找不到 zip 结束目录。".to_string())
+}
+
+fn detect_character_pack_root(entries: &[ZipEntry]) -> Result<String, String> {
+    let matches: Vec<String> = entries
+        .iter()
+        .filter(|entry| entry.name.ends_with("character.json"))
+        .map(|entry| {
+            entry
+                .name
+                .trim_end_matches("character.json")
+                .trim_end_matches('/')
+                .to_string()
+        })
+        .collect();
+
+    match matches.len() {
+        0 => Err("zip 中没有 character.json。".to_string()),
+        1 => Ok(matches[0].clone()),
+        _ => Err("zip 中包含多个 character.json，请一次导入一个角色包。".to_string()),
+    }
+}
+
+fn extract_character_pack_entries(
+    entries: &[ZipEntry],
+    root: &str,
+    target_dir: &Path,
+) -> Result<(), String> {
+    let prefix = if root.is_empty() {
+        String::new()
+    } else {
+        format!("{root}/")
+    };
+    for entry in entries {
+        if entry.name.ends_with('/') {
+            continue;
+        }
+        if !prefix.is_empty() && !entry.name.starts_with(&prefix) {
+            continue;
+        }
+        let relative = if prefix.is_empty() {
+            entry.name.as_str()
+        } else {
+            entry.name.trim_start_matches(&prefix)
+        };
+        if relative.is_empty() {
+            continue;
+        }
+        let target = safe_child_path(target_dir, relative)?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        fs::write(target, &entry.data).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn validate_imported_character_pack(pack_dir: &Path) -> Result<CharacterPackValidation, String> {
+    let character_path = pack_dir.join("character.json");
+    let raw = fs::read_to_string(&character_path).map_err(|error| error.to_string())?;
+    let character: CharacterPackJson =
+        serde_json::from_str(&raw).map_err(|error| format!("character.json 无效：{error}"))?;
+    let mut warnings = Vec::new();
+
+    require_text(&character.schema_version, "schema_version")?;
+    if character.schema_version != "akane.character.v0.1" {
+        return Err("schema_version 需要是 akane.character.v0.1。".to_string());
+    }
+    require_text(&character.identity.id, "identity.id")?;
+    require_text(&character.identity.name, "identity.name")?;
+    require_text(&character.identity.app_name, "identity.app_name")?;
+    require_text(&character.identity.user_title, "identity.user_title")?;
+    require_text(
+        &character.appearance.default_outfit,
+        "appearance.default_outfit",
+    )?;
+    require_text(
+        &character.appearance.default_emotion,
+        "appearance.default_emotion",
+    )?;
+    if character.dialogue.local_click_lines.is_empty() {
+        return Err("dialogue.local_click_lines 至少需要一条台词。".to_string());
+    }
+    for (index, line) in character.dialogue.local_click_lines.iter().enumerate() {
+        require_text(
+            &line.text,
+            &format!("dialogue.local_click_lines[{index}].text"),
+        )?;
+        require_text(
+            &line.emotion,
+            &format!("dialogue.local_click_lines[{index}].emotion"),
+        )?;
+    }
+
+    let asset_root = character
+        .assets
+        .asset_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("assets");
+    let characters_dir = pack_dir.join(asset_root).join("characters");
+    if characters_dir.is_dir() {
+        let default_outfit_dir = characters_dir.join(&character.appearance.default_outfit);
+        let default_emotion_found = default_outfit_dir.is_dir()
+            && find_emotion_image(&default_outfit_dir, &character.appearance.default_emotion);
+        if !default_emotion_found && has_any_emotion_image(&characters_dir) {
+            return Err("默认服装或默认表情缺少对应图片。".to_string());
+        }
+    } else {
+        warnings.push("未找到 assets/characters，当前运行会使用内置立绘兜底。".to_string());
+    }
+
+    for required in &character.appearance.required_emotions {
+        if required.trim().is_empty() {
+            return Err("appearance.required_emotions 不能包含空值。".to_string());
+        }
+    }
+
+    Ok(CharacterPackValidation {
+        character_id: character.identity.id,
+        character_name: character.identity.name,
+        warnings,
+    })
+}
+
+fn has_any_emotion_image(characters_dir: &Path) -> bool {
+    let Ok(outfits) = fs::read_dir(characters_dir) else {
+        return false;
+    };
+    for outfit in outfits.flatten() {
+        let path = outfit.path();
+        if path.is_dir() && has_emotion_image_file(&path) {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_emotion_image_file(outfit_dir: &Path) -> bool {
+    let Ok(files) = fs::read_dir(outfit_dir) else {
+        return false;
+    };
+    files.flatten().any(|file| {
+        let path = file.path();
+        path.is_file() && is_supported_character_image(&path)
+    })
+}
+
+fn find_emotion_image(outfit_dir: &Path, emotion: &str) -> bool {
+    let Ok(files) = fs::read_dir(outfit_dir) else {
+        return false;
+    };
+    files.flatten().any(|file| {
+        let path = file.path();
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        path.is_file() && stem == emotion && is_supported_character_image(&path)
+    })
+}
+
+fn is_supported_character_image(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+        "png" | "jpg" | "jpeg" | "webp"
+    )
+}
+
+fn creator_kit_characters_dir() -> Result<PathBuf, String> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let desktop_pet_next = manifest_dir
+        .parent()
+        .ok_or_else(|| "无法定位 desktop_pet_next。".to_string())?;
+    let repo_root = desktop_pet_next
+        .parent()
+        .ok_or_else(|| "无法定位项目根目录。".to_string())?;
+    let characters_dir = repo_root.join("desktop_pet_creator_kit").join("characters");
+    if !characters_dir
+        .parent()
+        .is_some_and(|parent| parent.exists())
+    {
+        return Err("没有找到 desktop_pet_creator_kit。".to_string());
+    }
+    Ok(characters_dir)
+}
+
+fn require_text(value: &str, label: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err(format!("{label} 不能为空。"))
+    } else {
+        Ok(())
+    }
+}
+
+fn safe_child_path(base: &Path, relative: &str) -> Result<PathBuf, String> {
+    let normalized = normalize_zip_path(relative)?;
+    let target = base.join(normalized.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let base = base
+        .canonicalize()
+        .or_else(|_| Ok::<PathBuf, std::io::Error>(base.to_path_buf()))
+        .map_err(|error| error.to_string())?;
+    let parent = target
+        .parent()
+        .unwrap_or(base.as_path())
+        .canonicalize()
+        .unwrap_or_else(|_| target.parent().unwrap_or(base.as_path()).to_path_buf());
+    if !parent.starts_with(&base) && parent != base {
+        return Err(format!("角色包内包含不安全路径：{relative}"));
+    }
+    Ok(target)
+}
+
+fn assert_safe_remove_target(base: &Path, target: &Path) -> Result<(), String> {
+    let base = base.canonicalize().map_err(|error| error.to_string())?;
+    let target = target.canonicalize().map_err(|error| error.to_string())?;
+    if target == base || !target.starts_with(&base) {
+        return Err("拒绝覆盖不安全的目标目录。".to_string());
+    }
+    Ok(())
+}
+
+fn sanitize_pack_id(value: &str) -> String {
+    let clean = value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(|ch| ch == '_' || ch == '.')
+        .to_string();
+    if clean == "." || clean == ".." {
+        String::new()
+    } else {
+        clean
+    }
+}
+
+fn normalize_zip_path(value: &str) -> Result<String, String> {
+    let raw = value.replace('\\', "/");
+    if raw.starts_with('/') || raw.contains(':') {
+        return Err(format!("角色包内包含不安全路径：{value}"));
+    }
+    let mut parts = Vec::new();
+    for part in raw.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            return Err(format!("角色包内包含不安全路径：{value}"));
+        }
+        parts.push(part);
+    }
+    Ok(parts.join("/"))
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, String> {
+    let raw = bytes
+        .get(offset..offset.saturating_add(2))
+        .ok_or_else(|| "zip 文件结构不完整。".to_string())?;
+    Ok(u16::from_le_bytes([raw[0], raw[1]]))
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
+    let raw = bytes
+        .get(offset..offset.saturating_add(4))
+        .ok_or_else(|| "zip 文件结构不完整。".to_string())?;
+    Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+}
+
 fn find_adjacent_lyric_path(audio_path: &PathBuf) -> Option<PathBuf> {
     let parent = audio_path.parent()?;
     let stem = audio_path.file_stem()?.to_str()?;
@@ -358,8 +899,14 @@ fn find_adjacent_lyric_path(audio_path: &PathBuf) -> Option<PathBuf> {
         if !path.is_file() {
             continue;
         }
-        let path_stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("");
-        let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+        let path_stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
         if path_stem.eq_ignore_ascii_case(stem) && extension.eq_ignore_ascii_case("lrc") {
             return Some(path);
         }
@@ -638,6 +1185,9 @@ fn normalize_pet_state(state: &mut PetState) {
     state.click_through = false;
     state.backend_url = normalize_backend_url(&state.backend_url);
     state.profile_user_id = DEFAULT_PROFILE_USER_ID.to_string();
+    if state.character_pack_id.trim().is_empty() {
+        state.character_pack_id = DEFAULT_CHARACTER_PACK_ID.to_string();
+    }
     if state.outfit.trim().is_empty() {
         state.outfit = DEFAULT_OUTFIT.to_string();
     }
@@ -669,6 +1219,10 @@ fn default_voice_input_enabled() -> bool {
 
 fn default_desktop_context_enabled() -> bool {
     true
+}
+
+fn default_character_pack_id() -> String {
+    DEFAULT_CHARACTER_PACK_ID.to_string()
 }
 
 fn default_screen_vision_mode() -> String {
@@ -995,6 +1549,8 @@ fn main() {
             save_pet_state,
             get_desktop_context_snapshot,
             prepare_audio_asset,
+            install_character_pack_zip_file,
+            install_character_pack_zip_bytes,
             apply_window_state,
             set_visual_scale,
             set_always_on_top,

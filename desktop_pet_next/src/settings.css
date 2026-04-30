@@ -257,6 +257,41 @@ button:disabled:hover {
   accent-color: #6f9eca;
 }
 
+.character-import-dropzone {
+  display: grid;
+  grid-template-columns: 92px 96px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px;
+  border: 1px dashed rgb(111 158 202 / 0.38);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.38);
+}
+
+.character-import-dropzone.is-dragging {
+  border-color: rgb(111 158 202 / 0.78);
+  background: rgb(111 158 202 / 0.14);
+}
+
+.character-import-dropzone label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgb(49 64 82 / 0.68);
+  font-size: 12px;
+}
+
+.character-import-dropzone span {
+  min-width: 0;
+  overflow: hidden;
+  color: rgb(49 64 82 / 0.58);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .music-queue {
   display: grid;
   gap: 7px;
@@ -492,6 +527,10 @@ button:disabled:hover {
   .button-grid,
   .toggle-grid,
   .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .character-import-dropzone {
     grid-template-columns: 1fr;
   }
 

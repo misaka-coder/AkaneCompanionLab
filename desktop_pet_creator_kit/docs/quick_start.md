@@ -65,6 +65,10 @@ npm run import -- ./dist/my_character.zip
 Use `--as new_pack_id` to install under a different folder name, and `--force`
 to overwrite an existing pack after validation passes.
 
+In the Tauri settings window, you can also use `导入 zip` or drag an exported
+Creator Kit zip onto the character-pack area. The current runtime discovers
+newly installed packs after restart or rebuild.
+
 For paid handoff work, see `docs/paid_delivery_checklist.md`.
 
 ## Create A Second Pack
