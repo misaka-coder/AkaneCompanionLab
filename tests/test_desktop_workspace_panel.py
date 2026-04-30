@@ -319,6 +319,47 @@ class DesktopWorkspacePanelTests(unittest.TestCase):
             )
             self.assertEqual(engine.store.get_task_workspace(task["task_id"])["status"], "completed")
 
+    def test_task_cards_expose_status_group_and_handoff_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            engine = _make_workspace_engine(Path(temp_dir))
+            task = engine.store.add_task_workspace(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                status="waiting_user",
+                normalized_goal="整理音频并生成摘要",
+                pending_question={"text": "要不要保留时间轴？"},
+                timestamp=130,
+            )
+            engine.store.append_task_workspace_event(
+                task_id=task["task_id"],
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                event_type="workshop_handoff",
+                from_actor="worker",
+                payload={
+                    "handoff": {
+                        "status": "partial",
+                        "summary": "转写稿已生成，时间轴格式待确认。",
+                        "next_action": "询问用户是否保留时间轴。",
+                        "artifacts": [{"id": "gen_001", "title": "转写稿"}],
+                    },
+                },
+                status="pending",
+                timestamp=135,
+            )
+
+            panel = engine.build_desktop_pet_workspace_panel(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+            )
+
+            task_card = panel["sections"]["tasks"][0]
+            self.assertEqual(task_card["status"], "partial")
+            self.assertEqual(task_card["status_group"], "attention")
+            self.assertEqual(task_card["artifact_count"], 1)
+            self.assertIn("转写稿已生成", task_card["subtitle"])
+            self.assertIn("询问用户", task_card["next_action"])
+
     def test_local_path_import_copies_supported_files_into_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -77,6 +77,9 @@ const MUSIC_TIMELINE_POLL_MS = 8000;
 const MUSIC_TIMELINE_RETRY_MS = 30000;
 const CLIPBOARD_TEXT_LIMIT = 600;
 const BACKEND_RETRY_MS = 30 * 1000;
+const WORKSPACE_TASK_POLL_MS = 12 * 1000;
+const WORKSPACE_TASK_IDLE_POLL_MS = 30 * 1000;
+const WORKSPACE_TASK_RECENT_UPDATE_MS = 5 * 60 * 1000;
 const VOICE_MIME_TYPES = [
   "audio/webm;codecs=opus",
   "audio/webm",
@@ -260,6 +263,11 @@ let screenVisionStatus = "off";
 let screenVisionError = "";
 let screenVisionActiveClipId = "";
 let backendRetryTimer = 0;
+let workspaceTaskPollTimer = 0;
+let workspaceTaskWatchPrimed = false;
+let workspaceTaskStatusCache = new Map();
+let workspaceTaskWatchKey = "";
+const workspaceTaskAnnounced = new Set();
 let lastDesktopForeground = null;
 
 const els = {
@@ -353,6 +361,7 @@ async function boot() {
     scheduleDesktopContextPoll();
     scheduleScreenVisionCapture({ immediate: true });
     scheduleProactiveWake();
+    scheduleWorkspaceTaskWatch({ delayMs: 2000 });
   } catch (error) {
     setStatus(`Tauri init failed: ${formatError(error)}`);
   }
@@ -714,11 +723,12 @@ async function registerWindowListeners() {
     window.clearTimeout(proactiveWakeTimer);
     stopScreenVisionCapture({ clearRemote: false });
     window.clearTimeout(backendRetryTimer);
+    window.clearTimeout(workspaceTaskPollTimer);
     window.clearTimeout(transientEmotionTimer);
     if (thinkController) thinkController.abort();
     if (asrController) asrController.abort();
     stopTts();
-    stopMusic({ silent: true });
+    stopMusic({ silent: true, clearQueue: true });
     cleanupVoiceRecorder();
   });
 }
@@ -839,6 +849,9 @@ async function handleSettingsCommand(payload) {
       break;
     case "playMusicTrack":
       await playMusicTrackBySourceId(payload.value);
+      break;
+    case "playWorkspaceAudio":
+      await playWorkspaceAudioItem(payload.value);
       break;
     case "removeMusicTrack":
       await removeMusicTrackBySourceId(payload.value);
@@ -2490,6 +2503,7 @@ async function ensureBackendSession({ restoreLatest = false } = {}) {
     } else {
       setRuntimeStatus("后端已就绪", { mode: "idle" });
     }
+    scheduleWorkspaceTaskWatch({ delayMs: 1200 });
     return bundle;
   } catch (error) {
     resourceState.health = "offline";
@@ -3581,6 +3595,60 @@ async function importDroppedFilesToWorkspace(paths) {
   }
 }
 
+async function playWorkspaceAudioItem(item) {
+  const value = item && typeof item === "object" ? item : {};
+  const handle = String(value.handle || value.id || "").trim();
+  if (!handle) {
+    showBubbleText("这首没有可播放的编号。", { transient: true, durationMs: 1800, kind: "music" });
+    return;
+  }
+
+  try {
+    setRuntimeStatus("正在从手边取音乐", { mode: "music" });
+    const path = await fetchWorkspaceItemLocation({
+      itemType: value.itemType || value.item_type || value.type || "attachment",
+      handle
+    });
+    await addDroppedAudioFiles([{ path, lyricPath: "" }]);
+  } catch (error) {
+    const message = friendlyErrorMessage(formatError(error));
+    setRuntimeStatus(`手边音乐播放失败：${message}`, { mode: "error" });
+    showBubbleText("这首手边音乐暂时放不了。", { transient: true, durationMs: 2200, kind: "music" });
+  }
+}
+
+async function fetchWorkspaceItemLocation({ itemType, handle }) {
+  const normalizedType = String(itemType || "").trim().toLowerCase();
+  const normalizedHandle = String(handle || "").trim();
+  if (!normalizedHandle) throw new Error("missing workspace handle");
+  const sessionId = state.sessionId || "";
+  if (!sessionId) throw new Error("会话还没准备好");
+
+  const routeType = normalizedType === "generated" || normalizedType === "output" ? "generated" : "attachments";
+  const endpointName = routeType === "generated" ? "desktop_workspace_generated_location" : "desktop_workspace_attachment_location";
+  const response = await backendFetch(
+    buildBackendEndpointUrl(
+      endpointName,
+      `/desktop-pet/workspace/${routeType}/${encodeURIComponent(normalizedHandle)}/location`,
+      {
+        user_id: sessionId,
+        real_user_id: state.profileUserId || PROFILE_USER_ID,
+        t: Date.now()
+      }
+    ),
+    {
+      method: "GET",
+      cache: "no-store",
+      connectTimeout: 10000
+    }
+  );
+  const payload = await readJsonResponse(response);
+  if (!response.ok || !payload?.ok || !payload.path) {
+    throw new Error(extractBackendErrorMessage(payload) || `HTTP ${response.status}`);
+  }
+  return String(payload.path || "");
+}
+
 function summarizeWorkspaceImportSkipped(payload) {
   const first = Array.isArray(payload?.skipped) ? payload.skipped[0] : null;
   const reason = String(first?.reason || "").trim();
@@ -3603,6 +3671,130 @@ async function notifyWorkspaceRefresh() {
   } catch {
     // The workspace window may not be open yet.
   }
+  scheduleWorkspaceTaskWatch({ immediate: true });
+}
+
+function scheduleWorkspaceTaskWatch({ immediate = false, delayMs = null } = {}) {
+  if (!isTauriRuntime) return;
+  window.clearTimeout(workspaceTaskPollTimer);
+  const delay = immediate ? 0 : Number.isFinite(Number(delayMs)) ? Number(delayMs) : WORKSPACE_TASK_POLL_MS;
+  workspaceTaskPollTimer = window.setTimeout(() => {
+    workspaceTaskPollTimer = 0;
+    void refreshWorkspaceTaskWatch();
+  }, Math.max(0, delay));
+}
+
+async function refreshWorkspaceTaskWatch() {
+  if (!isTauriRuntime) return;
+  const sessionId = String(state.sessionId || "").trim();
+  if (!sessionId || resourceState.health !== "online") {
+    scheduleWorkspaceTaskWatch({ delayMs: WORKSPACE_TASK_IDLE_POLL_MS });
+    return;
+  }
+  const watchKey = `${state.profileUserId || PROFILE_USER_ID}|${sessionId}`;
+  if (workspaceTaskWatchKey !== watchKey) {
+    workspaceTaskWatchKey = watchKey;
+    workspaceTaskWatchPrimed = false;
+    workspaceTaskStatusCache = new Map();
+    workspaceTaskAnnounced.clear();
+  }
+
+  let hasActiveTasks = false;
+  try {
+    const query = {
+      user_id: sessionId,
+      real_user_id: state.profileUserId || PROFILE_USER_ID,
+      limit: 12,
+      t: Date.now()
+    };
+    const response = await backendFetch(
+      buildBackendEndpointUrl("desktop_workspace_summary", "/desktop-pet/workspace/summary", query),
+      {
+        method: "GET",
+        cache: "no-store",
+        connectTimeout: 5000
+      }
+    );
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(extractBackendErrorMessage(payload) || `HTTP ${response.status}`);
+    const tasks = normalizeWorkspaceSummaryTasks(payload);
+    hasActiveTasks = tasks.some(isActiveWorkspaceTask);
+    announceWorkspaceTaskChanges(tasks);
+  } catch {
+    scheduleWorkspaceTaskWatch({ delayMs: WORKSPACE_TASK_IDLE_POLL_MS });
+    return;
+  }
+  scheduleWorkspaceTaskWatch({ delayMs: hasActiveTasks ? WORKSPACE_TASK_POLL_MS : WORKSPACE_TASK_IDLE_POLL_MS });
+}
+
+function normalizeWorkspaceSummaryTasks(payload) {
+  const sections = payload?.sections && typeof payload.sections === "object" ? payload.sections : {};
+  return (Array.isArray(sections.tasks) ? sections.tasks : [])
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      id: String(item.id || item.handle || "").trim(),
+      title: String(item.title || "后台任务").trim(),
+      status: String(item.status || "").trim().toLowerCase(),
+      statusGroup: String(item.status_group || item.statusGroup || "").trim().toLowerCase(),
+      updatedAt: Number(item.updated_at || item.updatedAt || 0),
+      artifactCount: Number(item.artifact_count || item.artifactCount || 0)
+    }))
+    .filter((item) => item.id);
+}
+
+function isActiveWorkspaceTask(task) {
+  return task.statusGroup === "active" || ["queued", "running"].includes(task.status);
+}
+
+function announceWorkspaceTaskChanges(tasks) {
+  const nextCache = new Map();
+  for (const task of tasks) {
+    const signature = `${task.status}:${task.updatedAt}:${task.artifactCount}`;
+    nextCache.set(task.id, { status: task.status, signature });
+    const previous = workspaceTaskStatusCache.get(task.id);
+    if (shouldAnnounceWorkspaceTask(task, previous)) {
+      announceWorkspaceTask(task);
+      workspaceTaskAnnounced.add(workspaceTaskAnnouncementKey(task));
+    }
+  }
+  workspaceTaskStatusCache = nextCache;
+  workspaceTaskWatchPrimed = true;
+}
+
+function shouldAnnounceWorkspaceTask(task, previous) {
+  if (!["completed", "failed", "blocked", "waiting_user", "partial"].includes(task.status)) return false;
+  const key = workspaceTaskAnnouncementKey(task);
+  if (workspaceTaskAnnounced.has(key)) return false;
+  if (previous && previous.status !== task.status) return true;
+  const updatedAtMs = Number(task.updatedAt || 0) * 1000;
+  return workspaceTaskWatchPrimed && updatedAtMs > 0 && Date.now() - updatedAtMs < WORKSPACE_TASK_RECENT_UPDATE_MS;
+}
+
+function workspaceTaskAnnouncementKey(task) {
+  return `${task.id}:${task.status}:${task.updatedAt || 0}`;
+}
+
+function announceWorkspaceTask(task) {
+  const title = task.title ? `：${task.title}` : "";
+  let message = `后台任务有新状态${title}`;
+  let bubble = "后台任务有新进展。";
+  let mode = "idle";
+  if (task.status === "completed") {
+    message = `后台任务已完成${title}`;
+    bubble = task.artifactCount > 0 ? "我处理好了，结果放到手边了。" : "我处理好了。";
+  } else if (task.status === "failed") {
+    message = `后台任务失败${title}`;
+    bubble = "后台任务失败了，我把状态放在手边了。";
+    mode = "error";
+  } else if (["blocked", "waiting_user", "partial"].includes(task.status)) {
+    message = `后台任务需要确认${title}`;
+    bubble = "后台任务等你确认一下。";
+  }
+  setRuntimeStatus(message, { mode });
+  if (!sending && !replyDisplayActive) {
+    showBubbleText(bubble, { transient: true, durationMs: 2600, kind: "status" });
+  }
+  void emit(WORKSPACE_REFRESH_EVENT, { t: Date.now() }).catch(() => {});
 }
 
 function isSupportedMusicPath(path) {
@@ -3672,7 +3864,7 @@ async function addDroppedAudioFiles(items) {
     }
     await enqueueMusicTracks(tracks);
   } catch (error) {
-    stopMusic({ silent: true });
+    stopMusic({ silent: true, clearQueue: true });
     setRuntimeStatus(`音乐准备失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
     showBubbleText("这首好像暂时放不了。", { transient: true, durationMs: 2200, kind: "music" });
   } finally {
@@ -3685,7 +3877,7 @@ async function addDroppedAudioFiles(items) {
 async function enqueueMusicTracks(tracks) {
   const items = Array.isArray(tracks) ? tracks.filter((track) => track?.cachedPath) : [];
   if (!items.length) return;
-  const shouldStart = !musicTrack || musicQueueIndex < 0 || !musicQueue.length;
+  const shouldStart = !musicTrack || musicQueueIndex < 0 || !musicQueue.length || (!musicPlaying && !musicPaused);
   if (shouldStart) {
     musicQueue = items;
     musicQueueIndex = 0;
@@ -3757,7 +3949,7 @@ async function playMusicTrackBySourceId(sourceId) {
     return false;
   }
   if (index === musicQueueIndex) {
-    if (musicPaused) await toggleMusicPlayback();
+    if (!musicPlaying) await toggleMusicPlayback();
     return true;
   }
   return playMusicQueueIndex(index, {
@@ -3777,7 +3969,7 @@ async function removeMusicTrackBySourceId(sourceId) {
   musicQueue.splice(index, 1);
 
   if (!musicQueue.length) {
-    stopMusic({ announce: true, silent: false });
+    stopMusic({ announce: true, silent: false, clearQueue: true });
     return true;
   }
 
@@ -3821,7 +4013,7 @@ async function handleMusicPlaybackError() {
       setRuntimeStatus(`音乐播放失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
     }
   }
-  stopMusic({ silent: true });
+  stopMusic({ silent: true, clearQueue: true });
   setRuntimeStatus(`音乐播放失败${name ? `：${name}` : ""}`, { mode: "error" });
   showBubbleText("这首歌好像没放出来……", { transient: true, durationMs: 2200, kind: "music" });
   if (failed?.displayName) scheduleSettingsSnapshot();
@@ -3847,6 +4039,7 @@ async function toggleMusicPlayback() {
       setMusicEmotion(true);
       const queueLabel = getMusicQueueLabel();
       setRuntimeStatus(`播放中：${getMusicDisplayName()}${queueLabel ? ` · ${queueLabel}` : ""}`, { mode: "music" });
+      scheduleBackendMusicTimeline(musicTrack, { immediate: true });
     } catch (error) {
       setRuntimeStatus(`音乐继续失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
     }
@@ -3855,18 +4048,28 @@ async function toggleMusicPlayback() {
   scheduleSettingsSnapshot();
 }
 
-function stopMusic({ announce = false, ended = false, silent = false } = {}) {
+function stopMusic({ announce = false, ended = false, silent = false, clearQueue = false } = {}) {
   const hadTrack = Boolean(musicTrack);
   const name = getMusicDisplayName();
   musicPlaying = false;
   musicPaused = false;
   musicLoading = false;
-  musicTrack = null;
-  musicQueue = [];
-  musicQueueIndex = -1;
   clearBackendMusicTimelineTimer();
   if (els.musicPlayer) {
-    resetMusicElement();
+    els.musicPlayer.pause();
+    try {
+      els.musicPlayer.currentTime = 0;
+    } catch {
+      // Some media backends reject currentTime until metadata is ready.
+    }
+    if (clearQueue) {
+      resetMusicElement();
+    }
+  }
+  if (clearQueue) {
+    musicTrack = null;
+    musicQueue = [];
+    musicQueueIndex = -1;
   }
   setMusicEmotion(false);
   if (!silent && hadTrack) {
@@ -3885,7 +4088,7 @@ function clearMusicQueue({ announce = false } = {}) {
     showBubbleText("队列现在是空的。", { transient: true, durationMs: 1600, kind: "music" });
     return;
   }
-  stopMusic({ announce });
+  stopMusic({ announce, clearQueue: true });
 }
 
 function setMusicEmotion(active) {
@@ -4304,13 +4507,16 @@ function buildDesktopMusicActivity() {
   const currentTime = Number(els.musicPlayer?.currentTime || 0);
   const duration = Number(els.musicPlayer?.duration || 0);
   const currentLyric = buildCurrentLyricSnapshot(currentTime);
+  const status = musicPlaying ? "running" : musicPaused ? "paused" : "stopped";
+  const progressSeconds = Number.isFinite(currentTime) ? Math.max(0, currentTime) : 0;
+  if (status === "stopped" && progressSeconds <= 0) return null;
   return {
     type: "audio_playback",
     title: getMusicDisplayName() || "未命名音乐",
     source_id: musicTrack.sourceId || "local_music_current",
     handle: "current",
-    status: musicPlaying ? "running" : musicPaused ? "paused" : "stopped",
-    progress_seconds: Number.isFinite(currentTime) ? Math.max(0, currentTime) : 0,
+    status,
+    progress_seconds: progressSeconds,
     duration_seconds: Number.isFinite(duration) ? Math.max(0, duration) : 0,
     source_kind: "local_file",
     file_name: musicTrack.fileName,

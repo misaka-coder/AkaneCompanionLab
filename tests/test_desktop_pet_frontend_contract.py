@@ -118,6 +118,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("/desktop-pet/workspace/import-local", main_source)
         self.assertIn("WORKSPACE_REFRESH_EVENT", main_source)
         self.assertIn("showFileDropHint", main_source)
+        self.assertIn("scheduleWorkspaceTaskWatch", main_source)
+        self.assertIn("announceWorkspaceTaskChanges", main_source)
+        self.assertIn("/desktop-pet/workspace/summary", main_source)
         self.assertIn("timelineLyricLineCount", main_source)
         self.assertIn('"playMusicTrack"', main_source)
         self.assertIn('"removeMusicTrack"', main_source)
@@ -130,6 +133,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("buildMusicLyricText", workspace_source)
         self.assertIn("WORKSPACE_REFRESH_EVENT", workspace_source)
         self.assertIn("scheduleWorkspaceRefresh(120)", workspace_source)
+        self.assertIn("TASK_AUTO_REFRESH_MS", workspace_source)
+        self.assertIn("resolveItemStatusGroup", workspace_source)
+        self.assertIn("status_group", workspace_source)
         self.assertIn("SETTINGS_COMMAND_EVENT", workspace_source)
 
     def test_next_settings_can_install_creator_kit_character_pack_zips(self) -> None:

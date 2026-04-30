@@ -664,17 +664,27 @@ def desktop_workspace_task_card(item: dict[str, Any] | None) -> dict[str, Any]:
     status = str(task.get("status") or "").strip().lower()
     title = clip_desktop_workspace_text(task.get("title") or "后台任务", 80)
     summary = clip_desktop_workspace_text(task.get("summary") or "", 120)
+    handoff = task.get("handoff") if isinstance(task.get("handoff"), dict) else {}
+    artifacts = [str(value or "").strip() for value in list(handoff.get("artifacts") or [])]
+    artifacts = [value for value in artifacts if value]
+    next_action = clip_desktop_workspace_text(handoff.get("next_action") or "", 100)
+    status_group = desktop_workspace_task_status_group(status)
+    subtitle = desktop_workspace_task_subtitle(status=status, summary=summary, artifact_count=len(artifacts))
     return {
         "item_type": "task",
         "id": task_id,
         "handle": task_id,
         "title": title,
-        "subtitle": summary or "后台任务",
+        "subtitle": subtitle,
+        "summary": summary,
         "status": status,
         "status_label": desktop_workspace_status_label(status),
+        "status_group": status_group,
+        "artifact_count": len(artifacts),
+        "next_action": next_action,
         "updated_at": int(task.get("updated_at") or 0),
         "can_open": False,
-        "can_clear": status in {"completed", "failed", "canceled"},
+        "can_clear": status in {"completed", "failed", "canceled", "blocked", "waiting_user"},
     }
 
 
@@ -728,6 +738,40 @@ def desktop_workspace_status_label(status: str) -> str:
         "canceled": "已取消",
         "cleaned": "已收起",
     }.get(str(status or "").strip().lower(), str(status or "").strip() or "未知")
+
+
+def desktop_workspace_task_status_group(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"queued", "running"}:
+        return "active"
+    if normalized in {"completed"}:
+        return "done"
+    if normalized in {"failed"}:
+        return "failed"
+    if normalized in {"blocked", "waiting_user", "partial"}:
+        return "attention"
+    if normalized in {"canceled", "cleaned"}:
+        return "idle"
+    return "idle"
+
+
+def desktop_workspace_task_subtitle(*, status: str, summary: str, artifact_count: int) -> str:
+    normalized = str(status or "").strip().lower()
+    if artifact_count > 0:
+        return f"{summary} · {artifact_count} 个产物" if summary else f"已有 {artifact_count} 个产物"
+    if summary:
+        return summary
+    fallback = {
+        "queued": "已排队，等待后台工坊接手",
+        "running": "后台工坊正在处理",
+        "blocked": "需要你确认后继续",
+        "waiting_user": "需要你确认后继续",
+        "partial": "已有部分结果，等前台接手",
+        "completed": "已完成，结果会放回手边",
+        "failed": "执行失败，可以查看原因后重试",
+        "canceled": "任务已取消",
+    }
+    return fallback.get(normalized, "后台任务")
 
 
 def clip_desktop_workspace_text(value: Any, limit: int) -> str:

@@ -104,6 +104,17 @@ button:disabled:hover {
   background: rgb(111 158 202 / 0.18);
 }
 
+.danger-button {
+  color: #74414a;
+  border-color: rgb(184 98 112 / 0.36);
+  background: rgb(255 242 244 / 0.62);
+}
+
+.danger-button:hover {
+  border-color: rgb(184 98 112 / 0.56);
+  background: rgb(255 236 239 / 0.9);
+}
+
 .workspace-alert {
   padding: 9px 10px;
   border: 1px solid rgb(190 95 95 / 0.26);
@@ -310,6 +321,26 @@ button:disabled:hover {
   background: rgb(255 255 255 / 0.5);
 }
 
+.workspace-item[data-status-group="active"] {
+  border-color: rgb(91 146 194 / 0.34);
+  background: rgb(244 250 255 / 0.72);
+}
+
+.workspace-item[data-status-group="attention"] {
+  border-color: rgb(180 142 70 / 0.34);
+  background: rgb(255 249 238 / 0.72);
+}
+
+.workspace-item[data-status-group="done"] {
+  border-color: rgb(82 156 117 / 0.32);
+  background: rgb(242 252 247 / 0.72);
+}
+
+.workspace-item[data-status-group="failed"] {
+  border-color: rgb(184 98 112 / 0.34);
+  background: rgb(255 244 246 / 0.72);
+}
+
 .item-mark {
   display: grid;
   place-items: center;
@@ -321,6 +352,24 @@ button:disabled:hover {
   background: rgb(111 158 202 / 0.12);
   font-size: 13px;
   font-weight: 750;
+}
+
+.workspace-item[data-status-group="attention"] .item-mark {
+  color: #735724;
+  border-color: rgb(180 142 70 / 0.34);
+  background: rgb(255 237 198 / 0.48);
+}
+
+.workspace-item[data-status-group="done"] .item-mark {
+  color: #2c6549;
+  border-color: rgb(82 156 117 / 0.34);
+  background: rgb(218 246 231 / 0.55);
+}
+
+.workspace-item[data-status-group="failed"] .item-mark {
+  color: #74414a;
+  border-color: rgb(184 98 112 / 0.36);
+  background: rgb(255 225 230 / 0.55);
 }
 
 .item-body {
@@ -354,6 +403,37 @@ button:disabled:hover {
   white-space: nowrap;
 }
 
+.item-status {
+  padding: 2px 7px;
+  border: 1px solid rgb(136 162 198 / 0.22);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.56);
+}
+
+.item-status[data-status-group="active"] {
+  color: #315d82;
+  border-color: rgb(91 146 194 / 0.28);
+  background: rgb(232 245 255 / 0.72);
+}
+
+.item-status[data-status-group="attention"] {
+  color: #735724;
+  border-color: rgb(180 142 70 / 0.3);
+  background: rgb(255 241 210 / 0.72);
+}
+
+.item-status[data-status-group="done"] {
+  color: #2c6549;
+  border-color: rgb(82 156 117 / 0.28);
+  background: rgb(225 248 236 / 0.72);
+}
+
+.item-status[data-status-group="failed"] {
+  color: #74414a;
+  border-color: rgb(184 98 112 / 0.28);
+  background: rgb(255 231 235 / 0.72);
+}
+
 .item-body p {
   min-width: 0;
   overflow: hidden;
@@ -363,6 +443,10 @@ button:disabled:hover {
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.item-body .item-next-action {
+  color: rgb(49 64 82 / 0.72);
 }
 
 .item-actions {
