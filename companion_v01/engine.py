@@ -75,73 +75,6 @@ from .vision_observation_router import VisionObservationRouter
 logger = logging.getLogger("akane.engine")
 
 
-TOOL_PACKS: dict[str, tuple[str, ...]] = {
-    "base": (
-        "retrieve_memory",
-        "set_reminder",
-        "list_reminders",
-        "cancel_reminder",
-        "manage_persona",
-        "manage_task_workspace",
-        "delegate_task",
-    ),
-    "web_scene": (
-        "call_npc",
-        "check_inventory",
-        "manage_gift",
-        "manage_artifact",
-    ),
-    "qq": (
-        "fetch_media_from_url",
-        "sync_attachment_workspace",
-        "inspect_attachment",
-        "read_attachment_section",
-        "retry_attachment",
-        "clear_attachment_focus",
-        "compose_file",
-        "revise_generated_file",
-        "apply_style_to_existing_file",
-        "inspect_media_info",
-        "convert_media_file",
-        "clean_voice_track",
-        "transcribe_media",
-        "prepare_voice_dataset",
-        "inspect_generated_file",
-        "send_file",
-        "send_sticker",
-        "send_generated_file",
-        "manage_generated_file",
-    ),
-    "desktop": (
-        "fetch_media_from_url",
-        "sync_attachment_workspace",
-        "inspect_attachment",
-        "read_attachment_section",
-        "retry_attachment",
-        "clear_attachment_focus",
-        "compose_file",
-        "revise_generated_file",
-        "apply_style_to_existing_file",
-        "inspect_media_info",
-        "convert_media_file",
-        "clean_voice_track",
-        "transcribe_media",
-        "prepare_voice_dataset",
-        "inspect_generated_file",
-        "send_file",
-        "send_generated_file",
-        "manage_generated_file",
-    ),
-}
-
-MODE_TOOL_PACKS: dict[ClientMode, tuple[str, ...]] = {
-    ClientMode.SCENE_STATIC: ("base", "web_scene"),
-    ClientMode.SCENE_LIVE2D: ("base", "web_scene"),
-    ClientMode.QQ_TEXT: ("base", "qq"),
-    ClientMode.DESKTOP_PET: ("base", "desktop"),
-}
-
-
 class AkaneMemoryEngine:
     def __init__(
         self,
@@ -2760,16 +2693,8 @@ class AkaneMemoryEngine:
         return registry.select(snapshot)
 
     def _legacy_mode_tool_names(self, client_context: ClientProtocolContext) -> list[str]:
-        pack_names = MODE_TOOL_PACKS.get(client_context.effective_mode, ("base",))
-        selected_names: list[str] = []
-        seen: set[str] = set()
-        for pack_name in pack_names:
-            for tool_name in TOOL_PACKS.get(pack_name, ()):
-                if tool_name in seen:
-                    continue
-                seen.add(tool_name)
-                selected_names.append(tool_name)
-        return selected_names
+        registry = getattr(self, "capability_registry", None) or CapabilityRegistry()
+        return list(registry.tool_names_for_mode(client_context.effective_mode))
 
     def _build_capability_snapshot(
         self,

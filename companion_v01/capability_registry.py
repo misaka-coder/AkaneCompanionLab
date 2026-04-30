@@ -44,6 +44,61 @@ DOCUMENT_ATTACHMENT_FORMATS = {
 DOCUMENT_GENERATED_FORMATS = {"txt", "md", "docx", "xlsx", "pdf", "json", "csv", "html"}
 MEDIA_FORMATS = {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "mp4", "mov", "mkv", "webm", "avi"}
 
+COMMON_CLIENT_MODES = (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D, ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
+WEB_SCENE_CLIENT_MODES = (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D)
+CHAT_FILE_CLIENT_MODES = (ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
+
+COMMON_TOOL_NAMES = (
+    "retrieve_memory",
+    "set_reminder",
+    "list_reminders",
+    "cancel_reminder",
+    "manage_persona",
+    "manage_task_workspace",
+    "delegate_task",
+)
+
+WEB_SCENE_TOOL_NAMES = (
+    "call_npc",
+    "check_inventory",
+    "manage_gift",
+    "manage_artifact",
+)
+
+REMOTE_MEDIA_TOOL_NAMES = ("fetch_media_from_url",)
+
+ATTACHMENT_WORKSPACE_TOOL_NAMES = (
+    "sync_attachment_workspace",
+    "inspect_attachment",
+    "retry_attachment",
+    "clear_attachment_focus",
+)
+
+DOCUMENT_WORKBENCH_TOOL_NAMES = (
+    "read_attachment_section",
+    "compose_file",
+    "revise_generated_file",
+    "apply_style_to_existing_file",
+)
+
+MEDIA_WORKBENCH_TOOL_NAMES = (
+    "inspect_media_info",
+    "separate_audio_stems",
+    "clean_voice_track",
+    "transcribe_media",
+    "prepare_voice_dataset",
+    "convert_media_file",
+)
+
+GENERATED_FILE_MANAGEMENT_TOOL_NAMES = (
+    "inspect_generated_file",
+    "manage_generated_file",
+)
+
+FILE_HANDOFF_TOOL_NAMES = ("send_file",)
+CONVERSATION_FILE_AUTHORING_TOOL_NAMES = ("compose_file",)
+QQ_STICKER_TOOL_NAMES = ("send_sticker",)
+
 
 @dataclass(frozen=True)
 class CapabilitySnapshot:
@@ -60,6 +115,7 @@ class CapabilitySnapshot:
 @dataclass(frozen=True)
 class CapabilityModule:
     name: str
+    layer: str
     modes: tuple[ClientMode, ...]
     tools: tuple[str, ...]
     light_hint: str
@@ -74,6 +130,7 @@ class CapabilitySelection:
     light_hints: tuple[str, ...]
     tool_names: tuple[str, ...]
     module_names: tuple[str, ...]
+    layer_names: tuple[str, ...] = ()
 
 
 def _always(_: CapabilitySnapshot) -> bool:
@@ -100,6 +157,10 @@ def _has_generated_file(snapshot: CapabilitySnapshot) -> bool:
     return snapshot.has_generated_file
 
 
+def _has_deliverable_file(snapshot: CapabilitySnapshot) -> bool:
+    return snapshot.has_any_attachment or snapshot.has_generated_file
+
+
 def _is_web_scene(snapshot: CapabilitySnapshot) -> bool:
     return snapshot.client_mode in {ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D}
 
@@ -114,8 +175,10 @@ class CapabilityRegistry:
         hints: list[str] = []
         tools: list[str] = []
         module_names: list[str] = []
+        layer_names: list[str] = []
         seen_tools: set[str] = set()
         seen_hints: set[str] = set()
+        seen_layers: set[str] = set()
         for module in self.modules:
             if not module.applies_to_mode(snapshot.client_mode):
                 continue
@@ -126,6 +189,10 @@ class CapabilityRegistry:
             if not module.trigger(snapshot):
                 continue
             module_names.append(module.name)
+            layer = str(module.layer or "").strip()
+            if layer and layer not in seen_layers:
+                seen_layers.add(layer)
+                layer_names.append(layer)
             for tool_name in module.tools:
                 if tool_name in seen_tools:
                     continue
@@ -135,81 +202,120 @@ class CapabilityRegistry:
             light_hints=tuple(hints),
             tool_names=tuple(tools),
             module_names=tuple(module_names),
+            layer_names=tuple(layer_names),
         )
 
+    def tool_names_for_mode(self, mode: ClientMode) -> tuple[str, ...]:
+        selected: list[str] = []
+        seen: set[str] = set()
+        for module in self.modules:
+            if not module.applies_to_mode(mode):
+                continue
+            for tool_name in module.tools:
+                if tool_name in seen:
+                    continue
+                seen.add(tool_name)
+                selected.append(tool_name)
+        return tuple(selected)
+
     def _default_modules(self) -> tuple[CapabilityModule, ...]:
-        qq_and_desktop = (ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
         return (
             CapabilityModule(
                 name="base",
-                modes=(ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D, ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET),
-                tools=("retrieve_memory", "set_reminder", "list_reminders", "cancel_reminder", "manage_persona", "manage_task_workspace", "delegate_task"),
+                layer="common",
+                modes=COMMON_CLIENT_MODES,
+                tools=COMMON_TOOL_NAMES,
                 light_hint="你可以主动检索长期记忆，也可以设置/查看/取消提醒、维护表达侧面；短任务直接调用工具完成，复杂多步任务可以记录到任务工作区，也可以委派给后台工坊分担。",
                 trigger=_always,
             ),
             CapabilityModule(
                 name="remote_media_fetch",
-                modes=qq_and_desktop,
-                tools=("fetch_media_from_url",),
-                light_hint="你也可以先把公开音频/视频链接下载进当前工作台；如果用户只要原视频/原音频，下载后直接发送原文件，不要多做转写、转码或净化。",
+                layer="shared_media",
+                modes=CHAT_FILE_CLIENT_MODES,
+                tools=REMOTE_MEDIA_TOOL_NAMES,
+                light_hint="你也可以先把公开音频/视频链接下载进当前工作台；如果用户只要原视频/原音频，下载后直接交付原文件，不要多做转写、转码或净化。",
                 trigger=_always,
             ),
             CapabilityModule(
                 name="attachment_workspace",
-                modes=qq_and_desktop,
-                tools=("sync_attachment_workspace", "inspect_attachment", "retry_attachment", "clear_attachment_focus", "send_file"),
-                light_hint="你可以接收临时图片和文件，在聊天里整理当前工作台，也可以把已有附件发回给用户。",
+                layer="shared_attachment_workspace",
+                modes=CHAT_FILE_CLIENT_MODES,
+                tools=ATTACHMENT_WORKSPACE_TOOL_NAMES,
+                light_hint="你可以接收临时图片和文件，并整理当前工作台；文件交付由当前客户端自己的文件交付层处理。",
                 trigger=_has_any_attachment,
             ),
             CapabilityModule(
                 name="conversation_file_authoring",
-                modes=qq_and_desktop,
-                tools=("compose_file",),
-                light_hint="即使没有附件，你也可以把当前对话中已经整理好的内容直接生成文件发给用户；用户说开始/直接做/生成时，不要只口头承诺。",
+                layer="shared_file_authoring",
+                modes=CHAT_FILE_CLIENT_MODES,
+                tools=CONVERSATION_FILE_AUTHORING_TOOL_NAMES,
+                light_hint="即使没有附件，你也可以把当前对话中已经整理好的内容直接生成文件并交给当前端；用户说开始/直接做/生成时，不要只口头承诺。",
                 trigger=_always,
             ),
             CapabilityModule(
-                name="sticker_pack",
+                name="qq_file_delivery",
+                layer="qq_delivery",
                 modes=(ClientMode.QQ_TEXT,),
-                tools=("send_sticker",),
+                tools=FILE_HANDOFF_TOOL_NAMES,
+                light_hint="在 QQ 里，你可以把已有临时附件或生成文件发回给用户；只发送已有文件，不替代生成、转码或修改。",
+                trigger=_has_deliverable_file,
+            ),
+            CapabilityModule(
+                name="desktop_file_handoff",
+                layer="desktop_workspace",
+                modes=(ClientMode.DESKTOP_PET,),
+                tools=FILE_HANDOFF_TOOL_NAMES,
+                light_hint="在桌宠里，你可以把已有临时附件或生成文件交给桌宠工作台打开、播放或继续处理；只交付已有文件，不替代生成、转码或修改。",
+                trigger=_has_deliverable_file,
+            ),
+            CapabilityModule(
+                name="sticker_pack",
+                layer="qq_delivery",
+                modes=(ClientMode.QQ_TEXT,),
+                tools=QQ_STICKER_TOOL_NAMES,
                 light_hint="你有一组静态表情包；聊天氛围适合时可以发送一张表情包，但不要为了展示功能而频繁发送。",
                 trigger=_always,
             ),
             CapabilityModule(
                 name="document_workbench",
-                modes=qq_and_desktop,
-                tools=("read_attachment_section", "compose_file", "revise_generated_file", "apply_style_to_existing_file"),
+                layer="shared_document",
+                modes=CHAT_FILE_CLIENT_MODES,
+                tools=DOCUMENT_WORKBENCH_TOOL_NAMES,
                 light_hint="你可以阅读、整理、转换和样式加工文本、Office、PDF 等文档。",
                 trigger=_has_document_context,
             ),
             CapabilityModule(
                 name="media_workbench",
-                modes=qq_and_desktop,
-                tools=("inspect_media_info", "separate_audio_stems", "clean_voice_track", "transcribe_media", "prepare_voice_dataset", "convert_media_file"),
+                layer="shared_media",
+                modes=CHAT_FILE_CLIENT_MODES,
+                tools=MEDIA_WORKBENCH_TOOL_NAMES,
                 light_hint=(
                     "音频/视频任务按需求自由组合：视频总结通常先 transcribe_media 得到转写稿再 compose_file；"
                     "字幕任务优先 transcribe_media 输出 srt/vtt；训练素材可按需要组合 convert_media_file 提音频、"
                     "separate_audio_stems 分离人声、clean_voice_track 降噪净化、prepare_voice_dataset 切片打包；"
-                    "用户只要原文件时只发送原文件，不要额外处理。"
+                    "用户只要原文件时只交付原文件，不要额外处理。"
                 ),
                 trigger=_has_media_context,
             ),
             CapabilityModule(
                 name="generated_file_management",
-                modes=qq_and_desktop,
-                tools=("inspect_generated_file", "send_file", "manage_generated_file"),
-                light_hint="你可以回看、继续发送、归档、删除或清理自己刚生成的文件。",
+                layer="shared_file_authoring",
+                modes=CHAT_FILE_CLIENT_MODES,
+                tools=GENERATED_FILE_MANAGEMENT_TOOL_NAMES,
+                light_hint="你可以回看、交付、归档、删除或清理自己刚生成的文件。",
                 trigger=_has_generated_file,
             ),
             CapabilityModule(
                 name="web_scene_world",
-                modes=(ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D),
-                tools=("call_npc", "check_inventory", "manage_gift", "manage_artifact"),
+                layer="web_scene",
+                modes=WEB_SCENE_CLIENT_MODES,
+                tools=WEB_SCENE_TOOL_NAMES,
                 light_hint="你可以围绕当前场景、礼物、藏品和临时 NPC 参与小世界构建。",
                 trigger=_is_web_scene,
             ),
             CapabilityModule(
                 name="desktop_environment",
+                layer="desktop_environment",
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=(),
                 light_hint="桌宠模式下，你未来可以获得桌面观察、窗口理解和快捷操作能力；当前仅保留能力提示。",

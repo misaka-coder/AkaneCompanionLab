@@ -11,7 +11,8 @@ import config
 
 from companion_v01.embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
 from companion_v01.engine import AkaneMemoryEngine
-from companion_v01.capability_registry import CapabilityRegistry
+from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
+from companion_v01.client_protocol import ClientMode
 from companion_v01.memory_compaction_service import MemoryCompactionService
 from companion_v01.mode_profiles import ModeProfileRegistry
 from companion_v01.persona_config import PERSONA
@@ -642,6 +643,141 @@ class EngineExtensionTests(unittest.TestCase):
             {"type": "manage_gift"},
         )
 
+    def test_capability_registry_declares_client_tool_layers(self) -> None:
+        registry = CapabilityRegistry()
+
+        scene_tools = registry.tool_names_for_mode(ClientMode.SCENE_STATIC)
+        qq_tools = registry.tool_names_for_mode(ClientMode.QQ_TEXT)
+        desktop_tools = registry.tool_names_for_mode(ClientMode.DESKTOP_PET)
+
+        self.assertIn("manage_gift", scene_tools)
+        self.assertIn("call_npc", scene_tools)
+        self.assertNotIn("transcribe_media", scene_tools)
+        self.assertNotIn("send_sticker", scene_tools)
+
+        self.assertIn("transcribe_media", qq_tools)
+        self.assertIn("send_file", qq_tools)
+        self.assertIn("send_sticker", qq_tools)
+        self.assertNotIn("manage_gift", qq_tools)
+
+        self.assertIn("transcribe_media", desktop_tools)
+        self.assertIn("send_file", desktop_tools)
+        self.assertNotIn("send_sticker", desktop_tools)
+        self.assertNotIn("manage_gift", desktop_tools)
+
+        desktop_selection = registry.select(
+            CapabilitySnapshot(
+                client_mode=ClientMode.DESKTOP_PET,
+                has_any_attachment=True,
+                has_media_attachment=True,
+            )
+        )
+        self.assertIn("desktop_file_handoff", desktop_selection.module_names)
+        self.assertIn("media_workbench", desktop_selection.module_names)
+        self.assertIn("desktop_workspace", desktop_selection.layer_names)
+        self.assertIn("shared_media", desktop_selection.layer_names)
+        self.assertNotIn("qq_delivery", desktop_selection.layer_names)
+        self.assertIn("convert_media_file", desktop_selection.tool_names)
+        self.assertIn("send_file", desktop_selection.tool_names)
+        self.assertNotIn("send_sticker", desktop_selection.tool_names)
+
+        qq_selection = registry.select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT))
+        self.assertIn("qq_delivery", qq_selection.layer_names)
+        self.assertIn("send_sticker", qq_selection.tool_names)
+
+    def test_desktop_tool_prompt_uses_desktop_layers_without_qq_or_web_tools(self) -> None:
+        class StubTool:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def build_prompt_instruction(self) -> str:
+                return f"- {self.name}：测试用工具。"
+
+            def normalize_call(self, value):
+                if value.get("type") != self.name:
+                    return None
+                return {"type": self.name}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.engine.store = MemoryStore(Path(temp_dir))
+            self.engine.capability_registry = CapabilityRegistry()
+            self.engine.tool_handlers = {
+                name: StubTool(name)
+                for name in [
+                    "set_reminder",
+                    "manage_persona",
+                    "fetch_media_from_url",
+                    "sync_attachment_workspace",
+                    "inspect_attachment",
+                    "retry_attachment",
+                    "clear_attachment_focus",
+                    "compose_file",
+                    "inspect_media_info",
+                    "convert_media_file",
+                    "transcribe_media",
+                    "send_file",
+                    "send_sticker",
+                    "manage_gift",
+                ]
+            }
+            desktop_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "desktop_pet"})
+
+            prompt = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=desktop_context,
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+            )
+            self.assertIn("\n- fetch_media_from_url", prompt)
+            self.assertIn("\n- compose_file", prompt)
+            self.assertNotIn("\n- sync_attachment_workspace", prompt)
+            self.assertNotIn("\n- convert_media_file", prompt)
+            self.assertNotIn("\n- send_sticker", prompt)
+            self.assertNotIn("\n- manage_gift", prompt)
+
+            media = self.engine.store.add_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                source="desktop_pet",
+                kind="audio",
+                status="ready",
+                origin_name="voice.wav",
+                file_ext=".wav",
+                detail={"media_info": {"audio": {"codec": "pcm"}}},
+                timestamp=100,
+            )
+            prompt_with_media = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=desktop_context,
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+            )
+
+            self.assertIn("\n- sync_attachment_workspace", prompt_with_media)
+            self.assertIn("\n- inspect_media_info", prompt_with_media)
+            self.assertIn("\n- convert_media_file", prompt_with_media)
+            self.assertIn("\n- transcribe_media", prompt_with_media)
+            self.assertIn("\n- send_file", prompt_with_media)
+            self.assertNotIn("\n- send_sticker", prompt_with_media)
+            self.assertNotIn("\n- manage_gift", prompt_with_media)
+            self.assertEqual(
+                self.engine._normalize_tool_call(
+                    {"type": "convert_media_file", "source_id": media["attachment_handle"]},
+                    client_context=desktop_context,
+                    profile_user_id="master",
+                    session_id="desktop_pet_test",
+                ),
+                {"type": "convert_media_file"},
+            )
+            self.assertIsNone(
+                self.engine._normalize_tool_call(
+                    {"type": "send_sticker"},
+                    client_context=desktop_context,
+                    profile_user_id="master",
+                    session_id="desktop_pet_test",
+                )
+            )
+
     def test_capability_registry_keeps_light_hints_and_hides_inactive_tools(self) -> None:
         class StubTool:
             def __init__(self, name: str) -> None:
@@ -694,7 +830,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("短任务直接调用工具完成", prompt)
             self.assertIn("文档", prompt)
             self.assertIn("音频/视频", prompt)
-            self.assertIn("如果用户只要原视频/原音频，下载后直接发送原文件", prompt)
+            self.assertIn("如果用户只要原视频/原音频，下载后直接交付原文件", prompt)
             self.assertIn("\n- fetch_media_from_url", prompt)
             self.assertIn("\n- compose_file", prompt)
             self.assertNotIn("\n- convert_media_file", prompt)
@@ -808,7 +944,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("视频总结通常先 transcribe_media 得到转写稿再 compose_file", prompt)
             self.assertIn("字幕任务优先 transcribe_media 输出 srt/vtt", prompt)
             self.assertIn("训练素材可按需要组合 convert_media_file 提音频", prompt)
-            self.assertIn("用户只要原文件时只发送原文件", prompt)
+            self.assertIn("用户只要原文件时只交付原文件", prompt)
             self.assertNotIn("\n- send_generated_file", prompt)
             self.assertIn("\n- manage_generated_file", prompt)
             self.assertEqual(
