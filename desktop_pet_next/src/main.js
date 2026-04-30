@@ -47,7 +47,7 @@ const PROFILE_USER_ID = "master";
 const CLIENT_MODE = "desktop_pet";
 const DESKTOP_HEALTH_PATH = "/desktop-pet/health";
 const LEGACY_HEALTH_PATH = "/health";
-const BASE_CAPABILITIES = ["speech_segments", "tts"];
+const BASE_CAPABILITIES = ["speech_segments", "tts", "file_drop", "tool_actions"];
 const AUDIO_PLAYBACK_CAPABILITY = "audio_playback";
 const THINK_TIMEOUT_MS = 5 * 60 * 1000;
 const TTS_TIMEOUT_MS = 45 * 1000;
@@ -180,6 +180,11 @@ const resourceState = {
 };
 
 const state = { ...DEFAULT_STATE };
+
+function getProfileUserId() {
+  return state.profileUserId || PROFILE_USER_ID;
+}
+
 const unlistenFns = [];
 let saveTimer = 0;
 let webglProbe = null;
@@ -2276,7 +2281,7 @@ async function reloadCharacterResources({ startup = false, userTriggered = false
 async function checkBackendHealth() {
   const query = new URLSearchParams({
     user_id: state.sessionId || "desktop_pet_next_health",
-    real_user_id: PROFILE_USER_ID,
+    real_user_id: getProfileUserId(),
     t: String(Date.now())
   });
 
@@ -2374,7 +2379,7 @@ function clearBackendRetry() {
 async function fetchResourceManifest() {
   const query = new URLSearchParams({
     user_id: state.sessionId,
-    real_user_id: PROFILE_USER_ID,
+    real_user_id: getProfileUserId(),
     client: CLIENT_MODE,
     character_pack_id: getCurrentCharacterPackId(),
     outfit: state.outfit || getProfileDefaultOutfit(),
@@ -2491,7 +2496,7 @@ async function ensureBackendSession({ restoreLatest = false } = {}) {
       connectTimeout: 5000,
       body: JSON.stringify({
         user_id: state.sessionId,
-        real_user_id: PROFILE_USER_ID,
+        real_user_id: getProfileUserId(),
         display_title: getProfileText("sessionDisplayTitle", SESSION_DISPLAY_TITLE)
       })
     });
@@ -2788,7 +2793,7 @@ async function maybeSubmitScreenVisionClip() {
       connectTimeout: 20_000,
       body: JSON.stringify({
         user_id: state.sessionId,
-        real_user_id: PROFILE_USER_ID,
+        real_user_id: getProfileUserId(),
         mode: "background",
         foreground,
         captured_start_ts: first.captured_at,
@@ -2862,7 +2867,7 @@ async function clearScreenVisionWorkspace({ quiet = false } = {}) {
       connectTimeout: 5000,
       body: JSON.stringify({
         user_id: state.sessionId,
-        real_user_id: PROFILE_USER_ID,
+        real_user_id: getProfileUserId(),
         scope: "session"
       })
     });
@@ -3099,7 +3104,7 @@ async function* sendThinkStream(message, turnToken, options = {}) {
     cache: "no-store",
     body: JSON.stringify({
       user_id: state.sessionId,
-      real_user_id: PROFILE_USER_ID,
+      real_user_id: getProfileUserId(),
       message,
       turn_kind: String(options.turnKind || ""),
       transient_user_message: Boolean(options.transientUserMessage),
@@ -3573,7 +3578,7 @@ async function importDroppedFilesToWorkspace(paths) {
         body: JSON.stringify({
           user_id: sessionId,
           session_id: sessionId,
-          real_user_id: state.profileUserId || PROFILE_USER_ID,
+          real_user_id: getProfileUserId(),
           paths: normalizedPaths,
           recursive: false,
           max_files: 40
@@ -3632,7 +3637,7 @@ async function fetchWorkspaceItemLocation({ itemType, handle }) {
       `/desktop-pet/workspace/${routeType}/${encodeURIComponent(normalizedHandle)}/location`,
       {
         user_id: sessionId,
-        real_user_id: state.profileUserId || PROFILE_USER_ID,
+        real_user_id: getProfileUserId(),
         t: Date.now()
       }
     ),
@@ -3703,7 +3708,7 @@ async function refreshWorkspaceTaskWatch() {
   try {
     const query = {
       user_id: sessionId,
-      real_user_id: state.profileUserId || PROFILE_USER_ID,
+      real_user_id: getProfileUserId(),
       limit: 12,
       t: Date.now()
     };
@@ -4255,7 +4260,7 @@ async function prepareBackendMusicTimeline(track) {
   const payload = {
     user_id: state.sessionId || "desktop_pet_next",
     session_id: state.sessionId || "desktop_pet_next",
-    real_user_id: state.profileUserId || PROFILE_USER_ID,
+    real_user_id: getProfileUserId(),
     activity: {
       ...activity,
       attachment_handle: attachment.handle || activity.attachment_handle || "",
