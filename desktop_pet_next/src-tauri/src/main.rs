@@ -3,6 +3,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::{Mutex, OnceLock},
 };
 
@@ -425,6 +426,13 @@ fn install_character_pack_zip_bytes(
     install_character_pack_zip(app, bytes, overwrite)
 }
 
+#[tauri::command]
+fn open_character_packs_folder() -> Result<(), String> {
+    let characters_dir = creator_kit_characters_dir()?;
+    fs::create_dir_all(&characters_dir).map_err(|error| error.to_string())?;
+    open_path_in_file_manager(&characters_dir)
+}
+
 fn read_lyric_asset(audio_path: &PathBuf, explicit_path: Option<&str>) -> Option<(String, String)> {
     let path = explicit_path
         .map(str::trim)
@@ -798,6 +806,32 @@ fn creator_kit_characters_dir() -> Result<PathBuf, String> {
         return Err("没有找到 desktop_pet_creator_kit。".to_string());
     }
     Ok(characters_dir)
+}
+
+fn open_path_in_file_manager(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("explorer");
+        command.arg(path);
+        command
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(path);
+        command
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(path);
+        command
+    };
+
+    command.spawn().map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn require_text(value: &str, label: &str) -> Result<(), String> {
@@ -1551,6 +1585,7 @@ fn main() {
             prepare_audio_asset,
             install_character_pack_zip_file,
             install_character_pack_zip_bytes,
+            open_character_packs_folder,
             apply_window_state,
             set_visual_scale,
             set_always_on_top,

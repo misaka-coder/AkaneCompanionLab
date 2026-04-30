@@ -11,7 +11,7 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 - Window position and size are persisted through Rust-side app config storage.
 - The right-click menu in the pet window is now a compact quick menu for input, settings, new session, resource reload, and exit, so it no longer covers the portrait.
 - Scale, opacity, outfit, backend check, always-on-top, taskbar visibility, reset, close, WebGL probe, and temporary click-through probe are exposed from an independent Tauri settings window.
-- The settings window can install Creator Kit exported character-pack zip files into `desktop_pet_creator_kit/characters/`; newly installed packs become selectable after restart or rebuild because pack discovery is currently build/dev-time.
+- The settings window can install Creator Kit exported character-pack zip files into `desktop_pet_creator_kit/characters/`, open that folder, and copy the last installed pack path; newly installed packs become selectable after restart or rebuild because pack discovery is currently build/dev-time.
 - Scale and opacity have Electron-style quick presets in addition to sliders.
 - The settings window includes a resource panel that lists manifest outfits, active outfit, resource source, backend status, emotion count, and missing required/recommended expressions.
 - Outfit cards can switch the active outfit; switching reloads `/resource-manifest` and persists the selected outfit.

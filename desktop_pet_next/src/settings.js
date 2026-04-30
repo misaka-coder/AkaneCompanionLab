@@ -22,6 +22,8 @@ const els = {
   characterPackZip: document.querySelector("#character-pack-zip"),
   chooseCharacterPackZip: document.querySelector("#choose-character-pack-zip"),
   overwriteCharacterPack: document.querySelector("#overwrite-character-pack"),
+  openCharacterPacksFolder: document.querySelector("#open-character-packs-folder"),
+  copyCharacterPackPath: document.querySelector("#copy-character-pack-path"),
   characterImportDropzone: document.querySelector("#character-import-dropzone"),
   characterImportStatus: document.querySelector("#character-import-status"),
   characterPackList: document.querySelector("#character-pack-list"),
@@ -99,6 +101,7 @@ const view = {
   active: null,
   music: null,
   webglEnabled: false,
+  lastCharacterImportPath: "",
   scaleTimer: 0,
   opacityTimer: 0
 };
@@ -140,6 +143,8 @@ function bindUi() {
   els.saveCharacterPack.addEventListener("click", () => saveCharacterPack());
   els.characterPack.addEventListener("change", () => updateCharacterPackButton());
   els.chooseCharacterPackZip.addEventListener("click", () => els.characterPackZip.click());
+  els.openCharacterPacksFolder.addEventListener("click", () => openCharacterPacksFolder());
+  els.copyCharacterPackPath.addEventListener("click", () => copyCharacterPackPath());
   els.characterPackZip.addEventListener("change", () => {
     const file = els.characterPackZip.files?.[0];
     if (file) {
@@ -380,11 +385,38 @@ function handleCharacterPackInstallResult(result) {
   const packId = String(result?.packId || "").trim();
   const name = String(result?.characterName || result?.characterId || packId || "角色包").trim();
   const warning = Array.isArray(result?.warnings) && result.warnings.length ? ` · ${result.warnings[0]}` : "";
-  setCharacterImportStatus(`${name} 已安装${warning} · 重启/重新构建后可选择`);
+  view.lastCharacterImportPath = String(result?.installedPath || "").trim();
+  els.copyCharacterPackPath.disabled = !view.lastCharacterImportPath;
+  setCharacterImportStatus(
+    `${name} 已安装到 characters/${packId}${warning} · 关闭并重新启动桌宠，或重新 build 后可选择`
+  );
 }
 
 function saveOutfit() {
   sendCommand("setOutfit", normalizeOutfitName(els.outfit.value));
+}
+
+async function openCharacterPacksFolder() {
+  try {
+    await invoke("open_character_packs_folder");
+    setCharacterImportStatus("已打开角色包目录");
+  } catch (error) {
+    setCharacterImportStatus(`打开目录失败：${formatError(error)}`);
+  }
+}
+
+async function copyCharacterPackPath() {
+  const path = String(view.lastCharacterImportPath || "").trim();
+  if (!path) {
+    setCharacterImportStatus("还没有可复制的导入路径");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(path);
+    setCharacterImportStatus("角色包安装路径已复制");
+  } catch (error) {
+    setCharacterImportStatus(`复制路径失败：${formatError(error)}`);
+  }
 }
 
 async function copySessionId() {

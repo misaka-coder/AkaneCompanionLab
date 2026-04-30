@@ -60,6 +60,10 @@ To install it under a new folder name or overwrite an existing pack:
 npm run import -- ./dist/akane_sample.zip --as my_character --force
 ```
 
+The Tauri settings window also supports `导入 zip`, `打开目录`, and copying the
+last installed pack path. See `docs/install_and_test.md` for the full testing
+flow.
+
 ## Try Another Pack In The App
 
 Copy `templates/character_pack/` into `characters/<your_pack_id>/`, edit

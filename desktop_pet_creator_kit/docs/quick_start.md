@@ -70,6 +70,7 @@ Creator Kit zip onto the character-pack area. The current runtime discovers
 newly installed packs after restart or rebuild.
 
 For paid handoff work, see `docs/paid_delivery_checklist.md`.
+For install testing, see `docs/install_and_test.md`.
 
 ## Create A Second Pack
 

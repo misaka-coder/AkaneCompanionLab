@@ -259,7 +259,7 @@ button:disabled:hover {
 
 .character-import-dropzone {
   display: grid;
-  grid-template-columns: 92px 96px minmax(0, 1fr);
+  grid-template-columns: 92px 96px 82px 82px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   min-height: 42px;

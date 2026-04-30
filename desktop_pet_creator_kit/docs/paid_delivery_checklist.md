@@ -50,8 +50,9 @@ tar -tf dist\<pack_id>.zip
 - Send the zip file.
 - Send installation notes or provide a remote setup session.
 - Tell the buyer that the current pack is discovered at app build/dev time.
-- Mention that runtime zip import from the settings window is planned, but the
-  current stable path is the Creator Kit command line.
+- Tell the buyer they can import from the settings window or with
+  `npm run import`, then restart or rebuild before selecting a newly installed
+  pack.
 
 ## Acceptance Test
 

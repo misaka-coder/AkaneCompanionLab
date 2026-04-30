@@ -150,7 +150,8 @@ npm run import -- ./dist/my_character.zip --as my_character_v2 --force
 The Tauri settings window has the same first install path for Creator Kit
 exported zips. Use `导入 zip` or drag a zip onto the character-pack area. New
 packs are available after the app restarts or the dev/build process refreshes
-the `characters/` folder.
+the `characters/` folder. The settings window also has an `打开目录` helper for
+opening the install folder after import.
 
 ## Next Planned Slices
 

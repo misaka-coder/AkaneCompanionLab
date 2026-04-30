@@ -136,10 +136,14 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("importCharacterPackZipFile", settings_source)
         self.assertIn("install_character_pack_zip_bytes", settings_source)
         self.assertIn("install_character_pack_zip_file", settings_source)
+        self.assertIn("open_character_packs_folder", settings_source)
+        self.assertIn('id="open-character-packs-folder"', settings_html)
+        self.assertIn('id="copy-character-pack-path"', settings_html)
         self.assertIn("onDragDropEvent", settings_source)
         self.assertIn("fn install_character_pack_zip", tauri_source)
         self.assertIn("install_character_pack_zip_bytes", tauri_source)
         self.assertIn("install_character_pack_zip_file", tauri_source)
+        self.assertIn("open_path_in_file_manager", tauri_source)
         self.assertIn("DEFAULT_CHARACTER_PACK_ID", tauri_source)
 
 
