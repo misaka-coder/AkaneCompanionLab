@@ -5,7 +5,10 @@ import unittest
 from pathlib import Path
 
 from companion_v01.persona_config import load_persona_config
+from companion_v01.prompt_blocks import build_desktop_pet_system_prompt
 from companion_v01.prompt_builder import PromptBuilder
+from companion_v01.prompt_profiles import PromptProfileRegistry
+from companion_v01.client_protocol import ClientMode
 
 
 class PersonaConfigTomlTests(unittest.TestCase):
@@ -244,6 +247,53 @@ system = "semantic reinforcement system"
         self.assertNotIn("[AKANE CURRENT STATE - EMBODY THIS]", persona.final_system_prompt)
         self.assertIn("当前前台角色", persona.final_user_prompt_suffix)
         self.assertNotIn("以 Akane 的身份", persona.final_user_prompt_suffix)
+
+    def test_desktop_pet_system_prompt_is_block_composed_and_pet_scoped(self) -> None:
+        prompt = build_desktop_pet_system_prompt()
+
+        self.assertIn("desktop_pet 桌宠模式", prompt)
+        self.assertIn("只能从本轮给你的角色包资源清单里选择服装和表情", prompt)
+        self.assertIn("activity 是给桌宠执行的请求", prompt)
+        self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", prompt)
+        self.assertNotIn("scene.major 表示场景大类", prompt)
+        self.assertNotIn("像 galgame 选项", prompt)
+
+    def test_desktop_pet_profile_override_removes_generic_scene_rules_from_final_prompt(self) -> None:
+        persona = load_persona_config()
+        builder = PromptBuilder(persona)
+        profile = PromptProfileRegistry().get(ClientMode.DESKTOP_PET)
+
+        result = builder.build_final_generation_context(
+            now_ts=1712400000,
+            raw_text="User: hi",
+            current_message_text="User: hi",
+            episodic_summary_text="",
+            semantic_summary_text="",
+            memory_text="",
+            current_visual_context="服装: default；表情: normal",
+            resource_context="可用服装与表情：\n- default -> 表情: normal, happy",
+            extra_context="",
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=False,
+            tool_prompt_context="",
+            debug_enabled=False,
+            persona_system_context="角色包身份：Mika",
+            system_prompt_override=profile.system_prompt_override,
+            mode_prompt_override=profile.mode_prompt_override(debug_enabled=False),
+        )
+
+        self.assertIn("desktop_pet 桌宠模式", result["system_prompt"])
+        self.assertIn("角色包身份：Mika", result["system_prompt"])
+        self.assertIn("字段固定为 emotion, speech", result["system_prompt"])
+        self.assertNotIn("scene.major 表示场景大类", result["system_prompt"])
+        self.assertNotIn("像 galgame 选项", result["system_prompt"])
 
 
 if __name__ == "__main__":

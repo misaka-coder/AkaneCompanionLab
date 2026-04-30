@@ -127,13 +127,15 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
 
     def test_desktop_prompt_profile_keeps_activity_as_execution_request(self) -> None:
         profile = self.engine._get_prompt_profile_registry().get(ClientMode.DESKTOP_PET)
-        fast_prompt = profile.mode_prompt_override(debug_enabled=False)
-        debug_prompt = profile.mode_prompt_override(debug_enabled=True)
+        prompts = [
+            profile.system_prompt_override,
+            profile.mode_prompt_override(debug_enabled=False),
+            profile.mode_prompt_override(debug_enabled=True),
+        ]
 
-        for prompt in (fast_prompt, debug_prompt):
-            self.assertIn("activity 只用于桌宠播放控制", prompt)
-            self.assertIn("activity 是执行请求，不是完成回执", prompt)
-            self.assertIn("不要在 speech 里假装动作已经执行", prompt)
+        self.assertTrue(any("activity 只用于桌宠播放控制" in prompt for prompt in prompts))
+        self.assertTrue(any("activity 是给桌宠执行的请求" in prompt for prompt in prompts))
+        self.assertTrue(any("不要在 speech 里假装动作已经播放、暂停或继续" in prompt for prompt in prompts))
 
     def test_activity_prompt_is_desktop_audio_capability_only(self) -> None:
         activity = {

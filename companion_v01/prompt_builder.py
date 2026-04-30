@@ -4,9 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from .persona_config import PersonaConfig
-
-
-CURRENT_ASSISTANT_STATE_MARKER = "[CURRENT ASSISTANT STATE - EMBODY THIS]"
+from .prompt_blocks import CURRENT_ASSISTANT_STATE_MARKER
 
 
 class PromptBuilder:

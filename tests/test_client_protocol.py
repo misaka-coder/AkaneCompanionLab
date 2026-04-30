@@ -141,6 +141,12 @@ class ClientProtocolTests(unittest.TestCase):
         self.assertTrue(profile.includes(PromptModule.PERSONA))
         self.assertTrue(profile.includes(PromptModule.TOOLS))
         self.assertFalse(profile.includes(PromptModule.SCENE_OBSERVATION))
+        self.assertIn("desktop_pet 桌宠模式", profile.system_prompt_override)
+        self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", profile.system_prompt_override)
+        self.assertIn("activity 是给桌宠执行的请求", profile.system_prompt_override)
+        self.assertNotIn("scene.major 表示场景大类", profile.system_prompt_override)
+        self.assertNotIn("像 galgame 选项", profile.system_prompt_override)
+        self.assertNotIn("背景变体", profile.system_prompt_override)
 
 
 if __name__ == "__main__":
