@@ -133,11 +133,17 @@ def task_workspace_artifact_from_generated_file(
         "source": "generated_file",
         "tool": tool_type,
         "send_to_user": bool(send_to_user),
+        "delivery_role": "requested_output" if send_to_user else "workspace_material",
     }
     if generated_id:
         artifact["generated_id"] = generated_id
     if handle:
         artifact["generated_handle"] = handle
+    content_card = generated.get("content_card") if isinstance(generated.get("content_card"), dict) else {}
+    separation = content_card.get("separation") if isinstance(content_card.get("separation"), dict) else {}
+    stem_role = str(separation.get("stem_role") or "").strip()
+    if stem_role:
+        artifact["stem_role"] = stem_role[:40]
     for key in ("file_ext", "file_size", "created_by_tool", "version_of_generated_id", "version_no"):
         value = generated.get(key)
         if value not in (None, "", [], {}):
@@ -167,6 +173,7 @@ def task_workspace_artifact_from_attachment_item(
         "source": "attachment_inbox",
         "tool": tool_type,
         "source_type": str(item.get("source") or "").strip(),
+        "delivery_role": "workspace_material",
     }
     if attachment_id:
         artifact["attachment_id"] = attachment_id

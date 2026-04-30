@@ -255,7 +255,7 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
             self.assertIn("gen_002(md / 终稿)", context)
             self.assertIn("worker_completed", context)
             self.assertIn("前台状态: 后台已完成，等待前台助手确认/交付", context)
-            self.assertIn("询问是否现在发给用户", context)
+            self.assertIn("先问是否发送以及要发送哪一份", context)
 
     def test_service_build_prompt_context_renders_blocked_frontstage_question(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

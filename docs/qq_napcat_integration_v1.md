@@ -30,6 +30,9 @@ QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS=180
 QQ_ATTACHMENT_DEBOUNCE_SECONDS=1.2
 QQ_ATTACHMENT_READY_WAIT_SECONDS=8
 QQ_REPLY_SEGMENT_DELAY_SECONDS=0.8
+QQ_EVENT_MAX_AGE_SECONDS=300
+QQ_ALLOW_STALE_EVENTS=false
+QQ_REQUIRE_FILE_DELIVERY_INTENT=true
 ```
 
 字段说明：
@@ -44,6 +47,9 @@ QQ_REPLY_SEGMENT_DELAY_SECONDS=0.8
 - `QQ_ATTACHMENT_DEBOUNCE_SECONDS`：QQ 连发图片/文件时的短防抖窗口。窗口内较早事件只入库不触发回复，最后一个事件统一唤醒 Akane，默认 `1.2` 秒。
 - `QQ_ATTACHMENT_READY_WAIT_SECONDS`：附件入库后，主回复最多等待视觉观察 / 文件解析完成的秒数，默认 `8` 秒。超时后仍会回复，但 Prompt 会显示仍有附件在处理中。
 - `QQ_REPLY_SEGMENT_DELAY_SECONDS`：`speech_segments` 分多条发到 QQ 时，每条之间的象征性停顿秒数，默认 `0.8`，最大 `3.0`。
+- `QQ_EVENT_MAX_AGE_SECONDS`：忽略超过该秒数的旧 QQ 事件，避免 NapCat / OneBot 重连后把历史消息重新灌进当前对话。设为 `0` 可关闭时间拦截。
+- `QQ_ALLOW_STALE_EVENTS`：是否允许处理旧事件，默认 `false`。只建议临时排查回放事件时打开。
+- `QQ_REQUIRE_FILE_DELIVERY_INTENT`：QQ 文件发送保护，默认 `true`。开启后，当前消息没有明确的文件/结果发送意图时，后端不会真正调用 OneBot 上传文件。
 
 ## 3. NapCat 配置
 

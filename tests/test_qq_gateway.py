@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import unittest
 from unittest.mock import patch
 
@@ -50,6 +51,45 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(first.should_respond)
         self.assertFalse(second.should_respond)
         self.assertEqual(second.reason, "duplicate_event")
+
+    @patch("companion_v01.qq_gateway.config.QQ_ALLOW_STALE_EVENTS", False)
+    @patch("companion_v01.qq_gateway.config.QQ_EVENT_MAX_AGE_SECONDS", 300)
+    def test_stale_message_event_is_ignored(self) -> None:
+        gateway = NapCatQQGateway()
+
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 1906243651,
+                "message_id": "old-message-1",
+                "time": int(time.time()) - 3600,
+                "raw_message": "在吗",
+            }
+        )
+
+        self.assertFalse(context.should_respond)
+        self.assertEqual(context.reason, "stale_event")
+
+    @patch("companion_v01.qq_gateway.config.QQ_ALLOW_STALE_EVENTS", True)
+    @patch("companion_v01.qq_gateway.config.QQ_EVENT_MAX_AGE_SECONDS", 300)
+    def test_stale_message_event_can_be_allowed_for_debug(self) -> None:
+        gateway = NapCatQQGateway()
+
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 1906243651,
+                "message_id": "old-message-debug-1",
+                "time": int(time.time()) - 3600,
+                "raw_message": "在吗",
+            }
+        )
+
+        self.assertTrue(context.should_respond)
 
     def test_group_follow_is_not_armed_after_mention(self) -> None:
         gateway = NapCatQQGateway()
@@ -344,6 +384,49 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["user_id"], 1906243651)
         self.assertEqual(payload["file"], "C:/tmp/akane.md")
         self.assertEqual(payload["name"], "Akane整理.md")
+
+    @patch("companion_v01.qq_gateway.config.QQ_REQUIRE_FILE_DELIVERY_INTENT", True)
+    def test_send_generated_files_blocks_without_current_delivery_intent(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 1906243651,
+                "message_id": "generated-block-1",
+                "raw_message": "在吗",
+            }
+        )
+
+        with patch("companion_v01.qq_gateway.requests.post") as mocked_post:
+            result = gateway.send_generated_files(
+                context,
+                [
+                    {
+                        "type": "generated_file_ready",
+                        "send_to_user": True,
+                        "generated_file": {
+                            "generated_id": "generated::old",
+                            "absolute_path": "C:/tmp/old.md",
+                            "output_title": "旧文件",
+                            "file_ext": "md",
+                        },
+                    }
+                ],
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["blocked_count"], 1)
+        self.assertEqual(result["reason"], "missing_file_delivery_intent")
+        mocked_post.assert_not_called()
+
+    def test_file_delivery_intent_respects_negative_request(self) -> None:
+        gateway = NapCatQQGateway()
+
+        self.assertTrue(gateway.message_requests_file_delivery("把 gen_001 发我一下"))
+        self.assertFalse(gateway.message_requests_file_delivery("先别发文件，我只是问问进度"))
 
     def test_send_generated_files_accepts_generic_file_ready_event(self) -> None:
         gateway = NapCatQQGateway()

@@ -485,13 +485,15 @@ class TaskWorkerService:
         lines = [
             "你是后台工坊里的 specialist worker，不是前台说话的角色。",
             "你负责执行被委派的任务，把进度和产物写回任务工作区；不要和用户闲聊，不要输出角色台词。",
-            "你不能直接发送文件给用户，也不能替前台助手做最终汇报、最终发送或清理收尾。产物生成后留在生成区和任务工作区，由前台助手决定如何交付、确认与清理。",
+            "你不能直接发送文件给用户，也不能替前台助手做最终汇报、最终发送或清理收尾。产物生成后留在生成区和任务工作区，由前台助手决定如何确认、发送与清理。",
+            "任务工作区里的产物不都等于要交付的文件：中间素材、参考件、伴奏/人声拆轨中的非目标轨，都只算可继续使用的素材。",
+            "只有直接符合用户目标或期望产物的结果，才在 handoff.artifacts 里作为交接候选；不确定用户要哪份时用 ask_confirmation，让前台助手问清楚。",
             "即使你觉得某个旧文件已经没用，也不要主动归档/删除；把情况写进任务工作区，交给前台助手处理。",
             "你必须只输出一个合法 JSON 对象，不能输出 markdown 或额外解释。",
             "JSON 字段：",
             '{"status":"continue|done|blocked","message":"给前台助手的内部简短说明","tool_call":{...}|null,'
             '"steps":[{"title":"步骤","status":"queued|running|done|failed|waiting_user","note":"可选"}],'
-            '"artifacts":[{"id":"gen_001","kind":"md","title":"可选"}],"question":"卡住时要前台助手/用户确认的问题，可空",'
+            '"artifacts":[{"id":"gen_001","kind":"md","title":"可选","delivery_role":"final_output|workspace_material"}],"question":"卡住时要前台助手/用户确认的问题，可空",'
             '"handoff":{"summary":"交给前台助手接手的一句话","next_action":"send_to_user|ask_confirmation|continue_work|ask_user|report_only","user_question":"需要用户回答时的自然问题，可空"}}',
             "如果下一步需要工具，就把工具写进 tool_call，并把 status 设为 continue。",
             "如果任务完成，tool_call 为 null，status 设为 done。",
@@ -694,11 +696,12 @@ class TaskWorkerService:
     ) -> dict[str, Any]:
         steps = [step for step in list(task.get("steps") or []) if isinstance(step, dict)]
         artifacts = [artifact for artifact in list(task.get("artifacts") or []) if isinstance(artifact, dict)]
+        handoff_artifacts = self._select_handoff_artifacts(task=task, artifacts=artifacts)
         completed_steps = self._summarize_steps(steps, {"done", "completed"})
         active_steps = self._summarize_steps(steps, {"running"})
         blocked_steps = self._summarize_steps(steps, {"waiting_user", "failed"})
         remaining_steps = self._summarize_steps(steps, {"queued"})
-        artifact_summaries = self._summarize_artifacts(artifacts)
+        artifact_summaries = self._summarize_artifacts(handoff_artifacts)
         normalized_action = self._default_next_action(
             next_action,
             status=status,
@@ -719,6 +722,7 @@ class TaskWorkerService:
             "blocked_steps": blocked_steps,
             "remaining_steps": remaining_steps,
             "artifacts": artifact_summaries,
+            "workspace_artifact_count": len(artifacts),
             "next_action": normalized_action,
             "akane_instruction": self._handoff_instruction(
                 status=status,
@@ -730,6 +734,137 @@ class TaskWorkerService:
         if question:
             handoff["user_question"] = question[:400]
         return handoff
+
+    def _select_handoff_artifacts(
+        self,
+        *,
+        task: dict[str, Any],
+        artifacts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        candidates = [artifact for artifact in artifacts if isinstance(artifact, dict)]
+        if not candidates:
+            return []
+
+        explicit = [
+            artifact
+            for artifact in candidates
+            if bool(artifact.get("send_to_user"))
+            or str(artifact.get("delivery_role") or "").strip().lower() in {"requested_output", "final_output", "deliverable"}
+            or bool(artifact.get("deliverable"))
+        ]
+        if explicit:
+            return explicit
+
+        intent = self._task_delivery_intent_text(task)
+        final_tool_artifacts = self._select_final_tool_artifacts(intent=intent, artifacts=candidates)
+        if final_tool_artifacts:
+            return final_tool_artifacts
+
+        by_audio_role = self._select_audio_role_artifacts(intent=intent, artifacts=candidates)
+        if by_audio_role:
+            return by_audio_role
+
+        generated = [artifact for artifact in candidates if str(artifact.get("source") or "") == "generated_file"]
+        if generated:
+            return [generated[-1]]
+        return candidates[-1:]
+
+    def _task_delivery_intent_text(self, task: dict[str, Any]) -> str:
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        workshop = metadata.get("workshop") if isinstance(metadata.get("workshop"), dict) else {}
+        raw_request = task.get("raw_request") if isinstance(task.get("raw_request"), dict) else {}
+        parts: list[str] = [
+            str(task.get("normalized_goal") or ""),
+            str(raw_request.get("text") or ""),
+            str(workshop.get("brief") or ""),
+        ]
+        for key in ("expected_outputs", "inputs"):
+            values = workshop.get(key) if isinstance(workshop.get(key), list) else []
+            parts.extend(str(item or "") for item in values)
+        for key in ("success_criteria", "constraints"):
+            values = task.get(key) if isinstance(task.get(key), list) else []
+            parts.extend(str(item or "") for item in values)
+        return " ".join(part.strip().lower() for part in parts if str(part or "").strip())
+
+    def _select_audio_role_artifacts(self, *, intent: str, artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        role_items = [
+            artifact
+            for artifact in artifacts
+            if str(artifact.get("stem_role") or "").strip()
+            or str(artifact.get("created_by_tool") or artifact.get("tool") or "") == "separate_audio_stems"
+        ]
+        if not role_items:
+            return []
+        wants_both = any(token in intent for token in ("人声伴奏", "人声和伴奏", "人声/伴奏", "两轨", "拆轨", "分离人声和伴奏"))
+        only_vocals = any(token in intent for token in ("只要人声", "只发人声", "只需要人声", "只保留人声", "只要干声"))
+        only_instrumental = any(token in intent for token in ("只要伴奏", "只发伴奏", "只需要伴奏", "只保留伴奏"))
+        wants_vocals = any(token in intent for token in ("只要人声", "人声", "vocals", "vocal", "干声", "歌声"))
+        wants_instrumental = any(token in intent for token in ("只要伴奏", "伴奏", "instrumental", "no vocals", "去人声"))
+        if only_vocals:
+            selected = [artifact for artifact in role_items if self._artifact_has_audio_role(artifact, {"vocals", "vocal", "人声", "干声", "歌声"})]
+            if selected:
+                return selected
+        if only_instrumental:
+            selected = [artifact for artifact in role_items if self._artifact_has_audio_role(artifact, {"instrumental", "伴奏", "no_vocals", "accompaniment"})]
+            if selected:
+                return selected
+        if wants_both or (wants_vocals and wants_instrumental):
+            return role_items
+        if wants_vocals:
+            selected = [artifact for artifact in role_items if self._artifact_has_audio_role(artifact, {"vocals", "vocal", "人声", "干声", "歌声"})]
+            if selected:
+                return selected
+        if wants_instrumental:
+            selected = [artifact for artifact in role_items if self._artifact_has_audio_role(artifact, {"instrumental", "伴奏", "no_vocals", "accompaniment"})]
+            if selected:
+                return selected
+        return []
+
+    def _artifact_has_audio_role(self, artifact: dict[str, Any], roles: set[str]) -> bool:
+        haystack = " ".join(
+            str(artifact.get(key) or "").strip().lower()
+            for key in ("stem_role", "title", "id", "generated_handle")
+        )
+        return any(role.lower() in haystack for role in roles)
+
+    def _select_final_tool_artifacts(self, *, intent: str, artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if any(token in intent for token in ("训练素材", "数据集", "dataset", "切片")):
+            selected = [
+                artifact
+                for artifact in artifacts
+                if str(artifact.get("created_by_tool") or artifact.get("tool") or "") == "prepare_voice_dataset"
+                or str(artifact.get("kind") or "").lower() in {"zip", "7z"}
+            ]
+            if selected:
+                return selected[-1:]
+        if any(token in intent for token in ("降噪", "净化", "去混响", "去回声", "denoise", "clean")):
+            selected = [
+                artifact
+                for artifact in artifacts
+                if str(artifact.get("created_by_tool") or artifact.get("tool") or "") == "clean_voice_track"
+            ]
+            if selected:
+                return selected[-1:]
+        if any(token in intent for token in ("总结", "文档", "markdown", "md", "docx", "pdf", "表格", "字幕", "转写", "文字稿", "稿")):
+            selected = [
+                artifact
+                for artifact in artifacts
+                if str(artifact.get("source") or "") == "generated_file"
+                and str(artifact.get("created_by_tool") or artifact.get("tool") or "")
+                in {"compose_file", "revise_generated_file", "transcribe_media"}
+            ]
+            if selected:
+                return selected[-1:]
+        if any(token in intent for token in ("提取音频", "音频轨", "转音频", "extract audio")):
+            selected = [
+                artifact
+                for artifact in artifacts
+                if str(artifact.get("created_by_tool") or artifact.get("tool") or "") == "convert_media_file"
+                or str(artifact.get("kind") or "").lower() in {"wav", "flac", "mp3", "m4a", "ogg"}
+            ]
+            if selected:
+                return selected[-1:]
+        return []
 
     def _summarize_steps(self, steps: list[dict[str, Any]], statuses: set[str]) -> list[str]:
         rendered: list[str] = []
@@ -753,11 +888,18 @@ class TaskWorkerService:
             artifact_id = str(artifact.get("id") or artifact.get("generated_handle") or artifact.get("attachment_handle") or "").strip()
             title = str(artifact.get("title") or "").strip()
             kind = str(artifact.get("kind") or artifact.get("format") or "").strip()
+            stem_role = str(artifact.get("stem_role") or "").strip()
+            delivery_role = str(artifact.get("delivery_role") or "").strip()
             key = (artifact_id or title).lower()
             if not key or key in seen:
                 continue
             seen.add(key)
-            rendered.append({"id": artifact_id[:80], "title": title[:120], "kind": kind[:40]})
+            summary = {"id": artifact_id[:80], "title": title[:120], "kind": kind[:40]}
+            if stem_role:
+                summary["stem_role"] = stem_role[:40]
+            if delivery_role:
+                summary["delivery_role"] = delivery_role[:60]
+            rendered.append(summary)
             if len(rendered) >= 20:
                 break
         return rendered
@@ -807,7 +949,7 @@ class TaskWorkerService:
     ) -> str:
         if status == "completed":
             if artifacts:
-                return "后台任务已完成，并产出了可交付文件。"
+                return "后台任务已完成，并产出了可交接的结果候选。"
             return "后台任务已完成。"
         if status == "blocked":
             return "后台任务需要用户补充信息后才能继续。"
@@ -819,7 +961,7 @@ class TaskWorkerService:
         if next_action == "send_to_user":
             return "用户已明确要结果时，前台助手可以用 send_file 精确发送这些 handle；发送后再询问是否需要清理任务工作区。"
         if next_action == "ask_confirmation":
-            return "先请用户确认是否采用或发送这些产物；用户确认后再用 send_file 精确发送对应 handle。"
+            return "先请用户确认要不要发送、以及具体发送哪份结果；用户确认后再用 send_file 精确发送对应 handle。"
         if next_action == "ask_user" or has_question:
             return "把交接问题改成自然口吻直接问用户，等用户回答后再继续委派或调用工具。"
         if status == "blocked":
@@ -900,22 +1042,40 @@ class TaskWorkerService:
                     "kind": str(item.get("kind") or item.get("format") or "").strip()[:40],
                     "title": title[:120],
                     "source": str(item.get("source") or "task_worker").strip()[:60],
+                    "delivery_role": str(item.get("delivery_role") or item.get("role") or "workspace_material").strip()[:60],
                 }
             )
+            if "deliverable" in item:
+                normalized[-1]["deliverable"] = bool(item.get("deliverable"))
             if len(normalized) >= 20:
                 break
         return normalized
 
     def _merge_artifacts(self, existing: list[dict[str, Any]], additions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for item in [*existing, *additions]:
+        key_to_index: dict[str, int] = {}
+        for item in existing:
             if not isinstance(item, dict):
                 continue
             key = str(item.get("id") or item.get("title") or "").strip().lower()
-            if not key or key in seen:
+            if not key or key in key_to_index:
                 continue
-            seen.add(key)
+            merged.append(dict(item))
+            key_to_index[key] = len(merged) - 1
+        for item in additions:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("id") or item.get("title") or "").strip().lower()
+            if not key:
+                continue
+            if key in key_to_index:
+                current = dict(merged[key_to_index[key]])
+                for field, value in item.items():
+                    if value not in (None, "", [], {}):
+                        current[field] = value
+                merged[key_to_index[key]] = current
+                continue
+            key_to_index[key] = len(merged)
             merged.append(dict(item))
         return merged
 

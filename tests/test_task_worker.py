@@ -45,6 +45,59 @@ class FakeLLM:
         return dict(self.outputs.pop(0))
 
 
+class TaskWorkerArtifactSelectionTests(unittest.TestCase):
+    def test_handoff_artifacts_keep_only_requested_audio_role(self) -> None:
+        worker = TaskWorkerService.__new__(TaskWorkerService)
+        task = {
+            "normalized_goal": "帮我从这首歌里分离一下，我只要人声。",
+            "raw_request": {"text": "只要人声就好"},
+            "metadata": {"workshop": {"brief": "分离人声，伴奏只是中间结果。"}},
+        }
+        artifacts = [
+            {
+                "id": "gen_001",
+                "kind": "wav",
+                "title": "歌曲_人声",
+                "source": "generated_file",
+                "tool": "separate_audio_stems",
+                "created_by_tool": "separate_audio_stems",
+                "stem_role": "vocals",
+                "delivery_role": "workspace_material",
+            },
+            {
+                "id": "gen_002",
+                "kind": "wav",
+                "title": "歌曲_伴奏",
+                "source": "generated_file",
+                "tool": "separate_audio_stems",
+                "created_by_tool": "separate_audio_stems",
+                "stem_role": "instrumental",
+                "delivery_role": "workspace_material",
+            },
+        ]
+
+        selected = worker._select_handoff_artifacts(task=task, artifacts=artifacts)
+
+        self.assertEqual([item["id"] for item in selected], ["gen_001"])
+
+    def test_handoff_artifacts_prefer_final_dataset_over_intermediates(self) -> None:
+        worker = TaskWorkerService.__new__(TaskWorkerService)
+        task = {
+            "normalized_goal": "从视频里分离人声、降噪，并切片准备训练素材。",
+            "metadata": {"workshop": {"expected_outputs": ["训练素材包"]}},
+        }
+        artifacts = [
+            {"id": "gen_001", "kind": "wav", "title": "人声", "source": "generated_file", "tool": "separate_audio_stems", "stem_role": "vocals"},
+            {"id": "gen_002", "kind": "wav", "title": "伴奏", "source": "generated_file", "tool": "separate_audio_stems", "stem_role": "instrumental"},
+            {"id": "gen_003", "kind": "wav", "title": "降噪人声", "source": "generated_file", "tool": "clean_voice_track"},
+            {"id": "gen_004", "kind": "zip", "title": "训练素材包", "source": "generated_file", "tool": "prepare_voice_dataset"},
+        ]
+
+        selected = worker._select_handoff_artifacts(task=task, artifacts=artifacts)
+
+        self.assertEqual([item["id"] for item in selected], ["gen_004"])
+
+
 class FakeComposeFileHandler(BaseToolHandler):
     tool_type = "compose_file"
 
@@ -272,8 +325,8 @@ class TaskWorkerServiceTests(unittest.TestCase):
             self.assertIn("gen_002(md / 后台总结_终稿)", task_prompt)
             self.assertIn("交接状态: 完成，等待前台助手交付/确认", task_prompt)
             self.assertIn("交接摘要: 终稿已经准备好，建议前台助手先请用户确认是否发送。", task_prompt)
-            self.assertIn("可交付产物: gen_001(md / 后台总结)；gen_002(md / 后台总结_终稿)", task_prompt)
-            self.assertIn("建议接手: 先请用户确认是否采用或发送这些产物", task_prompt)
+            self.assertIn("交接候选: gen_002(md / 后台总结_终稿)", task_prompt)
+            self.assertIn("建议接手: 先请用户确认要不要发送、以及具体发送哪份结果", task_prompt)
 
             inspect_handler = ManageTaskWorkspaceToolHandler(task_workspace_service=workspace)
             inspect_result = inspect_handler.execute(
@@ -293,7 +346,7 @@ class TaskWorkerServiceTests(unittest.TestCase):
             self.assertIn("当前产物：gen_001；gen_002", inspect_result.followup_context)
             self.assertIn("最近事件：worker_completed", inspect_result.followup_context)
             self.assertIn("交接状态: 完成，等待前台助手交付/确认", inspect_result.followup_context)
-            self.assertIn("建议接手: 先请用户确认是否采用或发送这些产物", inspect_result.followup_context)
+            self.assertIn("建议接手: 先请用户确认要不要发送、以及具体发送哪份结果", inspect_result.followup_context)
 
             events = workspace.list_events(task_id=delegated.task_id)
             completed_events = [event for event in events if event["event_type"] == "worker_completed"]
@@ -476,7 +529,7 @@ class TaskWorkerServiceTests(unittest.TestCase):
                 self.assertIn("交接状态: 部分完成，等待前台助手接手推进", prompt)
                 self.assertIn("还在推进: 生成初稿", prompt)
                 self.assertIn("仍需处理: 整理终稿", prompt)
-                self.assertIn("可交付产物: gen_001(md / 后台总结)", prompt)
+                self.assertIn("交接候选: gen_001(md / 后台总结)", prompt)
                 self.assertIn("要不要先发送现有成果", prompt)
 
                 events = workspace.list_events(task_id=delegated.task_id)

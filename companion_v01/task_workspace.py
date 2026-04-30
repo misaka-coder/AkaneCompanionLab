@@ -519,7 +519,7 @@ class TaskWorkspaceService:
             lines.append(f"{bullet}仍需处理: " + "；".join(remaining))
         artifacts = self._render_handoff_artifacts(handoff.get("artifacts"), limit=8)
         if artifacts:
-            lines.append(f"{bullet}可交付产物: " + "；".join(artifacts))
+            lines.append(f"{bullet}交接候选: " + "；".join(artifacts))
         question = str(handoff.get("user_question") or "").strip()
         if question:
             lines.append(f"{bullet}需要问用户: {question[:220]}")
@@ -548,10 +548,11 @@ class TaskWorkspaceService:
                 artifact_id = str(item.get("id") or item.get("handle") or "").strip()
                 title = str(item.get("title") or "").strip()
                 kind = str(item.get("kind") or "").strip()
+                stem_role = str(item.get("stem_role") or "").strip()
                 label = artifact_id or title
                 if not label:
                     continue
-                suffix = " / ".join(part for part in [kind, title if title and title != label else ""] if part)
+                suffix = " / ".join(part for part in [kind, stem_role, title if title and title != label else ""] if part)
                 rendered.append(label + (f"({suffix})" if suffix else ""))
             else:
                 text = str(item or "").strip()
@@ -591,16 +592,19 @@ class TaskWorkspaceService:
             return lines
 
         if status == "completed" or handoff_status == "completed":
-            artifact_labels = self._render_task_artifact_labels(artifacts, limit=4)
+            handoff_artifacts = (effective_handoff or {}).get("artifacts") if isinstance(effective_handoff, dict) else []
+            artifact_labels = self._render_handoff_artifacts(handoff_artifacts, limit=4)
+            if not artifact_labels:
+                artifact_labels = self._render_task_artifact_labels(artifacts, limit=4)
             lines = [f"{bullet}前台状态: 后台已完成，等待前台助手确认/交付"]
             if next_action == "send_to_user":
                 detail = "，".join(artifact_labels) if artifact_labels else "结果"
-                lines.append(f"{bullet}前台回应: 可以简短说明已经做好，并用 send_file 精确发送 {detail}；发送后再询问是否清理任务工作区。")
+                lines.append(f"{bullet}前台回应: 如果本轮用户已明确要发送结果，可以简短说明已经做好，并用 send_file 精确发送 {detail}；否则先确认要不要发送这些结果。")
             elif next_action == "report_only" and not artifact_labels:
                 lines.append(f"{bullet}前台回应: 自然说明已经处理完；如果用户还需要文件，再根据资源区或生成区继续处理。")
             else:
                 detail = "，".join(artifact_labels) if artifact_labels else "结果"
-                lines.append(f"{bullet}前台回应: 自然说明已经做好 {detail}，询问是否现在发给用户，或在用户已明确要结果时直接发送。")
+                lines.append(f"{bullet}前台回应: 自然说明已经做好 {detail}；如果用户没明确要发文件，先问是否发送以及要发送哪一份。")
             return lines
 
         if handoff_status == "partial":

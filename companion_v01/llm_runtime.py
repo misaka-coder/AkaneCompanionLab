@@ -386,6 +386,9 @@ class LLMRuntime:
             parsed = self._extract_json(content)
             if isinstance(parsed, dict):
                 return parsed
+            recovered = self._recover_partial_chat_json(content, fallback=fallback)
+            if isinstance(recovered, dict):
+                return recovered
         except Exception:
             self._record_metric("errors")
             pass
@@ -644,9 +647,30 @@ class LLMRuntime:
 
     def _extract_text(self, response: Any) -> str:
         try:
-            return str(response.choices[0].message.content or "").strip()
+            return self._flatten_message_content(response.choices[0].message.content).strip()
         except Exception:
             return ""
+
+    def _flatten_message_content(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if text is None:
+                        text = item.get("content")
+                    if text is None and isinstance(item.get("input_text"), str):
+                        text = item.get("input_text")
+                else:
+                    text = getattr(item, "text", None)
+                    if text is None:
+                        text = getattr(item, "content", None)
+                if text is not None:
+                    parts.append(str(text))
+            return "".join(parts)
+        return str(content or "")
 
     def _build_completion_kwargs(
         self,
@@ -878,6 +902,9 @@ class LLMRuntime:
             return payload if isinstance(payload, dict) else None
         except Exception:
             pass
+        parsed = self._extract_first_json_object(raw)
+        if isinstance(parsed, dict):
+            return parsed
         match = JSON_RE.search(raw)
         if not match:
             return None
@@ -886,3 +913,66 @@ class LLMRuntime:
             return payload if isinstance(payload, dict) else None
         except Exception:
             return None
+
+    def _extract_first_json_object(self, text: str) -> dict[str, Any] | None:
+        raw = str(text or "")
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r"\{", raw):
+            start = match.start()
+            prefix = raw[:start].rstrip()
+            if prefix and prefix[-1] in {":", "[", ","}:
+                continue
+            try:
+                payload, _end = decoder.raw_decode(raw[start:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
+        return None
+
+    def _recover_partial_chat_json(self, text: str, *, fallback: dict[str, Any]) -> dict[str, Any] | None:
+        tap = _TopLevelJSONStreamTap()
+        tap.feed(text)
+        speech = str(tap.latest_speech or "").strip()
+        emotion = str(tap.latest_emotion or "").strip()
+        raw_segments = self._extract_json_key_value(text, "speech_segments")
+        segments: list[str] = []
+        if isinstance(raw_segments, list):
+            for item in raw_segments:
+                value = (item.get("speech") or item.get("text") or "") if isinstance(item, dict) else item
+                segment = " ".join(str(value or "").replace("\r\n", "\n").replace("\r", "\n").splitlines()).strip()
+                if segment:
+                    segments.append(segment[:500])
+                if len(segments) >= 3:
+                    break
+        if not speech and not emotion and not segments:
+            return None
+        recovered = dict(fallback)
+        if emotion:
+            recovered["emotion"] = emotion
+        if segments:
+            recovered["speech"] = "\n".join(segments)
+            recovered["speech_segments"] = segments
+        elif speech:
+            recovered["speech"] = speech
+            recovered["speech_segments"] = []
+        return recovered
+
+    def _extract_json_key_value(self, text: str, key: str) -> Any:
+        raw = str(text or "")
+        key_text = str(key or "").strip()
+        if not key_text:
+            return None
+        pattern = re.compile(r'"' + re.escape(key_text) + r'"\s*:\s*')
+        for match in pattern.finditer(raw):
+            start = self._skip_json_ws(raw, match.end())
+            if start >= len(raw):
+                continue
+            end = self._find_json_value_end(raw, start)
+            if end is None:
+                continue
+            try:
+                return json.loads(raw[start:end])
+            except Exception:
+                continue
+        return None

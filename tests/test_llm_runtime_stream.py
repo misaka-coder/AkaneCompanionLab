@@ -44,6 +44,51 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
         self.assertEqual(call["query"], "扬州城")
         self.assertEqual(call["keywords"], ["二十四桥"])
 
+    def test_extract_text_flattens_content_blocks(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        text = runtime._flatten_message_content(
+            [
+                {"type": "text", "text": '{"emotion":"normal",'},
+                {"type": "text", "text": '"speech":"在的。"}'},
+            ]
+        )
+
+        self.assertEqual(text, '{"emotion":"normal","speech":"在的。"}')
+
+    def test_extract_json_uses_first_balanced_object(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        parsed = runtime._extract_json(
+            '好的，JSON 如下：\n```json\n{"emotion":"happy","speech":"在的。"}\n```\n{"ignored":true}'
+        )
+
+        self.assertEqual(parsed, {"emotion": "happy", "speech": "在的。"})
+
+    def test_partial_chat_json_recovery_keeps_generated_speech(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        recovered = runtime._recover_partial_chat_json(
+            '{"emotion":"happy","speech":"我听到啦，主人。","speech_segments":[]',
+            fallback={"emotion": "normal", "speech": "fallback", "speech_segments": []},
+        )
+
+        self.assertEqual(recovered["emotion"], "happy")
+        self.assertEqual(recovered["speech"], "我听到啦，主人。")
+        self.assertEqual(recovered["speech_segments"], [])
+
+    def test_partial_chat_json_recovery_keeps_speech_segments(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        recovered = runtime._recover_partial_chat_json(
+            '{"emotion":"happy","speech":"","speech_segments":["第一句。","第二句。"],"tool_call":null',
+            fallback={"emotion": "normal", "speech": "fallback", "speech_segments": []},
+        )
+
+        self.assertEqual(recovered["emotion"], "happy")
+        self.assertEqual(recovered["speech"], "第一句。\n第二句。")
+        self.assertEqual(recovered["speech_segments"], ["第一句。", "第二句。"])
+
 
 if __name__ == "__main__":
     unittest.main()
