@@ -206,7 +206,7 @@ class VideoTaskNetworkTests(unittest.TestCase):
                 "goal": "下载视频链接并把原视频发回给主人。",
                 "outputs": [
                     self._continue("fetch_media_from_url", {"url": "https://example.test/video.mp4", "preferred_title": "测试视频"}, "下载视频"),
-                    self._done("原视频已经下载好，交给 Akane 发送。", "send_to_user", ["下载视频"]),
+                    self._done("原视频已经下载好，交给前台助手发送。", "send_to_user", ["下载视频"]),
                 ],
                 "expected_sequence": ["fetch_media_from_url"],
                 "expected_artifacts": ["video_001"],
@@ -299,7 +299,7 @@ class VideoTaskNetworkTests(unittest.TestCase):
                 self.assertEqual(result["worker_send_calls"], [])
                 self.assertTrue(result["send_result"].stream_events)
                 self.assertEqual(result["send_result"].stream_events[0]["file"]["handle"], case["final_send_target"])
-                self.assertIn("交接状态: 完成，等待 Akane 交付/确认", result["task_prompt"])
+                self.assertIn("交接状态: 完成，等待前台助手交付/确认", result["task_prompt"])
                 self.assertIn(case["final_send_target"], result["task_prompt"])
                 for handle in case["expected_artifacts"]:
                     self.assertIn(handle, result["task_prompt"])
@@ -317,7 +317,7 @@ class VideoTaskNetworkTests(unittest.TestCase):
         result = self._run_route(
             {
                 "name": "attempted_worker_delivery_guard",
-                "goal": "提取视频音频并交给 Akane 发送。",
+                "goal": "提取视频音频并交给前台助手发送。",
                 "outputs": [
                     self._continue(
                         "convert_media_file",
@@ -329,7 +329,7 @@ class VideoTaskNetworkTests(unittest.TestCase):
                         },
                         "提取音频",
                     ),
-                    self._done("音频轨已经准备好，请 Akane 统一发送。", "send_to_user", ["提取音频"]),
+                    self._done("音频轨已经准备好，请前台助手统一发送。", "send_to_user", ["提取音频"]),
                 ],
                 "expected_sequence": ["convert_media_file"],
                 "expected_artifacts": ["gen_001"],

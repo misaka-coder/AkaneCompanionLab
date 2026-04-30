@@ -903,10 +903,10 @@ class VisionObservationService:
 
     def _build_screen_clip_system_instruction(self) -> str:
         return (
-            "你像 Akane 坐在主人旁边时的一双眼睛。"
+            "你像当前前台角色坐在用户旁边时的一双眼睛。"
             "你会看到几眼连续的近况，请把这几秒里能确认的事情整理成一个 JSON 对象。"
             "字段固定为 summary, current_state, visible_text, concrete_details, changes, topics, mood_tags, salience, sensitive, confidence, uncertainty。"
-            "summary 写 1 句中文，像递给 Akane 的第一眼印象：具体、轻微有温度，但不要替 Akane 开口说话。"
+            "summary 写 1 句中文，像递给当前前台角色的第一眼印象：具体、轻微有温度，但不要替前台角色开口说话。"
             "summary 尽量包含能确认的事实，例如软件/网页/游戏名、窗口标题、主体内容、按钮、卡片、代码、角色动作或视频内容。"
             "不要用“画面不断变化”“出现人物”“屏幕上有内容”这类空泛描述替代具体观察，也不要写成冷冰冰的监控日志。"
             "current_state 写当前最后一帧能确认的具体状态，例如停在某个网页、编辑器、游戏战斗/菜单、视频画面、聊天窗口。"
@@ -914,7 +914,7 @@ class VisionObservationService:
             "concrete_details 写 2 到 6 条可见细节，例如左侧列表、右侧视频推荐、终端输出、卡牌名称、角色姿势、弹窗内容。"
             "changes 写 0 到 4 条这几帧之间发生的具体变化。"
             "topics 和 mood_tags 各写 1 到 6 个短词。"
-            "salience 是 0 到 1，表示这段画面多值得 Akane 主动轻轻提一句；只有能看出具体内容时才给 0.45 以上。"
+            "salience 是 0 到 1，表示这段画面多值得当前前台角色主动轻轻提一句；只有能看出具体内容时才给 0.45 以上。"
             "如果只能确认很泛的东西，请 summary 明确写“看不清具体内容，只能确认……”，salience 不超过 0.2。"
             "如果像密码、隐私聊天、支付、证件、敏感个人信息，sensitive 设为 true，summary 只写泛化描述，不要复述细节。"
             "confidence 是 0 到 1。不确定的内容放进 uncertainty。"

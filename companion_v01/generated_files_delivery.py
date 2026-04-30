@@ -317,7 +317,7 @@ def apply_style_to_existing_file(
             ),
         }
 
-    title = service._normalize_title(output_title) or f"{source.get('title') or 'Akane文件'} 样式版"
+    title = service._normalize_title(output_title) or f"{source.get('title') or '生成文件'} 样式版"
     output_path = service._build_output_path(
         profile_user_id=profile_user_id,
         session_id=session_id,

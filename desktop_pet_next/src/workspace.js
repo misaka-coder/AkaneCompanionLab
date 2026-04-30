@@ -211,8 +211,8 @@ function renderPayload(payload) {
 
   els.content.replaceChildren(
     ...[
-      renderSection("手边文件", "刚递给 Akane 的原始材料", files, "file"),
-      renderSection("Akane 做好的东西", "文档、音频和其他生成物", outputs, "output"),
+      renderSection("手边文件", "刚递给当前角色的原始材料", files, "file"),
+      renderSection("做好的东西", "文档、音频和其他生成物", outputs, "output"),
       renderSection("正在进行", "后台任务只显示给用户看的状态", tasks, "task")
     ].filter(Boolean)
   );
@@ -387,7 +387,7 @@ function renderItem(item, kind) {
   ]
     .filter(Boolean)
     .join(" · ");
-  const detail = buildText("p", meta || "放在 Akane 手边");
+  const detail = buildText("p", meta || "放在当前角色手边");
 
   const actions = document.createElement("div");
   actions.className = "item-actions";

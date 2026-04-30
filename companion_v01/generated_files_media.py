@@ -270,10 +270,10 @@ def transcript_source_card(source: dict[str, Any]) -> dict[str, Any]:
 
 def infer_transcript_title(*, sources: list[dict[str, Any]], output_format: str, merged: bool) -> str:
     if not sources:
-        return f"Akane转写稿_{output_format}"
+        return f"转写稿_{output_format}"
     first = sources[0]
     title = str(first.get("title") or first.get("handle") or "").strip()
-    stem = Path(title).stem if title else "Akane媒体"
+    stem = Path(title).stem if title else "媒体"
     if merged and len(sources) > 1:
         return f"{stem}_等{len(sources)}份转写稿"
     return f"{stem}_转写稿"
@@ -457,7 +457,7 @@ def infer_voice_dataset_title(*, sources: list[dict[str, Any]], profile: str) ->
         source_title = str(sources[0].get("title") or sources[0].get("handle") or "").strip()
         if source_title:
             return f"{Path(source_title).stem}_{profile}_训练素材"
-    return f"Akane_{profile}_训练素材"
+    return f"{profile}_训练素材"
 
 
 def prepare_voice_dataset_input(

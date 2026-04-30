@@ -97,7 +97,7 @@ class WorkerRunSummary:
 class TaskWorkerService:
     """Run constrained background specialists against task workspaces.
 
-    The worker is intentionally not a second Akane. It receives a scoped brief,
+    The worker is intentionally not a second frontstage assistant. It receives a scoped brief,
     can use only a small tool set, writes progress back to the task workspace,
     and never sends user-facing files/messages by itself.
     """
@@ -168,7 +168,7 @@ class TaskWorkerService:
                 constraints=constraints or [],
                 steps=steps or [],
                 metadata=metadata,
-                owner="Akane",
+                owner="frontstage",
                 status="queued",
                 timestamp=now_ts,
             )
@@ -198,7 +198,7 @@ class TaskWorkerService:
         self.task_workspace_service.append_event(
             task_id=task_id,
             event_type="worker_delegated",
-            from_actor="Akane",
+            from_actor="frontstage",
             priority="normal",
             message=f"{assigned_agent} 已接收后台工坊任务。",
             payload={
@@ -417,17 +417,17 @@ class TaskWorkerService:
             task=limit_task,
             agent=agent,
             status="partial",
-            message=f"{agent} 已达到本轮后台工坊最大执行轮数，请 Akane 查看任务工作区后决定是否继续。",
+            message=f"{agent} 已达到本轮后台工坊最大执行轮数，请前台助手查看任务工作区后决定是否继续。",
             question="",
             next_action="continue_work",
-            handoff_note="已完成一部分后台步骤，但仍需要 Akane 决定是否继续推进或先交付现有成果。",
+            handoff_note="已完成一部分后台步骤，但仍需要前台助手决定是否继续推进或先交付现有成果。",
         )
         self.task_workspace_service.append_event(
             task_id=task_id,
             event_type="worker_round_limit",
             from_actor=agent,
             priority="normal",
-            message=f"{agent} 已达到本轮后台工坊最大执行轮数，请 Akane 查看任务工作区后决定是否继续。",
+            message=f"{agent} 已达到本轮后台工坊最大执行轮数，请前台助手查看任务工作区后决定是否继续。",
             payload={"max_rounds": max_rounds, "handoff": handoff},
             status="pending",
             timestamp=int(time.time()),
@@ -483,20 +483,20 @@ class TaskWorkerService:
 
     def _build_worker_system_prompt(self, *, agent: str, handlers: dict[str, BaseToolHandler]) -> str:
         lines = [
-            "你是 Akane 后台工坊里的 specialist worker，不是前台说话的 Akane。",
+            "你是后台工坊里的 specialist worker，不是前台说话的角色。",
             "你负责执行被委派的任务，把进度和产物写回任务工作区；不要和用户闲聊，不要输出角色台词。",
-            "你不能直接发送文件给用户，也不能替 Akane 做最终汇报、最终发送或清理收尾。产物生成后留在生成区和任务工作区，由 Akane 决定如何交付、确认与清理。",
-            "即使你觉得某个旧文件已经没用，也不要主动归档/删除；把情况写进任务工作区，交给 Akane 处理。",
+            "你不能直接发送文件给用户，也不能替前台助手做最终汇报、最终发送或清理收尾。产物生成后留在生成区和任务工作区，由前台助手决定如何交付、确认与清理。",
+            "即使你觉得某个旧文件已经没用，也不要主动归档/删除；把情况写进任务工作区，交给前台助手处理。",
             "你必须只输出一个合法 JSON 对象，不能输出 markdown 或额外解释。",
             "JSON 字段：",
-            '{"status":"continue|done|blocked","message":"给 Akane 的内部简短说明","tool_call":{...}|null,'
+            '{"status":"continue|done|blocked","message":"给前台助手的内部简短说明","tool_call":{...}|null,'
             '"steps":[{"title":"步骤","status":"queued|running|done|failed|waiting_user","note":"可选"}],'
-            '"artifacts":[{"id":"gen_001","kind":"md","title":"可选"}],"question":"卡住时要 Akane/用户确认的问题，可空",'
-            '"handoff":{"summary":"交给 Akane 接手的一句话","next_action":"send_to_user|ask_confirmation|continue_work|ask_user|report_only","user_question":"需要用户回答时的自然问题，可空"}}',
+            '"artifacts":[{"id":"gen_001","kind":"md","title":"可选"}],"question":"卡住时要前台助手/用户确认的问题，可空",'
+            '"handoff":{"summary":"交给前台助手接手的一句话","next_action":"send_to_user|ask_confirmation|continue_work|ask_user|report_only","user_question":"需要用户回答时的自然问题，可空"}}',
             "如果下一步需要工具，就把工具写进 tool_call，并把 status 设为 continue。",
             "如果任务完成，tool_call 为 null，status 设为 done。",
             "如果任务完成且已有产物，handoff.next_action 必须写清是 send_to_user 还是 ask_confirmation。",
-            "如果缺少必要信息，tool_call 为 null，status 设为 blocked，并写清 question；question 要写成 Akane 可以直接问用户的话。",
+            "如果缺少必要信息，tool_call 为 null，status 设为 blocked，并写清 question；question 要写成前台助手可以直接问用户的话。",
             "",
             "【你当前可用的受限工具】",
         ]
@@ -812,18 +812,18 @@ class TaskWorkerService:
         if status == "blocked":
             return "后台任务需要用户补充信息后才能继续。"
         if completed_steps or artifacts:
-            return "后台任务已完成一部分，仍有后续步骤需要 Akane 接手判断。"
-        return "后台任务暂停在中途，需要 Akane 接手判断下一步。"
+            return "后台任务已完成一部分，仍有后续步骤需要前台助手接手判断。"
+        return "后台任务暂停在中途，需要前台助手接手判断下一步。"
 
     def _handoff_instruction(self, *, status: str, next_action: str, has_artifacts: bool, has_question: bool) -> str:
         if next_action == "send_to_user":
-            return "用户已明确要结果时，Akane 可以用 send_file 精确发送这些 handle；发送后再询问是否需要清理任务工作区。"
+            return "用户已明确要结果时，前台助手可以用 send_file 精确发送这些 handle；发送后再询问是否需要清理任务工作区。"
         if next_action == "ask_confirmation":
             return "先请用户确认是否采用或发送这些产物；用户确认后再用 send_file 精确发送对应 handle。"
         if next_action == "ask_user" or has_question:
             return "把交接问题改成自然口吻直接问用户，等用户回答后再继续委派或调用工具。"
         if status == "blocked":
-            return "后台任务暂时无法继续；请由 Akane 改用可用工具推进，或自然说明需要稍后重试。"
+            return "后台任务暂时无法继续；请由前台助手改用可用工具推进，或自然说明需要稍后重试。"
         if status == "partial" or next_action == "continue_work":
             if has_artifacts:
                 return "说明哪些已经完成、哪些还在继续，并询问用户要不要先发送现有成果，或继续后台处理剩余步骤。"

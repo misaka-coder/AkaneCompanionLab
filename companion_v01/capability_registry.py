@@ -172,7 +172,7 @@ class CapabilityRegistry:
                 name="sticker_pack",
                 modes=(ClientMode.QQ_TEXT,),
                 tools=("send_sticker",),
-                light_hint="你有一组 Akane 表情包；聊天氛围适合时可以发送一张表情包，但不要为了展示功能而频繁发送。",
+                light_hint="你有一组静态表情包；聊天氛围适合时可以发送一张表情包，但不要为了展示功能而频繁发送。",
                 trigger=_always,
             ),
             CapabilityModule(

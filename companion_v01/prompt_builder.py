@@ -6,7 +6,7 @@ from typing import Any
 from .persona_config import PersonaConfig
 
 
-AKANE_CURRENT_STATE_MARKER = "[AKANE CURRENT STATE - EMBODY THIS]"
+CURRENT_ASSISTANT_STATE_MARKER = "[CURRENT ASSISTANT STATE - EMBODY THIS]"
 
 
 class PromptBuilder:
@@ -34,13 +34,13 @@ class PromptBuilder:
         instruction_text = (
             "请先判断：这句话是在接当前话题，还是在向过去要事实。\n"
             "接前文、当下闲聊、当前观点、新的当下话题，通常 need_retrieval=false；问昨天买了什么、之前去过哪里、上次说过什么，通常 need_retrieval=true。\n"
-            "注意：接当前话题不等于一定不检索。如果用户虽然在接前文，但让 Akane 回想、再想想、帮忙想起、补全若干旧事实或模糊实体，应判为 need_retrieval=true。\n"
+            "注意：接当前话题不等于一定不检索。如果用户虽然在接前文，但让当前助手回想、再想想、帮忙想起、补全若干旧事实或模糊实体，应判为 need_retrieval=true。\n"
             "如果用户在问共同经历、曾经说过/聊过/约定过的内容、过去的用户偏好或“叫什么来着”这类回忆问题，即使没写“你还记得吗”，也倾向 need_retrieval=true。\n"
             "过去记忆线索包括：以前、曾经、过去、当时、那时候、那天、那次、前几天、上回、聊过、说过、提过、约定、计划、记不清、想不起来、再想想、回想一下。\n"
-            "像“我也记不清了，反正有几个扬州城地点，你再想想”这种话，本质是在让 Akane 从过去对话里找地点，应判为 need_retrieval=true。\n"
-            "如果当前句有“那个/那几个/那件事/那个地方/那个项目”等模糊指代，并要求 Akane 想起具体内容，通常也需要检索。\n"
+            "像“我也记不清了，反正有几个扬州城地点，你再想想”这种话，本质是在让当前助手从过去对话里找地点，应判为 need_retrieval=true。\n"
+            "如果当前句有“那个/那几个/那件事/那个地方/那个项目”等模糊指代，并要求当前助手想起具体内容，通常也需要检索。\n"
             "当你在 direct_answer 和 memory_search 之间犹豫，而用户明显在要求回忆旧信息时，优先选择 memory_search；检索校验器会再判断命中质量。\n"
-            "但如果用户只是陈述一个新的过去事实，例如“我昨天没睡好”，并没有要求 Akane 回忆既有信息，通常 need_retrieval=false。\n"
+            "但如果用户只是陈述一个新的过去事实，例如“我昨天没睡好”，并没有要求当前助手回忆既有信息，通常 need_retrieval=false。\n"
             "不要把“最近窗口里有没有完整答案”当成标准；如果当前问题需要更早历史事实，应该检索。\n"
             "如果需要检索，rewritten_query 请写成简短搜索短句，不要写成“请查找……”这类任务描述。\n"
             "当用户围绕某个明确日期/时间段要求回忆，例如“4月12日晚上那件事”“4月12日晚上的事情”，rewritten_query 应抽象成“YYYY-MM-DD 晚上 发生了什么”或“YYYY-MM-DD 晚上 聊过什么”，不要只是同义改写“你再回忆一下”。\n"
@@ -151,14 +151,14 @@ class PromptBuilder:
         format_addendum = mode_prompt + tool_prompt_context
         if allow_tool_call:
             format_addendum += "\n如果你给出 choices，建议 2 到 4 个，文字简短，方向有区别。"
-        if AKANE_CURRENT_STATE_MARKER in base_system_prompt:
-            system_prompt = base_system_prompt.replace(AKANE_CURRENT_STATE_MARKER, "", 1).rstrip()
+        if CURRENT_ASSISTANT_STATE_MARKER in base_system_prompt:
+            system_prompt = base_system_prompt.replace(CURRENT_ASSISTANT_STATE_MARKER, "", 1).rstrip()
             system_prompt += format_addendum
-            system_prompt += f"\n\n{AKANE_CURRENT_STATE_MARKER}"
+            system_prompt += f"\n\n{CURRENT_ASSISTANT_STATE_MARKER}"
         else:
             system_prompt = base_system_prompt + format_addendum
             if persona_system:
-                system_prompt += f"\n\n{AKANE_CURRENT_STATE_MARKER}"
+                system_prompt += f"\n\n{CURRENT_ASSISTANT_STATE_MARKER}"
         if persona_system:
             system_prompt += f"\n{persona_system}"
 

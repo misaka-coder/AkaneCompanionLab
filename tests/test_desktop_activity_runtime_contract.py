@@ -102,7 +102,7 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
             _desktop_context(),
         )
 
-        self.assertIn("类型：Akane 表演/唱歌", prompt)
+        self.assertIn("类型：角色表演/唱歌", prompt)
         self.assertIn("状态：因主人发来消息已暂停", prompt)
         self.assertIn("进度 01:17 / 03:25", prompt)
         self.assertIn("如果你想继续表演，需要输出 activity action", prompt)

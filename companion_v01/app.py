@@ -101,7 +101,7 @@ public_guard = PublicThinkGuard(
     daily_think_limit=int(getattr(config, "DAILY_THINK_LIMIT", 200)),
     busy_message=str(getattr(config, "PUBLIC_BUSY_MESSAGE", "当前体验人数较多，请稍后再试。")),
     daily_limit_message=str(
-        getattr(config, "PUBLIC_DAILY_LIMIT_MESSAGE", "今日体验名额已满，明天再来看看 Akane 吧。")
+        getattr(config, "PUBLIC_DAILY_LIMIT_MESSAGE", "今日体验名额已满，明天再来看看吧。")
     ),
 )
 qq_gateway = NapCatQQGateway()

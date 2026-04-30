@@ -287,7 +287,7 @@ class SetReminderToolHandler(BaseToolHandler):
             ],
             followup_context=(
                 f"你刚刚已经成功设置了一条提醒：在 {due_label} 提醒用户“{reminder['content']}”。"
-                "请你用 Akane 的语气自然确认这件事，不要再次调用工具。"
+                "请你用当前前台角色的语气自然确认这件事，不要再次调用工具。"
             ),
         )
 
@@ -475,7 +475,7 @@ class CancelReminderToolHandler(BaseToolHandler):
             ],
             followup_context=(
                 f"你刚刚已经成功取消了一条提醒：[{due_label}] {cancelled['content']}。"
-                "请你用 Akane 的语气自然确认取消成功，不要再次调用工具。"
+                "请你用当前前台角色的语气自然确认取消成功，不要再次调用工具。"
             ),
         )
 
@@ -2328,7 +2328,7 @@ class SendStickerToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         sticker_list = self.sticker_service.build_prompt_list()
         return (
-            "- send_sticker：当你想给用户发送 Akane 表情包图片时使用。"
+            "- send_sticker：当你想给用户发送当前可用表情包图片时使用。"
             f"可用表情：{sticker_list or '（当前没有可用表情）'}。"
             "格式为 {\"type\":\"send_sticker\",\"sticker\":\"biexiao|haoxingfu|tanshou|turan_chuxian|wainao|zaoba|zhuangsha|zhuangsi\"}。"
             "它只负责发表情包，不生成文件、不修改附件；适合开心、吐槽、装傻、装死、突然冒泡等轻量情绪回应。"
@@ -2676,7 +2676,7 @@ class ManageTaskWorkspaceToolHandler(BaseToolHandler):
             self.task_workspace_service.append_event(
                 task_id=str(task["task_id"]),
                 event_type="steps_updated",
-                from_actor="Akane",
+                from_actor="frontstage",
                 message=str(call.get("reason") or "更新任务步骤。"),
                 payload={"steps": steps},
                 status="handled",
@@ -2705,7 +2705,7 @@ class ManageTaskWorkspaceToolHandler(BaseToolHandler):
             self.task_workspace_service.append_event(
                 task_id=str(task["task_id"]),
                 event_type="artifact_added",
-                from_actor="Akane",
+                from_actor="frontstage",
                 message=str(call.get("reason") or "登记任务产物。"),
                 payload={"artifacts": list(call.get("artifacts") or [])},
                 status="handled",
@@ -2740,7 +2740,7 @@ class ManageTaskWorkspaceToolHandler(BaseToolHandler):
             self.task_workspace_service.append_event(
                 task_id=str(task["task_id"]),
                 event_type="user_question",
-                from_actor="Akane",
+                from_actor="frontstage",
                 priority="high",
                 requires_user=True,
                 message=question,
@@ -2810,7 +2810,7 @@ class ManageTaskWorkspaceToolHandler(BaseToolHandler):
             steps=list(call.get("steps") or []),
             artifacts=list(call.get("artifacts") or []),
             metadata=self._normalize_dict(call.get("metadata")),
-            owner="Akane",
+            owner="frontstage",
             status="running" if list(call.get("steps") or []) else "queued",
             timestamp=context.now_ts,
         )
@@ -3393,7 +3393,7 @@ class ManagePersonaToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- manage_persona：用于保存或调整 Akane 的表达侧面卡片。"
+            "- manage_persona：用于保存或调整当前前台角色的表达侧面卡片。"
             "格式为 {\"type\":\"manage_persona\",\"action\":\"create|update|inspect|archive|delete\","
             "\"card_id\":\"可选\",\"name\":\"名字\",\"summary\":\"核心摘要\","
             "\"speech_style\":\"说话方式\",\"interaction_bias\":\"互动倾向\","

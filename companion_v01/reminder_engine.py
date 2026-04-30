@@ -104,9 +104,9 @@ def generate_reminder_notification_speech(
     visual_context = engine._describe_tool_scene_context(visual_payload)
     result = engine.llm.call_chat_json(
         system_prompt=(
-            "你是 Akane。现在有一条已经到时间的提醒需要你自然地说出口。"
+            "你是当前前台角色。现在有一条已经到时间的提醒需要你自然地说出口。"
             "你只输出一个合法 JSON 对象，字段固定为 speech。"
-            "speech 要像 Akane 当下自然想起这件事后对用户说的一句提醒，口吻亲近、简短、自然。"
+            "speech 要像当前前台角色当下自然想起这件事后对用户说的一句提醒，口吻亲近、简短、自然。"
             "只需要 1 到 2 句，不要解释系统原理，不要说自己忘记了，也不要输出多余字段。"
         ),
         user_prompt=(
@@ -114,7 +114,7 @@ def generate_reminder_notification_speech(
             f"提醒内容：{str(reminder.get('content') or '').strip()}\n"
             f"原始提醒时间说法：{str(reminder.get('raw_time_text') or '').strip() or '(未提供)'}\n"
             f"当前时间：{timestamp_to_datetime_label(int(reminder.get('fired_at') or reminder.get('due_ts') or time.time()))}\n"
-            "请用 Akane 的语气说一句现在该提醒用户的话。"
+            "请用当前前台角色的语气说一句现在该提醒用户的话。"
         ),
         fallback={"speech": fallback_speech},
         temperature=0.85,
@@ -154,5 +154,5 @@ def format_reminder_notification(reminder: dict[str, Any]) -> str:
     content = str(reminder.get("content") or "").strip()
     raw_time_text = str(reminder.get("raw_time_text") or "").strip()
     if raw_time_text:
-        return f"喵呜，到时间啦。你之前让我在{raw_time_text}提醒你“{content}”，现在该去做啦。"
-    return f"喵呜，到时间啦。你之前让我提醒你的事是“{content}”，现在该去做啦。"
+        return f"到时间啦。你之前让我在{raw_time_text}提醒你“{content}”，现在该去做啦。"
+    return f"到时间啦。你之前让我提醒你的事是“{content}”，现在该去做啦。"

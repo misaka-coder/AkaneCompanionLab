@@ -30,7 +30,7 @@ class TaskWorkspaceService:
         steps: list[dict[str, Any]] | None = None,
         artifacts: list[dict[str, Any]] | None = None,
         metadata: dict[str, Any] | None = None,
-        owner: str = "Akane",
+        owner: str = "frontstage",
         status: str = "queued",
         timestamp: int | None = None,
     ) -> dict[str, Any]:
@@ -164,7 +164,7 @@ class TaskWorkspaceService:
         artifact_limit: int = 8,
         event_limit: int = 3,
     ) -> str:
-        """Render active task state as compact working context for Akane."""
+        """Render active task state as compact working context for the frontstage assistant."""
 
         tasks = self._list_prompt_tasks(
             profile_user_id=profile_user_id,
@@ -497,9 +497,9 @@ class TaskWorkspaceService:
         status = str(handoff.get("status") or "").strip()
         if status:
             status_labels = {
-                "completed": "完成，等待 Akane 交付/确认",
+                "completed": "完成，等待前台助手交付/确认",
                 "blocked": "阻塞，等待用户回答",
-                "partial": "部分完成，等待 Akane 接手推进",
+                "partial": "部分完成，等待前台助手接手推进",
             }
             lines.append(f"{bullet}交接状态: {status_labels.get(status, status)}")
         summary = str(handoff.get("summary") or "").strip()
@@ -568,7 +568,7 @@ class TaskWorkspaceService:
         handoff: dict[str, Any] | None = None,
         bullet: str = "- ",
     ) -> list[str]:
-        """Render user-facing guidance for Akane without replacing task facts."""
+        """Render user-facing guidance for the frontstage assistant without replacing task facts."""
 
         if not isinstance(task, dict) or not task:
             return []
@@ -592,7 +592,7 @@ class TaskWorkspaceService:
 
         if status == "completed" or handoff_status == "completed":
             artifact_labels = self._render_task_artifact_labels(artifacts, limit=4)
-            lines = [f"{bullet}前台状态: 后台已完成，等待 Akane 确认/交付"]
+            lines = [f"{bullet}前台状态: 后台已完成，等待前台助手确认/交付"]
             if next_action == "send_to_user":
                 detail = "，".join(artifact_labels) if artifact_labels else "结果"
                 lines.append(f"{bullet}前台回应: 可以简短说明已经做好，并用 send_file 精确发送 {detail}；发送后再询问是否清理任务工作区。")
@@ -741,7 +741,7 @@ class TaskWorkspaceService:
             profile_user_id=str(task["profile_user_id"]),
             session_id=str(task["session_id"]),
             event_type="task_cleaned",
-            from_actor="Akane",
+            from_actor="frontstage",
             message=reason,
             payload={"mode": metadata["cleanup"]["mode"]},
             status="handled",

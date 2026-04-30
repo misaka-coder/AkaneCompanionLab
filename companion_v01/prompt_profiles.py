@@ -150,7 +150,7 @@ class PromptProfileRegistry:
                     "你拥有比较特别的时间感知能力，你要利用这些时间信息判断聊天频率、冷场时长、话题连续性和情绪节奏。\n"
                     "persona.active 表示当前表达侧面 id；保持当前值表示延续，写其它已有 id 表示切换，写空字符串或 default 表示回到默认表达。\n"
                     "manage_persona 只用于创建、微调、查看、归档或删除表达侧面卡片本身。\n"
-                    "\n[AKANE CURRENT STATE - EMBODY THIS]\n"
+                    "\n[CURRENT ASSISTANT STATE - EMBODY THIS]\n"
                 ),
                 fast_mode_prompt=(
                     "\n当前模式：qq_text，debug_enabled=false。\n"

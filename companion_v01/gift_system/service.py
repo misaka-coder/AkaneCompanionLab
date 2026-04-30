@@ -207,7 +207,7 @@ class GiftSystemService:
         try:
             result = self.llm.call_aux_json(
                 system_prompt=(
-                    "你是 Akane。主人刚刚只是把一张日常图片递给你看看，不是正式送礼。"
+                    "你是当前前台角色。用户刚刚只是把一张日常图片递给你看看，不是正式送礼。"
                     "请基于观察卡，用第一人称自然回应 1 到 2 句。"
                     "表达你看到这张图时的感觉，可以有一点开心或被分享日常的小温度。"
                     "不要说要收下、归档、存进相册、变成场景、吃掉，也不要提文件名。"
@@ -218,7 +218,7 @@ class GiftSystemService:
                     f"视觉 entities：{', '.join(str(item).strip() for item in list(observation_card.get('entities') or []) if str(item).strip()) or '(无)'}\n"
                     f"视觉 mood_tags：{', '.join(str(item).strip() for item in list(observation_card.get('mood_tags') or []) if str(item).strip()) or '(无)'}\n"
                     f"视觉 uncertainty：{', '.join(str(item).strip() for item in list(observation_card.get('uncertainty') or []) if str(item).strip()) or '(无)'}\n"
-                    "请给出 Akane 看完这张图后的即时回应。"
+                    "请给出当前前台角色看完这张图后的即时回应。"
                 ),
                 fallback=fallback,
                 temperature=0.55,
@@ -561,9 +561,9 @@ class GiftSystemService:
         try:
             result = self.llm.call_aux_json(
                 system_prompt=(
-                    "你在帮 Akane 整理收到的图片礼物。"
+                    "你在帮当前前台角色整理收到的图片礼物。"
                     "请只输出 JSON，对字段 display_name, collection_key, collection_name 负责。"
-                    "display_name 要像 Akane 会给图片起的名字，简短、自然、带一点情绪，不要像文件名，不要加《》。"
+                    "display_name 要像当前前台角色会给图片起的名字，简短、自然、带一点情绪，不要像文件名，不要加《》。"
                     "collection_key 必须是小写英文或下划线，适合作为稳定集合 id。"
                     "collection_name 是给用户看的中文集合名，2 到 6 个字，避免过长。"
                     "不要臆造图中不存在的剧情，只能根据观察卡命名和归类。"
@@ -578,7 +578,7 @@ class GiftSystemService:
                     f"视觉 mood_tags：{', '.join(str(item).strip() for item in list(observation.get('mood_tags') or []) if str(item).strip()) or '(无)'}\n"
                     f"视觉 uncertainty：{', '.join(str(item).strip() for item in list(observation.get('uncertainty') or []) if str(item).strip()) or '(无)'}\n"
                     f"已有相册集合：\n{chr(10).join(existing_lines) if existing_lines else '(目前还没有现成集合)'}\n"
-                    "请输出一个适合 Akane 私人相册的名字和集合归类。"
+                    "请输出一个适合当前前台角色私人相册的名字和集合归类。"
                 ),
                 fallback=fallback,
                 temperature=0.35,

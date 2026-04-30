@@ -148,7 +148,7 @@ def write_xlsx(
         rows = [["内容"], *[[line] for line in content.splitlines() if line.strip()]]
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = service._safe_sheet_name(title or "Akane")
+    sheet.title = service._safe_sheet_name(title or "生成内容")
     for row in rows:
         sheet.append([str(cell) for cell in row])
     apply_xlsx_formatting(service, sheet=sheet, rows=rows, formatting=formatting)
@@ -479,7 +479,7 @@ def write_pcm16_wav(path: Path, *, samples: array, sample_rate: int, channels: i
 def render_voice_dataset_readme(service: Any, manifest: dict[str, Any]) -> str:
     stats = manifest.get("stats") if isinstance(manifest.get("stats"), dict) else {}
     lines = [
-        f"# {manifest.get('title') or 'Akane Voice Dataset'}",
+        f"# {manifest.get('title') or 'Voice Dataset'}",
         "",
         f"- Profile: {manifest.get('profile') or 'gpt_sovits'}",
         f"- Slices: {stats.get('slice_count') or 0}",

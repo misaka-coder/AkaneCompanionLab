@@ -196,10 +196,10 @@ class TaskWorkerServiceTests(unittest.TestCase):
                     },
                     {
                         "status": "done",
-                        "message": "终稿已经准备好，请 Akane 确认后统一发给用户。",
+                        "message": "终稿已经准备好，请前台助手确认后统一发给用户。",
                         "tool_call": None,
                         "handoff": {
-                            "summary": "终稿已经准备好，建议 Akane 先请用户确认是否发送。",
+                            "summary": "终稿已经准备好，建议前台助手先请用户确认是否发送。",
                             "next_action": "ask_confirmation",
                         },
                         "steps": [
@@ -228,9 +228,9 @@ class TaskWorkerServiceTests(unittest.TestCase):
             delegated = worker.delegate_task(
                 profile_user_id="master",
                 session_id="qq-private",
-                brief="整理一份后台总结，完成后交给 Akane 统一发送。",
+                brief="整理一份后台总结，完成后交给前台助手统一发送。",
                 agent="document_agent",
-                normalized_goal="生成终稿并等待 Akane 发给用户。",
+                normalized_goal="生成终稿并等待前台助手发给用户。",
                 auto_start=False,
                 timestamp=100,
             )
@@ -270,8 +270,8 @@ class TaskWorkerServiceTests(unittest.TestCase):
             self.assertIn("后台工坊: document_agent / done", task_prompt)
             self.assertIn("worker_completed", task_prompt)
             self.assertIn("gen_002(md / 后台总结_终稿)", task_prompt)
-            self.assertIn("交接状态: 完成，等待 Akane 交付/确认", task_prompt)
-            self.assertIn("交接摘要: 终稿已经准备好，建议 Akane 先请用户确认是否发送。", task_prompt)
+            self.assertIn("交接状态: 完成，等待前台助手交付/确认", task_prompt)
+            self.assertIn("交接摘要: 终稿已经准备好，建议前台助手先请用户确认是否发送。", task_prompt)
             self.assertIn("可交付产物: gen_001(md / 后台总结)；gen_002(md / 后台总结_终稿)", task_prompt)
             self.assertIn("建议接手: 先请用户确认是否采用或发送这些产物", task_prompt)
 
@@ -292,7 +292,7 @@ class TaskWorkerServiceTests(unittest.TestCase):
             self.assertIn("后台工坊：document_agent / done", inspect_result.followup_context)
             self.assertIn("当前产物：gen_001；gen_002", inspect_result.followup_context)
             self.assertIn("最近事件：worker_completed", inspect_result.followup_context)
-            self.assertIn("交接状态: 完成，等待 Akane 交付/确认", inspect_result.followup_context)
+            self.assertIn("交接状态: 完成，等待前台助手交付/确认", inspect_result.followup_context)
             self.assertIn("建议接手: 先请用户确认是否采用或发送这些产物", inspect_result.followup_context)
 
             events = workspace.list_events(task_id=delegated.task_id)
@@ -473,7 +473,7 @@ class TaskWorkerServiceTests(unittest.TestCase):
                     profile_user_id="master",
                     session_id="qq-private",
                 )
-                self.assertIn("交接状态: 部分完成，等待 Akane 接手推进", prompt)
+                self.assertIn("交接状态: 部分完成，等待前台助手接手推进", prompt)
                 self.assertIn("还在推进: 生成初稿", prompt)
                 self.assertIn("仍需处理: 整理终稿", prompt)
                 self.assertIn("可交付产物: gen_001(md / 后台总结)", prompt)

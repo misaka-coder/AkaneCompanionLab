@@ -74,7 +74,7 @@ class DesktopWorkspacePanelTests(unittest.TestCase):
             self.assertEqual(file_card["title"], "一首歌")
             self.assertEqual(file_card["subtitle"], "音频 · FLAC")
             self.assertEqual(output_card["title"], "整理好的歌词")
-            self.assertIn("Akane 做好的东西", output_card["subtitle"])
+            self.assertIn("做好的东西", output_card["subtitle"])
             self.assertEqual(task_card["title"], "整理音频结果")
             self.assertNotIn("profile_user_id", file_card)
             self.assertNotIn("session_id", output_card)

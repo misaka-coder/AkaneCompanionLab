@@ -160,7 +160,7 @@ def build_desktop_activity_prompt(
 
     lines = [
         "【当前桌宠活动】",
-        f"- 类型：{'Akane 表演/唱歌' if activity_type == 'vocal_performance' else '普通音频播放'}",
+        f"- 类型：{'角色表演/唱歌' if activity_type == 'vocal_performance' else '普通音频播放'}",
         f"- 音频：{title}" + (f"（{source_id}）" if source_id else ""),
         f"- 状态：{status_label}",
     ]

@@ -519,7 +519,7 @@ class GeneratedFileService:
 
         title = self._normalize_title(output_title) or str(original.get("output_title") or "").strip()
         if not title:
-            title = "Akane修改版"
+            title = "生成文件修改版"
         if normalized_format == "xlsx" and not rows:
             rows = self._extract_table_rows_from_markdown(content)
         if normalized_format == "json" and content and not self._looks_like_json(content):
@@ -1242,7 +1242,7 @@ class GeneratedFileService:
                     lines.append(preview[:20000])
                 lines.append("")
         else:
-            lines.append("（本文件由 Akane 根据当前对话生成。）")
+            lines.append("（本文件根据当前对话生成。）")
         return "\n".join(lines).strip()
 
     def _build_source_only_markdown(self, sources: list[dict[str, Any]]) -> str:
@@ -2909,7 +2909,7 @@ class GeneratedFileService:
                 stem = Path(source_title).stem
                 return f"{stem}_整理"
         clean_task = re.sub(r"[^\w\u4e00-\u9fff]+", "_", str(task or "").strip()).strip("_")
-        return (clean_task[:32] if clean_task else f"Akane生成文件_{output_format}")
+        return (clean_task[:32] if clean_task else f"生成文件_{output_format}")
 
     def _safe_filename(self, value: Any) -> str:
         text = str(value or "").strip()

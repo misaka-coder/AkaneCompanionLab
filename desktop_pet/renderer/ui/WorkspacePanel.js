@@ -90,13 +90,13 @@ class WorkspacePanel {
   _renderShell({ loading = false, error = "" } = {}) {
     this._items.clear();
     this._root.innerHTML = `
-      <section class="workspace-panel" role="dialog" aria-modal="true" aria-label="Akane 手边物品">
+      <section class="workspace-panel" role="dialog" aria-modal="true" aria-label="手边物品">
         <div class="workspace-panel__glow"></div>
         <header class="workspace-panel__header">
           <div>
-            <p class="workspace-panel__eyebrow">Akane Tray</p>
+            <p class="workspace-panel__eyebrow">Hand Tray</p>
             <h2>手边物品</h2>
-            <p class="workspace-panel__subtitle">只整理你和 Akane 当前正在用的东西。</p>
+            <p class="workspace-panel__subtitle">只整理你和当前角色正在用的东西。</p>
           </div>
           <button class="workspace-panel__icon-btn" type="button" data-action="close" aria-label="关闭">×</button>
         </header>
@@ -126,11 +126,11 @@ class WorkspacePanel {
     const hasAny = fileCount || outputCount || taskCount || currentActivity;
 
     this._root.innerHTML = `
-      <section class="workspace-panel" role="dialog" aria-modal="true" aria-label="Akane 手边物品">
+      <section class="workspace-panel" role="dialog" aria-modal="true" aria-label="手边物品">
         <div class="workspace-panel__glow"></div>
         <header class="workspace-panel__header">
           <div>
-            <p class="workspace-panel__eyebrow">Akane Tray</p>
+            <p class="workspace-panel__eyebrow">Hand Tray</p>
             <h2>手边物品</h2>
             <p class="workspace-panel__subtitle">文件、成果、任务，都先放在这只小托盘里。</p>
           </div>
@@ -146,8 +146,8 @@ class WorkspacePanel {
           ${
             hasAny
               ? [
-                  this._renderSection("手边文件", "刚递给 Akane 的原始材料", files),
-                  this._renderSection("Akane 做好的东西", "文档、音频和其他生成物", outputs),
+                  this._renderSection("手边文件", "刚递给当前角色的原始材料", files),
+                  this._renderSection("做好的东西", "文档、音频和其他生成物", outputs),
                   this._renderSection("正在进行", "后台任务只显示给用户看的状态", tasks, { taskSection: true }),
                 ].join("")
               : '<div class="workspace-panel__empty">现在手边还很清爽。</div>'
@@ -252,7 +252,7 @@ class WorkspacePanel {
             <h4>${title}</h4>
             <span>${status}</span>
           </div>
-          <p>${this._escape(meta || "放在 Akane 手边")}</p>
+          <p>${this._escape(meta || "放在当前角色手边")}</p>
           <div class="workspace-card__actions">
             ${item.can_open ? '<button type="button" data-action="open-item">打开位置</button>' : ""}
             <button type="button" data-action="copy-item">复制编号</button>

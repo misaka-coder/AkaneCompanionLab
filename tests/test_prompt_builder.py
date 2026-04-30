@@ -193,7 +193,7 @@ system = "semantic reinforcement system"
             self.assertIn("final system", result["system_prompt"])
             self.assertIn("debug mode", result["system_prompt"])
             self.assertIn("- fake tool", result["system_prompt"])
-            self.assertIn("[AKANE CURRENT STATE - EMBODY THIS]", result["system_prompt"])
+            self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", result["system_prompt"])
             self.assertIn("persona state", result["system_prompt"])
             self.assertLess(result["system_prompt"].index("debug mode"), result["system_prompt"].index("persona state"))
             self.assertLess(result["system_prompt"].index("- fake tool"), result["system_prompt"].index("persona state"))
@@ -206,9 +206,9 @@ system = "semantic reinforcement system"
         builder = PromptBuilder(persona)
 
         self.assertIn("字段固定为 emotion, speech, speech_segments, tool_call", persona.final_fast_mode_prompt)
-        self.assertIn('"speech":"喵呜，主人，欢迎回来呀。","speech_segments":[],"tool_call":null', persona.final_fast_mode_prompt)
+        self.assertIn('"speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null', persona.final_fast_mode_prompt)
         self.assertIn("字段固定为 thought, emotion, speech, speech_segments, tool_call", persona.final_debug_mode_prompt)
-        self.assertIn('"speech":"喵呜，主人，欢迎回来呀。","speech_segments":[],"tool_call":null', persona.final_debug_mode_prompt)
+        self.assertIn('"speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null', persona.final_debug_mode_prompt)
         self.assertIn("tool_call 必须放在 speech_segments 字段之后", persona.final_system_prompt)
 
         result = builder.build_final_generation_context(
@@ -236,6 +236,14 @@ system = "semantic reinforcement system"
         fallback_keys = list(result["fallback"].keys())
         self.assertLess(fallback_keys.index("speech_segments"), fallback_keys.index("tool_call"))
         self.assertEqual(fallback_keys[:4], ["emotion", "speech", "speech_segments", "tool_call"])
+
+    def test_default_prompts_do_not_force_akane_identity(self) -> None:
+        persona = load_persona_config()
+
+        self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", persona.final_system_prompt)
+        self.assertNotIn("[AKANE CURRENT STATE - EMBODY THIS]", persona.final_system_prompt)
+        self.assertIn("当前前台角色", persona.final_user_prompt_suffix)
+        self.assertNotIn("以 Akane 的身份", persona.final_user_prompt_suffix)
 
 
 if __name__ == "__main__":

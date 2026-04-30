@@ -209,7 +209,7 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
                 profile_user_id="master",
                 session_id="qq-private",
                 raw_request_text="把音频整理成终稿。",
-                normalized_goal="生成终稿并等待 Akane 发给用户。",
+                normalized_goal="生成终稿并等待前台助手发给用户。",
                 artifacts=[{"id": "gen_002", "kind": "md", "title": "终稿"}],
                 metadata={
                     "workshop": {
@@ -237,7 +237,7 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
                 event_type="worker_completed",
                 from_actor="document_agent",
                 priority="high",
-                message="终稿已经准备好，请 Akane 确认后统一发给用户。",
+                message="终稿已经准备好，请前台助手确认后统一发给用户。",
                 status="pending",
                 timestamp=312,
             )
@@ -248,13 +248,13 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
             )
 
             self.assertIn("【当前任务工作区】", context)
-            self.assertIn("生成终稿并等待 Akane 发给用户", context)
+            self.assertIn("生成终稿并等待前台助手发给用户", context)
             self.assertIn("状态: completed", context)
             self.assertIn("后台工坊: document_agent / done", context)
             self.assertIn("工坊说明: 先生成初稿，再整理成终稿", context)
             self.assertIn("gen_002(md / 终稿)", context)
             self.assertIn("worker_completed", context)
-            self.assertIn("前台状态: 后台已完成，等待 Akane 确认/交付", context)
+            self.assertIn("前台状态: 后台已完成，等待前台助手确认/交付", context)
             self.assertIn("询问是否现在发给用户", context)
 
     def test_service_build_prompt_context_renders_blocked_frontstage_question(self) -> None:

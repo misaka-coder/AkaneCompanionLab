@@ -30,8 +30,8 @@ class PublicThinkGuard:
         self.daily_think_limit = max(0, int(daily_think_limit))
         self.busy_message = str(busy_message or "当前体验人数较多，请稍后再试。").strip() or "当前体验人数较多，请稍后再试。"
         self.daily_limit_message = (
-            str(daily_limit_message or "今日体验名额已满，明天再来看看 Akane 吧。").strip()
-            or "今日体验名额已满，明天再来看看 Akane 吧。"
+            str(daily_limit_message or "今日体验名额已满，明天再来看看吧。").strip()
+            or "今日体验名额已满，明天再来看看吧。"
         )
         self._timezone = ZoneInfo(timezone_name)
         self._lock = RLock()

@@ -415,13 +415,13 @@ def desktop_workspace_generated_card(item: dict[str, Any]) -> dict[str, Any]:
     handle = str(item.get("generated_handle") or item.get("generated_id") or "").strip()
     output_format = str(item.get("output_format") or item.get("file_ext") or "").strip().lower().lstrip(".")
     status = str(item.get("status") or "").strip().lower()
-    title = clip_desktop_workspace_text(item.get("output_title") or handle or "Akane 做好的东西", 80)
+    title = clip_desktop_workspace_text(item.get("output_title") or handle or "做好的东西", 80)
     return {
         "item_type": "generated",
         "id": handle,
         "handle": handle,
         "title": title,
-        "subtitle": f"{desktop_workspace_format_label(output_format)} · Akane 做好的东西",
+        "subtitle": f"{desktop_workspace_format_label(output_format)} · 做好的东西",
         "format": output_format,
         "status": status,
         "status_label": desktop_workspace_status_label(status),
