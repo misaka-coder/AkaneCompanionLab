@@ -198,7 +198,7 @@ def normalize_activity_action(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     action = str(value.get("action") or "").strip().lower()
-    if action not in {"play", "pause", "resume", "stop"}:
+    if action not in {"play", "pause", "resume", "stop", "previous", "next"}:
         return None
     target = str(value.get("target") or "current").strip()[:80] or "current"
     normalized: dict[str, Any] = {

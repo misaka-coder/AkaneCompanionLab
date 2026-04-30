@@ -561,6 +561,21 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
                 "source_id": "gen_018",
             },
         )
+        self.assertEqual(
+            self.engine._normalize_activity_action({"action": "next"}),
+            {
+                "action": "next",
+                "target": "current",
+            },
+        )
+        self.assertEqual(
+            self.engine._normalize_activity_action({"action": "previous", "source_id": "local:1"}),
+            {
+                "action": "previous",
+                "target": "current",
+                "source_id": "local:1",
+            },
+        )
         self.assertIsNone(self.engine._normalize_activity_action({"action": "continue"}))
 
     def test_desktop_runtime_only_interrupts_vocal_performance(self) -> None:
