@@ -103,6 +103,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         workspace_source = _read("desktop_pet_next/src/workspace.js")
         settings_html = _read("desktop_pet_next/settings.html")
         workspace_html = _read("desktop_pet_next/workspace.html")
+        tauri_source = _read("desktop_pet_next/src-tauri/src/main.rs")
 
         self.assertIn("playMusicTrackBySourceId", main_source)
         self.assertIn("removeMusicTrackBySourceId", main_source)
@@ -141,6 +142,18 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("resolveItemStatusGroup", workspace_source)
         self.assertIn("status_group", workspace_source)
         self.assertIn("SETTINGS_COMMAND_EVENT", workspace_source)
+        self.assertIn("openWorkspaceItem", workspace_source)
+        self.assertIn("revealWorkspaceItem", workspace_source)
+        self.assertIn("copyWorkspaceItemPath", workspace_source)
+        self.assertIn("exportWorkspaceItemToDesktop", workspace_source)
+        self.assertIn("resolveWorkspaceItemPath", workspace_source)
+        self.assertIn('invoke("open_local_file"', workspace_source)
+        self.assertIn('invoke("show_item_in_folder"', workspace_source)
+        self.assertIn('invoke("export_file_to_desktop"', workspace_source)
+        self.assertIn("fn open_local_file", tauri_source)
+        self.assertIn("fn show_item_in_folder", tauri_source)
+        self.assertIn("fn export_file_to_desktop", tauri_source)
+        self.assertIn("Akane Outputs", tauri_source)
 
     def test_next_settings_can_install_creator_kit_character_pack_zips(self) -> None:
         settings_source = _read("desktop_pet_next/src/settings.js")

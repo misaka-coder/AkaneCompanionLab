@@ -177,6 +177,14 @@ struct CharacterPackInstallResult {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ExportedWorkspaceFile {
+    ok: bool,
+    path: String,
+    file_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CharacterPackRegistryItem {
     id: String,
     source: String,
@@ -459,6 +467,46 @@ fn open_character_packs_folder() -> Result<(), String> {
     let characters_dir = creator_kit_characters_dir()?;
     fs::create_dir_all(&characters_dir).map_err(|error| error.to_string())?;
     open_path_in_file_manager(&characters_dir)
+}
+
+#[tauri::command]
+fn open_local_file(path: String) -> Result<(), String> {
+    let path = canonical_existing_path(&path)?;
+    open_path_with_system(&path)
+}
+
+#[tauri::command]
+fn show_item_in_folder(path: String) -> Result<(), String> {
+    let path = canonical_existing_path(&path)?;
+    reveal_path_in_file_manager(&path)
+}
+
+#[tauri::command]
+fn export_file_to_desktop(
+    app: AppHandle,
+    path: String,
+    file_name: String,
+) -> Result<ExportedWorkspaceFile, String> {
+    let source_path = canonical_existing_path(&path)?;
+    if !source_path.is_file() {
+        return Err("只能导出文件。".to_string());
+    }
+
+    let export_dir = resolve_desktop_export_dir(&app)?;
+    fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
+    let file_name = workspace_export_file_name(&source_path, &file_name);
+    let target_path = unique_child_file_path(&export_dir, &file_name);
+    fs::copy(&source_path, &target_path).map_err(|error| error.to_string())?;
+
+    Ok(ExportedWorkspaceFile {
+        ok: true,
+        path: target_path.to_string_lossy().to_string(),
+        file_name: target_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(file_name.as_str())
+            .to_string(),
+    })
 }
 
 #[tauri::command]
@@ -1003,6 +1051,159 @@ fn open_path_in_file_manager(path: &Path) -> Result<(), String> {
 
     command.spawn().map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn canonical_existing_path(raw_path: &str) -> Result<PathBuf, String> {
+    require_text(raw_path, "文件路径")?;
+    let path = PathBuf::from(raw_path.trim());
+    let path = path.canonicalize().map_err(|error| error.to_string())?;
+    if !path.exists() {
+        return Err("文件不存在。".to_string());
+    }
+    Ok(path)
+}
+
+fn open_path_with_system(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("explorer");
+        command.arg(path);
+        command
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(path);
+        command
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(path);
+        command
+    };
+
+    command.spawn().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn reveal_path_in_file_manager(path: &Path) -> Result<(), String> {
+    if path.is_dir() {
+        return open_path_in_file_manager(path);
+    }
+
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("explorer");
+        command.arg(format!("/select,{}", path.to_string_lossy()));
+        command
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg("-R").arg(path);
+        command
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(path.parent().unwrap_or_else(|| Path::new(".")));
+        command
+    };
+
+    command.spawn().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn resolve_desktop_export_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(path) = app.path().desktop_dir() {
+        return Ok(path.join("Akane Outputs"));
+    }
+    #[cfg(windows)]
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        return Ok(PathBuf::from(home).join("Desktop").join("Akane Outputs"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return Ok(PathBuf::from(home).join("Desktop").join("Akane Outputs"));
+    }
+    Err("无法定位桌面目录。".to_string())
+}
+
+fn workspace_export_file_name(source_path: &Path, suggested_name: &str) -> String {
+    let fallback = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("akane-output");
+    let mut file_name = sanitize_file_name(if suggested_name.trim().is_empty() {
+        fallback
+    } else {
+        suggested_name.trim()
+    });
+    if Path::new(&file_name).extension().is_none() {
+        if let Some(ext) = source_path.extension().and_then(|value| value.to_str()) {
+            if !ext.trim().is_empty() {
+                file_name.push('.');
+                file_name.push_str(ext.trim());
+            }
+        }
+    }
+    file_name
+}
+
+fn sanitize_file_name(value: &str) -> String {
+    let mut name: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    name = name.trim().trim_matches('.').trim().to_string();
+    if name.is_empty() {
+        return "akane-output".to_string();
+    }
+    if name.chars().count() > 160 {
+        name = name.chars().take(160).collect();
+        name = name.trim().trim_matches('.').trim().to_string();
+    }
+    if name.is_empty() {
+        "akane-output".to_string()
+    } else {
+        name
+    }
+}
+
+fn unique_child_file_path(directory: &Path, file_name: &str) -> PathBuf {
+    let first = directory.join(file_name);
+    if !first.exists() {
+        return first;
+    }
+
+    let path = Path::new(file_name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("akane-output");
+    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+    for index in 2..1000 {
+        let candidate_name = if extension.is_empty() {
+            format!("{stem} ({index})")
+        } else {
+            format!("{stem} ({index}).{extension}")
+        };
+        let candidate = directory.join(candidate_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    directory.join(format!("{}_{}", current_time_millis(), file_name))
 }
 
 fn require_text(value: &str, label: &str) -> Result<(), String> {
@@ -1758,6 +1959,9 @@ fn main() {
             install_character_pack_zip_file,
             install_character_pack_zip_bytes,
             open_character_packs_folder,
+            open_local_file,
+            show_item_in_folder,
+            export_file_to_desktop,
             apply_window_state,
             set_visual_scale,
             set_always_on_top,

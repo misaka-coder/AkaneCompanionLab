@@ -62,6 +62,18 @@ function bindUi() {
     if (button.dataset.action === "copy-id" && item) {
       void copyItemId(item);
     }
+    if (button.dataset.action === "open-file" && item) {
+      void openWorkspaceItem(item);
+    }
+    if (button.dataset.action === "reveal-file" && item) {
+      void revealWorkspaceItem(item);
+    }
+    if (button.dataset.action === "copy-path" && item) {
+      void copyWorkspaceItemPath(item);
+    }
+    if (button.dataset.action === "export-desktop" && item) {
+      void exportWorkspaceItemToDesktop(item);
+    }
     if (button.dataset.action === "play-audio" && item) {
       void playWorkspaceAudio(item);
     }
@@ -411,6 +423,14 @@ function renderItem(item, kind) {
 
   const actions = document.createElement("div");
   actions.className = "item-actions";
+  if (kind !== "task" && item.can_open) {
+    actions.append(
+      buildItemActionButton("open-file", "打开"),
+      buildItemActionButton("reveal-file", "位置"),
+      buildItemActionButton("export-desktop", "存桌面"),
+      buildItemActionButton("copy-path", "复制路径")
+    );
+  }
   if (kind !== "task" && isPlayableAudioItem(item)) {
     const play = document.createElement("button");
     play.type = "button";
@@ -437,6 +457,14 @@ function renderItem(item, kind) {
   body.append(actions);
   article.append(mark, body);
   return article;
+}
+
+function buildItemActionButton(action, label) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.dataset.action = action;
+  button.textContent = label;
+  return button;
 }
 
 function scheduleTaskAutoRefresh(tasks) {
@@ -519,6 +547,97 @@ async function copyItemId(item) {
   } catch (error) {
     setStatus(`复制失败：${formatError(error)}`);
   }
+}
+
+async function openWorkspaceItem(item) {
+  try {
+    const filePath = await resolveWorkspaceItemPath(item);
+    setStatus("正在打开文件");
+    await invoke("open_local_file", { path: filePath });
+    setStatus("已打开文件");
+  } catch (error) {
+    setStatus(`打开失败：${formatError(error)}`);
+    setAlert(`打开失败：${formatError(error)}`, "error");
+  }
+}
+
+async function revealWorkspaceItem(item) {
+  try {
+    const filePath = await resolveWorkspaceItemPath(item);
+    setStatus("正在打开位置");
+    await invoke("show_item_in_folder", { path: filePath });
+    setStatus("已打开所在位置");
+  } catch (error) {
+    setStatus(`打开位置失败：${formatError(error)}`);
+    setAlert(`打开位置失败：${formatError(error)}`, "error");
+  }
+}
+
+async function copyWorkspaceItemPath(item) {
+  try {
+    const filePath = await resolveWorkspaceItemPath(item);
+    await navigator.clipboard.writeText(filePath);
+    setStatus("文件路径已复制");
+  } catch (error) {
+    setStatus(`复制路径失败：${formatError(error)}`);
+    setAlert(`复制路径失败：${formatError(error)}`, "error");
+  }
+}
+
+async function exportWorkspaceItemToDesktop(item) {
+  try {
+    const filePath = await resolveWorkspaceItemPath(item);
+    setStatus("正在保存到桌面");
+    const result = await invoke("export_file_to_desktop", {
+      path: filePath,
+      fileName: buildWorkspaceExportFileName(item)
+    });
+    const exportedPath = String(result?.path || "").trim();
+    setStatus(exportedPath ? "已保存到桌面" : "已保存");
+    if (exportedPath) setAlert(`已保存到桌面：${exportedPath}`, "info");
+  } catch (error) {
+    setStatus(`保存失败：${formatError(error)}`);
+    setAlert(`保存失败：${formatError(error)}`, "error");
+  }
+}
+
+async function resolveWorkspaceItemPath(item) {
+  const handle = String(item?.handle || item?.id || "").trim();
+  if (!handle) throw new Error("没有可定位的编号");
+  const sessionId = String(state?.sessionId || "").trim();
+  if (!sessionId) throw new Error("会话还没准备好");
+
+  const routeType = workspaceRouteType(item);
+  const query = new URLSearchParams({
+    user_id: sessionId,
+    real_user_id: String(state?.profileUserId || PROFILE_USER_ID),
+    t: String(Date.now())
+  });
+  const response = await tauriFetch(
+    `${normalizeBackendUrl(state?.backendUrl || DEFAULT_BACKEND_URL)}/desktop-pet/workspace/${routeType}/${encodeURIComponent(handle)}/location?${query}`,
+    {
+      method: "GET",
+      cache: "no-store",
+      connectTimeout: 5000
+    }
+  );
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.ok || !payload?.path) {
+    throw new Error(extractWorkspaceError(payload) || `HTTP ${response.status}`);
+  }
+  return String(payload.path);
+}
+
+function workspaceRouteType(item) {
+  const type = String(item?.item_type || item?.type || "").trim().toLowerCase();
+  return type === "generated" || type === "output" ? "generated" : "attachments";
+}
+
+function buildWorkspaceExportFileName(item) {
+  const title = String(item?.title || item?.handle || item?.id || "akane-output").trim();
+  const format = String(item?.format || "").trim().replace(/^\.+/, "");
+  if (!format || title.toLowerCase().endsWith(`.${format.toLowerCase()}`)) return title;
+  return `${title}.${format}`;
 }
 
 async function playWorkspaceAudio(item) {
