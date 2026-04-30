@@ -146,6 +146,78 @@ def build_desktop_pet_router(
         )
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
+    @router.post("/desktop-pet/workspace/import-local")
+    async def desktop_pet_workspace_import_local(request: Request):
+        started_at = time.perf_counter()
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            runtime_metrics.observe_request(
+                "desktop_pet_workspace_import_local",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {exc}") from exc
+
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Payload must be an object")
+
+        session_id, profile_user_id = resolve_identity_from_payload(payload)
+        raw_paths = payload.get("paths")
+        if raw_paths is None and payload.get("path") is not None:
+            raw_paths = [payload.get("path")]
+        recursive = str(payload.get("recursive") or "").strip().lower() in {"1", "true", "yes"}
+        max_files = coerce_optional_int(payload.get("max_files") or payload.get("limit")) or 40
+
+        try:
+            result = await asyncio.to_thread(
+                engine.import_desktop_pet_local_paths,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                paths=raw_paths,
+                recursive=recursive,
+                max_files=max_files,
+                timestamp=int(time.time()),
+            )
+            decorate_desktop_workspace_attachment_urls(
+                list(result.get("items") or []),
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+            )
+        except ValueError as exc:
+            runtime_metrics.observe_request(
+                "desktop_pet_workspace_import_local",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            runtime_metrics.observe_request("desktop_pet_workspace_import_local", duration_ms=duration_ms, ok=False)
+            log_event(
+                "desktop_pet_workspace_import_local_error",
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                message=str(exc),
+            )
+            raise HTTPException(status_code=500, detail=f"Workspace import failed: {exc}") from exc
+
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        runtime_metrics.observe_request(
+            "desktop_pet_workspace_import_local",
+            duration_ms=duration_ms,
+            ok=bool(result.get("ok")),
+        )
+        log_event(
+            "desktop_pet_workspace_import_local",
+            session_id=session_id,
+            profile_user_id=profile_user_id,
+            imported=int(result.get("imported") or 0),
+            skipped=int(result.get("skipped_count") or 0),
+            duration_ms=round(duration_ms, 1),
+        )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
     @router.post("/desktop-pet/attachments/audio")
     async def desktop_pet_upload_audio(request: Request):
         started_at = time.perf_counter()
@@ -672,18 +744,48 @@ def decorate_desktop_workspace_urls(
 ) -> None:
     if not isinstance(payload, dict):
         return
+    sections = payload.get("sections") if isinstance(payload.get("sections"), dict) else {}
+    decorate_desktop_workspace_attachment_urls(
+        list(sections.get("files") or []),
+        session_id=session_id,
+        profile_user_id=profile_user_id,
+    )
+    decorate_desktop_workspace_generated_urls(
+        list(sections.get("outputs") or []),
+        session_id=session_id,
+        profile_user_id=profile_user_id,
+    )
+
+
+def decorate_desktop_workspace_attachment_urls(
+    items: list,
+    *,
+    session_id: str,
+    profile_user_id: str,
+) -> None:
     query = (
         f"user_id={quote(str(session_id), safe='')}"
         f"&real_user_id={quote(str(profile_user_id), safe='')}"
     )
-    sections = payload.get("sections") if isinstance(payload.get("sections"), dict) else {}
-    for item in list(sections.get("files") or []):
+    for item in list(items or []):
         if not isinstance(item, dict) or not item.get("can_open"):
             continue
         handle = str(item.get("handle") or item.get("id") or "").strip()
         if handle:
             item["url"] = f"/desktop-pet/workspace/attachments/{quote(handle, safe='')}/content?{query}"
-    for item in list(sections.get("outputs") or []):
+
+
+def decorate_desktop_workspace_generated_urls(
+    items: list,
+    *,
+    session_id: str,
+    profile_user_id: str,
+) -> None:
+    query = (
+        f"user_id={quote(str(session_id), safe='')}"
+        f"&real_user_id={quote(str(profile_user_id), safe='')}"
+    )
+    for item in list(items or []):
         if not isinstance(item, dict) or not item.get("can_open"):
             continue
         handle = str(item.get("handle") or item.get("id") or "").strip()

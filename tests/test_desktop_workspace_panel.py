@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from companion_v01.attachment_ingest import AttachmentIngestService
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.generated_files import GeneratedFileService
@@ -11,12 +12,25 @@ from companion_v01.store import MemoryStore
 from companion_v01.task_workspace import TaskWorkspaceService
 
 
+class _NoopVisionService:
+    def schedule_attachment_image_observation(self, **_kwargs):
+        return None
+
+
 def _make_workspace_engine(root: Path) -> AkaneMemoryEngine:
     engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+    engine.base_dir = root
     engine.store = MemoryStore(root / "store")
     engine.attachment_inbox_service = AttachmentInboxService(
         store=engine.store,
         base_dir=root / "attachments",
+    )
+    engine.vision_service = _NoopVisionService()
+    engine.attachment_ingest_service = AttachmentIngestService(
+        base_dir=root / "attachments",
+        store=engine.store,
+        attachment_service=engine.attachment_inbox_service,
+        vision_service=engine.vision_service,
     )
     engine.generated_file_service = GeneratedFileService(
         base_dir=root / "generated",
@@ -304,6 +318,76 @@ class DesktopWorkspacePanelTests(unittest.TestCase):
                 "removed",
             )
             self.assertEqual(engine.store.get_task_workspace(task["task_id"])["status"], "completed")
+
+    def test_local_path_import_copies_supported_files_into_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            engine = _make_workspace_engine(root)
+            incoming = root / "incoming"
+            incoming.mkdir()
+            source = incoming / "note.md"
+            source.write_text("# note\nhello", encoding="utf-8")
+
+            result = engine.import_desktop_pet_local_paths(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                paths=[str(source)],
+                timestamp=150,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["imported"], 1)
+            card = result["items"][0]
+            self.assertEqual(card["kind"], "document")
+            self.assertEqual(card["format"], "md")
+            self.assertEqual(card["status"], "ready")
+
+            stored = engine.store.get_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                attachment_id=result["attachments"][0]["attachment_id"],
+            )
+            self.assertEqual(stored["source"], "desktop_pet")
+            self.assertEqual(stored["kind"], "document")
+            self.assertNotEqual(Path(stored["storage_relpath"]), source)
+
+            resolved = engine.resolve_desktop_pet_attachment_file(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                target=card["handle"],
+            )
+            self.assertIsNotNone(resolved)
+            self.assertEqual(resolved[1].read_text(encoding="utf-8"), "# note\nhello")
+
+    def test_local_path_import_skips_unsupported_files_and_respects_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            engine = _make_workspace_engine(root)
+            incoming = root / "incoming"
+            incoming.mkdir()
+            (incoming / "a.txt").write_text("a", encoding="utf-8")
+            (incoming / "b.txt").write_text("b", encoding="utf-8")
+            (incoming / "skip.exe").write_bytes(b"nope")
+
+            unsupported = engine.import_desktop_pet_local_paths(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                paths=[str(incoming / "skip.exe")],
+                timestamp=151,
+            )
+            limited = engine.import_desktop_pet_local_paths(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                paths=[str(incoming)],
+                max_files=1,
+                timestamp=152,
+            )
+
+            self.assertFalse(unsupported["ok"])
+            self.assertEqual(unsupported["skipped"][0]["reason"], "unsupported_type")
+            self.assertTrue(limited["ok"])
+            self.assertEqual(limited["imported"], 1)
+            self.assertTrue(any(item["reason"] == "max_files_reached" for item in limited["skipped"]))
 
 
 if __name__ == "__main__":

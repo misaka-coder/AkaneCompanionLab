@@ -840,6 +840,26 @@ class AkaneMemoryEngine:
             timestamp=timestamp,
         )
 
+    def import_desktop_pet_local_paths(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        paths: list[Any] | tuple[Any, ...] | set[Any] | str,
+        recursive: bool = False,
+        max_files: int = 40,
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        return desktop_pet_engine.import_desktop_pet_local_paths(
+            self,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            paths=paths,
+            recursive=recursive,
+            max_files=max_files,
+            timestamp=timestamp,
+        )
+
     def resolve_desktop_pet_audio_attachment(
         self,
         *,

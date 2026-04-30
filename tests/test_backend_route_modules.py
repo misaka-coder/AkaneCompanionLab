@@ -192,6 +192,57 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertIn("/desktop-pet/workspace/generated/gen-1/content", payload["sections"]["outputs"][0]["url"])
         self.assertIn(("desktop_pet_workspace_summary", True), runtime.observed)
 
+    def test_desktop_pet_router_imports_local_paths_with_workspace_urls(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        captured: dict[str, Any] = {}
+
+        def import_local(**kwargs):
+            captured.update(kwargs)
+            return {
+                "ok": True,
+                "source": "desktop_pet",
+                "mode": "explicit_local_paths",
+                "imported": 1,
+                "skipped_count": 0,
+                "items": [{"id": "file_001", "handle": "file_001", "can_open": True}],
+                "attachments": [],
+                "skipped": [],
+            }
+
+        engine = SimpleNamespace(import_desktop_pet_local_paths=import_local)
+        app = FastAPI()
+        app.include_router(
+            build_desktop_pet_router(
+                engine=engine,
+                config_module=SimpleNamespace(DESKTOP_PET_AUDIO_UPLOAD_MAX_BYTES=1024),
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+                resolve_identity_from_query=resolve_query,
+                resolve_identity_from_payload=resolve_payload,
+            )
+        )
+
+        response = TestClient(app).post(
+            "/desktop-pet/workspace/import-local",
+            json={
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "paths": ["C:/tmp/note.md"],
+                "recursive": True,
+                "max_files": 2,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["profile_user_id"], "master")
+        self.assertEqual(captured["session_id"], "desktop")
+        self.assertEqual(captured["paths"], ["C:/tmp/note.md"])
+        self.assertTrue(captured["recursive"])
+        self.assertEqual(captured["max_files"], 2)
+        payload = response.json()
+        self.assertIn("/desktop-pet/workspace/attachments/file_001/content", payload["items"][0]["url"])
+        self.assertIn(("desktop_pet_workspace_import_local", True), runtime.observed)
+
     def test_desktop_pet_router_handles_screen_vision_workspace(self) -> None:
         runtime = FakeRuntimeMetrics()
         stored: list[dict[str, Any]] = []

@@ -1,11 +1,38 @@
 from __future__ import annotations
 
+import mimetypes
 import time
 from pathlib import Path
 from typing import Any
 
+from .attachment_ingest import AUDIO_MEDIA_SUFFIXES, DOCUMENT_SUFFIXES, MEDIA_SUFFIXES, TEXT_SUFFIXES
+
 
 DESKTOP_PET_AUDIO_EXTENSIONS = {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "webm"}
+DESKTOP_PET_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+DESKTOP_PET_ALLOWED_LOCAL_SUFFIXES = (
+    set(TEXT_SUFFIXES)
+    | set(DOCUMENT_SUFFIXES)
+    | set(MEDIA_SUFFIXES)
+    | DESKTOP_PET_IMAGE_SUFFIXES
+    | {".srt", ".vtt", ".lrc"}
+)
+DESKTOP_PET_IGNORED_LOCAL_DIR_NAMES = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    "dist",
+    "build",
+    "target",
+}
+DESKTOP_PET_DEFAULT_LOCAL_IMPORT_LIMIT = 40
+DESKTOP_PET_MAX_LOCAL_IMPORT_LIMIT = 100
+DESKTOP_PET_MAX_LOCAL_SCAN_DIRS = 120
+DESKTOP_PET_MAX_LOCAL_FILE_BYTES = 1024 * 1024 * 1024
 
 
 def ingest_desktop_pet_audio_attachment(
@@ -31,6 +58,205 @@ def ingest_desktop_pet_audio_attachment(
         source="desktop_pet",
         timestamp=timestamp,
     )
+
+
+def import_desktop_pet_local_paths(
+    engine: Any,
+    *,
+    profile_user_id: str,
+    session_id: str,
+    paths: list[Any] | tuple[Any, ...] | set[Any] | str,
+    recursive: bool = False,
+    max_files: int = DESKTOP_PET_DEFAULT_LOCAL_IMPORT_LIMIT,
+    timestamp: int | None = None,
+) -> dict[str, Any]:
+    service = engine._get_attachment_ingest_service()
+    if service is None:
+        raise RuntimeError("attachment ingest service unavailable")
+
+    normalized_limit = max(1, min(DESKTOP_PET_MAX_LOCAL_IMPORT_LIMIT, int(max_files or DESKTOP_PET_DEFAULT_LOCAL_IMPORT_LIMIT)))
+    candidates, skipped = collect_desktop_pet_local_import_files(
+        paths=paths,
+        recursive=recursive,
+        max_files=normalized_limit,
+    )
+    effective_ts = int(timestamp or time.time())
+    imported_items: list[dict[str, Any]] = []
+    imported_cards: list[dict[str, Any]] = []
+
+    for path in candidates:
+        try:
+            kind = infer_desktop_pet_local_import_kind(path)
+            item = service.ingest_local_file(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                source_path=path,
+                origin_name=path.name,
+                mime_type=mimetypes.guess_type(path.name)[0] or "",
+                kind=kind,
+                source="desktop_pet",
+                timestamp=effective_ts,
+            )
+        except Exception as exc:
+            skipped.append(
+                {
+                    "path": str(path),
+                    "reason": "import_failed",
+                    "message": str(exc)[:240],
+                }
+            )
+            continue
+        imported_items.append(item)
+        imported_cards.append(desktop_workspace_attachment_card(item))
+
+    return {
+        "ok": bool(imported_cards),
+        "source": "desktop_pet",
+        "mode": "explicit_local_paths",
+        "recursive": bool(recursive),
+        "imported": len(imported_cards),
+        "skipped_count": len(skipped),
+        "items": imported_cards,
+        "attachments": imported_items,
+        "skipped": skipped[:80],
+        "updated_at": effective_ts,
+    }
+
+
+def collect_desktop_pet_local_import_files(
+    *,
+    paths: list[Any] | tuple[Any, ...] | set[Any] | str,
+    recursive: bool,
+    max_files: int,
+) -> tuple[list[Path], list[dict[str, str]]]:
+    raw_paths = [paths] if isinstance(paths, str) else list(paths or [])
+    if not raw_paths:
+        raise ValueError("paths must contain at least one local file or directory path")
+
+    limit = max(1, min(DESKTOP_PET_MAX_LOCAL_IMPORT_LIMIT, int(max_files or DESKTOP_PET_DEFAULT_LOCAL_IMPORT_LIMIT)))
+    candidates: list[Path] = []
+    skipped: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for index, raw_path in enumerate(raw_paths):
+        text = str(raw_path or "").strip().strip('"')
+        if not text:
+            skipped.append({"path": "", "reason": "empty_path"})
+            continue
+        try:
+            path = Path(text).expanduser().resolve()
+        except Exception as exc:
+            skipped.append({"path": text, "reason": "invalid_path", "message": str(exc)[:160]})
+            continue
+
+        if path.is_file():
+            add_desktop_pet_local_candidate(path, candidates=candidates, skipped=skipped, seen=seen, limit=limit)
+        elif path.is_dir():
+            for child in iter_desktop_pet_import_directory(path, recursive=recursive, skipped=skipped):
+                if len(candidates) >= limit:
+                    skipped.append({"path": str(path), "reason": "max_files_reached"})
+                    break
+                add_desktop_pet_local_candidate(child, candidates=candidates, skipped=skipped, seen=seen, limit=limit)
+        else:
+            skipped.append({"path": str(path), "reason": "not_found"})
+
+        if len(candidates) >= limit:
+            remaining = raw_paths[index + 1 :]
+            if remaining:
+                skipped.append({"path": "", "reason": "max_files_reached"})
+            break
+
+    return candidates, skipped
+
+
+def iter_desktop_pet_import_directory(
+    root: Path,
+    *,
+    recursive: bool,
+    skipped: list[dict[str, str]],
+) -> list[Path]:
+    files: list[Path] = []
+    directories_seen = 0
+    pending = [root]
+
+    while pending:
+        directory = pending.pop(0)
+        directories_seen += 1
+        if directories_seen > DESKTOP_PET_MAX_LOCAL_SCAN_DIRS:
+            skipped.append({"path": str(root), "reason": "directory_scan_limit"})
+            break
+        try:
+            entries = sorted(directory.iterdir(), key=lambda item: item.name.lower())
+        except Exception as exc:
+            skipped.append({"path": str(directory), "reason": "directory_unreadable", "message": str(exc)[:160]})
+            continue
+        for entry in entries:
+            if is_desktop_pet_ignored_path(entry):
+                continue
+            if entry.is_file():
+                files.append(entry.resolve())
+            elif recursive and entry.is_dir():
+                pending.append(entry)
+
+    return files
+
+
+def add_desktop_pet_local_candidate(
+    path: Path,
+    *,
+    candidates: list[Path],
+    skipped: list[dict[str, str]],
+    seen: set[str],
+    limit: int,
+) -> None:
+    if len(candidates) >= limit:
+        skipped.append({"path": str(path), "reason": "max_files_reached"})
+        return
+    if is_desktop_pet_ignored_path(path):
+        skipped.append({"path": str(path), "reason": "ignored_path"})
+        return
+    suffix = path.suffix.lower()
+    if suffix not in DESKTOP_PET_ALLOWED_LOCAL_SUFFIXES:
+        skipped.append({"path": str(path), "reason": "unsupported_type"})
+        return
+    try:
+        size = path.stat().st_size
+    except Exception as exc:
+        skipped.append({"path": str(path), "reason": "stat_failed", "message": str(exc)[:160]})
+        return
+    if size <= 0:
+        skipped.append({"path": str(path), "reason": "empty_file"})
+        return
+    if size > DESKTOP_PET_MAX_LOCAL_FILE_BYTES:
+        skipped.append({"path": str(path), "reason": "file_too_large"})
+        return
+    key = str(path).casefold()
+    if key in seen:
+        return
+    seen.add(key)
+    candidates.append(path)
+
+
+def is_desktop_pet_ignored_path(path: Path) -> bool:
+    for part in path.parts:
+        name = str(part).strip()
+        if name in DESKTOP_PET_IGNORED_LOCAL_DIR_NAMES:
+            return True
+        if name.startswith(".") and name not in {".", ".."}:
+            return True
+    return False
+
+
+def infer_desktop_pet_local_import_kind(path: Path) -> str:
+    suffix = path.suffix.lower()
+    mime_type = str(mimetypes.guess_type(path.name)[0] or "").lower()
+    if suffix in DESKTOP_PET_IMAGE_SUFFIXES or mime_type.startswith("image/"):
+        return "image"
+    if suffix in AUDIO_MEDIA_SUFFIXES or mime_type.startswith("audio/"):
+        return "audio"
+    if suffix in TEXT_SUFFIXES or suffix in DOCUMENT_SUFFIXES or mime_type.startswith("text/"):
+        return "document"
+    return "file"
 
 
 def resolve_desktop_pet_audio_attachment(
