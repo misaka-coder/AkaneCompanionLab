@@ -28,6 +28,46 @@ The kit currently includes two samples:
 - `akane_sample`
 - `mika_sample`
 
+## Create A New Pack
+
+From the Creator Kit folder:
+
+```powershell
+cd desktop_pet_creator_kit
+npm run create
+```
+
+For a scripted setup, pass the core fields directly:
+
+```powershell
+npm run create -- --id my_character --name Mika --user-title 主人
+```
+
+Chinese outfit and emotion names are fine:
+
+```powershell
+npm run create -- --id my_character --name Mika --outfit 猫娘 --emotion 正常
+```
+
+This creates:
+
+```text
+characters/my_character/
+  character.json
+  character.toml
+  persona.md
+  assets/
+    characters/
+      default/
+        README.md
+```
+
+Then put the default portrait image here:
+
+```text
+characters/my_character/assets/characters/default/normal.png
+```
+
 ## Check The Character Pack
 
 From the Creator Kit folder:
@@ -72,18 +112,13 @@ newly installed packs after restart or rebuild.
 For paid handoff work, see `docs/paid_delivery_checklist.md`.
 For install testing, see `docs/install_and_test.md`.
 
-## Create A Second Pack
+## Edit A Pack
 
-Copy the template folder:
-
-```powershell
-Copy-Item -Recurse templates/character_pack characters/my_character
-```
-
-Then edit:
+After creation, edit:
 
 ```text
 characters/my_character/character.json
+characters/my_character/character.toml
 characters/my_character/persona.md
 ```
 

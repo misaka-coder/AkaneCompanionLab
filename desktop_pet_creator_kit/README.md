@@ -17,6 +17,28 @@ current prototype without forking the whole Tauri app.
 - `scripts/`
   - Local validation tools for creator-facing character packs.
 
+## Create A Pack
+
+From this folder:
+
+```powershell
+npm run create
+```
+
+That walks through a few prompts and writes a new folder under `characters/`.
+For repeatable setup work, pass the key fields directly:
+
+```powershell
+npm run create -- --id my_character --name Mika --user-title 主人
+```
+
+The command generates `character.json`, `character.toml`, `persona.md`, and the
+standard image folders. After that, put the default portrait at:
+
+```text
+characters/my_character/assets/characters/default/normal.png
+```
+
 ## Check A Pack
 
 From this folder:
@@ -77,6 +99,7 @@ The first Creator Kit slice is intentionally small:
 - character identity
 - user title
 - default outfit and emotion
+- a character-pack creator command
 - local click lines
 - basic asset contract notes
 - external character images under `assets/characters/<outfit>/<emotion>.png`

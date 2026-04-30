@@ -15,6 +15,23 @@ desktop_pet_creator_kit/characters/<pack_id>/
 The settings window discovers those folders at build/dev time and lets you
 select the active pack.
 
+## Create Command
+
+The recommended starting point is the creator command:
+
+```powershell
+cd desktop_pet_creator_kit
+npm run create -- --id my_character --name Mika --user-title 主人
+```
+
+It writes the required metadata files, creates the standard asset directories,
+and runs the validator once. If no images have been added yet, validation will
+finish with a warning that the app will use bundled fallback art.
+
+The pack id should be a stable folder id such as `my_character`. Outfit and
+emotion names can be creator-facing names such as `猫娘` or `正常`, because those
+map directly to image folders and file names.
+
 ## Required Files
 
 ```text

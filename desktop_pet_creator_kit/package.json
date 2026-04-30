@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Creator-facing character pack tools for Akane desktop pet.",
   "scripts": {
+    "create": "node ./scripts/create-character-pack.mjs",
     "check": "node ./scripts/validate-character-pack.mjs",
     "check:sample": "node ./scripts/validate-character-pack.mjs ./characters/akane_sample",
     "export": "node ./scripts/export-character-pack.mjs",
