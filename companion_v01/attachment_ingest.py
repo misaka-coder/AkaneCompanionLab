@@ -378,8 +378,8 @@ class AttachmentIngestService:
             "status": "retry_started",
             "item": retry_item,
             "followup_context": (
-                f"你刚刚已经开始重新处理临时附件 {retry_item.get('attachment_handle') or ''}。"
-                "请自然告诉用户你在重新试一次；结果会在处理完成后进入临时附件焦点。"
+                f"你刚刚已经开始重新处理工作台材料 {retry_item.get('attachment_handle') or ''}。"
+                "请自然告诉用户你在重新试一次；结果会在处理完成后进入当前材料工作台。"
                 "不要立刻断言已经成功，也不要重复调用 retry_attachment。"
             ),
         }
@@ -914,7 +914,7 @@ class AttachmentIngestService:
                 if str(item.get("attachment_handle") or item.get("summary_title") or item.get("origin_name") or "").strip()
             )
             return (
-                f"你刚刚已经把链接里的媒体素材放进临时附件工作台了：{labels or '已下载媒体'}。"
+                f"你刚刚已经把链接里的媒体素材放进当前材料工作台了：{labels or '已下载媒体'}。"
                 "请基于这个既成事实自然回应，不要重复调用 fetch_media_from_url。"
                 "如果用户想继续处理内容，可以直接使用 inspect_attachment、inspect_media_info、transcribe_media、convert_media_file 或 send_file。"
             )

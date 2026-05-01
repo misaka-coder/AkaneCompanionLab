@@ -2004,6 +2004,46 @@ class GeneratedFileTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["desktop_delivery"]["action"], "save_desktop")
         self.assertEqual(result.stream_events[0]["desktop_delivery"]["handle"], "gen_001")
 
+    def test_send_file_tool_handler_ignores_desktop_delivery_action_for_qq(self) -> None:
+        class FakeGeneratedService:
+            def send_file(self, **kwargs):
+                return {
+                    "ok": True,
+                    "files": [
+                        {
+                            "source_type": "generated",
+                            "source_id": "generated::1",
+                            "generated_id": "generated::1",
+                            "handle": "gen_001",
+                            "absolute_path": "C:/tmp/out.txt",
+                            "name": "out.txt",
+                        }
+                    ],
+                    "followup_context": "send_file ok",
+                }
+
+        handler = SendFileToolHandler(generated_file_service=FakeGeneratedService())
+        call = handler.normalize_call(
+            {
+                "type": "send_file",
+                "target": "gen_001",
+                "delivery_action": "save_desktop",
+            }
+        )
+        context = ToolExecutionContext(
+            profile_user_id="user",
+            session_id="session",
+            now_ts=130,
+            visual_payload={},
+            client_mode="qq_text",
+        )
+
+        result = handler.execute(call=call or {}, context=context)
+
+        self.assertEqual(result.stream_events[0]["client_mode"], "qq_text")
+        self.assertNotIn("delivery_action", result.stream_events[0])
+        self.assertNotIn("desktop_delivery", result.stream_events[0])
+
     def test_inspect_generated_file_reads_text_content(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

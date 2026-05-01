@@ -260,7 +260,7 @@ class CapabilityRegistry:
                 layer="qq_delivery",
                 modes=(ClientMode.QQ_TEXT,),
                 tools=FILE_HANDOFF_TOOL_NAMES,
-                light_hint="在 QQ 里，你可以把已有临时附件或生成文件发回给用户；只发送已有文件，不替代生成、转码或修改。",
+                light_hint="在 QQ 里，你可以把已有工作台材料或生成文件发回给用户；只发送已有文件，不替代生成、转码或修改。",
                 trigger=_has_deliverable_file,
             ),
             CapabilityModule(
@@ -268,7 +268,7 @@ class CapabilityRegistry:
                 layer="desktop_workspace",
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=FILE_HANDOFF_TOOL_NAMES,
-                light_hint="在桌宠里，你可以把已有临时附件或生成文件交给桌宠工作台打开、播放或继续处理；只交付已有文件，不替代生成、转码或修改。",
+                light_hint="在桌宠里，你可以把已有工作台材料或生成文件交给桌宠工作台打开、播放或继续处理；只交付已有文件，不替代生成、转码或修改。",
                 trigger=_has_deliverable_file,
             ),
             CapabilityModule(

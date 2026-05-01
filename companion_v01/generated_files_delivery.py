@@ -1343,7 +1343,7 @@ def resolve_attachment_style_source(
         str(attachment.get("summary_title") or "").strip()
         or str(attachment.get("origin_name") or "").strip()
         or str(attachment.get("attachment_handle") or "").strip()
-        or "临时附件"
+        or "工作台材料"
     )
     output_format = ""
     if isinstance(source_path, Path):
@@ -1370,7 +1370,7 @@ def sendable_file_label(service: Any, file_ref: dict[str, Any]) -> str:
     handle = str(file_ref.get("handle") or "").strip()
     title = str(file_ref.get("title") or file_ref.get("name") or "").strip()
     ext = str(file_ref.get("file_ext") or "").strip()
-    type_label = "生成文件" if source_type == "generated" else "临时附件" if source_type == "attachment" else "文件"
+    type_label = "生成文件" if source_type == "generated" else "工作台材料" if source_type == "attachment" else "文件"
     label = f"{type_label} {handle}" if handle else type_label
     if title:
         label += f"《{title}》"

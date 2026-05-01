@@ -685,6 +685,21 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("qq_delivery", qq_selection.layer_names)
         self.assertIn("send_sticker", qq_selection.tool_names)
 
+        scene_selection_with_files = registry.select(
+            CapabilitySnapshot(
+                client_mode=ClientMode.SCENE_STATIC,
+                has_any_attachment=True,
+                has_media_attachment=True,
+                has_generated_file=True,
+                has_media_generated_file=True,
+            )
+        )
+        self.assertIn("web_scene", scene_selection_with_files.layer_names)
+        self.assertNotIn("qq_delivery", scene_selection_with_files.layer_names)
+        self.assertNotIn("desktop_workspace", scene_selection_with_files.layer_names)
+        self.assertNotIn("send_file", scene_selection_with_files.tool_names)
+        self.assertNotIn("convert_media_file", scene_selection_with_files.tool_names)
+
     def test_desktop_tool_prompt_uses_desktop_layers_without_qq_or_web_tools(self) -> None:
         class StubTool:
             def __init__(self, name: str) -> None:

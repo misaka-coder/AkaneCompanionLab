@@ -549,7 +549,7 @@ class TaskWorkerService:
         generated_context = self.generated_context_builder(profile_user_id, session_id)
         for title, value in [
             ("任务工作区", task_context),
-            ("临时附件/素材", attachment_context),
+            ("工作台材料/素材", attachment_context),
             ("生成文件区", generated_context),
         ]:
             clean_value = str(value or "").strip()

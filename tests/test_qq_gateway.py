@@ -478,6 +478,47 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["file"], "C:/tmp/video.mp4")
         self.assertEqual(payload["name"], "video.mp4")
 
+    def test_send_generated_files_ignores_desktop_client_file_events(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 1906243651,
+                "message_id": "file-ready-desktop-1",
+                "raw_message": "发我文件",
+            }
+        )
+
+        with patch("companion_v01.qq_gateway.requests.post") as mocked_post:
+            result = gateway.send_generated_files(
+                context,
+                [
+                    {
+                        "type": "file_ready",
+                        "client_mode": "desktop_pet",
+                        "send_to_user": True,
+                        "delivery_action": "save_desktop",
+                        "desktop_delivery": {
+                            "action": "save_desktop",
+                            "path": "C:/tmp/video.mp4",
+                            "name": "video.mp4",
+                        },
+                        "file": {
+                            "source_type": "attachment",
+                            "source_id": "attachment::1",
+                            "absolute_path": "C:/tmp/video.mp4",
+                            "name": "video.mp4",
+                        },
+                    }
+                ],
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["count"], 0)
+        mocked_post.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

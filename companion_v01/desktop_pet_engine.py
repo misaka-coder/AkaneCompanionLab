@@ -554,7 +554,7 @@ def clear_desktop_workspace_files(
             session_id=session_id,
             action="archive",
             targets=["all"],
-            reason="用户从桌宠手边物品面板一键清理文件筐。",
+            reason="用户从桌宠手边物品面板一键清理工作台文件。",
             timestamp=timestamp,
         )
         managed.extend(

@@ -432,6 +432,8 @@ class NapCatQQGateway:
         events = [event for event in tool_events or [] if isinstance(event, dict)]
         targets: list[dict[str, Any]] = []
         for event in events:
+            if not self._event_allows_qq_file_delivery(event):
+                continue
             event_type = str(event.get("type") or "")
             if event_type not in {"generated_file_ready", "file_ready"}:
                 continue
@@ -494,6 +496,10 @@ class NapCatQQGateway:
             "count": len(results),
             "results": results,
         }
+
+    def _event_allows_qq_file_delivery(self, event: dict[str, Any]) -> bool:
+        event_mode = str(event.get("client_mode") or "").strip().lower()
+        return not event_mode or event_mode == "qq_text"
 
     def message_requests_file_delivery(self, text: str) -> bool:
         clean_text = re.sub(r"\s+", " ", str(text or "")).strip()

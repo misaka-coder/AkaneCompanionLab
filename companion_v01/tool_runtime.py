@@ -630,10 +630,10 @@ class InspectAttachmentToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- inspect_attachment：当你需要展开查看当前聊天里临时发来的图片或文件时使用。"
+            "- inspect_attachment：当你需要展开查看当前材料工作台里的图片或文件时使用。"
             "格式为 {\"type\":\"inspect_attachment\",\"target\":\"可选：附件id/标题/文件名/最近\",\"kind\":\"any|image|file|document|audio\"}。"
-            "附件只是临时上下文，不是礼物；单独查看某个附件时使用。"
-            "如果要同时对比多份附件，优先使用 sync_attachment_workspace。"
+            "工作台材料只是临时上下文，不是礼物、角色资源或长期记忆；单独查看某个材料时使用。"
+            "如果要同时对比多份材料，优先使用 sync_attachment_workspace。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -691,7 +691,7 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- read_attachment_section：当临时文件较长、你需要展开某一页/某几行/某个表/某个 sheet 的内容时使用。"
+            "- read_attachment_section：当工作台材料较长、你需要展开某一页/某几行/某个表/某个 sheet 的内容时使用。"
             "格式为 {\"type\":\"read_attachment_section\",\"target\":\"file_001|标题|文件名|latest\","
             "\"section\":\"第2页|第10-30行|第1个表|Sheet1\",\"kind\":\"any|file|document\"}。"
             "它只展开当前已解析出的可用文本片段；如果文件本身没有文本层或还没解析好，系统会告诉你。"
@@ -752,12 +752,12 @@ class SyncAttachmentWorkspaceToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- sync_attachment_workspace：当你需要整理当前附件工作台时使用。新发来的图片/文件通常会自动进入工作台；"
-            "这个工具主要用于收起暂时不分析的附件、重新指定重点材料，或切换要对比的对象。"
-            "格式为 {\"type\":\"sync_attachment_workspace\",\"focus_targets\":[\"img_001\",\"第2张图\",\"菜单照片\"],\"kind\":\"any|image|file|document|audio\",\"reason\":\"为什么需要这些附件\"}。"
+            "- sync_attachment_workspace：当你需要整理当前材料工作台时使用。新发来的图片/文件通常会自动进入工作台；"
+            "这个工具主要用于收起暂时不分析的材料、重新指定重点材料，或切换要对比的对象。"
+            "格式为 {\"type\":\"sync_attachment_workspace\",\"focus_targets\":[\"img_001\",\"第2张图\",\"菜单照片\"],\"kind\":\"any|image|file|document|audio\",\"reason\":\"为什么需要这些材料\"}。"
             "focus_targets 是整理后的最终工作台清单；可以一次保留多张图片或多个文件进行对比。"
-            "未列入的其它附件会留在旁边文件筐，只给识别信息。"
-            "系统会按上下文预算尽量展开你选中的附件；如果某些大文件放不下，会提示你用 read_attachment_section 指定页、行或 sheet。"
+            "未列入的其它材料会留在旁边材料清单，只给识别信息。"
+            "系统会按上下文预算尽量展开你选中的材料；如果某些大文件放不下，会提示你用 read_attachment_section 指定页、行或 sheet。"
             "不要用一连串打开/关闭操作；一次性提交整理后的最终清单即可。"
         )
 
@@ -838,10 +838,10 @@ class ClearAttachmentFocusToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- clear_attachment_focus：当临时图片/文件已经聊完、用户说发错了、或你判断不需要继续挂在上下文时使用。"
+            "- clear_attachment_focus：当工作台图片/文件已经聊完、用户说发错了、或你判断不需要继续挂在上下文时使用。"
             "格式为 {\"type\":\"clear_attachment_focus\",\"target\":\"current|latest|all|附件id/标题/文件名\",\"targets\":[\"img_001\",\"第2张图\"],\"kind\":\"any|image|file|document|audio\",\"reason\":\"可选原因\"}。"
-            "清理多个指定附件时用 targets 数组；清理全部图片或文件时用 target=all 并配合 kind。"
-            "它只清理临时附件焦点，不删除聊天记忆，也不处理礼物系统。"
+            "清理多个指定材料时用 targets 数组；清理全部图片或文件时用 target=all 并配合 kind。"
+            "它只清理当前材料工作台，不删除聊天记忆，也不处理礼物系统。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -922,9 +922,9 @@ class RetryAttachmentToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- retry_attachment：当临时图片/文件处理失败，且用户让你再试一次，或你需要重新读取失败附件时使用。"
+            "- retry_attachment：当工作台图片/文件处理失败，且用户让你再试一次，或你需要重新读取失败材料时使用。"
             "格式为 {\"type\":\"retry_attachment\",\"target\":\"latest|附件id|img_001|标题|文件名\",\"kind\":\"any|image|file|document|audio\",\"reason\":\"可选原因\"}。"
-            "这个工具只会重新处理临时附件，不会把它变成礼物或长期记忆；成功后附件会回到临时附件焦点。"
+            "这个工具只会重新处理工作台材料，不会把它变成礼物、角色资源或长期记忆；成功后材料会回到当前材料工作台。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -990,8 +990,8 @@ class FetchMediaFromUrlToolHandler(BaseToolHandler):
             "在 QQ/桌宠模式里，如果用户只发来一个公开视频或音频链接，或说“下载/拉进来/转写/总结这个链接”，"
             "应优先调用这个工具实际获取素材；不要只凭猜测说链接打不开、需要登录或平台不稳定。"
             "如果用户说“再试一次/重新下载/继续试”，且最近对话里有明确链接，也应带上那个链接重新调用。"
-            "它只负责把公开可访问的媒体链接下载成临时附件，不会直接总结、转写或转码；"
-            "下载成功后，这些素材会像普通 audio_001/file_001 一样进入临时附件工作台，之后再继续用 inspect_attachment、inspect_media_info、transcribe_media、convert_media_file 或 send_file。"
+            "它只负责把公开可访问的媒体链接下载成工作台材料，不会直接总结、转写或转码；"
+            "下载成功后，这些素材会像普通 audio_001/file_001 一样进入当前材料工作台，之后再继续用 inspect_attachment、inspect_media_info、transcribe_media、convert_media_file 或 send_file。"
             "如果用户只是要原视频/原音频或“把链接里的文件发我”，下载成功后直接 send_file 对应 handle，不要顺手转写、提音频或压缩。"
             "不要用它处理需要登录、付费、会员、DRM 或整条播放列表/合集的链接。"
         )
@@ -1068,7 +1068,7 @@ class ComposeFileToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- compose_file：当用户要你把临时附件、已生成文件或当前对话内容整理成一个新文件时使用。"
+            "- compose_file：当用户要你把工作台材料、已生成文件或当前对话内容整理成一个新文件时使用。"
             "如果用户明确要求生成/导出文件，或在已有任务后说“开始/继续/直接做”，不要只口头答应，"
             "应立刻在 tool_call 调用 compose_file。"
             "格式为 {\"type\":\"compose_file\",\"source_ids\":[\"file_001\",\"gen_001\"],"
@@ -2226,7 +2226,7 @@ class SendFileToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- send_file：当用户要你发送已有文件时使用，可发送临时附件 file_001/img_001/audio_001，"
+            "- send_file：当用户要你发送已有文件时使用，可发送工作台材料 file_001/img_001/audio_001，"
             "也可发送生成物 gen_001/gen_002。"
             "格式为 {\"type\":\"send_file\",\"targets\":[\"file_001\",\"gen_001\"]}，单个文件也可以用 target。"
             "适合“把刚才那个视频发我”“把原视频和转写稿都发我”“再发一次 gen_002”。"
@@ -2271,6 +2271,7 @@ class SendFileToolHandler(BaseToolHandler):
         events = []
         files = result.get("files") if isinstance(result, dict) else None
         delivery_action = self._normalize_delivery_action(call.get("delivery_action"))
+        allow_desktop_delivery = str(context.client_mode or "").strip() == "desktop_pet"
         if bool(result.get("ok")) and isinstance(files, list):
             for file_ref in files:
                 if not isinstance(file_ref, dict):
@@ -2281,7 +2282,7 @@ class SendFileToolHandler(BaseToolHandler):
                     "send_to_user": True,
                     "client_mode": context.client_mode,
                 }
-                if delivery_action:
+                if delivery_action and allow_desktop_delivery:
                     event["delivery_action"] = delivery_action
                     event["desktop_delivery"] = {
                         "action": delivery_action,
@@ -2334,6 +2335,7 @@ class SendGeneratedFileToolHandler(SendFileToolHandler):
         events = []
         generated_files = result.get("generated_files") if isinstance(result, dict) else None
         delivery_action = self._normalize_delivery_action(call.get("delivery_action"))
+        allow_desktop_delivery = str(context.client_mode or "").strip() == "desktop_pet"
         if bool(result.get("ok")) and isinstance(generated_files, list):
             for generated in generated_files:
                 if not isinstance(generated, dict):
@@ -2344,7 +2346,7 @@ class SendGeneratedFileToolHandler(SendFileToolHandler):
                     "send_to_user": True,
                     "client_mode": context.client_mode,
                 }
-                if delivery_action:
+                if delivery_action and allow_desktop_delivery:
                     event["delivery_action"] = delivery_action
                     event["desktop_delivery"] = {
                         "action": delivery_action,
@@ -2536,7 +2538,7 @@ class ManageGeneratedFileToolHandler(BaseToolHandler):
             "格式为 {\"type\":\"manage_generated_file\",\"action\":\"archive|delete|purge\","
             "\"targets\":[\"gen_001\",\"gen_002\"],\"reason\":\"清理原因\"}。"
             "archive 只从生成文件工作台隐藏；delete 会同时删除本地生成文件；purge 会删除本地文件并清空生成物内容卡片。"
-            "不要用它清理用户发来的 file_001/img_001，临时附件应使用 clear_attachment_focus。"
+            "不要用它清理用户发来的 file_001/img_001，工作台材料应使用 clear_attachment_focus。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:

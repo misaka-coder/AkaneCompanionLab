@@ -126,8 +126,8 @@ class ResourceVisibilityContractTests(unittest.TestCase):
                 session_id="session",
             )
 
-            self.assertIn("【临时附件焦点】", prompt)
-            self.assertIn("当前工作台 Focus", prompt)
+            self.assertIn("【当前材料工作台】", prompt)
+            self.assertIn("当前重点材料 Focus", prompt)
             self.assertIn("img_001", prompt)
             self.assertIn("视觉描述：", prompt)
             self.assertIn("木桌上摆着菜单、马克杯和黄油吐司", prompt)
@@ -342,7 +342,7 @@ class ResourceVisibilityContractTests(unittest.TestCase):
                 task_service=task_service,
             )
 
-            self.assertIn("【临时附件焦点】", combined)
+            self.assertIn("【当前材料工作台】", combined)
             self.assertIn("【生成文件工作台】", combined)
             self.assertIn("【当前任务工作区】", combined)
             self.assertIn("file_001", combined)
@@ -489,7 +489,7 @@ class ResourceVisibilityContractTests(unittest.TestCase):
             self.assertIn("gen_001(md / 长文本整理)", task_prompt)
             self.assertIn("gen_002(md / 长文本整理_摘要版)", task_prompt)
             self.assertIn("tool_artifacts_recorded", task_prompt)
-            self.assertIn("【临时附件焦点】", combined)
+            self.assertIn("【当前材料工作台】", combined)
             self.assertIn("【生成文件工作台】", combined)
             self.assertIn("【当前任务工作区】", combined)
 
