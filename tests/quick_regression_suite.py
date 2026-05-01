@@ -6,6 +6,9 @@ import unittest
 # 运行：python -m tests.quick_regression_suite
 
 QUICK_TESTS = [
+    # === Repository hygiene ===
+    "tests.test_repository_hygiene",
+
     # === Full module 回归（已有，保留） ===
     # 资源可见性契约：材料工作台提示词、来源标签、生成文件工作台、任务工作区
     "tests.test_resource_visibility_contract",
