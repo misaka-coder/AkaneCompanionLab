@@ -88,6 +88,9 @@ MEDIA_PRESET_ROUTING = [
     "- 人声伴奏分离 → separate_audio_stems",
     "- 训练素材切片打包 → prepare_voice_dataset",
     "- 只要原文件不处理 → send_file，不要转写/转码/净化",
+    "",
+    "涉及大小、码率、分辨率、时长、格式兼容等具体约束时，先 inspect_media_info 查当前规格，再决定 convert_media_file 参数。",
+    "人声处理组合：需要人声/伴奏分离时先 separate_audio_stems；需要更干净人声时，再对 vocals 结果调用 clean_voice_track。",
 ]
 
 

@@ -1109,6 +1109,8 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("训练素材切片打包", prompt)
             self.assertIn("prepare_voice_dataset", prompt)
             self.assertIn("只要原文件不处理", prompt)
+            self.assertIn("先 inspect_media_info 查当前规格", prompt)
+            self.assertIn("人声处理组合", prompt)
             self.assertIn("send_file", prompt)
 
             desktop_prompt = self.engine._build_tool_prompt_context(
