@@ -680,6 +680,7 @@ async function clearWorkspaceItem(item) {
 
 async function clearWorkspaceFiles() {
   if (loading) return;
+  if (!confirm("确认清理所有手边物品？文件和生成物会被移除，但不影响聊天记录。")) return;
   setStatus("正在清理文件");
   try {
     const result = await postWorkspaceAction({ action: "clear_files" });

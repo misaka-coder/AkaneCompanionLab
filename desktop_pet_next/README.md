@@ -2,6 +2,24 @@
 
 This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It does not replace or import the stable Electron implementation in `desktop_pet/`.
 
+## Quick Start
+
+```powershell
+# 1. From the repository root, start the Python backend (separate terminal)
+python launch_akane_memory_v01.py
+
+# 2. Enter the Next prototype and install Node dependencies
+cd desktop_pet_next
+npm install
+
+# 3. Launch the desktop pet (dev mode with hot reload)
+npm run tauri -- dev
+```
+
+Default backend URL: `http://127.0.0.1:9999`. Change it from the right-click menu or settings window.
+
+For release builds or packaging smoke tests, see the [Commands](#commands) and [Daily Smoke Test](#daily-smoke-test) sections below.
+
 ## Scope
 
 - Transparent, frameless, always-on-top Tauri window using the Electron pet's 340x560 base size.
@@ -109,10 +127,14 @@ npm run tauri -- dev
 
 `npm run tauri -- dev` also injects `%USERPROFILE%\.cargo\bin` into the process PATH, so it still works from an older VS Code terminal that has not refreshed the Rust PATH yet.
 
-The default backend URL is `http://127.0.0.1:9999`. Start the existing backend separately before testing replies:
+The default backend URL is `http://127.0.0.1:9999`. Start the existing backend before testing replies:
 
 ```powershell
+# From the repository root:
 python launch_akane_memory_v01.py
+
+# Or, if this terminal is already in desktop_pet_next:
+python ..\launch_akane_memory_v01.py
 ```
 
 You can change the backend URL from the right-click/debug menu.
@@ -148,7 +170,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-next.ps1 -Bu
 Use this quick pass after changing the Next prototype:
 
 ```powershell
-cd F:\Akane\AkaneCompanionLab\desktop_pet_next
+cd desktop_pet_next
 npm run build
 npm run doctor
 cargo check --manifest-path src-tauri\Cargo.toml
