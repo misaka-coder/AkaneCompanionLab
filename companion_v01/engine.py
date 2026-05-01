@@ -74,6 +74,22 @@ from .vision_observation_router import VisionObservationRouter
 
 logger = logging.getLogger("akane.engine")
 
+MEDIA_PRESET_ROUTING = [
+    "【媒体任务预设路由】",
+    "- 生成字幕 → transcribe_media output_format=srt/vtt",
+    "- 转写文字稿/会议纪要前置 → transcribe_media output_format=md/txt",
+    "- 提取视频音频 → convert_media_file output_format=mp3/wav",
+    "- 压缩音频/减小体积 → convert_media_file bitrate（如 128k/192k）",
+    "- 截取片段 → convert_media_file start_time/end_time",
+    "- 声音忽大忽小 → convert_media_file normalize_volume=true",
+    "- 声音太小 → convert_media_file volume_gain_db 正数",
+    "- 声音太大 → convert_media_file volume_gain_db 负数",
+    "- 人声降噪/去混响 → clean_voice_track",
+    "- 人声伴奏分离 → separate_audio_stems",
+    "- 训练素材切片打包 → prepare_voice_dataset",
+    "- 只要原文件不处理 → send_file，不要转写/转码/净化",
+]
+
 
 class AkaneMemoryEngine:
     def __init__(
@@ -2767,19 +2783,24 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
         )
+        media_routing: list[str] = []
+        if "media_workbench" in selection.module_names:
+            media_routing = [*MEDIA_PRESET_ROUTING, ""]
+
         if not handlers:
             hints = [hint for hint in selection.light_hints if hint]
-            if not hints:
+            if not hints and not media_routing:
                 return "当前没有可用工具，tool_call 固定为 null。"
-            return "\n".join(
-                [
-                    "【可用能力概览】",
-                    *[f"- {hint}" for hint in hints],
-                    "当前没有需要展开的具体工具，tool_call 固定为 null。",
-                ]
-            )
+            parts: list[str] = []
+            if hints:
+                parts.append("【可用能力概览】")
+                parts.extend(f"- {hint}" for hint in hints)
+                parts.append("")
+            parts.extend(media_routing)
+            parts.append("当前没有需要展开的具体工具，tool_call 固定为 null。")
+            return "\n".join(parts)
 
-        lines = []
+        lines: list[str] = []
         if selection.light_hints:
             lines.append("【可用能力概览】")
             for hint in selection.light_hints:
@@ -2795,6 +2816,7 @@ class AkaneMemoryEngine:
                     "",
                 ]
             )
+        lines.extend(media_routing)
         lines.append("【当前可调用工具】")
         for handler in handlers.values():
             lines.append(handler.build_prompt_instruction())

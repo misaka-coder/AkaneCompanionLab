@@ -292,12 +292,7 @@ class CapabilityRegistry:
                 layer="shared_media",
                 modes=CHAT_FILE_CLIENT_MODES,
                 tools=MEDIA_WORKBENCH_TOOL_NAMES,
-                light_hint=(
-                    "音频/视频任务按需求自由组合：视频总结通常先 transcribe_media 得到转写稿再 compose_file；"
-                    "字幕任务优先 transcribe_media 输出 srt/vtt；训练素材可按需要组合 convert_media_file 提音频、"
-                    "separate_audio_stems 分离人声、clean_voice_track 降噪净化、prepare_voice_dataset 切片打包；"
-                    "用户只要原文件时只交付原文件，不要额外处理。"
-                ),
+                light_hint="你可以处理音频/视频任务：转写、转码、降噪、分离人声、切片打包训练素材等。",
                 trigger=_has_media_context,
             ),
             CapabilityModule(

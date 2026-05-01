@@ -684,6 +684,7 @@ class EngineExtensionTests(unittest.TestCase):
         qq_selection = registry.select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT))
         self.assertIn("qq_delivery", qq_selection.layer_names)
         self.assertIn("send_sticker", qq_selection.tool_names)
+        self.assertNotIn("media_workbench", qq_selection.module_names)
 
         scene_selection_with_files = registry.select(
             CapabilitySnapshot(
@@ -695,6 +696,7 @@ class EngineExtensionTests(unittest.TestCase):
             )
         )
         self.assertIn("web_scene", scene_selection_with_files.layer_names)
+        self.assertNotIn("media_workbench", scene_selection_with_files.module_names)
         self.assertNotIn("qq_delivery", scene_selection_with_files.layer_names)
         self.assertNotIn("desktop_workspace", scene_selection_with_files.layer_names)
         self.assertNotIn("send_file", scene_selection_with_files.tool_names)
@@ -968,10 +970,6 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("\n- convert_media_file", prompt)
             self.assertIn("\n- inspect_generated_file", prompt)
             self.assertIn("\n- send_file", prompt)
-            self.assertIn("视频总结通常先 transcribe_media 得到转写稿再 compose_file", prompt)
-            self.assertIn("字幕任务优先 transcribe_media 输出 srt/vtt", prompt)
-            self.assertIn("训练素材可按需要组合 convert_media_file 提音频", prompt)
-            self.assertIn("用户只要原文件时只交付原文件", prompt)
             self.assertNotIn("\n- send_generated_file", prompt)
             self.assertIn("\n- manage_generated_file", prompt)
             self.assertEqual(
@@ -1057,6 +1055,101 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertNotIn("\n- inspect_generated_file", prompt_after_clear)
             self.assertNotIn("\n- send_file", prompt_after_clear)
             self.assertNotIn("\n- manage_generated_file", prompt_after_clear)
+
+    def test_media_preset_routing_appears_in_prompt_for_chat_clients(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.engine.store = MemoryStore(Path(temp_dir))
+            self.engine.capability_registry = CapabilityRegistry()
+            self.engine.tool_handlers = {}
+            self.engine.store.add_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="session",
+                source="qq",
+                kind="audio",
+                status="ready",
+                origin_name="test.wav",
+                file_ext=".wav",
+                detail={"media_info": {"audio": {"codec": "pcm"}}},
+                timestamp=100,
+            )
+            qq_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "qq_text"})
+            desktop_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "desktop_pet"})
+
+            no_media_prompt = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=qq_context,
+                profile_user_id="master",
+                session_id="empty_session",
+            )
+            self.assertNotIn("媒体任务预设路由", no_media_prompt)
+
+            prompt = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=qq_context,
+                profile_user_id="master",
+                session_id="session",
+            )
+
+            self.assertIn("媒体任务预设路由", prompt)
+            self.assertIn("生成字幕", prompt)
+            self.assertIn("transcribe_media output_format=srt", prompt)
+            self.assertIn("提取视频音频", prompt)
+            self.assertIn("convert_media_file output_format=mp3", prompt)
+            self.assertIn("压缩音频", prompt)
+            self.assertIn("截取片段", prompt)
+            self.assertIn("start_time/end_time", prompt)
+            self.assertIn("声音忽大忽小", prompt)
+            self.assertIn("normalize_volume", prompt)
+            self.assertIn("声音太小", prompt)
+            self.assertIn("volume_gain_db", prompt)
+            self.assertIn("人声降噪", prompt)
+            self.assertIn("clean_voice_track", prompt)
+            self.assertIn("人声伴奏分离", prompt)
+            self.assertIn("separate_audio_stems", prompt)
+            self.assertIn("训练素材切片打包", prompt)
+            self.assertIn("prepare_voice_dataset", prompt)
+            self.assertIn("只要原文件不处理", prompt)
+            self.assertIn("send_file", prompt)
+
+            desktop_prompt = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=desktop_context,
+                profile_user_id="master",
+                session_id="session",
+            )
+            self.assertIn("媒体任务预设路由", desktop_prompt)
+
+    def test_web_scene_excludes_all_media_workbench_tools(self) -> None:
+        registry = CapabilityRegistry()
+        scene_tools = registry.tool_names_for_mode(ClientMode.SCENE_STATIC)
+        for tool in {"inspect_media_info", "separate_audio_stems", "clean_voice_track",
+                      "transcribe_media", "prepare_voice_dataset", "convert_media_file"}:
+            self.assertNotIn(tool, scene_tools, f"{tool} should not be available in web scene mode")
+
+    def test_web_scene_prompt_excludes_media_preset_routing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.engine.store = MemoryStore(Path(temp_dir))
+            self.engine.capability_registry = CapabilityRegistry()
+            self.engine.tool_handlers = {}
+            self.engine.store.add_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="session",
+                source="web",
+                kind="audio",
+                status="ready",
+                origin_name="test.wav",
+                file_ext=".wav",
+                detail={"media_info": {"audio": {"codec": "pcm"}}},
+                timestamp=100,
+            )
+            scene_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "scene_static"})
+            prompt = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=scene_context,
+                profile_user_id="master",
+                session_id="session",
+            )
+            self.assertNotIn("媒体任务预设路由", prompt)
 
     def test_execute_tool_call_dispatches_to_registered_handler(self) -> None:
         class StubTool:
