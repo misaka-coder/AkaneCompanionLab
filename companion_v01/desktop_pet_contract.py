@@ -6,6 +6,9 @@ import sys
 import time
 from typing import Any
 
+from .capability_registry import CapabilityRegistry, CapabilitySnapshot
+from .client_protocol import ClientMode, ClientProtocolContext
+
 
 DESKTOP_PET_CONTRACT_VERSION = "desktop_pet.v0.1"
 DESKTOP_PET_RESOURCE_CONTRACT_VERSION = "desktop_pet_resource.v0.1"
@@ -215,3 +218,204 @@ def build_desktop_pet_error_payload(
     if details:
         payload["details"] = details
     return payload
+
+
+def _build_resource_summary(
+    engine: Any,
+    *,
+    profile_user_id: str = "",
+    character_pack_id: str = "",
+    preferred_outfit: str = "",
+    preferred_emotion: str = "",
+) -> dict[str, Any]:
+    """Safe resource info focused on desktop-pet character needs."""
+    try:
+        if hasattr(engine, "build_resource_manifest"):
+            manifest = engine.build_resource_manifest(
+                profile_user_id=profile_user_id,
+                client_mode=DESKTOP_PET_CLIENT_MODE,
+                character_pack_id=character_pack_id,
+            )
+        else:
+            resource_manifest = getattr(engine, "resource_manifest", None)
+            manifest = resource_manifest.get_manifest() if hasattr(resource_manifest, "get_manifest") else {}
+        manifest = manifest if isinstance(manifest, dict) else {}
+    except Exception:
+        manifest = {}
+
+    try:
+        decorated = decorate_resource_manifest_for_desktop_pet(
+            manifest,
+            profile_user_id=profile_user_id,
+            preferred_outfit=preferred_outfit or DESKTOP_PET_DEFAULT_OUTFIT,
+            preferred_emotion=preferred_emotion or DESKTOP_PET_DEFAULT_EMOTION,
+        )
+    except Exception:
+        decorated = manifest
+
+    defaults = decorated.get("defaults", {}) if isinstance(decorated.get("defaults"), dict) else {}
+    clients = decorated.get("clients", {}) if isinstance(decorated.get("clients"), dict) else {}
+    desktop = clients.get(DESKTOP_PET_CLIENT_MODE, {}) if isinstance(clients.get(DESKTOP_PET_CLIENT_MODE), dict) else {}
+    default_outfit_id = str(
+        desktop.get("default_outfit")
+        or defaults.get("desktop_pet_outfit")
+        or defaults.get("outfit")
+        or ""
+    )
+    default_emotion_id = str(
+        desktop.get("default_emotion")
+        or defaults.get("desktop_pet_emotion")
+        or defaults.get("emotion")
+        or ""
+    )
+
+    emotion_count = 0
+    characters = decorated.get("characters", {}) if isinstance(decorated.get("characters"), dict) else {}
+    outfits = characters.get("outfits")
+    if isinstance(outfits, list):
+        fallback_emotions: list[Any] = []
+        for outfit in outfits:
+            if not isinstance(outfit, dict):
+                continue
+            emotions = outfit.get("emotions")
+            if not fallback_emotions and isinstance(emotions, list):
+                fallback_emotions = emotions
+            if str(outfit.get("id") or "") == default_outfit_id:
+                emotion_count = len(emotions) if isinstance(emotions, list) else 0
+                break
+        if emotion_count <= 0 and fallback_emotions:
+            emotion_count = len(fallback_emotions)
+
+    return {
+        "resource_manifest_ok": bool(decorated.get("schema_version")),
+        "character_pack_id": _safe_character_pack_id(character_pack_id),
+        "outfit": default_outfit_id,
+        "default_emotion": default_emotion_id,
+        "emotion_count": emotion_count,
+    }
+
+
+def _build_workspace_counts(engine: Any, *, profile_user_id: str, session_id: str) -> dict[str, int]:
+    """Workspace item counts via build_desktop_pet_workspace_panel (no content)."""
+    builder = getattr(engine, "build_desktop_pet_workspace_panel", None)
+    if not callable(builder):
+        return {"files": 0, "outputs": 0, "tasks": 0}
+    try:
+        panel = builder(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            limit=60,
+        )
+        counts = panel.get("counts") if isinstance(panel, dict) else {}
+        return {
+            "files": int(counts.get("files", 0) if isinstance(counts, dict) else 0),
+            "outputs": int(counts.get("outputs", 0) if isinstance(counts, dict) else 0),
+            "tasks": int(counts.get("tasks", 0) if isinstance(counts, dict) else 0),
+        }
+    except Exception:
+        return {"files": -1, "outputs": -1, "tasks": -1}
+
+
+def _build_capability_object(engine: Any, *, profile_user_id: str, session_id: str) -> dict[str, Any]:
+    """Capability selection via registry.select() for desktop_pet mode."""
+    declared = list(DESKTOP_PET_CAPABILITIES)
+
+    try:
+        ctx = ClientProtocolContext(
+            requested_mode=ClientMode.DESKTOP_PET,
+            effective_mode=ClientMode.DESKTOP_PET,
+        )
+        if hasattr(engine, "_build_capability_snapshot"):
+            snapshot = engine._build_capability_snapshot(
+                client_context=ctx,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
+        else:
+            snapshot = CapabilitySnapshot(client_mode=ClientMode.DESKTOP_PET)
+    except Exception:
+        snapshot = CapabilitySnapshot(client_mode=ClientMode.DESKTOP_PET)
+
+    registry = getattr(engine, "capability_registry", None)
+    if not isinstance(registry, CapabilityRegistry):
+        registry = CapabilityRegistry()
+
+    try:
+        selection = registry.select(snapshot)
+    except Exception:
+        return {
+            "declared": declared,
+            "effective_modules": [],
+            "tool_layers": [],
+            "tool_names": [],
+        }
+
+    return {
+        "declared": declared,
+        "effective_modules": list(getattr(selection, "module_names", ())),
+        "tool_layers": list(getattr(selection, "layer_names", ())),
+        "tool_names": list(getattr(selection, "tool_names", ())),
+    }
+
+
+def build_desktop_pet_diagnostics_payload(
+    *,
+    engine: Any,
+    profile_user_id: str = "",
+    session_id: str = "",
+    character_pack_id: str = "",
+    preferred_outfit: str = "",
+    preferred_emotion: str = "",
+    runtime_metrics: dict[str, float] | None = None,
+    public_guard_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a read-only diagnostics payload for /desktop-pet/diagnostics.
+
+    Returns structural meta-info about the desktop pet runtime without
+    exposing API keys, tokens, prompts, chat content, screenshots,
+    or file full text.
+    """
+
+    return {
+        "status": "ok",
+        "client_mode": DESKTOP_PET_CLIENT_MODE,
+        "contract_version": DESKTOP_PET_CONTRACT_VERSION,
+        "server_time": int(time.time()),
+        "capabilities": _build_capability_object(
+            engine,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+        ),
+        "resources": _build_resource_summary(
+            engine,
+            profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
+            preferred_outfit=preferred_outfit,
+            preferred_emotion=preferred_emotion,
+        ),
+        "workspace": _build_workspace_counts(
+            engine,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+        ),
+        "runtime": {
+            "pid": os.getpid(),
+            "python": sys.executable,
+            "metrics": dict(runtime_metrics or {}),
+        },
+        "safety": {
+            "secrets_exposed": False,
+            "desktop_actions_require_client": True,
+            "full_disk_scan": False,
+            "public_guard": dict(public_guard_snapshot or {}),
+        },
+    }
+
+
+def _safe_character_pack_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if any(marker in raw for marker in ("/", "\\", "..")):
+        return ""
+    return raw[:120]

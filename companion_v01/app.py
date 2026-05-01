@@ -149,6 +149,8 @@ app.include_router(
         engine=engine,
         config_module=config,
         resolve_identity_from_query=_resolve_identity_from_query,
+        runtime_metrics=runtime_metrics,
+        public_guard=public_guard,
     )
 )
 app.include_router(

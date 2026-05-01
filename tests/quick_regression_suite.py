@@ -14,6 +14,8 @@ QUICK_TESTS = [
     "tests.test_resource_visibility_contract",
     # 桌宠前端契约：file_drop / tool_actions / 工作台入口、桌面本地文件交付
     "tests.test_desktop_pet_frontend_contract",
+    # 桌宠后端契约：health / resource manifest / diagnostics
+    "tests.test_desktop_pet_backend_contract",
     # 桌面 Activity Runtime、Workspace Panel、Scene 前端
     "tests.test_desktop_activity_runtime_contract",
     "tests.test_desktop_workspace_panel",

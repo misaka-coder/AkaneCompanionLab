@@ -12,6 +12,7 @@ from ..desktop_pet_contract import (
     DESKTOP_PET_CONTRACT_VERSION,
     DESKTOP_PET_DEFAULT_EMOTION,
     DESKTOP_PET_DEFAULT_OUTFIT,
+    build_desktop_pet_diagnostics_payload,
     build_desktop_pet_health_payload,
     decorate_resource_manifest_for_desktop_pet,
 )
@@ -25,6 +26,8 @@ def build_core_router(
     engine: Any,
     config_module: Any,
     resolve_identity_from_query: ResolveIdentity,
+    runtime_metrics: Any = None,
+    public_guard: Any = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -56,6 +59,36 @@ def build_core_router(
                 session_id=session_id,
                 streaming_tts_enabled=bool(getattr(config_module, "STREAMING_TTS_ENABLED", True)),
                 yt_dlp_available=importlib.util.find_spec("yt_dlp") is not None,
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @router.get("/desktop-pet/diagnostics")
+    async def desktop_pet_diagnostics(request: Request) -> JSONResponse:
+        session_id, profile_user_id = resolve_identity_from_query(request)
+        character_pack_id = str(
+            request.query_params.get("character_pack_id")
+            or request.query_params.get("characterPackId")
+            or ""
+        )
+        preferred_outfit = str(request.query_params.get("outfit") or "")
+        preferred_emotion = str(request.query_params.get("emotion") or "")
+        guard_snapshot: dict[str, Any] | None = None
+        if public_guard is not None and hasattr(public_guard, "snapshot"):
+            try:
+                guard_snapshot = dict(public_guard.snapshot())
+            except Exception:
+                guard_snapshot = None
+        return JSONResponse(
+            build_desktop_pet_diagnostics_payload(
+                engine=engine,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                preferred_outfit=preferred_outfit,
+                preferred_emotion=preferred_emotion,
+                runtime_metrics=runtime_metrics.snapshot() if hasattr(runtime_metrics, "snapshot") else None,
+                public_guard_snapshot=guard_snapshot,
             ),
             headers={"Cache-Control": "no-store"},
         )
