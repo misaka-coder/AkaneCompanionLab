@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { APP_DISPLAY_NAME, CHARACTER_NAME, DEFAULT_EMOTION, DEFAULT_OUTFIT } from "./character-profile.js";
@@ -83,6 +84,10 @@ const els = {
   resourceDetails: document.querySelector("#resource-details"),
   resourceMetrics: document.querySelector("#resource-metrics"),
   outfitList: document.querySelector("#outfit-list"),
+  refreshDiagnostics: document.querySelector("#refresh-diagnostics"),
+  diagnosticsSummary: document.querySelector("#diagnostics-summary"),
+  diagnosticsMetrics: document.querySelector("#diagnostics-metrics"),
+  diagnosticsTools: document.querySelector("#diagnostics-tools"),
   emotionGrid: document.querySelector("#emotion-grid"),
   hitTest: document.querySelector("#hit-test"),
   hitboxOverlay: document.querySelector("#hitbox-overlay"),
@@ -100,6 +105,10 @@ const view = {
   resource: null,
   active: null,
   music: null,
+  diagnostics: null,
+  diagnosticsLoading: false,
+  diagnosticsAutoKey: "",
+  diagnosticsTimer: 0,
   webglEnabled: false,
   lastCharacterImportPath: "",
   scaleTimer: 0,
@@ -188,6 +197,7 @@ function bindUi() {
   els.checkConnection.addEventListener("click", () => sendCommand("reloadResources"));
   els.copySession.addEventListener("click", () => copySessionId());
   els.reloadResources.addEventListener("click", () => sendCommand("reloadResources"));
+  els.refreshDiagnostics.addEventListener("click", () => refreshDiagnostics());
   els.restoreLatest.addEventListener("change", () =>
     sendCommand("setRestoreLatestOnStartup", els.restoreLatest.checked)
   );
@@ -499,6 +509,8 @@ function applySnapshot(snapshot) {
   renderResourceDetails();
   renderResourceMetrics();
   renderOutfitList();
+  renderDiagnostics();
+  scheduleDiagnosticsAutoRefresh();
   renderEmotionGrid();
 
   const source = sourceLabel(resource.source);
@@ -726,6 +738,254 @@ function renderResourceMetrics() {
       return item;
     })
   );
+}
+
+function renderDiagnostics() {
+  if (!els.diagnosticsSummary || !els.diagnosticsMetrics || !els.diagnosticsTools) return;
+  const entry = view.diagnostics && typeof view.diagnostics === "object" ? view.diagnostics : {};
+  const payload = entry.payload && typeof entry.payload === "object" ? entry.payload : null;
+  const diagnosticsReady = Boolean(payload);
+
+  if (view.diagnosticsLoading) {
+    els.diagnosticsSummary.textContent = diagnosticsReady ? "正在刷新能力诊断……" : "正在读取后端能力诊断……";
+  } else if (entry.error) {
+    els.diagnosticsSummary.textContent = `诊断暂不可用：${entry.error}`;
+  } else if (!canFetchDiagnostics()) {
+    els.diagnosticsSummary.textContent = diagnosticsReady
+      ? "后端当前不可用，下面保留上次能力诊断。"
+      : "后端连接后会显示桌宠当前可用能力。";
+  } else if (!payload) {
+    els.diagnosticsSummary.textContent = "等待刷新能力诊断。";
+  } else {
+    els.diagnosticsSummary.textContent = buildDiagnosticsSummary(payload, entry.loadedAt);
+  }
+
+  if (!payload) {
+    els.diagnosticsMetrics.replaceChildren();
+    renderDiagnosticsTools([]);
+    if (els.refreshDiagnostics) {
+      els.refreshDiagnostics.disabled = view.diagnosticsLoading || !canFetchDiagnostics();
+    }
+    return;
+  }
+
+  const capabilities = payload.capabilities && typeof payload.capabilities === "object" ? payload.capabilities : {};
+  const resources = payload.resources && typeof payload.resources === "object" ? payload.resources : {};
+  const workspace = payload.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
+  const safety = payload.safety && typeof payload.safety === "object" ? payload.safety : {};
+  const declared = normalizeDiagnosticsList(capabilities.declared);
+  const modules = normalizeDiagnosticsList(capabilities.effective_modules || capabilities.effectiveModules);
+  const layers = normalizeDiagnosticsList(capabilities.tool_layers || capabilities.toolLayers);
+  const tools = normalizeDiagnosticsList(capabilities.tool_names || capabilities.toolNames);
+
+  renderDiagnosticsMetrics([
+    ["模式", payload.client_mode || payload.clientMode || "desktop_pet"],
+    ["契约", payload.contract_version || payload.contractVersion || "-"],
+    ["能力", `${declared.length}`],
+    ["模块", `${modules.length}`],
+    ["工具层", `${layers.length}`],
+    ["工具", `${tools.length}`],
+    ["角色包", resources.character_pack_id || resources.characterPackId || getActiveCharacterPackId() || "-"],
+    ["服装", resources.outfit || view.resource?.activeOutfit || DEFAULT_OUTFIT],
+    ["默认表情", resources.default_emotion || resources.defaultEmotion || DEFAULT_EMOTION],
+    ["资源清单", formatDiagnosticsOk(resources.resource_manifest_ok ?? resources.resourceManifestOk)],
+    ["手边文件", `${countDiagnosticsValue(workspace.files)}`],
+    ["生成文件", `${countDiagnosticsValue(workspace.outputs)}`],
+    ["任务", `${countDiagnosticsValue(workspace.tasks)}`],
+    ["密钥", safety.secrets_exposed || safety.secretsExposed ? "疑似暴露" : "未暴露"],
+    ["磁盘扫描", safety.full_disk_scan || safety.fullDiskScan ? "开启" : "关闭"],
+    [
+      "桌面动作",
+      safety.desktop_actions_require_client || safety.desktopActionsRequireClient ? "客户端确认" : "未声明"
+    ]
+  ]);
+  renderDiagnosticsTools(tools);
+  if (els.refreshDiagnostics) {
+    els.refreshDiagnostics.disabled = view.diagnosticsLoading || !canFetchDiagnostics();
+  }
+}
+
+function renderDiagnosticsMetrics(rows) {
+  els.diagnosticsMetrics.replaceChildren(
+    ...rows.map(([label, value]) => {
+      const item = document.createElement("div");
+      item.className = "metric";
+      const key = document.createElement("span");
+      key.textContent = label;
+      const data = document.createElement("strong");
+      data.textContent = String(value ?? "-");
+      item.append(key, data);
+      return item;
+    })
+  );
+}
+
+function renderDiagnosticsTools(tools) {
+  const items = normalizeDiagnosticsList(tools);
+  if (!items.length) {
+    const empty = document.createElement("span");
+    empty.className = "is-empty";
+    empty.textContent = "暂无工具列表";
+    els.diagnosticsTools.replaceChildren(empty);
+    return;
+  }
+
+  const visible = items.slice(0, 18);
+  const chips = visible.map((name) => {
+    const chip = document.createElement("span");
+    chip.textContent = name;
+    chip.title = name;
+    return chip;
+  });
+  if (items.length > visible.length) {
+    const more = document.createElement("span");
+    more.textContent = `+${items.length - visible.length}`;
+    more.title = items.slice(visible.length).join(" / ");
+    chips.push(more);
+  }
+  els.diagnosticsTools.replaceChildren(...chips);
+}
+
+function buildDiagnosticsSummary(payload, loadedAt) {
+  const resources = payload.resources && typeof payload.resources === "object" ? payload.resources : {};
+  const capabilities = payload.capabilities && typeof payload.capabilities === "object" ? payload.capabilities : {};
+  const status = String(payload.status || "ok");
+  const mode = String(payload.client_mode || payload.clientMode || "desktop_pet");
+  const contract = String(payload.contract_version || payload.contractVersion || "-");
+  const pack = String(resources.character_pack_id || resources.characterPackId || getActiveCharacterPackId() || "-");
+  const emotionCount = countDiagnosticsValue(resources.emotion_count ?? resources.emotionCount);
+  const toolCount = normalizeDiagnosticsList(capabilities.tool_names || capabilities.toolNames).length;
+  return `${diagnosticsStatusLabel(status)} · ${mode} · ${contract} · ${pack} · ${emotionCount} 表情 · ${toolCount} 工具${formatLoadedAt(loadedAt)}`;
+}
+
+function scheduleDiagnosticsAutoRefresh() {
+  const key = buildDiagnosticsKey();
+  if (!key) {
+    renderDiagnostics();
+    return;
+  }
+  if (view.diagnosticsAutoKey === key && view.diagnostics?.payload) return;
+  view.diagnosticsAutoKey = key;
+  window.clearTimeout(view.diagnosticsTimer);
+  view.diagnosticsTimer = window.setTimeout(() => {
+    void refreshDiagnostics({ quiet: true });
+  }, 260);
+}
+
+async function refreshDiagnostics({ quiet = false } = {}) {
+  if (!canFetchDiagnostics()) {
+    view.diagnostics = { payload: null, loadedAt: 0, error: "后端尚未连接" };
+    renderDiagnostics();
+    return;
+  }
+
+  view.diagnosticsLoading = true;
+  renderDiagnostics();
+  try {
+    const response = await settingsBackendFetch(buildDiagnosticsUrl(), {
+      method: "GET",
+      cache: "no-store",
+      connectTimeout: 5000
+    });
+    if (!response.ok) {
+      throw new Error(await readDiagnosticsError(response, `HTTP ${response.status}`));
+    }
+    const payload = await response.json();
+    view.diagnostics = { payload, loadedAt: Date.now(), error: "" };
+    if (!quiet) setStatus("能力诊断已刷新");
+  } catch (error) {
+    view.diagnostics = {
+      payload: view.diagnostics?.payload || null,
+      loadedAt: view.diagnostics?.loadedAt || 0,
+      error: formatError(error)
+    };
+    if (!quiet) setStatus(`能力诊断失败：${formatError(error)}`);
+  } finally {
+    view.diagnosticsLoading = false;
+    renderDiagnostics();
+  }
+}
+
+function buildDiagnosticsUrl() {
+  const state = view.state || {};
+  const resource = view.resource || {};
+  const params = new URLSearchParams({
+    user_id: state.sessionId || "desktop_pet_next_diagnostics",
+    real_user_id: state.profileUserId || "master",
+    client: "desktop_pet",
+    character_pack_id: getActiveCharacterPackId(),
+    outfit: state.outfit || resource.activeOutfit || DEFAULT_OUTFIT,
+    emotion: state.currentEmotion || DEFAULT_EMOTION,
+    t: String(Date.now())
+  });
+  return buildSettingsBackendUrl("/desktop-pet/diagnostics", params);
+}
+
+function buildSettingsBackendUrl(endpoint, params = null) {
+  const base = `${normalizeBackendUrl(view.state?.backendUrl || DEFAULT_BACKEND_URL).replace(/\/+$/, "")}/`;
+  const url = new URL(endpoint, base);
+  const entries = params instanceof URLSearchParams ? [...params.entries()] : Object.entries(params || {});
+  for (const [key, value] of entries) {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  return url.toString();
+}
+
+function buildDiagnosticsKey() {
+  if (!canFetchDiagnostics()) return "";
+  const state = view.state || {};
+  return [
+    normalizeBackendUrl(state.backendUrl || DEFAULT_BACKEND_URL),
+    state.sessionId || "",
+    state.profileUserId || "master",
+    getActiveCharacterPackId(),
+    state.outfit || view.resource?.activeOutfit || DEFAULT_OUTFIT,
+    state.currentEmotion || DEFAULT_EMOTION
+  ].join("|");
+}
+
+function canFetchDiagnostics() {
+  return Boolean(normalizeBackendUrl(view.state?.backendUrl || DEFAULT_BACKEND_URL)) && view.resource?.health === "online";
+}
+
+function settingsBackendFetch(input, init) {
+  return isTauriRuntime ? tauriFetch(input, init) : window.fetch(input, init);
+}
+
+async function readDiagnosticsError(response, fallback) {
+  try {
+    const text = await response.text();
+    return text ? text.slice(0, 180) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeDiagnosticsList(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function countDiagnosticsValue(value) {
+  if (Array.isArray(value)) return value.length;
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function formatDiagnosticsOk(value) {
+  if (value === false) return "异常";
+  if (value === true) return "OK";
+  return "-";
+}
+
+function diagnosticsStatusLabel(status) {
+  return {
+    ok: "正常",
+    degraded: "降级",
+    error: "异常"
+  }[String(status || "").toLowerCase()] || String(status || "未知");
 }
 
 function renderOutfitList() {

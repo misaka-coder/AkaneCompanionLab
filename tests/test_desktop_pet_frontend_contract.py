@@ -190,6 +190,26 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("client: CLIENT_MODE", main_source)
         self.assertIn("function getCurrentCharacterPackId()", main_source)
 
+    def test_next_settings_exposes_readonly_desktop_diagnostics(self) -> None:
+        settings_source = _read("desktop_pet_next/src/settings.js")
+        settings_html = _read("desktop_pet_next/settings.html")
+        settings_css = _read("desktop_pet_next/src/settings.css")
+
+        self.assertIn("能力诊断", settings_html)
+        self.assertIn('id="refresh-diagnostics"', settings_html)
+        self.assertIn('id="diagnostics-summary"', settings_html)
+        self.assertIn('id="diagnostics-metrics"', settings_html)
+        self.assertIn('id="diagnostics-tools"', settings_html)
+        self.assertIn("@tauri-apps/plugin-http", settings_source)
+        self.assertIn("function refreshDiagnostics", settings_source)
+        self.assertIn("function renderDiagnostics", settings_source)
+        self.assertIn('"/desktop-pet/diagnostics"', settings_source)
+        self.assertIn("real_user_id", settings_source)
+        self.assertIn("character_pack_id: getActiveCharacterPackId()", settings_source)
+        self.assertIn("diagnosticsAutoKey", settings_source)
+        self.assertIn("desktop_pet_next_diagnostics", settings_source)
+        self.assertIn(".diagnostics-pill-row", settings_css)
+
 
 if __name__ == "__main__":
     unittest.main()

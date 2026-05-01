@@ -23,6 +23,7 @@ This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It 
 - Emotion preview is temporary and non-persistent; it restores the previous expression and does not change the dialogue state.
 - Backend offline or manifest failures are surfaced in the settings window, with bundled catgirl assets used as the visible fallback and a quiet reconnect retry while the Tauri app stays open.
 - Backend health now prefers `/desktop-pet/health`, falls back to legacy `/health`, and surfaces the desktop-pet contract version plus TTS/ASR endpoint status in settings.
+- The settings window can refresh `/desktop-pet/diagnostics` as a read-only capability panel, showing the active character pack, resource count, tool exposure, workspace counts, and safety boundaries for the current desktop-pet mode.
 - `/resource-manifest` desktop-pet metadata (`clients.desktop_pet`) is used for default outfit/emotion hints when available, while Web resources continue to live under `web/assets`.
 - Minimal `/think` dialogue loop with `client_mode = desktop_pet`, `speech_segments`/`tts` capabilities, and optional `desktop_context` when the context toggle is enabled.
 - Single-click the portrait to show a local line without calling the backend. Local reactions can refresh themselves immediately, while active backend replies and TTS are still protected.

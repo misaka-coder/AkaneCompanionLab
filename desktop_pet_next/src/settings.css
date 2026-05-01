@@ -120,6 +120,19 @@ input {
   line-height: 1.25;
 }
 
+.section-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.section-heading-row button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .field-row,
 .range-row {
   display: grid;
@@ -389,7 +402,8 @@ button:disabled:hover {
 .chip-row,
 .emotion-grid,
 .outfit-list,
-.character-pack-list {
+.character-pack-list,
+.diagnostics-pill-row {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
@@ -416,6 +430,28 @@ button:disabled:hover {
   color: rgb(49 64 82 / 0.56);
   font-size: 12px;
   scrollbar-width: thin;
+}
+
+.diagnostics-pill-row {
+  min-height: 30px;
+  color: rgb(49 64 82 / 0.56);
+  font-size: 12px;
+}
+
+.diagnostics-pill-row span {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 5px 9px;
+  border: 1px solid rgb(136 162 198 / 0.2);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.42);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostics-pill-row span.is-empty {
+  color: rgb(49 64 82 / 0.48);
 }
 
 .metric-grid {
