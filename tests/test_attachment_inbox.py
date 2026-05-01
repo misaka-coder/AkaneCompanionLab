@@ -257,11 +257,12 @@ class AttachmentInboxTests(unittest.TestCase):
                 detail_limit=1,
             )
 
-            self.assertIn("临时附件焦点", prompt)
+            self.assertIn("当前材料工作台", prompt)
             self.assertIn("img_001", prompt)
             self.assertIn("第1张图", prompt)
             self.assertIn("窗边小猫", prompt)
             self.assertIn("一只白猫趴在窗边", prompt)
+            self.assertIn("来源：QQ", prompt)
             self.assertIn("正在处理", prompt)
             self.assertIn("draft.txt", prompt)
             self.assertIn("sync_attachment_workspace", prompt)
@@ -306,12 +307,13 @@ class AttachmentInboxTests(unittest.TestCase):
                 profile_user_id="user",
                 session_id="session",
             )
-            self.assertIn("当前工作台 Focus", prompt)
+            self.assertIn("当前重点材料 Focus", prompt)
             self.assertIn("img_001", prompt)
             self.assertIn("img_003", prompt)
             self.assertIn("img_004", prompt)
-            self.assertIn("旁边的文件筐 Manifest", prompt)
+            self.assertIn("旁边的材料清单 Manifest", prompt)
             self.assertIn("img_002", prompt)
+            self.assertIn("来源=QQ", prompt)
             self.assertIn("测试任意多图对比", result["followup_context"])
 
     def test_sync_workspace_allows_more_than_three_focus_targets(self) -> None:
@@ -425,7 +427,7 @@ class AttachmentInboxTests(unittest.TestCase):
             )
             prompt = service.build_prompt_context(profile_user_id="user", session_id="session")
 
-            self.assertIn("旁边的文件筐 Manifest", prompt)
+            self.assertIn("旁边的材料清单 Manifest", prompt)
             self.assertIn("first.txt", prompt)
             self.assertNotIn("不该出现在Manifest里的正文", prompt)
             self.assertIn("当前工作台正文", prompt)
@@ -471,7 +473,7 @@ class AttachmentInboxTests(unittest.TestCase):
                 call=clear_handler.normalize_call({"type": "clear_attachment_focus", "target": "晚餐"}) or {},
                 context=context,
             )
-            self.assertIn("移除了 1 个附件", cleared.followup_context)
+            self.assertIn("移除了 1 个材料", cleared.followup_context)
             self.assertEqual(cleared.stream_events[0]["type"], "attachment_focus_cleared")
 
     def test_inspect_attachment_requests_confirmation_for_ambiguous_target(self) -> None:
@@ -751,7 +753,7 @@ class AttachmentInboxTests(unittest.TestCase):
                 context=context,
             )
 
-            self.assertIn("移除了 2 个附件", result.followup_context)
+            self.assertIn("移除了 2 个材料", result.followup_context)
             self.assertIn("未找到：不存在的图", result.followup_context)
             self.assertEqual(
                 [item["attachment_handle"] for item in result.stream_events[0]["items"]],
@@ -859,7 +861,7 @@ class AttachmentInboxTests(unittest.TestCase):
                 context=context,
             )
 
-            self.assertIn("2 个附件放到了当前工作台", result.followup_context)
+            self.assertIn("2 个材料放到了当前工作台", result.followup_context)
             self.assertEqual(result.stream_events[0]["type"], "attachment_workspace_synced")
             self.assertEqual(
                 [item["attachment_handle"] for item in result.stream_events[0]["items"]],

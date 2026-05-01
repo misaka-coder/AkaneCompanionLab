@@ -20,11 +20,11 @@ AUTO_FOCUS_MAX_ITEMS = WORKSPACE_MAX_TARGETS
 
 
 class AttachmentInboxService:
-    """Session-scoped temporary attachment focus.
+    """Session-scoped material workspace for user-provided files.
 
-    Attachments here are perception/reading context, not gifts and not memory.
-    The service only renders concise prompt cards and lets tools inspect/clear
-    items when Akane needs to keep the active chat tidy.
+    Items here are short-lived source materials from clients such as QQ,
+    desktop pet drag/drop, or URL imports. They are not gifts, character
+    resources, generated outputs, or long-term memory.
     """
 
     def __init__(self, *, store: MemoryStore, base_dir: Path | None = None) -> None:
@@ -187,8 +187,9 @@ class AttachmentInboxService:
             return ""
 
         lines = [
-            "【临时附件焦点】",
-            "这些是当前聊天里临时发来的图片或文件，只用于近几轮讨论；不要把它们当成礼物、资源或长期记忆。",
+            "【当前材料工作台】",
+            "这些是当前会话临时放进工作台的原始材料，可能来自 QQ、桌宠本地拖拽、链接下载或其他客户端；只用于近几轮处理/讨论。",
+            "不要把这些材料当成礼物、角色资源、生成成果或长期记忆。原始材料和工具生成成果是两类对象：要修改、转写、转换或整理材料时，先使用对应工具生成新成果；用户要拿到某个已有文件时，再按当前客户端可用的交付方式发送或打开它。",
         ]
 
         detailed_items = focused
@@ -199,7 +200,7 @@ class AttachmentInboxService:
             if str(item.get("attachment_id") or "") not in detailed_ids
         ][: max(0, int(index_limit or 6))]
         if detailed_items:
-            lines.append("当前工作台 Focus（这些附件会持续放在你眼前，直到你重新同步或清理）：")
+            lines.append("当前重点材料 Focus（这些材料会持续放在你眼前，直到重新同步或清理）：")
             rendered, budget_overflow = self._render_focus_items_with_budget(
                 detailed_items,
                 total_budget=DEFAULT_WORKSPACE_CHAR_BUDGET,
@@ -213,17 +214,17 @@ class AttachmentInboxService:
                 )
 
         if indexed_ready:
-            lines.append("旁边的文件筐 Manifest（只用于识别，不代表已经阅读全文）：")
+            lines.append("旁边的材料清单 Manifest（只用于识别和选择，不代表已经阅读全文/全片）：")
             for index, item in enumerate(indexed_ready, start=1):
                 lines.extend(self._render_manifest_item(index, item))
 
         if pending:
-            lines.append("正在处理、还没有完整描述的附件：")
+            lines.append("正在处理、还没有完整描述的材料：")
             for item in pending[: max(1, int(pending_limit or 3))]:
                 lines.append(f"- {self._compact_item_label(item)}")
 
         if failed:
-            lines.append("处理失败的附件：")
+            lines.append("处理失败的材料：")
             for item in failed[:2]:
                 label = self._compact_item_label(item)
                 error = str(item.get("error_message") or "").strip()
@@ -231,9 +232,9 @@ class AttachmentInboxService:
 
         overflow = max(0, len(ready) - len([item for item in detailed_items if item.get("status") == "ready"]) - len(indexed_ready))
         if overflow:
-            lines.append(f"此外还有 {overflow} 个较早附件未展开。")
+            lines.append(f"此外还有 {overflow} 个较早材料未展开。")
         lines.append(
-            "需要收起暂时不分析的附件、重新指定重点材料，或切换对比对象时，使用 sync_attachment_workspace 整理当前工作台；"
+            "需要收起暂时不分析的材料、重新指定重点材料，或切换对比对象时，使用 sync_attachment_workspace 整理当前材料工作台；"
             "聊完或用户说不用了，可用 clear_attachment_focus 清理。"
         )
         return "\n".join(lines)
@@ -411,9 +412,9 @@ class AttachmentInboxService:
             "item": touched,
             "content": content,
             "followup_context": (
-                f"你刚刚展开读取了临时附件 {label} 的「{section_text}」。\n"
+                f"你刚刚展开读取了工作台材料 {label} 的「{section_text}」。\n"
                 f"展开内容如下：\n{content}\n"
-                "请基于这段展开内容自然回应；不要把附件全文默认写入长期记忆。"
+                "请基于这段展开内容自然回应；不要把材料全文默认写入长期记忆。"
             ),
         }
 
@@ -559,7 +560,7 @@ class AttachmentInboxService:
                 "unresolved": unresolved,
                 "ambiguous_targets": ambiguous_targets,
                 "followup_context": (
-                    "你刚刚想移除临时附件焦点，但没有找到可移除的附件。"
+                    "你刚刚想移除工作台材料焦点，但没有找到可移除的材料。"
                     + (missing if missing else "")
                     + (
                         "这些目标不够明确，存在多个候选，请让用户确认："
@@ -583,7 +584,7 @@ class AttachmentInboxService:
             "unresolved": unresolved,
             "ambiguous_targets": ambiguous_targets,
             "followup_context": (
-                f"你刚刚已经从临时附件焦点中移除了 {len(cleared)} 个附件"
+                f"你刚刚已经从工作台材料焦点中移除了 {len(cleared)} 个材料"
                 f"（{names}）。{missing}"
                 + (
                     "这些目标不够明确，存在多个候选，请让用户确认："
@@ -592,7 +593,7 @@ class AttachmentInboxService:
                     if ambiguous_targets
                     else ""
                 )
-                + f"{suffix}这些附件不会继续注入上下文，也不会作为礼物或长期记忆保存。"
+                + f"{suffix}这些材料不会继续注入上下文，也不会作为礼物、角色资源或长期记忆保存。"
                 "请自然继续回应，不要重复调用工具。"
             ),
         }
@@ -863,6 +864,9 @@ class AttachmentInboxService:
             lines.append("   状态：处理失败。" + (f"原因：{readable_error}" if readable_error else ""))
             return lines
         lines.append("   状态：已放在当前工作台，可直接基于下面内容讨论。")
+        source_label = self._source_label(item)
+        if source_label:
+            lines.append(f"   来源：{source_label}")
         kind = str(item.get("kind") or "").strip().lower()
         if kind == "image":
             lines.extend(self._render_image_focus_detail(detail, fallback_hint=str(item.get("short_hint") or "")))
@@ -1022,6 +1026,9 @@ class AttachmentInboxService:
         file_size = int(item.get("file_size") or detail.get("file_size") or 0)
         if file_size:
             meta.append(f"大小={self._format_size(file_size)}")
+        source_label = self._source_label(item)
+        if source_label:
+            meta.append(f"来源={source_label}")
         if detail.get("line_count") is not None:
             meta.append(f"行数={detail.get('line_count')}")
         if detail.get("page_count") is not None:
@@ -1076,9 +1083,12 @@ class AttachmentInboxService:
 
     def _build_inspect_followup(self, item: dict[str, Any]) -> str:
         lines = [
-            "你刚刚查看了一个临时附件：",
+            "你刚刚查看了一份工作台材料：",
             self._compact_item_label(item),
         ]
+        source_label = self._source_label(item)
+        if source_label:
+            lines.append(f"来源：{source_label}")
         detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
         hint = str(item.get("short_hint") or detail.get("summary") or detail.get("description") or "").strip()
         if hint:
@@ -1105,7 +1115,7 @@ class AttachmentInboxService:
                 lines.append("注意：这只是预览，不是全文；如果要处理完整文件，应继续用 read_attachment_section 展开指定范围。")
             elif len(preview) > excerpt_limit:
                 lines.append("注意：这只是本次提示词节选，不是全文；忠实转换/导出原附件时不要复制这段节选，应让文件工具读取原始附件。")
-        lines.append("请基于这份附件信息自然回应；如果用户聊完了，可以稍后用 clear_attachment_focus 移除它。")
+        lines.append("请基于这份材料信息自然回应；如果用户聊完了，可以稍后用 clear_attachment_focus 移除它。")
         return "\n".join(lines)
 
     def _extract_section_content(self, item: dict[str, Any], *, section: str) -> str:
@@ -1429,10 +1439,10 @@ class AttachmentInboxService:
         reason: str,
     ) -> str:
         if not focused:
-            lines = ["你刚刚同步了附件工作台，但没有成功放入任何附件。"]
+            lines = ["你刚刚同步了材料工作台，但没有成功放入任何材料。"]
         else:
             lines = [
-                f"你刚刚把 {len(focused)} 个附件放到了当前工作台，接下来请只细看这些附件："
+                f"你刚刚把 {len(focused)} 个材料放到了当前工作台，接下来请只细看这些材料："
             ]
             rendered, budget_overflow = self._render_focus_items_with_budget(
                 focused,
@@ -1441,7 +1451,7 @@ class AttachmentInboxService:
             lines.extend(rendered)
             if budget_overflow:
                 lines.append(
-                    "以下附件已经进入工作台，但本次工具回执空间不够完整展开："
+                    "以下材料已经进入工作台，但本次工具回执空间不够完整展开："
                     + "、".join(self._compact_item_label(item) for item in budget_overflow[:8])
                     + "。下一轮系统提示词会继续按工作台预算挂载；必要时可用 read_attachment_section 精确展开。"
                 )
@@ -1456,7 +1466,7 @@ class AttachmentInboxService:
             )
         if str(reason or "").strip():
             lines.append(f"本次同步原因：{str(reason).strip()[:160]}")
-        lines.append("请基于当前工作台自然回应，不要再次重复同步同一批附件。")
+        lines.append("请基于当前材料工作台自然回应，不要再次重复同步同一批材料。")
         return "\n".join(lines)
 
     def _clip_rendered_lines(self, lines: list[str], char_budget: int) -> list[str]:
@@ -1504,6 +1514,18 @@ class AttachmentInboxService:
         if value >= 1_000_000:
             return f"{value / 1_000_000:.2f}Mbps"
         return f"{value / 1000:.0f}kbps"
+
+    def _source_label(self, item: dict[str, Any]) -> str:
+        source = str(item.get("source") or "").strip().lower()
+        if not source:
+            return ""
+        labels = {
+            "qq": "QQ",
+            "desktop_pet": "桌宠本地",
+            "remote_url": "链接下载",
+            "web": "Web",
+        }
+        return labels.get(source, str(item.get("source") or "").strip()[:40])
 
     def _compact_item_label(self, item: dict[str, Any]) -> str:
         attachment_id = str(item.get("attachment_handle") or item.get("attachment_id") or "").strip()
