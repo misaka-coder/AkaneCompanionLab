@@ -23,6 +23,7 @@ import {
   selectCharacterPack,
   setRuntimeCharacterPacks
 } from "./character-profile.js";
+import { createVisualRenderer } from "./visual-renderer.js";
 import "./styles.css";
 
 const bundledCharacterAssets = import.meta.glob("./assets/characters/猫娘/*.{png,jpg,jpeg,webp}", {
@@ -328,6 +329,11 @@ const els = {
   musicPlayer: document.querySelector("#music-player"),
   canvas: document.querySelector("#webgl-probe")
 };
+
+const visualRenderer = createVisualRenderer({
+  stage: els.stage,
+  image: els.petImage
+});
 
 setPetEmotion(DEFAULT_EMOTION, { persist: false, force: true });
 boot();
@@ -922,7 +928,7 @@ function applyCharacterChrome() {
   if (els.menuTitle) els.menuTitle.textContent = appName;
   if (els.chatInput) els.chatInput.placeholder = getProfileText("inputPlaceholder", INPUT_PLACEHOLDER);
   if (els.hitbox) els.hitbox.setAttribute("aria-label", name);
-  if (els.petImage) els.petImage.alt = name;
+  visualRenderer.setCharacterLabel(name);
   if (els.close) els.close.title = `关闭 ${appName}`;
 }
 
@@ -1033,6 +1039,7 @@ function buildSettingsSnapshot() {
       active: ttsActive,
       queueLength: ttsQueue.length
     },
+    visual: visualRenderer.getStatus(),
     music: buildMusicSnapshot(),
     webglEnabled: els.stage.classList.contains("show-webgl")
   };
@@ -3619,14 +3626,10 @@ function getBubbleSizeForText(text) {
 function setPetMotion(motion, { durationMs = 0 } = {}) {
   window.clearTimeout(motionTimer);
   const next = motion && motion !== "idle" ? motion : "idle";
-  if (next === "click" && els.stage.dataset.motion === "click") {
-    els.stage.dataset.motion = "idle";
-    void els.stage.offsetWidth;
-  }
-  els.stage.dataset.motion = next;
+  visualRenderer.setMotion(next, { restart: next === "click" });
   if (durationMs > 0) {
     motionTimer = window.setTimeout(() => {
-      if (!sending) els.stage.dataset.motion = "idle";
+      if (!sending) visualRenderer.setMotion("idle");
     }, durationMs);
   }
 }
@@ -4981,7 +4984,7 @@ function setPetEmotion(emotion, { persist = true, force = false } = {}) {
   const entry = resolveEmotionEntry(emotion);
   if (!force && state.currentEmotion === entry.id && els.petImage.src) return entry.id;
   state.currentEmotion = entry.id;
-  els.petImage.src = entry.url;
+  visualRenderer.setExpression(entry, { force });
   updateMenuLabels();
   if (persist) scheduleSave(0);
   return entry.id;

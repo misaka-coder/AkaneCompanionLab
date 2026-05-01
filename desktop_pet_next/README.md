@@ -73,6 +73,7 @@ For release builds or packaging smoke tests, see the [Commands](#commands) and [
 - `speech_segments` are displayed one segment at a time and take precedence over `speech`.
 - The menu displays backend/resource status, and `重载资源` rechecks health plus `/resource-manifest`.
 - The WebGL probe only verifies transparent Canvas/WebGL viability. It is not a Live2D integration yet.
+- The visual renderer now goes through a thin adapter (`src/visual-renderer.js`): today's mode is static portrait images plus CSS motion, while future Live2D can plug into the same expression/motion boundary without rewiring dialogue, voice, or resource loading.
 
 ## Deferred
 

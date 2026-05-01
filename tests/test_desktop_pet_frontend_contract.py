@@ -210,6 +210,27 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("desktop_pet_next_diagnostics", settings_source)
         self.assertIn(".diagnostics-pill-row", settings_css)
 
+    def test_next_visual_renderer_has_static_portrait_adapter_boundary(self) -> None:
+        main_source = _read("desktop_pet_next/src/main.js")
+        renderer_source = _read("desktop_pet_next/src/visual-renderer.js")
+        renderer_doc = _read("docs/desktop-pet-visual-renderer.md")
+
+        self.assertIn('import { createVisualRenderer } from "./visual-renderer.js"', main_source)
+        self.assertIn("const visualRenderer = createVisualRenderer", main_source)
+        self.assertIn("visualRenderer.setCharacterLabel", main_source)
+        self.assertIn("visualRenderer.setExpression", main_source)
+        self.assertIn("visualRenderer.setMotion", main_source)
+        self.assertIn("visual: visualRenderer.getStatus()", main_source)
+        self.assertIn("STATIC_RENDERER_MODE", renderer_source)
+        self.assertIn('"static_portrait"', renderer_source)
+        self.assertIn("LIVE2D_PENDING_MODE", renderer_source)
+        self.assertIn("live2dReady: false", renderer_source)
+        self.assertIn("expressionImages: true", renderer_source)
+        self.assertIn("cssMotion: true", renderer_source)
+        self.assertIn("lipSync: false", renderer_source)
+        self.assertIn("setExpression", renderer_doc)
+        self.assertIn("Future Live2D Shape", renderer_doc)
+
 
 if __name__ == "__main__":
     unittest.main()
