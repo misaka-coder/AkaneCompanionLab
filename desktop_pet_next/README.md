@@ -29,6 +29,7 @@ For release builds or packaging smoke tests, see the [Commands](#commands) and [
 - Window position and size are persisted through Rust-side app config storage.
 - The right-click menu in the pet window is now a compact quick menu for input, settings, new session, character-resource reload, and exit, so it no longer covers the portrait.
 - Scale, opacity, outfit, backend check, always-on-top, taskbar visibility, reset, close, WebGL probe, and temporary click-through probe are exposed from an independent Tauri settings window.
+- The settings window is now a wider anime-style control center with left navigation for overview, character, voice, music, desktop sensing, abilities, and advanced/debug controls.
 - The settings window can install Creator Kit exported character-pack zip files into `desktop_pet_creator_kit/characters/`, refresh the runtime pack list, apply the imported pack, open that folder, and copy the last installed pack path.
 - Scale and opacity have Electron-style quick presets in addition to sliders.
 - The settings window includes a resource panel that lists current character-pack outfits, active outfit, resource source, backend status, emotion count, and missing required/recommended expressions.

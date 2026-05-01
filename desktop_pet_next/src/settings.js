@@ -16,6 +16,17 @@ const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 const appWindow = isTauriRuntime ? getCurrentWindow() : null;
 
 const els = {
+  tabs: document.querySelector("#settings-tabs"),
+  pages: document.querySelector(".settings-pages"),
+  sidebarStatusCard: document.querySelector(".sidebar-status-card"),
+  sidebarStatus: document.querySelector("#sidebar-status"),
+  sidebarMeta: document.querySelector("#sidebar-meta"),
+  overviewAvatar: document.querySelector("#overview-avatar"),
+  overviewCharacterName: document.querySelector("#overview-character-name"),
+  overviewBackendBadge: document.querySelector("#overview-backend-badge"),
+  overviewDetails: document.querySelector("#overview-details"),
+  overviewAbilities: document.querySelector("#overview-abilities"),
+  overviewTools: document.querySelector("#overview-tools"),
   summary: document.querySelector("#settings-summary"),
   title: document.querySelector(".settings-header h1"),
   characterPack: document.querySelector("#character-pack"),
@@ -105,6 +116,7 @@ const view = {
   resource: null,
   active: null,
   music: null,
+  activePage: "overview",
   diagnostics: null,
   diagnosticsLoading: false,
   diagnosticsAutoKey: "",
@@ -147,6 +159,11 @@ async function boot() {
 }
 
 function bindUi() {
+  els.tabs.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-settings-tab]");
+    if (!button) return;
+    setActiveSettingsPage(button.dataset.settingsTab);
+  });
   els.openInput.addEventListener("click", () => sendCommand("openInput"));
   els.saveBackend.addEventListener("click", () => saveBackendUrl());
   els.saveCharacterPack.addEventListener("click", () => saveCharacterPack());
@@ -510,6 +527,7 @@ function applySnapshot(snapshot) {
   renderResourceMetrics();
   renderOutfitList();
   renderDiagnostics();
+  renderOverview();
   scheduleDiagnosticsAutoRefresh();
   renderEmotionGrid();
 
@@ -528,6 +546,21 @@ function applySnapshot(snapshot) {
   els.stopReply.disabled = !isReplyActive(snapshot);
   els.testTts.disabled = resource.tts?.enabled === false;
   els.testTts.textContent = state.voiceEnabled ? "测试语音" : "开启并测试";
+}
+
+function setActiveSettingsPage(page) {
+  const next = String(page || "overview").trim() || "overview";
+  const target = document.querySelector(`[data-settings-page="${cssEscape(next)}"]`);
+  if (!target) return;
+  view.activePage = next;
+  for (const button of els.tabs.querySelectorAll("[data-settings-tab]")) {
+    button.classList.toggle("active", button.dataset.settingsTab === next);
+  }
+  for (const pageElement of els.pages.querySelectorAll("[data-settings-page]")) {
+    const active = pageElement.dataset.settingsPage === next;
+    pageElement.hidden = !active;
+    pageElement.classList.toggle("active", active);
+  }
 }
 
 function renderPresetChips() {
@@ -659,6 +692,104 @@ function getActiveCharacterPackId() {
   return String(view.character?.packId || view.state?.characterPackId || "").trim();
 }
 
+function renderOverview() {
+  const state = view.state || {};
+  const resource = view.resource || {};
+  const character = view.character || {};
+  const name = String(character.appName || character.name || CHARACTER_NAME);
+  const health = String(resource.health || "unknown");
+  const emotion = String(state.currentEmotion || character.defaultEmotion || DEFAULT_EMOTION);
+  const outfit = String(resource.activeOutfit || state.outfit || DEFAULT_OUTFIT);
+  const source = sourceLabel(resource.source);
+
+  if (els.overviewCharacterName) {
+    els.overviewCharacterName.textContent = `${name} 状态卡`;
+  }
+  if (els.overviewBackendBadge) {
+    els.overviewBackendBadge.dataset.health = health;
+    els.overviewBackendBadge.textContent = `后端 ${healthLabel(health)}`;
+  }
+  if (els.overviewDetails) {
+    const emotionCount = Number(resource.emotionCount || 0);
+    const activity = buildActivityLine({ active: view.active, runtimeMode: "", music: view.music }).replace(/^状态：/, "");
+    els.overviewDetails.textContent = `${outfit} · ${emotion} · ${source} · ${emotionCount} 表情 · ${activity}`;
+  }
+  renderOverviewAvatar(emotion);
+  renderSidebarStatus(health, name, outfit, emotion);
+  renderPillRow(els.overviewAbilities, buildOverviewAbilityPills(state, resource), "等待能力状态");
+  renderPillRow(els.overviewTools, buildOverviewToolPills(), "能力诊断会在后端连接后显示");
+}
+
+function renderOverviewAvatar(activeEmotion) {
+  if (!els.overviewAvatar) return;
+  const emotions = Array.isArray(view.resource?.emotions) ? view.resource.emotions : [];
+  const entry =
+    emotions.find((item) => String(item.id || item.name || "") === activeEmotion) ||
+    emotions.find((item) => String(item.id || item.name || "") === DEFAULT_EMOTION) ||
+    emotions[0];
+  const url = String(entry?.url || "").trim();
+  if (url) {
+    els.overviewAvatar.style.backgroundImage = `url("${url}")`;
+    els.overviewAvatar.textContent = "";
+    return;
+  }
+  els.overviewAvatar.style.backgroundImage = "";
+  els.overviewAvatar.textContent = String(view.character?.name || CHARACTER_NAME).trim().slice(0, 1) || "A";
+}
+
+function renderSidebarStatus(health, name, outfit, emotion) {
+  if (els.sidebarStatusCard) {
+    els.sidebarStatusCard.dataset.health = health;
+  }
+  if (els.sidebarStatus) {
+    els.sidebarStatus.textContent = `${name} · ${healthLabel(health)}`;
+  }
+  if (els.sidebarMeta) {
+    els.sidebarMeta.textContent = `${outfit} · ${emotion}`;
+  }
+}
+
+function buildOverviewAbilityPills(state, resource) {
+  const pills = [];
+  pills.push(resource.health === "online" ? "后端在线" : "本地待机");
+  pills.push(state.voiceEnabled ? "回复朗读" : "朗读关闭");
+  pills.push(state.voiceInputEnabled ? "语音输入" : "语音输入关");
+  if (view.music?.track || view.music?.queueCount) pills.push("音乐队列");
+  if (state.desktopContextEnabled) pills.push("前台窗口");
+  if (state.clipboardContextEnabled) pills.push("剪贴板");
+  if (state.screenVisionEnabled) pills.push("看屏幕");
+  if (state.proactiveWakeEnabled) pills.push("主动搭话");
+  return pills;
+}
+
+function buildOverviewToolPills() {
+  const payload = view.diagnostics?.payload && typeof view.diagnostics.payload === "object" ? view.diagnostics.payload : null;
+  const capabilities = payload?.capabilities && typeof payload.capabilities === "object" ? payload.capabilities : {};
+  const tools = normalizeDiagnosticsList(capabilities.tool_names || capabilities.toolNames);
+  if (tools.length) return tools.slice(0, 8);
+  return ["文件处理", "生成文件交付", "手边物品", "媒体工具", "安全边界", "Live2D 预留"];
+}
+
+function renderPillRow(container, items, emptyText) {
+  if (!container) return;
+  const values = Array.isArray(items) ? items.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  if (!values.length) {
+    const empty = document.createElement("span");
+    empty.className = "is-empty";
+    empty.textContent = emptyText || "暂无状态";
+    container.replaceChildren(empty);
+    return;
+  }
+  container.replaceChildren(
+    ...values.map((item) => {
+      const chip = document.createElement("span");
+      chip.textContent = item;
+      chip.title = item;
+      return chip;
+    })
+  );
+}
+
 function renderResourceDetails() {
   const resource = view.resource || {};
   const source = sourceLabel(resource.source);
@@ -763,6 +894,7 @@ function renderDiagnostics() {
   if (!payload) {
     els.diagnosticsMetrics.replaceChildren();
     renderDiagnosticsTools([]);
+    renderPillRow(els.overviewTools, buildOverviewToolPills(), "能力诊断会在后端连接后显示");
     if (els.refreshDiagnostics) {
       els.refreshDiagnostics.disabled = view.diagnosticsLoading || !canFetchDiagnostics();
     }
@@ -800,6 +932,7 @@ function renderDiagnostics() {
     ]
   ]);
   renderDiagnosticsTools(tools);
+  renderPillRow(els.overviewTools, buildOverviewToolPills(), "能力诊断会在后端连接后显示");
   if (els.refreshDiagnostics) {
     els.refreshDiagnostics.disabled = view.diagnosticsLoading || !canFetchDiagnostics();
   }
@@ -1346,4 +1479,9 @@ function clamp(value, min, max) {
 
 function formatError(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return window.CSS.escape(value);
+  return String(value || "").replace(/"/g, '\\"');
 }

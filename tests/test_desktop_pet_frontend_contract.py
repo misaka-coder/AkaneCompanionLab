@@ -210,6 +210,30 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("desktop_pet_next_diagnostics", settings_source)
         self.assertIn(".diagnostics-pill-row", settings_css)
 
+    def test_next_settings_uses_control_center_navigation_layout(self) -> None:
+        settings_source = _read("desktop_pet_next/src/settings.js")
+        settings_html = _read("desktop_pet_next/settings.html")
+        settings_css = _read("desktop_pet_next/src/settings.css")
+        tauri_source = _read("desktop_pet_next/src-tauri/src/main.rs")
+
+        self.assertIn("settings-sidebar", settings_html)
+        self.assertIn('id="settings-tabs"', settings_html)
+        self.assertIn('data-settings-tab="overview"', settings_html)
+        self.assertIn('data-settings-tab="character"', settings_html)
+        self.assertIn('data-settings-tab="abilities"', settings_html)
+        self.assertIn('data-settings-page="advanced"', settings_html)
+        self.assertIn('id="overview-avatar"', settings_html)
+        self.assertIn('id="overview-abilities"', settings_html)
+        self.assertIn("function setActiveSettingsPage", settings_source)
+        self.assertIn("function renderOverview", settings_source)
+        self.assertIn("renderPillRow", settings_source)
+        self.assertIn(".settings-sidebar", settings_css)
+        self.assertIn(".settings-tabs button.active", settings_css)
+        self.assertIn(".overview-card", settings_css)
+        self.assertIn(".status-badge", settings_css)
+        self.assertIn(".inner_size(1080.0, 720.0)", tauri_source)
+        self.assertIn(".min_inner_size(760.0, 560.0)", tauri_source)
+
     def test_next_visual_renderer_has_static_portrait_adapter_boundary(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")
         renderer_source = _read("desktop_pet_next/src/visual-renderer.js")
