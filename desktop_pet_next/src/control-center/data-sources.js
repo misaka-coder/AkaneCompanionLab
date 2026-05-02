@@ -108,6 +108,10 @@ export function createBackendControlCenterSource(options = {}) {
           health: health.data,
           diagnostics: diagnostics.data,
           petState
+        }),
+        perceptionRuntime: buildPerceptionRuntimePatch({
+          petState,
+          diagnostics: diagnostics.data
         })
       };
     },
@@ -306,10 +310,13 @@ function buildCharacterRuntimePatch({
   const manifestOk = Boolean(manifest.schema_version && outfitCount > 0 && emotionCount > 0);
   const displayName = stringValue(identity.app_name || identity.name || pack?.id || packId || "Akane Default");
   const version = stringValue(profile.version || profile.schema_version || desktop.contract_version || manifest.schema_version);
-  const activeImage = emotionCards.find((item) => item.current)?.image || emotionCards[0]?.image || allOutfits[0]?.image || "";
+  const heroImage = toBackendAssetUrl(
+    baseUrl,
+    assets.hero || assets.cover || assets.banner || assets.header || assets.thumbnail
+  );
 
   return {
-    hero: activeImage,
+    ...(heroImage ? { hero: heroImage } : {}),
     selectedPack: displayName,
     packInfo: [
       { label: "名称", value: displayName },
@@ -396,6 +403,85 @@ function coerceVolumePercent(value, fallback) {
   if (!Number.isFinite(number)) return fallback;
   const percent = number <= 1 ? number * 100 : number;
   return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+function buildPerceptionRuntimePatch({ petState, diagnostics }) {
+  const diagnosticsData = asObject(diagnostics);
+  const serviceOk = stringValue(diagnosticsData?.status) === "ok";
+
+  const desktopContextEnabled = pickBoolean(petState?.desktopContextEnabled, true);
+  const clipboardContextEnabled = pickBoolean(petState?.clipboardContextEnabled, false);
+  const screenVisionEnabled = pickBoolean(petState?.screenVisionEnabled, false);
+  const screenVisionIntervalSec = positiveNumber(petState?.screenVisionIntervalSec);
+  const screenVisionFrameCount = positiveNumber(petState?.screenVisionFrameCount);
+  const proactiveWakeEnabled = pickBoolean(petState?.proactiveWakeEnabled, false);
+  const proactiveWakeIntervalSec = positiveNumber(petState?.proactiveWakeIntervalSec);
+  const screenVisionStatus = stringValue(diagnosticsData?.screen_vision?.status || diagnosticsData?.screenVision?.status);
+
+  const featureCards = [
+    {
+      id: "activeWindow",
+      enabled: desktopContextEnabled,
+      appName: desktopContextEnabled ? "等待前台窗口" : "前台窗口感知已关闭",
+      appDetail: desktopContextEnabled ? "发送消息时可附带窗口上下文" : "不会读取当前窗口",
+      version: serviceOk ? "本地感知" : "等待后端"
+    },
+    {
+      id: "clipboard",
+      enabled: clipboardContextEnabled,
+      code: clipboardContextEnabled
+        ? ["剪贴板内容不会在设置页预览", "仅在发送消息时按设置临时附带"]
+        : ["剪贴板感知已关闭"],
+      source: clipboardContextEnabled ? "仅显示能力状态 · 未读取内容" : "未读取剪贴板"
+    },
+    {
+      id: "screen",
+      enabled: screenVisionEnabled,
+      frequency: screenVisionIntervalSec > 0 ? `${screenVisionIntervalSec} 秒` : "",
+      frames: screenVisionFrameCount > 0 ? `${screenVisionFrameCount}` : ""
+    },
+    {
+      id: "proactive",
+      enabled: proactiveWakeEnabled,
+      activeOption: proactiveWakeIntervalSec > 0 ? formatDurationOption(proactiveWakeIntervalSec) : ""
+    }
+  ];
+
+  return {
+    featureCards,
+    diagnostics: [
+      {
+        label: "屏幕捕获帧率",
+        value: screenVisionEnabled ? "已开启" : "已关闭",
+        detail: screenVisionStatus || (screenVisionEnabled ? "等待采样" : "未运行"),
+        tone: screenVisionEnabled ? "good" : "info"
+      },
+      {
+        label: "OCR 识别状态",
+        value: screenVisionEnabled ? "待接入" : "未启用",
+        detail: "视觉识别状态暂未接入控制中心",
+        tone: "info"
+      },
+      {
+        label: "最后更新时间",
+        value: formatTimeOfDay(new Date()),
+        detail: serviceOk ? "已同步" : "等待后端",
+        tone: serviceOk ? "good" : "warning"
+      }
+    ]
+  };
+}
+
+function formatDurationOption(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  if (value % 60 === 0) return `${Math.round(value / 60)} 分钟`;
+  return `${Math.round(value)} 秒`;
+}
+
+function formatTimeOfDay(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function normalizeOutfitCards(outfits, { activeOutfitId, activeEmotionId, baseUrl }) {
@@ -603,6 +689,10 @@ function formatBytes(value) {
     unit += 1;
   }
   return `${size >= 10 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
+}
+
+function pickBoolean(value, fallback) {
+  return typeof value === "boolean" ? value : Boolean(fallback);
 }
 
 function formatDataSourceError(error) {

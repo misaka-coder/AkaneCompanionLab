@@ -11,6 +11,7 @@ export function createControlCenterSnapshot(raw = {}) {
   const overviewRuntime = raw.overviewRuntime || raw.runtime?.overview || {};
   const characterRuntime = raw.characterRuntime || raw.runtime?.character || {};
   const voiceRuntime = raw.voiceRuntime || raw.runtime?.voice || {};
+  const perceptionRuntime = raw.perceptionRuntime || raw.runtime?.perception || {};
   return {
     schemaVersion: CONTROL_CENTER_SCHEMA_VERSION,
     sourceKind: raw.sourceKind || "unknown",
@@ -21,7 +22,7 @@ export function createControlCenterSnapshot(raw = {}) {
       character: adaptCharacterPage(raw.characterPage || raw.character || {}, characterRuntime),
       voice: adaptVoicePage(raw.voicePage || raw.voice || {}, voiceRuntime),
       music: raw.musicPage || raw.music || {},
-      perception: raw.perceptionPage || raw.perception || {},
+      perception: adaptPerceptionPage(raw.perceptionPage || raw.perception || {}, perceptionRuntime),
       abilities: raw.abilitiesPage || raw.abilities || {},
       advanced: raw.advancedPage || raw.advanced || {}
     },
@@ -73,6 +74,48 @@ function adaptVoicePage(page, runtime = {}) {
     voice.diagnostics = runtime.diagnostics;
   }
   return voice;
+}
+
+function adaptPerceptionPage(page, runtime = {}) {
+  const perception = { ...page };
+  const cardPatchById = {};
+  if (Array.isArray(runtime.featureCards)) {
+    for (const card of runtime.featureCards) {
+      const id = String(card?.id || "").trim();
+      if (id) cardPatchById[id] = card;
+    }
+  }
+  if (Array.isArray(perception.featureCards)) {
+    perception.featureCards = perception.featureCards.map((card) => {
+      const id = String(card?.id || "").trim();
+      const patch = cardPatchById[id];
+      if (!patch) return card;
+      const merged = { ...card };
+      if (typeof patch.enabled === "boolean") merged.enabled = patch.enabled;
+      if (patch.appName !== undefined) merged.appName = String(patch.appName || "");
+      if (patch.appDetail !== undefined) merged.appDetail = String(patch.appDetail || "");
+      if (patch.version !== undefined) merged.version = String(patch.version || "");
+      if (patch.code !== undefined) merged.code = Array.isArray(patch.code) ? patch.code : [];
+      if (patch.source !== undefined) merged.source = String(patch.source || "");
+      if (patch.frequency !== undefined) merged.frequency = String(patch.frequency || "");
+      if (patch.frames !== undefined) merged.frames = String(patch.frames || "");
+      if (patch.activeOption !== undefined) {
+        merged.activeOption = String(patch.activeOption || "");
+        if (
+          merged.activeOption &&
+          Array.isArray(merged.options) &&
+          !merged.options.includes(merged.activeOption)
+        ) {
+          merged.options = [...merged.options, merged.activeOption];
+        }
+      }
+      return merged;
+    });
+  }
+  if (Array.isArray(runtime.diagnostics) && runtime.diagnostics.length) {
+    perception.diagnostics = runtime.diagnostics;
+  }
+  return perception;
 }
 
 function createShellSnapshot(raw) {

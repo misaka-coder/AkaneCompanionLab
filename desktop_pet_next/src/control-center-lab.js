@@ -165,6 +165,19 @@ function syncInteractiveStateWithSnapshot() {
   if (!emotions.some((item) => item.id === state.activeEmotion)) {
     state.activeEmotion = emotions.find((item) => item.current)?.id || emotions[0]?.id || "";
   }
+  syncPerceptionInteractiveState();
+}
+
+function syncPerceptionInteractiveState() {
+  const featureCards = Array.isArray(perceptionPage.featureCards) ? perceptionPage.featureCards : [];
+  for (const card of featureCards) {
+    if (!card?.id) continue;
+    state.switches[card.id] = Boolean(card.enabled);
+  }
+  const proactive = featureCards.find((card) => card?.id === "proactive");
+  if (proactive?.activeOption) {
+    state.activeInterval = String(proactive.activeOption);
+  }
 }
 
 function renderShell() {
