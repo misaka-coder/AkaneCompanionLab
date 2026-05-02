@@ -10,6 +10,7 @@ export function createControlCenterSnapshot(raw = {}) {
   const shell = createShellSnapshot(raw);
   const overviewRuntime = raw.overviewRuntime || raw.runtime?.overview || {};
   const characterRuntime = raw.characterRuntime || raw.runtime?.character || {};
+  const voiceRuntime = raw.voiceRuntime || raw.runtime?.voice || {};
   return {
     schemaVersion: CONTROL_CENTER_SCHEMA_VERSION,
     sourceKind: raw.sourceKind || "unknown",
@@ -18,7 +19,7 @@ export function createControlCenterSnapshot(raw = {}) {
     pages: {
       overview: adaptOverviewPage(raw.overviewPage || raw.overview || {}, overviewRuntime),
       character: adaptCharacterPage(raw.characterPage || raw.character || {}, characterRuntime),
-      voice: raw.voicePage || raw.voice || {},
+      voice: adaptVoicePage(raw.voicePage || raw.voice || {}, voiceRuntime),
       music: raw.musicPage || raw.music || {},
       perception: raw.perceptionPage || raw.perception || {},
       abilities: raw.abilitiesPage || raw.abilities || {},
@@ -58,6 +59,20 @@ function adaptCharacterPage(page, runtime = {}) {
     character.actions = runtime.actions;
   }
   return character;
+}
+
+function adaptVoicePage(page, runtime = {}) {
+  const voice = { ...page };
+  if (runtime.tts && typeof runtime.tts === "object") {
+    voice.tts = { ...voice.tts, ...dropEmpty(runtime.tts) };
+  }
+  if (runtime.asr && typeof runtime.asr === "object") {
+    voice.asr = { ...voice.asr, ...dropEmpty(runtime.asr) };
+  }
+  if (Array.isArray(runtime.diagnostics) && runtime.diagnostics.length) {
+    voice.diagnostics = runtime.diagnostics;
+  }
+  return voice;
 }
 
 function createShellSnapshot(raw) {

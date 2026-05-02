@@ -103,6 +103,11 @@ export function createBackendControlCenterSource(options = {}) {
           emotion,
           petState,
           availableCharacterPacks
+        }),
+        voiceRuntime: buildVoiceRuntimePatch({
+          health: health.data,
+          diagnostics: diagnostics.data,
+          petState
         })
       };
     },
@@ -343,6 +348,54 @@ function buildCharacterRuntimePatch({
       "服装与表情来自统一资源清单，桌宠和后端会按同一套资源理解当前形象。"
     ]
   };
+}
+
+function buildVoiceRuntimePatch({ health, diagnostics, petState }) {
+  const healthData = asObject(health);
+  const diagnosticsData = asObject(diagnostics);
+  const runtime = asObject(diagnosticsData.runtime);
+  const runtimeMetrics = asObject(runtime.metrics);
+  const healthTts = asObject(healthData.tts);
+  const healthAsr = asObject(healthData.asr);
+
+  const serviceOk = stringValue(healthData?.status) === "ok" || stringValue(diagnosticsData?.status) === "ok";
+  const ttsEnabled = petState?.voiceEnabled ?? healthTts.enabled ?? serviceOk;
+  const ttsVolume = coerceVolumePercent(petState?.voiceVolume, 80);
+  const asrAvailable = Boolean(healthAsr.endpoint || Object.keys(healthAsr).length);
+  const asrEnabled = petState?.voiceInputEnabled ?? asrAvailable;
+  const overallState = serviceOk ? "正常运行" : "未连接";
+  const overallTone = serviceOk ? "good" : "warning";
+  const ttsOnline = healthTts.endpoint ? "在线" : serviceOk ? "未启用" : "离线";
+  const ttsTone = healthTts.endpoint ? "good" : "warning";
+  const asrOnline = asrAvailable ? "在线" : "未启用";
+  const asrTone = asrAvailable ? "good" : "muted";
+  const networkState = serviceOk ? "良好" : "离线";
+  const networkTone = serviceOk ? "good" : "warning";
+  const latency = inferLatencyLabel(runtimeMetrics);
+
+  return {
+    tts: {
+      enabled: Boolean(ttsEnabled),
+      volume: ttsVolume
+    },
+    asr: {
+      enabled: Boolean(asrEnabled)
+    },
+    diagnostics: [
+      { label: "整体状态", value: overallState, tone: overallTone },
+      { label: "TTS 语音引擎", value: ttsOnline, tone: ttsTone },
+      { label: "ASR 语音引擎", value: asrOnline, tone: asrTone },
+      { label: "响应延迟", value: latency, tone: serviceOk ? "good" : "warning" },
+      { label: "网络状态", value: networkState, tone: networkTone }
+    ]
+  };
+}
+
+function coerceVolumePercent(value, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  const percent = number <= 1 ? number * 100 : number;
+  return Math.max(0, Math.min(100, Math.round(percent)));
 }
 
 function normalizeOutfitCards(outfits, { activeOutfitId, activeEmotionId, baseUrl }) {
