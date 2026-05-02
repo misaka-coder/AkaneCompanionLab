@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 import akaneNormal from "./assets/characters/猫娘/正常.png";
@@ -31,7 +32,12 @@ import {
 import "./control-center-lab.css";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
+const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
+const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
+const RUNTIME_SNAPSHOT_HYDRATE_DELAY_MS = 900;
 const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
+let latestRuntimeSnapshot = null;
+let runtimeSnapshotHydrateTimer = 0;
 const root = document.querySelector("#app");
 let dataSource = createControlCenterDataSource(createControlCenterDataSourceOptions());
 let snapshot = createControlCenterSnapshot(dataSource.readInitialState());
@@ -81,6 +87,7 @@ renderShell();
 bindEvents();
 renderActivePage();
 void hydrateControlCenterSnapshot();
+void bindSettingsSnapshotListener();
 
 function createControlCenterDataSourceOptions(overrides = {}) {
   const params = new URLSearchParams(window.location.search);
@@ -98,6 +105,7 @@ function createControlCenterDataSourceOptions(overrides = {}) {
     characterPackId: params.get("character_pack_id") || params.get("characterPackId") || petState.characterPackId || localStorage.getItem("akane.controlCenter.characterPackId") || "",
     outfit: params.get("outfit") || petState.outfit || "",
     emotion: params.get("emotion") || petState.currentEmotion || "",
+    musicSnapshot: overrides.musicSnapshot || latestRuntimeSnapshot?.music || null,
     petState,
     availableCharacterPacks: overrides.availableCharacterPacks || []
   };
@@ -129,7 +137,11 @@ async function createRuntimeDataSourceOptions() {
     } catch {
       availableCharacterPacks = [];
     }
-    return createControlCenterDataSourceOptions({ petState, availableCharacterPacks });
+    return createControlCenterDataSourceOptions({
+      petState,
+      availableCharacterPacks,
+      musicSnapshot: latestRuntimeSnapshot?.music || null
+    });
   } catch {
     return null;
   }
@@ -1633,4 +1645,25 @@ function escapeAttr(value) {
 
 function formatError(error) {
   return error instanceof Error ? error.message : String(error || "unknown");
+}
+
+async function bindSettingsSnapshotListener() {
+  if (!isTauriRuntime) return;
+  try {
+    await listen(SETTINGS_SNAPSHOT_EVENT, (event) => {
+      latestRuntimeSnapshot = event.payload || null;
+      scheduleRuntimeSnapshotHydrate();
+    });
+    await emit(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot" });
+  } catch {
+    // settings window may not be open yet
+  }
+}
+
+function scheduleRuntimeSnapshotHydrate(delay = RUNTIME_SNAPSHOT_HYDRATE_DELAY_MS) {
+  if (runtimeSnapshotHydrateTimer) return;
+  runtimeSnapshotHydrateTimer = window.setTimeout(() => {
+    runtimeSnapshotHydrateTimer = 0;
+    void hydrateControlCenterSnapshot();
+  }, delay);
 }

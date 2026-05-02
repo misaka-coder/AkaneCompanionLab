@@ -12,6 +12,7 @@ export function createControlCenterSnapshot(raw = {}) {
   const characterRuntime = raw.characterRuntime || raw.runtime?.character || {};
   const voiceRuntime = raw.voiceRuntime || raw.runtime?.voice || {};
   const perceptionRuntime = raw.perceptionRuntime || raw.runtime?.perception || {};
+  const musicRuntime = raw.musicRuntime || raw.runtime?.music || {};
   return {
     schemaVersion: CONTROL_CENTER_SCHEMA_VERSION,
     sourceKind: raw.sourceKind || "unknown",
@@ -21,7 +22,7 @@ export function createControlCenterSnapshot(raw = {}) {
       overview: adaptOverviewPage(raw.overviewPage || raw.overview || {}, overviewRuntime),
       character: adaptCharacterPage(raw.characterPage || raw.character || {}, characterRuntime),
       voice: adaptVoicePage(raw.voicePage || raw.voice || {}, voiceRuntime),
-      music: raw.musicPage || raw.music || {},
+      music: adaptMusicPage(raw.musicPage || raw.music || {}, musicRuntime),
       perception: adaptPerceptionPage(raw.perceptionPage || raw.perception || {}, perceptionRuntime),
       abilities: raw.abilitiesPage || raw.abilities || {},
       advanced: raw.advancedPage || raw.advanced || {}
@@ -116,6 +117,25 @@ function adaptPerceptionPage(page, runtime = {}) {
     perception.diagnostics = runtime.diagnostics;
   }
   return perception;
+}
+
+function adaptMusicPage(page, runtime = {}) {
+  if (!runtime || Object.keys(runtime).length === 0) return page;
+  const music = { ...page };
+  if (runtime.nowPlaying && typeof runtime.nowPlaying === "object") {
+    music.nowPlaying = { ...music.nowPlaying, ...runtime.nowPlaying };
+  }
+  if (Array.isArray(runtime.playlist)) {
+    music.playlist = runtime.playlist.map((item) => ({
+      cover: music.nowPlaying.cover,
+      ...item
+    }));
+  }
+  if (Array.isArray(runtime.lyrics)) music.lyrics = runtime.lyrics;
+  if (typeof runtime.activeLyric === "number") music.activeLyric = runtime.activeLyric;
+  if (Array.isArray(runtime.info)) music.info = runtime.info;
+  if (runtime.bottomStatus !== undefined) music.bottomStatus = runtime.bottomStatus;
+  return music;
 }
 
 function createShellSnapshot(raw) {

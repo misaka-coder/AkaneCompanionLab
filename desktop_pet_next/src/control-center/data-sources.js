@@ -50,6 +50,7 @@ export function createBackendControlCenterSource(options = {}) {
   const emotion = options.emotion || "";
   const petState = options.petState && typeof options.petState === "object" ? options.petState : {};
   const availableCharacterPacks = Array.isArray(options.availableCharacterPacks) ? options.availableCharacterPacks : [];
+  const musicSnapshot = options.musicSnapshot && typeof options.musicSnapshot === "object" ? options.musicSnapshot : null;
 
   return {
     kind: CONTROL_CENTER_SOURCE_KIND.backend,
@@ -112,7 +113,8 @@ export function createBackendControlCenterSource(options = {}) {
         perceptionRuntime: buildPerceptionRuntimePatch({
           petState,
           diagnostics: diagnostics.data
-        })
+        }),
+        musicRuntime: buildMusicRuntimePatch({ musicSnapshot, petState })
       };
     },
     readInitialState() {
@@ -482,6 +484,85 @@ function formatDurationOption(seconds) {
 function formatTimeOfDay(date) {
   const pad = (value) => String(value).padStart(2, "0");
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function buildMusicRuntimePatch({ musicSnapshot, petState }) {
+  if (!musicSnapshot || typeof musicSnapshot !== "object") return null;
+
+  const track = musicSnapshot.track;
+  const displayName = stringValue(track?.displayName || musicSnapshot.displayName);
+  const hasTrack = Boolean(displayName);
+  const queue = Array.isArray(musicSnapshot.queue) ? musicSnapshot.queue : [];
+  const rawQueueIndex = Number(musicSnapshot.queueIndex);
+  const queueIndex = Number.isInteger(rawQueueIndex) ? rawQueueIndex : -1;
+  const activeQueueIndex = queueIndex >= 0 && queueIndex < queue.length ? queueIndex : -1;
+  const progressSec = Number.isFinite(musicSnapshot.progressSeconds) ? Math.max(0, musicSnapshot.progressSeconds) : 0;
+  const durationSec = Number.isFinite(musicSnapshot.durationSeconds) ? Math.max(0, musicSnapshot.durationSeconds) : 0;
+  const progress = durationSec > 0 ? Math.min(100, Math.round((progressSec / durationSec) * 100)) : 0;
+  const volume = coerceVolumePercent(petState?.voiceVolume, 68);
+  const currentLyric = musicSnapshot.currentLyric && typeof musicSnapshot.currentLyric === "object"
+    ? musicSnapshot.currentLyric
+    : null;
+  const hasLyrics = Boolean(currentLyric && currentLyric.lineCount > 0);
+
+  const nowPlaying = {
+    title: hasTrack ? displayName : "暂无播放",
+    artist: hasTrack ? "" : "",
+    quality: hasTrack ? (track?.timelineQuality || track?.extension || "本地文件") : "",
+    elapsed: formatSeconds(progressSec),
+    duration: formatSeconds(durationSec),
+    progress,
+    volume,
+    cover: "music"
+  };
+
+  const playlist = hasTrack
+    ? queue.map((item, index) => ({
+        title: item.displayName || item.fileName || "未命名曲目",
+        artist: "",
+        duration: "",
+        active: index === activeQueueIndex
+      }))
+    : [];
+
+  let lyrics = [];
+  let activeLyric = -1;
+  if (hasLyrics && currentLyric.text) {
+    const lines = [];
+    if (currentLyric.previousText) lines.push(currentLyric.previousText);
+    lines.push(currentLyric.text);
+    if (currentLyric.nextText) lines.push(currentLyric.nextText);
+    lyrics = lines;
+    activeLyric = currentLyric.previousText ? 1 : 0;
+  } else {
+    lyrics = ["当前音乐暂无歌词"];
+    activeLyric = -1;
+  }
+
+  const info = hasTrack
+    ? [
+        { label: "时长", value: formatSeconds(durationSec) },
+        { label: "来源", value: "本地音乐" },
+        { label: "音质", value: track?.timelineQuality || track?.extension || "未知" }
+      ]
+    : [
+        { label: "时长", value: "-" },
+        { label: "来源", value: "-" },
+        { label: "音质", value: "-" }
+      ];
+
+  const bottomStatus = hasTrack
+    ? `正在播放 · ${queue.length > 0 && activeQueueIndex >= 0 ? `${activeQueueIndex + 1}/${queue.length}` : "单曲"}`
+    : "暂无播放 · 等待音乐加入队列";
+
+  return { nowPlaying, playlist, lyrics, activeLyric, info, bottomStatus };
+}
+
+function formatSeconds(seconds) {
+  const sec = Math.max(0, Math.round(Number(seconds) || 0));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
 function normalizeOutfitCards(outfits, { activeOutfitId, activeEmotionId, baseUrl }) {
