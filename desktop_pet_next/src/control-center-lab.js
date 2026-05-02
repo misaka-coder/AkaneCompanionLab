@@ -17,19 +17,27 @@ import cloudLetter from "./assets/control-center-lab/covers/cloud-letter.png";
 import moonBalcony from "./assets/control-center-lab/covers/moon-balcony.png";
 import starryCloudCat from "./assets/control-center-lab/covers/starry-cloud-cat.png";
 import {
-  abilitiesPage,
-  advancedPage,
-  characterPage,
-  labMeta,
-  musicPage,
-  navItems,
-  overviewPage,
-  perceptionPage,
-  voicePage
-} from "./control-center/mock-data.js";
+  CONTROL_CENTER_ACTIONS,
+  createControlCenterActionRouter
+} from "./control-center/action-router.js";
+import { createControlCenterSnapshot } from "./control-center/data-adapter.js";
+import { createControlCenterDataSource } from "./control-center/data-sources.js";
 import "./control-center-lab.css";
 
 const root = document.querySelector("#app");
+const dataSource = createControlCenterDataSource();
+const snapshot = createControlCenterSnapshot(dataSource.readInitialState());
+const actionRouter = createControlCenterActionRouter({ dataSource });
+const { labMeta, navItems, backgroundAsset } = snapshot.shell;
+const {
+  abilities: abilitiesPage,
+  advanced: advancedPage,
+  character: characterPage,
+  music: musicPage,
+  overview: overviewPage,
+  perception: perceptionPage,
+  voice: voicePage
+} = snapshot.pages;
 const images = {
   normal: akaneNormal,
   thinking: akaneThinking,
@@ -67,7 +75,7 @@ renderActivePage();
 
 function renderShell() {
   root.innerHTML = `
-    <div class="lab-sky" style="--lab-background-image: url(${imageFor("skyCityBalcony")})" aria-hidden="true">
+    <div class="lab-sky" style="--lab-background-image: url(${imageFor(backgroundAsset)})" aria-hidden="true">
       <span class="sparkle sparkle-one"></span>
       <span class="sparkle sparkle-two"></span>
       <span class="sparkle sparkle-three"></span>
@@ -105,11 +113,11 @@ function renderShell() {
 
       <section class="cc-main">
         <header class="window-chrome">
-          <button class="chrome-icon" type="button" aria-label="通知">${icon("bell")}</button>
+          <button class="chrome-icon" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.windowNotify}" aria-label="通知">${icon("bell")}</button>
           <div class="chrome-actions" aria-label="窗口操作">
-            <button class="chrome-icon" type="button" aria-label="最小化">${icon("minus")}</button>
-            <button class="chrome-icon" type="button" aria-label="最大化">${icon("square")}</button>
-            <button class="chrome-icon" type="button" aria-label="关闭">${icon("x")}</button>
+            <button class="chrome-icon" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.windowMinimize}" aria-label="最小化">${icon("minus")}</button>
+            <button class="chrome-icon" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.windowMaximize}" aria-label="最大化">${icon("square")}</button>
+            <button class="chrome-icon" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.windowClose}" aria-label="关闭">${icon("x")}</button>
           </div>
         </header>
         <div id="page-content" class="page-content"></div>
@@ -124,6 +132,16 @@ function renderShell() {
 
 function bindEvents() {
   root.addEventListener("click", (event) => {
+    const actionButton = event.target.closest("[data-action-id]");
+    if (actionButton) {
+      void actionRouter.run(
+        actionButton.dataset.actionId,
+        { page: state.activePage },
+        { source: "control-center-lab" }
+      );
+      return;
+    }
+
     const navButton = event.target.closest("[data-page]");
     if (navButton) {
       state.activePage = navButton.dataset.page;
@@ -321,7 +339,7 @@ function renderConnectionRow(item) {
 
 function renderOverviewAction(item) {
   return `
-    <button class="${item.tone}" type="button">
+    <button class="${item.tone}" type="button" data-action-id="${escapeAttr(item.commandId)}">
       ${icon(item.icon)}
       <span>${escapeHtml(item.label)}</span>
     </button>
@@ -337,7 +355,7 @@ function renderOverviewPackCard() {
         <strong>${escapeHtml(overviewPage.pack.name)}</strong>
         <p>版本：${escapeHtml(overviewPage.pack.version)}</p>
         <p>发布时间：${escapeHtml(overviewPage.pack.publishedAt)}</p>
-        <button type="button">${escapeHtml(overviewPage.pack.action)} ${icon("chevron")}</button>
+        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterOpenPackFolder}">${escapeHtml(overviewPage.pack.action)} ${icon("chevron")}</button>
       </div>
     </article>
   `;
@@ -427,8 +445,8 @@ function renderCharacterPage() {
             ${icon("chevronDown")}
           </button>
           <div class="pack-action-row">
-            <button class="pink-action" type="button">${icon("cloudUpload")} 导入 zip</button>
-            <button type="button">${icon("folder")} 打开角色包目录</button>
+            <button class="pink-action" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterImportZip}">${icon("cloudUpload")} 导入 zip</button>
+            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterOpenPackFolder}">${icon("folder")} 打开角色包目录</button>
           </div>
         </article>
         <article class="glass-card pack-info-panel">
@@ -503,9 +521,9 @@ function renderCharacterPage() {
       </div>
 
       <div class="character-action-bar">
-        <button class="apply-button" type="button">${icon("checkCircle")} ${escapeHtml(characterPage.actions[0])}</button>
-        <button type="button">${icon("refresh")} ${escapeHtml(characterPage.actions[1])}</button>
-        <button type="button">${icon("undo")} ${escapeHtml(characterPage.actions[2])}</button>
+        <button class="apply-button" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterApply}">${icon("checkCircle")} ${escapeHtml(characterPage.actions[0])}</button>
+        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterRefresh}">${icon("refresh")} ${escapeHtml(characterPage.actions[1])}</button>
+        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterRestoreDefaults}">${icon("undo")} ${escapeHtml(characterPage.actions[2])}</button>
       </div>
     </section>
   `;
@@ -557,8 +575,8 @@ function renderVoicePage() {
       </div>
 
       <div class="voice-action-row">
-        <button class="voice-test-button" type="button">${icon("mic")} <span>测试语音<small>检测麦克风与识别效果</small></span></button>
-        <button class="voice-stop-button" type="button">${icon("stop")} <span>停止语音<small>停止当前语音会话</small></span></button>
+        <button class="voice-test-button" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceTest}">${icon("mic")} <span>测试语音<small>检测麦克风与识别效果</small></span></button>
+        <button class="voice-stop-button" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceStop}">${icon("stop")} <span>停止语音<small>停止当前语音会话</small></span></button>
       </div>
 
       <div class="voice-bottom-grid">
@@ -742,11 +760,11 @@ function renderMusicPage() {
             <button type="button">${icon("repeat")} 列表循环 ${icon("chevronDown")}</button>
           </div>
           <div class="music-control-row">
-            <button type="button" title="上一首" aria-label="上一首">${icon("previous")}</button>
-            <button type="button" title="下一首" aria-label="下一首">${icon("next")}</button>
-            <button class="pause" type="button" title="暂停" aria-label="暂停">${icon("pause")}</button>
-            <button type="button" title="停止" aria-label="停止">${icon("stop")}</button>
-            <button type="button" title="清空" aria-label="清空">${icon("trash")}</button>
+            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicPrevious}" title="上一首" aria-label="上一首">${icon("previous")}</button>
+            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicNext}" title="下一首" aria-label="下一首">${icon("next")}</button>
+            <button class="pause" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicPause}" title="暂停" aria-label="暂停">${icon("pause")}</button>
+            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicStop}" title="停止" aria-label="停止">${icon("stop")}</button>
+            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicClear}" title="清空" aria-label="清空">${icon("trash")}</button>
           </div>
         </article>
 

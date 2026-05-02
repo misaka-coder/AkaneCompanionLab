@@ -3,6 +3,13 @@
 This document describes the future backend data needed by `desktop_pet_next/control-center-lab.html`.
 The current UI is a static prototype: all values in `src/control-center/mock-data.js` are mock data and should be replaced through an adapter layer later.
 
+Current adapter files:
+
+- `src/control-center/snapshot-schema.js`: front-end snapshot ids, version, and JSDoc contract.
+- `src/control-center/data-sources.js`: mock/backend data source boundary.
+- `src/control-center/data-adapter.js`: normalizes source data into `ControlCenterSnapshot`.
+- `src/control-center/action-router.js`: routes user-facing action ids without coupling buttons to backend APIs.
+
 ## Contract Shape
 
 Recommended snapshot shape:
@@ -171,6 +178,9 @@ type ControlCenterAction = {
 ```
 
 The UI should call an adapter such as `runControlCenterAction(actionId, payload)` later. The prototype buttons currently do not call backend APIs.
+
+In the lab implementation, buttons use `data-action-id` and are routed through `createControlCenterActionRouter`.
+Mock actions resolve locally; real backend or Tauri actions should be registered in the router instead of being called directly from render functions.
 
 ## Assets
 
