@@ -215,6 +215,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         settings_html = _read("desktop_pet_next/settings.html")
         settings_css = _read("desktop_pet_next/src/settings.css")
         tauri_source = _read("desktop_pet_next/src-tauri/src/main.rs")
+        tauri_capabilities = _read("desktop_pet_next/src-tauri/capabilities/default.json")
 
         self.assertIn("settings-sidebar", settings_html)
         self.assertIn("settings-window-bar", settings_html)
@@ -253,6 +254,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn(".inner_size(1080.0, 720.0)", tauri_source)
         self.assertIn(".min_inner_size(760.0, 560.0)", tauri_source)
         self.assertIn(".decorations(false)", tauri_source)
+        self.assertIn("core:window:allow-close", tauri_capabilities)
+        self.assertIn("core:window:allow-minimize", tauri_capabilities)
+        self.assertIn("core:window:allow-toggle-maximize", tauri_capabilities)
 
     def test_next_visual_renderer_has_static_portrait_adapter_boundary(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")
