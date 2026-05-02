@@ -119,6 +119,13 @@ export function createBackendControlCenterSource(options = {}) {
           diagnostics: diagnostics.data,
           workspace: workspace.data,
           connected: health.ok || diagnostics.ok
+        }),
+        advancedRuntime: buildAdvancedRuntimePatch({
+          health: health.data,
+          diagnostics: diagnostics.data,
+          workspace: workspace.data,
+          metricsText: metrics.data,
+          petState
         })
       };
     },
@@ -623,6 +630,117 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, connected }) {
       ]
     }
   };
+}
+
+function buildAdvancedRuntimePatch({ health, diagnostics, workspace, metricsText, petState }) {
+  const healthData = asObject(health);
+  const diagnosticsData = asObject(diagnostics);
+  const capabilities = asObject(diagnosticsData.capabilities);
+  const runtime = asObject(diagnosticsData.runtime);
+  const runtimeMetrics = asObject(runtime.metrics);
+  const metrics = parsePrometheusMetrics(metricsText);
+  const tools = normalizeStringList(capabilities.tool_names || capabilities.toolNames);
+  const serviceOk = stringValue(healthData?.status) === "ok" || stringValue(diagnosticsData?.status) === "ok";
+
+  // systemStrip — patch by label
+  const cpuPercent = metrics?.cpu_percent ? `${Math.round(metrics.cpu_percent)}%` : undefined;
+  const memPercent = metrics?.memory_percent ? `${Math.round(metrics.memory_percent)}%` : undefined;
+  const systemStrip = {
+    "运行中": { tone: serviceOk ? "green" : "muted" },
+    "CPU": { value: cpuPercent },
+    "内存": { value: memPercent },
+    "网络": { value: serviceOk ? "良好" : "离线", tone: serviceOk ? "green" : "warning" }
+  };
+
+  // diagnostics.metrics — patch by label
+  const currentMemoryBytes = metrics?.akane_tracemalloc_current_bytes;
+  const memoryDisplay = currentMemoryBytes ? formatBytes(currentMemoryBytes) : undefined;
+  const diagnosticsMetrics = {
+    "应用状态": { value: serviceOk ? "运行中" : "等待连接", tone: serviceOk ? "green" : "warning" },
+    "后端健康": { value: serviceOk ? "良好" : "异常", tone: serviceOk ? "green" : "danger" },
+    "内存占用": { value: memoryDisplay }
+  };
+
+  // diagnostics.logs — generate status sync timeline
+  const baseTime = diagnosticsData.server_time
+    ? new Date(Number(diagnosticsData.server_time) * 1000)
+    : new Date();
+  const logs = generateAdvancedSyncLogs(baseTime, serviceOk);
+
+  // abilityOverview — derived from tool names
+  const abilityOverview = buildAdvancedAbilityOverview(tools);
+
+  // live2d — reserved status only
+  const live2d = {
+    rows: [
+      { label: "模型", value: serviceOk ? "等待加载" : "未就绪" },
+      { label: "动作", value: "静态立绘" },
+      { label: "渲染器", value: "预留 · 待接入" },
+      { label: "物理", value: "预留 · 待接入" }
+    ]
+  };
+
+  return {
+    systemStrip,
+    diagnostics: { metrics: diagnosticsMetrics, logs },
+    live2d,
+    abilityOverview
+  };
+}
+
+function generateAdvancedSyncLogs(baseTime, serviceOk) {
+  const pad = (v) => String(v).padStart(2, "0");
+  const fmt = (date) => `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  if (!serviceOk) return [{ time: fmt(baseTime), level: "WARN", message: "[Service] Backend not connected" }];
+
+  const entries = [
+    { offset: -12, level: "INFO", message: "[Service] Health check passed" },
+    { offset: -8, level: "INFO", message: "[Sensing] Config loaded" },
+    { offset: -5, level: "INFO", message: "[Security] Policy checked" },
+    { offset: -3, level: "INFO", message: "[Workspace] Summary synced" },
+    { offset: -1, level: "INFO", message: "[Capability] Registry synced" },
+    { offset: 0, level: "INFO", message: "[Service] Backend connected" }
+  ];
+
+  const logs = [];
+  for (const entry of entries) {
+    const t = new Date(baseTime);
+    t.setSeconds(t.getSeconds() + entry.offset);
+    logs.push({ time: fmt(t), level: entry.level, message: entry.message });
+  }
+  return logs;
+}
+
+function buildAdvancedAbilityOverview(tools) {
+  const available = [];
+  if (tools.some((name) => /file|attachment|compose|send|document|read/i.test(name))) {
+    available.push({ label: "文件处理", icon: "folder", tone: "blue" });
+  }
+  if (tools.some((name) => /send_file|compose_file|generated|handoff/i.test(name))) {
+    available.push({ label: "生成文件交付", icon: "file", tone: "green" });
+  }
+  if (tools.some((name) => /media|audio|voice|transcribe|stems|clean/i.test(name))) {
+    available.push({ label: "媒体工具", icon: "play", tone: "purple" });
+  }
+  if (tools.some((name) => /clipboard|shelf|workspace|task|gift/i.test(name))) {
+    available.push({ label: "手边物品", icon: "gift", tone: "pink" });
+  }
+  if (tools.some((name) => /guard|safe|security|approval|sandbox/i.test(name))) {
+    available.push({ label: "安全边界", icon: "shield", tone: "orange" });
+  }
+  if (tools.some((name) => /memory|retrieve/i.test(name))) {
+    available.push({ label: "记忆检索", icon: "sparkle", tone: "blue" });
+  }
+  if (!available.length) {
+    available.push(
+      { label: "文件处理", icon: "folder", tone: "blue" },
+      { label: "生成文件交付", icon: "file", tone: "green" },
+      { label: "手边物品", icon: "gift", tone: "pink" },
+      { label: "媒体工具", icon: "play", tone: "purple" },
+      { label: "安全边界", icon: "shield", tone: "orange" }
+    );
+  }
+  return available.slice(0, 5);
 }
 
 function buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, safety }) {

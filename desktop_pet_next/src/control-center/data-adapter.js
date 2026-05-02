@@ -14,6 +14,7 @@ export function createControlCenterSnapshot(raw = {}) {
   const perceptionRuntime = raw.perceptionRuntime || raw.runtime?.perception || {};
   const musicRuntime = raw.musicRuntime || raw.runtime?.music || {};
   const abilitiesRuntime = raw.abilitiesRuntime || raw.runtime?.abilities || {};
+  const advancedRuntime = raw.advancedRuntime || raw.runtime?.advanced || {};
   return {
     schemaVersion: CONTROL_CENTER_SCHEMA_VERSION,
     sourceKind: raw.sourceKind || "unknown",
@@ -26,7 +27,7 @@ export function createControlCenterSnapshot(raw = {}) {
       music: adaptMusicPage(raw.musicPage || raw.music || {}, musicRuntime),
       perception: adaptPerceptionPage(raw.perceptionPage || raw.perception || {}, perceptionRuntime),
       abilities: adaptAbilitiesPage(raw.abilitiesPage || raw.abilities || {}, abilitiesRuntime),
-      advanced: raw.advancedPage || raw.advanced || {}
+      advanced: adaptAdvancedPage(raw.advancedPage || raw.advanced || {}, advancedRuntime)
     },
     dataDomains: raw.controlCenterDataDomains || {},
     featureFlags: deriveFeatureFlags(raw)
@@ -176,6 +177,42 @@ function adaptAbilitiesPage(page, runtime = {}) {
     }
   }
   return abilities;
+}
+
+function adaptAdvancedPage(page, runtime = {}) {
+  if (!runtime || Object.keys(runtime).length === 0) return page;
+  const advanced = { ...page };
+
+  // systemStrip: patch items by label
+  if (runtime.systemStrip && typeof runtime.systemStrip === "object") {
+    advanced.systemStrip = patchRowsByLabel(advanced.systemStrip, runtime.systemStrip);
+  }
+
+  // diagnostics: merge sub-fields
+  if (runtime.diagnostics && typeof runtime.diagnostics === "object") {
+    advanced.diagnostics = { ...advanced.diagnostics };
+    if (runtime.diagnostics.metrics && typeof runtime.diagnostics.metrics === "object") {
+      advanced.diagnostics.metrics = patchRowsByLabel(advanced.diagnostics.metrics, runtime.diagnostics.metrics);
+    }
+    if (Array.isArray(runtime.diagnostics.logs) && runtime.diagnostics.logs.length) {
+      advanced.diagnostics.logs = runtime.diagnostics.logs;
+    }
+  }
+
+  // live2d: merge rows
+  if (runtime.live2d && typeof runtime.live2d === "object") {
+    advanced.live2d = { ...advanced.live2d, ...dropEmpty(runtime.live2d) };
+    if (Array.isArray(runtime.live2d.rows)) {
+      advanced.live2d.rows = runtime.live2d.rows;
+    }
+  }
+
+  // abilityOverview: replace entirely when runtime provides it
+  if (Array.isArray(runtime.abilityOverview)) {
+    advanced.abilityOverview = runtime.abilityOverview;
+  }
+
+  return advanced;
 }
 
 function createShellSnapshot(raw) {
