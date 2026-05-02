@@ -31,12 +31,23 @@
       </aside>
 
       <section class="settings-main">
+        <div class="settings-window-bar">
+          <div class="settings-window-drag" data-tauri-drag-region>
+            <span>Akane 控制中心</span>
+          </div>
+          <div class="settings-window-actions">
+            <button id="settings-window-minimize" type="button" aria-label="最小化">-</button>
+            <button id="settings-window-maximize" type="button" aria-label="最大化">□</button>
+            <button id="settings-window-close" type="button" aria-label="关闭">×</button>
+          </div>
+        </div>
+
         <header class="settings-header">
           <div>
             <h1>Akane Next</h1>
             <p id="settings-summary">正在读取设置</p>
           </div>
-          <button id="open-input" class="primary-button" type="button">输入</button>
+          <button id="open-input" class="primary-button" type="button">打开对话</button>
         </header>
 
         <div class="settings-pages">
@@ -87,9 +98,11 @@
 
           <article class="settings-page" data-settings-page="character" hidden>
             <section class="settings-section character-hero-card">
-              <div>
+              <div id="character-hero-preview" class="character-hero-preview" aria-hidden="true">A</div>
+              <div class="character-hero-copy">
                 <h2>角色与资源管理</h2>
                 <p class="detail-line">管理角色包、服装、表情资源，让可见形象和后端资源保持同一套。</p>
+                <div id="character-hero-pills" class="diagnostics-pill-row"></div>
               </div>
             </section>
 
@@ -132,6 +145,12 @@
           </article>
 
           <article class="settings-page" data-settings-page="voice" hidden>
+            <section class="settings-section page-status-card">
+              <h2>语音状态</h2>
+              <p id="voice-status-summary" class="detail-line">等待桌宠同步语音能力。</p>
+              <div id="voice-status-pills" class="diagnostics-pill-row"></div>
+            </section>
+
             <section class="settings-section">
               <h2>语音</h2>
               <div class="toggle-grid">
@@ -151,6 +170,12 @@
           </article>
 
           <article class="settings-page" data-settings-page="music" hidden>
+            <section class="settings-section page-status-card">
+              <h2>播放状态</h2>
+              <p id="music-page-summary" class="detail-line">等待音乐队列。</p>
+              <div id="music-page-pills" class="diagnostics-pill-row"></div>
+            </section>
+
             <section class="settings-section">
               <h2>音乐</h2>
               <p id="music-status" class="detail-line">把音频文件拖到 Akane 身上就可以播放。</p>
@@ -167,6 +192,12 @@
           </article>
 
           <article class="settings-page" data-settings-page="context" hidden>
+            <section class="settings-section page-status-card">
+              <h2>感知状态</h2>
+              <p id="context-status-summary" class="detail-line">桌面上下文只在发送消息时临时附带。</p>
+              <div id="context-status-pills" class="diagnostics-pill-row"></div>
+            </section>
+
             <section class="settings-section">
               <h2>桌面感知</h2>
               <div class="toggle-grid">
@@ -217,6 +248,12 @@
           </article>
 
           <article class="settings-page" data-settings-page="advanced" hidden>
+            <section class="settings-section page-status-card">
+              <h2>运行状态</h2>
+              <p id="advanced-status-summary" class="detail-line">调试项会影响桌宠窗口交互和渲染。</p>
+              <div id="advanced-status-pills" class="diagnostics-pill-row"></div>
+            </section>
+
             <section class="settings-section">
               <h2>外观</h2>
               <label class="range-row">

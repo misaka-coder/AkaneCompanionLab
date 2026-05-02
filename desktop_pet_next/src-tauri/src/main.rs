@@ -1465,7 +1465,7 @@ async fn open_settings_window(app: AppHandle) -> Result<(), String> {
             .inner_size(1080.0, 720.0)
             .min_inner_size(760.0, 560.0)
             .resizable(true)
-            .decorations(true)
+            .decorations(false)
             .always_on_top(true)
             .skip_taskbar(false)
             .center()

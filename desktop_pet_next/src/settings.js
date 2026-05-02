@@ -18,6 +18,9 @@ const appWindow = isTauriRuntime ? getCurrentWindow() : null;
 const els = {
   tabs: document.querySelector("#settings-tabs"),
   pages: document.querySelector(".settings-pages"),
+  windowMinimize: document.querySelector("#settings-window-minimize"),
+  windowMaximize: document.querySelector("#settings-window-maximize"),
+  windowClose: document.querySelector("#settings-window-close"),
   sidebarStatusCard: document.querySelector(".sidebar-status-card"),
   sidebarStatus: document.querySelector("#sidebar-status"),
   sidebarMeta: document.querySelector("#sidebar-meta"),
@@ -41,6 +44,8 @@ const els = {
   characterPackList: document.querySelector("#character-pack-list"),
   characterDetails: document.querySelector("#character-details"),
   characterMetrics: document.querySelector("#character-metrics"),
+  characterHeroPreview: document.querySelector("#character-hero-preview"),
+  characterHeroPills: document.querySelector("#character-hero-pills"),
   openInput: document.querySelector("#open-input"),
   backendUrl: document.querySelector("#backend-url"),
   saveBackend: document.querySelector("#save-backend"),
@@ -66,8 +71,12 @@ const els = {
   voiceInputEnabled: document.querySelector("#voice-input-enabled"),
   voiceVolume: document.querySelector("#voice-volume"),
   voiceVolumeOutput: document.querySelector("#voice-volume-output"),
+  voiceStatusSummary: document.querySelector("#voice-status-summary"),
+  voiceStatusPills: document.querySelector("#voice-status-pills"),
   testTts: document.querySelector("#test-tts"),
   stopTts: document.querySelector("#stop-tts"),
+  musicPageSummary: document.querySelector("#music-page-summary"),
+  musicPagePills: document.querySelector("#music-page-pills"),
   musicStatus: document.querySelector("#music-status"),
   musicLyric: document.querySelector("#music-lyric"),
   musicQueue: document.querySelector("#music-queue"),
@@ -88,8 +97,12 @@ const els = {
   applyVisionRecommendation: document.querySelector("#apply-vision-recommendation"),
   clearScreenVision: document.querySelector("#clear-screen-vision"),
   desktopContextNote: document.querySelector("#desktop-context-note"),
+  contextStatusSummary: document.querySelector("#context-status-summary"),
+  contextStatusPills: document.querySelector("#context-status-pills"),
   alwaysOnTop: document.querySelector("#always-on-top"),
   skipTaskbar: document.querySelector("#skip-taskbar"),
+  advancedStatusSummary: document.querySelector("#advanced-status-summary"),
+  advancedStatusPills: document.querySelector("#advanced-status-pills"),
   resetVisuals: document.querySelector("#reset-visuals"),
   resetPlacement: document.querySelector("#reset-placement"),
   resourceDetails: document.querySelector("#resource-details"),
@@ -134,6 +147,12 @@ async function boot() {
   await bindNativeDropHandlers();
   renderPresetChips();
 
+  if (!isTauriRuntime) {
+    applySnapshot(buildBrowserPreviewSnapshot());
+    setStatus("浏览器预览模式");
+    return;
+  }
+
   try {
     const state = await invoke("load_pet_state");
     applySnapshot({
@@ -159,6 +178,7 @@ async function boot() {
 }
 
 function bindUi() {
+  bindWindowChrome();
   els.tabs.addEventListener("click", (event) => {
     const button = event.target.closest("[data-settings-tab]");
     if (!button) return;
@@ -324,6 +344,39 @@ function bindUi() {
   els.closePet.addEventListener("click", () => sendCommand("closePet"));
 }
 
+function bindWindowChrome() {
+  els.windowMinimize?.addEventListener("click", () => {
+    void runWindowAction(() => appWindow?.minimize?.());
+  });
+  els.windowMaximize?.addEventListener("click", () => {
+    void runWindowAction(async () => {
+      if (typeof appWindow?.toggleMaximize === "function") {
+        await appWindow.toggleMaximize();
+        return;
+      }
+      if (typeof appWindow?.isMaximized === "function" && typeof appWindow?.unmaximize === "function") {
+        if (await appWindow.isMaximized()) {
+          await appWindow.unmaximize();
+          return;
+        }
+      }
+      await appWindow?.maximize?.();
+    });
+  });
+  els.windowClose?.addEventListener("click", () => {
+    void runWindowAction(() => appWindow?.close?.());
+  });
+}
+
+async function runWindowAction(action) {
+  if (!appWindow) return;
+  try {
+    await action();
+  } catch (error) {
+    setStatus(`窗口操作失败：${formatError(error)}`);
+  }
+}
+
 async function bindNativeDropHandlers() {
   if (!appWindow?.onDragDropEvent) return;
   try {
@@ -468,11 +521,75 @@ function scheduleValueCommand(timerKey, command, value, delay) {
 }
 
 async function sendCommand(command, value = null) {
+  if (!isTauriRuntime) {
+    setStatus(`浏览器预览：${command}`);
+    return;
+  }
   try {
     await emit(SETTINGS_COMMAND_EVENT, { command, value });
   } catch (error) {
     setStatus(`发送命令失败：${formatError(error)}`);
   }
+}
+
+function buildBrowserPreviewSnapshot() {
+  return {
+    state: {
+      backendUrl: DEFAULT_BACKEND_URL,
+      sessionId: "browser-preview",
+      outfit: DEFAULT_OUTFIT,
+      currentEmotion: DEFAULT_EMOTION,
+      restoreLatestOnStartup: true,
+      scale: 1,
+      opacity: 1,
+      voiceEnabled: true,
+      voiceInputEnabled: true,
+      voiceVolume: 0.85,
+      desktopContextEnabled: true,
+      clipboardContextEnabled: false,
+      screenVisionEnabled: false,
+      screenVisionMode: "summary",
+      proactiveWakeEnabled: false,
+      proactiveWakeIntervalSec: 30,
+      screenVisionIntervalSec: 25,
+      screenVisionFrameCount: 4,
+      recommendedScreenVisionIntervalSec: 25,
+      alwaysOnTop: true,
+      skipTaskbar: false,
+      hitTestEnabled: false,
+      hitboxOverlay: false
+    },
+    character: {
+      appName: APP_DISPLAY_NAME,
+      name: CHARACTER_NAME,
+      id: "akane_preview",
+      packId: "browser_preview",
+      schemaVersion: "preview",
+      defaultOutfit: DEFAULT_OUTFIT,
+      defaultEmotion: DEFAULT_EMOTION,
+      musicEmotion: "听歌中",
+      userTitle: "主人",
+      localLineCount: 0,
+      assetSource: "浏览器预览",
+      availablePacks: []
+    },
+    resource: {
+      health: "unknown",
+      source: "bundled",
+      activeOutfit: DEFAULT_OUTFIT,
+      activeOutfitName: DEFAULT_OUTFIT,
+      requestedOutfit: DEFAULT_OUTFIT,
+      emotionCount: 0,
+      outfits: [],
+      emotions: [],
+      missingRequired: [],
+      missingRecommended: [],
+      tts: { enabled: true, endpoint: "/tts" },
+      asr: { available: true, endpoint: "/asr" }
+    },
+    active: {},
+    runtimeStatus: "浏览器预览模式"
+  };
 }
 
 function applySnapshot(snapshot) {
@@ -546,6 +663,7 @@ function applySnapshot(snapshot) {
   els.stopReply.disabled = !isReplyActive(snapshot);
   els.testTts.disabled = resource.tts?.enabled === false;
   els.testTts.textContent = state.voiceEnabled ? "测试语音" : "开启并测试";
+  renderPageStatusCards();
 }
 
 function setActiveSettingsPage(page) {
@@ -715,26 +833,44 @@ function renderOverview() {
     els.overviewDetails.textContent = `${outfit} · ${emotion} · ${source} · ${emotionCount} 表情 · ${activity}`;
   }
   renderOverviewAvatar(emotion);
+  renderCharacterHeroPreview(emotion);
   renderSidebarStatus(health, name, outfit, emotion);
+  renderPillRow(els.characterHeroPills, buildCharacterHeroPills(state, resource, character), "等待角色包状态");
   renderPillRow(els.overviewAbilities, buildOverviewAbilityPills(state, resource), "等待能力状态");
   renderPillRow(els.overviewTools, buildOverviewToolPills(), "能力诊断会在后端连接后显示");
 }
 
 function renderOverviewAvatar(activeEmotion) {
   if (!els.overviewAvatar) return;
-  const emotions = Array.isArray(view.resource?.emotions) ? view.resource.emotions : [];
-  const entry =
-    emotions.find((item) => String(item.id || item.name || "") === activeEmotion) ||
-    emotions.find((item) => String(item.id || item.name || "") === DEFAULT_EMOTION) ||
-    emotions[0];
+  applyEmotionPreview(els.overviewAvatar, activeEmotion, 1);
+}
+
+function renderCharacterHeroPreview(activeEmotion) {
+  if (!els.characterHeroPreview) return;
+  applyEmotionPreview(els.characterHeroPreview, activeEmotion, 1);
+}
+
+function applyEmotionPreview(element, activeEmotion, fallbackLength) {
+  const entry = resolveEmotionPreview(activeEmotion);
   const url = String(entry?.url || "").trim();
   if (url) {
-    els.overviewAvatar.style.backgroundImage = `url("${url}")`;
-    els.overviewAvatar.textContent = "";
+    element.style.backgroundImage = `url("${url}")`;
+    element.textContent = "";
     return;
   }
-  els.overviewAvatar.style.backgroundImage = "";
-  els.overviewAvatar.textContent = String(view.character?.name || CHARACTER_NAME).trim().slice(0, 1) || "A";
+  element.style.backgroundImage = "";
+  element.textContent = String(view.character?.name || CHARACTER_NAME)
+    .trim()
+    .slice(0, fallbackLength || 1) || "A";
+}
+
+function resolveEmotionPreview(activeEmotion) {
+  const emotions = Array.isArray(view.resource?.emotions) ? view.resource.emotions : [];
+  return (
+    emotions.find((item) => String(item.id || item.name || "") === activeEmotion) ||
+    emotions.find((item) => String(item.id || item.name || "") === DEFAULT_EMOTION) ||
+    emotions[0]
+  );
 }
 
 function renderSidebarStatus(health, name, outfit, emotion) {
@@ -762,12 +898,111 @@ function buildOverviewAbilityPills(state, resource) {
   return pills;
 }
 
+function buildCharacterHeroPills(state, resource, character) {
+  const outfitCount = Array.isArray(resource.outfits) ? resource.outfits.length : 0;
+  return [
+    getActiveCharacterPackId() ? "角色包已选择" : "内置角色",
+    `${resource.emotionCount || 0} 表情`,
+    `${outfitCount} 服装`,
+    resource.health === "online" ? "前后端统一" : "本地预览",
+    character.schemaVersion ? `契约 ${character.schemaVersion}` : ""
+  ].filter(Boolean);
+}
+
 function buildOverviewToolPills() {
   const payload = view.diagnostics?.payload && typeof view.diagnostics.payload === "object" ? view.diagnostics.payload : null;
   const capabilities = payload?.capabilities && typeof payload.capabilities === "object" ? payload.capabilities : {};
   const tools = normalizeDiagnosticsList(capabilities.tool_names || capabilities.toolNames);
   if (tools.length) return tools.slice(0, 8);
   return ["文件处理", "生成文件交付", "手边物品", "媒体工具", "安全边界", "Live2D 预留"];
+}
+
+function renderPageStatusCards() {
+  renderVoiceStatusCard();
+  renderMusicStatusCard();
+  renderContextStatusCard();
+  renderAdvancedStatusCard();
+}
+
+function renderVoiceStatusCard() {
+  const state = view.state || {};
+  const resource = view.resource || {};
+  const tts = resource.tts && typeof resource.tts === "object" ? resource.tts : {};
+  const asr = resource.asr && typeof resource.asr === "object" ? resource.asr : {};
+  const volume = Math.round(clamp(Number(state.voiceVolume ?? 0.85), 0, 1) * 100);
+  if (els.voiceStatusSummary) {
+    els.voiceStatusSummary.textContent = `${state.voiceEnabled ? "会朗读回复" : "当前不朗读回复"} · 音量 ${volume}% · ${healthLabel(resource.health)}`;
+  }
+  renderPillRow(
+    els.voiceStatusPills,
+    [
+      state.voiceEnabled ? "TTS 开启" : "TTS 关闭",
+      state.voiceInputEnabled ? "ASR 开启" : "ASR 关闭",
+      tts.enabled === false ? "后端 TTS 未启用" : tts.endpoint || "/tts",
+      asr.available === false ? "后端 ASR 未声明" : asr.endpoint || "/asr"
+    ],
+    "等待语音状态"
+  );
+}
+
+function renderMusicStatusCard() {
+  const music = view.music && typeof view.music === "object" ? view.music : {};
+  const track = music.track && typeof music.track === "object" ? music.track : {};
+  const name = String(music.displayName || track.displayName || track.fileName || "").trim();
+  const queueCount = Number(music.queueCount || (Array.isArray(music.queue) ? music.queue.length : 0));
+  const progress = formatMusicProgress(music.progressSeconds, music.durationSeconds);
+  const status = music.playing ? "播放中" : music.paused ? "已暂停" : name ? "已停止" : "等待音乐";
+  if (els.musicPageSummary) {
+    els.musicPageSummary.textContent = name ? `${status}：${name}${progress ? ` · ${progress}` : ""}` : "把音乐拖到桌宠身上后，队列和歌词会在这里同步。";
+  }
+  renderPillRow(
+    els.musicPagePills,
+    [
+      status,
+      queueCount ? `${queueCount} 首队列` : "队列为空",
+      track.lyricLineCount || music.currentLyric?.lineCount ? "本地歌词" : "本地歌词待定",
+      track.timelineLyricLineCount ? "后端歌词线索" : "后端线索待定"
+    ],
+    "等待音乐状态"
+  );
+}
+
+function renderContextStatusCard() {
+  const state = view.state || {};
+  if (els.contextStatusSummary) {
+    els.contextStatusSummary.textContent = buildDesktopContextNote(state);
+  }
+  renderPillRow(
+    els.contextStatusPills,
+    [
+      state.desktopContextEnabled ? "前台窗口" : "前台窗口关",
+      state.clipboardContextEnabled ? "剪贴板" : "剪贴板关",
+      state.screenVisionEnabled ? `看屏幕 · ${state.screenVisionMode === "direct" ? "直看" : "摘要"}` : "看屏幕关",
+      state.proactiveWakeEnabled ? `主动搭话 ${state.proactiveWakeIntervalSec || 30}s` : "主动搭话关"
+    ],
+    "等待感知状态"
+  );
+}
+
+function renderAdvancedStatusCard() {
+  const state = view.state || {};
+  const scale = Math.round(clamp(Number(state.scale ?? 1), 0.75, 1.45) * 100);
+  const opacity = Math.round(clamp(Number(state.opacity ?? 1), 0.55, 1) * 100);
+  if (els.advancedStatusSummary) {
+    els.advancedStatusSummary.textContent = `外观 ${scale}% · 透明度 ${opacity}% · ${view.webglEnabled ? "WebGL 显示中" : "WebGL 已隐藏"}`;
+  }
+  renderPillRow(
+    els.advancedStatusPills,
+    [
+      view.webglEnabled ? "WebGL 显示" : "WebGL 隐藏",
+      state.hitTestEnabled ? "Hit-Test 开" : "Hit-Test 关",
+      state.hitboxOverlay ? "Hitbox 显示" : "Hitbox 隐藏",
+      state.alwaysOnTop ? "窗口置顶" : "窗口不置顶",
+      state.skipTaskbar ? "任务栏隐藏" : "任务栏显示",
+      "Live2D 预留"
+    ],
+    "等待运行状态"
+  );
 }
 
 function renderPillRow(container, items, emptyText) {
