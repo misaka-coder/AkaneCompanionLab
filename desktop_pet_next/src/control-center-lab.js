@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 import akaneNormal from "./assets/characters/猫娘/正常.png";
@@ -32,9 +33,9 @@ import "./control-center-lab.css";
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 const root = document.querySelector("#app");
-const dataSource = createControlCenterDataSource(createControlCenterDataSourceOptions());
+let dataSource = createControlCenterDataSource(createControlCenterDataSourceOptions());
 let snapshot = createControlCenterSnapshot(dataSource.readInitialState());
-const actionRouter = createControlCenterActionRouter({ dataSource });
+let actionRouter = createControlCenterActionRouter({ dataSource });
 let { labMeta, navItems, backgroundAsset } = snapshot.shell;
 let {
   abilities: abilitiesPage,
@@ -81,32 +82,56 @@ bindEvents();
 renderActivePage();
 void hydrateControlCenterSnapshot();
 
-function createControlCenterDataSourceOptions() {
+function createControlCenterDataSourceOptions(overrides = {}) {
   const params = new URLSearchParams(window.location.search);
   const source = String(params.get("source") || "").trim().toLowerCase();
+  const petState = overrides.petState && typeof overrides.petState === "object" ? overrides.petState : {};
   if (source === CONTROL_CENTER_SOURCE_KIND.mock) {
     return { kind: CONTROL_CENTER_SOURCE_KIND.mock };
   }
   return {
     kind: CONTROL_CENTER_SOURCE_KIND.backend,
-    baseUrl: params.get("backend") || params.get("backend_url") || localStorage.getItem("akane.controlCenter.backendUrl") || DEFAULT_BACKEND_URL,
+    baseUrl: params.get("backend") || params.get("backend_url") || petState.backendUrl || localStorage.getItem("akane.controlCenter.backendUrl") || DEFAULT_BACKEND_URL,
     fetchImpl: isTauriRuntime ? tauriFetch : typeof window.fetch === "function" ? window.fetch.bind(window) : undefined,
-    sessionId: params.get("session_id") || params.get("user_id") || localStorage.getItem("akane.controlCenter.sessionId") || "control-center-lab",
-    profileUserId: params.get("real_user_id") || params.get("profile_user_id") || localStorage.getItem("akane.controlCenter.profileUserId") || "master",
-    characterPackId: params.get("character_pack_id") || params.get("characterPackId") || "",
-    outfit: params.get("outfit") || "",
-    emotion: params.get("emotion") || ""
+    sessionId: params.get("session_id") || params.get("user_id") || petState.sessionId || localStorage.getItem("akane.controlCenter.sessionId") || "control-center-lab",
+    profileUserId: params.get("real_user_id") || params.get("profile_user_id") || petState.profileUserId || localStorage.getItem("akane.controlCenter.profileUserId") || "master",
+    characterPackId: params.get("character_pack_id") || params.get("characterPackId") || petState.characterPackId || localStorage.getItem("akane.controlCenter.characterPackId") || "",
+    outfit: params.get("outfit") || petState.outfit || "",
+    emotion: params.get("emotion") || petState.currentEmotion || "",
+    petState,
+    availableCharacterPacks: overrides.availableCharacterPacks || []
   };
 }
 
 async function hydrateControlCenterSnapshot() {
-  if (!dataSource?.readSnapshot) return;
   try {
+    const runtimeOptions = await createRuntimeDataSourceOptions();
+    if (runtimeOptions) {
+      dataSource = createControlCenterDataSource(runtimeOptions);
+      actionRouter = createControlCenterActionRouter({ dataSource });
+    }
+    if (!dataSource?.readSnapshot) return;
     const raw = await dataSource.readSnapshot();
     if (!raw) return;
     applyControlCenterSnapshot(createControlCenterSnapshot(raw));
   } catch (error) {
     console.info("[control-center] keep mock snapshot:", formatError(error));
+  }
+}
+
+async function createRuntimeDataSourceOptions() {
+  if (!isTauriRuntime) return null;
+  try {
+    const petState = await invoke("load_pet_state");
+    let availableCharacterPacks = [];
+    try {
+      availableCharacterPacks = await invoke("list_character_packs");
+    } catch {
+      availableCharacterPacks = [];
+    }
+    return createControlCenterDataSourceOptions({ petState, availableCharacterPacks });
+  } catch {
+    return null;
   }
 }
 
@@ -126,8 +151,20 @@ function applyControlCenterSnapshot(nextSnapshot) {
   if (!navItems.some((item) => item.id === state.activePage)) {
     state.activePage = labMeta.defaultPage;
   }
+  syncInteractiveStateWithSnapshot();
   renderShell();
   renderActivePage();
+}
+
+function syncInteractiveStateWithSnapshot() {
+  const outfits = Array.isArray(characterPage.outfits) ? characterPage.outfits : [];
+  const emotions = Array.isArray(characterPage.emotions) ? characterPage.emotions : [];
+  if (!outfits.some((item) => item.id === state.activeOutfit)) {
+    state.activeOutfit = outfits.find((item) => item.current)?.id || outfits[0]?.id || "";
+  }
+  if (!emotions.some((item) => item.id === state.activeEmotion)) {
+    state.activeEmotion = emotions.find((item) => item.current)?.id || emotions[0]?.id || "";
+  }
 }
 
 function renderShell() {
@@ -618,7 +655,13 @@ function renderResourceRow(item) {
 }
 
 function imageFor(key) {
+  if (isImageUrl(key)) return String(key);
   return images[key] || images.normal;
+}
+
+function isImageUrl(value) {
+  const raw = String(value || "").trim();
+  return /^(https?:|data:|blob:|\/)/i.test(raw);
 }
 
 function renderVoicePage() {

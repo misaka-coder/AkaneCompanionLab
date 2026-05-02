@@ -14,8 +14,9 @@ Current real-data slice:
 
 - `control-center-lab.html` uses the backend data source by default and falls back to mock data if the backend is unavailable.
 - The overview page hydrates from existing endpoints: `/health`, `/desktop-pet/diagnostics`, `/desktop-pet/workspace/summary`, and `/metrics`.
+- The character page hydrates from `/resource-manifest`, plus Tauri `load_pet_state` / `list_character_packs` when running inside the desktop app.
 - Use `?source=mock` to force the static prototype, or `?backend=http://127.0.0.1:9999` to point the lab at another backend.
-- Backend responses are converted into `overviewRuntime`; render functions only consume `ControlCenterSnapshot` fields.
+- Backend responses are converted into page runtime patches such as `overviewRuntime` and `characterRuntime`; render functions only consume `ControlCenterSnapshot` fields.
 
 ## Contract Shape
 

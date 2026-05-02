@@ -9,6 +9,7 @@ const overviewActionIds = ["chat.new", "chat.stop", "workspace.open"];
 export function createControlCenterSnapshot(raw = {}) {
   const shell = createShellSnapshot(raw);
   const overviewRuntime = raw.overviewRuntime || raw.runtime?.overview || {};
+  const characterRuntime = raw.characterRuntime || raw.runtime?.character || {};
   return {
     schemaVersion: CONTROL_CENTER_SCHEMA_VERSION,
     sourceKind: raw.sourceKind || "unknown",
@@ -16,7 +17,7 @@ export function createControlCenterSnapshot(raw = {}) {
     shell,
     pages: {
       overview: adaptOverviewPage(raw.overviewPage || raw.overview || {}, overviewRuntime),
-      character: raw.characterPage || raw.character || {},
+      character: adaptCharacterPage(raw.characterPage || raw.character || {}, characterRuntime),
       voice: raw.voicePage || raw.voice || {},
       music: raw.musicPage || raw.music || {},
       perception: raw.perceptionPage || raw.perception || {},
@@ -26,6 +27,37 @@ export function createControlCenterSnapshot(raw = {}) {
     dataDomains: raw.controlCenterDataDomains || {},
     featureFlags: deriveFeatureFlags(raw)
   };
+}
+
+function adaptCharacterPage(page, runtime = {}) {
+  const character = { ...page };
+  if (runtime.hero) character.hero = runtime.hero;
+  if (runtime.selectedPack) character.selectedPack = runtime.selectedPack;
+  if (Array.isArray(runtime.packInfo) && runtime.packInfo.length) {
+    character.packInfo = runtime.packInfo;
+  }
+  if (typeof runtime.completeness === "number") {
+    character.completeness = Math.max(0, Math.min(100, runtime.completeness));
+  }
+  if (Array.isArray(runtime.outfits) && runtime.outfits.length) {
+    character.outfits = runtime.outfits;
+  }
+  if (Array.isArray(runtime.emotions) && runtime.emotions.length) {
+    character.emotions = runtime.emotions;
+  }
+  if (runtime.warning && typeof runtime.warning === "object") {
+    character.warning = { ...(character.warning || {}), ...dropEmpty(runtime.warning) };
+  }
+  if (Array.isArray(runtime.resources) && runtime.resources.length) {
+    character.resources = runtime.resources;
+  }
+  if (Array.isArray(runtime.tip) && runtime.tip.length) {
+    character.tip = runtime.tip;
+  }
+  if (Array.isArray(runtime.actions) && runtime.actions.length) {
+    character.actions = runtime.actions;
+  }
+  return character;
 }
 
 function createShellSnapshot(raw) {

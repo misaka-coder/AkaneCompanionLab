@@ -48,6 +48,8 @@ export function createBackendControlCenterSource(options = {}) {
   const characterPackId = options.characterPackId || "";
   const outfit = options.outfit || "";
   const emotion = options.emotion || "";
+  const petState = options.petState && typeof options.petState === "object" ? options.petState : {};
+  const availableCharacterPacks = Array.isArray(options.availableCharacterPacks) ? options.availableCharacterPacks : [];
 
   return {
     kind: CONTROL_CENTER_SOURCE_KIND.backend,
@@ -64,13 +66,14 @@ export function createBackendControlCenterSource(options = {}) {
         emotion,
         t: String(Date.now())
       };
-      const [health, diagnostics, workspace, metrics] = await Promise.all([
+      const [health, diagnostics, workspace, resourceManifest, metrics] = await Promise.all([
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/health", { t: commonParams.t })),
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/desktop-pet/diagnostics", commonParams)),
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/desktop-pet/workspace/summary", commonParams)),
+        fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/resource-manifest", commonParams)),
         fetchText(fetchImpl, buildBackendUrl(baseUrl, "/metrics", { t: commonParams.t }))
       ]);
-      if (![health, diagnostics, workspace, metrics].some((item) => item.ok)) {
+      if (![health, diagnostics, workspace, resourceManifest, metrics].some((item) => item.ok)) {
         return null;
       }
       return {
@@ -81,6 +84,7 @@ export function createBackendControlCenterSource(options = {}) {
           health,
           diagnostics,
           workspace,
+          resourceManifest,
           metrics
         },
         overviewRuntime: buildOverviewRuntimePatch({
@@ -89,6 +93,16 @@ export function createBackendControlCenterSource(options = {}) {
           workspace: workspace.data,
           metricsText: metrics.data,
           connected: health.ok || diagnostics.ok
+        }),
+        characterRuntime: buildCharacterRuntimePatch({
+          baseUrl,
+          resourceManifest: resourceManifest.data,
+          diagnostics: diagnostics.data,
+          characterPackId,
+          outfit,
+          emotion,
+          petState,
+          availableCharacterPacks
         })
       };
     },
@@ -221,6 +235,204 @@ function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText
   };
 }
 
+function buildCharacterRuntimePatch({
+  baseUrl,
+  resourceManifest,
+  diagnostics,
+  characterPackId,
+  outfit,
+  emotion,
+  petState,
+  availableCharacterPacks
+}) {
+  const manifest = asObject(resourceManifest);
+  const resources = asObject(diagnostics?.resources);
+  const defaults = asObject(manifest.defaults);
+  const clients = asObject(manifest.clients);
+  const desktop = asObject(clients.desktop_pet);
+  const packId = stringValue(
+    characterPackId ||
+      petState?.characterPackId ||
+      resources.character_pack_id ||
+      resources.characterPackId ||
+      desktop.character_pack_id
+  );
+  const activeOutfitId = stringValue(
+    outfit ||
+      petState?.outfit ||
+      resources.outfit ||
+      desktop.default_outfit ||
+      defaults.desktop_pet_outfit ||
+      defaults.outfit
+  );
+  const activeEmotionId = stringValue(
+    emotion ||
+      petState?.currentEmotion ||
+      resources.default_emotion ||
+      resources.defaultEmotion ||
+      desktop.default_emotion ||
+      defaults.desktop_pet_emotion ||
+      defaults.emotion
+  );
+  const pack = findAvailableCharacterPack(availableCharacterPacks, packId);
+  const profile = asObject(pack?.profile);
+  const identity = asObject(profile.identity);
+  const appearance = asObject(profile.appearance);
+  const assets = asObject(profile.assets);
+  const characters = asObject(manifest.characters);
+  const rawOutfits = asArray(characters.outfits);
+  const allOutfits = normalizeOutfitCards(rawOutfits, {
+    activeOutfitId,
+    activeEmotionId,
+    baseUrl
+  });
+  const activeOutfit =
+    findManifestEntry(rawOutfits, activeOutfitId) ||
+    findManifestEntry(rawOutfits, appearance.default_outfit) ||
+    rawOutfits.find((item) => item && typeof item === "object") ||
+    null;
+  const emotionCards = normalizeEmotionCards(asArray(activeOutfit?.emotions), {
+    activeEmotionId,
+    baseUrl
+  });
+  const outfitCount = rawOutfits.length;
+  const emotionCount = rawOutfits.reduce((total, item) => total + asArray(item?.emotions).length, 0);
+  const backgroundCount = countManifestBackgrounds(manifest);
+  const manifestOk = Boolean(manifest.schema_version && outfitCount > 0 && emotionCount > 0);
+  const displayName = stringValue(identity.app_name || identity.name || pack?.id || packId || "Akane Default");
+  const version = stringValue(profile.version || profile.schema_version || desktop.contract_version || manifest.schema_version);
+  const activeImage = emotionCards.find((item) => item.current)?.image || emotionCards[0]?.image || allOutfits[0]?.image || "";
+
+  return {
+    hero: activeImage,
+    selectedPack: displayName,
+    packInfo: [
+      { label: "名称", value: displayName },
+      { label: "版本", value: version || "resource-manifest" },
+      { label: "作者", value: stringValue(profile.author || identity.author) || (pack ? "本地角色包" : "后端资源清单") },
+      { label: "描述", value: stringValue(profile.description || assets.runtime_source) || `${outfitCount} 套服装 · ${emotionCount} 个表情` }
+    ],
+    completeness: manifestOk ? 100 : 0,
+    outfits: limitActiveCards(allOutfits, activeOutfitId, 4),
+    emotions: limitActiveCards(emotionCards, activeEmotionId, 4),
+    warning: manifestOk
+      ? {
+          title: "资源状态良好",
+          headline: "已加载统一资源清单",
+          body: `${outfitCount} 套服装 · ${emotionCount} 个表情`,
+          action: "刷新资源"
+        }
+      : {
+          title: "资源缺失提示",
+          headline: "暂未读取到角色资源清单",
+          body: "当前保留本地预览资源",
+          action: "重新检查"
+        },
+    resources: [
+      {
+        label: "动作资源",
+        value: pack?.assetCount || pack?.asset_count ? `${pack.assetCount || pack.asset_count}` : "预留",
+        tone: "blue"
+      },
+      { label: "表情资源", value: `${emotionCount} / ${emotionCount}`, tone: "green" },
+      { label: "服装资源", value: `${outfitCount} / ${outfitCount}`, tone: "pink" },
+      { label: "背景资源", value: `${backgroundCount} / ${backgroundCount}`, tone: "green" }
+    ],
+    tip: [
+      packId ? `当前角色包 id：${packId}。` : "当前使用后端默认角色资源。",
+      "服装与表情来自统一资源清单，桌宠和后端会按同一套资源理解当前形象。"
+    ]
+  };
+}
+
+function normalizeOutfitCards(outfits, { activeOutfitId, activeEmotionId, baseUrl }) {
+  return outfits
+    .filter((item) => item && typeof item === "object")
+    .map((outfit) => {
+      const id = stringValue(outfit.id || outfit.name);
+      const emotions = normalizeEmotionCards(asArray(outfit.emotions), {
+        activeEmotionId,
+        baseUrl
+      });
+      const preview = emotions.find((item) => item.id === activeEmotionId) || emotions[0];
+      const current = id === activeOutfitId || (!activeOutfitId && Boolean(outfit.current));
+      return {
+        id,
+        name: stringValue(outfit.name || id) || "未命名服装",
+        badge: current ? "当前" : "",
+        image: preview?.image || "",
+        current
+      };
+    })
+    .filter((item) => item.id);
+}
+
+function normalizeEmotionCards(emotions, { activeEmotionId, baseUrl }) {
+  return emotions
+    .filter((item) => item && typeof item === "object")
+    .map((emotion) => {
+      const id = stringValue(emotion.id || emotion.name);
+      return {
+        id,
+        name: stringValue(emotion.name || id) || "未命名表情",
+        image: toBackendAssetUrl(baseUrl, emotion.path || emotion.url || emotion.src),
+        current: id === activeEmotionId || (!activeEmotionId && Boolean(emotion.current))
+      };
+    })
+    .filter((item) => item.id);
+}
+
+function limitActiveCards(items, activeId, limit) {
+  const cards = Array.isArray(items) ? items : [];
+  const maxItems = Math.max(1, Number(limit || 4));
+  if (cards.length <= maxItems) return cards;
+  const active = cards.find((item) => item.id === activeId || item.current);
+  const selected = [];
+  if (active) selected.push(active);
+  for (const item of cards) {
+    if (selected.some((selectedItem) => selectedItem.id === item.id)) continue;
+    selected.push(item);
+    if (selected.length >= maxItems) break;
+  }
+  return selected;
+}
+
+function findAvailableCharacterPack(packs, packId) {
+  const normalized = stringValue(packId);
+  if (!normalized) return null;
+  return asArray(packs).find((pack) => {
+    const profile = asObject(pack?.profile);
+    const identity = asObject(profile.identity);
+    return [pack?.id, pack?.packId, identity.id].some((value) => stringValue(value) === normalized);
+  }) || null;
+}
+
+function findManifestEntry(items, target) {
+  const normalized = stringValue(target);
+  if (!normalized) return null;
+  return asArray(items).find((item) => {
+    if (!item || typeof item !== "object") return false;
+    const candidates = [item.id, item.name, ...(Array.isArray(item.aliases) ? item.aliases : [])];
+    return candidates.some((value) => stringValue(value) === normalized);
+  }) || null;
+}
+
+function countManifestBackgrounds(manifest) {
+  const majors = asArray(asObject(manifest.scenes).majors);
+  return majors.reduce((total, major) => {
+    const minors = asArray(major?.minors);
+    return total + minors.reduce((minorTotal, minor) => minorTotal + asArray(minor?.backgrounds).length, 0);
+  }, 0);
+}
+
+function toBackendAssetUrl(baseUrl, value) {
+  const raw = stringValue(value);
+  if (!raw) return "";
+  if (/^(https?:|data:|blob:)/i.test(raw)) return raw;
+  const base = `${String(baseUrl || DEFAULT_BACKEND_URL).replace(/\/+$/, "")}/`;
+  return new URL(raw.replace(/^\/+/, ""), base).toString();
+}
+
 function buildAbilityLabels({ tools, workspaceCounts }) {
   const labels = [];
   if (tools.some((name) => /file|attachment|compose|send/i.test(name))) labels.push("文件处理");
@@ -304,6 +516,10 @@ function normalizeStringList(value) {
 
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 function stringValue(value) {
