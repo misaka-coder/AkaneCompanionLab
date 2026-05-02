@@ -1,3 +1,5 @@
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+
 import akaneNormal from "./assets/characters/猫娘/正常.png";
 import akaneThinking from "./assets/characters/猫娘/思考中.png";
 import akaneHappy from "./assets/characters/猫娘/开心.png";
@@ -21,15 +23,20 @@ import {
   createControlCenterActionRouter
 } from "./control-center/action-router.js";
 import { createControlCenterSnapshot } from "./control-center/data-adapter.js";
-import { createControlCenterDataSource } from "./control-center/data-sources.js";
+import {
+  CONTROL_CENTER_SOURCE_KIND,
+  createControlCenterDataSource
+} from "./control-center/data-sources.js";
 import "./control-center-lab.css";
 
+const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
+const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 const root = document.querySelector("#app");
-const dataSource = createControlCenterDataSource();
-const snapshot = createControlCenterSnapshot(dataSource.readInitialState());
+const dataSource = createControlCenterDataSource(createControlCenterDataSourceOptions());
+let snapshot = createControlCenterSnapshot(dataSource.readInitialState());
 const actionRouter = createControlCenterActionRouter({ dataSource });
-const { labMeta, navItems, backgroundAsset } = snapshot.shell;
-const {
+let { labMeta, navItems, backgroundAsset } = snapshot.shell;
+let {
   abilities: abilitiesPage,
   advanced: advancedPage,
   character: characterPage,
@@ -72,6 +79,56 @@ const state = {
 renderShell();
 bindEvents();
 renderActivePage();
+void hydrateControlCenterSnapshot();
+
+function createControlCenterDataSourceOptions() {
+  const params = new URLSearchParams(window.location.search);
+  const source = String(params.get("source") || "").trim().toLowerCase();
+  if (source === CONTROL_CENTER_SOURCE_KIND.mock) {
+    return { kind: CONTROL_CENTER_SOURCE_KIND.mock };
+  }
+  return {
+    kind: CONTROL_CENTER_SOURCE_KIND.backend,
+    baseUrl: params.get("backend") || params.get("backend_url") || localStorage.getItem("akane.controlCenter.backendUrl") || DEFAULT_BACKEND_URL,
+    fetchImpl: isTauriRuntime ? tauriFetch : typeof window.fetch === "function" ? window.fetch.bind(window) : undefined,
+    sessionId: params.get("session_id") || params.get("user_id") || localStorage.getItem("akane.controlCenter.sessionId") || "control-center-lab",
+    profileUserId: params.get("real_user_id") || params.get("profile_user_id") || localStorage.getItem("akane.controlCenter.profileUserId") || "master",
+    characterPackId: params.get("character_pack_id") || params.get("characterPackId") || "",
+    outfit: params.get("outfit") || "",
+    emotion: params.get("emotion") || ""
+  };
+}
+
+async function hydrateControlCenterSnapshot() {
+  if (!dataSource?.readSnapshot) return;
+  try {
+    const raw = await dataSource.readSnapshot();
+    if (!raw) return;
+    applyControlCenterSnapshot(createControlCenterSnapshot(raw));
+  } catch (error) {
+    console.info("[control-center] keep mock snapshot:", formatError(error));
+  }
+}
+
+function applyControlCenterSnapshot(nextSnapshot) {
+  if (!nextSnapshot || typeof nextSnapshot !== "object") return;
+  snapshot = nextSnapshot;
+  ({ labMeta, navItems, backgroundAsset } = snapshot.shell);
+  ({
+    abilities: abilitiesPage,
+    advanced: advancedPage,
+    character: characterPage,
+    music: musicPage,
+    overview: overviewPage,
+    perception: perceptionPage,
+    voice: voicePage
+  } = snapshot.pages);
+  if (!navItems.some((item) => item.id === state.activePage)) {
+    state.activePage = labMeta.defaultPage;
+  }
+  renderShell();
+  renderActivePage();
+}
 
 function renderShell() {
   root.innerHTML = `
@@ -1516,4 +1573,8 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value);
+}
+
+function formatError(error) {
+  return error instanceof Error ? error.message : String(error || "unknown");
 }

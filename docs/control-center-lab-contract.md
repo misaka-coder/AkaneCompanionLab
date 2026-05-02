@@ -1,7 +1,7 @@
 # Akane Control Center Lab Data Contract
 
-This document describes the future backend data needed by `desktop_pet_next/control-center-lab.html`.
-The current UI is a static prototype: all values in `src/control-center/mock-data.js` are mock data and should be replaced through an adapter layer later.
+This document describes the backend data boundary for `desktop_pet_next/control-center-lab.html`.
+The lab still starts from `src/control-center/mock-data.js`, then hydrates supported fields through the data-source and adapter layer.
 
 Current adapter files:
 
@@ -9,6 +9,13 @@ Current adapter files:
 - `src/control-center/data-sources.js`: mock/backend data source boundary.
 - `src/control-center/data-adapter.js`: normalizes source data into `ControlCenterSnapshot`.
 - `src/control-center/action-router.js`: routes user-facing action ids without coupling buttons to backend APIs.
+
+Current real-data slice:
+
+- `control-center-lab.html` uses the backend data source by default and falls back to mock data if the backend is unavailable.
+- The overview page hydrates from existing endpoints: `/health`, `/desktop-pet/diagnostics`, `/desktop-pet/workspace/summary`, and `/metrics`.
+- Use `?source=mock` to force the static prototype, or `?backend=http://127.0.0.1:9999` to point the lab at another backend.
+- Backend responses are converted into `overviewRuntime`; render functions only consume `ControlCenterSnapshot` fields.
 
 ## Contract Shape
 
