@@ -12,6 +12,14 @@ const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.chatNew]: "newSession",
   [CONTROL_CENTER_ACTIONS.chatStop]: "stopReply",
   [CONTROL_CENTER_ACTIONS.workspaceOpen]: "openWorkspace",
+  [CONTROL_CENTER_ACTIONS.voiceTest]: "testTts",
+  [CONTROL_CENTER_ACTIONS.voiceStop]: "stopTts",
+  [CONTROL_CENTER_ACTIONS.characterRefresh]: "reloadResources",
+  [CONTROL_CENTER_ACTIONS.perceptionDesktopContextSetEnabled]: "setDesktopContextEnabled",
+  [CONTROL_CENTER_ACTIONS.perceptionClipboardContextSetEnabled]: "setClipboardContextEnabled",
+  [CONTROL_CENTER_ACTIONS.perceptionScreenVisionSetEnabled]: "setScreenVisionEnabled",
+  [CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetEnabled]: "setProactiveWakeEnabled",
+  [CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetIntervalSec]: "setProactiveWakeIntervalSec",
   [CONTROL_CENTER_ACTIONS.musicPrevious]: "previousMusic",
   [CONTROL_CENTER_ACTIONS.musicNext]: "nextMusic",
   [CONTROL_CENTER_ACTIONS.musicPause]: "toggleMusic",
@@ -19,8 +27,19 @@ const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.musicClear]: "clearMusicQueue"
 });
 const tauriInvokeByActionId = Object.freeze({
-  [CONTROL_CENTER_ACTIONS.workspaceOpen]: "open_workspace_window"
+  [CONTROL_CENTER_ACTIONS.workspaceOpen]: "open_workspace_window",
+  [CONTROL_CENTER_ACTIONS.characterOpenPackFolder]: "open_character_packs_folder",
+  [CONTROL_CENTER_ACTIONS.windowClose]: "close_window"
 });
+const tauriWindowActionByActionId = Object.freeze({
+  [CONTROL_CENTER_ACTIONS.windowMinimize]: "minimize",
+  [CONTROL_CENTER_ACTIONS.windowMaximize]: "toggleMaximize"
+});
+const clientOnlyActionIds = new Set([
+  CONTROL_CENTER_ACTIONS.windowClose,
+  CONTROL_CENTER_ACTIONS.windowMinimize,
+  CONTROL_CENTER_ACTIONS.windowMaximize
+]);
 
 export const CONTROL_CENTER_SOURCE_KIND = Object.freeze({
   mock: "mock",
@@ -209,6 +228,9 @@ export function createBackendControlCenterSource(options = {}) {
       if (tauriResult.status !== "not-available") {
         return tauriResult;
       }
+      if (clientOnlyActionIds.has(normalizedActionId)) {
+        return createNotImplementedActionResult(normalizedActionId);
+      }
 
       if (typeof fetchImpl !== "function") {
         return createNotImplementedActionResult(normalizedActionId);
@@ -243,6 +265,7 @@ export function createBackendControlCenterSource(options = {}) {
 async function runTauriControlCenterAction(actionId, payload, context, options) {
   const command = tauriInvokeByActionId[actionId];
   const settingsCommand = settingsCommandByActionId[actionId];
+  const windowAction = tauriWindowActionByActionId[actionId];
   const bridge = await resolveTauriBridge(options);
   if (!bridge) {
     return { ok: false, status: "not-available", actionId };
@@ -263,15 +286,40 @@ async function runTauriControlCenterAction(actionId, payload, context, options) 
       return { ok: true, status: "executed", actionId, payload, refresh: true };
     }
 
+    if (windowAction) {
+      return runTauriWindowAction(actionId, windowAction, bridge);
+    }
+
     return createNotImplementedActionResult(actionId);
   } catch (error) {
     return { ok: false, status: "failed", actionId, payload, error: formatDataSourceError(error), refresh: true };
   }
 }
 
+async function runTauriWindowAction(actionId, windowAction, bridge) {
+  const winApi = bridge.window;
+  if (winApi && typeof winApi[windowAction] === "function") {
+    await winApi[windowAction]();
+    return { ok: true, status: "executed", actionId, refresh: true };
+  }
+
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const win = getCurrentWindow();
+    if (windowAction === "minimize") {
+      await win.minimize();
+    } else if (windowAction === "toggleMaximize") {
+      await win.toggleMaximize();
+    }
+    return { ok: true, status: "executed", actionId, refresh: true };
+  } catch {
+    return createNotImplementedActionResult(actionId);
+  }
+}
+
 async function resolveTauriBridge(options = {}) {
   const injectedBridge = options.tauriBridge || {};
-  if (typeof injectedBridge.invoke === "function" || typeof injectedBridge.emit === "function") {
+  if (typeof injectedBridge.invoke === "function" || typeof injectedBridge.emit === "function" || typeof injectedBridge.window === "object") {
     return injectedBridge;
   }
 

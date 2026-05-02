@@ -24,6 +24,7 @@ import {
   CONTROL_CENTER_ACTIONS,
   createControlCenterActionRouter
 } from "./control-center/action-router.js";
+import { secondsFromIntervalLabel } from "./control-center/action-helpers.js";
 import { createControlCenterSnapshot } from "./control-center/data-adapter.js";
 import {
   CONTROL_CENTER_SOURCE_KIND,
@@ -277,6 +278,10 @@ function bindEvents() {
       state.switches[key] = !state.switches[key];
       switchButton.classList.toggle("is-on", state.switches[key]);
       switchButton.setAttribute("aria-checked", String(state.switches[key]));
+      const actionId = actionIdForPerceptionSwitch(key);
+      if (actionId) {
+        void actionRouter.run(actionId, { value: state.switches[key], featureId: key }, { source: "control-center-lab" });
+      }
       return;
     }
 
@@ -284,6 +289,13 @@ function bindEvents() {
     if (intervalButton) {
       state.activeInterval = intervalButton.dataset.interval;
       renderActivePage();
+      const seconds = secondsFromIntervalLabel(state.activeInterval);
+      if (seconds > 0) {
+        void actionRouter.run(CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetIntervalSec, {
+          value: seconds,
+          label: state.activeInterval
+        }, { source: "control-center-lab" });
+      }
       return;
     }
 
@@ -1645,6 +1657,16 @@ function escapeAttr(value) {
 
 function formatError(error) {
   return error instanceof Error ? error.message : String(error || "unknown");
+}
+
+function actionIdForPerceptionSwitch(featureId) {
+  const map = {
+    activeWindow: CONTROL_CENTER_ACTIONS.perceptionDesktopContextSetEnabled,
+    clipboard: CONTROL_CENTER_ACTIONS.perceptionClipboardContextSetEnabled,
+    screen: CONTROL_CENTER_ACTIONS.perceptionScreenVisionSetEnabled,
+    proactive: CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetEnabled
+  };
+  return map[featureId] || "";
 }
 
 function createRuntimeActionRouter(dataSource) {

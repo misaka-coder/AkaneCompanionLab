@@ -15,10 +15,10 @@ Current real-data slice:
 - `control-center-lab.html` uses the backend data source by default and falls back to mock data if the backend is unavailable.
 - The overview page hydrates from existing endpoints: `/health`, `/desktop-pet/diagnostics`, `/desktop-pet/workspace/summary`, and `/metrics`.
 - The character page hydrates from `/resource-manifest`, plus Tauri `load_pet_state` / `list_character_packs` when running inside the desktop app.
-- The voice page hydrates from `/health`, `/desktop-pet/diagnostics`, and Tauri `load_pet_state`: `tts.enabled`, `tts.volume`, `asr.enabled`, and diagnostics rows (`整体状态`, `TTS 语音引擎`, `ASR 语音引擎`, `响应延迟`, `网络状态`) are derived from real runtime fields. Button actions (test voice, stop voice, clear records, clear queue) remain disconnected — they are UI stubs in `action-router.js` awaiting Tauri command wiring.
-- The perception page hydrates from Tauri `load_pet_state` and `/desktop-pet/diagnostics`: the four feature cards (`activeWindow`, `clipboard`, `screen`, `proactive`) get their `enabled` state, interval display strings, and frame count from `petState` fields (`desktopContextEnabled`, `clipboardContextEnabled`, `screenVisionEnabled`, `screenVisionIntervalSec`, `screenVisionFrameCount`, `proactiveWakeEnabled`, `proactiveWakeIntervalSec`). The clipboard card only shows capability status placeholders and does not read clipboard content. Diagnostics rows are patched with current sensing status and sync time. Button actions, system permissions list, sensing events timeline, and privacy suggestions remain mock — they are UI stubs not yet connected to backend or Tauri commands.
+- The voice page hydrates from `/health`, `/desktop-pet/diagnostics`, and Tauri `load_pet_state`: `tts.enabled`, `tts.volume`, `asr.enabled`, and diagnostics rows (`整体状态`, `TTS 语音引擎`, `ASR 语音引擎`, `响应延迟`, `网络状态`) are derived from real runtime fields. The `voice.test` and `voice.stop` buttons now route through the action bridge; in Tauri they emit settings commands `testTts` and `stopTts`. Clear records and clear queue buttons remain disconnected — they are UI stubs awaiting a real data boundary.
+- The perception page hydrates from Tauri `load_pet_state` and `/desktop-pet/diagnostics`: the four feature cards (`activeWindow`, `clipboard`, `screen`, `proactive`) get their `enabled` state, interval display strings, and frame count from `petState` fields (`desktopContextEnabled`, `clipboardContextEnabled`, `screenVisionEnabled`, `screenVisionIntervalSec`, `screenVisionFrameCount`, `proactiveWakeEnabled`, `proactiveWakeIntervalSec`). The clipboard card only shows capability status placeholders and does not read clipboard content. Local switch toggles and proactive-wake interval changes now route through the action bridge: `perception.desktopContext.setEnabled`, `perception.clipboardContext.setEnabled`, `perception.screenVision.setEnabled`, `perception.proactiveWake.setEnabled`, and `perception.proactiveWake.setIntervalSec` emit the respective settings commands (`setDesktopContextEnabled`, `setClipboardContextEnabled`, `setScreenVisionEnabled`, `setProactiveWakeEnabled`, `setProactiveWakeIntervalSec`) with the new boolean value or interval seconds. The UI updates optimistically before the bridge result. System permissions list, sensing events timeline, privacy suggestions, and the clipboard clear action remain mock — they are UI stubs not yet connected to backend or Tauri commands.
 - The music page hydrates from the desktop pet `akane-next-settings-snapshot.music` via Tauri `SETTINGS_SNAPSHOT_EVENT`: current track display name, queue, progress/duration, lyric summary (previous/current/next lines), queue position, and bottom status bar. Volume is read from `petState.voiceVolume`. The adapter replaces `nowPlaying`, `playlist`, `lyrics`, `activeLyric`, `info`, and `bottomStatus` fields when a snapshot is available. Button actions (previous, next, pause, stop, clear) now route through the action bridge; in Tauri they emit the existing settings command event, and outside Tauri they return a structured backend or `not-implemented` result.
-- Control-center buttons are routed through `src/control-center/action-router.js`. The first bridged action ids are `chat.new`, `chat.stop`, `workspace.open`, `music.previous`, `music.next`, `music.pause`, `music.stop`, and `music.clear`; they flow through `dataSource.runAction(actionId, payload)` before reaching backend HTTP or Tauri. Other prototype buttons keep the mock/noop fallback until their real boundary is defined.
+- Control-center buttons are routed through `src/control-center/action-router.js`. Bridged action ids include `chat.new`, `chat.stop`, `workspace.open`, `voice.test`, `voice.stop`, `character.openPackFolder`, `character.refresh`, all five perception setting toggles (`perception.desktopContext.setEnabled`, `perception.clipboardContext.setEnabled`, `perception.screenVision.setEnabled`, `perception.proactiveWake.setEnabled`, `perception.proactiveWake.setIntervalSec`), window control actions (`window.close`, `window.minimize`, `window.maximize`), and the music control actions (`music.previous`, `music.next`, `music.pause`, `music.stop`, `music.clear`). All bridged actions flow through `dataSource.runAction(actionId, payload)` before reaching backend HTTP or Tauri. `window.close` invokes the Tauri command `close_window`; `window.minimize` and `window.maximize` use the Tauri window API (minimize / toggleMaximize) via injected bridge or dynamic import. Window actions are client-only and return `not-implemented` when Tauri is unavailable instead of falling back to backend HTTP. Perception toggles emit settings commands with boolean or numeric payload; voice and character refresh actions emit settings commands; `character.openPackFolder` and `workspace.open` invoke Tauri commands; music actions emit their respective settings commands. `window.notify` remains not-implemented — it has no stable real boundary yet. Other prototype buttons keep the mock/noop fallback until their real boundary is defined.
 - The abilities page hydrates from `/desktop-pet/diagnostics` and `/desktop-pet/workspace/summary`: backend tool names are mapped into user-facing modules, and the page updates summary stats, module cards, workflow examples, recent status rows, safety state, and Live2D reserved state. It intentionally does not render raw tool names.
 - The advanced page hydrates from `/health`, `/desktop-pet/diagnostics`, `/metrics`, and `petState` via `buildAdvancedRuntimePatch`: the system strip shows real running/network state and attempts CPU/memory percent from prometheus metrics; diagnostics metrics patch `应用状态`, `后端健康`, and `内存占用` by label; diagnostics logs are replaced with a status sync timeline; ability overview is derived from `tool_names`; Live2D rows show reserved statuses. `coreSettings`, `operations`, `expertOptions`, and `expertNote` remain mock — they are UI stubs not yet connected to back-end or Tauri commands.
 - Use `?source=mock` to force the static prototype, or `?backend=http://127.0.0.1:9999` to point the lab at another backend.
@@ -196,11 +196,23 @@ The UI calls the action router instead of backend or Tauri APIs directly.
 In the lab implementation, buttons use `data-action-id` and are routed through `createControlCenterActionRouter`.
 Mock actions resolve locally; real backend or Tauri actions should be registered in the router or implemented behind `dataSource.runAction` instead of being called directly from render functions.
 
-First action bridge slice:
+Current bridged action ids:
 
 - `chat.new`
 - `chat.stop`
 - `workspace.open`
+- `voice.test`
+- `voice.stop`
+- `character.openPackFolder`
+- `character.refresh`
+- `perception.desktopContext.setEnabled`
+- `perception.clipboardContext.setEnabled`
+- `perception.screenVision.setEnabled`
+- `perception.proactiveWake.setEnabled`
+- `perception.proactiveWake.setIntervalSec`
+- `window.close`
+- `window.minimize`
+- `window.maximize`
 - `music.previous`
 - `music.next`
 - `music.pause`
@@ -226,9 +238,24 @@ If a real action has no backend or Tauri implementation yet, return:
 {
   "ok": false,
   "status": "not-implemented",
-  "actionId": "music.next"
+  "actionId": "character.importZip",
+  "refresh": false
 }
 ```
+
+If an action handler or data source throws, the router resolves with a structured failure instead of rejecting:
+
+```json
+{
+  "ok": false,
+  "status": "failed",
+  "actionId": "music.next",
+  "error": "failure message",
+  "refresh": true
+}
+```
+
+`window.maximize` currently toggles maximize state through the Tauri window API. If strict maximize and unmaximize commands are needed later, add separate action ids instead of changing this action's current behavior.
 
 The router also accepts registered handlers and an `onAfterAction(result)` hook so callers can refresh the snapshot after an action without coupling render functions to backend or Tauri APIs.
 

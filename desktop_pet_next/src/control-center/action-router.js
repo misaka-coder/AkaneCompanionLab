@@ -17,13 +17,30 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   windowNotify: "window.notify",
   windowMinimize: "window.minimize",
   windowMaximize: "window.maximize",
-  windowClose: "window.close"
+  windowClose: "window.close",
+  perceptionDesktopContextSetEnabled: "perception.desktopContext.setEnabled",
+  perceptionClipboardContextSetEnabled: "perception.clipboardContext.setEnabled",
+  perceptionScreenVisionSetEnabled: "perception.screenVision.setEnabled",
+  perceptionProactiveWakeSetEnabled: "perception.proactiveWake.setEnabled",
+  perceptionProactiveWakeSetIntervalSec: "perception.proactiveWake.setIntervalSec"
 });
 
 export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.chatNew,
   CONTROL_CENTER_ACTIONS.chatStop,
   CONTROL_CENTER_ACTIONS.workspaceOpen,
+  CONTROL_CENTER_ACTIONS.voiceTest,
+  CONTROL_CENTER_ACTIONS.voiceStop,
+  CONTROL_CENTER_ACTIONS.characterOpenPackFolder,
+  CONTROL_CENTER_ACTIONS.characterRefresh,
+  CONTROL_CENTER_ACTIONS.perceptionDesktopContextSetEnabled,
+  CONTROL_CENTER_ACTIONS.perceptionClipboardContextSetEnabled,
+  CONTROL_CENTER_ACTIONS.perceptionScreenVisionSetEnabled,
+  CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetEnabled,
+  CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetIntervalSec,
+  CONTROL_CENTER_ACTIONS.windowClose,
+  CONTROL_CENTER_ACTIONS.windowMinimize,
+  CONTROL_CENTER_ACTIONS.windowMaximize,
   CONTROL_CENTER_ACTIONS.musicPrevious,
   CONTROL_CENTER_ACTIONS.musicNext,
   CONTROL_CENTER_ACTIONS.musicPause,
@@ -67,16 +84,27 @@ export function createControlCenterActionRouter(options = {}) {
       }
 
       let result;
-      const handler = handlers.get(normalizedActionId);
-      if (handler) {
-        result = await handler(payload, context);
-      } else if (shouldRouteToDataSource(dataSource, normalizedActionId, options)) {
-        result = await dataSource.runAction(normalizedActionId, payload, context);
-      } else if (isControlCenterBridgedAction(normalizedActionId)) {
-        result = createNotImplementedActionResult(normalizedActionId);
-      } else {
-        logger.info?.("[control-center] action", normalizedActionId, payload, context);
-        result = { ok: true, status: "noop", actionId: normalizedActionId, payload };
+      try {
+        const handler = handlers.get(normalizedActionId);
+        if (handler) {
+          result = await handler(payload, context);
+        } else if (shouldRouteToDataSource(dataSource, normalizedActionId, options)) {
+          result = await dataSource.runAction(normalizedActionId, payload, context);
+        } else if (shouldReturnNotImplemented(dataSource, normalizedActionId)) {
+          result = createNotImplementedActionResult(normalizedActionId);
+        } else {
+          logger.info?.("[control-center] action", normalizedActionId, payload, context);
+          result = { ok: true, status: "noop", actionId: normalizedActionId, payload };
+        }
+      } catch (error) {
+        result = {
+          ok: false,
+          status: "failed",
+          actionId: normalizedActionId,
+          payload,
+          error: formatActionError(error),
+          refresh: true
+        };
       }
 
       const normalizedResult = normalizeActionResult(result, normalizedActionId, payload);
@@ -117,7 +145,8 @@ export function createNotImplementedActionResult(actionId) {
   return {
     ok: false,
     status: "not-implemented",
-    actionId: normalizeActionId(actionId)
+    actionId: normalizeActionId(actionId),
+    refresh: false
   };
 }
 
@@ -131,21 +160,29 @@ function shouldRouteToDataSource(dataSource, actionId, options) {
   return isControlCenterBridgedAction(actionId);
 }
 
+function shouldReturnNotImplemented(dataSource, actionId) {
+  return isControlCenterBridgedAction(actionId) || Boolean(dataSource && dataSource.kind !== "mock");
+}
+
 function normalizeActionResult(result, actionId, payload) {
   if (!result || typeof result !== "object") {
-    return {
-      ok: true,
-      status: "handled",
-      actionId,
-      payload,
-      refresh: true
-    };
+    return { ok: true, status: "handled", actionId, payload, refresh: true };
+  }
+
+  const normalized = {
+    ...result,
+    actionId: normalizeActionId(result.actionId || actionId)
+  };
+
+  if (normalized.status === "not-implemented") {
+    return normalized.refresh === undefined
+      ? { ...normalized, refresh: false }
+      : { ...normalized, refresh: Boolean(normalized.refresh) };
   }
 
   return {
-    ...result,
-    actionId: normalizeActionId(result.actionId || actionId),
-    refresh: result.refresh === undefined ? true : Boolean(result.refresh)
+    ...normalized,
+    refresh: normalized.refresh === undefined ? true : Boolean(normalized.refresh)
   };
 }
 
@@ -167,4 +204,8 @@ function normalizeHandlerEntries(handlers) {
 
 function normalizeActionId(actionId) {
   return String(actionId || "").trim();
+}
+
+function formatActionError(error) {
+  return error instanceof Error ? error.message : String(error || "unknown");
 }
