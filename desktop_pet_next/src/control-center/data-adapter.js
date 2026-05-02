@@ -13,6 +13,7 @@ export function createControlCenterSnapshot(raw = {}) {
   const voiceRuntime = raw.voiceRuntime || raw.runtime?.voice || {};
   const perceptionRuntime = raw.perceptionRuntime || raw.runtime?.perception || {};
   const musicRuntime = raw.musicRuntime || raw.runtime?.music || {};
+  const abilitiesRuntime = raw.abilitiesRuntime || raw.runtime?.abilities || {};
   return {
     schemaVersion: CONTROL_CENTER_SCHEMA_VERSION,
     sourceKind: raw.sourceKind || "unknown",
@@ -24,7 +25,7 @@ export function createControlCenterSnapshot(raw = {}) {
       voice: adaptVoicePage(raw.voicePage || raw.voice || {}, voiceRuntime),
       music: adaptMusicPage(raw.musicPage || raw.music || {}, musicRuntime),
       perception: adaptPerceptionPage(raw.perceptionPage || raw.perception || {}, perceptionRuntime),
-      abilities: raw.abilitiesPage || raw.abilities || {},
+      abilities: adaptAbilitiesPage(raw.abilitiesPage || raw.abilities || {}, abilitiesRuntime),
       advanced: raw.advancedPage || raw.advanced || {}
     },
     dataDomains: raw.controlCenterDataDomains || {},
@@ -136,6 +137,45 @@ function adaptMusicPage(page, runtime = {}) {
   if (Array.isArray(runtime.info)) music.info = runtime.info;
   if (runtime.bottomStatus !== undefined) music.bottomStatus = runtime.bottomStatus;
   return music;
+}
+
+function adaptAbilitiesPage(page, runtime = {}) {
+  if (!runtime || Object.keys(runtime).length === 0) return page;
+  const abilities = { ...page };
+  if (runtime.overview && typeof runtime.overview === "object") {
+    abilities.overview = { ...(abilities.overview || {}), ...dropEmpty(runtime.overview) };
+    if (Array.isArray(runtime.overview.stats) && runtime.overview.stats.length) {
+      abilities.overview.stats = runtime.overview.stats;
+    }
+    if (typeof runtime.overview.availability === "number") {
+      abilities.overview.availability = Math.max(0, Math.min(100, runtime.overview.availability));
+    }
+  }
+  if (Array.isArray(runtime.quickActions) && runtime.quickActions.length) {
+    abilities.quickActions = runtime.quickActions;
+  }
+  if (Array.isArray(runtime.modules) && runtime.modules.length) {
+    abilities.modules = runtime.modules;
+  }
+  if (Array.isArray(runtime.workflows) && runtime.workflows.length) {
+    abilities.workflows = runtime.workflows;
+  }
+  if (Array.isArray(runtime.calls) && runtime.calls.length) {
+    abilities.calls = runtime.calls;
+  }
+  if (runtime.safety && typeof runtime.safety === "object") {
+    abilities.safety = { ...(abilities.safety || {}), ...dropEmpty(runtime.safety) };
+    if (Array.isArray(runtime.safety.items)) {
+      abilities.safety.items = runtime.safety.items;
+    }
+  }
+  if (runtime.live2d && typeof runtime.live2d === "object") {
+    abilities.live2d = { ...(abilities.live2d || {}), ...dropEmpty(runtime.live2d) };
+    if (Array.isArray(runtime.live2d.items)) {
+      abilities.live2d.items = runtime.live2d.items;
+    }
+  }
+  return abilities;
 }
 
 function createShellSnapshot(raw) {

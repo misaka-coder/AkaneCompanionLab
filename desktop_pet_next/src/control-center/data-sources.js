@@ -114,7 +114,12 @@ export function createBackendControlCenterSource(options = {}) {
           petState,
           diagnostics: diagnostics.data
         }),
-        musicRuntime: buildMusicRuntimePatch({ musicSnapshot, petState })
+        musicRuntime: buildMusicRuntimePatch({ musicSnapshot, petState }),
+        abilitiesRuntime: buildAbilitiesRuntimePatch({
+          diagnostics: diagnostics.data,
+          workspace: workspace.data,
+          connected: health.ok || diagnostics.ok
+        })
       };
     },
     readInitialState() {
@@ -563,6 +568,257 @@ function formatSeconds(seconds) {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function buildAbilitiesRuntimePatch({ diagnostics, workspace, connected }) {
+  const diagnosticsData = asObject(diagnostics);
+  const capabilities = asObject(diagnosticsData.capabilities);
+  const safety = asObject(diagnosticsData.safety);
+  const runtime = asObject(diagnosticsData.runtime);
+  const runtimeMetrics = asObject(runtime.metrics);
+  const workspaceCounts = asObject(diagnosticsData.workspace);
+  const workspaceDataCounts = asObject(workspace?.counts);
+  const tools = normalizeStringList(capabilities.tool_names || capabilities.toolNames);
+  const effectiveModules = normalizeStringList(capabilities.effective_modules || capabilities.effectiveModules);
+  const declared = normalizeStringList(capabilities.declared);
+  const serviceOk = Boolean(connected) || stringValue(diagnosticsData.status) === "ok";
+  const moduleCards = buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, safety });
+  const availableModuleCount = moduleCards.length;
+  const toolCount = tools.length;
+  const pendingApprovalCount = countPendingSafetyItems(safety);
+  const availability = serviceOk ? Math.min(100, Math.max(0, toolCount ? 98 : 72)) : 0;
+  const syncedAt = diagnosticsData.server_time
+    ? formatTimeOfDay(new Date(Number(diagnosticsData.server_time) * 1000))
+    : formatTimeOfDay(new Date());
+
+  return {
+    overview: {
+      stats: [
+        { label: "可用模块", value: String(availableModuleCount || effectiveModules.length || declared.length || 0) },
+        { label: "已注册工具", value: String(toolCount) },
+        { label: "需审批权限", value: String(pendingApprovalCount) }
+      ],
+      availability,
+      note: serviceOk ? "能力注册表已同步，当前模块可正常使用" : "等待后端连接，能力状态暂不可用"
+    },
+    modules: moduleCards,
+    workflows: buildAbilityWorkflows(moduleCards),
+    calls: buildAbilityStatusRows({
+      syncedAt,
+      serviceOk,
+      toolCount,
+      moduleCount: availableModuleCount,
+      workspaceCounts: mergeWorkspaceCounts(workspaceCounts, workspaceDataCounts),
+      safety,
+      runtimeMetrics
+    }),
+    safety: buildAbilitySafetyPanel(safety, serviceOk),
+    live2d: {
+      status: "预留",
+      items: [
+        { label: "模型", value: "静态立绘" },
+        { label: "动作", value: "表情切换" },
+        { label: "渲染器", value: "预留接口" },
+        { label: "物理", value: "待接入" }
+      ]
+    }
+  };
+}
+
+function buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, safety }) {
+  const definitions = [
+    {
+      title: "文件处理",
+      description: "读取、整理与转换本地文件和附件材料。",
+      permission: "受限文件访问",
+      tone: "blue",
+      icon: "folder",
+      pattern: /file|attachment|document|read|inspect|sync_attachment/i
+    },
+    {
+      title: "生成文件交付",
+      description: "生成文档、报告与资料，并交付到桌面端。",
+      permission: "生成与导出",
+      tone: "purple",
+      icon: "file",
+      pattern: /compose|send_file|generated|delivery|handoff/i
+    },
+    {
+      title: "手边物品",
+      description: "管理桌宠手边工作区、临时文件与任务材料。",
+      permission: "工作区管理",
+      tone: "orange",
+      icon: "gift",
+      pattern: /workspace|task|gift|clipboard/i,
+      extraCount: numberOrFallback(workspaceCounts.files, workspaceDataCounts.files, 0)
+    },
+    {
+      title: "媒体工具",
+      description: "处理音频、视频、转写、分离与净化等媒体任务。",
+      permission: "多媒体操作",
+      tone: "green",
+      icon: "play",
+      pattern: /media|audio|voice|transcribe|stems|clean/i
+    },
+    {
+      title: "记忆检索",
+      description: "检索长期记忆与上下文材料，辅助连续对话。",
+      permission: "记忆读取",
+      tone: "blue",
+      icon: "sparkle",
+      pattern: /memory|retrieve/i
+    },
+    {
+      title: "安全边界",
+      description: "限制危险操作，保护系统与用户隐私安全。",
+      permission: "安全与隔离",
+      tone: "pink",
+      icon: "shield",
+      pattern: /guard|safe|security|approval/i,
+      fallbackCount: countPendingSafetyItems(safety)
+    }
+  ];
+
+  const cards = [];
+  for (const definition of definitions) {
+    const count = tools.filter((name) => definition.pattern.test(name)).length + positiveNumber(definition.extraCount);
+    const fallbackCount = positiveNumber(definition.fallbackCount);
+    const abilityCount = count || fallbackCount;
+    if (!abilityCount && definition.title !== "安全边界") continue;
+    cards.push({
+      title: definition.title,
+      description: definition.description,
+      permission: definition.permission,
+      count: `${abilityCount || 1} 项能力`,
+      tone: definition.tone,
+      icon: definition.icon
+    });
+  }
+
+  if (!cards.length) {
+    cards.push({
+      title: "能力注册表",
+      description: "等待后端同步可用能力模块。",
+      permission: "待连接",
+      count: "0 项能力",
+      tone: "blue",
+      icon: "sparkle"
+    });
+  }
+  return cards.slice(0, 8);
+}
+
+function buildAbilityWorkflows(modules) {
+  const names = new Set(modules.map((item) => item.title));
+  const workflows = [];
+  if (names.has("文件处理") && names.has("生成文件交付")) {
+    workflows.push({
+      steps: ["文件处理", "生成文件", "交付"],
+      title: "读取文件 → 生成文档 → 交付",
+      detail: "读取资料、生成报告，并把结果交付给你"
+    });
+  }
+  if (names.has("媒体工具")) {
+    workflows.push({
+      steps: ["媒体工具", "转写", "摘要"],
+      title: "导入音频 → 转写清理 → 生成摘要",
+      detail: "把音频材料处理成可读文本和摘要"
+    });
+  }
+  if (names.has("手边物品")) {
+    workflows.push({
+      steps: ["手边物品", "整理", "归档"],
+      title: "手边材料 → 整理 → 归档",
+      detail: "把临时材料收进工作区，方便后续继续处理"
+    });
+  }
+  return workflows.length ? workflows : [
+    {
+      steps: ["诊断", "同步", "等待"],
+      title: "能力诊断 → 等待同步",
+      detail: "后端连接后会显示可用工作流"
+    }
+  ];
+}
+
+function buildAbilityStatusRows({ syncedAt, serviceOk, toolCount, moduleCount, workspaceCounts, safety, runtimeMetrics }) {
+  const rows = [
+    {
+      time: syncedAt,
+      module: "能力注册表",
+      description: serviceOk ? `已同步 ${moduleCount} 个模块、${toolCount} 个工具` : "等待后端同步能力注册表",
+      status: serviceOk ? "成功" : "待连接",
+      duration: inferLatencyLabel(runtimeMetrics),
+      method: "后端诊断"
+    }
+  ];
+  const files = numberOrFallback(workspaceCounts.files, 0);
+  const outputs = numberOrFallback(workspaceCounts.outputs, 0);
+  if (files || outputs) {
+    rows.push({
+      time: syncedAt,
+      module: "手边物品",
+      description: `当前工作区：${files} 个文件、${outputs} 个生成文件`,
+      status: "成功",
+      duration: "-",
+      method: "状态同步"
+    });
+  }
+  rows.push({
+    time: syncedAt,
+    module: "安全边界",
+    description: buildSafetyDescription(safety),
+    status: safety?.secrets_exposed ? "已拦截" : "成功",
+    duration: "-",
+    method: "策略检查"
+  });
+  return rows;
+}
+
+function buildAbilitySafetyPanel(safety, serviceOk) {
+  return {
+    status: serviceOk ? "已生效" : "待连接",
+    items: [
+      {
+        label: "桌面动作执行",
+        status: safety?.desktop_actions_require_client === false ? "自动执行" : "客户端确认"
+      },
+      {
+        label: "密钥与敏感信息",
+        status: safety?.secrets_exposed ? "已拦截" : "未暴露"
+      },
+      {
+        label: "全盘扫描",
+        status: safety?.full_disk_scan ? "需审批" : "关闭"
+      },
+      {
+        label: "外部网络与危险操作",
+        status: "需审批"
+      }
+    ]
+  };
+}
+
+function buildSafetyDescription(safety) {
+  if (safety?.secrets_exposed) return "检测到敏感信息暴露风险，已进入保护状态";
+  if (safety?.full_disk_scan) return "全盘扫描能力需要审批后才可执行";
+  return "桌面危险动作保持客户端确认，敏感信息未暴露";
+}
+
+function countPendingSafetyItems(safety) {
+  const data = asObject(safety);
+  let count = 1; // external/dangerous operations still require approval.
+  if (data.desktop_actions_require_client !== false) count += 1;
+  if (data.full_disk_scan) count += 1;
+  return count;
+}
+
+function mergeWorkspaceCounts(...sources) {
+  return {
+    files: numberOrFallback(...sources.map((item) => asObject(item).files), 0),
+    outputs: numberOrFallback(...sources.map((item) => asObject(item).outputs), 0),
+    tasks: numberOrFallback(...sources.map((item) => asObject(item).tasks), 0)
+  };
 }
 
 function normalizeOutfitCards(outfits, { activeOutfitId, activeEmotionId, baseUrl }) {
