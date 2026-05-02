@@ -17,7 +17,8 @@ Current real-data slice:
 - The character page hydrates from `/resource-manifest`, plus Tauri `load_pet_state` / `list_character_packs` when running inside the desktop app.
 - The voice page hydrates from `/health`, `/desktop-pet/diagnostics`, and Tauri `load_pet_state`: `tts.enabled`, `tts.volume`, `asr.enabled`, and diagnostics rows (`整体状态`, `TTS 语音引擎`, `ASR 语音引擎`, `响应延迟`, `网络状态`) are derived from real runtime fields. Button actions (test voice, stop voice, clear records, clear queue) remain disconnected — they are UI stubs in `action-router.js` awaiting Tauri command wiring.
 - The perception page hydrates from Tauri `load_pet_state` and `/desktop-pet/diagnostics`: the four feature cards (`activeWindow`, `clipboard`, `screen`, `proactive`) get their `enabled` state, interval display strings, and frame count from `petState` fields (`desktopContextEnabled`, `clipboardContextEnabled`, `screenVisionEnabled`, `screenVisionIntervalSec`, `screenVisionFrameCount`, `proactiveWakeEnabled`, `proactiveWakeIntervalSec`). The clipboard card only shows capability status placeholders and does not read clipboard content. Diagnostics rows are patched with current sensing status and sync time. Button actions, system permissions list, sensing events timeline, and privacy suggestions remain mock — they are UI stubs not yet connected to backend or Tauri commands.
-- The music page hydrates from the desktop pet `akane-next-settings-snapshot.music` via Tauri `SETTINGS_SNAPSHOT_EVENT`: current track display name, queue, progress/duration, lyric summary (previous/current/next lines), queue position, and bottom status bar. Volume is read from `petState.voiceVolume`. The adapter replaces `nowPlaying`, `playlist`, `lyrics`, `activeLyric`, `info`, and `bottomStatus` fields when a snapshot is available. Button actions (previous, next, pause, stop, clear) remain mock — they are UI stubs not yet connected to Tauri commands.
+- The music page hydrates from the desktop pet `akane-next-settings-snapshot.music` via Tauri `SETTINGS_SNAPSHOT_EVENT`: current track display name, queue, progress/duration, lyric summary (previous/current/next lines), queue position, and bottom status bar. Volume is read from `petState.voiceVolume`. The adapter replaces `nowPlaying`, `playlist`, `lyrics`, `activeLyric`, `info`, and `bottomStatus` fields when a snapshot is available. Button actions (previous, next, pause, stop, clear) now route through the action bridge; in Tauri they emit the existing settings command event, and outside Tauri they return a structured backend or `not-implemented` result.
+- Control-center buttons are routed through `src/control-center/action-router.js`. The first bridged action ids are `chat.new`, `chat.stop`, `workspace.open`, `music.previous`, `music.next`, `music.pause`, `music.stop`, and `music.clear`; they flow through `dataSource.runAction(actionId, payload)` before reaching backend HTTP or Tauri. Other prototype buttons keep the mock/noop fallback until their real boundary is defined.
 - The abilities page hydrates from `/desktop-pet/diagnostics` and `/desktop-pet/workspace/summary`: backend tool names are mapped into user-facing modules, and the page updates summary stats, module cards, workflow examples, recent status rows, safety state, and Live2D reserved state. It intentionally does not render raw tool names.
 - The advanced page hydrates from `/health`, `/desktop-pet/diagnostics`, `/metrics`, and `petState` via `buildAdvancedRuntimePatch`: the system strip shows real running/network state and attempts CPU/memory percent from prometheus metrics; diagnostics metrics patch `应用状态`, `后端健康`, and `内存占用` by label; diagnostics logs are replaced with a status sync timeline; ability overview is derived from `tool_names`; Live2D rows show reserved statuses. `coreSettings`, `operations`, `expertOptions`, and `expertNote` remain mock — they are UI stubs not yet connected to back-end or Tauri commands.
 - Use `?source=mock` to force the static prototype, or `?backend=http://127.0.0.1:9999` to point the lab at another backend.
@@ -190,10 +191,46 @@ type ControlCenterAction = {
 };
 ```
 
-The UI should call an adapter such as `runControlCenterAction(actionId, payload)` later. The prototype buttons currently do not call backend APIs.
+The UI calls the action router instead of backend or Tauri APIs directly.
 
 In the lab implementation, buttons use `data-action-id` and are routed through `createControlCenterActionRouter`.
-Mock actions resolve locally; real backend or Tauri actions should be registered in the router instead of being called directly from render functions.
+Mock actions resolve locally; real backend or Tauri actions should be registered in the router or implemented behind `dataSource.runAction` instead of being called directly from render functions.
+
+First action bridge slice:
+
+- `chat.new`
+- `chat.stop`
+- `workspace.open`
+- `music.previous`
+- `music.next`
+- `music.pause`
+- `music.stop`
+- `music.clear`
+
+Action results should be structured. A successful side-effect should include a snapshot refresh hint:
+
+```ts
+type ControlCenterActionResult = {
+  ok: boolean;
+  status?: string;
+  actionId: string;
+  refresh?: boolean;
+  payload?: unknown;
+  error?: string;
+};
+```
+
+If a real action has no backend or Tauri implementation yet, return:
+
+```json
+{
+  "ok": false,
+  "status": "not-implemented",
+  "actionId": "music.next"
+}
+```
+
+The router also accepts registered handlers and an `onAfterAction(result)` hook so callers can refresh the snapshot after an action without coupling render functions to backend or Tauri APIs.
 
 ## Assets
 

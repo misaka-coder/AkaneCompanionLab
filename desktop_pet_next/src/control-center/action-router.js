@@ -20,33 +20,151 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   windowClose: "window.close"
 });
 
+export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
+  CONTROL_CENTER_ACTIONS.chatNew,
+  CONTROL_CENTER_ACTIONS.chatStop,
+  CONTROL_CENTER_ACTIONS.workspaceOpen,
+  CONTROL_CENTER_ACTIONS.musicPrevious,
+  CONTROL_CENTER_ACTIONS.musicNext,
+  CONTROL_CENTER_ACTIONS.musicPause,
+  CONTROL_CENTER_ACTIONS.musicStop,
+  CONTROL_CENTER_ACTIONS.musicClear
+]);
+
+const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);
+
 export function createControlCenterActionRouter(options = {}) {
   const handlers = new Map();
   const dataSource = options.dataSource;
   const logger = options.logger || console;
+  let onAfterAction = typeof options.onAfterAction === "function" ? options.onAfterAction : null;
 
-  return {
+  const router = {
     register(actionId, handler) {
-      handlers.set(actionId, handler);
-      return () => handlers.delete(actionId);
+      const normalizedActionId = normalizeActionId(actionId);
+      if (!normalizedActionId || typeof handler !== "function") {
+        return () => {};
+      }
+      handlers.set(normalizedActionId, handler);
+      return () => handlers.delete(normalizedActionId);
+    },
+
+    registerHandlers(nextHandlers) {
+      return registerControlCenterActionHandlers(router, nextHandlers);
+    },
+
+    setAfterActionHook(nextHook) {
+      onAfterAction = typeof nextHook === "function" ? nextHook : null;
+      return () => {
+        if (onAfterAction === nextHook) onAfterAction = null;
+      };
     },
 
     async run(actionId, payload = {}, context = {}) {
-      if (!actionId) {
+      const normalizedActionId = normalizeActionId(actionId);
+      if (!normalizedActionId) {
         return { ok: false, status: "missing-action-id" };
       }
 
-      const handler = handlers.get(actionId);
+      let result;
+      const handler = handlers.get(normalizedActionId);
       if (handler) {
-        return handler(payload, context);
+        result = await handler(payload, context);
+      } else if (shouldRouteToDataSource(dataSource, normalizedActionId, options)) {
+        result = await dataSource.runAction(normalizedActionId, payload, context);
+      } else if (isControlCenterBridgedAction(normalizedActionId)) {
+        result = createNotImplementedActionResult(normalizedActionId);
+      } else {
+        logger.info?.("[control-center] action", normalizedActionId, payload, context);
+        result = { ok: true, status: "noop", actionId: normalizedActionId, payload };
       }
 
-      if (dataSource?.runAction) {
-        return dataSource.runAction(actionId, payload, context);
-      }
-
-      logger.info?.("[control-center] action", actionId, payload, context);
-      return { ok: true, status: "noop", actionId, payload };
+      const normalizedResult = normalizeActionResult(result, normalizedActionId, payload);
+      await notifyAfterAction(onAfterAction, normalizedResult, payload, context);
+      return normalizedResult;
     }
   };
+
+  if (options.handlers) {
+    registerControlCenterActionHandlers(router, options.handlers);
+  }
+
+  return router;
+}
+
+export function registerControlCenterActionHandlers(router, handlers = {}) {
+  if (!router || typeof router.register !== "function") {
+    return () => {};
+  }
+
+  const disposers = [];
+  for (const [actionId, handler] of normalizeHandlerEntries(handlers)) {
+    disposers.push(router.register(actionId, handler));
+  }
+
+  return () => {
+    for (const dispose of disposers.splice(0)) {
+      dispose();
+    }
+  };
+}
+
+export function isControlCenterBridgedAction(actionId) {
+  return bridgedActionIds.has(normalizeActionId(actionId));
+}
+
+export function createNotImplementedActionResult(actionId) {
+  return {
+    ok: false,
+    status: "not-implemented",
+    actionId: normalizeActionId(actionId)
+  };
+}
+
+function shouldRouteToDataSource(dataSource, actionId, options) {
+  if (typeof dataSource?.runAction !== "function") return false;
+  if (options.forwardUnknownActions) return true;
+  if (dataSource.kind === "mock") return true;
+  if (typeof dataSource.handlesAction === "function") {
+    return Boolean(dataSource.handlesAction(actionId));
+  }
+  return isControlCenterBridgedAction(actionId);
+}
+
+function normalizeActionResult(result, actionId, payload) {
+  if (!result || typeof result !== "object") {
+    return {
+      ok: true,
+      status: "handled",
+      actionId,
+      payload,
+      refresh: true
+    };
+  }
+
+  return {
+    ...result,
+    actionId: normalizeActionId(result.actionId || actionId),
+    refresh: result.refresh === undefined ? true : Boolean(result.refresh)
+  };
+}
+
+async function notifyAfterAction(onAfterAction, result, payload, context) {
+  if (typeof onAfterAction !== "function") return;
+  try {
+    await onAfterAction(result, { payload, context });
+  } catch {
+    // Action hooks are advisory and should not make the action itself fail.
+  }
+}
+
+function normalizeHandlerEntries(handlers) {
+  if (handlers instanceof Map) return handlers.entries();
+  if (Array.isArray(handlers)) return handlers;
+  if (handlers && typeof handlers === "object") return Object.entries(handlers);
+  return [];
+}
+
+function normalizeActionId(actionId) {
+  return String(actionId || "").trim();
 }

@@ -1,6 +1,26 @@
 import * as mockData from "./mock-data.js";
+import {
+  CONTROL_CENTER_ACTIONS,
+  CONTROL_CENTER_BRIDGED_ACTION_IDS,
+  createNotImplementedActionResult
+} from "./action-router.js";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
+const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
+const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);
+const settingsCommandByActionId = Object.freeze({
+  [CONTROL_CENTER_ACTIONS.chatNew]: "newSession",
+  [CONTROL_CENTER_ACTIONS.chatStop]: "stopReply",
+  [CONTROL_CENTER_ACTIONS.workspaceOpen]: "openWorkspace",
+  [CONTROL_CENTER_ACTIONS.musicPrevious]: "previousMusic",
+  [CONTROL_CENTER_ACTIONS.musicNext]: "nextMusic",
+  [CONTROL_CENTER_ACTIONS.musicPause]: "toggleMusic",
+  [CONTROL_CENTER_ACTIONS.musicStop]: "stopMusic",
+  [CONTROL_CENTER_ACTIONS.musicClear]: "clearMusicQueue"
+});
+const tauriInvokeByActionId = Object.freeze({
+  [CONTROL_CENTER_ACTIONS.workspaceOpen]: "open_workspace_window"
+});
 
 export const CONTROL_CENTER_SOURCE_KIND = Object.freeze({
   mock: "mock",
@@ -12,6 +32,9 @@ export function createControlCenterDataSource(options = {}) {
   const kind = options.kind || CONTROL_CENTER_SOURCE_KIND.mock;
   if (kind === CONTROL_CENTER_SOURCE_KIND.backend) {
     return createBackendControlCenterSource(options);
+  }
+  if (kind === CONTROL_CENTER_SOURCE_KIND.tauri) {
+    return createTauriControlCenterSource(options);
   }
   return createMockControlCenterSource(options.mockData || mockData);
 }
@@ -28,13 +51,47 @@ export function createMockControlCenterSource(data = mockData) {
     subscribe() {
       return () => {};
     },
+    handlesAction() {
+      return true;
+    },
     async runAction(actionId, payload = {}) {
       return {
         ok: true,
         status: "mocked",
         actionId,
-        payload
+        payload,
+        refresh: true
       };
+    }
+  };
+}
+
+export function createTauriControlCenterSource(options = {}) {
+  return {
+    kind: CONTROL_CENTER_SOURCE_KIND.tauri,
+    readInitialState() {
+      return {
+        ...mockData,
+        sourceKind: CONTROL_CENTER_SOURCE_KIND.mock,
+        fallbackReason: "tauri-source-awaiting-runtime-snapshot"
+      };
+    },
+    subscribe() {
+      return () => {};
+    },
+    handlesAction(actionId) {
+      return bridgedActionIds.has(normalizeActionId(actionId));
+    },
+    async runAction(actionId, payload = {}, context = {}) {
+      const normalizedActionId = normalizeActionId(actionId);
+      if (!bridgedActionIds.has(normalizedActionId)) {
+        return createNotImplementedActionResult(normalizedActionId);
+      }
+      const result = await runTauriControlCenterAction(normalizedActionId, payload, context, options);
+      if (result.status === "not-available") {
+        return createNotImplementedActionResult(normalizedActionId);
+      }
+      return result;
     }
   };
 }
@@ -139,25 +196,125 @@ export function createBackendControlCenterSource(options = {}) {
     subscribe() {
       return () => {};
     },
-    async runAction(actionId, payload = {}) {
+    handlesAction(actionId) {
+      return bridgedActionIds.has(normalizeActionId(actionId));
+    },
+    async runAction(actionId, payload = {}, context = {}) {
+      const normalizedActionId = normalizeActionId(actionId);
+      if (!bridgedActionIds.has(normalizedActionId)) {
+        return createNotImplementedActionResult(normalizedActionId);
+      }
+
+      const tauriResult = await runTauriControlCenterAction(normalizedActionId, payload, context, options);
+      if (tauriResult.status !== "not-available") {
+        return tauriResult;
+      }
+
       if (typeof fetchImpl !== "function") {
-        return { ok: false, status: "missing-fetch", actionId };
+        return createNotImplementedActionResult(normalizedActionId);
       }
       try {
-        const response = await fetchImpl(buildBackendUrl(baseUrl, `/control-center/actions/${encodeURIComponent(actionId)}`), {
+        const response = await fetchImpl(buildBackendUrl(baseUrl, `/control-center/actions/${encodeURIComponent(normalizedActionId)}`), {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
           body: JSON.stringify(payload)
         });
-        if (!response.ok) {
-          return { ok: false, status: `http-${response.status}`, actionId, payload };
+        if (response.status === 404 || response.status === 405) {
+          return createNotImplementedActionResult(normalizedActionId);
         }
-        return response.json();
+        if (!response.ok) {
+          return { ok: false, status: `http-${response.status}`, actionId: normalizedActionId, payload };
+        }
+        const result = await readActionResponse(response);
+        return {
+          ok: true,
+          status: "executed",
+          ...result,
+          actionId: result?.actionId || normalizedActionId,
+          refresh: result?.refresh === undefined ? true : Boolean(result.refresh)
+        };
       } catch (error) {
-        return { ok: false, status: "request-failed", actionId, payload, error: formatDataSourceError(error) };
+        return { ok: false, status: "request-failed", actionId: normalizedActionId, payload, error: formatDataSourceError(error) };
       }
     }
   };
+}
+
+async function runTauriControlCenterAction(actionId, payload, context, options) {
+  const command = tauriInvokeByActionId[actionId];
+  const settingsCommand = settingsCommandByActionId[actionId];
+  const bridge = await resolveTauriBridge(options);
+  if (!bridge) {
+    return { ok: false, status: "not-available", actionId };
+  }
+
+  try {
+    if (command && typeof bridge.invoke === "function") {
+      await bridge.invoke(command, {});
+      return { ok: true, status: "executed", actionId, payload, refresh: true };
+    }
+
+    if (settingsCommand && typeof bridge.emit === "function") {
+      await bridge.emit(SETTINGS_COMMAND_EVENT, {
+        command: settingsCommand,
+        value: payload?.value ?? null,
+        source: context?.source || "control-center"
+      });
+      return { ok: true, status: "executed", actionId, payload, refresh: true };
+    }
+
+    return createNotImplementedActionResult(actionId);
+  } catch (error) {
+    return { ok: false, status: "failed", actionId, payload, error: formatDataSourceError(error), refresh: true };
+  }
+}
+
+async function resolveTauriBridge(options = {}) {
+  const injectedBridge = options.tauriBridge || {};
+  if (typeof injectedBridge.invoke === "function" || typeof injectedBridge.emit === "function") {
+    return injectedBridge;
+  }
+
+  const windowBridge = globalThis.window?.__TAURI__ || globalThis.__TAURI__;
+  const windowInvoke = windowBridge?.core?.invoke || windowBridge?.invoke;
+  const windowEmit = windowBridge?.event?.emit || windowBridge?.emit;
+  if (typeof windowInvoke === "function" || typeof windowEmit === "function") {
+    return { invoke: windowInvoke, emit: windowEmit };
+  }
+
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  try {
+    const [coreApi, eventApi] = await Promise.all([
+      import("@tauri-apps/api/core"),
+      import("@tauri-apps/api/event")
+    ]);
+    return {
+      invoke: coreApi.invoke,
+      emit: eventApi.emit
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isTauriRuntime() {
+  return Boolean(globalThis.window?.__TAURI_INTERNALS__ || globalThis.__TAURI_INTERNALS__);
+}
+
+async function readActionResponse(response) {
+  const contentType = String(response?.headers?.get?.("content-type") || "").toLowerCase();
+  if (!contentType || contentType.includes("json")) {
+    try {
+      const result = await response.json();
+      return result && typeof result === "object" ? result : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
 }
 
 async function fetchJson(fetchImpl, url) {
@@ -1102,6 +1259,10 @@ function normalizeBackendBaseUrl(value) {
   } catch {
     return DEFAULT_BACKEND_URL;
   }
+}
+
+function normalizeActionId(actionId) {
+  return String(actionId || "").trim();
 }
 
 function normalizeStringList(value) {
