@@ -41,7 +41,7 @@ let runtimeSnapshotHydrateTimer = 0;
 const root = document.querySelector("#app");
 let dataSource = createControlCenterDataSource(createControlCenterDataSourceOptions());
 let snapshot = createControlCenterSnapshot(dataSource.readInitialState());
-let actionRouter = createControlCenterActionRouter({ dataSource });
+let actionRouter = createRuntimeActionRouter(dataSource);
 let { labMeta, navItems, backgroundAsset } = snapshot.shell;
 let {
   abilities: abilitiesPage,
@@ -116,7 +116,7 @@ async function hydrateControlCenterSnapshot() {
     const runtimeOptions = await createRuntimeDataSourceOptions();
     if (runtimeOptions) {
       dataSource = createControlCenterDataSource(runtimeOptions);
-      actionRouter = createControlCenterActionRouter({ dataSource });
+      actionRouter = createRuntimeActionRouter(dataSource);
     }
     if (!dataSource?.readSnapshot) return;
     const raw = await dataSource.readSnapshot();
@@ -1645,6 +1645,21 @@ function escapeAttr(value) {
 
 function formatError(error) {
   return error instanceof Error ? error.message : String(error || "unknown");
+}
+
+function createRuntimeActionRouter(dataSource) {
+  return createControlCenterActionRouter({
+    dataSource,
+    onAfterAction: handleControlCenterActionResult
+  });
+}
+
+function handleControlCenterActionResult(result) {
+  if (!result?.refresh) return;
+  scheduleRuntimeSnapshotHydrate();
+  if (isTauriRuntime) {
+    emit(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot" }).catch(() => {});
+  }
 }
 
 async function bindSettingsSnapshotListener() {
