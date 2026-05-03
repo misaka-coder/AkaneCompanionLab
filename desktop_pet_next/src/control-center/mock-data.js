@@ -1,3 +1,5 @@
+import { CONTROL_CENTER_ACTIONS } from "./action-router.js";
+
 export const navItems = [
   { id: "overview", label: "总览", icon: "home" },
   { id: "character", label: "角色", icon: "user" },
@@ -444,7 +446,7 @@ export const abilitiesPage = {
   },
   quickActions: [
     { label: "创建文档", icon: "doc", tone: "blue" },
-    { label: "交付文件", icon: "file", tone: "purple" },
+    { label: "打开工作区", icon: "folder", tone: "purple", actionId: CONTROL_CENTER_ACTIONS.workspaceOpen },
     { label: "启动工具", icon: "folder", tone: "orange" },
     { label: "安全检查", icon: "shield", tone: "green" },
     { label: "查看日志", icon: "log", tone: "pink" },
@@ -453,7 +455,7 @@ export const abilitiesPage = {
   modules: [
     {
       title: "文件处理",
-      description: "读取、写入、编辑与管理本地文件与文档。",
+      description: "读取 / 整理 / 转换",
       permission: "读写文件",
       count: "6 项能力",
       tone: "blue",
@@ -461,7 +463,7 @@ export const abilitiesPage = {
     },
     {
       title: "生成文件交付",
-      description: "生成各类文档、报表与资料并交付给用户。",
+      description: "文档 / 报告 / 表格",
       permission: "生成与导出",
       count: "5 项能力",
       tone: "purple",
@@ -469,7 +471,7 @@ export const abilitiesPage = {
     },
     {
       title: "手边物品",
-      description: "管理桌面与设备中的临时物品与剪贴板内容。",
+      description: "材料 / 成果 / 任务",
       permission: "剪贴板/临时存储",
       count: "4 项能力",
       tone: "orange",
@@ -477,7 +479,7 @@ export const abilitiesPage = {
     },
     {
       title: "媒体工具",
-      description: "音频、视频的播放、录制与处理工具集。",
+      description: "转写 / 分离 / 转码",
       permission: "多媒体操作",
       count: "7 项能力",
       tone: "green",
@@ -485,7 +487,7 @@ export const abilitiesPage = {
     },
     {
       title: "安全边界",
-      description: "限制危险操作，保护系统与用户隐私安全。",
+      description: "权限 / 审批 / 保护",
       permission: "安全与隔离",
       count: "8 项能力",
       tone: "blue",
@@ -493,7 +495,7 @@ export const abilitiesPage = {
     },
     {
       title: "Live2D 预留状态",
-      description: "管理 Akane 模型的渲染、动画与物理状态。",
+      description: "渲染 / 动画 / 物理",
       permission: "渲染与交互",
       count: "6 项能力",
       tone: "pink",

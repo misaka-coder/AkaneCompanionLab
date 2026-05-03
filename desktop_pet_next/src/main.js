@@ -9,17 +9,14 @@ import {
   COMMON_EMOTION_CANDIDATES,
   DEFAULT_EMOTION,
   DEFAULT_OUTFIT,
-  INPUT_PLACEHOLDER,
   LOCAL_CLICK_LINES,
   MUSIC_EMOTION,
-  PROACTIVE_WAKE_PROMPT,
   REQUIRED_EMOTIONS,
   RECOMMENDED_EMOTIONS,
-  SESSION_DISPLAY_TITLE,
-  TTS_TEST_TEXT,
   buildCharacterSnapshot,
   getActiveCharacterPackId,
   getActiveCharacterProfile,
+  getActiveCharacterText,
   selectCharacterPack,
   setRuntimeCharacterPacks
 } from "./character-profile.js";
@@ -134,8 +131,8 @@ const DEFAULT_STATE = {
   profileUserId: PROFILE_USER_ID,
   characterPackId: getActiveCharacterPackId(),
   sessionId: "",
-  outfit: DEFAULT_OUTFIT,
-  currentEmotion: DEFAULT_EMOTION,
+  outfit: getProfileDefaultOutfit(),
+  currentEmotion: getProfileDefaultEmotion(),
   restoreLatestOnStartup: true,
   voiceEnabled: false,
   voiceInputEnabled: true,
@@ -341,7 +338,7 @@ const visualRenderer = createVisualRenderer({
   image: els.petImage
 });
 
-setPetEmotion(DEFAULT_EMOTION, { persist: false, force: true });
+setPetEmotion(getProfileDefaultEmotion(), { persist: false, force: true });
 boot();
 
 async function boot() {
@@ -953,7 +950,7 @@ function applyCharacterChrome() {
   const name = getProfileIdentityText("name", CHARACTER_NAME);
   document.title = appName;
   if (els.menuTitle) els.menuTitle.textContent = appName;
-  if (els.chatInput) els.chatInput.placeholder = getProfileText("inputPlaceholder", INPUT_PLACEHOLDER);
+  if (els.chatInput) els.chatInput.placeholder = getActiveCharacterText("inputPlaceholder");
   if (els.hitbox) els.hitbox.setAttribute("aria-label", name);
   visualRenderer.setCharacterLabel(name);
   if (els.close) els.close.title = `关闭 ${appName}`;
@@ -2596,7 +2593,7 @@ async function ensureBackendSession({ restoreLatest = false } = {}) {
       body: JSON.stringify({
         user_id: state.sessionId,
         real_user_id: getProfileUserId(),
-        display_title: getProfileText("sessionDisplayTitle", SESSION_DISPLAY_TITLE)
+        display_title: getActiveCharacterText("sessionDisplayTitle")
       })
     });
 
@@ -3168,7 +3165,7 @@ async function sendProactiveWake() {
       if (!healthy) return;
     }
     if (!isTurnActive(turnToken)) return;
-    const stream = sendThinkStream(getProfileText("proactiveWakePrompt", PROACTIVE_WAKE_PROMPT), turnToken, {
+    const stream = sendThinkStream(getActiveCharacterText("proactiveWakePrompt"), turnToken, {
       turnKind: "desktop_pet_proactive",
       transientUserMessage: true,
       desktopScreenFrames: latestDesktopScreenFramesForThink()
@@ -4745,6 +4742,50 @@ function buildCurrentLyricSnapshot(timeSeconds = Number(els.musicPlayer?.current
   };
 }
 
+function buildMusicRecommendationsSnapshot(limit = 3) {
+  if (!musicQueue.length) return [];
+  if (musicQueue.length === 1) {
+    const current = musicQueue[0];
+    const durationSeconds = Number(els.musicPlayer?.duration || 0);
+    return [{
+      id: current.sourceId || "current",
+      sourceId: String(current.sourceId || ""),
+      title: String(current.displayName || current.fileName || ""),
+      artist: "",
+      durationSeconds: Number.isFinite(durationSeconds) ? Math.max(0, durationSeconds) : 0,
+      durationLabel: formatPlaylistDuration(durationSeconds),
+      reason: "当前播放",
+      playable: true
+    }];
+  }
+  const recommendations = [];
+  const maxIterations = Math.min(musicQueue.length - 1, limit);
+  for (let offset = 1; offset <= maxIterations && recommendations.length < limit; offset += 1) {
+    const index = (musicQueueIndex + offset) % musicQueue.length;
+    const track = musicQueue[index];
+    if (!track) continue;
+    recommendations.push({
+      id: track.sourceId || `rec_${index}`,
+      sourceId: String(track.sourceId || ""),
+      title: String(track.displayName || track.fileName || ""),
+      artist: "",
+      durationSeconds: 0,
+      durationLabel: "",
+      reason: offset === 1 ? "下一首" : "队列中",
+      playable: true
+    });
+  }
+  return recommendations;
+}
+
+function formatPlaylistDuration(seconds) {
+  const sec = Math.max(0, Math.round(Number(seconds) || 0));
+  if (!sec) return "";
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
 function buildMusicSnapshot() {
   const previous = getPreviousMusicTrack();
   const next = getNextMusicTrack();
@@ -4767,7 +4808,8 @@ function buildMusicSnapshot() {
     playing: musicPlaying,
     paused: musicPaused,
     loading: musicLoading,
-    displayName: getMusicDisplayName()
+    displayName: getMusicDisplayName(),
+    recommendations: buildMusicRecommendationsSnapshot()
   };
 }
 
@@ -4814,7 +4856,8 @@ function buildDesktopMusicActivity() {
     lyric_index: currentLyric?.index ?? -1,
     lyric_current: currentLyric?.text || "",
     lyric_previous: currentLyric?.previousText || "",
-    lyric_next: currentLyric?.nextText || ""
+    lyric_next: currentLyric?.nextText || "",
+    recommendations: buildMusicRecommendationsSnapshot().map(({ sourceId, title, reason }) => ({ source_id: sourceId, title, reason }))
   };
 }
 
@@ -4841,11 +4884,11 @@ async function testTts() {
   if (!state.voiceEnabled) {
     setVoiceEnabled(true);
   }
-  queueTtsItems([getProfileText("ttsTestText", TTS_TEST_TEXT)], `test:${Date.now()}`);
+  queueTtsItems([getActiveCharacterText("ttsTestText")], `test:${Date.now()}`);
 }
 
 async function previewTts(text) {
-  const normalized = normalizeTtsText(text) || getProfileText("ttsTestText", TTS_TEST_TEXT);
+  const normalized = normalizeTtsText(text) || getActiveCharacterText("ttsTestText");
   if (!state.voiceEnabled) {
     setVoiceEnabled(true);
   }

@@ -190,6 +190,18 @@ def build_desktop_activity_prompt(
                 ]
                 if titles:
                     lines.append(f"- 队列概况：{'；'.join(titles)}")
+            raw_recs = activity.get("recommendations") or []
+            if isinstance(raw_recs, list):
+                rec_lines = []
+                for rec in raw_recs[:3]:
+                    if not isinstance(rec, dict):
+                        continue
+                    title = sanitize_desktop_context_text(rec.get("title"), 40)
+                    reason = sanitize_desktop_context_text(rec.get("reason"), 30)
+                    if title:
+                        rec_lines.append(f"{title}（{reason}）" if reason else title)
+                if rec_lines:
+                    lines.append(f"- 当前 Akane 音乐推荐：{'；'.join(rec_lines)}")
         lyric_current = sanitize_desktop_context_text(
             activity.get("lyric_current") or activity.get("lyricCurrent"),
             120,

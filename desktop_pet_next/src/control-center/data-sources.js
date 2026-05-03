@@ -883,10 +883,24 @@ export function buildMusicRuntimePatch({ musicSnapshot, petState }) {
   const petPlayMode = String(petState?.musicPlayMode ?? "").trim();
   const petVolumeNormalization = typeof petState?.musicVolumeNormalization === "boolean" ? petState.musicVolumeNormalization : undefined;
 
+  const recommendations = Array.isArray(musicSnapshot?.recommendations)
+    ? musicSnapshot.recommendations.map((item) => ({
+        id: item.id || item.sourceId || "",
+        sourceId: String(item.sourceId || item.source_id || "").trim(),
+        title: String(item.title || "").trim(),
+        artist: String(item.artist || "").trim(),
+        duration: item.durationLabel || "",
+        durationSeconds: Number(item.durationSeconds || 0),
+        reason: String(item.reason || "").trim(),
+        playable: item.playable !== false
+      }))
+    : [];
+
   return {
     nowPlaying, playlist, lyrics, activeLyric, info, bottomStatus,
     ...(petPlayMode ? { currentPlayMode: petPlayMode } : {}),
     ...(typeof petVolumeNormalization === "boolean" ? { volumeNormalization: petVolumeNormalization } : {}),
+    recommendations,
   };
 }
 
@@ -1073,7 +1087,7 @@ function buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, 
   const definitions = [
     {
       title: "文件处理",
-      description: "读取、整理与转换本地文件和附件材料。",
+      description: "读取 / 整理 / 转换",
       permission: "受限文件访问",
       tone: "blue",
       icon: "folder",
@@ -1081,7 +1095,7 @@ function buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, 
     },
     {
       title: "生成文件交付",
-      description: "生成文档、报告与资料，并交付到桌面端。",
+      description: "文档 / 报告 / 表格",
       permission: "生成与导出",
       tone: "purple",
       icon: "file",
@@ -1089,7 +1103,7 @@ function buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, 
     },
     {
       title: "手边物品",
-      description: "管理桌宠手边工作区、临时文件与任务材料。",
+      description: "材料 / 成果 / 任务",
       permission: "工作区管理",
       tone: "orange",
       icon: "gift",
@@ -1098,7 +1112,7 @@ function buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, 
     },
     {
       title: "媒体工具",
-      description: "处理音频、视频、转写、分离与净化等媒体任务。",
+      description: "转写 / 分离 / 转码",
       permission: "多媒体操作",
       tone: "green",
       icon: "play",
@@ -1106,7 +1120,7 @@ function buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, 
     },
     {
       title: "记忆检索",
-      description: "检索长期记忆与上下文材料，辅助连续对话。",
+      description: "长期记忆 / 上下文",
       permission: "记忆读取",
       tone: "blue",
       icon: "sparkle",
@@ -1114,7 +1128,7 @@ function buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, 
     },
     {
       title: "安全边界",
-      description: "限制危险操作，保护系统与用户隐私安全。",
+      description: "权限 / 审批 / 保护",
       permission: "安全与隔离",
       tone: "pink",
       icon: "shield",
@@ -1165,7 +1179,7 @@ function buildAbilityWorkflows(modules) {
   if (names.has("媒体工具")) {
     workflows.push({
       steps: ["媒体工具", "转写", "摘要"],
-      title: "导入音频 → 转写清理 → 生成摘要",
+      title: "导入音频 → 转写 → 生成摘要",
       detail: "把音频材料处理成可读文本和摘要"
     });
   }

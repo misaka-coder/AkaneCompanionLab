@@ -198,6 +198,9 @@ function adaptMusicPage(page, runtime = {}) {
   }
   if (Array.isArray(runtime.info)) music.info = runtime.info;
   if (runtime.bottomStatus !== undefined) music.bottomStatus = runtime.bottomStatus;
+  if ("recommendations" in runtime && Array.isArray(runtime.recommendations)) {
+    music.recommendations = runtime.recommendations;
+  }
   return music;
 }
 

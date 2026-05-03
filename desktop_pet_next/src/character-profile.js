@@ -83,6 +83,30 @@ export function getActiveCharacterProfile() {
   return getActiveCharacterPack().profile;
 }
 
+export function getActiveCharacterIdentity() {
+  return getActiveCharacterProfile().identity;
+}
+
+export function getActiveCharacterAppearance() {
+  return getActiveCharacterProfile().appearance;
+}
+
+export function getActiveCharacterDialogue() {
+  return getActiveCharacterProfile().dialogue;
+}
+
+export function getActiveCharacterAssets() {
+  return getActiveCharacterProfile().assets;
+}
+
+export function getActiveCharacterText(key, fallback = "") {
+  return String(getActiveCharacterProfile()?.dialogue?.[key] || fallback || "").trim();
+}
+
+export function getActiveCharacterAppearanceValue(key, fallback = "") {
+  return String(getActiveCharacterProfile()?.appearance?.[key] || fallback || "").trim();
+}
+
 export function selectCharacterPack(value, { persist = true } = {}) {
   const pack = resolveCharacterPack(value);
   activeCharacterPackId = pack.packId;

@@ -1249,19 +1249,7 @@ function renderMusicPage() {
             <h2>${icon("sparkle")} Akane 推荐</h2>
             <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicRefreshRecommendations}" data-payload-source="recommendations">${icon("refresh")} 换一批</button>
           </div>
-          <div class="recommend-body">
-            <img src="${imageFor(musicPage.recommendations[0]?.cover || musicPage.nowPlaying.cover)}" alt="" />
-            <div>
-              ${musicPage.recommendations.map((item) => `
-                <div class="recommend-row">
-                  <span>${icon("play")}</span>
-                  <strong>${escapeHtml(item.title)}</strong>
-                  <small>${escapeHtml(item.artist)}</small>
-                  <time>${escapeHtml(item.duration)}</time>
-                </div>
-              `).join("")}
-            </div>
-          </div>
+          ${renderRecommendBody(musicPage)}
         </article>
       </div>
 
@@ -1274,6 +1262,36 @@ function renderMusicPage() {
         </div>
       </footer>
     </section>
+  `;
+}
+
+function renderRecommendBody(musicPage) {
+  const recs = Array.isArray(musicPage.recommendations) ? musicPage.recommendations : [];
+  if (!recs.length) {
+    return `
+      <div class="recommend-body recommend-body--empty">
+        <img src="${imageFor(musicPage.nowPlaying.cover || "music")}" alt="" />
+        <div class="recommend-empty-state">
+          <p>暂无推荐</p>
+          <small>播放音乐后将自动生成推荐列表</small>
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="recommend-body">
+      <img src="${imageFor(recs[0]?.cover || musicPage.nowPlaying.cover)}" alt="" />
+      <div>
+        ${recs.map((item) => `
+          <div class="recommend-row">
+            <span>${icon("play")}</span>
+            <strong>${escapeHtml(item.title)}</strong>
+            <small>${escapeHtml(item.reason || item.artist || "队列推荐")}</small>
+            <time>${escapeHtml(item.duration || item.durationLabel || "")}</time>
+          </div>
+        `).join("")}
+      </div>
+    </div>
   `;
 }
 
@@ -1775,8 +1793,9 @@ function renderAbilityStat(item) {
 }
 
 function renderQuickAction(item, index) {
+  const actionId = item.actionId || CONTROL_CENTER_ACTIONS.abilitiesQuickAction;
   return `
-    <button class="quick-action ${item.tone}" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesQuickAction}" data-payload-field="label" data-payload-value="${escapeAttr(item.label)}" data-payload-index="${index}">
+    <button class="quick-action ${item.tone}" type="button" data-action-id="${actionId}" data-payload-field="label" data-payload-value="${escapeAttr(item.label)}" data-payload-index="${index}">
       ${icon(item.icon)}
       <span>${escapeHtml(item.label)}</span>
     </button>
@@ -1812,7 +1831,6 @@ function renderWorkflow(item) {
       </div>
       <div>
         <strong>${escapeHtml(item.title)}</strong>
-        <p>${escapeHtml(item.detail)}</p>
       </div>
     </article>
   `;

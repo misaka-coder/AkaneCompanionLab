@@ -188,7 +188,7 @@ Fields driven by real backend data:
 | Character | `hero`, `selectedPack`, `selectedPackId`, `packInfo`, `completeness`, `outfits`, `emotions`, `warning`, `resources` (when pack asset count available) | resourceManifest, diagnostics, petState |
 | Voice | `tts.enabled/volume`, `asr.enabled`, `diagnostics` rows | health, diagnostics, petState |
 | Perception | `featureCards[*].enabled`, screen-vision interval/frames, proactive interval; clipboard shows capability status only (no content) | petState, diagnostics |
-| Music | `nowPlaying`, `playlist`, `lyrics`, `activeLyric`, `info`, `bottomStatus`, `currentPlayMode`, `outputDevice`, `volumeNormalization` | Tauri music snapshot + petState (backend snapshot does NOT overwrite music) |
+| Music | `nowPlaying`, `playlist`, `lyrics`, `activeLyric`, `info`, `bottomStatus`, `currentPlayMode`, `outputDevice`, `volumeNormalization`, `recommendations` | Tauri music snapshot + petState (backend snapshot does NOT overwrite music) |
 | Abilities | `overview.stats`, `availability`, `note`, `modules` (from tool names), `workflows`, `calls` (diagnostics-derived status rows), `safety` | diagnostics, workspace |
 | Advanced | `systemStrip` (CPU/memory/network/status), `coreSettings` (webgl/hitTest/hitbox), `diagnostics.metrics` (应用状态, 后端健康, 内存占用), `diagnostics.logs`, `abilityOverview` (from tool names), `live2d` (reserved) | health, diagnostics, metrics, petState |
 
@@ -202,7 +202,7 @@ Fields that remain in mock data (no backend provider):
 | `voice.records`, `voice.queue` | Recognition records and synthesis queue are local (no backend) |
 | `voice.processing` | Processing options are UI template |
 | `voice.wakeWord`, `voice.wakeSensitivity` | Wake-word config is local/Tauri, not available via backend |
-| `musicPage.modes`, `musicPage.recommendations` | Mood modes and recommendations are UI templates |
+| `musicPage.modes` | Mood modes are UI templates |
 | `perceptionPage.events`, `perceptionPage.suggestion` | Sensing events and suggestions are UI demonstration |
 | `perceptionPage.privacy`, `perceptionPage.permissions` | Static explanatory text |
 | `abilitiesPage.quickActions` | Template action buttons (no capability invocation boundary) |
@@ -315,10 +315,10 @@ Fields:
 - `queue`: track list with id, title, artist, duration, cover asset, current flag.
 - `info`: duration, source, audio quality, waveform data.
 - `moods`: mood presets and active mood.
-- `recommendations`: recommended tracks, cover asset, duration, play command.
+- `recommendations`: desktop-runtime queue projection. In pure mock/demo mode this may come from `mock-data.js`; once a Tauri music snapshot exists it must come from `buildMusicRecommendationsSnapshot()` and may be an empty array.
 - `output`: volume normalization, selected device, available devices.
 
-All songs, covers, and recommendations in the prototype are placeholders. Production data should reflect the real music library and playback service.
+Mock songs and covers are placeholders. Runtime recommendations are derived from the local music queue and are shared with `/think` through `desktop_activity.recommendations`; they must not include local paths, cached paths, storage paths, or full lyrics.
 
 ## Desktop Sensing
 

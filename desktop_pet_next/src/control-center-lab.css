@@ -3100,6 +3100,28 @@ button[data-action-unavailable="true"]:disabled {
   white-space: nowrap;
 }
 
+.recommend-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 100px;
+}
+
+.recommend-empty-state p {
+  margin: 0;
+  color: #61799e;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.recommend-empty-state small {
+  color: #8197b8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .recommend-row strong {
   color: #405d8b;
   font-weight: 850;

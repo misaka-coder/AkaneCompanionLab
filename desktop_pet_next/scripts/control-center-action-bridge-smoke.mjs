@@ -680,6 +680,33 @@ const musicRuntimePatch = buildMusicRuntimePatch({
 });
 assert.equal(musicRuntimePatch.playlist[0].id, "local-1", "runtime playlist id should come from sourceId");
 assert.equal(musicRuntimePatch.playlist[0].sourceId, "local-1", "runtime playlist should preserve sourceId");
+assert.deepEqual(musicRuntimePatch.recommendations, [], "runtime music patch without recommendations should clear mock recommendations");
+
+const musicRuntimeRecommendationPatch = buildMusicRuntimePatch({
+  musicSnapshot: {
+    track: { sourceId: "local-1", displayName: "Runtime Track" },
+    queue: [{ sourceId: "local-1", displayName: "Runtime Track" }],
+    queueIndex: 0,
+    progressSeconds: 0,
+    durationSeconds: 60,
+    playing: true,
+    recommendations: [
+      {
+        id: "local-2",
+        sourceId: "local-2",
+        title: "Next Runtime Track",
+        durationSeconds: 123,
+        durationLabel: "02:03",
+        reason: "下一首",
+        playable: true
+      }
+    ]
+  },
+  petState: { voiceVolume: 0.8 }
+});
+assert.equal(musicRuntimeRecommendationPatch.recommendations.length, 1, "runtime music recommendations should patch");
+assert.equal(musicRuntimeRecommendationPatch.recommendations[0].sourceId, "local-2", "runtime music recommendation sourceId should patch");
+assert.equal(musicRuntimeRecommendationPatch.recommendations[0].duration, "02:03", "runtime music recommendation duration label should patch");
 
 // ---------- deferred character actions ----------
 
@@ -1163,13 +1190,15 @@ const runtimeMusicContractSnapshot = createControlCenterSnapshot({
   musicRuntime: {
     currentPlayMode: "单曲循环",
     outputDevice: "耳机",
-    volumeNormalization: false
+    volumeNormalization: false,
+    recommendations: []
   }
 }).pages.music;
 
 assert.equal(runtimeMusicContractSnapshot.currentPlayMode, "单曲循环", "runtime music currentPlayMode should patch");
 assert.equal(runtimeMusicContractSnapshot.outputDevice, "耳机", "runtime music outputDevice should patch");
 assert.equal(runtimeMusicContractSnapshot.volumeNormalization, false, "runtime music volumeNormalization should patch");
+assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime music empty recommendations should override mock recommendations");
 
 // ---------- snapshot endpoint fallback ----------
 
