@@ -14,6 +14,9 @@ export function createControlCenterActionPayloadFromDataset(dataset = {}, page =
     payload.field = dataset.payloadField;
     payload.value = dataset.payloadValue !== undefined ? coerceDatasetPayloadValue(dataset.payloadValue) : null;
   }
+  if (dataset.payloadValue !== undefined && !Object.prototype.hasOwnProperty.call(payload, "value")) {
+    payload.value = coerceDatasetPayloadValue(dataset.payloadValue);
+  }
   if (dataset.payloadText !== undefined) {
     payload.text = dataset.payloadText;
   }
@@ -34,6 +37,9 @@ export function createControlCenterActionPayloadFromDataset(dataset = {}, page =
   }
   if (dataset.payloadEmotionId !== undefined) {
     payload.emotionId = dataset.payloadEmotionId;
+  }
+  if (dataset.payloadTrackId !== undefined) {
+    payload.trackId = dataset.payloadTrackId;
   }
   if (dataset.payloadOptionId !== undefined) {
     payload.optionId = dataset.payloadOptionId;

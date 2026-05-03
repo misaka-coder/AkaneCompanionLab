@@ -37,6 +37,8 @@ tmp_*.wav
 
 # Local model / tool scratch space
 .cache/
+.codex/
+.claude/settings.local.json
 models/
 downloads/
 

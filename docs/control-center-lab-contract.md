@@ -15,17 +15,125 @@ Current real-data slice:
 
 - `control-center-lab.html` uses the backend data source by default and falls back to mock data if the backend is unavailable.
 - The overview page hydrates from existing endpoints: `/health`, `/desktop-pet/diagnostics`, `/desktop-pet/workspace/summary`, and `/metrics`. Its voice TTS/ASR toggles reuse the voice action bridge (`voice.setTtsEnabled`, `voice.setAsrEnabled`), and its desktop sensing toggles reuse the perception action bridge (`perception.desktopContext.setEnabled`, `perception.clipboardContext.setEnabled`, `perception.screenVision.setEnabled`, `perception.proactiveWake.setEnabled`). These overview controls update optimistically before the bridge result.
-- The character page hydrates from `/resource-manifest`, plus Tauri `load_pet_state` / `list_character_packs` when running inside the desktop app. `character.openPackFolder`, `character.refresh`, and `character.previewEmotion` are bridged (tauri-invoke or settings-command). Pack selection, outfit management, expression browsing, and resource repair are registered in the action surface contract as deferred (`character.selectPack`, `character.setOutfit`, `character.manageOutfits`, `character.moreExpressions`, `character.resourceRepair`) — they have stable action IDs and `data-action-id` wiring but no real execution boundary. `character.importZip`, `character.apply`, and `character.restoreDefaults` remain deferred, awaiting file picker, apply semantics, and confirmation semantics. The resource warning action defaults to `character.refresh` but can be overridden by runtime as `character.resourceRepair`. Outfit tiles preserve local optimistic preview and route `character.setOutfit` on click.
-- The voice page hydrates from `/health`, `/desktop-pet/diagnostics`, and Tauri `load_pet_state`: `tts.enabled`, `tts.volume`, `asr.enabled`, and diagnostics rows (`整体状态`, `TTS 语音引擎`, `ASR 语音引擎`, `响应延迟`, `网络状态`) are derived from real runtime fields. The `voice.test` and `voice.stop` buttons now route through the action bridge; in Tauri they emit settings commands `testTts` and `stopTts`. TTS enabled, ASR enabled, and voice volume now route through `voice.setTtsEnabled`, `voice.setAsrEnabled`, and `voice.setVolume`, which emit `setVoiceEnabled`, `setVoiceInputEnabled`, and `setVoiceVolume`; the UI updates optimistically before the bridge result. Additional voice configuration controls (`voice.selectTtsVoice`, `voice.setSpeed`, `voice.selectAsrDevice`, `voice.setAsrLanguage`, `voice.setAsrSensitivity`, `voice.previewPlay`, `voice.records.clear`, `voice.queue.clear`, `voice.setWakeWord`, `voice.setWakeSensitivity`) are registered in the action surface contract as deferred — they have stable action IDs and `data-action-id` wiring but no real settings command yet. They return `not-implemented` at the router boundary.
-- The perception page hydrates from Tauri `load_pet_state` and `/desktop-pet/diagnostics`: the four feature cards (`activeWindow`, `clipboard`, `screen`, `proactive`) get their `enabled` state, interval display strings, and frame count from `petState` fields (`desktopContextEnabled`, `clipboardContextEnabled`, `screenVisionEnabled`, `screenVisionIntervalSec`, `screenVisionFrameCount`, `proactiveWakeEnabled`, `proactiveWakeIntervalSec`). The clipboard card only shows capability status placeholders and does not read clipboard content. Local switch toggles, screen-vision interval/frame controls, screen-vision clear action, and proactive-wake interval changes now route through the action bridge: `perception.desktopContext.setEnabled`, `perception.clipboardContext.setEnabled`, `perception.screenVision.setEnabled`, `perception.screenVision.setIntervalSec`, `perception.screenVision.setFrameCount`, `perception.screenVision.clear`, `perception.proactiveWake.setEnabled`, and `perception.proactiveWake.setIntervalSec` emit the respective settings commands with the new boolean or numeric value. The UI updates optimistically before the bridge result. Navigation, management, and diagnostics actions (`perception.privacyHelp`, `perception.managePermissions`, `perception.activeWindow.details`, `perception.clipboard.clear`, `perception.events.viewAll`, `perception.suggestion.run`, `perception.runDiagnostics`) are registered in the action surface contract as deferred — they have stable action IDs and `data-action-id` wiring but no real backend or Tauri commands yet.
-- The music page hydrates from the desktop pet `akane-next-settings-snapshot.music` via Tauri `SETTINGS_SNAPSHOT_EVENT`: current track display name, queue, progress/duration, lyric summary (previous/current/next lines), queue position, and bottom status bar. Volume is read from `petState.voiceVolume`. The adapter replaces `nowPlaying`, `playlist`, `lyrics`, `activeLyric`, `info`, and `bottomStatus` fields when a snapshot is available. Button actions (previous, next, pause, stop, clear) now route through the action bridge; in Tauri they emit the existing settings command event, and outside Tauri they return a structured backend or `not-implemented` result. Additional music controls (`music.setPlayMode`, `music.setMood`, `music.refreshRecommendations`, `music.selectQueueItem`, `music.setVolumeNormalization`, `music.selectOutputDevice`) are registered in the action surface contract as deferred — they have stable action IDs and `data-action-id` wiring but no real execution boundary yet. They return `not-implemented` at the router boundary.
+- The character page hydrates from `/resource-manifest`, plus Tauri `load_pet_state` / `list_character_packs` when running inside the desktop app. `character.openPackFolder`, `character.refresh`, `character.previewEmotion`, `character.selectPack`, and `character.setOutfit` are bridged (settings-command: `setCharacterPack` and `setOutfit`). Outfit tiles preserve local optimistic preview and route `character.setOutfit` on click. Expression browsing, outfit management, and resource repair are registered in the action surface contract as deferred (`character.manageOutfits`, `character.moreExpressions`, `character.resourceRepair`). `character.importZip`, `character.apply`, and `character.restoreDefaults` remain deferred, awaiting file picker, apply semantics, and confirmation semantics. The resource warning action defaults to `character.refresh` but can be overridden by runtime as `character.resourceRepair`.
+- The voice page hydrates from `/health`, `/desktop-pet/diagnostics`, and Tauri `load_pet_state`: `tts.enabled`, `tts.volume`, `tts.speed`, `asr.enabled`, `wakeWord`, `wakeSensitivity`, and diagnostics rows (`整体状态`, `TTS 语音引擎`, `ASR 语音引擎`, `响应延迟`, `网络状态`) are derived from real runtime fields. The `voice.test`, `voice.stop`, `voice.previewPlay`, `voice.setSpeed`, `voice.setWakeWord`, and `voice.setWakeSensitivity` buttons now route through the action bridge; in Tauri they emit settings commands `testTts`, `stopTts`, `previewTts`, `setVoiceSpeed`, `setWakeWord`, and `setWakeSensitivity`. TTS enabled, ASR enabled, and voice volume now route through `voice.setTtsEnabled`, `voice.setAsrEnabled`, and `voice.setVolume`, which emit `setVoiceEnabled`, `setVoiceInputEnabled`, and `setVoiceVolume`; the UI updates optimistically before the bridge result. Additional voice configuration controls (`voice.selectTtsVoice`, `voice.selectAsrDevice`, `voice.setAsrLanguage`, `voice.records.clear`, `voice.queue.clear`) are registered in the action surface contract as deferred — they have stable action IDs and `data-action-id` wiring but no real settings command yet. They return `not-implemented` at the router boundary. `voice.setAsrSensitivity` is display-only — it shows the sensitivity value as plain text without `data-action-id`. `music.selectOutputDevice` is similarly display-only in the music page footer.
+- The perception page hydrates from Tauri `load_pet_state` and `/desktop-pet/diagnostics`: the four feature cards (`activeWindow`, `clipboard`, `screen`, `proactive`) get their `enabled` state, interval display strings, and frame count from `petState` fields (`desktopContextEnabled`, `clipboardContextEnabled`, `screenVisionEnabled`, `screenVisionIntervalSec`, `screenVisionFrameCount`, `proactiveWakeEnabled`, `proactiveWakeIntervalSec`). The clipboard card only shows capability status placeholders and does not read clipboard content. Local switch toggles, screen-vision interval/frame controls, screen-vision clear action, proactive-wake interval changes, and diagnostics refresh route through the action bridge: `perception.desktopContext.setEnabled`, `perception.clipboardContext.setEnabled`, `perception.screenVision.setEnabled`, `perception.screenVision.setIntervalSec`, `perception.screenVision.setFrameCount`, `perception.screenVision.clear`, `perception.proactiveWake.setEnabled`, `perception.proactiveWake.setIntervalSec`, and `perception.runDiagnostics` emit the respective settings commands with the new boolean/numeric value or `requestSnapshot`. The UI updates optimistically before the bridge result. `perception.activeWindow.details` is client-handled — it toggles an expanded detail view on the active-window card, with `refresh:false` and no backend or Tauri boundary. Navigation and management actions (`perception.privacyHelp`, `perception.managePermissions`, `perception.clipboard.clear`, `perception.events.viewAll`, `perception.suggestion.run`) are registered in the action surface contract as deferred — they have stable action IDs and `data-action-id` wiring but no real backend or Tauri commands yet.
+- The music page hydrates from the desktop pet `akane-next-settings-snapshot.music` via Tauri `SETTINGS_SNAPSHOT_EVENT`: current track display name, queue, progress/duration, lyric summary (previous/current/next lines), queue position, playing/paused state, musicPlayMode, volumeNormalization, and bottom status bar. Volume is read from `petState.voiceVolume`. The adapter replaces `nowPlaying`, `playlist`, `lyrics`, `activeLyric`, `info`, and `bottomStatus` fields when a snapshot is available. Button actions (previous, next, pause, stop, clear, seek, queue item selection, setPlayMode, and setVolumeNormalization) now route through the action bridge; in Tauri they emit the existing settings command event, and outside Tauri they return a structured backend or `not-implemented` result. The music page volume bar reuses `voice.setVolume` because the current desktop runtime has one shared audio volume. Additional music controls (`music.setMood`, `music.refreshRecommendations`, `music.selectOutputDevice`) are registered in the action surface contract as deferred — they have stable action IDs and `data-action-id` wiring but no real execution boundary yet. They return `not-implemented` at the router boundary.
 - Verify bridged action mappings with `cd desktop_pet_next && npm run smoke:control-center-actions`.
-- The backend exposes `GET /control-center/actions` as a contract discovery endpoint, `POST /control-center/actions/{actionId}` as a structured action contract endpoint, and `GET /control-center/snapshot` as a unified runtime data endpoint. The first POST version returns `{ ok: false, status: "not-implemented", actionId, refresh: false }` for every action — it does not execute client-side operations. `GET /control-center/snapshot` returns `{ ok, status, schemaVersion, sourceKind, generatedAt, runtime: { health, diagnostics, workspace, resourceManifest, metrics } }` and now aggregates real best-effort providers for health, desktop-pet diagnostics, workspace summary, resource manifest, and prometheus metrics. Individual provider failures return `{ ok: false, status: "unavailable" }` without causing a 500. The frontend attempts the snapshot endpoint first with the same session/client/character query parameters used by the legacy endpoints, and falls back to the individual per-endpoint requests (`/health`, `/desktop-pet/diagnostics`, etc.) when the snapshot is unavailable or all sub-fields fail.
-- Control-center buttons are routed through `src/control-center/action-router.js`. Bridged action ids include `chat.new`, `chat.stop`, `workspace.open`, voice actions (`voice.test`, `voice.stop`, `voice.setTtsEnabled`, `voice.setAsrEnabled`, `voice.setVolume`), `character.openPackFolder`, `character.refresh`, `character.previewEmotion`, perception settings (`perception.desktopContext.setEnabled`, `perception.clipboardContext.setEnabled`, `perception.screenVision.setEnabled`, `perception.screenVision.setIntervalSec`, `perception.screenVision.setFrameCount`, `perception.screenVision.clear`, `perception.proactiveWake.setEnabled`, `perception.proactiveWake.setIntervalSec`), window control actions (`window.close`, `window.minimize`, `window.maximize`), advanced run/core operations (`advanced.probeClickThrough`, `advanced.resetWindow`, `advanced.toggleWebgl`, `advanced.setHitTestEnabled`, `advanced.setHitboxOverlay`), and the music control actions (`music.previous`, `music.next`, `music.pause`, `music.stop`, `music.clear`). All bridged actions flow through `dataSource.runAction(actionId, payload)` before reaching backend HTTP or Tauri. `window.close` invokes the Tauri command `close_window`; `window.minimize` and `window.maximize` use the Tauri window API (minimize / toggleMaximize) via injected bridge or dynamic import. Window actions are client-only and return `not-implemented` when Tauri is unavailable instead of falling back to backend HTTP. Perception toggles emit settings commands with boolean or numeric payload; voice, character refresh/preview, and advanced core actions emit settings commands; `character.openPackFolder` and `workspace.open` invoke Tauri commands; music actions emit their respective settings commands. `window.notify` remains not-implemented — it has no stable real boundary yet. Other prototype buttons keep the mock/noop fallback until their real boundary is defined.
-- The abilities page hydrates from `/desktop-pet/diagnostics` and `/desktop-pet/workspace/summary`: backend tool names are mapped into user-facing modules, and the page updates summary stats, module cards, workflow examples, recent status rows, safety state, and Live2D reserved state. It intentionally does not render raw tool names. All navigation and management operations (`abilities.quickAction`, `abilities.manageModules`, `abilities.moreWorkflows`, `abilities.logs.viewAll`, `abilities.safety.details`, `abilities.live2d.openSettings`) are registered in the action surface contract as deferred — they have stable action IDs and `data-action-id` wiring but no real capability invocation or management commands yet.
-- The advanced page hydrates from `/health`, `/desktop-pet/diagnostics`, `/metrics`, and `petState` via `buildAdvancedRuntimePatch`: the system strip shows real running/network state and attempts CPU/memory percent from prometheus metrics; diagnostics metrics patch `应用状态`, `后端健康`, and `内存占用` by label; diagnostics logs are replaced with a status sync timeline; ability overview is derived from `tool_names`; Live2D rows show reserved statuses. `advanced.probeClickThrough` and `advanced.resetWindow` are bridged (settings-command). Core toggles for WebGL, Hit-Test, and Hitbox route through `advanced.toggleWebgl`, `advanced.setHitTestEnabled`, and `advanced.setHitboxOverlay`. Log management, exit pet, expert options, Live2D status, and ability details (`advanced.logs.clear`, `advanced.logs.more`, `advanced.exitPet`, `advanced.expertOption`, `advanced.live2d.openStatus`, `advanced.ability.details`) are registered in the action surface contract as deferred — they have stable action IDs and `data-action-id` wiring but no real execution boundary. `advanced.exitPet` requires explicit confirmation before any future binding and must not be mapped to `closePet` or `window.close`.
+- Verify unified snapshot data pipeline (hydration, degradation, fallback, inert action contract) with `cd desktop_pet_next && npm run probe:control-center-runtime`.
+- Run the full control-center verification matrix (required-file gate + smoke + probe + build) with `cd desktop_pet_next && npm run verify:control-center`.
+
+| Check | Command (from desktop_pet_next) | Scope |
+|-------|--------------------------------|-------|
+| Action bridge | `npm run smoke:control-center-actions` | Action bridge mappings, `not-implemented` contract, exception hardening, surface contract consistency |
+| Runtime probe | `npm run probe:control-center-runtime` | Unified snapshot happy-path, partial degradation, fallback, all-unavailable null, action inertness |
+| Full matrix | `npm run verify:control-center` | Required-file existence gate + smoke actions + runtime probe + build |
+| Backend routes | `python -m unittest tests.test_backend_route_modules` (from repo root) | Snapshot endpoint, action endpoint, provider resilience, sensitive content |
+| Whitespace | `git diff --check` (from repo root) | Whitespace and syntax hygiene |
+
+- The backend exposes `GET /control-center/actions` as a contract discovery endpoint, `POST /control-center/actions/{actionId}` as a structured action contract endpoint, and `GET /control-center/snapshot` as a unified runtime data endpoint. The first POST version returns `{ ok: false, status: "not-implemented", actionId, refresh: false }` for every action — it does not execute client-side operations. `GET /control-center/snapshot` returns `{ ok, status, schemaVersion, sourceKind, generatedAt, runtime: { health, diagnostics, workspace, resourceManifest, metrics } }` and aggregates real production providers in `companion_v01/routes/control_center.py` / `build_control_center_snapshot_runtime_providers`:
+  - **health**: `_build_snapshot_health` reads `config_module`, returns status, pid, python, contracts
+  - **diagnostics**: `_build_snapshot_diagnostics` calls `build_desktop_pet_diagnostics_payload` with engine, runtime_metrics, public_guard
+  - **workspace**: `_build_snapshot_workspace` calls `engine.build_desktop_pet_workspace_panel` in async thread
+  - **resourceManifest**: `_build_snapshot_resource_manifest` calls `engine.build_resource_manifest` and decorates for desktop_pet
+  - **metrics**: `_build_snapshot_metrics_text` aggregates tracemalloc, llm snapshot, vector_store count, reindex status, public_guard state, and runtime counters into prometheus text format
+Individual provider failures return `{ ok: false, status: "unavailable" }` without causing a 500. The frontend attempts the snapshot endpoint first with the same session/client/character query parameters used by the legacy endpoints, and falls back to the individual per-endpoint requests (`/health`, `/desktop-pet/diagnostics`, etc.) when the snapshot is unavailable or all sub-fields fail. The Tauri `SETTINGS_SNAPSHOT_EVENT` handles high-frequency desktop state (music progress, petState) and is not a replacement for the backend snapshot — these two data paths are independent and merge at the adapter layer.
+- Control-center buttons are routed through `src/control-center/action-router.js`. Bridged action ids include `chat.new`, `chat.stop`, `workspace.open`, voice actions (`voice.test`, `voice.stop`, `voice.setTtsEnabled`, `voice.setAsrEnabled`, `voice.setVolume`, `voice.previewPlay`, `voice.setSpeed`, `voice.setWakeWord`, `voice.setWakeSensitivity`), `character.openPackFolder`, `character.refresh`, `character.previewEmotion`, `character.selectPack`, `character.setOutfit`, perception settings (`perception.desktopContext.setEnabled`, `perception.clipboardContext.setEnabled`, `perception.screenVision.setEnabled`, `perception.screenVision.setIntervalSec`, `perception.screenVision.setFrameCount`, `perception.screenVision.clear`, `perception.proactiveWake.setEnabled`, `perception.proactiveWake.setIntervalSec`, `perception.runDiagnostics`), window control actions (`window.close`, `window.minimize`, `window.maximize`), advanced run/core operations (`advanced.probeClickThrough`, `advanced.resetWindow`, `advanced.toggleWebgl`, `advanced.setHitTestEnabled`, `advanced.setHitboxOverlay`), and the music control actions (`music.previous`, `music.next`, `music.pause`, `music.stop`, `music.clear`, `music.seek`, `music.selectQueueItem`, `music.setPlayMode`, `music.setVolumeNormalization`). All bridged actions flow through `dataSource.runAction(actionId, payload)` before reaching backend HTTP or Tauri. `window.close` invokes the Tauri command `close_window`; `window.minimize` and `window.maximize` use the Tauri window API (minimize / toggleMaximize) via injected bridge or dynamic import. Window actions are client-only and return `not-implemented` when Tauri is unavailable instead of falling back to backend HTTP. Perception toggles/diagnostics emit settings commands with boolean/numeric payload or `requestSnapshot`; voice, character refresh/preview, and advanced core actions emit settings commands; `character.openPackFolder` and `workspace.open` invoke Tauri commands; music actions emit their respective settings commands. `window.notify` remains not-implemented — it has no stable real boundary yet. Other prototype buttons keep the mock/noop fallback until their real boundary is defined.
+- The abilities page hydrates from `/desktop-pet/diagnostics` and `/desktop-pet/workspace/summary`: backend tool names are mapped into user-facing modules, and the page updates summary stats, module cards, workflow examples, recent status rows, safety state, and Live2D reserved state. It intentionally does not render raw tool names. `abilities.logs.viewAll` is client-handled — it toggles between showing the first 3 call rows and the full call history, with `refresh:false` and no backend or Tauri boundary. Remaining navigation and management operations (`abilities.quickAction`, `abilities.manageModules`, `abilities.moreWorkflows`, `abilities.safety.details`, `abilities.live2d.openSettings`) are registered in the action surface contract as deferred — they have stable action IDs and `data-action-id` wiring but no real capability invocation or management commands yet.
+- The advanced page hydrates from `/health`, `/desktop-pet/diagnostics`, `/metrics`, and `petState` via `buildAdvancedRuntimePatch`: the system strip shows real running/network state and attempts CPU/memory percent from prometheus metrics; diagnostics metrics patch `应用状态`, `后端健康`, and `内存占用` by label; diagnostics logs are replaced with a status sync timeline; ability overview is derived from `tool_names`; Live2D rows show reserved statuses. `advanced.probeClickThrough` and `advanced.resetWindow` are bridged (settings-command). Core toggles for WebGL, Hit-Test, and Hitbox route through `advanced.toggleWebgl`, `advanced.setHitTestEnabled`, and `advanced.setHitboxOverlay`. `advanced.logs.more` is client-handled — it toggles between showing the first 5 log entries and the full log list, with `refresh:false` and no backend or Tauri boundary. Log management, exit pet, expert options, Live2D status, and ability details (`advanced.logs.clear`, `advanced.exitPet`, `advanced.expertOption`, `advanced.live2d.openStatus`, `advanced.ability.details`) are registered in the action surface contract as deferred — they have stable action IDs and `data-action-id` wiring but no real execution boundary. `advanced.exitPet` requires explicit confirmation before any future binding and must not be mapped to `closePet` or `window.close`.
 - Use `?source=mock` to force the static prototype, or `?backend=http://127.0.0.1:9999` to point the lab at another backend.
+- The control-center-lab.html can be used as the Tauri settings window preview by setting `AKANE_CONTROL_CENTER_LAB=1` (e.g. `npm run dev:control-center`). The default settings page remains settings.html for safe rollback. Settings and workspace windows stay non-topmost and are not owned by the pet window, so the pet can keep its own always-on-top priority.
+- The Tauri settings snapshot event is treated as a lightweight runtime patch for high-frequency music state. It must not trigger full backend hydration on every music progress update; full hydration remains reserved for initial load and explicit action refresh.
 - Backend responses are converted into page runtime patches such as `overviewRuntime` and `characterRuntime`; render functions only consume `ControlCenterSnapshot` fields.
+
+## Action Surface Classification
+
+Every control-center action falls into one of three tiers. This classification is machine-readable via `src/control-center/action-surface-contract.js`.
+
+### Bridged (40 actions)
+
+Actions with a real execution boundary: a Tauri settings command, a Tauri invoke, or a Tauri window API call. These are wired through `dataSource.runAction` → `runTauriControlCenterAction` → emit/invoke. Buttons have `data-action-id` and are NOT disabled.
+
+### Client-Handled (3 actions)
+
+Actions handled entirely within `control-center-lab.js` via `router.registerHandlers`. They have no backend or Tauri boundary — they toggle local UI state and return `refresh:false`.
+
+| Action ID | Page | Behavior |
+|-----------|------|----------|
+| `perception.activeWindow.details` | Perception | Toggles expanded detail view on the active-window card |
+| `abilities.logs.viewAll` | Abilities | Toggles between first 3 call rows and full call history |
+| `advanced.logs.more` | Advanced | Toggles between first 5 log entries and full log list |
+
+Client-handled actions are NOT in `CONTROL_CENTER_BRIDGED_ACTION_IDS`. Their buttons are enabled (not `data-action-unavailable`). Calling `dataSource.runAction` directly on them returns `not-implemented`. They never emit or invoke.
+
+### Deferred / Disabled (31 surfaces)
+
+Actions with stable action IDs but no real execution boundary. Buttons are rendered with `data-action-id` but are marked `data-action-unavailable="true"`, `aria-disabled="true"`, and `disabled` by `applyActionAvailability`.
+
+These include: `character.importZip`, `character.apply`, `character.restoreDefaults`, `character.manageOutfits`, `character.moreExpressions`, `character.resourceRepair`, `voice.selectTtsVoice`, `voice.selectAsrDevice`, `voice.setAsrLanguage`, `voice.records.clear`, `voice.queue.clear`, `music.setMood`, `music.refreshRecommendations`, `perception.privacyHelp`, `perception.managePermissions`, `perception.clipboard.clear`, `perception.events.viewAll`, `perception.suggestion.run`, `abilities.quickAction`, `abilities.manageModules`, `abilities.moreWorkflows`, `abilities.safety.details`, `abilities.live2d.openSettings`, `advanced.logs.clear`, `advanced.exitPet`, `advanced.expertOption`, `advanced.live2d.openStatus`, `advanced.ability.details`, `window.notify`.
+
+### Display-Only (no data-action-id)
+
+Two deferred actions are rendered as display-only text without `data-action-id` — they show current state but are not buttons:
+
+| Action ID | Element | Display |
+|-----------|---------|---------|
+| `voice.setAsrSensitivity` | `<strong>` in ASR card | Sensitivity percentage |
+| `music.selectOutputDevice` | `<strong>` in music footer | Output device name |
+
+### Deferred UX Audit — Complete
+
+Every deferred action has been reviewed and classified:
+
+- **No fake bridges.** Actions like `character.importZip`, `music.setMood`, `advanced.exitPet` remain deferred because there is no real boundary ready. Not a single "placeholder bridge" was added just to reduce the appearance of empty buttons.
+- **Disabled by default.** `applyActionAvailability` marks all non-bridged, non-client-handled action buttons as `aria-disabled="true"`, `disabled`, and `data-action-unavailable="true"`. Users see the button but cannot click it.
+- **Display-only downgrade.** Two deferred actions (`voice.setAsrSensitivity`, `music.selectOutputDevice`) were rendered as `<strong>` with `data-action-id`, making them look clickable. They were downgraded to plain `<strong>` with no `data-action-id`, removing the false affordance.
+- **3 client-handled actions** provide real local behavior (expand/collapse UI sections) with `refresh:false` and no backend/Tauri boundary.
+- **31 remaining deferred surfaces** are documented with reasons in `action-surface-contract.js`. No expiration date is set — they become bridged when the real boundary is ready, not before.
+
+### Design Principle
+
+**禁止为了减少摆设感而硬接假动作。** Do not bridge an action just to make the UI feel more complete. Every bridged action must have a real settings command handler in `main.js`, a real Tauri invoke, or a real Tauri window API call. Mock fallbacks and noop stubs are acceptable as transitional states; fake execution (emitting a command that is silently ignored, or returning `{ ok: true }` without side effects) is not.
+
+## Runtime Completeness
+
+The backend snapshot endpoint (`GET /control-center/snapshot`) uses **production providers** in `companion_v01/routes/control_center.py` / `build_control_center_snapshot_runtime_providers`. The five runtime fields (`health`, `diagnostics`, `workspace`, `resourceManifest`, `metrics`) aggregate real data from engine, config_module, runtime_metrics, public_guard, tracemalloc, llm, and vector_store. Individual provider failures degrade only the failing field.
+
+The **Tauri `SETTINGS_SNAPSHOT_EVENT`** provides an independent data path for high-frequency desktop state (music progress, petState, runtime status). It is not a replacement for the backend snapshot — these two sources merge at the adapter layer (`data-adapter.js`). When the backend snapshot returns data without `musicRuntime`, the mock music data passes through unchanged (not overwritten).
+
+Fields driven by real backend data:
+
+| Page | Runtime-driven fields | Source |
+|------|----------------------|--------|
+| Overview | `status.items`, `connection.rows`, `pack.name/version`, `emotion.name`, `voice.enabled/status`, `sense.toggles.enabled`, `abilities` labels, `health` tiles (memory, storage, errors, alerts) | health, diagnostics, workspace, metrics |
+| Character | `hero`, `selectedPack`, `selectedPackId`, `packInfo`, `completeness`, `outfits`, `emotions`, `warning`, `resources` (when pack asset count available) | resourceManifest, diagnostics, petState |
+| Voice | `tts.enabled/volume`, `asr.enabled`, `diagnostics` rows | health, diagnostics, petState |
+| Perception | `featureCards[*].enabled`, screen-vision interval/frames, proactive interval; clipboard shows capability status only (no content) | petState, diagnostics |
+| Music | `nowPlaying`, `playlist`, `lyrics`, `activeLyric`, `info`, `bottomStatus`, `currentPlayMode`, `outputDevice`, `volumeNormalization` | Tauri music snapshot + petState (backend snapshot does NOT overwrite music) |
+| Abilities | `overview.stats`, `availability`, `note`, `modules` (from tool names), `workflows`, `calls` (diagnostics-derived status rows), `safety` | diagnostics, workspace |
+| Advanced | `systemStrip` (CPU/memory/network/status), `coreSettings` (webgl/hitTest/hitbox), `diagnostics.metrics` (应用状态, 后端健康, 内存占用), `diagnostics.logs`, `abilityOverview` (from tool names), `live2d` (reserved) | health, diagnostics, metrics, petState |
+
+Fields that remain in mock data (no backend provider):
+
+| Field | Reason |
+|-------|--------|
+| `voice.tts.voice`, `voice.tts.speed` | No backend voice catalog or speed config |
+| `voice.asr.device`, `voice.asr.language`, `voice.asr.sensitivity` | No backend ASR device/language config |
+| `voice.preview.text` | Voice preview is UI demonstration text |
+| `voice.records`, `voice.queue` | Recognition records and synthesis queue are local (no backend) |
+| `voice.processing` | Processing options are UI template |
+| `voice.wakeWord`, `voice.wakeSensitivity` | Wake-word config is local/Tauri, not available via backend |
+| `musicPage.modes`, `musicPage.recommendations` | Mood modes and recommendations are UI templates |
+| `perceptionPage.events`, `perceptionPage.suggestion` | Sensing events and suggestions are UI demonstration |
+| `perceptionPage.privacy`, `perceptionPage.permissions` | Static explanatory text |
+| `abilitiesPage.quickActions` | Template action buttons (no capability invocation boundary) |
+| `abilitiesPage.calls` (full detail) | Individual invocation history not exposed via snapshot; diagnostics-derived status rows are shown instead |
+| `advancedPage.diagnostics.metrics["帧率 (FPS)"]` | No backend FPS data; mock value shown when runtime data unavailable |
+| `advancedPage.operations`, `advancedPage.expertOptions` | Static UI configuration |
+| `overviewPage.health["CPU 占用"]` | No backend CPU metric; shows "运行中" as service status |
+
+The snapshot endpoint never returns: prompt text, chat messages, API keys, secrets, clipboard content, screenshot content, or file full text. Individual provider failures degrade only the failing field — other fields remain available — and the endpoint still returns 200.
+
 
 ## Contract Shape
 
@@ -209,9 +317,12 @@ Current bridged action ids:
 - `voice.setTtsEnabled`
 - `voice.setAsrEnabled`
 - `voice.setVolume`
+- `voice.previewPlay`
 - `character.openPackFolder`
 - `character.refresh`
 - `character.previewEmotion`
+- `character.selectPack`
+- `character.setOutfit`
 - `perception.desktopContext.setEnabled`
 - `perception.clipboardContext.setEnabled`
 - `perception.screenVision.setEnabled`
@@ -220,6 +331,7 @@ Current bridged action ids:
 - `perception.screenVision.clear`
 - `perception.proactiveWake.setEnabled`
 - `perception.proactiveWake.setIntervalSec`
+- `perception.runDiagnostics`
 - `window.close`
 - `window.minimize`
 - `window.maximize`
@@ -233,6 +345,8 @@ Current bridged action ids:
 - `music.pause`
 - `music.stop`
 - `music.clear`
+- `music.seek`
+- `music.selectQueueItem`
 
 Action results should be structured. A successful side-effect should include a snapshot refresh hint:
 
@@ -274,18 +388,18 @@ Deferred action surfaces:
 
 The machine-readable source of truth is `src/control-center/action-surface-contract.js`; `npm run smoke:control-center-actions` verifies that all bridged ids are catalogued and all deferred ids remain unbridged.
 
-- Character import zip, apply, restore defaults, outfit selection, pack selector, and outfit/expression management are deferred until file selection, payload shape, and destructive/restore confirmation semantics are defined.
-- Voice selector, speed, ASR device/language/sensitivity, preview playback, record clearing, queue clearing, and wake-word settings remain UI stubs until stable settings commands or backend contracts exist.
-- Music play mode, mood presets, recommendation refresh, queue item selection, volume normalization, and output device controls remain UI stubs until playback payloads and backend/Tauri ownership are defined.
-- Perception privacy help, permission management, active-window details, clipboard clear, event log expansion, suggestions, and diagnostics are deferred until their real data/action boundaries exist.
+- Character import zip, apply, restore defaults, and outfit/expression management are deferred until file selection, payload shape, and destructive/restore confirmation semantics are defined. Pack selection and outfit tiles are bridged through `character.selectPack` and `character.setOutfit`.
+- Voice selector, speed, ASR device/language/sensitivity, record clearing, queue clearing, and wake-word settings remain UI stubs until stable settings commands or backend contracts exist.
+- Music play mode, mood presets, recommendation refresh, volume normalization, and output device controls remain UI stubs until playback payloads and backend/Tauri ownership are defined.
+- Perception privacy help, permission management, active-window details, clipboard clear, event log expansion, and suggestions are deferred until their real data/action boundaries exist.
 - Abilities quick actions, module/permission management, workflow expansion, call logs, safety policy details, and Live2D settings remain deferred because they currently represent capability navigation or policy surfaces, not concrete desktop commands.
 - Advanced log clearing, more logs, ability overview cards, Live2D status, expert options, and `退出桌宠` remain deferred. `退出桌宠` must not be bridged without an explicit confirmation and ownership decision.
 
 Parallel next slices:
 
 - Character apply/outfit/import slice: define payloads for `character.importZip`, `character.setOutfit`, `character.apply`, and `character.restoreDefaults`, including confirmation behavior and file-picker ownership.
-- Voice configuration slice: define catalog/device payloads for `voice.selectTtsVoice`, `voice.setSpeed`, `voice.selectAsrDevice`, `voice.setAsrLanguage`, `voice.setAsrSensitivity`, and clear/preview commands.
-- Music interaction slice: define playback ownership for `music.setPlayMode`, `music.setMood`, `music.refreshRecommendations`, `music.selectQueueItem`, `music.setVolumeNormalization`, and `music.selectOutputDevice`.
+- Voice configuration slice: define catalog/device payloads for `voice.selectTtsVoice`, `voice.setSpeed`, `voice.selectAsrDevice`, `voice.setAsrLanguage`, `voice.setAsrSensitivity`, and clear commands.
+- Music interaction slice: define playback ownership for `music.setPlayMode`, `music.setMood`, `music.refreshRecommendations`, `music.setVolumeNormalization`, and `music.selectOutputDevice`.
 - Capability/navigation slice: decide whether abilities, permissions, logs, privacy help, diagnostics, and Live2D settings open local panels, backend routes, or remain read-only.
 
 `window.maximize` currently toggles maximize state through the Tauri window API. If strict maximize and unmaximize commands are needed later, add separate action ids instead of changing this action's current behavior.

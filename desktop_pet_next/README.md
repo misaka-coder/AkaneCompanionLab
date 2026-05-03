@@ -122,6 +122,22 @@ npm run build
 
 `npm run smoke:control-center-actions` validates control-center action bridge mappings, exception hardening, and `not-implemented` behavior.
 
+`npm run probe:control-center-runtime` validates the control-center unified snapshot data pipeline: happy-path hydration from a complete backend snapshot, partial degradation when a single provider fails, fallback to legacy endpoints when the snapshot is broken, graceful null return when all backends are unavailable, action contract inertness (backend POST is never treated as a desktop action execution boundary), and surface contract consistency (all bridged actions are catalogued, all deferred surfaces are not bridged).
+
+`npm run verify:control-center` runs the full control-center verification matrix: smoke actions + runtime probe + build, with a required-file existence gate before execution.
+
+`npm run dev:control-center` launches the Tauri desktop app with `AKANE_CONTROL_CENTER_LAB=1`, which opens the new control-center-lab.html in the settings window instead of the default settings.html. This is a preview entry — the old settings page remains the default. When the env var is not set (or set to `0`/`false`), the original settings.html opens as before. Settings and workspace windows are non-topmost so the pet keeps its always-on-top priority.
+
+### Control Center Verification Matrix
+
+| Command | Scope |
+|---------|-------|
+| `npm run smoke:control-center-actions` | Action bridge mappings, `not-implemented` + `refresh:false` contract, exception hardening, surface contract consistency |
+| `npm run probe:control-center-runtime` | Unified snapshot data pipeline: happy-path hydration, partial degradation, bad-snapshot fallback, all-unavailable null, action inertness, surface contract |
+| `npm run verify:control-center` | Required-file existence gate + smoke actions + runtime probe + build |
+| `python -m unittest tests.test_backend_route_modules` (from repo root) | Backend control-center route contract: snapshot endpoint, action endpoint, provider failure resilience, no sensitive content |
+| `git diff --check` (from repo root) | Whitespace and syntax hygiene |
+
 After Rust is installed and `cargo` is available in PATH:
 
 ```powershell

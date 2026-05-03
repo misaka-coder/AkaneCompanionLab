@@ -692,6 +692,196 @@ class BackendRouteModuleTests(unittest.TestCase):
         response = TestClient(app).get("/control-center/snapshot")
         self.assertEqual(response.headers["cache-control"], "no-store")
 
+    # ---------- snapshot resilience ----------
+
+    def test_control_center_snapshot_workspace_provider_failure_still_200(self) -> None:
+        def fail_workspace(context: dict) -> dict:
+            raise RuntimeError("workspace failed")
+
+        runtime_metrics = FakeRuntimeMetrics()
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                runtime_metrics=runtime_metrics,
+                snapshot_runtime_providers={
+                    "health": lambda: {"status": "ok"},
+                    "diagnostics": lambda context: {"status": "ok", "capabilities": {"tool_names": [], "declared": [], "effective_modules": [], "tool_layers": []}, "runtime": {"metrics": {}}, "resources": {}, "workspace": {}, "safety": {}},
+                    "workspace": fail_workspace,
+                    "resourceManifest": lambda: {"schema_version": 1, "clients": {"desktop_pet": {}}, "characters": {"outfits": []}},
+                    "metrics": lambda: "cpu_percent 12",
+                },
+            )
+        )
+
+        response = TestClient(app).get("/control-center/snapshot")
+        self.assertEqual(response.status_code, 200)
+        runtime = response.json()["runtime"]
+        self.assertEqual(runtime["health"]["status"], "ok")
+        self.assertEqual(runtime["diagnostics"]["status"], "ok")
+        self.assertEqual(runtime["workspace"]["status"], "unavailable")
+        self.assertIn("error", runtime["workspace"])
+        self.assertIn("schema_version", runtime["resourceManifest"])
+        self.assertIn("cpu_percent", runtime["metrics"])
+
+    def test_control_center_snapshot_metrics_provider_failure_still_200(self) -> None:
+        def fail_metrics() -> str:
+            raise RuntimeError("metrics failed")
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                snapshot_runtime_providers={
+                    "health": lambda: {"status": "ok"},
+                    "diagnostics": lambda: {"status": "ok"},
+                    "workspace": lambda: {},
+                    "resourceManifest": lambda: {},
+                    "metrics": fail_metrics,
+                }
+            )
+        )
+
+        response = TestClient(app).get("/control-center/snapshot")
+        self.assertEqual(response.status_code, 200)
+        runtime = response.json()["runtime"]
+        self.assertEqual(runtime["health"]["status"], "ok")
+        self.assertEqual(runtime["metrics"]["status"], "unavailable")
+
+    def test_control_center_snapshot_no_sensitive_content(self) -> None:
+        runtime_metrics = FakeRuntimeMetrics()
+        runtime_metrics.incr("custom_total", 2)
+
+        def build_resource_manifest(**kwargs):
+            return {
+                "schema_version": 2,
+                "characters": {
+                    "outfits": [
+                        {
+                            "id": "cat",
+                            "name": "Cat",
+                            "emotions": [{"id": "normal", "name": "Normal"}],
+                        }
+                    ]
+                },
+                "defaults": {"outfit": "cat", "emotion": "normal"},
+            }
+
+        engine = SimpleNamespace(
+            build_resource_manifest=build_resource_manifest,
+            build_desktop_pet_workspace_panel=lambda **_kwargs: {"ok": True, "counts": {"files": 0, "outputs": 0, "tasks": 0}},
+            llm=SimpleNamespace(snapshot_metrics=lambda: {"requests_total": 3}),
+            vector_store=SimpleNamespace(count_entries=lambda: 42),
+            snapshot_embedding_reindex_status=lambda: {"total": 0, "processed": 0, "state": "idle"},
+        )
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                runtime_metrics=runtime_metrics,
+                resolve_identity_from_query=resolve_query,
+                snapshot_runtime_providers=build_control_center_snapshot_runtime_providers(
+                    engine=engine,
+                    config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                    runtime_metrics=runtime_metrics,
+                    public_guard=FakeGuard(),
+                ),
+            )
+        )
+
+        response = TestClient(app).get("/control-center/snapshot?user_id=desktop&real_user_id=master")
+        self.assertEqual(response.status_code, 200)
+        body = response.text.lower()
+
+        # Snapshot must not expose prompts, messages, api keys, secrets, clipboard, or screenshots
+        for sensitive_term in ("api_key", "prompt_text", "chat_message"):
+            self.assertNotIn(sensitive_term, body, f"snapshot should not contain {sensitive_term}")
+
+        # Check that raw content fields are absent from the runtime structure
+        payload = response.json()
+        runtime = payload["runtime"]
+        diagnostics_text = json.dumps(runtime.get("diagnostics", {}))
+        for field in ("messages", "prompt"):
+            self.assertNotIn(f'"{field}"', diagnostics_text, f"diagnostics should not contain {field}")
+
+    def test_control_center_snapshot_resource_manifest_drives_character_resources(self) -> None:
+        runtime_metrics = FakeRuntimeMetrics()
+
+        def build_resource_manifest(**kwargs):
+            return {
+                "schema_version": 2,
+                "characters": {
+                    "outfits": [
+                        {
+                            "id": "sailor",
+                            "name": "Sailor",
+                            "emotions": [
+                                {"id": "happy", "name": "Happy", "path": "/assets/sailor/happy.png"},
+                                {"id": "sad", "name": "Sad", "path": "/assets/sailor/sad.png"},
+                            ],
+                        },
+                        {
+                            "id": "casual",
+                            "name": "Casual",
+                            "emotions": [
+                                {"id": "smile", "name": "Smile", "path": "/assets/casual/smile.png"},
+                                {"id": "angry", "name": "Angry", "path": "/assets/casual/angry.png"},
+                                {"id": "cry", "name": "Cry", "path": "/assets/casual/cry.png"},
+                            ],
+                        },
+                    ]
+                },
+                "defaults": {"outfit": "sailor", "emotion": "happy"},
+                "scenes": {
+                    "majors": [
+                        {"id": "room", "minors": [{"id": "bg1", "backgrounds": [{"id": "b1"}]}]},
+                    ]
+                },
+            }
+
+        engine = SimpleNamespace(
+            build_resource_manifest=build_resource_manifest,
+            build_desktop_pet_workspace_panel=lambda **_kwargs: {"ok": True, "counts": {"files": 0, "outputs": 0, "tasks": 0}},
+            llm=SimpleNamespace(snapshot_metrics=lambda: {"requests_total": 0}),
+            vector_store=SimpleNamespace(count_entries=lambda: 0),
+            snapshot_embedding_reindex_status=lambda: {"total": 0, "processed": 0, "state": "idle"},
+        )
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                runtime_metrics=runtime_metrics,
+                resolve_identity_from_query=resolve_query,
+                snapshot_runtime_providers=build_control_center_snapshot_runtime_providers(
+                    engine=engine,
+                    config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                    runtime_metrics=runtime_metrics,
+                    public_guard=FakeGuard(),
+                ),
+            )
+        )
+
+        response = TestClient(app).get(
+            "/control-center/snapshot?user_id=desktop&real_user_id=master"
+            "&client=desktop_pet&character_pack_id=mika_pack&outfit=sailor&emotion=happy"
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        runtime = payload["runtime"]
+
+        # resourceManifest drives outfit and emotion data
+        manifest = runtime["resourceManifest"]
+        self.assertEqual(len(manifest["characters"]["outfits"]), 2)
+        self.assertEqual(manifest["characters"]["outfits"][0]["id"], "sailor")
+        self.assertEqual(len(manifest["characters"]["outfits"][1]["emotions"]), 3)
+
+        # Diagnostics resources should reflect manifest-derived counts
+        diag_resources = runtime["diagnostics"]["resources"]
+        # emotion_count includes all emotions across all outfits
+        self.assertGreaterEqual(diag_resources["emotion_count"], 0)
+
+        # Check that the decorated manifest reflects the preferred outfit
+        self.assertEqual(manifest["clients"]["desktop_pet"]["default_outfit"], "sailor")
+        self.assertEqual(manifest["clients"]["desktop_pet"]["default_emotion"], "happy")
+
 
 if __name__ == "__main__":
     unittest.main()

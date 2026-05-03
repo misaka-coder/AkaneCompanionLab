@@ -33,6 +33,7 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   musicPause: "music.pause",
   musicStop: "music.stop",
   musicClear: "music.clear",
+  musicSeek: "music.seek",
   musicSetPlayMode: "music.setPlayMode",
   musicSetMood: "music.setMood",
   musicRefreshRecommendations: "music.refreshRecommendations",
@@ -86,9 +87,15 @@ export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.voiceSetTtsEnabled,
   CONTROL_CENTER_ACTIONS.voiceSetAsrEnabled,
   CONTROL_CENTER_ACTIONS.voiceSetVolume,
+  CONTROL_CENTER_ACTIONS.voicePreviewPlay,
+  CONTROL_CENTER_ACTIONS.voiceSetSpeed,
+  CONTROL_CENTER_ACTIONS.voiceSetWakeWord,
+  CONTROL_CENTER_ACTIONS.voiceSetWakeSensitivity,
   CONTROL_CENTER_ACTIONS.characterOpenPackFolder,
   CONTROL_CENTER_ACTIONS.characterRefresh,
   CONTROL_CENTER_ACTIONS.characterPreviewEmotion,
+  CONTROL_CENTER_ACTIONS.characterSelectPack,
+  CONTROL_CENTER_ACTIONS.characterSetOutfit,
   CONTROL_CENTER_ACTIONS.perceptionDesktopContextSetEnabled,
   CONTROL_CENTER_ACTIONS.perceptionClipboardContextSetEnabled,
   CONTROL_CENTER_ACTIONS.perceptionScreenVisionSetEnabled,
@@ -97,6 +104,7 @@ export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.perceptionScreenVisionClear,
   CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetEnabled,
   CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetIntervalSec,
+  CONTROL_CENTER_ACTIONS.perceptionRunDiagnostics,
   CONTROL_CENTER_ACTIONS.windowClose,
   CONTROL_CENTER_ACTIONS.windowMinimize,
   CONTROL_CENTER_ACTIONS.windowMaximize,
@@ -109,7 +117,11 @@ export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.musicNext,
   CONTROL_CENTER_ACTIONS.musicPause,
   CONTROL_CENTER_ACTIONS.musicStop,
-  CONTROL_CENTER_ACTIONS.musicClear
+  CONTROL_CENTER_ACTIONS.musicClear,
+  CONTROL_CENTER_ACTIONS.musicSeek,
+  CONTROL_CENTER_ACTIONS.musicSelectQueueItem,
+  CONTROL_CENTER_ACTIONS.musicSetPlayMode,
+  CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization
 ]);
 
 const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);

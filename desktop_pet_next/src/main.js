@@ -90,6 +90,7 @@ const VOICE_MIME_TYPES = [
 ];
 const MUSIC_FILE_EXTENSIONS = new Set(["mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "webm"]);
 const MUSIC_LYRIC_EXTENSIONS = new Set(["lrc"]);
+const MUSIC_PLAY_MODES = Object.freeze(["列表循环", "单曲循环", "随机播放"]);
 const MIN_RECORDING_MS = 700;
 const SEGMENT_MIN_MS = 1200;
 const SEGMENT_MAX_MS = 4500;
@@ -148,7 +149,12 @@ const DEFAULT_STATE = {
   screenVisionIntervalSec: DEFAULT_SCREEN_VISION_INTERVAL_SEC,
   screenVisionFrameCount: DEFAULT_SCREEN_VISION_FRAMES_PER_CLIP,
   hitTestEnabled: true,
-  hitboxOverlay: false
+  hitboxOverlay: false,
+  voiceSpeed: "1.00x",
+  wakeWord: "Akane",
+  wakeSensitivity: "中等",
+  musicPlayMode: MUSIC_PLAY_MODES[0],
+  musicVolumeNormalization: true
 };
 
 const bundledOutfit = buildBundledOutfit();
@@ -853,6 +859,9 @@ async function handleSettingsCommand(payload) {
     case "testTts":
       await testTts();
       break;
+    case "previewTts":
+      await previewTts(payload.value);
+      break;
     case "previousMusic":
       await playPreviousMusicTrack();
       break;
@@ -870,6 +879,9 @@ async function handleSettingsCommand(payload) {
       break;
     case "toggleMusic":
       await toggleMusicPlayback();
+      break;
+    case "seekMusic":
+      seekMusicPlayback(Number(payload.value));
       break;
     case "stopMusic":
       stopMusic({ announce: true });
@@ -912,6 +924,21 @@ async function handleSettingsCommand(payload) {
       break;
     case "closePet":
       await closePetWindow();
+      break;
+    case "setVoiceSpeed":
+      setVoiceSpeed(payload.value);
+      break;
+    case "setWakeWord":
+      setWakeWord(payload.value);
+      break;
+    case "setWakeSensitivity":
+      setWakeSensitivity(payload.value);
+      break;
+    case "setMusicPlayMode":
+      setMusicPlayMode(payload.value);
+      break;
+    case "setMusicVolumeNormalization":
+      setMusicVolumeNormalization(payload.value);
       break;
     default:
       setRuntimeStatus(`未知设置命令：${command}`);
@@ -988,7 +1015,12 @@ function buildSettingsSnapshot() {
       screenVisionFrameCount: state.screenVisionFrameCount,
       recommendedScreenVisionIntervalSec: recommendedScreenVisionIntervalSec(state.proactiveWakeIntervalSec),
       hitTestEnabled: state.hitTestEnabled,
-      hitboxOverlay: state.hitboxOverlay
+      hitboxOverlay: state.hitboxOverlay,
+      voiceSpeed: state.voiceSpeed,
+      wakeWord: state.wakeWord,
+      wakeSensitivity: state.wakeSensitivity,
+      musicPlayMode: state.musicPlayMode,
+      musicVolumeNormalization: state.musicVolumeNormalization
     },
     resource: {
       health: resourceState.health,
@@ -1086,7 +1118,15 @@ function normalizeState(value) {
       incoming.screenVisionFrameCount ?? DEFAULT_STATE.screenVisionFrameCount
     ),
     hitTestEnabled: Boolean(incoming.hitTestEnabled ?? DEFAULT_STATE.hitTestEnabled),
-    hitboxOverlay: Boolean(incoming.hitboxOverlay ?? DEFAULT_STATE.hitboxOverlay)
+    hitboxOverlay: Boolean(incoming.hitboxOverlay ?? DEFAULT_STATE.hitboxOverlay),
+    voiceSpeed: String(incoming.voiceSpeed ?? DEFAULT_STATE.voiceSpeed).trim() || DEFAULT_STATE.voiceSpeed,
+    wakeWord: String(incoming.wakeWord ?? DEFAULT_STATE.wakeWord).trim() || DEFAULT_STATE.wakeWord,
+    wakeSensitivity: String(incoming.wakeSensitivity ?? DEFAULT_STATE.wakeSensitivity).trim() || DEFAULT_STATE.wakeSensitivity,
+    musicPlayMode: normalizeMusicPlayMode(incoming.musicPlayMode),
+    musicVolumeNormalization: normalizeBooleanSetting(
+      incoming.musicVolumeNormalization,
+      DEFAULT_STATE.musicVolumeNormalization
+    )
   };
 }
 
@@ -1113,6 +1153,20 @@ function normalizeScreenVisionFrameCount(value) {
       SCREEN_VISION_FRAME_COUNT_MAX
     )
   );
+}
+
+function normalizeMusicPlayMode(value) {
+  const mode = String(value || "").trim();
+  return MUSIC_PLAY_MODES.includes(mode) ? mode : DEFAULT_STATE.musicPlayMode;
+}
+
+function normalizeBooleanSetting(value, fallback = false) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const text = String(value ?? "").trim().toLowerCase();
+  if (text === "true" || text === "1") return true;
+  if (text === "false" || text === "0") return false;
+  return Boolean(fallback);
 }
 
 function recommendedScreenVisionIntervalSec(wakeIntervalSec) {
@@ -1205,6 +1259,43 @@ function setVoiceVolume(value) {
   if (els.voicePlayer) els.voicePlayer.volume = state.voiceVolume;
   if (els.musicPlayer) els.musicPlayer.volume = state.voiceVolume;
   scheduleSave(0);
+  scheduleSettingsSnapshot();
+}
+
+function setVoiceSpeed(value) {
+  state.voiceSpeed = String(value ?? DEFAULT_STATE.voiceSpeed).trim() || DEFAULT_STATE.voiceSpeed;
+  scheduleSave(0);
+  setRuntimeStatus(`语速已设为 ${state.voiceSpeed}`, { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setWakeWord(value) {
+  state.wakeWord = String(value ?? DEFAULT_STATE.wakeWord).trim() || DEFAULT_STATE.wakeWord;
+  scheduleSave(0);
+  setRuntimeStatus(`唤醒词已设为 ${state.wakeWord}`, { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setWakeSensitivity(value) {
+  state.wakeSensitivity = String(value ?? DEFAULT_STATE.wakeSensitivity).trim() || DEFAULT_STATE.wakeSensitivity;
+  scheduleSave(0);
+  setRuntimeStatus(`唤醒灵敏度已设为 ${state.wakeSensitivity}`, { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setMusicPlayMode(value) {
+  state.musicPlayMode = normalizeMusicPlayMode(value);
+  scheduleSave(0);
+  setRuntimeStatus(`播放模式：${state.musicPlayMode}`, { mode: musicPlaying ? "music" : "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setMusicVolumeNormalization(value) {
+  state.musicVolumeNormalization = normalizeBooleanSetting(value, DEFAULT_STATE.musicVolumeNormalization);
+  scheduleSave(0);
+  setRuntimeStatus(state.musicVolumeNormalization ? "音量均衡已开启" : "音量均衡已关闭", {
+    mode: musicPlaying ? "music" : "idle"
+  });
   scheduleSettingsSnapshot();
 }
 
@@ -4135,7 +4226,29 @@ async function removeMusicTrackBySourceId(sourceId) {
 
 async function handleMusicEnded() {
   if (!musicTrack) return;
+  if (state.musicPlayMode === "单曲循环" && musicQueueIndex >= 0) {
+    await playMusicQueueIndex(musicQueueIndex, {
+      message: `单曲循环：《${musicTrack.displayName}》。`
+    });
+    return;
+  }
+  if (state.musicPlayMode === "随机播放" && musicQueue.length > 1) {
+    let nextIndex = musicQueueIndex;
+    while (nextIndex === musicQueueIndex) {
+      nextIndex = Math.floor(Math.random() * musicQueue.length);
+    }
+    await playMusicQueueIndex(nextIndex, {
+      message: `随机播放：《${musicQueue[nextIndex].displayName}》。`
+    });
+    return;
+  }
   if (await playNextMusicTrack({ auto: true })) return;
+  if (state.musicPlayMode === "列表循环" && musicQueue.length > 1) {
+    await playMusicQueueIndex(0, {
+      message: `列表循环：《${musicQueue[0].displayName}》。`
+    });
+    return;
+  }
   stopMusic({ ended: true });
 }
 
@@ -4189,6 +4302,28 @@ async function toggleMusicPlayback() {
   }
   updateActivityControls();
   scheduleSettingsSnapshot();
+}
+
+function seekMusicPlayback(seconds) {
+  if (!musicTrack || !els.musicPlayer) {
+    setRuntimeStatus("暂无可跳转的音乐", { mode: "idle" });
+    return;
+  }
+  const duration = Number(els.musicPlayer.duration || 0);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    setRuntimeStatus("音乐时长仍在读取中", { mode: "idle" });
+    return;
+  }
+  const nextTime = clamp(Number(seconds || 0), 0, duration);
+  try {
+    els.musicPlayer.currentTime = nextTime;
+    setRuntimeStatus(`已跳转音乐进度：${getMusicDisplayName()}`, {
+      mode: musicPlaying ? "music" : musicPaused ? "music-paused" : "idle"
+    });
+    scheduleMusicSnapshot(80);
+  } catch {
+    setRuntimeStatus("音乐进度跳转失败", { mode: "error" });
+  }
 }
 
 function stopMusic({ announce = false, ended = false, silent = false, clearQueue = false } = {}) {
@@ -4707,6 +4842,14 @@ async function testTts() {
     setVoiceEnabled(true);
   }
   queueTtsItems([getProfileText("ttsTestText", TTS_TEST_TEXT)], `test:${Date.now()}`);
+}
+
+async function previewTts(text) {
+  const normalized = normalizeTtsText(text) || getProfileText("ttsTestText", TTS_TEST_TEXT);
+  if (!state.voiceEnabled) {
+    setVoiceEnabled(true);
+  }
+  queueTtsItems([normalized], `preview:${Date.now()}`);
 }
 
 function stopTts({ resetSignature = true } = {}) {

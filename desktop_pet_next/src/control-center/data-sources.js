@@ -17,6 +17,10 @@ const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.voiceSetTtsEnabled]: "setVoiceEnabled",
   [CONTROL_CENTER_ACTIONS.voiceSetAsrEnabled]: "setVoiceInputEnabled",
   [CONTROL_CENTER_ACTIONS.voiceSetVolume]: "setVoiceVolume",
+  [CONTROL_CENTER_ACTIONS.voicePreviewPlay]: "previewTts",
+  [CONTROL_CENTER_ACTIONS.voiceSetSpeed]: "setVoiceSpeed",
+  [CONTROL_CENTER_ACTIONS.voiceSetWakeWord]: "setWakeWord",
+  [CONTROL_CENTER_ACTIONS.voiceSetWakeSensitivity]: "setWakeSensitivity",
   [CONTROL_CENTER_ACTIONS.characterRefresh]: "reloadResources",
   [CONTROL_CENTER_ACTIONS.characterPreviewEmotion]: "previewEmotion",
   [CONTROL_CENTER_ACTIONS.perceptionDesktopContextSetEnabled]: "setDesktopContextEnabled",
@@ -27,16 +31,23 @@ const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.perceptionScreenVisionClear]: "clearScreenVision",
   [CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetEnabled]: "setProactiveWakeEnabled",
   [CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetIntervalSec]: "setProactiveWakeIntervalSec",
+  [CONTROL_CENTER_ACTIONS.perceptionRunDiagnostics]: "requestSnapshot",
   [CONTROL_CENTER_ACTIONS.advancedProbeClickThrough]: "probeClickThrough",
   [CONTROL_CENTER_ACTIONS.advancedResetWindow]: "resetWindow",
   [CONTROL_CENTER_ACTIONS.advancedToggleWebgl]: "toggleWebgl",
   [CONTROL_CENTER_ACTIONS.advancedSetHitTestEnabled]: "setHitTestEnabled",
   [CONTROL_CENTER_ACTIONS.advancedSetHitboxOverlay]: "setHitboxOverlay",
+  [CONTROL_CENTER_ACTIONS.characterSelectPack]: "setCharacterPack",
+  [CONTROL_CENTER_ACTIONS.characterSetOutfit]: "setOutfit",
   [CONTROL_CENTER_ACTIONS.musicPrevious]: "previousMusic",
   [CONTROL_CENTER_ACTIONS.musicNext]: "nextMusic",
   [CONTROL_CENTER_ACTIONS.musicPause]: "toggleMusic",
   [CONTROL_CENTER_ACTIONS.musicStop]: "stopMusic",
-  [CONTROL_CENTER_ACTIONS.musicClear]: "clearMusicQueue"
+  [CONTROL_CENTER_ACTIONS.musicClear]: "clearMusicQueue",
+  [CONTROL_CENTER_ACTIONS.musicSetPlayMode]: "setMusicPlayMode",
+  [CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization]: "setMusicVolumeNormalization",
+  [CONTROL_CENTER_ACTIONS.musicSeek]: "seekMusic",
+  [CONTROL_CENTER_ACTIONS.musicSelectQueueItem]: "playMusicTrack"
 });
 const tauriInvokeByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.workspaceOpen]: "open_workspace_window",
@@ -316,9 +327,10 @@ async function runTauriControlCenterAction(actionId, payload, context, options) 
 
     if (settingsCommand && typeof bridge.emit === "function") {
       await bridge.emit(SETTINGS_COMMAND_EVENT, {
+        ...payload,
         command: settingsCommand,
-        value: payload?.value ?? null,
-        source: context?.source || "control-center"
+        value: payload?.value ?? payload?.text ?? null,
+        source: context?.source || payload?.source || "control-center"
       });
       return { ok: true, status: "executed", actionId, payload, refresh: true };
     }
@@ -587,6 +599,7 @@ function buildCharacterRuntimePatch({
   return {
     ...(heroImage ? { hero: heroImage } : {}),
     selectedPack: displayName,
+    ...(packId ? { selectedPackId: packId } : {}),
     packInfo: [
       { label: "名称", value: displayName },
       { label: "版本", value: version || "resource-manifest" },
@@ -649,14 +662,21 @@ function buildVoiceRuntimePatch({ health, diagnostics, petState }) {
   const networkTone = serviceOk ? "good" : "warning";
   const latency = inferLatencyLabel(runtimeMetrics);
 
+  const petVoiceSpeed = String(petState?.voiceSpeed ?? "").trim();
+  const petWakeWord = String(petState?.wakeWord ?? "").trim();
+  const petWakeSensitivity = String(petState?.wakeSensitivity ?? "").trim();
+
   return {
     tts: {
       enabled: Boolean(ttsEnabled),
-      volume: ttsVolume
+      volume: ttsVolume,
+      ...(petVoiceSpeed ? { speed: petVoiceSpeed } : {}),
     },
     asr: {
       enabled: Boolean(asrEnabled)
     },
+    ...(petWakeWord ? { wakeWord: petWakeWord } : {}),
+    ...(petWakeSensitivity ? { wakeSensitivity: petWakeSensitivity } : {}),
     diagnostics: [
       { label: "整体状态", value: overallState, tone: overallTone },
       { label: "TTS 语音引擎", value: ttsOnline, tone: ttsTone },
@@ -753,7 +773,7 @@ function formatTimeOfDay(date) {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function buildMusicRuntimePatch({ musicSnapshot, petState }) {
+export function buildMusicRuntimePatch({ musicSnapshot, petState }) {
   if (!musicSnapshot || typeof musicSnapshot !== "object") return null;
 
   const track = musicSnapshot.track;
@@ -778,13 +798,19 @@ function buildMusicRuntimePatch({ musicSnapshot, petState }) {
     quality: hasTrack ? (track?.timelineQuality || track?.extension || "本地文件") : "",
     elapsed: formatSeconds(progressSec),
     duration: formatSeconds(durationSec),
+    progressSeconds: progressSec,
+    durationSeconds: durationSec,
     progress,
     volume,
+    playing: Boolean(musicSnapshot.playing),
+    paused: Boolean(musicSnapshot.paused),
     cover: "music"
   };
 
   const playlist = hasTrack
     ? queue.map((item, index) => ({
+        id: item.sourceId || item.id || item.fileName || item.displayName || `queue_${index + 1}`,
+        sourceId: item.sourceId || item.id || "",
         title: item.displayName || item.fileName || "未命名曲目",
         artist: "",
         duration: "",
@@ -819,10 +845,17 @@ function buildMusicRuntimePatch({ musicSnapshot, petState }) {
       ];
 
   const bottomStatus = hasTrack
-    ? `正在播放 · ${queue.length > 0 && activeQueueIndex >= 0 ? `${activeQueueIndex + 1}/${queue.length}` : "单曲"}`
+    ? `${musicSnapshot.playing ? "正在播放" : musicSnapshot.paused ? "已暂停" : "已停止"} · ${queue.length > 0 && activeQueueIndex >= 0 ? `${activeQueueIndex + 1}/${queue.length}` : "单曲"}`
     : "暂无播放 · 等待音乐加入队列";
 
-  return { nowPlaying, playlist, lyrics, activeLyric, info, bottomStatus };
+  const petPlayMode = String(petState?.musicPlayMode ?? "").trim();
+  const petVolumeNormalization = typeof petState?.musicVolumeNormalization === "boolean" ? petState.musicVolumeNormalization : undefined;
+
+  return {
+    nowPlaying, playlist, lyrics, activeLyric, info, bottomStatus,
+    ...(petPlayMode ? { currentPlayMode: petPlayMode } : {}),
+    ...(typeof petVolumeNormalization === "boolean" ? { volumeNormalization: petVolumeNormalization } : {}),
+  };
 }
 
 function formatSeconds(seconds) {

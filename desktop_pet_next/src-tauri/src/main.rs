@@ -1451,6 +1451,13 @@ fn close_pet_app(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn settings_window_url() -> &'static str {
+    match std::env::var("AKANE_CONTROL_CENTER_LAB") {
+        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => "control-center-lab.html",
+        _ => "settings.html",
+    }
+}
+
 #[tauri::command]
 async fn open_settings_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("settings") {
@@ -1459,24 +1466,17 @@ async fn open_settings_window(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let mut builder =
-        WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("settings.html".into()))
+    let builder =
+        WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App(settings_window_url().into()))
             .title("Akane Next 设置")
             .inner_size(1080.0, 720.0)
             .min_inner_size(760.0, 560.0)
             .resizable(true)
             .decorations(false)
-            .always_on_top(true)
+            .always_on_top(false)
             .skip_taskbar(false)
             .center()
             .visible(true);
-
-    #[cfg(windows)]
-    if let Some(main_window) = app.get_webview_window("main") {
-        builder = builder
-            .owner(&main_window)
-            .map_err(|error| error.to_string())?;
-    }
 
     let window = builder.build().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
@@ -1490,7 +1490,7 @@ async fn open_workspace_window(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let mut builder =
+    let builder =
         WebviewWindowBuilder::new(&app, "workspace", WebviewUrl::App("workspace.html".into()))
             .title("Akane Next 手边物品")
             .inner_size(760.0, 620.0)
@@ -1501,13 +1501,6 @@ async fn open_workspace_window(app: AppHandle) -> Result<(), String> {
             .skip_taskbar(false)
             .center()
             .visible(true);
-
-    #[cfg(windows)]
-    if let Some(main_window) = app.get_webview_window("main") {
-        builder = builder
-            .owner(&main_window)
-            .map_err(|error| error.to_string())?;
-    }
 
     let window = builder.build().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())

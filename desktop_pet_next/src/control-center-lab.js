@@ -22,14 +22,17 @@ import moonBalcony from "./assets/control-center-lab/covers/moon-balcony.png";
 import starryCloudCat from "./assets/control-center-lab/covers/starry-cloud-cat.png";
 import {
   CONTROL_CENTER_ACTIONS,
-  createControlCenterActionRouter
+  createControlCenterActionRouter,
+  isControlCenterBridgedAction
 } from "./control-center/action-router.js";
+import { CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS } from "./control-center/action-surface-contract.js";
 import {
   createControlCenterActionPayloadFromDataset,
   secondsFromIntervalLabel
 } from "./control-center/action-helpers.js";
 import { createControlCenterSnapshot } from "./control-center/data-adapter.js";
 import {
+  buildMusicRuntimePatch,
   CONTROL_CENTER_SOURCE_KIND,
   createControlCenterDataSource
 } from "./control-center/data-sources.js";
@@ -42,9 +45,13 @@ const RUNTIME_SNAPSHOT_HYDRATE_DELAY_MS = 900;
 const SCREEN_VISION_INTERVAL_OPTIONS_SEC = Object.freeze([15, 25, 30, 60, 120, 300, 600]);
 const SCREEN_VISION_FRAME_COUNT_MIN = 1;
 const SCREEN_VISION_FRAME_COUNT_MAX = 5;
+const MUSIC_PLAY_MODE_OPTIONS = Object.freeze(["列表循环", "单曲循环", "随机播放"]);
 const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 let latestRuntimeSnapshot = null;
 let runtimeSnapshotHydrateTimer = 0;
+let renderedPageId = "";
+const pageScrollPositions = new Map();
+const clientHandledActionIds = new Set(CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS);
 const root = document.querySelector("#app");
 let dataSource = createControlCenterDataSource(createControlCenterDataSourceOptions());
 let snapshot = createControlCenterSnapshot(dataSource.readInitialState());
@@ -90,11 +97,19 @@ const state = {
   activeVoicePreset: voicePage.tts?.voice || "Akane Voice",
   activeMusicMode: musicPage.modes[0],
   voice: buildVoiceState(voicePage),
-  advancedCoreSwitches: buildAdvancedCoreSwitchState(advancedPage.coreSettings)
+  advancedCoreSwitches: buildAdvancedCoreSwitchState(advancedPage.coreSettings),
+  expandedPerceptionCard: null,
+  showAllAbilityCalls: false,
+  showAllDiagnosticLogs: false
 };
 
-renderShell();
-bindEvents();
+// Shell may fail mid-render (e.g. missing asset). Events must always bind so
+// the page is not left in a half-rendered dead state.
+try {
+  renderShell();
+} finally {
+  bindEvents();
+}
 renderActivePage();
 void hydrateControlCenterSnapshot();
 void bindSettingsSnapshotListener();
@@ -131,7 +146,7 @@ async function hydrateControlCenterSnapshot() {
     if (!dataSource?.readSnapshot) return;
     const raw = await dataSource.readSnapshot();
     if (!raw) return;
-    applyControlCenterSnapshot(createControlCenterSnapshot(raw));
+    applyControlCenterSnapshot(createControlCenterSnapshot(raw), { renderShell: false });
   } catch (error) {
     console.info("[control-center] keep mock snapshot:", formatError(error));
   }
@@ -157,8 +172,11 @@ async function createRuntimeDataSourceOptions() {
   }
 }
 
-function applyControlCenterSnapshot(nextSnapshot) {
+function applyControlCenterSnapshot(nextSnapshot, options = {}) {
   if (!nextSnapshot || typeof nextSnapshot !== "object") return;
+  const renderShellAfterApply = options.renderShell !== false;
+  const renderPageAfterApply = options.renderPage !== false;
+  rememberRenderedPageScroll();
   snapshot = nextSnapshot;
   ({ labMeta, navItems, backgroundAsset } = snapshot.shell);
   ({
@@ -174,8 +192,12 @@ function applyControlCenterSnapshot(nextSnapshot) {
     state.activePage = labMeta.defaultPage;
   }
   syncInteractiveStateWithSnapshot();
-  renderShell();
-  renderActivePage();
+  if (renderShellAfterApply) {
+    renderShell();
+  }
+  if (renderPageAfterApply) {
+    renderActivePage();
+  }
 }
 
 function syncInteractiveStateWithSnapshot() {
@@ -217,6 +239,7 @@ function syncVoiceInteractiveState() {
 }
 
 function renderShell() {
+  rememberRenderedPageScroll();
   root.innerHTML = `
     <div class="lab-sky" style="--lab-background-image: url(${imageFor(backgroundAsset)})" aria-hidden="true">
       <span class="sparkle sparkle-one"></span>
@@ -271,13 +294,57 @@ function renderShell() {
       </section>
     </main>
   `;
+  renderedPageId = "";
+  applyActionAvailability(root);
 }
 
 function bindEvents() {
   root.addEventListener("click", (event) => {
+    const musicProgressTrack = event.target.closest("[data-music-progress-track]");
+    if (musicProgressTrack) {
+      const durationSeconds = Number(musicProgressTrack.dataset.durationSeconds || 0);
+      if (Number.isFinite(durationSeconds) && durationSeconds > 0) {
+        const percent = percentFromPointerEvent(event, musicProgressTrack);
+        const seconds = Math.round((durationSeconds * percent) / 100);
+        musicPage.nowPlaying = {
+          ...musicPage.nowPlaying,
+          elapsed: formatClockSeconds(seconds),
+          progress: percent,
+          progressSeconds: seconds
+        };
+        renderActivePage();
+        void actionRouter.run(
+          CONTROL_CENTER_ACTIONS.musicSeek,
+          { value: seconds, seconds, percent },
+          { source: "control-center-lab" }
+        );
+      }
+      return;
+    }
+
+    const musicVolumeTrack = event.target.closest("[data-music-volume-track]");
+    if (musicVolumeTrack) {
+      const percent = percentFromPointerEvent(event, musicVolumeTrack);
+      musicPage.nowPlaying = {
+        ...musicPage.nowPlaying,
+        volume: percent
+      };
+      renderActivePage();
+      void actionRouter.run(
+        CONTROL_CENTER_ACTIONS.voiceSetVolume,
+        { value: percent / 100, percent, source: "music" },
+        { source: "control-center-lab" }
+      );
+      return;
+    }
+
     const actionButton = event.target.closest("[data-action-id]");
     if (actionButton) {
+      if (actionButton.dataset.actionUnavailable === "true") {
+        return;
+      }
       const payload = createControlCenterActionPayloadFromDataset(actionButton.dataset, state.activePage);
+      applyLocalActionOptimisticUpdate(actionButton.dataset.actionId, payload);
       void actionRouter.run(
         actionButton.dataset.actionId,
         payload,
@@ -438,7 +505,10 @@ function bindEvents() {
 function resolveInitialPage() {
   const params = new URLSearchParams(window.location.search);
   const candidate = params.get("page") || window.location.hash.replace(/^#/, "");
-  return navItems.some((item) => item.id === candidate) ? candidate : labMeta.defaultPage;
+  if (Array.isArray(navItems) && navItems.some((item) => item.id === candidate)) {
+    return candidate;
+  }
+  return labMeta?.defaultPage || "overview";
 }
 
 function renderActivePage() {
@@ -448,6 +518,10 @@ function renderActivePage() {
   });
 
   const content = root.querySelector("#page-content");
+  if (!content) return;
+  if (renderedPageId) {
+    pageScrollPositions.set(renderedPageId, content.scrollTop);
+  }
   const renderers = {
     overview: renderOverviewPage,
     character: renderCharacterPage,
@@ -458,6 +532,74 @@ function renderActivePage() {
     advanced: renderAdvancedPage
   };
   content.innerHTML = (renderers[state.activePage] || renderOverviewPage)();
+  applyActionAvailability(content);
+  const scrollTop = pageScrollPositions.get(state.activePage) || 0;
+  content.scrollTop = scrollTop;
+  requestAnimationFrame(() => {
+    if (renderedPageId === state.activePage) {
+      content.scrollTop = scrollTop;
+    }
+  });
+  renderedPageId = state.activePage;
+}
+
+function applyLocalActionOptimisticUpdate(actionId, payload) {
+  if (actionId === CONTROL_CENTER_ACTIONS.musicSetPlayMode) {
+    const nextMode = nextMusicPlayMode(musicPage.currentPlayMode);
+    musicPage.currentPlayMode = nextMode;
+    payload.value = nextMode;
+    payload.playMode = nextMode;
+    payload.field = "playMode";
+    renderActivePage();
+    return;
+  }
+  if (actionId === CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization) {
+    musicPage.volumeNormalization = Boolean(payload.value);
+    renderActivePage();
+  }
+}
+
+function nextMusicPlayMode(currentMode) {
+  const index = MUSIC_PLAY_MODE_OPTIONS.indexOf(String(currentMode || "").trim());
+  return MUSIC_PLAY_MODE_OPTIONS[(index + 1) % MUSIC_PLAY_MODE_OPTIONS.length];
+}
+
+function rememberRenderedPageScroll() {
+  if (!renderedPageId) return;
+  const content = root.querySelector("#page-content");
+  if (!content) return;
+  pageScrollPositions.set(renderedPageId, content.scrollTop);
+}
+
+function isControlCenterClientHandledAction(actionId) {
+  return clientHandledActionIds.has(actionId);
+}
+
+function applyActionAvailability(container) {
+  if (!container) return;
+  const elements = container.querySelectorAll("[data-action-id]");
+  for (let index = 0; index < elements.length; index += 1) {
+    const element = elements[index];
+    try {
+      const actionId = element.dataset.actionId;
+      if (isControlCenterBridgedAction(actionId) || isControlCenterClientHandledAction(actionId)) {
+        delete element.dataset.actionUnavailable;
+        element.removeAttribute("aria-disabled");
+        if ("disabled" in element) {
+          element.disabled = false;
+        }
+        continue;
+      }
+      element.dataset.actionUnavailable = "true";
+      element.setAttribute("aria-disabled", "true");
+      element.setAttribute("title", element.getAttribute("title") || "暂未接入真实功能");
+      if ("disabled" in element) {
+        element.disabled = true;
+      }
+    } catch {
+      // One bad action element must not crash the whole page.
+    }
+  }
 }
 
 function renderNavButton(item) {
@@ -703,7 +845,7 @@ function renderCharacterPage() {
         </article>
         <article class="glass-card pack-select-panel">
           <h2>${icon("folder")} 当前角色包选择</h2>
-          <button class="select-like" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterSelectPack}" data-payload-field="packId" data-payload-value="${escapeAttr(characterPage.selectedPack)}" data-payload-pack-id="${escapeAttr(characterPage.selectedPackId || characterPage.selectedPack)}">
+          <button class="select-like" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterSelectPack}" data-payload-field="packId" data-payload-value="${escapeAttr(characterPage.selectedPackId || characterPage.selectedPack)}" data-payload-pack-id="${escapeAttr(characterPage.selectedPackId || characterPage.selectedPack)}">
             <span>${escapeHtml(characterPage.selectedPack)}</span>
             ${icon("chevronDown")}
           </button>
@@ -903,7 +1045,7 @@ function renderAsrCard() {
       <div class="voice-form-grid">
         <label><span>${icon("mic")} 麦克风设备</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSelectAsrDevice}" data-payload-field="asrDevice" data-payload-value="${escapeAttr(voicePage.asr.device)}">${escapeHtml(voicePage.asr.device)} ${icon("chevronDown")}</button></label>
         <label><span>${icon("settings")} 识别语言</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSetAsrLanguage}" data-payload-field="asrLanguage" data-payload-value="${escapeAttr(voicePage.asr.language)}">${escapeHtml(voicePage.asr.language)} ${icon("chevronDown")}</button></label>
-        <label><span>${icon("equalizer")} 输入灵敏度</span>${renderRangeBar(voicePage.asr.sensitivity)}<strong data-action-id="${CONTROL_CENTER_ACTIONS.voiceSetAsrSensitivity}" data-payload-field="sensitivity" data-payload-value="${voicePage.asr.sensitivity}">${voicePage.asr.sensitivity}%</strong></label>
+        <label><span>${icon("equalizer")} 输入灵敏度</span>${renderRangeBar(voicePage.asr.sensitivity)}<strong>${voicePage.asr.sensitivity}%</strong></label>
         <label><span>实时输入</span><em class="voice-live-wave">${Array.from({ length: 24 }, (_, index) => `<i style="--bar: ${((index * 7) % 24) + 8}px"></i>`).join("")}</em></label>
       </div>
     </article>
@@ -912,6 +1054,7 @@ function renderAsrCard() {
 
 function renderVoicePreviewCard() {
   const previewLines = voicePreviewTextLines();
+  const previewText = previewLines.join("\n");
   return `
     <article class="glass-card voice-preview-card">
       <h2>${icon("equalizer")} ${escapeHtml(voicePage.preview.title)}</h2>
@@ -923,7 +1066,7 @@ function renderVoicePreviewCard() {
         </div>
       </div>
       <div class="voice-preview-player">
-        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voicePreviewPlay}" data-payload-text="${escapeAttr(previewLines.join("\n"))}" aria-label="播放试听">${icon("play")}</button>
+        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voicePreviewPlay}" data-payload-text="${escapeAttr(previewText)}" data-payload-value="${escapeAttr(previewText)}" aria-label="播放试听">${icon("play")}</button>
         <span>${Array.from({ length: 28 }, (_, index) => `<i style="--bar: ${((index * 5) % 28) + 8}px"></i>`).join("")}</span>
         <time>${escapeHtml(voicePage.preview.duration)}</time>
       </div>
@@ -1003,6 +1146,11 @@ function renderRangeBar(value) {
 function renderMusicPage() {
   const outputDevice = musicPage.outputDevice || "扬声器";
   const volumeNormalization = musicPage.volumeNormalization !== false;
+  const playback = getMusicPlaybackState(musicPage.nowPlaying);
+  const progressSeconds = getMusicProgressSeconds(musicPage.nowPlaying);
+  const durationSeconds = getMusicDurationSeconds(musicPage.nowPlaying);
+  const progressPercent = clampPercent(musicPage.nowPlaying.progress);
+  const volumePercent = clampVoiceVolumePercent(musicPage.nowPlaying.volume);
   return `
     <section class="music-lab-page">
       <header class="music-title-row">
@@ -1030,11 +1178,11 @@ function renderMusicPage() {
                 <span>${escapeHtml(musicPage.nowPlaying.elapsed)}</span>
                 <span>${escapeHtml(musicPage.nowPlaying.duration)}</span>
               </div>
-              <div class="pink-progress"><span style="width: ${musicPage.nowPlaying.progress}%"></span></div>
+              <div class="pink-progress" data-music-progress-track data-duration-seconds="${durationSeconds}" role="slider" aria-label="播放进度" aria-valuemin="0" aria-valuemax="${durationSeconds}" aria-valuenow="${progressSeconds}"><span style="width: ${progressPercent}%"></span></div>
               <div class="volume-row">
                 ${icon("volume")}
-                <div class="volume-track"><span style="width: ${musicPage.nowPlaying.volume}%"></span></div>
-                <strong>${musicPage.nowPlaying.volume}%</strong>
+                <div class="volume-track" data-music-volume-track role="slider" aria-label="播放音量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${volumePercent}"><span style="width: ${volumePercent}%"></span></div>
+                <strong>${volumePercent}%</strong>
               </div>
             </div>
           </div>
@@ -1045,7 +1193,7 @@ function renderMusicPage() {
           <div class="music-control-row">
             <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicPrevious}" title="上一首" aria-label="上一首">${icon("previous")}</button>
             <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicNext}" title="下一首" aria-label="下一首">${icon("next")}</button>
-            <button class="pause" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicPause}" title="暂停" aria-label="暂停">${icon("pause")}</button>
+            <button class="pause" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicPause}" title="${playback.toggleTitle}" aria-label="${playback.toggleTitle}">${icon(playback.toggleIcon)}</button>
             <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicStop}" title="停止" aria-label="停止">${icon("stop")}</button>
             <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicClear}" title="清空" aria-label="清空">${icon("trash")}</button>
           </div>
@@ -1054,7 +1202,7 @@ function renderMusicPage() {
         <article class="glass-card lyric-panel">
           <div class="card-heading">
             <h2>${icon("file")} 歌词</h2>
-            <span>正在播放</span>
+            <span>${escapeHtml(playback.badge)}</span>
           </div>
           <div class="lyric-lines">
             ${musicPage.lyrics.map((line, index) => `
@@ -1090,7 +1238,7 @@ function renderMusicPage() {
           <p>选择心情，Akane 为你匹配氛围音乐</p>
           <div class="mood-grid">
             ${musicPage.modes.map((mode) => `
-              <button class="${mode === state.activeMusicMode ? "active" : ""}" data-music-mode="${escapeAttr(mode)}" type="button">
+              <button class="${mode === state.activeMusicMode ? "active" : ""}" data-music-mode="${escapeAttr(mode)}" type="button" data-action-unavailable="true" aria-disabled="true" disabled title="暂未接入真实音乐推荐">
                 ${renderMoodIcon(mode)} ${escapeHtml(mode)}
               </button>
             `).join("")}
@@ -1121,8 +1269,8 @@ function renderMusicPage() {
         <span>${icon("refresh")} ${escapeHtml(musicPage.bottomStatus)} ✦</span>
         <div>
           <b>音量均衡</b>
-          <button class="tiny-switch ${volumeNormalization ? "is-on" : ""}" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization}" data-payload-field="volumeNormalization" data-payload-value="${volumeNormalization}" aria-label="音量均衡"><span></span></button>
-          <strong data-action-id="${CONTROL_CENTER_ACTIONS.musicSelectOutputDevice}" data-payload-field="outputDevice" data-payload-value="${escapeAttr(outputDevice)}">${icon("volume")} 设备输出：${escapeHtml(outputDevice)} ${icon("chevronDown")}</strong>
+          <button class="tiny-switch ${volumeNormalization ? "is-on" : ""}" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization}" data-payload-field="volumeNormalization" data-payload-value="${!volumeNormalization}" aria-label="音量均衡"><span></span></button>
+          <strong>${icon("volume")} 设备输出：${escapeHtml(outputDevice)}</strong>
         </div>
       </footer>
     </section>
@@ -1132,7 +1280,7 @@ function renderMusicPage() {
 function renderQueueItem(item, index) {
   const trackId = item.id || item.title || `queue_${index + 1}`;
   return `
-    <button class="queue-item ${item.active ? "active" : ""}" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicSelectQueueItem}" data-track-id="${escapeAttr(trackId)}" data-track-index="${index}">
+    <button class="queue-item ${item.active ? "active" : ""}" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicSelectQueueItem}" data-payload-value="${escapeAttr(trackId)}" data-payload-track-id="${escapeAttr(trackId)}" data-payload-index="${index}" data-track-id="${escapeAttr(trackId)}" data-track-index="${index}">
       <span class="queue-cover"><img src="${imageFor(item.cover || musicPage.nowPlaying.cover)}" alt="" /></span>
       <span>
         <strong>${escapeHtml(item.title)}</strong>
@@ -1227,7 +1375,7 @@ function renderAbilitiesPage() {
           <article class="glass-card calls-card">
             <div class="card-heading">
               <h2>最近能力调用</h2>
-              <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll}">查看全部日志 ${icon("chevron")}</button>
+              <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll}">${state.showAllAbilityCalls ? "收起日志" : "查看全部日志"} ${icon("chevron")}</button>
             </div>
             ${renderCallsTable()}
           </article>
@@ -1273,9 +1421,9 @@ function renderAdvancedPage() {
               <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.advancedLogsClear}">${icon("trash")} 清空日志</button>
             </div>
             <div class="advanced-log-list">
-              ${advancedPage.diagnostics.logs.map(renderAdvancedLog).join("")}
+              ${renderAdvancedLogs()}
             </div>
-            <button class="advanced-more-log" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.advancedLogsMore}">查看更多日志 ${icon("chevronDown")}</button>
+            <button class="advanced-more-log" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.advancedLogsMore}">${state.showAllDiagnosticLogs ? "收起日志" : "查看更多日志"} ${icon("chevronDown")}</button>
           </section>
         </article>
 
@@ -1384,6 +1532,12 @@ function renderAdvancedLog(item) {
   `;
 }
 
+function renderAdvancedLogs() {
+  const allLogs = Array.isArray(advancedPage.diagnostics.logs) ? advancedPage.diagnostics.logs : [];
+  const visibleLogs = state.showAllDiagnosticLogs ? allLogs : allLogs.slice(0, 5);
+  return visibleLogs.map(renderAdvancedLog).join("");
+}
+
 function renderAdvancedLive2dRow(row) {
   return `
     <div>
@@ -1435,6 +1589,7 @@ function renderPerceptionFeatureCard(card) {
 
 function renderFeaturePreview(card) {
   if (card.previewType === "window") {
+    const expanded = state.expandedPerceptionCard === "activeWindow";
     return `
       <div class="feature-preview window-preview">
         <strong>${escapeHtml(card.label)}</strong>
@@ -1446,9 +1601,10 @@ function renderFeaturePreview(card) {
             <b>${escapeHtml(card.appName)}</b>
             <small>${escapeHtml(card.appDetail)}</small>
             <small>${escapeHtml(card.version)}</small>
+            ${expanded ? `<small>已展开 · 实时监控中</small>` : ""}
           </div>
         </div>
-        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails}" data-payload-feature-id="activeWindow">${escapeHtml(card.action)}</button>
+        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails}" data-payload-feature-id="activeWindow">${expanded ? "收起详情" : escapeHtml(card.action)}</button>
       </div>
     `;
   }
@@ -1663,6 +1819,8 @@ function renderWorkflow(item) {
 }
 
 function renderCallsTable() {
+  const allCalls = Array.isArray(abilitiesPage.calls) ? abilitiesPage.calls : [];
+  const visibleCalls = state.showAllAbilityCalls ? allCalls : allCalls.slice(0, 3);
   return `
     <div class="calls-table" role="table" aria-label="最近能力调用">
       <div class="calls-row calls-head" role="row">
@@ -1673,7 +1831,7 @@ function renderCallsTable() {
         <span>耗时</span>
         <span>调用方式</span>
       </div>
-      ${abilitiesPage.calls.map((item) => `
+      ${visibleCalls.map((item) => `
         <div class="calls-row" role="row">
           <span>${escapeHtml(item.time)}</span>
           <strong>${escapeHtml(item.module)}</strong>
@@ -1683,6 +1841,7 @@ function renderCallsTable() {
           <span>${escapeHtml(item.method)}</span>
         </div>
       `).join("")}
+      ${!state.showAllAbilityCalls && allCalls.length > 3 ? `<div class="calls-row"><span>还有 ${allCalls.length - 3} 条记录 · 点击"查看全部日志"展开</span></div>` : ""}
     </div>
   `;
 }
@@ -1848,6 +2007,58 @@ function actionIdForVoiceToggle(key) {
   return map[key] || "";
 }
 
+function getMusicPlaybackState(nowPlaying = {}) {
+  const playing = Boolean(nowPlaying.playing);
+  const paused = Boolean(nowPlaying.paused);
+  if (playing) {
+    return { playing, paused, toggleIcon: "pause", toggleTitle: "暂停", badge: "正在播放" };
+  }
+  if (paused) {
+    return { playing, paused, toggleIcon: "play", toggleTitle: "继续播放", badge: "已暂停" };
+  }
+  return { playing, paused, toggleIcon: "play", toggleTitle: "播放", badge: "待播放" };
+}
+
+function getMusicProgressSeconds(nowPlaying = {}) {
+  const value = Number(nowPlaying.progressSeconds);
+  if (Number.isFinite(value) && value >= 0) return Math.round(value);
+  const duration = getMusicDurationSeconds(nowPlaying);
+  const progress = Number(nowPlaying.progress);
+  if (duration > 0 && Number.isFinite(progress)) {
+    return Math.round((duration * Math.max(0, Math.min(100, progress))) / 100);
+  }
+  return parseClockSeconds(nowPlaying.elapsed);
+}
+
+function getMusicDurationSeconds(nowPlaying = {}) {
+  const value = Number(nowPlaying.durationSeconds);
+  if (Number.isFinite(value) && value > 0) return Math.round(value);
+  return parseClockSeconds(nowPlaying.duration);
+}
+
+function parseClockSeconds(label) {
+  const parts = String(label || "").trim().split(":").map((part) => Number.parseInt(part, 10));
+  if (parts.length < 2 || parts.some((part) => !Number.isFinite(part))) return 0;
+  if (parts.length === 2) return Math.max(0, parts[0] * 60 + parts[1]);
+  return Math.max(0, parts[0] * 3600 + parts[1] * 60 + parts[2]);
+}
+
+function formatClockSeconds(seconds) {
+  const sec = Math.max(0, Math.round(Number(seconds) || 0));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function percentFromPointerEvent(event, element) {
+  const rect = element.getBoundingClientRect();
+  if (!rect.width) return 0;
+  const raw = ((event.clientX - rect.left) / rect.width) * 100;
+  return Math.max(0, Math.min(100, Math.round(raw)));
+}
+
 function buildAdvancedCoreSwitchState(items) {
   const entries = {};
   for (const item of Array.isArray(items) ? items : []) {
@@ -1870,6 +2081,12 @@ function clampVoiceVolumePercent(value) {
   if (!Number.isFinite(number)) return 80;
   const percent = number <= 1 ? number * 100 : number;
   return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+function clampPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(100, Math.round(number)));
 }
 
 function buildScreenVisionState(featureCards) {
@@ -1914,10 +2131,29 @@ function parsePositiveInteger(value, fallback) {
 }
 
 function createRuntimeActionRouter(dataSource) {
-  return createControlCenterActionRouter({
+  const router = createControlCenterActionRouter({
     dataSource,
     onAfterAction: handleControlCenterActionResult
   });
+  router.registerHandlers({
+    [CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails]: () => {
+      state.expandedPerceptionCard =
+        state.expandedPerceptionCard === "activeWindow" ? null : "activeWindow";
+      renderActivePage();
+      return { ok: true, refresh: false };
+    },
+    [CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll]: () => {
+      state.showAllAbilityCalls = !state.showAllAbilityCalls;
+      renderActivePage();
+      return { ok: true, refresh: false };
+    },
+    [CONTROL_CENTER_ACTIONS.advancedLogsMore]: () => {
+      state.showAllDiagnosticLogs = !state.showAllDiagnosticLogs;
+      renderActivePage();
+      return { ok: true, refresh: false };
+    }
+  });
+  return router;
 }
 
 function handleControlCenterActionResult(result) {
@@ -1933,12 +2169,42 @@ async function bindSettingsSnapshotListener() {
   try {
     await listen(SETTINGS_SNAPSHOT_EVENT, (event) => {
       latestRuntimeSnapshot = event.payload || null;
-      scheduleRuntimeSnapshotHydrate();
+      applySettingsSnapshotPatch(latestRuntimeSnapshot);
     });
     await emit(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot" });
   } catch {
     // settings window may not be open yet
   }
+}
+
+function applySettingsSnapshotPatch(runtimeSnapshot) {
+  if (!runtimeSnapshot || typeof runtimeSnapshot !== "object") return;
+  const musicRuntime = buildMusicRuntimePatch({
+    musicSnapshot: runtimeSnapshot.music,
+    petState: runtimeSnapshot.state || {}
+  });
+  if (!musicRuntime) return;
+
+  const nextSnapshot = createControlCenterSnapshot({
+    navItems,
+    labMeta: {
+      ...labMeta,
+      backgroundAsset,
+      defaultPage: labMeta.defaultPage || snapshot.shell.labMeta.defaultPage
+    },
+    overviewPage,
+    characterPage,
+    voicePage,
+    musicPage,
+    perceptionPage,
+    abilitiesPage,
+    advancedPage,
+    musicRuntime
+  });
+  applyControlCenterSnapshot(nextSnapshot, {
+    renderShell: false,
+    renderPage: state.activePage === "music" || state.activePage === "overview"
+  });
 }
 
 function scheduleRuntimeSnapshotHydrate(delay = RUNTIME_SNAPSHOT_HYDRATE_DELAY_MS) {

@@ -281,6 +281,8 @@ export const musicPage = {
     duration: "04:38",
     progress: 32,
     volume: 68,
+    playing: true,
+    paused: false,
     albumTitle: "Starry Days",
     cover: "akaneNightWindow"
   },

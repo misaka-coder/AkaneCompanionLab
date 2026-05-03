@@ -11,6 +11,10 @@
     "preview": "vite preview --host 127.0.0.1 --port 1421",
     "start:release": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-next.ps1",
     "smoke:control-center-actions": "node ./scripts/control-center-action-bridge-smoke.mjs",
+    "probe:control-center-runtime": "node ./scripts/control-center-runtime-probe.mjs",
+    "smoke:control-center-ux": "node ./scripts/control-center-ux-smoke.mjs",
+    "verify:control-center": "node ./scripts/control-center-verify.mjs",
+    "dev:control-center": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:AKANE_CONTROL_CENTER_LAB='1'; npm run tauri -- dev\"",
     "tauri": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/tauri-with-cargo-path.ps1"
   },
   "dependencies": {

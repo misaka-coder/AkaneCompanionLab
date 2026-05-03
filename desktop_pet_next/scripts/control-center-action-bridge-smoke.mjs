@@ -8,6 +8,7 @@ import {
 } from "../src/control-center/action-router.js";
 import {
   CONTROL_CENTER_ACTION_SURFACE_STATUS,
+  CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS,
   getUncataloguedBridgedActionIds,
   listControlCenterActionSurfaces
 } from "../src/control-center/action-surface-contract.js";
@@ -18,6 +19,7 @@ import {
 import { createControlCenterSnapshot } from "../src/control-center/data-adapter.js";
 import * as mockData from "../src/control-center/mock-data.js";
 import {
+  buildMusicRuntimePatch,
   createBackendControlCenterSource,
   createMockControlCenterSource,
   createTauriControlCenterSource
@@ -72,6 +74,34 @@ const bridgedActionCases = [
     emit: "setVoiceVolume",
     value: 0.7
   },
+  {
+    id: CONTROL_CENTER_ACTIONS.voicePreviewPlay,
+    payload: { text: "你好，Akane。", value: "你好，Akane。" },
+    context: { source: "lab" },
+    emit: "previewTts",
+    value: "你好，Akane。"
+  },
+  {
+    id: CONTROL_CENTER_ACTIONS.voiceSetSpeed,
+    payload: { value: "1.00x", field: "speed" },
+    context: { source: "lab" },
+    emit: "setVoiceSpeed",
+    value: "1.00x"
+  },
+  {
+    id: CONTROL_CENTER_ACTIONS.voiceSetWakeWord,
+    payload: { value: "Akane", field: "wakeWord" },
+    context: { source: "lab" },
+    emit: "setWakeWord",
+    value: "Akane"
+  },
+  {
+    id: CONTROL_CENTER_ACTIONS.voiceSetWakeSensitivity,
+    payload: { value: "中等", field: "wakeSensitivity" },
+    context: { source: "lab" },
+    emit: "setWakeSensitivity",
+    value: "中等"
+  },
   { id: CONTROL_CENTER_ACTIONS.characterRefresh, payload: {}, context: {}, emit: "reloadResources" },
   {
     id: CONTROL_CENTER_ACTIONS.characterPreviewEmotion,
@@ -79,6 +109,20 @@ const bridgedActionCases = [
     context: {},
     emit: "previewEmotion",
     value: "happy"
+  },
+  {
+    id: CONTROL_CENTER_ACTIONS.characterSetOutfit,
+    payload: { value: "summer", outfitId: "summer" },
+    context: { source: "lab" },
+    emit: "setOutfit",
+    value: "summer"
+  },
+  {
+    id: CONTROL_CENTER_ACTIONS.characterSelectPack,
+    payload: { value: "akane_default", packId: "akane_default" },
+    context: { source: "lab" },
+    emit: "setCharacterPack",
+    value: "akane_default"
   },
   {
     id: CONTROL_CENTER_ACTIONS.characterOpenPackFolder,
@@ -141,6 +185,12 @@ const bridgedActionCases = [
     emit: "setProactiveWakeIntervalSec",
     value: 180
   },
+  {
+    id: CONTROL_CENTER_ACTIONS.perceptionRunDiagnostics,
+    payload: { page: "perception" },
+    context: { source: "lab" },
+    emit: "requestSnapshot"
+  },
   { id: CONTROL_CENTER_ACTIONS.advancedProbeClickThrough, payload: {}, context: {}, emit: "probeClickThrough" },
   { id: CONTROL_CENTER_ACTIONS.advancedResetWindow, payload: {}, context: {}, emit: "resetWindow" },
   {
@@ -168,7 +218,35 @@ const bridgedActionCases = [
   { id: CONTROL_CENTER_ACTIONS.musicNext, payload: {}, context: {}, emit: "nextMusic" },
   { id: CONTROL_CENTER_ACTIONS.musicPause, payload: {}, context: {}, emit: "toggleMusic" },
   { id: CONTROL_CENTER_ACTIONS.musicStop, payload: {}, context: {}, emit: "stopMusic" },
-  { id: CONTROL_CENTER_ACTIONS.musicClear, payload: {}, context: {}, emit: "clearMusicQueue" }
+  { id: CONTROL_CENTER_ACTIONS.musicClear, payload: {}, context: {}, emit: "clearMusicQueue" },
+  {
+    id: CONTROL_CENTER_ACTIONS.musicSeek,
+    payload: { value: 42, seconds: 42, percent: 25 },
+    context: { source: "lab" },
+    emit: "seekMusic",
+    value: 42
+  },
+  {
+    id: CONTROL_CENTER_ACTIONS.musicSelectQueueItem,
+    payload: { value: "track_starsWithYou", trackId: "track_starsWithYou", index: 3 },
+    context: { source: "lab" },
+    emit: "playMusicTrack",
+    value: "track_starsWithYou"
+  },
+  {
+    id: CONTROL_CENTER_ACTIONS.musicSetPlayMode,
+    payload: { value: "列表循环", field: "playMode" },
+    context: { source: "lab" },
+    emit: "setMusicPlayMode",
+    value: "列表循环"
+  },
+  {
+    id: CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization,
+    payload: { value: false, field: "volumeNormalization" },
+    context: { source: "lab" },
+    emit: "setMusicVolumeNormalization",
+    value: false
+  }
 ];
 
 for (const testCase of bridgedActionCases) {
@@ -434,15 +512,11 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
 
 const deferredVoiceActionIds = [
   CONTROL_CENTER_ACTIONS.voiceSelectTtsVoice,
-  CONTROL_CENTER_ACTIONS.voiceSetSpeed,
   CONTROL_CENTER_ACTIONS.voiceSelectAsrDevice,
   CONTROL_CENTER_ACTIONS.voiceSetAsrLanguage,
   CONTROL_CENTER_ACTIONS.voiceSetAsrSensitivity,
-  CONTROL_CENTER_ACTIONS.voicePreviewPlay,
   CONTROL_CENTER_ACTIONS.voiceRecordsClear,
-  CONTROL_CENTER_ACTIONS.voiceQueueClear,
-  CONTROL_CENTER_ACTIONS.voiceSetWakeWord,
-  CONTROL_CENTER_ACTIONS.voiceSetWakeSensitivity
+  CONTROL_CENTER_ACTIONS.voiceQueueClear
 ];
 
 for (const actionId of deferredVoiceActionIds) {
@@ -484,11 +558,8 @@ for (const actionId of deferredVoiceActionIds) {
 // ---------- deferred music actions ----------
 
 const deferredMusicActionIds = [
-  CONTROL_CENTER_ACTIONS.musicSetPlayMode,
   CONTROL_CENTER_ACTIONS.musicSetMood,
   CONTROL_CENTER_ACTIONS.musicRefreshRecommendations,
-  CONTROL_CENTER_ACTIONS.musicSelectQueueItem,
-  CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization,
   CONTROL_CENTER_ACTIONS.musicSelectOutputDevice
 ];
 
@@ -507,13 +578,13 @@ for (const actionId of deferredMusicActionIds) {
 
 // music.selectQueueItem payload preserves trackId and index
 {
-  const queueResult = await router.run(
-    CONTROL_CENTER_ACTIONS.musicSelectQueueItem,
-    { trackId: "track_starsWithYou", index: 3 },
-    { source: "smoke" }
+  const queuePayload = createControlCenterActionPayloadFromDataset(
+    { payloadValue: "track_starsWithYou", payloadTrackId: "track_starsWithYou", payloadIndex: "3" },
+    "music"
   );
-  assert.equal(queueResult.status, "not-implemented", "music.selectQueueItem should be not-implemented");
-  assert.equal(queueResult.ok, false, "music.selectQueueItem should be ok:false");
+  assert.equal(queuePayload.value, "track_starsWithYou", "music.selectQueueItem dataset should create payload.value");
+  assert.equal(queuePayload.trackId, "track_starsWithYou", "music.selectQueueItem dataset should create payload.trackId");
+  assert.equal(queuePayload.index, 3, "music.selectQueueItem dataset should create numeric payload.index");
 
   const mockMusicRouter = createControlCenterActionRouter({
     dataSource: createMockControlCenterSource(mockData)
@@ -595,11 +666,24 @@ assert.equal(runtimePlaylist.length, 2, "runtime playlist should have 2 items");
 assert.equal(runtimePlaylist[0].id, "no id track", "playlist item without id should fall back to title");
 assert.equal(runtimePlaylist[1].id, "custom-id", "playlist item with id should be preserved");
 
+// Tauri music runtime queue must expose sourceId as the clickable queue item value.
+const musicRuntimePatch = buildMusicRuntimePatch({
+  musicSnapshot: {
+    track: { sourceId: "local-1", displayName: "Runtime Track" },
+    queue: [{ sourceId: "local-1", displayName: "Runtime Track" }],
+    queueIndex: 0,
+    progressSeconds: 0,
+    durationSeconds: 60,
+    playing: true
+  },
+  petState: { voiceVolume: 0.8 }
+});
+assert.equal(musicRuntimePatch.playlist[0].id, "local-1", "runtime playlist id should come from sourceId");
+assert.equal(musicRuntimePatch.playlist[0].sourceId, "local-1", "runtime playlist should preserve sourceId");
+
 // ---------- deferred character actions ----------
 
 const deferredCharacterActionIds = [
-  CONTROL_CENTER_ACTIONS.characterSelectPack,
-  CONTROL_CENTER_ACTIONS.characterSetOutfit,
   CONTROL_CENTER_ACTIONS.characterManageOutfits,
   CONTROL_CENTER_ACTIONS.characterMoreExpressions,
   CONTROL_CENTER_ACTIONS.characterResourceRepair
@@ -668,11 +752,9 @@ for (const actionId of stillDeferred) {
 const deferredPerceptionActionIds = [
   CONTROL_CENTER_ACTIONS.perceptionPrivacyHelp,
   CONTROL_CENTER_ACTIONS.perceptionManagePermissions,
-  CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails,
   CONTROL_CENTER_ACTIONS.perceptionClipboardClear,
   CONTROL_CENTER_ACTIONS.perceptionEventsViewAll,
-  CONTROL_CENTER_ACTIONS.perceptionSuggestionRun,
-  CONTROL_CENTER_ACTIONS.perceptionRunDiagnostics
+  CONTROL_CENTER_ACTIONS.perceptionSuggestionRun
 ];
 
 for (const actionId of deferredPerceptionActionIds) {
@@ -717,7 +799,6 @@ const deferredAbilitiesActionIds = [
   CONTROL_CENTER_ACTIONS.abilitiesQuickAction,
   CONTROL_CENTER_ACTIONS.abilitiesManageModules,
   CONTROL_CENTER_ACTIONS.abilitiesMoreWorkflows,
-  CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll,
   CONTROL_CENTER_ACTIONS.abilitiesSafetyDetails,
   CONTROL_CENTER_ACTIONS.abilitiesLive2dOpenSettings
 ];
@@ -751,7 +832,6 @@ for (const actionId of deferredAbilitiesActionIds) {
 
 const deferredAdvancedActionIds = [
   CONTROL_CENTER_ACTIONS.advancedLogsClear,
-  CONTROL_CENTER_ACTIONS.advancedLogsMore,
   CONTROL_CENTER_ACTIONS.advancedExitPet,
   CONTROL_CENTER_ACTIONS.advancedExpertOption,
   CONTROL_CENTER_ACTIONS.advancedLive2dOpenStatus,
@@ -1259,6 +1339,342 @@ assert.equal(runtimeMusicContractSnapshot.volumeNormalization, false, "runtime m
   assert.equal(result, null, "snapshot all-unavailable should fall back");
 }
 
+// ---------- character resources runtime patch ----------
+
+{
+  const runtimeResourcesSnapshot = createControlCenterSnapshot({
+    ...mockData,
+    sourceKind: "backend",
+    characterRuntime: {
+      resources: [
+        { label: "动作资源", value: "45 / 50", tone: "blue" },
+        { label: "表情资源", value: "12 / 12", tone: "green" },
+        { label: "服装资源", value: "3 / 3", tone: "pink" },
+        { label: "背景资源", value: "5 / 5", tone: "green" }
+      ]
+    }
+  }).pages.character;
+
+  assert.equal(runtimeResourcesSnapshot.resources.length, 4, "runtime character resources should have 4 items");
+  assert.equal(runtimeResourcesSnapshot.resources[0].value, "45 / 50", "runtime character resources[0] should patch action resource count");
+  assert.equal(runtimeResourcesSnapshot.resources[1].value, "12 / 12", "runtime character resources[1] should patch emotion resource count");
+  assert.equal(runtimeResourcesSnapshot.resources[2].value, "3 / 3", "runtime character resources[2] should patch outfit resource count");
+  assert.equal(runtimeResourcesSnapshot.resources[3].value, "5 / 5", "runtime character resources[3] should patch background resource count");
+}
+
+// ---------- character runtime consistency: pack selector, outfit, emotion payloads ----------
+
+{
+  // Runtime data with explicit selectedPackId, outfits, emotions
+  const charConsistencySnapshot = createControlCenterSnapshot({
+    ...mockData,
+    sourceKind: "backend",
+    characterRuntime: {
+      selectedPackId: "runtime_pack",
+      selectedPack: "Runtime Pack Display",
+      outfits: [
+        { id: "runtime_default", name: "Runtime Default", current: true, image: "happy" },
+        { id: "runtime_alt", name: "Runtime Alt", image: "shy" }
+      ],
+      emotions: [
+        { id: "runtime_happy", name: "Runtime Happy", current: true, image: "happy" },
+        { id: "runtime_shy", name: "Runtime Shy", image: "shy" }
+      ]
+    }
+  }).pages.character;
+
+  // Pack selector payload uses runtime selectedPackId
+  assert.equal(charConsistencySnapshot.selectedPackId, "runtime_pack", "char consistency: selectedPackId should be runtime_pack");
+  const packDataset = { payloadField: "packId", payloadValue: charConsistencySnapshot.selectedPackId, payloadPackId: charConsistencySnapshot.selectedPackId };
+  const packPayload = createControlCenterActionPayloadFromDataset(packDataset, "character");
+  assert.equal(packPayload.value, "runtime_pack", "char consistency: pack selector payload.value should use runtime_pack");
+  assert.equal(packPayload.packId, "runtime_pack", "char consistency: pack selector payload.packId should use runtime_pack");
+
+  // Outfit tile data uses runtime outfit IDs (not mock "default")
+  assert.equal(charConsistencySnapshot.outfits[0].id, "runtime_default", "char consistency: outfit[0] id should be runtime_default");
+  assert.equal(charConsistencySnapshot.outfits[1].id, "runtime_alt", "char consistency: outfit[1] id should be runtime_alt");
+  // Simulate state sync: active outfit picks runtime id
+  const activeOutfit = charConsistencySnapshot.outfits.find((o) => o.current)?.id || charConsistencySnapshot.outfits[0]?.id;
+  assert.equal(activeOutfit, "runtime_default", "char consistency: active outfit should be runtime_default");
+  // Mock ID should NOT appear
+  assert.equal(charConsistencySnapshot.outfits.some((o) => o.id === "default"), false, "char consistency: mock outfit id 'default' should not appear");
+
+  // Emotion tile data uses runtime emotion IDs (not mock "smile")
+  assert.equal(charConsistencySnapshot.emotions[0].id, "runtime_happy", "char consistency: emotion[0] id should be runtime_happy");
+  assert.equal(charConsistencySnapshot.emotions[1].id, "runtime_shy", "char consistency: emotion[1] id should be runtime_shy");
+  // Simulate state sync: active emotion picks runtime id
+  const activeEmotion = charConsistencySnapshot.emotions.find((e) => e.current)?.id || charConsistencySnapshot.emotions[0]?.id;
+  assert.equal(activeEmotion, "runtime_happy", "char consistency: active emotion should be runtime_happy");
+  // Mock ID should NOT appear
+  assert.equal(charConsistencySnapshot.emotions.some((e) => e.id === "smile"), false, "char consistency: mock emotion id 'smile' should not appear");
+}
+
+// ---------- abilities modules from tool names, no raw tool IDs ----------
+
+{
+  const toolNamesSnapshot = createControlCenterSnapshot({
+    ...mockData,
+    sourceKind: "backend",
+    abilitiesRuntime: {
+      modules: [
+        { title: "文件处理", description: "读取与整理本地文件", permission: "受限访问", count: "3 项能力", tone: "blue", icon: "folder" },
+        { title: "媒体工具", description: "处理音频与视频", permission: "多媒体操作", count: "5 项能力", tone: "green", icon: "play" }
+      ]
+    }
+  }).pages.abilities;
+
+  assert.equal(toolNamesSnapshot.modules.length, 2, "runtime abilities modules should have 2 items");
+  assert.equal(toolNamesSnapshot.modules[0].title, "文件处理", "runtime modules[0] title should be user-friendly");
+  assert.equal(toolNamesSnapshot.modules[1].title, "媒体工具", "runtime modules[1] title should be user-friendly");
+  // Verify no raw tool IDs leak into module titles or descriptions
+  const allModuleText = JSON.stringify(toolNamesSnapshot.modules);
+  assert.equal(allModuleText.includes("read_file"), false, "runtime module text should not contain raw tool names like read_file");
+}
+
+// ---------- field degradation: one field unavailable, others still produce patches ----------
+
+{
+  const degradedSource = createBackendControlCenterSource({
+    baseUrl: "http://degraded-test",
+    sessionId: "degraded-session",
+    fetchImpl: async (url) => {
+      if (url.includes("/control-center/snapshot")) {
+        return {
+          ok: true, status: 200, headers: { get: () => "application/json" },
+          json: async () => ({
+            ok: true, schemaVersion: 1, sourceKind: "backend",
+            generatedAt: new Date().toISOString(),
+            runtime: {
+              health: { ok: false, status: "unavailable" },
+              diagnostics: { status: "ok", capabilities: { tool_names: ["read_file", "send_file"] }, runtime: { metrics: { request_duration_ms: 42 } } },
+              workspace: { counts: { files: 3, outputs: 1, tasks: 0 } },
+              resourceManifest: { schema_version: 1, clients: { desktop_pet: {} }, characters: { outfits: [] } },
+              metrics: "cpu_percent 15\nmemory_percent 42"
+            }
+          })
+        };
+      }
+      return { ok: false, status: 404, headers: { get: () => "" } };
+    }
+  });
+  const degradedResult = await degradedSource.readSnapshot();
+  assert.ok(degradedResult, "degraded snapshot (health unavailable) should still return data");
+
+  // health unavailable → overview health should still have basic structure from other sources
+  assert.ok(degradedResult.overviewRuntime?.health, "degraded snapshot should still produce overviewRuntime health");
+  assert.ok(degradedResult.overviewRuntime?.health["CPU 占用"], "degraded overview CPU tile should exist");
+  // diagnostics available → abilities runtime from diagnostics
+  assert.ok(degradedResult.abilitiesRuntime?.overview, "degraded snapshot should still produce abilitiesRuntime from diagnostics");
+  // metrics available → advanced runtime from metrics
+  assert.equal(degradedResult.advancedRuntime.systemStrip.CPU.value, "15%", "degraded snapshot advanced CPU should come from metrics");
+  assert.equal(degradedResult.advancedRuntime.systemStrip["内存"].value, "42%", "degraded snapshot advanced memory should come from metrics");
+  // resourceManifest available → character runtime
+  assert.ok(degradedResult.characterRuntime, "degraded snapshot should still produce characterRuntime from resourceManifest");
+  // sourceKind is backend, not fallback mock
+  assert.equal(degradedResult.sourceKind, "backend", "degraded snapshot should keep backend sourceKind");
+}
+
+// ---------- abilities modules from diagnostics tool names ----------
+
+{
+  const abilitiesFromTools = createControlCenterSnapshot({
+    ...mockData,
+    sourceKind: "backend",
+    abilitiesRuntime: {
+      modules: [
+        { title: "文件处理", description: "文档读写与转换", permission: "读写文件", count: "4 项能力", tone: "blue", icon: "folder" },
+        { title: "生成文件交付", description: "生成并交付文档", permission: "生成与导出", count: "2 项能力", tone: "purple", icon: "file" },
+        { title: "媒体工具", description: "音视频播放与转写", permission: "多媒体操作", count: "3 项能力", tone: "green", icon: "play" },
+        { title: "安全边界", description: "限制危险操作", permission: "安全与隔离", count: "2 项能力", tone: "pink", icon: "shield" }
+      ]
+    }
+  }).pages.abilities;
+
+  assert.equal(abilitiesFromTools.modules.length, 4, "abilities modules from tool names should have 4 items");
+  // All module descriptions should be user-facing, not raw tool IDs
+  for (const mod of abilitiesFromTools.modules) {
+    assert.ok(!mod.description.includes("_"), `${mod.title} description should not contain raw identifiers`);
+    assert.ok(typeof mod.title === "string" && mod.title.length > 0, "module title should be a non-empty string");
+  }
+}
+
+// ---------- advanced metrics from metrics text ----------
+
+{
+  const metricsTextSnapshot = createControlCenterSnapshot({
+    ...mockData,
+    sourceKind: "backend",
+    advancedRuntime: {
+      // diagnostics.metrics must be an object keyed by label (as buildAdvancedRuntimePatch produces)
+      diagnostics: {
+        metrics: {
+          "应用状态": { value: "已连接", tone: "green" },
+          "后端健康": { value: "良好", tone: "green" },
+          "内存占用": { value: "256 MB" }
+        }
+      },
+      systemStrip: {
+        "CPU": { value: "22%" },
+        "内存": { value: "55%" }
+      }
+    }
+  }).pages.advanced;
+
+  // diagnostics.metrics: rows patched by label — matching labels get runtime values
+  assert.equal(metricsTextSnapshot.diagnostics.metrics[0].value, "已连接", "advanced metrics[0] app status should be runtime-patched");
+  assert.equal(metricsTextSnapshot.diagnostics.metrics[1].value, "良好", "advanced metrics[1] backend health should be runtime-patched");
+  // "帧率 (FPS)" has no runtime patch → mock value passes through
+  assert.equal(metricsTextSnapshot.diagnostics.metrics[2].value, "60", "advanced metrics[2] FPS should stay at mock value when runtime does not patch it");
+  assert.equal(metricsTextSnapshot.diagnostics.metrics[3].value, "256 MB", "advanced metrics[3] memory should be runtime-patched by label");
+  // systemStrip patched by label as well
+  assert.equal(metricsTextSnapshot.systemStrip[1].value, "22%", "advanced systemStrip CPU should be runtime-patched");
+  assert.equal(metricsTextSnapshot.systemStrip[2].value, "55%", "advanced systemStrip memory should be runtime-patched");
+}
+
+// ---------- client-handled actions (local UI handlers) ----------
+
+const clientHandledActionIds = new Set(CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS);
+
+// Client-handled action surface contract: all 3 should be in the surface contract with client-handled status
+{
+  const clientHandledSurfaces = listControlCenterActionSurfaces(CONTROL_CENTER_ACTION_SURFACE_STATUS.clientHandled);
+  assert.equal(clientHandledSurfaces.length, 3, "should have 3 client-handled surfaces");
+  for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
+    const surface = clientHandledSurfaces.find((s) => s.actionId === actionId);
+    assert.ok(surface, `${actionId} should appear in client-handled surfaces`);
+    assert.equal(surface.bridged, false, `${actionId} should not be bridged`);
+    assert.equal(typeof surface.description, "string", `${actionId} should have a description`);
+  }
+}
+
+// Client-handled actions are NOT in bridged action ids
+for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
+  assert.equal(isControlCenterBridgedAction(actionId), false, `${actionId} should NOT be a bridged action`);
+}
+
+// Client-handled actions are NOT in deferred surfaces
+{
+  const deferredSurfaceIds = new Set(
+    listControlCenterActionSurfaces(CONTROL_CENTER_ACTION_SURFACE_STATUS.deferred).map((s) => s.actionId)
+  );
+  for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
+    assert.equal(deferredSurfaceIds.has(actionId), false, `${actionId} should NOT be in deferred surfaces`);
+  }
+}
+
+// Client-handled actions through router with registered handlers: refresh:false, no emit/invoke
+{
+  const beforeEmitLen = emitLog.length;
+  const beforeInvokeLen = invokeLog.length;
+  const handlerLog = [];
+  const chRouter = createControlCenterActionRouter({ dataSource });
+  chRouter.registerHandlers({
+    [CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails]: (payload) => {
+      handlerLog.push({ actionId: CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails, payload });
+      return { ok: true, refresh: false };
+    },
+    [CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll]: (payload) => {
+      handlerLog.push({ actionId: CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll, payload });
+      return { ok: true, refresh: false };
+    },
+    [CONTROL_CENTER_ACTIONS.advancedLogsMore]: (payload) => {
+      handlerLog.push({ actionId: CONTROL_CENTER_ACTIONS.advancedLogsMore, payload });
+      return { ok: true, refresh: false };
+    }
+  });
+
+  const chCases = [
+    { id: CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails, payload: { featureId: "activeWindow" } },
+    { id: CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll, payload: { page: "abilities" } },
+    { id: CONTROL_CENTER_ACTIONS.advancedLogsMore, payload: { page: "advanced" } }
+  ];
+
+  for (const testCase of chCases) {
+    const result = await chRouter.run(testCase.id, testCase.payload, { source: "smoke" });
+    assert.equal(result.ok, true, `${testCase.id} should be handled locally`);
+    assert.equal(result.refresh, false, `${testCase.id} should have refresh:false`);
+    assert.notEqual(result.status, "not-implemented", `${testCase.id} should not be not-implemented`);
+    assert.notEqual(result.status, "failed", `${testCase.id} should not be failed`);
+  }
+
+  assert.equal(handlerLog.length, 3, "all 3 client-handled handlers should be called");
+  assert.equal(emitLog.length, beforeEmitLen, "client-handled actions should NOT emit");
+  assert.equal(invokeLog.length, beforeInvokeLen, "client-handled actions should NOT invoke");
+}
+
+// Client-handled actions through dataSource directly: still not-implemented (no real boundary)
+for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
+  const result = await dataSource.runAction(actionId, {}, { source: "smoke" });
+  assert.deepEqual(
+    { ok: result.ok, status: result.status, actionId: result.actionId, refresh: result.refresh },
+    { ok: false, status: "not-implemented", actionId, refresh: false },
+    `${actionId} dataSource should remain not-implemented`
+  );
+}
+
+// Client-handled action router without registered handler: should still work (not-implemented from dataSource)
+{
+  const bareRouter = createControlCenterActionRouter({ dataSource });
+  for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
+    const result = await bareRouter.run(actionId, {}, { source: "smoke" });
+    assert.equal(result.status, "not-implemented", `${actionId} without handler should be not-implemented`);
+    assert.equal(result.refresh, false, `${actionId} without handler should have refresh:false`);
+  }
+}
+
+// ---------- display-only actions: voiceSetAsrSensitivity and musicSelectOutputDevice ----------
+
+// These remain deferred in surface contract but do NOT have data-action-id in the UI.
+// Data source still returns not-implemented.
+{
+  const displayOnlyIds = [
+    CONTROL_CENTER_ACTIONS.voiceSetAsrSensitivity,
+    CONTROL_CENTER_ACTIONS.musicSelectOutputDevice
+  ];
+  for (const actionId of displayOnlyIds) {
+    assert.equal(isControlCenterBridgedAction(actionId), false, `${actionId} should NOT be bridged`);
+    const result = await dataSource.runAction(actionId);
+    assert.equal(result.status, "not-implemented", `${actionId} dataSource should be not-implemented`);
+    // They remain in deferred surfaces
+    const deferredIds = new Set(
+      listControlCenterActionSurfaces(CONTROL_CENTER_ACTION_SURFACE_STATUS.deferred).map((s) => s.actionId)
+    );
+    assert.equal(deferredIds.has(actionId), true, `${actionId} should appear in deferred surfaces`);
+  }
+}
+
+// ---------- forbidden actions remain not-implemented ----------
+
+const forbiddenActionIds = [
+  CONTROL_CENTER_ACTIONS.musicSetMood,
+  CONTROL_CENTER_ACTIONS.musicRefreshRecommendations,
+  CONTROL_CENTER_ACTIONS.advancedExitPet
+];
+
+for (const actionId of forbiddenActionIds) {
+  assert.equal(isControlCenterBridgedAction(actionId), false, `${actionId} should NOT be bridged`);
+  const dsResult = await dataSource.runAction(actionId, {}, { source: "smoke" });
+  assert.equal(dsResult.status, "not-implemented", `${actionId} dataSource should be not-implemented`);
+  assert.equal(dsResult.refresh, false, `${actionId} dataSource should have refresh:false`);
+  const rResult = await router.run(actionId, {}, { source: "smoke" });
+  assert.equal(rResult.status, "not-implemented", `${actionId} router should be not-implemented`);
+  assert.equal(rResult.refresh, false, `${actionId} router should have refresh:false`);
+}
+
+// advanced.exitPet is NOT window.close and NOT closePet
+assert.notEqual(
+  CONTROL_CENTER_ACTIONS.advancedExitPet,
+  CONTROL_CENTER_ACTIONS.windowClose,
+  "advanced.exitPet must not equal window.close"
+);
+// Verify exitPet's dataSource runAction doesn't trigger close_window invoke
+{
+  const beforeExitInvokeLen = invokeLog.length;
+  await dataSource.runAction(CONTROL_CENTER_ACTIONS.advancedExitPet);
+  const closeWindowInvoke = invokeLog.slice(beforeExitInvokeLen).find((e) => e.command === "close_window");
+  assert.equal(closeWindowInvoke, undefined, "advanced.exitPet must not invoke close_window");
+}
+
 console.log(
   `control-center action bridge smoke passed: ${bridgedActionCases.length} bridged actions, ` +
     `${directNotImplementedCases.length} not-implemented checks, ${labelCases.length} interval labels, ` +
@@ -1266,12 +1682,16 @@ console.log(
     `${deferredSurfaces.length} deferred surface checks, 2 character warning checks, 3 screen vision control checks, ` +
     "5 data-* payload helper checks, " +
     "6 overview music control checks, 9 overview voice checks, 17 overview sense checks, " +
-    "10 deferred voice action checks, " +
-    "11 deferred music action checks, 2 playlist id checks, 8 payload shape checks, 4 voice/music contract field checks, " +
-    "5 deferred character action checks, 3 char payload/fallback checks, 3 still-deferred checks, " +
-    "7 deferred perception action checks, 6 deferred abilities action checks, " +
+    `${deferredVoiceActionIds.length} deferred voice action ids, ` +
+    `${deferredMusicActionIds.length} deferred music action ids, 4 playlist id checks, 8 payload shape checks, 4 voice/music contract field checks, ` +
+    `${deferredCharacterActionIds.length} deferred character action checks, 3 char payload/fallback checks, 3 still-deferred checks, ` +
+    `${deferredPerceptionActionIds.length} deferred perception action ids, 6 deferred abilities action checks, ` +
     "4 perception/abilities payload checks, " +
     "6 deferred advanced action checks, 1 window notify check, 1 exitPet-not-close check, " +
     "4 advanced payload checks, 4 advanced adapter checks, 5 still-bridged advanced checks, " +
-    "2 snapshot valid path checks, 4 snapshot fallback checks"
+    "2 snapshot valid path checks, 4 snapshot fallback checks, " +
+    "4 character resources checks, 13 character consistency checks, 2 abilities modules checks, 4 field degradation checks, " +
+    "4 abilities-from-tools checks, 4 advanced metrics checks, " +
+    "3 client-handled surface checks, 3 client-handled router tests, 3 client-handled dataSource not-implemented, " +
+    "3 bare-router not-implemented, 2 display-only action checks, 3 forbidden action checks, 1 exitPet safety check"
 );
