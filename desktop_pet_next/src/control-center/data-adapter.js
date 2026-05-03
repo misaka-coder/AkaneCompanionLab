@@ -42,6 +42,8 @@ export function createControlCenterSnapshot(raw = {}) {
   return {
     schemaVersion: CONTROL_CENTER_SCHEMA_VERSION,
     sourceKind: raw.sourceKind || "unknown",
+    backendUrl: raw.backendUrl || null,
+    fallbackReason: raw.fallbackReason || null,
     generatedAt: new Date().toISOString(),
     shell,
     pages: {

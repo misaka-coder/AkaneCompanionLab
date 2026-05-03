@@ -1,7 +1,14 @@
 # Akane Control Center Lab Data Contract
 
 This document describes the backend data boundary for `desktop_pet_next/control-center-lab.html`.
-The lab still starts from `src/control-center/mock-data.js`, then hydrates supported fields through the data-source and adapter layer.
+
+## Beta Entry
+
+The new control center (`control-center-lab.html`) is a **beta entry** activated by `AKANE_CONTROL_CENTER_LAB=1`
+(see `src-tauri/src/main.rs` / `settings_window_url()`). The default settings page (`settings.html`) remains
+the stable entry for production use.
+
+The lab starts from `src/control-center/mock-data.js`, then hydrates supported fields through the data-source and adapter layer. The page is always rendered with mock data first, then upgraded with real runtime data when available. Backend failure does not block navigation or window chrome buttons.
 
 Current adapter files:
 
@@ -28,7 +35,7 @@ Current real-data slice:
 | Action bridge | `npm run smoke:control-center-actions` | Action bridge mappings, `not-implemented` contract, exception hardening, surface contract consistency |
 | Runtime probe | `npm run probe:control-center-runtime` | Unified snapshot happy-path, partial degradation, fallback, all-unavailable null, action inertness |
 | Full matrix | `npm run verify:control-center` | Required-file existence gate + smoke actions + runtime probe + build |
-| Backend routes | `python -m unittest tests.test_backend_route_modules` (from repo root) | Snapshot endpoint, action endpoint, provider resilience, sensitive content |
+| Backend routes | `python -m unittest tests.test_backend_route_modules` (from repo root) | Snapshot endpoint, action endpoint, provider resilience, sensitive content, provider reality check (5 providers), action inertness |
 | Whitespace | `git diff --check` (from repo root) | Whitespace and syntax hygiene |
 
 - The backend exposes `GET /control-center/actions` as a contract discovery endpoint, `POST /control-center/actions/{actionId}` as a structured action contract endpoint, and `GET /control-center/snapshot` as a unified runtime data endpoint. The first POST version returns `{ ok: false, status: "not-implemented", actionId, refresh: false }` for every action — it does not execute client-side operations. `GET /control-center/snapshot` returns `{ ok, status, schemaVersion, sourceKind, generatedAt, runtime: { health, diagnostics, workspace, resourceManifest, metrics } }` and aggregates real production providers in `companion_v01/routes/control_center.py` / `build_control_center_snapshot_runtime_providers`:
@@ -95,9 +102,81 @@ Every deferred action has been reviewed and classified:
 
 **禁止为了减少摆设感而硬接假动作。** Do not bridge an action just to make the UI feel more complete. Every bridged action must have a real settings command handler in `main.js`, a real Tauri invoke, or a real Tauri window API call. Mock fallbacks and noop stubs are acceptable as transitional states; fake execution (emitting a command that is silently ignored, or returning `{ ok: true }` without side effects) is not.
 
+## Bootstrap Contract
+
+How the control center acquires its backend URL, session, profile, and character-state parameters:
+
+### Priority Chain (highest → lowest)
+
+1. **URL query params** (`?backend=...`, `?session_id=...`, `?character_pack_id=...`, `?outfit=...`)
+2. **Tauri `load_pet_state` invoke** — returns petState with `backendUrl`, `sessionId`, `profileUserId`, `characterPackId`, `outfit`, `currentEmotion`, plus all runtime flag fields
+3. **localStorage** — `akane.controlCenter.backendUrl`, `akane.controlCenter.sessionId`, `akane.controlCenter.characterPackId` etc.
+4. **DEFAULT_BACKEND_URL** (`http://127.0.0.1:9999`) and default session/profile (`"control-center-lab"`, `"master"`)
+
+The `createControlCenterDataSourceOptions` function in `control-center-lab.js` implements this chain. The bootstrap fields that flow into every `readSnapshot()` call via `commonParams` are:
+
+| Field | URL param | petState key | Default |
+|-------|-----------|-------------|---------|
+| backendUrl | `backend` / `backend_url` | `backendUrl` | `http://127.0.0.1:9999` |
+| sessionId | `session_id` / `user_id` | `sessionId` | `control-center-lab` |
+| profileUserId | `real_user_id` / `profile_user_id` | `profileUserId` | `master` |
+| characterPackId | `character_pack_id` / `characterPackId` | `characterPackId` | empty string |
+| outfit | `outfit` | `outfit` | empty string |
+| emotion | `emotion` | `currentEmotion` | empty string |
+
+### Source Metadata
+
+Every data source exposes metadata for observability:
+
+- **`dataSource.kind`**: `"backend"` | `"mock"` | `"tauri"`
+- **`dataSource.backendUrl`**: the resolved backend URL (or `null` for mock/tauri sources)
+- **`dataSource.fallbackReason`**: `null` when the source is functioning, or a string reason (`"mock-source"`, `"unified-snapshot-unavailable"`, `"all-backend-endpoints-failed"`, `"no-fetch-impl"`)
+- **`dataSource.getFallbackReason()`**: returns the most recent fallback reason after the last `readSnapshot()` call
+
+When `readSnapshot()` returns `null` (all backends unavailable), the page does not white-screen: the initial mock snapshot remains displayed, `applyActionAvailability` keeps buttons in their correct disabled state, and nav/page switching works normally.
+
+### Metadata Flow Through Snapshot
+
+The `createControlCenterSnapshot()` function now passes through `backendUrl` and `fallbackReason` from the raw data source output. Every snapshot object includes:
+
+```js
+{
+  sourceKind: "backend" | "mock" | "tauri",
+  backendUrl: "http://127.0.0.1:9999" | null,
+  fallbackReason: null | "unified-snapshot-unavailable" | "all-backend-endpoints-failed" | "..."
+}
+```
+
+These fields are verified in scenario 1 (production-shaped snapshot) and scenario 2 (partial degradation) of the runtime probe. The smoke test also confirms all 77 action IDs in `CONTROL_CENTER_ACTIONS` are classified as bridged, client-handled, or deferred — no unclassified action IDs exist, and duplicate page surfaces must stay in the same status category.
+
+### Button Status Audit
+
+Every action ID in `CONTROL_CENTER_ACTIONS` is assigned to exactly one status category. Surface entries may repeat when the same action appears on multiple pages, for example music controls on both Overview and Music.
+
+| Status | Count | Criteria |
+|--------|-------|----------|
+| **Bridged** | 43 unique action IDs / 52 surface entries | Real settings command, Tauri invoke, or Tauri window API |
+| **Client-handled** | 3 | Local UI toggle, `refresh:false`, no backend/Tauri boundary |
+| **Deferred/Disabled** | 31 | Stable ID, button disabled via `data-action-unavailable`, documented reason |
+| **Unclassified** | 0 | Enforced by smoke test: `Object.values(CONTROL_CENTER_ACTIONS) ⊆ surface contract`, with exactly one status category per action ID |
+
+No new actions were bridged in this batch. `voice.records.clear`, `voice.queue.clear`, and `advanced.logs.clear` remain deferred because `main.js` has no corresponding settings command handler.
+
+### Probe Verification
+
+Scenario 7 of `control-center-runtime-probe.mjs` verifies:
+- Mock source has `kind: "mock"`, `backendUrl: null`, `fallbackReason: "mock-source"`
+- Backend source has `kind: "backend"`, preserves configured `backendUrl`
+- Default `backendUrl` starts with `http://`
+- Unavailable backend: `readSnapshot()` returns `null`, `getFallbackReason()` returns a meaningful string
+- Available backend: `readSnapshot()` returns data, `getFallbackReason()` returns `null` (cleared)
+- Source metadata JSON contains no sensitive fields (`api_key`, `password`, `secret`, `token`)
+
 ## Runtime Completeness
 
 The backend snapshot endpoint (`GET /control-center/snapshot`) uses **production providers** in `companion_v01/routes/control_center.py` / `build_control_center_snapshot_runtime_providers`. The five runtime fields (`health`, `diagnostics`, `workspace`, `resourceManifest`, `metrics`) aggregate real data from engine, config_module, runtime_metrics, public_guard, tracemalloc, llm, and vector_store. Individual provider failures degrade only the failing field.
+
+Provider reality is enforced by `test_control_center_snapshot_providers_are_reality_not_placeholder` in `tests/test_backend_route_modules.py` — all 5 fields are checked for real data structure, none are allowed to return `{ ok: false, status: "unavailable" }` under normal conditions.
 
 The **Tauri `SETTINGS_SNAPSHOT_EVENT`** provides an independent data path for high-frequency desktop state (music progress, petState, runtime status). It is not a replacement for the backend snapshot — these two sources merge at the adapter layer (`data-adapter.js`). When the backend snapshot returns data without `musicRuntime`, the mock music data passes through unchanged (not overwritten).
 
@@ -133,6 +212,8 @@ Fields that remain in mock data (no backend provider):
 | `overviewPage.health["CPU 占用"]` | No backend CPU metric; shows "运行中" as service status |
 
 The snapshot endpoint never returns: prompt text, chat messages, API keys, secrets, clipboard content, screenshot content, or file full text. Individual provider failures degrade only the failing field — other fields remain available — and the endpoint still returns 200.
+
+The backend **`POST /control-center/actions/{actionId}`** endpoint is **inert by design** — every action returns `{ ok: false, status: "not-implemented", refresh: false }`. This is verified by `test_control_center_action_inert_refresh_only` which checks window.close, music.next, character.importZip, and unknown.action all return not-implemented. No desktop, window, or music operation can be triggered through the backend action endpoint.
 
 
 ## Contract Shape

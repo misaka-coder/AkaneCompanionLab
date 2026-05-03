@@ -90,8 +90,14 @@ export function createControlCenterDataSource(options = {}) {
 }
 
 export function createMockControlCenterSource(data = mockData) {
+  const fallbackReason = "mock-source";
   return {
     kind: CONTROL_CENTER_SOURCE_KIND.mock,
+    backendUrl: null,
+    fallbackReason,
+    getFallbackReason() {
+      return fallbackReason;
+    },
     readInitialState() {
       return {
         ...data,
@@ -117,8 +123,14 @@ export function createMockControlCenterSource(data = mockData) {
 }
 
 export function createTauriControlCenterSource(options = {}) {
+  const fallbackReason = "tauri-source-awaiting-runtime-snapshot";
   return {
     kind: CONTROL_CENTER_SOURCE_KIND.tauri,
+    backendUrl: null,
+    fallbackReason,
+    getFallbackReason() {
+      return fallbackReason;
+    },
     readInitialState() {
       return {
         ...mockData,
@@ -158,11 +170,24 @@ export function createBackendControlCenterSource(options = {}) {
   const petState = options.petState && typeof options.petState === "object" ? options.petState : {};
   const availableCharacterPacks = Array.isArray(options.availableCharacterPacks) ? options.availableCharacterPacks : [];
   const musicSnapshot = options.musicSnapshot && typeof options.musicSnapshot === "object" ? options.musicSnapshot : null;
+  let lastFallbackReason = null;
 
-  return {
+  function setFallbackReason(reason) {
+    lastFallbackReason = reason;
+  }
+
+  const source = {
     kind: CONTROL_CENTER_SOURCE_KIND.backend,
+    backendUrl: baseUrl,
+    get fallbackReason() {
+      return lastFallbackReason;
+    },
+    getFallbackReason() {
+      return lastFallbackReason;
+    },
     async readSnapshot() {
       if (typeof fetchImpl !== "function") {
+        setFallbackReason("no-fetch-impl");
         return null;
       }
 
@@ -187,9 +212,11 @@ export function createBackendControlCenterSource(options = {}) {
         emotion
       });
       if (snapshotResult) {
+        setFallbackReason(null);
         return snapshotResult;
       }
 
+      setFallbackReason("unified-snapshot-unavailable");
       const [health, diagnostics, workspace, resourceManifest, metrics] = await Promise.all([
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/health", { t: commonParams.t })),
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/desktop-pet/diagnostics", commonParams)),
@@ -198,11 +225,15 @@ export function createBackendControlCenterSource(options = {}) {
         fetchText(fetchImpl, buildBackendUrl(baseUrl, "/metrics", { t: commonParams.t }))
       ]);
       if (![health, diagnostics, workspace, resourceManifest, metrics].some((item) => item.ok)) {
+        setFallbackReason("all-backend-endpoints-failed");
         return null;
       }
+      setFallbackReason(null);
       return {
         ...mockData,
         sourceKind: CONTROL_CENTER_SOURCE_KIND.backend,
+        backendUrl: baseUrl,
+        fallbackReason: null,
         controlCenterRuntime: {
           backendBaseUrl: baseUrl,
           health,
@@ -308,6 +339,7 @@ export function createBackendControlCenterSource(options = {}) {
       }
     }
   };
+  return source;
 }
 
 async function runTauriControlCenterAction(actionId, payload, context, options) {
@@ -1495,6 +1527,8 @@ async function tryReadUnifiedSnapshot(fetchImpl, baseUrl, scope = {}) {
     return {
       ...mockData,
       sourceKind: CONTROL_CENTER_SOURCE_KIND.backend,
+      backendUrl: baseUrl,
+      fallbackReason: null,
       controlCenterRuntime: {
         backendBaseUrl: baseUrl,
         health,

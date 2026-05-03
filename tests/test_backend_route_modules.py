@@ -883,5 +883,101 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(manifest["clients"]["desktop_pet"]["default_emotion"], "happy")
 
 
+    def test_control_center_snapshot_providers_are_reality_not_placeholder(self) -> None:
+        """Verify ALL 5 snapshot providers return real data, not _unavailable placeholders."""
+        runtime_metrics = FakeRuntimeMetrics()
+        runtime_metrics.incr("requests_total", 1)
+
+        engine = SimpleNamespace(
+            build_resource_manifest=lambda **kwargs: {
+                "schema_version": 2,
+                "characters": {"outfits": [{"id": "cat", "name": "Cat", "emotions": [{"id": "normal", "name": "Normal"}]}]},
+                "defaults": {"outfit": "cat", "emotion": "normal"},
+            },
+            build_desktop_pet_workspace_panel=lambda **_kwargs: {"ok": True, "counts": {"files": 1, "outputs": 0, "tasks": 0}},
+            llm=SimpleNamespace(snapshot_metrics=lambda: {"requests_total": 1}),
+            vector_store=SimpleNamespace(count_entries=lambda: 10),
+            snapshot_embedding_reindex_status=lambda: {"total": 0, "processed": 0, "state": "idle"},
+        )
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                runtime_metrics=runtime_metrics,
+                resolve_identity_from_query=resolve_query,
+                snapshot_runtime_providers=build_control_center_snapshot_runtime_providers(
+                    engine=engine,
+                    config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                    runtime_metrics=runtime_metrics,
+                    public_guard=FakeGuard(),
+                ),
+            )
+        )
+
+        response = TestClient(app).get(
+            "/control-center/snapshot?user_id=desktop&real_user_id=master"
+            "&client=desktop_pet&character_pack_id=mika_pack&outfit=cat&emotion=normal"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        runtime = response.json()["runtime"]
+
+        # All 5 fields must be present and none should be placeholder/unavailable
+        for field in ("health", "diagnostics", "workspace", "resourceManifest", "metrics"):
+            self.assertIn(field, runtime, f"snapshot should contain runtime.{field}")
+            # If the field is a dict with ok:False, it's an unavailable provider
+            value = runtime[field]
+            if isinstance(value, dict):
+                self.assertNotEqual(
+                    value.get("ok"), False,
+                    f"snapshot runtime.{field} should NOT be unavailable/placeholder; "
+                    f"got error={value.get('error')}"
+                )
+
+        # health: real status/pid/python/contracts from config_module
+        self.assertEqual(runtime["health"]["status"], "ok")
+        self.assertIsInstance(runtime["health"]["pid"], int)
+        self.assertIsInstance(runtime["health"]["python"], str)
+        self.assertIn("desktop_pet", runtime["health"]["contracts"])
+
+        # diagnostics: real engine calls
+        self.assertEqual(runtime["diagnostics"]["status"], "ok")
+        self.assertIn("resources", runtime["diagnostics"])
+        self.assertIn("capabilities", runtime["diagnostics"])
+
+        # workspace: real engine.build_desktop_pet_workspace_panel called
+        self.assertTrue(runtime["workspace"]["ok"])
+        self.assertEqual(runtime["workspace"]["counts"]["files"], 1)
+
+        # resourceManifest: real engine.build_resource_manifest + decorate
+        self.assertIsInstance(runtime["resourceManifest"]["schema_version"], int)
+        self.assertIn("characters", runtime["resourceManifest"])
+        self.assertIn("clients", runtime["resourceManifest"])
+
+        # metrics: prometheus text with real tracemalloc/llm/vector counts
+        self.assertIsInstance(runtime["metrics"], str)
+        self.assertIn("akane_vector_entries", runtime["metrics"])
+        self.assertIn("akane_tracemalloc", runtime["metrics"])
+        self.assertIn("akane_llm_requests_total", runtime["metrics"])
+
+    def test_control_center_action_inert_refresh_only(self) -> None:
+        """Verify that ALL backend action endpoints only return not-implemented,
+        never execute desktop operations."""
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        client = TestClient(app)
+
+        # Multiple action types: desktop-related, window, music, unknown
+        for action_id in ("window.close", "music.next", "unknown.action", "character.importZip"):
+            response = client.post(f"/control-center/actions/{action_id}", json={})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["ok"], False, f"{action_id} should be ok:false")
+            self.assertEqual(payload["status"], "not-implemented", f"{action_id} should be not-implemented")
+            self.assertEqual(payload["actionId"], action_id, f"{action_id} should echo actionId")
+            self.assertEqual(payload["refresh"], False, f"{action_id} should have refresh:false")
+
+
 if __name__ == "__main__":
     unittest.main()

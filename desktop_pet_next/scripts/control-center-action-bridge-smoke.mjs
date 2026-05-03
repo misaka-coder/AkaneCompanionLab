@@ -1643,6 +1643,34 @@ for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
   }
 }
 
+// ---------- all action IDs are covered by the surface contract ----------
+//
+// Every action ID constant in CONTROL_CENTER_ACTIONS must appear in the surface
+// contract as either bridged, client-handled, or deferred. There must be no
+// "unclassified" action IDs that have no documented status. Some action IDs
+// intentionally appear on multiple pages, so duplicate surface entries are OK
+// as long as they stay in a single status category.
+
+{
+  const allActionIds = Object.values(CONTROL_CENTER_ACTIONS);
+  const allSurfaces = listControlCenterActionSurfaces();
+  const allSurfaceIds = new Set(allSurfaces.map((s) => s.actionId));
+  const unclassified = allActionIds.filter((id) => !allSurfaceIds.has(id));
+  assert.equal(
+    unclassified.length, 0,
+    `all CONTROL_CENTER_ACTIONS must be in surface contract; unclassified: ${unclassified.join(", ")}`
+  );
+
+  for (const actionId of allActionIds) {
+    const statuses = new Set(allSurfaces.filter((s) => s.actionId === actionId).map((s) => s.status));
+    assert.equal(
+      statuses.size,
+      1,
+      `${actionId} must map to exactly one surface status category; got ${Array.from(statuses).join(", ")}`
+    );
+  }
+}
+
 // ---------- forbidden actions remain not-implemented ----------
 
 const forbiddenActionIds = [

@@ -13,6 +13,7 @@ import {
 import { createControlCenterSnapshot } from "../src/control-center/data-adapter.js";
 import {
   createBackendControlCenterSource,
+  createMockControlCenterSource,
   CONTROL_CENTER_SOURCE_KIND,
 } from "../src/control-center/data-sources.js";
 
@@ -35,7 +36,7 @@ function makeSnapshotFetch({
     sourceKind: "backend",
     generatedAt: new Date().toISOString(),
     runtime: {
-      health: { status: "ok", pid: 1234, contracts: { desktop_pet: { tts: true } } },
+      health: { status: "ok", pid: 1234, python: "/usr/bin/python3", contracts: { desktop_pet: { tts: true } } },
       diagnostics: {
         status: "ok",
         capabilities: {
@@ -310,6 +311,85 @@ function makeSnapshotFetch({
   // Production provider: metrics is a plain string (prometheus text format)
   assert.equal(typeof snapshotBody.runtime.metrics, "string", "1.67 runtime metrics should be prometheus text string");
   assert.ok(snapshotBody.runtime.metrics.includes("akane_tracemalloc"), "1.68 runtime metrics should contain akane_tracemalloc fields");
+
+  // ---------- field-level real-data coverage assertions ----------
+
+  // Overview: status items patched from runtime (not mock)
+  const connectedItem = overview.status.items.find((i) => i.label && i.label.includes("连接状态"));
+  assert.ok(connectedItem, "1.69 overview status should have 连接状态 item");
+  const summaryItem = overview.status.items.find((i) => i.label && i.label.includes("今日能力摘要"));
+  assert.ok(summaryItem, "1.70 overview status should have 今日能力摘要 item");
+
+  // Overview: connection rows patched from runtime
+  const latencyRow = overview.connection.rows.find((r) => r.label && r.label.includes("响应延迟"));
+  assert.ok(latencyRow, "1.71 overview connection should have 响应延迟 row");
+  const syncRow = overview.connection.rows.find((r) => r.label && r.label.includes("同步状态"));
+  assert.ok(syncRow, "1.72 overview connection should have 同步状态 row");
+
+  // Overview: pack from runtime diagnostics resources
+  assert.ok(overview.pack.name, "1.73 overview pack name should be populated");
+  assert.ok(overview.pack.version, "1.74 overview pack version should be populated");
+
+  // Character: warning populated from runtime
+  assert.ok(character.warning, "1.75 character warning should exist");
+  assert.ok(typeof character.warning.title === "string", "1.76 character warning title should be string");
+  assert.ok(typeof character.warning.body === "string", "1.77 character warning body should be string");
+  assert.ok(character.warning.actionId, "1.78 character warning should have actionId (falls back to character.refresh)");
+
+  // Voice: TTS enabled and ASR enabled from runtime values
+  assert.equal(typeof voice.tts?.enabled, "boolean", "1.79 voice tts.enabled should be boolean from runtime");
+  assert.equal(typeof voice.asr?.enabled, "boolean", "1.80 voice asr.enabled should be boolean from runtime");
+
+  // Voice: diagnostics rows from runtime (整体状态, TTS/ASR status)
+  const overallDiagnostic = voice.diagnostics.find((d) => d.label && d.label.includes("整体"));
+  assert.ok(overallDiagnostic, "1.81 voice diagnostics should have 整体状态 row");
+  const ttsDiag = voice.diagnostics.find((d) => d.label && (d.label.includes("TTS") || d.label.includes("语音引擎")));
+  assert.ok(ttsDiag, "1.82 voice diagnostics should have TTS row");
+
+  // Perception: all 4 feature cards present with enabled state
+  const expectedCardIds = ["activeWindow", "clipboard", "screen", "proactive"];
+  for (const cardId of expectedCardIds) {
+    const card = perception.featureCards.find((c) => c.id === cardId);
+    assert.ok(card, `1.83 perception should have "${cardId}" feature card`);
+    assert.equal(typeof card.enabled, "boolean", `1.84 perception "${cardId}" enabled should be boolean from runtime`);
+  }
+
+  // Abilities: safety status from diagnostics
+  assert.ok(abilities.safety, "1.85 abilities safety should exist");
+  assert.equal(typeof abilities.safety.status, "string", "1.86 abilities safety status should be string");
+  assert.ok(Array.isArray(abilities.safety.items), "1.87 abilities safety items should be an array");
+
+  // Abilities: modules have permission and count fields
+  for (const mod of abilities.modules) {
+    assert.ok(mod.permission, "1.88 ability module should have permission field");
+    assert.ok(mod.count, "1.89 ability module should have count field");
+  }
+
+  // Advanced: runtime pid and python from health provider
+  assert.equal(snapshotBody.runtime.health.pid, 1234, "1.90 runtime health should contain pid from production provider");
+  assert.ok(snapshotBody.runtime.health.python, "1.91 runtime health should contain python path from production provider");
+  assert.ok(snapshotBody.runtime.health.contracts, "1.92 runtime health should contain contracts from production provider");
+
+  // Advanced: systemStrip has "运行中" status from runtime
+  const runningStrip = advanced.systemStrip.find((s) => s.label && s.label.includes("运行"));
+  assert.ok(runningStrip, "1.93 advanced systemStrip should have 运行中 row");
+
+  // Advanced: diagnostics logs are runtime-generated timeline entries
+  assert.ok(advanced.diagnostics.logs.length > 0, "1.94 advanced diagnostics logs should be populated");
+  for (const log of advanced.diagnostics.logs) {
+    assert.equal(typeof log.time, "string", "1.95 advanced log entry should have time string");
+    assert.equal(typeof log.message, "string", "1.96 advanced log entry should have message string");
+  }
+
+  // Advanced: diagnostics metrics patched by label — "应用状态" from runtime
+  const appStatusMetric = advanced.diagnostics.metrics.find((m) => m.label && m.label.includes("应用状态"));
+  assert.ok(appStatusMetric, "1.97 advanced metrics should have 应用状态 row");
+
+  // Snapshot metadata: backendUrl and fallbackReason flow through from source
+  assert.equal(snapshot.sourceKind, CONTROL_CENTER_SOURCE_KIND.backend, "1.98 snapshot sourceKind should be backend");
+  assert.ok(snapshot.backendUrl, "1.99 snapshot backendUrl should be present from source metadata");
+  assert.equal(snapshot.fallbackReason, null, "1.100 snapshot fallbackReason should be null on successful read");
+  assert.ok(snapshot.backendUrl.startsWith("http"), "1.101 snapshot backendUrl should be a valid URL");
 }
 
 // ---------------------------------------------------------------------------
@@ -365,11 +445,15 @@ function makeSnapshotFetch({
   // advanced page from workspace/metrics
   assert.ok(snapshot.pages.advanced.diagnostics, "2.6 degraded: advanced diagnostics should exist");
 
+  // Source metadata flows through even when one field is degraded
+  assert.ok(snapshot.backendUrl, "2.7 degraded: snapshot backendUrl should be present");
+  assert.equal(snapshot.fallbackReason, null, "2.8 degraded: snapshot fallbackReason should be null (read succeeded)");
+
   // No fallback to legacy endpoints when snapshot succeeds (even partially)
   const snapshotUrls = requestedUrls.filter((u) => u.includes("/control-center/snapshot"));
-  assert.ok(snapshotUrls.length >= 1, "2.7 degraded: snapshot endpoint should have been called");
+  assert.ok(snapshotUrls.length >= 1, "2.9 degraded: snapshot endpoint should have been called");
   const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot"));
-  assert.equal(legacyUrls.length, 0, "2.8 degraded: legacy endpoints should NOT be called when snapshot returns usable data");
+  assert.equal(legacyUrls.length, 0, "2.10 degraded: legacy endpoints should NOT be called when snapshot returns usable data");
 }
 
 // ---------------------------------------------------------------------------
@@ -504,6 +588,83 @@ function makeSnapshotFetch({
 }
 
 // ---------------------------------------------------------------------------
+// 7. Bootstrap contract: source metadata, priority chain, fallback reason
+// ---------------------------------------------------------------------------
+
+// 7a. Mock source metadata
+{
+  const mockSource = createMockControlCenterSource();
+  assert.equal(mockSource.kind, CONTROL_CENTER_SOURCE_KIND.mock, "7.1 mock source kind should be mock");
+  assert.equal(mockSource.backendUrl, null, "7.2 mock source backendUrl should be null");
+  assert.equal(mockSource.fallbackReason, "mock-source", "7.3 mock source fallbackReason should be mock-source");
+  assert.equal(mockSource.getFallbackReason(), "mock-source", "7.3b mock source getFallbackReason should be mock-source");
+}
+
+// 7b. Backend source metadata when configured with a URL
+{
+  const backendSource = createBackendControlCenterSource({ baseUrl: "http://custom-backend:9999" });
+  assert.equal(backendSource.kind, CONTROL_CENTER_SOURCE_KIND.backend, "7.4 backend source kind should be backend");
+  assert.equal(backendSource.backendUrl, "http://custom-backend:9999", "7.5 backend source backendUrl should match options");
+  assert.equal(typeof backendSource.getFallbackReason, "function", "7.6 backend source should have getFallbackReason()");
+}
+
+// 7c. Backend source with default URL when none provided
+{
+  const defaultSource = createBackendControlCenterSource({});
+  assert.ok(defaultSource.backendUrl, "7.7 backend source should have non-empty default backendUrl");
+  assert.ok(defaultSource.backendUrl.startsWith("http"), "7.8 backend source backendUrl should be a valid URL");
+  assert.equal(defaultSource.fallbackReason, null, "7.9 backend source initial fallbackReason should be null");
+}
+
+// 7d. Backend unavailable: readSnapshot returns null AND fallback reason is set
+{
+  const unavailableSource = createBackendControlCenterSource({
+    baseUrl: "http://unavailable-bootstrap-test",
+    fetchImpl: async () => ({ ok: false, status: 404, headers: { get: () => "" } }),
+  });
+  const result = await unavailableSource.readSnapshot();
+  assert.equal(result, null, "7.10 backend unavailable readSnapshot should return null");
+  // getFallbackReason should indicate the failure
+  const reason = unavailableSource.getFallbackReason();
+  assert.ok(typeof reason === "string" && reason.length > 0, "7.11 backend unavailable should have fallback reason string");
+  assert.notEqual(reason, null, "7.12 backend unavailable fallback reason should not be null");
+  assert.equal(unavailableSource.fallbackReason, reason, "7.12b backend fallbackReason property should match getter");
+}
+
+// 7e. Backend available: readSnapshot succeeds and clears fallback reason
+{
+  const { fetchImpl } = makeSnapshotFetch();
+  const okSource = createBackendControlCenterSource({
+    baseUrl: "http://ok-bootstrap-test",
+    fetchImpl,
+  });
+  const result = await okSource.readSnapshot();
+  assert.ok(result, "7.13 backend available readSnapshot should return data");
+  // After successful read, fallback reason should be null (cleared)
+  assert.equal(okSource.getFallbackReason(), null, "7.14 backend available getFallbackReason should be null");
+  // source metadata should include the backend URL
+  assert.equal(okSource.backendUrl, "http://ok-bootstrap-test", "7.15 backend available source should preserve backendUrl");
+}
+
+// 7f. Backend source metadata does NOT contain sensitive content
+{
+  const sensitiveSource = createBackendControlCenterSource({
+    baseUrl: "http://sensitive-check",
+    fetchImpl: async () => ({ ok: false, status: 404, headers: { get: () => "" } }),
+  });
+  await sensitiveSource.readSnapshot();
+  const sourceText = JSON.stringify({
+    kind: sensitiveSource.kind,
+    backendUrl: sensitiveSource.backendUrl,
+    fallbackReason: sensitiveSource.fallbackReason,
+    getFallbackReasonResult: sensitiveSource.getFallbackReason(),
+  });
+  for (const term of ["api_key", "apiKey", "password", "secret", "token"]) {
+    assert.equal(sourceText.includes(term), false, `7.16 source metadata should not contain sensitive field '${term}'`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 
@@ -518,10 +679,19 @@ console.log(
     "abilities modules/user-facing/safety/overview, " +
     "advanced systemStrip/diagnostics metrics/logs/abilityOverview, " +
     "no sensitive fields, " +
-    "provider raw data shape), " +
+    "provider raw data shape, " +
+    "overview statusItems/connectionRows/pack, " +
+    "character warning/actionId, " +
+    "voice tts/asr/enabled/diagnostics, " +
+    "perception all 4 cards enabled, " +
+    "abilities safety/items/module fields, " +
+    "advanced pid/python/systemStrip/logs/metrics), " +
     "2 partial degradation, " +
     "3 bad snapshot fallback, " +
     "4 all unavailable null, " +
     "5 action contract inert, " +
-    "6 surface contract consistency"
+    "6 surface contract consistency, " +
+    "7 bootstrap contract (mock source metadata, backend source metadata, " +
+    "default URL, unavailable fallback reason, " +
+    "available clears reason, no sensitive metadata)"
 );
