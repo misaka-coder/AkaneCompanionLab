@@ -120,6 +120,8 @@ npm run doctor
 npm run build
 ```
 
+`npm run smoke:control-center-actions` validates control-center action bridge mappings, exception hardening, and `not-implemented` behavior.
+
 After Rust is installed and `cargo` is available in PATH:
 
 ```powershell

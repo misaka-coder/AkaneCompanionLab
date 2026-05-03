@@ -3473,20 +3473,32 @@ button:focus-visible {
   background: rgb(255 255 255 / 0.36);
 }
 
-.overview-voice-toggles div {
+.overview-voice-toggles div,
+.overview-voice-toggles button {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  width: 100%;
   min-height: 29px;
   padding: 0 12px;
   color: #536f9c;
+  border: 0;
   border-bottom: 1px solid rgb(112 151 205 / 0.13);
+  background: transparent;
+  font: inherit;
   font-size: 13px;
   font-weight: 800;
+  text-align: left;
 }
 
-.overview-voice-toggles div:last-child {
+.overview-voice-toggles button {
+  appearance: none;
+  cursor: pointer;
+}
+
+.overview-voice-toggles div:last-child,
+.overview-voice-toggles button:last-child {
   border-bottom: 0;
 }
 
@@ -3638,7 +3650,8 @@ button:focus-visible {
   margin-top: 10px;
 }
 
-.sense-toggle-row span {
+.sense-toggle-row > span,
+.sense-toggle-row > button {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -3648,14 +3661,26 @@ button:focus-visible {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgb(255 255 255 / 0.4);
+  font: inherit;
   font-size: 12px;
   font-weight: 800;
 }
 
-.sense-toggle-row i {
+.sense-toggle-row > button {
+  appearance: none;
+  cursor: pointer;
+}
+
+.sense-toggle-row > span > i,
+.sense-toggle-row > button > i {
   width: 26px;
   height: 16px;
   border-radius: 999px;
+  background: rgb(170 190 216 / 0.48);
+}
+
+.sense-toggle-row > span > i.is-on,
+.sense-toggle-row > button.is-on > i {
   background: linear-gradient(90deg, #ff75a5, #ff9bbc);
 }
 
@@ -3828,6 +3853,7 @@ button:focus-visible {
 }
 
 .voice-card-title span,
+.voice-card-title button,
 .voice-diagnostics-card .card-heading span {
   display: inline-flex;
   align-items: center;
@@ -3840,6 +3866,12 @@ button:focus-visible {
   font-size: 12px;
   font-weight: 900;
   white-space: nowrap;
+}
+
+.voice-card-title button[aria-pressed="false"] {
+  color: #657d9f;
+  border-color: rgb(130 154 190 / 0.22);
+  background: rgb(245 249 255 / 0.76);
 }
 
 .voice-form-grid {
@@ -3909,6 +3941,22 @@ button:focus-visible {
   background: #fff;
   transform: translate(-50%, -50%);
   box-shadow: 0 6px 12px rgb(246 105 150 / 0.18);
+}
+
+.voice-stepper {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.voice-stepper button {
+  display: grid;
+  place-items: center;
+  min-height: 28px;
+  padding: 0;
+  font-size: 15px;
 }
 
 .voice-live-wave,

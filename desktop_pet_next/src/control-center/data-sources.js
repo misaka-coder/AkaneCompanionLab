@@ -14,12 +14,24 @@ const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.workspaceOpen]: "openWorkspace",
   [CONTROL_CENTER_ACTIONS.voiceTest]: "testTts",
   [CONTROL_CENTER_ACTIONS.voiceStop]: "stopTts",
+  [CONTROL_CENTER_ACTIONS.voiceSetTtsEnabled]: "setVoiceEnabled",
+  [CONTROL_CENTER_ACTIONS.voiceSetAsrEnabled]: "setVoiceInputEnabled",
+  [CONTROL_CENTER_ACTIONS.voiceSetVolume]: "setVoiceVolume",
   [CONTROL_CENTER_ACTIONS.characterRefresh]: "reloadResources",
+  [CONTROL_CENTER_ACTIONS.characterPreviewEmotion]: "previewEmotion",
   [CONTROL_CENTER_ACTIONS.perceptionDesktopContextSetEnabled]: "setDesktopContextEnabled",
   [CONTROL_CENTER_ACTIONS.perceptionClipboardContextSetEnabled]: "setClipboardContextEnabled",
   [CONTROL_CENTER_ACTIONS.perceptionScreenVisionSetEnabled]: "setScreenVisionEnabled",
+  [CONTROL_CENTER_ACTIONS.perceptionScreenVisionSetIntervalSec]: "setScreenVisionIntervalSec",
+  [CONTROL_CENTER_ACTIONS.perceptionScreenVisionSetFrameCount]: "setScreenVisionFrameCount",
+  [CONTROL_CENTER_ACTIONS.perceptionScreenVisionClear]: "clearScreenVision",
   [CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetEnabled]: "setProactiveWakeEnabled",
   [CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetIntervalSec]: "setProactiveWakeIntervalSec",
+  [CONTROL_CENTER_ACTIONS.advancedProbeClickThrough]: "probeClickThrough",
+  [CONTROL_CENTER_ACTIONS.advancedResetWindow]: "resetWindow",
+  [CONTROL_CENTER_ACTIONS.advancedToggleWebgl]: "toggleWebgl",
+  [CONTROL_CENTER_ACTIONS.advancedSetHitTestEnabled]: "setHitTestEnabled",
+  [CONTROL_CENTER_ACTIONS.advancedSetHitboxOverlay]: "setHitboxOverlay",
   [CONTROL_CENTER_ACTIONS.musicPrevious]: "previousMusic",
   [CONTROL_CENTER_ACTIONS.musicNext]: "nextMusic",
   [CONTROL_CENTER_ACTIONS.musicPause]: "toggleMusic",
@@ -38,7 +50,15 @@ const tauriWindowActionByActionId = Object.freeze({
 const clientOnlyActionIds = new Set([
   CONTROL_CENTER_ACTIONS.windowClose,
   CONTROL_CENTER_ACTIONS.windowMinimize,
-  CONTROL_CENTER_ACTIONS.windowMaximize
+  CONTROL_CENTER_ACTIONS.windowMaximize,
+  CONTROL_CENTER_ACTIONS.characterPreviewEmotion
+]);
+const unifiedSnapshotRuntimeFields = Object.freeze([
+  "health",
+  "diagnostics",
+  "workspace",
+  "resourceManifest",
+  "metrics"
 ]);
 
 export const CONTROL_CENTER_SOURCE_KIND = Object.freeze({
@@ -134,6 +154,7 @@ export function createBackendControlCenterSource(options = {}) {
       if (typeof fetchImpl !== "function") {
         return null;
       }
+
       const commonParams = {
         user_id: sessionId,
         real_user_id: profileUserId,
@@ -143,6 +164,21 @@ export function createBackendControlCenterSource(options = {}) {
         emotion,
         t: String(Date.now())
       };
+
+      // Try unified snapshot endpoint first
+      const snapshotResult = await tryReadUnifiedSnapshot(fetchImpl, baseUrl, {
+        requestParams: commonParams,
+        petState,
+        musicSnapshot,
+        availableCharacterPacks,
+        characterPackId,
+        outfit,
+        emotion
+      });
+      if (snapshotResult) {
+        return snapshotResult;
+      }
+
       const [health, diagnostics, workspace, resourceManifest, metrics] = await Promise.all([
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/health", { t: commonParams.t })),
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/desktop-pet/diagnostics", commonParams)),
@@ -169,6 +205,7 @@ export function createBackendControlCenterSource(options = {}) {
           diagnostics: diagnostics.data,
           workspace: workspace.data,
           metricsText: metrics.data,
+          petState,
           connected: health.ok || diagnostics.ok
         }),
         characterRuntime: buildCharacterRuntimePatch({
@@ -395,7 +432,7 @@ async function fetchText(fetchImpl, url) {
   }
 }
 
-function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText, connected }) {
+function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText, petState, connected }) {
   const resources = asObject(diagnostics?.resources);
   const capabilities = asObject(diagnostics?.capabilities);
   const workspaceCounts = asObject(diagnostics?.workspace);
@@ -416,6 +453,7 @@ function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText
     tasks: numberOrFallback(workspaceCounts.tasks, counts.tasks, 0)
   };
   const serviceOk = connected || stringValue(health?.status) === "ok" || stringValue(diagnostics?.status) === "ok";
+  const senseRuntime = buildOverviewSenseRuntimePatch(petState);
   const toolCount = tools.length;
   const moduleCount = modules.length || declared.length;
 
@@ -451,6 +489,7 @@ function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText
       asrEnabled: serviceOk,
       status: serviceOk ? "语音状态：后端已连接" : "语音状态：等待连接"
     },
+    ...(senseRuntime ? { sense: senseRuntime } : {}),
     abilities: buildAbilityLabels({ tools, workspaceCounts: effectiveWorkspaceCounts }),
     health: buildHealthTiles({
       metrics,
@@ -461,6 +500,17 @@ function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText
       serviceOk
     })
   };
+}
+
+function buildOverviewSenseRuntimePatch(petState) {
+  const state = asObject(petState);
+  const entries = [
+    ["activeWindowEnabled", state.desktopContextEnabled],
+    ["clipboardEnabled", state.clipboardContextEnabled],
+    ["screenVisionEnabled", state.screenVisionEnabled],
+    ["proactiveWakeEnabled", state.proactiveWakeEnabled]
+  ].filter(([, value]) => typeof value === "boolean");
+  return entries.length ? Object.fromEntries(entries) : null;
 }
 
 function buildCharacterRuntimePatch({
@@ -885,8 +935,14 @@ function buildAdvancedRuntimePatch({ health, diagnostics, workspace, metricsText
     ]
   };
 
+  const coreSettings = [
+    { id: "hitTest", enabled: Boolean(petState?.hitTestEnabled) },
+    { id: "hitbox", enabled: Boolean(petState?.hitboxOverlay) }
+  ];
+
   return {
     systemStrip,
+    coreSettings,
     diagnostics: { metrics: diagnosticsMetrics, logs },
     live2d,
     abilityOverview
@@ -1361,4 +1417,116 @@ function pickBoolean(value, fallback) {
 
 function formatDataSourceError(error) {
   return error instanceof Error ? error.message : String(error || "unknown");
+}
+
+async function tryReadUnifiedSnapshot(fetchImpl, baseUrl, scope = {}) {
+  const {
+    petState,
+    musicSnapshot,
+    availableCharacterPacks,
+    characterPackId,
+    outfit,
+    emotion,
+    requestParams
+  } = scope;
+  try {
+    const response = await fetchJson(
+      fetchImpl,
+      buildBackendUrl(baseUrl, "/control-center/snapshot", requestParams || { t: String(Date.now()) })
+    );
+    const snapshot = response.data;
+    if (!response.ok || !snapshot || snapshot.ok !== true) {
+      return null;
+    }
+    if (
+      typeof snapshot.schemaVersion !== "number" ||
+      snapshot.sourceKind !== CONTROL_CENTER_SOURCE_KIND.backend ||
+      typeof snapshot.generatedAt !== "string"
+    ) {
+      return null;
+    }
+    const runtime = snapshot.runtime;
+    if (!runtime || typeof runtime !== "object" || !unifiedSnapshotRuntimeFields.every((field) => field in runtime)) {
+      return null;
+    }
+    const health = unpackUnifiedSnapshotField(runtime.health);
+    const diagnostics = unpackUnifiedSnapshotField(runtime.diagnostics);
+    const workspace = unpackUnifiedSnapshotField(runtime.workspace);
+    const resourceManifest = unpackUnifiedSnapshotField(runtime.resourceManifest);
+    const metrics = unpackUnifiedSnapshotField(runtime.metrics);
+    const hasSomeData = [health, diagnostics, workspace, resourceManifest, metrics].some((item) => item.ok);
+    if (!hasSomeData) {
+      return null;
+    }
+    const metricsText = typeof metrics.data === "string" ? metrics.data : "";
+    return {
+      ...mockData,
+      sourceKind: CONTROL_CENTER_SOURCE_KIND.backend,
+      controlCenterRuntime: {
+        backendBaseUrl: baseUrl,
+        health,
+        diagnostics,
+        workspace,
+        resourceManifest,
+        metrics
+      },
+      overviewRuntime: buildOverviewRuntimePatch({
+        health: health.data,
+        diagnostics: diagnostics.data,
+        workspace: workspace.data,
+        metricsText,
+        petState,
+        connected: health.ok || diagnostics.ok
+      }),
+      characterRuntime: buildCharacterRuntimePatch({
+        baseUrl,
+        resourceManifest: resourceManifest.data,
+        diagnostics: diagnostics.data,
+        characterPackId,
+        outfit,
+        emotion,
+        petState,
+        availableCharacterPacks
+      }),
+      voiceRuntime: buildVoiceRuntimePatch({
+        health: health.data,
+        diagnostics: diagnostics.data,
+        petState
+      }),
+      perceptionRuntime: buildPerceptionRuntimePatch({
+        petState,
+        diagnostics: diagnostics.data
+      }),
+      musicRuntime: buildMusicRuntimePatch({ musicSnapshot, petState }),
+      abilitiesRuntime: buildAbilitiesRuntimePatch({
+        diagnostics: diagnostics.data,
+        workspace: workspace.data,
+        connected: health.ok || diagnostics.ok
+      }),
+      advancedRuntime: buildAdvancedRuntimePatch({
+        health: health.data,
+        diagnostics: diagnostics.data,
+        workspace: workspace.data,
+        metricsText,
+        petState
+      })
+    };
+  } catch {
+    return null;
+  }
+}
+
+function unpackUnifiedSnapshotField(entry) {
+  if (entry && typeof entry === "object" && !Array.isArray(entry) && "ok" in entry) {
+    if (entry.ok === false) {
+      return { ok: false, data: null, status: entry.status || "unavailable" };
+    }
+    if ("data" in entry) {
+      return { ok: true, data: entry.data, status: entry.status || "available" };
+    }
+  }
+  if (typeof entry === "string") {
+    return { ok: Boolean(entry), data: entry };
+  }
+  return { ok: true, data: entry || null };
 }

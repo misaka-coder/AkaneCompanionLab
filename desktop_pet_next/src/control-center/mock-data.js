@@ -171,6 +171,7 @@ export const characterPage = {
   subtitle: "管理 Akane 的角色包、服装、表情等资源，自定义她在桌面上的形象与表现。",
   hero: "akaneSakuraWide",
   selectedPack: "Akane Default",
+  selectedPackId: "akane_default",
   packInfo: [
     { label: "名称", value: "Akane Default" },
     { label: "版本", value: "1.0.0" },
@@ -254,6 +255,8 @@ export const voicePage = {
     { label: "回声消除", detail: "消除回声，提升通话质量", enabled: true },
     { label: "唤醒词", detail: "说出唤醒词来唤醒 Akane", enabled: true }
   ],
+  wakeWord: "Akane",
+  wakeSensitivity: "中等",
   diagnostics: [
     { label: "整体状态", value: "正常运行", tone: "good" },
     { label: "ASR 延迟", value: "42 ms", tone: "good" },
@@ -282,12 +285,12 @@ export const musicPage = {
     cover: "akaneNightWindow"
   },
   playlist: [
-    { title: "晴空漫游", artist: "Akane", duration: "03:45", cover: "akaneSkyPaperPlane" },
-    { title: "云端信号", artist: "Akane", duration: "04:12", cover: "cloudLetter" },
-    { title: "夏日轨迹", artist: "Akane", duration: "03:58", cover: "starryCloudCat" },
-    { title: "星光与你", artist: "Akane", duration: "04:38", active: true, cover: "akaneNightWindow" },
-    { title: "温柔频率", artist: "Akane", duration: "04:01", cover: "akaneSakuraClose" },
-    { title: "夜色心跳", artist: "Akane", duration: "03:36", cover: "moonBalcony" }
+    { id: "track_clearSky", title: "晴空漫游", artist: "Akane", duration: "03:45", cover: "akaneSkyPaperPlane" },
+    { id: "track_cloudSignal", title: "云端信号", artist: "Akane", duration: "04:12", cover: "cloudLetter" },
+    { id: "track_summerTrail", title: "夏日轨迹", artist: "Akane", duration: "03:58", cover: "starryCloudCat" },
+    { id: "track_starsWithYou", title: "星光与你", artist: "Akane", duration: "04:38", active: true, cover: "akaneNightWindow" },
+    { id: "track_gentleFreq", title: "温柔频率", artist: "Akane", duration: "04:01", cover: "akaneSakuraClose" },
+    { id: "track_nightBeat", title: "夜色心跳", artist: "Akane", duration: "03:36", cover: "moonBalcony" }
   ],
   lyrics: [
     "微风轻轻吹过窗台",
@@ -299,6 +302,8 @@ export const musicPage = {
     "星光与你 未来都精彩"
   ],
   activeLyric: 2,
+  currentPlayMode: "列表循环",
+  outputDevice: "扬声器",
   info: [
     { label: "时长", value: "04:38" },
     { label: "来源", value: "本地音乐" },
@@ -306,9 +311,9 @@ export const musicPage = {
   ],
   modes: ["放松", "专注", "治愈", "活力", "思念", "睡前"],
   recommendations: [
-    { title: "萤火与晚风", artist: "Akane", duration: "03:52", cover: "moonBalcony" },
-    { title: "银河便利店", artist: "Akane", duration: "04:21", cover: "cloudLetter" },
-    { title: "软糖星球", artist: "Akane", duration: "03:47", cover: "starryCloudCat" }
+    { id: "rec_firefly", title: "萤火与晚风", artist: "Akane", duration: "03:52", cover: "moonBalcony" },
+    { id: "rec_galaxy", title: "银河便利店", artist: "Akane", duration: "04:21", cover: "cloudLetter" },
+    { id: "rec_gummy", title: "软糖星球", artist: "Akane", duration: "03:47", cover: "starryCloudCat" }
   ],
   bottomStatus: "正在为你播放最合适的音乐，愿每一首歌都能温暖你。"
 };
@@ -352,9 +357,9 @@ export const perceptionPage = {
       enabled: true,
       previewType: "settings",
       label: "截图频率设置",
-      frequency: "5 秒",
-      frames: "120",
-      hint: "帧（约 10 分钟）",
+      frequency: "25 秒",
+      frames: "4",
+      hint: "帧（仅保留近期画面）",
       note: "仅本地处理，不上传任何截图"
     },
     {
@@ -584,25 +589,31 @@ export const advancedPage = {
   ],
   coreSettings: [
     {
+      id: "webgl",
       title: "WebGL",
       description: "启用硬件加速渲染，提升 Live2D 与特效表现。",
       enabled: true,
       icon: "panel",
-      tone: "blue"
+      tone: "blue",
+      actionId: "advanced.toggleWebgl"
     },
     {
+      id: "hitTest",
       title: "Hit-Test",
       description: "启用点击检测，支持与桌宠进行交互。",
       enabled: true,
       icon: "target",
-      tone: "blue"
+      tone: "blue",
+      actionId: "advanced.setHitTestEnabled"
     },
     {
+      id: "hitbox",
       title: "Hitbox",
       description: "显示与优化可交互范围，提高点击准确性。",
       enabled: true,
       icon: "focus",
-      tone: "blue"
+      tone: "blue",
+      actionId: "advanced.setHitboxOverlay"
     }
   ],
   operations: [
@@ -611,21 +622,25 @@ export const advancedPage = {
       description: "临时穿透桌面窗口，持续 5 秒。",
       action: "执行",
       icon: "window",
-      tone: "blue"
+      tone: "blue",
+      actionId: "advanced.probeClickThrough"
     },
     {
       title: "重置窗口",
       description: "将桌宠窗口恢复到默认位置与大小。",
       action: "重置",
       icon: "refresh",
-      tone: "blue"
+      tone: "blue",
+      actionId: "advanced.resetWindow"
     },
     {
+      id: "exitPet",
       title: "退出桌宠",
       description: "关闭桌宠进程，停止所有运行服务。",
       action: "退出",
       icon: "alert",
-      tone: "pink"
+      tone: "pink",
+      actionId: "advanced.exitPet"
     }
   ],
   diagnostics: {
@@ -656,38 +671,43 @@ export const advancedPage = {
     ]
   },
   abilityOverview: [
-    { label: "文件处理", icon: "folder", tone: "blue" },
-    { label: "生成文件交付", icon: "file", tone: "green" },
-    { label: "手边物品", icon: "gift", tone: "pink" },
-    { label: "媒体工具", icon: "play", tone: "purple" },
-    { label: "安全边界", icon: "shield", tone: "orange" }
+    { id: "adv_abilit_file", label: "文件处理", icon: "folder", tone: "blue" },
+    { id: "adv_abilit_deliver", label: "生成文件交付", icon: "file", tone: "green" },
+    { id: "adv_abilit_items", label: "手边物品", icon: "gift", tone: "pink" },
+    { id: "adv_abilit_media", label: "媒体工具", icon: "play", tone: "purple" },
+    { id: "adv_abilit_safety", label: "安全边界", icon: "shield", tone: "orange" }
   ],
   expertOptions: [
     {
+      id: "expert_devMode",
       title: "开发者模式",
       description: "启用调试与开发者工具，适用于开发与排查问题。",
       enabled: false,
       icon: "code"
     },
     {
+      id: "expert_detailedLogs",
       title: "详细日志",
       description: "记录更详细的运行日志，可能影响性能与磁盘占用。",
       enabled: false,
       icon: "log"
     },
     {
+      id: "expert_hardwareAccel",
       title: "硬件加速",
       description: "启用 GPU 硬件加速，提升渲染与解码性能。",
       enabled: true,
       icon: "cpu"
     },
     {
+      id: "expert_lowLatency",
       title: "低延迟模式",
       description: "优化事件处理与队列，减少交互延迟。",
       enabled: true,
       icon: "zap"
     },
     {
+      id: "expert_autoUpdate",
       title: "自动更新",
       description: "自动检查并安装更新，保持最佳体验与安全。",
       enabled: true,

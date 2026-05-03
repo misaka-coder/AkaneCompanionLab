@@ -5,6 +5,30 @@ import {
 } from "./snapshot-schema.js";
 
 const overviewActionIds = ["chat.new", "chat.stop", "workspace.open"];
+const overviewMusicControlActionIds = [
+  "music.previous",
+  "music.next",
+  "music.pause",
+  "music.stop",
+  "music.clear"
+];
+const overviewVoiceRowDefaults = [
+  { id: "ttsEnabled", actionId: "voice.setTtsEnabled", label: "回复朗读（TTS）" },
+  { id: "asrEnabled", actionId: "voice.setAsrEnabled", label: "语音输入（ASR）" }
+];
+const overviewSenseToggleDefaults = [
+  { id: "activeWindow", actionId: "perception.desktopContext.setEnabled", label: "前台窗口感知", icon: "clipboard" },
+  { id: "clipboard", actionId: "perception.clipboardContext.setEnabled", label: "剪贴板文本", icon: "clipboard" },
+  { id: "screen", actionId: "perception.screenVision.setEnabled", label: "看屏幕", icon: "clipboard" },
+  { id: "proactive", actionId: "perception.proactiveWake.setEnabled", label: "主动搭话", icon: "clipboard" }
+];
+const characterWarningActionId = "character.refresh";
+const advancedCoreSettingDefaults = [
+  { id: "webgl", actionId: "advanced.toggleWebgl" },
+  { id: "hitTest", actionId: "advanced.setHitTestEnabled" },
+  { id: "hitbox", actionId: "advanced.setHitboxOverlay" }
+];
+const advancedOperationActionIds = ["advanced.probeClickThrough", "advanced.resetWindow"];
 
 export function createControlCenterSnapshot(raw = {}) {
   const shell = createShellSnapshot(raw);
@@ -38,6 +62,10 @@ function adaptCharacterPage(page, runtime = {}) {
   const character = { ...page };
   if (runtime.hero) character.hero = runtime.hero;
   if (runtime.selectedPack) character.selectedPack = runtime.selectedPack;
+  if (runtime.selectedPackId) character.selectedPackId = String(runtime.selectedPackId);
+  if (!character.selectedPackId) {
+    character.selectedPackId = character.selectedPack || "";
+  }
   if (Array.isArray(runtime.packInfo) && runtime.packInfo.length) {
     character.packInfo = runtime.packInfo;
   }
@@ -45,10 +73,16 @@ function adaptCharacterPage(page, runtime = {}) {
     character.completeness = Math.max(0, Math.min(100, runtime.completeness));
   }
   if (Array.isArray(runtime.outfits) && runtime.outfits.length) {
-    character.outfits = runtime.outfits;
+    character.outfits = runtime.outfits.map((item, index) => ({
+      ...item,
+      id: item.id || item.name || `outfit_${index + 1}`
+    }));
   }
   if (Array.isArray(runtime.emotions) && runtime.emotions.length) {
-    character.emotions = runtime.emotions;
+    character.emotions = runtime.emotions.map((item, index) => ({
+      ...item,
+      id: item.id || item.name || `emotion_${index + 1}`
+    }));
   }
   if (runtime.warning && typeof runtime.warning === "object") {
     character.warning = { ...(character.warning || {}), ...dropEmpty(runtime.warning) };
@@ -62,6 +96,12 @@ function adaptCharacterPage(page, runtime = {}) {
   if (Array.isArray(runtime.actions) && runtime.actions.length) {
     character.actions = runtime.actions;
   }
+  if (character.warning && typeof character.warning === "object") {
+    character.warning = {
+      ...character.warning,
+      actionId: character.warning.actionId || characterWarningActionId
+    };
+  }
   return character;
 }
 
@@ -72,6 +112,15 @@ function adaptVoicePage(page, runtime = {}) {
   }
   if (runtime.asr && typeof runtime.asr === "object") {
     voice.asr = { ...voice.asr, ...dropEmpty(runtime.asr) };
+  }
+  if (runtime.preview && typeof runtime.preview === "object") {
+    voice.preview = { ...voice.preview, ...dropEmpty(runtime.preview) };
+  }
+  if (runtime.wakeWord !== undefined) {
+    voice.wakeWord = String(runtime.wakeWord || "");
+  }
+  if (runtime.wakeSensitivity !== undefined) {
+    voice.wakeSensitivity = String(runtime.wakeSensitivity || "");
   }
   if (Array.isArray(runtime.diagnostics) && runtime.diagnostics.length) {
     voice.diagnostics = runtime.diagnostics;
@@ -128,13 +177,23 @@ function adaptMusicPage(page, runtime = {}) {
     music.nowPlaying = { ...music.nowPlaying, ...runtime.nowPlaying };
   }
   if (Array.isArray(runtime.playlist)) {
-    music.playlist = runtime.playlist.map((item) => ({
+    music.playlist = runtime.playlist.map((item, index) => ({
       cover: music.nowPlaying.cover,
-      ...item
+      ...item,
+      id: item.id || item.title || `queue_${index + 1}`
     }));
   }
   if (Array.isArray(runtime.lyrics)) music.lyrics = runtime.lyrics;
   if (typeof runtime.activeLyric === "number") music.activeLyric = runtime.activeLyric;
+  if (runtime.currentPlayMode !== undefined || runtime.playMode !== undefined) {
+    music.currentPlayMode = String(runtime.currentPlayMode ?? runtime.playMode ?? "");
+  }
+  if (runtime.outputDevice !== undefined) {
+    music.outputDevice = String(runtime.outputDevice || "");
+  }
+  if (typeof runtime.volumeNormalization === "boolean") {
+    music.volumeNormalization = runtime.volumeNormalization;
+  }
   if (Array.isArray(runtime.info)) music.info = runtime.info;
   if (runtime.bottomStatus !== undefined) music.bottomStatus = runtime.bottomStatus;
   return music;
@@ -180,38 +239,111 @@ function adaptAbilitiesPage(page, runtime = {}) {
 }
 
 function adaptAdvancedPage(page, runtime = {}) {
-  if (!runtime || Object.keys(runtime).length === 0) return page;
+  const runtimeData = runtime && typeof runtime === "object" ? runtime : {};
   const advanced = { ...page };
 
   // systemStrip: patch items by label
-  if (runtime.systemStrip && typeof runtime.systemStrip === "object") {
-    advanced.systemStrip = patchRowsByLabel(advanced.systemStrip, runtime.systemStrip);
+  if (runtimeData.systemStrip && typeof runtimeData.systemStrip === "object") {
+    advanced.systemStrip = patchRowsByLabel(advanced.systemStrip, runtimeData.systemStrip);
   }
 
   // diagnostics: merge sub-fields
-  if (runtime.diagnostics && typeof runtime.diagnostics === "object") {
+  if (runtimeData.diagnostics && typeof runtimeData.diagnostics === "object") {
     advanced.diagnostics = { ...advanced.diagnostics };
-    if (runtime.diagnostics.metrics && typeof runtime.diagnostics.metrics === "object") {
-      advanced.diagnostics.metrics = patchRowsByLabel(advanced.diagnostics.metrics, runtime.diagnostics.metrics);
+    if (runtimeData.diagnostics.metrics && typeof runtimeData.diagnostics.metrics === "object") {
+      advanced.diagnostics.metrics = patchRowsByLabel(advanced.diagnostics.metrics, runtimeData.diagnostics.metrics);
     }
-    if (Array.isArray(runtime.diagnostics.logs) && runtime.diagnostics.logs.length) {
-      advanced.diagnostics.logs = runtime.diagnostics.logs;
+    if (Array.isArray(runtimeData.diagnostics.logs) && runtimeData.diagnostics.logs.length) {
+      advanced.diagnostics.logs = runtimeData.diagnostics.logs;
     }
   }
 
   // live2d: merge rows
-  if (runtime.live2d && typeof runtime.live2d === "object") {
-    advanced.live2d = { ...advanced.live2d, ...dropEmpty(runtime.live2d) };
-    if (Array.isArray(runtime.live2d.rows)) {
-      advanced.live2d.rows = runtime.live2d.rows;
+  if (runtimeData.live2d && typeof runtimeData.live2d === "object") {
+    advanced.live2d = { ...advanced.live2d, ...dropEmpty(runtimeData.live2d) };
+    if (Array.isArray(runtimeData.live2d.rows)) {
+      advanced.live2d.rows = runtimeData.live2d.rows;
     }
   }
 
-  // abilityOverview: replace entirely when runtime provides it
-  if (Array.isArray(runtime.abilityOverview)) {
-    advanced.abilityOverview = runtime.abilityOverview;
+  // abilityOverview: replace entirely when runtime provides it, ensure stable id
+  if (Array.isArray(runtimeData.abilityOverview)) {
+    advanced.abilityOverview = runtimeData.abilityOverview.map((item, index) => ({
+      ...item,
+      id: item.id || item.label || `ability_${index + 1}`
+    }));
   }
 
+  if (Array.isArray(runtimeData.coreSettings)) {
+    advanced.coreSettings = mergeAdvancedCoreSettings(advanced.coreSettings, runtimeData.coreSettings);
+  }
+  if (Array.isArray(runtimeData.operations)) {
+    advanced.operations = runtimeData.operations.map((item, index) => ({
+      ...item,
+      id: item.id || item.title || `operation_${index + 1}`
+    }));
+  }
+
+  // expertOptions: ensure stable id
+  if (Array.isArray(runtimeData.expertOptions)) {
+    advanced.expertOptions = runtimeData.expertOptions.map((item, index) => ({
+      ...item,
+      id: item.id || item.title || `expert_${index + 1}`
+    }));
+  }
+
+  return withAdvancedOperationActionIds(withAdvancedCoreSettingActionIds(advanced));
+}
+
+function mergeAdvancedCoreSettings(baseItems, runtimeItems) {
+  const base = withAdvancedCoreSettingActionIds({ coreSettings: Array.isArray(baseItems) ? baseItems : [] }).coreSettings;
+  const runtimeById = new Map();
+  for (const [index, item] of runtimeItems.entries()) {
+    if (!item || typeof item !== "object") continue;
+    const fallback = advancedCoreSettingDefaults[index];
+    const id = String(item.id || fallback?.id || "").trim();
+    if (id) runtimeById.set(id, item);
+  }
+  return base.map((item) => {
+    const patch = runtimeById.get(item.id);
+    if (!patch) return item;
+    return {
+      ...item,
+      ...dropEmpty(patch),
+      enabled: typeof patch.enabled === "boolean" ? patch.enabled : item.enabled
+    };
+  });
+}
+
+function withAdvancedCoreSettingActionIds(advanced) {
+  if (Array.isArray(advanced.coreSettings)) {
+    return {
+      ...advanced,
+      coreSettings: advanced.coreSettings.map((item, index) => {
+        if (!item || typeof item !== "object") return item;
+        const fallback = advancedCoreSettingDefaults[index] || {};
+        return {
+          ...item,
+          id: item.id || fallback.id || "",
+          ...(item.actionId || fallback.actionId ? { actionId: item.actionId || fallback.actionId } : {})
+        };
+      })
+    };
+  }
+  return advanced;
+}
+
+function withAdvancedOperationActionIds(advanced) {
+  if (Array.isArray(advanced.operations)) {
+    return {
+      ...advanced,
+      operations: advanced.operations.map((item, index) => {
+        if (!item || typeof item !== "object" || item.actionId) return item;
+        const actionId = advancedOperationActionIds[index];
+        return actionId ? { ...item, actionId } : item;
+      })
+    };
+  }
   return advanced;
 }
 
@@ -247,6 +379,24 @@ function adaptOverviewPage(page, runtime = {}) {
     ...page,
     quickActions: withActionIds(page.quickActions, overviewActionIds)
   };
+  if (overview.music && Array.isArray(overview.music.controls)) {
+    overview.music = {
+      ...overview.music,
+      controls: normalizeMusicControls(overview.music.controls)
+    };
+  }
+  if (overview.voice) {
+    overview.voice = {
+      ...overview.voice,
+      rows: normalizeOverviewVoiceRows(overview.voice.rows)
+    };
+  }
+  if (overview.sense) {
+    overview.sense = {
+      ...overview.sense,
+      toggles: normalizeOverviewSenseToggles(overview.sense.toggles)
+    };
+  }
   if (runtime.statusBadge && overview.status) {
     overview.status = { ...overview.status, badge: runtime.statusBadge };
   }
@@ -272,15 +422,33 @@ function adaptOverviewPage(page, runtime = {}) {
     overview.emotion = { ...overview.emotion, ...dropEmpty(runtime.emotion) };
   }
   if (runtime.voice && overview.voice) {
-    const ttsEnabled = pickBoolean(runtime.voice.ttsEnabled, overview.voice.rows?.[0]?.enabled);
-    const asrEnabled = pickBoolean(runtime.voice.asrEnabled, overview.voice.rows?.[1]?.enabled);
+    const enabledById = {
+      ttsEnabled: runtime.voice.ttsEnabled,
+      asrEnabled: runtime.voice.asrEnabled
+    };
     overview.voice = {
       ...overview.voice,
       status: runtime.voice.status || overview.voice.status,
-      rows: [
-        { ...(overview.voice.rows?.[0] || { label: "回复朗读（TTS）" }), enabled: ttsEnabled },
-        { ...(overview.voice.rows?.[1] || { label: "语音输入（ASR）" }), enabled: asrEnabled }
-      ]
+      rows: normalizeOverviewVoiceRows(overview.voice.rows).map((row) => ({
+        ...row,
+        enabled: pickBoolean(enabledById[row.id], row.enabled)
+      }))
+    };
+  }
+  if (runtime.sense && overview.sense) {
+    const enabledById = {
+      activeWindow: runtime.sense.activeWindowEnabled,
+      clipboard: runtime.sense.clipboardEnabled,
+      screen: runtime.sense.screenVisionEnabled ?? runtime.sense.screenEnabled,
+      proactive: runtime.sense.proactiveWakeEnabled ?? runtime.sense.proactiveEnabled
+    };
+    overview.sense = {
+      ...overview.sense,
+      note: runtime.sense.note || overview.sense.note,
+      toggles: normalizeOverviewSenseToggles(overview.sense.toggles).map((item) => ({
+        ...item,
+        enabled: pickBoolean(enabledById[item.id], item.enabled)
+      }))
     };
   }
   if (Array.isArray(runtime.abilities) && runtime.abilities.length) {
@@ -300,6 +468,100 @@ function withActionIds(items, actionIds) {
     ...item,
     commandId: item.commandId || item.id || actionIds[index] || `control-center.action.${index + 1}`
   }));
+}
+
+function normalizeMusicControls(controls) {
+  if (!Array.isArray(controls)) return [];
+  return controls.map((item, index) => {
+    const fallbackId = overviewMusicControlActionIds[index];
+    if (typeof item === "string") {
+      return {
+        label: item,
+        ...(fallbackId ? { actionId: fallbackId } : {})
+      };
+    }
+    if (item && typeof item === "object") {
+      const label = item.label || item.value || item.title || item.name || "";
+      return {
+        ...item,
+        label,
+        ...(item.actionId || fallbackId ? { actionId: item.actionId || fallbackId } : {})
+      };
+    }
+    return {
+      label: "",
+      ...(fallbackId ? { actionId: fallbackId } : {})
+    };
+  });
+}
+
+function normalizeOverviewVoiceRows(rows) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const rowCount = sourceRows.length > 0 ? sourceRows.length : overviewVoiceRowDefaults.length;
+  return Array.from({ length: rowCount }, (_, index) => {
+    const fallback = overviewVoiceRowDefaults[index] || {};
+    const item = sourceRows[index];
+    if (typeof item === "string") {
+      return {
+        label: item || fallback.label || "",
+        enabled: false,
+        ...(fallback.id ? { id: fallback.id } : {}),
+        ...(fallback.actionId ? { actionId: fallback.actionId } : {})
+      };
+    }
+    if (item && typeof item === "object") {
+      const label = item.label || item.value || item.title || item.name || fallback.label || "";
+      return {
+        ...item,
+        label,
+        enabled: Boolean(item.enabled),
+        ...(item.id || fallback.id ? { id: item.id || fallback.id } : {}),
+        ...(item.actionId || fallback.actionId ? { actionId: item.actionId || fallback.actionId } : {})
+      };
+    }
+    return {
+      label: fallback.label || "",
+      enabled: false,
+      ...(fallback.id ? { id: fallback.id } : {}),
+      ...(fallback.actionId ? { actionId: fallback.actionId } : {})
+    };
+  });
+}
+
+function normalizeOverviewSenseToggles(toggles) {
+  const sourceItems = Array.isArray(toggles) ? toggles : [];
+  const itemCount = sourceItems.length > 0 ? sourceItems.length : overviewSenseToggleDefaults.length;
+  return Array.from({ length: itemCount }, (_, index) => {
+    const fallback = overviewSenseToggleDefaults[index] || {};
+    const item = sourceItems[index];
+    if (typeof item === "string") {
+      return {
+        label: item || fallback.label || "",
+        enabled: true,
+        icon: fallback.icon || "clipboard",
+        ...(fallback.id ? { id: fallback.id } : {}),
+        ...(fallback.actionId ? { actionId: fallback.actionId } : {})
+      };
+    }
+    if (item && typeof item === "object") {
+      const label = item.label || item.value || item.title || item.name || fallback.label || "";
+      return {
+        ...item,
+        label,
+        enabled: typeof item.enabled === "boolean" ? item.enabled : true,
+        icon: item.icon || fallback.icon || "clipboard",
+        ...(item.id || fallback.id ? { id: item.id || fallback.id } : {}),
+        ...(item.actionId || fallback.actionId ? { actionId: item.actionId || fallback.actionId } : {})
+      };
+    }
+    return {
+      label: fallback.label || "",
+      enabled: true,
+      icon: fallback.icon || "clipboard",
+      ...(fallback.id ? { id: fallback.id } : {}),
+      ...(fallback.actionId ? { actionId: fallback.actionId } : {})
+    };
+  });
 }
 
 function patchRowsByLabel(rows, valuesByLabel) {

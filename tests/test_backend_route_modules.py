@@ -11,6 +11,10 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
+from companion_v01.routes.control_center import (
+    build_control_center_router,
+    build_control_center_snapshot_runtime_providers,
+)
 from companion_v01.routes.core import build_core_router
 from companion_v01.routes.desktop_pet import build_desktop_pet_router
 from companion_v01.routes.gifts import build_gifts_router
@@ -29,6 +33,9 @@ class FakeRuntimeMetrics:
     def incr(self, key: str, amount: float = 1.0) -> None:
         self.counters[key] = self.counters.get(key, 0.0) + amount
 
+    def snapshot(self) -> dict[str, float]:
+        return dict(self.counters)
+
 
 class FakeGuard:
     def __init__(self, *, allowed: bool = True) -> None:
@@ -45,6 +52,15 @@ class FakeGuard:
 
     def release(self) -> None:
         self.released += 1
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "enabled": True,
+            "max_concurrent_thinks": 2,
+            "daily_think_limit": 200,
+            "active_thinks": 0,
+            "used_today": 1,
+        }
 
 
 class FakeStore:
@@ -401,6 +417,280 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"], "invalid_payload")
         self.assertIn(("think_once", False), runtime.observed)
+
+    # ---------- control center action contract ----------
+
+    def test_control_center_action_returns_not_implemented(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).post("/control-center/actions/music.next", json={})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["ok"], False)
+        self.assertEqual(payload["status"], "not-implemented")
+        self.assertEqual(payload["actionId"], "music.next")
+        self.assertEqual(payload["refresh"], False)
+
+    def test_control_center_action_catalog_describes_contract(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).get("/control-center/actions")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        payload = response.json()
+        self.assertEqual(payload["ok"], True)
+        self.assertEqual(payload["status"], "available")
+        self.assertEqual(payload["contractVersion"], 1)
+        self.assertEqual(payload["actionsEndpoint"], "/control-center/actions/{actionId}")
+        self.assertEqual(payload["execution"], "not-implemented")
+        self.assertEqual(payload["defaultResult"]["status"], "not-implemented")
+        self.assertEqual(payload["defaultResult"]["refresh"], False)
+
+    def test_control_center_action_window_close_is_not_implemented(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).post("/control-center/actions/window.close", json={})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "not-implemented")
+        self.assertEqual(payload["actionId"], "window.close")
+
+    def test_control_center_unknown_action_not_404(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).post("/control-center/actions/unknown.action", json={})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "not-implemented")
+        self.assertEqual(payload["actionId"], "unknown.action")
+
+    def test_control_center_non_object_payload_does_not_500(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).post("/control-center/actions/music.next", json="not an object")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "not-implemented")
+
+    def test_control_center_empty_body_does_not_500(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).post("/control-center/actions/music.next", content=b"", headers={"Content-Type": "application/json"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "not-implemented")
+
+    def test_control_center_runtime_metrics_does_not_block_response(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(runtime_metrics=runtime)
+        )
+
+        response = TestClient(app).post("/control-center/actions/music.next", json={})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "not-implemented")
+
+    def test_control_center_log_event_receives_contract_event(self) -> None:
+        events: list[tuple[str, dict[str, Any]]] = []
+
+        def log_event(event: str, **fields: Any) -> None:
+            events.append((event, fields))
+
+        app = FastAPI()
+        app.include_router(build_control_center_router(log_event=log_event))
+
+        response = TestClient(app).post("/control-center/actions/music.next", json={"value": True})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(events[0][0], "control_center_action")
+        self.assertEqual(events[0][1]["action_id"], "music.next")
+        self.assertEqual(events[0][1]["status"], "not-implemented")
+        self.assertEqual(events[0][1]["payload_keys"], ["value"])
+
+    def test_control_center_metrics_and_log_errors_do_not_block_response(self) -> None:
+        class BrokenRuntimeMetrics:
+            def observe_request(self, *_args: Any, **_kwargs: Any) -> None:
+                raise RuntimeError("metrics failed")
+
+        def log_event(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("log failed")
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                runtime_metrics=BrokenRuntimeMetrics(),
+                log_event=log_event,
+            )
+        )
+
+        response = TestClient(app).post("/control-center/actions/music.next", json={})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "not-implemented")
+
+    # ---------- control center snapshot contract ----------
+
+    def test_control_center_snapshot_returns_200(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).get("/control-center/snapshot")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["ok"], True)
+        self.assertEqual(payload["status"], "available")
+
+    def test_control_center_snapshot_contract_shape(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        payload = TestClient(app).get("/control-center/snapshot").json()
+
+        self.assertIn("schemaVersion", payload)
+        self.assertIsInstance(payload["schemaVersion"], int)
+        self.assertEqual(payload["sourceKind"], "backend")
+        self.assertIn("generatedAt", payload)
+        self.assertIsInstance(payload["generatedAt"], str)
+        self.assertIn("runtime", payload)
+        self.assertIsInstance(payload["runtime"], dict)
+
+    def test_control_center_snapshot_runtime_has_all_fields(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        runtime = TestClient(app).get("/control-center/snapshot").json()["runtime"]
+
+        for field in ("health", "diagnostics", "workspace", "resourceManifest", "metrics"):
+            self.assertIn(field, runtime, f"runtime should contain {field}")
+            self.assertIsInstance(runtime[field], dict)
+            self.assertIn("ok", runtime[field])
+            self.assertIn("status", runtime[field])
+
+    def test_control_center_snapshot_failure_does_not_500(self) -> None:
+        def fail_health() -> dict:
+            raise RuntimeError("health failed")
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                snapshot_runtime_providers={
+                    "health": fail_health,
+                    "diagnostics": lambda: {"status": "ok"},
+                    "metrics": lambda: "cpu_percent 12",
+                }
+            )
+        )
+
+        response = TestClient(app).get("/control-center/snapshot")
+        self.assertEqual(response.status_code, 200)
+        runtime = response.json()["runtime"]
+        self.assertEqual(runtime["health"]["status"], "unavailable")
+        self.assertEqual(runtime["diagnostics"]["status"], "ok")
+        self.assertEqual(runtime["metrics"], "cpu_percent 12")
+
+    def test_control_center_snapshot_real_providers_aggregate_runtime(self) -> None:
+        runtime_metrics = FakeRuntimeMetrics()
+        runtime_metrics.incr("custom_total", 2)
+        captured: dict[str, Any] = {}
+
+        def build_resource_manifest(**kwargs):
+            captured["resource_manifest"] = kwargs
+            return {
+                "schema_version": 2,
+                "characters": {
+                    "outfits": [
+                        {
+                            "id": "cat",
+                            "name": "Cat",
+                            "emotions": [{"id": "normal", "name": "Normal"}],
+                        }
+                    ]
+                },
+                "defaults": {"outfit": "cat", "emotion": "normal"},
+            }
+
+        def build_workspace_panel(**kwargs):
+            captured["workspace"] = kwargs
+            return {
+                "ok": True,
+                "counts": {"files": 2, "outputs": 1, "tasks": 0},
+                "sections": {
+                    "files": [{"id": "att-1", "handle": "att-1", "can_open": True}],
+                    "outputs": [],
+                },
+            }
+
+        engine = SimpleNamespace(
+            build_resource_manifest=build_resource_manifest,
+            build_desktop_pet_workspace_panel=build_workspace_panel,
+            llm=SimpleNamespace(snapshot_metrics=lambda: {"requests_total": 3}),
+            vector_store=SimpleNamespace(count_entries=lambda: 42),
+            snapshot_embedding_reindex_status=lambda: {"total": 5, "processed": 2, "state": "idle"},
+        )
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                runtime_metrics=runtime_metrics,
+                resolve_identity_from_query=resolve_query,
+                snapshot_runtime_providers=build_control_center_snapshot_runtime_providers(
+                    engine=engine,
+                    config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                    runtime_metrics=runtime_metrics,
+                    public_guard=FakeGuard(),
+                ),
+            )
+        )
+
+        response = TestClient(app).get(
+            "/control-center/snapshot?user_id=desktop&real_user_id=master"
+            "&client=desktop_pet&character_pack_id=mika_pack&outfit=cat&emotion=normal"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        runtime = payload["runtime"]
+        self.assertEqual(runtime["health"]["status"], "ok")
+        self.assertEqual(runtime["diagnostics"]["status"], "ok")
+        self.assertEqual(runtime["workspace"]["counts"]["files"], 2)
+        self.assertIn("/desktop-pet/workspace/attachments/att-1/content", runtime["workspace"]["sections"]["files"][0]["url"])
+        self.assertEqual(runtime["resourceManifest"]["clients"]["desktop_pet"]["profile_user_id"], "master")
+        self.assertIn("akane_vector_entries 42", runtime["metrics"])
+        self.assertIn("akane_custom_total 2.0", runtime["metrics"])
+        self.assertEqual(captured["resource_manifest"]["character_pack_id"], "mika_pack")
+        self.assertEqual(captured["workspace"]["profile_user_id"], "master")
+        self.assertIn(("control_center.snapshot", True), runtime_metrics.observed)
+
+    def test_control_center_snapshot_does_not_break_action_contract(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        snapshot = TestClient(app).get("/control-center/snapshot").json()
+        self.assertEqual(snapshot["ok"], True)
+
+        action = TestClient(app).post("/control-center/actions/music.next", json={}).json()
+        self.assertEqual(action["status"], "not-implemented")
+        self.assertEqual(action["actionId"], "music.next")
+
+    def test_control_center_snapshot_cached_no_store(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).get("/control-center/snapshot")
+        self.assertEqual(response.headers["cache-control"], "no-store")
 
 
 if __name__ == "__main__":

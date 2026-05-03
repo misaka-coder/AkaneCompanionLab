@@ -24,7 +24,10 @@ import {
   CONTROL_CENTER_ACTIONS,
   createControlCenterActionRouter
 } from "./control-center/action-router.js";
-import { secondsFromIntervalLabel } from "./control-center/action-helpers.js";
+import {
+  createControlCenterActionPayloadFromDataset,
+  secondsFromIntervalLabel
+} from "./control-center/action-helpers.js";
 import { createControlCenterSnapshot } from "./control-center/data-adapter.js";
 import {
   CONTROL_CENTER_SOURCE_KIND,
@@ -36,6 +39,9 @@ const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
 const RUNTIME_SNAPSHOT_HYDRATE_DELAY_MS = 900;
+const SCREEN_VISION_INTERVAL_OPTIONS_SEC = Object.freeze([15, 25, 30, 60, 120, 300, 600]);
+const SCREEN_VISION_FRAME_COUNT_MIN = 1;
+const SCREEN_VISION_FRAME_COUNT_MAX = 5;
 const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 let latestRuntimeSnapshot = null;
 let runtimeSnapshotHydrateTimer = 0;
@@ -79,9 +85,12 @@ const state = {
   activeOutfit: characterPage.outfits?.find((item) => item.current)?.id || characterPage.outfits?.[0]?.id || "",
   activeEmotion: characterPage.emotions?.find((item) => item.current)?.id || characterPage.emotions?.[0]?.id || "",
   switches: Object.fromEntries(perceptionPage.featureCards.map((card) => [card.id, card.enabled])),
+  screenVision: buildScreenVisionState(perceptionPage.featureCards),
   activeInterval: perceptionPage.featureCards.find((card) => card.id === "proactive")?.activeOption || "1 分钟",
   activeVoicePreset: voicePage.tts?.voice || "Akane Voice",
-  activeMusicMode: musicPage.modes[0]
+  activeMusicMode: musicPage.modes[0],
+  voice: buildVoiceState(voicePage),
+  advancedCoreSwitches: buildAdvancedCoreSwitchState(advancedPage.coreSettings)
 };
 
 renderShell();
@@ -179,6 +188,8 @@ function syncInteractiveStateWithSnapshot() {
     state.activeEmotion = emotions.find((item) => item.current)?.id || emotions[0]?.id || "";
   }
   syncPerceptionInteractiveState();
+  syncVoiceInteractiveState();
+  syncAdvancedInteractiveState();
 }
 
 function syncPerceptionInteractiveState() {
@@ -191,6 +202,18 @@ function syncPerceptionInteractiveState() {
   if (proactive?.activeOption) {
     state.activeInterval = String(proactive.activeOption);
   }
+  state.screenVision = buildScreenVisionState(featureCards);
+}
+
+function syncAdvancedInteractiveState() {
+  state.advancedCoreSwitches = {
+    ...state.advancedCoreSwitches,
+    ...buildAdvancedCoreSwitchState(advancedPage.coreSettings)
+  };
+}
+
+function syncVoiceInteractiveState() {
+  state.voice = buildVoiceState(voicePage);
 }
 
 function renderShell() {
@@ -254,9 +277,10 @@ function bindEvents() {
   root.addEventListener("click", (event) => {
     const actionButton = event.target.closest("[data-action-id]");
     if (actionButton) {
+      const payload = createControlCenterActionPayloadFromDataset(actionButton.dataset, state.activePage);
       void actionRouter.run(
         actionButton.dataset.actionId,
-        { page: state.activePage },
+        payload,
         { source: "control-center-lab" }
       );
       return;
@@ -278,7 +302,7 @@ function bindEvents() {
       state.switches[key] = !state.switches[key];
       switchButton.classList.toggle("is-on", state.switches[key]);
       switchButton.setAttribute("aria-checked", String(state.switches[key]));
-      const actionId = actionIdForPerceptionSwitch(key);
+      const actionId = switchButton.dataset.switchActionId || actionIdForPerceptionSwitch(key);
       if (actionId) {
         void actionRouter.run(actionId, { value: state.switches[key], featureId: key }, { source: "control-center-lab" });
       }
@@ -299,10 +323,83 @@ function bindEvents() {
       return;
     }
 
+    const screenVisionIntervalButton = event.target.closest("[data-screen-vision-interval-step]");
+    if (screenVisionIntervalButton) {
+      const step = Number(screenVisionIntervalButton.dataset.screenVisionIntervalStep || 1);
+      const value = nextScreenVisionIntervalSec(state.screenVision.intervalSec, step);
+      state.screenVision.intervalSec = value;
+      renderActivePage();
+      void actionRouter.run(
+        CONTROL_CENTER_ACTIONS.perceptionScreenVisionSetIntervalSec,
+        { value, label: `${value} 秒` },
+        { source: "control-center-lab" }
+      );
+      return;
+    }
+
+    const screenVisionFrameButton = event.target.closest("[data-screen-vision-frame-step]");
+    if (screenVisionFrameButton) {
+      const step = Number(screenVisionFrameButton.dataset.screenVisionFrameStep || 0);
+      const value = clampScreenVisionFrameCount(state.screenVision.frameCount + step);
+      state.screenVision.frameCount = value;
+      renderActivePage();
+      void actionRouter.run(
+        CONTROL_CENTER_ACTIONS.perceptionScreenVisionSetFrameCount,
+        { value, frames: value },
+        { source: "control-center-lab" }
+      );
+      return;
+    }
+
+    const voiceToggle = event.target.closest("[data-voice-toggle]");
+    if (voiceToggle) {
+      const key = voiceToggle.dataset.voiceToggle;
+      const actionId = voiceToggle.dataset.voiceActionId || actionIdForVoiceToggle(key);
+      if (actionId) {
+        const value = !Boolean(state.voice[key]);
+        state.voice[key] = value;
+        renderActivePage();
+        void actionRouter.run(actionId, { value, settingId: key }, { source: "control-center-lab" });
+      }
+      return;
+    }
+
+    const voiceVolumeButton = event.target.closest("[data-voice-volume-step]");
+    if (voiceVolumeButton) {
+      const step = Number(voiceVolumeButton.dataset.voiceVolumeStep || 0);
+      const percent = clampVoiceVolumePercent(state.voice.volumePercent + step);
+      state.voice.volumePercent = percent;
+      renderActivePage();
+      void actionRouter.run(
+        CONTROL_CENTER_ACTIONS.voiceSetVolume,
+        { value: percent / 100, percent },
+        { source: "control-center-lab" }
+      );
+      return;
+    }
+
+    const advancedCoreToggle = event.target.closest("[data-advanced-core-toggle]");
+    if (advancedCoreToggle) {
+      const settingId = advancedCoreToggle.dataset.advancedCoreToggle;
+      const setting = advancedPage.coreSettings.find((item) => item.id === settingId);
+      if (setting?.actionId) {
+        const value = !Boolean(state.advancedCoreSwitches[settingId]);
+        state.advancedCoreSwitches[settingId] = value;
+        renderActivePage();
+        void actionRouter.run(setting.actionId, { value, settingId }, { source: "control-center-lab" });
+      }
+      return;
+    }
+
     const outfitButton = event.target.closest("[data-character-outfit]");
     if (outfitButton) {
       state.activeOutfit = outfitButton.dataset.characterOutfit;
       renderActivePage();
+      void actionRouter.run(
+        CONTROL_CENTER_ACTIONS.characterSetOutfit,
+        { value: state.activeOutfit, outfitId: state.activeOutfit },
+        { source: "control-center-lab" }
+      );
       return;
     }
 
@@ -310,6 +407,11 @@ function bindEvents() {
     if (emotionButton) {
       state.activeEmotion = emotionButton.dataset.characterEmotion;
       renderActivePage();
+      void actionRouter.run(
+        CONTROL_CENTER_ACTIONS.characterPreviewEmotion,
+        { value: state.activeEmotion, emotionId: state.activeEmotion },
+        { source: "control-center-lab" }
+      );
       return;
     }
 
@@ -324,6 +426,11 @@ function bindEvents() {
     if (musicMode) {
       state.activeMusicMode = musicMode.dataset.musicMode;
       renderActivePage();
+      void actionRouter.run(
+        CONTROL_CENTER_ACTIONS.musicSetMood,
+        { value: state.activeMusicMode, mood: state.activeMusicMode },
+        { source: "control-center-lab" }
+      );
     }
   });
 }
@@ -423,9 +530,7 @@ function renderOverviewPage() {
         <article class="glass-card overview-sense-card">
           <h2>${icon("eye")} ${escapeHtml(overviewPage.sense.title)}</h2>
           <div class="sense-toggle-row">
-            ${overviewPage.sense.toggles.map((item) => `
-              <span>${icon("clipboard")} ${escapeHtml(item)} <i></i></span>
-            `).join("")}
+            ${overviewPage.sense.toggles.map(renderOverviewSenseToggle).join("")}
           </div>
           <p>${icon("shield")} ${escapeHtml(overviewPage.sense.note)}</p>
         </article>
@@ -477,6 +582,21 @@ function renderOverviewAction(item) {
   `;
 }
 
+function renderOverviewSenseToggle(item) {
+  const key = item.id || "";
+  const enabled = typeof state.switches[key] === "boolean" ? state.switches[key] : Boolean(item.enabled);
+  if (!item.actionId || !key) {
+    return `<span>${icon(item.icon || "clipboard")} ${escapeHtml(item.label)} <i class="${enabled ? "is-on" : ""}"></i></span>`;
+  }
+  return `
+    <button class="${enabled ? "is-on" : ""}" type="button" data-switch="${escapeAttr(key)}" data-switch-action-id="${escapeAttr(item.actionId)}" role="switch" aria-checked="${enabled}">
+      ${icon(item.icon || "clipboard")}
+      <span>${escapeHtml(item.label)}</span>
+      <i></i>
+    </button>
+  `;
+}
+
 function renderOverviewPackCard() {
   return `
     <article class="glass-card overview-pack-card">
@@ -504,16 +624,28 @@ function renderOverviewEmotionCard() {
 }
 
 function renderOverviewVoiceCard() {
+  const rows = Array.isArray(overviewPage.voice.rows) ? overviewPage.voice.rows : [];
   return `
     <article class="glass-card overview-voice-card">
       <h2>${icon("equalizer")} ${escapeHtml(overviewPage.voice.title)}</h2>
       <div class="overview-voice-toggles">
-        ${overviewPage.voice.rows.map((row) => `
-          <div><span>${escapeHtml(row.label)}</span>${renderStaticSwitch(row.enabled)}</div>
-        `).join("")}
+        ${rows.map(renderOverviewVoiceToggle).join("")}
       </div>
       <p>${icon("checkCircle")} ${escapeHtml(overviewPage.voice.status)} <i></i></p>
     </article>
+  `;
+}
+
+function renderOverviewVoiceToggle(row) {
+  const key = row.id || "";
+  const enabled = typeof state.voice[key] === "boolean" ? state.voice[key] : Boolean(row.enabled);
+  if (!row.actionId || !key) {
+    return `<div><span>${escapeHtml(row.label)}</span>${renderStaticSwitch(enabled)}</div>`;
+  }
+  return `
+    <button type="button" data-voice-toggle="${escapeAttr(key)}" data-voice-action-id="${escapeAttr(row.actionId)}" aria-pressed="${enabled}">
+      <span>${escapeHtml(row.label)}</span>${renderStaticSwitch(enabled)}
+    </button>
   `;
 }
 
@@ -531,7 +663,7 @@ function renderOverviewMusicCard() {
       </div>
       <div class="mini-control-row">
         ${overviewPage.music.controls.map((item, index) => `
-          <button class="${index === 2 ? "active" : ""}" type="button">${index === 0 ? icon("previous") : index === 1 ? icon("next") : index === 2 ? icon("pause") : index === 3 ? icon("stop") : icon("trash")} ${escapeHtml(item)}</button>
+          <button class="${index === 2 ? "active" : ""}" type="button"${item.actionId ? ` data-action-id="${escapeAttr(item.actionId)}"` : ""}>${index === 0 ? icon("previous") : index === 1 ? icon("next") : index === 2 ? icon("pause") : index === 3 ? icon("stop") : icon("trash")} ${escapeHtml(item.label)}</button>
         `).join("")}
       </div>
     </article>
@@ -571,7 +703,7 @@ function renderCharacterPage() {
         </article>
         <article class="glass-card pack-select-panel">
           <h2>${icon("folder")} 当前角色包选择</h2>
-          <button class="select-like" type="button">
+          <button class="select-like" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterSelectPack}" data-payload-field="packId" data-payload-value="${escapeAttr(characterPage.selectedPack)}" data-payload-pack-id="${escapeAttr(characterPage.selectedPackId || characterPage.selectedPack)}">
             <span>${escapeHtml(characterPage.selectedPack)}</span>
             ${icon("chevronDown")}
           </button>
@@ -599,17 +731,17 @@ function renderCharacterPage() {
         <article class="glass-card outfit-panel">
           <div class="card-heading">
             <h2>${icon("shirt")} 服装选择</h2>
-            <button type="button">管理服装</button>
+            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterManageOutfits}" data-payload-pack-id="${escapeAttr(characterPage.selectedPackId || characterPage.selectedPack)}">管理服装</button>
           </div>
           <div class="outfit-strip">
             ${characterPage.outfits.map((item) => renderOutfitTile(item, activeOutfit)).join("")}
-            <button class="outfit-next" type="button" aria-label="更多服装">${icon("chevron")}</button>
+            <button class="outfit-next" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterManageOutfits}" data-payload-pack-id="${escapeAttr(characterPage.selectedPackId || characterPage.selectedPack)}" aria-label="更多服装">${icon("chevron")}</button>
           </div>
         </article>
         <article class="glass-card expression-panel">
           <div class="card-heading">
             <h2>${icon("smile")} 表情预览</h2>
-            <button type="button">更多表情 ${icon("chevron")}</button>
+            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterMoreExpressions}" data-payload-outfit-id="${escapeAttr(state.activeOutfit)}" data-payload-emotion-id="${escapeAttr(state.activeEmotion)}">更多表情 ${icon("chevron")}</button>
           </div>
           <div class="expression-layout">
             <div class="expression-strip">
@@ -634,7 +766,7 @@ function renderCharacterPage() {
               <strong>${escapeHtml(characterPage.warning.headline)}</strong>
               <p>${escapeHtml(characterPage.warning.body)}</p>
             </div>
-            <button type="button">${escapeHtml(characterPage.warning.action)}</button>
+            <button type="button"${characterPage.warning.actionId ? ` data-action-id="${escapeAttr(characterPage.warning.actionId)}"` : ""}>${escapeHtml(characterPage.warning.action)}</button>
             <span aria-hidden="true">${icon("folder")}</span>
           </div>
         </article>
@@ -729,6 +861,8 @@ function renderVoicePage() {
 }
 
 function renderTtsCard() {
+  const ttsEnabled = Boolean(state.voice.ttsEnabled);
+  const volumePercent = clampVoiceVolumePercent(state.voice.volumePercent);
   return `
     <article class="glass-card voice-config-card tts-card">
       <div class="voice-card-title">
@@ -736,18 +870,27 @@ function renderTtsCard() {
           <h2>${icon("volume")} ${escapeHtml(voicePage.tts.title)}</h2>
           <p>${escapeHtml(voicePage.tts.subtitle)}</p>
         </div>
-        <span>${icon("checkCircle")} 已启用</span>
+        <button type="button" data-voice-toggle="ttsEnabled" aria-pressed="${ttsEnabled}">${icon("checkCircle")} ${ttsEnabled ? "已启用" : "已关闭"}</button>
       </div>
       <div class="voice-form-grid">
-        <label><span>${icon("user")} 选择音色</span><button type="button">${icon("equalizer")} ${escapeHtml(voicePage.tts.voice)} ${icon("chevronDown")}</button></label>
-        <label><span>${icon("volume")} 输出音量</span>${renderRangeBar(voicePage.tts.volume)}<strong>${voicePage.tts.volume}%</strong></label>
-        <label><span>${icon("clock")} 语速调节</span>${renderRangeBar(52)}<strong>${escapeHtml(voicePage.tts.speed)}</strong></label>
+        <label><span>${icon("user")} 选择音色</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSelectTtsVoice}" data-payload-field="ttsVoice" data-payload-value="${escapeAttr(voicePage.tts.voice)}">${icon("equalizer")} ${escapeHtml(voicePage.tts.voice)} ${icon("chevronDown")}</button></label>
+        <label>
+          <span>${icon("volume")} 输出音量</span>
+          <div class="voice-stepper">
+            <button type="button" data-voice-volume-step="-10" aria-label="降低输出音量">−</button>
+            ${renderRangeBar(volumePercent)}
+            <button type="button" data-voice-volume-step="10" aria-label="提高输出音量">＋</button>
+          </div>
+          <strong>${volumePercent}%</strong>
+        </label>
+        <label><span>${icon("clock")} 语速调节</span>${renderRangeBar(52)}<strong data-action-id="${CONTROL_CENTER_ACTIONS.voiceSetSpeed}" data-payload-field="speed" data-payload-value="${escapeAttr(voicePage.tts.speed)}">${escapeHtml(voicePage.tts.speed)}</strong></label>
       </div>
     </article>
   `;
 }
 
 function renderAsrCard() {
+  const asrEnabled = Boolean(state.voice.asrEnabled);
   return `
     <article class="glass-card voice-config-card asr-card">
       <div class="voice-card-title">
@@ -755,12 +898,12 @@ function renderAsrCard() {
           <h2>${icon("mic")} ${escapeHtml(voicePage.asr.title)}</h2>
           <p>${escapeHtml(voicePage.asr.subtitle)}</p>
         </div>
-        <span>${icon("checkCircle")} 已启用</span>
+        <button type="button" data-voice-toggle="asrEnabled" aria-pressed="${asrEnabled}">${icon("checkCircle")} ${asrEnabled ? "已启用" : "已关闭"}</button>
       </div>
       <div class="voice-form-grid">
-        <label><span>${icon("mic")} 麦克风设备</span><button type="button">${escapeHtml(voicePage.asr.device)} ${icon("chevronDown")}</button></label>
-        <label><span>${icon("settings")} 识别语言</span><button type="button">${escapeHtml(voicePage.asr.language)} ${icon("chevronDown")}</button></label>
-        <label><span>${icon("equalizer")} 输入灵敏度</span>${renderRangeBar(voicePage.asr.sensitivity)}<strong>${voicePage.asr.sensitivity}%</strong></label>
+        <label><span>${icon("mic")} 麦克风设备</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSelectAsrDevice}" data-payload-field="asrDevice" data-payload-value="${escapeAttr(voicePage.asr.device)}">${escapeHtml(voicePage.asr.device)} ${icon("chevronDown")}</button></label>
+        <label><span>${icon("settings")} 识别语言</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSetAsrLanguage}" data-payload-field="asrLanguage" data-payload-value="${escapeAttr(voicePage.asr.language)}">${escapeHtml(voicePage.asr.language)} ${icon("chevronDown")}</button></label>
+        <label><span>${icon("equalizer")} 输入灵敏度</span>${renderRangeBar(voicePage.asr.sensitivity)}<strong data-action-id="${CONTROL_CENTER_ACTIONS.voiceSetAsrSensitivity}" data-payload-field="sensitivity" data-payload-value="${voicePage.asr.sensitivity}">${voicePage.asr.sensitivity}%</strong></label>
         <label><span>实时输入</span><em class="voice-live-wave">${Array.from({ length: 24 }, (_, index) => `<i style="--bar: ${((index * 7) % 24) + 8}px"></i>`).join("")}</em></label>
       </div>
     </article>
@@ -768,6 +911,7 @@ function renderAsrCard() {
 }
 
 function renderVoicePreviewCard() {
+  const previewLines = voicePreviewTextLines();
   return `
     <article class="glass-card voice-preview-card">
       <h2>${icon("equalizer")} ${escapeHtml(voicePage.preview.title)}</h2>
@@ -775,11 +919,11 @@ function renderVoicePreviewCard() {
       <div class="voice-preview-body">
         <img src="${imageFor("happy")}" alt="" />
         <div class="speech-bubble">
-          ${voicePage.preview.text.map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
+          ${previewLines.map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
         </div>
       </div>
       <div class="voice-preview-player">
-        <button type="button" aria-label="播放试听">${icon("play")}</button>
+        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voicePreviewPlay}" data-payload-text="${escapeAttr(previewLines.join("\n"))}" aria-label="播放试听">${icon("play")}</button>
         <span>${Array.from({ length: 28 }, (_, index) => `<i style="--bar: ${((index * 5) % 28) + 8}px"></i>`).join("")}</span>
         <time>${escapeHtml(voicePage.preview.duration)}</time>
       </div>
@@ -790,7 +934,7 @@ function renderVoicePreviewCard() {
 function renderVoiceRecordsCard() {
   return `
     <article class="glass-card voice-list-card">
-      <div class="card-heading"><h2>${icon("clock")} 识别记录</h2><button type="button">清空记录</button></div>
+      <div class="card-heading"><h2>${icon("clock")} 识别记录</h2><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceRecordsClear}" data-payload-field="records">清空记录</button></div>
       <p>最近识别到的语音内容</p>
       <div class="voice-record-list">
         ${voicePage.records.map((item) => `
@@ -804,7 +948,7 @@ function renderVoiceRecordsCard() {
 function renderVoiceQueueCard() {
   return `
     <article class="glass-card voice-list-card">
-      <div class="card-heading"><h2>${icon("equalizer")} 合成队列 / 最近朗读</h2><button type="button">清空队列</button></div>
+      <div class="card-heading"><h2>${icon("equalizer")} 合成队列 / 最近朗读</h2><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceQueueClear}" data-payload-field="queue">清空队列</button></div>
       <p>Akane 最近为你朗读的内容</p>
       <div class="voice-queue-list">
         ${voicePage.queue.map((item, index) => `
@@ -828,8 +972,8 @@ function renderVoiceProcessingCard() {
           </div>
         `).join("")}
       </div>
-      <label><span>唤醒词设置</span><button type="button">Akane</button></label>
-      <label><span>唤醒灵敏度</span><button type="button">中等（推荐） ${icon("chevronDown")}</button></label>
+      <label><span>唤醒词设置</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSetWakeWord}" data-payload-field="wakeWord" data-payload-value="${escapeAttr(voicePage.wakeWord || "Akane")}">${escapeHtml(voicePage.wakeWord || "Akane")}</button></label>
+      <label><span>唤醒灵敏度</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSetWakeSensitivity}" data-payload-field="wakeSensitivity" data-payload-value="${escapeAttr(voicePage.wakeSensitivity || "中等")}">${escapeHtml(voicePage.wakeSensitivity || "中等")}（推荐） ${icon("chevronDown")}</button></label>
     </article>
   `;
 }
@@ -857,6 +1001,8 @@ function renderRangeBar(value) {
 }
 
 function renderMusicPage() {
+  const outputDevice = musicPage.outputDevice || "扬声器";
+  const volumeNormalization = musicPage.volumeNormalization !== false;
   return `
     <section class="music-lab-page">
       <header class="music-title-row">
@@ -894,7 +1040,7 @@ function renderMusicPage() {
           </div>
           <div class="play-mode-row">
             <span>${icon("repeat")} 播放模式</span>
-            <button type="button">${icon("repeat")} 列表循环 ${icon("chevronDown")}</button>
+            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicSetPlayMode}" data-payload-field="playMode" data-payload-value="${escapeAttr(musicPage.currentPlayMode || "列表循环")}">${icon("repeat")} ${escapeHtml(musicPage.currentPlayMode || "列表循环")} ${icon("chevronDown")}</button>
           </div>
           <div class="music-control-row">
             <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicPrevious}" title="上一首" aria-label="上一首">${icon("previous")}</button>
@@ -926,7 +1072,7 @@ function renderMusicPage() {
             <span>${musicPage.playlist.length} 首</span>
           </div>
           <div class="queue-list">
-            ${musicPage.playlist.map(renderQueueItem).join("")}
+            ${musicPage.playlist.map((item, index) => renderQueueItem(item, index)).join("")}
           </div>
         </article>
       </div>
@@ -953,7 +1099,7 @@ function renderMusicPage() {
         <article class="glass-card recommend-panel">
           <div class="card-heading">
             <h2>${icon("sparkle")} Akane 推荐</h2>
-            <button type="button">${icon("refresh")} 换一批</button>
+            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicRefreshRecommendations}" data-payload-source="recommendations">${icon("refresh")} 换一批</button>
           </div>
           <div class="recommend-body">
             <img src="${imageFor(musicPage.recommendations[0]?.cover || musicPage.nowPlaying.cover)}" alt="" />
@@ -975,17 +1121,18 @@ function renderMusicPage() {
         <span>${icon("refresh")} ${escapeHtml(musicPage.bottomStatus)} ✦</span>
         <div>
           <b>音量均衡</b>
-          <button class="tiny-switch is-on" type="button" aria-label="音量均衡"><span></span></button>
-          <strong>${icon("volume")} 设备输出：扬声器 ${icon("chevronDown")}</strong>
+          <button class="tiny-switch ${volumeNormalization ? "is-on" : ""}" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization}" data-payload-field="volumeNormalization" data-payload-value="${volumeNormalization}" aria-label="音量均衡"><span></span></button>
+          <strong data-action-id="${CONTROL_CENTER_ACTIONS.musicSelectOutputDevice}" data-payload-field="outputDevice" data-payload-value="${escapeAttr(outputDevice)}">${icon("volume")} 设备输出：${escapeHtml(outputDevice)} ${icon("chevronDown")}</strong>
         </div>
       </footer>
     </section>
   `;
 }
 
-function renderQueueItem(item) {
+function renderQueueItem(item, index) {
+  const trackId = item.id || item.title || `queue_${index + 1}`;
   return `
-    <button class="queue-item ${item.active ? "active" : ""}" type="button">
+    <button class="queue-item ${item.active ? "active" : ""}" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicSelectQueueItem}" data-track-id="${escapeAttr(trackId)}" data-track-index="${index}">
       <span class="queue-cover"><img src="${imageFor(item.cover || musicPage.nowPlaying.cover)}" alt="" /></span>
       <span>
         <strong>${escapeHtml(item.title)}</strong>
@@ -1011,7 +1158,7 @@ function renderMoodIcon(mode) {
 
 function renderPerceptionPage() {
   return `
-    ${renderPageTitle(perceptionPage, `<button class="privacy-help" type="button">${icon("help")} ${escapeHtml(perceptionPage.helpLabel)}</button>`)}
+    ${renderPageTitle(perceptionPage, `<button class="privacy-help" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionPrivacyHelp}">${icon("help")} ${escapeHtml(perceptionPage.helpLabel)}</button>`)}
     <section class="perception-page">
       <div class="perception-feature-grid">
         ${perceptionPage.featureCards.map(renderPerceptionFeatureCard).join("")}
@@ -1055,7 +1202,7 @@ function renderAbilitiesPage() {
           <h2>快捷操作</h2>
           <p>常用能力一键直达</p>
           <div class="quick-action-grid">
-            ${abilitiesPage.quickActions.map(renderQuickAction).join("")}
+            ${abilitiesPage.quickActions.map((item, index) => renderQuickAction(item, index)).join("")}
           </div>
         </article>
       </div>
@@ -1064,7 +1211,7 @@ function renderAbilitiesPage() {
           <article class="glass-card modules-card">
             <div class="card-heading">
               <h2>能力模块 ${icon("info")}</h2>
-              <button type="button">管理模块与权限 ${icon("chevron")}</button>
+              <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesManageModules}">管理模块与权限 ${icon("chevron")}</button>
             </div>
             <div class="module-grid">
               ${abilitiesPage.modules.map(renderAbilityModule).join("")}
@@ -1074,13 +1221,13 @@ function renderAbilitiesPage() {
             <h2>能力工作流示例 ${icon("info")}</h2>
             <div class="workflow-list">
               ${abilitiesPage.workflows.map(renderWorkflow).join("")}
-              <button class="more-workflow" type="button">更多示例 ${icon("chevron")}</button>
+              <button class="more-workflow" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesMoreWorkflows}">更多示例 ${icon("chevron")}</button>
             </div>
           </article>
           <article class="glass-card calls-card">
             <div class="card-heading">
               <h2>最近能力调用</h2>
-              <button type="button">查看全部日志 ${icon("chevron")}</button>
+              <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll}">查看全部日志 ${icon("chevron")}</button>
             </div>
             ${renderCallsTable()}
           </article>
@@ -1123,17 +1270,17 @@ function renderAdvancedPage() {
           <section class="advanced-log-panel">
             <div class="card-heading">
               <h3>运行日志 <span>最近 20 条</span></h3>
-              <button type="button">${icon("trash")} 清空日志</button>
+              <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.advancedLogsClear}">${icon("trash")} 清空日志</button>
             </div>
             <div class="advanced-log-list">
               ${advancedPage.diagnostics.logs.map(renderAdvancedLog).join("")}
             </div>
-            <button class="advanced-more-log" type="button">查看更多日志 ${icon("chevronDown")}</button>
+            <button class="advanced-more-log" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.advancedLogsMore}">查看更多日志 ${icon("chevronDown")}</button>
           </section>
         </article>
 
         <div class="advanced-right-stack">
-          <article class="glass-card advanced-live2d-card">
+          <article class="glass-card advanced-live2d-card" data-action-id="${CONTROL_CENTER_ACTIONS.advancedLive2dOpenStatus}">
             <h2>${icon("star")} Live2D 预留状态</h2>
             <div class="advanced-live2d-body">
               <div class="advanced-live2d-ring">
@@ -1148,7 +1295,7 @@ function renderAdvancedPage() {
           <article class="glass-card advanced-ability-card">
             <h2>${icon("star")} 能力概览</h2>
             <div class="advanced-ability-grid">
-              ${advancedPage.abilityOverview.map(renderAdvancedAbility).join("")}
+              ${advancedPage.abilityOverview.map((item, index) => renderAdvancedAbility(item, index)).join("")}
             </div>
           </article>
         </div>
@@ -1157,7 +1304,7 @@ function renderAdvancedPage() {
       <article class="glass-card advanced-expert-card">
         <h2>${icon("sparkle")} 专家选项</h2>
         <div class="advanced-expert-grid">
-          ${advancedPage.expertOptions.map(renderExpertOption).join("")}
+          ${advancedPage.expertOptions.map((item, index) => renderExpertOption(item, index)).join("")}
         </div>
         <p>${icon("star")} ${escapeHtml(advancedPage.expertNote)}</p>
       </article>
@@ -1180,19 +1327,28 @@ function renderAdvancedSystemStrip() {
 }
 
 function renderAdvancedCoreItem(item) {
+  const isOn = Boolean(state.advancedCoreSwitches[item.id] ?? item.enabled);
   return `
-    <div class="advanced-toggle-item ${escapeAttr(item.tone)}">
+    <button
+      class="advanced-toggle-item ${escapeAttr(item.tone)}"
+      data-advanced-core-toggle="${escapeAttr(item.id)}"
+      type="button"
+      aria-pressed="${isOn}"
+    >
       <span class="advanced-item-icon">${icon(item.icon)}</span>
       <span>
         <strong>${escapeHtml(item.title)}</strong>
         <small>${escapeHtml(item.description)}</small>
       </span>
-      ${renderStaticSwitch(item.enabled)}
-    </div>
+      ${renderStaticSwitch(isOn)}
+    </button>
   `;
 }
 
 function renderAdvancedOperation(item) {
+  const actionAttrs = item.actionId
+    ? ` data-action-id="${escapeAttr(item.actionId)}"${item.actionId === CONTROL_CENTER_ACTIONS.advancedExitPet ? ' data-payload-requires-confirmation="true"' : ""}`
+    : "";
   return `
     <div class="advanced-operation ${escapeAttr(item.tone)}">
       <span class="advanced-item-icon">${icon(item.icon)}</span>
@@ -1200,7 +1356,7 @@ function renderAdvancedOperation(item) {
         <strong>${escapeHtml(item.title)}</strong>
         <small>${escapeHtml(item.description)}</small>
       </span>
-      <button type="button">${escapeHtml(item.action)}</button>
+      <button type="button"${actionAttrs}>${escapeHtml(item.action)}</button>
     </div>
   `;
 }
@@ -1237,18 +1393,20 @@ function renderAdvancedLive2dRow(row) {
   `;
 }
 
-function renderAdvancedAbility(item) {
+function renderAdvancedAbility(item, index) {
   return `
-    <button class="${escapeAttr(item.tone)}" type="button">
+    <button class="${escapeAttr(item.tone)}" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.advancedAbilityDetails}" data-payload-field="label" data-payload-value="${escapeAttr(item.label)}" data-payload-index="${index}">
       ${icon(item.icon)}
       <span>${escapeHtml(item.label)}</span>
     </button>
   `;
 }
 
-function renderExpertOption(item) {
+function renderExpertOption(item, index) {
+  const optionId = item.id || item.title || `expert_${index + 1}`;
+  const nextValue = !Boolean(item.enabled);
   return `
-    <div class="advanced-expert-option">
+    <div class="advanced-expert-option" data-action-id="${CONTROL_CENTER_ACTIONS.advancedExpertOption}" data-payload-field="enabled" data-payload-value="${nextValue}" data-payload-option-id="${escapeAttr(optionId)}" data-payload-index="${index}">
       <span class="advanced-item-icon">${icon(item.icon)}</span>
       <span>
         <strong>${escapeHtml(item.title)}</strong>
@@ -1290,7 +1448,7 @@ function renderFeaturePreview(card) {
             <small>${escapeHtml(card.version)}</small>
           </div>
         </div>
-        <button type="button">${escapeHtml(card.action)}</button>
+        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails}" data-payload-feature-id="activeWindow">${escapeHtml(card.action)}</button>
       </div>
     `;
   }
@@ -1302,28 +1460,34 @@ function renderFeaturePreview(card) {
         <pre>${card.code.map(escapeHtml).join("\n")}</pre>
         <div class="preview-footer">
           <span>${escapeHtml(card.source)}</span>
-          <button type="button">${escapeHtml(card.action)}</button>
+          <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionClipboardClear}" data-payload-feature-id="clipboard">${escapeHtml(card.action)}</button>
         </div>
       </div>
     `;
   }
 
   if (card.previewType === "settings") {
+    const intervalSec = state.screenVision.intervalSec || secondsFromIntervalLabel(card.frequency);
+    const frameCount = state.screenVision.frameCount || parsePositiveInteger(card.frames, SCREEN_VISION_FRAME_COUNT_MIN);
     return `
       <div class="feature-preview settings-preview">
         <strong>${escapeHtml(card.label)}</strong>
         <label>
           <span>截图间隔</span>
-          <button type="button">${escapeHtml(card.frequency)} ${icon("chevronDown")}</button>
+          <button type="button" data-screen-vision-interval-step="1">${escapeHtml(`${intervalSec} 秒`)} ${icon("chevronDown")}</button>
         </label>
         <label>
           <span>保留帧数</span>
           <div class="stepper">
-            <button type="button">−</button>
-            <b>${escapeHtml(card.frames)}</b>
-            <button type="button">＋</button>
+            <button type="button" data-screen-vision-frame-step="-1">−</button>
+            <b>${escapeHtml(frameCount)}</b>
+            <button type="button" data-screen-vision-frame-step="1">＋</button>
           </div>
           <small>${escapeHtml(card.hint)}</small>
+        </label>
+        <label>
+          <span>观察记录</span>
+          <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionScreenVisionClear}">清空记录</button>
         </label>
         <p>${icon("shield")} ${escapeHtml(card.note)}</p>
       </div>
@@ -1356,7 +1520,7 @@ function renderPrivacyCard() {
         <ul>
           ${perceptionPage.privacy.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
         </ul>
-        <button type="button">了解更多隐私保护细节 ${icon("arrowRight")}</button>
+        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionPrivacyHelp}">了解更多隐私保护细节 ${icon("arrowRight")}</button>
       </div>
     </article>
   `;
@@ -1367,7 +1531,7 @@ function renderPermissionCard() {
     <article class="glass-card permission-card">
       <div class="card-heading">
         <h2>权限状态</h2>
-        <button type="button">管理权限</button>
+        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionManagePermissions}">管理权限</button>
       </div>
       <div class="permission-grid">
         ${perceptionPage.permissions.map((item) => `
@@ -1387,7 +1551,7 @@ function renderEventCard() {
     <article class="glass-card event-card">
       <div class="card-heading">
         <h2>近期感知事件</h2>
-        <button type="button">查看全部</button>
+        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionEventsViewAll}">查看全部</button>
       </div>
       <div class="event-list">
         ${perceptionPage.events.map((item) => `
@@ -1418,7 +1582,7 @@ function renderSuggestionCard() {
           <p>${escapeHtml(perceptionPage.suggestion.body)}</p>
           <p>${escapeHtml(perceptionPage.suggestion.prompt)}</p>
           <div class="suggestion-actions">
-            ${perceptionPage.suggestion.actions.map((action) => `<button type="button">${escapeHtml(action)}</button>`).join("")}
+            ${perceptionPage.suggestion.actions.map((action, index) => `<button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionSuggestionRun}" data-payload-field="action" data-payload-value="${escapeAttr(action)}" data-payload-index="${index}">${escapeHtml(action)}</button>`).join("")}
           </div>
         </div>
         <img src="${images.thinking}" alt="" />
@@ -1440,7 +1604,7 @@ function renderDiagnosticCard() {
           </div>
         `).join("")}
       </div>
-      <button type="button">${icon("refresh")} 运行诊断</button>
+      <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionRunDiagnostics}">${icon("refresh")} 运行诊断</button>
     </article>
   `;
 }
@@ -1454,9 +1618,9 @@ function renderAbilityStat(item) {
   `;
 }
 
-function renderQuickAction(item) {
+function renderQuickAction(item, index) {
   return `
-    <button class="quick-action ${item.tone}" type="button">
+    <button class="quick-action ${item.tone}" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesQuickAction}" data-payload-field="label" data-payload-value="${escapeAttr(item.label)}" data-payload-index="${index}">
       ${icon(item.icon)}
       <span>${escapeHtml(item.label)}</span>
     </button>
@@ -1538,7 +1702,7 @@ function renderSafetyPanel() {
           </div>
         `).join("")}
       </div>
-      <button type="button">查看详细策略 ${icon("chevron")}</button>
+      <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesSafetyDetails}">查看详细策略 ${icon("chevron")}</button>
     </article>
   `;
 }
@@ -1559,7 +1723,7 @@ function renderLive2dPanel() {
           </div>
         `).join("")}
       </div>
-      <button type="button">打开 Live2D 设置面板</button>
+      <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesLive2dOpenSettings}">打开 Live2D 设置面板</button>
     </article>
   `;
 }
@@ -1659,6 +1823,13 @@ function formatError(error) {
   return error instanceof Error ? error.message : String(error || "unknown");
 }
 
+function voicePreviewTextLines() {
+  const text = voicePage.preview?.text;
+  if (Array.isArray(text)) return text.map((line) => String(line || ""));
+  if (typeof text === "string") return text.split(/\r?\n/).filter(Boolean);
+  return [];
+}
+
 function actionIdForPerceptionSwitch(featureId) {
   const map = {
     activeWindow: CONTROL_CENTER_ACTIONS.perceptionDesktopContextSetEnabled,
@@ -1667,6 +1838,79 @@ function actionIdForPerceptionSwitch(featureId) {
     proactive: CONTROL_CENTER_ACTIONS.perceptionProactiveWakeSetEnabled
   };
   return map[featureId] || "";
+}
+
+function actionIdForVoiceToggle(key) {
+  const map = {
+    ttsEnabled: CONTROL_CENTER_ACTIONS.voiceSetTtsEnabled,
+    asrEnabled: CONTROL_CENTER_ACTIONS.voiceSetAsrEnabled
+  };
+  return map[key] || "";
+}
+
+function buildAdvancedCoreSwitchState(items) {
+  const entries = {};
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item?.id) continue;
+    entries[item.id] = Boolean(item.enabled);
+  }
+  return entries;
+}
+
+function buildVoiceState(page) {
+  return {
+    ttsEnabled: Boolean(page?.tts?.enabled),
+    asrEnabled: Boolean(page?.asr?.enabled),
+    volumePercent: clampVoiceVolumePercent(page?.tts?.volume)
+  };
+}
+
+function clampVoiceVolumePercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 80;
+  const percent = number <= 1 ? number * 100 : number;
+  return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+function buildScreenVisionState(featureCards) {
+  const screenCard = (Array.isArray(featureCards) ? featureCards : []).find((card) => card?.id === "screen");
+  const intervalSec = secondsFromIntervalLabel(screenCard?.frequency) || SCREEN_VISION_INTERVAL_OPTIONS_SEC[1];
+  return {
+    intervalSec: normalizeScreenVisionIntervalSec(intervalSec),
+    frameCount: clampScreenVisionFrameCount(parsePositiveInteger(screenCard?.frames, 4))
+  };
+}
+
+function nextScreenVisionIntervalSec(current, step = 1) {
+  const currentValue = normalizeScreenVisionIntervalSec(current);
+  const currentIndex = SCREEN_VISION_INTERVAL_OPTIONS_SEC.indexOf(currentValue);
+  const startIndex = currentIndex >= 0
+    ? currentIndex
+    : SCREEN_VISION_INTERVAL_OPTIONS_SEC.findIndex((value) => value >= currentValue);
+  const safeIndex = startIndex >= 0 ? startIndex : 0;
+  const nextIndex = (safeIndex + Number(step || 1) + SCREEN_VISION_INTERVAL_OPTIONS_SEC.length) % SCREEN_VISION_INTERVAL_OPTIONS_SEC.length;
+  return SCREEN_VISION_INTERVAL_OPTIONS_SEC[nextIndex];
+}
+
+function normalizeScreenVisionIntervalSec(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return SCREEN_VISION_INTERVAL_OPTIONS_SEC[1];
+  const nearest = SCREEN_VISION_INTERVAL_OPTIONS_SEC.reduce((best, candidate) => (
+    Math.abs(candidate - number) < Math.abs(best - number) ? candidate : best
+  ), SCREEN_VISION_INTERVAL_OPTIONS_SEC[0]);
+  return nearest;
+}
+
+function clampScreenVisionFrameCount(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 4;
+  return Math.max(SCREEN_VISION_FRAME_COUNT_MIN, Math.min(SCREEN_VISION_FRAME_COUNT_MAX, Math.round(number)));
+}
+
+function parsePositiveInteger(value, fallback) {
+  const match = String(value ?? "").match(/\d+/);
+  const number = match ? Number.parseInt(match[0], 10) : Number(fallback);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
 function createRuntimeActionRouter(dataSource) {
