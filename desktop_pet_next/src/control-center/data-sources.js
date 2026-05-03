@@ -47,7 +47,8 @@ const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.musicSetPlayMode]: "setMusicPlayMode",
   [CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization]: "setMusicVolumeNormalization",
   [CONTROL_CENTER_ACTIONS.musicSeek]: "seekMusic",
-  [CONTROL_CENTER_ACTIONS.musicSelectQueueItem]: "playMusicTrack"
+  [CONTROL_CENTER_ACTIONS.musicSelectQueueItem]: "playMusicTrack",
+  [CONTROL_CENTER_ACTIONS.musicPlayWorkspaceRecommendation]: "playWorkspaceAudio"
 });
 const tauriInvokeByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.workspaceOpen]: "open_workspace_window",
@@ -62,7 +63,8 @@ const clientOnlyActionIds = new Set([
   CONTROL_CENTER_ACTIONS.windowClose,
   CONTROL_CENTER_ACTIONS.windowMinimize,
   CONTROL_CENTER_ACTIONS.windowMaximize,
-  CONTROL_CENTER_ACTIONS.characterPreviewEmotion
+  CONTROL_CENTER_ACTIONS.characterPreviewEmotion,
+  CONTROL_CENTER_ACTIONS.musicPlayWorkspaceRecommendation
 ]);
 const unifiedSnapshotRuntimeFields = Object.freeze([
   "health",
@@ -342,6 +344,14 @@ export function createBackendControlCenterSource(options = {}) {
   return source;
 }
 
+function buildWorkspaceRecommendationValue(payload = {}) {
+  const itemType = payload.itemType === "generated" ? "generated" : "attachment";
+  const handle = String(payload.handle || "").trim();
+  const title = String(payload.title || "").trim();
+  if (!handle) return null;
+  return { itemType, handle, title };
+}
+
 async function runTauriControlCenterAction(actionId, payload, context, options) {
   const command = tauriInvokeByActionId[actionId];
   const settingsCommand = settingsCommandByActionId[actionId];
@@ -358,6 +368,14 @@ async function runTauriControlCenterAction(actionId, payload, context, options) 
     }
 
     if (settingsCommand && typeof bridge.emit === "function") {
+      if (actionId === CONTROL_CENTER_ACTIONS.musicPlayWorkspaceRecommendation) {
+        const value = buildWorkspaceRecommendationValue(payload);
+        if (!value) {
+          return { ok: false, status: "invalid-payload", actionId, error: "missing handle" };
+        }
+        await bridge.emit(SETTINGS_COMMAND_EVENT, { command: settingsCommand, value, source: context?.source || "control-center" });
+        return { ok: true, status: "executed", actionId, payload: value, refresh: true };
+      }
       await bridge.emit(SETTINGS_COMMAND_EVENT, {
         ...payload,
         command: settingsCommand,
@@ -539,7 +557,7 @@ function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText
       metrics,
       runtimeMetrics,
       workspaceCounts: effectiveWorkspaceCounts,
-      emotionCount,
+      health,
       toolCount,
       serviceOk
     })
@@ -884,16 +902,22 @@ export function buildMusicRuntimePatch({ musicSnapshot, petState }) {
   const petVolumeNormalization = typeof petState?.musicVolumeNormalization === "boolean" ? petState.musicVolumeNormalization : undefined;
 
   const recommendations = Array.isArray(musicSnapshot?.recommendations)
-    ? musicSnapshot.recommendations.map((item) => ({
-        id: item.id || item.sourceId || "",
-        sourceId: String(item.sourceId || item.source_id || "").trim(),
-        title: String(item.title || "").trim(),
-        artist: String(item.artist || "").trim(),
-        duration: item.durationLabel || "",
-        durationSeconds: Number(item.durationSeconds || 0),
-        reason: String(item.reason || "").trim(),
-        playable: item.playable !== false
-      }))
+    ? musicSnapshot.recommendations.map((item) => {
+        const itemType = item.itemType === "generated" ? "generated" : "attachment";
+        return {
+          id: item.id || item.sourceId || "",
+          sourceId: String(item.sourceId || item.source_id || "").trim(),
+          itemType,
+          handle: String(item.handle || "").trim(),
+          title: String(item.title || "").trim(),
+          artist: String(item.artist || "").trim(),
+          duration: item.durationLabel || item.duration || "",
+          durationLabel: item.durationLabel || "",
+          durationSeconds: Number(item.durationSeconds || 0),
+          reason: String(item.reason || "").trim(),
+          playable: item.playable !== false
+        };
+      })
     : [];
 
   return {
@@ -1379,20 +1403,24 @@ function buildAbilityLabels({ tools, workspaceCounts }) {
   return labels.slice(0, 8);
 }
 
-function buildHealthTiles({ metrics, runtimeMetrics, workspaceCounts, emotionCount, toolCount, serviceOk }) {
+function buildHealthTiles({ metrics, runtimeMetrics, workspaceCounts, health, toolCount, serviceOk }) {
   const currentMemoryBytes = metrics.akane_tracemalloc_current_bytes;
   const peakMemoryBytes = metrics.akane_tracemalloc_peak_bytes;
   const vectorEntries = metrics.akane_vector_entries;
   const activeThinks = metrics.akane_public_guard_active_thinks;
+  const cpuPercent = metrics.cpu_percent;
+  const contractVersion = health?.contracts?.desktop_pet?.version || "";
+  const cpuValue = Number(cpuPercent);
+  const hasCpuPercent = Number.isFinite(cpuValue);
   return {
-    "CPU 占用": serviceOk ? "运行中" : "待连接",
+    "CPU 占用": hasCpuPercent ? `${Math.round(cpuValue)}%` : (serviceOk ? "运行中" : "待连接"),
     "内存占用": currentMemoryBytes ? formatBytes(currentMemoryBytes) : "-",
-    "存储空间": vectorEntries ? `${Math.round(vectorEntries)} 条记忆` : `${workspaceCounts.files} 手边文件`,
-    "温度": peakMemoryBytes ? `峰值 ${formatBytes(peakMemoryBytes)}` : "-",
+    "记忆容量": vectorEntries ? `${Math.round(vectorEntries)} 条记忆` : `${workspaceCounts.files} 个文件`,
+    "峰值内存": peakMemoryBytes ? `峰值 ${formatBytes(peakMemoryBytes)}` : "待采集",
     "错误数": String(countMetricErrors(runtimeMetrics)),
-    "告警": String(activeThinks || 0),
-    "应用版本": `${emotionCount || 0} 表情`,
-    "检查更新": toolCount ? `${toolCount} 工具` : "等待诊断"
+    "活跃守护": activeThinks ? `${activeThinks} 个会话` : "0",
+    "协议版本": contractVersion || "待同步",
+    "能力注册": toolCount ? `${toolCount} 工具` : "等待诊断"
   };
 }
 

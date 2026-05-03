@@ -246,6 +246,12 @@ const bridgedActionCases = [
     context: { source: "lab" },
     emit: "setMusicVolumeNormalization",
     value: false
+  },
+  {
+    id: CONTROL_CENTER_ACTIONS.musicPlayWorkspaceRecommendation,
+    payload: { itemType: "generated", handle: "audio_001", title: "Starry Days", path: "C:/secret/song.mp3", cachedPath: "C:/secret/cache.mp3" },
+    context: { source: "lab" },
+    emit: "playWorkspaceAudio"
   }
 ];
 
@@ -272,6 +278,18 @@ for (const testCase of bridgedActionCases) {
     const entry = invokeLog.find((item) => item.command === testCase.invoke);
     assert.ok(entry, `${testCase.id} should invoke ${testCase.invoke}`);
   }
+}
+
+{
+  const entry = emitLog.find((item) => item.payload.command === "playWorkspaceAudio");
+  assert.ok(entry, "music.playWorkspaceRecommendation should emit playWorkspaceAudio");
+  assert.deepEqual(
+    entry.payload.value,
+    { itemType: "generated", handle: "audio_001", title: "Starry Days" },
+    "workspace recommendation playback should only emit safe workspace fields"
+  );
+  assert.equal("path" in entry.payload.value, false, "workspace recommendation payload must not include path");
+  assert.equal("cachedPath" in entry.payload.value, false, "workspace recommendation payload must not include cachedPath");
 }
 
 // ---------- action surface contract ----------
@@ -363,6 +381,16 @@ for (const [label, expected] of labelCases) {
     "advanced"
   );
   assert.equal(exitPayload.requiresConfirmation, true, "payload helper should coerce requiresConfirmation");
+
+  const workspaceRecommendationPayload = createControlCenterActionPayloadFromDataset(
+    { payloadItemType: "generated", payloadHandle: "audio_001", payloadTitle: "Starry Days" },
+    "music"
+  );
+  assert.deepEqual(
+    workspaceRecommendationPayload,
+    { page: "music", itemType: "generated", handle: "audio_001", title: "Starry Days" },
+    "payload helper should build workspace recommendation payload"
+  );
 }
 
 assert.ok(afterActionLog.length >= bridgedActionCases.length, "onAfterAction should receive refresh results");
@@ -1740,7 +1768,7 @@ console.log(
     "5 data-* payload helper checks, " +
     "6 overview music control checks, 9 overview voice checks, 17 overview sense checks, " +
     `${deferredVoiceActionIds.length} deferred voice action ids, ` +
-    `${deferredMusicActionIds.length} deferred music action ids, 4 playlist id checks, 8 payload shape checks, 4 voice/music contract field checks, ` +
+    `${deferredMusicActionIds.length} deferred music action ids, 4 playlist id checks, 9 payload shape checks, 4 voice/music contract field checks, ` +
     `${deferredCharacterActionIds.length} deferred character action checks, 3 char payload/fallback checks, 3 still-deferred checks, ` +
     `${deferredPerceptionActionIds.length} deferred perception action ids, 6 deferred abilities action checks, ` +
     "4 perception/abilities payload checks, " +

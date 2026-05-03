@@ -47,6 +47,15 @@ export function createControlCenterActionPayloadFromDataset(dataset = {}, page =
   if (dataset.payloadRequiresConfirmation !== undefined) {
     payload.requiresConfirmation = coerceDatasetPayloadValue(dataset.payloadRequiresConfirmation);
   }
+  if (dataset.payloadItemType !== undefined) {
+    payload.itemType = String(dataset.payloadItemType).trim();
+  }
+  if (dataset.payloadHandle !== undefined) {
+    payload.handle = String(dataset.payloadHandle).trim();
+  }
+  if (dataset.payloadTitle !== undefined) {
+    payload.title = String(dataset.payloadTitle).trim();
+  }
   if (dataset.trackId !== undefined) {
     payload.trackId = dataset.trackId;
   }

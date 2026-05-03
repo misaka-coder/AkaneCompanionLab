@@ -84,9 +84,24 @@ def import_desktop_pet_local_paths(
     imported_items: list[dict[str, Any]] = []
     imported_cards: list[dict[str, Any]] = []
 
+    duplicate_count = 0
+
     for path in candidates:
         try:
             kind = infer_desktop_pet_local_import_kind(path)
+            if kind == "audio":
+                existing = find_existing_desktop_audio_attachment_duplicate(
+                    engine, profile_user_id=profile_user_id, session_id=session_id, path=path,
+                )
+                if existing is not None:
+                    skipped.append({
+                        "path": str(path),
+                        "reason": "duplicate_source",
+                        "existing_handle": existing.get("attachment_handle") or existing.get("attachment_id") or "",
+                        "origin_name": path.name,
+                    })
+                    duplicate_count += 1
+                    continue
             item = service.ingest_local_file(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -110,17 +125,52 @@ def import_desktop_pet_local_paths(
         imported_cards.append(desktop_workspace_attachment_card(item))
 
     return {
-        "ok": bool(imported_cards),
+        "ok": bool(imported_cards) or duplicate_count > 0,
         "source": "desktop_pet",
         "mode": "explicit_local_paths",
         "recursive": bool(recursive),
         "imported": len(imported_cards),
+        "duplicate_count": duplicate_count,
         "skipped_count": len(skipped),
         "items": imported_cards,
         "attachments": imported_items,
         "skipped": skipped[:80],
         "updated_at": effective_ts,
     }
+
+
+def find_existing_desktop_audio_attachment_duplicate(
+    engine: Any,
+    *,
+    profile_user_id: str,
+    session_id: str,
+    path: Path,
+) -> dict[str, Any] | None:
+    service = engine._get_attachment_ingest_service()
+    if service is None:
+        return None
+    items = engine.store.list_attachment_inbox_items(
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        statuses=["ready", "pending_observation"],
+        limit=200,
+    )
+    origin_name = path.name
+    file_size = path.stat().st_size if path.is_file() else 0
+    ext = path.suffix.lower().lstrip(".")
+    for item in items:
+        if str(item.get("kind") or "").strip().lower() != "audio":
+            continue
+        existing_name = str(item.get("origin_name") or "").strip()
+        if existing_name.lower() != origin_name.lower():
+            continue
+        if int(item.get("file_size") or 0) != file_size:
+            continue
+        existing_ext = str(item.get("file_ext") or "").strip().lower().lstrip(".")
+        if existing_ext != ext:
+            continue
+        return item
+    return None
 
 
 def collect_desktop_pet_local_import_files(
@@ -365,6 +415,7 @@ def build_desktop_pet_workspace_panel(
     limit: int = 24,
 ) -> dict[str, Any]:
     max_items = max(1, min(60, int(limit or 24)))
+    fetch_limit = min(max_items * 3, 180)
     attachment_service = engine._get_attachment_inbox_service()
     generated_service = engine._get_generated_file_service()
     task_service = engine._get_task_workspace_service()
@@ -375,9 +426,10 @@ def build_desktop_pet_workspace_panel(
             profile_user_id=profile_user_id,
             session_id=session_id,
             statuses=["ready", "pending_observation", "failed"],
-            limit=max_items,
+            limit=fetch_limit,
         )
-        files = [desktop_workspace_attachment_card(item) for item in attachments]
+        cards = [desktop_workspace_attachment_card(item) for item in attachments]
+        files = dedupe_desktop_workspace_audio_attachment_cards(cards, limit=max_items)
 
     outputs: list[dict[str, Any]] = []
     if generated_service is not None:
@@ -412,6 +464,75 @@ def build_desktop_pet_workspace_panel(
             "tasks": len(tasks),
         },
     }
+
+
+def is_desktop_workspace_audio_card(card: dict[str, Any]) -> bool:
+    kind = str(card.get("kind") or "").strip().lower()
+    fmt = str(card.get("format") or card.get("file_ext") or "").strip().lower().lstrip(".")
+    if kind == "audio":
+        return True
+    audio_suffixes = {s.lower().lstrip(".") for s in AUDIO_MEDIA_SUFFIXES}
+    return fmt in audio_suffixes
+
+
+def desktop_workspace_audio_dedupe_key(card: dict[str, Any]) -> str:
+    fmt = str(card.get("format") or card.get("file_ext") or "").strip().lower().lstrip(".")
+    title = str(card.get("origin_name") or card.get("title") or "").strip().lower()
+    if not title:
+        return ""
+    size = int(card.get("size_bytes") or 0)
+    return f"audio:{fmt}:{title}:{size}"
+
+
+def dedupe_desktop_workspace_audio_attachment_cards(
+    cards: list[dict[str, Any]],
+    limit: int = 24,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    groups: dict[str, dict[str, Any]] = {}
+
+    for card in cards:
+        if not is_desktop_workspace_audio_card(card):
+            result.append(card)
+            continue
+
+        key = desktop_workspace_audio_dedupe_key(card)
+        if not key:
+            result.append(card)
+            continue
+
+        group = groups.get(key)
+        if group is None:
+            handle = str(card.get("handle") or "").strip()
+            entry = dict(card, duplicate_count=1, duplicate_handles=[handle] if handle else [])
+            groups[key] = {"index": len(result), "card": entry}
+            result.append(entry)
+            continue
+
+        idx = group["index"]
+        existing = group["card"]
+        existing["duplicate_count"] = (existing.get("duplicate_count") or 1) + 1
+        handle = str(card.get("handle") or "").strip()
+        existing_handles = existing.get("duplicate_handles") or []
+        if handle and len(existing_handles) < 12 and handle not in existing_handles:
+            existing_handles.append(handle)
+            existing["duplicate_handles"] = existing_handles
+
+        card_ready = str(card.get("status") or "").strip().lower() == "ready"
+        existing_ready = str(existing.get("status") or "").strip().lower() == "ready"
+        if card_ready and not existing_ready:
+            replacement = dict(card, duplicate_count=existing["duplicate_count"], duplicate_handles=existing_handles)
+            result[idx] = replacement
+            group["card"] = replacement
+        elif card_ready == existing_ready:
+            card_updated = int(card.get("updated_at") or 0)
+            existing_updated = int(existing.get("updated_at") or 0)
+            if card_updated > existing_updated:
+                replacement = dict(card, duplicate_count=existing["duplicate_count"], duplicate_handles=existing_handles)
+                result[idx] = replacement
+                group["card"] = replacement
+
+    return result[:limit]
 
 
 def manage_desktop_pet_workspace_panel(

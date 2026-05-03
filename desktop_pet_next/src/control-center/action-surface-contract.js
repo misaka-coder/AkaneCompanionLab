@@ -56,6 +56,7 @@ export const CONTROL_CENTER_ACTION_SURFACES = Object.freeze([
   bridged("music", CONTROL_CENTER_ACTIONS.musicSelectQueueItem, "settings-command", "playMusicTrack"),
   bridged("music", CONTROL_CENTER_ACTIONS.musicSetPlayMode, "settings-command", "setMusicPlayMode"),
   bridged("music", CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization, "settings-command", "setMusicVolumeNormalization"),
+  bridged("music", CONTROL_CENTER_ACTIONS.musicPlayWorkspaceRecommendation, "settings-command", "playWorkspaceAudio"),
 
   bridged("perception", CONTROL_CENTER_ACTIONS.perceptionDesktopContextSetEnabled, "settings-command", "setDesktopContextEnabled"),
   bridged("perception", CONTROL_CENTER_ACTIONS.perceptionClipboardContextSetEnabled, "settings-command", "setClipboardContextEnabled"),

@@ -243,6 +243,9 @@ let musicPaused = false;
 let musicLoading = false;
 let musicEmotionActive = false;
 let musicDropHover = false;
+let workspaceMusicRecommendations = [];
+let workspaceMusicRecommendationsRefreshTimer = 0;
+let workspaceMusicRecommendationsLoading = false;
 let workspaceImporting = false;
 let voiceInputState = "idle";
 let voiceRecorder = null;
@@ -352,6 +355,7 @@ async function boot() {
     setStatus("Browser preview");
     await reloadCharacterResources({ startup: true });
     scheduleNativeHitTestSync();
+    scheduleWorkspaceMusicRecommendationsRefresh();
     return;
   }
 
@@ -377,6 +381,7 @@ async function boot() {
     scheduleScreenVisionCapture({ immediate: true });
     scheduleProactiveWake();
     scheduleWorkspaceTaskWatch({ delayMs: 2000 });
+    scheduleWorkspaceMusicRecommendationsRefresh();
   } catch (error) {
     setStatus(`Tauri init failed: ${formatError(error)}`);
   }
@@ -868,9 +873,11 @@ async function handleSettingsCommand(payload) {
     case "playMusicTrack":
       await playMusicTrackBySourceId(payload.value);
       break;
-    case "playWorkspaceAudio":
-      await playWorkspaceAudioItem(payload.value);
+    case "playWorkspaceAudio": {
+      const raw = payload.value && typeof payload.value === "object" ? payload.value : payload;
+      await playWorkspaceAudioItem({ itemType: raw.itemType, handle: raw.handle, title: raw.title });
       break;
+    }
     case "removeMusicTrack":
       await removeMusicTrackBySourceId(payload.value);
       break;
@@ -3826,21 +3833,50 @@ async function importDroppedFilesToWorkspace(paths) {
   }
 }
 
+function buildWorkspaceAudioSourceId(itemType, handle) {
+  const normalizedType = itemType === "generated" ? "generated" : "attachment";
+  const normalizedHandle = String(handle || "").trim();
+  return normalizedHandle ? `workspace:${normalizedType}:${normalizedHandle}` : "";
+}
+
+function findMusicQueueIndexByWorkspaceAudio(itemType, handle) {
+  const sourceId = buildWorkspaceAudioSourceId(itemType, handle);
+  if (!sourceId) return -1;
+  return musicQueue.findIndex((track) =>
+    track?.sourceId === sourceId ||
+    track?.queueDedupeKey === sourceId ||
+    (
+      String(track?.workspaceItemType || "") === (itemType === "generated" ? "generated" : "attachment") &&
+      String(track?.workspaceHandle || "") === String(handle || "").trim()
+    )
+  );
+}
+
 async function playWorkspaceAudioItem(item) {
   const value = item && typeof item === "object" ? item : {};
-  const handle = String(value.handle || value.id || "").trim();
+  const itemType = value.itemType === "generated" ? "generated" : "attachment";
+  const handle = String(value.handle || "").trim();
+  const title = String(value.title || "").trim();
   if (!handle) {
     showBubbleText("这首没有可播放的编号。", { transient: true, durationMs: 1800, kind: "music" });
     return;
   }
 
+  const existingIndex = findMusicQueueIndexByWorkspaceAudio(itemType, handle);
+  if (existingIndex >= 0) {
+    await playMusicQueueIndex(existingIndex, { message: `播放《${musicQueue[existingIndex]?.displayName || title}》。` });
+    scheduleSettingsSnapshot();
+    return;
+  }
+
   try {
     setRuntimeStatus("正在从手边取音乐", { mode: "music" });
-    const path = await fetchWorkspaceItemLocation({
-      itemType: value.itemType || value.item_type || value.type || "attachment",
-      handle
-    });
-    await addDroppedAudioFiles([{ path, lyricPath: "" }]);
+    const path = await fetchWorkspaceItemLocation({ itemType, handle });
+    const workspaceSourceId = buildWorkspaceAudioSourceId(itemType, handle);
+    await addDroppedAudioFiles(
+      [{ path, lyricPath: "", workspaceMetadata: { sourceId: workspaceSourceId, queueDedupeKey: workspaceSourceId, workspaceItemType: itemType, workspaceHandle: handle, displayName: title } }],
+      { playSourceIdAfterAdd: workspaceSourceId, clearQueueOnError: false }
+    );
   } catch (error) {
     const message = friendlyErrorMessage(formatError(error));
     setRuntimeStatus(`手边音乐播放失败：${message}`, { mode: "error" });
@@ -3903,6 +3939,7 @@ async function notifyWorkspaceRefresh() {
     // The workspace window may not be open yet.
   }
   scheduleWorkspaceTaskWatch({ immediate: true });
+  scheduleWorkspaceMusicRecommendationsRefresh();
 }
 
 function scheduleWorkspaceTaskWatch({ immediate = false, delayMs = null } = {}) {
@@ -4058,7 +4095,7 @@ function pathStemKey(path) {
   return (dotIndex > 0 ? name.slice(0, dotIndex) : name).trim().toLowerCase();
 }
 
-async function addDroppedAudioFiles(items) {
+async function addDroppedAudioFiles(items, options = {}) {
   if (!isTauriRuntime) return;
   const audioItems = Array.isArray(items)
     ? items
@@ -4066,7 +4103,8 @@ async function addDroppedAudioFiles(items) {
           if (typeof item === "string") return { path: item, lyricPath: "" };
           return {
             path: String(item?.path || ""),
-            lyricPath: String(item?.lyricPath || "")
+            lyricPath: String(item?.lyricPath || ""),
+            workspaceMetadata: item?.workspaceMetadata || null
           };
         })
         .filter((item) => item.path)
@@ -4085,7 +4123,7 @@ async function addDroppedAudioFiles(items) {
           path: item.path,
           lyricPath: item.lyricPath || null
         });
-        tracks.push(normalizeMusicTrack(asset));
+        tracks.push(normalizeMusicTrack(asset, item.workspaceMetadata || undefined));
       } catch (error) {
         errors.push(formatError(error));
       }
@@ -4093,9 +4131,11 @@ async function addDroppedAudioFiles(items) {
     if (!tracks.length) {
       throw new Error(errors[0] || "没有可播放的音频文件");
     }
-    await enqueueMusicTracks(tracks);
+    await enqueueMusicTracks(tracks, options);
   } catch (error) {
-    stopMusic({ silent: true, clearQueue: true });
+    if (options.clearQueueOnError !== false) {
+      stopMusic({ silent: true, clearQueue: true });
+    }
     setRuntimeStatus(`音乐准备失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
     showBubbleText("这首好像暂时放不了。", { transient: true, durationMs: 2200, kind: "music" });
   } finally {
@@ -4105,21 +4145,58 @@ async function addDroppedAudioFiles(items) {
   }
 }
 
-async function enqueueMusicTracks(tracks) {
+async function enqueueMusicTracks(tracks, options = {}) {
   const items = Array.isArray(tracks) ? tracks.filter((track) => track?.cachedPath) : [];
   if (!items.length) return;
+
+  const playSourceId = options.playSourceIdAfterAdd ? String(options.playSourceIdAfterAdd).trim() : "";
+  const findTargetIndex = () => playSourceId
+    ? musicQueue.findIndex((track) => track.sourceId === playSourceId || track.queueDedupeKey === playSourceId)
+    : -1;
+
+  const uniqueItems = items.filter((track) => {
+    const key = track.queueDedupeKey || track.sourceId || "";
+    return !key || !musicQueue.some((existing) => existing.queueDedupeKey === key || existing.sourceId === key);
+  });
+
+  if (!uniqueItems.length) {
+    const existingIndex = findTargetIndex();
+    if (existingIndex >= 0) {
+      await playMusicQueueIndex(existingIndex);
+      scheduleSettingsSnapshot();
+    }
+    return;
+  }
+
   const shouldStart = !musicTrack || musicQueueIndex < 0 || !musicQueue.length || (!musicPlaying && !musicPaused);
-  if (shouldStart) {
-    musicQueue = items;
+
+  if (shouldStart && !playSourceId) {
+    musicQueue = uniqueItems;
     musicQueueIndex = 0;
     await playMusicQueueIndex(0, {
-      message: items.length > 1 ? `收到，先放《${items[0].displayName}》。` : `收到，放《${items[0].displayName}》。`
+      message: uniqueItems.length > 1 ? `收到，先放《${uniqueItems[0].displayName}》。` : `收到，放《${uniqueItems[0].displayName}》。`
     });
     return;
   }
 
-  musicQueue.push(...items);
-  const text = items.length > 1 ? `已加入 ${items.length} 首，队列现在 ${musicQueue.length} 首。` : `已加入队列：《${items[0].displayName}》。`;
+  const startIndex = musicQueue.length;
+  musicQueue.push(...uniqueItems);
+
+  if (playSourceId) {
+    const targetIndex = findTargetIndex();
+    if (targetIndex >= 0) {
+      await playMusicQueueIndex(targetIndex);
+      scheduleSettingsSnapshot();
+      return;
+    }
+    if (shouldStart) {
+      await playMusicQueueIndex(startIndex);
+      scheduleSettingsSnapshot();
+      return;
+    }
+  }
+
+  const text = uniqueItems.length > 1 ? `已加入 ${uniqueItems.length} 首，队列现在 ${musicQueue.length} 首。` : `已加入队列：《${uniqueItems[0].displayName}》。`;
   setRuntimeStatus(text, { mode: "music" });
   showBubbleText(text, { transient: true, durationMs: 2400, kind: "music" });
   updateActivityControls();
@@ -4378,18 +4455,29 @@ function setMusicEmotion(active) {
   musicEmotionActive = false;
 }
 
-function normalizeMusicTrack(asset) {
+function normalizeMusicTrack(asset, metadata) {
   const value = asset && typeof asset === "object" ? asset : {};
   const fileName = String(value.fileName || "audio");
   const cachedPath = String(value.cachedPath || "");
   const lyricFileName = String(value.lyricFileName || "").trim();
   const lyrics = parseLrcText(value.lyricText || "");
+  let metaSourceId = "", metaDisplayName = "", metaQueueDedupeKey = "", metaWorkspaceItemType = "", metaWorkspaceHandle = "";
+  if (metadata && typeof metadata === "object") {
+    metaSourceId = String(metadata.sourceId || "").trim();
+    metaDisplayName = String(metadata.displayName || "").trim();
+    metaQueueDedupeKey = String(metadata.queueDedupeKey || "").trim();
+    metaWorkspaceItemType = metadata.workspaceItemType === "generated" ? "generated" : metadata.workspaceItemType === "attachment" ? "attachment" : "";
+    metaWorkspaceHandle = String(metadata.workspaceHandle || "").trim();
+  }
   return {
     originalPath: String(value.originalPath || ""),
     cachedPath,
-    sourceId: `local:${fileName}:${simpleHash(cachedPath || fileName)}`,
+    sourceId: metaSourceId || `local:${fileName}:${simpleHash(cachedPath || fileName)}`,
+    queueDedupeKey: metaQueueDedupeKey || metaSourceId || "",
+    workspaceItemType: metaWorkspaceItemType || "",
+    workspaceHandle: metaWorkspaceHandle || "",
     fileName,
-    displayName: String(value.displayName || value.fileName || "未命名音乐"),
+    displayName: metaDisplayName || String(value.displayName || value.fileName || "未命名音乐"),
     extension: String(value.extension || "").toLowerCase(),
     sizeBytes: Number(value.sizeBytes || 0),
     lyricFileName,
@@ -4742,7 +4830,120 @@ function buildCurrentLyricSnapshot(timeSeconds = Number(els.musicPlayer?.current
   };
 }
 
-function buildMusicRecommendationsSnapshot(limit = 3) {
+function isWorkspaceAudioItem(item) {
+  if (!item || typeof item !== "object") return false;
+  if (String(item.kind || "").trim().toLowerCase() === "audio") return true;
+  const subtitle = String(item.subtitle || "").toLowerCase();
+  if (subtitle.includes("音频")) return true;
+  const format = String(item.format || "").toLowerCase().replace(/^\.+/, "");
+  if (MUSIC_FILE_EXTENSIONS.has(format)) return true;
+  const name = String(item.title || item.name || "").toLowerCase();
+  const ext = name.split(".").pop();
+  if (ext && MUSIC_FILE_EXTENSIONS.has(ext)) return true;
+  return false;
+}
+
+function buildWorkspaceMusicRecommendationFromItem(item, section) {
+  const handle = String(item.handle || item.id || "").trim();
+  const title = String(item.title || item.name || item.fileName || "").trim();
+  const format = String(item.format || "").trim();
+  const prefix = section === "outputs" ? "workspace:generated" : "workspace:attachment";
+  const durationSeconds = Number(item.durationSeconds || item.duration_seconds || 0);
+  return {
+    id: handle ? `${prefix}:${handle}` : `${section}_${title}_${format}`,
+    sourceId: handle ? `${prefix}:${handle}` : "",
+    itemType: section === "outputs" ? "generated" : "attachment",
+    handle,
+    title,
+    format,
+    sizeBytes: Number(item.sizeBytes || item.size_bytes || 0),
+    durationSeconds: Number.isFinite(durationSeconds) ? Math.max(0, durationSeconds) : 0,
+    durationLabel: formatPlaylistDuration(durationSeconds),
+    reason: section === "outputs" ? "生成音频" : "手边音频",
+    playable: true
+  };
+}
+
+function dedupeMusicRecommendations(items) {
+  const seenHandles = new Set();
+  const seenSoftKeys = new Set();
+  return items.filter((item) => {
+    const itemType = String(item.itemType || "").trim().toLowerCase();
+    const handle = String(item.handle || "").trim();
+    const handleKey = handle ? `${itemType}:${handle}` : "";
+    if (handleKey && seenHandles.has(handleKey)) return false;
+    const title = String(item.title || "").trim().toLowerCase();
+    const format = String(item.format || "").trim().toLowerCase().replace(/^\.+/, "");
+    const sizeBytes = Number(item.sizeBytes || item.size_bytes || 0);
+    const hasSoftKey = Boolean(title) && Number.isFinite(sizeBytes) && sizeBytes > 0;
+    const softKey = hasSoftKey ? `${title}|${format}|${sizeBytes}` : "";
+    if (softKey && seenSoftKeys.has(softKey)) return false;
+    if (handleKey) seenHandles.add(handleKey);
+    if (softKey) seenSoftKeys.add(softKey);
+    return true;
+  });
+}
+
+function setWorkspaceMusicRecommendations(nextRecommendations) {
+  const next = Array.isArray(nextRecommendations) ? nextRecommendations : [];
+  if (JSON.stringify(workspaceMusicRecommendations) === JSON.stringify(next)) return;
+  workspaceMusicRecommendations = next;
+  scheduleSettingsSnapshot();
+}
+
+async function refreshWorkspaceMusicRecommendations() {
+  if (workspaceMusicRecommendationsLoading) return;
+  workspaceMusicRecommendationsLoading = true;
+  try {
+    const profileUserId = String(state.profileUserId || PROFILE_USER_ID);
+    const sessionId = String(state.sessionId || "");
+    if (!sessionId || resourceState.health !== "online") {
+      setWorkspaceMusicRecommendations([]);
+      return;
+    }
+    const url = buildBackendEndpointUrl("workspaceSummary", "/desktop-pet/workspace/summary", {
+      user_id: sessionId,
+      real_user_id: profileUserId,
+      limit: 24,
+      t: String(Date.now())
+    });
+    const response = await backendFetch(url, {
+      headers: { Accept: "application/json" },
+      cache: "no-store"
+    });
+    if (!response.ok) {
+      setWorkspaceMusicRecommendations([]);
+      return;
+    }
+    const payload = await response.json().catch(() => null);
+    const sections = payload?.sections || payload;
+    const candidates = [];
+    for (const sectionName of ["files", "outputs"]) {
+      const items = Array.isArray(sections[sectionName]) ? sections[sectionName] : [];
+      for (const item of items) {
+        if (isWorkspaceAudioItem(item)) {
+          candidates.push(buildWorkspaceMusicRecommendationFromItem(item, sectionName));
+        }
+      }
+    }
+    const nextRecs = dedupeMusicRecommendations(candidates).slice(0, 3);
+    setWorkspaceMusicRecommendations(nextRecs);
+  } catch {
+    setWorkspaceMusicRecommendations([]);
+  } finally {
+    workspaceMusicRecommendationsLoading = false;
+  }
+}
+
+function scheduleWorkspaceMusicRecommendationsRefresh(delay = 300) {
+  window.clearTimeout(workspaceMusicRecommendationsRefreshTimer);
+  workspaceMusicRecommendationsRefreshTimer = window.setTimeout(() => {
+    workspaceMusicRecommendationsRefreshTimer = 0;
+    void refreshWorkspaceMusicRecommendations();
+  }, delay);
+}
+
+function buildQueueMusicRecommendationsSnapshot(limit = 3) {
   if (!musicQueue.length) return [];
   if (musicQueue.length === 1) {
     const current = musicQueue[0];
@@ -4776,6 +4977,13 @@ function buildMusicRecommendationsSnapshot(limit = 3) {
     });
   }
   return recommendations;
+}
+
+function buildMusicRecommendationsSnapshot(limit = 3) {
+  if (workspaceMusicRecommendations.length > 0) {
+    return workspaceMusicRecommendations.slice(0, limit);
+  }
+  return buildQueueMusicRecommendationsSnapshot(limit);
 }
 
 function formatPlaylistDuration(seconds) {
@@ -4823,13 +5031,22 @@ function simpleHash(value) {
 }
 
 function buildDesktopMusicActivity() {
-  if (!musicTrack) return null;
+  const recs = buildMusicRecommendationsSnapshot();
+  const recsSummary = recs.map(({ title, reason }) => ({ title, reason }));
+
+  if (!musicTrack) {
+    if (recs.length > 0) {
+      return { type: "audio_recommendations", status: "idle", recommendations: recsSummary };
+    }
+    return null;
+  }
+
   const currentTime = Number(els.musicPlayer?.currentTime || 0);
   const duration = Number(els.musicPlayer?.duration || 0);
   const currentLyric = buildCurrentLyricSnapshot(currentTime);
   const status = musicPlaying ? "running" : musicPaused ? "paused" : "stopped";
   const progressSeconds = Number.isFinite(currentTime) ? Math.max(0, currentTime) : 0;
-  if (status === "stopped" && progressSeconds <= 0) return null;
+  if (status === "stopped" && progressSeconds <= 0 && recs.length === 0) return null;
   return {
     type: "audio_playback",
     title: getMusicDisplayName() || "未命名音乐",
@@ -4857,7 +5074,7 @@ function buildDesktopMusicActivity() {
     lyric_current: currentLyric?.text || "",
     lyric_previous: currentLyric?.previousText || "",
     lyric_next: currentLyric?.nextText || "",
-    recommendations: buildMusicRecommendationsSnapshot().map(({ sourceId, title, reason }) => ({ source_id: sourceId, title, reason }))
+    recommendations: recsSummary
   };
 }
 

@@ -3081,12 +3081,15 @@ button[data-action-unavailable="true"]:disabled {
   border-bottom: 0;
 }
 
-.recommend-row span {
+.recommend-row span,
+.recommend-play {
   display: grid;
   place-items: center;
   width: 22px;
   height: 22px;
+  padding: 0;
   color: #fff;
+  border: 0;
   border-radius: 50%;
   background: #5d9af4;
 }

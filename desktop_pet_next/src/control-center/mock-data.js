@@ -158,12 +158,12 @@ export const overviewPage = {
   health: [
     { label: "CPU 占用", value: "18%", detail: "spark-blue" },
     { label: "内存占用", value: "2.1 GB", detail: "spark-purple" },
-    { label: "存储空间", value: "120 GB / 512 GB", progress: 23 },
-    { label: "温度", value: "46°C", detail: "spark-orange" },
+    { label: "记忆容量", value: "0.5K 条记忆", progress: 8 },
+    { label: "峰值内存", value: "峰值 412 MB", detail: "spark-orange" },
     { label: "错误数", value: "0", progress: 0 },
-    { label: "告警", value: "0", detail: "spark-orange" },
-    { label: "应用版本", value: "1.2.0", note: "已是最新版本" },
-    { label: "检查更新", value: "检查更新", note: "当前已是最新版本" }
+    { label: "活跃守护", value: "0", detail: "spark-orange" },
+    { label: "协议版本", value: "desktop_pet", note: "已同步" },
+    { label: "能力注册", value: "25 工具", note: "能力注册表已同步" }
   ]
 };
 

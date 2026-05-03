@@ -430,6 +430,136 @@ class DesktopWorkspacePanelTests(unittest.TestCase):
             self.assertEqual(limited["imported"], 1)
             self.assertTrue(any(item["reason"] == "max_files_reached" for item in limited["skipped"]))
 
+    def test_local_audio_import_soft_dedupes_duplicate_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            engine = _make_workspace_engine(root)
+            incoming = root / "incoming"
+            incoming.mkdir()
+            source = incoming / "song.mp3"
+            source.write_bytes(b"fake-audio")
+
+            first = engine.import_desktop_pet_local_paths(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                paths=[str(source)],
+                timestamp=160,
+            )
+            second = engine.import_desktop_pet_local_paths(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                paths=[str(source)],
+                timestamp=161,
+            )
+
+            self.assertTrue(first["ok"])
+            self.assertEqual(first["imported"], 1)
+            self.assertEqual(first["duplicate_count"], 0)
+            self.assertTrue(second["ok"])
+            self.assertEqual(second["imported"], 0)
+            self.assertEqual(second["duplicate_count"], 1)
+            self.assertEqual(second["skipped"][0]["reason"], "duplicate_source")
+            self.assertEqual(second["skipped"][0]["origin_name"], "song.mp3")
+            self.assertEqual(second["skipped"][0]["existing_handle"], first["items"][0]["handle"])
+
+    def test_local_import_does_not_soft_dedupe_non_audio_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            engine = _make_workspace_engine(root)
+            incoming = root / "incoming"
+            incoming.mkdir()
+            source = incoming / "note.md"
+            source.write_text("# note", encoding="utf-8")
+
+            first = engine.import_desktop_pet_local_paths(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                paths=[str(source)],
+                timestamp=170,
+            )
+            second = engine.import_desktop_pet_local_paths(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                paths=[str(source)],
+                timestamp=171,
+            )
+
+            self.assertTrue(first["ok"])
+            self.assertTrue(second["ok"])
+            self.assertEqual(first["imported"], 1)
+            self.assertEqual(second["imported"], 1)
+            self.assertEqual(second["duplicate_count"], 0)
+
+    def test_workspace_summary_soft_dedupes_audio_cards_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            engine = _make_workspace_engine(Path(temp_dir))
+            old_audio = engine.store.add_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                source="desktop_pet",
+                kind="audio",
+                status="pending_observation",
+                origin_name="same.mp3",
+                file_ext="mp3",
+                file_size=128,
+                summary_title="Same Song",
+                timestamp=100,
+            )
+            ready_audio = engine.store.add_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                source="desktop_pet",
+                kind="audio",
+                status="ready",
+                origin_name="same.mp3",
+                file_ext="mp3",
+                file_size=128,
+                summary_title="Same Song",
+                timestamp=110,
+            )
+            engine.store.add_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                source="desktop_pet",
+                kind="document",
+                status="ready",
+                origin_name="note.md",
+                file_ext="md",
+                file_size=128,
+                summary_title="Same Song",
+                timestamp=120,
+            )
+            engine.store.add_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+                source="desktop_pet",
+                kind="document",
+                status="ready",
+                origin_name="note.md",
+                file_ext="md",
+                file_size=128,
+                summary_title="Same Song",
+                timestamp=130,
+            )
+
+            panel = engine.build_desktop_pet_workspace_panel(
+                profile_user_id="master",
+                session_id="desktop_pet_test",
+            )
+
+            files = panel["sections"]["files"]
+            audio_cards = [item for item in files if item["kind"] == "audio"]
+            document_cards = [item for item in files if item["kind"] == "document"]
+            self.assertEqual(panel["counts"]["files"], 3)
+            self.assertEqual(len(audio_cards), 1)
+            self.assertEqual(len(document_cards), 2)
+            self.assertEqual(audio_cards[0]["handle"], ready_audio["attachment_handle"])
+            self.assertEqual(audio_cards[0]["duplicate_count"], 2)
+            self.assertEqual(
+                set(audio_cards[0]["duplicate_handles"]),
+                {old_audio["attachment_handle"], ready_audio["attachment_handle"]},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

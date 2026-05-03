@@ -40,6 +40,7 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   musicSelectQueueItem: "music.selectQueueItem",
   musicSetVolumeNormalization: "music.setVolumeNormalization",
   musicSelectOutputDevice: "music.selectOutputDevice",
+  musicPlayWorkspaceRecommendation: "music.playWorkspaceRecommendation",
   windowNotify: "window.notify",
   windowMinimize: "window.minimize",
   windowMaximize: "window.maximize",
@@ -121,7 +122,8 @@ export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.musicSeek,
   CONTROL_CENTER_ACTIONS.musicSelectQueueItem,
   CONTROL_CENTER_ACTIONS.musicSetPlayMode,
-  CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization
+  CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization,
+  CONTROL_CENTER_ACTIONS.musicPlayWorkspaceRecommendation
 ]);
 
 const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);

@@ -1282,14 +1282,20 @@ function renderRecommendBody(musicPage) {
     <div class="recommend-body">
       <img src="${imageFor(recs[0]?.cover || musicPage.nowPlaying.cover)}" alt="" />
       <div>
-        ${recs.map((item) => `
-          <div class="recommend-row">
-            <span>${icon("play")}</span>
-            <strong>${escapeHtml(item.title)}</strong>
-            <small>${escapeHtml(item.reason || item.artist || "队列推荐")}</small>
-            <time>${escapeHtml(item.duration || item.durationLabel || "")}</time>
-          </div>
-        `).join("")}
+        ${recs.map((item) => {
+          const clickable = item.playable && item.handle;
+          const itemType = item.itemType === "generated" ? "generated" : "attachment";
+          return `
+            <div class="recommend-row">
+              ${clickable
+                ? `<button class="recommend-play" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicPlayWorkspaceRecommendation}" data-payload-item-type="${escapeAttr(itemType)}" data-payload-handle="${escapeAttr(item.handle)}" data-payload-title="${escapeAttr(item.title)}" aria-label="播放 ${escapeAttr(item.title)}">${icon("play")}</button>`
+                : `<span class="recommend-play-icon">${icon("play")}</span>`}
+              <strong>${escapeHtml(item.title)}</strong>
+              <small>${escapeHtml(item.reason || item.artist || "队列推荐")}</small>
+              <time>${escapeHtml(item.duration || item.durationLabel || "")}</time>
+            </div>
+          `;
+        }).join("")}
       </div>
     </div>
   `;
