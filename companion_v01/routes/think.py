@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+import config
 from ..desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, build_desktop_pet_error_payload
+
+logger = logging.getLogger("akane.think")
 
 
 LogEvent = Callable[..., None]
@@ -196,53 +200,64 @@ def build_think_router(
 
 
 def print_debug(payload: dict, frame: dict) -> None:
+    # Only emit verbose debug output when at least one debug flag is enabled.
+    # Without this gate, every /think and /think_once call dumps large JSON
+    # blocks to stdout, making logs unreadable in normal operation.
+    router_debug = bool(getattr(config, "ROUTER_DEBUG", False))
+    verifier_debug = bool(getattr(config, "VERIFIER_DEBUG", False))
+    final_debug = bool(getattr(config, "FINAL_DEBUG", False))
+    if not (router_debug or verifier_debug or final_debug):
+        return
+
     debug = frame.get("_debug") or {}
     retrieval_debug = debug.get("retrieval_result") or {}
     memory_snippets = list(retrieval_debug.get("memory_snippets") or [])
     selected_memory_snippets = list(retrieval_debug.get("selected_memory_snippets") or [])
-    print("")
-    print("=" * 18, "哀鸿同人 V0.1", "=" * 18)
-    print(f"session_id: {payload.get('user_id', '')}")
-    print(f"user_text: {payload.get('message', '')}")
-    print("")
-    print("=== 前置检索控制输出 ===")
-    print(json.dumps(debug.get("router_output", {}), ensure_ascii=False, indent=2))
-    print("")
-    print("=== 前置检索控制耗时 ===")
-    print(json.dumps(debug.get("router_timing", {}), ensure_ascii=False, indent=2))
-    print("")
-    print("=== 检索结果摘要 ===")
-    print(json.dumps(debug.get("retrieval_result", {}), ensure_ascii=False, indent=2))
-    print("")
-    print("=== 检索校验输出 ===")
-    print(json.dumps(debug.get("verifier_output", {}), ensure_ascii=False, indent=2))
-    print("")
-    print("=== 检索校验耗时 ===")
-    print(json.dumps(debug.get("verifier_timing", {}), ensure_ascii=False, indent=2))
-    print("")
+
+    out: list[str] = []
+    out.append("")
+    out.append("=" * 18 + " Aihong Companion V0.1 " + "=" * 18)
+    out.append(f"session_id: {payload.get('user_id', '')}")
+    out.append(f"user_text: {payload.get('message', '')}")
+    out.append("")
+    out.append("=== 前置检索控制输出 ===")
+    out.append(json.dumps(debug.get("router_output", {}), ensure_ascii=False, indent=2))
+    out.append("")
+    out.append("=== 前置检索控制耗时 ===")
+    out.append(json.dumps(debug.get("router_timing", {}), ensure_ascii=False, indent=2))
+    out.append("")
+    out.append("=== 检索结果摘要 ===")
+    out.append(json.dumps(debug.get("retrieval_result", {}), ensure_ascii=False, indent=2))
+    out.append("")
+    out.append("=== 检索校验输出 ===")
+    out.append(json.dumps(debug.get("verifier_output", {}), ensure_ascii=False, indent=2))
+    out.append("")
+    out.append("=== 检索校验耗时 ===")
+    out.append(json.dumps(debug.get("verifier_timing", {}), ensure_ascii=False, indent=2))
+    out.append("")
     if debug.get("memory_tool"):
-        print("=== Akane 主动记忆检索工具 ===")
-        print(json.dumps(debug.get("memory_tool", {}), ensure_ascii=False, indent=2))
-        print("")
-    print("=== 检索片段（按编号） ===")
+        out.append("=== Akane 主动记忆检索工具 ===")
+        out.append(json.dumps(debug.get("memory_tool", {}), ensure_ascii=False, indent=2))
+        out.append("")
+    out.append("=== 检索片段（按编号） ===")
     if memory_snippets:
         for index, snippet in enumerate(memory_snippets, start=1):
-            print(f"[{index}]")
-            print(str(snippet))
-            print("")
+            out.append(f"[{index}]")
+            out.append(str(snippet))
+            out.append("")
     else:
-        print("(无)")
-    print("=== 被选中的记忆片段 ===")
+        out.append("(无)")
+    out.append("=== 被选中的记忆片段 ===")
     if selected_memory_snippets:
         for item in selected_memory_snippets:
             label = f"[{item.get('index')}]" if item.get("index") is not None else "[fallback]"
-            print(label)
-            print(str(item.get("snippet") or ""))
-            print("")
+            out.append(label)
+            out.append(str(item.get("snippet") or ""))
+            out.append("")
     else:
-        print("(无)")
-    print("")
-    print("=== 最终回复 JSON ===")
+        out.append("(无)")
+    out.append("")
+    out.append("=== 最终回复 JSON ===")
     visible: dict[str, object] = {}
     for key in (
         "thought",
@@ -265,8 +280,10 @@ def print_debug(payload: dict, frame: dict) -> None:
         if key == "thought" and key not in frame:
             continue
         visible[key] = frame.get(key)
-    print(json.dumps(visible, ensure_ascii=False, indent=2))
-    print("=" * 48)
+    out.append(json.dumps(visible, ensure_ascii=False, indent=2))
+    out.append("=" * 48)
+
+    logger.info("\n".join(out))
 
 
 def log_turn_result(
