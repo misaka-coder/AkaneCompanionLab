@@ -43,6 +43,9 @@ tmp_*.wav
 models/
 downloads/
 
+# User-provided media assets (keep local, do not track in repo)
+web/assets/bgm/
+
 # Local reference copies not part of the Akane app
 claude_code_annotated/
 
