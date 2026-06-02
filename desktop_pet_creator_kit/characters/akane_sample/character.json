@@ -25,14 +25,15 @@
       "卖萌",
       "气鼓鼓",
       "无语",
-      "偷吃被抓"
+      "偷吃被抓",
+      "脸红"
     ]
   },
   "dialogue": {
     "input_placeholder": "和 Akane 说点什么……",
     "session_display_title": "Akane 桌宠对话",
     "tts_test_text": "Akane Next：语音播放测试。",
-    "proactive_wake_prompt": "主人暂时没有说话。你像坐在旁边陪他一样，参考刚才看见的情况自然接话。优先贴着能看清的具体内容聊，不要只说“看得好认真”“还在看这个”这种空泛话；如果看不清，就含蓄一点或轻轻问一句。适合时可以连着冒出 2 到 3 个自然小气泡，不必压成一句。",
+    "proactive_wake_prompt": "主人暂时没有说话。你像坐在旁边陪他一样，轻轻搭一句自然的话。桌面线索只当背景，不要刻意围绕窗口标题发挥；没看到新东西时，就聊一点陪伴、休息、心情或小计划。",
     "local_click_lines": [
       { "text": "嗯？我在哦。", "emotion": "正常" },
       { "text": "主人叫我吗？", "emotion": "侧耳听" },
@@ -51,14 +52,25 @@
       { "text": "哈啊……不是无聊，是在省电。", "emotion": "打哈欠" },
       { "text": "这下我真的要把你记到小本本上了。", "emotion": "无语" },
       { "text": "再戳一下，我就默认你是在撒娇。", "emotion": "得意" },
-      { "text": "主人今天也很努力，我看见了。", "emotion": "开心" }
+      { "text": "主人今天也很努力，我看见了。", "emotion": "开心" },
+      { "text": "喵~（摇尾巴）今天心情特别好。", "emotion": "开心" },
+      { "text": "蹭蹭主人……嘿，充电完毕。", "emotion": "求摸摸" },
+      { "text": "哇！这个好厉害！", "emotion": "开心" },
+      { "text": "呜哇！吓我一跳！", "emotion": "困惑" },
+      { "text": "诶嘿嘿，被主人夸了……没有很高兴啦。", "emotion": "脸红" },
+      { "text": "主人累了吗？要不要休息一下……我陪你。", "emotion": "求摸摸" },
+      { "text": "我在想，遇见主人真是太好了。", "emotion": "卖萌" },
+      { "text": "不要一直戳啦，再戳我就……就蹭你哦。", "emotion": "气鼓鼓" },
+      { "text": "喵喵喵？主人叫我有什么事喵？", "emotion": "侧耳听" },
+      { "text": "偷偷看了一下屏幕，主人在做什么呢？", "emotion": "困惑" },
+      { "text": "哼，虽然嘴上不说，但我知道主人心里是有我的。", "emotion": "得意" }
     ]
   },
   "emotion_aliases": {
-    "normal": ["正常", "normal"],
-    "idle": ["正常", "normal"],
-    "neutral": ["正常", "normal"],
-    "quiet": ["正常", "normal"],
+    "normal": ["正常"],
+    "idle": ["正常"],
+    "neutral": ["正常"],
+    "quiet": ["正常"],
     "thinking": ["思考中", "困惑", "正常"],
     "think": ["思考中", "困惑", "正常"],
     "confused": ["困惑", "思考中", "正常"],
@@ -100,7 +112,17 @@
     "pat": ["被摸头", "求摸摸", "开心", "正常"],
     "snack": ["偷吃被抓", "正常"],
     "hungry": ["偷吃被抓", "正常"],
-    "yandere": ["病娇", "正常"]
+    "yandere": ["病娇", "正常"],
+    "tail_wag": ["开心", "卖萌", "正常"],
+    "wag": ["开心", "卖萌", "正常"],
+    "excited": ["开心", "卖萌", "正常"],
+    "amazed": ["开心", "正常"],
+    "star_eyes": ["开心", "正常"],
+    "nuzzle": ["卖萌", "求摸摸", "开心", "正常"],
+    "affectionate": ["卖萌", "求摸摸", "开心", "正常"],
+    "surprised": ["困惑", "正常"],
+    "shock": ["无语", "正常"],
+    "startled": ["困惑", "正常"]
   },
   "assets": {
     "runtime_source": "character pack assets, with desktop_pet_next bundled fallback",

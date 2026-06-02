@@ -28,6 +28,7 @@ users_data/
 
 # Logs and temporary outputs
 *.log
+runtime_logs/
 test-results/
 .tmp_*/
 .tmp_*

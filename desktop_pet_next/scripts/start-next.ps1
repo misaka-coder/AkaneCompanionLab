@@ -1,6 +1,7 @@
 param(
   [switch]$BuildIfMissing,
-  [switch]$Doctor
+  [switch]$Doctor,
+  [switch]$LegacySettings
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,6 +10,10 @@ $Root = Split-Path -Parent $PSScriptRoot
 $ExePath = Join-Path $Root "src-tauri\target\release\akane_desktop_pet_next.exe"
 
 Set-Location $Root
+
+if (-not $LegacySettings) {
+  $env:AKANE_CONTROL_CENTER_LAB = "1"
+}
 
 if ($Doctor) {
   npm run doctor

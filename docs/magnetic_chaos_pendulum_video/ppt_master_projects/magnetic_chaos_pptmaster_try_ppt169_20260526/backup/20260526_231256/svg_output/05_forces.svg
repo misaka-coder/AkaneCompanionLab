@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="720" fill="#F8FAFC"/>
+
+  <g id="header">
+    <text x="64" y="82" font-family="Microsoft YaHei" font-size="42px" font-weight="700" fill="#1A202C">受力原理：不是乱动，而是多种力叠加</text>
+    <text x="66" y="124" font-family="Microsoft YaHei" font-size="20px" fill="#526070">小球每一刻都受物理规律控制，只是规律叠加后变得很复杂。</text>
+  </g>
+
+  <g id="center-system">
+    <circle cx="640" cy="365" r="76" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="2"/>
+    <circle cx="640" cy="365" r="26" fill="#FACC15" stroke="#EA580C" stroke-width="3"/>
+    <text x="640" y="462" text-anchor="middle" font-family="Microsoft YaHei" font-size="20px" font-weight="700" fill="#1A202C">磁性摆锤</text>
+    <line x1="640" y1="280" x2="640" y2="226" stroke="#526070" stroke-width="3"/>
+    <line x1="558" y1="365" x2="486" y2="365" stroke="#2563EB" stroke-width="3"/>
+    <polygon points="486,365 504,354 504,376" fill="#2563EB"/>
+    <line x1="722" y1="365" x2="794" y2="365" stroke="#EA580C" stroke-width="3"/>
+    <polygon points="794,365 776,354 776,376" fill="#EA580C"/>
+    <line x1="604" y1="434" x2="560" y2="500" stroke="#0D9488" stroke-width="3"/>
+    <polygon points="560,500 562,479 580,491" fill="#0D9488"/>
+    <line x1="676" y1="434" x2="720" y2="500" stroke="#7C3AED" stroke-width="3"/>
+    <polygon points="720,500 700,491 718,479" fill="#7C3AED"/>
+  </g>
+
+  <g id="force-cards">
+    <rect x="64" y="180" width="430" height="112" rx="20" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="96" y="220" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#2563EB">重力</text>
+    <text x="96" y="258" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">让摆锤倾向于回到最低位置，像普通单摆。</text>
+
+    <rect x="786" y="180" width="430" height="112" rx="20" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="818" y="220" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#EA580C">磁力</text>
+    <text x="818" y="258" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">三个磁铁从不同方向吸引或影响小球。</text>
+
+    <rect x="64" y="474" width="430" height="112" rx="20" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="96" y="514" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#0D9488">阻力和摩擦</text>
+    <text x="96" y="552" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">不断消耗能量，所以小球最终会停下来。</text>
+
+    <rect x="786" y="474" width="430" height="112" rx="20" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="818" y="514" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#7C3AED">非线性</text>
+    <text x="818" y="552" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">位置差一点，受力方向就可能明显不同。</text>
+  </g>
+
+  <g id="takeaway">
+    <rect x="266" y="612" width="748" height="48" rx="24" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="640" y="643" text-anchor="middle" font-family="Microsoft YaHei" font-size="20px" font-weight="700" fill="#2563EB">关键句：规律存在，但长期预测需要极其精确的初始条件。</text>
+  </g>
+
+  <text x="1216" y="664" text-anchor="end" font-family="Microsoft YaHei" font-size="13px" fill="#64748B">05 / 07</text>
+</svg>

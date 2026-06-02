@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="720" fill="#F8FAFC" />
+
+  <g id="header">
+    <text x="64" y="82" font-family="Microsoft YaHei" font-size="50px" font-weight="700" fill="#1A202C">为什么叫“混沌”？</text>
+    <text x="66" y="126" font-family="Microsoft YaHei" font-size="24px" fill="#526070">混沌不是完全随机，而是“确定系统中的难预测运动”。</text>
+  </g>
+
+  <g id="video-placeholder">
+    <path fill="#FFFFFF" stroke="#EA580C" stroke-width="5" stroke-dasharray="20 14" d="M90,170 H710 A26,26 0 0 1 736,196 V574 A26,26 0 0 1 710,600 H90 A26,26 0 0 1 64,574 V196 A26,26 0 0 1 90,170 Z" />
+    <path fill="#EEF6FF" stroke="#CBD5E1" stroke-width="3" d="M114,206 H686 A18,18 0 0 1 704,224 V530 A18,18 0 0 1 686,548 H114 A18,18 0 0 1 96,530 V224 A18,18 0 0 1 114,206 Z" />
+    <path d="M220 360 C304 260 392 430 494 310 C584 210 630 420 676 284" fill="none" stroke="#7C3AED" stroke-width="7" />
+    <path d="M222 382 C332 506 414 260 540 418 C606 506 658 350 674 462" fill="none" stroke="#2563EB" stroke-width="6" stroke-dasharray="11 13" />
+    <circle cx="222" cy="360" r="14" fill="#FACC15" stroke="#EA580C" stroke-width="4" />
+    <circle cx="222" cy="382" r="14" fill="#FACC15" stroke="#2563EB" stroke-width="4" />
+    <polygon points="372,318 372,390 436,354" fill="#EA580C" />
+    <text x="400" y="484" text-anchor="middle" font-family="Microsoft YaHei" font-size="40px" font-weight="700" fill="#1A202C">实验演示片段二</text>
+    <text x="400" y="522" text-anchor="middle" font-family="Microsoft YaHei" font-size="18px" fill="#64748B">展示小球绕行、折返、轨迹变化</text>
+  </g>
+
+  <g id="concept-block">
+    <path fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2" d="M806,170 H1190 A26,26 0 0 1 1216,196 V574 A26,26 0 0 1 1190,600 H806 A26,26 0 0 1 780,574 V196 A26,26 0 0 1 806,170 Z" />
+    <text x="820" y="232" font-family="Microsoft YaHei" font-size="40px" font-weight="700" fill="#7C3AED">确定</text>
+    <text x="928" y="232" font-family="Microsoft YaHei" font-size="40px" font-weight="700" fill="#1A202C">但难预测</text>
+    <line x1="820" y1="258" x2="1168" y2="258" stroke="#D9E2EC" stroke-width="3" />
+
+    <path fill="#2563EB" d="M832,296 H832 A12,12 0 0 1 844,308 V358 A12,12 0 0 1 832,370 H832 A12,12 0 0 1 820,358 V308 A12,12 0 0 1 832,296 Z" />
+    <text x="866" y="324" font-family="Microsoft YaHei" font-size="28px" font-weight="700" fill="#2563EB">不是纯随机</text>
+    <text x="866" y="364" font-family="Microsoft YaHei" font-size="24px" fill="#1A202C">仍然受物理规律控制。</text>
+
+    <path fill="#EA580C" d="M832,398 H832 A12,12 0 0 1 844,410 V460 A12,12 0 0 1 832,472 H832 A12,12 0 0 1 820,460 V410 A12,12 0 0 1 832,398 Z" />
+    <text x="866" y="426" font-family="Microsoft YaHei" font-size="28px" font-weight="700" fill="#EA580C">敏感初始条件</text>
+    <text x="866" y="466" font-family="Microsoft YaHei" font-size="24px" fill="#1A202C">起点差一点，路径差很多。</text>
+
+    <path fill="#0D9488" d="M832,500 H832 A12,12 0 0 1 844,512 V562 A12,12 0 0 1 832,574 H832 A12,12 0 0 1 820,562 V512 A12,12 0 0 1 832,500 Z" />
+    <text x="866" y="528" font-family="Microsoft YaHei" font-size="28px" font-weight="700" fill="#0D9488">结局可能不同</text>
+    <text x="866" y="568" font-family="Microsoft YaHei" font-size="24px" fill="#1A202C">停在哪个磁铁上不一定。</text>
+  </g>
+
+  <g id="bottom-line">
+    <path fill="#EEF6FF" stroke="#CBD5E1" stroke-width="2" d="M88,626 H936 A24,24 0 0 1 960,650 V650 A24,24 0 0 1 936,674 H88 A24,24 0 0 1 64,650 V650 A24,24 0 0 1 88,626 Z" />
+    <text x="512" y="658" text-anchor="middle" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#2563EB">它看起来像乱动，其实是复杂规律造成的。</text>
+    <text x="1216" y="664" text-anchor="end" font-family="Microsoft YaHei" font-size="16px" fill="#64748B">06 / 07</text>
+  </g>
+</svg>

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="720" fill="#F8FAFC"/>
+
+  <g id="title">
+    <text x="64" y="82" font-family="Microsoft YaHei" font-size="42px" font-weight="700" fill="#1A202C">结论：简单装置，也能产生复杂运动</text>
+    <text x="66" y="124" font-family="Microsoft YaHei" font-size="20px" fill="#526070">磁混沌摆展示了“确定性规律”和“长期不可预测性”可以同时存在。</text>
+  </g>
+
+  <g id="summary">
+    <rect x="64" y="170" width="456" height="112" rx="22" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="96" y="210" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#2563EB">一句话总结</text>
+    <text x="96" y="247" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">三个磁铁改变受力方向，轨迹对起点很敏感。</text>
+
+    <rect x="64" y="314" width="456" height="112" rx="22" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="96" y="354" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#0D9488">实验价值</text>
+    <text x="96" y="391" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">把抽象的“混沌”变成可以直接看见的运动。</text>
+
+    <rect x="64" y="458" width="456" height="112" rx="22" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="96" y="498" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#EA580C">现实联系</text>
+    <text x="96" y="535" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">天气、湍流、交通流中也常见类似敏感性。</text>
+  </g>
+
+  <g id="final-video">
+    <rect x="590" y="170" width="626" height="352" rx="24" fill="#FFFFFF" stroke="#EA580C" stroke-width="4" stroke-dasharray="18 14"/>
+    <rect x="618" y="198" width="570" height="296" rx="16" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="2"/>
+    <circle cx="904" cy="332" r="28" fill="#FACC15" stroke="#EA580C" stroke-width="3"/>
+    <circle cx="904" cy="396" r="36" fill="#FFFFFF" stroke="#EA580C" stroke-width="3"/>
+    <text x="904" y="405" text-anchor="middle" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#EA580C">S</text>
+    <path d="M786 290 C868 250 962 268 1000 336 C1030 388 974 424 904 396" fill="none" stroke="#7C3AED" stroke-width="4" stroke-dasharray="9 11"/>
+    <text x="904" y="256" text-anchor="middle" font-family="Microsoft YaHei" font-size="34px" font-weight="700" fill="#1A202C">横屏演示视频 3</text>
+    <text x="904" y="456" text-anchor="middle" font-family="Microsoft YaHei" font-size="20px" fill="#526070">小球变慢，并最终停在某个磁铁上方</text>
+  </g>
+
+  <g id="closing">
+    <rect x="590" y="556" width="626" height="68" rx="34" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="903" y="599" text-anchor="middle" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#2563EB">复杂现象背后仍有规律，只是预测很困难。</text>
+  </g>
+
+  <text x="64" y="664" font-family="Microsoft YaHei" font-size="13px" fill="#64748B">结尾建议：视频定格 2 秒，再切回本页总结。</text>
+  <text x="1216" y="664" text-anchor="end" font-family="Microsoft YaHei" font-size="13px" fill="#64748B">07 / 07</text>
+</svg>

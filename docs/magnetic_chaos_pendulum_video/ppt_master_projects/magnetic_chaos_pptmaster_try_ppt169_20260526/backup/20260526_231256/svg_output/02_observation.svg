@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="720" fill="#F8FAFC"/>
+
+  <g id="header">
+    <text x="64" y="82" font-family="Microsoft YaHei" font-size="42px" font-weight="700" fill="#1A202C">先看现象：运动很复杂</text>
+    <text x="66" y="124" font-family="Microsoft YaHei" font-size="20px" fill="#526070">普通单摆轨迹比较规则，磁混沌摆会不断弯曲、折返和改变方向。</text>
+  </g>
+
+  <g id="trajectory-panel">
+    <rect x="64" y="164" width="586" height="438" rx="24" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <circle cx="358" cy="378" r="172" fill="#EEF6FF" stroke="#D9E2EC" stroke-width="2"/>
+    <circle cx="358" cy="248" r="28" fill="#FFFFFF" stroke="#2563EB" stroke-width="3"/>
+    <text x="358" y="256" text-anchor="middle" font-family="Microsoft YaHei" font-size="20px" font-weight="700" fill="#2563EB">N</text>
+    <circle cx="236" cy="466" r="28" fill="#FFFFFF" stroke="#0D9488" stroke-width="3"/>
+    <text x="236" y="474" text-anchor="middle" font-family="Microsoft YaHei" font-size="20px" font-weight="700" fill="#0D9488">N</text>
+    <circle cx="482" cy="466" r="28" fill="#FFFFFF" stroke="#EA580C" stroke-width="3"/>
+    <text x="482" y="474" text-anchor="middle" font-family="Microsoft YaHei" font-size="20px" font-weight="700" fill="#EA580C">S</text>
+
+    <path d="M292 324 C222 254 278 192 358 248 C450 316 516 286 498 374 C478 474 356 518 236 466 C142 424 196 328 292 324" fill="none" stroke="#7C3AED" stroke-width="4"/>
+    <path d="M292 324 C382 356 436 410 482 466" fill="none" stroke="#EA580C" stroke-width="4" stroke-dasharray="9 11"/>
+    <circle cx="292" cy="324" r="18" fill="#FACC15" stroke="#EA580C" stroke-width="3"/>
+
+    <text x="100" y="566" font-family="Microsoft YaHei" font-size="15px" fill="#64748B">示意：轨迹不是固定圆弧，而是在三个磁铁间不断被改写。</text>
+  </g>
+
+  <g id="observation-cards">
+    <rect x="700" y="164" width="516" height="108" rx="20" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <rect x="724" y="190" width="12" height="56" rx="6" fill="#2563EB"/>
+    <text x="756" y="204" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#2563EB">1. 方向不断改变</text>
+    <text x="756" y="238" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">小球会突然转向，靠近一个磁铁后又绕开。</text>
+
+    <rect x="700" y="306" width="516" height="108" rx="20" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <rect x="724" y="332" width="12" height="56" rx="6" fill="#0D9488"/>
+    <text x="756" y="346" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#0D9488">2. 运动逐渐变慢</text>
+    <text x="756" y="380" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">阻力和摩擦消耗能量，摆动幅度越来越小。</text>
+
+    <rect x="700" y="448" width="516" height="108" rx="20" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <rect x="724" y="474" width="12" height="56" rx="6" fill="#EA580C"/>
+    <text x="756" y="488" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#EA580C">3. 最后停在某个磁铁上方</text>
+    <text x="756" y="522" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">结局不是唯一的，和释放条件有关。</text>
+  </g>
+
+  <g id="footer">
+    <text x="64" y="664" font-family="Microsoft YaHei" font-size="13px" fill="#64748B">讲解提示：这里之后切入第一段横屏演示视频。</text>
+    <text x="1216" y="664" text-anchor="end" font-family="Microsoft YaHei" font-size="13px" fill="#64748B">02 / 07</text>
+  </g>
+</svg>

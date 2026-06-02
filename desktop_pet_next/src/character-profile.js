@@ -29,7 +29,7 @@ const FALLBACK_PROFILE = {
     session_display_title: "Akane 桌宠对话",
     tts_test_text: "Akane Next：语音播放测试。",
     proactive_wake_prompt:
-      "主人暂时没有说话。你像坐在旁边陪他一样，参考刚才看见的情况自然接话。",
+      "主人暂时没有说话。你像坐在旁边陪他一样，轻轻搭一句自然的话。桌面线索只当背景，不要刻意围绕窗口标题发挥。",
     local_click_lines: [{ text: "嗯？我在哦。", emotion: "正常" }]
   },
   emotion_aliases: {

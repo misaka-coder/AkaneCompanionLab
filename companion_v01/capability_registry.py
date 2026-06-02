@@ -292,7 +292,7 @@ class CapabilityRegistry:
                 layer="shared_media",
                 modes=CHAT_FILE_CLIENT_MODES,
                 tools=MEDIA_WORKBENCH_TOOL_NAMES,
-                light_hint="你可以处理音频/视频任务：转写、转码、降噪、分离人声、切片打包训练素材等。",
+                light_hint="你可以处理音频/视频任务：转写、转码、降噪、分离人声、切片打包训练素材等。在 QQ 里这些媒体任务容易耗时，优先委派后台工坊；完成后再通知和交付。",
                 trigger=_has_media_context,
             ),
             CapabilityModule(

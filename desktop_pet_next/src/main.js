@@ -43,6 +43,7 @@ const appWindow = isTauriRuntime ? getCurrentWindow() : null;
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const PROFILE_USER_ID = "master";
 const CLIENT_MODE = "desktop_pet";
+
 const DESKTOP_HEALTH_PATH = "/desktop-pet/health";
 const LEGACY_HEALTH_PATH = "/health";
 const BASE_CAPABILITIES = ["speech_segments", "tts", "file_drop", "tool_actions"];
@@ -70,7 +71,7 @@ const SCREEN_VISION_FORCE_AFTER_SKIPS = 2;
 const PROACTIVE_WAKE_DEFAULT_SEC = 30;
 const PROACTIVE_WAKE_MIN_SEC = 15;
 const PROACTIVE_WAKE_MAX_SEC = 600;
-const PROACTIVE_WAKE_RETRY_MS = 5000;
+const PROACTIVE_WAKE_RETRY_MS = 15000;
 const MUSIC_TIMELINE_POLL_MS = 8000;
 const MUSIC_TIMELINE_RETRY_MS = 30000;
 const CLIPBOARD_TEXT_LIMIT = 600;
@@ -96,6 +97,13 @@ const CLIENT_SEGMENT_SOFT_LIMIT = 56;
 const CLIENT_SEGMENT_MAX = 5;
 const LOCAL_CLICK_DELAY_MS = 240;
 const INPUT_HISTORY_LIMIT = 24;
+const CHAT_INPUT_IDLE_HIDE_MS = 5000;
+const PROACTIVE_WAKE_STYLE_GUARD = [
+  "本轮是主动搭话，不是用户提问。",
+  "可以参考桌面线索，但不要把窗口标题或软件名当成必须回应的主题；只有标题时最多当背景。",
+  "优先轻短地陪一句、提醒一句，或自然问候；没有新线索也可以不围绕屏幕聊。",
+  "回复尽量短，1 到 2 个自然小气泡。"
+].join("\n");
 const SCALE_MIN = 0.75;
 const SCALE_MAX = 1.45;
 const SCALE_PRESETS = [0.85, 1, 1.15, 1.3];
@@ -203,6 +211,7 @@ let replyDisplayActive = false;
 let segmentTimer = 0;
 let lastTurnSignature = "";
 let lastTurnTextKey = "";
+let firstSpeechSegmentShown = false;
 let lastActivityActionSignature = "";
 let motionTimer = 0;
 let transientEmotionTimer = 0;
@@ -220,6 +229,7 @@ let inputHistory = [];
 let inputHistoryIndex = -1;
 let inputHistoryDraft = "";
 let applyingInputHistory = false;
+let chatInputIdleTimer = 0;
 let suppressClickUntil = 0;
 let hitSyncFrame = 0;
 let pendingHitSyncForce = false;
@@ -244,6 +254,7 @@ let musicLoading = false;
 let musicEmotionActive = false;
 let musicDropHover = false;
 let workspaceMusicRecommendations = [];
+let workspaceAudioCatalog = [];
 let workspaceMusicRecommendationsRefreshTimer = 0;
 let workspaceMusicRecommendationsLoading = false;
 let workspaceImporting = false;
@@ -259,6 +270,7 @@ let voiceInputToken = 0;
 let desktopContextPollTimer = 0;
 let proactiveWakeTimer = 0;
 let proactiveWakeLastAt = 0;
+let proactiveWakeNextAllowedAt = 0;
 let proactiveWakeRunning = false;
 let screenVisionTimer = 0;
 let screenVisionStream = null;
@@ -430,8 +442,15 @@ function bindUi() {
     event.preventDefault();
     submitChatInput();
   });
+  els.chatForm.addEventListener("pointermove", () => {
+    scheduleChatInputAutoHide();
+  });
+  els.chatForm.addEventListener("pointerdown", () => {
+    scheduleChatInputAutoHide();
+  });
 
   els.chatInput.addEventListener("keydown", (event) => {
+    scheduleChatInputAutoHide();
     if (event.isComposing) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -456,6 +475,10 @@ function bindUi() {
   els.chatInput.addEventListener("input", () => {
     autoResizeChatInput();
     if (!applyingInputHistory) resetInputHistoryCursor();
+    scheduleChatInputAutoHide();
+  });
+  els.chatInput.addEventListener("focus", () => {
+    scheduleChatInputAutoHide();
   });
   els.chatInput.addEventListener("blur", () => {
     window.setTimeout(() => {
@@ -466,6 +489,7 @@ function bindUi() {
   });
   els.chatInput.addEventListener("pointerdown", (event) => {
     event.stopPropagation();
+    scheduleChatInputAutoHide();
   });
   els.voiceRecordButton.addEventListener("click", (event) => {
     event.preventDefault();
@@ -1077,7 +1101,30 @@ function buildSettingsSnapshot() {
     },
     visual: visualRenderer.getStatus(),
     music: buildMusicSnapshot(),
+    currentExpression: buildCurrentExpressionSnapshot(),
     webglEnabled: els.stage.classList.contains("show-webgl")
+  };
+}
+
+function buildCurrentExpressionSnapshot() {
+  const entry = resolveEmotionEntry(state.currentEmotion);
+  if (!entry) {
+    return {
+      id: state.currentEmotion || "",
+      name: state.currentEmotion || "",
+      image: state.currentEmotion || "",
+      outfitId: state.outfit || "",
+      characterPackId: getActiveCharacterPackId(),
+      updatedAt: Date.now()
+    };
+  }
+  return {
+    id: entry.id || state.currentEmotion || "",
+    name: entry.name || entry.id || state.currentEmotion || "",
+    image: entry.image || entry.url || entry.key || entry.id || "",
+    outfitId: state.outfit || "",
+    characterPackId: getActiveCharacterPackId(),
+    updatedAt: Date.now()
   };
 }
 
@@ -1368,11 +1415,13 @@ function setScreenVisionMode(value) {
 function setProactiveWakeEnabled(enabled) {
   state.proactiveWakeEnabled = Boolean(enabled);
   if (state.proactiveWakeEnabled) {
+    proactiveWakeNextAllowedAt = Date.now() + getProactiveWakeIntervalMs();
     scheduleProactiveWake({ immediate: false });
     setRuntimeStatus("主动搭话已开启", { mode: "idle" });
   } else {
     window.clearTimeout(proactiveWakeTimer);
     proactiveWakeTimer = 0;
+    proactiveWakeNextAllowedAt = 0;
     proactiveWakeRunning = false;
     setRuntimeStatus("主动搭话已关闭", { mode: "idle" });
   }
@@ -1382,6 +1431,7 @@ function setProactiveWakeEnabled(enabled) {
 
 function setProactiveWakeIntervalSec(value) {
   state.proactiveWakeIntervalSec = normalizeProactiveWakeIntervalSec(value);
+  proactiveWakeNextAllowedAt = Date.now() + getProactiveWakeIntervalMs();
   const recommended = recommendedScreenVisionIntervalSec(state.proactiveWakeIntervalSec);
   if (!Number.isFinite(Number(state.screenVisionIntervalSec))) {
     state.screenVisionIntervalSec = recommended;
@@ -1487,6 +1537,7 @@ function showChatInput() {
   closeMenu();
   els.chatForm.hidden = false;
   autoResizeChatInput();
+  scheduleChatInputAutoHide();
   scheduleNativeHitTestSync({ force: true });
   window.setTimeout(() => {
     els.chatInput.focus();
@@ -1502,12 +1553,37 @@ function submitChatInput() {
 
 function hideChatInput({ clear = false } = {}) {
   if (els.chatForm.hidden && !clear) return;
+  clearChatInputAutoHide();
   els.chatForm.hidden = true;
   if (clear) els.chatInput.value = "";
   resetInputHistoryCursor();
   autoResizeChatInput();
   els.chatInput.blur();
   scheduleNativeHitTestSync({ force: true });
+}
+
+function scheduleChatInputAutoHide(delayMs = CHAT_INPUT_IDLE_HIDE_MS) {
+  window.clearTimeout(chatInputIdleTimer);
+  if (els.chatForm.hidden) return;
+  chatInputIdleTimer = window.setTimeout(() => {
+    chatInputIdleTimer = 0;
+    if (els.chatForm.hidden) return;
+    if (sending || voiceInputState === "recording" || voiceInputState === "processing") {
+      scheduleChatInputAutoHide();
+      return;
+    }
+    if (els.chatInput.value.trim()) return;
+    if (els.chatForm.matches?.(":hover")) {
+      scheduleChatInputAutoHide();
+      return;
+    }
+    hideChatInput();
+  }, delayMs);
+}
+
+function clearChatInputAutoHide() {
+  window.clearTimeout(chatInputIdleTimer);
+  chatInputIdleTimer = 0;
 }
 
 function setChatInputText(text, { append = false } = {}) {
@@ -1517,6 +1593,7 @@ function setChatInputText(text, { append = false } = {}) {
   els.chatInput.value = append && current ? `${current} ${value}` : value;
   showChatInput();
   autoResizeChatInput();
+  scheduleChatInputAutoHide();
 }
 
 function shouldNavigateInputHistory(event, direction) {
@@ -1834,6 +1911,7 @@ function setVoiceInputState(nextState) {
   voiceInputState = nextState;
   updateVoiceRecordButton();
   updateActivityControls();
+  if (!els.chatForm.hidden) scheduleChatInputAutoHide();
   scheduleSettingsSnapshot();
 }
 
@@ -3029,6 +3107,7 @@ function interruptReply({ announce = false } = {}) {
 
   stopTts();
   clearLocalInteraction();
+  firstSpeechSegmentShown = false;
   lastTurnSignature = "";
   lastTurnTextKey = "";
   lastActivityActionSignature = "";
@@ -3084,6 +3163,7 @@ async function sendMessage(text) {
   let restoreText = "";
   cancelEmotionPreview({ restore: true });
   clearLocalInteraction();
+  firstSpeechSegmentShown = false;
   lastTurnSignature = "";
   lastTurnTextKey = "";
   desktopFileDeliveryHandled.clear();
@@ -3102,6 +3182,7 @@ async function sendMessage(text) {
   } catch (error) {
     if (!isTurnActive(turnToken)) return;
     restoreText = trimmed;
+    firstSpeechSegmentShown = false;
     showError(isAbortLike(error) ? "请求超时" : formatError(error));
   } finally {
     if (isTurnActive(turnToken)) {
@@ -3125,11 +3206,13 @@ function scheduleProactiveWake({ immediate = false, delayMs = null } = {}) {
   window.clearTimeout(proactiveWakeTimer);
   proactiveWakeTimer = 0;
   if (!isTauriRuntime || !state.proactiveWakeEnabled) return;
+  const now = Date.now();
+  const remainingMs = Math.max(0, proactiveWakeNextAllowedAt - now);
   const baseDelay = Number.isFinite(Number(delayMs))
     ? Number(delayMs)
     : immediate
       ? 1000
-      : state.proactiveWakeIntervalSec * 1000;
+      : Math.max(getProactiveWakeIntervalMs(), remainingMs);
   const jitter = immediate || Number.isFinite(Number(delayMs)) ? 1 : 0.85 + Math.random() * 0.3;
   proactiveWakeTimer = window.setTimeout(() => {
     proactiveWakeTimer = 0;
@@ -3139,12 +3222,25 @@ function scheduleProactiveWake({ immediate = false, delayMs = null } = {}) {
 
 async function runProactiveWake() {
   if (!state.proactiveWakeEnabled) return;
+  const remainingMs = proactiveWakeNextAllowedAt - Date.now();
+  if (remainingMs > 0) {
+    scheduleProactiveWake({ delayMs: remainingMs });
+    return;
+  }
   if (!canStartProactiveWake()) {
-    scheduleProactiveWake({ delayMs: PROACTIVE_WAKE_RETRY_MS });
+    scheduleProactiveWake({ delayMs: Math.max(PROACTIVE_WAKE_RETRY_MS, getProactiveWakeRemainingMs()) });
     return;
   }
   await sendProactiveWake();
   scheduleProactiveWake();
+}
+
+function getProactiveWakeIntervalMs() {
+  return normalizeProactiveWakeIntervalSec(state.proactiveWakeIntervalSec) * 1000;
+}
+
+function getProactiveWakeRemainingMs() {
+  return Math.max(0, proactiveWakeNextAllowedAt - Date.now());
 }
 
 function canStartProactiveWake() {
@@ -3159,8 +3255,12 @@ function canStartProactiveWake() {
 
 async function sendProactiveWake() {
   const turnToken = ++activeTurnToken;
+  const startedAt = Date.now();
+  proactiveWakeLastAt = startedAt;
+  proactiveWakeNextAllowedAt = startedAt + getProactiveWakeIntervalMs();
   proactiveWakeRunning = true;
   sending = true;
+  firstSpeechSegmentShown = false;
   lastTurnSignature = "";
   lastTurnTextKey = "";
   desktopFileDeliveryHandled.clear();
@@ -3172,15 +3272,16 @@ async function sendProactiveWake() {
       if (!healthy) return;
     }
     if (!isTurnActive(turnToken)) return;
-    const stream = sendThinkStream(getActiveCharacterText("proactiveWakePrompt"), turnToken, {
+    const stream = sendThinkStream(buildProactiveWakeMessage(), turnToken, {
       turnKind: "desktop_pet_proactive",
       transientUserMessage: true,
       desktopScreenFrames: latestDesktopScreenFramesForThink()
     });
     await processThinkStream(stream, turnToken);
-    proactiveWakeLastAt = Date.now();
+    proactiveWakeLastAt = startedAt;
   } catch (error) {
     if (!isTurnActive(turnToken) || isAbortLike(error)) return;
+    firstSpeechSegmentShown = false;
     setRuntimeStatus(`主动搭话暂时失败：${formatError(error)}`, { mode: "error" });
   } finally {
     proactiveWakeRunning = false;
@@ -3195,6 +3296,56 @@ async function sendProactiveWake() {
       updateActivityControls();
       scheduleSettingsSnapshot();
     }
+  }
+}
+
+function buildProactiveWakeMessage() {
+  const prompt = getActiveCharacterText(
+    "proactiveWakePrompt",
+    "主人暂时没有说话。你像坐在旁边陪他一样，自然地轻声搭一句话。"
+  );
+  return `${prompt}\n\n${PROACTIVE_WAKE_STYLE_GUARD}`;
+}
+
+async function* readNdjsonEvents(response) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    // Fallback: response body streaming not available.
+    const raw = await response.text();
+    const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const tail = !lines.length && raw.trim() ? [raw.trim()] : [];
+    for (const line of [...lines, ...tail]) {
+      try { yield JSON.parse(line); } catch { /* skip */ }
+    }
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const segments = buffer.split(/\r?\n/);
+    buffer = segments.pop() || "";
+
+    for (const segment of segments) {
+      const trimmed = segment.trim();
+      if (!trimmed) continue;
+      try {
+        yield JSON.parse(trimmed);
+      } catch {
+        // Skip malformed stream lines.
+      }
+    }
+  }
+
+  buffer += decoder.decode();
+  const tail = buffer.trim();
+  if (tail) {
+    try { yield JSON.parse(tail); } catch { /* skip */ }
   }
 }
 
@@ -3243,19 +3394,9 @@ async function* sendThinkStream(message, turnToken, options = {}) {
     throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
   }
 
-  const raw = await response.text();
-  const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (!lines.length && raw.trim()) {
-    lines.push(raw.trim());
-  }
-
-  for (const line of lines) {
+  for await (const event of readNdjsonEvents(response)) {
     if (!isTurnActive(turnToken)) return;
-    try {
-      yield JSON.parse(line);
-    } catch {
-      // Skip malformed stream lines.
-    }
+    yield event;
   }
 }
 
@@ -3274,25 +3415,45 @@ async function processThinkStream(stream, turnToken) {
     } else if (type === "ui") {
       applyPayloadEmotion(event);
     } else if (type === "speech_chunk") {
-      partialSpeech += String(event?.text || "");
+      const chunk = String(event?.text || "");
+      if (chunk) partialSpeech += chunk;
+    } else if (type === "speech_segment") {
+      const text = String(event?.text || "").trim();
+      if (text && !rendered && !firstSpeechSegmentShown) {
+        firstSpeechSegmentShown = true;
+        showBubbleText(text, { transient: false, kind: "reply" });
+      }
     } else if (type === "file_ready" || type === "generated_file_ready") {
       void handleDesktopFileDeliveryEvent(event);
     } else if (type === "final" || type === "final_ui") {
       const payload = event?.payload || event;
-      if (renderPayload(payload)) rendered = true;
+      if (renderPayload(payload)) {
+        rendered = true;
+        firstSpeechSegmentShown = false;
+      }
     } else if (type === "npc_turn") {
-      if (!rendered && renderPayload(event)) rendered = true;
+      if (!rendered && renderPayload(event)) {
+        rendered = true;
+        firstSpeechSegmentShown = false;
+      }
     } else if (type === "stream_error" || type === "error") {
       streamErrored = true;
       streamErrorMessage = String(event?.message || "Stream error");
-      if (event?.partial && !rendered && renderPayload(event.partial)) rendered = true;
+      if (event?.partial && !rendered) {
+        firstSpeechSegmentShown = false;
+        if (renderPayload(event.partial)) rendered = true;
+      }
     } else if (type === "stream_end") {
-      if (event?.partial && !rendered && renderPayload(event.partial)) rendered = true;
+      if (event?.partial && !rendered) {
+        firstSpeechSegmentShown = false;
+        if (renderPayload(event.partial)) rendered = true;
+      }
     }
   }
 
   if (!isTurnActive(turnToken)) return false;
   if (!rendered && partialSpeech.trim()) {
+    firstSpeechSegmentShown = false;
     rendered = renderPayload({ speech: partialSpeech.trim() });
   }
 
@@ -3352,41 +3513,123 @@ function applyPayloadEmotion(payload, { persist = true } = {}) {
 
 function applyPayloadActivity(payload) {
   const activity = payload?.activity;
-  if (!activity || typeof activity !== "object" || !musicTrack) return;
-  const action = String(activity.action || "").trim().toLowerCase();
-  const target = String(activity.target || activity.handle || "current").trim().toLowerCase();
-  const sourceId = String(activity.source_id || activity.sourceId || "").trim();
-  const requestedIndex = sourceId ? findMusicTrackIndexBySourceId(sourceId) : -1;
-  const targetsCurrent =
-    ["current", "", "local_music_current"].includes(target) ||
-    sourceId === musicTrack.sourceId ||
-    requestedIndex >= 0;
-  if (!targetsCurrent) return;
-  const signature = `${action}:${target}:${sourceId}:${musicTrack.sourceId}`;
-  if (signature === lastActivityActionSignature) return;
-  lastActivityActionSignature = signature;
+  if (!activity || typeof activity !== "object") return;
 
-  if ((action === "next" || action === "skip") && hasNextMusicTrack()) {
+  const action = String(activity.action || "").trim().toLowerCase();
+  if (!action) return;
+  const sourceId = String(activity.source_id || activity.sourceId || "").trim();
+
+  const actionSignature = [
+    action,
+    sourceId,
+    musicQueue.length,
+    musicQueueIndex,
+    musicTrack?.sourceId || "",
+    musicPlaying ? "playing" : "not-playing",
+    musicPaused ? "paused" : "not-paused"
+  ].join(":");
+  if (actionSignature === lastActivityActionSignature) return;
+  lastActivityActionSignature = actionSignature;
+
+  if (action === "next" || action === "skip") {
+    if (!hasNextMusicTrack()) {
+      notifyMusicActivityUnavailable("后面没有更多歌曲了。");
+      return;
+    }
     void playNextMusicTrack();
-  } else if ((action === "previous" || action === "prev") && hasPreviousMusicTrack()) {
+  } else if (action === "previous" || action === "prev") {
+    if (!hasPreviousMusicTrack()) {
+      notifyMusicActivityUnavailable("前面没有歌曲了。");
+      return;
+    }
     void playPreviousMusicTrack();
-  } else if (action === "play" && requestedIndex >= 0 && requestedIndex !== musicQueueIndex) {
-    void playMusicQueueIndex(requestedIndex, {
-      message: `切到这首：《${musicQueue[requestedIndex].displayName}》。`
-    });
-  } else if (action === "pause" && musicPlaying) {
-    els.musicPlayer.pause();
-    musicPlaying = false;
-    musicPaused = true;
-    setMusicEmotion(false);
-    setRuntimeStatus(`音乐已暂停：${getMusicDisplayName()}`, { mode: "music-paused" });
-  } else if ((action === "resume" || action === "play") && musicPaused) {
-    void toggleMusicPlayback();
+  } else if (action === "play") {
+    if (sourceId) {
+      const requestedIndex = findMusicTrackIndexBySourceId(sourceId);
+      if (requestedIndex >= 0) {
+        if (requestedIndex === musicQueueIndex && musicPlaying) return;
+        if (requestedIndex === musicQueueIndex && !musicPlaying) {
+          void toggleMusicPlayback();
+          updateActivityControls();
+          scheduleSettingsSnapshot();
+          return;
+        }
+        void playMusicQueueIndex(requestedIndex, {
+          message: `切到这首：《${musicQueue[requestedIndex].displayName}》。`
+        });
+      } else if (/^workspace:(attachment|generated):.+/.test(sourceId)) {
+        const parts = sourceId.split(":");
+        void playWorkspaceAudioItem({
+          itemType: parts[1],
+          handle: parts.slice(2).join(":"),
+          title: ""
+        });
+      } else {
+        const catalogItem = workspaceAudioCatalog.find((rec) =>
+          rec.sourceId === sourceId || rec.handle === sourceId
+        );
+        if (catalogItem && catalogItem.handle) {
+          void playWorkspaceAudioItem({
+            itemType: catalogItem.itemType || "attachment",
+            handle: catalogItem.handle,
+            title: catalogItem.title || ""
+          });
+        } else {
+          notifyMusicActivityUnavailable("这首还没有加入播放队列。");
+          return;
+        }
+      }
+    } else if (musicPaused) {
+      void toggleMusicPlayback();
+    } else if (musicPlaying) {
+      return;
+    } else {
+      const queueIndex = getSafeMusicQueueIndex();
+      if (queueIndex < 0) {
+        notifyMusicActivityUnavailable("我手边还没有可播放的音乐，可以先拖入一首，或者从推荐里点一首。");
+        return;
+      }
+      void playMusicQueueIndex(queueIndex, {
+        message: `播放：《${musicQueue[queueIndex].displayName}》。`
+      });
+    }
+  } else if (action === "pause") {
+    if (musicPlaying) {
+      els.musicPlayer.pause();
+      musicPlaying = false;
+      musicPaused = true;
+      setMusicEmotion(false);
+      setRuntimeStatus(`音乐已暂停：${getMusicDisplayName()}`, { mode: "music-paused" });
+    } else {
+      notifyMusicActivityUnavailable("现在没有正在播放的音乐。");
+      return;
+    }
+  } else if (action === "resume") {
+    if (musicPaused) {
+      void toggleMusicPlayback();
+    } else if (musicPlaying) {
+      notifyMusicActivityUnavailable("音乐已经在播放了。");
+      return;
+    } else {
+      const queueIndex = getSafeMusicQueueIndex();
+      if (queueIndex < 0) {
+        notifyMusicActivityUnavailable("我手边还没有可播放的音乐。");
+        return;
+      }
+      void playMusicQueueIndex(queueIndex, {
+        message: `播放：《${musicQueue[queueIndex].displayName}》。`
+      });
+    }
   } else if (action === "stop") {
+    if (!musicTrack) {
+      notifyMusicActivityUnavailable("现在没有正在播放的音乐。");
+      return;
+    }
     stopMusic({ announce: false });
   } else {
     return;
   }
+
   updateActivityControls();
   scheduleSettingsSnapshot();
 }
@@ -3531,10 +3774,9 @@ function normalizeSegments(value) {
 }
 
 function buildClientCapabilities() {
-  const capabilities = [...BASE_CAPABILITIES];
+  const capabilities = [...BASE_CAPABILITIES, AUDIO_PLAYBACK_CAPABILITY];
   if (state.desktopContextEnabled) capabilities.push("desktop_context");
   if (state.screenVisionEnabled && state.screenVisionMode === "summary") capabilities.push("screen_vision");
-  if (musicTrack) capabilities.push(AUDIO_PLAYBACK_CAPABILITY);
   return capabilities;
 }
 
@@ -4799,7 +5041,20 @@ function summarizeMusicTrack(track) {
 function findMusicTrackIndexBySourceId(sourceId) {
   const normalized = String(sourceId || "").trim();
   if (!normalized) return -1;
-  return musicQueue.findIndex((track) => track?.sourceId === normalized);
+  return musicQueue.findIndex((track) =>
+    track?.sourceId === normalized || track?.queueDedupeKey === normalized
+  );
+}
+
+function getSafeMusicQueueIndex() {
+  if (!musicQueue.length) return -1;
+  if (musicQueueIndex >= 0 && musicQueueIndex < musicQueue.length) return musicQueueIndex;
+  return 0;
+}
+
+function notifyMusicActivityUnavailable(message) {
+  setRuntimeStatus(message, { mode: "music" });
+  showBubbleText(message, { transient: true, durationMs: 2200, kind: "music" });
 }
 
 function buildCurrentLyricSnapshot(timeSeconds = Number(els.musicPlayer?.currentTime || 0)) {
@@ -4899,6 +5154,7 @@ async function refreshWorkspaceMusicRecommendations() {
     const sessionId = String(state.sessionId || "");
     if (!sessionId || resourceState.health !== "online") {
       setWorkspaceMusicRecommendations([]);
+      workspaceAudioCatalog = [];
       return;
     }
     const url = buildBackendEndpointUrl("workspaceSummary", "/desktop-pet/workspace/summary", {
@@ -4913,6 +5169,7 @@ async function refreshWorkspaceMusicRecommendations() {
     });
     if (!response.ok) {
       setWorkspaceMusicRecommendations([]);
+      workspaceAudioCatalog = [];
       return;
     }
     const payload = await response.json().catch(() => null);
@@ -4928,8 +5185,10 @@ async function refreshWorkspaceMusicRecommendations() {
     }
     const nextRecs = dedupeMusicRecommendations(candidates).slice(0, 3);
     setWorkspaceMusicRecommendations(nextRecs);
+    workspaceAudioCatalog = dedupeMusicRecommendations(candidates).slice(0, 12);
   } catch {
     setWorkspaceMusicRecommendations([]);
+    workspaceAudioCatalog = [];
   } finally {
     workspaceMusicRecommendationsLoading = false;
   }
@@ -5032,11 +5291,12 @@ function simpleHash(value) {
 
 function buildDesktopMusicActivity() {
   const recs = buildMusicRecommendationsSnapshot();
-  const recsSummary = recs.map(({ title, reason }) => ({ title, reason }));
+  const recsSummary = recs.map(({ title, reason, sourceId }) => ({ title, reason, source_id: sourceId || "" }));
+  const catalog = buildPlayableMusicCatalog();
 
   if (!musicTrack) {
-    if (recs.length > 0) {
-      return { type: "audio_recommendations", status: "idle", recommendations: recsSummary };
+    if (recs.length > 0 || catalog.length > 0) {
+      return { type: "audio_recommendations", status: "idle", recommendations: recsSummary, catalog };
     }
     return null;
   }
@@ -5046,7 +5306,7 @@ function buildDesktopMusicActivity() {
   const currentLyric = buildCurrentLyricSnapshot(currentTime);
   const status = musicPlaying ? "running" : musicPaused ? "paused" : "stopped";
   const progressSeconds = Number.isFinite(currentTime) ? Math.max(0, currentTime) : 0;
-  if (status === "stopped" && progressSeconds <= 0 && recs.length === 0) return null;
+  if (status === "stopped" && progressSeconds <= 0 && recs.length === 0 && catalog.length === 0) return null;
   return {
     type: "audio_playback",
     title: getMusicDisplayName() || "未命名音乐",
@@ -5074,8 +5334,54 @@ function buildDesktopMusicActivity() {
     lyric_current: currentLyric?.text || "",
     lyric_previous: currentLyric?.previousText || "",
     lyric_next: currentLyric?.nextText || "",
-    recommendations: recsSummary
+    recommendations: recsSummary,
+    catalog
   };
+}
+
+function buildPlayableMusicCatalog() {
+  const seen = new Set();
+  const catalog = [];
+
+  const addItem = (item) => {
+    if (!item || !item.sourceId || !item.title) return;
+    const key = item.sourceId || item.title;
+    if (seen.has(key)) return;
+    seen.add(key);
+    catalog.push({
+      source_id: item.sourceId,
+      title: item.title,
+      source: item.itemType ? `workspace:${item.itemType}` : "queue",
+      item_type: item.itemType || "",
+      handle: item.handle || "",
+      reason: item.reason || "",
+      playable: true
+    });
+  };
+
+  for (const track of musicQueue) {
+    if (track?.displayName) {
+      addItem({
+        sourceId: track.sourceId || track.queueDedupeKey || "",
+        title: String(track.displayName || ""),
+        itemType: "",
+        handle: "",
+        reason: "播放队列"
+      });
+    }
+  }
+
+  for (const rec of workspaceAudioCatalog) {
+    addItem({
+      sourceId: rec.sourceId,
+      title: rec.title,
+      itemType: rec.itemType,
+      handle: rec.handle,
+      reason: rec.reason || "手边音频"
+    });
+  }
+
+  return catalog.slice(0, 12);
 }
 
 function queueTtsItems(items, signature = "") {
@@ -5388,6 +5694,7 @@ function setPetEmotion(emotion, { persist = true, force = false } = {}) {
   if (!force && state.currentEmotion === entry.id && els.petImage.src) return entry.id;
   state.currentEmotion = entry.id;
   visualRenderer.setExpression(entry, { force });
+  scheduleSettingsSnapshot();
   updateMenuLabels();
   if (persist) scheduleSave(0);
   return entry.id;

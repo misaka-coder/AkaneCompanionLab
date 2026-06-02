@@ -33,6 +33,7 @@ import {
 import { createControlCenterSnapshot } from "./control-center/data-adapter.js";
 import {
   buildMusicRuntimePatch,
+  buildOverviewEmotionRuntimePatchFromSettingsSnapshot,
   CONTROL_CENTER_SOURCE_KIND,
   createControlCenterDataSource
 } from "./control-center/data-sources.js";
@@ -93,7 +94,7 @@ const state = {
   activeEmotion: characterPage.emotions?.find((item) => item.current)?.id || characterPage.emotions?.[0]?.id || "",
   switches: Object.fromEntries(perceptionPage.featureCards.map((card) => [card.id, card.enabled])),
   screenVision: buildScreenVisionState(perceptionPage.featureCards),
-  activeInterval: perceptionPage.featureCards.find((card) => card.id === "proactive")?.activeOption || "1 分钟",
+  activeInterval: perceptionPage.featureCards.find((card) => card.id === "proactive")?.activeOption || "5 分钟",
   activeVoicePreset: voicePage.tts?.voice || "Akane Voice",
   activeMusicMode: musicPage.modes[0],
   voice: buildVoiceState(voicePage),
@@ -686,6 +687,8 @@ function renderOverviewPage() {
         </article>
       </div>
 
+      ${renderRecentOutputs(overviewPage.recentOutputs)}
+
       <article class="glass-card overview-health-card">
         <h2>${icon("equalizer")} 应用健康诊断</h2>
         <div class="health-grid">
@@ -808,6 +811,36 @@ function renderOverviewMusicCard() {
           <button class="${index === 2 ? "active" : ""}" type="button"${item.actionId ? ` data-action-id="${escapeAttr(item.actionId)}"` : ""}>${index === 0 ? icon("previous") : index === 1 ? icon("next") : index === 2 ? icon("pause") : index === 3 ? icon("stop") : icon("trash")} ${escapeHtml(item.label)}</button>
         `).join("")}
       </div>
+    </article>
+  `;
+}
+
+function renderRecentOutputs(recentOutputs) {
+  const outputs = Array.isArray(recentOutputs) ? recentOutputs : [];
+  return `
+    <article class="glass-card overview-outputs-card">
+      <div class="card-heading">
+        <h2>${icon("sparkle")} 最近成果</h2>
+        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.workspaceOpen}">打开工作区 ${icon("chevron")}</button>
+      </div>
+      ${outputs.length > 0 ? `
+        <div class="recent-outputs-list">
+          ${outputs.slice(0, 3).map((item) => `
+            <div class="recent-output-item">
+              <span class="recent-output-icon">${icon("file")}</span>
+              <div class="recent-output-info">
+                <strong>${escapeHtml(item.title || "未命名文件")}</strong>
+                <small>${escapeHtml(item.subtitle || item.format || "")}</small>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      ` : `
+        <div class="recent-outputs-empty">
+          <p>暂无生成成果</p>
+          <small>Akane 处理完任务后会在这里展示成果</small>
+        </div>
+      `}
     </article>
   `;
 }
@@ -1340,8 +1373,8 @@ function renderPerceptionPage() {
         ${renderPermissionCard()}
       </div>
       <div class="perception-bottom-grid">
-        ${renderEventCard()}
-        ${renderSuggestionCard()}
+        ${renderSenseStatusCard()}
+        ${renderSenseNoteCard()}
         ${renderDiagnosticCard()}
       </div>
     </section>
@@ -1613,7 +1646,6 @@ function renderPerceptionFeatureCard(card) {
 
 function renderFeaturePreview(card) {
   if (card.previewType === "window") {
-    const expanded = state.expandedPerceptionCard === "activeWindow";
     return `
       <div class="feature-preview window-preview">
         <strong>${escapeHtml(card.label)}</strong>
@@ -1625,10 +1657,8 @@ function renderFeaturePreview(card) {
             <b>${escapeHtml(card.appName)}</b>
             <small>${escapeHtml(card.appDetail)}</small>
             <small>${escapeHtml(card.version)}</small>
-            ${expanded ? `<small>已展开 · 实时监控中</small>` : ""}
           </div>
         </div>
-        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails}" data-payload-feature-id="activeWindow">${expanded ? "收起详情" : escapeHtml(card.action)}</button>
       </div>
     `;
   }
@@ -1640,7 +1670,6 @@ function renderFeaturePreview(card) {
         <pre>${card.code.map(escapeHtml).join("\n")}</pre>
         <div class="preview-footer">
           <span>${escapeHtml(card.source)}</span>
-          <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionClipboardClear}" data-payload-feature-id="clipboard">${escapeHtml(card.action)}</button>
         </div>
       </div>
     `;
@@ -1707,14 +1736,22 @@ function renderPrivacyCard() {
 }
 
 function renderPermissionCard() {
+  const cards = perceptionPage.featureCards || [];
+  const screen = cards.find((c) => c.id === "screen");
+  const clipboard = cards.find((c) => c.id === "clipboard");
+  const items = [
+    { label: "屏幕捕获", status: screen?.enabled ? "已启用" : "未启用", icon: "shield", tone: screen?.enabled ? "good" : "info" },
+    { label: "剪贴板", status: clipboard?.enabled ? "已启用" : "未启用", icon: "clipboard", tone: clipboard?.enabled ? "good" : "info" },
+    { label: "麦克风", status: "需系统授权", icon: "mic", tone: "warn", fixed: true },
+    { label: "文件访问", status: "按需工作", icon: "folder", tone: "caution", fixed: true }
+  ];
   return `
     <article class="glass-card permission-card">
       <div class="card-heading">
-        <h2>权限状态</h2>
-        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionManagePermissions}">管理权限</button>
+        <h2>感知边界</h2>
       </div>
       <div class="permission-grid">
-        ${perceptionPage.permissions.map((item) => `
+        ${items.map((item) => `
           <div class="permission-tile ${item.tone}">
             ${icon(item.icon)}
             <span>${escapeHtml(item.label)}</span>
@@ -1726,22 +1763,44 @@ function renderPermissionCard() {
   `;
 }
 
-function renderEventCard() {
+function renderSenseStatusCard() {
+  const cards = perceptionPage.featureCards || [];
+  const makeItem = (id, icon, label, getStatus) => {
+    const card = cards.find((c) => c.id === id);
+    return { icon, label, status: getStatus(card) };
+  };
+  const statusItems = [
+    makeItem("activeWindow", "lock", "前台窗口感知", (c) =>
+      c?.enabled ? "已启用" : "已关闭"
+    ),
+    makeItem("clipboard", "clipboard", "剪贴板文本", (c) =>
+      c?.enabled ? "已启用" : "已关闭"
+    ),
+    makeItem("screen", "eye", "屏幕捕获", (c) => {
+      if (!c?.enabled) return "已关闭";
+      const parts = ["已启用"];
+      if (c.frequency) parts.push(`间隔 ${c.frequency}`);
+      if (c.frames) parts.push(`保留 ${c.frames} 帧`);
+      return parts.join(" · ");
+    }),
+    makeItem("proactive", "chat", "主动搭话", (c) => {
+      if (!c?.enabled) return "已关闭";
+      const parts = ["已启用"];
+      if (c.activeOption) parts.push(`间隔 ${c.activeOption}`);
+      return parts.join(" · ");
+    })
+  ];
   return `
-    <article class="glass-card event-card">
+    <article class="glass-card sense-status-card">
       <div class="card-heading">
-        <h2>近期感知事件</h2>
-        <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionEventsViewAll}">查看全部</button>
+        <h2>感知运行状态</h2>
       </div>
-      <div class="event-list">
-        ${perceptionPage.events.map((item) => `
-          <div class="event-row">
-            <span class="event-icon">${icon(item.icon)}</span>
-            <div>
-              <strong>${escapeHtml(item.title)}</strong>
-              <p>${escapeHtml(item.detail)}</p>
-            </div>
-            <time>${escapeHtml(item.time)}</time>
+      <div class="sense-status-list">
+        ${statusItems.map((item) => `
+          <div class="sense-status-row">
+            <span class="sense-status-icon">${icon(item.icon)}</span>
+            <span class="sense-status-label">${escapeHtml(item.label)}</span>
+            <strong class="sense-status-value">${escapeHtml(item.status)}</strong>
           </div>
         `).join("")}
       </div>
@@ -1749,21 +1808,41 @@ function renderEventCard() {
   `;
 }
 
-function renderSuggestionCard() {
+function renderSenseNoteCard() {
+  const cards = perceptionPage.featureCards || [];
+  const aw = cards.find((c) => c.id === "activeWindow");
+  const cb = cards.find((c) => c.id === "clipboard");
+  const sc = cards.find((c) => c.id === "screen");
+  const pr = cards.find((c) => c.id === "proactive");
+  const items = [];
+  if (aw?.enabled) {
+    items.push("前台窗口感知已开启，Akane 会在发送消息时参考当前窗口上下文。");
+  }
+  if (cb?.enabled) {
+    items.push("剪贴板感知已开启，Akane 只会在发送消息时临时参考复制内容，正文不在控制中心展示。");
+  }
+  if (sc?.enabled) {
+    items.push("屏幕捕获已开启，Akane 可以按设置保留最近画面作为上下文。");
+  } else {
+    items.push("屏幕捕获已关闭，Akane 不会主动查看你的屏幕画面。");
+  }
+  if (pr?.enabled) {
+    const detail = pr.activeOption ? `（当前间隔 ${pr.activeOption}）` : "";
+    items.push(`主动搭话已开启，Akane 会按设定间隔轻声提醒你${detail}。`);
+  }
+  const anyEnabled = Boolean(aw?.enabled || cb?.enabled || sc?.enabled || pr?.enabled);
+  if (!anyEnabled) {
+    items.length = 0;
+    items.push("所有桌面感知能力均已关闭，Akane 目前只根据对话内容陪伴你。");
+  }
   return `
-    <article class="glass-card suggestion-card">
+    <article class="glass-card sense-note-card">
       <div class="card-heading">
-        <h2>${icon("sparkle")} Akane 的发现与建议</h2>
-        <span>${icon("sparkle")} ${escapeHtml(perceptionPage.suggestion.badge)}</span>
+        <h2>${icon("sparkle")} Akane 的感知小记</h2>
       </div>
-      <div class="suggestion-body">
+      <div class="sense-note-body">
         <div>
-          <h3>${escapeHtml(perceptionPage.suggestion.title)}</h3>
-          <p>${escapeHtml(perceptionPage.suggestion.body)}</p>
-          <p>${escapeHtml(perceptionPage.suggestion.prompt)}</p>
-          <div class="suggestion-actions">
-            ${perceptionPage.suggestion.actions.map((action, index) => `<button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.perceptionSuggestionRun}" data-payload-field="action" data-payload-value="${escapeAttr(action)}" data-payload-index="${index}">${escapeHtml(action)}</button>`).join("")}
-          </div>
+          ${items.map((text) => `<p>${icon("heart")} ${escapeHtml(text)}</p>`).join("")}
         </div>
         <img src="${images.thinking}" alt="" />
       </div>
@@ -2203,11 +2282,15 @@ async function bindSettingsSnapshotListener() {
 
 function applySettingsSnapshotPatch(runtimeSnapshot) {
   if (!runtimeSnapshot || typeof runtimeSnapshot !== "object") return;
+
   const musicRuntime = buildMusicRuntimePatch({
     musicSnapshot: runtimeSnapshot.music,
     petState: runtimeSnapshot.state || {}
-  });
-  if (!musicRuntime) return;
+  }) || undefined;
+
+  const overviewRuntime = buildOverviewEmotionRuntimePatchFromSettingsSnapshot(runtimeSnapshot) || undefined;
+
+  if (!musicRuntime && !overviewRuntime) return;
 
   const nextSnapshot = createControlCenterSnapshot({
     navItems,
@@ -2223,7 +2306,8 @@ function applySettingsSnapshotPatch(runtimeSnapshot) {
     perceptionPage,
     abilitiesPage,
     advancedPage,
-    musicRuntime
+    musicRuntime,
+    overviewRuntime
   });
   applyControlCenterSnapshot(nextSnapshot, {
     renderShell: false,

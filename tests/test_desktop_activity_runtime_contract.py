@@ -125,6 +125,35 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("切换到某个具体音频时，play 应尽量带 source_id", prompt)
         self.assertIn("只继续当前音频时，用 resume + target=current", prompt)
 
+    def test_audio_recommendations_prompt_exposes_playable_catalog_without_current_track(self) -> None:
+        prompt = self.engine._build_desktop_activity_prompt(
+            {
+                "type": "audio_recommendations",
+                "status": "idle",
+                "recommendations": [
+                    {
+                        "title": "Starry Days",
+                        "reason": "手边音频",
+                        "source_id": "workspace:attachment:audio_001",
+                    }
+                ],
+                "catalog": [
+                    {
+                        "title": "Starry Days",
+                        "reason": "手边音频",
+                        "source_id": "workspace:attachment:audio_001",
+                    }
+                ],
+            },
+            _desktop_context(),
+        )
+
+        self.assertIn("类型：可播放音乐推荐", prompt)
+        self.assertIn("当前 Akane 音乐推荐", prompt)
+        self.assertIn("Starry Days", prompt)
+        self.assertIn("workspace:attachment:audio_001", prompt)
+        self.assertIn("当前可播放音乐", prompt)
+
     def test_desktop_prompt_profile_keeps_activity_as_execution_request(self) -> None:
         profile = self.engine._get_prompt_profile_registry().get(ClientMode.DESKTOP_PET)
         prompts = [

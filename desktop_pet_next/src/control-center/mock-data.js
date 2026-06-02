@@ -164,6 +164,11 @@ export const overviewPage = {
     { label: "活跃守护", value: "0", detail: "spark-orange" },
     { label: "协议版本", value: "desktop_pet", note: "已同步" },
     { label: "能力注册", value: "25 工具", note: "能力注册表已同步" }
+  ],
+  recentOutputs: [
+    { title: "Q4 报告草案", subtitle: "DOCX · 做好的东西", format: "docx" },
+    { title: "调研笔记整理", subtitle: "MD · 做好的东西", format: "md" },
+    { title: "周报摘要", subtitle: "PDF · 做好的东西", format: "pdf" }
   ]
 };
 
@@ -336,10 +341,9 @@ export const perceptionPage = {
       enabled: true,
       previewType: "window",
       label: "当前活动窗口",
-      appName: "Microsoft Visual Studio Code",
-      appDetail: "代码编辑器",
-      version: "v1.90.1",
-      action: "查看详情"
+      appName: "等待同步",
+      appDetail: "同步后将在此显示状态",
+      version: "桌面感知"
     },
     {
       id: "clipboard",
@@ -349,9 +353,8 @@ export const perceptionPage = {
       enabled: true,
       previewType: "code",
       label: "最新剪贴板内容",
-      code: ["const akane = {", '  name: "Akane",', '  mission: "让每一天都更轻松"', "}"],
-      source: "来自 Visual Studio Code · 1分钟前",
-      action: "清空记录"
+      code: ["剪贴板内容不在控制中心展示"],
+      source: "仅显示能力状态 · 未读取正文"
     },
     {
       id: "screen",
@@ -374,8 +377,8 @@ export const perceptionPage = {
       enabled: true,
       previewType: "interval",
       label: "搭话间隔",
-      options: ["30 秒", "1 分钟", "3 分钟", "5 分钟", "10 分钟"],
-      activeOption: "1 分钟",
+      options: ["3 分钟", "5 分钟", "10 分钟", "15 分钟", "30 分钟"],
+      activeOption: "5 分钟",
       note: "会根据上下文智能判断是否打扰你"
     }
   ],
@@ -386,48 +389,20 @@ export const perceptionPage = {
     "你可以随时查看、清除或管理历史记录。"
   ],
   permissions: [
-    { label: "屏幕捕获", status: "已授权", tone: "good", icon: "shield" },
-    { label: "剪贴板", status: "已授权", tone: "good", icon: "clipboard" },
-    { label: "麦克风", status: "未授权", tone: "warn", icon: "mic" },
-    { label: "文件访问", status: "部分授权", tone: "caution", icon: "folder" }
+    { id: "screen", label: "屏幕捕获", icon: "shield" },
+    { id: "clipboard", label: "剪贴板", icon: "clipboard" },
+    { label: "麦克风", icon: "mic", fixed: true },
+    { label: "文件访问", icon: "folder", fixed: true }
   ],
-  events: [
-    {
-      icon: "window",
-      title: "前台窗口切换到 Microsoft Visual Studio Code",
-      detail: "代码编辑器",
-      time: "12:35:21"
-    },
-    {
-      icon: "clipboard",
-      title: "复制了代码片段（共 86 字符）",
-      detail: "来自 Visual Studio Code",
-      time: "12:34:58"
-    },
-    {
-      icon: "camera",
-      title: "捕获屏幕画面",
-      detail: "检测到文档与代码内容",
-      time: "12:34:55"
-    },
-    {
-      icon: "message",
-      title: "Akane 主动搭话",
-      detail: "你在写个函数呢，需要我帮你检查一下逻辑吗？",
-      time: "12:34:40"
-    }
-  ],
+  events: [],
   suggestion: {
-    badge: "基于当前上下文",
-    title: "我注意到你正在编写一个函数哦~",
-    body: "函数需要处理异步请求，可能需要添加错误处理和加载状态。",
-    prompt: "我可以帮你：",
-    actions: ["检查代码逻辑与异常处理", "优化变量命名与结构", "生成单元测试", "解释相关 API 用法"]
+    title: "Akane 的感知小记",
+    body: ""
   },
   diagnostics: [
-    { label: "屏幕捕获帧率", value: "60 FPS", detail: "稳定", tone: "good" },
-    { label: "OCR 识别状态", value: "正常", detail: "识别准确率 98%", tone: "good" },
-    { label: "最后更新时间", value: "12:35:21", detail: "刚刚", tone: "info" }
+    { label: "屏幕捕获帧率", value: "等待同步", detail: "运行时数据就绪后将在此显示", tone: "info" },
+    { label: "OCR 识别状态", value: "等待同步", detail: "视觉识别状态暂未接入控制中心", tone: "info" },
+    { label: "最后更新时间", value: "--:--:--", detail: "等待同步", tone: "info" }
   ]
 };
 

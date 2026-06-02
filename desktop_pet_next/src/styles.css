@@ -145,12 +145,12 @@ textarea {
   display: inline-block;
   width: max-content;
   min-width: 0;
-  max-width: min(calc(220px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
+  max-width: min(calc(270px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
   height: auto;
   min-height: 0;
-  max-height: calc(78px * var(--pet-scale));
+  max-height: min(calc(184px * var(--pet-scale)), calc(44vh - var(--bubble-safe-top)));
   transform: translateX(-50%) translateY(-4px);
-  padding: calc(4px * var(--pet-scale)) calc(10px * var(--pet-scale));
+  padding: calc(7px * var(--pet-scale)) calc(11px * var(--pet-scale));
   border: 1px solid rgb(180 200 230 / 0.38);
   border-radius: calc(11px * var(--pet-scale));
   color: #3a4858;
@@ -160,12 +160,12 @@ textarea {
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
   font-size: calc(12px * var(--pet-scale));
-  line-height: 1.34;
+  line-height: 1.5;
   text-align: left;
   white-space: normal;
   word-break: normal;
   overflow-wrap: anywhere;
-  overflow: visible;
+  overflow: hidden;
   isolation: isolate;
   opacity: 0;
   visibility: hidden;
@@ -186,8 +186,11 @@ textarea {
   position: relative;
   z-index: 2;
   display: block;
-  max-height: calc(54px * var(--pet-scale));
+  max-height: min(calc(154px * var(--pet-scale)), calc(44vh - var(--bubble-safe-top) - calc(30px * var(--pet-scale))));
+  padding-right: calc(2px * var(--pet-scale));
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(140 165 205 / 0.42) transparent;
 }
 
 .bubble[data-size="short"] {
@@ -201,7 +204,7 @@ textarea {
 }
 
 .bubble[data-size="long"] {
-  max-width: min(calc(236px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
+  max-width: min(calc(304px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
 }
 
 .bubble::after {
@@ -393,8 +396,8 @@ textarea {
 }
 
 .quick-menu {
-  width: min(188px, calc(100vw - 16px));
-  max-height: min(260px, calc(100vh - 20px));
+  width: min(224px, calc(100vw - 16px));
+  max-height: min(340px, calc(100vh - 20px));
   padding: 8px 0 9px;
   border-radius: 14px;
 }
@@ -407,6 +410,12 @@ textarea {
   grid-template-columns: 1fr 1fr;
   gap: 7px;
   padding-top: 3px;
+}
+
+.quick-menu .visual-section {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
 }
 
 .embedded-settings[hidden] {
@@ -485,6 +494,25 @@ textarea {
 .menu-row input {
   width: 100%;
   accent-color: #8cb4dc;
+}
+
+.visual-control-row {
+  grid-template-columns: 42px minmax(0, 1fr) 38px;
+  min-height: 26px;
+  padding-block: 2px;
+}
+
+.visual-control-row label {
+  font-size: 11px;
+}
+
+.visual-control-row input[type="range"] {
+  height: 22px;
+  min-width: 0;
+}
+
+.visual-control-row output {
+  font-size: 10px;
 }
 
 .backend-row {

@@ -20,6 +20,7 @@ logger = logging.getLogger("akane.task_worker")
 ToolHandlersProvider = Callable[[], dict[str, BaseToolHandler]]
 PromptContextBuilder = Callable[[str, str], str]
 ToolArtifactRecorder = Callable[..., tuple[list[dict[str, Any]], str]]
+TaskCompletionCallback = Callable[..., None]
 
 
 AGENT_ALLOWED_TOOLS: dict[str, set[str]] = {
@@ -112,6 +113,7 @@ class TaskWorkerService:
         attachment_context_builder: PromptContextBuilder,
         generated_context_builder: PromptContextBuilder,
         record_tool_artifacts: ToolArtifactRecorder,
+        on_task_completed: TaskCompletionCallback | None = None,
     ) -> None:
         self.llm = llm
         self.task_workspace_service = task_workspace_service
@@ -120,6 +122,7 @@ class TaskWorkerService:
         self.attachment_context_builder = attachment_context_builder
         self.generated_context_builder = generated_context_builder
         self.record_tool_artifacts = record_tool_artifacts
+        self.on_task_completed = on_task_completed
 
     def delegate_task(
         self,
@@ -137,6 +140,7 @@ class TaskWorkerService:
         steps: list[dict[str, Any]] | None = None,
         inputs: list[Any] | None = None,
         expected_outputs: list[Any] | None = None,
+        delivery_context: dict[str, Any] | None = None,
         auto_start: bool = True,
         timestamp: int | None = None,
     ) -> WorkerDelegation:
@@ -158,6 +162,9 @@ class TaskWorkerService:
                     "delegated_at": now_ts,
                 }
             }
+            normalized_delivery_context = self._normalize_delivery_context(delivery_context)
+            if normalized_delivery_context:
+                metadata["delivery"] = normalized_delivery_context
             task = self.task_workspace_service.create_task(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -187,6 +194,9 @@ class TaskWorkerService:
                 }
             )
             metadata["workshop"] = workshop
+            normalized_delivery_context = self._normalize_delivery_context(delivery_context)
+            if normalized_delivery_context and not isinstance(metadata.get("delivery"), dict):
+                metadata["delivery"] = normalized_delivery_context
             task = self.task_workspace_service.update_task(
                 task_id=str(task["task_id"]),
                 status="queued",
@@ -372,6 +382,13 @@ class TaskWorkerService:
                     payload={"handoff": handoff},
                     status="pending",
                     timestamp=int(time.time()),
+                )
+                self._notify_task_completed(
+                    task_id=task_id,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    task=post_complete_task,
+                    handoff=handoff,
                 )
                 summary.status = "done"
                 return summary
@@ -978,6 +995,58 @@ class TaskWorkerService:
         if raw not in AGENT_ALLOWED_TOOLS:
             return "media_agent"
         return raw
+
+    def _normalize_delivery_context(self, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        client = str(value.get("client") or value.get("client_mode") or "").strip().lower()
+        if client and client != "qq_text":
+            return {}
+        target_id = self._coerce_positive_int(value.get("target_id"))
+        if not target_id:
+            return {}
+        return {
+            "client": "qq_text",
+            "is_group": bool(value.get("is_group")),
+            "target_id": target_id,
+            "user_id": self._coerce_positive_int(value.get("user_id")),
+            "group_id": self._coerce_positive_int(value.get("group_id")),
+            "session_id": str(value.get("session_id") or "")[:120],
+            "profile_user_id": str(value.get("profile_user_id") or "")[:120],
+            "clean_message": str(value.get("clean_message") or "")[:1000],
+            "raw_message": str(value.get("raw_message") or "")[:1000],
+            "sender_label": str(value.get("sender_label") or "")[:120],
+        }
+
+    def _coerce_positive_int(self, value: Any) -> int:
+        try:
+            parsed = int(value or 0)
+        except Exception:
+            return 0
+        return parsed if parsed > 0 else 0
+
+    def _notify_task_completed(
+        self,
+        *,
+        task_id: str,
+        profile_user_id: str,
+        session_id: str,
+        task: dict[str, Any],
+        handoff: dict[str, Any],
+    ) -> None:
+        callback = getattr(self, "on_task_completed", None)
+        if callback is None:
+            return
+        try:
+            callback(
+                task_id=task_id,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                task=task,
+                handoff=handoff,
+            )
+        except Exception:
+            logger.exception("task completion callback failed: task_id=%s", task_id)
 
     def _normalize_text_list(self, value: Any) -> list[str]:
         if value is None:

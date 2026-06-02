@@ -25,7 +25,9 @@ QQ_FILE_DELIVERY_DIRECT_RE = re.compile(
 )
 QQ_FILE_DELIVERY_TARGET_RE = re.compile(
     r"(文件|附件|结果|成果|产物|文档|表格|图片|照片|音频|视频|字幕|歌词|压缩包|安装包|"
+    r"人声|伴奏|干声|歌声|音轨|声轨|"
     r"word|docx?|excel|xlsx?|pptx?|pdf|markdown|\bmd\b|zip|rar|7z|"
+    r"mp3|wav|flac|m4a|aac|ogg|opus|vocals?|instrumental|stems?|"
     r"gen_\d+|file_\d+|img_\d+|audio_\d+|video_\d+)",
     re.IGNORECASE,
 )
@@ -67,6 +69,20 @@ class QQMessageContext:
             "client_mode": "qq_text",
             "client_capabilities": list(QQ_TEXT_CAPABILITIES),
             "extra_context": self.extra_context,
+            "qq_delivery_context": self.to_delivery_context(),
+        }
+
+    def to_delivery_context(self) -> dict[str, Any]:
+        return {
+            "is_group": bool(self.is_group),
+            "target_id": int(self.target_id or 0),
+            "user_id": int(self.user_id or 0),
+            "group_id": int(self.group_id or 0),
+            "session_id": self.session_id,
+            "profile_user_id": self.profile_user_id,
+            "clean_message": self.clean_message,
+            "raw_message": self.raw_message,
+            "sender_label": self.sender_label,
         }
 
 
@@ -179,6 +195,27 @@ class NapCatQQGateway:
                 group_id=group_id,
                 sender_label=sender_label,
             ),
+        )
+
+    def context_from_delivery_context(self, value: dict[str, Any]) -> QQMessageContext | None:
+        if not isinstance(value, dict):
+            return None
+        target_id = self._safe_int(value.get("target_id"))
+        if not target_id:
+            return None
+        return QQMessageContext(
+            should_respond=True,
+            reason="background_task_delivery",
+            is_group=bool(value.get("is_group")),
+            target_id=target_id,
+            user_id=self._safe_int(value.get("user_id")),
+            group_id=self._safe_int(value.get("group_id")),
+            session_id=str(value.get("session_id") or ""),
+            profile_user_id=str(value.get("profile_user_id") or ""),
+            clean_message=str(value.get("clean_message") or ""),
+            raw_message=str(value.get("raw_message") or ""),
+            sender_label=str(value.get("sender_label") or ""),
+            attachments=[],
         )
 
     def extract_message_text(self, event: dict[str, Any]) -> str:
@@ -379,6 +416,8 @@ class NapCatQQGateway:
             lines.append(f"群号：{group_id or 'unknown'}")
             lines.append("群聊消息会带有【昵称】标记；这是说话人标记，不是用户正文。")
         lines.append("这是纯文字客户端；不需要切换场景、BGM 或立绘。")
+        lines.append("QQ 会尽早发送 speech 中已经成句的内容；为了响应更快，优先把正文写进 speech，并用自然标点或换行分隔。")
+        lines.append("QQ 里音视频转码、分离人声伴奏、降噪、转写、切片打包这类可能耗时的媒体处理，优先用 delegate_task 交给后台工坊；前台只简短说已经开始，完成后系统会主动通知并交付。")
         return "\n".join(lines)
 
     def render_reply_text(self, frame: dict[str, Any]) -> str:
@@ -386,20 +425,21 @@ class NapCatQQGateway:
 
     def render_reply_messages(self, frame: dict[str, Any]) -> list[str]:
         messages: list[str] = []
+        max_segments = max(1, min(20, int(getattr(config, "QQ_REPLY_MAX_SEGMENTS", 8) or 8)))
         segments = frame.get("speech_segments")
         if isinstance(segments, list):
             for item in segments:
                 text = str(item or "").strip()
                 if text:
                     messages.append(text[:1800].strip())
-                if len(messages) >= 3:
+                if len(messages) >= max_segments:
                     break
 
         if not messages:
             speech = str(frame.get("speech") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
             inferred = [line.strip() for line in speech.split("\n") if line.strip()]
-            if 1 < len(inferred) <= 3:
-                messages = [line[:1800].strip() for line in inferred]
+            if 1 < len(inferred) <= max_segments:
+                messages = [line[:1800].strip() for line in inferred[:max_segments]]
             elif speech:
                 messages = [speech[:1800].strip()]
 

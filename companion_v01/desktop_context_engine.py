@@ -77,6 +77,7 @@ def build_desktop_context_prompt(
         if process_name:
             window_text += f"（进程：{process_name}）"
         lines.append(f"- {window_label}：{window_text}")
+        lines.append("- 窗口标题只是环境线索；除非用户明确提到，不要把它当成必须回应的主题。")
     else:
         lines.append("- 当前窗口：未知，勿猜测。")
     if clipboard_included and clipboard_text:
@@ -140,10 +141,12 @@ def build_desktop_activity_prompt(
         return ""
 
     activity_type = str(activity.get("type") or "").strip().lower()
-    if activity_type not in {"audio_playback", "vocal_performance"}:
+    if activity_type not in {"audio_playback", "audio_recommendations", "vocal_performance"}:
         return ""
 
-    title = sanitize_desktop_context_text(activity.get("title"), 120) or "未命名音频"
+    title = sanitize_desktop_context_text(activity.get("title"), 120) or (
+        "Akane 音乐推荐" if activity_type == "audio_recommendations" else "未命名音频"
+    )
     source_id = sanitize_desktop_context_text(activity.get("source_id") or activity.get("handle"), 60)
     status = str(activity.get("status") or "").strip().lower() or "unknown"
     progress = format_activity_time(activity.get("progress_seconds"))
@@ -160,7 +163,7 @@ def build_desktop_activity_prompt(
 
     lines = [
         "【当前桌宠活动】",
-        f"- 类型：{'角色表演/唱歌' if activity_type == 'vocal_performance' else '普通音频播放'}",
+        f"- 类型：{'角色表演/唱歌' if activity_type == 'vocal_performance' else '可播放音乐推荐' if activity_type == 'audio_recommendations' else '普通音频播放'}",
         f"- 音频：{title}" + (f"（{source_id}）" if source_id else ""),
         f"- 状态：{status_label}",
     ]
@@ -169,7 +172,7 @@ def build_desktop_activity_prompt(
         if duration:
             timing += f" / {duration}"
         lines.append(f"- {timing}")
-    if activity_type == "audio_playback":
+    if activity_type in {"audio_playback", "audio_recommendations"}:
         queue_count = coerce_activity_int(activity.get("queue_count") or activity.get("queueCount"))
         queue_index = coerce_activity_int(activity.get("queue_index") or activity.get("queueIndex"))
         if queue_count > 1:
@@ -190,18 +193,40 @@ def build_desktop_activity_prompt(
                 ]
                 if titles:
                     lines.append(f"- 队列概况：{'；'.join(titles)}")
-            raw_recs = activity.get("recommendations") or []
-            if isinstance(raw_recs, list):
-                rec_lines = []
-                for rec in raw_recs[:3]:
-                    if not isinstance(rec, dict):
-                        continue
-                    title = sanitize_desktop_context_text(rec.get("title"), 40)
-                    reason = sanitize_desktop_context_text(rec.get("reason"), 30)
-                    if title:
-                        rec_lines.append(f"{title}（{reason}）" if reason else title)
-                if rec_lines:
-                    lines.append(f"- 当前 Akane 音乐推荐：{'；'.join(rec_lines)}")
+        raw_recs = activity.get("recommendations") or []
+        if isinstance(raw_recs, list):
+            rec_lines = []
+            for rec in raw_recs[:3]:
+                if not isinstance(rec, dict):
+                    continue
+                rec_title = sanitize_desktop_context_text(rec.get("title"), 40)
+                reason = sanitize_desktop_context_text(rec.get("reason"), 30)
+                rec_source_id = sanitize_desktop_context_text(rec.get("source_id"), 60)
+                if rec_title:
+                    line = f"{rec_title}（{reason}）" if reason else rec_title
+                    if rec_source_id:
+                        line += f"，source_id: {rec_source_id}"
+                    rec_lines.append(line)
+            if rec_lines:
+                lines.append(f"- 当前 Akane 音乐推荐：{'；'.join(rec_lines)}")
+        raw_catalog = activity.get("catalog") or []
+        if isinstance(raw_catalog, list) and raw_catalog:
+            catalog_lines = []
+            for cat_item in raw_catalog[:12]:
+                if not isinstance(cat_item, dict):
+                    continue
+                cat_title = sanitize_desktop_context_text(cat_item.get("title"), 50)
+                cat_source = sanitize_desktop_context_text(cat_item.get("source_id"), 60)
+                cat_reason = sanitize_desktop_context_text(cat_item.get("reason"), 20)
+                if cat_title and cat_source:
+                    line = f"{cat_title}（source_id: {cat_source}）"
+                    if cat_reason:
+                        line += f" - {cat_reason}"
+                    catalog_lines.append(line)
+            if catalog_lines:
+                lines.append("【当前可播放音乐】")
+                for line in catalog_lines:
+                    lines.append(f"- {line}")
         lyric_current = sanitize_desktop_context_text(
             activity.get("lyric_current") or activity.get("lyricCurrent"),
             120,
@@ -231,14 +256,14 @@ def build_desktop_activity_prompt(
             "- 主人发消息时表演已暂停；如果你想继续表演，需要输出 activity action，而不是假装仍在继续。"
         )
     lines.append(
-        '- 可选 activity 输出：{"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"可选 file/audio/gen handle"}；不需要控制时输出 null。'
+        '- 可选 activity 输出：{"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"可选 workspace:attachment:xxx / workspace:generated:xxx / file/audio/gen handle"}；不需要控制时输出 null。'
     )
     lines.append(
         "- activity 是给桌宠执行的请求，不是执行成功回执；speech 里不要说已经播放、已经暂停或已经继续，"
         "可以自然说“我来试试”“我帮你继续”。"
     )
     lines.append(
-        "- 切换到某个具体音频时，play 应尽量带 source_id；只继续当前音频时，用 resume + target=current。"
+        "- 切换到某个具体音频时，play 应尽量带 source_id（推荐列表中已有 source_id）；只继续当前音频时，用 resume + target=current。"
     )
     activity_prompt = "\n".join(lines)
     timeline_prompt = build_desktop_music_timeline_prompt(

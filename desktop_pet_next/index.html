@@ -56,6 +56,18 @@
             </div>
           </li>
 
+          <li class="menu-section visual-section">外观</li>
+          <li class="menu-row visual-control-row">
+            <label for="scale-range">大小</label>
+            <input id="scale-range" type="range" min="0.75" max="1.45" step="0.05" value="1" />
+            <output id="scale-output" for="scale-range">100%</output>
+          </li>
+          <li class="menu-row visual-control-row">
+            <label for="opacity-range">透明</label>
+            <input id="opacity-range" type="range" min="0.55" max="1" step="0.05" value="1" />
+            <output id="opacity-output" for="opacity-range">100%</output>
+          </li>
+
           <li class="menu-actions quick-menu-actions">
             <button id="quick-input" type="button">输入</button>
             <button id="open-settings" type="button">设置</button>
@@ -78,11 +90,7 @@
             <button id="backend-url-save" type="button">保存</button>
             <input id="outfit-input" type="text" spellcheck="false" />
             <button id="outfit-save" type="button">保存</button>
-            <input id="scale-range" type="range" min="0.75" max="1.45" step="0.05" value="1" />
-            <output id="scale-output" for="scale-range">100%</output>
             <span id="scale-presets"></span>
-            <input id="opacity-range" type="range" min="0.55" max="1" step="0.05" value="1" />
-            <output id="opacity-output" for="opacity-range">100%</output>
             <span id="opacity-presets"></span>
             <button id="always-on-top-toggle" type="button">置顶</button>
             <button id="taskbar-toggle" type="button">任务栏</button>

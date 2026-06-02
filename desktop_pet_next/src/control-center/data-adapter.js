@@ -462,6 +462,9 @@ function adaptOverviewPage(page, runtime = {}) {
   if (runtime.health && overview.health) {
     overview.health = patchRowsByLabel(overview.health, runtime.health);
   }
+  if (Array.isArray(runtime.recentOutputs)) {
+    overview.recentOutputs = runtime.recentOutputs;
+  }
   return overview;
 }
 

@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="720" fill="#F8FAFC" />
+
+  <g id="header">
+    <text x="64" y="82" font-family="Microsoft YaHei" font-size="50px" font-weight="700" fill="#1A202C">实验装置：三个磁铁 + 一个磁性摆锤</text>
+    <text x="66" y="126" font-family="Microsoft YaHei" font-size="24px" fill="#526070">装置很简单，但多个磁力叠加后，小球运动会变得很难预测。</text>
+  </g>
+
+  <g id="device-diagram">
+    <path fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2" d="M90,168 H720 A26,26 0 0 1 746,194 V598 A26,26 0 0 1 720,624 H90 A26,26 0 0 1 64,598 V194 A26,26 0 0 1 90,168 Z" />
+    <path fill="#EEF6FF" d="M114,194 H696 A22,22 0 0 1 718,216 V236 A22,22 0 0 1 696,258 H114 A22,22 0 0 1 92,236 V216 A22,22 0 0 1 114,194 Z" />
+    <text x="405" y="235" text-anchor="middle" font-family="Microsoft YaHei" font-size="28px" font-weight="700" fill="#2563EB">装置示意图</text>
+
+    <line x1="180" y1="566" x2="632" y2="566" stroke="#526070" stroke-width="6" />
+    <line x1="226" y1="566" x2="226" y2="282" stroke="#526070" stroke-width="6" />
+    <line x1="226" y1="282" x2="410" y2="282" stroke="#526070" stroke-width="6" />
+    <line x1="410" y1="282" x2="464" y2="398" stroke="#526070" stroke-width="4" />
+    <circle cx="464" cy="398" r="26" fill="#FACC15" stroke="#EA580C" stroke-width="4" />
+
+    <ellipse cx="470" cy="534" rx="178" ry="46" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="3" />
+    <circle cx="470" cy="478" r="34" fill="#FFFFFF" stroke="#2563EB" stroke-width="4" />
+    <text x="470" y="489" text-anchor="middle" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#2563EB">N</text>
+    <circle cx="336" cy="556" r="34" fill="#FFFFFF" stroke="#0D9488" stroke-width="4" />
+    <text x="336" y="567" text-anchor="middle" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#0D9488">N</text>
+    <circle cx="604" cy="556" r="34" fill="#FFFFFF" stroke="#EA580C" stroke-width="4" />
+    <text x="604" y="567" text-anchor="middle" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#EA580C">S</text>
+
+    <line x1="490" y1="398" x2="470" y2="478" stroke="#2563EB" stroke-width="3" stroke-dasharray="8 9" />
+    <line x1="452" y1="420" x2="336" y2="556" stroke="#0D9488" stroke-width="3" stroke-dasharray="8 9" />
+    <line x1="478" y1="418" x2="604" y2="556" stroke="#EA580C" stroke-width="3" stroke-dasharray="8 9" />
+  </g>
+
+  <g id="device-notes">
+    <path fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2" d="M804,178 H1194 A22,22 0 0 1 1216,200 V268 A22,22 0 0 1 1194,290 H804 A22,22 0 0 1 782,268 V200 A22,22 0 0 1 804,178 Z" />
+    <text x="814" y="220" font-family="Microsoft YaHei" font-size="28px" font-weight="700" fill="#2563EB">1. 摆锤</text>
+    <text x="814" y="262" font-family="Microsoft YaHei" font-size="24px" fill="#1A202C">带有磁性，会被下方磁铁影响。</text>
+
+    <path fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2" d="M804,326 H1194 A22,22 0 0 1 1216,348 V416 A22,22 0 0 1 1194,438 H804 A22,22 0 0 1 782,416 V348 A22,22 0 0 1 804,326 Z" />
+    <text x="814" y="368" font-family="Microsoft YaHei" font-size="28px" font-weight="700" fill="#0D9488">2. 三个磁铁</text>
+    <text x="814" y="410" font-family="Microsoft YaHei" font-size="24px" fill="#1A202C">位置不同，提供不同方向磁力。</text>
+
+    <path fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2" d="M804,474 H1194 A22,22 0 0 1 1216,496 V564 A22,22 0 0 1 1194,586 H804 A22,22 0 0 1 782,564 V496 A22,22 0 0 1 804,474 Z" />
+    <text x="814" y="516" font-family="Microsoft YaHei" font-size="28px" font-weight="700" fill="#EA580C">3. 释放位置</text>
+    <text x="814" y="558" font-family="Microsoft YaHei" font-size="24px" fill="#1A202C">从非平衡位置松手，差异被放大。</text>
+  </g>
+
+  <text x="1216" y="664" text-anchor="end" font-family="Microsoft YaHei" font-size="16px" fill="#64748B">04 / 07</text>
+</svg>

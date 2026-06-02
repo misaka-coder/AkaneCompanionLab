@@ -72,8 +72,10 @@ app.add_middleware(
     expose_headers=["X-Accel-Buffering"],
     max_age=600,
 )
+
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
+
 WEB_DIR = PROJECT_DIR / "web"
 ASSETS_DIR = WEB_DIR / "assets"
 CREATOR_KIT_CHARACTERS_DIR = PROJECT_DIR / "desktop_pet_creator_kit" / "characters"
@@ -106,6 +108,149 @@ public_guard = PublicThinkGuard(
     ),
 )
 qq_gateway = NapCatQQGateway()
+
+
+def _install_qq_task_completion_notifications() -> None:
+    task_worker = getattr(engine, "task_worker_service", None)
+    if task_worker is None:
+        return
+
+    def _handle_completion(
+        *,
+        task_id: str,
+        profile_user_id: str,
+        session_id: str,
+        task: dict,
+        handoff: dict,
+    ) -> None:
+        if not bool(getattr(config, "QQ_BACKGROUND_COMPLETION_NOTIFY_ENABLED", True)):
+            return
+        task_service = getattr(engine, "task_workspace_service", None)
+        current_task = task_service.get_task(task_id) if task_service is not None else task
+        metadata = dict((current_task or task).get("metadata") or {})
+        delivery = metadata.get("delivery") if isinstance(metadata.get("delivery"), dict) else {}
+        if str(delivery.get("client") or "").strip() != "qq_text":
+            return
+        if delivery.get("completed_notified_at"):
+            return
+        context = qq_gateway.context_from_delivery_context(delivery)
+        if context is None:
+            return
+
+        delivery["completed_notified_at"] = int(time.time())
+        metadata["delivery"] = delivery
+        if task_service is not None:
+            task_service.update_task(task_id=task_id, metadata=metadata, timestamp=int(time.time()))
+
+        artifact_targets = _qq_completion_artifact_targets(current_task or task, handoff)
+        original_message = str(delivery.get("clean_message") or delivery.get("raw_message") or "")
+        should_send = str((handoff or {}).get("next_action") or "").strip().lower() == "send_to_user"
+        should_send = should_send or qq_gateway.message_requests_file_delivery(original_message)
+        if should_send and artifact_targets:
+            sent_count = _send_qq_completion_files(
+                context=context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                targets=artifact_targets,
+            )
+            if sent_count > 0:
+                qq_gateway.send_reply(context, f"做好啦，我把结果发给你了。")
+                return
+
+        labels = _qq_completion_artifact_labels(current_task or task, handoff)
+        if labels:
+            qq_gateway.send_reply(
+                context,
+                "做好啦。现在有这些结果可以发给你："
+                + "、".join(labels[:6])
+                + "。你要哪份就直接说“发给我”或告诉我编号。",
+            )
+        else:
+            qq_gateway.send_reply(context, "做好啦，后台任务已经处理完了。")
+
+    task_worker.on_task_completed = _handle_completion
+
+
+def _qq_completion_artifact_targets(task: dict, handoff: dict) -> list[str]:
+    targets: list[str] = []
+    raw_items = (handoff or {}).get("artifacts") if isinstance(handoff, dict) else []
+    if not isinstance(raw_items, list) or not raw_items:
+        raw_items = task.get("artifacts") if isinstance(task.get("artifacts"), list) else []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        for key in ("generated_handle", "generated_id", "id", "handle"):
+            value = str(item.get(key) or "").strip()
+            if value and value not in targets:
+                targets.append(value)
+                break
+    return targets[:8]
+
+
+def _qq_completion_artifact_labels(task: dict, handoff: dict) -> list[str]:
+    labels: list[str] = []
+    raw_items = (handoff or {}).get("artifacts") if isinstance(handoff, dict) else []
+    if not isinstance(raw_items, list) or not raw_items:
+        raw_items = task.get("artifacts") if isinstance(task.get("artifacts"), list) else []
+    for item in raw_items:
+        if isinstance(item, dict):
+            artifact_id = str(item.get("id") or item.get("generated_handle") or item.get("handle") or "").strip()
+            title = str(item.get("title") or "").strip()
+            kind = str(item.get("kind") or "").strip()
+            label = artifact_id or title
+            if title and artifact_id and title != artifact_id:
+                label = f"{artifact_id}({title})"
+            if kind and label:
+                label = f"{label}/{kind}"
+        else:
+            label = str(item or "").strip()
+        if label and label not in labels:
+            labels.append(label[:160])
+    return labels[:8]
+
+
+def _send_qq_completion_files(
+    *,
+    context,
+    profile_user_id: str,
+    session_id: str,
+    targets: list[str],
+) -> int:
+    generated_file_service = engine._get_generated_file_service()
+    if generated_file_service is None:
+        return 0
+    result = generated_file_service.send_file(
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        targets=targets,
+        timestamp=int(time.time()),
+    )
+    if not bool(result.get("ok")):
+        return 0
+    sent_count = 0
+    for file_ref in list(result.get("files") or []):
+        if not isinstance(file_ref, dict):
+            continue
+        send_result = qq_gateway.send_file(
+            context,
+            file_path=str(file_ref.get("absolute_path") or ""),
+            name=str(file_ref.get("name") or file_ref.get("title") or ""),
+        )
+        generated_id = str(file_ref.get("generated_id") or "").strip()
+        if generated_id:
+            engine.mark_generated_file_delivery(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                generated_id=generated_id,
+                delivery_status="sent" if send_result.get("ok") else "failed",
+                timestamp=int(time.time()),
+            )
+        if send_result.get("ok"):
+            sent_count += 1
+    return sent_count
+
+
+_install_qq_task_completion_notifications()
 
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")

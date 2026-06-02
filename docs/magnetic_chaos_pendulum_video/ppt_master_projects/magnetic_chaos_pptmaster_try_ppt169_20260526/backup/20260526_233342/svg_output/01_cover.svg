@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="720" fill="#F8FAFC"/>
+  <rect x="64" y="54" width="1152" height="612" rx="28" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+  <rect x="64" y="54" width="1152" height="128" rx="28" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="2"/>
+  <rect x="64" y="140" width="1152" height="42" fill="#EEF6FF"/>
+
+  <g id="title-block">
+    <rect x="112" y="94" width="124" height="42" rx="21" fill="#0D9488"/>
+    <text x="174" y="122" text-anchor="middle" font-family="Microsoft YaHei" font-size="18px" font-weight="700" fill="#FFFFFF">实验 27</text>
+    <text x="112" y="286" font-family="Microsoft YaHei" font-size="82px" font-weight="700" fill="#1A202C">磁混沌摆</text>
+    <text x="116" y="344" font-family="Microsoft YaHei" font-size="28px" font-weight="700" fill="#2563EB">小球为什么会走出复杂轨迹？</text>
+    <text x="116" y="388" font-family="Microsoft YaHei" font-size="24px" fill="#526070">最后为什么会停在某一个磁铁上方？</text>
+    <rect x="112" y="438" width="272" height="54" rx="27" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="248" y="473" text-anchor="middle" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#2563EB">5 分钟讲解视频</text>
+  </g>
+
+  <g id="pendulum-visual">
+    <circle cx="902" cy="378" r="208" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="3"/>
+    <circle cx="902" cy="378" r="150" fill="#FFFFFF" fill-opacity="0.52" stroke="#D9E2EC" stroke-width="2"/>
+    <line x1="902" y1="122" x2="812" y2="346" stroke="#526070" stroke-width="5"/>
+    <circle cx="812" cy="346" r="26" fill="#FACC15" stroke="#EA580C" stroke-width="4"/>
+
+    <circle cx="902" cy="242" r="40" fill="#FFFFFF" stroke="#2563EB" stroke-width="5"/>
+    <text x="902" y="253" text-anchor="middle" font-family="Microsoft YaHei" font-size="28px" font-weight="700" fill="#2563EB">N</text>
+    <circle cx="754" cy="470" r="40" fill="#FFFFFF" stroke="#0D9488" stroke-width="5"/>
+    <text x="754" y="481" text-anchor="middle" font-family="Microsoft YaHei" font-size="28px" font-weight="700" fill="#0D9488">N</text>
+    <circle cx="1050" cy="470" r="40" fill="#FFFFFF" stroke="#EA580C" stroke-width="5"/>
+    <text x="1050" y="481" text-anchor="middle" font-family="Microsoft YaHei" font-size="28px" font-weight="700" fill="#EA580C">S</text>
+
+    <path d="M812 346 C746 280 786 204 902 242" fill="none" stroke="#2563EB" stroke-width="6"/>
+    <path d="M812 346 C706 392 706 472 754 470" fill="none" stroke="#0D9488" stroke-width="6"/>
+    <path d="M812 346 C934 322 1040 382 1050 470" fill="none" stroke="#EA580C" stroke-width="6"/>
+    <path d="M762 264 C922 168 1086 264 1036 386 C998 492 856 554 728 456" fill="none" stroke="#7C3AED" stroke-width="4" stroke-dasharray="12 13"/>
+  </g>
+
+  <g id="footer">
+    <line x1="112" y1="586" x2="650" y2="586" stroke="#D9E2EC" stroke-width="3"/>
+    <text x="112" y="628" font-family="Microsoft YaHei" font-size="18px" fill="#64748B">结构：现象观察 → 视频演示 → 原理解释 → 结论</text>
+    <text x="1170" y="628" text-anchor="end" font-family="Microsoft YaHei" font-size="16px" fill="#64748B">01 / 07</text>
+  </g>
+</svg>

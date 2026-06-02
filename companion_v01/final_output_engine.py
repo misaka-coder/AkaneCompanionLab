@@ -6,6 +6,15 @@ from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
 from .persona_config import PERSONA
 from .text_utils import join_tags
 
+_MUSIC_FALLBACK_ACTIONS = (
+    (["暂停", "停一下", "先停", "停一停"], "pause"),
+    (["继续播放", "继续放", "继续唱", "恢复播放", "接着放"], "resume"),
+    (["下一首", "换一首", "切歌", "下首歌", "换首歌"], "next"),
+    (["上一首", "上首歌", "前一首", "返回上一首"], "previous"),
+    (["放首歌", "放歌", "播放音乐", "播音乐", "放一首", "来首歌"], "play"),
+)
+_MUSIC_FALLBACK_NEGATIONS = ("不要", "别", "先别", "不用", "不想", "不要再", "别再")
+
 
 def normalize_final_output(
     engine: Any,
@@ -18,6 +27,7 @@ def normalize_final_output(
     debug_enabled: bool,
     client_context: ClientProtocolContext | None = None,
     resource_manifest: Any = None,
+    user_message: str = "",
 ) -> dict[str, Any]:
     client_context = client_context or engine._resolve_client_protocol_context({})
     manifest_service = resource_manifest or engine.resource_manifest
@@ -52,6 +62,13 @@ def normalize_final_output(
         normalized["activity"] = normalize_activity_action(normalized.get("activity"))
     else:
         normalized.pop("activity", None)
+    if normalized.get("activity") is None and client_context and client_context.effective_mode == ClientMode.DESKTOP_PET and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
+        user_text = str(user_message or "").strip().lower()
+        if user_text and not any(negation in user_text for negation in _MUSIC_FALLBACK_NEGATIONS):
+            for keywords, action in _MUSIC_FALLBACK_ACTIONS:
+                if any(kw in user_text for kw in keywords):
+                    normalized["activity"] = normalize_activity_action({"action": action, "target": "current"})
+                    break
     speech, speech_segments = normalize_speech_payload(
         speech=normalized.get("speech"),
         speech_segments=normalized.get("speech_segments"),

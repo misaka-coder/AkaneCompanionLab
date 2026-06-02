@@ -6,6 +6,7 @@ from typing import Any
 import config
 
 from .client_protocol import ClientProtocolContext
+from .client_protocol import ClientMode
 from .tool_runtime import ToolExecutionContext
 
 
@@ -76,10 +77,70 @@ def normalize_tool_call(
         profile_user_id=profile_user_id,
         session_id=session_id,
     )
+    delegated_media_call = _maybe_delegate_qq_media_tool(
+        value,
+        tool_type=tool_type,
+        handlers=handlers,
+        client_context=client_context,
+    )
+    if delegated_media_call is not None:
+        return delegated_media_call
     handler = handlers.get(tool_type)
     if handler is None:
         return None
     return handler.normalize_call(value)
+
+
+def _maybe_delegate_qq_media_tool(
+    value: dict[str, Any],
+    *,
+    tool_type: str,
+    handlers: dict[str, Any],
+    client_context: ClientProtocolContext | None,
+) -> dict[str, Any] | None:
+    if not bool(getattr(config, "QQ_DELEGATE_MEDIA_TO_BACKGROUND", True)):
+        return None
+    if client_context is None or client_context.effective_mode != ClientMode.QQ_TEXT:
+        return None
+    if tool_type not in {
+        "convert_media_file",
+        "separate_audio_stems",
+        "clean_voice_track",
+        "transcribe_media",
+        "prepare_voice_dataset",
+    }:
+        return None
+    delegate_handler = handlers.get("delegate_task")
+    if delegate_handler is None:
+        return None
+    source_values = []
+    for key in ("source_id", "source_ids", "source_target", "source_targets", "target", "targets"):
+        raw = value.get(key)
+        if isinstance(raw, list):
+            source_values.extend(str(item or "").strip() for item in raw)
+        elif str(raw or "").strip():
+            source_values.append(str(raw or "").strip())
+    output_bits = []
+    for key in ("output_format", "output_title", "mode", "language", "profile"):
+        raw = str(value.get(key) or "").strip()
+        if raw:
+            output_bits.append(f"{key}={raw}")
+    brief = (
+        "在 QQ 后台工坊执行媒体处理工具 "
+        f"{tool_type}，参数为 {describe_tool_call_for_prompt(value)}。"
+        "完成后把产物登记为可交付结果，由前台/系统通知用户并发送。"
+    )
+    delegated = {
+        "type": "delegate_task",
+        "agent": "media_agent",
+        "brief": brief,
+        "goal": f"后台完成 QQ 媒体处理：{tool_type}",
+        "raw_request": brief,
+        "inputs": [item for item in source_values if item][:12],
+        "expected_outputs": output_bits or [f"{tool_type} 生成的结果文件"],
+        "success_criteria": ["生成用户请求的媒体结果文件", "结果可由 QQ 发回用户"],
+    }
+    return delegate_handler.normalize_call(delegated)
 
 
 def promote_narrated_tool_call(
@@ -146,6 +207,7 @@ def execute_tool_call(
     current_user_source_id: str = "",
     client_context: ClientProtocolContext | None = None,
     memory_exclude_source_ids: list[str] | None = None,
+    request_context: dict[str, Any] | None = None,
 ) -> Any | None:
     normalized_call = normalize_tool_call(
         engine,
@@ -182,5 +244,6 @@ def execute_tool_call(
             visual_payload=enriched_visual_payload,
             current_user_source_id=current_user_source_id,
             client_mode=client_mode,
+            request_context=dict(request_context or {}),
         ),
     )

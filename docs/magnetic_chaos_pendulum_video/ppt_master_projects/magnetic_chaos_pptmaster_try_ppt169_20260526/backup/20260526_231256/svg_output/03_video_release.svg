@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="720" fill="#F8FAFC"/>
+
+  <g id="left-narration">
+    <text x="64" y="88" font-family="Microsoft YaHei" font-size="42px" font-weight="700" fill="#1A202C">演示 1：释放与初始摆动</text>
+    <text x="66" y="132" font-family="Microsoft YaHei" font-size="20px" fill="#526070">先让观众看到：小球一松手，轨迹马上不再像普通单摆。</text>
+
+    <rect x="64" y="190" width="350" height="78" rx="18" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <circle cx="96" cy="229" r="11" fill="#2563EB"/>
+    <text x="124" y="236" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">拍清楚手拉开摆锤</text>
+
+    <rect x="64" y="292" width="350" height="78" rx="18" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <circle cx="96" cy="331" r="11" fill="#0D9488"/>
+    <text x="124" y="338" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">松手后观察转向</text>
+
+    <rect x="64" y="394" width="350" height="78" rx="18" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <circle cx="96" cy="433" r="11" fill="#EA580C"/>
+    <text x="124" y="440" font-family="Microsoft YaHei" font-size="20px" fill="#1A202C">保留 20 到 25 秒</text>
+
+    <rect x="64" y="520" width="350" height="64" rx="18" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="239" y="558" text-anchor="middle" font-family="Microsoft YaHei" font-size="20px" font-weight="700" fill="#2563EB">讲解重点：从规则到复杂</text>
+  </g>
+
+  <g id="video-placeholder">
+    <rect x="486" y="156" width="720" height="405" rx="24" fill="#FFFFFF" stroke="#EA580C" stroke-width="4" stroke-dasharray="18 14"/>
+    <rect x="516" y="186" width="660" height="345" rx="16" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="2"/>
+    <polygon points="820,314 820,404 900,359" fill="#EA580C"/>
+    <text x="846" y="464" text-anchor="middle" font-family="Microsoft YaHei" font-size="34px" font-weight="700" fill="#1A202C">横屏演示视频 1</text>
+    <text x="846" y="499" text-anchor="middle" font-family="Microsoft YaHei" font-size="20px" fill="#526070">释放小球，展示初始复杂运动</text>
+    <line x1="486" y1="584" x2="1206" y2="584" stroke="#D9E2EC" stroke-width="2"/>
+    <text x="846" y="620" text-anchor="middle" font-family="Microsoft YaHei" font-size="15px" fill="#64748B">后期剪辑：把视频直接覆盖在这个 16:9 框内</text>
+  </g>
+
+  <text x="1216" y="664" text-anchor="end" font-family="Microsoft YaHei" font-size="13px" fill="#64748B">03 / 07</text>
+</svg>

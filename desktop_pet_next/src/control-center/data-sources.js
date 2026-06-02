@@ -250,6 +250,8 @@ export function createBackendControlCenterSource(options = {}) {
           workspace: workspace.data,
           metricsText: metrics.data,
           petState,
+          baseUrl,
+          resourceManifest: resourceManifest.data,
           connected: health.ok || diagnostics.ok
         }),
         characterRuntime: buildCharacterRuntimePatch({
@@ -494,7 +496,7 @@ async function fetchText(fetchImpl, url) {
   }
 }
 
-function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText, petState, connected }) {
+function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText, petState, baseUrl, resourceManifest, connected }) {
   const resources = asObject(diagnostics?.resources);
   const capabilities = asObject(diagnostics?.capabilities);
   const workspaceCounts = asObject(diagnostics?.workspace);
@@ -507,7 +509,17 @@ function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText
   const packId = stringValue(resources.character_pack_id || resources.characterPackId);
   const outfit = stringValue(resources.outfit);
   const defaultEmotion = stringValue(resources.default_emotion || resources.defaultEmotion);
+  const activeEmotionId = String(petState?.currentEmotion || defaultEmotion || "").trim();
   const emotionCount = positiveNumber(resources.emotion_count ?? resources.emotionCount);
+
+  const manifest = asObject(resourceManifest);
+  const rawOutfits = asArray(asObject(manifest.characters).outfits);
+  const activeOutfitId = String(petState?.outfit || outfit || resources.outfit || "").trim();
+  const activeOutfit = findManifestEntry(rawOutfits, activeOutfitId) || rawOutfits.find(Boolean) || null;
+  const emotionCards = normalizeEmotionCards(asArray(activeOutfit?.emotions), { activeEmotionId, baseUrl });
+  const activeEmotion = emotionCards.find((card) =>
+    card.id === activeEmotionId || card.name === activeEmotionId
+  );
   const counts = asObject(workspace?.counts);
   const effectiveWorkspaceCounts = {
     files: numberOrFallback(workspaceCounts.files, counts.files, 0),
@@ -544,7 +556,8 @@ function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText
       publishedAt: outfit || "当前服装"
     },
     emotion: {
-      name: defaultEmotion || "微笑"
+      name: activeEmotion?.name || activeEmotionId || defaultEmotion || "微笑",
+      image: activeEmotion?.image || activeEmotion?.url || activeEmotion?.key || activeEmotionId || ""
     },
     voice: {
       ttsEnabled: Boolean(health?.contracts?.desktop_pet?.tts || health?.contracts?.desktop_pet?.health || serviceOk),
@@ -552,6 +565,7 @@ function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText
       status: serviceOk ? "语音状态：后端已连接" : "语音状态：等待连接"
     },
     ...(senseRuntime ? { sense: senseRuntime } : {}),
+    recentOutputs: buildRecentOutputsPatch(workspace),
     abilities: buildAbilityLabels({ tools, workspaceCounts: effectiveWorkspaceCounts }),
     health: buildHealthTiles({
       metrics,
@@ -926,6 +940,29 @@ export function buildMusicRuntimePatch({ musicSnapshot, petState }) {
     ...(typeof petVolumeNormalization === "boolean" ? { volumeNormalization: petVolumeNormalization } : {}),
     recommendations,
   };
+}
+
+export function buildOverviewEmotionRuntimePatchFromSettingsSnapshot(runtimeSnapshot) {
+  const currentExpression = runtimeSnapshot?.currentExpression || null;
+  if (currentExpression && currentExpression.id) {
+    return {
+      emotion: {
+        name: currentExpression.name || currentExpression.id || "",
+        image: currentExpression.image || currentExpression.id || ""
+      }
+    };
+  }
+  const petState = runtimeSnapshot?.state || {};
+  const emotionId = String(petState.currentEmotion || "").trim();
+  if (emotionId) {
+    return {
+      emotion: {
+        name: emotionId,
+        image: emotionId
+      }
+    };
+  }
+  return null;
 }
 
 function formatSeconds(seconds) {
@@ -1391,6 +1428,29 @@ function toBackendAssetUrl(baseUrl, value) {
   return new URL(raw.replace(/^\/+/, ""), base).toString();
 }
 
+function buildRecentOutputsPatch(workspace) {
+  const sections = asObject(workspace?.data?.sections || workspace?.sections);
+  const outputs = Array.isArray(sections.outputs) ? sections.outputs : [];
+  return outputs
+    .map((item) => {
+      const title = String(item.title || item.name || "").trim();
+      const status = String(item.status || "").trim();
+      if (!title || status === "failed") return null;
+      return {
+        id: String(item.handle || item.id || "").trim(),
+        handle: String(item.handle || "").trim(),
+        title,
+        subtitle: String(item.subtitle || item.format || "").trim(),
+        kind: String(item.kind || "file").trim().toLowerCase(),
+        format: String(item.format || item.file_ext || "").trim(),
+        status,
+        updatedAt: Number(item.updated_at || item.updatedAt || 0)
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
 function buildAbilityLabels({ tools, workspaceCounts }) {
   const labels = [];
   if (tools.some((name) => /file|attachment|compose|send/i.test(name))) labels.push("文件处理");
@@ -1585,6 +1645,8 @@ async function tryReadUnifiedSnapshot(fetchImpl, baseUrl, scope = {}) {
         workspace: workspace.data,
         metricsText,
         petState,
+        baseUrl,
+        resourceManifest: resourceManifest.data,
         connected: health.ok || diagnostics.ok
       }),
       characterRuntime: buildCharacterRuntimePatch({

@@ -18,6 +18,7 @@ class ToolExecutionContext:
     visual_payload: dict[str, Any]
     current_user_source_id: str = ""
     client_mode: str = ""
+    request_context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

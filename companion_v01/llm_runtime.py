@@ -70,6 +70,9 @@ class _TopLevelJSONStreamTap:
         self.latest_emotion = ""
         self.latest_speech = ""
         self._ui_emitted = False
+        self._speech_segment_count = 0
+        self._last_segment_end = 0
+        self._max_speech_segments = 3
 
     def feed(self, text: Any) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
@@ -156,6 +159,20 @@ class _TopLevelJSONStreamTap:
             if delta_text:
                 self.latest_speech += delta_text
                 events.append({"type": "speech_chunk", "text": delta_text})
+                if self._speech_segment_count < self._max_speech_segments:
+                    remaining = self.latest_speech[self._last_segment_end:]
+                    match = re.search(r"[。！？!?\n]", remaining)
+                    if match:
+                        end = self._last_segment_end + match.end()
+                        segment_text = self.latest_speech[self._last_segment_end:end].strip()
+                        if segment_text:
+                            self._speech_segment_count += 1
+                            events.append({
+                                "type": "speech_segment",
+                                "index": self._speech_segment_count - 1,
+                                "text": segment_text,
+                            })
+                            self._last_segment_end = end
         return events
 
     def _start_string(self, role: str) -> None:

@@ -1400,6 +1400,7 @@ class AkaneMemoryEngine:
                 current_user_source_id=str(user_record.get("source_id") or ""),
                 client_context=client_context,
                 memory_exclude_source_ids=memory_exclude_source_ids,
+                request_context=payload,
             )
             if tool_result:
                 tool_results.append(tool_result)
@@ -1661,6 +1662,11 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
             )
+            yield {
+                "type": "assistant_stage_decision",
+                "has_tool_call": bool(tool_call),
+                "tool_type": str((tool_call or {}).get("type") or ""),
+            }
             if not tool_call:
                 break
 
@@ -1721,6 +1727,7 @@ class AkaneMemoryEngine:
                 current_user_source_id=str(user_record.get("source_id") or ""),
                 client_context=client_context,
                 memory_exclude_source_ids=memory_exclude_source_ids,
+                request_context=payload,
             )
             if tool_result:
                 tool_results.append(tool_result)
@@ -1963,6 +1970,7 @@ class AkaneMemoryEngine:
             resource_manifest=resource_manifest,
             allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
             debug_enabled=bool(generation_context["debug_enabled"]),
+            user_message=user_message,
         )
 
     def _stream_final_response(
@@ -2041,6 +2049,7 @@ class AkaneMemoryEngine:
             session_id=session_id,
             client_context=client_context,
             resource_manifest=resource_manifest,
+            user_message=user_message,
             allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
             debug_enabled=bool(generation_context["debug_enabled"]),
         )
@@ -2351,6 +2360,7 @@ class AkaneMemoryEngine:
         debug_enabled: bool,
         client_context: ClientProtocolContext | None = None,
         resource_manifest: ResourceManifest | None = None,
+        user_message: str = "",
     ) -> dict[str, Any]:
         return final_output_engine.normalize_final_output(
             self,
@@ -2362,6 +2372,7 @@ class AkaneMemoryEngine:
             debug_enabled=debug_enabled,
             client_context=client_context,
             resource_manifest=resource_manifest,
+            user_message=user_message,
         )
 
     def _normalize_speech_payload(
@@ -2960,6 +2971,7 @@ class AkaneMemoryEngine:
         current_user_source_id: str = "",
         client_context: ClientProtocolContext | None = None,
         memory_exclude_source_ids: list[str] | None = None,
+        request_context: dict[str, Any] | None = None,
     ) -> ToolExecutionResult | None:
         return tool_orchestration_engine.execute_tool_call(
             self,
@@ -2971,6 +2983,7 @@ class AkaneMemoryEngine:
             current_user_source_id=current_user_source_id,
             client_context=client_context,
             memory_exclude_source_ids=memory_exclude_source_ids,
+            request_context=request_context,
         )
 
     def _execute_retrieve_memory_tool(

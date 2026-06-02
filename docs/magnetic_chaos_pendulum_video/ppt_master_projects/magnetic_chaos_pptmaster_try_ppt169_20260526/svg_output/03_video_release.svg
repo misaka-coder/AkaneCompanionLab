@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="720" fill="#F8FAFC"/>
+
+  <g id="left-narration">
+    <rect x="64" y="56" width="360" height="608" rx="28" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="96" y="116" font-family="Microsoft YaHei" font-size="40px" font-weight="700" fill="#1A202C">演示片段一</text>
+    <text x="96" y="158" font-family="Microsoft YaHei" font-size="28px" font-weight="700" fill="#2563EB">释放与初始摆动</text>
+    <line x1="96" y1="188" x2="360" y2="188" stroke="#D9E2EC" stroke-width="3"/>
+
+    <circle cx="112" cy="248" r="14" fill="#2563EB"/>
+    <text x="140" y="256" font-family="Microsoft YaHei" font-size="24px" fill="#1A202C">观察起点</text>
+    <text x="140" y="288" font-family="Microsoft YaHei" font-size="18px" fill="#526070">小球从偏离中心处释放</text>
+
+    <circle cx="112" cy="352" r="14" fill="#0D9488"/>
+    <text x="140" y="360" font-family="Microsoft YaHei" font-size="24px" fill="#1A202C">观察转向</text>
+    <text x="140" y="392" font-family="Microsoft YaHei" font-size="18px" fill="#526070">靠近磁铁后轨迹改变</text>
+
+    <circle cx="112" cy="456" r="14" fill="#EA580C"/>
+    <text x="140" y="464" font-family="Microsoft YaHei" font-size="24px" fill="#1A202C">观察特点</text>
+    <text x="140" y="496" font-family="Microsoft YaHei" font-size="18px" fill="#526070">运动不再是简单圆弧</text>
+
+    <rect x="96" y="560" width="264" height="58" rx="29" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="228" y="597" text-anchor="middle" font-family="Microsoft YaHei" font-size="24px" font-weight="700" fill="#2563EB">从规则到复杂</text>
+  </g>
+
+  <g id="video-placeholder">
+    <rect x="468" y="72" width="748" height="540" rx="28" fill="#FFFFFF" stroke="#EA580C" stroke-width="5" stroke-dasharray="20 14"/>
+    <rect x="502" y="110" width="680" height="383" rx="18" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="3"/>
+    <polygon points="812,258 812,345 892,302" fill="#EA580C"/>
+    <text x="842" y="414" text-anchor="middle" font-family="Microsoft YaHei" font-size="40px" font-weight="700" fill="#1A202C">实验演示片段一</text>
+    <text x="842" y="462" text-anchor="middle" font-family="Microsoft YaHei" font-size="24px" fill="#526070">释放小球，观察初始复杂运动</text>
+    <rect x="566" y="526" width="552" height="42" rx="21" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="2"/>
+    <text x="842" y="554" text-anchor="middle" font-family="Microsoft YaHei" font-size="18px" fill="#64748B">视频时长约 20 到 25 秒</text>
+  </g>
+
+  <text x="1216" y="664" text-anchor="end" font-family="Microsoft YaHei" font-size="16px" fill="#64748B">03 / 07</text>
+</svg>

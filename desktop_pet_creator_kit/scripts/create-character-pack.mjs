@@ -238,7 +238,7 @@ function buildPack({ id, name, appName, userTitle, outfit, emotion, musicEmotion
       input_placeholder: `和 ${name} 说点什么……`,
       session_display_title: `${name} 桌宠对话`,
       tts_test_text: `${name}：语音播放测试。`,
-      proactive_wake_prompt: `${userTitle}暂时没有说话。你像坐在旁边陪伴一样，参考刚才看见的情况自然接话。`,
+      proactive_wake_prompt: `${userTitle}暂时没有说话。你像坐在旁边陪伴一样，轻轻搭一句自然的话。桌面线索只当背景，不要刻意围绕窗口标题发挥。`,
       local_click_lines: buildLocalClickLines({ emotion, availableEmotions })
     },
     emotion_aliases: buildEmotionAliases({ emotion, musicEmotion, availableEmotions }),

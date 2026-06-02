@@ -21,7 +21,8 @@ class DelegateTaskToolHandler(BaseToolHandler):
             "\"brief\":\"给后台工坊的明确任务说明\",\"task_id\":\"可选；已有任务 id\","
             "\"goal\":\"对用户需求的归一化目标\",\"inputs\":[\"素材或编号\"],\"expected_outputs\":[\"期望产物\"],"
             "\"steps\":[{\"title\":\"步骤\",\"status\":\"queued\"}],\"constraints\":[\"约束\"],\"success_criteria\":[\"验收标准\"]}。"
-            "不要把一句话就能直接完成的小事委派出去；如果用户明确要求立刻发送已有文件、生成一个简单文件、转换一个明确格式或做一次简单转写，直接调用对应处理工具即可。"
+            "不要把一句话就能直接完成的小事委派出去；如果用户明确要求立刻发送已有文件或生成一个简单文本文件，直接调用对应工具即可。"
+            "但在 QQ 纯文字客户端里，音视频转码、分离人声伴奏、降噪、转写、训练素材切片打包这类媒体处理通常可能较慢，优先委派给后台工坊，避免前台阻塞或文件交付超时。"
             "委派成功后前台只需要简短告诉用户后台已经开始，不要长篇解释内部流程或 task_id。"
         )
 
@@ -51,6 +52,7 @@ class DelegateTaskToolHandler(BaseToolHandler):
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        delivery_context = self._extract_delivery_context(context)
         delegation = self.task_worker_service.delegate_task(
             profile_user_id=context.profile_user_id,
             session_id=context.session_id,
@@ -65,6 +67,7 @@ class DelegateTaskToolHandler(BaseToolHandler):
             steps=list(call.get("steps") or []),
             inputs=list(call.get("inputs") or []),
             expected_outputs=list(call.get("expected_outputs") or []),
+            delivery_context=delivery_context,
             auto_start=True,
             timestamp=context.now_ts,
         )
@@ -92,6 +95,17 @@ class DelegateTaskToolHandler(BaseToolHandler):
                 "started": delegation.started,
             },
         )
+
+    def _extract_delivery_context(self, context: ToolExecutionContext) -> dict[str, Any]:
+        request_context = context.request_context if isinstance(context.request_context, dict) else {}
+        delivery_context = request_context.get("qq_delivery_context")
+        if not isinstance(delivery_context, dict):
+            return {}
+        if str(context.client_mode or "").strip() != "qq_text":
+            return {}
+        normalized = dict(delivery_context)
+        normalized["client"] = "qq_text"
+        return normalized
 
     def _normalize_agent(self, value: Any) -> str:
         raw = str(value or "auto").strip().lower()

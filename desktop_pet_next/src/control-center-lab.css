@@ -1184,6 +1184,8 @@ button[data-action-unavailable="true"]:disabled {
 
 .event-card,
 .suggestion-card,
+.sense-status-card,
+.sense-note-card,
 .diagnostic-card {
   min-height: 276px;
   padding: 16px;
@@ -1250,6 +1252,54 @@ button[data-action-unavailable="true"]:disabled {
   color: #62769b;
   font-size: 12px;
   text-align: right;
+}
+
+.sense-status-list {
+  display: grid;
+  gap: 0;
+  margin-top: 12px;
+}
+
+.sense-status-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 50px;
+  border-bottom: 1px solid rgb(112 151 205 / 0.16);
+}
+
+.sense-status-row:last-child {
+  border-bottom: 0;
+}
+
+.sense-status-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: #357ff1;
+  border-radius: 50%;
+  background: #eaf3ff;
+  box-shadow: 0 0 0 4px rgb(70 134 235 / 0.08);
+}
+
+.sense-status-label {
+  color: #365276;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sense-status-value {
+  color: #469969;
+  font-size: 12px;
+  font-weight: 750;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.sense-status-value:empty {
+  color: #8197b8;
 }
 
 .suggestion-card {
@@ -1331,6 +1381,43 @@ button[data-action-unavailable="true"]:disabled {
   object-fit: contain;
   object-position: bottom right;
   filter: drop-shadow(0 14px 24px rgb(239 111 150 / 0.2));
+}
+
+.sense-note-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 160px;
+  gap: 10px;
+  min-height: 222px;
+  margin-top: 11px;
+  padding: 14px 14px 0;
+  overflow: hidden;
+  border: 1px solid rgb(186 208 240 / 0.22);
+  border-radius: 10px;
+  background:
+    linear-gradient(90deg, rgb(241 247 255 / 0.78), rgb(246 250 255 / 0.56)),
+    rgb(255 255 255 / 0.48);
+}
+
+.sense-note-body p {
+  margin: 0 0 8px;
+  color: #4d6585;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.sense-note-body .ui-icon {
+  color: #5a9cf5;
+  vertical-align: -2px;
+}
+
+.sense-note-body img {
+  align-self: end;
+  width: 180px;
+  height: 210px;
+  object-fit: contain;
+  object-position: bottom right;
+  opacity: 0.75;
 }
 
 .diagnostic-card {
@@ -3864,6 +3951,108 @@ button[data-action-unavailable="true"]:disabled {
   opacity: 0.62;
 }
 
+.overview-outputs-card {
+  padding: 14px 16px;
+  margin-bottom: 10px;
+}
+
+.overview-outputs-card .card-heading button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 9px;
+  color: #357de9;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.overview-outputs-card .card-heading button:hover {
+  border-color: rgb(87 143 226 / 0.2);
+  background: rgb(255 255 255 / 0.55);
+}
+
+.recent-outputs-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.recent-output-item {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.38);
+}
+
+.recent-output-icon {
+  display: grid;
+  place-items: center;
+  color: #5d9af4;
+}
+
+.recent-output-icon .ui-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.recent-output-info {
+  min-width: 0;
+}
+
+.recent-output-info strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: #31527d;
+  font-size: 13px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-output-info small {
+  display: block;
+  min-width: 0;
+  margin-top: 2px;
+  overflow: hidden;
+  color: #8197b8;
+  font-size: 11px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-outputs-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px 0 12px;
+}
+
+.recent-outputs-empty p {
+  margin: 0;
+  color: #61799e;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.recent-outputs-empty small {
+  color: #8197b8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .spark-blue {
   color: #5a9cf5;
 }
@@ -5193,6 +5382,23 @@ button[data-action-unavailable="true"]:disabled {
 
   .suggestion-body img {
     width: 176px;
+    height: 190px;
+  }
+
+  .sense-status-card,
+  .sense-note-card {
+    min-height: 252px;
+    padding: 13px;
+  }
+
+  .sense-note-body {
+    grid-template-columns: minmax(0, 1fr) 120px;
+    min-height: 204px;
+    padding: 12px 12px 0;
+  }
+
+  .sense-note-body img {
+    width: 140px;
     height: 190px;
   }
 

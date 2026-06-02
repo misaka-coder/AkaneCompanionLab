@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="720" fill="#F8FAFC"/>
+  <rect x="64" y="56" width="1152" height="608" rx="28" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+
+  <g id="title-block">
+    <text x="112" y="166" font-family="Microsoft YaHei" font-size="20px" fill="#0D9488">实验 27</text>
+    <text x="112" y="244" font-family="Microsoft YaHei" font-size="68px" font-weight="700" fill="#1A202C">磁混沌摆</text>
+    <text x="116" y="298" font-family="Microsoft YaHei" font-size="24px" fill="#526070">一个小球为什么会走出复杂轨迹，最后停在某一个磁铁上？</text>
+    <rect x="112" y="346" width="238" height="42" rx="21" fill="#EEF6FF" stroke="#CBD5E1"/>
+    <text x="231" y="373" text-anchor="middle" font-family="Microsoft YaHei" font-size="15px" fill="#2563EB">5 分钟讲解视频</text>
+  </g>
+
+  <g id="pendulum-visual">
+    <circle cx="900" cy="376" r="190" fill="#EEF6FF" stroke="#CBD5E1" stroke-width="2"/>
+    <line x1="900" y1="154" x2="820" y2="350" stroke="#526070" stroke-width="3"/>
+    <circle cx="820" cy="350" r="22" fill="#FACC15" stroke="#EA580C" stroke-width="3"/>
+
+    <circle cx="900" cy="258" r="33" fill="#FFFFFF" stroke="#2563EB" stroke-width="3"/>
+    <text x="900" y="266" text-anchor="middle" font-family="Microsoft YaHei" font-size="20px" font-weight="700" fill="#2563EB">N</text>
+    <circle cx="760" cy="458" r="33" fill="#FFFFFF" stroke="#0D9488" stroke-width="3"/>
+    <text x="760" y="466" text-anchor="middle" font-family="Microsoft YaHei" font-size="20px" font-weight="700" fill="#0D9488">N</text>
+    <circle cx="1040" cy="458" r="33" fill="#FFFFFF" stroke="#EA580C" stroke-width="3"/>
+    <text x="1040" y="466" text-anchor="middle" font-family="Microsoft YaHei" font-size="20px" font-weight="700" fill="#EA580C">S</text>
+
+    <path d="M820 350 C760 294 788 236 900 258" fill="none" stroke="#2563EB" stroke-width="4"/>
+    <path d="M820 350 C720 392 724 456 760 458" fill="none" stroke="#0D9488" stroke-width="4"/>
+    <path d="M820 350 C930 334 1032 386 1040 458" fill="none" stroke="#EA580C" stroke-width="4"/>
+    <path d="M780 270 C920 188 1058 270 1020 376 C990 464 862 526 744 446" fill="none" stroke="#7C3AED" stroke-width="3" stroke-dasharray="10 12"/>
+  </g>
+
+  <g id="footer">
+    <line x1="112" y1="586" x2="548" y2="586" stroke="#D9E2EC" stroke-width="2"/>
+    <text x="112" y="626" font-family="Microsoft YaHei" font-size="15px" fill="#64748B">结构：现象观察 → 视频演示 → 原理解释 → 结论</text>
+    <text x="1170" y="626" text-anchor="end" font-family="Microsoft YaHei" font-size="13px" fill="#64748B">01 / 07</text>
+  </g>
+</svg>
