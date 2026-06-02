@@ -269,7 +269,7 @@ class AttachmentIngestService:
             )
 
             kind = str(item.get("kind") or "").strip().lower()
-            if kind == "image":
+            if kind == "image" and self.vision_service is not None:
                 scheduled = self.vision_service.schedule_attachment_image_observation(
                     attachment={
                         **item,

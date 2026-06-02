@@ -60,6 +60,31 @@ class DesktopPetCharacterResourceService:
         manifest.refresh()
         return manifest.build_runtime_manifest()
 
+    def build_character_identity(self, character_pack_id: str) -> dict[str, str]:
+        """Return the resolved display identity for a character pack.
+
+        Returns a dict with keys ``assistant_name``, ``user_label``,
+        ``app_name``, and ``pack_id``.  Returns an empty dict when the
+        pack id is invalid or the pack directory is missing.
+        """
+        pack_id = sanitize_character_pack_id(character_pack_id)
+        if not pack_id:
+            return {}
+        pack_dir = self._resolve_pack_dir(pack_id)
+        if pack_dir is None or not pack_dir.is_dir():
+            return {}
+        character = _load_json(pack_dir / "character.json")
+        identity = _as_dict(character.get("identity"))
+        name = _clean_text(identity.get("name")) or pack_id
+        app_name = _clean_text(identity.get("app_name")) or name
+        user_title = _clean_text(identity.get("user_title")) or "用户"
+        return {
+            "assistant_name": name,
+            "user_label": user_title,
+            "app_name": app_name,
+            "pack_id": pack_id,
+        }
+
     def build_persona_prompt_context(
         self,
         character_pack_id: str,

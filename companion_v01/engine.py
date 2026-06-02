@@ -126,11 +126,14 @@ class AkaneMemoryEngine:
             store=self.store,
             base_dir=self.base_dir / "attachment_inbox_files",
         )
-        self.vision_observation_router = VisionObservationRouter(
-            store=self.store,
-            gift_service=self.gift_service,
-            attachment_service=self.attachment_inbox_service,
-        )
+        if getattr(config, "VISION_ENABLED", True):
+            self.vision_observation_router: VisionObservationRouter | None = VisionObservationRouter(
+                store=self.store,
+                gift_service=self.gift_service,
+                attachment_service=self.attachment_inbox_service,
+            )
+        else:
+            self.vision_observation_router = None
         self.artifact_service = ArtifactContainerService(
             store=self.store,
             public_path_builder=self.gift_service._build_public_path,
@@ -157,18 +160,26 @@ class AkaneMemoryEngine:
             else Path(__file__).resolve().parent.parent / "web" / "assets"
         )
         self.sticker_assets = StickerAssetService(assets_dir=sticker_assets_dir)
-        self.vision_service = VisionObservationService(
-            self.base_dir / "vision_cache",
-            store=self.store,
-            resource_manifest=self.resource_manifest,
-            gift_assets_dir=self.base_dir / "user_assets",
-            on_observation_ready=self.vision_observation_router.handle,
-        )
-        self.desktop_screen_vision = DesktopScreenVisionWorkspace(
-            vision_service=self.vision_service,
-            max_ready_per_session=int(getattr(config, "DESKTOP_SCREEN_VISION_MAX_CLIPS", 5) or 5),
-            ttl_sec=int(getattr(config, "DESKTOP_SCREEN_VISION_TTL_SEC", 15 * 60) or (15 * 60)),
-        )
+        if getattr(config, "VISION_ENABLED", True):
+            self.vision_service: VisionObservationService | None = VisionObservationService(
+                self.base_dir / "vision_cache",
+                store=self.store,
+                resource_manifest=self.resource_manifest,
+                gift_assets_dir=self.base_dir / "user_assets",
+                on_observation_ready=(
+                    self.vision_observation_router.handle
+                    if self.vision_observation_router is not None
+                    else None
+                ),
+            )
+            self.desktop_screen_vision: DesktopScreenVisionWorkspace | None = DesktopScreenVisionWorkspace(
+                vision_service=self.vision_service,
+                max_ready_per_session=int(getattr(config, "DESKTOP_SCREEN_VISION_MAX_CLIPS", 5) or 5),
+                ttl_sec=int(getattr(config, "DESKTOP_SCREEN_VISION_TTL_SEC", 15 * 60) or (15 * 60)),
+            )
+        else:
+            self.vision_service = None
+            self.desktop_screen_vision = None
         self.attachment_ingest_service = AttachmentIngestService(
             base_dir=self.base_dir / "attachment_inbox_files",
             store=self.store,
@@ -221,8 +232,10 @@ class AkaneMemoryEngine:
         self.store.reset()
         self.vector_store.reset()
         self.gift_service.reset()
-        self.vision_service.reset()
-        self.desktop_screen_vision.reset()
+        if self.vision_service is not None:
+            self.vision_service.reset()
+        if self.desktop_screen_vision is not None:
+            self.desktop_screen_vision.reset()
         self.npc_runtime.reset()
 
     def build_resource_manifest(
@@ -545,6 +558,43 @@ class AkaneMemoryEngine:
                     if value:
                         return value
         return ""
+
+    def _resolve_turn_speaker_identity(
+        self,
+        client_context: ClientProtocolContext,
+        character_pack_id: str,
+    ) -> dict[str, str]:
+        """Resolve display speaker identity for the current turn.
+
+        DesktopPet mode with a valid character pack  →  character pack identity.
+        All other modes  →  persona_profiles.toml defaults (PERSONA).
+        """
+        if (
+            client_context is not None
+            and client_context.effective_mode == ClientMode.DESKTOP_PET
+        ):
+            service = getattr(self, "desktop_pet_character_resources", None)
+            if service is not None and character_pack_id:
+                identity_builder = getattr(service, "build_character_identity", None)
+                if identity_builder is not None:
+                    try:
+                        identity = identity_builder(character_pack_id)
+                    except Exception:
+                        identity = {}
+                    if identity:
+                        return {
+                            "assistant_name": str(identity.get("assistant_name") or ""),
+                            "user_label": str(identity.get("user_label") or ""),
+                            "app_name": str(identity.get("app_name") or ""),
+                            "pack_id": str(identity.get("pack_id") or ""),
+                        }
+
+        return {
+            "assistant_name": PERSONA.assistant_name,
+            "user_label": PERSONA.user_label,
+            "app_name": PERSONA.assistant_name,
+            "pack_id": "",
+        }
 
     def _build_desktop_pet_character_pack_prompt_context(
         self,
@@ -992,6 +1042,8 @@ class AkaneMemoryEngine:
         captured_end_ts: int | None = None,
         mode: str = "",
     ) -> dict[str, Any]:
+        if self.desktop_screen_vision is None:
+            return {"ok": False, "reason": "vision_disabled"}
         return self.desktop_screen_vision.submit_clip(
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -1010,6 +1062,8 @@ class AkaneMemoryEngine:
         limit: int = 3,
         include_pending: bool = False,
     ) -> list[dict[str, Any]]:
+        if self.desktop_screen_vision is None:
+            return []
         return self.desktop_screen_vision.list_latest(
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -1024,6 +1078,8 @@ class AkaneMemoryEngine:
         session_id: str,
         clip_id: str,
     ) -> dict[str, Any] | None:
+        if self.desktop_screen_vision is None:
+            return None
         return self.desktop_screen_vision.get_clip(
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -1036,6 +1092,8 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str | None = None,
     ) -> dict[str, Any]:
+        if self.desktop_screen_vision is None:
+            return {"ok": False, "reason": "vision_disabled"}
         return self.desktop_screen_vision.clear(
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -1048,6 +1106,8 @@ class AkaneMemoryEngine:
         session_id: str,
         limit: int = 3,
     ) -> str:
+        if self.desktop_screen_vision is None:
+            return ""
         return self.desktop_screen_vision.build_prompt_context(
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -1061,6 +1121,8 @@ class AkaneMemoryEngine:
         session_id: str,
         clip_id: str,
     ) -> dict[str, Any]:
+        if self.desktop_screen_vision is None:
+            return {"ok": False, "reason": "vision_disabled"}
         observation = self.desktop_screen_vision.get_clip(
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -1477,6 +1539,9 @@ class AkaneMemoryEngine:
             npc_turns=tool_turns,
             final_speech=final_output.get("speech"),
             final_speech_segments=final_output.get("speech_segments"),
+            speaker_name=self._resolve_turn_speaker_identity(
+                client_context, turn_character_pack_id,
+            )["assistant_name"],
         )
         memory_tags = self._normalize_memory_tags(final_output.get("memory_tags"))
         final_output["memory_tags"] = join_tags(memory_tags)
@@ -1806,6 +1871,9 @@ class AkaneMemoryEngine:
             npc_turns=tool_turns,
             final_speech=final_output.get("speech"),
             final_speech_segments=final_output.get("speech_segments"),
+            speaker_name=self._resolve_turn_speaker_identity(
+                client_context, turn_character_pack_id,
+            )["assistant_name"],
         )
         memory_tags = self._normalize_memory_tags(final_output.get("memory_tags"))
         final_output["memory_tags"] = join_tags(memory_tags)
@@ -2010,9 +2078,12 @@ class AkaneMemoryEngine:
             allow_tool_call=allow_tool_call,
             final_debug_enabled=final_debug_enabled,
         )
+        speaker_identity = self._resolve_turn_speaker_identity(
+            client_context, character_pack_id,
+        )
         yield {
             "type": "turn_start",
-            "speaker": PERSONA.assistant_name,
+            "speaker": speaker_identity["assistant_name"],
         }
         stream_result = yield from self.llm.stream_chat_json(
             system_prompt=str(generation_context["system_prompt"]),
@@ -2170,7 +2241,7 @@ class AkaneMemoryEngine:
                 extra_scene_groups=user_scene_groups,
                 extra_character_outfits=user_character_outfits,
             )
-            if prompt_profile.includes(PromptModule.SCENE_OBSERVATION) and not desktop_pet_character_only
+            if self.vision_service is not None and prompt_profile.includes(PromptModule.SCENE_OBSERVATION) and not desktop_pet_character_only
             else ""
         )
         outfit_observation_context = (
@@ -2180,7 +2251,7 @@ class AkaneMemoryEngine:
                 extra_scene_groups=user_scene_groups,
                 extra_character_outfits=user_character_outfits,
             )
-            if prompt_profile.includes(PromptModule.OUTFIT_OBSERVATION) and not desktop_pet_character_only
+            if self.vision_service is not None and prompt_profile.includes(PromptModule.OUTFIT_OBSERVATION) and not desktop_pet_character_only
             else ""
         )
         focused_gift = (
@@ -2194,7 +2265,7 @@ class AkaneMemoryEngine:
         )
         gift_observation_context = (
             self.vision_service.build_gift_prompt_context(asset=focused_gift)
-            if focused_gift is not None
+            if self.vision_service is not None and focused_gift is not None
             else ""
         )
         persona_service = self._get_persona_card_service()
@@ -2414,8 +2485,8 @@ class AkaneMemoryEngine:
     def _normalize_activity_action(self, value: Any) -> dict[str, Any] | None:
         return final_output_engine.normalize_activity_action(value)
 
-    def _build_assistant_dialogue_turn(self, speech: Any) -> dict[str, str] | None:
-        return final_output_engine.build_assistant_dialogue_turn(speech)
+    def _build_assistant_dialogue_turn(self, speech: Any, *, speaker_name: str | None = None) -> dict[str, str] | None:
+        return final_output_engine.build_assistant_dialogue_turn(speech, speaker_name=speaker_name)
 
     def _build_dialogue_turns(
         self,
@@ -2424,12 +2495,14 @@ class AkaneMemoryEngine:
         npc_turns: list[dict[str, Any]],
         final_speech: Any,
         final_speech_segments: Any = None,
+        speaker_name: str | None = None,
     ) -> list[dict[str, str]]:
         return final_output_engine.build_dialogue_turns(
             preface_turn=preface_turn,
             npc_turns=npc_turns,
             final_speech=final_speech,
             final_speech_segments=final_speech_segments,
+            speaker_name=speaker_name,
         )
 
     def _max_tool_rounds(self) -> int:

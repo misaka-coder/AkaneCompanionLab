@@ -231,12 +231,12 @@ def normalize_activity_action(value: Any) -> dict[str, Any] | None:
     return normalized
 
 
-def build_assistant_dialogue_turn(speech: Any) -> dict[str, str] | None:
+def build_assistant_dialogue_turn(speech: Any, *, speaker_name: str | None = None) -> dict[str, str] | None:
     text = str(speech or "").strip()
     if not text:
         return None
     return {
-        "speaker": PERSONA.assistant_name,
+        "speaker": speaker_name or PERSONA.assistant_name,
         "speech": text,
     }
 
@@ -247,6 +247,7 @@ def build_dialogue_turns(
     npc_turns: list[dict[str, Any]],
     final_speech: Any,
     final_speech_segments: Any = None,
+    speaker_name: str | None = None,
 ) -> list[dict[str, str]]:
     turns: list[dict[str, str]] = []
     if isinstance(preface_turn, list):
@@ -268,11 +269,11 @@ def build_dialogue_turns(
 
     if isinstance(final_speech_segments, list) and final_speech_segments:
         for segment in final_speech_segments:
-            final_turn = build_assistant_dialogue_turn(segment)
+            final_turn = build_assistant_dialogue_turn(segment, speaker_name=speaker_name)
             if final_turn:
                 turns.append(final_turn)
     else:
-        final_turn = build_assistant_dialogue_turn(final_speech)
+        final_turn = build_assistant_dialogue_turn(final_speech, speaker_name=speaker_name)
         if final_turn:
             turns.append(final_turn)
 

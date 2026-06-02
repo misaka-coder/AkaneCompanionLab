@@ -125,6 +125,18 @@ def build_voice_router(
                 headers={"Cache-Control": "no-store"},
             )
 
+        if tts_client is None:
+            runtime_metrics.observe_request("tts", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+            return JSONResponse(
+                build_desktop_pet_error_payload(
+                    error="tts_disabled",
+                    message="TTS client is unavailable.",
+                    retryable=False,
+                ),
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+
         try:
             audio = await tts_client.synthesize(text)
         except ValueError as exc:

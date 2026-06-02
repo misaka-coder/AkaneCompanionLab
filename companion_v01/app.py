@@ -112,7 +112,10 @@ public_guard = PublicThinkGuard(
         getattr(config, "PUBLIC_DAILY_LIMIT_MESSAGE", "今日体验名额已满，明天再来看看吧。")
     ),
 )
-qq_gateway = NapCatQQGateway()
+if getattr(config, "QQ_BRIDGE_ENABLED", False):
+    qq_gateway: NapCatQQGateway | None = NapCatQQGateway()
+else:
+    qq_gateway = None
 
 
 def _install_qq_task_completion_notifications() -> None:
@@ -255,7 +258,8 @@ def _send_qq_completion_files(
     return sent_count
 
 
-_install_qq_task_completion_notifications()
+if qq_gateway is not None:
+    _install_qq_task_completion_notifications()
 
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
@@ -339,16 +343,17 @@ app.include_router(
         resolve_identity_from_payload=_resolve_identity_from_payload,
     )
 )
-app.include_router(
-    build_qq_router(
-        engine=engine,
-        config_module=config,
-        qq_gateway=qq_gateway,
-        runtime_metrics=runtime_metrics,
-        logger=logger,
-        log_event=_log_event,
+if qq_gateway is not None:
+    app.include_router(
+        build_qq_router(
+            engine=engine,
+            config_module=config,
+            qq_gateway=qq_gateway,
+            runtime_metrics=runtime_metrics,
+            logger=logger,
+            log_event=_log_event,
+        )
     )
-)
 app.include_router(
     build_sessions_router(
         engine=engine,
