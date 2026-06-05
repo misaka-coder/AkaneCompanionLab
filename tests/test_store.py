@@ -73,6 +73,108 @@ class MemoryStoreEvalTurnTests(unittest.TestCase):
             self.assertEqual([item["seq_no"] for item in recent_messages], [3, 4, 5])
             self.assertEqual([item["content"] for item in recent_messages], ["message-3", "message-4", "message-5"])
 
+    def test_character_pack_id_scopes_raw_and_visible_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            store.add_message(
+                profile_user_id="master",
+                session_id="shared_session",
+                character_pack_id="akane",
+                role="user",
+                content="Akane remembers the blue notebook.",
+                timestamp=100,
+            )
+            store.add_message(
+                profile_user_id="master",
+                session_id="shared_session",
+                character_pack_id="kaju",
+                role="user",
+                content="Kaju remembers the lunchbox.",
+                timestamp=101,
+            )
+            store.add_summary(
+                profile_user_id="master",
+                session_id="session_akane",
+                character_pack_id="akane",
+                timestamp=200,
+                date_label="2026-06-05",
+                time_of_day="night",
+                period_label="night chat",
+                event_type="daily",
+                importance=0.7,
+                diary_summary="Akane talked about a blue notebook.",
+                key_events=["blue notebook"],
+                core_facts=["blue notebook"],
+                semantic_tags=["notebook"],
+                source_start_seq=1,
+                source_end_seq=1,
+                source_ids=["akane-msg"],
+            )
+            store.add_summary(
+                profile_user_id="master",
+                session_id="session_kaju",
+                character_pack_id="kaju",
+                timestamp=201,
+                date_label="2026-06-05",
+                time_of_day="night",
+                period_label="night chat",
+                event_type="daily",
+                importance=0.7,
+                diary_summary="Kaju talked about a lunchbox.",
+                key_events=["lunchbox"],
+                core_facts=["lunchbox"],
+                semantic_tags=["lunchbox"],
+                source_start_seq=1,
+                source_end_seq=1,
+                source_ids=["kaju-msg"],
+            )
+            store.add_semantic_summary(
+                profile_user_id="master",
+                session_id="session_akane",
+                character_pack_id="akane",
+                timestamp=300,
+                period_start_ts=200,
+                period_end_ts=300,
+                date_label="2026-06-05",
+                time_of_day="night",
+                importance=0.8,
+                semantic_summary="Akane has a blue notebook memory.",
+                stable_facts=["blue notebook"],
+                recurring_topics=["stationery"],
+                important_people=[],
+                open_loops=[],
+                semantic_tags=["notebook"],
+                source_summary_ids=["akane-summary"],
+            )
+            store.add_semantic_summary(
+                profile_user_id="master",
+                session_id="session_kaju",
+                character_pack_id="kaju",
+                timestamp=301,
+                period_start_ts=201,
+                period_end_ts=301,
+                date_label="2026-06-05",
+                time_of_day="night",
+                importance=0.8,
+                semantic_summary="Kaju has a lunchbox memory.",
+                stable_facts=["lunchbox"],
+                recurring_topics=["food"],
+                important_people=[],
+                open_loops=[],
+                semantic_tags=["lunchbox"],
+                source_summary_ids=["kaju-summary"],
+            )
+
+            akane_raw = store.get_unsummarized_messages("shared_session", character_pack_id="akane")
+            kaju_raw = store.get_unsummarized_messages("shared_session", character_pack_id="kaju")
+            akane_episodic = store.get_visible_episodic_summaries("master", character_pack_id="akane")
+            kaju_semantic = store.get_recent_semantic_summaries("master", character_pack_id="kaju")
+
+            self.assertEqual([item["content"] for item in akane_raw], ["Akane remembers the blue notebook."])
+            self.assertEqual([item["content"] for item in kaju_raw], ["Kaju remembers the lunchbox."])
+            self.assertEqual([item["character_pack_id"] for item in akane_episodic], ["akane"])
+            self.assertEqual([item["semantic_summary"] for item in kaju_semantic], ["Kaju has a lunchbox memory."])
+
     def test_get_latest_eval_turn_returns_most_recent_final_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))

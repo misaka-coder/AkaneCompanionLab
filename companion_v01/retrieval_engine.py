@@ -112,6 +112,7 @@ def run_pre_retrieval_pipeline(
     *,
     payload: dict[str, Any],
     profile_user_id: str,
+    character_pack_id: str | None = None,
     user_message: str,
     now_ts: int,
     recent_raw: list[dict[str, Any]],
@@ -129,6 +130,7 @@ def run_pre_retrieval_pipeline(
         )
     return engine._get_retrieval_service().run_explicit(
         profile_user_id=profile_user_id,
+        character_pack_id=character_pack_id,
         original_query=user_message,
         now_ts=now_ts,
         exclude_source_ids=collect_visible_context_source_ids(
@@ -181,10 +183,22 @@ def execute_retrieve_memory_tool(
     original_query = str((current_user_record or {}).get("content") or query)
     episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
     semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
-    recent_raw = engine.store.get_unsummarized_messages(context.session_id)
-    recent_episodic_summaries = engine.store.get_visible_episodic_summaries(context.profile_user_id, limit=episodic_limit)
+    character_pack_id = str(getattr(context, "character_pack_id", "") or "").strip()
+    recent_raw = engine.store.get_unsummarized_messages(
+        context.session_id,
+        character_pack_id=character_pack_id,
+    )
+    recent_episodic_summaries = engine.store.get_visible_episodic_summaries(
+        context.profile_user_id,
+        limit=episodic_limit,
+        character_pack_id=character_pack_id,
+    )
     recent_semantic_summaries = (
-        engine.store.get_recent_semantic_summaries(context.profile_user_id, limit=semantic_limit)
+        engine.store.get_recent_semantic_summaries(
+            context.profile_user_id,
+            limit=semantic_limit,
+            character_pack_id=character_pack_id,
+        )
         if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
         else []
     )
@@ -201,6 +215,7 @@ def execute_retrieve_memory_tool(
     )
     pipeline = engine._get_retrieval_service().run_explicit(
         profile_user_id=context.profile_user_id,
+        character_pack_id=character_pack_id,
         original_query=original_query,
         now_ts=int(context.now_ts),
         query=query,

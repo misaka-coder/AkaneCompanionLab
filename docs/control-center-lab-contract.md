@@ -124,6 +124,8 @@ The `createControlCenterDataSourceOptions` function in `control-center-lab.js` i
 | outfit | `outfit` | `outfit` | empty string |
 | emotion | `emotion` | `currentEmotion` | empty string |
 
+When `characterPackId` is non-empty, chat-memory and session endpoints use it as the default memory scope. This isolates desktop-pet raw messages, episodic summaries, semantic summaries, eval-turn restore data, and vector retrieval per character. Music and gift resources stay scoped to `profileUserId` by default so the user's library remains shared across characters.
+
 ### Source Metadata
 
 Every data source exposes metadata for observability:

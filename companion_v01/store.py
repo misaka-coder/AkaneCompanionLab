@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -10,6 +11,15 @@ from pathlib import Path
 from typing import Any
 
 from .text_utils import timestamp_to_date_label, infer_time_of_day
+
+CHARACTER_PACK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def normalize_character_pack_id(value: Any) -> str:
+    pack_id = str(value or "").strip()
+    if not pack_id or not CHARACTER_PACK_ID_PATTERN.fullmatch(pack_id):
+        return ""
+    return pack_id
 
 
 class MemoryStore:
@@ -38,6 +48,7 @@ class MemoryStore:
                     source_id TEXT PRIMARY KEY,
                     profile_user_id TEXT NOT NULL,
                     session_id TEXT NOT NULL,
+                    character_pack_id TEXT NOT NULL DEFAULT '',
                     seq_no INTEGER NOT NULL,
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
@@ -56,10 +67,14 @@ class MemoryStore:
                 CREATE INDEX IF NOT EXISTS idx_chat_profile_time
                 ON chat_messages(profile_user_id, timestamp);
 
+                CREATE INDEX IF NOT EXISTS idx_chat_profile_character_time
+                ON chat_messages(profile_user_id, character_pack_id, timestamp);
+
                 CREATE TABLE IF NOT EXISTS memory_summaries (
                     summary_id TEXT PRIMARY KEY,
                     profile_user_id TEXT NOT NULL,
                     session_id TEXT NOT NULL,
+                    character_pack_id TEXT NOT NULL DEFAULT '',
                     timestamp INTEGER NOT NULL,
                     date_label TEXT NOT NULL,
                     time_of_day TEXT NOT NULL,
@@ -80,6 +95,9 @@ class MemoryStore:
                 CREATE INDEX IF NOT EXISTS idx_summary_profile_time
                 ON memory_summaries(profile_user_id, timestamp DESC);
 
+                CREATE INDEX IF NOT EXISTS idx_summary_profile_character_time
+                ON memory_summaries(profile_user_id, character_pack_id, timestamp DESC);
+
                 CREATE INDEX IF NOT EXISTS idx_summary_semanticized
                 ON memory_summaries(profile_user_id, session_id, is_semanticized, timestamp DESC);
 
@@ -87,6 +105,7 @@ class MemoryStore:
                     semantic_id TEXT PRIMARY KEY,
                     profile_user_id TEXT NOT NULL,
                     session_id TEXT NOT NULL,
+                    character_pack_id TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL,
                     timestamp INTEGER NOT NULL,
                     period_start_ts INTEGER NOT NULL,
@@ -108,11 +127,15 @@ class MemoryStore:
                 CREATE INDEX IF NOT EXISTS idx_semantic_profile_time
                 ON memory_semantic_summaries(profile_user_id, last_reinforced_ts DESC, importance DESC, timestamp DESC);
 
+                CREATE INDEX IF NOT EXISTS idx_semantic_profile_character_time
+                ON memory_semantic_summaries(profile_user_id, character_pack_id, last_reinforced_ts DESC, importance DESC, timestamp DESC);
+
                 CREATE TABLE IF NOT EXISTS eval_turns (
                     trace_id TEXT PRIMARY KEY,
                     created_at INTEGER NOT NULL,
                     session_id TEXT NOT NULL,
                     profile_user_id TEXT NOT NULL,
+                    character_pack_id TEXT NOT NULL DEFAULT '',
                     user_message TEXT NOT NULL,
                     router_json TEXT NOT NULL,
                     verifier_json TEXT NOT NULL,
@@ -122,6 +145,7 @@ class MemoryStore:
                 CREATE TABLE IF NOT EXISTS chat_sessions (
                     session_id TEXT PRIMARY KEY,
                     profile_user_id TEXT NOT NULL,
+                    character_pack_id TEXT NOT NULL DEFAULT '',
                     display_title TEXT NOT NULL DEFAULT '',
                     current_gift_focus_asset_id TEXT NOT NULL DEFAULT '',
                     current_gift_focus_updated_at INTEGER NOT NULL DEFAULT 0,
@@ -131,6 +155,9 @@ class MemoryStore:
 
                 CREATE INDEX IF NOT EXISTS idx_chat_sessions_profile_updated
                 ON chat_sessions(profile_user_id, updated_at DESC, created_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_chat_sessions_profile_character_updated
+                ON chat_sessions(profile_user_id, character_pack_id, updated_at DESC, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS reminders (
                     reminder_id TEXT PRIMARY KEY,
@@ -392,6 +419,12 @@ class MemoryStore:
             self._ensure_column(
                 conn=conn,
                 table_name="chat_sessions",
+                column_name="character_pack_id",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn=conn,
+                table_name="chat_sessions",
                 column_name="current_gift_focus_asset_id",
                 column_definition="TEXT NOT NULL DEFAULT ''",
             )
@@ -404,8 +437,20 @@ class MemoryStore:
             self._ensure_column(
                 conn=conn,
                 table_name="chat_messages",
+                column_name="character_pack_id",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn=conn,
+                table_name="chat_messages",
                 column_name="index_in_vector",
                 column_definition="INTEGER NOT NULL DEFAULT 1",
+            )
+            self._ensure_column(
+                conn=conn,
+                table_name="memory_summaries",
+                column_name="character_pack_id",
+                column_definition="TEXT NOT NULL DEFAULT ''",
             )
             self._ensure_column(
                 conn=conn,
@@ -417,6 +462,18 @@ class MemoryStore:
                 conn=conn,
                 table_name="memory_summaries",
                 column_name="semantic_id",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn=conn,
+                table_name="memory_semantic_summaries",
+                column_name="character_pack_id",
+                column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn=conn,
+                table_name="eval_turns",
+                column_name="character_pack_id",
                 column_definition="TEXT NOT NULL DEFAULT ''",
             )
             self._ensure_column(
@@ -738,14 +795,20 @@ class MemoryStore:
             conn.execute("DELETE FROM attachment_inbox_items")
             conn.execute("DELETE FROM desktop_music_timelines")
 
-    def _build_default_session_title(self, conn: sqlite3.Connection, profile_user_id: str) -> str:
+    def _build_default_session_title(
+        self,
+        conn: sqlite3.Connection,
+        profile_user_id: str,
+        character_pack_id: str = "",
+    ) -> str:
+        normalized_character_pack_id = normalize_character_pack_id(character_pack_id)
         row = conn.execute(
             """
             SELECT COUNT(*) AS cnt
             FROM chat_sessions
-            WHERE profile_user_id = ?
+            WHERE profile_user_id = ? AND character_pack_id = ?
             """,
-            (str(profile_user_id),),
+            (str(profile_user_id), normalized_character_pack_id),
         ).fetchone()
         count = int(row["cnt"] or 0) if row else 0
         if count <= 0:
@@ -757,11 +820,13 @@ class MemoryStore:
         *,
         profile_user_id: str,
         session_id: str,
+        character_pack_id: str = "",
         display_title: str | None = None,
         timestamp: int | None = None,
     ) -> dict[str, Any]:
         normalized_profile_user_id = str(profile_user_id or "").strip()
         normalized_session_id = str(session_id or "").strip()
+        normalized_character_pack_id = normalize_character_pack_id(character_pack_id)
         if not normalized_profile_user_id or not normalized_session_id:
             raise ValueError("profile_user_id and session_id are required")
 
@@ -782,11 +847,12 @@ class MemoryStore:
                     conn.execute(
                         """
                         UPDATE chat_sessions
-                        SET display_title = ?, updated_at = ?
+                        SET display_title = ?, character_pack_id = ?, updated_at = ?
                         WHERE session_id = ? AND profile_user_id = ?
                         """,
                         (
                             requested_title,
+                            normalized_character_pack_id,
                             effective_ts,
                             normalized_session_id,
                             normalized_profile_user_id,
@@ -796,6 +862,7 @@ class MemoryStore:
                         {
                             **dict(existing),
                             "display_title": requested_title,
+                            "character_pack_id": normalized_character_pack_id,
                             "updated_at": effective_ts,
                         }
                     )
@@ -803,21 +870,31 @@ class MemoryStore:
                 conn.execute(
                     """
                     UPDATE chat_sessions
-                    SET updated_at = ?
+                    SET character_pack_id = ?, updated_at = ?
                     WHERE session_id = ? AND profile_user_id = ?
                     """,
                     (
+                        normalized_character_pack_id,
                         effective_ts,
                         normalized_session_id,
                         normalized_profile_user_id,
                     ),
                 )
-                return self._row_to_session({**dict(existing), "updated_at": effective_ts})
+                return self._row_to_session({
+                    **dict(existing),
+                    "character_pack_id": normalized_character_pack_id,
+                    "updated_at": effective_ts,
+                })
 
-            resolved_title = requested_title or self._build_default_session_title(conn, normalized_profile_user_id)
+            resolved_title = requested_title or self._build_default_session_title(
+                conn,
+                normalized_profile_user_id,
+                normalized_character_pack_id,
+            )
             payload = {
                 "session_id": normalized_session_id,
                 "profile_user_id": normalized_profile_user_id,
+                "character_pack_id": normalized_character_pack_id,
                 "display_title": resolved_title,
                 "created_at": effective_ts,
                 "updated_at": effective_ts,
@@ -825,12 +902,13 @@ class MemoryStore:
             conn.execute(
                 """
                 INSERT INTO chat_sessions (
-                    session_id, profile_user_id, display_title, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    session_id, profile_user_id, character_pack_id, display_title, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload["session_id"],
                     payload["profile_user_id"],
+                    payload["character_pack_id"],
                     payload["display_title"],
                     payload["created_at"],
                     payload["updated_at"],
@@ -889,6 +967,25 @@ class MemoryStore:
                 LIMIT 1
                 """,
                 (str(profile_user_id), str(session_id)),
+            ).fetchone()
+        return self._row_to_session(dict(row)) if row else None
+
+    def get_character_session(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any] | None:
+        normalized_character_pack_id = normalize_character_pack_id(character_pack_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM chat_sessions
+                WHERE profile_user_id = ? AND session_id = ? AND character_pack_id = ?
+                LIMIT 1
+                """,
+                (str(profile_user_id), str(session_id), normalized_character_pack_id),
             ).fetchone()
         return self._row_to_session(dict(row)) if row else None
 
@@ -960,41 +1057,59 @@ class MemoryStore:
             "updated_at": effective_ts,
         }
 
-    def _backfill_profile_sessions(self, *, conn: sqlite3.Connection, profile_user_id: str) -> None:
+    def _backfill_profile_sessions(
+        self,
+        *,
+        conn: sqlite3.Connection,
+        profile_user_id: str,
+        character_pack_id: str | None = None,
+    ) -> None:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         existing_ids = {
             str(row["session_id"])
             for row in conn.execute(
-                "SELECT session_id FROM chat_sessions WHERE profile_user_id = ?",
-                (str(profile_user_id),),
+                """
+                SELECT session_id FROM chat_sessions
+                WHERE profile_user_id = ?
+                  AND (? IS NULL OR character_pack_id = ?)
+                """,
+                (str(profile_user_id), normalized_character_pack_id, normalized_character_pack_id),
             ).fetchall()
         }
         legacy_rows = conn.execute(
             """
-            SELECT session_id, MIN(timestamp) AS created_at, MAX(timestamp) AS updated_at
+            SELECT session_id, character_pack_id, MIN(timestamp) AS created_at, MAX(timestamp) AS updated_at
             FROM chat_messages
             WHERE profile_user_id = ?
-            GROUP BY session_id
+              AND (? IS NULL OR character_pack_id = ?)
+            GROUP BY session_id, character_pack_id
             ORDER BY MIN(timestamp) ASC, session_id ASC
             """,
-            (str(profile_user_id),),
+            (str(profile_user_id), normalized_character_pack_id, normalized_character_pack_id),
         ).fetchall()
 
         for row in legacy_rows:
             session_id = str(row["session_id"] or "").strip()
             if not session_id or session_id in existing_ids:
                 continue
+            row_character_pack_id = normalize_character_pack_id(row["character_pack_id"])
             created_at = int(row["created_at"] or time.time())
             updated_at = int(row["updated_at"] or created_at)
-            title = self._build_default_session_title(conn, str(profile_user_id))
+            title = self._build_default_session_title(conn, str(profile_user_id), row_character_pack_id)
             conn.execute(
                 """
                 INSERT INTO chat_sessions (
-                    session_id, profile_user_id, display_title, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    session_id, profile_user_id, character_pack_id, display_title, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
                     str(profile_user_id),
+                    row_character_pack_id,
                     title,
                     created_at,
                     updated_at,
@@ -1002,17 +1117,37 @@ class MemoryStore:
             )
             existing_ids.add(session_id)
 
-    def list_sessions(self, profile_user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    def list_sessions(
+        self,
+        profile_user_id: str,
+        limit: int = 50,
+        character_pack_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         with self._connect() as conn:
-            self._backfill_profile_sessions(conn=conn, profile_user_id=str(profile_user_id))
+            self._backfill_profile_sessions(
+                conn=conn,
+                profile_user_id=str(profile_user_id),
+                character_pack_id=normalized_character_pack_id,
+            )
             rows = conn.execute(
                 """
                 SELECT * FROM chat_sessions
                 WHERE profile_user_id = ?
+                  AND (? IS NULL OR character_pack_id = ?)
                 ORDER BY updated_at DESC, created_at DESC, session_id DESC
                 LIMIT ?
                 """,
-                (str(profile_user_id), max(1, int(limit))),
+                (
+                    str(profile_user_id),
+                    normalized_character_pack_id,
+                    normalized_character_pack_id,
+                    max(1, int(limit)),
+                ),
             ).fetchall()
         return [self._row_to_session(dict(row)) for row in rows]
 
@@ -1021,28 +1156,60 @@ class MemoryStore:
         *,
         profile_user_id: str,
         session_id: str,
+        character_pack_id: str | None = None,
         limit: int = 120,
     ) -> list[dict[str, Any]]:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM (
                     SELECT * FROM chat_messages
                     WHERE profile_user_id = ? AND session_id = ?
+                      AND (? IS NULL OR character_pack_id = ?)
                     ORDER BY seq_no DESC
                     LIMIT ?
                 )
                 ORDER BY seq_no ASC
                 """,
-                (str(profile_user_id), str(session_id), max(1, int(limit))),
+                (
+                    str(profile_user_id),
+                    str(session_id),
+                    normalized_character_pack_id,
+                    normalized_character_pack_id,
+                    max(1, int(limit)),
+                ),
             ).fetchall()
         return [self._row_to_message(dict(row)) for row in rows]
 
-    def next_seq_no(self, session_id: str) -> int:
+    def next_seq_no(
+        self,
+        session_id: str,
+        *,
+        profile_user_id: str = "",
+        character_pack_id: str | None = None,
+    ) -> int:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
+        clauses = ["session_id = ?"]
+        params: list[Any] = [str(session_id)]
+        if str(profile_user_id or "").strip():
+            clauses.append("profile_user_id = ?")
+            params.append(str(profile_user_id))
+        if normalized_character_pack_id is not None:
+            clauses.append("character_pack_id = ?")
+            params.append(normalized_character_pack_id)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT COALESCE(MAX(seq_no), 0) AS max_seq FROM chat_messages WHERE session_id = ?",
-                (session_id,),
+                f"SELECT COALESCE(MAX(seq_no), 0) AS max_seq FROM chat_messages WHERE {' AND '.join(clauses)}",
+                params,
             ).fetchone()
         return int(row["max_seq"]) + 1
 
@@ -1051,6 +1218,7 @@ class MemoryStore:
         *,
         profile_user_id: str,
         session_id: str,
+        character_pack_id: str = "",
         role: str,
         content: str,
         timestamp: int | None = None,
@@ -1060,11 +1228,17 @@ class MemoryStore:
         index_in_vector: bool = True,
     ) -> dict[str, Any]:
         ts = int(timestamp or time.time())
+        normalized_character_pack_id = normalize_character_pack_id(character_pack_id)
         record = {
             "source_id": str(uuid.uuid4()),
             "profile_user_id": str(profile_user_id),
             "session_id": str(session_id),
-            "seq_no": self.next_seq_no(session_id),
+            "character_pack_id": normalized_character_pack_id,
+            "seq_no": self.next_seq_no(
+                session_id,
+                profile_user_id=profile_user_id,
+                character_pack_id=normalized_character_pack_id,
+            ),
             "role": str(role),
             "content": str(content),
             "timestamp": ts,
@@ -1078,21 +1252,23 @@ class MemoryStore:
         self.ensure_session(
             profile_user_id=record["profile_user_id"],
             session_id=record["session_id"],
+            character_pack_id=record["character_pack_id"],
             timestamp=record["timestamp"],
         )
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO chat_messages (
-                    source_id, profile_user_id, session_id, seq_no, role, content,
+                    source_id, profile_user_id, session_id, character_pack_id, seq_no, role, content,
                     timestamp, date_label, time_of_day, semantic_tags_json,
                     index_in_vector, is_summarized, summary_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record["source_id"],
                     record["profile_user_id"],
                     record["session_id"],
+                    record["character_pack_id"],
                     record["seq_no"],
                     record["role"],
                     record["content"],
@@ -1135,36 +1311,74 @@ class MemoryStore:
                 ),
             )
 
-    def get_unsummarized_messages(self, session_id: str) -> list[dict[str, Any]]:
+    def get_unsummarized_messages(
+        self,
+        session_id: str,
+        *,
+        character_pack_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM chat_messages
                 WHERE session_id = ? AND is_summarized = 0
+                  AND (? IS NULL OR character_pack_id = ?)
                 ORDER BY seq_no ASC
                 """,
-                (session_id,),
+                (session_id, normalized_character_pack_id, normalized_character_pack_id),
             ).fetchall()
         return [self._row_to_message(dict(row)) for row in rows]
 
-    def get_unsummarized_count(self, session_id: str) -> int:
+    def get_unsummarized_count(
+        self,
+        session_id: str,
+        *,
+        character_pack_id: str | None = None,
+    ) -> int:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM chat_messages WHERE session_id = ? AND is_summarized = 0",
-                (session_id,),
+                """
+                SELECT COUNT(*) AS cnt
+                FROM chat_messages
+                WHERE session_id = ? AND is_summarized = 0
+                  AND (? IS NULL OR character_pack_id = ?)
+                """,
+                (session_id, normalized_character_pack_id, normalized_character_pack_id),
             ).fetchone()
         return int(row["cnt"])
 
-    def get_oldest_unsummarized_batch(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    def get_oldest_unsummarized_batch(
+        self,
+        session_id: str,
+        limit: int = 20,
+        *,
+        character_pack_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM chat_messages
                 WHERE session_id = ? AND is_summarized = 0
+                  AND (? IS NULL OR character_pack_id = ?)
                 ORDER BY seq_no ASC
                 LIMIT ?
                 """,
-                (session_id, int(limit)),
+                (session_id, normalized_character_pack_id, normalized_character_pack_id, int(limit)),
             ).fetchall()
         return [self._row_to_message(dict(row)) for row in rows]
 
@@ -1187,6 +1401,7 @@ class MemoryStore:
         *,
         profile_user_id: str,
         session_id: str,
+        character_pack_id: str = "",
         timestamp: int,
         date_label: str,
         time_of_day: str,
@@ -1201,10 +1416,12 @@ class MemoryStore:
         source_end_seq: int,
         source_ids: list[str],
     ) -> dict[str, Any]:
+        normalized_character_pack_id = normalize_character_pack_id(character_pack_id)
         payload = {
             "summary_id": f"summary::{uuid.uuid4()}",
             "profile_user_id": str(profile_user_id),
             "session_id": str(session_id),
+            "character_pack_id": normalized_character_pack_id,
             "timestamp": int(timestamp),
             "date_label": str(date_label),
             "time_of_day": str(time_of_day),
@@ -1223,15 +1440,16 @@ class MemoryStore:
             conn.execute(
                 """
                 INSERT INTO memory_summaries (
-                    summary_id, profile_user_id, session_id, timestamp, date_label, time_of_day,
+                    summary_id, profile_user_id, session_id, character_pack_id, timestamp, date_label, time_of_day,
                     period_label, event_type, importance, diary_summary, key_events_json,
                     core_facts_json, semantic_tags_json, is_semanticized, semantic_id, source_start_seq, source_end_seq, source_ids_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload["summary_id"],
                     payload["profile_user_id"],
                     payload["session_id"],
+                    payload["character_pack_id"],
                     payload["timestamp"],
                     payload["date_label"],
                     payload["time_of_day"],
@@ -1251,54 +1469,101 @@ class MemoryStore:
             )
         return self._row_to_summary(payload)
 
-    def get_recent_summaries(self, profile_user_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    def get_recent_summaries(
+        self,
+        profile_user_id: str,
+        limit: int = 5,
+        *,
+        character_pack_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM memory_summaries
                 WHERE profile_user_id = ?
+                  AND (? IS NULL OR character_pack_id = ?)
                 ORDER BY timestamp DESC
                 LIMIT ?
                 """,
-                (profile_user_id, int(limit)),
+                (profile_user_id, normalized_character_pack_id, normalized_character_pack_id, int(limit)),
             ).fetchall()
         return [self._row_to_summary(dict(row)) for row in rows]
 
-    def get_visible_episodic_summaries(self, profile_user_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    def get_visible_episodic_summaries(
+        self,
+        profile_user_id: str,
+        limit: int = 10,
+        *,
+        character_pack_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM memory_summaries
                 WHERE profile_user_id = ? AND is_semanticized = 0
+                  AND (? IS NULL OR character_pack_id = ?)
                 ORDER BY timestamp DESC
                 LIMIT ?
                 """,
-                (profile_user_id, int(limit)),
+                (profile_user_id, normalized_character_pack_id, normalized_character_pack_id, int(limit)),
             ).fetchall()
         return [self._row_to_summary(dict(row)) for row in rows]
 
-    def get_unsemanticized_summary_count(self, session_id: str) -> int:
+    def get_unsemanticized_summary_count(
+        self,
+        session_id: str,
+        *,
+        character_pack_id: str | None = None,
+    ) -> int:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT COUNT(*) AS cnt
                 FROM memory_summaries
                 WHERE session_id = ? AND is_semanticized = 0
+                  AND (? IS NULL OR character_pack_id = ?)
                 """,
-                (session_id,),
+                (session_id, normalized_character_pack_id, normalized_character_pack_id),
             ).fetchone()
         return int(row["cnt"])
 
-    def get_oldest_unsemanticized_summaries(self, session_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    def get_oldest_unsemanticized_summaries(
+        self,
+        session_id: str,
+        limit: int = 5,
+        *,
+        character_pack_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM memory_summaries
                 WHERE session_id = ? AND is_semanticized = 0
+                  AND (? IS NULL OR character_pack_id = ?)
                 ORDER BY timestamp ASC
                 LIMIT ?
                 """,
-                (session_id, int(limit)),
+                (session_id, normalized_character_pack_id, normalized_character_pack_id, int(limit)),
             ).fetchall()
         return [self._row_to_summary(dict(row)) for row in rows]
 
@@ -1321,6 +1586,7 @@ class MemoryStore:
         *,
         profile_user_id: str,
         session_id: str,
+        character_pack_id: str = "",
         timestamp: int,
         period_start_ts: int,
         period_end_ts: int,
@@ -1335,10 +1601,12 @@ class MemoryStore:
         semantic_tags: list[str],
         source_summary_ids: list[str],
     ) -> dict[str, Any]:
+        normalized_character_pack_id = normalize_character_pack_id(character_pack_id)
         payload = {
             "semantic_id": f"semantic::{uuid.uuid4()}",
             "profile_user_id": str(profile_user_id),
             "session_id": str(session_id),
+            "character_pack_id": normalized_character_pack_id,
             "created_at": int(time.time()),
             "timestamp": int(timestamp),
             "period_start_ts": int(period_start_ts),
@@ -1360,17 +1628,18 @@ class MemoryStore:
             conn.execute(
                 """
                 INSERT INTO memory_semantic_summaries (
-                    semantic_id, profile_user_id, session_id, created_at, timestamp,
+                    semantic_id, profile_user_id, session_id, character_pack_id, created_at, timestamp,
                     period_start_ts, period_end_ts, date_label, time_of_day, importance,
                     semantic_summary, stable_facts_json, recurring_topics_json,
                     important_people_json, open_loops_json, semantic_tags_json,
                     source_summary_ids_json, reinforcement_count, last_reinforced_ts
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload["semantic_id"],
                     payload["profile_user_id"],
                     payload["session_id"],
+                    payload["character_pack_id"],
                     payload["created_at"],
                     payload["timestamp"],
                     payload["period_start_ts"],
@@ -1460,16 +1729,28 @@ class MemoryStore:
             )
         return self.get_semantic_summary_by_id(payload["semantic_id"])
 
-    def get_recent_semantic_summaries(self, profile_user_id: str, limit: int = 3) -> list[dict[str, Any]]:
+    def get_recent_semantic_summaries(
+        self,
+        profile_user_id: str,
+        limit: int = 3,
+        *,
+        character_pack_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM memory_semantic_summaries
                 WHERE profile_user_id = ?
+                  AND (? IS NULL OR character_pack_id = ?)
                 ORDER BY last_reinforced_ts DESC, importance DESC, timestamp DESC
                 LIMIT ?
                 """,
-                (profile_user_id, int(limit)),
+                (profile_user_id, normalized_character_pack_id, normalized_character_pack_id, int(limit)),
             ).fetchall()
         return [self._row_to_semantic_summary(dict(row)) for row in rows]
 
@@ -1566,24 +1847,27 @@ class MemoryStore:
         trace_id: str,
         session_id: str,
         profile_user_id: str,
+        character_pack_id: str = "",
         user_message: str,
         router_json: dict[str, Any],
         verifier_json: dict[str, Any],
         final_json: dict[str, Any],
     ) -> None:
+        normalized_character_pack_id = normalize_character_pack_id(character_pack_id)
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO eval_turns (
-                    trace_id, created_at, session_id, profile_user_id, user_message,
+                    trace_id, created_at, session_id, profile_user_id, character_pack_id, user_message,
                     router_json, verifier_json, final_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trace_id,
                     int(time.time()),
                     session_id,
                     profile_user_id,
+                    normalized_character_pack_id,
                     user_message,
                     json.dumps(router_json, ensure_ascii=False),
                     json.dumps(verifier_json, ensure_ascii=False),
@@ -4321,16 +4605,27 @@ class MemoryStore:
             )
         return self._row_to_vision_observation(payload)
 
-    def get_latest_eval_turn(self, session_id: str) -> dict[str, Any] | None:
+    def get_latest_eval_turn(
+        self,
+        session_id: str,
+        *,
+        character_pack_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT * FROM eval_turns
                 WHERE session_id = ?
+                  AND (? IS NULL OR character_pack_id = ?)
                 ORDER BY created_at DESC, rowid DESC
                 LIMIT 1
                 """,
-                (session_id,),
+                (session_id, normalized_character_pack_id, normalized_character_pack_id),
             ).fetchone()
         return self._row_to_eval_turn(dict(row)) if row else None
 
@@ -4339,16 +4634,28 @@ class MemoryStore:
         *,
         profile_user_id: str,
         session_id: str,
+        character_pack_id: str | None = None,
     ) -> dict[str, Any] | None:
+        normalized_character_pack_id = (
+            normalize_character_pack_id(character_pack_id)
+            if character_pack_id is not None
+            else None
+        )
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT * FROM eval_turns
                 WHERE profile_user_id = ? AND session_id = ?
+                  AND (? IS NULL OR character_pack_id = ?)
                 ORDER BY created_at DESC, rowid DESC
                 LIMIT 1
                 """,
-                (str(profile_user_id), str(session_id)),
+                (
+                    str(profile_user_id),
+                    str(session_id),
+                    normalized_character_pack_id,
+                    normalized_character_pack_id,
+                ),
             ).fetchone()
         return self._row_to_eval_turn(dict(row)) if row else None
 
@@ -4357,6 +4664,7 @@ class MemoryStore:
             "source_id": row["source_id"],
             "profile_user_id": row["profile_user_id"],
             "session_id": row["session_id"],
+            "character_pack_id": normalize_character_pack_id(row.get("character_pack_id", "")),
             "seq_no": int(row["seq_no"]),
             "role": row["role"],
             "content": row["content"],
@@ -4376,6 +4684,7 @@ class MemoryStore:
             "source_id": row["summary_id"],
             "profile_user_id": row["profile_user_id"],
             "session_id": row["session_id"],
+            "character_pack_id": normalize_character_pack_id(row.get("character_pack_id", "")),
             "timestamp": int(row["timestamp"]),
             "date_label": row["date_label"],
             "time_of_day": row["time_of_day"],
@@ -4400,6 +4709,7 @@ class MemoryStore:
             "source_id": row["semantic_id"],
             "profile_user_id": row["profile_user_id"],
             "session_id": row["session_id"],
+            "character_pack_id": normalize_character_pack_id(row.get("character_pack_id", "")),
             "created_at": int(row["created_at"]),
             "timestamp": int(row["timestamp"]),
             "period_start_ts": int(row["period_start_ts"]),
@@ -4458,6 +4768,7 @@ class MemoryStore:
             "created_at": int(row["created_at"]),
             "session_id": row["session_id"],
             "profile_user_id": row["profile_user_id"],
+            "character_pack_id": normalize_character_pack_id(row.get("character_pack_id", "")),
             "user_message": row["user_message"],
             "router_json": json.loads(row.get("router_json") or "{}"),
             "verifier_json": json.loads(row.get("verifier_json") or "{}"),
@@ -4468,6 +4779,7 @@ class MemoryStore:
         return {
             "session_id": str(row["session_id"]),
             "profile_user_id": str(row["profile_user_id"]),
+            "character_pack_id": normalize_character_pack_id(row.get("character_pack_id", "")),
             "display_title": str(row.get("display_title", "") or "").strip() or "新的对话",
             "current_gift_focus_asset_id": str(row.get("current_gift_focus_asset_id", "") or "").strip(),
             "current_gift_focus_updated_at": int(row.get("current_gift_focus_updated_at", 0) or 0),

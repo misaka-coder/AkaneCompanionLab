@@ -94,11 +94,16 @@ class VectorStore:
         self,
         *,
         profile_user_id: str,
+        character_pack_id: str | None = None,
         query_text: str,
         time_hint: dict[str, Any] | None,
         n_results: int = 8,
     ) -> list[dict[str, Any]]:
-        where = self._build_where(profile_user_id=profile_user_id, time_hint=time_hint)
+        where = self._build_where(
+            profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
+            time_hint=time_hint,
+        )
         with self._lock:
             result = self.collection.query(
                 query_embeddings=self.embedding_provider.embed_texts([str(query_text or "")]),
@@ -125,12 +130,17 @@ class VectorStore:
         self,
         *,
         profile_user_id: str,
+        character_pack_id: str | None = None,
         query_text: str,
         keywords: list[str],
         time_hint: dict[str, Any] | None,
         n_results: int = 8,
     ) -> list[dict[str, Any]]:
-        where = self._build_where(profile_user_id=profile_user_id, time_hint=time_hint)
+        where = self._build_where(
+            profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
+            time_hint=time_hint,
+        )
         with self._lock:
             result = self.collection.get(
                 where=where,
@@ -216,8 +226,17 @@ class VectorStore:
             score += idf * (numerator / max(1e-6, denominator))
         return score
 
-    def _build_where(self, *, profile_user_id: str, time_hint: dict[str, Any] | None) -> dict[str, Any]:
+    def _build_where(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str | None = None,
+        time_hint: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         clauses: list[dict[str, Any]] = [{"profile_user_id": str(profile_user_id)}]
+        normalized_character_pack_id = str(character_pack_id or "").strip()
+        if normalized_character_pack_id:
+            clauses.append({"character_pack_id": normalized_character_pack_id})
         hint = time_hint if isinstance(time_hint, dict) else {}
         if hint.get("date_label"):
             clauses.append({"date_label": str(hint["date_label"])})

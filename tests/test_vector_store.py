@@ -156,6 +156,25 @@ class VectorStoreLogicTests(unittest.TestCase):
         self.assertEqual(store.collection.last_query["query_embeddings"], [[3.0, 4.0, 5.0]])
         self.assertEqual(hits[0]["source_id"], "memory-1")
 
+    def test_semantic_search_can_scope_to_character_pack_id(self) -> None:
+        store = VectorStore.__new__(VectorStore)
+        store._lock = threading.RLock()
+        store.embedding_provider = DummyEmbeddingProvider()
+        store.collection = FakeCollection()
+
+        store.semantic_search(
+            profile_user_id="master",
+            character_pack_id="kaju",
+            query_text="便当",
+            time_hint=None,
+            n_results=4,
+        )
+
+        self.assertEqual(
+            store.collection.last_query["where"],
+            {"$and": [{"profile_user_id": "master"}, {"character_pack_id": "kaju"}]},
+        )
+
     def test_upsert_entries_uses_batch_embedding_interface(self) -> None:
         store = VectorStore.__new__(VectorStore)
         store._lock = threading.RLock()

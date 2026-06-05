@@ -99,7 +99,7 @@ Each file owns a specific business domain. Most are classes instantiated by `Aka
 | `companion_v01/huggingface_provider.py` | `HuggingFaceEmbeddingProvider` — concrete HuggingFace implementation. |
 | `companion_v01/vector_entry_builder.py` | Builds vector store entries from dialogue/thoughts. |
 | `companion_v01/vector_store.py` | `VectorStore`. Persistent vector database for semantic retrieval. |
-| `companion_v01/store.py` | JSON-based disk store for state persistence (sessions, personas, task state). |
+| `companion_v01/store.py` | SQLite-backed memory/resource store. Chat messages, sessions, episodic summaries, semantic summaries, eval turns, and vector metadata can be scoped by `character_pack_id` for desktop-pet character isolation; music/gift resources remain profile-scoped. |
 
 #### LLM & Prompt
 

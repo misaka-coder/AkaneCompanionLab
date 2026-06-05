@@ -52,17 +52,31 @@ class MemoryCompactionService:
         self.summary_queue.clear_pending()
         self.summary_queue.close()
 
-    def schedule_summary_cycle(self, *, profile_user_id: str, session_id: str) -> None:
+    def schedule_summary_cycle(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> None:
         self.summary_queue.enqueue(
             profile_user_id=profile_user_id,
             session_id=session_id,
+            character_pack_id=character_pack_id,
             generation=self._get_summary_generation(),
         )
 
-    def run_summary_cycle(self, *, profile_user_id: str, session_id: str) -> None:
+    def run_summary_cycle(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> None:
         self._run_summary_cycle_with_generation(
             profile_user_id=profile_user_id,
             session_id=session_id,
+            character_pack_id=character_pack_id,
             generation=self._get_summary_generation(),
         )
 
@@ -70,6 +84,7 @@ class MemoryCompactionService:
         self._run_summary_cycle_with_generation(
             profile_user_id=task.profile_user_id,
             session_id=task.session_id,
+            character_pack_id=task.character_pack_id,
             generation=task.generation,
         )
 
@@ -78,14 +93,19 @@ class MemoryCompactionService:
         *,
         profile_user_id: str,
         session_id: str,
+        character_pack_id: str = "",
         generation: int,
     ) -> None:
         summary_trigger_count = max(1, int(getattr(config, "SUMMARY_TRIGGER_COUNT", 30)))
         summary_batch_size = max(1, int(getattr(config, "SUMMARY_BATCH_SIZE", 20)))
-        while self.store.get_unsummarized_count(session_id) >= summary_trigger_count:
+        while self.store.get_unsummarized_count(session_id, character_pack_id=character_pack_id) >= summary_trigger_count:
             if not self._is_summary_generation_current(generation):
                 return
-            batch = self.store.get_oldest_unsummarized_batch(session_id, limit=summary_batch_size)
+            batch = self.store.get_oldest_unsummarized_batch(
+                session_id,
+                limit=summary_batch_size,
+                character_pack_id=character_pack_id,
+            )
             if len(batch) < summary_batch_size:
                 return
             summary_payload = self._summarize_batch(batch)
@@ -102,6 +122,7 @@ class MemoryCompactionService:
             summary_record = self.store.add_summary(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                character_pack_id=character_pack_id,
                 timestamp=batch[-1]["timestamp"],
                 date_label=batch[-1]["date_label"],
                 time_of_day=batch[-1]["time_of_day"],
@@ -121,6 +142,7 @@ class MemoryCompactionService:
         self._run_semantic_summary_cycle_with_generation(
             profile_user_id=profile_user_id,
             session_id=session_id,
+            character_pack_id=character_pack_id,
             generation=generation,
         )
 
@@ -129,16 +151,21 @@ class MemoryCompactionService:
         *,
         profile_user_id: str,
         session_id: str,
+        character_pack_id: str = "",
         generation: int,
     ) -> None:
         if not bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True)):
             return
         semantic_trigger_count = max(1, int(getattr(config, "EPISODIC_COMPACT_TRIGGER_COUNT", 10)))
         semantic_batch_size = max(1, int(getattr(config, "EPISODIC_COMPACT_BATCH_SIZE", 5)))
-        while self.store.get_unsemanticized_summary_count(session_id) >= semantic_trigger_count:
+        while self.store.get_unsemanticized_summary_count(session_id, character_pack_id=character_pack_id) >= semantic_trigger_count:
             if not self._is_summary_generation_current(generation):
                 return
-            batch = self.store.get_oldest_unsemanticized_summaries(session_id, limit=semantic_batch_size)
+            batch = self.store.get_oldest_unsemanticized_summaries(
+                session_id,
+                limit=semantic_batch_size,
+                character_pack_id=character_pack_id,
+            )
             if len(batch) < semantic_batch_size:
                 return
             semantic_payload = self._semanticize_summary_batch(batch)
@@ -163,6 +190,7 @@ class MemoryCompactionService:
             incoming_record = {
                 "profile_user_id": profile_user_id,
                 "session_id": session_id,
+                "character_pack_id": character_pack_id,
                 "timestamp": period_end_ts,
                 "period_start_ts": period_start_ts,
                 "period_end_ts": period_end_ts,
@@ -179,6 +207,7 @@ class MemoryCompactionService:
             }
             reinforcement_target = self._select_semantic_reinforcement_target(
                 profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
                 incoming_record=incoming_record,
             )
             if reinforcement_target:
@@ -190,6 +219,7 @@ class MemoryCompactionService:
                 semantic_record = self.store.add_semantic_summary(
                     profile_user_id=profile_user_id,
                     session_id=session_id,
+                    character_pack_id=character_pack_id,
                     timestamp=incoming_record["timestamp"],
                     period_start_ts=incoming_record["period_start_ts"],
                     period_end_ts=incoming_record["period_end_ts"],
@@ -291,13 +321,18 @@ class MemoryCompactionService:
         self,
         *,
         profile_user_id: str,
+        character_pack_id: str = "",
         incoming_record: dict[str, Any],
     ) -> dict[str, Any] | None:
         if not bool(getattr(config, "ENABLE_SEMANTIC_REINFORCEMENT", True)):
             return None
         lookback = max(1, int(getattr(config, "SEMANTIC_REINFORCEMENT_LOOKBACK", 8)))
         min_overlap = max(1, int(getattr(config, "SEMANTIC_REINFORCEMENT_MIN_OVERLAP", 2)))
-        candidates = self.store.get_recent_semantic_summaries(profile_user_id, limit=lookback)
+        candidates = self.store.get_recent_semantic_summaries(
+            profile_user_id,
+            limit=lookback,
+            character_pack_id=character_pack_id,
+        )
         best_candidate: dict[str, Any] | None = None
         best_score = 0
         for candidate in candidates:

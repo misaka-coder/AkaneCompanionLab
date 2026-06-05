@@ -12,6 +12,7 @@ def build_raw_vector_entry(record: dict[str, Any]) -> dict[str, Any]:
         "metadata": {
             "profile_user_id": record["profile_user_id"],
             "session_id": record["session_id"],
+            "character_pack_id": str(record.get("character_pack_id") or ""),
             "seq_no": int(record["seq_no"]),
             "timestamp": int(record["timestamp"]),
             "date_label": record["date_label"],
@@ -35,6 +36,7 @@ def build_summary_vector_entry(record: dict[str, Any]) -> dict[str, Any]:
         "metadata": {
             "profile_user_id": record["profile_user_id"],
             "session_id": record["session_id"],
+            "character_pack_id": str(record.get("character_pack_id") or ""),
             "seq_no": int(record["source_end_seq"]),
             "timestamp": int(record["timestamp"]),
             "date_label": record["date_label"],
@@ -60,6 +62,7 @@ def build_semantic_summary_vector_entry(record: dict[str, Any]) -> dict[str, Any
         "metadata": {
             "profile_user_id": record["profile_user_id"],
             "session_id": record["session_id"],
+            "character_pack_id": str(record.get("character_pack_id") or ""),
             "seq_no": 0,
             "timestamp": int(record["timestamp"]),
             "date_label": record["date_label"],

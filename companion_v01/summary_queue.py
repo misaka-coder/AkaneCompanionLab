@@ -11,6 +11,7 @@ from typing import Callable
 class SummaryTask:
     profile_user_id: str
     session_id: str
+    character_pack_id: str
     generation: int
 
 
@@ -18,7 +19,7 @@ class SummaryTaskQueue:
     def __init__(self, handler: Callable[[SummaryTask], None]):
         self._handler = handler
         self._queue: queue.Queue[SummaryTask | None] = queue.Queue()
-        self._queued_keys: set[tuple[str, str, int]] = set()
+        self._queued_keys: set[tuple[str, str, str, int]] = set()
         self._lock = threading.Lock()
         self._stopped = threading.Event()
         self._thread = threading.Thread(
@@ -28,10 +29,18 @@ class SummaryTaskQueue:
         )
         self._thread.start()
 
-    def enqueue(self, *, profile_user_id: str, session_id: str, generation: int) -> bool:
+    def enqueue(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        generation: int,
+    ) -> bool:
         task = SummaryTask(
             profile_user_id=str(profile_user_id),
             session_id=str(session_id),
+            character_pack_id=str(character_pack_id or ""),
             generation=int(generation),
         )
         task_key = self._task_key(task)
@@ -74,5 +83,5 @@ class SummaryTaskQueue:
             finally:
                 self._queue.task_done()
 
-    def _task_key(self, task: SummaryTask) -> tuple[str, str, int]:
-        return (task.profile_user_id, task.session_id, task.generation)
+    def _task_key(self, task: SummaryTask) -> tuple[str, str, str, int]:
+        return (task.profile_user_id, task.session_id, task.character_pack_id, task.generation)

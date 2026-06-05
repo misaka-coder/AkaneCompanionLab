@@ -825,6 +825,7 @@ class AkaneMemoryEngine:
         *,
         payload: dict[str, Any],
         profile_user_id: str,
+        character_pack_id: str = "",
         user_message: str,
         now_ts: int,
         recent_raw: list[dict[str, Any]],
@@ -837,6 +838,7 @@ class AkaneMemoryEngine:
             self,
             payload=payload,
             profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
             user_message=user_message,
             now_ts=now_ts,
             recent_raw=recent_raw,
@@ -861,16 +863,30 @@ class AkaneMemoryEngine:
             router_output=router_output,
         )
 
-    def _schedule_summary_cycle(self, *, profile_user_id: str, session_id: str) -> None:
+    def _schedule_summary_cycle(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> None:
         self._get_compaction_service().schedule_summary_cycle(
             profile_user_id=profile_user_id,
             session_id=session_id,
+            character_pack_id=character_pack_id,
         )
 
-    def _run_summary_cycle(self, *, profile_user_id: str, session_id: str) -> None:
+    def _run_summary_cycle(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> None:
         self._get_compaction_service().run_summary_cycle(
             profile_user_id=profile_user_id,
             session_id=session_id,
+            character_pack_id=character_pack_id,
         )
 
     def ingest_qq_attachments(
@@ -1313,6 +1329,7 @@ class AkaneMemoryEngine:
             user_record = self.store.add_message(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                character_pack_id=turn_character_pack_id,
                 role="user",
                 content=user_message,
                 timestamp=now_ts,
@@ -1320,16 +1337,31 @@ class AkaneMemoryEngine:
                 time_of_day=time_of_day,
                 semantic_tags=extract_semantic_tags(user_message),
             )
-            self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
+            self._schedule_summary_cycle(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
 
-        recent_raw = self.store.get_unsummarized_messages(session_id)
+        recent_raw = self.store.get_unsummarized_messages(
+            session_id,
+            character_pack_id=turn_character_pack_id,
+        )
         if transient_user_turn:
             recent_raw = [*recent_raw, user_record]
         episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
         semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
-        recent_episodic_summaries = self.store.get_visible_episodic_summaries(profile_user_id, limit=episodic_limit)
+        recent_episodic_summaries = self.store.get_visible_episodic_summaries(
+            profile_user_id,
+            limit=episodic_limit,
+            character_pack_id=turn_character_pack_id,
+        )
         recent_semantic_summaries = (
-            self.store.get_recent_semantic_summaries(profile_user_id, limit=semantic_limit)
+            self.store.get_recent_semantic_summaries(
+                profile_user_id,
+                limit=semantic_limit,
+                character_pack_id=turn_character_pack_id,
+            )
             if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
             else []
         )
@@ -1338,6 +1370,7 @@ class AkaneMemoryEngine:
         retrieval_pipeline = self._run_pre_retrieval_pipeline(
             payload=payload,
             profile_user_id=profile_user_id,
+            character_pack_id=turn_character_pack_id,
             user_message=user_message,
             now_ts=now_ts,
             recent_raw=recent_raw,
@@ -1444,6 +1477,7 @@ class AkaneMemoryEngine:
                 preface_record = self.store.add_message(
                     profile_user_id=profile_user_id,
                     session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
                     role="assistant",
                     content=preface_turn["speech"],
                     timestamp=now_ts,
@@ -1452,12 +1486,17 @@ class AkaneMemoryEngine:
                     semantic_tags=extract_semantic_tags(preface_turn["speech"]),
                 )
                 self._upsert_raw_record(preface_record)
-                self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
+                self._schedule_summary_cycle(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                )
                 recent_raw_for_turn.append(preface_record)
 
             tool_result = self._execute_tool_call(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                character_pack_id=turn_character_pack_id,
                 tool_call=tool_call,
                 visual_payload=final_output,
                 now_ts=now_ts,
@@ -1494,13 +1533,18 @@ class AkaneMemoryEngine:
                     tool_record = self.store.add_message(
                         profile_user_id=profile_user_id,
                         session_id=session_id,
+                        character_pack_id=turn_character_pack_id,
                         role=f"npc:{speaker}",
                         content=speech,
                         timestamp=max(now_ts, int(time.time())),
                         semantic_tags=extract_semantic_tags(speech),
                     )
                     self._upsert_raw_record(tool_record)
-                    self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
+                    self._schedule_summary_cycle(
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        character_pack_id=turn_character_pack_id,
+                    )
                     recent_raw_for_turn.append(tool_record)
 
             allow_more_tools = tool_round_index < max_tool_rounds - 1
@@ -1562,18 +1606,24 @@ class AkaneMemoryEngine:
         assistant_record = self.store.add_message(
             profile_user_id=profile_user_id,
             session_id=session_id,
+            character_pack_id=turn_character_pack_id,
             role="assistant",
             content=final_output.get("speech", ""),
             timestamp=int(time.time()),
             semantic_tags=extract_semantic_tags(final_output.get("speech", "")),
         )
         self._upsert_raw_record(assistant_record)
-        self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
+        self._schedule_summary_cycle(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=turn_character_pack_id,
+        )
 
         self.store.append_eval_turn(
             trace_id=trace_id,
             session_id=session_id,
             profile_user_id=profile_user_id,
+            character_pack_id=turn_character_pack_id,
             user_message=user_message,
             router_json=router_output,
             verifier_json=verifier_output,
@@ -1638,6 +1688,7 @@ class AkaneMemoryEngine:
             user_record = self.store.add_message(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                character_pack_id=turn_character_pack_id,
                 role="user",
                 content=user_message,
                 timestamp=now_ts,
@@ -1645,16 +1696,31 @@ class AkaneMemoryEngine:
                 time_of_day=time_of_day,
                 semantic_tags=extract_semantic_tags(user_message),
             )
-            self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
+            self._schedule_summary_cycle(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
 
-        recent_raw = self.store.get_unsummarized_messages(session_id)
+        recent_raw = self.store.get_unsummarized_messages(
+            session_id,
+            character_pack_id=turn_character_pack_id,
+        )
         if transient_user_turn:
             recent_raw = [*recent_raw, user_record]
         episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
         semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
-        recent_episodic_summaries = self.store.get_visible_episodic_summaries(profile_user_id, limit=episodic_limit)
+        recent_episodic_summaries = self.store.get_visible_episodic_summaries(
+            profile_user_id,
+            limit=episodic_limit,
+            character_pack_id=turn_character_pack_id,
+        )
         recent_semantic_summaries = (
-            self.store.get_recent_semantic_summaries(profile_user_id, limit=semantic_limit)
+            self.store.get_recent_semantic_summaries(
+                profile_user_id,
+                limit=semantic_limit,
+                character_pack_id=turn_character_pack_id,
+            )
             if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
             else []
         )
@@ -1663,6 +1729,7 @@ class AkaneMemoryEngine:
         retrieval_pipeline = self._run_pre_retrieval_pipeline(
             payload=payload,
             profile_user_id=profile_user_id,
+            character_pack_id=turn_character_pack_id,
             user_message=user_message,
             now_ts=now_ts,
             recent_raw=recent_raw,
@@ -1774,6 +1841,7 @@ class AkaneMemoryEngine:
                 preface_record = self.store.add_message(
                     profile_user_id=profile_user_id,
                     session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
                     role="assistant",
                     content=preface_turn["speech"],
                     timestamp=now_ts,
@@ -1782,12 +1850,17 @@ class AkaneMemoryEngine:
                     semantic_tags=extract_semantic_tags(preface_turn["speech"]),
                 )
                 self._upsert_raw_record(preface_record)
-                self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
+                self._schedule_summary_cycle(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                )
                 recent_raw_for_turn.append(preface_record)
 
             tool_result = self._execute_tool_call(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                character_pack_id=turn_character_pack_id,
                 tool_call=tool_call,
                 visual_payload=final_output,
                 now_ts=now_ts,
@@ -1826,13 +1899,18 @@ class AkaneMemoryEngine:
                     tool_record = self.store.add_message(
                         profile_user_id=profile_user_id,
                         session_id=session_id,
+                        character_pack_id=turn_character_pack_id,
                         role=f"npc:{speaker}",
                         content=speech,
                         timestamp=max(now_ts, int(time.time())),
                         semantic_tags=extract_semantic_tags(speech),
                     )
                     self._upsert_raw_record(tool_record)
-                    self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
+                    self._schedule_summary_cycle(
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        character_pack_id=turn_character_pack_id,
+                    )
                     recent_raw_for_turn.append(tool_record)
 
             allow_more_tools = tool_round_index < max_tool_rounds - 1
@@ -1896,18 +1974,24 @@ class AkaneMemoryEngine:
         assistant_record = self.store.add_message(
             profile_user_id=profile_user_id,
             session_id=session_id,
+            character_pack_id=turn_character_pack_id,
             role="assistant",
             content=final_output.get("speech", ""),
             timestamp=int(time.time()),
             semantic_tags=extract_semantic_tags(final_output.get("speech", "")),
         )
         self._upsert_raw_record(assistant_record)
-        self._schedule_summary_cycle(profile_user_id=profile_user_id, session_id=session_id)
+        self._schedule_summary_cycle(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=turn_character_pack_id,
+        )
 
         self.store.append_eval_turn(
             trace_id=trace_id,
             session_id=session_id,
             profile_user_id=profile_user_id,
+            character_pack_id=turn_character_pack_id,
             user_message=user_message,
             router_json=router_output,
             verifier_json=verifier_output,
@@ -3040,6 +3124,7 @@ class AkaneMemoryEngine:
         *,
         profile_user_id: str,
         session_id: str,
+        character_pack_id: str = "",
         tool_call: dict[str, Any],
         visual_payload: dict[str, Any],
         now_ts: int,
@@ -3052,6 +3137,7 @@ class AkaneMemoryEngine:
             self,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            character_pack_id=character_pack_id,
             tool_call=tool_call,
             visual_payload=visual_payload,
             now_ts=now_ts,

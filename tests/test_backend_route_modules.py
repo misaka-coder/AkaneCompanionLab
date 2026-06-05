@@ -66,11 +66,21 @@ class FakeGuard:
 class FakeStore:
     def __init__(self) -> None:
         self.sessions: dict[tuple[str, str], dict[str, Any]] = {}
+        self.last_character_pack_id: str | None = None
 
-    def ensure_session(self, *, profile_user_id: str, session_id: str, display_title: str | None = None) -> dict[str, Any]:
+    def ensure_session(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        display_title: str | None = None,
+    ) -> dict[str, Any]:
+        self.last_character_pack_id = character_pack_id
         session = {
             "profile_user_id": profile_user_id,
             "session_id": session_id,
+            "character_pack_id": character_pack_id,
             "display_title": display_title or session_id,
         }
         self.sessions[(profile_user_id, session_id)] = session
@@ -79,17 +89,53 @@ class FakeStore:
     def get_session(self, profile_user_id: str, session_id: str) -> dict[str, Any] | None:
         return self.sessions.get((profile_user_id, session_id))
 
-    def list_sessions(self, *, profile_user_id: str, limit: int) -> list[dict[str, Any]]:
+    def get_character_session(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any] | None:
+        self.last_character_pack_id = character_pack_id
+        session = self.sessions.get((profile_user_id, session_id))
+        if session and str(session.get("character_pack_id") or "") == character_pack_id:
+            return session
+        return None
+
+    def list_sessions(
+        self,
+        *,
+        profile_user_id: str,
+        limit: int,
+        character_pack_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self.last_character_pack_id = character_pack_id
         return [
             session
             for (stored_profile, _session_id), session in self.sessions.items()
             if stored_profile == profile_user_id
+            and (character_pack_id is None or str(session.get("character_pack_id") or "") == character_pack_id)
         ][:limit]
 
-    def get_session_messages(self, *, profile_user_id: str, session_id: str, limit: int) -> list[dict[str, Any]]:
+    def get_session_messages(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str | None = None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        self.last_character_pack_id = character_pack_id
         return [{"role": "assistant", "content": "hello"}]
 
-    def get_latest_eval_turn_for_session(self, *, profile_user_id: str, session_id: str) -> dict[str, Any]:
+    def get_latest_eval_turn_for_session(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.last_character_pack_id = character_pack_id
         return {"final_json": {"emotion": "normal"}}
 
 
@@ -165,14 +211,21 @@ class BackendRouteModuleTests(unittest.TestCase):
 
         response = TestClient(app).post(
             "/sessions/ensure",
-            json={"user_id": "desktop", "real_user_id": "master", "display_title": "Desktop"},
+            json={
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "display_title": "Desktop",
+                "character_pack_id": "kaju",
+            },
         )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["session"]["session_id"], "desktop")
+        self.assertEqual(payload["session"]["character_pack_id"], "kaju")
         self.assertEqual(payload["session"]["display_title"], "Desktop")
         self.assertEqual(payload["latest_final_json"], {"emotion": "normal"})
+        self.assertEqual(engine.store.last_character_pack_id, "kaju")
         self.assertIn(("sessions_ensure", True), runtime.observed)
 
     def test_desktop_pet_router_adds_workspace_file_urls(self) -> None:

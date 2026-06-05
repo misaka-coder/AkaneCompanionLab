@@ -150,6 +150,7 @@ class RetrievalService:
         self,
         *,
         profile_user_id: str,
+        character_pack_id: str | None = None,
         user_message: str,
         now_ts: int,
         current_user_record: dict[str, Any],
@@ -198,6 +199,7 @@ class RetrievalService:
         if router_output.get("need_retrieval"):
             retrieval_result, verifier_output, confirmed_snippets, verifier_timing = self._run_retrieval_chain(
                 profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
                 original_query=user_message,
                 now_ts=now_ts,
                 router_output=router_output,
@@ -219,6 +221,7 @@ class RetrievalService:
         self,
         *,
         profile_user_id: str,
+        character_pack_id: str | None = None,
         original_query: str,
         now_ts: int,
         query: str | None = None,
@@ -251,6 +254,7 @@ class RetrievalService:
         )
         retrieval_result, verifier_output, confirmed_snippets, verifier_timing = self._run_retrieval_chain(
             profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
             original_query=original_query,
             now_ts=now_ts,
             router_output=router_output,
@@ -427,6 +431,7 @@ class RetrievalService:
         self,
         *,
         profile_user_id: str,
+        character_pack_id: str | None = None,
         original_query: str,
         now_ts: int,
         router_output: dict[str, Any],
@@ -451,6 +456,7 @@ class RetrievalService:
             excluded_before_attempt = sorted(accumulated_exclude_ids)
             retrieval_result = self._retrieve_memories(
                 profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
                 query=current_router.get("rewritten_query") or original_query,
                 keywords=list(current_router.get("keywords") or []),
                 time_hint=self._normalize_time_hint(current_router.get("time_hint")),
@@ -548,6 +554,7 @@ class RetrievalService:
         self,
         *,
         profile_user_id: str,
+        character_pack_id: str | None = None,
         query: str,
         keywords: list[str],
         time_hint: dict[str, Any] | None,
@@ -563,6 +570,7 @@ class RetrievalService:
             hit
             for hit in self.vector_store.semantic_search(
                 profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
                 query_text=query,
                 time_hint=normalized_time_hint,
                 n_results=10,
@@ -573,6 +581,7 @@ class RetrievalService:
             hit
             for hit in self.vector_store.keyword_search(
                 profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
                 query_text=query,
                 keywords=keywords,
                 time_hint=normalized_time_hint,

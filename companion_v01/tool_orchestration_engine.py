@@ -201,6 +201,7 @@ def execute_tool_call(
     *,
     profile_user_id: str,
     session_id: str,
+    character_pack_id: str = "",
     tool_call: dict[str, Any],
     visual_payload: dict[str, Any],
     now_ts: int,
@@ -230,6 +231,7 @@ def execute_tool_call(
 
     enriched_visual_payload = dict(visual_payload or {})
     enriched_visual_payload["_profile_user_id"] = profile_user_id
+    enriched_visual_payload["_character_pack_id"] = str(character_pack_id or "")
     if memory_exclude_source_ids:
         enriched_visual_payload["_memory_retrieval_exclude_source_ids"] = list(memory_exclude_source_ids)
     client_mode = ""
@@ -242,6 +244,7 @@ def execute_tool_call(
             session_id=session_id,
             now_ts=now_ts,
             visual_payload=enriched_visual_payload,
+            character_pack_id=str(character_pack_id or ""),
             current_user_source_id=current_user_source_id,
             client_mode=client_mode,
             request_context=dict(request_context or {}),

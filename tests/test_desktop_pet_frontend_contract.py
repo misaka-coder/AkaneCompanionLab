@@ -280,6 +280,21 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertNotIn('pack_dir.join(&asset_root).join("characters")', tauri_source)
         self.assertNotIn('if clean.is_empty() { "default".to_string() }', tauri_source)
 
+    def test_next_character_runtime_state_is_pack_scoped(self) -> None:
+        main_source = _read("desktop_pet_next/src/main.js")
+        tauri_source = _read("desktop_pet_next/src-tauri/src/main.rs")
+
+        self.assertIn("characters: {}", main_source)
+        self.assertIn("function getCharacterRuntimeKey", main_source)
+        self.assertIn("function persistCurrentCharacterRuntimeState", main_source)
+        self.assertIn("function applyCharacterRuntimeState", main_source)
+        self.assertIn("persistCurrentCharacterRuntimeState(previousPackId)", main_source)
+        self.assertIn("applyCharacterRuntimeState(pack.packId, pack.profile)", main_source)
+        self.assertIn("characterRuntimeKey: getCharacterRuntimeKey(state.characterPackId)", main_source)
+        self.assertIn("characters: { ...ensureCharacterRuntimeMap() }", main_source)
+        self.assertIn("characters: HashMap<String, CharacterRuntimeState>", tauri_source)
+        self.assertIn("for runtime in state.characters.values_mut()", tauri_source)
+
     def test_next_visual_renderer_has_static_portrait_adapter_boundary(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")
         renderer_source = _read("desktop_pet_next/src/visual-renderer.js")

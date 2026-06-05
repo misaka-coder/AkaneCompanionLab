@@ -5,7 +5,7 @@ Owner direction: creator-facing desktop pet first
 Primary runtime: `desktop_pet_next`
 Frozen runtime: `desktop_pet`
 
-Implementation note 2026-06-05: `desktop_pet_next` now has a minimal active-character runtime map, v0.2 character-pack metadata support, backend `character_pack_id` request contract, and a standalone workshop shell. Character-scoped memory persistence is still a pending backend storage phase, not complete.
+Implementation note 2026-06-05: `desktop_pet_next` now has an active-character runtime map, v0.2 character-pack metadata support, backend `character_pack_id` request contract, a standalone workshop shell, and database-level character-scoped chat memory. Music/gift resources remain user-profile scoped unless a later feature explicitly opts into per-character resource spaces.
 
 ## Purpose
 

@@ -16,6 +16,7 @@ class ToolExecutionContext:
     session_id: str
     now_ts: int
     visual_payload: dict[str, Any]
+    character_pack_id: str = ""
     current_user_source_id: str = ""
     client_mode: str = ""
     request_context: dict[str, Any] = field(default_factory=dict)
