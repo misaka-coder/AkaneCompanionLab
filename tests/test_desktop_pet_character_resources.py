@@ -117,6 +117,61 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
             {"system_context": "", "reference_context": "", "active_id": ""},
         )
 
+    def test_v02_persona_form_fields_are_available_to_desktop_prompt(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        characters_dir = Path(temp_dir.name) / "characters"
+        pack_dir = characters_dir / "reimu_demo"
+
+        write_bytes(pack_dir / "assets" / "characters" / "default" / "normal.png")
+        write_json(
+            pack_dir / "character.json",
+            {
+                "schema_version": "akane.character.v0.2",
+                "identity": {
+                    "id": "reimu_demo",
+                    "name": "Reimu",
+                    "app_name": "Reimu Pet",
+                    "self_reference": "我",
+                    "user_title": "你",
+                    "relationship": "住在桌面边上的巫女，会吐槽但也会帮忙。",
+                },
+                "persona_form": {
+                    "personality_keywords": ["慵懒", "毒舌"],
+                    "speaking_style": "短句偏多，吐槽自然。",
+                    "catchphrases": ["真麻烦啊"],
+                    "boundaries": "不要把自己说成通用客服。",
+                    "proactive_style": "先轻轻吐槽一句，再问是否需要帮忙。",
+                    "example_lines": [{"text": "又卡住了？把问题说出来。", "emotion": "normal"}],
+                    "extra_setting": "补充世界观。",
+                },
+                "appearance": {
+                    "default_outfit": "default",
+                    "default_emotion": "normal",
+                    "music_emotion": "normal",
+                    "required_emotions": ["normal"],
+                },
+                "dialogue": {
+                    "local_click_lines": [{"text": "嗯？有事就说。", "emotion": "normal"}],
+                },
+                "emotion_aliases": {"normal": ["normal"]},
+                "layout": {"outfits": {"default": {"window": {"width": 420, "height": 620}}}},
+                "voice": {"provider": "", "profile_id": "", "notes": ""},
+            },
+        )
+
+        service = DesktopPetCharacterResourceService(characters_dir=characters_dir)
+        identity = service.build_character_identity("reimu_demo")
+        self.assertEqual(identity["character_id"], "reimu_demo")
+        self.assertEqual(identity["user_label"], "你")
+
+        context = service.build_persona_prompt_context("reimu_demo")
+        self.assertEqual(context["active_id"], "reimu_demo")
+        self.assertIn("角色自称：我", context["system_context"])
+        self.assertIn("住在桌面边上的巫女", context["system_context"])
+        self.assertIn("性格关键词: 慵懒、毒舌", context["reference_context"])
+        self.assertIn("又卡住了？把问题说出来。", context["reference_context"])
+
 
 if __name__ == "__main__":
     unittest.main()

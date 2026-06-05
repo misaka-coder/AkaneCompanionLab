@@ -78,7 +78,9 @@ class DesktopPetCharacterResourceService:
         name = _clean_text(identity.get("name")) or pack_id
         app_name = _clean_text(identity.get("app_name")) or name
         user_title = _clean_text(identity.get("user_title")) or "用户"
+        character_id = _clean_text(identity.get("id")) or pack_id
         return {
+            "character_id": character_id,
             "assistant_name": name,
             "user_label": user_title,
             "app_name": app_name,
@@ -106,6 +108,7 @@ class DesktopPetCharacterResourceService:
 
         character = _load_json(pack_dir / "character.json")
         identity = _as_dict(character.get("identity"))
+        persona_form = _as_dict(character.get("persona_form"))
         appearance = _as_dict(character.get("appearance"))
         dialogue = _as_dict(character.get("dialogue"))
         emotion_aliases = _coerce_alias_map(character.get("emotion_aliases"))
@@ -114,6 +117,8 @@ class DesktopPetCharacterResourceService:
         name = _clean_text(identity.get("name")) or pack_id
         app_name = _clean_text(identity.get("app_name")) or name
         user_title = _clean_text(identity.get("user_title")) or "用户"
+        self_reference = _clean_text(identity.get("self_reference"))
+        relationship = _clean_text(identity.get("relationship"))
         identity_id = _clean_text(identity.get("id")) or pack_id
         default_outfit = _clean_text(appearance.get("default_outfit"))
         default_emotion = _clean_text(appearance.get("default_emotion"))
@@ -128,6 +133,10 @@ class DesktopPetCharacterResourceService:
             "- emotion 必须从当前角色包资源清单里的可用表情中选择；如果想表达的情绪没有对应图片，选择语义最接近的可用表情，不要编造新的 emotion。",
             "- character.outfit 优先沿用当前服装；只有用户明确要求或资源清单确实支持时才切换。",
         ]
+        if self_reference:
+            system_lines.append(f"- 角色自称：{self_reference}")
+        if relationship:
+            system_lines.append(f"- 角色与用户关系：{relationship}")
         default_parts = []
         if default_outfit:
             default_parts.append(f"默认服装={default_outfit}")
@@ -146,6 +155,10 @@ class DesktopPetCharacterResourceService:
             system_lines.extend(f"  - {line}" for line in alias_lines[:ALIAS_PROMPT_LIMIT])
 
         reference_sections: list[str] = []
+        persona_form_text = _format_persona_form(persona_form)
+        if persona_form_text:
+            reference_sections.append("[角色包 persona_form]\n" + persona_form_text)
+
         persona_text = _read_text(pack_dir / "persona.md")
         if persona_text:
             reference_sections.append(
@@ -164,7 +177,7 @@ class DesktopPetCharacterResourceService:
         return {
             "system_context": "\n".join(system_lines).strip(),
             "reference_context": "\n\n".join(reference_sections).strip(),
-            "active_id": "",
+            "active_id": identity_id,
         }
 
     def _resolve_pack_dir(self, pack_id: str) -> Path | None:
@@ -310,6 +323,40 @@ def _coerce_click_lines(value: Any) -> list[dict[str, str]]:
         if text and emotion:
             items.append({"text": text, "emotion": emotion})
     return items
+
+
+def _format_persona_form(value: dict[str, Any]) -> str:
+    if not value:
+        return ""
+    lines: list[str] = []
+    fields = [
+        ("personality_keywords", "性格关键词"),
+        ("speaking_style", "说话风格"),
+        ("catchphrases", "常用表达"),
+        ("boundaries", "边界与禁忌"),
+        ("proactive_style", "主动搭话风格"),
+        ("extra_setting", "补充设定"),
+    ]
+    for key, label in fields:
+        raw = value.get(key)
+        if isinstance(raw, list):
+            text = "、".join(_coerce_string_list(raw))
+        else:
+            text = _clean_text(raw)
+        if text:
+            lines.append(f"- {label}: {text}")
+    examples = []
+    for item in value.get("example_lines") or []:
+        if not isinstance(item, dict):
+            continue
+        text = _clean_text(item.get("text"))
+        emotion = _clean_text(item.get("emotion"))
+        if text:
+            examples.append(f"- {text}" + (f" (emotion={emotion})" if emotion else ""))
+    if examples:
+        lines.append("示例台词:")
+        lines.extend(examples[:CLICK_LINE_PROMPT_LIMIT])
+    return "\n".join(lines).strip()
 
 
 def _truncate_text(value: str, *, limit: int) -> str:

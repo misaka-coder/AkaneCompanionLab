@@ -15,6 +15,15 @@ This directory is the handoff entry for the next desktop pet mainline work.
 - The V1 goal is a creator-facing character workshop: create/import characters, configure persona fields, upload and calibrate portraits, switch characters quickly, and keep memory isolated by default.
 - Akane is the demo character, not a hard product constraint.
 
+## Implementation Status
+
+Updated: 2026-06-05
+
+- Implemented the first Phase 1 skeleton in `desktop_pet_next`: per-character runtime state map, active `character_pack_id` request contract, v0.2 character-pack parsing/validation, and a minimal standalone workshop window.
+- `desktop_pet_creator_kit` now creates v0.2 draft packs with `persona_form`, `layout`, `voice`, and extended identity fields while keeping v0.1 packs valid.
+- `companion_v01` can build desktop-pet prompt context from v0.2 identity/persona fields, but database-level character-scoped memory isolation is still pending.
+- The old Electron `desktop_pet` remains untouched by this slice.
+
 ## Claude Code Quick Start
 
 1. Run `git status --short` and avoid touching unrelated dirty files.

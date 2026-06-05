@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -48,6 +49,43 @@ const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[serde(rename_all = "camelCase")]
+struct CharacterRuntimeState {
+    version: u32,
+    character_pack_id: String,
+    session_id: String,
+    outfit: String,
+    current_emotion: String,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<u32>,
+    height: Option<u32>,
+    scale: f64,
+    opacity: f64,
+    updated_at: u64,
+}
+
+impl Default for CharacterRuntimeState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            character_pack_id: String::new(),
+            session_id: String::new(),
+            outfit: String::new(),
+            current_emotion: String::new(),
+            x: None,
+            y: None,
+            width: None,
+            height: None,
+            scale: 1.0,
+            opacity: 1.0,
+            updated_at: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+#[serde(rename_all = "camelCase")]
 struct PetState {
     x: Option<i32>,
     y: Option<i32>,
@@ -62,6 +100,7 @@ struct PetState {
     profile_user_id: String,
     #[serde(default = "default_character_pack_id")]
     character_pack_id: String,
+    characters: HashMap<String, CharacterRuntimeState>,
     session_id: String,
     outfit: String,
     current_emotion: String,
@@ -110,6 +149,7 @@ impl Default for PetState {
             backend_url: DEFAULT_BACKEND_URL.to_string(),
             profile_user_id: DEFAULT_PROFILE_USER_ID.to_string(),
             character_pack_id: DEFAULT_CHARACTER_PACK_ID.to_string(),
+            characters: HashMap::new(),
             session_id: String::new(),
             outfit: DEFAULT_OUTFIT.to_string(),
             current_emotion: DEFAULT_EMOTION.to_string(),
@@ -221,8 +261,16 @@ struct ZipEntry {
 struct CharacterPackJson {
     schema_version: String,
     identity: CharacterPackIdentity,
+    #[serde(default)]
+    persona_form: serde_json::Value,
     appearance: CharacterPackAppearance,
     dialogue: CharacterPackDialogue,
+    #[serde(default)]
+    emotion_aliases: serde_json::Value,
+    #[serde(default)]
+    layout: serde_json::Value,
+    #[serde(default)]
+    voice: serde_json::Value,
     #[serde(default)]
     assets: CharacterPackAssets,
 }
@@ -232,7 +280,11 @@ struct CharacterPackIdentity {
     id: String,
     name: String,
     app_name: String,
+    #[serde(default)]
+    self_reference: String,
     user_title: String,
+    #[serde(default)]
+    relationship: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -838,13 +890,21 @@ fn validate_imported_character_pack(pack_dir: &Path) -> Result<CharacterPackVali
     let mut warnings = Vec::new();
 
     require_text(&character.schema_version, "schema_version")?;
-    if character.schema_version != "akane.character.v0.1" {
-        return Err("schema_version 需要是 akane.character.v0.1。".to_string());
+    if character.schema_version != "akane.character.v0.1"
+        && character.schema_version != "akane.character.v0.2"
+    {
+        return Err("schema_version 需要是 akane.character.v0.1 或 akane.character.v0.2。".to_string());
     }
     require_text(&character.identity.id, "identity.id")?;
     require_text(&character.identity.name, "identity.name")?;
     require_text(&character.identity.app_name, "identity.app_name")?;
     require_text(&character.identity.user_title, "identity.user_title")?;
+    let _self_reference = character.identity.self_reference.trim();
+    let _relationship = character.identity.relationship.trim();
+    require_optional_object(&character.persona_form, "persona_form")?;
+    require_optional_object(&character.emotion_aliases, "emotion_aliases")?;
+    require_optional_object(&character.layout, "layout")?;
+    require_optional_object(&character.voice, "voice")?;
     require_text(
         &character.appearance.default_outfit,
         "appearance.default_outfit",
@@ -1214,6 +1274,14 @@ fn require_text(value: &str, label: &str) -> Result<(), String> {
     }
 }
 
+fn require_optional_object(value: &serde_json::Value, label: &str) -> Result<(), String> {
+    if value.is_null() || value.is_object() {
+        Ok(())
+    } else {
+        Err(format!("{label} 必须是对象。"))
+    }
+}
+
 fn safe_child_path(base: &Path, relative: &str) -> Result<PathBuf, String> {
     let normalized = normalize_zip_path(relative)?;
     let target = base.join(normalized.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -1443,7 +1511,7 @@ fn close_window(window: Window) -> Result<(), String> {
 
 #[tauri::command]
 fn close_pet_app(app: AppHandle) -> Result<(), String> {
-    for label in ["settings", "workspace", "main"] {
+    for label in ["settings", "workspace", "workshop", "main"] {
         if let Some(window) = app.get_webview_window(label) {
             let _ = window.close();
         }
@@ -1495,6 +1563,30 @@ async fn open_workspace_window(app: AppHandle) -> Result<(), String> {
             .title("Akane Next 手边物品")
             .inner_size(760.0, 620.0)
             .min_inner_size(520.0, 420.0)
+            .resizable(true)
+            .decorations(true)
+            .always_on_top(false)
+            .skip_taskbar(false)
+            .center()
+            .visible(true);
+
+    let window = builder.build().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn open_workshop_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("workshop") {
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let builder =
+        WebviewWindowBuilder::new(&app, "workshop", WebviewUrl::App("workshop.html".into()))
+            .title("Akane Next 角色工坊")
+            .inner_size(860.0, 620.0)
+            .min_inner_size(640.0, 460.0)
             .resizable(true)
             .decorations(true)
             .always_on_top(false)
@@ -1598,6 +1690,21 @@ fn normalize_pet_state(state: &mut PetState) {
     state.proactive_wake_interval_sec = state.proactive_wake_interval_sec.clamp(15, 600);
     state.screen_vision_interval_sec = state.screen_vision_interval_sec.clamp(15, 600);
     state.screen_vision_frame_count = state.screen_vision_frame_count.clamp(1, 5);
+    for runtime in state.characters.values_mut() {
+        normalize_character_runtime_state(runtime);
+    }
+}
+
+fn normalize_character_runtime_state(runtime: &mut CharacterRuntimeState) {
+    if runtime.version == 0 {
+        runtime.version = 1;
+    }
+    runtime.character_pack_id = runtime.character_pack_id.trim().to_string();
+    runtime.session_id = runtime.session_id.trim().to_string();
+    runtime.outfit = runtime.outfit.trim().to_string();
+    runtime.current_emotion = runtime.current_emotion.trim().to_string();
+    runtime.scale = clamp(runtime.scale, 0.75, 1.45);
+    runtime.opacity = clamp(runtime.opacity, 0.55, 1.0);
 }
 
 fn default_hit_test_enabled() -> bool {
@@ -1968,6 +2075,7 @@ fn main() {
             close_pet_app,
             open_settings_window,
             open_workspace_window,
+            open_workshop_window,
             get_window_geometry
         ])
         .plugin(tauri_plugin_http::init())

@@ -17,6 +17,15 @@ Agent prompt pack: `docs/desktop_pet_character_workshop_v1_agent_prompts.md`
 - Add tests before or with risky storage changes.
 - Preserve current music queue behavior.
 
+## Current Implementation Notes
+
+Updated: 2026-06-05
+
+- Phase 1 skeleton implemented: v0.2 identity/persona/layout/voice fields are accepted by the creator kit validator, created by the draft script, normalized by `desktop_pet_next`, accepted by Tauri import validation, and available to the backend desktop-pet prompt context.
+- Phase 2 skeleton implemented: `pet_state.json` now has a per-character runtime state map keyed by profile user plus character pack; character switching saves/restores session id, geometry, scale, opacity, outfit, and current emotion.
+- Phase 3 shell implemented: `workshop.html` opens as a Tauri window from the pet quick menu and settings character page, lists installed character packs, and can emit apply-character commands.
+- Pending: full workshop editing/create/save UI, portrait upload/calibration, export/import v0.2 coverage beyond existing zip paths, and database-level character-scoped memory storage.
+
 ## Phase 0: Repo Mapping And Safety Baseline
 
 Goal: understand exact current boundaries before editing.
@@ -78,6 +87,11 @@ Acceptance:
 - Invalid zip/path traversal still fails.
 - Backend persona context can include v0.2 generated persona text or `persona.md`.
 
+Status:
+
+- Implemented for v0.2 parsing, creator draft defaults, validator warnings, desktop normalization, Tauri import acceptance, and backend prompt-context exposure.
+- Still pending export/import-specific tests for every v0.2 optional artifact beyond current zip validation paths.
+
 Suggested tests:
 
 ```powershell
@@ -128,6 +142,11 @@ Acceptance:
 - Each character restores its own session and window geometry.
 - Backend requests carry the active `character_pack_id`.
 - No UI text incorrectly says Akane when another character is active.
+
+Status:
+
+- Implemented the runtime map and request contract skeleton.
+- Manual multi-pack switch/restart testing is still needed with at least one non-Akane pack.
 
 Suggested tests:
 
@@ -181,6 +200,11 @@ Acceptance:
 - User can edit basic identity/persona fields and save.
 - User can apply the character and see the pet switch.
 - UI makes custom-character capability obvious.
+
+Status:
+
+- Implemented the standalone window, quick-menu/settings entry points, registry list, and apply-character command path.
+- Create/edit/save pages remain pending.
 
 Suggested tests:
 

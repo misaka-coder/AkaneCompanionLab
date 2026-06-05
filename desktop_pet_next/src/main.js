@@ -138,6 +138,7 @@ const DEFAULT_STATE = {
   backendUrl: DEFAULT_BACKEND_URL,
   profileUserId: PROFILE_USER_ID,
   characterPackId: getActiveCharacterPackId(),
+  characters: {},
   sessionId: "",
   outfit: getProfileDefaultOutfit(),
   currentEmotion: getProfileDefaultEmotion(),
@@ -191,10 +192,99 @@ const resourceState = {
   loadedAt: 0
 };
 
-const state = { ...DEFAULT_STATE };
+const state = { ...DEFAULT_STATE, characters: {} };
 
 function getProfileUserId() {
   return state.profileUserId || PROFILE_USER_ID;
+}
+
+function buildBackendCharacterContext() {
+  return {
+    client_mode: CLIENT_MODE,
+    character_pack_id: getCurrentCharacterPackId()
+  };
+}
+
+function getCharacterRuntimeKey(packId = getCurrentCharacterPackId()) {
+  const profile = String(getProfileUserId() || PROFILE_USER_ID).trim() || PROFILE_USER_ID;
+  const character = normalizeCharacterPackId(packId) || getActiveCharacterPackId();
+  return `${profile}::${character}`;
+}
+
+function ensureCharacterRuntimeMap() {
+  if (!state.characters || typeof state.characters !== "object" || Array.isArray(state.characters)) {
+    state.characters = {};
+  }
+  return state.characters;
+}
+
+function persistCurrentCharacterRuntimeState(packId = state.characterPackId || getActiveCharacterPackId()) {
+  const normalizedPackId = normalizeCharacterPackId(packId) || getActiveCharacterPackId();
+  const map = ensureCharacterRuntimeMap();
+  map[getCharacterRuntimeKey(normalizedPackId)] = {
+    version: 1,
+    characterPackId: normalizedPackId,
+    sessionId: String(state.sessionId || "").trim() || generateSessionId(),
+    outfit: String(state.outfit || "").trim() || getProfileDefaultOutfit(),
+    currentEmotion: String(state.currentEmotion || "").trim() || getProfileDefaultEmotion(),
+    x: normalizeNullableInteger(state.x),
+    y: normalizeNullableInteger(state.y),
+    width: normalizePositiveInteger(state.width),
+    height: normalizePositiveInteger(state.height),
+    scale: clamp(Number(state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
+    opacity: clamp(Number(state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
+    updatedAt: Date.now()
+  };
+  return map[getCharacterRuntimeKey(normalizedPackId)];
+}
+
+function findCharacterRuntimeState(packId) {
+  const key = getCharacterRuntimeKey(packId);
+  return normalizeCharacterRuntimeState(ensureCharacterRuntimeMap()[key]);
+}
+
+function createCharacterRuntimeState(packId, profile, { seedFromCurrent = false } = {}) {
+  const appearance = profile?.appearance || {};
+  const defaultOutfit = String(appearance.defaultOutfit || getProfileDefaultOutfit()).trim() || getProfileDefaultOutfit();
+  const defaultEmotion = String(appearance.defaultEmotion || getProfileDefaultEmotion()).trim() || getProfileDefaultEmotion();
+  return {
+    version: 1,
+    characterPackId: normalizeCharacterPackId(packId) || getActiveCharacterPackId(),
+    sessionId: seedFromCurrent ? String(state.sessionId || "").trim() || generateSessionId() : generateSessionId(),
+    outfit: seedFromCurrent ? String(state.outfit || defaultOutfit).trim() || defaultOutfit : defaultOutfit,
+    currentEmotion: seedFromCurrent ? String(state.currentEmotion || defaultEmotion).trim() || defaultEmotion : defaultEmotion,
+    x: normalizeNullableInteger(state.x),
+    y: normalizeNullableInteger(state.y),
+    width: normalizePositiveInteger(state.width),
+    height: normalizePositiveInteger(state.height),
+    scale: clamp(Number(state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
+    opacity: clamp(Number(state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
+    updatedAt: Date.now()
+  };
+}
+
+function applyCharacterRuntimeState(packId, profile, options = {}) {
+  const normalizedPackId = normalizeCharacterPackId(packId) || getActiveCharacterPackId();
+  const map = ensureCharacterRuntimeMap();
+  const key = getCharacterRuntimeKey(normalizedPackId);
+  const runtime = findCharacterRuntimeState(normalizedPackId) ||
+    createCharacterRuntimeState(normalizedPackId, profile, options);
+  const appearance = profile?.appearance || {};
+  const defaultOutfit = String(appearance.defaultOutfit || getProfileDefaultOutfit()).trim() || getProfileDefaultOutfit();
+  const defaultEmotion = String(appearance.defaultEmotion || getProfileDefaultEmotion()).trim() || getProfileDefaultEmotion();
+
+  state.sessionId = String(runtime.sessionId || "").trim() || generateSessionId();
+  state.outfit = normalizeOutfitName(runtime.outfit || defaultOutfit) || defaultOutfit;
+  state.currentEmotion = String(runtime.currentEmotion || defaultEmotion).trim() || defaultEmotion;
+  state.x = normalizeNullableInteger(runtime.x);
+  state.y = normalizeNullableInteger(runtime.y);
+  state.width = normalizePositiveInteger(runtime.width);
+  state.height = normalizePositiveInteger(runtime.height);
+  state.scale = clamp(Number(runtime.scale ?? state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX);
+  state.opacity = clamp(Number(runtime.opacity ?? state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1);
+
+  map[key] = persistCurrentCharacterRuntimeState(normalizedPackId);
+  return runtime;
 }
 
 const unlistenFns = [];
@@ -307,6 +397,7 @@ const els = {
   close: document.querySelector("#close-window"),
   quickInput: document.querySelector("#quick-input"),
   openSettings: document.querySelector("#open-settings"),
+  openWorkshop: document.querySelector("#open-workshop"),
   openWorkspace: document.querySelector("#open-workspace"),
   stopReply: document.querySelector("#stop-reply"),
   bubble: document.querySelector("#bubble"),
@@ -378,6 +469,7 @@ async function boot() {
     const pack = selectCharacterPack(state.characterPackId, { persist: false });
     state.characterPackId = pack.packId;
     refreshLocalResourceAssets();
+    applyCharacterRuntimeState(pack.packId, pack.profile, { seedFromCurrent: true });
     applyCharacterChrome();
     applyVisualState();
     await reloadCharacterResources({ startup: true });
@@ -509,6 +601,9 @@ function bindUi() {
   });
   els.openSettings.addEventListener("click", () => {
     void openSettingsWindow();
+  });
+  els.openWorkshop.addEventListener("click", () => {
+    void openWorkshopWindow();
   });
   els.openWorkspace.addEventListener("click", () => {
     void openWorkspaceWindow();
@@ -818,6 +913,9 @@ async function handleSettingsCommand(payload) {
     case "openWorkspace":
       await openWorkspaceWindow();
       break;
+    case "openWorkshop":
+      await openWorkshopWindow();
+      break;
     case "setBackendUrl":
       await updateBackendUrl(payload.value);
       break;
@@ -1026,6 +1124,8 @@ function buildSettingsSnapshot() {
       backendUrl: state.backendUrl,
       profileUserId: state.profileUserId,
       characterPackId: state.characterPackId,
+      characterRuntimeKey: getCharacterRuntimeKey(state.characterPackId),
+      characters: { ...ensureCharacterRuntimeMap() },
       sessionId: state.sessionId,
       outfit: state.outfit,
       currentEmotion: state.currentEmotion,
@@ -1145,6 +1245,7 @@ function normalizeState(value) {
     backendUrl: normalizeBackendUrl(incoming.backendUrl),
     profileUserId: PROFILE_USER_ID,
     characterPackId: normalizeCharacterPackId(incoming.characterPackId),
+    characters: normalizeCharacterRuntimeStates(incoming.characters),
     sessionId: String(incoming.sessionId || "").trim() || generateSessionId(),
     outfit: normalizeOutfitName(incoming.outfit),
     currentEmotion: resolveEmotionEntry(incoming.currentEmotion).id,
@@ -1179,6 +1280,50 @@ function normalizeState(value) {
       DEFAULT_STATE.musicVolumeNormalization
     )
   };
+}
+
+function normalizeCharacterRuntimeStates(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const result = {};
+  for (const [key, runtime] of Object.entries(source)) {
+    const normalized = normalizeCharacterRuntimeState(runtime);
+    if (normalized) {
+      result[String(key)] = normalized;
+    }
+  }
+  return result;
+}
+
+function normalizeCharacterRuntimeState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const characterPackId = normalizeCharacterPackId(value.characterPackId || value.packId || value.character_pack_id);
+  return {
+    version: Math.max(1, Math.round(Number(value.version || 1))),
+    characterPackId,
+    sessionId: String(value.sessionId || value.session_id || "").trim(),
+    outfit: normalizeOutfitName(value.outfit),
+    currentEmotion: String(value.currentEmotion || value.current_emotion || "").trim(),
+    x: normalizeNullableInteger(value.x),
+    y: normalizeNullableInteger(value.y),
+    width: normalizePositiveInteger(value.width),
+    height: normalizePositiveInteger(value.height),
+    scale: clamp(Number(value.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
+    opacity: clamp(Number(value.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
+    updatedAt: Math.max(0, Math.round(Number(value.updatedAt || value.updated_at || 0)))
+  };
+}
+
+function normalizeNullableInteger(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(number) : null;
+}
+
+function normalizePositiveInteger(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return Math.round(number);
 }
 
 function normalizeScreenVisionMode(value) {
@@ -1814,6 +1959,11 @@ async function transcribeVoiceBlob(blob) {
   const form = new FormData();
   form.append("file", blob, getVoiceFilename());
   form.append("language", "zh");
+  form.append("user_id", state.sessionId || "desktop_pet_next");
+  form.append("session_id", state.sessionId || "desktop_pet_next");
+  form.append("real_user_id", getProfileUserId());
+  form.append("client_mode", CLIENT_MODE);
+  form.append("character_pack_id", getCurrentCharacterPackId());
 
   try {
     const requestInit = {
@@ -2218,6 +2368,7 @@ async function saveNow() {
   try {
     const geometry = await invoke("get_window_geometry");
     Object.assign(state, geometry);
+    persistCurrentCharacterRuntimeState();
     await invoke("save_pet_state", { state });
   } catch (error) {
     setStatus(`Save failed: ${formatError(error)}`);
@@ -2256,6 +2407,17 @@ async function openWorkspaceWindow() {
   }
   await saveNow();
   await tauriCall("open_workspace_window", {});
+  scheduleSettingsSnapshot(120);
+}
+
+async function openWorkshopWindow() {
+  closeMenu();
+  if (!isTauriRuntime) {
+    setStatus("角色工坊窗口仅 Tauri 可用");
+    return;
+  }
+  await saveNow();
+  await tauriCall("open_workshop_window", {});
   scheduleSettingsSnapshot(120);
 }
 
@@ -2316,12 +2478,18 @@ async function refreshRuntimeCharacterPacks({ userTriggered = false, silent = fa
 
 async function updateCharacterPack(value) {
   const previousPackId = state.characterPackId || getActiveCharacterPackId();
+  if (isTauriRuntime) {
+    await saveNow();
+  } else {
+    persistCurrentCharacterRuntimeState(previousPackId);
+  }
   const pack = selectCharacterPack(value);
   state.characterPackId = pack.packId;
-  state.outfit = pack.profile.appearance.defaultOutfit;
-  state.currentEmotion = pack.profile.appearance.defaultEmotion;
   refreshLocalResourceAssets();
+  applyCharacterRuntimeState(pack.packId, pack.profile);
   applyCharacterChrome();
+  applyVisualState();
+  setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { persist: false, force: true });
 
   if (pack.packId === previousPackId) {
     scheduleSave(0);
@@ -2332,10 +2500,11 @@ async function updateCharacterPack(value) {
 
   setStatus(`角色包已切换为 ${pack.profile.identity.name}，正在应用。`, { durationMs: 2400 });
   if (isTauriRuntime) {
+    await invoke("apply_window_state", { state });
     await saveNow();
   }
   await reloadCharacterResources({ userTriggered: true });
-  void ensureBackendSession();
+  void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
 }
 
 async function setAlwaysOnTop(enabled) {
@@ -2403,6 +2572,7 @@ async function resetVisuals() {
 async function startNewSession() {
   interruptReply({ announce: false });
   state.sessionId = generateSessionId();
+  persistCurrentCharacterRuntimeState();
   lastTurnSignature = "";
   lastTurnTextKey = "";
   lastActivityActionSignature = "";
@@ -2463,6 +2633,7 @@ async function checkBackendHealth() {
   const query = new URLSearchParams({
     user_id: state.sessionId || "desktop_pet_next_health",
     real_user_id: getProfileUserId(),
+    ...buildBackendCharacterContext(),
     t: String(Date.now())
   });
 
@@ -2487,7 +2658,11 @@ async function checkBackendHealth() {
 
 async function checkLegacyBackendHealth(primaryError) {
   try {
-    const response = await backendFetch(`${state.backendUrl}${LEGACY_HEALTH_PATH}?t=${Date.now()}`, {
+    const query = new URLSearchParams({
+      ...buildBackendCharacterContext(),
+      t: String(Date.now())
+    });
+    const response = await backendFetch(`${state.backendUrl}${LEGACY_HEALTH_PATH}?${query.toString()}`, {
       method: "GET",
       cache: "no-store",
       connectTimeout: 3500
@@ -2677,8 +2852,10 @@ async function ensureBackendSession({ restoreLatest = false } = {}) {
       connectTimeout: 5000,
       body: JSON.stringify({
         user_id: state.sessionId,
+        session_id: state.sessionId,
         real_user_id: getProfileUserId(),
-        display_title: getActiveCharacterText("sessionDisplayTitle")
+        display_title: getActiveCharacterText("sessionDisplayTitle"),
+        ...buildBackendCharacterContext()
       })
     });
 
@@ -2975,6 +3152,7 @@ async function maybeSubmitScreenVisionClip() {
       body: JSON.stringify({
         user_id: state.sessionId,
         real_user_id: getProfileUserId(),
+        ...buildBackendCharacterContext(),
         mode: "background",
         foreground,
         captured_start_ts: first.captured_at,
@@ -3049,6 +3227,7 @@ async function clearScreenVisionWorkspace({ quiet = false } = {}) {
       body: JSON.stringify({
         user_id: state.sessionId,
         real_user_id: getProfileUserId(),
+        ...buildBackendCharacterContext(),
         scope: "session"
       })
     });
@@ -4054,6 +4233,7 @@ async function importDroppedFilesToWorkspace(paths) {
           user_id: sessionId,
           session_id: sessionId,
           real_user_id: getProfileUserId(),
+          ...buildBackendCharacterContext(),
           paths: normalizedPaths,
           recursive: false,
           max_files: 40
@@ -4142,6 +4322,7 @@ async function fetchWorkspaceItemLocation({ itemType, handle }) {
       {
         user_id: sessionId,
         real_user_id: getProfileUserId(),
+        ...buildBackendCharacterContext(),
         t: Date.now()
       }
     ),
@@ -4832,6 +5013,8 @@ async function uploadMusicTrackForTimeline(track) {
   form.append("user_id", state.sessionId || "desktop_pet_next");
   form.append("session_id", state.sessionId || "desktop_pet_next");
   form.append("real_user_id", state.profileUserId || PROFILE_USER_ID);
+  form.append("client_mode", CLIENT_MODE);
+  form.append("character_pack_id", getCurrentCharacterPackId());
 
   const response = await backendFetch(
     buildBackendEndpointUrl("desktop_audio_upload", "/desktop-pet/attachments/audio", { t: Date.now() }),
@@ -4861,6 +5044,7 @@ async function prepareBackendMusicTimeline(track) {
     user_id: state.sessionId || "desktop_pet_next",
     session_id: state.sessionId || "desktop_pet_next",
     real_user_id: getProfileUserId(),
+    ...buildBackendCharacterContext(),
     activity: {
       ...activity,
       attachment_handle: attachment.handle || activity.attachment_handle || "",
@@ -5160,6 +5344,7 @@ async function refreshWorkspaceMusicRecommendations() {
     const url = buildBackendEndpointUrl("workspaceSummary", "/desktop-pet/workspace/summary", {
       user_id: sessionId,
       real_user_id: profileUserId,
+      ...buildBackendCharacterContext(),
       limit: 24,
       t: String(Date.now())
     });
@@ -5456,7 +5641,10 @@ async function playTtsText(text, token) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
-      body: JSON.stringify({ text })
+      body: JSON.stringify({
+        text,
+        ...buildBackendCharacterContext()
+      })
     };
     if (isTauriRuntime) {
       requestInit.connectTimeout = 30_000;

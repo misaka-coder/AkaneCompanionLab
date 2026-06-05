@@ -1,0 +1,247 @@
+:root {
+  color-scheme: light;
+  font-family:
+    "Microsoft YaHei", "PingFang SC", "Source Han Sans SC", "Segoe UI", system-ui, sans-serif;
+  color: #25313d;
+  background: #f4f7fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 0;
+  margin: 0;
+  background: #f4f7fb;
+}
+
+button {
+  min-height: 34px;
+  border: 1px solid #cbd8e6;
+  border-radius: 7px;
+  padding: 0 12px;
+  color: #263342;
+  background: #ffffff;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: #91abc9;
+  background: #f8fbff;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.workshop-shell {
+  display: grid;
+  min-height: 100vh;
+  grid-template-rows: auto auto 1fr;
+}
+
+.workshop-header {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 28px 18px;
+  border-bottom: 1px solid #dbe4ee;
+  background: #ffffff;
+}
+
+.eyebrow {
+  display: block;
+  margin-bottom: 4px;
+  color: #65778d;
+  font-size: 12px;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 24px;
+  font-weight: 720;
+}
+
+h2 {
+  font-size: 15px;
+}
+
+.workshop-header p,
+.detail-panel p {
+  margin-top: 7px;
+  color: #607286;
+  font-size: 13px;
+}
+
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.active-panel {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  border-bottom: 1px solid #dbe4ee;
+  background: #dbe4ee;
+}
+
+.active-panel > div {
+  min-width: 0;
+  padding: 14px 28px;
+  background: #fbfdff;
+}
+
+.active-panel span,
+.pack-card span,
+.pack-card p,
+.detail-panel dt,
+.detail-panel dd {
+  color: #607286;
+  font-size: 12px;
+}
+
+.active-panel strong {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workshop-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  gap: 18px;
+  padding: 20px 28px 28px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.section-heading span {
+  min-width: 28px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: #4f6378;
+  background: #e9eff6;
+  font-size: 12px;
+  text-align: center;
+}
+
+.pack-list {
+  display: grid;
+  gap: 10px;
+}
+
+.pack-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 14px;
+  align-items: center;
+  min-height: 82px;
+  border: 1px solid #d5dfeb;
+  border-radius: 8px;
+  padding: 14px;
+  background: #ffffff;
+}
+
+.pack-card.active {
+  border-color: #86a8cc;
+  background: #f7fbff;
+}
+
+.pack-card-heading,
+.pack-card p {
+  min-width: 0;
+}
+
+.pack-card-heading strong,
+.pack-card-heading span,
+.pack-card p {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pack-card-heading strong {
+  margin-bottom: 4px;
+  font-size: 15px;
+}
+
+.pack-card button {
+  grid-row: span 2;
+}
+
+.detail-panel {
+  align-self: start;
+  border: 1px solid #d5dfeb;
+  border-radius: 8px;
+  padding: 16px;
+  background: #ffffff;
+}
+
+.detail-panel dl {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.detail-panel dt {
+  margin-bottom: 3px;
+  color: #344456;
+  font-weight: 700;
+}
+
+.detail-panel dd {
+  margin: 0;
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .workshop-header,
+  .workshop-body {
+    padding-inline: 16px;
+  }
+
+  .workshop-header,
+  .active-panel,
+  .workshop-body,
+  .pack-card {
+    grid-template-columns: 1fr;
+  }
+
+  .workshop-header {
+    align-items: stretch;
+  }
+
+  .header-actions {
+    justify-content: flex-start;
+  }
+
+  .active-panel > div {
+    padding-inline: 16px;
+  }
+
+  .pack-card button {
+    grid-row: auto;
+    justify-self: start;
+  }
+}

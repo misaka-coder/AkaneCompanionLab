@@ -16,6 +16,7 @@ export default defineConfig({
         main: resolve(__dirname, "index.html"),
         controlCenterLab: resolve(__dirname, "control-center-lab.html"),
         settings: resolve(__dirname, "settings.html"),
+        workshop: resolve(__dirname, "workshop.html"),
         workspace: resolve(__dirname, "workspace.html")
       }
     }

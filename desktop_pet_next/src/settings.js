@@ -37,6 +37,7 @@ const els = {
   characterPackZip: document.querySelector("#character-pack-zip"),
   chooseCharacterPackZip: document.querySelector("#choose-character-pack-zip"),
   overwriteCharacterPack: document.querySelector("#overwrite-character-pack"),
+  openCharacterWorkshop: document.querySelector("#open-character-workshop"),
   openCharacterPacksFolder: document.querySelector("#open-character-packs-folder"),
   copyCharacterPackPath: document.querySelector("#copy-character-pack-path"),
   characterImportDropzone: document.querySelector("#character-import-dropzone"),
@@ -189,6 +190,7 @@ function bindUi() {
   els.saveCharacterPack.addEventListener("click", () => saveCharacterPack());
   els.characterPack.addEventListener("change", () => updateCharacterPackButton());
   els.chooseCharacterPackZip.addEventListener("click", () => els.characterPackZip.click());
+  els.openCharacterWorkshop.addEventListener("click", () => openCharacterWorkshop());
   els.openCharacterPacksFolder.addEventListener("click", () => openCharacterPacksFolder());
   els.copyCharacterPackPath.addEventListener("click", () => copyCharacterPackPath());
   els.characterPackZip.addEventListener("change", () => {
@@ -481,6 +483,15 @@ async function openCharacterPacksFolder() {
     setCharacterImportStatus("已打开角色包目录");
   } catch (error) {
     setCharacterImportStatus(`打开目录失败：${formatError(error)}`);
+  }
+}
+
+async function openCharacterWorkshop() {
+  try {
+    await invoke("open_workshop_window");
+    setCharacterImportStatus("已打开角色工坊");
+  } catch (error) {
+    setCharacterImportStatus(`打开工坊失败：${formatError(error)}`);
   }
 }
 

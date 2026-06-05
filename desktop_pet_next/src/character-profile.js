@@ -15,7 +15,18 @@ const FALLBACK_PROFILE = {
     id: "akane_sample",
     name: "Akane",
     app_name: "Akane Next",
-    user_title: "主人"
+    self_reference: "我",
+    user_title: "主人",
+    relationship: "默认演示角色。"
+  },
+  persona_form: {
+    personality_keywords: [],
+    speaking_style: "",
+    catchphrases: [],
+    boundaries: "",
+    proactive_style: "",
+    example_lines: [],
+    extra_setting: ""
   },
   appearance: {
     default_outfit: "猫娘",
@@ -124,6 +135,7 @@ export function listCharacterPacks() {
     name: pack.profile.identity.name,
     appName: pack.profile.identity.appName,
     userTitle: pack.profile.identity.userTitle,
+    relationship: pack.profile.identity.relationship,
     schemaVersion: pack.profile.schemaVersion,
     source: pack.source,
     installedPath: pack.installedPath || "",
@@ -159,6 +171,8 @@ export function buildCharacterSnapshot() {
     name: profile.identity.name,
     appName: profile.identity.appName,
     userTitle: profile.identity.userTitle,
+    selfReference: profile.identity.selfReference,
+    relationship: profile.identity.relationship,
     defaultOutfit: profile.appearance.defaultOutfit,
     defaultEmotion: profile.appearance.defaultEmotion,
     musicEmotion: profile.appearance.musicEmotion,
@@ -168,7 +182,10 @@ export function buildCharacterSnapshot() {
     assetSource: profile.assets.runtimeSource,
     assetRoot: profile.assets.assetRoot,
     portraitGlob: profile.assets.portraitGlob,
-    bundledOutfit: profile.assets.bundledOutfit
+    bundledOutfit: profile.assets.bundledOutfit,
+    personaForm: { ...profile.personaForm },
+    layout: profile.layout,
+    voice: { ...profile.voice }
   };
 }
 
@@ -261,6 +278,7 @@ function normalizeCharacterProfile(value) {
   const identity = source.identity && typeof source.identity === "object" ? source.identity : {};
   const appearance = source.appearance && typeof source.appearance === "object" ? source.appearance : {};
   const dialogue = source.dialogue && typeof source.dialogue === "object" ? source.dialogue : {};
+  const personaForm = source.persona_form && typeof source.persona_form === "object" ? source.persona_form : {};
   const assets = source.assets && typeof source.assets === "object" ? source.assets : {};
 
   const defaultOutfit = cleanText(appearance.default_outfit, fallback.appearance.default_outfit);
@@ -274,7 +292,18 @@ function normalizeCharacterProfile(value) {
       id: cleanText(identity.id, fallback.identity.id),
       name: identityName,
       appName,
-      userTitle: cleanText(identity.user_title, fallback.identity.user_title)
+      selfReference: cleanText(identity.self_reference, fallback.identity.self_reference || "我"),
+      userTitle: cleanText(identity.user_title, fallback.identity.user_title),
+      relationship: cleanText(identity.relationship, fallback.identity.relationship || "")
+    },
+    personaForm: {
+      personalityKeywords: cleanStringArray(personaForm.personality_keywords, []),
+      speakingStyle: cleanText(personaForm.speaking_style, ""),
+      catchphrases: cleanStringArray(personaForm.catchphrases, []),
+      boundaries: cleanText(personaForm.boundaries, ""),
+      proactiveStyle: cleanText(personaForm.proactive_style, ""),
+      exampleLines: cleanExampleLines(personaForm.example_lines),
+      extraSetting: cleanText(personaForm.extra_setting, "")
     },
     appearance: {
       defaultOutfit,
@@ -302,7 +331,33 @@ function normalizeCharacterProfile(value) {
       assetRoot: cleanText(assets.asset_root, "assets"),
       bundledOutfit: cleanText(assets.bundled_outfit, defaultOutfit),
       portraitGlob: cleanText(assets.portrait_glob, "")
-    }
+    },
+    layout: normalizeLayout(source.layout),
+    voice: normalizeVoice(source.voice)
+  };
+}
+
+function cleanExampleLines(value) {
+  const items = Array.isArray(value) ? value : [];
+  return items
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      text: cleanText(item.text),
+      emotion: cleanText(item.emotion)
+    }))
+    .filter((item) => item.text);
+}
+
+function normalizeLayout(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function normalizeVoice(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    provider: cleanText(source.provider, ""),
+    profileId: cleanText(source.profile_id, ""),
+    notes: cleanText(source.notes, "")
   };
 }
 

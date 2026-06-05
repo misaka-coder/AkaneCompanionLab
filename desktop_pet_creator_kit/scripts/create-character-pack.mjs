@@ -7,7 +7,7 @@ import process from "node:process";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
-const SCHEMA_VERSION = "akane.character.v0.1";
+const SCHEMA_VERSION = "akane.character.v0.2";
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const kitRoot = path.resolve(scriptDir, "..");
@@ -225,7 +225,18 @@ function buildPack({ id, name, appName, userTitle, outfit, emotion, musicEmotion
       id,
       name,
       app_name: appName,
-      user_title: userTitle
+      self_reference: "我",
+      user_title: userTitle,
+      relationship: `住在桌面边上的 ${name}，会按自己的性格陪伴和回应 ${userTitle}。`
+    },
+    persona_form: {
+      personality_keywords: [],
+      speaking_style: "短句自然，不写解释性设定说明。",
+      catchphrases: [],
+      boundaries: "不要把自己说成通用客服。",
+      proactive_style: `${userTitle}暂时没有说话时，按角色风格轻轻搭一句话。`,
+      example_lines: buildLocalClickLines({ emotion, availableEmotions }).slice(0, 1),
+      extra_setting: ""
     },
     appearance: {
       default_outfit: outfit,
@@ -242,6 +253,20 @@ function buildPack({ id, name, appName, userTitle, outfit, emotion, musicEmotion
       local_click_lines: buildLocalClickLines({ emotion, availableEmotions })
     },
     emotion_aliases: buildEmotionAliases({ emotion, musicEmotion, availableEmotions }),
+    layout: {
+      outfits: {
+        [outfit]: {
+          window: { width: 340, height: 560 },
+          portrait: { scale: 1, offset_x: 0, offset_y: 0, fit: "contain", anchor: "bottom_center" },
+          bubble: { anchor_x: 0.5, anchor_y: 0.12, max_width: 300 }
+        }
+      }
+    },
+    voice: {
+      provider: "",
+      profile_id: "",
+      notes: ""
+    },
     assets: {
       runtime_source: "character pack assets, with desktop_pet_next bundled fallback",
       asset_root: "assets",
@@ -418,8 +443,24 @@ function buildToml(pack) {
     `id = ${tomlString(pack.identity.id)}`,
     `name = ${tomlString(pack.identity.name)}`,
     `app_name = ${tomlString(pack.identity.app_name)}`,
+    `self_reference = ${tomlString(pack.identity.self_reference)}`,
     `user_title = ${tomlString(pack.identity.user_title)}`,
+    `relationship = ${tomlString(pack.identity.relationship)}`,
     "",
+    "[persona_form]",
+    `personality_keywords = ${tomlArray(pack.persona_form.personality_keywords)}`,
+    `speaking_style = ${tomlString(pack.persona_form.speaking_style)}`,
+    `catchphrases = ${tomlArray(pack.persona_form.catchphrases)}`,
+    `boundaries = ${tomlString(pack.persona_form.boundaries)}`,
+    `proactive_style = ${tomlString(pack.persona_form.proactive_style)}`,
+    `extra_setting = ${tomlString(pack.persona_form.extra_setting)}`,
+    "",
+    ...pack.persona_form.example_lines.flatMap((line) => [
+      "[[persona_form.example_lines]]",
+      `text = ${tomlString(line.text)}`,
+      `emotion = ${tomlString(line.emotion)}`,
+      ""
+    ]),
     "[appearance]",
     `default_outfit = ${tomlString(pack.appearance.default_outfit)}`,
     `default_emotion = ${tomlString(pack.appearance.default_emotion)}`,

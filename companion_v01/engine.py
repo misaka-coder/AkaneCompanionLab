@@ -583,6 +583,7 @@ class AkaneMemoryEngine:
                         identity = {}
                     if identity:
                         return {
+                            "character_id": str(identity.get("character_id") or identity.get("pack_id") or ""),
                             "assistant_name": str(identity.get("assistant_name") or ""),
                             "user_label": str(identity.get("user_label") or ""),
                             "app_name": str(identity.get("app_name") or ""),
@@ -590,6 +591,7 @@ class AkaneMemoryEngine:
                         }
 
         return {
+            "character_id": "",
             "assistant_name": PERSONA.assistant_name,
             "user_label": PERSONA.user_label,
             "app_name": PERSONA.assistant_name,

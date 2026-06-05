@@ -5,7 +5,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const SCHEMA_VERSION = "akane.character.v0.1";
+const CURRENT_SCHEMA_VERSION = "akane.character.v0.2";
+const SUPPORTED_SCHEMA_VERSIONS = new Set(["akane.character.v0.1", CURRENT_SCHEMA_VERSION]);
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -81,6 +82,63 @@ function getStringArray(source, key, label, required = false) {
     clean.push(entry.trim());
   }
   return clean;
+}
+
+function validatePersonaForm(character) {
+  if (character.persona_form === undefined) {
+    addWarning("persona_form is missing; workshop persona fields will start empty.");
+    return;
+  }
+  if (!isObject(character.persona_form)) {
+    addError("persona_form must be an object when provided.");
+    return;
+  }
+  const form = character.persona_form;
+  getStringArray(form, "personality_keywords", "persona_form.personality_keywords");
+  getStringArray(form, "catchphrases", "persona_form.catchphrases");
+  getOptionalString(form, "speaking_style", "persona_form.speaking_style");
+  getOptionalString(form, "boundaries", "persona_form.boundaries");
+  getOptionalString(form, "proactive_style", "persona_form.proactive_style");
+  getOptionalString(form, "extra_setting", "persona_form.extra_setting");
+  const exampleLines = form.example_lines;
+  if (exampleLines !== undefined) {
+    if (!Array.isArray(exampleLines)) {
+      addError("persona_form.example_lines must be an array when provided.");
+    } else {
+      exampleLines.forEach((line, index) => {
+        if (!isObject(line)) {
+          addError(`persona_form.example_lines[${index}] must be an object.`);
+          return;
+        }
+        getRequiredString(line, "text", `persona_form.example_lines[${index}].text`);
+        getOptionalString(line, "emotion", `persona_form.example_lines[${index}].emotion`);
+      });
+    }
+  }
+}
+
+function validateLayout(character) {
+  if (character.layout === undefined) return;
+  if (!isObject(character.layout)) {
+    addError("layout must be an object when provided.");
+    return;
+  }
+  const outfits = character.layout.outfits;
+  if (outfits !== undefined && !isObject(outfits)) {
+    addError("layout.outfits must be an object when provided.");
+    return;
+  }
+}
+
+function validateVoice(character) {
+  if (character.voice === undefined) return;
+  if (!isObject(character.voice)) {
+    addError("voice must be an object when provided.");
+    return;
+  }
+  getOptionalString(character.voice, "provider", "voice.provider");
+  getOptionalString(character.voice, "profile_id", "voice.profile_id");
+  getOptionalString(character.voice, "notes", "voice.notes");
 }
 
 async function pathExists(targetPath) {
@@ -204,8 +262,8 @@ async function validatePack() {
   const character = await readJson(characterPath);
 
   const schemaVersion = getRequiredString(character, "schema_version", "schema_version");
-  if (schemaVersion && schemaVersion !== SCHEMA_VERSION) {
-    addError(`schema_version must be "${SCHEMA_VERSION}".`);
+  if (schemaVersion && !SUPPORTED_SCHEMA_VERSIONS.has(schemaVersion)) {
+    addError(`schema_version must be one of: ${[...SUPPORTED_SCHEMA_VERSIONS].join(", ")}.`);
   }
 
   const identity = getObject(character, "identity", "identity");
@@ -217,6 +275,8 @@ async function validatePack() {
   const name = getRequiredString(identity, "name", "identity.name");
   getRequiredString(identity, "app_name", "identity.app_name");
   getRequiredString(identity, "user_title", "identity.user_title");
+  getOptionalString(identity, "self_reference", "identity.self_reference");
+  getOptionalString(identity, "relationship", "identity.relationship");
 
   const defaultOutfit = getRequiredString(
     appearance,
@@ -247,6 +307,9 @@ async function validatePack() {
   getOptionalString(dialogue, "tts_test_text", "dialogue.tts_test_text");
   getOptionalString(dialogue, "proactive_wake_prompt", "dialogue.proactive_wake_prompt");
   validateAliases(character);
+  validatePersonaForm(character);
+  validateLayout(character);
+  validateVoice(character);
 
   const assetRoot = getOptionalString(assets, "asset_root", "assets.asset_root", "assets");
   const charactersDir = path.join(packDir, assetRoot, "characters");

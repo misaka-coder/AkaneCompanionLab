@@ -1,9 +1,11 @@
 # Desktop Pet Character Workshop V1 Design
 
-Status: planning baseline
+Status: planning baseline; first runtime/schema/workshop-shell skeleton implemented 2026-06-05
 Owner direction: creator-facing desktop pet first
 Primary runtime: `desktop_pet_next`
 Frozen runtime: `desktop_pet`
+
+Implementation note 2026-06-05: `desktop_pet_next` now has a minimal active-character runtime map, v0.2 character-pack metadata support, backend `character_pack_id` request contract, and a standalone workshop shell. Character-scoped memory persistence is still a pending backend storage phase, not complete.
 
 ## Purpose
 

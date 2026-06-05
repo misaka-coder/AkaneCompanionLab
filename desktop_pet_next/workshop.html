@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Akane Next 角色工坊</title>
+  </head>
+  <body>
+    <main class="workshop-shell">
+      <header class="workshop-header">
+        <div>
+          <span class="eyebrow">Character Workshop</span>
+          <h1>角色工坊</h1>
+          <p id="workshop-summary">正在读取角色包。</p>
+        </div>
+        <div class="header-actions">
+          <button id="refresh-packs" type="button">刷新</button>
+          <button id="open-packs-folder" type="button">打开目录</button>
+          <button id="close-window" type="button">关闭</button>
+        </div>
+      </header>
+
+      <section class="active-panel">
+        <div>
+          <span>当前角色</span>
+          <strong id="active-character">-</strong>
+        </div>
+        <div>
+          <span>角色包</span>
+          <strong id="active-pack">-</strong>
+        </div>
+        <div>
+          <span>会话</span>
+          <strong id="active-session">-</strong>
+        </div>
+      </section>
+
+      <section class="workshop-body">
+        <div>
+          <div class="section-heading">
+            <h2>已安装角色包</h2>
+            <span id="pack-count">0</span>
+          </div>
+          <div id="pack-list" class="pack-list" aria-live="polite"></div>
+        </div>
+
+        <aside class="detail-panel">
+          <h2>角色包信息</h2>
+          <dl id="pack-detail-list"></dl>
+          <p id="workshop-status">等待同步。</p>
+        </aside>
+      </section>
+    </main>
+    <script type="module" src="/src/workshop.js"></script>
+  </body>
+</html>
