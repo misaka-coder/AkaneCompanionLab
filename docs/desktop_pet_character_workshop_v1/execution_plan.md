@@ -24,7 +24,12 @@ Updated: 2026-06-05
 - Phase 1 skeleton implemented: v0.2 identity/persona/layout/voice fields are accepted by the creator kit validator, created by the draft script, normalized by `desktop_pet_next`, accepted by Tauri import validation, and available to the backend desktop-pet prompt context.
 - Phase 2 skeleton implemented: `pet_state.json` now has a per-character runtime state map keyed by profile user plus character pack; character switching saves/restores session id, geometry, scale, opacity, outfit, and current emotion.
 - Phase 3 shell implemented: `workshop.html` opens as a Tauri window from the pet quick menu and settings character page, lists installed character packs, and can emit apply-character commands.
-- Pending: full workshop editing/create/save UI, portrait upload/calibration, export/import v0.2 coverage beyond existing zip paths, and database-level character-scoped memory storage.
+- **Phase 3A** implemented: persona form UI with tab navigation. Loads identity + persona fields from selected character pack's `character.json`. Local draft save to `localStorage` with auto-save on blur and manual save button. Empty state when no pack selected. Example lines with dynamic add/remove.
+- **Phase 3B** implemented: `save_character_pack` (deep-merge identity + persona_form into character.json on disk) and `create_character_pack` (new pack from template with directory structure). Workshop save button calls Tauri command first, falls back to localStorage. "新建角色" button opens a create dialog.
+- **Phase 4A complete**: `upload_portrait_image` (magic-byte detection, atomic write, Unicode-safe IDs), `list_pack_assets`, `delete/rename` commands, `set_default_emotion` Tauri commands. Workshop "立绘管理" tab: outfit cards, upload, preview, delete/rename, set-default/music, missing-emotion warnings.
+- **Phase 4B complete**: `save_calibration` + `resize_pet_window` Tauri commands. Workshop "显示校准" tab: outfit selector, 7 sliders (window W/H, scale, offset X/Y, bubble X/Y), auto-layout from image aspect ratio, real-time preview with animated bubble dot. `setLayout` added to visual-renderer, `applyCharacterLayout` in main.js with signature-based debounce to avoid redundant window resizes. Atomic writes + validation on all new commands.
+- **Phase 3 import/export complete**: `export_character_pack` Tauri command (recursive zip via `zip` crate, saves to desktop). Workshop header buttons: 📥 Import (file picker → `install_character_pack_zip_bytes`, refresh list), 📤 Export (call `export_character_pack`, show result, open folder).
+- Repair pass complete: replaced the undefined `characterPackRegistry` layout lookup, restored valid workshop DOM nesting, made `save_character_pack` create missing `persona_form` for v0.1 packs, routed portrait asset paths through safe child resolution, changed empty sanitized asset ids to hard errors, and switched the default settings entry to `control-center-lab.html` with `AKANE_LEGACY_SETTINGS=1` as rollback.
 
 ## Phase 0: Repo Mapping And Safety Baseline
 
@@ -203,8 +208,9 @@ Acceptance:
 
 Status:
 
-- Implemented the standalone window, quick-menu/settings entry points, registry list, and apply-character command path.
-- Create/edit/save pages remain pending.
+- Phase 3A implemented: tab navigation, persona form with all identity + persona fields, example lines, localStorage draft auto-save, empty state.
+- Phase 3B implemented: `save_character_pack` Tauri command (deep-merge into character.json), `create_character_pack` Tauri command (new pack from template), "新建角色" dialog in workshop UI, save button wired to file save with localStorage fallback. Build passes on both Rust and Vite sides.
+- Portrait upload/calibration (Phase 4) and test chat (Phase 6) remain pending.
 
 Suggested tests:
 

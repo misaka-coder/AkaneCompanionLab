@@ -1389,10 +1389,44 @@ function applyVisualState() {
   els.backendUrl.value = state.backendUrl;
   els.outfit.value = state.outfit || getProfileDefaultOutfit();
   els.stage.classList.toggle("show-hitbox-overlay", state.hitboxOverlay);
+  applyCharacterLayout();
   updateVoiceRecordButton();
   updateMenuLabels();
   scheduleNativeHitTestSync();
   autoResizeChatInput();
+}
+
+let lastAppliedLayoutSignature = "";
+
+function applyCharacterLayout() {
+  const profile = getActiveCharacterProfile();
+  const layouts = profile?.layout?.outfits && typeof profile.layout.outfits === "object"
+    ? profile.layout.outfits
+    : {};
+  const outfit = String(state.outfit || getProfileDefaultOutfit()).trim() || getProfileDefaultOutfit();
+  const outfitLayout = layouts[outfit] || layouts[getProfileDefaultOutfit()];
+  if (!outfitLayout) {
+    visualRenderer.setLayout(null);
+    lastAppliedLayoutSignature = "";
+    return;
+  }
+
+  visualRenderer.setLayout(outfitLayout);
+
+  /* apply calibrated window size — only when dimensions change */
+  const winW = Number(outfitLayout.window?.width) || 0;
+  const winH = Number(outfitLayout.window?.height) || 0;
+  const sig = `${getCurrentCharacterPackId()}::${outfit}::${winW}x${winH}`;
+  if (winW >= 200 && winH >= 200 && sig !== lastAppliedLayoutSignature) {
+    lastAppliedLayoutSignature = sig;
+    state.width = winW;
+    state.height = winH;
+    if (isTauriRuntime) {
+      void invoke("resize_pet_window", { width: winW, height: winH }).catch((error) => {
+        setStatus(`窗口校准尺寸应用失败：${formatError(error)}`, { durationMs: 2400 });
+      });
+    }
+  }
 }
 
 function updateMenuLabels() {

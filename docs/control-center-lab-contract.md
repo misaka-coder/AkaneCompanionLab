@@ -2,11 +2,11 @@
 
 This document describes the backend data boundary for `desktop_pet_next/control-center-lab.html`.
 
-## Beta Entry
+## Default Entry
 
-The new control center (`control-center-lab.html`) is a **beta entry** activated by `AKANE_CONTROL_CENTER_LAB=1`
-(see `src-tauri/src/main.rs` / `settings_window_url()`). The default settings page (`settings.html`) remains
-the stable entry for production use.
+The new control center (`control-center-lab.html`) is the default settings entry
+(see `src-tauri/src/main.rs` / `settings_window_url()`). The old settings page (`settings.html`) remains
+available only as an explicit rollback via `AKANE_LEGACY_SETTINGS=1`.
 
 The lab starts from `src/control-center/mock-data.js`, then hydrates supported fields through the data-source and adapter layer. The page is always rendered with mock data first, then upgraded with real runtime data when available. Backend failure does not block navigation or window chrome buttons.
 
@@ -49,7 +49,7 @@ Individual provider failures return `{ ok: false, status: "unavailable" }` witho
 - The abilities page hydrates from `/desktop-pet/diagnostics` and `/desktop-pet/workspace/summary`: backend tool names are mapped into user-facing modules, and the page updates summary stats, module cards, workflow examples, recent status rows, safety state, and Live2D reserved state. It intentionally does not render raw tool names. `abilities.logs.viewAll` is client-handled — it toggles between showing the first 3 call rows and the full call history, with `refresh:false` and no backend or Tauri boundary. Remaining navigation and management operations (`abilities.quickAction`, `abilities.manageModules`, `abilities.moreWorkflows`, `abilities.safety.details`, `abilities.live2d.openSettings`) are registered in the action surface contract as deferred — they have stable action IDs and `data-action-id` wiring but no real capability invocation or management commands yet.
 - The advanced page hydrates from `/health`, `/desktop-pet/diagnostics`, `/metrics`, and `petState` via `buildAdvancedRuntimePatch`: the system strip shows real running/network state and attempts CPU/memory percent from prometheus metrics; diagnostics metrics patch `应用状态`, `后端健康`, and `内存占用` by label; diagnostics logs are replaced with a status sync timeline; ability overview is derived from `tool_names`; Live2D rows show reserved statuses. `advanced.probeClickThrough` and `advanced.resetWindow` are bridged (settings-command). Core toggles for WebGL, Hit-Test, and Hitbox route through `advanced.toggleWebgl`, `advanced.setHitTestEnabled`, and `advanced.setHitboxOverlay`. `advanced.logs.more` is client-handled — it toggles between showing the first 5 log entries and the full log list, with `refresh:false` and no backend or Tauri boundary. Log management, exit pet, expert options, Live2D status, and ability details (`advanced.logs.clear`, `advanced.exitPet`, `advanced.expertOption`, `advanced.live2d.openStatus`, `advanced.ability.details`) are registered in the action surface contract as deferred — they have stable action IDs and `data-action-id` wiring but no real execution boundary. `advanced.exitPet` requires explicit confirmation before any future binding and must not be mapped to `closePet` or `window.close`.
 - Use `?source=mock` to force the static prototype, or `?backend=http://127.0.0.1:9999` to point the lab at another backend.
-- The control-center-lab.html can be used as the Tauri settings window preview by setting `AKANE_CONTROL_CENTER_LAB=1` (e.g. `npm run dev:control-center`). The default settings page remains settings.html for safe rollback. Settings and workspace windows stay non-topmost and are not owned by the pet window, so the pet can keep its own always-on-top priority.
+- The control-center-lab.html is the default Tauri settings window. Set `AKANE_LEGACY_SETTINGS=1` only for rollback to settings.html. Settings and workspace windows stay non-topmost and are not owned by the pet window, so the pet can keep its own always-on-top priority.
 - The Tauri settings snapshot event is treated as a lightweight runtime patch for high-frequency music state. It must not trigger full backend hydration on every music progress update; full hydration remains reserved for initial load and explicit action refresh.
 - Backend responses are converted into page runtime patches such as `overviewRuntime` and `characterRuntime`; render functions only consume `ControlCenterSnapshot` fields.
 

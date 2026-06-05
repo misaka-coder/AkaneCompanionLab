@@ -126,7 +126,7 @@ npm run build
 
 `npm run verify:control-center` runs the full control-center verification matrix: smoke actions + runtime probe + build, with a required-file existence gate before execution.
 
-`npm run dev:control-center` launches the Tauri desktop app with `AKANE_CONTROL_CENTER_LAB=1`, which opens the new control-center-lab.html in the settings window instead of the default settings.html. This is a preview entry — the old settings page remains the default. When the env var is not set (or set to `0`/`false`), the original settings.html opens as before. Settings and workspace windows are non-topmost so the pet keeps its always-on-top priority.
+The settings window opens `control-center-lab.html` by default. Set `AKANE_LEGACY_SETTINGS=1` only when you need the old `settings.html` rollback surface. `npm run dev:control-center` remains available as an explicit control-center development entry. Settings and workspace windows are non-topmost so the pet keeps its always-on-top priority.
 
 ### Control Center Verification Matrix
 

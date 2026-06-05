@@ -61,6 +61,30 @@ export function createVisualRenderer({ stage, image } = {}) {
     return currentMotion;
   }
 
+  function setLayout(layout) {
+    if (!stage) return;
+    if (!layout || typeof layout !== "object") {
+      if (image) {
+        image.style.transform = "";
+        image.style.transformOrigin = "";
+      }
+      delete stage.dataset.layoutApplied;
+      return;
+    }
+    const portrait = layout.portrait || {};
+
+    const scale = Number(portrait.scale ?? 1) || 1;
+    const offX = Number(portrait.offset_x ?? 0) || 0;
+    const offY = Number(portrait.offset_y ?? 0) || 0;
+
+    if (image) {
+      image.style.transform = `translate(${offX}px, ${offY}px) scale(${scale})`;
+      image.style.transformOrigin = normalizeTransformOrigin(portrait.anchor);
+    }
+
+    stage.dataset.layoutApplied = "true";
+  }
+
   function getStatus() {
     return {
       mode,
@@ -83,7 +107,8 @@ export function createVisualRenderer({ stage, image } = {}) {
     setCharacterLabel,
     setExpression,
     setMotion,
-    setRendererMode
+    setRendererMode,
+    setLayout
   };
 }
 
@@ -98,4 +123,9 @@ function normalizeExpressionEntry(entry) {
   const name = String(source.name || source.id || id).trim();
   const url = String(source.url || "").trim();
   return { id, name, url };
+}
+
+function normalizeTransformOrigin(value) {
+  const origin = String(value || "").trim().replace(/_/g, " ");
+  return origin || "bottom center";
 }

@@ -202,8 +202,8 @@ Built with Tauri v2 + Vite. Entry: `index.html` → `src/main.js`.
 | File | Responsibility |
 |------|---------------|
 | `index.html` | Main pet window HTML. Mounts `#app`, loads `main.js`. |
-| `control-center-lab.html` | **Beta** control center HTML. Mounts `#app`, loads `control-center-lab.js`. Activated by `AKANE_CONTROL_CENTER_LAB=1`. |
-| `settings.html` | Old settings page. Mounts `#app`, loads `settings.js`. Stable default for Tauri settings window. |
+| `control-center-lab.html` | Default control center HTML. Mounts `#app`, loads `control-center-lab.js`. |
+| `settings.html` | Old settings page. Mounts `#app`, loads `settings.js`. Explicit rollback via `AKANE_LEGACY_SETTINGS=1`. |
 | `workspace.html` | Workspace (hand-side items) window. Loads `workspace.js`. |
 | `vite.config.js` | Vite build configuration. Multi-page: index, settings, workspace, control-center-lab. |
 
@@ -238,7 +238,7 @@ Built with Tauri v2 + Vite. Entry: `index.html` → `src/main.js`.
 
 | File | Responsibility |
 |------|---------------|
-| `src-tauri/src/main.rs` | Tauri app entry. Window creation (pet, settings, workspace). `load_pet_state` command, `settings_window_url()` with `AKANE_CONTROL_CENTER_LAB` env var gate. Desktop context snapshot provider. |
+| `src-tauri/src/main.rs` | Tauri app entry. Window creation (pet, settings, workspace). `load_pet_state` command, `settings_window_url()` with `AKANE_LEGACY_SETTINGS` rollback gate. Desktop context snapshot provider. |
 | `src-tauri/Cargo.toml` | Rust dependencies. Tauri v2, window APIs, file system. |
 | `src-tauri/tauri.conf.json` | Tauri configuration: window labels, permissions, security policies. |
 

@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
     sync::{Mutex, OnceLock},
@@ -221,6 +222,8 @@ struct ExportedWorkspaceFile {
     ok: bool,
     path: String,
     file_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -273,6 +276,33 @@ struct CharacterPackJson {
     voice: serde_json::Value,
     #[serde(default)]
     assets: CharacterPackAssets,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveCharacterPackRequest {
+    pack_id: String,
+    identity: serde_json::Value,
+    persona_form: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateCharacterPackRequest {
+    pack_id: String,
+    name: String,
+    app_name: String,
+    user_title: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadPortraitResult {
+    ok: bool,
+    outfit: String,
+    emotion: String,
+    path: String,
+    size_bytes: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -558,6 +588,7 @@ fn export_file_to_desktop(
             .and_then(|value| value.to_str())
             .unwrap_or(file_name.as_str())
             .to_string(),
+        size_bytes: None,
     })
 }
 
@@ -640,6 +671,575 @@ fn list_character_packs() -> Result<Vec<CharacterPackRegistryItem>, String> {
     });
 
     Ok(packs)
+}
+
+#[tauri::command]
+fn save_character_pack(request: SaveCharacterPackRequest) -> Result<CharacterPackRegistryItem, String> {
+    let pack_id = sanitize_pack_id(&request.pack_id);
+    if pack_id.is_empty() {
+        return Err("无效的角色包 ID。".to_string());
+    }
+
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    if !pack_dir.is_dir() {
+        return Err(format!("角色包 {pack_id} 不存在。"));
+    }
+
+    let character_path = pack_dir.join("character.json");
+    if !character_path.is_file() {
+        return Err(format!("{pack_id} 缺少 character.json。"));
+    }
+
+    /* read existing character.json */
+    let raw = fs::read_to_string(&character_path).map_err(|error| error.to_string())?;
+    let mut profile: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|error| format!("character.json 无效：{error}"))?;
+
+    require_optional_object(&request.identity, "identity")?;
+    require_optional_object(&request.persona_form, "persona_form")?;
+
+    let Some(obj) = profile.as_object_mut() else {
+        return Err("character.json 根节点必须是对象。".to_string());
+    };
+
+    let identity = obj
+        .entry("identity".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !identity.is_object() {
+        return Err("identity 必须是对象。".to_string());
+    }
+    deep_merge_json(identity, &request.identity);
+
+    let persona_form = obj
+        .entry("persona_form".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !persona_form.is_object() {
+        return Err("persona_form 必须是对象。".to_string());
+    }
+    deep_merge_json(persona_form, &request.persona_form);
+
+    /* validate merged result still parses as CharacterPackJson */
+    let validated: CharacterPackJson = serde_json::from_value(profile.clone())
+        .map_err(|error| format!("合并后的角色数据无效：{error}"))?;
+
+    /* atomic write: temp file then rename to avoid corruption on crash */
+    let updated = serde_json::to_string_pretty(&profile)
+        .map_err(|error| format!("序列化角色数据失败：{error}"))?;
+    write_text_atomic(&character_path, &updated)?;
+
+    /* regenerate persona.md only if it still looks like the template */
+    let persona_path = pack_dir.join("persona.md");
+    let should_write = match fs::read_to_string(&persona_path) {
+        Ok(existing) => {
+            // If all three template headers are present, it's still a template
+            // and safe to regenerate. If any are missing, the user has edited it.
+            existing.contains("## Voice")
+                && existing.contains("## Relationship Boundary")
+                && existing.contains("## World Notes")
+        }
+        Err(_) => true, // file doesn't exist — create it
+    };
+    if should_write {
+        write_text_atomic(
+            &persona_path,
+            &persona_md_text(&validated.identity.name, &validated.identity.user_title),
+        )?;
+    }
+
+    /* return updated registry item – reuse validated struct */
+    let asset_root = validated
+        .assets
+        .asset_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("assets");
+    let outfits = list_character_pack_outfits(&pack_dir, asset_root);
+    let asset_count = outfits.iter().map(|outfit| outfit.emotions.len()).sum();
+
+    Ok(CharacterPackRegistryItem {
+        id: pack_id,
+        source: character_path.to_string_lossy().to_string(),
+        installed_path: pack_dir.to_string_lossy().to_string(),
+        asset_count,
+        profile,
+        outfits,
+    })
+}
+
+#[tauri::command]
+fn create_character_pack(request: CreateCharacterPackRequest) -> Result<CharacterPackRegistryItem, String> {
+    let pack_id = sanitize_pack_id(&request.pack_id);
+    if pack_id.is_empty() {
+        return Err("无效的角色包 ID。".to_string());
+    }
+    let name = request.name.trim().to_string();
+    if name.is_empty() {
+        return Err("角色名称不能为空。".to_string());
+    }
+    let app_name = if request.app_name.trim().is_empty() {
+        format!("{name} Pet")
+    } else {
+        request.app_name.trim().to_string()
+    };
+    let user_title = if request.user_title.trim().is_empty() {
+        "主人".to_string()
+    } else {
+        request.user_title.trim().to_string()
+    };
+    let default_outfit = "default".to_string();
+
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    if pack_dir.exists() {
+        return Err(format!("角色包 {pack_id} 已存在。"));
+    }
+
+    /* load template character.json and fill in user-provided fields */
+    let template_path = creator_kit_template_path()?;
+    let template_raw = fs::read_to_string(&template_path)
+        .map_err(|error| format!("读取模板失败：{error}"))?;
+    let mut character_json: serde_json::Value = serde_json::from_str(&template_raw)
+        .map_err(|error| format!("模板 JSON 无效：{error}"))?;
+
+    if let Some(obj) = character_json.as_object_mut() {
+        if let Some(identity) = obj.get_mut("identity").and_then(|v| v.as_object_mut()) {
+            identity.insert("id".to_string(), serde_json::Value::String(pack_id.clone()));
+            identity.insert("name".to_string(), serde_json::Value::String(name.clone()));
+            identity.insert("app_name".to_string(), serde_json::Value::String(app_name.clone()));
+            identity.insert("user_title".to_string(), serde_json::Value::String(user_title.clone()));
+            identity.insert("relationship".to_string(), serde_json::Value::String(
+                format!("住在桌面边上的 {name}，会按自己的性格陪伴和回应 {user_title}。")
+            ));
+        }
+        if let Some(persona) = obj.get_mut("persona_form").and_then(|v| v.as_object_mut()) {
+            persona.insert("proactive_style".to_string(), serde_json::Value::String(
+                format!("{user_title}暂时没有说话时，按角色风格轻轻搭一句话。")
+            ));
+        }
+        if let Some(dialogue) = obj.get_mut("dialogue").and_then(|v| v.as_object_mut()) {
+            dialogue.insert("input_placeholder".to_string(), serde_json::Value::String(
+                format!("和 {name} 说点什么……")
+            ));
+            dialogue.insert("session_display_title".to_string(), serde_json::Value::String(
+                format!("{name} 桌宠对话")
+            ));
+            dialogue.insert("tts_test_text".to_string(), serde_json::Value::String(
+                format!("{name}：语音播放测试。")
+            ));
+            dialogue.insert("proactive_wake_prompt".to_string(), serde_json::Value::String(
+                format!("{user_title}暂时没有说话。你像坐在旁边陪伴一样，轻轻搭一句自然的话。桌面线索只当背景，不要刻意围绕窗口标题发挥。")
+            ));
+        }
+    }
+
+    /* create directory structure */
+    let assets_chars_dir = pack_dir.join("assets").join("characters").join(&default_outfit);
+    fs::create_dir_all(&assets_chars_dir).map_err(|error| error.to_string())?;
+
+    let character_json_str = serde_json::to_string_pretty(&character_json)
+        .map_err(|error| format!("序列化 character.json 失败：{error}"))?;
+    write_text_atomic(&pack_dir.join("character.json"), &character_json_str)?;
+
+    write_text_atomic(&pack_dir.join("persona.md"), &persona_md_text(&name, &user_title))?;
+
+    let profile = character_json;
+    let outfits = list_character_pack_outfits(&pack_dir, "assets");
+    let asset_count = outfits.iter().map(|outfit| outfit.emotions.len()).sum();
+
+    Ok(CharacterPackRegistryItem {
+        id: pack_id,
+        source: pack_dir
+            .join("character.json")
+            .to_string_lossy()
+            .to_string(),
+        installed_path: pack_dir.to_string_lossy().to_string(),
+        asset_count,
+        profile,
+        outfits,
+    })
+}
+
+#[tauri::command]
+fn upload_portrait_image(_app: AppHandle, pack_id: String, outfit: String, emotion: String, image_bytes: Vec<u8>) -> Result<UploadPortraitResult, String> {
+    let pack_id = sanitize_pack_id(&pack_id);
+    if pack_id.is_empty() { return Err("无效的角色包 ID。".to_string()); }
+
+    let outfit = sanitize_asset_id(&outfit);
+    if outfit.is_empty() { return Err("服装 ID 不能为空。".to_string()); }
+
+    let emotion = sanitize_asset_id(&emotion);
+    if emotion.is_empty() { return Err("表情 ID 不能为空。".to_string()); }
+
+    if image_bytes.is_empty() { return Err("图片数据为空。".to_string()); }
+    if image_bytes.len() > 20 * 1024 * 1024 {
+        return Err("图片大小不能超过 20 MB。".to_string());
+    }
+
+    /* detect format from magic bytes, reject unsupported types */
+    let extension = detect_image_extension(&image_bytes)?;
+
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    if !pack_dir.is_dir() { return Err(format!("角色包 {pack_id} 不存在。")); }
+
+    let (_asset_root, characters_dir) = pack_characters_dir(&pack_dir)?;
+    let outfit_dir = safe_child_path(&characters_dir, &outfit)?;
+
+    /* create outfit directory if needed */
+    fs::create_dir_all(&outfit_dir).map_err(|error| error.to_string())?;
+
+    /* remove existing image with the same emotion but different extension */
+    for existing in ["png", "jpg", "jpeg", "webp"] {
+        let old_path = outfit_dir.join(format!("{emotion}.{existing}"));
+        if old_path.is_file() && existing != extension {
+            fs::remove_file(&old_path).map_err(|error| error.to_string())?;
+        }
+    }
+
+    let file_name = format!("{emotion}.{extension}");
+    let target_path = outfit_dir.join(&file_name);
+    write_bytes_atomic(&target_path, &image_bytes)?;
+
+    let size_bytes = image_bytes.len() as u64;
+
+    Ok(UploadPortraitResult {
+        ok: true,
+        outfit,
+        emotion,
+        path: target_path.to_string_lossy().to_string(),
+        size_bytes,
+    })
+}
+
+/// Detect image file extension from magic bytes.
+/// Supported: png, jpg/jpeg, webp.
+fn detect_image_extension(bytes: &[u8]) -> Result<String, String> {
+    if bytes.len() < 12 { return Err("图片数据不完整。".to_string()); }
+
+    if bytes[0..4] == [0x89, b'P', b'N', b'G'] { return Ok("png".to_string()); }
+    if bytes[0..2] == [0xFF, 0xD8] { return Ok("jpg".to_string()); }
+    if bytes.len() >= 12
+        && bytes[0..4] == [b'R', b'I', b'F', b'F']
+        && bytes[8..12] == [b'W', b'E', b'B', b'P']
+    {
+        return Ok("webp".to_string());
+    }
+    Err("不支持的图片格式。仅支持 PNG、JPEG、WebP。".to_string())
+}
+
+#[tauri::command]
+fn list_pack_assets(pack_id: String) -> Result<Vec<CharacterPackOutfitAsset>, String> {
+    let pack_id = sanitize_pack_id(&pack_id);
+    if pack_id.is_empty() { return Err("无效的角色包 ID。".to_string()); }
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    if !pack_dir.is_dir() { return Err(format!("角色包 {pack_id} 不存在。")); }
+    let asset_root = read_pack_asset_root(&pack_dir)?;
+    Ok(list_character_pack_outfits(&pack_dir, &asset_root))
+}
+
+#[tauri::command]
+fn export_character_pack(app: AppHandle, pack_id: String) -> Result<ExportedWorkspaceFile, String> {
+    let pack_id = sanitize_pack_id(&pack_id);
+    if pack_id.is_empty() { return Err("无效的角色包 ID。".to_string()); }
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    if !pack_dir.is_dir() { return Err(format!("角色包 {pack_id} 不存在。")); }
+
+    let zip_name = format!("{pack_id}.zip");
+    let export_dir = resolve_desktop_export_dir(&app)?;
+    fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
+    let target_path = unique_child_file_path(&export_dir, &zip_name);
+
+    let file = fs::File::create(&target_path).map_err(|error| error.to_string())?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let pack_prefix = pack_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&pack_id)
+        .to_string();
+
+    fn walk_zip(
+        writer: &mut zip::ZipWriter<fs::File>,
+        base: &Path,
+        prefix: &str,
+        options: zip::write::SimpleFileOptions,
+    ) -> Result<(), String> {
+        if !base.is_dir() { return Ok(()); }
+        for entry in fs::read_dir(base).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            let relative = format!("{prefix}/{name}");
+
+            if path.is_dir() {
+                writer
+                    .add_directory(&relative, options)
+                    .map_err(|e| e.to_string())?;
+                walk_zip(writer, &path, &relative, options)?;
+            } else if path.is_file() {
+                writer
+                    .start_file(&relative, options)
+                    .map_err(|e| e.to_string())?;
+                let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+                writer.write_all(&bytes).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
+    writer
+        .add_directory(&pack_prefix, options)
+        .map_err(|e| e.to_string())?;
+    walk_zip(&mut writer, &pack_dir, &pack_prefix, options)?;
+
+    let file = writer.finish().map_err(|e| e.to_string())?;
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+
+    Ok(ExportedWorkspaceFile {
+        ok: true,
+        path: target_path.to_string_lossy().to_string(),
+        file_name: zip_name,
+        size_bytes: Some(metadata.len()),
+    })
+}
+
+#[tauri::command]
+fn delete_portrait_image(pack_id: String, outfit: String, emotion: String) -> Result<Vec<CharacterPackOutfitAsset>, String> {
+    let pack_id = sanitize_pack_id(&pack_id);
+    if pack_id.is_empty() { return Err("无效的角色包 ID。".to_string()); }
+    let outfit = sanitize_asset_id(&outfit);
+    if outfit.is_empty() { return Err("服装 ID 不能为空。".to_string()); }
+    let emotion = sanitize_asset_id(&emotion);
+    if emotion.is_empty() { return Err("表情 ID 不能为空。".to_string()); }
+
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    let (asset_root, characters_dir) = pack_characters_dir(&pack_dir)?;
+    let outfit_dir = safe_child_path(&characters_dir, &outfit)?;
+
+    let mut deleted = false;
+    for ext in ["png", "jpg", "jpeg", "webp"] {
+        let path = outfit_dir.join(format!("{emotion}.{ext}"));
+        if path.is_file() {
+            fs::remove_file(&path).map_err(|error| error.to_string())?;
+            deleted = true;
+        }
+    }
+    if !deleted { return Err(format!("表情 {emotion} 在服装 {outfit} 中不存在。")); }
+
+    /* clean up empty outfit directory */
+    if outfit_dir.is_dir() && list_character_pack_emotions(&outfit_dir).is_empty() {
+        let _ = fs::remove_dir(&outfit_dir);
+    }
+
+    Ok(list_character_pack_outfits(&pack_dir, &asset_root))
+}
+
+#[tauri::command]
+fn rename_portrait_emotion(pack_id: String, outfit: String, old_emotion: String, new_emotion: String) -> Result<Vec<CharacterPackOutfitAsset>, String> {
+    let pack_id = sanitize_pack_id(&pack_id);
+    if pack_id.is_empty() { return Err("无效的角色包 ID。".to_string()); }
+    let outfit = sanitize_asset_id(&outfit);
+    if outfit.is_empty() { return Err("服装 ID 不能为空。".to_string()); }
+    let old_emotion = sanitize_asset_id(&old_emotion);
+    if old_emotion.is_empty() { return Err("原表情 ID 不能为空。".to_string()); }
+    let new_emotion = sanitize_asset_id(&new_emotion);
+    if new_emotion.is_empty() { return Err("新表情 ID 不能为空。".to_string()); }
+    if old_emotion == new_emotion { return Err("新旧表情 ID 相同。".to_string()); }
+
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    let (asset_root, characters_dir) = pack_characters_dir(&pack_dir)?;
+    let outfit_dir = safe_child_path(&characters_dir, &outfit)?;
+
+    let mut renamed = false;
+    for ext in ["png", "jpg", "jpeg", "webp"] {
+        let old_path = outfit_dir.join(format!("{old_emotion}.{ext}"));
+        let new_path = outfit_dir.join(format!("{new_emotion}.{ext}"));
+        if old_path.is_file() && !new_path.exists() {
+            fs::rename(&old_path, &new_path).map_err(|error| error.to_string())?;
+            renamed = true;
+        }
+    }
+    if !renamed { return Err(format!("表情 {old_emotion} 不存在或 {new_emotion} 已占用。")); }
+
+    Ok(list_character_pack_outfits(&pack_dir, &asset_root))
+}
+
+#[tauri::command]
+fn rename_portrait_outfit(pack_id: String, old_outfit: String, new_outfit: String) -> Result<Vec<CharacterPackOutfitAsset>, String> {
+    let pack_id = sanitize_pack_id(&pack_id);
+    if pack_id.is_empty() { return Err("无效的角色包 ID。".to_string()); }
+    let old_outfit = sanitize_asset_id(&old_outfit);
+    if old_outfit.is_empty() { return Err("原服装 ID 不能为空。".to_string()); }
+    let new_outfit = sanitize_asset_id(&new_outfit);
+    if new_outfit.is_empty() { return Err("新服装 ID 不能为空。".to_string()); }
+    if old_outfit == new_outfit { return Err("新旧服装 ID 相同。".to_string()); }
+
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    let (asset_root, chars_dir) = pack_characters_dir(&pack_dir)?;
+    let old_dir = safe_child_path(&chars_dir, &old_outfit)?;
+    let new_dir = safe_child_path(&chars_dir, &new_outfit)?;
+
+    if !old_dir.is_dir() { return Err(format!("服装 {old_outfit} 不存在。")); }
+    if new_dir.exists() { return Err(format!("服装 {new_outfit} 已存在。")); }
+
+    fs::rename(&old_dir, &new_dir).map_err(|error| error.to_string())?;
+    Ok(list_character_pack_outfits(&pack_dir, &asset_root))
+}
+
+#[tauri::command]
+fn set_default_emotion(pack_id: String, field: String, value: String) -> Result<String, String> {
+    let pack_id = sanitize_pack_id(&pack_id);
+    if pack_id.is_empty() { return Err("无效的角色包 ID。".to_string()); }
+    if !["default_emotion", "default_outfit", "music_emotion"].contains(&field.as_str()) {
+        return Err(format!("不允许修改字段：{field}"));
+    }
+    let value = sanitize_asset_id(&value);
+    if value.is_empty() { return Err(format!("{field} 的值不能为空。")); }
+
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    let character_path = pack_dir.join("character.json");
+    if !character_path.is_file() { return Err(format!("{pack_id} 缺少 character.json。")); }
+
+    let raw = fs::read_to_string(&character_path).map_err(|error| error.to_string())?;
+    let mut profile: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|error| format!("character.json 无效：{error}"))?;
+
+    if let Some(appearance) = profile.get_mut("appearance").and_then(|v| v.as_object_mut()) {
+        appearance.insert(field.clone(), serde_json::Value::String(value.clone()));
+    }
+
+    /* validate */
+    let _validated: CharacterPackJson = serde_json::from_value(profile.clone())
+        .map_err(|error| format!("更新后的角色数据无效：{error}"))?;
+
+    /* atomic write */
+    let updated = serde_json::to_string_pretty(&profile)
+        .map_err(|error| format!("序列化失败：{error}"))?;
+    write_text_atomic(&character_path, &updated)?;
+
+    Ok(format!("{field} → {value}"))
+}
+
+#[tauri::command]
+fn save_calibration(pack_id: String, outfit_id: String, layout: serde_json::Value) -> Result<String, String> {
+    let pack_id = sanitize_pack_id(&pack_id);
+    if pack_id.is_empty() { return Err("无效的角色包 ID。".to_string()); }
+    let outfit_id = sanitize_asset_id(&outfit_id);
+    if outfit_id.is_empty() { return Err("服装 ID 不能为空。".to_string()); }
+
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    let character_path = pack_dir.join("character.json");
+    if !character_path.is_file() { return Err(format!("{pack_id} 缺少 character.json。")); }
+
+    let raw = fs::read_to_string(&character_path).map_err(|error| error.to_string())?;
+    let mut profile: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|error| format!("character.json 无效：{error}"))?;
+
+    /* ensure layout.outfits exists */
+    if profile.get("layout").is_none() {
+        profile["layout"] = serde_json::json!({ "outfits": {} });
+    }
+    if profile["layout"].get("outfits").is_none() {
+        profile["layout"]["outfits"] = serde_json::json!({});
+    }
+    profile["layout"]["outfits"][&outfit_id] = layout;
+
+    /* validate */
+    let _validated: CharacterPackJson = serde_json::from_value(profile.clone())
+        .map_err(|error| format!("更新后的角色数据无效：{error}"))?;
+
+    /* atomic write */
+    let updated = serde_json::to_string_pretty(&profile)
+        .map_err(|error| format!("序列化失败：{error}"))?;
+    write_text_atomic(&character_path, &updated)?;
+
+    Ok(format!("{pack_id}/{outfit_id} 校准已保存"))
+}
+
+/// Read the `asset_root` from a pack's character.json. Falls back to "assets".
+fn read_pack_asset_root(pack_dir: &Path) -> Result<String, String> {
+    let character_path = pack_dir.join("character.json");
+    if !character_path.is_file() {
+        return Err(format!("{} 缺少 character.json。", pack_dir.display()));
+    }
+    let raw = fs::read_to_string(&character_path).map_err(|error| error.to_string())?;
+    let character: CharacterPackJson = serde_json::from_str(&raw)
+        .map_err(|error| format!("character.json 无效：{error}"))?;
+    Ok(character.assets.asset_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("assets")
+        .to_string())
+}
+
+fn pack_characters_dir(pack_dir: &Path) -> Result<(String, PathBuf), String> {
+    let asset_root = read_pack_asset_root(pack_dir)?;
+    let asset_root_dir = safe_child_path(pack_dir, &asset_root)?;
+    let characters_dir = safe_child_path(&asset_root_dir, "characters")?;
+    Ok((asset_root, characters_dir))
+}
+
+fn sanitize_asset_id(value: &str) -> String {
+    // Match JS sanitizeAssetId: replace path-traversal chars and whitespace with _,
+    // strip leading/trailing dots/underscores, but preserve Unicode (Chinese/Japanese).
+    let clean: String = value
+        .trim()
+        .chars()
+        .map(|ch| match ch {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            ch if ch.is_whitespace() => '_',
+            _ => ch,
+        })
+        .collect();
+    clean.trim_matches(|ch| ch == '_' || ch == '.').to_string()
+}
+
+/// Generate the default `persona.md` content for a character pack.
+/// This is regenerated on every save until a manual-editing feature is added.
+fn persona_md_text(name: &str, user_title: &str) -> String {
+    format!(
+        "# {name} Persona\n\n\
+         ## Voice\n\n\
+         Write how {name} speaks, what tone they use, and how they address {user_title}.\n\n\
+         ## Relationship Boundary\n\n\
+         Describe the relationship, allowed topics, and things the character should avoid.\n\n\
+         ## World Notes\n\n\
+         Add background, preferences, habits, and repeated motifs here.\n\n\
+         The desktop-pet backend reads this file for the selected character pack. \
+         Keep the notes concise and usable as prompt reference.\n",
+    )
+}
+
+/// Recursively merge `source` into `target` for matching JSON objects.
+/// Arrays and primitives are replaced; objects are merged key-by-key.
+fn deep_merge_json(target: &mut serde_json::Value, source: &serde_json::Value) {
+    if let (Some(target_map), Some(source_map)) = (target.as_object_mut(), source.as_object()) {
+        for (key, source_value) in source_map {
+            match target_map.get_mut(key) {
+                Some(target_value) if target_value.is_object() && source_value.is_object() => {
+                    deep_merge_json(target_value, source_value);
+                }
+                _ => {
+                    target_map.insert(key.clone(), source_value.clone());
+                }
+            }
+        }
+    }
 }
 
 fn read_lyric_asset(audio_path: &PathBuf, explicit_path: Option<&str>) -> Option<(String, String)> {
@@ -1087,6 +1687,23 @@ fn creator_kit_characters_dir() -> Result<PathBuf, String> {
     Ok(characters_dir)
 }
 
+fn creator_kit_template_path() -> Result<PathBuf, String> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .ok_or_else(|| "无法定位项目根目录。".to_string())?;
+    let template_path = repo_root
+        .join("desktop_pet_creator_kit")
+        .join("templates")
+        .join("character_pack")
+        .join("character.json");
+    if !template_path.is_file() {
+        return Err("找不到角色包模板文件。".to_string());
+    }
+    Ok(template_path)
+}
+
 fn open_path_in_file_manager(path: &Path) -> Result<(), String> {
     #[cfg(windows)]
     let mut command = {
@@ -1280,6 +1897,24 @@ fn require_optional_object(value: &serde_json::Value, label: &str) -> Result<(),
     } else {
         Err(format!("{label} 必须是对象。"))
     }
+}
+
+fn write_text_atomic(path: &Path, text: &str) -> Result<(), String> {
+    write_bytes_atomic(path, text.as_bytes())
+}
+
+fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("无法定位写入目录：{}", path.display()))?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("无效文件名：{}", path.display()))?;
+    let tmp_path = parent.join(format!(".{file_name}.tmp"));
+    fs::write(&tmp_path, bytes).map_err(|error| error.to_string())?;
+    fs::rename(&tmp_path, path).map_err(|error| error.to_string())
 }
 
 fn safe_child_path(base: &Path, relative: &str) -> Result<PathBuf, String> {
@@ -1520,9 +2155,12 @@ fn close_pet_app(app: AppHandle) -> Result<(), String> {
 }
 
 fn settings_window_url() -> &'static str {
-    match std::env::var("AKANE_CONTROL_CENTER_LAB") {
-        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => "control-center-lab.html",
-        _ => "settings.html",
+    // The control center is now the default settings entry. Keep the old
+    // settings.html behind an explicit rollback flag so agents do not drift
+    // back to the legacy settings surface while implementing new features.
+    match std::env::var("AKANE_LEGACY_SETTINGS") {
+        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => "settings.html",
+        _ => "control-center-lab.html",
     }
 }
 
@@ -1609,6 +2247,16 @@ fn get_window_geometry(window: Window) -> Result<WindowGeometry, String> {
         width: size.width,
         height: size.height,
     })
+}
+
+#[tauri::command]
+fn resize_pet_window(window: Window, width: f64, height: f64) -> Result<(), String> {
+    if width < 180.0 || height < 180.0 || width > 1200.0 || height > 1200.0 {
+        return Err(format!("窗口尺寸超出范围：{width}x{height}"));
+    }
+    window
+        .set_size(Size::Logical(LogicalSize::new(width, height)))
+        .map_err(|error| error.to_string())
 }
 
 fn set_scaled_size(window: &Window, scale: f64) -> Result<(), String> {
@@ -2076,7 +2724,18 @@ fn main() {
             open_settings_window,
             open_workspace_window,
             open_workshop_window,
-            get_window_geometry
+            get_window_geometry,
+            save_character_pack,
+            create_character_pack,
+            upload_portrait_image,
+            list_pack_assets,
+            delete_portrait_image,
+            rename_portrait_emotion,
+            rename_portrait_outfit,
+            set_default_emotion,
+            save_calibration,
+            resize_pet_window,
+            export_character_pack
         ])
         .plugin(tauri_plugin_http::init())
         .run(tauri::generate_context!())

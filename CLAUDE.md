@@ -58,7 +58,15 @@
 
 - 桌宠角色工坊 V1：`docs/desktop_pet_character_workshop_v1/README.md`
 - 这条主线以 `desktop_pet_next` 为新桌宠主线，旧 Electron `desktop_pet` 冻结，仅保留当前可用状态。
-- Claude Code 接手桌宠角色自定义、提示词配置、记忆隔离、立绘校准相关任务时，先读上述目录，再开始改代码。
+- 设置窗口默认使用 `control-center-lab.html`；旧 `settings.html` 只作为 `AKANE_LEGACY_SETTINGS=1` 的回退入口。
+
+## Agent 护栏
+
+- 接手桌宠角色自定义、提示词配置、记忆隔离、立绘校准相关任务时，先读 `docs/desktop_pet_character_workshop_v1/`。
+- 每轮只做一个可验证切片；不要同时推进 UI、数据库迁移、资产导入和提示词链路。
+- Rust 写入角色包文件时使用临时文件再 rename；所有从角色包读取出的相对路径必须走 `safe_child_path`。
+- 新增前端运行时引用必须来自现有模块或明确导入，不能依赖臆造的全局变量。
+- 审查发现高风险问题时先停在 repair pass，不要继续叠新功能。
 
 ## 项目速查
 

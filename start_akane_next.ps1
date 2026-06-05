@@ -159,10 +159,10 @@ Write-Host "[INFO] Project: $projectDir"
 Write-Host "[INFO] Backend: http://127.0.0.1:$BackendPort/"
 
 if (-not $LegacySettings) {
-    $env:AKANE_CONTROL_CENTER_LAB = "1"
+    Remove-Item Env:\AKANE_LEGACY_SETTINGS -ErrorAction SilentlyContinue
     Write-Host "[INFO] Settings center: control-center-lab.html"
 } else {
-    Remove-Item Env:\AKANE_CONTROL_CENTER_LAB -ErrorAction SilentlyContinue
+    $env:AKANE_LEGACY_SETTINGS = "1"
     Write-Host "[INFO] Settings center: legacy settings.html"
 }
 
@@ -206,8 +206,10 @@ if (-not $SkipDesktop) {
         Ensure-NpmInstall -DesktopDir $desktopDir
         Push-Location -LiteralPath $desktopDir
         try {
-            if ($ControlCenterLab -or -not $LegacySettings) {
-                $env:AKANE_CONTROL_CENTER_LAB = "1"
+            if ($LegacySettings) {
+                $env:AKANE_LEGACY_SETTINGS = "1"
+            } else {
+                Remove-Item Env:\AKANE_LEGACY_SETTINGS -ErrorAction SilentlyContinue
             }
             Write-Host "[INFO] Starting Akane Next in Tauri dev mode..."
             & npm run tauri -- dev

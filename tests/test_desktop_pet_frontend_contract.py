@@ -254,9 +254,31 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn(".inner_size(1080.0, 720.0)", tauri_source)
         self.assertIn(".min_inner_size(760.0, 560.0)", tauri_source)
         self.assertIn(".decorations(false)", tauri_source)
+        self.assertIn("AKANE_LEGACY_SETTINGS", tauri_source)
+        self.assertIn('_ => "control-center-lab.html"', tauri_source)
         self.assertIn("core:window:allow-close", tauri_capabilities)
         self.assertIn("core:window:allow-minimize", tauri_capabilities)
         self.assertIn("core:window:allow-toggle-maximize", tauri_capabilities)
+
+    def test_next_character_workshop_repair_contracts(self) -> None:
+        main_source = _read("desktop_pet_next/src/main.js")
+        workshop_html = _read("desktop_pet_next/workshop.html")
+        tauri_source = _read("desktop_pet_next/src-tauri/src/main.rs")
+
+        self.assertNotIn("characterPackRegistry", main_source)
+        self.assertIn("const profile = getActiveCharacterProfile()", main_source)
+        self.assertIn("visualRenderer.setLayout(null)", main_source)
+
+        main_close = workshop_html.rfind("</main>")
+        self.assertGreater(main_close, 0)
+        self.assertLess(workshop_html.index('data-tab-panel="portraits"'), main_close)
+        self.assertLess(workshop_html.index('data-tab-panel="calibration"'), main_close)
+
+        self.assertIn('entry("persona_form".to_string())', tauri_source)
+        self.assertIn("fn pack_characters_dir", tauri_source)
+        self.assertIn("safe_child_path(&asset_root_dir, \"characters\")", tauri_source)
+        self.assertNotIn('pack_dir.join(&asset_root).join("characters")', tauri_source)
+        self.assertNotIn('if clean.is_empty() { "default".to_string() }', tauri_source)
 
     def test_next_visual_renderer_has_static_portrait_adapter_boundary(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")

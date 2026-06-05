@@ -11,8 +11,10 @@ $ExePath = Join-Path $Root "src-tauri\target\release\akane_desktop_pet_next.exe"
 
 Set-Location $Root
 
-if (-not $LegacySettings) {
-  $env:AKANE_CONTROL_CENTER_LAB = "1"
+if ($LegacySettings) {
+  $env:AKANE_LEGACY_SETTINGS = "1"
+} else {
+  Remove-Item Env:\AKANE_LEGACY_SETTINGS -ErrorAction SilentlyContinue
 }
 
 if ($Doctor) {
