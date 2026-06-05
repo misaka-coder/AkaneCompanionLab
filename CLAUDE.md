@@ -54,6 +54,12 @@
 - 不提交：`.env`、`runtime_logs`、`users_data`、`*.db`、`node_modules`、`dist`/`target` 缓存。
 - 如果工作区已有大量改动，先做 checkpoint，再进行基础设施类改造。
 
+## 当前重点任务入口
+
+- 桌宠角色工坊 V1：`docs/desktop_pet_character_workshop_v1/README.md`
+- 这条主线以 `desktop_pet_next` 为新桌宠主线，旧 Electron `desktop_pet` 冻结，仅保留当前可用状态。
+- Claude Code 接手桌宠角色自定义、提示词配置、记忆隔离、立绘校准相关任务时，先读上述目录，再开始改代码。
+
 ## 项目速查
 
 | 目录 | 用途 |
