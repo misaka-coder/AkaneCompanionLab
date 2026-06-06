@@ -47,6 +47,9 @@ export function createControlCenterActionPayloadFromDataset(dataset = {}, page =
   if (dataset.payloadProviderId !== undefined) {
     payload.providerId = String(dataset.payloadProviderId).trim();
   }
+  if (dataset.payloadWorkflowId !== undefined) {
+    payload.workflowId = String(dataset.payloadWorkflowId).trim();
+  }
   if (dataset.payloadEndpoint !== undefined) {
     payload.endpoint = String(dataset.payloadEndpoint).trim();
   }

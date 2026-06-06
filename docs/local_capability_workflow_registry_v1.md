@@ -32,6 +32,11 @@ Phase 3B workflow binding config skeleton is implemented on the backend. It can
 save and validate a safe binding reference for `workshop.portrait.cutout`
 (`workflowPath` plus required slot mapping), but it still does not read ComfyUI
 workflow JSON, validate node IDs, or execute the workflow.
+Phase 3C adds a minimal control-center workflow binding entrance. The abilities
+page can expand the "透明背景处理" workflow card, edit the safe workflow
+reference plus two user-facing slot labels, save through the workflow config
+route, and run config-level validation. It still does not add an "auto cutout"
+execution button.
 
 Files:
 
@@ -106,6 +111,12 @@ Files:
     "透明背景处理", with user-facing status text like "未配置" or "待绑定".
     It does not expose workflow ids, slot ids, model paths, or node details in
     the normal ability dashboard.
+  - Routes `abilities.workflow.config.save` and
+    `abilities.workflow.validate` to
+    `/capabilities/workflows/{workflowId}/config` and
+    `/capabilities/workflows/{workflowId}/validate`.
+  - Mock sources return `not-implemented` for workflow write actions so the UI
+    cannot fake a saved binding.
   - Routes `abilities.provider.config.save` and
     `abilities.provider.healthCheck` to
     `/capabilities/providers/{providerId}/config` and
@@ -115,6 +126,10 @@ Files:
 - `desktop_pet_next/src/control-center-lab.js`
   - Renders module status labels from the catalog-derived dashboard model.
   - Renders workflow status badges/details for read-only workflow entries.
+  - Adds a compact workflow binding drawer for catalog workflow entries. It
+    shows `workflowPath`, input slot, output slot, and enable binding controls.
+    The collapsed card remains user-facing and does not expose raw internal slot
+    ids.
   - Renders a compact "本地能力环境" section only when configurable provider
     catalog entries exist. The default view shows provider name, purpose, status,
     endpoint summary, and next-step reason; endpoint editing appears only after a
@@ -126,8 +141,14 @@ Files:
     `abilities.provider.config.open` (client-handled),
     `abilities.provider.config.save` (backend-route), and
     `abilities.provider.healthCheck` (backend-route).
+  - Adds workflow binding actions:
+    `abilities.workflow.config.open` (client-handled),
+    `abilities.workflow.config.save` (backend-route), and
+    `abilities.workflow.validate` (backend-route).
 - `desktop_pet_next/src/control-center/action-surface-contract.js`
   - Classifies provider panel open as client-handled and save/health-check as
+    bridged backend-route actions.
+  - Classifies workflow panel open as client-handled and save/validate as
     bridged backend-route actions.
 - `desktop_pet_next/scripts/control-center-runtime-probe.mjs`
   - Verifies optional catalog enrichment, catalog failure degradation, and
@@ -136,6 +157,8 @@ Files:
 - `desktop_pet_next/scripts/control-center-action-bridge-smoke.mjs`
   - Verifies provider actions use dedicated capabilities routes, not the inert
     `/control-center/actions/{actionId}` endpoint.
+  - Verifies workflow binding actions also use dedicated capabilities routes,
+    not the inert `/control-center/actions/{actionId}` endpoint.
 
 Verification:
 
@@ -2036,6 +2059,24 @@ Implemented Phase 3B:
   warning tone and explanatory detail, not a runnable ready state.
 - No ComfyUI prompt submission, workflow JSON parsing, node id validation, model
   path picker, asset write, or workshop "自动抠图" button exists yet.
+
+Implemented Phase 3C:
+
+- The abilities page can expand the "透明背景处理" workflow card.
+- The expanded panel exposes only:
+  - `workflowPath`
+  - input slot label
+  - output slot label
+  - enable binding toggle
+- Save and validate use real backend-route actions:
+  - `abilities.workflow.config.save`
+  - `abilities.workflow.validate`
+- Mock source returns `not-implemented`, so the UI cannot fake a saved workflow.
+- The collapsed workflow card stays simple and user-facing. It may keep the safe
+  public catalog workflow id for routing, but it does not display raw ComfyUI
+  workflow ids, internal required slot ids, model paths, node ids, or secrets.
+- This is still configuration only. It does not create the Phase 4 workshop
+  "自动抠图" action.
 
 Acceptance:
 

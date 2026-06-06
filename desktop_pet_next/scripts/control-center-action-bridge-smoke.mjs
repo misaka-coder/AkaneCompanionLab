@@ -398,6 +398,12 @@ for (const [label, expected] of labelCases) {
   );
   assert.equal(providerPayload.providerId, "provider.comfyui.local", "payload helper should keep providerId");
   assert.equal(providerPayload.endpoint, "http://127.0.0.1:8188", "payload helper should keep provider endpoint");
+
+  const workflowPayload = createControlCenterActionPayloadFromDataset(
+    { payloadWorkflowId: "workflow.workshop.portrait.cutout" },
+    "abilities"
+  );
+  assert.equal(workflowPayload.workflowId, "workflow.workshop.portrait.cutout", "payload helper should keep workflowId");
 }
 
 assert.ok(afterActionLog.length >= bridgedActionCases.length, "onAfterAction should receive refresh results");
@@ -588,6 +594,66 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
   const saveBody = JSON.parse(fetchCalls[0].options.body);
   assert.deepEqual(saveBody, { enabled: true, endpoint: "http://127.0.0.1:8188/ui?token=secret" }, "provider save should only send enabled and endpoint");
   assert.equal("token" in saveBody, false, "provider save must not forward arbitrary token fields");
+}
+
+// Workflow binding actions are bridged to dedicated backend routes, not /control-center/actions.
+{
+  const fetchCalls = [];
+  const backendSource = createBackendControlCenterSource({
+    baseUrl: "http://workflow-action-test",
+    sessionId: "desktop",
+    profileUserId: "master",
+    fetchImpl: async (url, options = {}) => {
+      fetchCalls.push({ url: String(url), options });
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({
+          ok: true,
+          status: String(url).includes("validate") ? "validated_config" : "saved",
+          workflowId: "workflow.workshop.portrait.cutout",
+          executionReady: false,
+          refresh: true
+        })
+      };
+    }
+  });
+
+  const saveResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave, {
+    workflowId: "workflow.workshop.portrait.cutout",
+    enabled: true,
+    workflowPath: "workflows/comfyui/portrait_cutout.json",
+    inputImageSlot: "input_image",
+    outputImageSlot: "output_image",
+    token: "must-not-send"
+  });
+  assert.equal(saveResult.status, "saved", "workflow config save should hit workflow config route");
+  assert.equal(saveResult.refresh, true, "workflow config save should request refresh");
+
+  const validateResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate, {
+    workflowId: "workflow.workshop.portrait.cutout"
+  });
+  assert.equal(validateResult.status, "validated_config", "workflow validate should hit workflow validate route");
+
+  assert.equal(fetchCalls.length, 2, "workflow save/validate should make two backend requests");
+  assert.ok(fetchCalls[0].url.includes("/capabilities/workflows/workflow.workshop.portrait.cutout/config"), "workflow save should use workflow config route");
+  assert.ok(fetchCalls[1].url.includes("/capabilities/workflows/workflow.workshop.portrait.cutout/validate"), "workflow validate should use workflow validate route");
+  assert.equal(fetchCalls.some((call) => call.url.includes("/control-center/actions")), false, "workflow actions must not use inert control-center action endpoint");
+  const saveBody = JSON.parse(fetchCalls[0].options.body);
+  assert.deepEqual(
+    saveBody,
+    {
+      enabled: true,
+      workflowPath: "workflows/comfyui/portrait_cutout.json",
+      slotMapping: {
+        input_image_handle: "input_image",
+        output_image_handle: "output_image"
+      }
+    },
+    "workflow save should only send enabled, workflowPath, and safe slot mapping"
+  );
+  assert.equal("token" in saveBody, false, "workflow save must not forward arbitrary token fields");
 }
 
 // ---------- deferred voice actions ----------
@@ -942,6 +1008,13 @@ for (const actionId of deferredAbilitiesActionIds) {
   );
   assert.equal(providerMockResult.status, "not-implemented", "mock source must not fake provider config save");
   assert.equal(providerMockResult.refresh, false, "mock provider config save should not request refresh");
+
+  const workflowMockResult = await mockAbRouter.run(
+    CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave,
+    { workflowId: "workflow.workshop.portrait.cutout", workflowPath: "workflows/comfyui/portrait_cutout.json", enabled: true }
+  );
+  assert.equal(workflowMockResult.status, "not-implemented", "mock source must not fake workflow config save");
+  assert.equal(workflowMockResult.refresh, false, "mock workflow config save should not request refresh");
 }
 
 // ---------- deferred advanced + shell actions ----------
@@ -1659,10 +1732,10 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
 
 const clientHandledActionIds = new Set(CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS);
 
-// Client-handled action surface contract: all 4 should be in the surface contract with client-handled status
+// Client-handled action surface contract: all 5 should be in the surface contract with client-handled status
 {
   const clientHandledSurfaces = listControlCenterActionSurfaces(CONTROL_CENTER_ACTION_SURFACE_STATUS.clientHandled);
-  assert.equal(clientHandledSurfaces.length, 4, "should have 4 client-handled surfaces");
+  assert.equal(clientHandledSurfaces.length, 5, "should have 5 client-handled surfaces");
   for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
     const surface = clientHandledSurfaces.find((s) => s.actionId === actionId);
     assert.ok(surface, `${actionId} should appear in client-handled surfaces`);
@@ -1705,6 +1778,10 @@ for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
       handlerLog.push({ actionId: CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen, payload });
       return { ok: true, refresh: false };
     },
+    [CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigOpen]: (payload) => {
+      handlerLog.push({ actionId: CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigOpen, payload });
+      return { ok: true, refresh: false };
+    },
     [CONTROL_CENTER_ACTIONS.advancedLogsMore]: (payload) => {
       handlerLog.push({ actionId: CONTROL_CENTER_ACTIONS.advancedLogsMore, payload });
       return { ok: true, refresh: false };
@@ -1715,6 +1792,7 @@ for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
     { id: CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails, payload: { featureId: "activeWindow" } },
     { id: CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll, payload: { page: "abilities" } },
     { id: CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen, payload: { page: "abilities", providerId: "provider.comfyui.local" } },
+    { id: CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigOpen, payload: { page: "abilities", workflowId: "workflow.workshop.portrait.cutout" } },
     { id: CONTROL_CENTER_ACTIONS.advancedLogsMore, payload: { page: "advanced" } }
   ];
 
@@ -1726,7 +1804,7 @@ for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
     assert.notEqual(result.status, "failed", `${testCase.id} should not be failed`);
   }
 
-  assert.equal(handlerLog.length, 4, "all 4 client-handled handlers should be called");
+  assert.equal(handlerLog.length, 5, "all 5 client-handled handlers should be called");
   assert.equal(emitLog.length, beforeEmitLen, "client-handled actions should NOT emit");
   assert.equal(invokeLog.length, beforeInvokeLen, "client-handled actions should NOT invoke");
 }
@@ -1837,7 +1915,7 @@ console.log(
     `${directNotImplementedCases.length} not-implemented checks, ${labelCases.length} interval labels, ` +
     "4 hardening checks, 4 window action checks, 3 voice setting checks, 1 character preview action check, 5 advanced action checks, " +
     `${deferredSurfaces.length} deferred surface checks, 2 character warning checks, 3 screen vision control checks, ` +
-    "6 data-* payload helper checks, " +
+    "7 data-* payload helper checks, " +
     "6 overview music control checks, 9 overview voice checks, 17 overview sense checks, " +
     `${deferredVoiceActionIds.length} deferred voice action ids, ` +
     `${deferredMusicActionIds.length} deferred music action ids, 4 playlist id checks, 9 payload shape checks, 4 voice/music contract field checks, ` +
@@ -1849,6 +1927,6 @@ console.log(
     "2 snapshot valid path checks, 4 snapshot fallback checks, " +
     "4 character resources checks, 13 character consistency checks, 2 abilities modules checks, 4 field degradation checks, " +
     "4 abilities-from-tools checks, 4 advanced metrics checks, " +
-    "4 client-handled surface checks, 4 client-handled router tests, 4 client-handled dataSource not-implemented, " +
+    "5 client-handled surface checks, 5 client-handled router tests, 5 client-handled dataSource not-implemented, " +
     "3 bare-router not-implemented, 2 display-only action checks, 3 forbidden action checks, 1 exitPet safety check"
 );

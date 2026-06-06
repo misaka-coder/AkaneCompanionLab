@@ -107,7 +107,9 @@ const state = {
   advancedCoreSwitches: buildAdvancedCoreSwitchState(advancedPage.coreSettings),
   expandedPerceptionCard: null,
   activeProviderConfigId: "",
+  activeWorkflowConfigId: "",
   providerActionStatus: {},
+  workflowActionStatus: {},
   showAllAbilityCalls: false,
   showAllDiagnosticLogs: false
 };
@@ -253,6 +255,10 @@ function syncProviderInteractiveState() {
   if (state.activeProviderConfigId && !providers.some((item) => item.id === state.activeProviderConfigId)) {
     state.activeProviderConfigId = "";
   }
+  const workflows = Array.isArray(abilitiesPage.workflows) ? abilitiesPage.workflows : [];
+  if (state.activeWorkflowConfigId && !workflows.some((item) => item.workflowId === state.activeWorkflowConfigId || item.id === state.activeWorkflowConfigId)) {
+    state.activeWorkflowConfigId = "";
+  }
 }
 
 function renderShell() {
@@ -371,6 +377,26 @@ function bindEvents() {
       void runProviderConfigAction(
         providerHealthButton,
         CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck
+      );
+      return;
+    }
+
+    const workflowSaveButton = event.target.closest("[data-workflow-config-save]");
+    if (workflowSaveButton) {
+      if (workflowSaveButton.dataset.actionUnavailable === "true") return;
+      void runWorkflowConfigAction(
+        workflowSaveButton,
+        CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave
+      );
+      return;
+    }
+
+    const workflowValidateButton = event.target.closest("[data-workflow-validate]");
+    if (workflowValidateButton) {
+      if (workflowValidateButton.dataset.actionUnavailable === "true") return;
+      void runWorkflowConfigAction(
+        workflowValidateButton,
+        CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate
       );
       return;
     }
@@ -549,6 +575,16 @@ async function runProviderConfigAction(button, actionId) {
   renderActivePage();
 }
 
+async function runWorkflowConfigAction(button, actionId) {
+  const payload = readWorkflowConfigPayload(button);
+  if (!payload.workflowId) return;
+  state.workflowActionStatus[payload.workflowId] = "处理中";
+  renderActivePage();
+  const result = await actionRouter.run(actionId, payload, { source: "control-center-lab" });
+  state.workflowActionStatus[payload.workflowId] = workflowActionStatusLabel(result);
+  renderActivePage();
+}
+
 function readProviderConfigPayload(button) {
   const providerId = String(button?.dataset?.providerId || "").trim();
   const row = button?.closest?.("[data-provider-row]");
@@ -562,11 +598,40 @@ function readProviderConfigPayload(button) {
   };
 }
 
+function readWorkflowConfigPayload(button) {
+  const workflowId = String(button?.dataset?.workflowId || "").trim();
+  const row = button?.closest?.("[data-workflow-row]");
+  const workflowPathInput = row?.querySelector?.("[data-workflow-path-input]");
+  const inputSlotInput = row?.querySelector?.("[data-workflow-input-slot-input]");
+  const outputSlotInput = row?.querySelector?.("[data-workflow-output-slot-input]");
+  const enabledInput = row?.querySelector?.("[data-workflow-enabled-input]");
+  return {
+    page: state.activePage,
+    workflowId,
+    workflowPath: String(workflowPathInput?.value || "").trim(),
+    inputImageSlot: String(inputSlotInput?.value || "").trim(),
+    outputImageSlot: String(outputSlotInput?.value || "").trim(),
+    enabled: Boolean(enabledInput?.checked)
+  };
+}
+
 function providerActionStatusLabel(result) {
   if (!result) return "未完成";
   if (result.status === "saved") return result.ok ? "已保存" : "保存失败";
   if (result.status === "ready") return "连接正常";
   if (result.status === "unreachable") return "未连接";
+  if (result.status === "invalid_config") return "配置异常";
+  if (result.status === "not-implemented") return "当前环境不可写";
+  return result.ok ? "已完成" : "操作失败";
+}
+
+function workflowActionStatusLabel(result) {
+  if (!result) return "未完成";
+  if (result.status === "saved") return result.ok ? "已保存绑定" : "保存失败";
+  if (result.status === "validated_config") return "配置可保存";
+  if (result.status === "missing_workflow") return "待绑定";
+  if (result.status === "missing_slot_mapping") return "槽位待补齐";
+  if (result.status === "invalid_workflow_config") return "绑定配置异常";
   if (result.status === "invalid_config") return "配置异常";
   if (result.status === "not-implemented") return "当前环境不可写";
   return result.ok ? "已完成" : "操作失败";
@@ -2125,25 +2190,111 @@ function renderProviderConfigBody(provider, endpoint, defaultEndpoint) {
 }
 
 function renderWorkflow(item) {
+  const workflowId = item.workflowId || item.id || "";
+  const isConfigurable = Boolean(workflowId && (item.workflowPath !== undefined || item.defaultWorkflowPath !== undefined || item.actionsEnabled));
+  const isOpen = state.activeWorkflowConfigId === workflowId;
   const statusBadge = item.statusLabel
     ? `<span class="module-status ${escapeAttr(item.statusTone || "warning")}">${escapeHtml(item.statusLabel)}</span>`
     : "";
   const detail = item.detail ? `<p>${escapeHtml(item.detail)}</p>` : "";
+  const statusMessage = state.workflowActionStatus[workflowId] || item.reason || item.statusLabel || "待确认";
   return `
-    <article class="workflow-tile">
-      <div class="workflow-icons">
-        ${item.steps.map((step, index) => `
-          <span>${icon(index === 0 ? "folder" : index === 1 ? "file" : "upload")}</span>
-        `).join("<i>›</i>")}
-      </div>
-      <div>
-        <div class="workflow-title-line">
-          <strong>${escapeHtml(item.title)}</strong>
-          ${statusBadge}
+    <article class="workflow-tile ${isOpen ? "is-open" : ""}" data-workflow-row data-workflow-id="${escapeAttr(workflowId)}">
+      <div class="workflow-main">
+        <div class="workflow-icons">
+          ${item.steps.map((step, index) => `
+            <span>${icon(index === 0 ? "folder" : index === 1 ? "file" : "upload")}</span>
+          `).join("<i>›</i>")}
         </div>
-        ${detail}
+        <div>
+          <div class="workflow-title-line">
+            <strong>${escapeHtml(item.title)}</strong>
+            ${statusBadge}
+          </div>
+          ${detail}
+          <small>${escapeHtml(statusMessage)}</small>
+        </div>
       </div>
+      ${isConfigurable ? `
+        <button
+          class="workflow-config-toggle"
+          type="button"
+          data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigOpen}"
+          data-payload-workflow-id="${escapeAttr(workflowId)}"
+          aria-expanded="${isOpen}"
+        >${isOpen ? "收起" : "配置"} ${icon("chevronDown")}</button>
+      ` : ""}
+      ${isOpen ? renderWorkflowConfigBody(item) : ""}
     </article>
+  `;
+}
+
+function renderWorkflowConfigBody(item) {
+  const workflowId = item.workflowId || item.id || "";
+  const workflowPath = item.workflowPath || item.defaultWorkflowPath || "workflows/comfyui/portrait_cutout.json";
+  const inputSlot = item.inputImageSlot || "input_image";
+  const outputSlot = item.outputImageSlot || "output_image";
+  const actionsDisabled = item.actionsEnabled === false;
+  const saveActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave}"`;
+  const validateActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate}"`;
+  const disabledAttr = actionsDisabled ? ' aria-disabled="true" disabled' : "";
+  return `
+    <div class="workflow-config-body">
+      <label>
+        <span>工作流引用</span>
+        <input
+          type="text"
+          value="${escapeAttr(workflowPath)}"
+          placeholder="workflows/comfyui/portrait_cutout.json"
+          data-workflow-path-input
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+      <label>
+        <span>输入槽位</span>
+        <input
+          type="text"
+          value="${escapeAttr(inputSlot)}"
+          placeholder="input_image"
+          data-workflow-input-slot-input
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+      <label>
+        <span>输出槽位</span>
+        <input
+          type="text"
+          value="${escapeAttr(outputSlot)}"
+          placeholder="output_image"
+          data-workflow-output-slot-input
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+      <label class="provider-toggle">
+        <input type="checkbox" data-workflow-enabled-input ${item.enabled ? "checked" : ""} />
+        <span>启用绑定</span>
+      </label>
+      <div class="provider-config-actions workflow-config-actions">
+        <button
+          type="button"
+          data-workflow-validate
+          data-workflow-id="${escapeAttr(workflowId)}"
+          ${validateActionAttr}
+          ${disabledAttr}
+        >${icon("checkCircle")} 验证配置</button>
+        <button
+          type="button"
+          data-workflow-config-save
+          data-workflow-id="${escapeAttr(workflowId)}"
+          ${saveActionAttr}
+          ${disabledAttr}
+        >${icon("checkCircle")} 保存绑定</button>
+      </div>
+      <p>${icon("shield")} 这里只保存安全相对引用和槽位名；不会读取、上传或执行 ComfyUI 工作流。</p>
+    </div>
   `;
 }
 
@@ -2479,6 +2630,12 @@ function createRuntimeActionRouter(dataSource) {
     [CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen]: (payload) => {
       const providerId = String(payload?.providerId || "").trim();
       state.activeProviderConfigId = state.activeProviderConfigId === providerId ? "" : providerId;
+      renderActivePage();
+      return { ok: true, refresh: false };
+    },
+    [CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigOpen]: (payload) => {
+      const workflowId = String(payload?.workflowId || "").trim();
+      state.activeWorkflowConfigId = state.activeWorkflowConfigId === workflowId ? "" : workflowId;
       renderActivePage();
       return { ok: true, refresh: false };
     },

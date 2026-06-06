@@ -169,8 +169,14 @@ function makeCapabilitiesCatalogBody() {
         name: "透明背景处理",
         description: "角色工坊的立绘透明背景处理流程",
         enabled: false,
+        configured: false,
+        configurable: true,
+        executionReady: false,
         status: "missing_config",
         reason: "provider_endpoint_missing",
+        workflowPath: "",
+        defaultWorkflowPath: "workflows/comfyui/portrait_cutout.json",
+        slotMapping: {},
         risk: "medium",
         usedBy: ["workshop", "desktop_pet"],
         target: "character_pack_assets",
@@ -440,8 +446,11 @@ function makeSnapshotFetch({
     abilities.workflows.some((workflow) => workflow.title === "透明背景处理" && workflow.statusLabel === "未配置"),
     "1.21k workflow catalog should surface portrait cutout as a user-facing non-ready workflow"
   );
+  const cutoutWorkflow = abilities.workflows.find((workflow) => workflow.title === "透明背景处理");
+  assert.equal(cutoutWorkflow.workflowId, "workflow.workshop.portrait.cutout", "1.21k2 workflow card should keep safe catalog workflow id for configuration");
+  assert.equal(cutoutWorkflow.defaultWorkflowPath, "workflows/comfyui/portrait_cutout.json", "1.21k3 workflow card should expose safe default workflow reference");
   const workflowText = JSON.stringify(abilities.workflows);
-  for (const rawId of ["workflow.comfyui", "input_image_handle", "output_image_handle", "cachedPath"]) {
+  for (const rawId of ["workflow.comfyui", "input_image_handle", "output_image_handle", "cachedPath", "token"]) {
     assert.equal(workflowText.includes(rawId), false, `1.21l workflow summaries should not expose raw detail ${rawId}`);
   }
 

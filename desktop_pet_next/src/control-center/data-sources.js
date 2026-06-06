@@ -12,6 +12,10 @@ const providerBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave,
   CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck
 ]);
+const workflowBackendActionIds = new Set([
+  CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave,
+  CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate
+]);
 const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.chatNew]: "newSession",
   [CONTROL_CENTER_ACTIONS.chatStop]: "stopReply",
@@ -117,8 +121,9 @@ export function createMockControlCenterSource(data = mockData) {
       return true;
     },
     async runAction(actionId, payload = {}) {
-      if (providerBackendActionIds.has(normalizeActionId(actionId))) {
-        return createNotImplementedActionResult(normalizeActionId(actionId));
+      const normalizedActionId = normalizeActionId(actionId);
+      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId)) {
+        return createNotImplementedActionResult(normalizedActionId);
       }
       return {
         ok: true,
@@ -317,11 +322,14 @@ export function createBackendControlCenterSource(options = {}) {
         return createNotImplementedActionResult(normalizedActionId);
       }
 
-      if (providerBackendActionIds.has(normalizedActionId)) {
+      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId)) {
         if (typeof fetchImpl !== "function") {
           return createNotImplementedActionResult(normalizedActionId);
         }
-        return runProviderBackendAction(fetchImpl, baseUrl, normalizedActionId, payload, {
+        const routeAction = providerBackendActionIds.has(normalizedActionId)
+          ? runProviderBackendAction
+          : runWorkflowBackendAction;
+        return routeAction(fetchImpl, baseUrl, normalizedActionId, payload, {
           user_id: sessionId,
           real_user_id: profileUserId,
           client,
@@ -366,6 +374,58 @@ export function createBackendControlCenterSource(options = {}) {
     }
   };
   return source;
+}
+
+async function runWorkflowBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
+  const workflowId = String(payload.workflowId || payload.workflow_id || payload.id || "").trim();
+  if (!workflowId) {
+    return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "workflowId is required" };
+  }
+  const endpoint = `/capabilities/workflows/${encodeURIComponent(workflowId)}/${workflowActionPath(actionId)}`;
+  const body = buildWorkflowActionBody(actionId, payload);
+  try {
+    const response = await fetchImpl(buildBackendUrl(baseUrl, endpoint, params), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store"
+    });
+    if (response.status === 404 || response.status === 405) {
+      return createNotImplementedActionResult(actionId);
+    }
+    if (!response.ok) {
+      return { ok: false, status: `http-${response.status}`, actionId, workflowId, refresh: false };
+    }
+    const result = await readActionResponse(response);
+    return {
+      ...result,
+      ok: Boolean(result?.ok),
+      actionId,
+      workflowId,
+      refresh: result?.refresh === undefined ? true : Boolean(result.refresh)
+    };
+  } catch (error) {
+    return { ok: false, status: "request-failed", actionId, workflowId, refresh: false, error: formatDataSourceError(error) };
+  }
+}
+
+function workflowActionPath(actionId) {
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave) return "config";
+  return "validate";
+}
+
+function buildWorkflowActionBody(actionId, payload = {}) {
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave) {
+    return {
+      enabled: Boolean(payload.enabled),
+      workflowPath: String(payload.workflowPath || "").trim(),
+      slotMapping: {
+        input_image_handle: String(payload.inputImageSlot || payload.input_image_handle || "").trim(),
+        output_image_handle: String(payload.outputImageSlot || payload.output_image_handle || "").trim()
+      }
+    };
+  }
+  return {};
 }
 
 async function runProviderBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
@@ -1709,12 +1769,23 @@ function buildCatalogWorkflowCards(entries) {
     .filter((entry) => entry.kind === "workflow")
     .map((entry) => {
       const status = mapWorkflowStatus(entry.status);
+      const slotMapping = asObject(entry.slotMapping);
       return {
+        id: entry.id,
+        workflowId: entry.id,
         steps: workflowSteps(entry),
         title: workflowTitle(entry),
         detail: workflowDetail(entry),
         statusLabel: status.label,
-        statusTone: status.tone
+        statusTone: status.tone,
+        enabled: Boolean(entry.enabled),
+        configured: Boolean(entry.configured),
+        executionReady: Boolean(entry.executionReady),
+        workflowPath: entry.workflowPath,
+        defaultWorkflowPath: entry.defaultWorkflowPath,
+        inputImageSlot: stringValue(slotMapping.input_image_handle),
+        outputImageSlot: stringValue(slotMapping.output_image_handle),
+        actionsEnabled: entry.configurable !== false
       };
     });
 }
