@@ -1215,8 +1215,11 @@ function normalizeCapabilityCatalogEntries(catalog) {
       requiresConfirmation: Boolean(entry.requiresConfirmation),
       configured: Boolean(entry.configured),
       configurable: Boolean(entry.configurable),
+      executionReady: Boolean(entry.executionReady),
       endpoint: stringValue(entry.endpoint),
       defaultEndpoint: stringValue(entry.defaultEndpoint),
+      workflowPath: stringValue(entry.workflowPath),
+      defaultWorkflowPath: stringValue(entry.defaultWorkflowPath),
       autoEnabled: Boolean(entry.autoEnabled),
       usedBy: normalizeStringList(entry.usedBy),
       toolTypes: normalizeStringList(entry.toolTypes),
@@ -1705,7 +1708,7 @@ function buildCatalogWorkflowCards(entries) {
   return entries
     .filter((entry) => entry.kind === "workflow")
     .map((entry) => {
-      const status = mapCapabilityStatus(entry.status);
+      const status = mapWorkflowStatus(entry.status);
       return {
         steps: workflowSteps(entry),
         title: workflowTitle(entry),
@@ -1735,11 +1738,28 @@ function workflowDetail(entry) {
   const status = entry.status || "";
   if (status === "missing_config") return "需要先配置本地执行环境";
   if (status === "missing_workflow") return "本地服务已保存，等待绑定具体工作流";
+  if (status === "missing_slot_mapping") return "工作流已选择，仍需补齐输入输出槽位";
   if (status === "unreachable") return "本地服务暂时未连接";
   if (status === "invalid_config") return "配置需要修复后才能使用";
+  if (status === "invalid_workflow_config") return "工作流绑定配置需要修复";
   if (status === "disabled") return "已配置但未启用";
+  if (status === "configured") return "工作流绑定已保存，执行入口尚未开放";
   if (status === "ready") return "工作流已可供相关页面调用";
   return entry.description || "等待本地能力同步";
+}
+
+function mapWorkflowStatus(status) {
+  const normalized = stringValue(status);
+  if (normalized === "configured" || normalized === "validated_config") {
+    return { label: "已绑定", tone: "warning" };
+  }
+  if (normalized === "missing_slot_mapping") {
+    return { label: "待补齐", tone: "warning" };
+  }
+  if (normalized === "invalid_workflow_config") {
+    return { label: "配置异常", tone: "danger" };
+  }
+  return mapCapabilityStatus(status);
 }
 
 function buildAbilityStatusRows({ syncedAt, serviceOk, toolCount, moduleCount, catalogSummary, workspaceCounts, safety, runtimeMetrics }) {

@@ -28,6 +28,10 @@ Phase 3A read-only workflow catalog skeleton is implemented. The first workflow
 entry is `workshop.portrait.cutout`, backed by the local ComfyUI provider
 contract. It is visible as status guidance only; there is still no workflow JSON
 editor, slot binding UI, or execution route.
+Phase 3B workflow binding config skeleton is implemented on the backend. It can
+save and validate a safe binding reference for `workshop.portrait.cutout`
+(`workflowPath` plus required slot mapping), but it still does not read ComfyUI
+workflow JSON, validate node IDs, or execute the workflow.
 
 Files:
 
@@ -48,6 +52,8 @@ Files:
   - `POST /capabilities/local-environment-check`
   - `GET /capabilities/providers`
   - `GET /capabilities/workflows`
+  - `POST /capabilities/workflows/{workflowId}/config`
+  - `POST /capabilities/workflows/{workflowId}/validate`
   - `POST /capabilities/providers/{providerId}/config`
   - `POST /capabilities/providers/{providerId}/health-check`
   - The local environment check probes only known localhost services and never
@@ -64,6 +70,15 @@ Files:
   - Invalid config files return structured `configStatus` / `warnings` and are
     not silently overwritten by save or health-check routes.
   - Health checks are discovery/status only; they never auto-enable providers.
+  - Stores workflow binding skeletons in the same profile-scoped config file
+    under `workflows`.
+  - Workflow paths must be safe relative JSON paths such as
+    `workflows/comfyui/portrait_cutout.json`; absolute paths, URL-like strings,
+    traversal, credentials, token/query fields, and non-json paths are rejected.
+  - Slot mappings accept only known slot names and short symbolic values. Extra
+    unknown slots are ignored rather than echoed.
+  - Workflow validation is config-level only and returns `executionReady:false`
+    until a real runner/binding validator exists.
 - `companion_v01/app.py`
   - Registers the capabilities router.
 - `tests/test_backend_route_modules.py`
@@ -78,6 +93,9 @@ Files:
   - Verifies the workflow catalog remains read-only, exposes safe-handle slot
     names only, and does not mark `workshop.portrait.cutout` ready merely
     because the ComfyUI provider endpoint was saved or health-checked.
+  - Verifies workflow binding config rejects unsafe paths and slot mappings,
+    persists only safe relative workflow references, and remains
+    `executionReady:false` after validation.
 - `desktop_pet_next/src/control-center/data-sources.js`
   - Reads `/capabilities` alongside the control-center runtime data.
   - Treats it as optional: missing or invalid catalog data does not block
@@ -1984,6 +2002,40 @@ Implemented Phase 3A:
 - The control center ability page may show "透明背景处理" as a compact status
   card, but it must not add an execution button until Phase 4 creates the real
   workshop boundary.
+
+Implemented Phase 3B:
+
+- `POST /capabilities/workflows/{workflowId}/config` saves a workflow binding
+  skeleton for known workflows only.
+- `POST /capabilities/workflows/{workflowId}/validate` verifies provider config,
+  workflow path presence, and required symbolic slot mappings.
+- The saved config lives in the existing profile-scoped capability config:
+
+```json
+{
+  "schemaVersion": 1,
+  "providers": {},
+  "workflows": {
+    "workflow.workshop.portrait.cutout": {
+      "enabled": true,
+      "workflowPath": "workflows/comfyui/portrait_cutout.json",
+      "slotMapping": {
+        "input_image_handle": "input_image",
+        "output_image_handle": "output_image"
+      }
+    }
+  }
+}
+```
+
+- The config store deliberately uses a safe relative `workflowPath` reference,
+  not a full local path and not the workflow JSON content.
+- `validate` can return `validated_config`, but still reports
+  `executionReady:false` with reason `workflow_runtime_not_bound`.
+- The control center translates `configured` workflow state into "已绑定" with a
+  warning tone and explanatory detail, not a runnable ready state.
+- No ComfyUI prompt submission, workflow JSON parsing, node id validation, model
+  path picker, asset write, or workshop "自动抠图" button exists yet.
 
 Acceptance:
 

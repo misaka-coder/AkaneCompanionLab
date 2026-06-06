@@ -1178,6 +1178,108 @@ class BackendRouteModuleTests(unittest.TestCase):
                 self.assertNotIn(sensitive, body)
             self.assertIn(("capabilities.workflows", True), runtime.observed)
 
+    def test_capabilities_workflow_config_skeleton_persists_safe_binding_without_execution(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            provider = client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188"},
+            ).json()
+            self.assertTrue(provider["ok"])
+
+            saved_response = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": r"workflows\comfyui\portrait_cutout.json?token=secret",
+                    "slotMapping": {
+                        "input_image_handle": "input_image",
+                        "output_image_handle": "output_image",
+                        "ignored_extra": "should_not_echo",
+                    },
+                },
+            )
+            saved = saved_response.json()
+            self.assertFalse(saved["ok"])
+            self.assertEqual(saved["status"], "invalid_workflow_config")
+
+            saved_response = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": r"workflows\comfyui\portrait_cutout.json",
+                    "slotMapping": {
+                        "input_image_handle": "input_image",
+                        "output_image_handle": "output_image",
+                        "ignored_extra": "should_not_echo",
+                    },
+                },
+            )
+            self.assertEqual(saved_response.status_code, 200)
+            saved = saved_response.json()
+            self.assertTrue(saved["ok"])
+            self.assertEqual(saved["status"], "saved")
+            self.assertFalse(saved["executionReady"])
+            workflow = saved["workflow"]
+            self.assertEqual(workflow["workflowPath"], "workflows/comfyui/portrait_cutout.json")
+            self.assertEqual(workflow["status"], "configured")
+            self.assertEqual(workflow["reason"], "workflow_runtime_not_bound")
+            self.assertFalse(workflow["executionReady"])
+            self.assertNotIn("ignored_extra", json.dumps(workflow, ensure_ascii=False))
+
+            validated = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/validate?user_id=desktop&real_user_id=master"
+            ).json()
+            self.assertTrue(validated["ok"])
+            self.assertEqual(validated["status"], "validated_config")
+            self.assertFalse(validated["executionReady"])
+            self.assertTrue(validated["checks"]["providerConfigured"])
+            self.assertTrue(validated["checks"]["workflowConfigured"])
+            self.assertTrue(validated["checks"]["requiredSlots"])
+
+            catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            by_id = {item["id"]: item for item in catalog["capabilities"]}
+            self.assertEqual(by_id["workflow.workshop.portrait.cutout"]["status"], "configured")
+            self.assertFalse(by_id["workflow.workshop.portrait.cutout"]["executionReady"])
+
+            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            config_text = config_path.read_text(encoding="utf-8")
+            self.assertIn("workflows/comfyui/portrait_cutout.json", config_text)
+            for forbidden in ("token", "secret", "ignored_extra", str(Path(temp_dir))):
+                self.assertNotIn(forbidden.lower(), config_text.lower())
+
+            rejected_path = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "workflowPath": r"C:\Users\Lenovo\workflow.json"},
+            ).json()
+            self.assertFalse(rejected_path["ok"])
+            self.assertEqual(rejected_path["status"], "invalid_workflow_config")
+
+            rejected_slots = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": "workflows/comfyui/portrait_cutout.json",
+                    "slotMapping": {"input_image_handle": "input image"},
+                },
+            ).json()
+            self.assertFalse(rejected_slots["ok"])
+            self.assertIn(rejected_slots["status"], {"missing_slot_mapping", "invalid_workflow_config"})
+            self.assertIn(("capabilities.workflow_config", True), runtime.observed)
+            self.assertIn(("capabilities.workflow_config", False), runtime.observed)
+            self.assertIn(("capabilities.workflow_validate", True), runtime.observed)
+
     def test_capabilities_local_environment_check_is_discovery_not_enablement(self) -> None:
         runtime = FakeRuntimeMetrics()
 

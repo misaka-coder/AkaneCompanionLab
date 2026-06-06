@@ -12,7 +12,9 @@ from ..local_capability_config import (
     check_provider_health,
     list_provider_configs,
     load_capability_config,
+    save_workflow_config,
     save_provider_config,
+    validate_workflow_config,
 )
 from ..local_capability_catalog import (
     build_local_capability_catalog,
@@ -57,6 +59,7 @@ def build_capabilities_router(
             tts_client=tts_client,
             profile_user_id=profile_user_id,
             provider_configs=provider_config.get("providers", {}),
+            workflow_configs=provider_config.get("workflows", {}),
         )
         payload["providerConfigStatus"] = provider_config.get("configStatus") or "available"
         payload["providerConfigWarnings"] = list(provider_config.get("warnings") or [])
@@ -97,6 +100,7 @@ def build_capabilities_router(
         payload = build_local_workflow_catalog(
             profile_user_id=profile_user_id,
             provider_configs=provider_config.get("providers", {}),
+            workflow_configs=provider_config.get("workflows", {}),
         )
         payload["providerConfigStatus"] = provider_config.get("configStatus") or "available"
         payload["providerConfigWarnings"] = list(provider_config.get("warnings") or [])
@@ -108,6 +112,46 @@ def build_capabilities_router(
             total=payload.get("summary", {}).get("total"),
         )
         return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    @router.post("/capabilities/workflows/{workflow_id}/config")
+    async def write_capability_workflow_config(workflow_id: str, request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = await _read_json_object(request)
+        result = save_workflow_config(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+            workflow_id=workflow_id,
+            payload=payload,
+        )
+        _observe_request(runtime_metrics, "capabilities.workflow_config", started_at, bool(result.get("ok")))
+        _log_best_effort(
+            log_event,
+            "capabilities_workflow_config",
+            status=result.get("status"),
+            workflowId=result.get("workflowId"),
+        )
+        status_code = 404 if result.get("status") == "unknown_workflow" else 200
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+    @router.post("/capabilities/workflows/{workflow_id}/validate")
+    async def validate_capability_workflow_config(workflow_id: str, request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        result = validate_workflow_config(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+            workflow_id=workflow_id,
+        )
+        _observe_request(runtime_metrics, "capabilities.workflow_validate", started_at, bool(result.get("ok")))
+        _log_best_effort(
+            log_event,
+            "capabilities_workflow_validate",
+            status=result.get("status"),
+            workflowId=result.get("workflowId"),
+        )
+        status_code = 404 if result.get("status") == "unknown_workflow" else 200
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
 
     @router.post("/capabilities/providers/{provider_id}/config")
     async def write_capability_provider_config(provider_id: str, request: Request) -> JSONResponse:
