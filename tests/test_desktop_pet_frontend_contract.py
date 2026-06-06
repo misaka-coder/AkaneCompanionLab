@@ -175,6 +175,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
             "install_character_pack_zip_bytes",
             "export_file_to_desktop",
             "upload_portrait_image",
+            "import_generated_portrait_image",
             "read_portrait_image",
             "export_character_pack",
         ]
@@ -184,6 +185,37 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
             blocking_index = tauri_source.index(f"fn {command}_blocking", wrapper_index)
             wrapper_source = tauri_source[wrapper_index:blocking_index]
             self.assertIn("spawn_blocking(move ||", wrapper_source)
+
+    def test_next_generated_portrait_import_command_uses_safe_atomic_write(self) -> None:
+        tauri_source = _read("desktop_pet_next/src-tauri/src/main.rs")
+
+        self.assertIn("async fn import_generated_portrait_image", tauri_source)
+        self.assertIn("fn import_generated_portrait_image_blocking", tauri_source)
+        self.assertIn("import_generated_portrait_image,", tauri_source)
+
+        wrapper_index = tauri_source.index("async fn import_generated_portrait_image")
+        blocking_index = tauri_source.index("fn import_generated_portrait_image_blocking", wrapper_index)
+        wrapper_source = tauri_source[wrapper_index:blocking_index]
+        self.assertIn("spawn_blocking(move ||", wrapper_source)
+
+        end_index = tauri_source.index("#[tauri::command]\nfn create_portrait_outfit", blocking_index)
+        blocking_source = tauri_source[blocking_index:end_index]
+        self.assertIn("let outfit = sanitize_asset_id(&outfit)", blocking_source)
+        self.assertIn("let emotion = sanitize_asset_id(&emotion)", blocking_source)
+        self.assertIn("safe_child_path(&characters_dir, &pack_id)", blocking_source)
+        self.assertIn("safe_child_path(&characters_dir, &outfit)", blocking_source)
+        self.assertIn("safe_child_path(&outfit_dir, &format!(\"{emotion}.{extension}\"))", blocking_source)
+        self.assertIn(
+            "write_bytes_atomic_with_cleanup(&target_path, &image_bytes, &cleanup_paths)",
+            blocking_source,
+        )
+        self.assertIn("Ok(list_character_pack_outfits(&pack_dir, &asset_root))", blocking_source)
+
+        writer_index = tauri_source.index("fn write_bytes_atomic")
+        safe_path_index = tauri_source.index("fn safe_child_path", writer_index)
+        writer_source = tauri_source[writer_index:safe_path_index]
+        self.assertIn("let tmp_path = parent.join(format!(\".{file_name}.tmp\"))", writer_source)
+        self.assertIn("fs::rename(&tmp_path, path)", writer_source)
 
     def test_next_settings_can_install_creator_kit_character_pack_zips(self) -> None:
         settings_source = _read("desktop_pet_next/src/settings.js")
@@ -359,6 +391,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertNotIn("workshop.portrait.cutout/run", workshop_source)
         self.assertNotIn("runPortraitCutout", workshop_source)
         self.assertNotIn("executePortraitCutout", workshop_source)
+        self.assertNotIn('invoke("import_generated_portrait_image"', workshop_source)
         self.assertIn('buildBackendUrl("/think"', workshop_source)
         self.assertIn('turn_kind: "workshop_test_chat"', workshop_source)
         self.assertIn("user_id: scope.sessionId", workshop_source)

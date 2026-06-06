@@ -1360,6 +1360,141 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(unknown.json()["status"], "unknown_workflow")
             self.assertIn(("capabilities.workflow_preflight", False), runtime.observed)
 
+    def test_capabilities_workflow_job_routes_are_inert_and_safe(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            missing = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            )
+            self.assertEqual(missing.status_code, 200)
+            missing_payload = missing.json()
+            self.assertFalse(missing_payload["ok"])
+            self.assertEqual(missing_payload["status"], "missing_config")
+            self.assertNotIn("jobId", missing_payload)
+
+            unknown = client.post(
+                "/capabilities/workflows/unknown.workflow/jobs?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            )
+            self.assertEqual(unknown.status_code, 404)
+            self.assertEqual(unknown.json()["status"], "unknown_workflow")
+
+            client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188"},
+            )
+            client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": "workflows/comfyui/portrait_cutout.json",
+                    "slotMapping": {
+                        "input_image_handle": "input_image",
+                        "output_image_handle": "output_image",
+                    },
+                },
+            )
+
+            rejected = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
+                json={
+                    "inputImageHandle": "https://example.test/portrait.png?token=secret",
+                    "outputImageHandle": "portrait_cutout",
+                    "imageBytes": "RAW_IMAGE_BYTES_SHOULD_NOT_ECHO",
+                },
+            )
+            self.assertEqual(rejected.status_code, 200)
+            rejected_payload = rejected.json()
+            self.assertFalse(rejected_payload["ok"])
+            self.assertEqual(rejected_payload["status"], "invalid_request")
+            self.assertNotIn("jobId", rejected_payload)
+
+            inert = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
+                json={
+                    "inputImageHandle": "portrait_source",
+                    "outputImageHandle": "portrait_cutout",
+                    "imageBytes": "RAW_IMAGE_BYTES_SHOULD_NOT_ECHO",
+                    "token": "secret",
+                },
+            )
+            self.assertEqual(inert.status_code, 200)
+            inert_payload = inert.json()
+            self.assertFalse(inert_payload["ok"])
+            self.assertEqual(inert_payload["status"], "not-implemented")
+            self.assertEqual(inert_payload["reason"], "workflow_runner_not_bound")
+            self.assertFalse(inert_payload["executionReady"])
+            self.assertFalse(inert_payload["canRun"])
+            self.assertEqual(inert_payload["jobStatus"], "queued-but-inert")
+            self.assertNotEqual(inert_payload["job"]["status"], "completed")
+            self.assertFalse(inert_payload["job"]["runner"]["bound"])
+            job_id = inert_payload["jobId"]
+            self.assertTrue(job_id.startswith("workflowjob_"))
+
+            status_response = client.get(
+                f"/capabilities/workflow-jobs/{job_id}?user_id=desktop&real_user_id=master"
+            )
+            self.assertEqual(status_response.status_code, 200)
+            status_payload = status_response.json()
+            self.assertTrue(status_payload["ok"])
+            self.assertEqual(status_payload["status"], "queued-but-inert")
+            self.assertEqual(status_payload["reason"], "workflow_runner_not_bound")
+            self.assertFalse(status_payload["executionReady"])
+            self.assertFalse(status_payload["canRun"])
+            self.assertEqual(status_payload["job"]["outputs"], [])
+            self.assertNotEqual(status_payload["job"]["status"], "completed")
+            self.assertNotIn("_profileUserId", status_payload["job"])
+            self.assertNotIn("_sessionId", status_payload["job"])
+
+            wrong_profile = client.get(
+                f"/capabilities/workflow-jobs/{job_id}?user_id=desktop&real_user_id=other_profile"
+            )
+            self.assertEqual(wrong_profile.status_code, 404)
+            self.assertEqual(wrong_profile.json()["status"], "unknown_workflow_job")
+
+            unknown_job = client.get(
+                "/capabilities/workflow-jobs/token_secret?user_id=desktop&real_user_id=master"
+            )
+            self.assertEqual(unknown_job.status_code, 404)
+            self.assertEqual(unknown_job.json()["status"], "unknown_workflow_job")
+
+            combined_text = json.dumps(
+                [
+                    missing_payload,
+                    unknown.json(),
+                    rejected_payload,
+                    inert_payload,
+                    status_payload,
+                    wrong_profile.json(),
+                    unknown_job.json(),
+                ],
+                ensure_ascii=False,
+            ).lower()
+            for forbidden in (
+                "https://example.test",
+                "portrait.png",
+                "raw_image_bytes_should_not_echo",
+                "token",
+                "secret",
+                str(Path(temp_dir)).lower(),
+            ):
+                self.assertNotIn(forbidden, combined_text)
+            self.assertIn(("capabilities.workflow_job_start", False), runtime.observed)
+            self.assertIn(("capabilities.workflow_job_status", True), runtime.observed)
+            self.assertIn(("capabilities.workflow_job_status", False), runtime.observed)
+
     def test_capabilities_local_environment_check_is_discovery_not_enablement(self) -> None:
         runtime = FakeRuntimeMetrics()
 

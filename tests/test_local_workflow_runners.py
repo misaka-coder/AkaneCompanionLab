@@ -8,6 +8,7 @@ from companion_v01.local_workflow_runners.comfyui import (
     ComfyUiImageRef,
     ComfyUiSlotMappingError,
     apply_comfyui_input_slots,
+    extract_comfyui_output_images,
 )
 
 
@@ -113,6 +114,68 @@ class ComfyUiClientTests(unittest.TestCase):
         broken_client = ComfyUiClient("http://127.0.0.1:8188", session=broken)
         with self.assertRaises(ComfyUiClientError):
             broken_client.queue_prompt({"1": {}})
+
+    def test_extract_output_images_from_history_response(self) -> None:
+        history = {
+            "prompt-001": {
+                "outputs": {
+                    "12": {
+                        "images": [
+                            {"filename": "portrait.png", "subfolder": "akane", "type": "output"},
+                            {"filename": "mask.webp", "subfolder": "", "type": "temp"},
+                        ]
+                    },
+                    "20": {"text": ["ignored"]},
+                }
+            }
+        }
+
+        refs = extract_comfyui_output_images(history, prompt_id="prompt-001")
+
+        self.assertEqual(
+            refs,
+            [
+                ComfyUiImageRef("portrait.png", "akane", "output"),
+                ComfyUiImageRef("mask.webp", "", "temp"),
+            ],
+        )
+
+    def test_extract_output_images_discards_unsafe_history_values(self) -> None:
+        history = {
+            "outputs": {
+                "12": {
+                    "images": [
+                        {"filename": "safe.png", "subfolder": "akane", "type": "output"},
+                        {"filename": "../escape.png", "subfolder": "akane", "type": "output"},
+                        {"filename": "http://example.test/escape.png", "subfolder": "akane", "type": "output"},
+                        {"filename": "token_secret.png", "subfolder": "akane", "type": "output"},
+                        {"filename": "bad-subfolder.png", "subfolder": "../akane", "type": "output"},
+                        {"filename": "bad-type.png", "subfolder": "akane", "type": "api_key"},
+                        {"filename": "bad-url-subfolder.png", "subfolder": "http://example.test/a", "type": "output"},
+                        "not-a-dict",
+                    ]
+                }
+            }
+        }
+
+        refs = extract_comfyui_output_images(history)
+
+        self.assertEqual(refs, [ComfyUiImageRef("safe.png", "akane", "output")])
+
+    def test_extract_output_images_rejects_ambiguous_or_malformed_history(self) -> None:
+        with self.assertRaises(ValueError):
+            extract_comfyui_output_images({}, prompt_id="../prompt")
+
+        with self.assertRaises(ComfyUiClientError):
+            extract_comfyui_output_images(
+                {
+                    "prompt-001": {"outputs": {}},
+                    "prompt-002": {"outputs": {}},
+                }
+            )
+
+        with self.assertRaises(ComfyUiClientError):
+            extract_comfyui_output_images({"outputs": []})
 
     def test_apply_input_slots_updates_workflow_copy_only(self) -> None:
         workflow = {

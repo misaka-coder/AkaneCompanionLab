@@ -43,9 +43,11 @@ const DEFAULT_EMOTION: &str = "正常";
 const MAX_AUDIO_FILE_BYTES: u64 = 300 * 1024 * 1024;
 const MAX_LYRIC_FILE_BYTES: u64 = 512 * 1024;
 const MAX_CHARACTER_PACK_ZIP_BYTES: usize = 300 * 1024 * 1024;
+const MAX_PORTRAIT_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "webm",
 ];
+const SUPPORTED_PORTRAIT_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -1017,7 +1019,7 @@ fn upload_portrait_image_blocking(
     if image_bytes.is_empty() {
         return Err("图片数据为空。".to_string());
     }
-    if image_bytes.len() > 20 * 1024 * 1024 {
+    if image_bytes.len() > MAX_PORTRAIT_IMAGE_BYTES {
         return Err("图片大小不能超过 20 MB。".to_string());
     }
 
@@ -1057,6 +1059,91 @@ fn upload_portrait_image_blocking(
         path: target_path.to_string_lossy().to_string(),
         size_bytes,
     })
+}
+
+#[tauri::command]
+async fn import_generated_portrait_image(
+    pack_id: String,
+    outfit: String,
+    emotion: String,
+    image_bytes: Vec<u8>,
+    extension: Option<String>,
+    mime_type: Option<String>,
+    overwrite: bool,
+) -> Result<Vec<CharacterPackOutfitAsset>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_generated_portrait_image_blocking(
+            pack_id,
+            outfit,
+            emotion,
+            image_bytes,
+            extension,
+            mime_type,
+            overwrite,
+        )
+    })
+    .await
+    .map_err(|error| format!("生成立绘写入任务失败：{error}"))?
+}
+
+fn import_generated_portrait_image_blocking(
+    pack_id: String,
+    outfit: String,
+    emotion: String,
+    image_bytes: Vec<u8>,
+    extension: Option<String>,
+    mime_type: Option<String>,
+    overwrite: bool,
+) -> Result<Vec<CharacterPackOutfitAsset>, String> {
+    let pack_id = sanitize_pack_id(&pack_id);
+    if pack_id.is_empty() {
+        return Err("无效的角色包 ID。".to_string());
+    }
+
+    let outfit = sanitize_asset_id(&outfit);
+    if outfit.is_empty() {
+        return Err("服装 ID 不能为空。".to_string());
+    }
+
+    let emotion = sanitize_asset_id(&emotion);
+    if emotion.is_empty() {
+        return Err("表情 ID 不能为空。".to_string());
+    }
+
+    if image_bytes.is_empty() {
+        return Err("图片数据为空。".to_string());
+    }
+    if image_bytes.len() > MAX_PORTRAIT_IMAGE_BYTES {
+        return Err("图片大小不能超过 20 MB。".to_string());
+    }
+
+    let extension = resolve_generated_portrait_extension(&image_bytes, extension, mime_type)?;
+
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    if !pack_dir.is_dir() {
+        return Err(format!("角色包 {pack_id} 不存在。"));
+    }
+
+    let (asset_root, characters_dir) = pack_characters_dir(&pack_dir)?;
+    let outfit_dir = safe_child_path(&characters_dir, &outfit)?;
+    fs::create_dir_all(&outfit_dir).map_err(|error| error.to_string())?;
+
+    let existing_paths = existing_portrait_image_paths(&outfit_dir, &emotion)?;
+    if !overwrite && existing_paths.iter().any(|path| path.is_file()) {
+        return Err(format!(
+            "表情 {emotion} 已存在，请确认 overwrite 后再覆盖。"
+        ));
+    }
+    let target_path = safe_child_path(&outfit_dir, &format!("{emotion}.{extension}"))?;
+    let cleanup_paths = if overwrite {
+        existing_paths
+    } else {
+        Vec::new()
+    };
+    write_bytes_atomic_with_cleanup(&target_path, &image_bytes, &cleanup_paths)?;
+
+    Ok(list_character_pack_outfits(&pack_dir, &asset_root))
 }
 
 #[tauri::command]
@@ -1158,6 +1245,79 @@ fn detect_image_extension(bytes: &[u8]) -> Result<String, String> {
         return Ok("webp".to_string());
     }
     Err("不支持的图片格式。仅支持 PNG、JPEG、WebP。".to_string())
+}
+
+fn resolve_generated_portrait_extension(
+    bytes: &[u8],
+    extension: Option<String>,
+    mime_type: Option<String>,
+) -> Result<String, String> {
+    let detected = detect_image_extension(bytes)?;
+    let extension_hint = parse_portrait_extension_hint(extension.as_deref())?;
+    let mime_hint = parse_portrait_mime_hint(mime_type.as_deref())?;
+
+    if let (Some(ext), Some(mime_ext)) = (&extension_hint, &mime_hint) {
+        if ext != mime_ext {
+            return Err("extension 与 mimeType 指向的图片格式不一致。".to_string());
+        }
+    }
+
+    if let Some(hint) = extension_hint.or(mime_hint) {
+        if hint != detected {
+            return Err("图片数据格式与 extension/mimeType 不一致。".to_string());
+        }
+    }
+
+    Ok(detected)
+}
+
+fn parse_portrait_extension_hint(value: Option<&str>) -> Result<Option<String>, String> {
+    let Some(raw) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    normalize_portrait_extension(raw)
+        .map(Some)
+        .ok_or_else(|| "不支持的立绘扩展名。仅支持 png、jpg、jpeg、webp。".to_string())
+}
+
+fn parse_portrait_mime_hint(value: Option<&str>) -> Result<Option<String>, String> {
+    let Some(raw) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let media_type = raw
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let extension = match media_type.as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    };
+    extension
+        .map(|value| Some(value.to_string()))
+        .ok_or_else(|| {
+            "不支持的立绘 MIME 类型。仅支持 image/png、image/jpeg、image/webp。".to_string()
+        })
+}
+
+fn normalize_portrait_extension(value: &str) -> Option<String> {
+    let normalized = value.trim().trim_start_matches('.').to_ascii_lowercase();
+    match normalized.as_str() {
+        "png" => Some("png".to_string()),
+        "jpg" | "jpeg" => Some("jpg".to_string()),
+        "webp" => Some("webp".to_string()),
+        _ => None,
+    }
+}
+
+fn existing_portrait_image_paths(outfit_dir: &Path, emotion: &str) -> Result<Vec<PathBuf>, String> {
+    SUPPORTED_PORTRAIT_EXTENSIONS
+        .iter()
+        .map(|extension| safe_child_path(outfit_dir, &format!("{emotion}.{extension}")))
+        .collect()
 }
 
 #[tauri::command]
@@ -2293,6 +2453,33 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     fs::rename(&tmp_path, path).map_err(|error| error.to_string())
 }
 
+fn write_bytes_atomic_with_cleanup(
+    path: &Path,
+    bytes: &[u8],
+    cleanup_paths: &[PathBuf],
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("无法定位写入目录：{}", path.display()))?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("无效文件名：{}", path.display()))?;
+    let tmp_path = parent.join(format!(".{file_name}.tmp"));
+    fs::write(&tmp_path, bytes).map_err(|error| error.to_string())?;
+    if path.is_file() {
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    fs::rename(&tmp_path, path).map_err(|error| error.to_string())?;
+    for cleanup_path in cleanup_paths {
+        if cleanup_path != path && cleanup_path.is_file() {
+            fs::remove_file(cleanup_path).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 fn safe_child_path(base: &Path, relative: &str) -> Result<PathBuf, String> {
     let normalized = normalize_zip_path(relative)?;
     let target = base.join(normalized.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -3109,6 +3296,7 @@ fn main() {
             create_character_pack,
             create_portrait_outfit,
             upload_portrait_image,
+            import_generated_portrait_image,
             read_portrait_image,
             list_pack_assets,
             delete_portrait_image,

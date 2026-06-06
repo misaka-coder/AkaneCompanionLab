@@ -38,6 +38,39 @@ class ComfyUiImageBytes:
     content_type: str
 
 
+def extract_comfyui_output_images(
+    history: Mapping[str, Any],
+    *,
+    prompt_id: str | None = None,
+) -> list[ComfyUiImageRef]:
+    """Extract safe ComfyUI image refs from a history response."""
+
+    if not isinstance(history, Mapping):
+        raise ComfyUiClientError("history_invalid_json")
+    history_entry = _select_comfyui_history_entry(history, prompt_id=prompt_id)
+    if history_entry is None:
+        return []
+
+    outputs = history_entry.get("outputs")
+    if outputs in (None, ""):
+        return []
+    if not isinstance(outputs, Mapping):
+        raise ComfyUiClientError("history_outputs_invalid")
+
+    images: list[ComfyUiImageRef] = []
+    for node_output in outputs.values():
+        if not isinstance(node_output, Mapping):
+            continue
+        node_images = node_output.get("images")
+        if not isinstance(node_images, list):
+            continue
+        for raw_image in node_images:
+            image_ref = _parse_comfyui_history_image_ref(raw_image)
+            if image_ref is not None:
+                images.append(image_ref)
+    return images
+
+
 class ComfyUiClient:
     """Tiny loopback-only client for the public ComfyUI HTTP API."""
 
@@ -230,6 +263,48 @@ def _safe_comfyui_image_type(value: Any) -> str:
     if image_type not in COMFYUI_IMAGE_TYPES:
         raise ValueError("image_type_invalid")
     return image_type
+
+
+def _select_comfyui_history_entry(
+    history: Mapping[str, Any],
+    *,
+    prompt_id: str | None = None,
+) -> Mapping[str, Any] | None:
+    if prompt_id:
+        safe_prompt_id = _safe_comfyui_value(prompt_id, "prompt_id")
+        entry = history.get(safe_prompt_id)
+        if entry is None:
+            return None
+        if not isinstance(entry, Mapping):
+            raise ComfyUiClientError("history_entry_invalid")
+        return entry
+
+    if "outputs" in history:
+        return history
+
+    entries = [
+        entry
+        for entry in history.values()
+        if isinstance(entry, Mapping) and "outputs" in entry
+    ]
+    if not entries:
+        return None
+    if len(entries) > 1:
+        raise ComfyUiClientError("history_prompt_id_required")
+    return entries[0]
+
+
+def _parse_comfyui_history_image_ref(value: Any) -> ComfyUiImageRef | None:
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        filename = _safe_comfyui_value(value.get("filename"), "filename")
+        raw_subfolder = value.get("subfolder")
+        subfolder = _safe_comfyui_value(raw_subfolder, "subfolder") if raw_subfolder else ""
+        image_type = _safe_comfyui_image_type(value.get("type") or "output")
+    except ValueError:
+        return None
+    return ComfyUiImageRef(filename=filename, subfolder=subfolder, image_type=image_type)
 
 
 def _parse_comfyui_input_slot_path(value: Any) -> tuple[str, list[str]]:

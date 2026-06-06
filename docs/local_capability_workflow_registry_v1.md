@@ -57,6 +57,19 @@ Phase 4D adds a pure in-memory ComfyUI input slot mapping helper. It applies
 safe Akane slot values to a copied workflow JSON object using paths like
 `12.inputs.image`, and rejects non-input or missing-node paths. It still does
 not load workflow files, submit prompts, or write assets.
+Phase 4E adds safe ComfyUI history output parsing. The helper extracts
+`ComfyUiImageRef` entries from `/history/{promptId}` payloads and drops unsafe
+filenames, subfolders, or image types before any future `/view` call.
+Phase 4F adds a Tauri-only generated portrait import command:
+`import_generated_portrait_image`. It writes generated image bytes into a
+character pack through the existing safe character-pack path boundary and
+blocking worker, but no workshop button calls it yet.
+Phase 4G adds backend workflow job skeleton routes:
+`POST /capabilities/workflows/{workflowId}/jobs` and
+`GET /capabilities/workflow-jobs/{jobId}`. They call preflight and can create a
+profile-scoped `queued-but-inert` job record when all config/request checks pass,
+but they still do not bind a real runner, upload images, call ComfyUI, or write
+assets.
 
 Files:
 
@@ -80,10 +93,16 @@ Files:
   - `POST /capabilities/workflows/{workflowId}/config`
   - `POST /capabilities/workflows/{workflowId}/validate`
   - `POST /capabilities/workflows/{workflowId}/preflight`
+  - `POST /capabilities/workflows/{workflowId}/jobs`
+  - `GET /capabilities/workflow-jobs/{jobId}`
   - `POST /capabilities/providers/{providerId}/config`
   - `POST /capabilities/providers/{providerId}/health-check`
   - The local environment check probes only known localhost services and never
     auto-enables providers.
+  - Workflow job routes are inert in this phase. They return `missing_config`,
+    `invalid_request`, `unknown_workflow`, or `not-implemented`; the only
+    stored job state is `queued-but-inert`, scoped to the resolved
+    `profile_user_id`, with no outputs.
 - `companion_v01/local_capability_config.py`
   - Stores profile-scoped provider endpoint config at
     `users_data/<profile_user_id>/capabilities/capabilities.yaml`.
@@ -121,10 +140,19 @@ Files:
   - Provides `apply_comfyui_input_slots()` for applying slot values to a copied
     workflow JSON object. It currently supports input paths only:
     `node_id.inputs.field` and `node_id.inputs.nested.field`.
-  - Output extraction from ComfyUI history is intentionally separate and is not
-    implemented yet.
+  - Provides `extract_comfyui_output_images()` for reading safe image refs from
+    ComfyUI history output payloads. It discards unsafe path-like, URL-like, or
+    secret-bearing values.
   - This module is not registered as a route and is not reachable from the
     workshop yet.
+- `desktop_pet_next/src-tauri/src/main.rs`
+  - Adds `import_generated_portrait_image`, a blocking-worker Tauri command for
+    future generated portrait writes.
+  - Reuses `sanitize_pack_id`, `sanitize_asset_id`, `safe_child_path`, magic-byte
+    image format detection, size limits, and temp-file rename.
+  - Requires `overwrite:true` before replacing an existing emotion image.
+  - Does not expose a workshop UI action yet and does not call the backend
+    workflow routes.
 - `companion_v01/app.py`
   - Registers the capabilities router.
 - `tests/test_backend_route_modules.py`
@@ -145,12 +173,19 @@ Files:
   - Verifies workflow preflight rejects unsafe asset handles, reports missing
     config cleanly, and returns `not-implemented` rather than fake success when
     provider/workflow config is present but no runner exists.
+  - Verifies workflow job routes are profile-scoped, inert, and do not echo
+    image bytes, URL inputs, local paths, tokens, or secrets.
 - `tests/test_local_workflow_runners.py`
   - Verifies the ComfyUI adapter uses normalized loopback endpoints, calls the
     expected public ComfyUI routes, and rejects unsafe path-like values or bad
     prompt ids without making real network calls.
   - Verifies input slot mapping updates a workflow copy without mutating the
     original workflow and rejects non-input, missing-node, or unsafe slot paths.
+  - Verifies ComfyUI history output extraction returns only safe image refs and
+    rejects ambiguous history payloads without making real network calls.
+- `tests/test_desktop_pet_frontend_contract.py`
+  - Verifies the generated portrait import command exists, runs on a blocking
+    worker, uses safe character-pack paths, and writes through temp-file rename.
 - `desktop_pet_next/src/control-center/data-sources.js`
   - Reads `/capabilities` alongside the control-center runtime data.
   - Treats it as optional: missing or invalid catalog data does not block
@@ -226,8 +261,10 @@ Verification:
 ```bash
 python -m unittest tests.test_backend_route_modules
 python -m unittest tests.test_local_workflow_runners
+python -m unittest tests.test_desktop_pet_frontend_contract
 python -m py_compile companion_v01/local_capability_config.py companion_v01/local_capability_catalog.py companion_v01/routes/capabilities.py companion_v01/app.py tests/test_backend_route_modules.py
 python -m py_compile companion_v01/local_workflow_runners/__init__.py companion_v01/local_workflow_runners/comfyui.py tests/test_local_workflow_runners.py
+cargo check                         # from desktop_pet_next/src-tauri
 cd desktop_pet_next && npm run smoke:control-center-actions
 cd desktop_pet_next && npm run probe:control-center-runtime
 git diff --check
@@ -2212,6 +2249,49 @@ Implemented Phase 4D:
 - It does not load workflow JSON from disk, run ComfyUI, poll jobs, or write
   character-pack assets.
 
+Implemented Phase 4E:
+
+- Added `extract_comfyui_output_images()` to the ComfyUI runner module.
+- It reads common ComfyUI history structures:
+  `history[prompt_id].outputs[node_id].images[]` or a direct object with
+  `outputs`.
+- It returns safe `ComfyUiImageRef` values only.
+- Unsafe filenames, subfolders, URLs, path traversal, token/secret/password/API
+  key-looking values, and invalid image types are discarded before any future
+  `/view` request.
+- Ambiguous multi-prompt history requires an explicit `prompt_id`.
+- It does not fetch images, execute workflows, or choose which output should be
+  imported into a character pack.
+
+Implemented Phase 4F:
+
+- Added Tauri command `import_generated_portrait_image`.
+- Parameters are `packId`, `outfit`, `emotion`, `imageBytes`, optional
+  `extension`, optional `mimeType`, and `overwrite`.
+- The command runs on `spawn_blocking`, validates pack/outfit/emotion through
+  existing sanitizers, detects image format from magic bytes, rejects mismatched
+  extension/MIME hints, and limits image size to the existing portrait limit.
+- It writes through safe character-pack paths and temp-file rename, then returns
+  the refreshed outfit asset list.
+- It requires explicit `overwrite:true` before replacing an existing emotion.
+- It is not wired to `workshop.js`; no visible "自动抠图" button exists yet.
+
+Implemented Phase 4G:
+
+- Added inert workflow job routes:
+  - `POST /capabilities/workflows/{workflowId}/jobs`
+  - `GET /capabilities/workflow-jobs/{jobId}`
+- The start route calls the existing preflight boundary first.
+- Missing config, unknown workflow, and invalid handles do not create jobs.
+- When preflight reaches `workflow_runner_not_bound`, the route creates a
+  profile-scoped `queued-but-inert` job record and returns
+  `status:"not-implemented"`, `canRun:false`, and `executionReady:false`.
+- Job status reads are scoped to the resolved profile id and do not expose
+  internal scope fields.
+- Job records do not contain raw image bytes, local paths, URL inputs, tokens,
+  secrets, or outputs.
+- No background task is submitted yet, and no ComfyUI request is made.
+
 Acceptance:
 
 - workflow JSON path can be configured
@@ -2234,9 +2314,10 @@ Acceptance:
 Current Phase 4A boundary:
 
 - Read-only status guidance is implemented.
-- Phase 4B backend preflight, Phase 4C low-level ComfyUI client, and Phase 4D
-  in-memory input slot mapping are implemented, but real execution remains
-  pending.
+- Phase 4B backend preflight, Phase 4C low-level ComfyUI client, Phase 4D
+  in-memory input slot mapping, Phase 4E output ref parsing, Phase 4F Tauri
+  generated portrait import, and Phase 4G inert job routes are implemented, but
+  real execution remains pending.
 - The next execution slice must add a real runner boundary, background task
   progress, and safe character-pack output writing before any clickable
   "自动抠图" button appears.
