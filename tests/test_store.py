@@ -1,13 +1,133 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from companion_v01.store import MemoryStore
 
 
 class MemoryStoreEvalTurnTests(unittest.TestCase):
+    def test_legacy_database_adds_character_scope_columns_before_indexes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "akane_memory_v01.db"
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE chat_messages (
+                        source_id TEXT PRIMARY KEY,
+                        profile_user_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        seq_no INTEGER NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        date_label TEXT NOT NULL,
+                        time_of_day TEXT NOT NULL,
+                        semantic_tags_json TEXT NOT NULL,
+                        is_summarized INTEGER NOT NULL DEFAULT 0,
+                        summary_id TEXT NOT NULL DEFAULT ''
+                    );
+
+                    CREATE TABLE memory_summaries (
+                        summary_id TEXT PRIMARY KEY,
+                        profile_user_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        date_label TEXT NOT NULL,
+                        time_of_day TEXT NOT NULL,
+                        period_label TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        importance REAL NOT NULL,
+                        diary_summary TEXT NOT NULL,
+                        key_events_json TEXT NOT NULL,
+                        core_facts_json TEXT NOT NULL,
+                        semantic_tags_json TEXT NOT NULL,
+                        source_start_seq INTEGER NOT NULL,
+                        source_end_seq INTEGER NOT NULL,
+                        source_ids_json TEXT NOT NULL
+                    );
+
+                    CREATE TABLE memory_semantic_summaries (
+                        semantic_id TEXT PRIMARY KEY,
+                        profile_user_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        period_start_ts INTEGER NOT NULL,
+                        period_end_ts INTEGER NOT NULL,
+                        date_label TEXT NOT NULL,
+                        time_of_day TEXT NOT NULL,
+                        importance REAL NOT NULL,
+                        semantic_summary TEXT NOT NULL,
+                        stable_facts_json TEXT NOT NULL,
+                        recurring_topics_json TEXT NOT NULL,
+                        important_people_json TEXT NOT NULL,
+                        open_loops_json TEXT NOT NULL,
+                        semantic_tags_json TEXT NOT NULL,
+                        source_summary_ids_json TEXT NOT NULL,
+                        reinforcement_count INTEGER NOT NULL DEFAULT 1,
+                        last_reinforced_ts INTEGER NOT NULL
+                    );
+
+                    CREATE TABLE eval_turns (
+                        trace_id TEXT PRIMARY KEY,
+                        created_at INTEGER NOT NULL,
+                        session_id TEXT NOT NULL,
+                        profile_user_id TEXT NOT NULL,
+                        user_message TEXT NOT NULL,
+                        router_json TEXT NOT NULL,
+                        verifier_json TEXT NOT NULL,
+                        final_json TEXT NOT NULL
+                    );
+
+                    CREATE TABLE chat_sessions (
+                        session_id TEXT PRIMARY KEY,
+                        profile_user_id TEXT NOT NULL,
+                        display_title TEXT NOT NULL DEFAULT '',
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    );
+                    """
+                )
+                conn.commit()
+
+            MemoryStore(Path(temp_dir))
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                for table_name in (
+                    "chat_messages",
+                    "memory_summaries",
+                    "memory_semantic_summaries",
+                    "eval_turns",
+                    "chat_sessions",
+                ):
+                    columns = {
+                        row[1]
+                        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+                    }
+                    self.assertIn("character_pack_id", columns)
+
+                summary_columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(memory_summaries)").fetchall()
+                }
+                self.assertIn("is_semanticized", summary_columns)
+
+                indexes = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'index'"
+                    ).fetchall()
+                }
+                self.assertIn("idx_chat_profile_character_time", indexes)
+                self.assertIn("idx_summary_profile_character_time", indexes)
+                self.assertIn("idx_summary_semanticized", indexes)
+                self.assertIn("idx_semantic_profile_character_time", indexes)
+                self.assertIn("idx_chat_sessions_profile_character_updated", indexes)
+
     def test_attachment_handle_sequence_uses_visible_prefix_not_kind(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))

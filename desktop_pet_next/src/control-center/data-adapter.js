@@ -68,6 +68,9 @@ function adaptCharacterPage(page, runtime = {}) {
   if (!character.selectedPackId) {
     character.selectedPackId = character.selectedPack || "";
   }
+  if (Array.isArray(runtime.availablePacks)) {
+    character.availablePacks = normalizeCharacterAvailablePacks(runtime.availablePacks, character.selectedPackId);
+  }
   if (Array.isArray(runtime.packInfo) && runtime.packInfo.length) {
     character.packInfo = runtime.packInfo;
   }
@@ -105,6 +108,39 @@ function adaptCharacterPage(page, runtime = {}) {
     };
   }
   return character;
+}
+
+function normalizeCharacterAvailablePacks(packs, selectedPackId) {
+  const selected = String(selectedPackId || "").trim();
+  const seen = new Set();
+  return (Array.isArray(packs) ? packs : [])
+    .map((pack) => {
+      if (!pack || typeof pack !== "object") return null;
+      const profile = pack.profile && typeof pack.profile === "object" ? pack.profile : {};
+      const identity = profile.identity && typeof profile.identity === "object" ? profile.identity : {};
+      const appearance = profile.appearance && typeof profile.appearance === "object" ? profile.appearance : {};
+      const assets = profile.assets && typeof profile.assets === "object" ? profile.assets : {};
+      const id = String(pack.id || pack.packId || pack.pack_id || "").trim();
+      if (!id || seen.has(id)) return null;
+      seen.add(id);
+      const characterId = String(pack.characterId || pack.character_id || identity.id || "").trim();
+      const name = String(pack.name || identity.name || characterId || id).trim();
+      const appName = String(pack.appName || pack.app_name || identity.appName || identity.app_name || name).trim();
+      const assetCount = Number(pack.assetCount || pack.asset_count || 0);
+      return {
+        id,
+        characterId,
+        name,
+        appName: appName || name || id,
+        schemaVersion: String(pack.schemaVersion || pack.schema_version || profile.schemaVersion || profile.schema_version || "").trim(),
+        defaultOutfit: String(pack.defaultOutfit || pack.default_outfit || appearance.defaultOutfit || appearance.default_outfit || "").trim(),
+        defaultEmotion: String(pack.defaultEmotion || pack.default_emotion || appearance.defaultEmotion || appearance.default_emotion || "").trim(),
+        assetCount: Number.isFinite(assetCount) && assetCount > 0 ? assetCount : 0,
+        assetSource: String(pack.assetSource || pack.asset_source || assets.runtimeSource || assets.runtime_source || "").trim(),
+        selected: selected ? id === selected : Boolean(pack.selected)
+      };
+    })
+    .filter(Boolean);
 }
 
 function adaptVoicePage(page, runtime = {}) {

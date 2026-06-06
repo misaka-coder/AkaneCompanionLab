@@ -138,9 +138,12 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
                 },
                 "persona_form": {
                     "personality_keywords": ["慵懒", "毒舌"],
+                    "character_core": "看起来没干劲，但其实很可靠。",
+                    "behavior_style": "用户忙碌时少打扰；用户低落时平静陪着。",
                     "speaking_style": "短句偏多，吐槽自然。",
                     "catchphrases": ["真麻烦啊"],
                     "boundaries": "不要把自己说成通用客服。",
+                    "interaction_principles": "不要长篇说教，关心藏在具体提醒里。",
                     "proactive_style": "先轻轻吐槽一句，再问是否需要帮忙。",
                     "example_lines": [{"text": "又卡住了？把问题说出来。", "emotion": "normal"}],
                     "extra_setting": "补充世界观。",
@@ -170,6 +173,9 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         self.assertIn("角色自称：我", context["system_context"])
         self.assertIn("住在桌面边上的巫女", context["system_context"])
         self.assertIn("性格关键词: 慵懒、毒舌", context["reference_context"])
+        self.assertIn("角色核心: 看起来没干劲，但其实很可靠。", context["reference_context"])
+        self.assertIn("行为倾向: 用户忙碌时少打扰", context["reference_context"])
+        self.assertIn("互动原则: 不要长篇说教", context["reference_context"])
         self.assertIn("又卡住了？把问题说出来。", context["reference_context"])
 
 

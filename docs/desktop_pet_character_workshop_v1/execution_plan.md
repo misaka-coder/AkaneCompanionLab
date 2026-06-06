@@ -2,8 +2,9 @@
 
 This plan is for implementing the creator-facing desktop pet character workshop without damaging the existing project.
 
-Primary design document: `docs/desktop_pet_character_workshop_v1_design.md`
-Agent prompt pack: `docs/desktop_pet_character_workshop_v1_agent_prompts.md`
+Primary design document: `docs/desktop_pet_character_workshop_v1/design.md`
+Workshop UI redesign document: `docs/desktop_pet_character_workshop_v1/workshop-ui-design.md`
+Agent prompt pack: `docs/desktop_pet_character_workshop_v1/agent_prompts.md`
 
 ## Ground Rules
 
@@ -27,10 +28,15 @@ Updated: 2026-06-05
 - **Phase 3A** implemented: persona form UI with tab navigation. Loads identity + persona fields from selected character pack's `character.json`. Local draft save to `localStorage` with auto-save on blur and manual save button. Empty state when no pack selected. Example lines with dynamic add/remove.
 - **Phase 3B** implemented: `save_character_pack` (deep-merge identity + persona_form into character.json on disk) and `create_character_pack` (new pack from template with directory structure). Workshop save button calls Tauri command first, falls back to localStorage. "新建角色" button opens a create dialog.
 - **Phase 4A complete**: `upload_portrait_image` (magic-byte detection, atomic write, Unicode-safe IDs), `list_pack_assets`, `delete/rename` commands, `set_default_emotion` Tauri commands. Workshop "立绘管理" tab: outfit cards, upload, preview, delete/rename, set-default/music, missing-emotion warnings.
-- **Phase 4B complete**: `save_calibration` + `resize_pet_window` Tauri commands. Workshop "显示校准" tab: outfit selector, 7 sliders (window W/H, scale, offset X/Y, bubble X/Y), auto-layout from image aspect ratio, real-time preview with animated bubble dot. `setLayout` added to visual-renderer, `applyCharacterLayout` in main.js with signature-based debounce to avoid redundant window resizes. Atomic writes + validation on all new commands.
+- **Phase 4B complete**: `save_calibration` + `resize_pet_window` Tauri commands. Workshop "显示校准" tab: outfit selector, 7 sliders (window W/H, scale, offset X/Y, bubble X/Y), auto-layout from image aspect ratio, real-time draggable bubble preview, and lightweight bubble style presets. `setLayout` added to visual-renderer and now applies portrait plus bubble layout; `applyCharacterLayout` in main.js uses signature-based debounce to avoid redundant window resizes. Atomic writes + validation on all new commands.
 - **Phase 3 import/export complete**: `export_character_pack` Tauri command (recursive zip via `zip` crate, saves to desktop). Workshop header buttons: 📥 Import (file picker → `install_character_pack_zip_bytes`, refresh list), 📤 Export (call `export_character_pack`, show result, open folder).
 - Repair pass complete: replaced the undefined `characterPackRegistry` layout lookup, restored valid workshop DOM nesting, made `save_character_pack` create missing `persona_form` for v0.1 packs, routed portrait asset paths through safe child resolution, changed empty sanitized asset ids to hard errors, and switched the default settings entry to `control-center-lab.html` with `AKANE_LEGACY_SETTINGS=1` as rollback.
 - Memory isolation pass complete: `character_pack_id` is persisted on chat messages, chat sessions, episodic summaries, semantic summaries, eval turns, and vector metadata. Desktop-pet turn processing, background summary compaction, explicit `retrieve_memory`, and `/sessions` reads now scope to the active character when a pack id is present. Shared music/gift resources intentionally remain profile-scoped.
+- **Phase 6 first slice complete**: workshop "测试对话" tab sends `/think` with the selected `character_pack_id`, `client_mode=desktop_pet`, an isolated `workshop_test_*` session/profile, and a minimal current visual payload. It renders user/assistant messages, streamed/final speech segments, final emotion, prompt-field summary, and memory scope indicators. Full system prompt text remains hidden.
+- **Phase 6 save-boundary slice complete**: if the selected pack has unsaved persona edits, test chat now requires a successful file save before `/think`; ordinary save still falls back to localStorage, but test chat stops when the backend-visible `character.json` was not updated.
+- **Phase 6 apply/visual slice complete**: test chat can apply the selected pack to the live desktop pet through the existing `setCharacterPack` settings command, and `current_visual` now carries outfit/emotion/available-emotion/layout metadata without local file paths.
+- **Phase 7 demo-readiness slice complete**: first-use create/import prompts, pack readiness rows, no-outfit/no-expression states, missing default portrait warnings, lightweight save/switch/preview/error feedback, and README usage notes are implemented without adding fake runtime actions.
+- **Post-V1 UI redesign baseline drafted**: `workshop-ui-design.md` captures the next visual pass as a quiet, efficient character editor: compact character rows instead of large cards, visible hierarchy instead of dropdown-driven structure, calmer typography/colors, and light anime detail without binding the UI to one character.
 
 ## Phase 0: Repo Mapping And Safety Baseline
 
@@ -211,7 +217,7 @@ Status:
 
 - Phase 3A implemented: tab navigation, persona form with all identity + persona fields, example lines, localStorage draft auto-save, empty state.
 - Phase 3B implemented: `save_character_pack` Tauri command (deep-merge into character.json), `create_character_pack` Tauri command (new pack from template), "新建角色" dialog in workshop UI, save button wired to file save with localStorage fallback. Build passes on both Rust and Vite sides.
-- Portrait upload/calibration (Phase 4) and test chat (Phase 6) remain pending.
+- Import/export, portrait management, display calibration, test chat, apply-to-desktop, and demo-readiness flows are now implemented in later phases. Remaining work here is manual verification and visual redesign, not missing Phase 3 shell functionality.
 
 Suggested tests:
 
@@ -360,6 +366,15 @@ Acceptance:
 - Creator edits persona form, tests a message, sees changed style.
 - Test chat does not pollute production session unless explicitly applied.
 
+Status:
+
+- First slice implemented in `workshop.html` / `src/workshop.js` / `src/workshop.css`.
+- The workshop saves dirty persona fields before sending a test message, then calls `/think` with `client_mode=desktop_pet` and the selected `character_pack_id`.
+- Test calls use an isolated `workshop_test_*` session/profile instead of `state.sessionId` / `state.profileUserId`, so production desktop-pet memory scope is not reused.
+- Prompt diagnostics currently show field-level summaries from `character.json` / form data only; full system prompts are intentionally not rendered.
+- Save-boundary repair: when testing the pack currently being edited, localStorage fallback is not treated as enough because the backend prompt builder reads the on-disk character pack.
+- Apply/visual repair: the test panel has an "应用到桌宠" control backed by the real settings event boundary, plus a small preview and backend-safe `current_visual` fields for the selected outfit, emotion, available emotions, and saved layout.
+
 ## Phase 7: Polish And Demo Readiness
 
 Goal: make the capability obvious and attractive.
@@ -388,6 +403,54 @@ Acceptance:
 - A new viewer can find customization without reading source files.
 - The workshop looks like the place where the product's main power lives.
 
+Status:
+
+- First-use route: when there are zero or one packs, the character list highlights `新建角色` and `导入角色包`.
+- Empty/resource states: list and portrait tabs now show no-pack, no-outfit, no-expression, missing default outfit, missing default emotion, and missing default portrait states.
+- Generic labels: workshop-specific UI does not hardcode Akane as the active character; Akane remains documented only as a demo/sample pack.
+- Feedback: save success, character switching, expression preview, and create-form validation use small CSS animations.
+- README now documents create/import/export and memory-isolation behavior for creator handoff.
+
+## Phase 8: Workshop UI Redesign
+
+Goal: improve the workshop's visual clarity and usability after the V1 functional loop is in place.
+
+Primary document:
+
+- `workshop-ui-design.md`
+
+Tasks:
+
+1. Replace the current blue/glass-heavy visual treatment with a calmer app-like surface.
+2. Fix horizontal overflow across desktop and mobile widths.
+3. Redesign the character list as compact rows instead of large rounded cards.
+4. Keep primary hierarchy visible with tabs/rails/sections, not dropdown-first navigation.
+5. Reduce form visual noise and make persona editing feel like a structured editor.
+6. Make portraits, calibration, and test chat feel like task-specific tools.
+7. Keep action boundaries unchanged; do not add fake bridges for visual completeness.
+
+Acceptance:
+
+- The first screen clearly shows the character list and selected character status.
+- Users can find create/import/edit/apply/test without reading docs.
+- The UI no longer reads as a pile of cards or a one-hue blue prototype.
+- Text scale, color, and spacing are consistent across tabs.
+- Deferred or unavailable actions remain honest and do not fake success.
+
+Suggested tests:
+
+```powershell
+python -m unittest tests.test_desktop_pet_frontend_contract
+cd desktop_pet_next
+npm run build
+```
+
+Manual:
+
+- Browser smoke `workshop.html` at desktop width and narrow viewport.
+- Verify list, persona, portraits, calibration, and test tabs render without horizontal scroll.
+- Verify create/import/export/apply buttons still hit their existing real boundaries.
+
 ## Integration Order
 
 Recommended order:
@@ -399,6 +462,7 @@ Recommended order:
 5. Phase 5 memory isolation.
 6. Phase 6 test chat.
 7. Phase 7 polish.
+8. Phase 8 workshop UI redesign.
 
 Memory isolation is critical, but it can be started in parallel after the character id contract is stable.
 

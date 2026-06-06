@@ -32,6 +32,7 @@ import {
 } from "./control-center/action-helpers.js";
 import { createControlCenterSnapshot } from "./control-center/data-adapter.js";
 import {
+  buildCharacterRuntimePatchFromSettingsSnapshot,
   buildMusicRuntimePatch,
   buildOverviewEmotionRuntimePatchFromSettingsSnapshot,
   CONTROL_CENTER_SOURCE_KIND,
@@ -51,6 +52,11 @@ const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 let latestRuntimeSnapshot = null;
 let runtimeSnapshotHydrateTimer = 0;
 let renderedPageId = "";
+const runtimePatchSignatures = {
+  music: "",
+  overview: "",
+  character: ""
+};
 const pageScrollPositions = new Map();
 const clientHandledActionIds = new Set(CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS);
 const root = document.querySelector("#app");
@@ -862,9 +868,9 @@ function renderStaticSwitch(isOn) {
 
 function renderCharacterPage() {
   const activeOutfit =
-    characterPage.outfits.find((item) => item.id === state.activeOutfit) || characterPage.outfits[0];
+    characterPage.outfits.find((item) => item.id === state.activeOutfit) || characterPage.outfits[0] || {};
   const activeEmotion =
-    characterPage.emotions.find((item) => item.id === state.activeEmotion) || characterPage.emotions[0];
+    characterPage.emotions.find((item) => item.id === state.activeEmotion) || characterPage.emotions[0] || {};
 
   return `
     <section class="character-lab-page">
@@ -882,6 +888,7 @@ function renderCharacterPage() {
             <span>${escapeHtml(characterPage.selectedPack)}</span>
             ${icon("chevronDown")}
           </button>
+          ${renderCharacterPackSwitcher()}
           <div class="pack-action-row">
             <button class="pink-action" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterImportZip}">${icon("cloudUpload")} 导入 zip</button>
             <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterOpenPackFolder}">${icon("folder")} 打开角色包目录</button>
@@ -964,6 +971,54 @@ function renderCharacterPage() {
         <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterRestoreDefaults}">${icon("undo")} ${escapeHtml(characterPage.actions[2])}</button>
       </div>
     </section>
+  `;
+}
+
+function renderCharacterPackSwitcher() {
+  const packs = normalizeCharacterPackCards(characterPage.availablePacks, characterPage.selectedPackId);
+  if (!packs.length) {
+    return `<p class="pack-switcher-empty">等待桌宠同步可用角色包。</p>`;
+  }
+  return `
+    <div class="pack-switcher" aria-label="可用角色包">
+      ${packs.map(renderCharacterPackSwitchCard).join("")}
+    </div>
+  `;
+}
+
+function normalizeCharacterPackCards(packs, selectedPackId) {
+  const selected = String(selectedPackId || characterPage.selectedPack || "").trim();
+  const seen = new Set();
+  return (Array.isArray(packs) ? packs : [])
+    .map((pack) => {
+      if (!pack || typeof pack !== "object") return null;
+      const id = String(pack.id || pack.packId || pack.pack_id || "").trim();
+      if (!id || seen.has(id)) return null;
+      seen.add(id);
+      const label = String(pack.appName || pack.app_name || pack.name || pack.label || id).trim();
+      const detail = [
+        String(pack.name || pack.characterId || pack.character_id || "").trim(),
+        String(pack.defaultOutfit || pack.default_outfit || "").trim()
+      ].filter(Boolean).join(" · ");
+      return {
+        id,
+        label: label || id,
+        detail,
+        selected: selected ? id === selected : Boolean(pack.selected)
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+function renderCharacterPackSwitchCard(pack) {
+  const disabled = pack.selected ? " disabled aria-disabled=\"true\"" : "";
+  return `
+    <button class="pack-switch-card ${pack.selected ? "active" : ""}" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.characterSelectPack}" data-payload-field="packId" data-payload-value="${escapeAttr(pack.id)}" data-payload-pack-id="${escapeAttr(pack.id)}"${disabled}>
+      <strong>${escapeHtml(pack.label)}</strong>
+      <span>${escapeHtml(pack.detail || pack.id)}</span>
+      ${pack.selected ? `<small>${icon("check")} 当前</small>` : ""}
+    </button>
   `;
 }
 
@@ -1888,13 +1943,15 @@ function renderQuickAction(item, index) {
 }
 
 function renderAbilityModule(item) {
+  const statusLabel = item.statusLabel || "可用";
+  const statusTone = item.statusTone || "ready";
   return `
     <article class="module-tile ${item.tone}">
       <div class="module-icon">${icon(item.icon)}</div>
       <div>
         <div class="module-title-row">
           <h3>${escapeHtml(item.title)}</h3>
-          <span>运行中</span>
+          <span class="module-status ${escapeAttr(statusTone)}">${escapeHtml(statusLabel)}</span>
         </div>
         <p>${escapeHtml(item.description)}</p>
       </div>
@@ -2289,8 +2346,22 @@ function applySettingsSnapshotPatch(runtimeSnapshot) {
   }) || undefined;
 
   const overviewRuntime = buildOverviewEmotionRuntimePatchFromSettingsSnapshot(runtimeSnapshot) || undefined;
+  const characterRuntime = buildCharacterRuntimePatchFromSettingsSnapshot(runtimeSnapshot) || undefined;
 
-  if (!musicRuntime && !overviewRuntime) return;
+  if (!musicRuntime && !overviewRuntime && !characterRuntime) return;
+
+  const nextSignatures = {
+    music: musicRuntime ? stableRuntimePatchSignature(musicRuntime) : runtimePatchSignatures.music,
+    overview: overviewRuntime ? stableRuntimePatchSignature(overviewRuntime) : runtimePatchSignatures.overview,
+    character: characterRuntime ? stableRuntimePatchSignature(characterRuntime) : runtimePatchSignatures.character
+  };
+  const changed = {
+    music: nextSignatures.music !== runtimePatchSignatures.music,
+    overview: nextSignatures.overview !== runtimePatchSignatures.overview,
+    character: nextSignatures.character !== runtimePatchSignatures.character
+  };
+  if (!changed.music && !changed.overview && !changed.character) return;
+  Object.assign(runtimePatchSignatures, nextSignatures);
 
   const nextSnapshot = createControlCenterSnapshot({
     navItems,
@@ -2307,12 +2378,24 @@ function applySettingsSnapshotPatch(runtimeSnapshot) {
     abilitiesPage,
     advancedPage,
     musicRuntime,
-    overviewRuntime
+    overviewRuntime,
+    characterRuntime
   });
   applyControlCenterSnapshot(nextSnapshot, {
     renderShell: false,
-    renderPage: state.activePage === "music" || state.activePage === "overview"
+    renderPage:
+      (state.activePage === "music" && changed.music) ||
+      (state.activePage === "overview" && changed.overview) ||
+      (state.activePage === "character" && changed.character)
   });
+}
+
+function stableRuntimePatchSignature(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
 }
 
 function scheduleRuntimeSnapshotHydrate(delay = RUNTIME_SNAPSHOT_HYDRATE_DELAY_MS) {

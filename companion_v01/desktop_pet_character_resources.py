@@ -331,9 +331,12 @@ def _format_persona_form(value: dict[str, Any]) -> str:
     lines: list[str] = []
     fields = [
         ("personality_keywords", "性格关键词"),
+        ("character_core", "角色核心"),
+        ("behavior_style", "行为倾向"),
         ("speaking_style", "说话风格"),
         ("catchphrases", "常用表达"),
         ("boundaries", "边界与禁忌"),
+        ("interaction_principles", "互动原则"),
         ("proactive_style", "主动搭话风格"),
         ("extra_setting", "补充设定"),
     ]

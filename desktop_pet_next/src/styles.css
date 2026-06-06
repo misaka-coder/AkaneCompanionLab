@@ -4,6 +4,11 @@
   --overlay-side-gap: calc(12px * var(--pet-scale));
   --overlay-bottom-gap: calc(18px * var(--pet-scale));
   --bubble-safe-top: calc(32px * var(--pet-scale));
+  --bubble-position-safe-top: calc(8px * var(--pet-scale));
+  --bubble-anchor-x: 50%;
+  --bubble-anchor-y: calc(8px * var(--pet-scale));
+  --bubble-max-width: calc(270px * var(--pet-scale));
+  --bubble-edge-safe: calc(74px * var(--pet-scale));
   --chat-input-min-height: calc(42px * var(--pet-scale));
   --chat-input-max-height: calc(96px * var(--pet-scale));
   --voice-button-size: calc(42px * var(--pet-scale));
@@ -138,29 +143,41 @@ textarea {
 
 .bubble {
   position: absolute;
-  left: 50%;
-  top: calc(8px * var(--pet-scale));
+  left: clamp(
+    calc(var(--overlay-side-gap) + var(--bubble-edge-safe)),
+    var(--bubble-anchor-x),
+    calc(100vw - var(--overlay-side-gap) - var(--bubble-edge-safe))
+  );
+  top: clamp(
+    var(--bubble-position-safe-top),
+    var(--bubble-anchor-y),
+    calc(100vh - var(--overlay-bottom-gap) - calc(126px * var(--pet-scale)))
+  );
   z-index: 7;
   box-sizing: border-box;
   display: inline-block;
   width: max-content;
   min-width: 0;
-  max-width: min(calc(270px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
+  max-width: min(var(--bubble-max-width), calc(100vw - (var(--overlay-side-gap) * 2)));
   height: auto;
   min-height: 0;
   max-height: min(calc(184px * var(--pet-scale)), calc(44vh - var(--bubble-safe-top)));
-  transform: translateX(-50%) translateY(-4px);
-  padding: calc(7px * var(--pet-scale)) calc(11px * var(--pet-scale));
-  border: 1px solid rgb(180 200 230 / 0.38);
-  border-radius: calc(11px * var(--pet-scale));
-  color: #3a4858;
+  transform: translateX(-50%) translateY(-5px) scale(0.985);
+  padding: calc(9px * var(--pet-scale)) calc(14px * var(--pet-scale));
+  border: 1px solid rgb(172 196 228 / 0.46);
+  border-radius: calc(14px * var(--pet-scale));
+  color: #334252;
   background:
-    linear-gradient(180deg, rgb(242 247 255 / 0.96), rgb(228 238 252 / 0.92));
-  box-shadow: 0 8px 22px rgb(20 30 50 / 0.12);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+    linear-gradient(145deg, rgb(255 255 255 / 0.98), rgb(231 241 255 / 0.91) 72%, rgb(222 235 252 / 0.94));
+  box-shadow:
+    0 12px 30px rgb(20 30 50 / 0.16),
+    0 2px 8px rgb(255 255 255 / 0.44) inset,
+    0 -1px 0 rgb(118 152 198 / 0.12) inset;
+  -webkit-backdrop-filter: blur(12px) saturate(1.08);
+  backdrop-filter: blur(12px) saturate(1.08);
   font-size: calc(12px * var(--pet-scale));
-  line-height: 1.5;
+  font-weight: 540;
+  line-height: 1.55;
   text-align: left;
   white-space: normal;
   word-break: normal;
@@ -171,15 +188,15 @@ textarea {
   visibility: hidden;
   pointer-events: none;
   transition:
-    opacity 0.22s ease,
-    visibility 0.22s ease,
-    transform 0.22s ease;
+    opacity 0.2s ease,
+    visibility 0.2s ease,
+    transform 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.12);
 }
 
 .bubble.visible {
   opacity: 1;
   visibility: visible;
-  transform: translateX(-50%) translateY(0);
+  transform: translateX(-50%) translateY(0) scale(1);
 }
 
 .bubble-text {
@@ -194,8 +211,8 @@ textarea {
 }
 
 .bubble[data-size="short"] {
-  padding-block: calc(3px * var(--pet-scale));
-  border-radius: calc(10px * var(--pet-scale));
+  padding-block: calc(5px * var(--pet-scale));
+  border-radius: calc(13px * var(--pet-scale));
 }
 
 .bubble[data-size="short"] .bubble-text {
@@ -204,20 +221,38 @@ textarea {
 }
 
 .bubble[data-size="long"] {
-  max-width: min(calc(304px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
+  max-width: min(
+    max(var(--bubble-max-width), calc(304px * var(--pet-scale))),
+    calc(100vw - (var(--overlay-side-gap) * 2))
+  );
 }
 
+.bubble::before,
 .bubble::after {
   content: "";
   position: absolute;
+  pointer-events: none;
+}
+
+.bubble::before {
+  inset: 1px 1px auto;
+  z-index: 0;
+  height: 42%;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.58), rgb(255 255 255 / 0));
+}
+
+.bubble::after {
   left: 58%;
   bottom: calc(-7px * var(--pet-scale));
   z-index: 1;
   width: calc(10px * var(--pet-scale));
   height: calc(10px * var(--pet-scale));
-  border-right: 1px solid rgb(180 200 230 / 0.34);
-  border-bottom: 1px solid rgb(180 200 230 / 0.34);
-  background: rgb(228 238 252 / 0.94);
+  border-right: 1px solid rgb(172 196 228 / 0.42);
+  border-bottom: 1px solid rgb(172 196 228 / 0.42);
+  background: rgb(231 241 255 / 0.95);
+  box-shadow: 2px 2px 4px rgb(20 30 50 / 0.04);
   transform: translateX(-50%) rotate(45deg);
 }
 
@@ -234,15 +269,66 @@ textarea {
   background: rgb(140 165 205 / 0.42);
 }
 
+.stage[data-bubble-style="paper"] .bubble {
+  border-color: rgb(216 181 102 / 0.54);
+  color: #4d3f2a;
+  background:
+    linear-gradient(145deg, rgb(255 252 237 / 0.99), rgb(255 243 199 / 0.95) 68%, rgb(246 225 165 / 0.94));
+  box-shadow:
+    0 12px 30px rgb(120 88 34 / 0.16),
+    0 2px 8px rgb(255 255 255 / 0.56) inset,
+    0 -1px 0 rgb(148 105 28 / 0.12) inset;
+}
+
+.stage[data-bubble-style="paper"] .bubble::after {
+  border-right-color: rgb(216 181 102 / 0.46);
+  border-bottom-color: rgb(216 181 102 / 0.46);
+  background: rgb(255 243 199 / 0.96);
+}
+
+.stage[data-bubble-style="clear"] .bubble {
+  border-color: rgb(255 255 255 / 0.66);
+  color: #26384c;
+  background:
+    linear-gradient(150deg, rgb(255 255 255 / 0.54), rgb(230 241 255 / 0.34));
+  box-shadow:
+    0 12px 32px rgb(20 30 50 / 0.12),
+    0 1px 8px rgb(255 255 255 / 0.58) inset;
+  -webkit-backdrop-filter: blur(18px) saturate(1.18);
+  backdrop-filter: blur(18px) saturate(1.18);
+}
+
+.stage[data-bubble-style="clear"] .bubble::after {
+  border-right-color: rgb(255 255 255 / 0.5);
+  border-bottom-color: rgb(255 255 255 / 0.5);
+  background: rgb(255 255 255 / 0.42);
+}
+
+.stage[data-bubble-style="dark"] .bubble {
+  border-color: rgb(255 255 255 / 0.12);
+  color: #f4f7fb;
+  background:
+    linear-gradient(145deg, rgb(48 57 76 / 0.95), rgb(22 29 42 / 0.92));
+  box-shadow:
+    0 14px 34px rgb(8 12 20 / 0.28),
+    0 1px 0 rgb(255 255 255 / 0.08) inset;
+}
+
+.stage[data-bubble-style="dark"] .bubble::after {
+  border-right-color: rgb(255 255 255 / 0.12);
+  border-bottom-color: rgb(255 255 255 / 0.12);
+  background: rgb(22 29 42 / 0.92);
+}
+
 .chat-form {
   position: absolute;
   left: 50%;
   bottom: var(--overlay-bottom-gap);
   z-index: 8;
   display: flex;
-  align-items: flex-end;
-  gap: calc(8px * var(--pet-scale));
-  width: min(calc(324px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
+  align-items: center;
+  gap: calc(10px * var(--pet-scale));
+  width: min(calc(344px * var(--pet-scale)), calc(100vw - (var(--overlay-side-gap) * 2)));
   transform: translateX(-50%);
   pointer-events: auto;
 }
@@ -255,21 +341,28 @@ textarea {
   height: var(--chat-input-min-height);
   min-height: var(--chat-input-min-height);
   max-height: var(--chat-input-max-height);
-  padding: calc(10px * var(--pet-scale)) calc(14px * var(--pet-scale));
-  border: 1px solid rgb(180 200 230 / 0.4);
-  border-radius: 16px;
+  padding: calc(10px * var(--pet-scale)) calc(17px * var(--pet-scale));
+  border: 1px solid rgb(176 199 230 / 0.44);
+  border-radius: calc(24px * var(--pet-scale));
   outline: none;
   resize: none;
   overflow: hidden;
   scrollbar-width: none;
-  color: #3a4858;
+  color: #344354;
   background:
-    linear-gradient(180deg, rgb(242 247 255 / 0.96), rgb(228 238 252 / 0.92));
-  box-shadow: 0 8px 22px rgb(20 30 50 / 0.1);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+    linear-gradient(145deg, rgb(255 255 255 / 0.86), rgb(232 241 255 / 0.68));
+  box-shadow:
+    0 12px 30px rgb(20 30 50 / 0.13),
+    0 1px 9px rgb(255 255 255 / 0.62) inset,
+    0 -1px 0 rgb(120 150 190 / 0.1) inset;
+  -webkit-backdrop-filter: blur(16px) saturate(1.12);
+  backdrop-filter: blur(16px) saturate(1.12);
   font-size: calc(13px * var(--pet-scale));
   line-height: 1.6;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    background 0.16s ease;
 }
 
 .chat-form textarea::-webkit-scrollbar {
@@ -278,8 +371,13 @@ textarea {
 }
 
 .chat-form textarea:focus {
-  border-color: rgb(140 175 220 / 0.64);
-  box-shadow: 0 4px 20px rgb(80 120 180 / 0.14);
+  border-color: rgb(138 171 218 / 0.72);
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 0.92), rgb(232 241 255 / 0.75));
+  box-shadow:
+    0 14px 34px rgb(48 92 150 / 0.17),
+    0 0 0 3px rgb(138 171 218 / 0.12),
+    0 1px 9px rgb(255 255 255 / 0.7) inset;
 }
 
 .chat-form textarea::placeholder {
@@ -292,15 +390,19 @@ textarea {
   place-items: center;
   width: var(--voice-button-size);
   height: var(--voice-button-size);
-  border: 1px solid rgb(180 200 230 / 0.44);
+  border: 1px solid rgb(176 199 230 / 0.5);
   border-radius: 999px;
-  color: #4a5a6a;
+  color: #46566b;
   background:
-    radial-gradient(circle at 35% 25%, rgb(255 255 255 / 0.96), rgb(225 235 252 / 0.92));
-  box-shadow: 0 8px 22px rgb(20 30 50 / 0.11);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+    radial-gradient(circle at 36% 28%, rgb(255 255 255 / 0.98), rgb(239 245 255 / 0.94) 46%, rgb(220 232 249 / 0.9));
+  box-shadow:
+    0 12px 28px rgb(20 30 50 / 0.14),
+    0 2px 7px rgb(255 255 255 / 0.76) inset,
+    0 -1px 0 rgb(110 140 184 / 0.12) inset;
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  backdrop-filter: blur(14px) saturate(1.1);
   cursor: pointer;
+  font-weight: 760;
   line-height: 1;
   transition:
     transform 0.16s ease,
@@ -311,7 +413,9 @@ textarea {
 
 .voice-record-button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 26px rgb(20 30 50 / 0.15);
+  box-shadow:
+    0 14px 32px rgb(20 30 50 / 0.18),
+    0 2px 8px rgb(255 255 255 / 0.78) inset;
 }
 
 .voice-record-button.recording {
@@ -376,30 +480,32 @@ textarea {
 .debug-menu {
   position: absolute;
   z-index: 10;
+  box-sizing: border-box;
   width: min(268px, calc(100vw - 16px));
-  max-height: calc(100vh - 20px);
+  max-height: min(340px, calc(100vh - 16px));
   margin: 0;
-  padding: 8px 0;
+  padding: 8px 0 9px;
   border: 1px solid rgb(180 200 230 / 0.5);
-  border-radius: calc(16px * var(--pet-scale));
+  border-radius: 15px;
   color: #3a4858;
   background:
-    linear-gradient(180deg, rgb(242 247 255 / 0.98), rgb(232 240 252 / 0.95));
-  box-shadow: 0 16px 40px rgb(20 30 50 / 0.18);
+    linear-gradient(145deg, rgb(250 253 255 / 0.94), rgb(235 243 255 / 0.86));
+  box-shadow:
+    0 16px 40px rgb(20 30 50 / 0.18),
+    0 1px 9px rgb(255 255 255 / 0.58) inset;
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
   list-style: none;
   overflow-y: auto;
+  overscroll-behavior: contain;
   pointer-events: auto;
   scrollbar-width: thin;
   scrollbar-color: rgb(140 165 205 / 0.42) transparent;
 }
 
 .quick-menu {
-  width: min(224px, calc(100vw - 16px));
-  max-height: min(340px, calc(100vh - 20px));
-  padding: 8px 0 9px;
-  border-radius: 14px;
+  width: min(214px, calc(100vw - 16px));
+  max-height: min(340px, calc(100vh - 16px));
 }
 
 .quick-menu .menu-head {
@@ -408,8 +514,8 @@ textarea {
 
 .quick-menu-actions {
   grid-template-columns: 1fr 1fr;
-  gap: 7px;
-  padding-top: 3px;
+  gap: 6px;
+  padding: 3px 12px 4px;
 }
 
 .quick-menu .visual-section {
@@ -439,7 +545,7 @@ textarea {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 16px 10px;
+  padding: 6px 14px 8px;
 }
 
 .menu-head-icon {
@@ -462,8 +568,8 @@ textarea {
 }
 
 .menu-section {
-  margin: 5px 14px 3px;
-  padding-top: 7px;
+  margin: 4px 12px 3px;
+  padding-top: 6px;
   border-top: 1px solid rgb(180 200 230 / 0.28);
   color: rgb(58 72 88 / 0.5);
   font-size: 10px;
@@ -482,8 +588,8 @@ textarea {
   grid-template-columns: 54px 1fr 42px;
   align-items: center;
   gap: 8px;
-  min-height: 30px;
-  padding: 4px 14px;
+  min-height: 28px;
+  padding: 3px 12px;
   font-size: 11px;
 }
 
@@ -497,8 +603,8 @@ textarea {
 }
 
 .visual-control-row {
-  grid-template-columns: 42px minmax(0, 1fr) 38px;
-  min-height: 26px;
+  grid-template-columns: 38px minmax(0, 1fr) 36px;
+  min-height: 24px;
   padding-block: 2px;
 }
 
@@ -564,7 +670,7 @@ textarea {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
-  padding: 4px 14px;
+  padding: 4px 12px;
 }
 
 .menu-chips {
@@ -610,10 +716,14 @@ textarea {
 }
 
 .menu-actions button {
-  min-height: 30px;
-  padding: 5px 8px;
+  min-height: 28px;
+  padding: 4px 8px;
   font-size: 12px;
   line-height: 1.25;
+}
+
+.quick-menu .menu-actions button:disabled {
+  display: none;
 }
 
 .menu-actions button:hover,

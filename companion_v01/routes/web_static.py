@@ -19,6 +19,18 @@ def build_web_static_router(
     async def index():
         return FileResponse(web_dir / "index.html")
 
+    @router.get("/monogatari")
+    async def monogatari():
+        return FileResponse(web_dir / "monogatari.html")
+
+    @router.get("/monogatari.css")
+    async def monogatari_css():
+        return FileResponse(
+            web_dir / "monogatari.css",
+            media_type="text/css",
+            headers={"Cache-Control": "no-store"},
+        )
+
     @router.get("/preview")
     async def preview():
         return FileResponse(web_dir / "index.html")

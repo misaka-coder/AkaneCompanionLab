@@ -1241,7 +1241,13 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
     outfit: "cat",
     emotion: "happy",
     fetchImpl: async (url) => {
-      snapshotUrl = String(url);
+      const requestUrl = String(url);
+      if (requestUrl.includes("/control-center/snapshot")) {
+        snapshotUrl = requestUrl;
+      }
+      if (requestUrl.includes("/capabilities")) {
+        return { ok: false, status: 404, headers: { get: () => "" } };
+      }
       return {
         ok: true,
         status: 200,

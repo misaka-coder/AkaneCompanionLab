@@ -415,7 +415,7 @@ The current `akane.character.v0.1` can migrate gradually. V0.2 should be backwar
       "default": {
         "window": {"width": 420, "height": 620},
         "portrait": {"scale": 1.0, "offset_x": 0, "offset_y": 0, "fit": "contain"},
-        "bubble": {"anchor_x": 0.5, "anchor_y": 0.12, "max_width": 300}
+        "bubble": {"anchor_x": 0.5, "anchor_y": 0.12, "max_width": 300, "style": "soft"}
       }
     }
   },

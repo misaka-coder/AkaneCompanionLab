@@ -2,6 +2,8 @@ const STATIC_RENDERER_MODE = "static_portrait";
 const LIVE2D_PENDING_MODE = "live2d_pending";
 const DEFAULT_MOTION = "idle";
 const VALID_MOTIONS = new Set(["idle", "thinking", "speaking", "click"]);
+const DEFAULT_BUBBLE_STYLE = "soft";
+const VALID_BUBBLE_STYLES = new Set([DEFAULT_BUBBLE_STYLE, "paper", "clear", "dark"]);
 
 export function createVisualRenderer({ stage, image } = {}) {
   let mode = STATIC_RENDERER_MODE;
@@ -68,10 +70,12 @@ export function createVisualRenderer({ stage, image } = {}) {
         image.style.transform = "";
         image.style.transformOrigin = "";
       }
+      resetBubbleLayout(stage);
       delete stage.dataset.layoutApplied;
       return;
     }
     const portrait = layout.portrait || {};
+    const bubble = layout.bubble || {};
 
     const scale = Number(portrait.scale ?? 1) || 1;
     const offX = Number(portrait.offset_x ?? 0) || 0;
@@ -82,6 +86,7 @@ export function createVisualRenderer({ stage, image } = {}) {
       image.style.transformOrigin = normalizeTransformOrigin(portrait.anchor);
     }
 
+    applyBubbleLayout(stage, bubble);
     stage.dataset.layoutApplied = "true";
   }
 
@@ -128,4 +133,41 @@ function normalizeExpressionEntry(entry) {
 function normalizeTransformOrigin(value) {
   const origin = String(value || "").trim().replace(/_/g, " ");
   return origin || "bottom center";
+}
+
+function applyBubbleLayout(stage, bubble) {
+  const source = bubble && typeof bubble === "object" ? bubble : {};
+  const anchorX = normalizeUnit(source.anchor_x, 0.5);
+  const anchorY = normalizeUnit(source.anchor_y, 0.12);
+  const maxWidth = normalizePx(source.max_width, 300, 160, 520);
+  const style = normalizeBubbleStyle(source.style || source.theme);
+
+  stage.style.setProperty("--bubble-anchor-x", `${anchorX * 100}%`);
+  stage.style.setProperty("--bubble-anchor-y", `${anchorY * 100}%`);
+  stage.style.setProperty("--bubble-max-width", `${maxWidth}px`);
+  stage.dataset.bubbleStyle = style;
+}
+
+function resetBubbleLayout(stage) {
+  stage.style.removeProperty("--bubble-anchor-x");
+  stage.style.removeProperty("--bubble-anchor-y");
+  stage.style.removeProperty("--bubble-max-width");
+  delete stage.dataset.bubbleStyle;
+}
+
+function normalizeUnit(value, fallback) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return fallback;
+  return Math.min(1, Math.max(0, next));
+}
+
+function normalizePx(value, fallback, min, max) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return fallback;
+  return Math.min(max, Math.max(min, next));
+}
+
+function normalizeBubbleStyle(value) {
+  const style = String(value || "").trim().toLowerCase();
+  return VALID_BUBBLE_STYLES.has(style) ? style : DEFAULT_BUBBLE_STYLE;
 }

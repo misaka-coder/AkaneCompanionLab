@@ -11,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
+from companion_v01.routes.capabilities import build_capabilities_router
 from companion_v01.routes.control_center import (
     build_control_center_router,
     build_control_center_snapshot_runtime_providers,
@@ -1030,6 +1031,125 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(payload["status"], "not-implemented", f"{action_id} should be not-implemented")
             self.assertEqual(payload["actionId"], action_id, f"{action_id} should echo actionId")
             self.assertEqual(payload["refresh"], False, f"{action_id} should have refresh:false")
+
+    def test_capabilities_catalog_exposes_readonly_existing_tools_and_providers(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        engine = SimpleNamespace(
+            tool_handlers={
+                "retrieve_memory": object(),
+                "compose_file": object(),
+                "transcribe_media": object(),
+            }
+        )
+        app = FastAPI()
+        app.include_router(
+            build_capabilities_router(
+                engine=engine,
+                config_module=SimpleNamespace(
+                    TTS_VOICE="zh-CN-XiaoxiaoNeural",
+                    STREAMING_TTS_ENABLED=True,
+                    ASR_WHISPER_MODEL_SIZE="small",
+                    ASR_LANGUAGE="zh",
+                ),
+                tts_client=object(),
+                runtime_metrics=runtime,
+                resolve_identity_from_query=resolve_query,
+            )
+        )
+
+        response = TestClient(app).get("/capabilities?user_id=desktop&real_user_id=master")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["execution"], "read-only")
+        self.assertEqual(payload["configScope"]["profileUserId"], "master")
+        self.assertEqual(
+            payload["configScope"]["explicitConfigPath"],
+            "users_data/<profile_user_id>/capabilities/capabilities.yaml",
+        )
+        self.assertEqual(
+            payload["configScope"]["localDiscoveryPath"],
+            "users_data/_local/capabilities/discovery.json",
+        )
+
+        capabilities = payload["capabilities"]
+        by_id = {item["id"]: item for item in capabilities}
+        self.assertIn("tool.retrieve_memory", by_id)
+        self.assertIn("tool.compose_file", by_id)
+        self.assertIn("tool.transcribe_media", by_id)
+        self.assertIn("provider.tts.edge", by_id)
+        self.assertIn("provider.asr.faster_whisper", by_id)
+
+        self.assertEqual(by_id["tool.compose_file"]["source"], "backend_tool")
+        self.assertEqual(by_id["tool.compose_file"]["adapter"], "tool_runtime")
+        self.assertEqual(by_id["tool.compose_file"]["status"], "ready")
+        self.assertEqual(by_id["tool.transcribe_media"]["risk"], "medium")
+
+        tts_provider = by_id["provider.tts.edge"]
+        self.assertEqual(tts_provider["type"], "tts_provider")
+        self.assertEqual(tts_provider["source"], "builtin")
+        self.assertEqual(tts_provider["adapter"], "edge_tts")
+        self.assertEqual(tts_provider["executionMode"], "internal")
+
+        # Product names must stay in adapter/provider ids, not base source/type.
+        for item in capabilities:
+            self.assertNotIn(item.get("source"), {"comfyui", "gpt_sovits", "rvc", "faster_whisper", "demucs"})
+            self.assertNotIn(item.get("type"), {"comfyui", "gpt_sovits", "rvc", "faster_whisper", "demucs"})
+
+        body = response.text.lower()
+        for sensitive in ("api_key", "password", "secret", "token", "prompt_text", "chat_message"):
+            self.assertNotIn(sensitive, body)
+        self.assertIn(("capabilities.catalog", True), runtime.observed)
+
+    def test_capabilities_local_environment_check_is_discovery_not_enablement(self) -> None:
+        runtime = FakeRuntimeMetrics()
+
+        def fake_probe() -> dict[str, Any]:
+            return {
+                "ok": True,
+                "status": "checked",
+                "schemaVersion": 1,
+                "autoEnable": False,
+                "services": [
+                    {
+                        "id": "provider.comfyui.local",
+                        "kind": "provider",
+                        "type": "asset_processor",
+                        "source": "external_executor",
+                        "adapter": "comfyui",
+                        "executionMode": "external",
+                        "enabled": False,
+                        "status": "ready",
+                        "endpoint": "http://127.0.0.1:8188",
+                        "discovered": True,
+                        "bindable": True,
+                        "autoEnabled": False,
+                    }
+                ],
+                "summary": {"total": 1},
+            }
+
+        app = FastAPI()
+        app.include_router(
+            build_capabilities_router(
+                engine=SimpleNamespace(tool_handlers={}),
+                runtime_metrics=runtime,
+                local_environment_probe=fake_probe,
+            )
+        )
+
+        response = TestClient(app).post("/capabilities/local-environment-check")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["autoEnable"])
+        self.assertEqual(payload["services"][0]["adapter"], "comfyui")
+        self.assertEqual(payload["services"][0]["source"], "external_executor")
+        self.assertFalse(payload["services"][0]["enabled"])
+        self.assertFalse(payload["services"][0]["autoEnabled"])
+        self.assertIn(("capabilities.local_environment_check", True), runtime.observed)
 
 
 if __name__ == "__main__":

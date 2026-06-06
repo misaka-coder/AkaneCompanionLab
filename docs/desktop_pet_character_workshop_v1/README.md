@@ -6,7 +6,8 @@ This directory is the handoff entry for the next desktop pet mainline work.
 
 1. `design.md` - product direction, data model, memory rules, renderer boundaries, and acceptance criteria.
 2. `execution_plan.md` - implementation phases and verification checklist.
-3. `agent_prompts.md` - prompts for Claude Code or other coding agents, including optional subagent splits.
+3. `workshop-ui-design.md` - post-V1 workshop visual redesign direction and implementation slices.
+4. `agent_prompts.md` - prompts for Claude Code or other coding agents, including optional subagent splits.
 
 ## Project Direction
 
@@ -27,6 +28,19 @@ Updated: 2026-06-05
 - **Phase 3B** implemented: `save_character_pack` and `create_character_pack` Tauri commands. The workshop now saves persona edits directly to `character.json` on disk (merges identity + persona_form fields), and can create new character packs from the UI with a "新建角色" dialog.
 - Repair pass: fixed desktop runtime layout lookup to use the active character profile instead of an undefined registry, kept all workshop tab panels inside the main shell, made v0.1 packs gain `persona_form` on save, constrained portrait file writes to safe character-pack paths, and made `control-center-lab.html` the default settings entry with `AKANE_LEGACY_SETTINGS=1` as rollback.
 - Memory isolation pass: character switching keeps per-pack runtime state in `pet_state.json`; backend memory reads/writes now scope raw chat, episodic summaries, semantic summaries, sessions, eval turns, and vector search by `character_pack_id` when present. Music/gift libraries still use the shared user profile.
+- **Phase 6 first slice** implemented: workshop "测试对话" tab sends `/think` with the selected `character_pack_id`, `client_mode=desktop_pet`, and an isolated workshop test profile/session. It renders speech segments, final emotion, prompt-field summary, and memory scope indicators without exposing full system prompts or reusing the production desktop-pet session/profile.
+- **Phase 6 save-boundary slice** implemented: when testing the pack currently being edited, the workshop now requires persona changes to be written to `character.json` before calling `/think`; localStorage fallback remains available for ordinary draft saves but no longer pretends to update backend-visible prompt data during test chat.
+- **Phase 6 apply/visual slice** implemented: the test panel can apply the selected pack to the desktop pet through the existing `setCharacterPack` settings command, and its `/think` request now includes backend-safe current visual metadata (pack id, outfit, emotion, available emotion ids, and saved numeric layout) while the UI shows a lightweight calibrated portrait preview.
+- **Phase 7 demo-readiness slice** implemented: the workshop highlights "新建角色" / "导入角色包" when there are no custom packs yet, surfaces missing default outfit/emotion/portrait readiness in the list and portrait tabs, shows no-outfit/no-expression upload states, and adds small state feedback for save success, character switching, expression preview, and create-form validation.
+- **Bubble calibration slice** implemented: saved per-outfit bubble anchors now affect the desktop-pet runtime bubble position, and the workshop calibration preview uses a draggable sample bubble plus lightweight style presets (`soft`, `paper`, `clear`, `dark`) instead of a decorative marker.
+- **Post-V1 UI redesign baseline** drafted in `workshop-ui-design.md`: the workshop should become a quiet, efficient character editor with a compact character list, visible hierarchy, fewer card blocks, calmer typography/colors, and only light anime-flavored details.
+
+## Workshop User Flow
+
+- Create from UI: open `角色工坊`, choose `新建角色`, fill pack id/name, then edit identity/persona fields in `角色设定`.
+- Import/export: use the header `导入` and `导出` controls. Imports validate the zip before installing; exports include `character.json`, persona data, layout, and portrait assets.
+- Portrait readiness: the `立绘管理` tab warns when the default outfit, default emotion, or required expressions are missing. Upload at least one default outfit/emotion image before relying on desktop-pet switching.
+- Memory isolation: desktop-pet chat memory is scoped by `character_pack_id`. Test chat uses a separate `workshop_test_*` session/profile and does not reuse the live desktop-pet conversation.
 
 ## Claude Code Quick Start
 

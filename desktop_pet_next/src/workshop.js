@@ -1,12 +1,26 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import "./workshop.css";
 
 const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
+const CHARACTER_PACK_ACTIVATED_EVENT = "akane-next-character-pack-activated";
 const DRAFT_STORAGE_PREFIX = "akane-workshop-draft:";
+const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
+const CLIENT_MODE = "desktop_pet";
+const WORKSHOP_TEST_SCOPE_PREFIX = "workshop_test";
+const DEFAULT_BUBBLE_STYLE = "soft";
+const MAX_CHARACTER_PACK_ZIP_BYTES = 300 * 1024 * 1024;
+const MAX_PORTRAIT_IMAGE_BYTES = 20 * 1024 * 1024;
+const BUBBLE_STYLE_LABELS = {
+  soft: "柔和",
+  paper: "便签",
+  clear: "透明",
+  dark: "深色",
+};
 
 const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 const appWindow = isTauriRuntime ? getCurrentWindow() : null;
@@ -20,12 +34,16 @@ const els = {
   summary: document.querySelector("#workshop-summary"),
   status: document.querySelector("#workshop-status"),
   activeCharacter: document.querySelector("#active-character"),
+  editingCharacter: document.querySelector("#editing-character"),
   activePack: document.querySelector("#active-pack"),
   activeSession: document.querySelector("#active-session"),
   /* character list */
   packCount: document.querySelector("#pack-count"),
   packDetailList: document.querySelector("#pack-detail-list"),
   packList: document.querySelector("#pack-list"),
+  firstUsePanel: document.querySelector("#first-use-panel"),
+  firstUseCreate: document.querySelector("#first-use-create"),
+  firstUseImport: document.querySelector("#first-use-import"),
   refreshPacks: document.querySelector("#refresh-packs"),
   openPacksFolder: document.querySelector("#open-packs-folder"),
   closeWindow: document.querySelector("#close-window"),
@@ -35,13 +53,17 @@ const els = {
   /* persona form */
   personaForm: document.querySelector("#persona-form"),
   fieldName: document.querySelector("#field-name"),
+  fieldAppName: document.querySelector("#field-app-name"),
   fieldUserTitle: document.querySelector("#field-user-title"),
   fieldSelfReference: document.querySelector("#field-self-reference"),
   fieldRelationship: document.querySelector("#field-relationship"),
   fieldPersonalityKeywords: document.querySelector("#field-personality-keywords"),
+  fieldCharacterCore: document.querySelector("#field-character-core"),
+  fieldBehaviorStyle: document.querySelector("#field-behavior-style"),
   fieldSpeakingStyle: document.querySelector("#field-speaking-style"),
   fieldCatchphrases: document.querySelector("#field-catchphrases"),
   fieldBoundaries: document.querySelector("#field-boundaries"),
+  fieldInteractionPrinciples: document.querySelector("#field-interaction-principles"),
   fieldProactiveStyle: document.querySelector("#field-proactive-style"),
   fieldExtraSetting: document.querySelector("#field-extra-setting"),
   exampleLinesContainer: document.querySelector("#example-lines-container"),
@@ -55,7 +77,9 @@ const els = {
   portraitsContent: document.querySelector("#portraits-content"),
   portraitsEmptyState: document.querySelector("#portraits-empty-state"),
   outfitsContainer: document.querySelector("#outfits-container"),
+  newOutfitId: document.querySelector("#new-outfit-id"),
   addOutfitBtn: document.querySelector("#add-outfit-btn"),
+  portraitImportStatus: document.querySelector("#portrait-import-status"),
   emotionPreview: document.querySelector("#emotion-preview"),
   /* calibration */
   calibrationEmptyState: document.querySelector("#calibration-empty-state"),
@@ -74,6 +98,26 @@ const els = {
   calOffsetY: document.querySelector("#cal-offset-y"),
   calBubbleX: document.querySelector("#cal-bubble-x"),
   calBubbleY: document.querySelector("#cal-bubble-y"),
+  calBubbleStyle: document.querySelector("#cal-bubble-style"),
+  /* test chat */
+  testChatEmptyState: document.querySelector("#test-chat-empty-state"),
+  testChatContent: document.querySelector("#test-chat-content"),
+  testChatLog: document.querySelector("#test-chat-log"),
+  testChatForm: document.querySelector("#test-chat-form"),
+  testChatInput: document.querySelector("#test-chat-input"),
+  testChatSend: document.querySelector("#test-chat-send"),
+  testChatClear: document.querySelector("#test-chat-clear"),
+  testApplyPack: document.querySelector("#test-apply-pack"),
+  testChatStatus: document.querySelector("#test-chat-status"),
+  testScopeCharacter: document.querySelector("#test-scope-character"),
+  testScopeSession: document.querySelector("#test-scope-session"),
+  testScopeProfile: document.querySelector("#test-scope-profile"),
+  testVisualOutfit: document.querySelector("#test-visual-outfit"),
+  testVisualLayout: document.querySelector("#test-visual-layout"),
+  testVisualPreview: document.querySelector("#test-visual-preview"),
+  testPromptFields: document.querySelector("#test-prompt-fields"),
+  testResponseEmotion: document.querySelector("#test-response-emotion"),
+  testResponseSegments: document.querySelector("#test-response-segments"),
   /* create dialog */
   createDialog: document.querySelector("#create-dialog"),
   createForm: document.querySelector("#create-form"),
@@ -97,22 +141,40 @@ const view = {
   activePackId: "",
   activeSessionId: "",
   activeCharacterName: "",
+  backendUrl: DEFAULT_BACKEND_URL,
+  profileUserId: "master",
   activeTab: "list",
+  /* Stable workshop target; desktop character changes must not replace it. */
+  workspacePackId: "",
   /* cached full profile of the pack being edited (character.json object) */
   editingPackId: "",
   editingProfile: null,
   draftDirty: false,
+  testPackId: "",
+  testRunning: false,
+  testMessages: [],
+  testScopes: {},
+  testAssetsByPack: {},
+  testLastEmotion: "",
+  testLastSegments: [],
+  pendingApplyPackId: "",
 };
+
+let lastWorkshopSnapshotSignature = "";
 
 const fieldIds = [
   "field-name",
+  "field-app-name",
   "field-user-title",
   "field-self-reference",
   "field-relationship",
   "field-personality-keywords",
+  "field-character-core",
+  "field-behavior-style",
   "field-speaking-style",
   "field-catchphrases",
   "field-boundaries",
+  "field-interaction-principles",
   "field-proactive-style",
   "field-extra-setting",
 ];
@@ -135,7 +197,7 @@ async function boot() {
     applySnapshot(event.payload);
   });
   await refreshPacks();
-  await emit(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot", value: null });
+  await emitTo("main", SETTINGS_COMMAND_EVENT, { command: "requestSnapshot", value: null });
 }
 
 /* ------------------------------------------------------------------ */
@@ -156,6 +218,8 @@ function bindUi() {
       void appWindow?.close?.();
     }
   });
+  els.firstUseCreate.addEventListener("click", () => openCreateDialog());
+  els.firstUseImport.addEventListener("click", () => importPack());
 
   /* pack list */
   els.packList.addEventListener("click", (event) => {
@@ -177,7 +241,7 @@ function bindUi() {
   for (const btn of els.tabButtons) {
     btn.addEventListener("click", () => {
       const tab = String(btn.dataset.tab || "").trim();
-      if (tab) switchTab(tab, view.activePackId);
+      if (tab) switchTab(tab, view.workspacePackId || view.activePackId);
     });
   }
 
@@ -245,6 +309,16 @@ function bindUi() {
     void createCharacterPack();
   });
 
+  /* test chat */
+  els.testChatForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void sendTestChatMessage();
+  });
+  els.testChatClear.addEventListener("click", () => resetTestChatSession());
+  els.testApplyPack.addEventListener("click", () => {
+    void applyTestPackToDesktop();
+  });
+
   /* Tauri system close (X button / Alt+F4): auto-save before exit */
   if (appWindow) {
     try {
@@ -265,6 +339,10 @@ function bindUi() {
 
 function switchTab(tab, packId) {
   view.activeTab = tab;
+  const explicitTargetId = String(packId || "").trim();
+  if (tab !== "list" && explicitTargetId) {
+    setWorkspacePack(explicitTargetId);
+  }
 
   for (const btn of els.tabButtons) {
     const isSelected = btn.dataset.tab === tab;
@@ -275,13 +353,13 @@ function switchTab(tab, packId) {
   }
 
   if (tab === "persona") {
-    const targetId = String(packId || view.activePackId || "").trim();
+    const targetId = String(view.workspacePackId || view.activePackId || "").trim();
     if (targetId) {
       startEditingPack(targetId);
     }
   }
   if (tab === "portraits") {
-    const targetId = String(packId || view.activePackId || "").trim();
+    const targetId = String(view.workspacePackId || view.activePackId || "").trim();
     if (targetId) {
       void loadPortraitsTab(targetId);
     } else {
@@ -289,11 +367,19 @@ function switchTab(tab, packId) {
     }
   }
   if (tab === "calibration") {
-    const targetId = String(packId || view.activePackId || "").trim();
+    const targetId = String(view.workspacePackId || view.activePackId || "").trim();
     if (targetId) {
       void loadCalibrationTab(targetId);
     } else {
       showCalibrationEmpty();
+    }
+  }
+  if (tab === "test") {
+    const targetId = String(view.workspacePackId || view.activePackId || "").trim();
+    if (targetId) {
+      loadTestChatTab(targetId);
+    } else {
+      showTestChatEmpty();
     }
   }
 }
@@ -324,6 +410,7 @@ function startEditingPack(packId) {
     autoSaveDraftSync(view.editingPackId);
   }
 
+  setWorkspacePack(packId);
   view.editingPackId = packId;
   view.editingProfile = profile;
 
@@ -349,7 +436,8 @@ function setEditingPackLabel(name, packId) {
     els.personaEditingPackName.textContent = name || "-";
   }
   if (els.personaEditingPackId) {
-    els.personaEditingPackId.textContent = packId || "";
+    els.personaEditingPackId.textContent = packId ? "保存到当前角色包文件" : "";
+    els.personaEditingPackId.title = packId || "";
   }
 }
 
@@ -374,13 +462,17 @@ function populateFormFields(identity, persona) {
   persona = persona || {};
 
   setFieldValue(els.fieldName, identity.name || "");
+  setFieldValue(els.fieldAppName, identity.app_name || identity.appName || "");
   setFieldValue(els.fieldUserTitle, identity.user_title || identity.userTitle || "");
   setFieldValue(els.fieldSelfReference, identity.self_reference || identity.selfReference || "");
   setFieldValue(els.fieldRelationship, identity.relationship || "");
   setFieldValue(els.fieldPersonalityKeywords, asKeywordsInput(persona.personality_keywords));
+  setFieldValue(els.fieldCharacterCore, persona.character_core || persona.characterCore || "");
+  setFieldValue(els.fieldBehaviorStyle, persona.behavior_style || persona.behaviorStyle || "");
   setFieldValue(els.fieldSpeakingStyle, persona.speaking_style || persona.speakingStyle || "");
   setFieldValue(els.fieldCatchphrases, asLinesInput(persona.catchphrases));
   setFieldValue(els.fieldBoundaries, persona.boundaries || "");
+  setFieldValue(els.fieldInteractionPrinciples, persona.interaction_principles || persona.interactionPrinciples || "");
   setFieldValue(els.fieldProactiveStyle, persona.proactive_style || persona.proactiveStyle || "");
   setFieldValue(els.fieldExtraSetting, persona.extra_setting || persona.extraSetting || "");
 
@@ -391,6 +483,7 @@ function populateFormFields(identity, persona) {
 function collectFormData() {
   const identity = {
     name: (els.fieldName?.value || "").trim(),
+    app_name: (els.fieldAppName?.value || "").trim(),
     user_title: (els.fieldUserTitle?.value || "").trim(),
     self_reference: (els.fieldSelfReference?.value || "").trim(),
     relationship: (els.fieldRelationship?.value || "").trim(),
@@ -398,9 +491,12 @@ function collectFormData() {
 
   const personaForm = {
     personality_keywords: splitKeywords(els.fieldPersonalityKeywords?.value || ""),
+    character_core: (els.fieldCharacterCore?.value || "").trim(),
+    behavior_style: (els.fieldBehaviorStyle?.value || "").trim(),
     speaking_style: (els.fieldSpeakingStyle?.value || "").trim(),
     catchphrases: splitLines(els.fieldCatchphrases?.value || ""),
     boundaries: (els.fieldBoundaries?.value || "").trim(),
+    interaction_principles: (els.fieldInteractionPrinciples?.value || "").trim(),
     proactive_style: (els.fieldProactiveStyle?.value || "").trim(),
     extra_setting: (els.fieldExtraSetting?.value || "").trim(),
     example_lines: collectExampleLines(),
@@ -429,10 +525,11 @@ function collectExampleLines() {
     .filter(Boolean);
 }
 
-async function saveDraft() {
+async function saveDraft(options = {}) {
+  const allowLocalFallback = options.allowLocalFallback !== false;
   if (!view.editingPackId) {
     setStatus("请先从角色列表中选择一个角色包。");
-    return;
+    return { ok: false, persisted: false, reason: "no-pack" };
   }
   const data = collectFormData();
 
@@ -440,9 +537,11 @@ async function saveDraft() {
   if (isTauriRuntime) {
     try {
       const result = await invoke("save_character_pack", {
-        packId: view.editingPackId,
-        identity: data.identity,
-        personaForm: data.persona_form,
+        request: {
+          packId: view.editingPackId,
+          identity: data.identity,
+          personaForm: data.persona_form,
+        },
       });
       view.editingPackId = String(result?.id || view.editingPackId).trim();
 
@@ -459,39 +558,61 @@ async function saveDraft() {
       view.draftDirty = false;
       clearDraft(view.editingPackId);
       updateDraftStatus(false);
-      setStatus(`已保存至文件（${view.editingPackId}）。`);
-      return;
+      setStatus("已保存到角色包文件。");
+      flashElement(els.draftStatus, "save-flash");
+      return { ok: true, persisted: true, source: "file", packId: view.editingPackId };
     } catch (error) {
+      if (!allowLocalFallback) {
+        const message = formatError(error);
+        setStatus(`文件保存失败：${message}`);
+        return { ok: false, persisted: false, source: "file", error: message };
+      }
       /* backend save failed – fall back to localStorage */
       setStatus(`文件保存失败，已保存到本地草稿：${formatError(error)}`);
     }
   }
 
+  if (!allowLocalFallback) {
+    setStatus("文件保存不可用，未写入角色包文件。");
+    return { ok: false, persisted: false, source: "file", reason: "file-save-unavailable" };
+  }
+
   /* localStorage fallback */
   try {
-    persistDraft(view.editingPackId, data);
+    if (!persistDraft(view.editingPackId, data)) {
+      throw new Error("localStorage unavailable");
+    }
     view.draftDirty = false;
     updateDraftStatus(false);
-    setStatus(`草稿已保存（${view.editingPackId}）。`);
+    setStatus("草稿已保存。");
+    flashElement(els.draftStatus, "save-flash");
+    return { ok: true, persisted: false, source: "localStorage", packId: view.editingPackId };
   } catch (error) {
-    setStatus(`保存失败：${formatError(error)}`);
+    const message = formatError(error);
+    setStatus(`保存失败：${message}`);
+    return { ok: false, persisted: false, source: "localStorage", error: message };
   }
 }
 
 async function autoSaveDraft() {
   if (!view.editingPackId || !view.draftDirty) return;
   const data = collectFormData();
-  persistDraft(view.editingPackId, data);
-  view.draftDirty = false;
-  updateDraftStatus(false);
+  if (persistDraft(view.editingPackId, data)) {
+    view.draftDirty = false;
+    updateDraftStatus(false);
+  } else {
+    updateDraftStatus(true);
+    setStatus("自动保存草稿失败，请手动保存。");
+  }
 }
 
 /** synchronous save – used when switching packs inside a sync call chain */
 function autoSaveDraftSync(packId) {
   if (!packId || !view.draftDirty) return;
   const data = collectFormData();
-  persistDraft(packId, data);
-  view.draftDirty = false;
+  if (persistDraft(packId, data)) {
+    view.draftDirty = false;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -511,8 +632,9 @@ function persistDraft(packId, data) {
       persona_form: data.persona_form,
     };
     localStorage.setItem(draftKey(packId), JSON.stringify(payload));
+    return true;
   } catch {
-    /* storage full or unavailable – silently skip */
+    return false;
   }
 }
 
@@ -551,6 +673,11 @@ function updateDraftStatus(dirty) {
 
 function hasDraft(packId) {
   return Boolean(loadDraft(packId));
+}
+
+function hasBackendPendingPersonaChanges(packId) {
+  const id = String(packId || "").trim();
+  return Boolean(id && view.editingPackId === id && (view.draftDirty || hasDraft(id)));
 }
 
 /* ------------------------------------------------------------------ */
@@ -620,7 +747,10 @@ async function refreshPacks() {
     ]);
     view.packs = normalizePacks(packs);
     view.activePackId = String(petState?.characterPackId || view.activePackId || "").trim();
+    ensureWorkspacePack();
     view.activeSessionId = String(petState?.sessionId || view.activeSessionId || "").trim();
+    view.backendUrl = normalizeBackendUrl(petState?.backendUrl || view.backendUrl);
+    view.profileUserId = String(petState?.profileUserId || view.profileUserId || "master").trim() || "master";
     view.activeCharacterName = getPackName(findPack(view.activePackId)) || view.activeCharacterName;
     render();
     setStatus("角色包已刷新。");
@@ -633,26 +763,86 @@ function applySnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return;
   const state = snapshot.state || {};
   const character = snapshot.character || {};
-  view.activePackId = String(character.packId || state.characterPackId || view.activePackId || "").trim();
+  const signature = buildWorkshopSnapshotSignature(state, character);
+  if (signature === lastWorkshopSnapshotSignature) {
+    return;
+  }
+  lastWorkshopSnapshotSignature = signature;
+  view.activePackId = String(state.characterPackId || character.packId || view.activePackId || "").trim();
   view.activeSessionId = String(state.sessionId || view.activeSessionId || "").trim();
-  view.activeCharacterName = String(character.appName || character.name || view.activeCharacterName || "").trim();
+  view.backendUrl = normalizeBackendUrl(state.backendUrl || view.backendUrl);
+  view.profileUserId = String(state.profileUserId || view.profileUserId || "master").trim() || "master";
   const available = Array.isArray(character.availablePacks) ? character.availablePacks : [];
   if (available.length) {
-    view.packs = normalizePacks(available);
+    view.packs = mergeSnapshotPacks(view.packs, normalizePacks(available));
   }
+  const canonicalActivePack = findPack(view.activePackId);
+  view.activeCharacterName = getPackName(canonicalActivePack) ||
+    (String(character.packId || "").trim() === view.activePackId
+      ? String(character.appName || character.name || "").trim()
+      : view.activeCharacterName);
+  ensureWorkspacePack();
   render();
+}
+
+function buildWorkshopSnapshotSignature(state, character) {
+  const packs = Array.isArray(character.availablePacks) ? character.availablePacks : [];
+  return stableSignature({
+    activePackId: String(state.characterPackId || character.packId || "").trim(),
+    sessionId: String(state.sessionId || "").trim(),
+    backendUrl: normalizeBackendUrl(state.backendUrl || view.backendUrl),
+    profileUserId: String(state.profileUserId || view.profileUserId || "master").trim() || "master",
+    packs: packs.map((pack) => ({
+      id: String(pack?.id || pack?.packId || "").trim(),
+      name: String(pack?.name || pack?.characterName || pack?.appName || "").trim(),
+      selected: Boolean(pack?.selected),
+      schemaVersion: String(pack?.schemaVersion || "").trim(),
+      assetCount: Number(pack?.assetCount || pack?.asset_count || 0) || 0,
+      defaultOutfit: String(pack?.defaultOutfit || pack?.default_outfit || "").trim(),
+      defaultEmotion: String(pack?.defaultEmotion || pack?.default_emotion || "").trim(),
+    })),
+  });
 }
 
 async function applyPack(packId) {
   const pack = findPack(packId);
+  if (!pack || packId === view.activePackId) return { ok: true, packId };
+  if (view.pendingApplyPackId) {
+    setStatus(`正在等待 ${getPackName(findPack(view.pendingApplyPackId)) || view.pendingApplyPackId} 完成切换。`);
+    return { ok: false, packId, reason: "apply-pending" };
+  }
   setStatus(`正在应用：${getPackName(pack) || packId}`);
+  view.pendingApplyPackId = packId;
+  renderPackList();
   try {
-    await emit(SETTINGS_COMMAND_EVENT, { command: "setCharacterPack", value: packId });
-    view.activePackId = packId;
-    view.activeCharacterName = getPackName(pack) || view.activeCharacterName;
+    const result = await invoke("activate_character_pack", { packId });
+    const activePackId = String(result?.packId || "").trim();
+    if (activePackId !== packId) {
+      throw new Error(`桌面端返回的角色不一致：请求 ${packId}，实际 ${activePackId || "未知"}`);
+    }
+    let mainWindowNotified = true;
+    try {
+      await emit(CHARACTER_PACK_ACTIVATED_EVENT, { packId: activePackId });
+    } catch {
+      mainWindowNotified = false;
+    }
+    view.activePackId = activePackId;
+    view.activeCharacterName = getPackName(findPack(view.activePackId)) || view.activeCharacterName;
+    view.pendingApplyPackId = "";
     render();
+    pulsePackCard(packId);
+    setStatus(
+      !mainWindowNotified
+        ? `角色已保存：${getPackName(pack) || packId}。主窗口未收到通知，请重启桌宠。`
+        : `已应用到桌宠：${getPackName(pack) || packId}`
+    );
+    return { ok: true, packId };
   } catch (error) {
-    setStatus(`应用失败：${formatError(error)}`);
+    view.pendingApplyPackId = "";
+    renderPackList();
+    const message = formatError(error);
+    setStatus(`应用失败：${message}`);
+    return { ok: false, packId, error: message };
   }
 }
 
@@ -664,10 +854,16 @@ async function importPack() {
   fileInput.onchange = async () => {
     const file = fileInput.files?.[0];
     if (!file) return;
+    if (Number(file.size || 0) > MAX_CHARACTER_PACK_ZIP_BYTES) {
+      setStatus("角色包 zip 暂时请控制在 300 MB 以内。");
+      return;
+    }
     setStatus(`正在导入：${file.name}…`);
     try {
+      await yieldToUiForLargeFileRead();
       const bytes = new Uint8Array(await file.arrayBuffer());
       const result = await invoke("install_character_pack_zip_bytes", {
+        fileName: file.name,
         bytes: Array.from(bytes),
         overwrite: false,
       });
@@ -681,7 +877,7 @@ async function importPack() {
 }
 
 async function exportPack() {
-  const packId = view.activePackId;
+  const packId = view.workspacePackId || view.activePackId;
   if (!packId) { setStatus("请先选择一个角色包。"); return; }
   if (!isTauriRuntime) { setStatus("浏览器预览模式不支持导出。"); return; }
   setStatus(`正在导出：${packId}…`);
@@ -720,6 +916,14 @@ function openCreateDialog() {
   els.createDialog.showModal();
 }
 
+function showCreateError(message) {
+  els.createError.textContent = String(message || "");
+  els.createError.hidden = !message;
+  if (message) {
+    flashElement(els.createForm, "invalid-flash");
+  }
+}
+
 async function createCharacterPack() {
   const packId = (els.createPackId.value || "").trim();
   const name = (els.createName.value || "").trim();
@@ -727,23 +931,23 @@ async function createCharacterPack() {
   const userTitle = (els.createUserTitle.value || "").trim();
 
   if (!packId) {
-    els.createError.textContent = "请输入角色包 ID。";
-    els.createError.hidden = false;
+    showCreateError("请输入保存名。");
     return;
   }
   if (!name) {
-    els.createError.textContent = "请输入角色名称。";
-    els.createError.hidden = false;
+    showCreateError("请输入角色名称。");
     return;
   }
 
   setStatus(`正在创建角色包：${name}…`);
   try {
     const result = await invoke("create_character_pack", {
-      packId,
-      name,
-      appName,
-      userTitle,
+      request: {
+        packId,
+        name,
+        appName,
+        userTitle,
+      },
     });
     els.createDialog.close();
     setStatus(`已创建角色包：${name}（${packId}）。`);
@@ -753,8 +957,7 @@ async function createCharacterPack() {
       switchTab("persona", result.id);
     }
   } catch (error) {
-    els.createError.textContent = formatError(error);
-    els.createError.hidden = false;
+    showCreateError(formatError(error));
     setStatus(`创建失败：${formatError(error)}`);
   }
 }
@@ -776,11 +979,13 @@ async function loadPortraitsTab(packId) {
   }
 
   setStatus(`正在读取立绘数据：${getPackName(pack)}`);
+  setPortraitStatus("正在读取角色包中的服装和图片…");
   try {
     const outfits = await invoke("list_pack_assets", { packId });
     renderPortraitsView(packId, outfits);
   } catch (error) {
     setStatus(`读取立绘失败：${formatError(error)}`);
+    setPortraitStatus(`读取失败：${formatError(error)}`, true);
     showPortraitsEmpty();
   }
 }
@@ -809,54 +1014,89 @@ function renderPortraitsView(packId, outfits) {
     els.outfitsContainer.appendChild(warnings);
   }
 
+  if (!items.length) {
+    els.outfitsContainer.appendChild(buildNoOutfitsState(packId, profile));
+    els.addOutfitBtn.onclick = () => createOutfit(packId);
+    setStatus("还没有立绘资源。");
+    setPortraitStatus("还没有服装。请先在上方输入服装名并创建。");
+    return;
+  }
+
   /* render outfit cards */
   for (const outfit of items) {
     els.outfitsContainer.appendChild(buildOutfitCard(packId, outfit, profile));
   }
 
   /* bind add-outfit button */
-  els.addOutfitBtn.onclick = () => addOutfitDialog(packId);
+  els.addOutfitBtn.onclick = () => createOutfit(packId);
 
-  setStatus(`已加载 ${items.length} 套服装。`);
+  const imageCount = items.reduce((total, outfit) => total + (outfit.emotions?.length || 0), 0);
+  setStatus(`已加载 ${items.length} 套服装、${imageCount} 张图片。`);
+  setPortraitStatus(`角色包中现有 ${items.length} 套服装、${imageCount} 张已导入图片。`);
 }
 
 function buildMissingEmotionWarnings(outfits, profile) {
   const appearance = profile.appearance || {};
-  const required = Array.isArray(appearance.required_emotions || appearance.requiredEmotions)
-    ? (appearance.required_emotions || appearance.requiredEmotions) : [];
-  const recommended = Array.isArray(appearance.recommended_emotions || appearance.recommendedEmotions)
-    ? (appearance.recommended_emotions || appearance.recommendedEmotions) : [];
+  const defaultOutfit = String(appearance.default_outfit || appearance.defaultOutfit || "").trim();
+  const defaultEmotion = String(appearance.default_emotion || appearance.defaultEmotion || "").trim();
 
-  /* collect all emotion IDs across all outfits */
-  const available = new Set();
+  const outfitIds = new Set();
+  const availableByOutfit = new Map();
   for (const outfit of outfits) {
+    const outfitId = String(outfit?.id || "").trim();
+    if (outfitId) {
+      outfitIds.add(outfitId);
+      availableByOutfit.set(outfitId, new Set());
+    }
     for (const em of (outfit.emotions || [])) {
-      available.add(em.id);
+      const emotionId = String(em?.id || "").trim();
+      if (!emotionId) continue;
+      if (outfitId) availableByOutfit.get(outfitId)?.add(emotionId);
     }
   }
 
-  const missingRequired = required.filter((id) => !available.has(id));
-  const missingRecommended = recommended.filter((id) => !available.has(id));
+  const defaultOutfitMissing = Boolean(defaultOutfit && outfits.length && !outfitIds.has(defaultOutfit));
+  const defaultPortraitMissing = Boolean(
+    defaultEmotion &&
+      (!outfits.length ||
+        (defaultOutfit
+          ? !availableByOutfit.get(defaultOutfit)?.has(defaultEmotion)
+          : true))
+  );
 
-  if (!missingRequired.length && !missingRecommended.length) return null;
+  if (!defaultOutfitMissing && !defaultPortraitMissing) return null;
 
   const box = document.createElement("div");
   box.className = "missing-emotions-warning glass-card";
 
-  if (missingRequired.length) {
-    const line = document.createElement("p");
-    line.className = "warning-line warning-required";
-    line.innerHTML = `⚠️ <strong>缺少必要表情：</strong>${missingRequired.join(", ")}`;
-    box.appendChild(line);
-  }
-  if (missingRecommended.length) {
-    const line = document.createElement("p");
-    line.className = "warning-line warning-recommended";
-    line.innerHTML = `💡 <strong>建议添加：</strong>${missingRecommended.join(", ")}`;
-    box.appendChild(line);
-  }
+  const value = defaultOutfit && defaultEmotion ? `${defaultOutfit} / ${defaultEmotion}` : "尚未设置";
+  box.appendChild(buildWarningLine("warning-required", "当前默认立绘无效：", value));
+  const guidance = document.createElement("p");
+  guidance.className = "warning-guidance";
+  guidance.textContent = "这不是待导入清单。请点击下方任一已有表情，再在右侧选择“设为默认立绘”。";
+  box.appendChild(guidance);
 
   return box;
+}
+
+function buildWarningLine(className, label, value) {
+  const line = document.createElement("p");
+  line.className = `warning-line ${className}`;
+  const strong = document.createElement("strong");
+  strong.textContent = label;
+  line.append(strong, document.createTextNode(value));
+  return line;
+}
+
+function buildNoOutfitsState(packId, profile) {
+  const state = document.createElement("div");
+  state.className = "asset-empty-state glass-card";
+  const title = document.createElement("strong");
+  title.textContent = "还没有服装";
+  const note = document.createElement("p");
+  note.textContent = "在上方输入服装名并点击“创建服装”。创建后，再向该服装导入表情图片。";
+  state.append(title, note);
+  return state;
 }
 
 function buildOutfitCard(packId, outfit, packProfile) {
@@ -870,12 +1110,17 @@ function buildOutfitCard(packId, outfit, packProfile) {
   titleGroup.className = "outfit-title-group";
 
   const title = document.createElement("h3");
-  title.textContent = `👗 ${outfit.name || outfit.id}`;
+  const emotions = Array.isArray(outfit.emotions) ? outfit.emotions : [];
+  title.textContent = `${outfit.name || outfit.id}`;
   title.title = "双击重命名服装";
 
   title.addEventListener("dblclick", () => renameOutfitDialog(packId, outfit.id));
 
   titleGroup.append(title);
+  const count = document.createElement("span");
+  count.className = "outfit-image-count";
+  count.textContent = `${emotions.length} 张已导入`;
+  titleGroup.append(count);
 
   /* default outfit badge */
   const defaultOutfit = packProfile?.appearance?.default_outfit || packProfile?.appearance?.defaultOutfit || "";
@@ -892,8 +1137,10 @@ function buildOutfitCard(packId, outfit, packProfile) {
   const addBtn = document.createElement("button");
   addBtn.type = "button";
   addBtn.className = "btn-add-line";
-  addBtn.textContent = "＋ 上传表情";
-  addBtn.addEventListener("click", () => uploadEmotionDialog(packId, outfit.id));
+  addBtn.textContent = "导入图片";
+  addBtn.addEventListener("click", () => uploadEmotionImages(packId, outfit.id, {
+    existingEmotionIds: emotions.map((emotion) => emotion.id),
+  }));
 
   actions.append(addBtn);
   header.append(titleGroup, actions);
@@ -901,16 +1148,37 @@ function buildOutfitCard(packId, outfit, packProfile) {
   const grid = document.createElement("div");
   grid.className = "emotion-grid";
 
-  const emotions = Array.isArray(outfit.emotions) ? outfit.emotions : [];
   const defaultEmotion = packProfile?.appearance?.default_emotion || packProfile?.appearance?.defaultEmotion || "";
   const musicEmotion = packProfile?.appearance?.music_emotion || packProfile?.appearance?.musicEmotion || "";
 
-  grid.replaceChildren(
-    ...emotions.map((em) => buildEmotionTile(packId, outfit.id, em, { defaultEmotion, musicEmotion }))
-  );
+  if (emotions.length) {
+    grid.replaceChildren(
+      ...emotions.map((em) => buildEmotionTile(packId, outfit.id, em, {
+        defaultEmotion,
+        defaultOutfit,
+        musicEmotion,
+      }))
+    );
+  } else {
+    grid.appendChild(buildNoEmotionsState(packId, outfit.id));
+  }
 
   card.append(header, grid);
   return card;
+}
+
+function buildNoEmotionsState(packId, outfitId) {
+  const state = document.createElement("div");
+  state.className = "emotion-empty-state";
+  const text = document.createElement("span");
+  text.textContent = "服装已创建，目前没有图片。";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "btn-secondary";
+  button.textContent = "选择图片";
+  button.addEventListener("click", () => uploadEmotionImages(packId, outfitId));
+  state.append(text, button);
+  return state;
 }
 
 function buildEmotionTile(packId, outfitId, emotion, flags = {}) {
@@ -919,9 +1187,10 @@ function buildEmotionTile(packId, outfitId, emotion, flags = {}) {
   tile.title = `${emotion.name || emotion.id} — 点击预览 | 右键删除 | 双击重命名`;
 
   const img = document.createElement("img");
-  img.src = convertFileSrc(emotion.path || "");
   img.alt = emotion.name || emotion.id;
   img.loading = "lazy";
+  tile.append(img);
+  void loadPortraitImage(img, packId, outfitId, emotion);
 
   const labelRow = document.createElement("div");
   labelRow.className = "emotion-label-row";
@@ -932,7 +1201,7 @@ function buildEmotionTile(packId, outfitId, emotion, flags = {}) {
   labelRow.append(label);
 
   /* default / music badges */
-  if (emotion.id === flags.defaultEmotion) {
+  if (outfitId === flags.defaultOutfit && emotion.id === flags.defaultEmotion) {
     const defBadge = document.createElement("span");
     defBadge.className = "emotion-flag";
     defBadge.textContent = "默认";
@@ -945,9 +1214,9 @@ function buildEmotionTile(packId, outfitId, emotion, flags = {}) {
     labelRow.append(musicBadge);
   }
 
-  tile.append(img, labelRow);
+  tile.append(labelRow);
 
-  tile.addEventListener("click", () => previewEmotion(emotion));
+  tile.addEventListener("click", () => previewEmotion(packId, outfitId, emotion));
   tile.addEventListener("dblclick", () => renameEmotionDialog(packId, outfitId, emotion.id));
   tile.addEventListener("contextmenu", (event) => {
     event.preventDefault();
@@ -958,16 +1227,17 @@ function buildEmotionTile(packId, outfitId, emotion, flags = {}) {
 }
 
 let previewingEmotion = null;
+const portraitImageUrlCache = new Map();
 
-function previewEmotion(emotion) {
+function previewEmotion(packId, outfitId, emotion) {
   if (!els.emotionPreview) return;
-  previewingEmotion = emotion;
+  previewingEmotion = { packId, outfitId, emotion };
   els.emotionPreview.replaceChildren();
 
-  const img = document.createElement("img");
-  img.src = convertFileSrc(emotion.path || "");
-  img.alt = emotion.name || emotion.id;
-  img.className = "preview-image";
+  const previewAsset = document.createElement("img");
+  previewAsset.alt = emotion.name || emotion.id;
+  previewAsset.className = "preview-image";
+  void loadPortraitImage(previewAsset, packId, outfitId, emotion, "preview-image-load-error");
 
   const info = document.createElement("p");
   info.className = "preview-info";
@@ -978,25 +1248,120 @@ function previewEmotion(emotion) {
 
   const setDefaultBtn = document.createElement("button");
   setDefaultBtn.type = "button";
-  setDefaultBtn.className = "btn-secondary";
-  setDefaultBtn.textContent = "⭐ 设为默认表情";
-  setDefaultBtn.style.cssText = "font-size:12px;padding:5px 10px;";
-  setDefaultBtn.addEventListener("click", () => setAppearanceField("default_emotion", emotion.id));
+  setDefaultBtn.className = "btn-primary";
+  setDefaultBtn.textContent = "设为默认立绘";
+  setDefaultBtn.addEventListener("click", () => setDefaultPortrait(packId, outfitId, emotion.id));
 
   const setMusicBtn = document.createElement("button");
   setMusicBtn.type = "button";
   setMusicBtn.className = "btn-secondary";
   setMusicBtn.textContent = "🎵 设为听歌表情";
   setMusicBtn.style.cssText = "font-size:12px;padding:5px 10px;";
-  setMusicBtn.addEventListener("click", () => setAppearanceField("music_emotion", emotion.id));
+  setMusicBtn.addEventListener("click", () => setAppearanceField(packId, "music_emotion", emotion.id));
 
   actions.append(setDefaultBtn, setMusicBtn);
 
-  els.emotionPreview.append(img, info, actions);
+  els.emotionPreview.append(previewAsset, info, actions);
+  flashElement(els.emotionPreview, "preview-flash");
 }
 
-async function setAppearanceField(field, value) {
-  const packId = view.editingPackId || view.activePackId;
+async function loadPortraitImage(img, packId, outfitId, emotion, errorClassName = "image-load-error") {
+  try {
+    const url = await getPortraitImageUrl(packId, outfitId, emotion);
+    if (!img.isConnected) return;
+    img.src = url;
+  } catch (error) {
+    if (!img.isConnected) return;
+    img.replaceWith(buildImageLoadError(`图片读取失败\n${formatError(error)}`, errorClassName));
+  }
+}
+
+async function getPortraitImageUrl(packId, outfitId, emotion) {
+  const emotionId = String(emotion?.id || "").trim();
+  const key = `${packId}\u0000${outfitId}\u0000${emotionId}`;
+  if (portraitImageUrlCache.has(key)) {
+    return portraitImageUrlCache.get(key);
+  }
+
+  const promise = (async () => {
+    const payload = await invoke("read_portrait_image", {
+      packId,
+      outfit: outfitId,
+      emotion: emotionId,
+    });
+    const bytes = payload instanceof Uint8Array
+      ? payload
+      : payload instanceof ArrayBuffer
+        ? new Uint8Array(payload)
+        : new Uint8Array(payload || []);
+    if (!bytes.length) {
+      throw new Error("图片数据为空");
+    }
+    return URL.createObjectURL(new Blob([bytes], { type: portraitMimeType(emotion?.path) }));
+  })();
+
+  portraitImageUrlCache.set(key, promise);
+  try {
+    return await promise;
+  } catch (error) {
+    portraitImageUrlCache.delete(key);
+    throw error;
+  }
+}
+
+function portraitMimeType(path) {
+  const extension = String(path || "").split(".").pop().toLowerCase();
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension === "webp") return "image/webp";
+  return "image/png";
+}
+
+function clearPortraitImageCache(packId) {
+  const prefix = `${packId}\u0000`;
+  for (const [key, value] of portraitImageUrlCache.entries()) {
+    if (!key.startsWith(prefix)) continue;
+    portraitImageUrlCache.delete(key);
+    Promise.resolve(value).then((url) => URL.revokeObjectURL(url)).catch(() => {});
+  }
+}
+
+function buildImageLoadError(text, className = "image-load-error") {
+  const fallback = document.createElement("div");
+  fallback.className = className;
+  fallback.textContent = text;
+  return fallback;
+}
+
+function setPortraitStatus(message, isError = false) {
+  if (!els.portraitImportStatus) return;
+  els.portraitImportStatus.textContent = String(message || "");
+  els.portraitImportStatus.classList.toggle("error", Boolean(isError));
+}
+
+async function setDefaultPortrait(packId, outfitId, emotionId) {
+  if (!packId || !isTauriRuntime) return;
+  setPortraitStatus(`正在设置默认立绘：${outfitId} / ${emotionId}…`);
+  try {
+    await invoke("set_default_portrait", {
+      packId,
+      outfit: outfitId,
+      emotion: emotionId,
+    });
+    const pack = findPack(packId);
+    if (pack?._rawProfile?.appearance) {
+      pack._rawProfile.appearance.default_outfit = outfitId;
+      pack._rawProfile.appearance.default_emotion = emotionId;
+    }
+    setStatus(`默认立绘已设为：${outfitId} / ${emotionId}`);
+    await loadPortraitsTab(packId);
+    setPortraitStatus(`默认立绘已设为：${outfitId} / ${emotionId}`);
+  } catch (error) {
+    setStatus(`设置默认立绘失败：${formatError(error)}`);
+    setPortraitStatus(`设置默认立绘失败：${formatError(error)}`, true);
+  }
+}
+
+async function setAppearanceField(packId, field, value) {
   if (!packId || !isTauriRuntime) return;
   try {
     await invoke("set_default_emotion", { packId, field, value });
@@ -1009,6 +1374,7 @@ async function setAppearanceField(field, value) {
     await loadPortraitsTab(packId);
   } catch (error) {
     setStatus(`更新失败：${formatError(error)}`);
+    setPortraitStatus(`更新失败：${formatError(error)}`, true);
   }
 }
 
@@ -1017,6 +1383,7 @@ async function deleteEmotionConfirm(packId, outfitId, emotionId) {
   setStatus(`正在删除表情：${emotionId}…`);
   try {
     await invoke("delete_portrait_image", { packId, outfit: outfitId, emotion: emotionId });
+    clearPortraitImageCache(packId);
     setStatus(`已删除表情：${emotionId}`);
     await loadPortraitsTab(packId);
   } catch (error) {
@@ -1030,6 +1397,7 @@ async function renameEmotionDialog(packId, outfitId, oldId) {
   setStatus(`正在重命名：${oldId} → ${newId.trim()}…`);
   try {
     await invoke("rename_portrait_emotion", { packId, outfit: outfitId, oldEmotion: oldId, newEmotion: newId.trim() });
+    clearPortraitImageCache(packId);
     setStatus(`已重命名：${newId.trim()}`);
     await loadPortraitsTab(packId);
   } catch (error) {
@@ -1043,6 +1411,7 @@ async function renameOutfitDialog(packId, oldId) {
   setStatus(`正在重命名服装：${oldId} → ${newId.trim()}…`);
   try {
     await invoke("rename_portrait_outfit", { packId, oldOutfit: oldId, newOutfit: newId.trim() });
+    clearPortraitImageCache(packId);
     setStatus(`已重命名服装：${newId.trim()}`);
     await loadPortraitsTab(packId);
   } catch (error) {
@@ -1050,40 +1419,122 @@ async function renameOutfitDialog(packId, oldId) {
   }
 }
 
-async function uploadEmotionDialog(packId, outfitId) {
-  if (!isTauriRuntime) return;
-  const emotion = prompt("表情 ID（例如 normal, happy, 开心）：", "normal");
-  if (!emotion || !emotion.trim()) return;
+function inferEmotionNameFromFileName(fileName, fallback = "normal") {
+  const baseName = String(fileName || "")
+    .replace(/\\/g, "/")
+    .split("/")
+    .pop()
+    .replace(/\.[^.]+$/, "")
+    .trim();
+  return baseName || fallback;
+}
 
-  const fileInput = document.createElement("input");
-  fileInput.type = "file";
-  fileInput.accept = "image/png,image/jpeg,image/webp";
-  fileInput.onchange = async () => {
-    const file = fileInput.files?.[0];
-    if (!file) return;
-    setStatus(`正在上传：${file.name}…`);
+async function uploadEmotionImages(packId, outfitId, options = {}) {
+  if (!isTauriRuntime) return;
+
+  setPortraitStatus(`请选择要导入到“${outfitId}”的图片。`);
+  const files = await chooseLocalFiles({
+    accept: "image/png,image/jpeg,image/webp",
+    multiple: true,
+  });
+  if (!files.length) {
+    setPortraitStatus(`未选择图片，“${outfitId}”没有发生变化。`);
+    return;
+  }
+
+  const existingEmotionIds = new Set(options.existingEmotionIds || []);
+  const fallbackEmotion = String(options.defaultEmotion || "normal").trim() || "normal";
+  let successCount = 0;
+  let overwriteCount = 0;
+  const failures = [];
+
+  setStatus(`正在导入 ${files.length} 张表情图到 ${outfitId}…`);
+  setPortraitStatus(`正在导入 ${files.length} 张图片到“${outfitId}”…`);
+  for (const file of files) {
+    const emotion = inferEmotionNameFromFileName(file.name, fallbackEmotion);
     try {
+      if (Number(file.size || 0) > MAX_PORTRAIT_IMAGE_BYTES) {
+        failures.push(`${file.name}: 图片大小不能超过 20 MB。`);
+        continue;
+      }
+      await yieldToUiForLargeFileRead();
       const bytes = new Uint8Array(await file.arrayBuffer());
       await invoke("upload_portrait_image", {
         packId,
         outfit: outfitId,
-        emotion: emotion.trim(),
+        emotion,
         imageBytes: Array.from(bytes),
       });
-      setStatus(`已上传：${emotion.trim()} → ${outfitId}`);
-      await loadPortraitsTab(packId);
+      if (existingEmotionIds.has(emotion)) overwriteCount += 1;
+      successCount += 1;
     } catch (error) {
-      setStatus(`上传失败：${formatError(error)}`);
+      failures.push(`${file.name}: ${formatError(error)}`);
     }
-  };
-  fileInput.click();
+  }
+
+  clearPortraitImageCache(packId);
+  await loadPortraitsTab(packId);
+  if (failures.length) {
+    const message = `导入完成：成功 ${successCount} 张，覆盖 ${overwriteCount} 张，失败 ${failures.length} 张。${failures.slice(0, 2).join("；")}`;
+    setStatus(message);
+    setPortraitStatus(message, true);
+    return;
+  }
+  const message = `已导入 ${successCount} 张图片到“${outfitId}”${overwriteCount ? `，其中覆盖 ${overwriteCount} 张` : ""}。`;
+  setStatus(message);
+  setPortraitStatus(message);
 }
 
-function addOutfitDialog(packId) {
-  const outfit = prompt("新服装 ID（例如 default, 校服, summer）：", "");
-  if (!outfit || !outfit.trim()) return;
-  /* creating a new outfit directory is done by uploading an image into it */
-  uploadEmotionDialog(packId, outfit.trim());
+function chooseLocalFiles({ accept = "", multiple = false } = {}) {
+  return new Promise((resolve) => {
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = accept;
+    fileInput.multiple = multiple;
+    fileInput.hidden = true;
+    document.body.appendChild(fileInput);
+
+    let settled = false;
+    const finish = (files = []) => {
+      if (settled) return;
+      settled = true;
+      fileInput.remove();
+      resolve(Array.from(files || []));
+    };
+
+    fileInput.addEventListener("change", () => finish(fileInput.files), { once: true });
+    fileInput.addEventListener("cancel", () => finish(), { once: true });
+  fileInput.click();
+});
+}
+
+function yieldToUiForLargeFileRead() {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, 0);
+  });
+}
+
+async function createOutfit(packId) {
+  const outfit = String(els.newOutfitId?.value || "").trim();
+  if (!outfit) {
+    setStatus("请先填写新服装名，例如 巫女服、校服、summer。");
+    setPortraitStatus("请先填写新服装名。", true);
+    els.newOutfitId?.focus();
+    flashElement(els.newOutfitId, "invalid-flash");
+    return;
+  }
+  setStatus(`正在创建服装：${outfit}…`);
+  setPortraitStatus(`正在创建服装目录“${outfit}”…`);
+  try {
+    await invoke("create_portrait_outfit", { packId, outfit });
+    els.newOutfitId.value = "";
+    setStatus(`已创建服装：${outfit}`);
+    await loadPortraitsTab(packId);
+    setPortraitStatus(`已创建服装“${outfit}”。现在可以在它的卡片中导入图片。`);
+  } catch (error) {
+    setStatus(`创建服装失败：${formatError(error)}`);
+    setPortraitStatus(`创建服装失败：${formatError(error)}`, true);
+  }
 }
 
 function formatFileSize(bytes) {
@@ -1129,24 +1580,19 @@ async function loadCalibrationTab(packId) {
     if (els.calibrationContent) els.calibrationContent.hidden = false;
     if (els.calibrationEmptyState) els.calibrationEmptyState.hidden = true;
 
-    /* load first outfit's first emotion image */
-    const defaultOutfit = items[0];
-    const firstEmotion = defaultOutfit.emotions?.[0];
-    if (!firstEmotion) { setStatus("没有可预览的表情。"); return; }
-
-    els.calibrationImage.src = convertFileSrc(firstEmotion.path || "");
-    els.calibrationImage.onload = () => {
-      loadLayoutForOutfit(packId, defaultOutfit.id);
-    };
+    const profile = pack?._rawProfile || {};
+    const configuredOutfit = String(
+      profile?.appearance?.default_outfit || profile?.appearance?.defaultOutfit || ""
+    ).trim();
+    const defaultOutfit = items.find((item) => item.id === configuredOutfit) || items[0];
+    els.calibrationOutfitSelect.value = defaultOutfit.id;
+    await loadCalibrationOutfitPreview(packId, defaultOutfit, profile);
 
     /* outfit switch */
-    els.calibrationOutfitSelect.onchange = () => {
+    els.calibrationOutfitSelect.onchange = async () => {
       const sel = els.calibrationOutfitSelect.value;
       const outfit = items.find((o) => o.id === sel);
-      if (outfit?.emotions?.[0]) {
-        els.calibrationImage.src = convertFileSrc(outfit.emotions[0].path || "");
-        els.calibrationImage.onload = () => loadLayoutForOutfit(packId, sel);
-      }
+      if (outfit) await loadCalibrationOutfitPreview(packId, outfit, profile);
     };
 
     /* slider bindings */
@@ -1164,6 +1610,43 @@ async function loadCalibrationTab(packId) {
   }
 }
 
+async function loadCalibrationOutfitPreview(packId, outfit, profile) {
+  const emotions = Array.isArray(outfit?.emotions) ? outfit.emotions : [];
+  const configuredEmotion = String(
+    profile?.appearance?.default_emotion || profile?.appearance?.defaultEmotion || ""
+  ).trim();
+  const emotion = emotions.find((item) => item.id === configuredEmotion) || emotions[0];
+  if (!emotion) {
+    els.calibrationImage.removeAttribute("src");
+    setStatus(`服装“${outfit?.name || outfit?.id || "-"}”没有可预览的图片。`);
+    return false;
+  }
+
+  const token = ++calibrationImageToken;
+  setStatus(`正在加载校准预览：${outfit.name || outfit.id} / ${emotion.name || emotion.id}`);
+  try {
+    const url = await getPortraitImageUrl(packId, outfit.id, emotion);
+    if (token !== calibrationImageToken) return false;
+    els.calibrationImage.onload = () => {
+      if (token !== calibrationImageToken) return;
+      loadLayoutForOutfit(packId, outfit.id);
+      setStatus(`正在校准：${outfit.name || outfit.id} / ${emotion.name || emotion.id}`);
+    };
+    els.calibrationImage.onerror = () => {
+      if (token !== calibrationImageToken) return;
+      setStatus(`校准预览加载失败：${outfit.name || outfit.id} / ${emotion.name || emotion.id}`);
+    };
+    els.calibrationImage.src = url;
+    return true;
+  } catch (error) {
+    if (token === calibrationImageToken) {
+      els.calibrationImage.removeAttribute("src");
+      setStatus(`校准预览加载失败：${formatError(error)}`);
+    }
+    return false;
+  }
+}
+
 function loadLayoutForOutfit(packId, outfitId) {
   const pack = findPack(packId);
   const profile = pack?._rawProfile || {};
@@ -1175,8 +1658,9 @@ function loadLayoutForOutfit(packId, outfitId) {
     setCalibrationSlider("cal-scale", Math.round((outfitLayout.portrait?.scale || 1) * 100));
     setCalibrationSlider("cal-offset-x", outfitLayout.portrait?.offset_x || 0);
     setCalibrationSlider("cal-offset-y", outfitLayout.portrait?.offset_y || 0);
-    setCalibrationSlider("cal-bubble-x", Math.round((outfitLayout.bubble?.anchor_x || 0.5) * 100));
-    setCalibrationSlider("cal-bubble-y", Math.round((outfitLayout.bubble?.anchor_y || 0.12) * 100));
+    setCalibrationSlider("cal-bubble-x", Math.round(readUnitValue(outfitLayout.bubble?.anchor_x, 0.5) * 100));
+    setCalibrationSlider("cal-bubble-y", Math.round(readUnitValue(outfitLayout.bubble?.anchor_y, 0.12) * 100));
+    setCalibrationBubbleStyle(outfitLayout.bubble?.style || outfitLayout.bubble?.theme || DEFAULT_BUBBLE_STYLE);
   } else {
     applyAutoLayout();
   }
@@ -1201,6 +1685,7 @@ function applyAutoLayout() {
   setCalibrationSlider("cal-offset-y", 0);
   setCalibrationSlider("cal-bubble-x", 50);
   setCalibrationSlider("cal-bubble-y", 12);
+  setCalibrationBubbleStyle(DEFAULT_BUBBLE_STYLE);
 
   setStatus("已应用自动布局。");
 }
@@ -1213,6 +1698,7 @@ function setCalibrationSlider(id, value) {
 }
 
 let calibrationSlidersBound = false;
+let calibrationImageToken = 0;
 
 function bindCalibrationSliders() {
   if (calibrationSlidersBound) return;
@@ -1223,6 +1709,47 @@ function bindCalibrationSliders() {
     if (!el) continue;
     el.addEventListener("input", () => applyCalibrationPreview());
   }
+  bindCalibrationBubbleControls();
+}
+
+function bindCalibrationBubbleControls() {
+  for (const button of getCalibrationBubbleStyleButtons()) {
+    button.addEventListener("click", () => {
+      setCalibrationBubbleStyle(button.dataset.calBubbleStyle);
+    });
+  }
+
+  const bubble = els.calibrationBubbleDot;
+  if (!bubble) return;
+
+  bubble.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    bubble.setPointerCapture?.(event.pointerId);
+    bubble.dataset.dragging = "true";
+    setBubbleAnchorFromPointer(event);
+  });
+  bubble.addEventListener("pointermove", (event) => {
+    if (bubble.dataset.dragging !== "true") return;
+    setBubbleAnchorFromPointer(event);
+  });
+  const stopDrag = (event) => {
+    if (bubble.dataset.dragging !== "true") return;
+    delete bubble.dataset.dragging;
+    try {
+      bubble.releasePointerCapture?.(event.pointerId);
+    } catch {
+      /* pointer capture may already be released */
+    }
+  };
+  bubble.addEventListener("pointerup", stopDrag);
+  bubble.addEventListener("pointercancel", stopDrag);
+  bubble.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? 5 : 1;
+    if (event.key === "ArrowLeft") adjustBubbleAnchor(-step, 0, event);
+    if (event.key === "ArrowRight") adjustBubbleAnchor(step, 0, event);
+    if (event.key === "ArrowUp") adjustBubbleAnchor(0, -step, event);
+    if (event.key === "ArrowDown") adjustBubbleAnchor(0, step, event);
+  });
 }
 
 function applyCalibrationPreview() {
@@ -1231,13 +1758,15 @@ function applyCalibrationPreview() {
   const scale = (Number(els.calScale?.value) || 100) / 100;
   const offX = Number(els.calOffsetX?.value) || 0;
   const offY = Number(els.calOffsetY?.value) || 0;
-  const bubbleX = (Number(els.calBubbleX?.value) || 50) / 100;
-  const bubbleY = (Number(els.calBubbleY?.value) || 12) / 100;
+  const bubbleX = readSliderUnit(els.calBubbleX, 0.5);
+  const bubbleY = readSliderUnit(els.calBubbleY, 0.12);
+  const bubbleStyle = getCalibrationBubbleStyle();
 
   /* update frame size */
   if (els.calibrationFrame) {
     els.calibrationFrame.style.width = `${Math.min(winW, 600)}px`;
     els.calibrationFrame.style.height = `${Math.min(winH, 500)}px`;
+    els.calibrationFrame.dataset.bubbleStyle = bubbleStyle;
   }
 
   /* update portrait */
@@ -1249,6 +1778,7 @@ function applyCalibrationPreview() {
   if (els.calibrationBubbleDot) {
     els.calibrationBubbleDot.style.left = `${bubbleX * 100}%`;
     els.calibrationBubbleDot.style.top = `${bubbleY * 100}%`;
+    els.calibrationBubbleDot.dataset.bubbleStyle = bubbleStyle;
   }
 
   /* update value labels */
@@ -1259,11 +1789,74 @@ function applyCalibrationPreview() {
   updateCalLabel("cal-offset-y-val", `${offY}`);
   updateCalLabel("cal-bubble-x-val", bubbleX.toFixed(2));
   updateCalLabel("cal-bubble-y-val", bubbleY.toFixed(2));
+  updateCalLabel("cal-bubble-style-val", BUBBLE_STYLE_LABELS[bubbleStyle] || BUBBLE_STYLE_LABELS[DEFAULT_BUBBLE_STYLE]);
 }
 
 function updateCalLabel(id, text) {
   const el = document.querySelector(`#${id}`);
   if (el) el.textContent = text;
+}
+
+function getCalibrationBubbleStyleButtons() {
+  return Array.from(els.calBubbleStyle?.querySelectorAll("[data-cal-bubble-style]") || []);
+}
+
+function getCalibrationBubbleStyle() {
+  return normalizeBubbleStyle(els.calBubbleStyle?.dataset.activeStyle);
+}
+
+function setCalibrationBubbleStyle(value, { updatePreview = true } = {}) {
+  const style = normalizeBubbleStyle(value);
+  if (els.calBubbleStyle) {
+    els.calBubbleStyle.dataset.activeStyle = style;
+  }
+  for (const button of getCalibrationBubbleStyleButtons()) {
+    const active = normalizeBubbleStyle(button.dataset.calBubbleStyle) === style;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+  updateCalLabel("cal-bubble-style-val", BUBBLE_STYLE_LABELS[style] || BUBBLE_STYLE_LABELS[DEFAULT_BUBBLE_STYLE]);
+  if (updatePreview) applyCalibrationPreview();
+}
+
+function normalizeBubbleStyle(value) {
+  const style = String(value || "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(BUBBLE_STYLE_LABELS, style) ? style : DEFAULT_BUBBLE_STYLE;
+}
+
+function readSliderUnit(input, fallback) {
+  const raw = Number(input?.value);
+  const percent = Number.isFinite(raw) ? raw : fallback * 100;
+  return clampNumber(percent / 100, 0, 1);
+}
+
+function readUnitValue(value, fallback) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return fallback;
+  return clampNumber(next, 0, 1);
+}
+
+function setBubbleAnchorFromPointer(event) {
+  const rect = els.calibrationFrame?.getBoundingClientRect();
+  if (!rect || rect.width <= 0 || rect.height <= 0) return;
+  const x = clampNumber(((event.clientX - rect.left) / rect.width) * 100, 0, 100);
+  const y = clampNumber(((event.clientY - rect.top) / rect.height) * 100, 0, 100);
+  if (els.calBubbleX) els.calBubbleX.value = String(Math.round(x));
+  if (els.calBubbleY) els.calBubbleY.value = String(Math.round(y));
+  applyCalibrationPreview();
+}
+
+function adjustBubbleAnchor(dx, dy, event) {
+  event.preventDefault();
+  const x = Number(els.calBubbleX?.value);
+  const y = Number(els.calBubbleY?.value);
+  if (els.calBubbleX) els.calBubbleX.value = String(clampNumber((Number.isFinite(x) ? x : 50) + dx, 0, 100));
+  if (els.calBubbleY) els.calBubbleY.value = String(clampNumber((Number.isFinite(y) ? y : 12) + dy, 0, 100));
+  applyCalibrationPreview();
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 async function saveCalibration(packId) {
@@ -1281,9 +1874,10 @@ async function saveCalibration(packId) {
       anchor: "bottom_center",
     },
     bubble: {
-      anchor_x: (Number(els.calBubbleX?.value) || 50) / 100,
-      anchor_y: (Number(els.calBubbleY?.value) || 12) / 100,
+      anchor_x: readSliderUnit(els.calBubbleX, 0.5),
+      anchor_y: readSliderUnit(els.calBubbleY, 0.12),
       max_width: 300,
+      style: getCalibrationBubbleStyle(),
     },
   };
 
@@ -1303,37 +1897,659 @@ async function saveCalibration(packId) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Test chat                                                         */
+/* ------------------------------------------------------------------ */
+
+function loadTestChatTab(packId) {
+  const pack = findPack(packId);
+  if (!pack) {
+    showTestChatEmpty();
+    return;
+  }
+  if (view.testPackId && view.testPackId !== packId) {
+    view.testMessages = [];
+    view.testLastEmotion = "";
+    view.testLastSegments = [];
+  }
+  view.testPackId = packId;
+  ensureTestScope(packId);
+  if (els.testChatContent) els.testChatContent.hidden = false;
+  if (els.testChatEmptyState) els.testChatEmptyState.hidden = true;
+  renderTestChatView(packId);
+  if (!view.testAssetsByPack[packId]) {
+    void refreshTestVisualAssets(packId);
+  }
+}
+
+function showTestChatEmpty() {
+  view.testPackId = "";
+  if (els.testChatContent) els.testChatContent.hidden = true;
+  if (els.testChatEmptyState) els.testChatEmptyState.hidden = false;
+  renderTestDiagnostics(null, null);
+  updateTestChatControls();
+}
+
+function renderTestChatView(packId = view.testPackId) {
+  const pack = findPack(packId);
+  if (!pack) {
+    showTestChatEmpty();
+    return;
+  }
+  const scope = ensureTestScope(packId);
+  renderTestDiagnostics(pack, scope);
+  renderTestChatTranscript();
+  updateTestChatControls();
+}
+
+function renderTestDiagnostics(pack, scope) {
+  const packId = pack?.id || "";
+  if (els.testScopeCharacter) {
+    els.testScopeCharacter.textContent = getPackName(pack) || "未选择";
+    els.testScopeCharacter.title = packId || "";
+  }
+  if (els.testScopeSession) {
+    els.testScopeSession.textContent = scope?.sessionId ? "独立测试会话" : "-";
+    els.testScopeSession.title = scope?.sessionId || "";
+  }
+  if (els.testScopeProfile) {
+    els.testScopeProfile.textContent = scope?.profileUserId ? "不会混入正式记忆" : "-";
+    els.testScopeProfile.title = scope?.profileUserId || "";
+  }
+  if (els.testResponseEmotion) {
+    els.testResponseEmotion.textContent = view.testLastEmotion || "-";
+  }
+  const visual = pack ? getTestVisualState(pack) : null;
+  if (els.testVisualOutfit) {
+    els.testVisualOutfit.textContent = visual?.outfit || "-";
+    els.testVisualOutfit.title = visual?.outfit || "";
+  }
+  if (els.testVisualLayout) {
+    els.testVisualLayout.textContent = visual?.layout
+      ? formatTestLayoutSummary(visual.layout)
+      : "未保存";
+  }
+  renderTestVisualPreview(pack, visual);
+  renderPromptFieldSummary(pack);
+  renderTestResponseSegments(view.testLastSegments);
+}
+
+function renderPromptFieldSummary(pack) {
+  if (!els.testPromptFields) return;
+  if (!pack) {
+    els.testPromptFields.textContent = "请选择角色包。";
+    return;
+  }
+  const profile = getEffectiveTestProfile(pack);
+  const identity = profile.identity || {};
+  const persona = profile.persona_form || {};
+  const rows = [
+    ["角色名称", identity.name || pack.name || "-"],
+    ["应用显示名", identity.app_name || identity.appName || pack.name || "-"],
+    ["用户称呼", identity.user_title || identity.userTitle || "-"],
+    ["自称", identity.self_reference || identity.selfReference || "-"],
+    ["关系", identity.relationship || "-"],
+    ["性格关键词", summarizeList(persona.personality_keywords)],
+    ["角色核心", summarizeText(persona.character_core || persona.characterCore)],
+    ["行为倾向", summarizeText(persona.behavior_style || persona.behaviorStyle)],
+    ["说话风格", summarizeText(persona.speaking_style || persona.speakingStyle)],
+    ["口头禅", `${asArray(persona.catchphrases).length} 条`],
+    ["边界", summarizeText(persona.boundaries)],
+    ["互动原则", summarizeText(persona.interaction_principles || persona.interactionPrinciples)],
+    ["示例台词", `${asArray(persona.example_lines).length} 条`],
+  ];
+  els.testPromptFields.replaceChildren(
+    ...rows.map(([label, value]) => {
+      const row = document.createElement("div");
+      row.append(buildText("span", label), buildText("strong", value));
+      return row;
+    })
+  );
+}
+
+function renderTestResponseSegments(segments) {
+  if (!els.testResponseSegments) return;
+  const items = Array.isArray(segments) ? segments.filter(Boolean) : [];
+  if (!items.length) {
+    els.testResponseSegments.textContent = "-";
+    return;
+  }
+  els.testResponseSegments.replaceChildren(
+    ...items.map((segment) => buildText("p", segment))
+  );
+}
+
+async function refreshTestVisualAssets(packId) {
+  if (!isTauriRuntime || !packId) return;
+  try {
+    const items = await invoke("list_pack_assets", { packId });
+    view.testAssetsByPack[packId] = Array.isArray(items) ? items : [];
+  } catch {
+    view.testAssetsByPack[packId] = [];
+  }
+  if (view.activeTab === "test" && view.testPackId === packId) {
+    renderTestChatView(packId);
+  }
+}
+
+function renderTestVisualPreview(pack, visual = null) {
+  if (!els.testVisualPreview) return;
+  if (!pack) {
+    els.testVisualPreview.textContent = "-";
+    return;
+  }
+
+  const state = visual || getTestVisualState(pack);
+  const emotion = findTestVisualEmotionAsset(pack, state);
+  const layout = state.layout || {};
+  const winW = Math.max(200, Number(layout.window?.width) || 340);
+  const winH = Math.max(200, Number(layout.window?.height) || 520);
+  const offsetX = Number(layout.portrait?.offset_x) || 0;
+  const offsetY = Number(layout.portrait?.offset_y) || 0;
+  const portraitScale = Number(layout.portrait?.scale) || 1;
+  const bubbleX = readUnitValue(layout.bubble?.anchor_x, 0.5);
+  const bubbleY = readUnitValue(layout.bubble?.anchor_y, 0.12);
+  const bubbleStyle = normalizeBubbleStyle(layout.bubble?.style || layout.bubble?.theme);
+
+  const stage = document.createElement("div");
+  stage.className = "test-visual-stage";
+  stage.dataset.bubbleStyle = bubbleStyle;
+  stage.style.aspectRatio = `${winW} / ${winH}`;
+  stage.style.setProperty("--test-offset-x", `${(offsetX / winW) * 100}%`);
+  stage.style.setProperty("--test-offset-y", `${(offsetY / winH) * 100}%`);
+  stage.style.setProperty("--test-scale", String(portraitScale));
+  stage.style.setProperty("--test-bubble-x", `${Math.min(1, Math.max(0, bubbleX)) * 100}%`);
+  stage.style.setProperty("--test-bubble-y", `${Math.min(1, Math.max(0, bubbleY)) * 100}%`);
+
+  const portrait = document.createElement("div");
+  portrait.className = "test-visual-portrait";
+  if (emotion?.id) {
+    const img = document.createElement("img");
+    img.alt = emotion.name || emotion.id || state.emotion || "portrait";
+    portrait.appendChild(img);
+    void loadPortraitImage(img, pack.id, state.outfit, emotion, "test-visual-image-error");
+  } else {
+    const missing = document.createElement("span");
+    missing.textContent = "未找到默认立绘资源";
+    portrait.appendChild(missing);
+  }
+
+  const bubble = document.createElement("div");
+  bubble.className = "test-visual-bubble";
+  bubble.title = "气泡锚点";
+  bubble.textContent = "示例";
+  stage.append(portrait, bubble);
+
+  const info = document.createElement("p");
+  info.className = "test-visual-info";
+  info.textContent = `${state.outfit || "-"} / ${state.emotion || "-"} · ${state.layout ? "已加载校准" : "未保存校准"}`;
+
+  els.testVisualPreview.replaceChildren(stage, info);
+}
+
+function renderTestChatTranscript() {
+  if (!els.testChatLog) return;
+  if (!view.testMessages.length) {
+    const empty = document.createElement("p");
+    empty.className = "test-chat-placeholder";
+    empty.textContent = "还没有测试消息。";
+    els.testChatLog.replaceChildren(empty);
+    return;
+  }
+  els.testChatLog.replaceChildren(
+    ...view.testMessages.map((message) => {
+      const item = document.createElement("article");
+      item.className = `test-message ${message.role === "user" ? "user" : "assistant"}`;
+      const title = document.createElement("header");
+      title.append(
+        buildText("strong", message.role === "user" ? "你" : getPackName(findPack(view.testPackId)) || "角色"),
+        buildText("span", message.status || "")
+      );
+      item.append(title);
+      const segments = Array.isArray(message.segments) && message.segments.length
+        ? message.segments
+        : [message.text || ""].filter(Boolean);
+      for (const segment of segments) {
+        item.append(buildText("p", segment));
+      }
+      if (message.emotion) {
+        const footer = document.createElement("footer");
+        footer.textContent = `表情：${message.emotion}`;
+        item.append(footer);
+      }
+      return item;
+    })
+  );
+  els.testChatLog.scrollTop = els.testChatLog.scrollHeight;
+}
+
+async function applyTestPackToDesktop() {
+  const packId = String(view.testPackId || view.activePackId || "").trim();
+  const pack = findPack(packId);
+  if (!pack) {
+    setTestStatus("请先选择一个角色包。");
+    return;
+  }
+  if (!isTauriRuntime) {
+    setTestStatus("浏览器预览模式不支持应用到桌宠。");
+    return;
+  }
+  if (view.testRunning) return;
+
+  if (hasBackendPendingPersonaChanges(packId)) {
+    setTestStatus("正在保存当前人设字段。");
+    const saveResult = await saveDraft({ allowLocalFallback: false });
+    if (!saveResult?.ok) {
+      setTestStatus("应用已暂停：当前人设没有写入角色包文件。");
+      return;
+    }
+  }
+
+  setTestStatus(`正在应用到桌宠：${getPackName(pack) || packId}`);
+  const result = await applyPack(packId);
+  if (result?.ok) {
+    setTestStatus(`已应用到桌宠：${getPackName(pack) || packId}`);
+  } else {
+    setTestStatus(`应用失败：${result?.error || "unknown error"}`);
+  }
+}
+
+async function sendTestChatMessage() {
+  const packId = String(view.testPackId || view.activePackId || "").trim();
+  const pack = findPack(packId);
+  const text = String(els.testChatInput?.value || "").trim();
+  if (!pack) {
+    setTestStatus("请先选择一个角色包。");
+    return;
+  }
+  if (!text) {
+    setTestStatus("请输入测试内容。");
+    return;
+  }
+  if (view.testRunning) return;
+
+  if (hasBackendPendingPersonaChanges(packId)) {
+    setTestStatus("正在保存当前人设字段。");
+    const saveResult = await saveDraft({ allowLocalFallback: false });
+    if (!saveResult?.ok) {
+      setTestStatus("测试已暂停：当前人设没有写入角色包文件。");
+      return;
+    }
+  }
+
+  const scope = ensureTestScope(packId);
+  const requestPack = findPack(packId) || pack;
+  view.testMessages.push({ role: "user", text, status: "已发送" });
+  const assistantMessage = {
+    role: "assistant",
+    text: "",
+    segments: [],
+    emotion: "",
+    status: "等待回复",
+  };
+  view.testMessages.push(assistantMessage);
+  view.testRunning = true;
+  view.testLastEmotion = "";
+  view.testLastSegments = [];
+  els.testChatInput.value = "";
+  renderTestChatView(packId);
+  setTestStatus("正在请求 /think。");
+
+  try {
+    const response = await requestWorkshopThink({ pack: requestPack, scope, message: text });
+    if (!response.ok) {
+      throw new Error(await readResponseError(response, `HTTP ${response.status}`));
+    }
+    await consumeWorkshopThinkStream(response, assistantMessage);
+    if (!assistantMessage.text && !assistantMessage.segments.length) {
+      throw new Error("未收到回复内容");
+    }
+    assistantMessage.status = "完成";
+    setTestStatus("测试回复完成。");
+  } catch (error) {
+    assistantMessage.status = "失败";
+    assistantMessage.text = `请求失败：${formatError(error)}`;
+    setTestStatus(`测试失败：${formatError(error)}`);
+  } finally {
+    view.testRunning = false;
+    renderTestChatView(packId);
+  }
+}
+
+async function requestWorkshopThink({ pack, scope, message }) {
+  const payload = {
+    user_id: scope.sessionId,
+    session_id: scope.sessionId,
+    real_user_id: scope.profileUserId,
+    message,
+    turn_kind: "workshop_test_chat",
+    client_mode: CLIENT_MODE,
+    character_pack_id: pack.id,
+    client_capabilities: ["speech_segments"],
+    current_visual: buildTestCurrentVisual(pack),
+    desktop_context: {},
+    desktop_screen_frames: [],
+    desktop_activity: {},
+    workshop_test: true,
+  };
+  return backendFetch(buildBackendUrl("/think", { t: Date.now() }), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify(payload),
+    ...(isTauriRuntime ? { connectTimeout: 30_000 } : {}),
+  });
+}
+
+async function consumeWorkshopThinkStream(response, assistantMessage) {
+  let partialSpeech = "";
+  for await (const event of readNdjsonEvents(response)) {
+    const type = String(event?.type || "").trim().toLowerCase();
+    if (type === "speech_chunk") {
+      partialSpeech += String(event.text || "");
+      assistantMessage.text = partialSpeech.trim();
+      assistantMessage.status = "生成中";
+    } else if (type === "speech_segment") {
+      const text = String(event.text || "").trim();
+      if (text) {
+        assistantMessage.segments.push(text);
+        assistantMessage.status = "生成中";
+      }
+    } else if (type === "ui") {
+      const emotion = String(event.emotion || "").trim();
+      if (emotion) assistantMessage.emotion = emotion;
+    } else if (type === "final" || type === "final_ui" || type === "npc_turn") {
+      applyTestPayload(event.payload || event, assistantMessage);
+    } else if (type === "stream_error" || type === "error") {
+      if (event.partial) applyTestPayload(event.partial, assistantMessage);
+      throw new Error(String(event.message || event.error || "stream error"));
+    } else if (type === "stream_end" && event.partial) {
+      applyTestPayload(event.partial, assistantMessage);
+    }
+    updateTestMessageDiagnostics(assistantMessage);
+    renderTestChatTranscript();
+  }
+  if (!assistantMessage.text && !assistantMessage.segments.length && partialSpeech.trim()) {
+    assistantMessage.text = partialSpeech.trim();
+  }
+  updateTestMessageDiagnostics(assistantMessage);
+}
+
+function applyTestPayload(payload, assistantMessage) {
+  if (!payload || typeof payload !== "object") return;
+  const segments = normalizeResponseSegments(payload.speech_segments || payload.segments);
+  if (segments.length) {
+    assistantMessage.segments = segments;
+    assistantMessage.text = segments.join("");
+  } else {
+    const speech = String(payload.speech || payload.text || "").trim();
+    if (speech) assistantMessage.text = speech;
+  }
+  const emotion = String(payload.emotion || "").trim();
+  if (emotion) assistantMessage.emotion = emotion;
+}
+
+function updateTestMessageDiagnostics(message) {
+  view.testLastEmotion = String(message.emotion || view.testLastEmotion || "").trim();
+  view.testLastSegments = Array.isArray(message.segments) && message.segments.length
+    ? message.segments
+    : splitDisplayText(message.text);
+  if (els.testResponseEmotion) els.testResponseEmotion.textContent = view.testLastEmotion || "-";
+  renderTestResponseSegments(view.testLastSegments);
+}
+
+async function* readNdjsonEvents(response) {
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    const raw = await response.text();
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try { yield JSON.parse(trimmed); } catch { /* skip malformed line */ }
+    }
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try { yield JSON.parse(trimmed); } catch { /* skip malformed line */ }
+    }
+  }
+  buffer += decoder.decode();
+  const tail = buffer.trim();
+  if (tail) {
+    try { yield JSON.parse(tail); } catch { /* skip malformed tail */ }
+  }
+}
+
+async function readResponseError(response, fallback) {
+  try {
+    const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
+    if (contentType.includes("json")) {
+      const payload = await response.json();
+      return String(payload?.detail || payload?.message || payload?.error || fallback);
+    }
+    const text = String(await response.text()).trim();
+    return text || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function resetTestChatSession() {
+  const packId = String(view.testPackId || view.activePackId || "").trim();
+  if (!packId) {
+    showTestChatEmpty();
+    return;
+  }
+  delete view.testScopes[packId];
+  view.testMessages = [];
+  view.testLastEmotion = "";
+  view.testLastSegments = [];
+  ensureTestScope(packId);
+  renderTestChatView(packId);
+  setTestStatus("已创建新的隔离测试会话。");
+}
+
+function ensureTestScope(packId) {
+  const id = sanitizeScopePart(packId || "character");
+  if (!view.testScopes[packId]) {
+    const suffix = Date.now().toString(36);
+    view.testScopes[packId] = {
+      sessionId: `${WORKSHOP_TEST_SCOPE_PREFIX}_${id}_${suffix}`,
+      profileUserId: `${WORKSHOP_TEST_SCOPE_PREFIX}_profile_${id}_${suffix}`,
+    };
+  }
+  return view.testScopes[packId];
+}
+
+function buildTestCurrentVisual(pack) {
+  const visual = getTestVisualState(pack);
+  return {
+    character_pack_id: pack.id,
+    emotion: visual.emotion,
+    character: {
+      character_pack_id: pack.id,
+      outfit: visual.outfit,
+      layout: visual.layout || null,
+      available_emotions: visual.availableEmotions,
+    },
+    scene: {},
+    available_emotions: visual.availableEmotions.map((item) => item.id),
+  };
+}
+
+function getTestVisualState(pack) {
+  const profile = pack?._rawProfile && typeof pack._rawProfile === "object" ? pack._rawProfile : {};
+  const appearance = profile.appearance && typeof profile.appearance === "object" ? profile.appearance : {};
+  const layoutOutfits = profile.layout?.outfits && typeof profile.layout.outfits === "object"
+    ? profile.layout.outfits
+    : {};
+  const assets = Array.isArray(view.testAssetsByPack[pack?.id]) ? view.testAssetsByPack[pack.id] : [];
+  const defaultOutfit = String(pack?.defaultOutfit || appearance.default_outfit || appearance.defaultOutfit || "").trim();
+  const assetOutfit = findTestOutfitAsset(assets, defaultOutfit) || assets[0] || null;
+  const firstLayoutOutfit = Object.keys(layoutOutfits)[0] || "";
+  const outfit = String(defaultOutfit || assetOutfit?.id || firstLayoutOutfit || "").trim();
+  const resolvedOutfitAsset = findTestOutfitAsset(assets, outfit) || assetOutfit;
+  const defaultEmotion = String(
+    view.testLastEmotion ||
+      pack?.defaultEmotion ||
+      appearance.default_emotion ||
+      appearance.defaultEmotion ||
+      ""
+  ).trim();
+  const firstAssetEmotion = String(resolvedOutfitAsset?.emotions?.[0]?.id || "").trim();
+  const emotion = String(defaultEmotion || firstAssetEmotion || "normal").trim();
+  const layout = layoutOutfits[outfit] || layoutOutfits[defaultOutfit] || null;
+  return {
+    outfit,
+    emotion,
+    layout: layout && typeof layout === "object" ? layout : null,
+    availableEmotions: collectTestAvailableEmotions(appearance, resolvedOutfitAsset, emotion),
+  };
+}
+
+function collectTestAvailableEmotions(appearance, outfitAsset, defaultEmotion) {
+  const entries = [];
+  const seen = new Set();
+  const add = (id, name = "") => {
+    const cleanId = String(id || "").trim();
+    if (!cleanId || seen.has(cleanId)) return;
+    seen.add(cleanId);
+    entries.push({ id: cleanId, name: String(name || cleanId).trim() || cleanId });
+  };
+
+  add(defaultEmotion);
+  for (const item of asArray(outfitAsset?.emotions)) {
+    add(item?.id || item?.name, item?.name || item?.id);
+  }
+  add(appearance.default_emotion || appearance.defaultEmotion);
+  add(appearance.music_emotion || appearance.musicEmotion);
+  for (const id of asArray(appearance.required_emotions || appearance.requiredEmotions)) add(id);
+  for (const id of asArray(appearance.recommended_emotions || appearance.recommendedEmotions)) add(id);
+  return entries;
+}
+
+function findTestOutfitAsset(assets, outfitId) {
+  const id = String(outfitId || "").trim();
+  if (!id) return null;
+  return (Array.isArray(assets) ? assets : []).find((item) => String(item?.id || "").trim() === id) || null;
+}
+
+function findTestVisualEmotionAsset(pack, visual) {
+  const assets = Array.isArray(view.testAssetsByPack[pack?.id]) ? view.testAssetsByPack[pack.id] : [];
+  const outfit = findTestOutfitAsset(assets, visual?.outfit) || assets[0] || null;
+  const emotions = Array.isArray(outfit?.emotions) ? outfit.emotions : [];
+  const id = String(visual?.emotion || "").trim();
+  return emotions.find((item) => String(item?.id || "").trim() === id) || emotions[0] || null;
+}
+
+function formatTestLayoutSummary(layout) {
+  const width = Number(layout?.window?.width) || 0;
+  const height = Number(layout?.window?.height) || 0;
+  if (width > 0 && height > 0) return `${Math.round(width)} × ${Math.round(height)}`;
+  return "已保存";
+}
+
+function getEffectiveTestProfile(pack) {
+  if (hasBackendPendingPersonaChanges(pack?.id)) {
+    const data = collectFormData();
+    return {
+      ...(pack?._rawProfile || {}),
+      identity: { ...((pack?._rawProfile || {}).identity || {}), ...data.identity },
+      persona_form: { ...((pack?._rawProfile || {}).persona_form || {}), ...data.persona_form },
+    };
+  }
+  return pack?._rawProfile || {};
+}
+
+function normalizeResponseSegments(value) {
+  return asArray(value)
+    .map((item) => {
+      if (typeof item === "string") return item.trim();
+      if (item && typeof item === "object") {
+        return String(item.text || item.speech || item.content || "").trim();
+      }
+      return "";
+    })
+    .filter(Boolean);
+}
+
+function splitDisplayText(value) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  return text
+    .split(/(?<=[。！？!?])\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
+function setTestStatus(message) {
+  if (els.testChatStatus) els.testChatStatus.textContent = String(message || "");
+}
+
+function updateTestChatControls() {
+  const disabled = view.testRunning || !view.testPackId;
+  if (els.testChatSend) els.testChatSend.disabled = disabled;
+  if (els.testChatInput) els.testChatInput.disabled = view.testRunning || !view.testPackId;
+  if (els.testChatClear) els.testChatClear.disabled = view.testRunning || !view.testPackId;
+  if (els.testApplyPack) els.testApplyPack.disabled = disabled || !isTauriRuntime;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Render                                                            */
 /* ------------------------------------------------------------------ */
 
 function render() {
   const activePack = findPack(view.activePackId);
+  ensureWorkspacePack();
+  const workspacePack = findPack(view.workspacePackId);
   const activeName = view.activeCharacterName || getPackName(activePack) || "-";
+  const workspaceName = getPackName(workspacePack) || "-";
   els.activeCharacter.textContent = activeName;
-  els.activePack.textContent = view.activePackId || "-";
-  els.activeSession.textContent = shortId(view.activeSessionId);
+  els.activeCharacter.title = activePack?.id || "";
+  if (els.editingCharacter) {
+    els.editingCharacter.textContent = workspaceName;
+    els.editingCharacter.title = workspacePack?.id || "";
+  }
+  els.activePack.textContent = workspacePack ? getPackReadinessSummary(workspacePack) : "-";
+  els.activePack.title = workspacePack?.id || "";
+  els.activeSession.textContent = view.activeSessionId ? "已隔离" : "-";
+  els.activeSession.title = view.activeSessionId || "";
   els.summary.textContent = view.packs.length
-    ? `${activeName} · ${view.packs.length} 个角色包`
+    ? `桌宠：${activeName} · 正在编辑：${workspaceName} · ${view.packs.length} 个角色`
     : "还没有读到角色包。";
   els.packCount.textContent = String(view.packs.length);
-  renderPackDetails(activePack);
+  renderPackDetails(workspacePack);
   renderPackList();
 
-  /* if persona tab is active, keep form in sync with active pack */
-  if (view.activeTab === "persona" && view.editingPackId !== view.activePackId) {
-    /* auto-save current draft before switching */
-    if (view.editingPackId && view.draftDirty) {
-      autoSaveDraftSync(view.editingPackId);
-    }
-    if (view.activePackId) {
-      startEditingPack(view.activePackId);
+  if (view.activeTab === "persona" && view.editingPackId !== view.workspacePackId) {
+    startEditingPack(view.workspacePackId);
+  }
+  if (view.activeTab === "test") {
+    const targetId = view.workspacePackId || view.testPackId || view.activePackId;
+    if (targetId) {
+      view.testPackId = targetId;
+      renderTestChatView(targetId);
+    } else {
+      showTestChatEmpty();
     }
   }
 }
 
 function renderPackList() {
+  renderFirstUsePanel();
   if (!view.packs.length) {
-    els.packList.textContent = "暂无角色包。";
+    els.packList.replaceChildren(buildPackListEmptyState());
     return;
   }
 
@@ -1341,14 +2557,25 @@ function renderPackList() {
     ...view.packs.map((pack) => {
       const card = document.createElement("article");
       card.className = "pack-card";
-      card.classList.toggle("active", pack.id === view.activePackId || Boolean(pack.selected));
+      card.dataset.packId = pack.id;
+      const isActive = pack.id === view.activePackId;
+      const isEditing = pack.id === view.workspacePackId;
+      card.classList.toggle("active", isActive);
+      card.classList.toggle("editing", isEditing);
 
       const heading = document.createElement("div");
       heading.className = "pack-card-heading";
-      heading.append(buildText("strong", getPackName(pack) || pack.id), buildText("span", pack.id));
+      const name = getPackName(pack) || "未命名角色";
+      const subtitle = document.createElement("span");
+      subtitle.textContent = buildPackRoleLabel(pack, { isActive, isEditing });
+      subtitle.className = isActive || isEditing ? "pack-row-active-note" : "";
+      heading.append(buildText("strong", name), subtitle);
 
       const meta = document.createElement("p");
-      meta.textContent = buildPackMeta(pack);
+      const issues = buildPackReadinessIssues(pack);
+      meta.textContent = issues.length
+        ? `还差：${issues.slice(0, 2).map((item) => item.label).join("、")} · ${buildPackMeta(pack)}`
+        : buildPackMeta(pack);
 
       const actions = document.createElement("div");
       actions.className = "pack-card-actions";
@@ -1357,13 +2584,13 @@ function renderPackList() {
       editBtn.type = "button";
       editBtn.className = "btn-edit-pack";
       editBtn.dataset.editPack = pack.id;
-      editBtn.textContent = "编辑";
+      editBtn.textContent = isEditing ? "继续编辑" : "编辑";
 
       const applyBtn = document.createElement("button");
       applyBtn.type = "button";
       applyBtn.dataset.applyPack = pack.id;
-      applyBtn.disabled = pack.id === view.activePackId || Boolean(pack.selected);
-      applyBtn.textContent = applyBtn.disabled ? "已启用" : "应用";
+      applyBtn.disabled = isActive || Boolean(view.pendingApplyPackId);
+      applyBtn.textContent = isActive ? "已启用" : pack.id === view.pendingApplyPackId ? "应用中" : "应用";
 
       actions.append(editBtn, applyBtn);
       card.append(heading, meta, actions);
@@ -1372,28 +2599,66 @@ function renderPackList() {
   );
 }
 
+function renderFirstUsePanel() {
+  if (!els.firstUsePanel) return;
+  const shouldShow = view.packs.length <= 1;
+  els.firstUsePanel.hidden = !shouldShow;
+  if (shouldShow) {
+    els.firstUsePanel.dataset.state = view.packs.length ? "starter-pack" : "empty";
+  } else {
+    delete els.firstUsePanel.dataset.state;
+  }
+}
+
+function buildPackListEmptyState() {
+  const box = document.createElement("div");
+  box.className = "pack-list-empty glass-card";
+  const title = document.createElement("strong");
+  title.textContent = "暂无角色包";
+  const note = document.createElement("p");
+  note.textContent = "可以先新建一个草稿角色，再逐步补人设、立绘和校准。";
+  box.append(title, note);
+  return box;
+}
+
 function renderPackDetails(pack) {
+  const readiness = buildPackReadinessIssues(pack);
+  if (!pack) {
+    els.packDetailList.replaceChildren(buildReadinessRow({
+      ok: false,
+      label: "选择一个角色",
+      detail: "从左侧列表选择角色后，这里会显示接下来要补什么。",
+    }));
+    return;
+  }
   const rows = [
-    ["名称", getPackName(pack) || "-"],
-    ["Pack ID", pack?.id || "-"],
-    ["角色 ID", pack?.characterId || "-"],
-    ["Schema", pack?.schemaVersion || "-"],
-    ["默认服装", pack?.defaultOutfit || "-"],
-    ["默认表情", pack?.defaultEmotion || "-"],
-    ["资源数", pack?.assetCount ? String(pack.assetCount) : "-"],
-    ["来源", pack?.source || "-"],
+    { ok: true, label: "角色名称", detail: getPackName(pack) || "未命名角色" },
+    { ok: Boolean(pack.defaultOutfit), label: "默认服装", detail: pack.defaultOutfit ? displayAssetName(pack.defaultOutfit) : "还没指定" },
+    { ok: Boolean(pack.defaultEmotion), label: "默认表情", detail: pack.defaultEmotion ? displayAssetName(pack.defaultEmotion) : "还没指定" },
+    { ok: Number(pack.assetCount || 0) > 0, label: "立绘资源", detail: pack.assetCount ? `${pack.assetCount} 个文件` : "还没有可用图片" },
+    { ok: !readiness.length, label: "可用状态", detail: readiness.length ? `建议先补：${readiness.map((item) => item.label).join("、")}` : "可以继续编辑或应用到桌宠" },
+  ];
+  const technical = [
+    ["角色包 ID", pack.id || "-"],
+    ["角色 ID", pack.characterId || "-"],
+    ["结构版本", pack.schemaVersion || "-"],
+    ["文件来源", pack.source || "-"],
   ];
   els.packDetailList.replaceChildren(
-    ...rows.map(([label, value]) => {
-      const row = document.createElement("div");
-      const key = document.createElement("dt");
-      const data = document.createElement("dd");
-      key.textContent = label;
-      data.textContent = value;
-      row.append(key, data);
-      return row;
-    })
+    ...rows.map((row) => buildReadinessRow(row)),
+    buildTechnicalDetails(technical)
   );
+}
+
+function buildPackReadinessIssues(pack) {
+  if (!pack) return [];
+  const issues = [];
+  if (!getPackName(pack)) issues.push({ key: "name", label: "名称" });
+  if (!pack.schemaVersion) issues.push({ key: "schema", label: "结构版本" });
+  if (!pack.defaultOutfit) issues.push({ key: "outfit", label: "默认服装" });
+  if (!pack.defaultEmotion) issues.push({ key: "emotion", label: "默认表情" });
+  if (!Number(pack.assetCount || 0)) issues.push({ key: "assets", label: "立绘资源" });
+  return issues;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1417,7 +2682,7 @@ function normalizePacks(value) {
         defaultEmotion: String(pack.defaultEmotion || appearance.default_emotion || appearance.defaultEmotion || "").trim(),
         assetCount: Number(pack.assetCount || 0),
         source: String(pack.source || "").trim(),
-        selected: Boolean(pack.selected),
+        selected: false,
         /* keep the raw profile so the persona form can read it */
         _rawProfile: profile,
       };
@@ -1426,9 +2691,58 @@ function normalizePacks(value) {
     .sort((left, right) => getPackName(left).localeCompare(getPackName(right), "zh-Hans-CN"));
 }
 
+function mergeSnapshotPacks(currentPacks, snapshotPacks) {
+  const merged = new Map();
+  for (const pack of Array.isArray(currentPacks) ? currentPacks : []) {
+    if (pack?.id) merged.set(pack.id, pack);
+  }
+  for (const pack of Array.isArray(snapshotPacks) ? snapshotPacks : []) {
+    if (!pack?.id) continue;
+    const existing = merged.get(pack.id);
+    if (!existing) {
+      merged.set(pack.id, pack);
+      continue;
+    }
+    merged.set(pack.id, {
+      ...existing,
+      ...pack,
+      selected: false,
+      _rawProfile: hasProfilePayload(pack._rawProfile) ? pack._rawProfile : existing._rawProfile,
+    });
+  }
+  return [...merged.values()]
+    .filter((pack) => pack.id)
+    .sort((left, right) => getPackName(left).localeCompare(getPackName(right), "zh-Hans-CN"));
+}
+
+function hasProfilePayload(profile) {
+  return Boolean(profile && typeof profile === "object" && !Array.isArray(profile) && Object.keys(profile).length);
+}
+
 function findPack(packId) {
   const id = String(packId || "").trim();
   return view.packs.find((pack) => pack.id === id) || null;
+}
+
+function setWorkspacePack(packId) {
+  const id = String(packId || "").trim();
+  if (!id || !findPack(id)) return false;
+  view.workspacePackId = id;
+  return true;
+}
+
+function ensureWorkspacePack() {
+  if (findPack(view.workspacePackId)) return view.workspacePackId;
+  const fallbackId = findPack(view.activePackId)?.id || view.packs[0]?.id || "";
+  view.workspacePackId = fallbackId;
+  return fallbackId;
+}
+
+function buildPackRoleLabel(pack, { isActive = false, isEditing = false } = {}) {
+  if (isActive && isEditing) return "桌宠正在使用 · 工坊正在编辑";
+  if (isActive) return "桌宠正在使用";
+  if (isEditing) return "工坊正在编辑";
+  return getPackReadinessSummary(pack);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1439,15 +2753,80 @@ function getPackName(pack) {
   return String(pack?.name || pack?.characterName || pack?.characterId || "").trim();
 }
 
+function getPackReadinessSummary(pack) {
+  if (!pack) return "-";
+  const issues = buildPackReadinessIssues(pack).filter((item) => item.key !== "schema");
+  if (!issues.length) return "素材已就绪";
+  return `待补：${issues.slice(0, 2).map((item) => item.label).join("、")}`;
+}
+
 function buildPackMeta(pack) {
   const parts = [
-    pack.characterName || pack.characterId || "",
-    pack.defaultOutfit ? `服装 ${pack.defaultOutfit}` : "",
-    pack.defaultEmotion ? `默认 ${pack.defaultEmotion}` : "",
-    pack.schemaVersion || "",
-    pack.assetCount ? `${pack.assetCount} 个文件` : "",
+    pack.defaultOutfit ? `服装：${displayAssetName(pack.defaultOutfit)}` : "未设默认服装",
+    pack.defaultEmotion ? `表情：${displayAssetName(pack.defaultEmotion)}` : "未设默认表情",
+    pack.assetCount ? `素材：${pack.assetCount} 个` : "暂无立绘素材",
   ].filter(Boolean);
-  return parts.join(" · ") || "角色包";
+  return parts.join(" · ");
+}
+
+function displayAssetName(value) {
+  const text = String(value || "").trim();
+  if (!text) return "-";
+  const key = text.toLowerCase();
+  const aliases = {
+    default: "默认",
+    normal: "普通",
+    neutral: "普通",
+    thinking: "思考",
+    happy: "开心",
+    shy: "害羞",
+    angry: "生气",
+    pout: "气鼓鼓",
+    confused: "困惑",
+    sleepy: "困倦",
+    tired: "疲惫",
+    listening: "倾听",
+    music: "听歌",
+    touched: "被摸头",
+  };
+  return aliases[key] || text;
+}
+
+function buildReadinessRow({ ok, label, detail }) {
+  const row = document.createElement("div");
+  row.className = `readiness-row ${ok ? "ok" : "todo"}`;
+
+  const mark = document.createElement("span");
+  mark.className = "readiness-mark";
+  mark.setAttribute("aria-hidden", "true");
+  mark.textContent = ok ? "✓" : "!";
+
+  const body = document.createElement("div");
+  const title = document.createElement("strong");
+  const desc = document.createElement("span");
+  title.textContent = label;
+  desc.textContent = detail;
+  body.append(title, desc);
+  row.append(mark, body);
+  return row;
+}
+
+function buildTechnicalDetails(rows) {
+  const details = document.createElement("details");
+  details.className = "technical-details";
+  const summary = document.createElement("summary");
+  summary.textContent = "技术信息";
+  const list = document.createElement("div");
+  list.className = "technical-details-list";
+  list.append(
+    ...rows.map(([label, value]) => {
+      const row = document.createElement("p");
+      row.append(buildText("span", label), buildText("code", value || "-"));
+      return row;
+    })
+  );
+  details.append(summary, list);
+  return details;
 }
 
 function buildText(tagName, text) {
@@ -1472,6 +2851,79 @@ function setStatus(message) {
 
 function formatError(error) {
   return error instanceof Error ? error.message : String(error || "unknown error");
+}
+
+function stableSignature(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(Date.now());
+  }
+}
+
+function flashElement(element, className) {
+  if (!element || !className) return;
+  element.classList.remove(className);
+  void element.offsetWidth;
+  element.classList.add(className);
+}
+
+function pulsePackCard(packId) {
+  const id = String(packId || "").trim();
+  if (!id || !els.packList) return;
+  const card = Array.from(els.packList.querySelectorAll("[data-pack-id]"))
+    .find((item) => item.dataset.packId === id);
+  flashElement(card, "switch-flash");
+}
+
+function backendFetch(input, init) {
+  if (isTauriRuntime) {
+    return tauriFetch(input, init);
+  }
+  return window.fetch(input, init);
+}
+
+function buildBackendUrl(path, params = null) {
+  const base = `${normalizeBackendUrl(view.backendUrl).replace(/\/+$/, "")}/`;
+  const url = new URL(String(path || "/").replace(/^\/+/, ""), base);
+  for (const [key, value] of Object.entries(params || {})) {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  return url.toString();
+}
+
+function normalizeBackendUrl(value) {
+  const raw = String(value || "").trim() || DEFAULT_BACKEND_URL;
+  try {
+    return new URL(raw).toString().replace(/\/+$/, "");
+  } catch {
+    return DEFAULT_BACKEND_URL;
+  }
+}
+
+function sanitizeScopePart(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  const encoded = encodeURIComponent(raw).replace(/%/g, "_").replace(/[^a-z0-9_-]+/g, "_");
+  const text = encoded || raw.replace(/[^a-z0-9_-]+/g, "_");
+  return text.replace(/^_+|_+$/g, "").slice(0, 64) || "character";
+}
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function summarizeList(value) {
+  const items = asArray(value).map((item) => String(item || "").trim()).filter(Boolean);
+  if (!items.length) return "-";
+  return items.slice(0, 4).join("、") + (items.length > 4 ? ` 等 ${items.length} 项` : "");
+}
+
+function summarizeText(value) {
+  const text = String(value || "").trim();
+  if (!text) return "-";
+  return text.length <= 34 ? text : `${text.slice(0, 34)}...`;
 }
 
 /* JSON array <-> text input helpers */

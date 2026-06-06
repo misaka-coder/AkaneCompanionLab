@@ -67,9 +67,6 @@ class MemoryStore:
                 CREATE INDEX IF NOT EXISTS idx_chat_profile_time
                 ON chat_messages(profile_user_id, timestamp);
 
-                CREATE INDEX IF NOT EXISTS idx_chat_profile_character_time
-                ON chat_messages(profile_user_id, character_pack_id, timestamp);
-
                 CREATE TABLE IF NOT EXISTS memory_summaries (
                     summary_id TEXT PRIMARY KEY,
                     profile_user_id TEXT NOT NULL,
@@ -94,12 +91,6 @@ class MemoryStore:
 
                 CREATE INDEX IF NOT EXISTS idx_summary_profile_time
                 ON memory_summaries(profile_user_id, timestamp DESC);
-
-                CREATE INDEX IF NOT EXISTS idx_summary_profile_character_time
-                ON memory_summaries(profile_user_id, character_pack_id, timestamp DESC);
-
-                CREATE INDEX IF NOT EXISTS idx_summary_semanticized
-                ON memory_summaries(profile_user_id, session_id, is_semanticized, timestamp DESC);
 
                 CREATE TABLE IF NOT EXISTS memory_semantic_summaries (
                     semantic_id TEXT PRIMARY KEY,
@@ -127,9 +118,6 @@ class MemoryStore:
                 CREATE INDEX IF NOT EXISTS idx_semantic_profile_time
                 ON memory_semantic_summaries(profile_user_id, last_reinforced_ts DESC, importance DESC, timestamp DESC);
 
-                CREATE INDEX IF NOT EXISTS idx_semantic_profile_character_time
-                ON memory_semantic_summaries(profile_user_id, character_pack_id, last_reinforced_ts DESC, importance DESC, timestamp DESC);
-
                 CREATE TABLE IF NOT EXISTS eval_turns (
                     trace_id TEXT PRIMARY KEY,
                     created_at INTEGER NOT NULL,
@@ -155,9 +143,6 @@ class MemoryStore:
 
                 CREATE INDEX IF NOT EXISTS idx_chat_sessions_profile_updated
                 ON chat_sessions(profile_user_id, updated_at DESC, created_at DESC);
-
-                CREATE INDEX IF NOT EXISTS idx_chat_sessions_profile_character_updated
-                ON chat_sessions(profile_user_id, character_pack_id, updated_at DESC, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS reminders (
                     reminder_id TEXT PRIMARY KEY,
@@ -592,6 +577,30 @@ class MemoryStore:
                     column_name=column_name,
                     column_definition=column_definition,
                 )
+            conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chat_profile_character_time
+                ON chat_messages(profile_user_id, character_pack_id, timestamp);
+
+                CREATE INDEX IF NOT EXISTS idx_summary_profile_character_time
+                ON memory_summaries(profile_user_id, character_pack_id, timestamp DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_summary_semanticized
+                ON memory_summaries(profile_user_id, session_id, is_semanticized, timestamp DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_semantic_profile_character_time
+                ON memory_semantic_summaries(
+                    profile_user_id,
+                    character_pack_id,
+                    last_reinforced_ts DESC,
+                    importance DESC,
+                    timestamp DESC
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_chat_sessions_profile_character_updated
+                ON chat_sessions(profile_user_id, character_pack_id, updated_at DESC, created_at DESC);
+                """
+            )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_persona_cards_profile_status

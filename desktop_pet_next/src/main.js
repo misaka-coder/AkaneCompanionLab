@@ -17,6 +17,7 @@ import {
   getActiveCharacterPackId,
   getActiveCharacterProfile,
   getActiveCharacterText,
+  listCharacterPacks,
   selectCharacterPack,
   setRuntimeCharacterPacks
 } from "./character-profile.js";
@@ -74,6 +75,7 @@ const PROACTIVE_WAKE_MAX_SEC = 600;
 const PROACTIVE_WAKE_RETRY_MS = 15000;
 const MUSIC_TIMELINE_POLL_MS = 8000;
 const MUSIC_TIMELINE_RETRY_MS = 30000;
+const MUSIC_TIMELINE_INITIAL_DELAY_MS = 6500;
 const CLIPBOARD_TEXT_LIMIT = 600;
 const BACKEND_RETRY_MS = 30 * 1000;
 const WORKSPACE_TASK_POLL_MS = 12 * 1000;
@@ -108,9 +110,11 @@ const SCALE_MIN = 0.75;
 const SCALE_MAX = 1.45;
 const SCALE_PRESETS = [0.85, 1, 1.15, 1.3];
 const OPACITY_PRESETS = [1, 0.85, 0.7, 0.55];
+const MENU_VIEWPORT_MARGIN = 8;
 const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
 const WORKSPACE_REFRESH_EVENT = "akane-next-workspace-refresh";
+const CHARACTER_PACK_ACTIVATED_EVENT = "akane-next-character-pack-activated";
 const PET_HIT_POLYGON = [
   [32, 0],
   [72, 0],
@@ -325,6 +329,11 @@ let hitSyncFrame = 0;
 let pendingHitSyncForce = false;
 let lastHitRegionSignature = "";
 let settingsSnapshotTimer = 0;
+let settingsBridgeRegistered = false;
+let characterActivationBridgeRegistered = false;
+let menuAnchor = null;
+let characterActivationTask = Promise.resolve();
+let lastAppliedLayoutSignature = "";
 let musicSnapshotTimer = 0;
 let musicTimelineTimer = 0;
 let musicTimelineSourceId = "";
@@ -463,23 +472,24 @@ async function boot() {
   }
 
   try {
-    await refreshRuntimeCharacterPacks({ silent: true });
-    const loaded = await invoke("load_pet_state");
-    Object.assign(state, normalizeState(loaded));
-    const pack = selectCharacterPack(state.characterPackId, { persist: false });
-    state.characterPackId = pack.packId;
-    refreshLocalResourceAssets();
-    applyCharacterRuntimeState(pack.packId, pack.profile, { seedFromCurrent: true });
-    applyCharacterChrome();
-    applyVisualState();
-    await reloadCharacterResources({ startup: true });
-    setPetEmotion(state.currentEmotion, { persist: false, force: true });
+    await registerCharacterActivationBridge();
+  } catch (error) {
+    setStatus(`角色切换桥接不可用：${formatError(error)}`);
+  }
+  void registerSettingsBridge().catch((error) => {
+    setStatus(`设置桥接不可用：${formatError(error)}`);
+  });
+
+  try {
+    await loadAndApplyPersistedCharacterState();
+    scheduleSave(0);
     await invoke("apply_window_state", { state });
     await syncNativeHitTest({ force: true });
-    await registerWindowListeners();
-    await registerFileDropHandlers();
-    await registerSettingsBridge();
-    scheduleSave(0);
+    await Promise.allSettled([
+      registerWindowListeners(),
+      registerFileDropHandlers()
+    ]);
+    await reloadCharacterResources({ startup: true });
     void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
     scheduleDesktopContextPoll();
     scheduleScreenVisionCapture({ immediate: true });
@@ -489,6 +499,31 @@ async function boot() {
   } catch (error) {
     setStatus(`Tauri init failed: ${formatError(error)}`);
   }
+}
+
+async function loadAndApplyPersistedCharacterState({ expectedPackId = "" } = {}) {
+  const loaded = await invoke("load_pet_state");
+  const persistedPackId = String(loaded?.characterPackId || "").trim();
+  await refreshRuntimeCharacterPacks({ silent: true, scheduleSnapshot: false });
+  Object.assign(state, normalizeState(loaded));
+
+  const pack = selectCharacterPack(state.characterPackId, { persist: false });
+  if (expectedPackId && pack.packId !== expectedPackId) {
+    throw new Error(`角色状态不一致：期望 ${expectedPackId}，实际 ${pack.packId}。`);
+  }
+  if (persistedPackId && pack.packId !== persistedPackId) {
+    throw new Error(`角色包 ${persistedPackId} 未加载，已保留当前桌宠。`);
+  }
+
+  state.characterPackId = pack.packId;
+  resourceState.manifest = null;
+  resourceState.source = "character_pack";
+  refreshLocalResourceAssets();
+  applyCharacterRuntimeState(pack.packId, pack.profile);
+  applyCharacterChrome();
+  applyVisualState();
+  setPetEmotion(state.currentEmotion, { persist: false, force: true });
+  return pack;
 }
 
 function bindUi() {
@@ -661,7 +696,10 @@ function bindUi() {
       void stopVoiceRecording();
     }
   });
-  window.addEventListener("resize", scheduleNativeHitTestSync);
+  window.addEventListener("resize", () => {
+    repositionOpenMenu();
+    scheduleNativeHitTestSync({ force: true });
+  });
 
   els.scale.addEventListener("input", () => {
     updateVisualScale(Number(els.scale.value));
@@ -891,11 +929,42 @@ async function registerFileDropHandlers() {
 }
 
 async function registerSettingsBridge() {
-  if (!isTauriRuntime) return;
+  if (!isTauriRuntime || settingsBridgeRegistered) return;
 
-  unlistenFns.push(await listen(SETTINGS_COMMAND_EVENT, (event) => {
-    void handleSettingsCommand(event.payload);
-  }));
+  const unlisten = await listen(SETTINGS_COMMAND_EVENT, (event) => {
+    void handleSettingsCommand(event.payload).catch((error) => {
+      void reportSettingsCommandFailure(event.payload, error);
+    });
+  });
+  unlistenFns.push(unlisten);
+  settingsBridgeRegistered = true;
+}
+
+async function registerCharacterActivationBridge() {
+  if (!isTauriRuntime || characterActivationBridgeRegistered) return;
+
+  const unlisten = await listen(CHARACTER_PACK_ACTIVATED_EVENT, (event) => {
+    const packId = String(event?.payload?.packId || "").trim();
+    if (!packId) return;
+    characterActivationTask = characterActivationTask
+      .catch(() => {})
+      .then(() => applyPersistedCharacterActivation(packId))
+      .catch((error) => {
+        setStatus(`角色切换失败：${formatError(error)}`);
+      });
+  });
+  unlistenFns.push(unlisten);
+  characterActivationBridgeRegistered = true;
+}
+
+async function applyPersistedCharacterActivation(packId) {
+  const pack = await loadAndApplyPersistedCharacterState({ expectedPackId: packId });
+  await invoke("apply_window_state", { state });
+  scheduleSave(0);
+  scheduleSettingsSnapshot(0);
+  setStatus(`角色包已切换为 ${pack.profile.identity.name}。`, { durationMs: 2400 });
+  await reloadCharacterResources({ userTriggered: true });
+  void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
 }
 
 async function handleSettingsCommand(payload) {
@@ -1072,6 +1141,11 @@ async function handleSettingsCommand(payload) {
   }
 
   scheduleSettingsSnapshot();
+}
+
+function reportSettingsCommandFailure(_payload, error) {
+  const message = formatError(error);
+  setStatus(`设置命令失败：${message}`);
 }
 
 function applyCharacterChrome() {
@@ -1396,8 +1470,6 @@ function applyVisualState() {
   autoResizeChatInput();
 }
 
-let lastAppliedLayoutSignature = "";
-
 function applyCharacterLayout() {
   const profile = getActiveCharacterProfile();
   const layouts = profile?.layout?.outfits && typeof profile.layout.outfits === "object"
@@ -1443,6 +1515,7 @@ function updateMenuLabels() {
   renderPresetChips();
   renderResourceDetails();
   renderEmotionGrid();
+  repositionOpenMenu();
   scheduleSettingsSnapshot();
 }
 
@@ -2234,7 +2307,7 @@ function openContextMenu(event) {
   event.preventDefault();
   event.stopPropagation();
   cancelLocalClick();
-  showMenu(event.clientX, event.clientY);
+  showMenu({ x: event.clientX, y: event.clientY, source: "pointer" });
 }
 
 function toggleMenuNear(anchor) {
@@ -2243,22 +2316,59 @@ function toggleMenuNear(anchor) {
     return;
   }
   const rect = anchor.getBoundingClientRect();
-  showMenu(rect.right - 2, rect.bottom + 8);
+  showMenu({ x: rect.right - 2, y: rect.bottom + 8, anchor, source: "anchor" });
 }
 
-function showMenu(x, y) {
+function showMenu(anchor) {
+  menuAnchor = normalizeMenuAnchor(anchor);
   els.menu.hidden = false;
+  els.menu.style.visibility = "hidden";
   updateConnectionStatus();
-  const rect = els.menu.getBoundingClientRect();
-  const maxX = window.innerWidth - rect.width - 8;
-  const maxY = window.innerHeight - rect.height - 8;
-  els.menu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
-  els.menu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
+  repositionOpenMenu();
+  els.menu.style.visibility = "";
   scheduleNativeHitTestSync({ force: true });
 }
 
+function repositionOpenMenu() {
+  if (!menuAnchor || els.menu.hidden) return;
+  const point = resolveMenuAnchorPoint(menuAnchor);
+  placeMenuInsideViewport(point.x, point.y);
+}
+
+function normalizeMenuAnchor(anchor) {
+  const source = anchor && typeof anchor === "object" ? anchor : {};
+  return {
+    x: Number(source.x) || MENU_VIEWPORT_MARGIN,
+    y: Number(source.y) || MENU_VIEWPORT_MARGIN,
+    anchor: source.anchor instanceof Element ? source.anchor : null,
+    source: source.source === "anchor" ? "anchor" : "pointer"
+  };
+}
+
+function resolveMenuAnchorPoint(anchor) {
+  if (anchor.anchor && document.documentElement.contains(anchor.anchor)) {
+    const rect = anchor.anchor.getBoundingClientRect();
+    return { x: rect.right - 2, y: rect.bottom + MENU_VIEWPORT_MARGIN };
+  }
+  return { x: anchor.x, y: anchor.y };
+}
+
+function placeMenuInsideViewport(x, y) {
+  const maxHeight = Math.max(96, Math.min(340, window.innerHeight - MENU_VIEWPORT_MARGIN * 2));
+  els.menu.style.maxHeight = `${maxHeight}px`;
+  const rect = els.menu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - MENU_VIEWPORT_MARGIN;
+  const maxY = window.innerHeight - rect.height - MENU_VIEWPORT_MARGIN;
+  const left = clamp(Number(x) || MENU_VIEWPORT_MARGIN, MENU_VIEWPORT_MARGIN, Math.max(MENU_VIEWPORT_MARGIN, maxX));
+  const top = clamp(Number(y) || MENU_VIEWPORT_MARGIN, MENU_VIEWPORT_MARGIN, Math.max(MENU_VIEWPORT_MARGIN, maxY));
+  els.menu.style.left = `${Math.round(left)}px`;
+  els.menu.style.top = `${Math.round(top)}px`;
+}
+
 function closeMenu() {
+  menuAnchor = null;
   els.menu.hidden = true;
+  els.menu.style.visibility = "";
   scheduleNativeHitTestSync({ force: true });
 }
 
@@ -2387,6 +2497,7 @@ function scheduleScaleCommit() {
 async function commitVisualScale() {
   const geometry = await tauriCall("set_visual_scale", { scale: state.scale });
   if (geometry) Object.assign(state, geometry);
+  repositionOpenMenu();
   scheduleNativeHitTestSync({ force: true });
   scheduleSave(0);
 }
@@ -2496,7 +2607,11 @@ async function refreshCharacterPacksFromSettings(value) {
   }
 }
 
-async function refreshRuntimeCharacterPacks({ userTriggered = false, silent = false } = {}) {
+async function refreshRuntimeCharacterPacks({
+  userTriggered = false,
+  silent = false,
+  scheduleSnapshot = true
+} = {}) {
   if (!isTauriRuntime) return false;
   const packs = await tauriCall("list_character_packs", {}, { quiet: true });
   if (!Array.isArray(packs)) {
@@ -2506,19 +2621,36 @@ async function refreshRuntimeCharacterPacks({ userTriggered = false, silent = fa
   runtimeCharacterPacks = packs;
   setRuntimeCharacterPacks(packs);
   refreshLocalResourceAssets();
-  scheduleSettingsSnapshot();
+  if (scheduleSnapshot) scheduleSettingsSnapshot();
   return true;
 }
 
 async function updateCharacterPack(value) {
+  const requestedPackId = String(value || "").trim();
+  if (!requestedPackId) {
+    throw new Error("角色包 ID 不能为空。");
+  }
+  if (isTauriRuntime) {
+    await refreshRuntimeCharacterPacks({ silent: true });
+  }
+  const availablePack = listCharacterPacks().find((item) => item.id === requestedPackId);
+  if (!availablePack) {
+    throw new Error(`角色包 ${requestedPackId} 未加载，已保留当前角色。`);
+  }
+
   const previousPackId = state.characterPackId || getActiveCharacterPackId();
   if (isTauriRuntime) {
     await saveNow();
   } else {
     persistCurrentCharacterRuntimeState(previousPackId);
   }
-  const pack = selectCharacterPack(value);
+  const pack = selectCharacterPack(availablePack.id);
+  if (pack.packId !== requestedPackId) {
+    throw new Error(`角色包解析结果不一致：请求 ${requestedPackId}，得到 ${pack.packId}。`);
+  }
   state.characterPackId = pack.packId;
+  resourceState.manifest = null;
+  resourceState.source = "character_pack";
   refreshLocalResourceAssets();
   applyCharacterRuntimeState(pack.packId, pack.profile);
   applyCharacterChrome();
@@ -2529,7 +2661,12 @@ async function updateCharacterPack(value) {
     scheduleSave(0);
     setStatus(`角色包已是：${pack.profile.identity.name}`);
     await reloadCharacterResources({ userTriggered: true });
-    return;
+    return {
+      requestedPackId,
+      activePackId: state.characterPackId,
+      characterName: pack.profile.identity.name,
+      resourceSource: resourceState.source
+    };
   }
 
   setStatus(`角色包已切换为 ${pack.profile.identity.name}，正在应用。`, { durationMs: 2400 });
@@ -2539,6 +2676,12 @@ async function updateCharacterPack(value) {
   }
   await reloadCharacterResources({ userTriggered: true });
   void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
+  return {
+    requestedPackId,
+    activePackId: state.characterPackId,
+    characterName: pack.profile.identity.name,
+    resourceSource: resourceState.source
+  };
 }
 
 async function setAlwaysOnTop(enabled) {
@@ -2807,7 +2950,7 @@ function applyResourceManifest(manifest) {
       id: String(item.id || item.name || "").trim(),
       name: String(item.name || item.id || "").trim(),
       aliases: Array.isArray(item.aliases) ? item.aliases.map((alias) => String(alias || "").trim()).filter(Boolean) : [],
-      url: resolveAssetUrl(item.path, state.backendUrl)
+      url: resolveAssetUrl(item.path || item.url || item.src, state.backendUrl)
     }))
     .filter((item) => item.id && item.url);
 
@@ -4197,15 +4340,26 @@ async function handleDroppedFiles(paths) {
   const files = Array.isArray(paths) ? paths.map((item) => String(item || "")).filter(Boolean) : [];
   if (!files.length) return;
   const items = buildDroppedAudioItems(files);
-  let importResult = null;
-  let importError = "";
-  try {
-    importResult = await importDroppedFilesToWorkspace(files);
-  } catch (error) {
-    importError = friendlyErrorMessage(formatError(error));
+
+  if (items.length) {
+    runDroppedWorkspaceImportInBackground(files, { audioCount: items.length, totalCount: files.length });
+    setRuntimeStatus(items.length > 1 ? `收到 ${items.length} 首音乐，正在准备播放` : "音乐收到，正在准备播放", {
+      mode: "music"
+    });
+    if (!sending && !replyDisplayActive) {
+      showBubbleText(files.length > items.length ? "音乐先放起来，其他文件我后台收进手边。" : "音乐先放起来，手边我后台整理。", {
+        transient: true,
+        durationMs: 1800,
+        kind: "music"
+      });
+    }
+    await yieldToUiForDrop();
+    await addDroppedAudioFiles(items);
+    return;
   }
 
-  if (!items.length) {
+  try {
+    const importResult = await importDroppedFilesToWorkspace(files);
     const imported = Number(importResult?.imported || 0);
     if (imported > 0) {
       const skipped = Number(importResult?.skipped_count || 0);
@@ -4221,25 +4375,50 @@ async function handleDroppedFiles(paths) {
       return;
     }
 
+    showBubbleText("这个文件暂时还不能放进手边。", {
+      transient: true,
+      durationMs: 2400,
+      kind: "status"
+    });
+    setRuntimeStatus("拖入的文件不是当前支持的类型", { mode: "error" });
+  } catch (error) {
+    const importError = friendlyErrorMessage(formatError(error));
     showBubbleText(importError || "这个文件暂时还不能放进手边。", {
       transient: true,
       durationMs: 2400,
       kind: "status"
     });
     setRuntimeStatus(importError || "拖入的文件不是当前支持的类型", { mode: "error" });
-    return;
   }
-  if (importResult?.imported) {
-    showBubbleText(
-      files.length > items.length
-        ? `音乐会播放，另外 ${Number(importResult.imported || 0)} 个文件也放进手边了。`
-        : "音乐收到啦，也放进手边工作台了。",
-      { transient: true, durationMs: 2200, kind: "music" }
+}
+
+function runDroppedWorkspaceImportInBackground(files, { audioCount = 0, totalCount = 0 } = {}) {
+  const task = importDroppedFilesToWorkspace(files);
+  void task.then((importResult) => {
+    const imported = Number(importResult?.imported || 0);
+    if (!imported) return;
+    const skipped = Number(importResult?.skipped_count || 0);
+    const hasExtraFiles = Number(totalCount || 0) > Number(audioCount || 0);
+    const suffix = skipped > 0 ? `，跳过 ${skipped} 个` : "";
+    setRuntimeStatus(
+      hasExtraFiles
+        ? `音乐播放中，另外 ${imported} 个文件已放进手边${suffix}`
+        : `音乐播放中，文件已后台放进手边${suffix}`,
+      { mode: "music" }
     );
-  } else if (importError) {
-    setRuntimeStatus(`手边导入失败，但音乐可以继续准备：${importError}`, { mode: "music" });
-  }
-  await addDroppedAudioFiles(items);
+  }).catch((error) => {
+    setRuntimeStatus(`手边后台导入失败，音乐播放不受影响：${friendlyErrorMessage(formatError(error))}`, { mode: "music" });
+  });
+}
+
+function yieldToUiForDrop() {
+  return new Promise((resolve) => {
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
+      return;
+    }
+    window.setTimeout(resolve, 0);
+  });
 }
 
 async function importDroppedFilesToWorkspace(paths) {
@@ -4918,6 +5097,7 @@ function normalizeMusicTrack(asset, metadata) {
   const cachedPath = String(value.cachedPath || "");
   const lyricFileName = String(value.lyricFileName || "").trim();
   const lyrics = parseLrcText(value.lyricText || "");
+  const sizeBytes = Number(value.sizeBytes || value.size_bytes || 0);
   let metaSourceId = "", metaDisplayName = "", metaQueueDedupeKey = "", metaWorkspaceItemType = "", metaWorkspaceHandle = "";
   if (metadata && typeof metadata === "object") {
     metaSourceId = String(metadata.sourceId || "").trim();
@@ -4936,7 +5116,7 @@ function normalizeMusicTrack(asset, metadata) {
     fileName,
     displayName: metaDisplayName || String(value.displayName || value.fileName || "未命名音乐"),
     extension: String(value.extension || "").toLowerCase(),
-    sizeBytes: Number(value.sizeBytes || 0),
+    sizeBytes,
     lyricFileName,
     lyricLineCount: lyrics.length,
     lyrics,
@@ -4977,7 +5157,11 @@ function scheduleBackendMusicTimeline(track, { immediate = false, delayMs = null
   const sourceId = String(track.sourceId || "").trim();
   if (!sourceId) return;
   musicTimelineSourceId = sourceId;
-  const delay = immediate ? 700 : Number.isFinite(delayMs) ? Math.max(1200, delayMs) : MUSIC_TIMELINE_POLL_MS;
+  const delay = immediate
+    ? MUSIC_TIMELINE_INITIAL_DELAY_MS
+    : Number.isFinite(delayMs)
+      ? Math.max(1200, delayMs)
+      : MUSIC_TIMELINE_POLL_MS;
   musicTimelineTimer = window.setTimeout(() => {
     musicTimelineTimer = 0;
     if (!musicTrack || musicTrack.sourceId !== sourceId || musicTimelineSourceId !== sourceId) return;

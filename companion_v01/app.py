@@ -24,6 +24,7 @@ from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .public_guard import PublicThinkGuard
 from .qq_gateway import NapCatQQGateway
 from .resource_manifest import ResourceManifest
+from .routes.capabilities import build_capabilities_router
 from .routes.control_center import build_control_center_router, build_control_center_snapshot_runtime_providers
 from .routes.core import build_core_router
 from .routes.desktop_pet import build_desktop_pet_router
@@ -383,6 +384,16 @@ app.include_router(
             runtime_metrics=runtime_metrics,
             public_guard=public_guard,
         ),
+    )
+)
+app.include_router(
+    build_capabilities_router(
+        engine=engine,
+        config_module=config,
+        tts_client=tts_client,
+        runtime_metrics=runtime_metrics,
+        log_event=_log_event,
+        resolve_identity_from_query=_resolve_identity_from_query,
     )
 )
 app.include_router(

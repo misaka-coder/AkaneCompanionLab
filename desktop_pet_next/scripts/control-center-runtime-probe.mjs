@@ -12,6 +12,7 @@ import {
 } from "../src/control-center/action-surface-contract.js";
 import { createControlCenterSnapshot } from "../src/control-center/data-adapter.js";
 import {
+  buildCharacterRuntimePatchFromSettingsSnapshot,
   createBackendControlCenterSource,
   createMockControlCenterSource,
   CONTROL_CENTER_SOURCE_KIND,
@@ -22,13 +23,117 @@ import {
 // endpoint + individual legacy endpoints.
 // ---------------------------------------------------------------------------
 
+function makeCapabilitiesCatalogBody() {
+  return {
+    ok: true,
+    status: "available",
+    schemaVersion: 1,
+    execution: "read-only",
+    summary: {
+      total: 6,
+      byStatus: { ready: 4, missing_executor: 1, disabled: 1 },
+      byKind: { tool: 3, provider: 3 },
+    },
+    capabilities: [
+      {
+        id: "tool.retrieve_memory",
+        kind: "tool",
+        type: "tool",
+        source: "backend_tool",
+        adapter: "tool_runtime",
+        executionMode: "internal",
+        toolType: "retrieve_memory",
+        group: "memory",
+        name: "Retrieve Memory",
+        enabled: true,
+        status: "ready",
+        risk: "low",
+        usedBy: ["agent"],
+      },
+      {
+        id: "tool.compose_file",
+        kind: "tool",
+        type: "tool",
+        source: "backend_tool",
+        adapter: "tool_runtime",
+        executionMode: "internal",
+        toolType: "compose_file",
+        group: "documents",
+        name: "Compose File",
+        enabled: true,
+        status: "ready",
+        risk: "medium",
+        usedBy: ["agent", "workspace"],
+      },
+      {
+        id: "tool.transcribe_media",
+        kind: "tool",
+        type: "tool",
+        source: "backend_tool",
+        adapter: "tool_runtime",
+        executionMode: "internal",
+        toolType: "transcribe_media",
+        group: "asr",
+        name: "Transcribe Media",
+        enabled: true,
+        status: "ready",
+        risk: "medium",
+        usedBy: ["agent", "voice"],
+      },
+      {
+        id: "provider.tts.edge",
+        kind: "provider",
+        type: "tts_provider",
+        source: "builtin",
+        adapter: "edge_tts",
+        executionMode: "internal",
+        name: "Edge TTS",
+        enabled: true,
+        status: "ready",
+        risk: "low",
+        usedBy: ["voice", "desktop_pet"],
+      },
+      {
+        id: "provider.asr.faster_whisper",
+        kind: "provider",
+        type: "asr_provider",
+        source: "builtin",
+        adapter: "faster_whisper",
+        executionMode: "internal",
+        name: "faster-whisper ASR",
+        enabled: false,
+        status: "missing_executor",
+        risk: "medium",
+        usedBy: ["voice", "workspace", "desktop_pet"],
+      },
+      {
+        id: "provider.media.ffmpeg",
+        kind: "provider",
+        type: "asset_processor",
+        source: "external_executor",
+        adapter: "ffmpeg",
+        executionMode: "external",
+        name: "FFmpeg",
+        enabled: false,
+        status: "disabled",
+        risk: "medium",
+        usedBy: ["workspace", "media"],
+      },
+    ],
+  };
+}
+
 function makeSnapshotFetch({
   snapshotBody = null,
   snapshotOk = true,
   legacyOk = true,
   snapshotStatus = 200,
+  capabilitiesBody = null,
+  capabilitiesOk = true,
+  capabilitiesStatus = 200,
 } = {}) {
   const requestedUrls = [];
+  const fullCapabilitiesBody = capabilitiesBody || makeCapabilitiesCatalogBody();
   const fullSnapshotBody = snapshotBody || {
     ok: true,
     status: "available",
@@ -125,8 +230,9 @@ function makeSnapshotFetch({
     requestedUrls,
     snapshotBody: fullSnapshotBody,
     fetchImpl: async (url) => {
-      requestedUrls.push(url);
-      if (url.includes("/control-center/snapshot")) {
+      const requestUrl = String(url);
+      requestedUrls.push(requestUrl);
+      if (requestUrl.includes("/control-center/snapshot")) {
         if (!snapshotOk) {
           return { ok: false, status: snapshotStatus, headers: { get: () => "" } };
         }
@@ -135,6 +241,17 @@ function makeSnapshotFetch({
           status: snapshotStatus,
           headers: { get: () => "application/json" },
           json: async () => fullSnapshotBody,
+        };
+      }
+      if (requestUrl.includes("/capabilities")) {
+        if (!capabilitiesOk) {
+          return { ok: false, status: capabilitiesStatus, headers: { get: () => "" } };
+        }
+        return {
+          ok: true,
+          status: capabilitiesStatus,
+          headers: { get: () => "application/json" },
+          json: async () => fullCapabilitiesBody,
         };
       }
       if (!legacyOk) {
@@ -158,6 +275,20 @@ function makeSnapshotFetch({
     characterPackId: "runtime_pack",
     outfit: "cat",
     emotion: "happy",
+    availableCharacterPacks: [
+      {
+        id: "runtime_pack",
+        source: "F:\\secret\\runtime_pack\\character.json",
+        installedPath: "F:\\secret\\runtime_pack",
+        assetCount: 7,
+        profile: {
+          schema_version: "v0.2",
+          identity: { id: "runtime_character", name: "Runtime Character", app_name: "Runtime Pack" },
+          appearance: { default_outfit: "cat", default_emotion: "happy" },
+          assets: { runtime_source: "local" },
+        },
+      },
+    ],
     fetchImpl,
   });
   const raw = await source.readSnapshot();
@@ -173,6 +304,12 @@ function makeSnapshotFetch({
 
   // character: selectedPackId from resource manifest
   assert.equal(character.selectedPackId, "runtime_pack", "1.5 character selectedPackId should come from runtime pack id");
+  assert.ok(Array.isArray(character.availablePacks), "1.5a character availablePacks should be an array");
+  assert.equal(character.availablePacks.length, 1, "1.5b character availablePacks should hydrate from Tauri pack registry");
+  assert.equal(character.availablePacks[0].id, "runtime_pack", "1.5c character availablePacks should keep pack id");
+  assert.equal(character.availablePacks[0].appName, "Runtime Pack", "1.5d character availablePacks should keep display name");
+  assert.equal("installedPath" in character.availablePacks[0], false, "1.5e character availablePacks should not expose installedPath");
+  assert.equal("source" in character.availablePacks[0], false, "1.5f character availablePacks should not expose source path");
 
   // character: outfit ids from runtime resource manifest (not mock "default")
   assert.ok(character.outfits.some((o) => o.id === "cat"), "1.6 character outfits should include runtime id 'cat'");
@@ -207,6 +344,23 @@ function makeSnapshotFetch({
     assert.ok(typeof mod.title === "string" && mod.title.length > 0, "1.20 module title should be non-empty string");
     assert.ok(!mod.title.includes("_"), "1.21 module title should not contain raw identifiers");
   }
+  assert.ok(
+    abilities.modules.some((mod) => mod.title === "音频与语音"),
+    "1.21a capability catalog should surface audio/voice as a user-facing module"
+  );
+  assert.ok(
+    abilities.modules.some((mod) => mod.title === "本地模型与执行器"),
+    "1.21b capability catalog should surface local executors as a user-facing module"
+  );
+  assert.ok(
+    abilities.modules.some((mod) => typeof mod.statusLabel === "string" && mod.statusLabel.length > 0),
+    "1.21c capability modules should carry user-facing status labels"
+  );
+  const abilityModuleText = JSON.stringify(abilities.modules);
+  for (const rawId of ["transcribe_media", "faster_whisper", "provider.asr"]) {
+    assert.equal(abilityModuleText.includes(rawId), false, `1.21d capability modules should not expose raw id ${rawId}`);
+  }
+  assert.ok(raw.controlCenterRuntime.capabilitiesCatalog.ok, "1.21e raw snapshot should include optional capabilities catalog status");
 
   // abilities: overview from diagnostics
   assert.ok(abilities.overview, "1.22 abilities overview should exist");
@@ -393,6 +547,48 @@ function makeSnapshotFetch({
 }
 
 // ---------------------------------------------------------------------------
+// 1b. Tauri settings snapshot character pack list patch
+// ---------------------------------------------------------------------------
+
+{
+  const snapshot = createControlCenterSnapshot({
+    characterRuntime: buildCharacterRuntimePatchFromSettingsSnapshot({
+      state: { characterPackId: "mika_pack" },
+      character: {
+        packId: "mika_pack",
+        name: "Mika",
+        appName: "Mika Companion",
+        schemaVersion: "v0.2",
+        defaultOutfit: "casual",
+        defaultEmotion: "normal",
+        availablePacks: [
+          {
+            id: "mika_pack",
+            name: "Mika",
+            appName: "Mika Companion",
+            installedPath: "F:\\private\\characters\\mika_pack",
+            source: "F:\\private\\characters\\mika_pack\\character.json",
+            defaultOutfit: "casual",
+            defaultEmotion: "normal",
+            assetCount: 5,
+            selected: true,
+          },
+        ],
+      },
+      resource: { emotionCount: 5, outfits: [{ id: "casual" }] },
+    }),
+  });
+  const packs = snapshot.pages.character.availablePacks;
+  assert.equal(snapshot.pages.character.selectedPackId, "mika_pack", "1b.1 selectedPackId should come from settings snapshot");
+  assert.equal(snapshot.pages.character.selectedPack, "Mika Companion", "1b.2 selectedPack should come from settings snapshot");
+  assert.ok(Array.isArray(packs), "1b.3 availablePacks should be an array");
+  assert.equal(packs.length, 1, "1b.4 availablePacks should contain one pack");
+  assert.equal(packs[0].selected, true, "1b.5 active pack should be marked selected");
+  assert.equal("installedPath" in packs[0], false, "1b.6 availablePacks should not include installedPath");
+  assert.equal("source" in packs[0], false, "1b.7 availablePacks should not include source");
+}
+
+// ---------------------------------------------------------------------------
 // 2. Partial runtime degradation: one field unavailable, others still hydrate
 // ---------------------------------------------------------------------------
 
@@ -452,8 +648,24 @@ function makeSnapshotFetch({
   // No fallback to legacy endpoints when snapshot succeeds (even partially)
   const snapshotUrls = requestedUrls.filter((u) => u.includes("/control-center/snapshot"));
   assert.ok(snapshotUrls.length >= 1, "2.9 degraded: snapshot endpoint should have been called");
-  const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot"));
+  const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot") && !u.includes("/capabilities"));
   assert.equal(legacyUrls.length, 0, "2.10 degraded: legacy endpoints should NOT be called when snapshot returns usable data");
+}
+
+// 2b. Optional capabilities catalog unavailable: unified snapshot still renders.
+{
+  const { fetchImpl } = makeSnapshotFetch({ capabilitiesOk: false, capabilitiesStatus: 404 });
+  const source = createBackendControlCenterSource({
+    baseUrl: "http://capabilities-missing-test",
+    sessionId: "capabilities-missing-session",
+    profileUserId: "capabilities-missing-user",
+    fetchImpl,
+  });
+  const raw = await source.readSnapshot();
+  assert.ok(raw, "2b.1 missing capabilities catalog should not block readSnapshot");
+  assert.equal(raw.controlCenterRuntime.capabilitiesCatalog.ok, false, "2b.2 missing capabilities catalog should be structured unavailable");
+  const snapshot = createControlCenterSnapshot(raw);
+  assert.ok(snapshot.pages.abilities.modules.length > 0, "2b.3 abilities page should fall back to diagnostics modules");
 }
 
 // ---------------------------------------------------------------------------
@@ -481,7 +693,7 @@ function makeSnapshotFetch({
   assert.ok(snapshotUrls.length >= 1, "3.3 fallback: snapshot endpoint should have been attempted");
 
   // Verify legacy endpoints were called
-  const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot"));
+  const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot") && !u.includes("/capabilities"));
   assert.ok(legacyUrls.length >= 1, "3.4 fallback: legacy endpoints should have been called after snapshot failed");
 
   const snapshot = createControlCenterSnapshot(raw);
@@ -498,6 +710,7 @@ function makeSnapshotFetch({
     snapshotOk: false,
     snapshotStatus: 404,
     legacyOk: false,
+    capabilitiesOk: false,
   });
   const source = createBackendControlCenterSource({
     baseUrl: "http://unavailable-test",
@@ -512,7 +725,7 @@ function makeSnapshotFetch({
   // Both snapshot and legacy were attempted
   const snapshotUrls = requestedUrls.filter((u) => u.includes("/control-center/snapshot"));
   assert.ok(snapshotUrls.length >= 1, "4.2 unavailable: snapshot endpoint should have been attempted");
-  const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot"));
+  const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot") && !u.includes("/capabilities"));
   assert.ok(legacyUrls.length >= 1, "4.3 unavailable: legacy endpoints should have been attempted");
 }
 

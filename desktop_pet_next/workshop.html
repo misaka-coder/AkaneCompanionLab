@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Akane Next 角色工坊</title>
+    <title>角色工坊</title>
   </head>
   <body>
     <main class="workshop-shell">
       <header class="workshop-header">
         <div>
-          <span class="eyebrow">Character Workshop</span>
+          <span class="eyebrow">桌宠角色编辑器</span>
           <h1>角色工坊</h1>
           <p id="workshop-summary">正在读取角色包。</p>
         </div>
@@ -25,15 +25,19 @@
 
       <section class="active-panel">
         <div>
-          <span>当前角色</span>
+          <span>桌宠正在使用</span>
           <strong id="active-character">-</strong>
         </div>
         <div>
-          <span>角色包</span>
+          <span>工坊正在编辑</span>
+          <strong id="editing-character">-</strong>
+        </div>
+        <div>
+          <span>素材状态</span>
           <strong id="active-pack">-</strong>
         </div>
         <div>
-          <span>会话</span>
+          <span>记忆</span>
           <strong id="active-session">-</strong>
         </div>
       </section>
@@ -43,6 +47,7 @@
         <button role="tab" aria-selected="false" data-tab="persona" type="button">角色设定</button>
         <button role="tab" aria-selected="false" data-tab="portraits" type="button">立绘管理</button>
         <button role="tab" aria-selected="false" data-tab="calibration" type="button">显示校准</button>
+        <button role="tab" aria-selected="false" data-tab="test" type="button">测试对话</button>
       </nav>
 
       <!-- Tab: Character List -->
@@ -52,12 +57,22 @@
             <h2>已安装角色包</h2>
             <span id="pack-count">0</span>
           </div>
+          <section id="first-use-panel" class="first-use-panel" hidden>
+            <div>
+              <strong>准备一个新角色</strong>
+              <p>从新建草稿开始，或导入已经打包好的角色 zip。</p>
+            </div>
+            <div class="first-use-actions">
+              <button id="first-use-create" type="button" class="btn-primary">新建角色</button>
+              <button id="first-use-import" type="button" class="btn-secondary">导入角色包</button>
+            </div>
+          </section>
           <div id="pack-list" class="pack-list" aria-live="polite"></div>
         </div>
 
         <aside class="detail-panel">
-          <h2>角色包信息</h2>
-          <dl id="pack-detail-list"></dl>
+          <h2>下一步</h2>
+          <div id="pack-detail-list" class="pack-detail-list"></div>
           <p id="workshop-status">等待同步。</p>
         </aside>
       </section>
@@ -83,6 +98,11 @@
             <div class="form-field">
               <label for="field-name">角色名称 <span class="field-hint">— 角色的名字，显示在界面上</span></label>
               <input id="field-name" type="text" class="form-input" placeholder="例如：博丽灵梦" maxlength="80" />
+            </div>
+
+            <div class="form-field">
+              <label for="field-app-name">应用显示名称 <span class="field-hint">— 窗口标题、桌宠菜单等位置显示的名字</span></label>
+              <input id="field-app-name" type="text" class="form-input" placeholder="例如：灵梦Pet" maxlength="80" />
             </div>
 
             <div class="form-field">
@@ -115,6 +135,16 @@
             </div>
 
             <div class="form-field">
+              <label for="field-character-core">角色核心 <span class="field-hint">— 一段话概括角色最重要的魅力和内核</span></label>
+              <textarea id="field-character-core" class="form-input form-textarea" rows="3" placeholder="例如：看起来没什么干劲，但其实很可靠。关心通常藏在吐槽和提醒里。" maxlength="800"></textarea>
+            </div>
+
+            <div class="form-field">
+              <label for="field-behavior-style">行为倾向 <span class="field-hint">— 忙碌、低落、开玩笑、认真工作时如何回应</span></label>
+              <textarea id="field-behavior-style" class="form-input form-textarea" rows="4" placeholder="例如：用户忙碌时少打扰；用户低落时不煽情，平静地陪着；用户乱熬夜时会直接吐槽。" maxlength="1000"></textarea>
+            </div>
+
+            <div class="form-field">
               <label for="field-speaking-style">说话风格 <span class="field-hint">— 描述角色的句式、语气、用词习惯</span></label>
               <textarea id="field-speaking-style" class="form-input form-textarea" rows="3" placeholder="例如：短句偏多，吐槽自然，不写解释性设定说明。" maxlength="500"></textarea>
             </div>
@@ -127,6 +157,11 @@
             <div class="form-field">
               <label for="field-boundaries">边界与禁忌 <span class="field-hint">— 角色不会做或不会说的话，行为边界</span></label>
               <textarea id="field-boundaries" class="form-input form-textarea" rows="2" placeholder="例如：不要过度撒娇，不要把自己说成通用客服。" maxlength="500"></textarea>
+            </div>
+
+            <div class="form-field">
+              <label for="field-interaction-principles">互动原则 <span class="field-hint">— 和用户相处时稳定遵守的原则</span></label>
+              <textarea id="field-interaction-principles" class="form-input form-textarea" rows="3" placeholder="例如：不要长篇说教；关心要藏在具体提醒里；正事上直接指出问题。" maxlength="800"></textarea>
             </div>
 
             <div class="form-field">
@@ -189,8 +224,12 @@
             <div id="portraits-content" hidden>
               <div class="section-heading">
                 <h2>服装与表情</h2>
-                <button id="add-outfit-btn" type="button" class="btn-add-line">＋ 添加服装</button>
+                <div class="portrait-import-actions">
+                  <input id="new-outfit-id" type="text" class="form-input compact-input" placeholder="新服装名，如 巫女服" maxlength="80" />
+                  <button id="add-outfit-btn" type="button" class="btn-add-line">创建服装</button>
+                </div>
               </div>
+              <p id="portrait-import-status" class="portrait-import-status">先创建服装，再在服装卡片中导入图片。</p>
               <div id="outfits-container"></div>
             </div>
           </div>
@@ -199,9 +238,11 @@
             <div id="emotion-preview" class="emotion-preview-box">
               <p class="preview-placeholder">点击表情名称预览</p>
             </div>
-            <div class="help-list" style="margin-top:12px">
-              <p style="font-size:12px;color:var(--text-soft)">推荐表情：normal, thinking, happy, shy, angry, confused, sleepy, listening, music, touched</p>
-              <p style="font-size:12px;color:var(--text-soft);margin-top:6px">表情 ID 支持中文或英文。拖入或点击上传 PNG/JPEG/WebP 图片。</p>
+            <div class="help-list portrait-hints">
+              <p>1. 输入服装名并创建，例如“巫女服”。</p>
+              <p>2. 在服装卡片中批量导入 PNG/JPEG/WebP。</p>
+              <p>3. 点击一张表情，在这里设为默认立绘。</p>
+              <p>图片文件名会成为 emotion 名，例如“开心.png”对应“开心”。</p>
             </div>
           </aside>
         </div>
@@ -228,7 +269,16 @@
                   <div class="calibration-portrait" id="calibration-portrait">
                     <img id="calibration-image" alt="预览" />
                   </div>
-                  <div class="calibration-bubble-dot" id="calibration-bubble-dot" title="气泡锚点"></div>
+                  <div
+                    class="calibration-bubble-dot"
+                    id="calibration-bubble-dot"
+                    role="button"
+                    tabindex="0"
+                    title="拖动调整气泡位置"
+                    aria-label="拖动调整气泡位置"
+                  >
+                    <span>示例气泡</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -264,14 +314,71 @@
                 <label>气泡垂直锚点 <span id="cal-bubble-y-val">0.12</span></label>
                 <input type="range" id="cal-bubble-y" min="0" max="100" value="12" step="1" />
               </div>
+              <div class="calibration-field">
+                <label>气泡样式 <span id="cal-bubble-style-val">柔和</span></label>
+                <div id="cal-bubble-style" class="bubble-style-options" role="group" aria-label="气泡样式">
+                  <button type="button" data-cal-bubble-style="soft" aria-pressed="true">柔和</button>
+                  <button type="button" data-cal-bubble-style="paper" aria-pressed="false">便签</button>
+                  <button type="button" data-cal-bubble-style="clear" aria-pressed="false">透明</button>
+                  <button type="button" data-cal-bubble-style="dark" aria-pressed="false">深色</button>
+                </div>
+              </div>
             </div>
             <p class="help-note" style="margin-top:14px">
               📐 窗口尺寸决定桌宠窗口大小。<br/>
               🎯 缩放/偏移控制立绘在窗口中的位置。<br/>
-              💬 气泡锚点控制在立绘上方哪个位置弹出对话气泡。
+              💬 拖动预览气泡，控制对话从哪里弹出。
             </p>
           </aside>
         </div>
+      </section>
+
+      <!-- Tab: Test Chat -->
+      <section class="workshop-body test-chat-panel" data-tab-panel="test" hidden>
+        <div class="test-chat-main">
+          <div class="test-chat-empty-state" id="test-chat-empty-state">
+            <p>👈 请先选择一个角色包。测试对话会使用独立测试会话，不复用正式桌宠会话。</p>
+          </div>
+          <div id="test-chat-content" hidden>
+            <div class="section-heading">
+              <h2>测试对话</h2>
+              <div class="test-chat-actions">
+                <button id="test-apply-pack" type="button" class="btn-primary">应用到桌宠</button>
+                <button id="test-chat-clear" type="button" class="btn-secondary">新测试会话</button>
+              </div>
+            </div>
+            <div id="test-chat-log" class="test-chat-log" aria-live="polite"></div>
+            <form id="test-chat-form" class="test-chat-form" autocomplete="off">
+              <textarea id="test-chat-input" class="form-input form-textarea" rows="3" placeholder="输入一句话，测试当前角色的人设语气。" maxlength="800"></textarea>
+              <button id="test-chat-send" type="submit" class="btn-primary">发送测试</button>
+            </form>
+            <p id="test-chat-status" class="test-chat-status">等待测试输入。</p>
+          </div>
+        </div>
+        <aside class="detail-panel test-diagnostics-panel">
+          <h2>诊断摘要</h2>
+          <dl class="test-scope-list">
+            <div><dt>角色包</dt><dd id="test-scope-character">-</dd></div>
+            <div><dt>测试会话</dt><dd id="test-scope-session">-</dd></div>
+            <div><dt>测试记忆</dt><dd id="test-scope-profile">-</dd></div>
+            <div><dt>当前服装</dt><dd id="test-visual-outfit">-</dd></div>
+            <div><dt>校准布局</dt><dd id="test-visual-layout">-</dd></div>
+            <div><dt>最近表情</dt><dd id="test-response-emotion">-</dd></div>
+          </dl>
+          <div>
+            <h3>当前立绘</h3>
+            <div id="test-visual-preview" class="test-visual-preview">-</div>
+          </div>
+          <div>
+            <h3>提示词字段摘要</h3>
+            <div id="test-prompt-fields" class="test-prompt-fields"></div>
+          </div>
+          <div>
+            <h3>最近分段</h3>
+            <div id="test-response-segments" class="test-response-segments">-</div>
+          </div>
+          <p class="help-note">测试面板只显示字段摘要，不展示完整 system prompt。</p>
+        </aside>
       </section>
 
     </main>
@@ -282,8 +389,8 @@
         <h2>新建角色</h2>
         <p class="dialog-desc">创建一个新的角色包。之后可以在「角色设定」中编辑详细的身份和人格信息。</p>
         <div class="form-field">
-          <label for="create-pack-id">角色包 ID <span class="field-hint">— 用作文件夹名，建议英文</span></label>
-          <input id="create-pack-id" type="text" class="form-input" placeholder="例如：my_character" maxlength="60" required />
+          <label for="create-pack-id">保存名 <span class="field-hint">— 用作文件夹名，建议拼音或英文</span></label>
+          <input id="create-pack-id" type="text" class="form-input" placeholder="例如：lingmeng" maxlength="60" required />
         </div>
         <div class="form-field">
           <label for="create-name">角色名称 <span class="field-hint">— 角色的显示名称</span></label>
