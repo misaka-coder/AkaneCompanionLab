@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from ..local_capability_config import (
     check_provider_health,
@@ -23,8 +23,11 @@ from ..local_capability_config import (
     validate_workflow_config,
 )
 from ..local_workflow_execution import (
+    WorkflowExecutionAsset,
     WorkflowExecutionRequest,
     call_workflow_execution_runner,
+    normalize_workflow_asset,
+    normalize_workflow_asset_handle,
 )
 from ..local_capability_catalog import (
     build_local_capability_catalog,
@@ -116,6 +119,11 @@ def build_capabilities_router(
             profile_user_id=profile_user_id,
             provider_configs=provider_config.get("providers", {}),
             workflow_configs=provider_config.get("workflows", {}),
+        )
+        _mark_workflows_execution_ready(
+            payload,
+            workflow_runner=workflow_runner,
+            background_tasks=background_tasks,
         )
         payload["providerConfigStatus"] = provider_config.get("configStatus") or "available"
         payload["providerConfigWarnings"] = list(provider_config.get("warnings") or [])
@@ -217,6 +225,7 @@ def build_capabilities_router(
                 session_id=session_id,
                 workflow_runner=workflow_runner,
                 background_tasks=background_tasks,
+                payload=payload,
                 workflow_jobs=workflow_jobs,
                 workflow_jobs_lock=workflow_jobs_lock,
             )
@@ -289,6 +298,61 @@ def build_capabilities_router(
             jobStatus=job.get("status"),
         )
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @router.get("/capabilities/workflow-jobs/{job_id}/outputs/{output_handle}")
+    async def read_capability_workflow_job_output(job_id: str, output_handle: str, request: Request) -> Response:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        safe_job_id = _safe_workflow_job_id(job_id)
+        safe_output_handle = normalize_workflow_asset_handle(output_handle)
+        job: dict[str, Any] | None = None
+        if safe_job_id and safe_output_handle.get("ok"):
+            with workflow_jobs_lock:
+                stored = workflow_jobs.get(safe_job_id)
+                job = copy.deepcopy(stored) if stored else None
+        if job is None or job.get("_profileUserId") != profile_user_id:
+            _observe_request(runtime_metrics, "capabilities.workflow_job_output", started_at, False)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "status": "unknown_workflow_job",
+                    "reason": "workflow_job_not_found",
+                },
+                status_code=404,
+                headers={"Cache-Control": "no-store"},
+            )
+        if str(job.get("status") or "") != "completed":
+            _observe_request(runtime_metrics, "capabilities.workflow_job_output", started_at, False)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "status": "not-ready",
+                    "reason": "workflow_job_output_not_ready",
+                },
+                status_code=409,
+                headers={"Cache-Control": "no-store"},
+            )
+        output_asset = _find_workflow_job_output_asset(job, str(safe_output_handle.get("handle") or ""))
+        if output_asset is None:
+            _observe_request(runtime_metrics, "capabilities.workflow_job_output", started_at, False)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "status": "unknown_workflow_output",
+                    "reason": "workflow_output_not_found",
+                },
+                status_code=404,
+                headers={"Cache-Control": "no-store"},
+            )
+        _observe_request(runtime_metrics, "capabilities.workflow_job_output", started_at, True)
+        return Response(
+            content=output_asset.data,
+            media_type=output_asset.content_type or "application/octet-stream",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @router.post("/capabilities/providers/{provider_id}/config")
     async def write_capability_provider_config(provider_id: str, request: Request) -> JSONResponse:
@@ -469,6 +533,7 @@ def _start_bound_workflow_job(
     session_id: str,
     workflow_runner: Any,
     background_tasks: Any,
+    payload: dict[str, Any],
     workflow_jobs: dict[str, dict[str, Any]],
     workflow_jobs_lock: threading.RLock,
 ) -> dict[str, Any]:
@@ -486,6 +551,7 @@ def _start_bound_workflow_job(
         preflight=preflight,
         profile_user_id=profile_user_id,
         session_id=session_id,
+        input_assets=_extract_workflow_input_assets(preflight=preflight, payload=payload),
     )
     with workflow_jobs_lock:
         workflow_jobs[job["jobId"]] = job
@@ -542,6 +608,7 @@ def _build_bound_workflow_job(
     preflight: dict[str, Any],
     profile_user_id: str,
     session_id: str,
+    input_assets: dict[str, WorkflowExecutionAsset] | None = None,
 ) -> dict[str, Any]:
     now = _now_iso()
     accepted_inputs = preflight.get("acceptedInputs") if isinstance(preflight.get("acceptedInputs"), dict) else {}
@@ -550,6 +617,8 @@ def _build_bound_workflow_job(
         "_profileUserId": str(profile_user_id or ""),
         "_sessionId": str(session_id or ""),
         "_workflow": copy.deepcopy(preflight.get("workflow")) if isinstance(preflight.get("workflow"), dict) else {},
+        "_inputAssets": dict(input_assets or {}),
+        "_outputAssets": {},
         "jobId": f"workflowjob_{uuid.uuid4().hex}",
         "kind": "workflow_job",
         "workflowId": str(preflight.get("workflowId") or ""),
@@ -614,6 +683,7 @@ def _run_bound_workflow_job(
         profile_user_id=str(job.get("_profileUserId") or ""),
         session_id=str(job.get("_sessionId") or ""),
         inputs=dict(job.get("inputs") or {}),
+        input_assets=dict(job.get("_inputAssets") or {}),
         workflow=copy.deepcopy(job.get("_workflow")) if isinstance(job.get("_workflow"), dict) else {},
     )
     try:
@@ -634,6 +704,7 @@ def _run_bound_workflow_job(
             status="completed",
             reason=str(runner_result.get("reason") or "workflow_completed"),
             outputs=list(runner_result.get("outputs") or []),
+            output_assets=list(runner_result.get("outputAssets") or []),
         )
     else:
         _update_workflow_job(
@@ -643,6 +714,7 @@ def _run_bound_workflow_job(
             status="failed",
             reason=str(runner_result.get("reason") or "workflow_runner_failed"),
             outputs=[],
+            output_assets=[],
         )
 
 
@@ -654,6 +726,7 @@ def _update_workflow_job(
     status: str,
     reason: str,
     outputs: list[dict[str, Any]],
+    output_assets: list[WorkflowExecutionAsset] | None = None,
 ) -> None:
     now = _now_iso()
     with workflow_jobs_lock:
@@ -666,6 +739,12 @@ def _update_workflow_job(
         job["executionReady"] = False
         job["canRun"] = False
         job["outputs"] = copy.deepcopy(outputs)
+        if output_assets is not None:
+            job["_outputAssets"] = {
+                asset.handle: asset
+                for asset in output_assets
+                if isinstance(asset, WorkflowExecutionAsset)
+            }
         events = list(job.get("events") or [])
         events.append({"status": job["status"], "reason": job["reason"], "createdAt": now})
         job["events"] = events[-20:]
@@ -700,6 +779,48 @@ def _with_bound_workflow_runner(
     next_result["executionReady"] = True
     next_result["canRun"] = True
     return next_result
+
+
+def _extract_workflow_input_assets(
+    *,
+    preflight: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, WorkflowExecutionAsset]:
+    accepted_inputs = preflight.get("acceptedInputs") if isinstance(preflight.get("acceptedInputs"), dict) else {}
+    input_handle = str(accepted_inputs.get("inputImageHandle") or "")
+    if not input_handle:
+        return {}
+    raw_asset = {
+        "handle": input_handle,
+        "bytes": payload.get("inputImageBytes") or payload.get("imageBytes"),
+        "contentType": payload.get("inputImageContentType") or payload.get("mimeType") or payload.get("contentType"),
+    }
+    asset = normalize_workflow_asset(raw_asset)
+    return {asset.handle: asset} if asset is not None else {}
+
+
+def _find_workflow_job_output_asset(job: dict[str, Any], output_handle: str) -> WorkflowExecutionAsset | None:
+    output_assets = job.get("_outputAssets") if isinstance(job.get("_outputAssets"), dict) else {}
+    asset = output_assets.get(output_handle)
+    return asset if isinstance(asset, WorkflowExecutionAsset) else None
+
+
+def _mark_workflows_execution_ready(payload: dict[str, Any], *, workflow_runner: Any, background_tasks: Any) -> None:
+    if workflow_runner is None or background_tasks is None or not hasattr(background_tasks, "submit"):
+        return
+    workflows = payload.get("workflows") if isinstance(payload.get("workflows"), list) else []
+    for workflow in workflows:
+        if not isinstance(workflow, dict):
+            continue
+        if not workflow.get("configured") or not workflow.get("enabled"):
+            continue
+        if str(workflow.get("status") or "") not in {"configured", "validated_config", "ready"}:
+            continue
+        workflow["status"] = "ready"
+        workflow["reason"] = ""
+        workflow["executionReady"] = True
+    if isinstance(payload.get("summary"), dict):
+        payload["summary"]["executionReady"] = sum(1 for workflow in workflows if workflow.get("executionReady"))
 
 
 def _public_workflow_job(job: dict[str, Any]) -> dict[str, Any]:

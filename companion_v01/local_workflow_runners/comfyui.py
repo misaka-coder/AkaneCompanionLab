@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 import requests
 
-from ..local_capability_config import normalize_local_http_endpoint
+from ..local_capability_config import (
+    load_capability_config,
+    normalize_local_http_endpoint,
+    resolve_workflow_config_file_path,
+)
+from ..local_workflow_execution import (
+    WorkflowExecutionAsset,
+    WorkflowExecutionRequest,
+    WorkflowExecutionResult,
+    detect_workflow_image_extension,
+)
 
 
 COMFYUI_SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
@@ -36,6 +49,137 @@ class ComfyUiImageRef:
 class ComfyUiImageBytes:
     data: bytes
     content_type: str
+
+
+class ComfyUiWorkflowRunner:
+    """Run a configured Akane workflow through a local ComfyUI executor."""
+
+    def __init__(
+        self,
+        *,
+        config_base_dir: Path | str | None,
+        client_factory: Any = None,
+        sleep: Any = None,
+        poll_interval_seconds: float = 1.0,
+        max_poll_seconds: float = 60.0,
+    ) -> None:
+        self.config_base_dir = Path(config_base_dir) if config_base_dir is not None else None
+        self.client_factory = client_factory or ComfyUiClient
+        self.sleep = sleep or time.sleep
+        self.poll_interval_seconds = max(0.05, float(poll_interval_seconds or 1.0))
+        self.max_poll_seconds = max(self.poll_interval_seconds, float(max_poll_seconds or 60.0))
+
+    def execute_workflow(self, request: WorkflowExecutionRequest) -> WorkflowExecutionResult:
+        if request.workflow_id != "workflow.workshop.portrait.cutout":
+            return WorkflowExecutionResult(ok=False, status="failed", reason="unsupported_workflow")
+
+        runtime_config = self._load_runtime_config(request)
+        if not runtime_config.get("ok"):
+            return WorkflowExecutionResult(
+                ok=False,
+                status="failed",
+                reason=str(runtime_config.get("reason") or "workflow_runtime_config_invalid"),
+            )
+
+        input_handle = str(request.inputs.get("inputImageHandle") or "")
+        output_handle = str(request.inputs.get("outputImageHandle") or "")
+        input_asset = request.input_assets.get(input_handle)
+        if input_asset is None:
+            return WorkflowExecutionResult(ok=False, status="failed", reason="input_image_bytes_required")
+
+        try:
+            workflow_json = self._read_workflow_json(runtime_config["workflowPath"])
+            client = self.client_factory(runtime_config["endpoint"])
+            uploaded_image = client.upload_image(
+                input_asset.data,
+                filename=_comfyui_upload_filename(request, input_asset),
+                subfolder="akane",
+                image_type="input",
+                overwrite=True,
+                content_type=input_asset.content_type,
+            )
+            patched_workflow = apply_comfyui_input_slots(
+                workflow_json,
+                runtime_config["slotMapping"],
+                {
+                    "input_image_handle": uploaded_image.filename,
+                    "output_image_handle": output_handle,
+                },
+            )
+            prompt_id = client.queue_prompt(patched_workflow, client_id=_comfyui_client_id(request))
+            output_ref = self._wait_for_first_output_image(client, prompt_id)
+            image = client.get_image(output_ref)
+        except ComfyUiSlotMappingError:
+            return WorkflowExecutionResult(ok=False, status="failed", reason="workflow_slot_mapping_invalid")
+        except ComfyUiClientError:
+            return WorkflowExecutionResult(ok=False, status="failed", reason="comfyui_request_failed")
+        except ValueError:
+            return WorkflowExecutionResult(ok=False, status="failed", reason="workflow_runtime_config_invalid")
+        except Exception:
+            return WorkflowExecutionResult(ok=False, status="failed", reason="workflow_runner_failed")
+
+        output_asset = WorkflowExecutionAsset(
+            handle=output_handle,
+            data=image.data,
+            content_type=image.content_type,
+        )
+        return WorkflowExecutionResult(
+            ok=True,
+            status="completed",
+            reason="workflow_completed",
+            outputs=({"handle": output_handle, "kind": "image", "contentType": image.content_type},),
+            output_assets=(output_asset,),
+        )
+
+    def _load_runtime_config(self, request: WorkflowExecutionRequest) -> dict[str, Any]:
+        config = load_capability_config(
+            base_dir=self.config_base_dir,
+            profile_user_id=request.profile_user_id,
+        )
+        provider = config.get("providers", {}).get("provider.comfyui.local")
+        workflow = config.get("workflows", {}).get(request.workflow_id)
+        if not isinstance(provider, Mapping) or not provider.get("enabled") or not provider.get("endpoint"):
+            return {"ok": False, "reason": "comfyui_provider_missing"}
+        if not isinstance(workflow, Mapping) or not workflow.get("enabled"):
+            return {"ok": False, "reason": "workflow_binding_missing"}
+        workflow_path = resolve_workflow_config_file_path(
+            base_dir=self.config_base_dir,
+            profile_user_id=request.profile_user_id,
+            workflow_path=str(workflow.get("workflowPath") or ""),
+        )
+        slot_mapping = workflow.get("slotMapping") if isinstance(workflow.get("slotMapping"), Mapping) else {}
+        if workflow_path is None or not slot_mapping:
+            return {"ok": False, "reason": "workflow_binding_missing"}
+        return {
+            "ok": True,
+            "endpoint": provider["endpoint"],
+            "workflowPath": workflow_path,
+            "slotMapping": dict(slot_mapping),
+        }
+
+    def _read_workflow_json(self, workflow_path: Path) -> dict[str, Any]:
+        if not workflow_path.is_file():
+            raise ValueError("workflow_file_missing")
+        if workflow_path.stat().st_size > 4 * 1024 * 1024:
+            raise ValueError("workflow_file_too_large")
+        payload = json.loads(workflow_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping) or not payload:
+            raise ValueError("workflow_json_invalid")
+        return dict(payload)
+
+    def _wait_for_first_output_image(self, client: "ComfyUiClient", prompt_id: str) -> ComfyUiImageRef:
+        deadline = time.monotonic() + self.max_poll_seconds
+        last_history: dict[str, Any] = {}
+        while time.monotonic() <= deadline:
+            last_history = client.get_history(prompt_id)
+            images = extract_comfyui_output_images(last_history, prompt_id=prompt_id)
+            if images:
+                return images[0]
+            self.sleep(self.poll_interval_seconds)
+        images = extract_comfyui_output_images(last_history, prompt_id=prompt_id) if last_history else []
+        if images:
+            return images[0]
+        raise ComfyUiClientError("comfyui_output_timeout")
 
 
 def extract_comfyui_output_images(
@@ -347,3 +491,14 @@ def _guess_image_content_type(filename: str) -> str:
     if lower.endswith(".webp"):
         return "image/webp"
     return "image/png"
+
+
+def _comfyui_upload_filename(request: WorkflowExecutionRequest, asset: WorkflowExecutionAsset) -> str:
+    extension = detect_workflow_image_extension(asset.data) or "png"
+    suffix = str(request.job_id or "job")[-12:] or "job"
+    return f"akane_{suffix}_input.{extension}"
+
+
+def _comfyui_client_id(request: WorkflowExecutionRequest) -> str:
+    suffix = str(request.job_id or "job")[-16:] or "job"
+    return f"akane-{suffix}"

@@ -63,18 +63,26 @@ filenames, subfolders, or image types before any future `/view` call.
 Phase 4F adds a Tauri-only generated portrait import command:
 `import_generated_portrait_image`. It writes generated image bytes into a
 character pack through the existing safe character-pack path boundary and
-blocking worker, but no workshop button calls it yet.
+blocking worker. Phase 4I now calls it from the workshop only after a completed
+backend workflow output is fetched.
 Phase 4G adds backend workflow job skeleton routes:
 `POST /capabilities/workflows/{workflowId}/jobs` and
 `GET /capabilities/workflow-jobs/{jobId}`. They call preflight and can create a
 profile-scoped `queued-but-inert` job record when all config/request checks pass,
-but they still do not bind a real runner, upload images, call ComfyUI, or write
-assets.
+when no runner is bound. Phase 4I supersedes the inert-only path in production
+by binding a real ComfyUI runner.
 Phase 4H adds the runner binding slot and background job state machine. The
 capabilities router can accept an injected `workflow_runner` plus the existing
 `BackgroundTaskRunner`; only then does preflight become `ready` and jobs move
-through `queued -> running -> completed/failed`. Production still passes no
-workflow runner by default, so ComfyUI is not executed yet.
+through `queued -> running -> completed/failed`.
+Phase 4I wires the first real execution path for character portrait cutout:
+the app binds a `ComfyUiWorkflowRunner`, job routes accept explicit image bytes
+from the workshop, the runner loads a profile-scoped safe workflow JSON file,
+uploads to loopback ComfyUI, polls history, fetches generated image bytes, and
+exposes completed outputs through a profile-scoped byte route. The workshop now
+shows "自动抠图" only when the catalog reports the workflow as `ready` and
+`executionReady:true`; generated portraits are written back only through the
+Tauri `import_generated_portrait_image` safe character-pack boundary.
 
 Files:
 
@@ -100,21 +108,30 @@ Files:
   - `POST /capabilities/workflows/{workflowId}/preflight`
   - `POST /capabilities/workflows/{workflowId}/jobs`
   - `GET /capabilities/workflow-jobs/{jobId}`
+  - `GET /capabilities/workflow-jobs/{jobId}/outputs/{outputHandle}`
   - `POST /capabilities/providers/{providerId}/config`
   - `POST /capabilities/providers/{providerId}/health-check`
   - The local environment check probes only known localhost services and never
     auto-enables providers.
-  - Workflow job routes are inert in this phase. They return `missing_config`,
-    `invalid_request`, `unknown_workflow`, or `not-implemented`; the only
-    stored job state is `queued-but-inert`, scoped to the resolved
-    `profile_user_id`, with no outputs.
-  - When a real workflow runner is explicitly injected, job routes submit work
+  - Without an injected runner, workflow job routes remain inert. They return
+    `missing_config`, `invalid_request`, `unknown_workflow`, or
+    `not-implemented`; the only stored job state is `queued-but-inert`, scoped
+    to the resolved `profile_user_id`, with no outputs.
+  - With the production ComfyUI runner injected, job routes submit work
     to the existing background task runner on the `workflow` lane and expose
-    structured progress/status only.
+    structured progress/status only. Completed job status exposes safe output
+    handles but not image bytes.
+  - Output bytes are available only from the profile-scoped output route for
+    completed jobs. The response is image bytes with `no-store` and `nosniff`;
+    wrong profile, missing output, and not-ready jobs do not leak data.
 - `companion_v01/local_workflow_execution.py`
   - Defines the narrow workflow runner request/result boundary.
   - Normalizes runner results and sanitizes public outputs to safe
     `{ handle, kind, contentType }` records.
+  - Adds `WorkflowExecutionAsset` for internal byte handoff. Public job status
+    never echoes `_outputAssets` or raw image bytes.
+  - Accepts bounded image bytes/base64/data URLs only after magic-byte image
+    validation.
   - Drops unsafe output handles and suppresses raw runner exceptions or
     path/secret-bearing reason strings.
 - `companion_v01/local_capability_config.py`
@@ -143,6 +160,8 @@ Files:
     strings, and obvious secret-bearing values before any future runner can see
     them. The current preflight result remains inert with `canRun:false` and
     `executionReady:false`.
+  - `resolve_workflow_config_file_path()` resolves workflow JSON references
+    under `users_data/<profile_user_id>/capabilities/` only.
 - `companion_v01/local_workflow_runners/comfyui.py`
   - Provides a small loopback-only ComfyUI HTTP adapter.
   - Normalizes endpoints through the same local HTTP policy used by provider
@@ -157,18 +176,26 @@ Files:
   - Provides `extract_comfyui_output_images()` for reading safe image refs from
     ComfyUI history output payloads. It discards unsafe path-like, URL-like, or
     secret-bearing values.
-  - This module is not registered as a route and is not reachable from the
-    workshop yet.
+  - Adds `ComfyUiWorkflowRunner` for `workflow.workshop.portrait.cutout`. It
+    reads profile-scoped provider/workflow config, requires explicit input
+    bytes from the request, safely loads the configured workflow JSON, applies
+    configured input/output slots, uploads the source image, queues/polls
+    ComfyUI, fetches the first safe output image, and returns an internal
+    `WorkflowExecutionAsset`.
+  - The runner is reachable only through the capabilities job route after
+    preflight/config checks. It does not read character-pack files, local
+    absolute paths, prompts, chat messages, clipboard content, or screenshots.
 - `desktop_pet_next/src-tauri/src/main.rs`
   - Adds `import_generated_portrait_image`, a blocking-worker Tauri command for
-    future generated portrait writes.
+    generated portrait writes.
   - Reuses `sanitize_pack_id`, `sanitize_asset_id`, `safe_child_path`, magic-byte
     image format detection, size limits, and temp-file rename.
   - Requires `overwrite:true` before replacing an existing emotion image.
-  - Does not expose a workshop UI action yet and does not call the backend
-    workflow routes.
+  - The workshop uses it after fetching a completed backend workflow output;
+    the backend itself never writes character-pack files.
 - `companion_v01/app.py`
-  - Registers the capabilities router.
+  - Registers the capabilities router with the existing engine background task
+    scheduler and `ComfyUiWorkflowRunner(config_base_dir=Path(config.DATA_DIR))`.
 - `tests/test_backend_route_modules.py`
   - Verifies read-only catalog shape, existing backend tool exposure, provider
     classification, safe config paths, no obvious sensitive fields, and local
@@ -189,6 +216,9 @@ Files:
     provider/workflow config is present but no runner exists.
   - Verifies workflow job routes are profile-scoped, inert, and do not echo
     image bytes, URL inputs, local paths, tokens, or secrets.
+  - Verifies injected-runner jobs can complete, expose safe public outputs, keep
+    internal output assets out of job status, and return image bytes only from
+    the correct profile-scoped output route.
   - Verifies an injected workflow runner uses the background `workflow` lane,
     updates job status, filters unsafe outputs, and reports structured failure
     when the runner raises.
@@ -200,6 +230,9 @@ Files:
     original workflow and rejects non-input, missing-node, or unsafe slot paths.
   - Verifies ComfyUI history output extraction returns only safe image refs and
     rejects ambiguous history payloads without making real network calls.
+  - Verifies `ComfyUiWorkflowRunner` loads a safe profile-scoped workflow JSON
+    config, uploads request-provided portrait bytes, queues/polls ComfyUI, reads
+    the generated output image, and returns an internal output asset.
 - `tests/test_desktop_pet_frontend_contract.py`
   - Verifies the generated portrait import command exists, runs on a blocking
     worker, uses safe character-pack paths, and writes through temp-file rename.
@@ -256,8 +289,14 @@ Files:
     repeated capability hydration.
   - On failure, leaves ordinary portrait management usable and only shows
     "能力状态未同步".
-  - The "去配置" button opens the control center/settings window; it does not
-    execute a workflow or submit an image.
+  - The "去配置" button opens the control center/settings window.
+  - The "自动抠图" button is hidden until the workflow is `ready` and
+    `executionReady:true`. When clicked, it reads the currently previewed
+    portrait through Tauri `read_portrait_image`, starts a backend workflow job
+    with explicit image bytes, polls job status, fetches the completed output
+    bytes, and imports the generated image through
+    `import_generated_portrait_image` as a non-overwriting `<emotion>_cutout`
+    portrait.
 - `desktop_pet_next/src/control-center/action-surface-contract.js`
   - Classifies provider panel open as client-handled and save/health-check as
     bridged backend-route actions.
@@ -2174,8 +2213,9 @@ Implemented Phase 3B:
   `executionReady:false` with reason `workflow_runtime_not_bound`.
 - The control center translates `configured` workflow state into "已绑定" with a
   warning tone and explanatory detail, not a runnable ready state.
-- No ComfyUI prompt submission, workflow JSON parsing, node id validation, model
-  path picker, asset write, or workshop "自动抠图" button exists yet.
+- At Phase 3B, there was no ComfyUI prompt submission, workflow JSON parsing,
+  node id validation, model path picker, asset write, or workshop "自动抠图"
+  button.
 
 Implemented Phase 3C:
 
@@ -2192,8 +2232,8 @@ Implemented Phase 3C:
 - The collapsed workflow card stays simple and user-facing. It may keep the safe
   public catalog workflow id for routing, but it does not display raw ComfyUI
   workflow ids, internal required slot ids, model paths, node ids, or secrets.
-- This is still configuration only. It does not create the Phase 4 workshop
-  "自动抠图" action.
+- At Phase 3C, this is still configuration only. Phase 4I creates the workshop
+  "自动抠图" action through the backend job and Tauri import boundaries.
 
 Implemented Phase 4A:
 
@@ -2212,9 +2252,10 @@ Implemented Phase 4A:
 - Failure to read the capability catalog does not block creating outfits,
   importing images, previewing expressions, setting default portraits, or
   calibration.
-- The workshop still does not show or run an actual "自动抠图" execution button.
-  No image bytes are sent to ComfyUI, no workflow JSON is parsed, and no
-  generated portrait asset is written in this phase.
+- At Phase 4A, the workshop did not show or run an actual "自动抠图" execution
+  button. No image bytes were sent to ComfyUI, no workflow JSON was parsed, and
+  no generated portrait asset was written in that phase. Phase 4I supersedes
+  this read-only boundary.
 
 Implemented Phase 4B:
 
@@ -2291,7 +2332,8 @@ Implemented Phase 4F:
 - It writes through safe character-pack paths and temp-file rename, then returns
   the refreshed outfit asset list.
 - It requires explicit `overwrite:true` before replacing an existing emotion.
-- It is not wired to `workshop.js`; no visible "自动抠图" button exists yet.
+- Phase 4I wires this command to `workshop.js` after backend job completion;
+  the visible "自动抠图" button is still gated by workflow readiness.
 
 Implemented Phase 4G:
 
@@ -2328,16 +2370,44 @@ Implemented Phase 4H:
   `workflow` lane, and status polling reports `queued`, `running`,
   `completed`, or `failed`.
 - `companion_v01/app.py` passes the existing `engine.background_tasks` scheduler
-  to the router, but still does not pass a workflow runner. This is deliberate:
-  production has scheduler readiness but no ComfyUI execution yet.
+  to the router. Phase 4I also passes a concrete ComfyUI runner.
 - Tests cover both injected-runner success and injected-runner exception
   failure without exposing unsafe fields.
+
+Implemented Phase 4I:
+
+- Added `ComfyUiWorkflowRunner` as the first real local workflow runner.
+- `companion_v01/app.py` binds it to the capabilities router with the existing
+  background task scheduler.
+- The runner resolves the configured workflow JSON under
+  `users_data/<profile_user_id>/capabilities/`, requires request-provided input
+  image bytes, applies configured ComfyUI input slots, queues the prompt, polls
+  history, fetches the first safe output image, and returns an internal output
+  asset.
+- `POST /capabilities/workflows/{workflowId}/jobs` accepts
+  `inputImageBytes` / `imageBytes` into an internal input asset boundary. Public
+  job status still exposes only structured state and safe output handles.
+- `GET /capabilities/workflow-jobs/{jobId}/outputs/{outputHandle}` returns
+  completed image bytes only for the same resolved profile id. It returns 404
+  for wrong profile or unknown output and 409 before completion.
+- The workshop now shows "自动抠图" only when
+  `workflow.workshop.portrait.cutout` is `ready` and `executionReady:true`.
+- The workshop execution path is:
+  Tauri `read_portrait_image` -> backend workflow job -> job polling -> output
+  byte fetch -> Tauri `import_generated_portrait_image`.
+- Generated images are imported as non-overwriting `<emotion>_cutout` portraits.
+- The backend never reads character-pack source image files and never writes
+  generated character-pack assets; both file boundaries stay Tauri-side.
+- Job status, catalog payloads, logs, and snapshots must not expose local
+  absolute paths, workflow JSON contents, prompt text, chat messages, image
+  bytes, clipboard/screenshot content, tokens, passwords, or API keys.
 
 Acceptance:
 
 - workflow JSON path can be configured
 - required slots are validated
 - test run can fail with structured reason
+- configured cutout can run through ComfyUI and write back through Tauri import
 
 ### Phase 4: Workshop Integration
 
@@ -2352,18 +2422,21 @@ Acceptance:
 - output writes through safe character-pack boundaries
 - UI stays responsive during long run
 
-Current Phase 4A boundary:
+Current Phase 4I boundary:
 
-- Read-only status guidance is implemented.
-- Phase 4B backend preflight, Phase 4C low-level ComfyUI client, Phase 4D
-  in-memory input slot mapping, Phase 4E output ref parsing, Phase 4F Tauri
-  generated portrait import, Phase 4G inert job routes, and Phase 4H runner
-  binding/background job state are implemented, but real ComfyUI execution
-  remains pending.
-- The next execution slice must implement the real ComfyUI runner itself:
-  safe workflow JSON loading, input image resolution/upload, prompt queueing,
-  history polling, output image fetch, and safe handoff to the Tauri portrait
-  import boundary before any clickable "自动抠图" button appears.
+- The real ComfyUI portrait cutout path is implemented and production-bound.
+- "自动抠图" remains hidden unless provider/workflow config and runner binding
+  make the workflow `ready` with `executionReady:true`.
+- The workshop sends explicit portrait image bytes to the backend job route,
+  never local file paths.
+- The backend executes ComfyUI through the runner, stores output bytes only in
+  internal job state, and exposes completed outputs through the profile-scoped
+  output byte route.
+- Tauri imports the fetched output into the character pack through safe path
+  validation and non-overwriting generated emotion ids.
+- Remaining work is usability and validation polish: better setup guidance,
+  optional workflow JSON structural validation before marking a row ready, and
+  richer progress text for long ComfyUI runs.
 
 ### Phase 5: Voice Provider Layer
 

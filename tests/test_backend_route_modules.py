@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from companion_v01.background_tasks import BackgroundTaskRunner
 from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
-from companion_v01.local_workflow_execution import WorkflowExecutionRequest
+from companion_v01.local_workflow_execution import WorkflowExecutionAsset, WorkflowExecutionRequest
 from companion_v01.routes.capabilities import build_capabilities_router
 from companion_v01.routes.control_center import (
     build_control_center_router,
@@ -1530,6 +1530,18 @@ class BackendRouteModuleTests(unittest.TestCase):
                     {"handle": "token_secret_output", "kind": "image", "contentType": "image/png"},
                     {"handle": r"C:\Users\Lenovo\portrait.png", "kind": "image"},
                 ],
+                "outputAssets": [
+                    WorkflowExecutionAsset(
+                        handle="portrait_cutout",
+                        data=b"\x89PNG\r\n\x1a\ncutout",
+                        content_type="image/png",
+                    ),
+                    {
+                        "handle": "token_secret_output",
+                        "bytes": [137, 80, 78, 71, 13, 10, 26, 10],
+                        "contentType": "image/png",
+                    },
+                ],
             }
         )
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1576,6 +1588,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                 json={
                     "inputImageHandle": "portrait_source",
                     "outputImageHandle": "portrait_cutout",
+                    "inputImageBytes": [137, 80, 78, 71, 13, 10, 26, 10, 115, 111, 117, 114, 99, 101],
                     "imageBytes": "RAW_IMAGE_BYTES_SHOULD_NOT_ECHO",
                 },
             ).json()
@@ -1601,7 +1614,21 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(runner.requests[0].session_id, "desktop")
             self.assertEqual(runner.requests[0].inputs["inputImageHandle"], "portrait_source")
             self.assertEqual(runner.requests[0].inputs["outputImageHandle"], "portrait_cutout")
+            self.assertEqual(runner.requests[0].input_assets["portrait_source"].data, b"\x89PNG\r\n\x1a\nsource")
             self.assertNotIn("_workflow", status_payload["job"])
+            self.assertNotIn("_outputAssets", status_payload["job"])
+
+            output_response = client.get(
+                f"/capabilities/workflow-jobs/{job_id}/outputs/portrait_cutout?user_id=desktop&real_user_id=master"
+            )
+            self.assertEqual(output_response.status_code, 200)
+            self.assertEqual(output_response.content, b"\x89PNG\r\n\x1a\ncutout")
+            self.assertEqual(output_response.headers["content-type"], "image/png")
+
+            wrong_profile_output = client.get(
+                f"/capabilities/workflow-jobs/{job_id}/outputs/portrait_cutout?user_id=desktop&real_user_id=other_profile"
+            )
+            self.assertEqual(wrong_profile_output.status_code, 404)
             combined_text = json.dumps([started, status_payload], ensure_ascii=False).lower()
             for forbidden in (
                 "raw_image_bytes_should_not_echo",

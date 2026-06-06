@@ -717,6 +717,25 @@ def normalize_workflow_path(workflow_path: str) -> dict[str, Any]:
     }
 
 
+def resolve_workflow_config_file_path(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    workflow_path: str,
+) -> Path | None:
+    config_path = _profile_config_path(base_dir, profile_user_id)
+    if config_path is None:
+        return None
+    normalized = normalize_workflow_path(workflow_path)
+    if not normalized.get("ok"):
+        return None
+    root = config_path.parent.resolve()
+    target = (root / str(normalized["workflowPath"])).resolve()
+    if root == target or root not in target.parents:
+        return None
+    return target
+
+
 def normalize_workflow_slot_mapping(spec: WorkflowConfigSpec, slot_mapping: Any) -> dict[str, Any]:
     if slot_mapping in (None, ""):
         slot_mapping = {slot: slot for slot in spec.required_slots}

@@ -1163,8 +1163,14 @@ textarea {
   white-space: nowrap;
 }
 
-.portrait-cutout-status button {
+.portrait-cutout-actions {
+  display: flex;
   flex: 0 0 auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.portrait-cutout-status button {
   min-height: 30px;
   padding: 5px 10px;
 }

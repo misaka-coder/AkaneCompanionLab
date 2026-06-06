@@ -85,6 +85,7 @@ const els = {
   portraitCutoutStatus: document.querySelector("#portrait-cutout-status"),
   portraitCutoutSummary: document.querySelector("#portrait-cutout-summary"),
   portraitCutoutConfig: document.querySelector("#portrait-cutout-config"),
+  portraitCutoutRun: document.querySelector("#portrait-cutout-run"),
   emotionPreview: document.querySelector("#emotion-preview"),
   /* calibration */
   calibrationEmptyState: document.querySelector("#calibration-empty-state"),
@@ -171,6 +172,7 @@ const view = {
     executionReady: false,
     canConfigure: false,
   },
+  portraitCutoutRunning: false,
 };
 
 let lastWorkshopSnapshotSignature = "";
@@ -234,6 +236,9 @@ function bindUi() {
   els.firstUseCreate.addEventListener("click", () => openCreateDialog());
   els.firstUseImport.addEventListener("click", () => importPack());
   els.portraitCutoutConfig?.addEventListener("click", () => openCapabilitySettings());
+  els.portraitCutoutRun?.addEventListener("click", () => {
+    void runPortraitCutoutForPreview();
+  });
 
   /* pack list */
   els.packList.addEventListener("click", (event) => {
@@ -1151,8 +1156,8 @@ function applyPortraitCutoutCapability(next) {
 function normalizePortraitCutoutCapability(workflow) {
   const status = String(workflow?.status || "").trim() || "unknown";
   const labels = {
-    configured: "已绑定，执行入口待开放",
-    validated_config: "已绑定，执行入口待开放",
+    configured: "已绑定，等待执行器",
+    validated_config: "已绑定，等待执行器",
     ready: "自动抠图已可用",
     missing_config: "需要配置本地 ComfyUI",
     missing_workflow: "需要绑定抠图工作流",
@@ -1163,9 +1168,9 @@ function normalizePortraitCutoutCapability(workflow) {
     invalid_workflow_config: "工作流绑定异常",
   };
   const details = {
-    configured: "配置已经保存，但当前版本还没有接入真正的工作流执行。",
-    validated_config: "配置已经通过基础校验，但当前版本还没有接入真正的工作流执行。",
-    ready: "之后会在这里提供自动处理入口。",
+    configured: "配置已经保存，但后端还没有绑定真实执行器。",
+    validated_config: "配置已经通过基础校验，但后端还没有绑定真实执行器。",
+    ready: "先在右侧预览一张表情图，再点击自动抠图生成透明背景版本。",
     missing_config: "可以先到设置的能力页填写本地 ComfyUI 地址并做探活。",
     missing_workflow: "本地服务已配置，下一步是在能力页绑定透明背景处理工作流。",
     missing_slot_mapping: "工作流引用已保存，还需要补齐输入图片和输出图片的槽位名。",
@@ -1197,6 +1202,12 @@ function renderPortraitCutoutStatus() {
     els.portraitCutoutConfig.hidden = state.canConfigure === false;
     els.portraitCutoutConfig.textContent = state.configured ? "查看配置" : "去配置";
   }
+  if (els.portraitCutoutRun) {
+    const canRun = status === "ready" && state.executionReady && !view.portraitCutoutRunning;
+    els.portraitCutoutRun.hidden = !(status === "ready" && state.executionReady);
+    els.portraitCutoutRun.disabled = !canRun;
+    els.portraitCutoutRun.textContent = view.portraitCutoutRunning ? "处理中..." : "自动抠图";
+  }
 }
 
 function portraitCutoutTone(status) {
@@ -1220,6 +1231,152 @@ async function openCapabilitySettings() {
   } catch (error) {
     setPortraitStatus(`打开设置失败：${formatError(error)}`, true);
   }
+}
+
+async function runPortraitCutoutForPreview() {
+  if (!isTauriRuntime) {
+    setPortraitStatus("浏览器预览模式无法执行自动抠图。", true);
+    return;
+  }
+  if (view.portraitCutoutRunning) return;
+  const target = previewingEmotion;
+  const packId = String(target?.packId || "").trim();
+  const outfitId = String(target?.outfitId || "").trim();
+  const emotion = target?.emotion || null;
+  const emotionId = String(emotion?.id || "").trim();
+  if (!packId || !outfitId || !emotionId) {
+    setPortraitStatus("请先在右侧预览一张要处理的表情图。", true);
+    return;
+  }
+
+  const capability = await refreshPortraitCutoutCapability({ force: true, silent: true });
+  if (capability.status !== "ready" || !capability.executionReady) {
+    setPortraitStatus("自动抠图还没准备好，请先在能力页完成 ComfyUI 和工作流绑定。", true);
+    return;
+  }
+
+  view.portraitCutoutRunning = true;
+  renderPortraitCutoutStatus();
+  const generatedEmotion = buildGeneratedCutoutEmotionId(emotionId);
+  const outputHandle = `portrait_cutout_${Date.now().toString(36)}`;
+  setPortraitStatus(`正在处理：${outfitId} / ${emotionId}…`);
+  try {
+    const imageBytes = await readPortraitImageBytes(packId, outfitId, emotionId);
+    const mimeType = portraitMimeType(emotion?.path);
+    const job = await startPortraitCutoutJob({
+      inputImageHandle: "portrait_source",
+      outputImageHandle: outputHandle,
+      imageBytes,
+      mimeType,
+    });
+    const completed = await waitForPortraitCutoutJob(job.jobId);
+    const output = Array.isArray(completed?.job?.outputs) ? completed.job.outputs[0] : null;
+    const outputBytes = await fetchPortraitCutoutOutput(job.jobId, output?.handle || outputHandle);
+    await invoke("import_generated_portrait_image", {
+      packId,
+      outfit: outfitId,
+      emotion: generatedEmotion,
+      imageBytes: Array.from(outputBytes),
+      mimeType: output?.contentType || "image/png",
+      overwrite: false,
+    });
+    clearPortraitImageCache(packId);
+    await loadPortraitsTab(packId);
+    setPortraitStatus(`已生成透明背景版本：${outfitId} / ${generatedEmotion}`);
+    setStatus(`自动抠图完成：${generatedEmotion}`);
+  } catch (error) {
+    const message = `自动抠图失败：${formatError(error)}`;
+    setPortraitStatus(message, true);
+    setStatus(message);
+  } finally {
+    view.portraitCutoutRunning = false;
+    renderPortraitCutoutStatus();
+  }
+}
+
+async function startPortraitCutoutJob({ inputImageHandle, outputImageHandle, imageBytes, mimeType }) {
+  const response = await backendFetch(buildBackendUrl(`/capabilities/workflows/${PORTRAIT_CUTOUT_WORKFLOW_ID}/jobs`, {
+    user_id: "desktop",
+    session_id: "desktop",
+    real_user_id: view.profileUserId || "master",
+    client: CLIENT_MODE,
+  }), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      inputImageHandle,
+      outputImageHandle,
+      inputImageBytes: Array.from(imageBytes),
+      inputImageContentType: mimeType,
+    }),
+    cache: "no-store",
+    ...(isTauriRuntime ? { connectTimeout: 3_500 } : {}),
+  });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, `HTTP ${response.status}`));
+  }
+  const payload = await response.json();
+  if (!payload?.ok || !payload?.jobId) {
+    throw new Error(payload?.reason || payload?.status || "workflow_job_start_failed");
+  }
+  return payload;
+}
+
+async function waitForPortraitCutoutJob(jobId) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 90_000) {
+    const response = await backendFetch(buildBackendUrl(`/capabilities/workflow-jobs/${jobId}`, {
+      user_id: "desktop",
+      session_id: "desktop",
+      real_user_id: view.profileUserId || "master",
+      client: CLIENT_MODE,
+      t: Date.now(),
+    }), {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      ...(isTauriRuntime ? { connectTimeout: 3_500 } : {}),
+    });
+    if (!response.ok) {
+      throw new Error(await readResponseError(response, `HTTP ${response.status}`));
+    }
+    const payload = await response.json();
+    const status = String(payload?.status || "").trim();
+    if (status === "completed") return payload;
+    if (status === "failed") {
+      throw new Error(payload?.reason || "workflow_job_failed");
+    }
+    setPortraitStatus(`自动抠图处理中：${status || "running"}…`);
+    await delay(900);
+  }
+  throw new Error("workflow_job_timeout");
+}
+
+async function fetchPortraitCutoutOutput(jobId, outputHandle) {
+  const response = await backendFetch(buildBackendUrl(`/capabilities/workflow-jobs/${jobId}/outputs/${outputHandle}`, {
+    user_id: "desktop",
+    session_id: "desktop",
+    real_user_id: view.profileUserId || "master",
+    client: CLIENT_MODE,
+  }), {
+    method: "GET",
+    headers: { Accept: "image/png,image/webp,image/jpeg,*/*" },
+    cache: "no-store",
+    ...(isTauriRuntime ? { connectTimeout: 3_500 } : {}),
+  });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, `HTTP ${response.status}`));
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+function buildGeneratedCutoutEmotionId(emotionId) {
+  const base = String(emotionId || "normal").trim() || "normal";
+  return base.endsWith("_cutout") ? base : `${base}_cutout`;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function buildMissingEmotionWarnings(outfits, profile) {
@@ -1471,19 +1628,7 @@ async function getPortraitImageUrl(packId, outfitId, emotion) {
   }
 
   const promise = (async () => {
-    const payload = await invoke("read_portrait_image", {
-      packId,
-      outfit: outfitId,
-      emotion: emotionId,
-    });
-    const bytes = payload instanceof Uint8Array
-      ? payload
-      : payload instanceof ArrayBuffer
-        ? new Uint8Array(payload)
-        : new Uint8Array(payload || []);
-    if (!bytes.length) {
-      throw new Error("图片数据为空");
-    }
+    const bytes = await readPortraitImageBytes(packId, outfitId, emotionId);
     return URL.createObjectURL(new Blob([bytes], { type: portraitMimeType(emotion?.path) }));
   })();
 
@@ -1494,6 +1639,26 @@ async function getPortraitImageUrl(packId, outfitId, emotion) {
     portraitImageUrlCache.delete(key);
     throw error;
   }
+}
+
+async function readPortraitImageBytes(packId, outfitId, emotionId) {
+  const payload = await invoke("read_portrait_image", {
+    packId,
+    outfit: outfitId,
+    emotion: emotionId,
+  });
+  const bytes = payload instanceof Uint8Array
+    ? payload
+    : payload instanceof ArrayBuffer
+      ? new Uint8Array(payload)
+      : new Uint8Array(payload || []);
+  if (!bytes.length) {
+    throw new Error("图片数据为空");
+  }
+  if (bytes.length > MAX_PORTRAIT_IMAGE_BYTES) {
+    throw new Error("图片大小不能超过 20 MB。");
+  }
+  return bytes;
 }
 
 function portraitMimeType(path) {
@@ -2522,7 +2687,7 @@ async function readResponseError(response, fallback) {
     const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
     if (contentType.includes("json")) {
       const payload = await response.json();
-      return String(payload?.detail || payload?.message || payload?.error || fallback);
+      return String(payload?.detail || payload?.message || payload?.error || payload?.reason || payload?.status || fallback);
     }
     const text = String(await response.text()).trim();
     return text || fallback;
