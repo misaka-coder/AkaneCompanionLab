@@ -53,6 +53,10 @@ Phase 4C adds a low-level ComfyUI HTTP client foundation under
 tested with fake sessions. It can speak the public `/upload/image`, `/prompt`,
 `/history/{promptId}`, and `/view` routes, but no backend route or workshop UI
 calls it yet.
+Phase 4D adds a pure in-memory ComfyUI input slot mapping helper. It applies
+safe Akane slot values to a copied workflow JSON object using paths like
+`12.inputs.image`, and rejects non-input or missing-node paths. It still does
+not load workflow files, submit prompts, or write assets.
 
 Files:
 
@@ -114,6 +118,11 @@ Files:
   - Accepts only safe opaque file/subfolder/client/prompt values; local paths,
     URL-like strings, and obvious secret-bearing values are rejected before
     requests are made.
+  - Provides `apply_comfyui_input_slots()` for applying slot values to a copied
+    workflow JSON object. It currently supports input paths only:
+    `node_id.inputs.field` and `node_id.inputs.nested.field`.
+  - Output extraction from ComfyUI history is intentionally separate and is not
+    implemented yet.
   - This module is not registered as a route and is not reachable from the
     workshop yet.
 - `companion_v01/app.py`
@@ -140,6 +149,8 @@ Files:
   - Verifies the ComfyUI adapter uses normalized loopback endpoints, calls the
     expected public ComfyUI routes, and rejects unsafe path-like values or bad
     prompt ids without making real network calls.
+  - Verifies input slot mapping updates a workflow copy without mutating the
+    original workflow and rejects non-input, missing-node, or unsafe slot paths.
 - `desktop_pet_next/src/control-center/data-sources.js`
   - Reads `/capabilities` alongside the control-center runtime data.
   - Treats it as optional: missing or invalid catalog data does not block
@@ -2189,6 +2200,18 @@ Implemented Phase 4C:
   yet. It does not create jobs, mutate workflow JSON, or write character-pack
   assets.
 
+Implemented Phase 4D:
+
+- Added `apply_comfyui_input_slots()` to the ComfyUI runner module.
+- It applies Akane slot values to a workflow JSON copy using safe input paths
+  such as `12.inputs.image` or `20.inputs.options.padding`.
+- It deliberately rejects output paths such as `31.outputs.images[0]`; output
+  image selection must be handled from ComfyUI history in a later slice.
+- It rejects missing nodes, missing `inputs`, unsafe slot names, and malformed
+  slot paths.
+- It does not load workflow JSON from disk, run ComfyUI, poll jobs, or write
+  character-pack assets.
+
 Acceptance:
 
 - workflow JSON path can be configured
@@ -2211,8 +2234,9 @@ Acceptance:
 Current Phase 4A boundary:
 
 - Read-only status guidance is implemented.
-- Phase 4B backend preflight and Phase 4C low-level ComfyUI client are
-  implemented, but real execution remains pending.
+- Phase 4B backend preflight, Phase 4C low-level ComfyUI client, and Phase 4D
+  in-memory input slot mapping are implemented, but real execution remains
+  pending.
 - The next execution slice must add a real runner boundary, background task
   progress, and safe character-pack output writing before any clickable
   "自动抠图" button appears.

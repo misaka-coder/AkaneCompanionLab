@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -10,11 +11,18 @@ from ..local_capability_config import normalize_local_http_endpoint
 
 
 COMFYUI_SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
+COMFYUI_INPUT_SLOT_PATH_RE = re.compile(
+    r"^(?P<node_id>[A-Za-z0-9_-]{1,80})\.inputs\.(?P<input_path>[A-Za-z0-9_.-]{1,120})$"
+)
 COMFYUI_IMAGE_TYPES = {"input", "output", "temp"}
 
 
 class ComfyUiClientError(RuntimeError):
     """Raised when the ComfyUI HTTP boundary returns an unusable response."""
+
+
+class ComfyUiSlotMappingError(ValueError):
+    """Raised when a configured slot path cannot be applied to workflow JSON."""
 
 
 @dataclass(frozen=True)
@@ -146,6 +154,36 @@ class ComfyUiClient:
         return f"{self.endpoint}{suffix}"
 
 
+def apply_comfyui_input_slots(
+    workflow: Mapping[str, Any],
+    slot_mapping: Mapping[str, Any],
+    values: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a workflow copy with Akane input slot values applied.
+
+    Slot paths intentionally support only ComfyUI input fields:
+    ``node_id.inputs.field`` or ``node_id.inputs.nested.field``.
+    Output extraction is handled separately from ComfyUI history.
+    """
+
+    if not isinstance(workflow, Mapping) or not workflow:
+        raise ComfyUiSlotMappingError("workflow_json_required")
+    if not isinstance(slot_mapping, Mapping) or not slot_mapping:
+        raise ComfyUiSlotMappingError("slot_mapping_required")
+    if not isinstance(values, Mapping) or not values:
+        raise ComfyUiSlotMappingError("slot_values_required")
+
+    next_workflow = copy.deepcopy(dict(workflow))
+    for raw_slot, value in values.items():
+        slot = _safe_comfyui_value(raw_slot, "slot")
+        raw_path = slot_mapping.get(slot)
+        if raw_path in (None, ""):
+            raise ComfyUiSlotMappingError(f"slot_mapping_missing:{slot}")
+        node_id, input_path = _parse_comfyui_input_slot_path(raw_path)
+        _set_comfyui_input_value(next_workflow, node_id=node_id, input_path=input_path, value=value)
+    return next_workflow
+
+
 def _json_response(response: Any, action: str) -> Mapping[str, Any]:
     _raise_for_status(response, action)
     try:
@@ -192,6 +230,39 @@ def _safe_comfyui_image_type(value: Any) -> str:
     if image_type not in COMFYUI_IMAGE_TYPES:
         raise ValueError("image_type_invalid")
     return image_type
+
+
+def _parse_comfyui_input_slot_path(value: Any) -> tuple[str, list[str]]:
+    text = str(value or "").strip()
+    match = COMFYUI_INPUT_SLOT_PATH_RE.match(text)
+    if not match:
+        raise ComfyUiSlotMappingError("slot_path_must_target_input")
+    input_path = [part for part in match.group("input_path").split(".") if part]
+    if not input_path:
+        raise ComfyUiSlotMappingError("slot_path_must_target_input")
+    return match.group("node_id"), input_path
+
+
+def _set_comfyui_input_value(
+    workflow: dict[str, Any],
+    *,
+    node_id: str,
+    input_path: list[str],
+    value: Any,
+) -> None:
+    node = workflow.get(node_id)
+    if not isinstance(node, dict):
+        raise ComfyUiSlotMappingError(f"workflow_node_missing:{node_id}")
+    inputs = node.get("inputs")
+    if not isinstance(inputs, dict):
+        raise ComfyUiSlotMappingError(f"workflow_node_inputs_missing:{node_id}")
+    target = inputs
+    for part in input_path[:-1]:
+        child = target.get(part)
+        if not isinstance(child, dict):
+            raise ComfyUiSlotMappingError(f"workflow_input_path_missing:{node_id}")
+        target = child
+    target[input_path[-1]] = copy.deepcopy(value)
 
 
 def _guess_image_content_type(filename: str) -> str:

@@ -6,6 +6,8 @@ from companion_v01.local_workflow_runners.comfyui import (
     ComfyUiClient,
     ComfyUiClientError,
     ComfyUiImageRef,
+    ComfyUiSlotMappingError,
+    apply_comfyui_input_slots,
 )
 
 
@@ -111,6 +113,39 @@ class ComfyUiClientTests(unittest.TestCase):
         broken_client = ComfyUiClient("http://127.0.0.1:8188", session=broken)
         with self.assertRaises(ComfyUiClientError):
             broken_client.queue_prompt({"1": {}})
+
+    def test_apply_input_slots_updates_workflow_copy_only(self) -> None:
+        workflow = {
+            "12": {"class_type": "LoadImage", "inputs": {"image": "old.png"}},
+            "20": {"class_type": "SomeNode", "inputs": {"options": {"padding": 0}}},
+        }
+
+        patched = apply_comfyui_input_slots(
+            workflow,
+            {
+                "input_image_handle": "12.inputs.image",
+                "padding": "20.inputs.options.padding",
+            },
+            {
+                "input_image_handle": "uploaded.png",
+                "padding": 12,
+            },
+        )
+
+        self.assertEqual(patched["12"]["inputs"]["image"], "uploaded.png")
+        self.assertEqual(patched["20"]["inputs"]["options"]["padding"], 12)
+        self.assertEqual(workflow["12"]["inputs"]["image"], "old.png")
+        self.assertEqual(workflow["20"]["inputs"]["options"]["padding"], 0)
+
+    def test_apply_input_slots_rejects_unsafe_or_non_input_paths(self) -> None:
+        workflow = {"12": {"class_type": "LoadImage", "inputs": {"image": "old.png"}}}
+
+        with self.assertRaises(ComfyUiSlotMappingError):
+            apply_comfyui_input_slots(workflow, {"input_image_handle": "31.outputs.images"}, {"input_image_handle": "x"})
+        with self.assertRaises(ComfyUiSlotMappingError):
+            apply_comfyui_input_slots(workflow, {"input_image_handle": "404.inputs.image"}, {"input_image_handle": "x"})
+        with self.assertRaises(ValueError):
+            apply_comfyui_input_slots(workflow, {"token=secret": "12.inputs.image"}, {"token=secret": "x"})
 
 
 if __name__ == "__main__":
