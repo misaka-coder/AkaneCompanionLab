@@ -1280,6 +1280,86 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertIn(("capabilities.workflow_config", False), runtime.observed)
             self.assertIn(("capabilities.workflow_validate", True), runtime.observed)
 
+    def test_capabilities_workflow_preflight_is_safe_and_inert(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            missing = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            ).json()
+            self.assertFalse(missing["ok"])
+            self.assertEqual(missing["status"], "missing_config")
+            self.assertFalse(missing["executionReady"])
+            self.assertFalse(missing["canRun"])
+            self.assertFalse(missing["checks"]["providerConfigured"])
+            self.assertFalse(missing["checks"]["runnerBound"])
+
+            client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188"},
+            )
+            client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": "workflows/comfyui/portrait_cutout.json",
+                    "slotMapping": {
+                        "input_image_handle": "input_image",
+                        "output_image_handle": "output_image",
+                    },
+                },
+            )
+
+            rejected = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
+                json={
+                    "inputImageHandle": r"C:\Users\Lenovo\secret.png",
+                    "outputImageHandle": "portrait_cutout",
+                },
+            ).json()
+            self.assertFalse(rejected["ok"])
+            self.assertEqual(rejected["status"], "invalid_request")
+            self.assertEqual(rejected["reason"], "asset_handle_must_be_safe_opaque_id")
+            rejected_text = json.dumps(rejected, ensure_ascii=False).lower()
+            self.assertNotIn("secret.png", rejected_text)
+            self.assertNotIn(str(Path(temp_dir)).lower(), rejected_text)
+
+            ready_but_inert = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            ).json()
+            self.assertFalse(ready_but_inert["ok"])
+            self.assertEqual(ready_but_inert["status"], "not-implemented")
+            self.assertEqual(ready_but_inert["reason"], "workflow_runner_not_bound")
+            self.assertFalse(ready_but_inert["executionReady"])
+            self.assertFalse(ready_but_inert["canRun"])
+            self.assertTrue(ready_but_inert["checks"]["providerConfigured"])
+            self.assertTrue(ready_but_inert["checks"]["workflowConfigured"])
+            self.assertTrue(ready_but_inert["checks"]["inputImageHandle"])
+            self.assertTrue(ready_but_inert["checks"]["outputImageHandle"])
+            self.assertFalse(ready_but_inert["checks"]["runnerBound"])
+            self.assertEqual(ready_but_inert["acceptedInputs"]["inputImageHandle"], "portrait_source")
+            self.assertEqual(ready_but_inert["acceptedInputs"]["outputImageHandle"], "portrait_cutout")
+
+            unknown = client.post(
+                "/capabilities/workflows/unknown.workflow/preflight?user_id=desktop&real_user_id=master",
+                json={},
+            )
+            self.assertEqual(unknown.status_code, 404)
+            self.assertEqual(unknown.json()["status"], "unknown_workflow")
+            self.assertIn(("capabilities.workflow_preflight", False), runtime.observed)
+
     def test_capabilities_local_environment_check_is_discovery_not_enablement(self) -> None:
         runtime = FakeRuntimeMetrics()
 

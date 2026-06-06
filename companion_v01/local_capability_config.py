@@ -20,6 +20,8 @@ PUBLIC_WORKFLOW_FIELDS = {"enabled", "workflowPath", "slotMapping", "updatedAt"}
 WORKFLOW_PATH_MAX_LENGTH = 220
 WORKFLOW_SLOT_MAX_LENGTH = 80
 WORKFLOW_SLOT_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+WORKFLOW_ASSET_HANDLE_MAX_LENGTH = 120
+WORKFLOW_ASSET_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 
 
 HealthChecker = Callable[[str, int, float], tuple[bool, str]]
@@ -425,6 +427,111 @@ def validate_workflow_config(
     }
 
 
+def preflight_workflow_execution(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    workflow_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    spec = CONFIGURABLE_WORKFLOW_BY_ID.get(str(workflow_id or "").strip())
+    if spec is None:
+        return {"ok": False, "status": "unknown_workflow", "workflowId": str(workflow_id or "").strip()}
+
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    if config.get("configStatus") == "invalid_config":
+        return {
+            "ok": False,
+            "status": "invalid_config",
+            "workflowId": spec.id,
+            "capabilityId": spec.capability_id,
+            "reason": config.get("reason") or "provider_config_file_invalid",
+            "executionReady": False,
+            "canRun": False,
+        }
+
+    provider_entries = get_provider_config_entries(base_dir=base_dir, profile_user_id=profile_user_id)
+    providers_by_id = {entry["id"]: entry for entry in provider_entries}
+    provider = providers_by_id.get(spec.provider_id, {})
+    workflow = build_workflow_config_entry(
+        spec,
+        config.get("workflows", {}).get(spec.id),
+        provider,
+    )
+    checks = {
+        "providerConfigured": bool(provider.get("configured")),
+        "providerEnabled": bool(provider.get("enabled")),
+        "providerAvailable": str(provider.get("status") or "") in {"configured", "ready"},
+        "workflowConfigured": bool(workflow.get("configured")),
+        "workflowEnabled": bool(workflow.get("enabled")),
+        "requiredSlots": _required_slots_present(spec, workflow.get("slotMapping")),
+        "inputImageHandle": False,
+        "outputImageHandle": False,
+        "runnerBound": False,
+    }
+    if not (checks["providerConfigured"] and checks["workflowConfigured"] and checks["workflowEnabled"]):
+        return {
+            "ok": False,
+            "status": workflow.get("status") or "missing_workflow",
+            "workflowId": spec.id,
+            "capabilityId": spec.capability_id,
+            "reason": workflow.get("reason") or "workflow_binding_missing",
+            "executionReady": False,
+            "canRun": False,
+            "checks": checks,
+            "workflow": workflow,
+        }
+    if not checks["providerAvailable"]:
+        return {
+            "ok": False,
+            "status": workflow.get("status") or provider.get("status") or "unavailable",
+            "workflowId": spec.id,
+            "capabilityId": spec.capability_id,
+            "reason": workflow.get("reason") or provider.get("reason") or "provider_unavailable",
+            "executionReady": False,
+            "canRun": False,
+            "checks": checks,
+            "workflow": workflow,
+        }
+
+    input_handle = normalize_workflow_asset_handle(
+        payload.get("inputImageHandle") or payload.get("inputAssetHandle") or payload.get("sourceAssetHandle")
+    )
+    output_handle = normalize_workflow_asset_handle(
+        payload.get("outputImageHandle") or payload.get("outputAssetHandle") or payload.get("targetAssetHandle")
+    )
+    checks["inputImageHandle"] = bool(input_handle.get("ok"))
+    checks["outputImageHandle"] = bool(output_handle.get("ok"))
+    if not input_handle.get("ok") or not output_handle.get("ok"):
+        return {
+            "ok": False,
+            "status": "invalid_request",
+            "workflowId": spec.id,
+            "capabilityId": spec.capability_id,
+            "reason": input_handle.get("reason") if not input_handle.get("ok") else output_handle.get("reason"),
+            "executionReady": False,
+            "canRun": False,
+            "checks": checks,
+            "workflow": workflow,
+        }
+
+    return {
+        "ok": False,
+        "status": "not-implemented",
+        "workflowId": spec.id,
+        "capabilityId": spec.capability_id,
+        "reason": "workflow_runner_not_bound",
+        "executionReady": False,
+        "canRun": False,
+        "checks": checks,
+        "acceptedInputs": {
+            "inputImageHandle": input_handle["handle"],
+            "outputImageHandle": output_handle["handle"],
+        },
+        "workflow": workflow,
+    }
+
+
 def build_provider_config_entry(spec: ProviderConfigSpec, config: Mapping[str, Any] | None) -> dict[str, Any]:
     config = config if isinstance(config, Mapping) else {}
     config_status = str(config.get("status") or "").strip()
@@ -636,6 +743,27 @@ def normalize_workflow_slot_mapping(spec: WorkflowConfigSpec, slot_mapping: Any)
             "missingSlots": missing,
         }
     return {"ok": True, "status": "valid", "slotMapping": normalized}
+
+
+def normalize_workflow_asset_handle(value: Any) -> dict[str, Any]:
+    handle = str(value or "").strip()
+    if not handle:
+        return {"ok": False, "status": "invalid_request", "reason": "asset_handle_required"}
+    lowered = handle.lower()
+    if (
+        len(handle) > WORKFLOW_ASSET_HANDLE_MAX_LENGTH
+        or "://" in handle
+        or "/" in handle
+        or "\\" in handle
+        or "token" in lowered
+        or "secret" in lowered
+        or "password" in lowered
+        or "api_key" in lowered
+    ):
+        return {"ok": False, "status": "invalid_request", "reason": "asset_handle_must_be_safe_opaque_id"}
+    if not WORKFLOW_ASSET_HANDLE_RE.match(handle):
+        return {"ok": False, "status": "invalid_request", "reason": "asset_handle_must_be_safe_opaque_id"}
+    return {"ok": True, "status": "valid", "handle": handle}
 
 
 def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str) -> dict[str, Any]:

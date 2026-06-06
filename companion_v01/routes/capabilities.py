@@ -12,6 +12,7 @@ from ..local_capability_config import (
     check_provider_health,
     list_provider_configs,
     load_capability_config,
+    preflight_workflow_execution,
     save_workflow_config,
     save_provider_config,
     validate_workflow_config,
@@ -147,6 +148,27 @@ def build_capabilities_router(
         _log_best_effort(
             log_event,
             "capabilities_workflow_validate",
+            status=result.get("status"),
+            workflowId=result.get("workflowId"),
+        )
+        status_code = 404 if result.get("status") == "unknown_workflow" else 200
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+    @router.post("/capabilities/workflows/{workflow_id}/preflight")
+    async def preflight_capability_workflow_execution(workflow_id: str, request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = await _read_json_object(request)
+        result = preflight_workflow_execution(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+            workflow_id=workflow_id,
+            payload=payload,
+        )
+        _observe_request(runtime_metrics, "capabilities.workflow_preflight", started_at, bool(result.get("ok")))
+        _log_best_effort(
+            log_event,
+            "capabilities_workflow_preflight",
             status=result.get("status"),
             workflowId=result.get("workflowId"),
         )

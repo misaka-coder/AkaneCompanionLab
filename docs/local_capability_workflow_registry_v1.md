@@ -42,6 +42,12 @@ tab reads `/capabilities/workflows`, summarizes the `workflow.workshop.portrait.
 status as "透明背景处理", and offers a navigation hint back to the control center
 ability configuration. It does not execute ComfyUI, parse workflow JSON, process
 images, or write generated assets.
+Phase 4B adds a backend workflow preflight boundary:
+`POST /capabilities/workflows/{workflowId}/preflight`. It checks whether the
+known workflow/provider config and safe opaque image handles are present, then
+returns structured missing/invalid/not-implemented states. It still does not
+start ComfyUI, parse workflow JSON, upload image bytes, or write generated
+assets.
 
 Files:
 
@@ -64,6 +70,7 @@ Files:
   - `GET /capabilities/workflows`
   - `POST /capabilities/workflows/{workflowId}/config`
   - `POST /capabilities/workflows/{workflowId}/validate`
+  - `POST /capabilities/workflows/{workflowId}/preflight`
   - `POST /capabilities/providers/{providerId}/config`
   - `POST /capabilities/providers/{providerId}/health-check`
   - The local environment check probes only known localhost services and never
@@ -89,6 +96,11 @@ Files:
     unknown slots are ignored rather than echoed.
   - Workflow validation is config-level only and returns `executionReady:false`
     until a real runner/binding validator exists.
+  - Workflow preflight accepts only safe opaque `inputImageHandle` /
+    `outputImageHandle` values. It rejects local paths, URLs, traversal-like
+    strings, and obvious secret-bearing values before any future runner can see
+    them. The current preflight result remains inert with `canRun:false` and
+    `executionReady:false`.
 - `companion_v01/app.py`
   - Registers the capabilities router.
 - `tests/test_backend_route_modules.py`
@@ -106,6 +118,9 @@ Files:
   - Verifies workflow binding config rejects unsafe paths and slot mappings,
     persists only safe relative workflow references, and remains
     `executionReady:false` after validation.
+  - Verifies workflow preflight rejects unsafe asset handles, reports missing
+    config cleanly, and returns `not-implemented` rather than fake success when
+    provider/workflow config is present but no runner exists.
 - `desktop_pet_next/src/control-center/data-sources.js`
   - Reads `/capabilities` alongside the control-center runtime data.
   - Treats it as optional: missing or invalid catalog data does not block
@@ -2115,6 +2130,26 @@ Implemented Phase 4A:
   No image bytes are sent to ComfyUI, no workflow JSON is parsed, and no
   generated portrait asset is written in this phase.
 
+Implemented Phase 4B:
+
+- The backend exposes a preflight-only boundary:
+  `POST /capabilities/workflows/{workflowId}/preflight`.
+- The known first workflow is still `workflow.workshop.portrait.cutout`.
+- Preflight checks:
+  - provider config exists and is enabled
+  - workflow binding exists and is enabled
+  - required symbolic slot mapping exists
+  - request includes safe opaque `inputImageHandle` and `outputImageHandle`
+- Accepted image values are handles, not paths. Local absolute paths, URL-like
+  strings, slash/backslash paths, overly long values, and obvious secret-bearing
+  strings are rejected with `status:"invalid_request"`.
+- When all config and request handles are valid, the current response is still
+  `{ ok:false, status:"not-implemented", reason:"workflow_runner_not_bound",
+  canRun:false, executionReady:false }`.
+- This endpoint is intentionally not wired to the workshop UI yet. It does not
+  parse workflow JSON, submit a prompt to ComfyUI, send image bytes, poll a
+  queue, or write output assets.
+
 Acceptance:
 
 - workflow JSON path can be configured
@@ -2137,8 +2172,11 @@ Acceptance:
 Current Phase 4A boundary:
 
 - Read-only status guidance is implemented.
-- Real execution remains pending. The next slice must add an explicit execution
-  route/boundary before any clickable "自动抠图" button appears.
+- Phase 4B backend preflight is implemented, but real execution remains
+  pending.
+- The next execution slice must add a real runner boundary, background task
+  progress, and safe character-pack output writing before any clickable
+  "自动抠图" button appears.
 
 ### Phase 5: Voice Provider Layer
 
