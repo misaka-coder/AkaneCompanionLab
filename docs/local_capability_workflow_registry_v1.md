@@ -13,50 +13,119 @@ context compaction.
 
 ## 0. Implementation Status
 
-Phase 1 first backend slice is implemented. Phase 1B read-only frontend
-dashboard wiring is in progress/implemented as a narrow slice: the control
-center reads `/capabilities` as optional enhancement data, translates raw
-tool/provider entries into user-facing ability modules, and keeps configuration
-and local-environment probing out of the UI until a separate management slice.
+Phase 1 first backend slice is implemented. Phase 1B frontend dashboard wiring
+is implemented as a narrow slice: the control center reads `/capabilities` as
+optional enhancement data and translates raw tool/provider entries into
+user-facing ability modules.
+Phase 2 backend provider config skeleton is now implemented for local external
+executors: ComfyUI and GPT-SoVITS can be represented as configurable provider
+entries with profile-scoped endpoint config and bounded localhost health checks.
+Phase 2B adds a lightweight provider configuration entrance in the control
+center ability page. It shows local provider status and allows endpoint
+save/health-check through real backend routes only. This still does not execute
+ComfyUI/GPT-SoVITS workflows.
+Phase 3A read-only workflow catalog skeleton is implemented. The first workflow
+entry is `workshop.portrait.cutout`, backed by the local ComfyUI provider
+contract. It is visible as status guidance only; there is still no workflow JSON
+editor, slot binding UI, or execution route.
 
 Files:
 
 - `companion_v01/local_capability_catalog.py`
   - Builds a read-only capability catalog from existing `engine.tool_handlers`,
     prompt-time capability modules, and lightweight provider status checks.
+  - Adds read-only `kind: "workflow"` entries, starting with
+    `workshop.portrait.cutout` / `workflow.comfyui.portrait_cutout`.
+  - Workflow status is derived from provider config without pretending the
+    workflow is executable: missing provider config stays `missing_config`,
+    configured or health-ready provider status still becomes `missing_workflow`
+    until an actual workflow binding/validation layer exists.
   - Keeps concrete products in `adapter`, not in base `type` or `source`.
   - Exposes profile-scoped config path and machine-local discovery path as safe
     metadata.
 - `companion_v01/routes/capabilities.py`
   - `GET /capabilities`
   - `POST /capabilities/local-environment-check`
+  - `GET /capabilities/providers`
+  - `GET /capabilities/workflows`
+  - `POST /capabilities/providers/{providerId}/config`
+  - `POST /capabilities/providers/{providerId}/health-check`
   - The local environment check probes only known localhost services and never
     auto-enables providers.
+- `companion_v01/local_capability_config.py`
+  - Stores profile-scoped provider endpoint config at
+    `users_data/<profile_user_id>/capabilities/capabilities.yaml`.
+  - Uses JSON-compatible YAML content for now, avoiding a new YAML dependency.
+  - Allows only loopback `http` / `https` provider endpoints, strips path/query
+    fragments, rejects credentials, and writes config atomically.
+  - Re-normalizes loaded config before exposure so hand-edited or legacy
+    endpoint path/query/token fields and unknown sensitive fields are not echoed
+    by `/capabilities` or `/capabilities/providers`.
+  - Invalid config files return structured `configStatus` / `warnings` and are
+    not silently overwritten by save or health-check routes.
+  - Health checks are discovery/status only; they never auto-enable providers.
 - `companion_v01/app.py`
   - Registers the capabilities router.
 - `tests/test_backend_route_modules.py`
   - Verifies read-only catalog shape, existing backend tool exposure, provider
     classification, safe config paths, no obvious sensitive fields, and local
     discovery not being enablement.
+  - Verifies provider config save/health-check boundaries for ComfyUI and
+    GPT-SoVITS, including no external endpoints, no secret query persistence,
+    profile-scoped config, and no auto-enable on health check.
+  - Verifies manually edited provider config is sanitized on read and invalid
+    config files are reported without silent overwrite.
+  - Verifies the workflow catalog remains read-only, exposes safe-handle slot
+    names only, and does not mark `workshop.portrait.cutout` ready merely
+    because the ComfyUI provider endpoint was saved or health-checked.
 - `desktop_pet_next/src/control-center/data-sources.js`
   - Reads `/capabilities` alongside the control-center runtime data.
   - Treats it as optional: missing or invalid catalog data does not block
     snapshot hydration or legacy fallback.
   - Groups raw `tool.*`, `provider.*`, and `prompt_module.*` entries into
     readable dashboard modules such as "音频与语音" and "本地模型与执行器".
+  - Converts `kind: "workflow"` entries into short workflow cards such as
+    "透明背景处理", with user-facing status text like "未配置" or "待绑定".
+    It does not expose workflow ids, slot ids, model paths, or node details in
+    the normal ability dashboard.
+  - Routes `abilities.provider.config.save` and
+    `abilities.provider.healthCheck` to
+    `/capabilities/providers/{providerId}/config` and
+    `/capabilities/providers/{providerId}/health-check`.
+  - Mock sources return `not-implemented` for provider write actions so the UI
+    cannot fake a saved provider config.
 - `desktop_pet_next/src/control-center-lab.js`
   - Renders module status labels from the catalog-derived dashboard model.
+  - Renders workflow status badges/details for read-only workflow entries.
+  - Renders a compact "本地能力环境" section only when configurable provider
+    catalog entries exist. The default view shows provider name, purpose, status,
+    endpoint summary, and next-step reason; endpoint editing appears only after a
+    local expand action.
   - Does not expose raw ids such as `transcribe_media` in the normal ability
     dashboard.
+- `desktop_pet_next/src/control-center/action-router.js`
+  - Adds provider config actions:
+    `abilities.provider.config.open` (client-handled),
+    `abilities.provider.config.save` (backend-route), and
+    `abilities.provider.healthCheck` (backend-route).
+- `desktop_pet_next/src/control-center/action-surface-contract.js`
+  - Classifies provider panel open as client-handled and save/health-check as
+    bridged backend-route actions.
 - `desktop_pet_next/scripts/control-center-runtime-probe.mjs`
   - Verifies optional catalog enrichment, catalog failure degradation, and
-    no raw capability id leakage in module text.
+    no raw capability id leakage in module text, provider summaries, or
+    workflow summaries.
+- `desktop_pet_next/scripts/control-center-action-bridge-smoke.mjs`
+  - Verifies provider actions use dedicated capabilities routes, not the inert
+    `/control-center/actions/{actionId}` endpoint.
 
 Verification:
 
 ```bash
 python -m unittest tests.test_backend_route_modules
-python -m py_compile companion_v01/local_capability_catalog.py companion_v01/routes/capabilities.py companion_v01/app.py tests/test_backend_route_modules.py
+python -m py_compile companion_v01/local_capability_config.py companion_v01/local_capability_catalog.py companion_v01/routes/capabilities.py companion_v01/app.py tests/test_backend_route_modules.py
+cd desktop_pet_next && npm run smoke:control-center-actions
+cd desktop_pet_next && npm run probe:control-center-runtime
 git diff --check
 ```
 
@@ -1829,6 +1898,58 @@ Acceptance:
 - health checks do not block startup
 - provider entries include `type`, `source`, `adapter`, and `execution_mode`
 
+Implemented slice:
+
+- Configurable providers:
+  - `provider.comfyui.local`
+  - `provider.tts.gpt_sovits.local`
+- Routes:
+  - `GET /capabilities/providers`
+  - `POST /capabilities/providers/{providerId}/config`
+  - `POST /capabilities/providers/{providerId}/health-check`
+- Config rules:
+  - profile-scoped file:
+    `users_data/<profile_user_id>/capabilities/capabilities.yaml`
+  - endpoint must be loopback `http` or `https`
+  - path/query/fragment are stripped before persistence
+  - loaded config is re-normalized before exposure; old hand-edited endpoint
+    paths, query strings, token-like fields, and unknown provider fields are not
+    returned to the frontend
+  - invalid config files expose structured `configStatus` and `warnings`
+    instead of degrading silently
+  - save/health-check do not overwrite an invalid config file implicitly
+  - URL credentials are rejected
+  - health checks are bounded socket probes and never auto-enable providers
+- Catalog integration:
+  - configurable providers now appear in `GET /capabilities`
+  - unconfigured providers show `missing_config`
+  - configured-but-not-checked providers show `configured`
+  - enabled providers with a saved health check can show `ready` or
+    `unreachable`
+
+Frontend configuration entrance:
+
+- Ability page renders a compact "本地能力环境" provider section when
+  configurable provider entries are present in `/capabilities`.
+- Provider rows show only user-facing information: name, purpose, status,
+  endpoint summary, usage area, and a short reason. They do not show workflow
+  JSON, node ids, model paths, slot mappings, token values, or local absolute
+  paths.
+- `abilities.provider.config.open` is client-handled and only expands/collapses
+  the local panel.
+- `abilities.provider.config.save` and `abilities.provider.healthCheck` are
+  real backend-route actions. They go through the action router and data source,
+  then call the provider config/health-check routes.
+- Mock source does not fake provider write success; it returns
+  `not-implemented`.
+
+Still not implemented:
+
+- no ComfyUI workflow execution
+- no GPT-SoVITS synthesis call
+- no model path picker
+- no workflow slot mapping
+
 ### Phase 3: Workflow Skeleton
 
 Goal:
@@ -1839,6 +1960,30 @@ Goal:
 Recommended first workflow:
 
 - `workshop.portrait.cutout` via ComfyUI
+
+Implemented Phase 3A:
+
+- `GET /capabilities` includes a read-only workflow entry:
+  `workflow.workshop.portrait.cutout`.
+- `GET /capabilities/workflows` returns the same workflow slice without tool or
+  provider entries.
+- Public fields describe what the workflow is for:
+  `capabilityId`, `workflowId`, `providerId`, `target`, `output`, safe slot
+  names, `inputSchema.pathPolicy: "safe-handle-only"`, status, and reason.
+- The workflow does not expose ComfyUI JSON, node ids, prompt text, local model
+  paths, asset paths, cached paths, image content, or token/query fields.
+- Status is intentionally conservative:
+  - no ComfyUI endpoint -> `missing_config`
+  - invalid ComfyUI endpoint -> `invalid_config`
+  - disabled ComfyUI provider -> `disabled`
+  - unreachable ComfyUI provider -> `unreachable`
+  - configured or health-ready ComfyUI provider -> `missing_workflow`
+- `missing_workflow` means "provider exists, but no workflow binding/validation
+  contract exists yet". It must not be rendered as a runnable "auto cutout"
+  feature.
+- The control center ability page may show "透明背景处理" as a compact status
+  card, but it must not add an execution button until Phase 4 creates the real
+  workshop boundary.
 
 Acceptance:
 

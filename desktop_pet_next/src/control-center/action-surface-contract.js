@@ -12,6 +12,7 @@ export const CONTROL_CENTER_ACTION_SURFACE_STATUS = Object.freeze({
 export const CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails,
   CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll,
+  CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen,
   CONTROL_CENTER_ACTIONS.advancedLogsMore
 ]);
 
@@ -103,6 +104,9 @@ export const CONTROL_CENTER_ACTION_SURFACES = Object.freeze([
   deferred("abilities", CONTROL_CENTER_ACTIONS.abilitiesQuickAction, "Requires capability invocation payload."),
   deferred("abilities", CONTROL_CENTER_ACTIONS.abilitiesManageModules, "Requires capability management route."),
   deferred("abilities", CONTROL_CENTER_ACTIONS.abilitiesMoreWorkflows, "Requires workflow catalog route."),
+  clientHandled("abilities", CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen, "Local toggle: expands local provider configuration details."),
+  bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave, "backend-route", "POST /capabilities/providers/{providerId}/config"),
+  bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck, "backend-route", "POST /capabilities/providers/{providerId}/health-check"),
   clientHandled("abilities", CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll, "Local toggle: expands ability call history rows."),
   deferred("abilities", CONTROL_CENTER_ACTIONS.abilitiesSafetyDetails, "Requires policy detail route."),
   deferred("abilities", CONTROL_CENTER_ACTIONS.abilitiesLive2dOpenSettings, "Requires Live2D settings owner."),

@@ -29,10 +29,11 @@ function makeCapabilitiesCatalogBody() {
     status: "available",
     schemaVersion: 1,
     execution: "read-only",
+    providerConfigStatus: "available",
     summary: {
-      total: 6,
-      byStatus: { ready: 4, missing_executor: 1, disabled: 1 },
-      byKind: { tool: 3, provider: 3 },
+      total: 9,
+      byStatus: { ready: 4, missing_executor: 1, disabled: 1, missing_config: 2, configured: 1 },
+      byKind: { tool: 3, provider: 5, workflow: 1 },
     },
     capabilities: [
       {
@@ -118,6 +119,66 @@ function makeCapabilitiesCatalogBody() {
         status: "disabled",
         risk: "medium",
         usedBy: ["workspace", "media"],
+      },
+      {
+        id: "provider.comfyui.local",
+        kind: "provider",
+        type: "asset_processor",
+        source: "external_executor",
+        adapter: "comfyui",
+        executionMode: "external",
+        name: "本地 ComfyUI",
+        enabled: false,
+        configured: false,
+        configurable: true,
+        status: "missing_config",
+        reason: "provider_endpoint_missing",
+        endpoint: "",
+        defaultEndpoint: "http://127.0.0.1:8188",
+        risk: "medium",
+        usedBy: ["workshop", "image", "desktop_pet"],
+      },
+      {
+        id: "provider.tts.gpt_sovits.local",
+        kind: "provider",
+        type: "tts_provider",
+        source: "external_executor",
+        adapter: "gpt_sovits",
+        executionMode: "external",
+        name: "本地 GPT-SoVITS",
+        enabled: true,
+        configured: true,
+        configurable: true,
+        status: "configured",
+        reason: "",
+        endpoint: "http://127.0.0.1:9880",
+        defaultEndpoint: "http://127.0.0.1:9880",
+        risk: "medium",
+        usedBy: ["voice", "desktop_pet"],
+      },
+      {
+        id: "workflow.workshop.portrait.cutout",
+        kind: "workflow",
+        type: "asset_processor",
+        source: "external_executor",
+        adapter: "comfyui",
+        executionMode: "external",
+        capabilityId: "workshop.portrait.cutout",
+        workflowId: "workflow.comfyui.portrait_cutout",
+        providerId: "provider.comfyui.local",
+        name: "透明背景处理",
+        description: "角色工坊的立绘透明背景处理流程",
+        enabled: false,
+        status: "missing_config",
+        reason: "provider_endpoint_missing",
+        risk: "medium",
+        usedBy: ["workshop", "desktop_pet"],
+        target: "character_pack_assets",
+        output: "transparent_png",
+        slots: {
+          required: ["input_image_handle", "output_image_handle"],
+          optional: ["mask_output_handle", "background_color", "padding", "alpha_threshold"],
+        },
       },
     ],
   };
@@ -361,6 +422,28 @@ function makeSnapshotFetch({
     assert.equal(abilityModuleText.includes(rawId), false, `1.21d capability modules should not expose raw id ${rawId}`);
   }
   assert.ok(raw.controlCenterRuntime.capabilitiesCatalog.ok, "1.21e raw snapshot should include optional capabilities catalog status");
+  assert.ok(Array.isArray(abilities.providers), "1.21f abilities providers should be an array");
+  assert.ok(abilities.providers.length >= 2, "1.21g abilities providers should include configurable local providers");
+  assert.ok(
+    abilities.providers.some((provider) => provider.title === "本地 ComfyUI" && provider.statusLabel === "未配置"),
+    "1.21h local provider summary should expose user-facing status"
+  );
+  assert.ok(
+    abilities.providers.every((provider) => typeof provider.defaultEndpoint === "string"),
+    "1.21i provider summaries should include safe default endpoint hints"
+  );
+  const providerText = JSON.stringify(abilities.providers);
+  for (const forbidden of ["token=", "secret", "C:/", "cachedPath"]) {
+    assert.equal(providerText.includes(forbidden), false, `1.21j provider summary should not expose ${forbidden}`);
+  }
+  assert.ok(
+    abilities.workflows.some((workflow) => workflow.title === "透明背景处理" && workflow.statusLabel === "未配置"),
+    "1.21k workflow catalog should surface portrait cutout as a user-facing non-ready workflow"
+  );
+  const workflowText = JSON.stringify(abilities.workflows);
+  for (const rawId of ["workflow.comfyui", "input_image_handle", "output_image_handle", "cachedPath"]) {
+    assert.equal(workflowText.includes(rawId), false, `1.21l workflow summaries should not expose raw detail ${rawId}`);
+  }
 
   // abilities: overview from diagnostics
   assert.ok(abilities.overview, "1.22 abilities overview should exist");

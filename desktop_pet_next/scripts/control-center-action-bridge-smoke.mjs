@@ -391,6 +391,13 @@ for (const [label, expected] of labelCases) {
     { page: "music", itemType: "generated", handle: "audio_001", title: "Starry Days" },
     "payload helper should build workspace recommendation payload"
   );
+
+  const providerPayload = createControlCenterActionPayloadFromDataset(
+    { payloadProviderId: "provider.comfyui.local", payloadEndpoint: "http://127.0.0.1:8188" },
+    "abilities"
+  );
+  assert.equal(providerPayload.providerId, "provider.comfyui.local", "payload helper should keep providerId");
+  assert.equal(providerPayload.endpoint, "http://127.0.0.1:8188", "payload helper should keep provider endpoint");
 }
 
 assert.ok(afterActionLog.length >= bridgedActionCases.length, "onAfterAction should receive refresh results");
@@ -534,6 +541,53 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
   assert.equal(result.status, "not-implemented", "backend character.previewEmotion should be not-implemented without Tauri");
   assert.equal(result.refresh, false, "backend character.previewEmotion should not request refresh");
   assert.equal(backendFetchCalled, false, "backend character.previewEmotion should not call backend HTTP");
+}
+
+// Provider configuration actions are bridged to dedicated backend routes, not /control-center/actions.
+{
+  const fetchCalls = [];
+  const backendSource = createBackendControlCenterSource({
+    baseUrl: "http://provider-action-test",
+    sessionId: "desktop",
+    profileUserId: "master",
+    fetchImpl: async (url, options = {}) => {
+      fetchCalls.push({ url: String(url), options });
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({
+          ok: true,
+          status: String(url).includes("health-check") ? "ready" : "saved",
+          providerId: "provider.comfyui.local",
+          refresh: true
+        })
+      };
+    }
+  });
+
+  const saveResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave, {
+    providerId: "provider.comfyui.local",
+    enabled: true,
+    endpoint: "http://127.0.0.1:8188/ui?token=secret",
+    token: "must-not-send"
+  });
+  assert.equal(saveResult.status, "saved", "provider config save should hit provider config route");
+  assert.equal(saveResult.refresh, true, "provider config save should request refresh");
+
+  const healthResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck, {
+    providerId: "provider.comfyui.local",
+    endpoint: "http://127.0.0.1:8188"
+  });
+  assert.equal(healthResult.status, "ready", "provider health check should hit provider health route");
+
+  assert.equal(fetchCalls.length, 2, "provider save/check should make two backend requests");
+  assert.ok(fetchCalls[0].url.includes("/capabilities/providers/provider.comfyui.local/config"), "save should use provider config route");
+  assert.ok(fetchCalls[1].url.includes("/capabilities/providers/provider.comfyui.local/health-check"), "health should use provider health route");
+  assert.equal(fetchCalls.some((call) => call.url.includes("/control-center/actions")), false, "provider actions must not use inert control-center action endpoint");
+  const saveBody = JSON.parse(fetchCalls[0].options.body);
+  assert.deepEqual(saveBody, { enabled: true, endpoint: "http://127.0.0.1:8188/ui?token=secret" }, "provider save should only send enabled and endpoint");
+  assert.equal("token" in saveBody, false, "provider save must not forward arbitrary token fields");
 }
 
 // ---------- deferred voice actions ----------
@@ -881,6 +935,13 @@ for (const actionId of deferredAbilitiesActionIds) {
   );
   assert.equal(quickResult.payload.label, "创建文档", "abilities quick action payload.label preserved");
   assert.equal(quickResult.payload.index, 0, "abilities quick action payload.index preserved");
+
+  const providerMockResult = await mockAbRouter.run(
+    CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave,
+    { providerId: "provider.comfyui.local", endpoint: "http://127.0.0.1:8188", enabled: true }
+  );
+  assert.equal(providerMockResult.status, "not-implemented", "mock source must not fake provider config save");
+  assert.equal(providerMockResult.refresh, false, "mock provider config save should not request refresh");
 }
 
 // ---------- deferred advanced + shell actions ----------
@@ -1598,10 +1659,10 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
 
 const clientHandledActionIds = new Set(CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS);
 
-// Client-handled action surface contract: all 3 should be in the surface contract with client-handled status
+// Client-handled action surface contract: all 4 should be in the surface contract with client-handled status
 {
   const clientHandledSurfaces = listControlCenterActionSurfaces(CONTROL_CENTER_ACTION_SURFACE_STATUS.clientHandled);
-  assert.equal(clientHandledSurfaces.length, 3, "should have 3 client-handled surfaces");
+  assert.equal(clientHandledSurfaces.length, 4, "should have 4 client-handled surfaces");
   for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
     const surface = clientHandledSurfaces.find((s) => s.actionId === actionId);
     assert.ok(surface, `${actionId} should appear in client-handled surfaces`);
@@ -1640,6 +1701,10 @@ for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
       handlerLog.push({ actionId: CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll, payload });
       return { ok: true, refresh: false };
     },
+    [CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen]: (payload) => {
+      handlerLog.push({ actionId: CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen, payload });
+      return { ok: true, refresh: false };
+    },
     [CONTROL_CENTER_ACTIONS.advancedLogsMore]: (payload) => {
       handlerLog.push({ actionId: CONTROL_CENTER_ACTIONS.advancedLogsMore, payload });
       return { ok: true, refresh: false };
@@ -1649,6 +1714,7 @@ for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
   const chCases = [
     { id: CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails, payload: { featureId: "activeWindow" } },
     { id: CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll, payload: { page: "abilities" } },
+    { id: CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen, payload: { page: "abilities", providerId: "provider.comfyui.local" } },
     { id: CONTROL_CENTER_ACTIONS.advancedLogsMore, payload: { page: "advanced" } }
   ];
 
@@ -1660,7 +1726,7 @@ for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
     assert.notEqual(result.status, "failed", `${testCase.id} should not be failed`);
   }
 
-  assert.equal(handlerLog.length, 3, "all 3 client-handled handlers should be called");
+  assert.equal(handlerLog.length, 4, "all 4 client-handled handlers should be called");
   assert.equal(emitLog.length, beforeEmitLen, "client-handled actions should NOT emit");
   assert.equal(invokeLog.length, beforeInvokeLen, "client-handled actions should NOT invoke");
 }
@@ -1767,22 +1833,22 @@ assert.notEqual(
 }
 
 console.log(
-  `control-center action bridge smoke passed: ${bridgedActionCases.length} bridged actions, ` +
+  `control-center action bridge smoke passed: ${CONTROL_CENTER_BRIDGED_ACTION_IDS.length} bridged action ids, ${bridgedActionCases.length} tauri bridge cases, ` +
     `${directNotImplementedCases.length} not-implemented checks, ${labelCases.length} interval labels, ` +
     "4 hardening checks, 4 window action checks, 3 voice setting checks, 1 character preview action check, 5 advanced action checks, " +
     `${deferredSurfaces.length} deferred surface checks, 2 character warning checks, 3 screen vision control checks, ` +
-    "5 data-* payload helper checks, " +
+    "6 data-* payload helper checks, " +
     "6 overview music control checks, 9 overview voice checks, 17 overview sense checks, " +
     `${deferredVoiceActionIds.length} deferred voice action ids, ` +
     `${deferredMusicActionIds.length} deferred music action ids, 4 playlist id checks, 9 payload shape checks, 4 voice/music contract field checks, ` +
     `${deferredCharacterActionIds.length} deferred character action checks, 3 char payload/fallback checks, 3 still-deferred checks, ` +
-    `${deferredPerceptionActionIds.length} deferred perception action ids, 6 deferred abilities action checks, ` +
+    `${deferredPerceptionActionIds.length} deferred perception action ids, ${deferredAbilitiesActionIds.length} deferred abilities action checks, ` +
     "4 perception/abilities payload checks, " +
     "6 deferred advanced action checks, 1 window notify check, 1 exitPet-not-close check, " +
     "4 advanced payload checks, 4 advanced adapter checks, 5 still-bridged advanced checks, " +
     "2 snapshot valid path checks, 4 snapshot fallback checks, " +
     "4 character resources checks, 13 character consistency checks, 2 abilities modules checks, 4 field degradation checks, " +
     "4 abilities-from-tools checks, 4 advanced metrics checks, " +
-    "3 client-handled surface checks, 3 client-handled router tests, 3 client-handled dataSource not-implemented, " +
+    "4 client-handled surface checks, 4 client-handled router tests, 4 client-handled dataSource not-implemented, " +
     "3 bare-router not-implemented, 2 display-only action checks, 3 forbidden action checks, 1 exitPet safety check"
 );

@@ -258,6 +258,9 @@ function adaptAbilitiesPage(page, runtime = {}) {
   if (Array.isArray(runtime.modules) && runtime.modules.length) {
     abilities.modules = runtime.modules;
   }
+  if (Array.isArray(runtime.providers)) {
+    abilities.providers = runtime.providers;
+  }
   if (Array.isArray(runtime.workflows) && runtime.workflows.length) {
     abilities.workflows = runtime.workflows;
   }

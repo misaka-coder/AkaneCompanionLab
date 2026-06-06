@@ -8,6 +8,10 @@ import {
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);
+const providerBackendActionIds = new Set([
+  CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave,
+  CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck
+]);
 const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.chatNew]: "newSession",
   [CONTROL_CENTER_ACTIONS.chatStop]: "stopReply",
@@ -113,6 +117,9 @@ export function createMockControlCenterSource(data = mockData) {
       return true;
     },
     async runAction(actionId, payload = {}) {
+      if (providerBackendActionIds.has(normalizeActionId(actionId))) {
+        return createNotImplementedActionResult(normalizeActionId(actionId));
+      }
       return {
         ok: true,
         status: "mocked",
@@ -310,6 +317,18 @@ export function createBackendControlCenterSource(options = {}) {
         return createNotImplementedActionResult(normalizedActionId);
       }
 
+      if (providerBackendActionIds.has(normalizedActionId)) {
+        if (typeof fetchImpl !== "function") {
+          return createNotImplementedActionResult(normalizedActionId);
+        }
+        return runProviderBackendAction(fetchImpl, baseUrl, normalizedActionId, payload, {
+          user_id: sessionId,
+          real_user_id: profileUserId,
+          client,
+          t: String(Date.now())
+        });
+      }
+
       const tauriResult = await runTauriControlCenterAction(normalizedActionId, payload, context, options);
       if (tauriResult.status !== "not-available") {
         return tauriResult;
@@ -347,6 +366,55 @@ export function createBackendControlCenterSource(options = {}) {
     }
   };
   return source;
+}
+
+async function runProviderBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
+  const providerId = String(payload.providerId || payload.provider_id || "").trim();
+  if (!providerId) {
+    return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "providerId is required" };
+  }
+  const endpoint = `/capabilities/providers/${encodeURIComponent(providerId)}/${providerActionPath(actionId)}`;
+  const body = buildProviderActionBody(actionId, payload);
+  try {
+    const response = await fetchImpl(buildBackendUrl(baseUrl, endpoint, params), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store"
+    });
+    if (response.status === 404 || response.status === 405) {
+      return createNotImplementedActionResult(actionId);
+    }
+    if (!response.ok) {
+      return { ok: false, status: `http-${response.status}`, actionId, refresh: false };
+    }
+    const result = await readActionResponse(response);
+    return {
+      ...result,
+      ok: Boolean(result?.ok),
+      actionId,
+      providerId,
+      refresh: result?.refresh === undefined ? true : Boolean(result.refresh)
+    };
+  } catch (error) {
+    return { ok: false, status: "request-failed", actionId, providerId, refresh: false, error: formatDataSourceError(error) };
+  }
+}
+
+function providerActionPath(actionId) {
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave) return "config";
+  return "health-check";
+}
+
+function buildProviderActionBody(actionId, payload = {}) {
+  const endpoint = String(payload.endpoint || "").trim();
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave) {
+    return {
+      enabled: Boolean(payload.enabled),
+      ...(endpoint ? { endpoint } : {})
+    };
+  }
+  return endpoint ? { endpoint } : {};
 }
 
 function buildWorkspaceRecommendationValue(payload = {}) {
@@ -1088,7 +1156,8 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalo
       note: buildAbilityOverviewNote({ serviceOk, catalogEntries, catalogSummary })
     },
     modules: moduleCards,
-    workflows: buildAbilityWorkflows(moduleCards),
+    providers: buildAbilityProviderCards(catalogEntries, capabilitiesCatalog),
+    workflows: buildAbilityWorkflows(moduleCards, catalogEntries),
     calls: buildAbilityStatusRows({
       syncedAt,
       serviceOk,
@@ -1132,15 +1201,28 @@ function normalizeCapabilityCatalogEntries(catalog) {
       source: stringValue(entry.source),
       adapter: stringValue(entry.adapter),
       executionMode: stringValue(entry.executionMode),
+      capabilityId: stringValue(entry.capabilityId),
+      workflowId: stringValue(entry.workflowId),
+      providerId: stringValue(entry.providerId),
       toolType: stringValue(entry.toolType),
       group: stringValue(entry.group),
       name: stringValue(entry.name),
+      description: stringValue(entry.description),
       enabled: entry.enabled !== false,
       status: stringValue(entry.status || (entry.enabled === false ? "disabled" : "ready")),
+      reason: stringValue(entry.reason),
       risk: stringValue(entry.risk),
       requiresConfirmation: Boolean(entry.requiresConfirmation),
+      configured: Boolean(entry.configured),
+      configurable: Boolean(entry.configurable),
+      endpoint: stringValue(entry.endpoint),
+      defaultEndpoint: stringValue(entry.defaultEndpoint),
+      autoEnabled: Boolean(entry.autoEnabled),
       usedBy: normalizeStringList(entry.usedBy),
-      toolTypes: normalizeStringList(entry.toolTypes)
+      toolTypes: normalizeStringList(entry.toolTypes),
+      target: stringValue(entry.target),
+      output: stringValue(entry.output),
+      slots: asObject(entry.slots)
     }))
     .filter((entry) => entry.id || entry.name || entry.group || entry.type);
 }
@@ -1251,6 +1333,71 @@ function buildCapabilityCatalogModuleCards({ entries, workspaceCounts, workspace
   return cards.slice(0, 8);
 }
 
+function buildAbilityProviderCards(entries, catalog) {
+  const payload = asObject(catalog);
+  const configStatus = stringValue(payload.providerConfigStatus || payload.configStatus || "available");
+  return entries
+    .filter((entry) => entry.kind === "provider" && entry.configurable)
+    .map((entry) => {
+      const status = mapCapabilityStatus(entry.status);
+      return {
+        id: entry.id,
+        name: entry.name || providerDisplayName(entry),
+        title: entry.name || providerDisplayName(entry),
+        description: providerDescription(entry),
+        adapter: entry.adapter,
+        type: entry.type,
+        source: entry.source,
+        status: entry.status || "missing_config",
+        statusLabel: status.label,
+        statusTone: status.tone,
+        reason: providerReasonLabel(entry),
+        enabled: Boolean(entry.enabled),
+        configured: Boolean(entry.configured),
+        configurable: true,
+        endpoint: entry.endpoint,
+        defaultEndpoint: entry.defaultEndpoint,
+        usedByLabel: providerUsedByLabel(entry.usedBy),
+        configStatus,
+        actionsEnabled: configStatus !== "invalid_config"
+      };
+    });
+}
+
+function providerDisplayName(entry) {
+  if (entry.adapter === "comfyui") return "本地 ComfyUI";
+  if (entry.adapter === "gpt_sovits") return "本地 GPT-SoVITS";
+  return entry.id || "本地 Provider";
+}
+
+function providerDescription(entry) {
+  if (entry.adapter === "comfyui") return "用于角色立绘处理、透明背景抠图和图像工作流预留";
+  if (entry.adapter === "gpt_sovits") return "用于后续角色语音合成与自定义声线配置";
+  return entry.type === "tts_provider" ? "本地语音能力提供方" : "本地能力执行器";
+}
+
+function providerUsedByLabel(usedBy = []) {
+  const labels = {
+    workshop: "角色工坊",
+    image: "图像处理",
+    desktop_pet: "桌宠",
+    voice: "语音"
+  };
+  const mapped = usedBy.map((item) => labels[item] || "").filter(Boolean);
+  return mapped.length ? mapped.join(" / ") : "本地能力";
+}
+
+function providerReasonLabel(entry) {
+  const status = entry.status || "";
+  if (status === "missing_config") return "需要配置本机服务地址";
+  if (status === "configured") return "已保存，建议检查连接";
+  if (status === "disabled") return "已配置但未启用";
+  if (status === "unreachable") return "本地服务暂时未连接";
+  if (status === "invalid_config") return "配置需要修复";
+  if (status === "ready") return "连接正常";
+  return entry.reason || "等待确认";
+}
+
 function capabilityEntryText(entry) {
   return [
     entry.id,
@@ -1290,8 +1437,11 @@ function mapCapabilityStatus(status) {
     missing_executor: { label: "缺少本地运行环境", tone: "warning" },
     missing_model: { label: "缺少模型", tone: "warning" },
     missing_config: { label: "未配置", tone: "warning" },
+    configured: { label: "待检查", tone: "warning" },
+    missing_workflow: { label: "待绑定", tone: "warning" },
     disabled: { label: "未启用", tone: "muted" },
     unreachable: { label: "未连接", tone: "warning" },
+    invalid_config: { label: "配置异常", tone: "danger" },
     unavailable: { label: "不可用", tone: "danger" }
   };
   return labels[normalized] || { label: "待确认", tone: "warning" };
@@ -1497,7 +1647,8 @@ function buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, 
   return cards.slice(0, 8);
 }
 
-function buildAbilityWorkflows(modules) {
+function buildAbilityWorkflows(modules, catalogEntries = []) {
+  const catalogWorkflows = buildCatalogWorkflowCards(catalogEntries);
   const names = new Set(modules.map((item) => item.title));
   const hasFile = names.has("文件处理") || names.has("文件与工作区");
   const hasDocument = names.has("生成文件交付") || names.has("文档处理");
@@ -1538,13 +1689,57 @@ function buildAbilityWorkflows(modules) {
       detail: "让常用偏好、提醒和任务上下文留在角色身边"
     });
   }
-  return workflows.length ? workflows : [
+  const fallbackWorkflows = workflows.length ? workflows : [
     {
       steps: ["诊断", "同步", "等待"],
       title: "能力诊断 → 等待同步",
       detail: "后端连接后会显示可用工作流"
     }
   ];
+  return catalogWorkflows.length
+    ? [...catalogWorkflows, ...fallbackWorkflows].slice(0, 3)
+    : fallbackWorkflows;
+}
+
+function buildCatalogWorkflowCards(entries) {
+  return entries
+    .filter((entry) => entry.kind === "workflow")
+    .map((entry) => {
+      const status = mapCapabilityStatus(entry.status);
+      return {
+        steps: workflowSteps(entry),
+        title: workflowTitle(entry),
+        detail: workflowDetail(entry),
+        statusLabel: status.label,
+        statusTone: status.tone
+      };
+    });
+}
+
+function workflowSteps(entry) {
+  if (entry.capabilityId === "workshop.portrait.cutout") {
+    return ["立绘", "处理", "透明PNG"];
+  }
+  if (entry.type === "tts_provider") {
+    return ["文本", "声线", "语音"];
+  }
+  return ["输入", "处理", "输出"];
+}
+
+function workflowTitle(entry) {
+  if (entry.capabilityId === "workshop.portrait.cutout") return "透明背景处理";
+  return entry.name || "本地工作流";
+}
+
+function workflowDetail(entry) {
+  const status = entry.status || "";
+  if (status === "missing_config") return "需要先配置本地执行环境";
+  if (status === "missing_workflow") return "本地服务已保存，等待绑定具体工作流";
+  if (status === "unreachable") return "本地服务暂时未连接";
+  if (status === "invalid_config") return "配置需要修复后才能使用";
+  if (status === "disabled") return "已配置但未启用";
+  if (status === "ready") return "工作流已可供相关页面调用";
+  return entry.description || "等待本地能力同步";
 }
 
 function buildAbilityStatusRows({ syncedAt, serviceOk, toolCount, moduleCount, catalogSummary, workspaceCounts, safety, runtimeMetrics }) {

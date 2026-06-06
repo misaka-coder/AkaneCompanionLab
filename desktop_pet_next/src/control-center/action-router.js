@@ -63,6 +63,9 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   abilitiesQuickAction: "abilities.quickAction",
   abilitiesManageModules: "abilities.manageModules",
   abilitiesMoreWorkflows: "abilities.moreWorkflows",
+  abilitiesProviderConfigOpen: "abilities.provider.config.open",
+  abilitiesProviderConfigSave: "abilities.provider.config.save",
+  abilitiesProviderHealthCheck: "abilities.provider.healthCheck",
   abilitiesLogsViewAll: "abilities.logs.viewAll",
   abilitiesSafetyDetails: "abilities.safety.details",
   abilitiesLive2dOpenSettings: "abilities.live2d.openSettings",
@@ -123,7 +126,9 @@ export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.musicSelectQueueItem,
   CONTROL_CENTER_ACTIONS.musicSetPlayMode,
   CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization,
-  CONTROL_CENTER_ACTIONS.musicPlayWorkspaceRecommendation
+  CONTROL_CENTER_ACTIONS.musicPlayWorkspaceRecommendation,
+  CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave,
+  CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck
 ]);
 
 const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);

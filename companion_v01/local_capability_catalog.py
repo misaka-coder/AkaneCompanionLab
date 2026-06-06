@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .capability_registry import CapabilityRegistry
+from .local_capability_config import build_provider_config_entry, CONFIGURABLE_PROVIDER_SPECS
 
 
 SCHEMA_VERSION = 1
@@ -103,6 +104,27 @@ class LocalServiceProbe:
     port: int
 
 
+@dataclass(frozen=True)
+class LocalWorkflowSpec:
+    id: str
+    capability_id: str
+    workflow_id: str
+    name: str
+    description: str
+    type: str
+    source: str
+    adapter: str
+    execution_mode: str
+    provider_id: str
+    group: str
+    used_by: tuple[str, ...]
+    risk: str
+    target: str
+    output: str
+    required_slots: tuple[str, ...]
+    optional_slots: tuple[str, ...]
+
+
 KNOWN_LOCAL_SERVICE_PROBES = (
     LocalServiceProbe(
         id="provider.comfyui.local",
@@ -124,6 +146,28 @@ KNOWN_LOCAL_SERVICE_PROBES = (
     ),
 )
 
+LOCAL_WORKFLOW_SPECS = (
+    LocalWorkflowSpec(
+        id="workflow.workshop.portrait.cutout",
+        capability_id="workshop.portrait.cutout",
+        workflow_id="workflow.comfyui.portrait_cutout",
+        name="透明背景处理",
+        description="角色工坊的立绘透明背景处理流程，绑定本地 ComfyUI 工作流后可用于角色素材整理。",
+        type="asset_processor",
+        source="external_executor",
+        adapter="comfyui",
+        execution_mode="external",
+        provider_id="provider.comfyui.local",
+        group="workshop",
+        used_by=("workshop", "desktop_pet"),
+        risk="medium",
+        target="character_pack_assets",
+        output="transparent_png",
+        required_slots=("input_image_handle", "output_image_handle"),
+        optional_slots=("mask_output_handle", "background_color", "padding", "alpha_threshold"),
+    ),
+)
+
 
 def build_local_capability_catalog(
     *,
@@ -131,10 +175,14 @@ def build_local_capability_catalog(
     config_module: Any = None,
     tts_client: Any = None,
     profile_user_id: str = "",
+    provider_configs: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     entries = []
     entries.extend(_build_backend_tool_entries(getattr(engine, "tool_handlers", {}) or {}))
     entries.extend(_build_provider_entries(config_module=config_module, tts_client=tts_client))
+    configurable_provider_entries = _build_configurable_provider_entries(provider_configs or {})
+    entries.extend(configurable_provider_entries)
+    entries.extend(_build_workflow_entries(configurable_provider_entries))
     entries.extend(_build_prompt_module_entries())
     entries = sorted(entries, key=lambda item: (str(item.get("kind") or ""), str(item.get("id") or "")))
 
@@ -151,6 +199,29 @@ def build_local_capability_catalog(
         },
         "summary": _summarize_entries(entries),
         "capabilities": entries,
+    }
+
+
+def build_local_workflow_catalog(
+    *,
+    profile_user_id: str = "",
+    provider_configs: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    provider_entries = _build_configurable_provider_entries(provider_configs or {})
+    workflows = _build_workflow_entries(provider_entries)
+    return {
+        "ok": True,
+        "status": "available",
+        "schemaVersion": SCHEMA_VERSION,
+        "generatedAt": _now_iso(),
+        "execution": "read-only",
+        "configScope": {
+            "profileUserId": str(profile_user_id or ""),
+            "explicitConfigPath": PROFILE_CONFIG_PATH_TEMPLATE,
+            "localDiscoveryPath": LOCAL_DISCOVERY_PATH,
+        },
+        "summary": _summarize_entries(workflows),
+        "workflows": workflows,
     }
 
 
@@ -279,6 +350,80 @@ def _build_provider_entries(*, config_module: Any = None, tts_client: Any = None
         },
     ]
     return entries
+
+
+def _build_configurable_provider_entries(provider_configs: Mapping[str, Any]) -> list[dict[str, Any]]:
+    provider_map = provider_configs if isinstance(provider_configs, Mapping) else {}
+    return [
+        build_provider_config_entry(spec, provider_map.get(spec.id))
+        for spec in CONFIGURABLE_PROVIDER_SPECS
+    ]
+
+
+def _build_workflow_entries(provider_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    providers_by_id = {str(entry.get("id") or ""): entry for entry in provider_entries}
+    return [
+        _build_workflow_entry(spec, providers_by_id.get(spec.provider_id))
+        for spec in LOCAL_WORKFLOW_SPECS
+    ]
+
+
+def _build_workflow_entry(spec: LocalWorkflowSpec, provider_entry: Mapping[str, Any] | None) -> dict[str, Any]:
+    status, reason = _workflow_status(provider_entry)
+    return {
+        "id": spec.id,
+        "kind": "workflow",
+        "type": spec.type,
+        "source": spec.source,
+        "adapter": spec.adapter,
+        "executionMode": spec.execution_mode,
+        "capabilityId": spec.capability_id,
+        "workflowId": spec.workflow_id,
+        "providerId": spec.provider_id,
+        "name": spec.name,
+        "description": spec.description,
+        "group": spec.group,
+        "enabled": status == "ready",
+        "status": status,
+        "reason": reason,
+        "risk": spec.risk,
+        "requiresConfirmation": False,
+        "usedBy": list(spec.used_by),
+        "target": spec.target,
+        "output": spec.output,
+        "slots": {
+            "required": list(spec.required_slots),
+            "optional": list(spec.optional_slots),
+        },
+        "inputSchema": {
+            "inputImage": "asset_handle",
+            "outputImage": "asset_handle",
+            "pathPolicy": "safe-handle-only",
+        },
+    }
+
+
+def _workflow_status(provider_entry: Mapping[str, Any] | None) -> tuple[str, str]:
+    if not isinstance(provider_entry, Mapping):
+        return "missing_config", "provider_config_missing"
+    provider_status = str(provider_entry.get("status") or "").strip()
+    if provider_status in {"missing_config", "invalid_config", "unreachable", "disabled"}:
+        return provider_status, _workflow_reason_from_provider(provider_status, provider_entry)
+    if provider_status in {"ready", "configured"}:
+        return "missing_workflow", "workflow_binding_missing"
+    return "missing_config", "provider_config_missing"
+
+
+def _workflow_reason_from_provider(status: str, provider_entry: Mapping[str, Any]) -> str:
+    if status == "missing_config":
+        return "provider_endpoint_missing"
+    if status == "invalid_config":
+        return str(provider_entry.get("reason") or "invalid_provider_config")
+    if status == "unreachable":
+        return str(provider_entry.get("reason") or "connection_failed")
+    if status == "disabled":
+        return "provider_disabled"
+    return ""
 
 
 def _build_prompt_module_entries() -> list[dict[str, Any]]:

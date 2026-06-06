@@ -106,6 +106,8 @@ const state = {
   voice: buildVoiceState(voicePage),
   advancedCoreSwitches: buildAdvancedCoreSwitchState(advancedPage.coreSettings),
   expandedPerceptionCard: null,
+  activeProviderConfigId: "",
+  providerActionStatus: {},
   showAllAbilityCalls: false,
   showAllDiagnosticLogs: false
 };
@@ -219,6 +221,7 @@ function syncInteractiveStateWithSnapshot() {
   syncPerceptionInteractiveState();
   syncVoiceInteractiveState();
   syncAdvancedInteractiveState();
+  syncProviderInteractiveState();
 }
 
 function syncPerceptionInteractiveState() {
@@ -243,6 +246,13 @@ function syncAdvancedInteractiveState() {
 
 function syncVoiceInteractiveState() {
   state.voice = buildVoiceState(voicePage);
+}
+
+function syncProviderInteractiveState() {
+  const providers = Array.isArray(abilitiesPage.providers) ? abilitiesPage.providers : [];
+  if (state.activeProviderConfigId && !providers.some((item) => item.id === state.activeProviderConfigId)) {
+    state.activeProviderConfigId = "";
+  }
 }
 
 function renderShell() {
@@ -341,6 +351,26 @@ function bindEvents() {
         CONTROL_CENTER_ACTIONS.voiceSetVolume,
         { value: percent / 100, percent, source: "music" },
         { source: "control-center-lab" }
+      );
+      return;
+    }
+
+    const providerSaveButton = event.target.closest("[data-provider-config-save]");
+    if (providerSaveButton) {
+      if (providerSaveButton.dataset.actionUnavailable === "true") return;
+      void runProviderConfigAction(
+        providerSaveButton,
+        CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave
+      );
+      return;
+    }
+
+    const providerHealthButton = event.target.closest("[data-provider-health-check]");
+    if (providerHealthButton) {
+      if (providerHealthButton.dataset.actionUnavailable === "true") return;
+      void runProviderConfigAction(
+        providerHealthButton,
+        CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck
       );
       return;
     }
@@ -507,6 +537,39 @@ function bindEvents() {
       );
     }
   });
+}
+
+async function runProviderConfigAction(button, actionId) {
+  const payload = readProviderConfigPayload(button);
+  if (!payload.providerId) return;
+  state.providerActionStatus[payload.providerId] = "处理中";
+  renderActivePage();
+  const result = await actionRouter.run(actionId, payload, { source: "control-center-lab" });
+  state.providerActionStatus[payload.providerId] = providerActionStatusLabel(result);
+  renderActivePage();
+}
+
+function readProviderConfigPayload(button) {
+  const providerId = String(button?.dataset?.providerId || "").trim();
+  const row = button?.closest?.("[data-provider-row]");
+  const endpointInput = row?.querySelector?.("[data-provider-endpoint-input]");
+  const enabledInput = row?.querySelector?.("[data-provider-enabled-input]");
+  return {
+    page: state.activePage,
+    providerId,
+    endpoint: String(endpointInput?.value || "").trim(),
+    enabled: Boolean(enabledInput?.checked)
+  };
+}
+
+function providerActionStatusLabel(result) {
+  if (!result) return "未完成";
+  if (result.status === "saved") return result.ok ? "已保存" : "保存失败";
+  if (result.status === "ready") return "连接正常";
+  if (result.status === "unreachable") return "未连接";
+  if (result.status === "invalid_config") return "配置异常";
+  if (result.status === "not-implemented") return "当前环境不可写";
+  return result.ok ? "已完成" : "操作失败";
 }
 
 function resolveInitialPage() {
@@ -1477,6 +1540,7 @@ function renderAbilitiesPage() {
               ${abilitiesPage.modules.map(renderAbilityModule).join("")}
             </div>
           </article>
+          ${renderProviderPanel()}
           <article class="glass-card workflow-card">
             <h2>能力工作流示例 ${icon("info")}</h2>
             <div class="workflow-list">
@@ -1963,7 +2027,108 @@ function renderAbilityModule(item) {
   `;
 }
 
+function renderProviderPanel() {
+  const providers = Array.isArray(abilitiesPage.providers) ? abilitiesPage.providers : [];
+  if (!providers.length) return "";
+  return `
+    <article class="glass-card provider-panel">
+      <div class="card-heading">
+        <h2>${icon("cube")} 本地能力环境</h2>
+        <span>${providers.filter((item) => item.status === "ready").length}/${providers.length} 可用</span>
+      </div>
+      <div class="provider-list">
+        ${providers.map(renderProviderRow).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function renderProviderRow(provider) {
+  const providerId = provider.id || "";
+  const isOpen = state.activeProviderConfigId === providerId;
+  const statusTone = provider.statusTone || "warning";
+  const endpoint = provider.endpoint || "";
+  const defaultEndpoint = provider.defaultEndpoint || "";
+  const displayEndpoint = endpoint || defaultEndpoint || "待配置";
+  const statusMessage = state.providerActionStatus[providerId] || provider.reason || provider.statusLabel || "待确认";
+  return `
+    <section class="provider-row ${isOpen ? "is-open" : ""}" data-provider-row data-provider-id="${escapeAttr(providerId)}">
+      <div class="provider-summary">
+        <span class="provider-icon">${icon(provider.adapter === "gpt_sovits" ? "mic" : "cube")}</span>
+        <div>
+          <div class="provider-title-line">
+            <h3>${escapeHtml(provider.title || provider.name || "本地能力")}</h3>
+            <span class="module-status ${escapeAttr(statusTone)}">${escapeHtml(provider.statusLabel || "待确认")}</span>
+          </div>
+          <p>${escapeHtml(provider.description || "本地能力执行环境")}</p>
+          <div class="provider-meta">
+            <span>${icon("folder")} ${escapeHtml(provider.usedByLabel || "本地能力")}</span>
+            <span>${icon("wifi")} ${escapeHtml(displayEndpoint)}</span>
+            <strong>${escapeHtml(statusMessage)}</strong>
+          </div>
+        </div>
+        <button
+          type="button"
+          data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen}"
+          data-payload-provider-id="${escapeAttr(providerId)}"
+          aria-expanded="${isOpen}"
+        >${isOpen ? "收起" : "配置"} ${icon("chevronDown")}</button>
+      </div>
+      ${isOpen ? renderProviderConfigBody(provider, endpoint, defaultEndpoint) : ""}
+    </section>
+  `;
+}
+
+function renderProviderConfigBody(provider, endpoint, defaultEndpoint) {
+  const providerId = provider.id || "";
+  const inputValue = endpoint || defaultEndpoint || "";
+  const actionsDisabled = provider.actionsEnabled === false;
+  const healthActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck}"`;
+  const saveActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave}"`;
+  const disabledAttr = actionsDisabled ? ' aria-disabled="true" disabled' : "";
+  return `
+    <div class="provider-config-body">
+      <label>
+        <span>本地服务地址</span>
+        <input
+          type="text"
+          value="${escapeAttr(inputValue)}"
+          placeholder="${escapeAttr(defaultEndpoint || "http://127.0.0.1:8188")}"
+          data-provider-endpoint-input
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+      <label class="provider-toggle">
+        <input type="checkbox" data-provider-enabled-input ${provider.enabled ? "checked" : ""} />
+        <span>启用此能力</span>
+      </label>
+      <div class="provider-config-actions">
+        <button
+          type="button"
+          data-provider-health-check
+          data-provider-id="${escapeAttr(providerId)}"
+          ${healthActionAttr}
+          ${disabledAttr}
+        >${icon("wifi")} 检查连接</button>
+        <button
+          type="button"
+          data-provider-config-save
+          data-provider-id="${escapeAttr(providerId)}"
+          ${saveActionAttr}
+          ${disabledAttr}
+        >${icon("checkCircle")} 保存配置</button>
+      </div>
+      <p>${icon("shield")} 只接受本机 localhost / 127.0.0.1 地址；检查连接不会自动启用能力。</p>
+    </div>
+  `;
+}
+
 function renderWorkflow(item) {
+  const statusBadge = item.statusLabel
+    ? `<span class="module-status ${escapeAttr(item.statusTone || "warning")}">${escapeHtml(item.statusLabel)}</span>`
+    : "";
+  const detail = item.detail ? `<p>${escapeHtml(item.detail)}</p>` : "";
   return `
     <article class="workflow-tile">
       <div class="workflow-icons">
@@ -1972,7 +2137,11 @@ function renderWorkflow(item) {
         `).join("<i>›</i>")}
       </div>
       <div>
-        <strong>${escapeHtml(item.title)}</strong>
+        <div class="workflow-title-line">
+          <strong>${escapeHtml(item.title)}</strong>
+          ${statusBadge}
+        </div>
+        ${detail}
       </div>
     </article>
   `;
@@ -2304,6 +2473,12 @@ function createRuntimeActionRouter(dataSource) {
     },
     [CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll]: () => {
       state.showAllAbilityCalls = !state.showAllAbilityCalls;
+      renderActivePage();
+      return { ok: true, refresh: false };
+    },
+    [CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen]: (payload) => {
+      const providerId = String(payload?.providerId || "").trim();
+      state.activeProviderConfigId = state.activeProviderConfigId === providerId ? "" : providerId;
       renderActivePage();
       return { ok: true, refresh: false };
     },

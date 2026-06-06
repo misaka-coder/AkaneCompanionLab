@@ -44,6 +44,12 @@ export function createControlCenterActionPayloadFromDataset(dataset = {}, page =
   if (dataset.payloadOptionId !== undefined) {
     payload.optionId = dataset.payloadOptionId;
   }
+  if (dataset.payloadProviderId !== undefined) {
+    payload.providerId = String(dataset.payloadProviderId).trim();
+  }
+  if (dataset.payloadEndpoint !== undefined) {
+    payload.endpoint = String(dataset.payloadEndpoint).trim();
+  }
   if (dataset.payloadRequiresConfirmation !== undefined) {
     payload.requiresConfirmation = coerceDatasetPayloadValue(dataset.payloadRequiresConfirmation);
   }
