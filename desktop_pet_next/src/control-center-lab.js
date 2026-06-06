@@ -2232,8 +2232,8 @@ function renderWorkflow(item) {
 function renderWorkflowConfigBody(item) {
   const workflowId = item.workflowId || item.id || "";
   const workflowPath = item.workflowPath || item.defaultWorkflowPath || "workflows/comfyui/portrait_cutout.json";
-  const inputSlot = item.inputImageSlot || "input_image";
-  const outputSlot = item.outputImageSlot || "output_image";
+  const inputSlot = item.inputImageSlot || "12.inputs.image";
+  const outputSlot = item.outputImageSlot || "20.inputs.filename_prefix";
   const actionsDisabled = item.actionsEnabled === false;
   const saveActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave}"`;
   const validateActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate}"`;
@@ -2256,7 +2256,7 @@ function renderWorkflowConfigBody(item) {
         <input
           type="text"
           value="${escapeAttr(inputSlot)}"
-          placeholder="input_image"
+          placeholder="12.inputs.image"
           data-workflow-input-slot-input
           autocomplete="off"
           spellcheck="false"
@@ -2267,7 +2267,7 @@ function renderWorkflowConfigBody(item) {
         <input
           type="text"
           value="${escapeAttr(outputSlot)}"
-          placeholder="output_image"
+          placeholder="20.inputs.filename_prefix"
           data-workflow-output-slot-input
           autocomplete="off"
           spellcheck="false"

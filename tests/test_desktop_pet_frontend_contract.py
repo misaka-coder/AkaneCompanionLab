@@ -283,6 +283,8 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
 
         self.assertIn('const statusLabel = item.statusLabel || "可用"', control_center_source)
         self.assertIn('class="module-status', control_center_source)
+        self.assertIn('placeholder="12.inputs.image"', control_center_source)
+        self.assertIn('placeholder="20.inputs.filename_prefix"', control_center_source)
         self.assertIn(".module-title-row .module-status.warning", control_center_css)
 
         self.assertIn("transcribe_media", runtime_probe)
@@ -386,6 +388,10 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('buildBackendUrl("/capabilities/workflows"', workshop_source)
         self.assertIn("function refreshPortraitCutoutCapability(options = {})", workshop_source)
         self.assertIn("function normalizePortraitCutoutCapability(workflow)", workshop_source)
+        self.assertIn("function describePortraitCutoutReason(reason)", workshop_source)
+        self.assertIn("workflow_file_missing", workshop_source)
+        self.assertIn("slot_mapping_path_invalid", workshop_source)
+        self.assertIn("ComfyUI 请求失败", workshop_source)
         self.assertIn("function renderPortraitCutoutStatus()", workshop_source)
         self.assertIn('invoke("open_settings_window")', workshop_source)
         self.assertNotIn("/capabilities/workflows/run", workshop_source)

@@ -21,6 +21,7 @@ from ..local_capability_config import (
     save_workflow_config,
     save_provider_config,
     validate_workflow_config,
+    validate_workflow_runtime_binding,
 )
 from ..local_workflow_execution import (
     WorkflowExecutionAsset,
@@ -79,6 +80,13 @@ def build_capabilities_router(
             provider_configs=provider_config.get("providers", {}),
             workflow_configs=provider_config.get("workflows", {}),
         )
+        _mark_workflows_execution_ready(
+            payload,
+            workflow_runner=workflow_runner,
+            background_tasks=background_tasks,
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+        )
         payload["providerConfigStatus"] = provider_config.get("configStatus") or "available"
         payload["providerConfigWarnings"] = list(provider_config.get("warnings") or [])
         _observe_request(runtime_metrics, "capabilities.catalog", started_at, True)
@@ -124,6 +132,8 @@ def build_capabilities_router(
             payload,
             workflow_runner=workflow_runner,
             background_tasks=background_tasks,
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
         )
         payload["providerConfigStatus"] = provider_config.get("configStatus") or "available"
         payload["providerConfigWarnings"] = list(provider_config.get("warnings") or [])
@@ -805,10 +815,17 @@ def _find_workflow_job_output_asset(job: dict[str, Any], output_handle: str) -> 
     return asset if isinstance(asset, WorkflowExecutionAsset) else None
 
 
-def _mark_workflows_execution_ready(payload: dict[str, Any], *, workflow_runner: Any, background_tasks: Any) -> None:
+def _mark_workflows_execution_ready(
+    payload: dict[str, Any],
+    *,
+    workflow_runner: Any,
+    background_tasks: Any,
+    base_dir: Path | None,
+    profile_user_id: str,
+) -> None:
     if workflow_runner is None or background_tasks is None or not hasattr(background_tasks, "submit"):
         return
-    workflows = payload.get("workflows") if isinstance(payload.get("workflows"), list) else []
+    workflows = _payload_workflow_entries(payload)
     for workflow in workflows:
         if not isinstance(workflow, dict):
             continue
@@ -816,11 +833,61 @@ def _mark_workflows_execution_ready(payload: dict[str, Any], *, workflow_runner:
             continue
         if str(workflow.get("status") or "") not in {"configured", "validated_config", "ready"}:
             continue
-        workflow["status"] = "ready"
-        workflow["reason"] = ""
-        workflow["executionReady"] = True
+        runtime = validate_workflow_runtime_binding(
+            base_dir=base_dir,
+            profile_user_id=profile_user_id,
+            workflow_id=str(workflow.get("id") or workflow.get("workflowId") or ""),
+        )
+        if runtime.get("ok"):
+            workflow["status"] = "ready"
+            workflow["reason"] = ""
+            workflow["executionReady"] = True
+        else:
+            workflow["status"] = runtime.get("status") or "invalid_workflow_config"
+            workflow["reason"] = runtime.get("reason") or "workflow_runtime_config_invalid"
+            workflow["executionReady"] = False
     if isinstance(payload.get("summary"), dict):
+        payload["summary"].update(_summarize_payload_entries(payload))
         payload["summary"]["executionReady"] = sum(1 for workflow in workflows if workflow.get("executionReady"))
+
+
+def _payload_workflow_entries(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if isinstance(payload.get("workflows"), list):
+        return [item for item in payload["workflows"] if isinstance(item, dict)]
+    if isinstance(payload.get("capabilities"), list):
+        return [
+            item
+            for item in payload["capabilities"]
+            if isinstance(item, dict) and str(item.get("kind") or "") == "workflow"
+        ]
+    return []
+
+
+def _summarize_payload_entries(payload: dict[str, Any]) -> dict[str, Any]:
+    entries = payload.get("workflows") if isinstance(payload.get("workflows"), list) else payload.get("capabilities")
+    entries = entries if isinstance(entries, list) else []
+    by_kind: dict[str, int] = {}
+    by_status: dict[str, int] = {}
+    by_source: dict[str, int] = {}
+    by_type: dict[str, int] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        _increment_summary_count(by_kind, str(entry.get("kind") or "unknown"))
+        _increment_summary_count(by_status, str(entry.get("status") or "unknown"))
+        _increment_summary_count(by_source, str(entry.get("source") or "unknown"))
+        _increment_summary_count(by_type, str(entry.get("type") or "unknown"))
+    return {
+        "total": sum(by_kind.values()),
+        "byKind": by_kind,
+        "byStatus": by_status,
+        "bySource": by_source,
+        "byType": by_type,
+    }
+
+
+def _increment_summary_count(target: dict[str, int], key: str) -> None:
+    target[key] = target.get(key, 0) + 1
 
 
 def _public_workflow_job(job: dict[str, Any]) -> dict[str, Any]:

@@ -175,6 +175,21 @@ def resolve_payload(payload: dict) -> tuple[str, str]:
     return session_id, profile_user_id
 
 
+def write_valid_cutout_workflow(base_dir: str | Path, profile_user_id: str = "master") -> Path:
+    workflow_path = Path(base_dir) / profile_user_id / "capabilities" / "workflows" / "comfyui" / "portrait_cutout.json"
+    workflow_path.parent.mkdir(parents=True, exist_ok=True)
+    workflow_path.write_text(
+        json.dumps(
+            {
+                "12": {"class_type": "LoadImage", "inputs": {"image": "old.png"}},
+                "20": {"class_type": "SaveImage", "inputs": {"filename_prefix": "old"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return workflow_path
+
+
 class BackendRouteModuleTests(unittest.TestCase):
     def test_core_router_decorates_resource_manifest_for_desktop_pet(self) -> None:
         captured: dict[str, Any] = {}
@@ -1225,8 +1240,8 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "enabled": True,
                     "workflowPath": r"workflows\comfyui\portrait_cutout.json?token=secret",
                     "slotMapping": {
-                        "input_image_handle": "input_image",
-                        "output_image_handle": "output_image",
+                        "input_image_handle": "12.inputs.image",
+                        "output_image_handle": "20.inputs.filename_prefix",
                         "ignored_extra": "should_not_echo",
                     },
                 },
@@ -1241,8 +1256,8 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "enabled": True,
                     "workflowPath": r"workflows\comfyui\portrait_cutout.json",
                     "slotMapping": {
-                        "input_image_handle": "input_image",
-                        "output_image_handle": "output_image",
+                        "input_image_handle": "12.inputs.image",
+                        "output_image_handle": "20.inputs.filename_prefix",
                         "ignored_extra": "should_not_echo",
                     },
                 },
@@ -1259,6 +1274,15 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertFalse(workflow["executionReady"])
             self.assertNotIn("ignored_extra", json.dumps(workflow, ensure_ascii=False))
 
+            validated_missing_file = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/validate?user_id=desktop&real_user_id=master"
+            ).json()
+            self.assertFalse(validated_missing_file["ok"])
+            self.assertEqual(validated_missing_file["status"], "invalid_workflow_config")
+            self.assertEqual(validated_missing_file["reason"], "workflow_file_missing")
+            self.assertFalse(validated_missing_file["checks"]["workflowFile"])
+
+            write_valid_cutout_workflow(temp_dir)
             validated = client.post(
                 "/capabilities/workflows/workflow.workshop.portrait.cutout/validate?user_id=desktop&real_user_id=master"
             ).json()
@@ -1268,6 +1292,8 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertTrue(validated["checks"]["providerConfigured"])
             self.assertTrue(validated["checks"]["workflowConfigured"])
             self.assertTrue(validated["checks"]["requiredSlots"])
+            self.assertTrue(validated["checks"]["workflowFile"])
+            self.assertTrue(validated["checks"]["slotPaths"])
 
             catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
             by_id = {item["id"]: item for item in catalog["capabilities"]}
@@ -1336,8 +1362,8 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "enabled": True,
                     "workflowPath": "workflows/comfyui/portrait_cutout.json",
                     "slotMapping": {
-                        "input_image_handle": "input_image",
-                        "output_image_handle": "output_image",
+                        "input_image_handle": "12.inputs.image",
+                        "output_image_handle": "20.inputs.filename_prefix",
                     },
                 },
             )
@@ -1356,6 +1382,16 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertNotIn("secret.png", rejected_text)
             self.assertNotIn(str(Path(temp_dir)).lower(), rejected_text)
 
+            missing_file = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            ).json()
+            self.assertFalse(missing_file["ok"])
+            self.assertEqual(missing_file["status"], "invalid_workflow_config")
+            self.assertEqual(missing_file["reason"], "workflow_file_missing")
+            self.assertFalse(missing_file["checks"]["workflowFile"])
+
+            write_valid_cutout_workflow(temp_dir)
             ready_but_inert = client.post(
                 "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
                 json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
@@ -1367,6 +1403,8 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertFalse(ready_but_inert["canRun"])
             self.assertTrue(ready_but_inert["checks"]["providerConfigured"])
             self.assertTrue(ready_but_inert["checks"]["workflowConfigured"])
+            self.assertTrue(ready_but_inert["checks"]["workflowFile"])
+            self.assertTrue(ready_but_inert["checks"]["slotPaths"])
             self.assertTrue(ready_but_inert["checks"]["inputImageHandle"])
             self.assertTrue(ready_but_inert["checks"]["outputImageHandle"])
             self.assertFalse(ready_but_inert["checks"]["runnerBound"])
@@ -1422,8 +1460,8 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "enabled": True,
                     "workflowPath": "workflows/comfyui/portrait_cutout.json",
                     "slotMapping": {
-                        "input_image_handle": "input_image",
-                        "output_image_handle": "output_image",
+                        "input_image_handle": "12.inputs.image",
+                        "output_image_handle": "20.inputs.filename_prefix",
                     },
                 },
             )
@@ -1442,6 +1480,20 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(rejected_payload["status"], "invalid_request")
             self.assertNotIn("jobId", rejected_payload)
 
+            missing_file = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
+                json={
+                    "inputImageHandle": "portrait_source",
+                    "outputImageHandle": "portrait_cutout",
+                    "imageBytes": "RAW_IMAGE_BYTES_SHOULD_NOT_ECHO",
+                },
+            ).json()
+            self.assertFalse(missing_file["ok"])
+            self.assertEqual(missing_file["status"], "invalid_workflow_config")
+            self.assertEqual(missing_file["reason"], "workflow_file_missing")
+            self.assertNotIn("jobId", missing_file)
+
+            write_valid_cutout_workflow(temp_dir)
             inert = client.post(
                 "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
                 json={
@@ -1567,11 +1619,26 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "enabled": True,
                     "workflowPath": "workflows/comfyui/portrait_cutout.json",
                     "slotMapping": {
-                        "input_image_handle": "input_image",
-                        "output_image_handle": "output_image",
+                        "input_image_handle": "12.inputs.image",
+                        "output_image_handle": "20.inputs.filename_prefix",
                     },
                 },
             )
+            missing_file_catalog = client.get("/capabilities/workflows?user_id=desktop&real_user_id=master").json()
+            missing_file_workflow = {item["id"]: item for item in missing_file_catalog["workflows"]}[
+                "workflow.workshop.portrait.cutout"
+            ]
+            self.assertEqual(missing_file_workflow["status"], "invalid_workflow_config")
+            self.assertEqual(missing_file_workflow["reason"], "workflow_file_missing")
+            self.assertFalse(missing_file_workflow["executionReady"])
+
+            write_valid_cutout_workflow(temp_dir)
+            ready_catalog = client.get("/capabilities/workflows?user_id=desktop&real_user_id=master").json()
+            ready_workflow = {item["id"]: item for item in ready_catalog["workflows"]}[
+                "workflow.workshop.portrait.cutout"
+            ]
+            self.assertEqual(ready_workflow["status"], "ready")
+            self.assertTrue(ready_workflow["executionReady"])
 
             preflight = client.post(
                 "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
@@ -1582,6 +1649,8 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertTrue(preflight["executionReady"])
             self.assertTrue(preflight["canRun"])
             self.assertTrue(preflight["checks"]["runnerBound"])
+            self.assertTrue(preflight["checks"]["workflowFile"])
+            self.assertTrue(preflight["checks"]["slotPaths"])
 
             started = client.post(
                 "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
@@ -1667,11 +1736,12 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "enabled": True,
                     "workflowPath": "workflows/comfyui/portrait_cutout.json",
                     "slotMapping": {
-                        "input_image_handle": "input_image",
-                        "output_image_handle": "output_image",
+                        "input_image_handle": "12.inputs.image",
+                        "output_image_handle": "20.inputs.filename_prefix",
                     },
                 },
             )
+            write_valid_cutout_workflow(temp_dir)
 
             started = client.post(
                 "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",

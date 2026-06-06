@@ -736,15 +736,9 @@ Workflow fields:
   "type": "asset_processor",
   "name": "ComfyUI 角色立绘抠图",
   "workflowPath": "workflows/comfyui/portrait_cutout.json",
-  "slots": {
-    "input_image": {
-      "node": "12",
-      "path": "inputs.image"
-    },
-    "output_image": {
-      "node": "31",
-      "path": "outputs.images[0]"
-    }
+  "slotMapping": {
+    "input_image_handle": "12.inputs.image",
+    "output_image_handle": "20.inputs.filename_prefix"
   },
   "inputSchema": {
     "type": "object",
@@ -2199,8 +2193,8 @@ Implemented Phase 3B:
       "enabled": true,
       "workflowPath": "workflows/comfyui/portrait_cutout.json",
       "slotMapping": {
-        "input_image_handle": "input_image",
-        "output_image_handle": "output_image"
+        "input_image_handle": "12.inputs.image",
+        "output_image_handle": "20.inputs.filename_prefix"
       }
     }
   }
@@ -2209,6 +2203,14 @@ Implemented Phase 3B:
 
 - The config store deliberately uses a safe relative `workflowPath` reference,
   not a full local path and not the workflow JSON content.
+- The workflow JSON must exist under the same profile-scoped capability
+  directory, for example:
+  `users_data/<profile_user_id>/capabilities/workflows/comfyui/portrait_cutout.json`.
+- Required slot mappings must point to existing ComfyUI node input paths in that
+  JSON. Use paths such as `12.inputs.image` for the uploaded source image and
+  `20.inputs.filename_prefix` for the generated output prefix. Output slots such
+  as `31.outputs.images[0]` are intentionally rejected because Akane reads the
+  generated image from ComfyUI history after execution.
 - `validate` can return `validated_config`, but still reports
   `executionReady:false` with reason `workflow_runtime_not_bound`.
 - The control center translates `configured` workflow state into "已绑定" with a
@@ -2387,6 +2389,12 @@ Implemented Phase 4I:
 - `POST /capabilities/workflows/{workflowId}/jobs` accepts
   `inputImageBytes` / `imageBytes` into an internal input asset boundary. Public
   job status still exposes only structured state and safe output handles.
+- `/capabilities` and `/capabilities/workflows` mark a configured workflow as
+  `ready` only after the profile-scoped workflow JSON exists, parses as an
+  object, and all required slot mappings point to existing ComfyUI node
+  `inputs` paths. Failure reasons stay as safe short enums such as
+  `workflow_file_missing`, `workflow_file_invalid_json`, or
+  `slot_mapping_target_missing`.
 - `GET /capabilities/workflow-jobs/{jobId}/outputs/{outputHandle}` returns
   completed image bytes only for the same resolved profile id. It returns 404
   for wrong profile or unknown output and 409 before completion.
@@ -2426,7 +2434,8 @@ Current Phase 4I boundary:
 
 - The real ComfyUI portrait cutout path is implemented and production-bound.
 - "自动抠图" remains hidden unless provider/workflow config and runner binding
-  make the workflow `ready` with `executionReady:true`.
+  make the workflow `ready` with `executionReady:true`. `ready` requires the
+  configured JSON file to exist and required ComfyUI input slot paths to resolve.
 - The workshop sends explicit portrait image bytes to the backend job route,
   never local file paths.
 - The backend executes ComfyUI through the runner, stores output bytes only in

@@ -20,8 +20,10 @@ PUBLIC_WORKFLOW_FIELDS = {"enabled", "workflowPath", "slotMapping", "updatedAt"}
 WORKFLOW_PATH_MAX_LENGTH = 220
 WORKFLOW_SLOT_MAX_LENGTH = 80
 WORKFLOW_SLOT_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+WORKFLOW_COMFYUI_SLOT_PATH_RE = re.compile(r"^[A-Za-z0-9_-]{1,60}\.inputs\.[A-Za-z0-9_.-]{1,120}$")
 WORKFLOW_ASSET_HANDLE_MAX_LENGTH = 120
 WORKFLOW_ASSET_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
+WORKFLOW_CONFIG_FILE_MAX_BYTES = 4 * 1024 * 1024
 
 
 HealthChecker = Callable[[str, int, float], tuple[bool, str]]
@@ -404,6 +406,8 @@ def validate_workflow_config(
         "providerConfigured": bool(providers_by_id.get(spec.provider_id, {}).get("configured")),
         "workflowConfigured": bool(workflow.get("configured")),
         "requiredSlots": _required_slots_present(spec, workflow.get("slotMapping")),
+        "workflowFile": False,
+        "slotPaths": False,
         "executionReady": False,
     }
     if not checks["workflowConfigured"]:
@@ -415,6 +419,29 @@ def validate_workflow_config(
             "executionReady": False,
             "checks": checks,
             "workflow": workflow,
+        }
+    runtime = validate_workflow_runtime_binding(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        workflow_id=spec.id,
+    )
+    runtime_checks = runtime.get("checks") if isinstance(runtime.get("checks"), Mapping) else {}
+    checks["workflowFile"] = bool(runtime_checks.get("workflowFile"))
+    checks["slotPaths"] = bool(runtime_checks.get("slotPaths"))
+    if not runtime.get("ok"):
+        return {
+            "ok": False,
+            "status": runtime.get("status") or "invalid_workflow_config",
+            "workflowId": spec.id,
+            "reason": runtime.get("reason") or "workflow_runtime_config_invalid",
+            "executionReady": False,
+            "checks": checks,
+            "workflow": {
+                **workflow,
+                "status": runtime.get("status") or "invalid_workflow_config",
+                "reason": runtime.get("reason") or "workflow_runtime_config_invalid",
+                "executionReady": False,
+            },
         }
     return {
         "ok": True,
@@ -465,6 +492,8 @@ def preflight_workflow_execution(
         "workflowConfigured": bool(workflow.get("configured")),
         "workflowEnabled": bool(workflow.get("enabled")),
         "requiredSlots": _required_slots_present(spec, workflow.get("slotMapping")),
+        "workflowFile": False,
+        "slotPaths": False,
         "inputImageHandle": False,
         "outputImageHandle": False,
         "runnerBound": False,
@@ -513,6 +542,32 @@ def preflight_workflow_execution(
             "canRun": False,
             "checks": checks,
             "workflow": workflow,
+        }
+
+    runtime = validate_workflow_runtime_binding(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        workflow_id=spec.id,
+    )
+    runtime_checks = runtime.get("checks") if isinstance(runtime.get("checks"), Mapping) else {}
+    checks["workflowFile"] = bool(runtime_checks.get("workflowFile"))
+    checks["slotPaths"] = bool(runtime_checks.get("slotPaths"))
+    if not runtime.get("ok"):
+        return {
+            "ok": False,
+            "status": runtime.get("status") or "invalid_workflow_config",
+            "workflowId": spec.id,
+            "capabilityId": spec.capability_id,
+            "reason": runtime.get("reason") or "workflow_runtime_config_invalid",
+            "executionReady": False,
+            "canRun": False,
+            "checks": checks,
+            "workflow": {
+                **workflow,
+                "status": runtime.get("status") or "invalid_workflow_config",
+                "reason": runtime.get("reason") or "workflow_runtime_config_invalid",
+                "executionReady": False,
+            },
         }
 
     return {
@@ -734,6 +789,115 @@ def resolve_workflow_config_file_path(
     if root == target or root not in target.parents:
         return None
     return target
+
+
+def validate_workflow_runtime_binding(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    workflow_id: str,
+) -> dict[str, Any]:
+    spec = CONFIGURABLE_WORKFLOW_BY_ID.get(str(workflow_id or "").strip())
+    if spec is None:
+        return {"ok": False, "status": "unknown_workflow", "workflowId": str(workflow_id or "").strip()}
+
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    workflow = config.get("workflows", {}).get(spec.id)
+    if not isinstance(workflow, Mapping) or not workflow.get("enabled"):
+        return _runtime_binding_result(spec, "missing_workflow", "workflow_binding_missing")
+
+    workflow_path = str(workflow.get("workflowPath") or "").strip()
+    slot_mapping = workflow.get("slotMapping") if isinstance(workflow.get("slotMapping"), Mapping) else {}
+    if not workflow_path:
+        return _runtime_binding_result(spec, "missing_workflow", "workflow_path_required")
+    if not _required_slots_present(spec, slot_mapping):
+        return _runtime_binding_result(spec, "missing_slot_mapping", "required_slot_mapping_missing")
+
+    resolved_path = resolve_workflow_config_file_path(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        workflow_path=workflow_path,
+    )
+    if resolved_path is None:
+        return _runtime_binding_result(spec, "invalid_workflow_config", "workflow_path_must_be_safe_relative_json")
+    if not resolved_path.is_file():
+        return _runtime_binding_result(spec, "invalid_workflow_config", "workflow_file_missing")
+    try:
+        if resolved_path.stat().st_size > WORKFLOW_CONFIG_FILE_MAX_BYTES:
+            return _runtime_binding_result(spec, "invalid_workflow_config", "workflow_file_too_large")
+        workflow_json = json.loads(resolved_path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        return _runtime_binding_result(spec, "invalid_workflow_config", "workflow_file_invalid_encoding")
+    except json.JSONDecodeError:
+        return _runtime_binding_result(spec, "invalid_workflow_config", "workflow_file_invalid_json")
+    except OSError:
+        return _runtime_binding_result(spec, "invalid_workflow_config", "workflow_file_unreadable")
+
+    if not isinstance(workflow_json, Mapping) or not workflow_json:
+        return _runtime_binding_result(spec, "invalid_workflow_config", "workflow_json_invalid")
+
+    for slot_name in spec.required_slots:
+        slot_path = str(slot_mapping.get(slot_name) or "").strip()
+        slot_check = validate_comfyui_input_slot_path(workflow_json, slot_path)
+        if not slot_check.get("ok"):
+            return _runtime_binding_result(
+                spec,
+                "invalid_workflow_config",
+                str(slot_check.get("reason") or "slot_mapping_target_missing"),
+                workflow_file=True,
+            )
+
+    return {
+        "ok": True,
+        "status": "ready",
+        "workflowId": spec.id,
+        "reason": "",
+        "executionReady": True,
+        "checks": {
+            "workflowFile": True,
+            "slotPaths": True,
+        },
+    }
+
+
+def validate_comfyui_input_slot_path(workflow_json: Mapping[str, Any], slot_path: str) -> dict[str, Any]:
+    path = str(slot_path or "").strip()
+    if not WORKFLOW_COMFYUI_SLOT_PATH_RE.match(path):
+        return {"ok": False, "reason": "slot_mapping_path_invalid"}
+    parts = path.split(".")
+    node_id = parts[0]
+    node = workflow_json.get(node_id)
+    if not isinstance(node, Mapping):
+        return {"ok": False, "reason": "slot_mapping_node_missing"}
+    current: Any = node.get("inputs")
+    if not isinstance(current, Mapping):
+        return {"ok": False, "reason": "slot_mapping_inputs_missing"}
+    for part in parts[2:]:
+        if not isinstance(current, Mapping) or part not in current:
+            return {"ok": False, "reason": "slot_mapping_target_missing"}
+        current = current[part]
+    return {"ok": True, "reason": ""}
+
+
+def _runtime_binding_result(
+    spec: WorkflowConfigSpec,
+    status: str,
+    reason: str,
+    *,
+    workflow_file: bool = False,
+    slot_paths: bool = False,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": status,
+        "workflowId": spec.id,
+        "reason": _safe_reason(reason),
+        "executionReady": False,
+        "checks": {
+            "workflowFile": workflow_file,
+            "slotPaths": slot_paths,
+        },
+    }
 
 
 def normalize_workflow_slot_mapping(spec: WorkflowConfigSpec, slot_mapping: Any) -> dict[str, Any]:
