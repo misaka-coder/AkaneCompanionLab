@@ -624,8 +624,8 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
     workflowId: "workflow.workshop.portrait.cutout",
     enabled: true,
     workflowPath: "workflows/comfyui/portrait_cutout.json",
-    inputImageSlot: "input_image",
-    outputImageSlot: "output_image",
+    inputImageSlot: "12.inputs.image",
+    outputImageSlot: "20.inputs.filename_prefix",
     token: "must-not-send"
   });
   assert.equal(saveResult.status, "saved", "workflow config save should hit workflow config route");
@@ -647,8 +647,8 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
       enabled: true,
       workflowPath: "workflows/comfyui/portrait_cutout.json",
       slotMapping: {
-        input_image_handle: "input_image",
-        output_image_handle: "output_image"
+        input_image_handle: "12.inputs.image",
+        output_image_handle: "20.inputs.filename_prefix"
       }
     },
     "workflow save should only send enabled, workflowPath, and safe slot mapping"

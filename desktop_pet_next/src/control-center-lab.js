@@ -1607,10 +1607,10 @@ function renderAbilitiesPage() {
           </article>
           ${renderProviderPanel()}
           <article class="glass-card workflow-card">
-            <h2>能力工作流示例 ${icon("info")}</h2>
+            <h2>本地工作流 ${icon("info")}</h2>
             <div class="workflow-list">
               ${abilitiesPage.workflows.map(renderWorkflow).join("")}
-              <button class="more-workflow" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesMoreWorkflows}">更多示例 ${icon("chevron")}</button>
+              <button class="more-workflow" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesMoreWorkflows}">更多工作流 ${icon("chevron")}</button>
             </div>
           </article>
           <article class="glass-card calls-card">
@@ -2192,7 +2192,7 @@ function renderProviderConfigBody(provider, endpoint, defaultEndpoint) {
 function renderWorkflow(item) {
   const workflowId = item.workflowId || item.id || "";
   const isConfigurable = Boolean(workflowId && (item.workflowPath !== undefined || item.defaultWorkflowPath !== undefined || item.actionsEnabled));
-  const isOpen = state.activeWorkflowConfigId === workflowId;
+  const isOpen = Boolean(workflowId && state.activeWorkflowConfigId === workflowId);
   const statusBadge = item.statusLabel
     ? `<span class="module-status ${escapeAttr(item.statusTone || "warning")}">${escapeHtml(item.statusLabel)}</span>`
     : "";
@@ -2224,7 +2224,7 @@ function renderWorkflow(item) {
           aria-expanded="${isOpen}"
         >${isOpen ? "收起" : "配置"} ${icon("chevronDown")}</button>
       ` : ""}
-      ${isOpen ? renderWorkflowConfigBody(item) : ""}
+      ${isConfigurable && isOpen ? renderWorkflowConfigBody(item) : ""}
     </article>
   `;
 }
@@ -2240,58 +2240,62 @@ function renderWorkflowConfigBody(item) {
   const disabledAttr = actionsDisabled ? ' aria-disabled="true" disabled' : "";
   return `
     <div class="workflow-config-body">
-      <label>
-        <span>工作流引用</span>
-        <input
-          type="text"
-          value="${escapeAttr(workflowPath)}"
-          placeholder="workflows/comfyui/portrait_cutout.json"
-          data-workflow-path-input
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </label>
-      <label>
-        <span>输入槽位</span>
-        <input
-          type="text"
-          value="${escapeAttr(inputSlot)}"
-          placeholder="12.inputs.image"
-          data-workflow-input-slot-input
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </label>
-      <label>
-        <span>输出槽位</span>
-        <input
-          type="text"
-          value="${escapeAttr(outputSlot)}"
-          placeholder="20.inputs.filename_prefix"
-          data-workflow-output-slot-input
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </label>
-      <label class="provider-toggle">
-        <input type="checkbox" data-workflow-enabled-input ${item.enabled ? "checked" : ""} />
-        <span>启用绑定</span>
-      </label>
-      <div class="provider-config-actions workflow-config-actions">
-        <button
-          type="button"
-          data-workflow-validate
-          data-workflow-id="${escapeAttr(workflowId)}"
-          ${validateActionAttr}
-          ${disabledAttr}
-        >${icon("checkCircle")} 验证配置</button>
-        <button
-          type="button"
-          data-workflow-config-save
-          data-workflow-id="${escapeAttr(workflowId)}"
-          ${saveActionAttr}
-          ${disabledAttr}
-        >${icon("checkCircle")} 保存绑定</button>
+      <div class="workflow-config-fields">
+        <label>
+          <span>工作流文件</span>
+          <input
+            type="text"
+            value="${escapeAttr(workflowPath)}"
+            placeholder="workflows/comfyui/portrait_cutout.json"
+            data-workflow-path-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label>
+          <span>输入节点</span>
+          <input
+            type="text"
+            value="${escapeAttr(inputSlot)}"
+            placeholder="12.inputs.image"
+            data-workflow-input-slot-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label>
+          <span>输出前缀</span>
+          <input
+            type="text"
+            value="${escapeAttr(outputSlot)}"
+            placeholder="20.inputs.filename_prefix"
+            data-workflow-output-slot-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+      </div>
+      <div class="workflow-config-footer">
+        <label class="provider-toggle workflow-enable-toggle">
+          <input type="checkbox" data-workflow-enabled-input ${item.enabled ? "checked" : ""} />
+          <span>启用绑定</span>
+        </label>
+        <div class="provider-config-actions workflow-config-actions">
+          <button
+            type="button"
+            data-workflow-validate
+            data-workflow-id="${escapeAttr(workflowId)}"
+            ${validateActionAttr}
+            ${disabledAttr}
+          >${icon("checkCircle")} 验证配置</button>
+          <button
+            type="button"
+            data-workflow-config-save
+            data-workflow-id="${escapeAttr(workflowId)}"
+            ${saveActionAttr}
+            ${disabledAttr}
+          >${icon("checkCircle")} 保存绑定</button>
+        </div>
       </div>
       <p>${icon("shield")} 这里只保存安全相对引用和槽位名；不会读取、上传或执行 ComfyUI 工作流。</p>
     </div>

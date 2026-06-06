@@ -283,8 +283,15 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
 
         self.assertIn('const statusLabel = item.statusLabel || "可用"', control_center_source)
         self.assertIn('class="module-status', control_center_source)
+        self.assertIn("本地工作流", control_center_source)
+        self.assertNotIn("能力工作流示例", control_center_source)
+        self.assertIn("Boolean(workflowId && state.activeWorkflowConfigId === workflowId)", control_center_source)
+        self.assertIn('class="workflow-config-fields"', control_center_source)
+        self.assertIn('class="provider-toggle workflow-enable-toggle"', control_center_source)
         self.assertIn('placeholder="12.inputs.image"', control_center_source)
         self.assertIn('placeholder="20.inputs.filename_prefix"', control_center_source)
+        self.assertIn(".workflow-config-fields", control_center_css)
+        self.assertIn(".workflow-enable-toggle", control_center_css)
         self.assertIn(".module-title-row .module-status.warning", control_center_css)
 
         self.assertIn("transcribe_media", runtime_probe)

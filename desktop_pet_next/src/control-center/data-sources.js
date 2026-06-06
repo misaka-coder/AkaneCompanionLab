@@ -1759,9 +1759,7 @@ function buildAbilityWorkflows(modules, catalogEntries = []) {
       detail: "后端连接后会显示可用工作流"
     }
   ];
-  return catalogWorkflows.length
-    ? [...catalogWorkflows, ...fallbackWorkflows].slice(0, 3)
-    : fallbackWorkflows;
+  return catalogWorkflows.length ? catalogWorkflows.slice(0, 3) : fallbackWorkflows;
 }
 
 function buildCatalogWorkflowCards(entries) {

@@ -2060,8 +2060,8 @@ button[data-action-unavailable="true"]:disabled {
 
 .workflow-list {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 11px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
   margin-top: 12px;
 }
 
@@ -2076,9 +2076,11 @@ button[data-action-unavailable="true"]:disabled {
 .workflow-tile {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
-  padding: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
 }
 
 .workflow-main {
@@ -2214,11 +2216,18 @@ button[data-action-unavailable="true"]:disabled {
 .workflow-config-body {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(220px, 1.3fr) minmax(130px, 0.7fr) minmax(130px, 0.7fr) auto;
-  gap: 10px;
-  align-items: end;
-  padding-top: 9px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+  padding-top: 11px;
   border-top: 1px solid rgb(98 148 221 / 0.16);
+}
+
+.workflow-config-fields {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.35fr) minmax(150px, 0.8fr) minmax(170px, 0.9fr);
+  gap: 10px;
+  min-width: 0;
 }
 
 .workflow-config-body label {
@@ -2232,6 +2241,7 @@ button[data-action-unavailable="true"]:disabled {
 
 .workflow-config-body input[type="text"] {
   width: 100%;
+  min-width: 0;
   min-height: 36px;
   padding: 0 11px;
   color: #31537e;
@@ -2243,19 +2253,42 @@ button[data-action-unavailable="true"]:disabled {
   font-weight: 800;
 }
 
+.workflow-config-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.workflow-enable-toggle {
+  flex: 0 0 auto;
+  min-width: 118px;
+}
+
 .workflow-config-actions {
+  flex: 1 1 300px;
+  flex-wrap: wrap;
   justify-content: flex-end;
 }
 
+.workflow-config-actions button {
+  flex: 1 1 140px;
+  max-width: 240px;
+}
+
 .workflow-config-body > p {
-  grid-column: 1 / -1;
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
   margin: 0;
   color: #61799e;
   font-size: 11px;
   font-weight: 700;
+  line-height: 1.5;
+  white-space: normal;
 }
 
 .more-workflow {
@@ -5883,7 +5916,11 @@ button[data-action-unavailable="true"]:disabled {
   }
 
   .workflow-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workflow-config-fields {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .emotion-grid {
@@ -6114,6 +6151,18 @@ button[data-action-unavailable="true"]:disabled {
 
   .provider-config-actions button {
     flex: 1 1 160px;
+  }
+
+  .workflow-tile {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workflow-config-toggle {
+    justify-self: stretch;
+  }
+
+  .workflow-config-actions button {
+    max-width: none;
   }
 
   .voice-bottom-grid {
