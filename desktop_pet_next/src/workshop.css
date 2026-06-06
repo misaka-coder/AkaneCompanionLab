@@ -1128,6 +1128,66 @@ textarea {
   color: #b94343;
 }
 
+.portrait-cutout-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  margin: 0 0 12px;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, #fff, #f8fafc);
+}
+
+.portrait-cutout-status > div {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.portrait-cutout-status strong {
+  color: var(--ink-strong);
+  font-size: 12.5px;
+  font-weight: 760;
+}
+
+.portrait-cutout-status span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portrait-cutout-status button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 5px 10px;
+}
+
+.portrait-cutout-status[data-state="ready"] {
+  border-left-color: var(--green-600);
+  background: linear-gradient(180deg, #fff, #f3fbf7);
+}
+
+.portrait-cutout-status[data-state="configured"] {
+  border-left-color: var(--orange-600);
+  background: linear-gradient(180deg, #fff, #fff8ed);
+}
+
+.portrait-cutout-status[data-state="attention"] {
+  border-left-color: var(--orange-600);
+}
+
+.portrait-cutout-status[data-state="error"] {
+  border-left-color: #c04242;
+  background: linear-gradient(180deg, #fff, #fff6f6);
+}
+
 .outfit-card {
   margin-bottom: 12px;
 }

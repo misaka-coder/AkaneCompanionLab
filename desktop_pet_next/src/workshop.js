@@ -12,6 +12,8 @@ const DRAFT_STORAGE_PREFIX = "akane-workshop-draft:";
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const CLIENT_MODE = "desktop_pet";
 const WORKSHOP_TEST_SCOPE_PREFIX = "workshop_test";
+const PORTRAIT_CUTOUT_WORKFLOW_ID = "workflow.workshop.portrait.cutout";
+const PORTRAIT_CUTOUT_CAPABILITY_CACHE_MS = 30_000;
 const DEFAULT_BUBBLE_STYLE = "soft";
 const MAX_CHARACTER_PACK_ZIP_BYTES = 300 * 1024 * 1024;
 const MAX_PORTRAIT_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -80,6 +82,9 @@ const els = {
   newOutfitId: document.querySelector("#new-outfit-id"),
   addOutfitBtn: document.querySelector("#add-outfit-btn"),
   portraitImportStatus: document.querySelector("#portrait-import-status"),
+  portraitCutoutStatus: document.querySelector("#portrait-cutout-status"),
+  portraitCutoutSummary: document.querySelector("#portrait-cutout-summary"),
+  portraitCutoutConfig: document.querySelector("#portrait-cutout-config"),
   emotionPreview: document.querySelector("#emotion-preview"),
   /* calibration */
   calibrationEmptyState: document.querySelector("#calibration-empty-state"),
@@ -158,6 +163,14 @@ const view = {
   testLastEmotion: "",
   testLastSegments: [],
   pendingApplyPackId: "",
+  portraitCutoutCapability: {
+    status: "unknown",
+    label: "能力状态待同步",
+    detail: "进入立绘管理页后会读取本地能力注册表。",
+    configured: false,
+    executionReady: false,
+    canConfigure: false,
+  },
 };
 
 let lastWorkshopSnapshotSignature = "";
@@ -220,6 +233,7 @@ function bindUi() {
   });
   els.firstUseCreate.addEventListener("click", () => openCreateDialog());
   els.firstUseImport.addEventListener("click", () => importPack());
+  els.portraitCutoutConfig?.addEventListener("click", () => openCapabilitySettings());
 
   /* pack list */
   els.packList.addEventListener("click", (event) => {
@@ -752,6 +766,7 @@ async function refreshPacks() {
     view.backendUrl = normalizeBackendUrl(petState?.backendUrl || view.backendUrl);
     view.profileUserId = String(petState?.profileUserId || view.profileUserId || "master").trim() || "master";
     view.activeCharacterName = getPackName(findPack(view.activePackId)) || view.activeCharacterName;
+    void refreshPortraitCutoutCapability({ force: true });
     render();
     setStatus("角色包已刷新。");
   } catch (error) {
@@ -782,6 +797,7 @@ function applySnapshot(snapshot) {
       ? String(character.appName || character.name || "").trim()
       : view.activeCharacterName);
   ensureWorkspacePack();
+  void refreshPortraitCutoutCapability({ silent: true });
   render();
 }
 
@@ -980,6 +996,7 @@ async function loadPortraitsTab(packId) {
 
   setStatus(`正在读取立绘数据：${getPackName(pack)}`);
   setPortraitStatus("正在读取角色包中的服装和图片…");
+  void refreshPortraitCutoutCapability();
   try {
     const outfits = await invoke("list_pack_assets", { packId });
     renderPortraitsView(packId, outfits);
@@ -1007,6 +1024,7 @@ function renderPortraitsView(packId, outfits) {
   const profile = pack?._rawProfile || {};
 
   els.outfitsContainer.replaceChildren();
+  renderPortraitCutoutStatus();
 
   /* render warnings section */
   const warnings = buildMissingEmotionWarnings(items, profile);
@@ -1033,6 +1051,175 @@ function renderPortraitsView(packId, outfits) {
   const imageCount = items.reduce((total, outfit) => total + (outfit.emotions?.length || 0), 0);
   setStatus(`已加载 ${items.length} 套服装、${imageCount} 张图片。`);
   setPortraitStatus(`角色包中现有 ${items.length} 套服装、${imageCount} 张已导入图片。`);
+}
+
+let lastCutoutCapabilitySignature = "";
+let lastCutoutCapabilitySyncedAt = 0;
+let cutoutCapabilityRequest = null;
+
+async function refreshPortraitCutoutCapability(options = {}) {
+  if (!isTauriRuntime) {
+    applyPortraitCutoutCapability({
+      status: "unavailable",
+      label: "浏览器预览不可用",
+      detail: "请在桌宠窗口中读取本地能力状态。",
+    });
+    return view.portraitCutoutCapability;
+  }
+  const signature = stableSignature({
+    backendUrl: normalizeBackendUrl(view.backendUrl),
+    profileUserId: view.profileUserId || "master",
+  });
+  const cacheIsFresh = signature === lastCutoutCapabilitySignature &&
+    Date.now() - lastCutoutCapabilitySyncedAt < PORTRAIT_CUTOUT_CAPABILITY_CACHE_MS;
+  if (!options.force && cacheIsFresh) {
+    renderPortraitCutoutStatus();
+    return view.portraitCutoutCapability;
+  }
+  if (cutoutCapabilityRequest && signature === lastCutoutCapabilitySignature) {
+    return cutoutCapabilityRequest;
+  }
+  lastCutoutCapabilitySignature = signature;
+  cutoutCapabilityRequest = (async () => {
+    try {
+      const payload = await readWorkflowCatalog();
+      const workflows = Array.isArray(payload?.workflows) ? payload.workflows : [];
+      const workflow = workflows.find((item) => String(item?.id || "").trim() === PORTRAIT_CUTOUT_WORKFLOW_ID);
+      applyPortraitCutoutCapability(workflow
+        ? normalizePortraitCutoutCapability(workflow)
+        : {
+            status: "unavailable",
+            label: "未找到透明背景处理入口",
+            detail: "能力注册表暂未提供角色立绘透明背景处理。",
+          });
+      lastCutoutCapabilitySyncedAt = Date.now();
+    } catch (error) {
+      applyPortraitCutoutCapability({
+        status: "unavailable",
+        label: "能力状态未同步",
+        detail: "立绘管理仍可正常使用；稍后可到设置里的能力页检查本地环境。",
+        reason: formatError(error),
+      });
+      lastCutoutCapabilitySyncedAt = Date.now();
+      if (!options.silent && view.activeTab === "portraits") {
+        renderPortraitCutoutStatus();
+      }
+    } finally {
+      cutoutCapabilityRequest = null;
+    }
+    return view.portraitCutoutCapability;
+  })();
+  return cutoutCapabilityRequest;
+}
+
+async function readWorkflowCatalog() {
+  const profileId = view.profileUserId || "master";
+  const response = await backendFetch(buildBackendUrl("/capabilities/workflows", {
+    user_id: "desktop",
+    session_id: "desktop",
+    real_user_id: profileId,
+    client: CLIENT_MODE,
+    t: Date.now(),
+  }), {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+    ...(isTauriRuntime ? { connectTimeout: 3_500 } : {}),
+  });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, `HTTP ${response.status}`));
+  }
+  return response.json();
+}
+
+function applyPortraitCutoutCapability(next) {
+  view.portraitCutoutCapability = {
+    status: String(next?.status || "unknown").trim() || "unknown",
+    label: String(next?.label || "能力状态待同步").trim() || "能力状态待同步",
+    detail: String(next?.detail || "").trim(),
+    configured: Boolean(next?.configured),
+    enabled: Boolean(next?.enabled),
+    executionReady: Boolean(next?.executionReady),
+    canConfigure: Boolean(next?.canConfigure),
+    reason: String(next?.reason || "").trim(),
+  };
+  if (view.activeTab === "portraits") {
+    renderPortraitCutoutStatus();
+  }
+}
+
+function normalizePortraitCutoutCapability(workflow) {
+  const status = String(workflow?.status || "").trim() || "unknown";
+  const labels = {
+    configured: "已绑定，执行入口待开放",
+    validated_config: "已绑定，执行入口待开放",
+    ready: "自动抠图已可用",
+    missing_config: "需要配置本地 ComfyUI",
+    missing_workflow: "需要绑定抠图工作流",
+    missing_slot_mapping: "需要补齐输入输出槽位",
+    disabled: "自动抠图绑定未启用",
+    unreachable: "ComfyUI 暂时未连接",
+    invalid_config: "本地能力配置异常",
+    invalid_workflow_config: "工作流绑定异常",
+  };
+  const details = {
+    configured: "配置已经保存，但当前版本还没有接入真正的工作流执行。",
+    validated_config: "配置已经通过基础校验，但当前版本还没有接入真正的工作流执行。",
+    ready: "之后会在这里提供自动处理入口。",
+    missing_config: "可以先到设置的能力页填写本地 ComfyUI 地址并做探活。",
+    missing_workflow: "本地服务已配置，下一步是在能力页绑定透明背景处理工作流。",
+    missing_slot_mapping: "工作流引用已保存，还需要补齐输入图片和输出图片的槽位名。",
+    disabled: "绑定存在但未启用，可以到能力页重新启用。",
+    unreachable: "请确认 ComfyUI 正在运行，然后在能力页重新探活。",
+    invalid_config: "能力配置文件需要修复，立绘管理本身不会受影响。",
+    invalid_workflow_config: "工作流绑定需要修复，立绘管理本身不会受影响。",
+  };
+  return {
+    status,
+    label: labels[status] || "能力状态待确认",
+    detail: details[status] || "立绘管理可继续使用；自动处理入口会等真实执行边界完成后开放。",
+    configured: Boolean(workflow?.configured),
+    enabled: Boolean(workflow?.enabled),
+    executionReady: Boolean(workflow?.executionReady),
+    canConfigure: workflow?.configurable !== false,
+    reason: String(workflow?.reason || "").trim(),
+  };
+}
+
+function renderPortraitCutoutStatus() {
+  if (!els.portraitCutoutStatus || !els.portraitCutoutSummary) return;
+  const state = view.portraitCutoutCapability || {};
+  const status = String(state.status || "unknown").trim() || "unknown";
+  els.portraitCutoutStatus.dataset.state = portraitCutoutTone(status);
+  els.portraitCutoutSummary.textContent = state.label || "能力状态待同步";
+  els.portraitCutoutStatus.title = state.detail || "";
+  if (els.portraitCutoutConfig) {
+    els.portraitCutoutConfig.hidden = state.canConfigure === false;
+    els.portraitCutoutConfig.textContent = state.configured ? "查看配置" : "去配置";
+  }
+}
+
+function portraitCutoutTone(status) {
+  if (status === "ready") return "ready";
+  if (status === "configured" || status === "validated_config") return "configured";
+  if (status === "invalid_config" || status === "invalid_workflow_config") return "error";
+  if (status === "missing_config" || status === "missing_workflow" || status === "missing_slot_mapping" || status === "disabled" || status === "unreachable") {
+    return "attention";
+  }
+  return "unknown";
+}
+
+async function openCapabilitySettings() {
+  if (!isTauriRuntime) {
+    setPortraitStatus("浏览器预览模式无法打开设置窗口。", true);
+    return;
+  }
+  try {
+    await invoke("open_settings_window");
+    setPortraitStatus("已打开设置窗口。请在“能力”页查看本地能力环境。");
+  } catch (error) {
+    setPortraitStatus(`打开设置失败：${formatError(error)}`, true);
+  }
 }
 
 function buildMissingEmotionWarnings(outfits, profile) {

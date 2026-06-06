@@ -37,6 +37,11 @@ page can expand the "透明背景处理" workflow card, edit the safe workflow
 reference plus two user-facing slot labels, save through the workflow config
 route, and run config-level validation. It still does not add an "auto cutout"
 execution button.
+Phase 4A adds a read-only character workshop consumer. The portrait management
+tab reads `/capabilities/workflows`, summarizes the `workflow.workshop.portrait.cutout`
+status as "透明背景处理", and offers a navigation hint back to the control center
+ability configuration. It does not execute ComfyUI, parse workflow JSON, process
+images, or write generated assets.
 
 Files:
 
@@ -145,6 +150,17 @@ Files:
     `abilities.workflow.config.open` (client-handled),
     `abilities.workflow.config.save` (backend-route), and
     `abilities.workflow.validate` (backend-route).
+- `desktop_pet_next/src/workshop.js` / `workshop.html` / `workshop.css`
+  - Adds a compact portrait-tab "透明背景处理" status row.
+  - Reads `/capabilities/workflows` with the same backend/profile boundary used
+    by the workshop, but a fixed non-chat `desktop` capability session so it
+    does not reuse the live desktop-pet or workshop test chat memory scope.
+  - Caches the read briefly so high-frequency desktop snapshots do not trigger
+    repeated capability hydration.
+  - On failure, leaves ordinary portrait management usable and only shows
+    "能力状态未同步".
+  - The "去配置" button opens the control center/settings window; it does not
+    execute a workflow or submit an image.
 - `desktop_pet_next/src/control-center/action-surface-contract.js`
   - Classifies provider panel open as client-handled and save/health-check as
     bridged backend-route actions.
@@ -2078,6 +2094,27 @@ Implemented Phase 3C:
 - This is still configuration only. It does not create the Phase 4 workshop
   "自动抠图" action.
 
+Implemented Phase 4A:
+
+- The character workshop portrait tab consumes the workflow catalog read-only.
+- The visible label is "透明背景处理" instead of raw workflow/capability ids.
+- Status examples:
+  - `missing_config` -> "需要配置本地 ComfyUI"
+  - `missing_workflow` -> "需要绑定抠图工作流"
+  - `configured` / `validated_config` -> "已绑定，执行入口待开放"
+  - `unreachable` -> "ComfyUI 暂时未连接"
+- The read path uses `GET /capabilities/workflows` and includes
+  fixed `user_id` / `session_id` values of `desktop`, plus `real_user_id` and
+  `client=desktop_pet`.
+- The result is cached briefly to avoid repeatedly hydrating capabilities on
+  desktop snapshot updates.
+- Failure to read the capability catalog does not block creating outfits,
+  importing images, previewing expressions, setting default portraits, or
+  calibration.
+- The workshop still does not show or run an actual "自动抠图" execution button.
+  No image bytes are sent to ComfyUI, no workflow JSON is parsed, and no
+  generated portrait asset is written in this phase.
+
 Acceptance:
 
 - workflow JSON path can be configured
@@ -2096,6 +2133,12 @@ Acceptance:
 - missing setup shows clear guidance
 - output writes through safe character-pack boundaries
 - UI stays responsive during long run
+
+Current Phase 4A boundary:
+
+- Read-only status guidance is implemented.
+- Real execution remains pending. The next slice must add an explicit execution
+  route/boundary before any clickable "自动抠图" button appears.
 
 ### Phase 5: Voice Provider Layer
 
