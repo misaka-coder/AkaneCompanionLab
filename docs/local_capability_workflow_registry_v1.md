@@ -48,6 +48,11 @@ known workflow/provider config and safe opaque image handles are present, then
 returns structured missing/invalid/not-implemented states. It still does not
 start ComfyUI, parse workflow JSON, upload image bytes, or write generated
 assets.
+Phase 4C adds a low-level ComfyUI HTTP client foundation under
+`companion_v01/local_workflow_runners/comfyui.py`. It is loopback-only and
+tested with fake sessions. It can speak the public `/upload/image`, `/prompt`,
+`/history/{promptId}`, and `/view` routes, but no backend route or workshop UI
+calls it yet.
 
 Files:
 
@@ -101,6 +106,16 @@ Files:
     strings, and obvious secret-bearing values before any future runner can see
     them. The current preflight result remains inert with `canRun:false` and
     `executionReady:false`.
+- `companion_v01/local_workflow_runners/comfyui.py`
+  - Provides a small loopback-only ComfyUI HTTP adapter.
+  - Normalizes endpoints through the same local HTTP policy used by provider
+    config.
+  - Supports upload, prompt queueing, history reads, and output image reads.
+  - Accepts only safe opaque file/subfolder/client/prompt values; local paths,
+    URL-like strings, and obvious secret-bearing values are rejected before
+    requests are made.
+  - This module is not registered as a route and is not reachable from the
+    workshop yet.
 - `companion_v01/app.py`
   - Registers the capabilities router.
 - `tests/test_backend_route_modules.py`
@@ -121,6 +136,10 @@ Files:
   - Verifies workflow preflight rejects unsafe asset handles, reports missing
     config cleanly, and returns `not-implemented` rather than fake success when
     provider/workflow config is present but no runner exists.
+- `tests/test_local_workflow_runners.py`
+  - Verifies the ComfyUI adapter uses normalized loopback endpoints, calls the
+    expected public ComfyUI routes, and rejects unsafe path-like values or bad
+    prompt ids without making real network calls.
 - `desktop_pet_next/src/control-center/data-sources.js`
   - Reads `/capabilities` alongside the control-center runtime data.
   - Treats it as optional: missing or invalid catalog data does not block
@@ -195,7 +214,9 @@ Verification:
 
 ```bash
 python -m unittest tests.test_backend_route_modules
+python -m unittest tests.test_local_workflow_runners
 python -m py_compile companion_v01/local_capability_config.py companion_v01/local_capability_catalog.py companion_v01/routes/capabilities.py companion_v01/app.py tests/test_backend_route_modules.py
+python -m py_compile companion_v01/local_workflow_runners/__init__.py companion_v01/local_workflow_runners/comfyui.py tests/test_local_workflow_runners.py
 cd desktop_pet_next && npm run smoke:control-center-actions
 cd desktop_pet_next && npm run probe:control-center-runtime
 git diff --check
@@ -1981,7 +2002,7 @@ Implemented slice:
   - `POST /capabilities/providers/{providerId}/health-check`
 - Config rules:
   - profile-scoped file:
-    `users_data/<profile_user_id>/capabilities/capabilities.yaml`
+     `users_data/<profile_user_id>/capabilities/capabilities.yaml`
   - endpoint must be loopback `http` or `https`
   - path/query/fragment are stripped before persistence
   - loaded config is re-normalized before exposure; old hand-edited endpoint
@@ -2150,6 +2171,24 @@ Implemented Phase 4B:
   parse workflow JSON, submit a prompt to ComfyUI, send image bytes, poll a
   queue, or write output assets.
 
+Implemented Phase 4C:
+
+- Added `ComfyUiClient` in `companion_v01/local_workflow_runners/comfyui.py`.
+- The client is a protocol adapter only:
+  - `upload_image()` -> ComfyUI `/upload/image`
+  - `queue_prompt()` -> ComfyUI `/prompt`
+  - `get_history()` -> ComfyUI `/history/{promptId}`
+  - `get_image()` -> ComfyUI `/view`
+- Endpoints are loopback-only through `normalize_local_http_endpoint()`.
+- File names, subfolders, client ids, prompt ids, and view targets must be safe
+  short opaque values. Paths, URLs, traversal-like values, and secret-bearing
+  values are rejected.
+- Tests use fake sessions only. No real ComfyUI process is required and no
+  network call is made during verification.
+- This client is not connected to `/capabilities/workflows/{workflowId}/preflight`
+  yet. It does not create jobs, mutate workflow JSON, or write character-pack
+  assets.
+
 Acceptance:
 
 - workflow JSON path can be configured
@@ -2172,8 +2211,8 @@ Acceptance:
 Current Phase 4A boundary:
 
 - Read-only status guidance is implemented.
-- Phase 4B backend preflight is implemented, but real execution remains
-  pending.
+- Phase 4B backend preflight and Phase 4C low-level ComfyUI client are
+  implemented, but real execution remains pending.
 - The next execution slice must add a real runner boundary, background task
   progress, and safe character-pack output writing before any clickable
   "自动抠图" button appears.
