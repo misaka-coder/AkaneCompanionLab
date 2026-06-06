@@ -70,6 +70,11 @@ Phase 4G adds backend workflow job skeleton routes:
 profile-scoped `queued-but-inert` job record when all config/request checks pass,
 but they still do not bind a real runner, upload images, call ComfyUI, or write
 assets.
+Phase 4H adds the runner binding slot and background job state machine. The
+capabilities router can accept an injected `workflow_runner` plus the existing
+`BackgroundTaskRunner`; only then does preflight become `ready` and jobs move
+through `queued -> running -> completed/failed`. Production still passes no
+workflow runner by default, so ComfyUI is not executed yet.
 
 Files:
 
@@ -103,6 +108,15 @@ Files:
     `invalid_request`, `unknown_workflow`, or `not-implemented`; the only
     stored job state is `queued-but-inert`, scoped to the resolved
     `profile_user_id`, with no outputs.
+  - When a real workflow runner is explicitly injected, job routes submit work
+    to the existing background task runner on the `workflow` lane and expose
+    structured progress/status only.
+- `companion_v01/local_workflow_execution.py`
+  - Defines the narrow workflow runner request/result boundary.
+  - Normalizes runner results and sanitizes public outputs to safe
+    `{ handle, kind, contentType }` records.
+  - Drops unsafe output handles and suppresses raw runner exceptions or
+    path/secret-bearing reason strings.
 - `companion_v01/local_capability_config.py`
   - Stores profile-scoped provider endpoint config at
     `users_data/<profile_user_id>/capabilities/capabilities.yaml`.
@@ -175,6 +189,9 @@ Files:
     provider/workflow config is present but no runner exists.
   - Verifies workflow job routes are profile-scoped, inert, and do not echo
     image bytes, URL inputs, local paths, tokens, or secrets.
+  - Verifies an injected workflow runner uses the background `workflow` lane,
+    updates job status, filters unsafe outputs, and reports structured failure
+    when the runner raises.
 - `tests/test_local_workflow_runners.py`
   - Verifies the ComfyUI adapter uses normalized loopback endpoints, calls the
     expected public ComfyUI routes, and rejects unsafe path-like values or bad
@@ -262,7 +279,7 @@ Verification:
 python -m unittest tests.test_backend_route_modules
 python -m unittest tests.test_local_workflow_runners
 python -m unittest tests.test_desktop_pet_frontend_contract
-python -m py_compile companion_v01/local_capability_config.py companion_v01/local_capability_catalog.py companion_v01/routes/capabilities.py companion_v01/app.py tests/test_backend_route_modules.py
+python -m py_compile companion_v01/local_capability_config.py companion_v01/local_capability_catalog.py companion_v01/local_workflow_execution.py companion_v01/routes/capabilities.py companion_v01/app.py tests/test_backend_route_modules.py
 python -m py_compile companion_v01/local_workflow_runners/__init__.py companion_v01/local_workflow_runners/comfyui.py tests/test_local_workflow_runners.py
 cargo check                         # from desktop_pet_next/src-tauri
 cd desktop_pet_next && npm run smoke:control-center-actions
@@ -2292,6 +2309,30 @@ Implemented Phase 4G:
   secrets, or outputs.
 - No background task is submitted yet, and no ComfyUI request is made.
 
+Implemented Phase 4H:
+
+- Added `companion_v01/local_workflow_execution.py`.
+- The new boundary defines `WorkflowExecutionRequest`,
+  `WorkflowExecutionResult`, and a runner callable/protocol shape.
+- Runner results are normalized before they touch public job state:
+  unsafe output handles are discarded; public outputs are limited to
+  `{ handle, kind, contentType }`; raw exceptions, local paths, URLs, tokens,
+  secrets, passwords, and API-key-looking strings are not echoed.
+- `build_capabilities_router()` now accepts optional `workflow_runner` and
+  `background_tasks` parameters.
+- If no runner is injected, behavior remains unchanged:
+  preflight returns `workflow_runner_not_bound`, job start creates only
+  `queued-but-inert`, and no work executes.
+- If a runner is injected and preflight/config/request checks pass:
+  preflight returns `ready`, job start submits a background task on the
+  `workflow` lane, and status polling reports `queued`, `running`,
+  `completed`, or `failed`.
+- `companion_v01/app.py` passes the existing `engine.background_tasks` scheduler
+  to the router, but still does not pass a workflow runner. This is deliberate:
+  production has scheduler readiness but no ComfyUI execution yet.
+- Tests cover both injected-runner success and injected-runner exception
+  failure without exposing unsafe fields.
+
 Acceptance:
 
 - workflow JSON path can be configured
@@ -2316,11 +2357,13 @@ Current Phase 4A boundary:
 - Read-only status guidance is implemented.
 - Phase 4B backend preflight, Phase 4C low-level ComfyUI client, Phase 4D
   in-memory input slot mapping, Phase 4E output ref parsing, Phase 4F Tauri
-  generated portrait import, and Phase 4G inert job routes are implemented, but
-  real execution remains pending.
-- The next execution slice must add a real runner boundary, background task
-  progress, and safe character-pack output writing before any clickable
-  "自动抠图" button appears.
+  generated portrait import, Phase 4G inert job routes, and Phase 4H runner
+  binding/background job state are implemented, but real ComfyUI execution
+  remains pending.
+- The next execution slice must implement the real ComfyUI runner itself:
+  safe workflow JSON loading, input image resolution/upload, prompt queueing,
+  history polling, output image fetch, and safe handoff to the Tauri portrait
+  import boundary before any clickable "自动抠图" button appears.
 
 ### Phase 5: Voice Provider Layer
 

@@ -22,6 +22,10 @@ from ..local_capability_config import (
     save_provider_config,
     validate_workflow_config,
 )
+from ..local_workflow_execution import (
+    WorkflowExecutionRequest,
+    call_workflow_execution_runner,
+)
 from ..local_capability_catalog import (
     build_local_capability_catalog,
     build_local_workflow_catalog,
@@ -45,6 +49,8 @@ def build_capabilities_router(
     local_environment_probe: Callable[[], dict[str, Any]] | None = None,
     capability_config_base_dir: str | Path | None = None,
     provider_health_checker: ProviderHealthChecker | None = None,
+    workflow_runner: Any = None,
+    background_tasks: Any = None,
 ) -> APIRouter:
     router = APIRouter()
     workflow_jobs: dict[str, dict[str, Any]] = {}
@@ -173,6 +179,11 @@ def build_capabilities_router(
             workflow_id=workflow_id,
             payload=payload,
         )
+        result = _with_bound_workflow_runner(
+            result,
+            workflow_runner=workflow_runner,
+            background_tasks=background_tasks,
+        )
         _observe_request(runtime_metrics, "capabilities.workflow_preflight", started_at, bool(result.get("ok")))
         _log_best_effort(
             log_event,
@@ -194,7 +205,22 @@ def build_capabilities_router(
             workflow_id=workflow_id,
             payload=payload,
         )
-        if result.get("status") == "not-implemented" and result.get("reason") == "workflow_runner_not_bound":
+        result = _with_bound_workflow_runner(
+            result,
+            workflow_runner=workflow_runner,
+            background_tasks=background_tasks,
+        )
+        if result.get("ok") and result.get("status") == "ready":
+            result = _start_bound_workflow_job(
+                preflight=result,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                workflow_runner=workflow_runner,
+                background_tasks=background_tasks,
+                workflow_jobs=workflow_jobs,
+                workflow_jobs_lock=workflow_jobs_lock,
+            )
+        elif result.get("status") == "not-implemented" and result.get("reason") == "workflow_runner_not_bound":
             job = _build_inert_workflow_job(
                 preflight=result,
                 profile_user_id=profile_user_id,
@@ -397,6 +423,7 @@ def _build_inert_workflow_job(
     return {
         "_profileUserId": str(profile_user_id or ""),
         "_sessionId": str(session_id or ""),
+        "_workflow": copy.deepcopy(preflight.get("workflow")) if isinstance(preflight.get("workflow"), dict) else {},
         "jobId": f"workflowjob_{uuid.uuid4().hex}",
         "kind": "workflow_job",
         "workflowId": str(preflight.get("workflowId") or ""),
@@ -433,6 +460,246 @@ def _build_inert_workflow_job(
             }
         ],
     }
+
+
+def _start_bound_workflow_job(
+    *,
+    preflight: dict[str, Any],
+    profile_user_id: str,
+    session_id: str,
+    workflow_runner: Any,
+    background_tasks: Any,
+    workflow_jobs: dict[str, dict[str, Any]],
+    workflow_jobs_lock: threading.RLock,
+) -> dict[str, Any]:
+    if workflow_runner is None or background_tasks is None or not hasattr(background_tasks, "submit"):
+        return {
+            **preflight,
+            "ok": False,
+            "status": "not-implemented",
+            "reason": "workflow_scheduler_not_bound",
+            "executionReady": False,
+            "canRun": False,
+        }
+
+    job = _build_bound_workflow_job(
+        preflight=preflight,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+    )
+    with workflow_jobs_lock:
+        workflow_jobs[job["jobId"]] = job
+    try:
+        handle = background_tasks.submit(
+            lane="workflow",
+            name="capability-workflow",
+            fn=_run_bound_workflow_job,
+            args=(job["jobId"], workflow_runner, workflow_jobs, workflow_jobs_lock),
+        )
+    except Exception:
+        _update_workflow_job(
+            job["jobId"],
+            workflow_jobs=workflow_jobs,
+            workflow_jobs_lock=workflow_jobs_lock,
+            status="failed",
+            reason="workflow_scheduler_failed",
+            outputs=[],
+        )
+        with workflow_jobs_lock:
+            failed_job = copy.deepcopy(workflow_jobs[job["jobId"]])
+        return {
+            **preflight,
+            "ok": False,
+            "status": "failed",
+            "reason": "workflow_scheduler_failed",
+            "executionReady": False,
+            "canRun": False,
+            "jobId": job["jobId"],
+            "jobStatus": "failed",
+            "job": _public_workflow_job(failed_job),
+        }
+
+    with workflow_jobs_lock:
+        stored = workflow_jobs.get(job["jobId"])
+        if stored is not None:
+            stored["runner"]["backgroundTaskId"] = str(getattr(handle, "task_id", "") or "")
+            job = copy.deepcopy(stored)
+    return {
+        **preflight,
+        "ok": True,
+        "status": "queued",
+        "reason": "workflow_job_submitted",
+        "executionReady": True,
+        "canRun": False,
+        "jobId": job["jobId"],
+        "jobStatus": job["status"],
+        "job": _public_workflow_job(job),
+    }
+
+
+def _build_bound_workflow_job(
+    *,
+    preflight: dict[str, Any],
+    profile_user_id: str,
+    session_id: str,
+) -> dict[str, Any]:
+    now = _now_iso()
+    accepted_inputs = preflight.get("acceptedInputs") if isinstance(preflight.get("acceptedInputs"), dict) else {}
+    checks = preflight.get("checks") if isinstance(preflight.get("checks"), dict) else {}
+    return {
+        "_profileUserId": str(profile_user_id or ""),
+        "_sessionId": str(session_id or ""),
+        "_workflow": copy.deepcopy(preflight.get("workflow")) if isinstance(preflight.get("workflow"), dict) else {},
+        "jobId": f"workflowjob_{uuid.uuid4().hex}",
+        "kind": "workflow_job",
+        "workflowId": str(preflight.get("workflowId") or ""),
+        "capabilityId": str(preflight.get("capabilityId") or ""),
+        "status": "queued",
+        "reason": "workflow_job_submitted",
+        "executionReady": True,
+        "canRun": False,
+        "createdAt": now,
+        "updatedAt": now,
+        "inputs": {
+            "inputImageHandle": str(accepted_inputs.get("inputImageHandle") or ""),
+            "outputImageHandle": str(accepted_inputs.get("outputImageHandle") or ""),
+        },
+        "checks": {
+            "providerConfigured": bool(checks.get("providerConfigured")),
+            "workflowConfigured": bool(checks.get("workflowConfigured")),
+            "inputImageHandle": bool(checks.get("inputImageHandle")),
+            "outputImageHandle": bool(checks.get("outputImageHandle")),
+            "runnerBound": True,
+        },
+        "runner": {
+            "bound": True,
+            "lane": "workflow",
+            "backgroundTaskId": "",
+            "reason": "",
+        },
+        "outputs": [],
+        "events": [
+            {
+                "status": "queued",
+                "reason": "workflow_job_submitted",
+                "createdAt": now,
+            }
+        ],
+    }
+
+
+def _run_bound_workflow_job(
+    job_id: str,
+    workflow_runner: Any,
+    workflow_jobs: dict[str, dict[str, Any]],
+    workflow_jobs_lock: threading.RLock,
+) -> None:
+    _update_workflow_job(
+        job_id,
+        workflow_jobs=workflow_jobs,
+        workflow_jobs_lock=workflow_jobs_lock,
+        status="running",
+        reason="workflow_running",
+        outputs=[],
+    )
+    with workflow_jobs_lock:
+        job = copy.deepcopy(workflow_jobs.get(job_id))
+    if not job:
+        return
+
+    request = WorkflowExecutionRequest(
+        job_id=str(job.get("jobId") or ""),
+        workflow_id=str(job.get("workflowId") or ""),
+        capability_id=str(job.get("capabilityId") or ""),
+        profile_user_id=str(job.get("_profileUserId") or ""),
+        session_id=str(job.get("_sessionId") or ""),
+        inputs=dict(job.get("inputs") or {}),
+        workflow=copy.deepcopy(job.get("_workflow")) if isinstance(job.get("_workflow"), dict) else {},
+    )
+    try:
+        runner_result = call_workflow_execution_runner(workflow_runner, request)
+    except Exception:
+        runner_result = {
+            "ok": False,
+            "status": "failed",
+            "reason": "workflow_runner_failed",
+            "outputs": [],
+        }
+
+    if runner_result.get("ok"):
+        _update_workflow_job(
+            job_id,
+            workflow_jobs=workflow_jobs,
+            workflow_jobs_lock=workflow_jobs_lock,
+            status="completed",
+            reason=str(runner_result.get("reason") or "workflow_completed"),
+            outputs=list(runner_result.get("outputs") or []),
+        )
+    else:
+        _update_workflow_job(
+            job_id,
+            workflow_jobs=workflow_jobs,
+            workflow_jobs_lock=workflow_jobs_lock,
+            status="failed",
+            reason=str(runner_result.get("reason") or "workflow_runner_failed"),
+            outputs=[],
+        )
+
+
+def _update_workflow_job(
+    job_id: str,
+    *,
+    workflow_jobs: dict[str, dict[str, Any]],
+    workflow_jobs_lock: threading.RLock,
+    status: str,
+    reason: str,
+    outputs: list[dict[str, Any]],
+) -> None:
+    now = _now_iso()
+    with workflow_jobs_lock:
+        job = workflow_jobs.get(job_id)
+        if job is None:
+            return
+        job["status"] = str(status or "failed")[:80]
+        job["reason"] = str(reason or "")[:160]
+        job["updatedAt"] = now
+        job["executionReady"] = False
+        job["canRun"] = False
+        job["outputs"] = copy.deepcopy(outputs)
+        events = list(job.get("events") or [])
+        events.append({"status": job["status"], "reason": job["reason"], "createdAt": now})
+        job["events"] = events[-20:]
+
+
+def _with_bound_workflow_runner(
+    result: dict[str, Any],
+    *,
+    workflow_runner: Any,
+    background_tasks: Any,
+) -> dict[str, Any]:
+    if (
+        workflow_runner is None
+        or result.get("status") != "not-implemented"
+        or result.get("reason") != "workflow_runner_not_bound"
+    ):
+        return result
+    next_result = copy.deepcopy(result)
+    checks = dict(next_result.get("checks") or {})
+    checks["runnerBound"] = True
+    next_result["checks"] = checks
+    if background_tasks is None or not hasattr(background_tasks, "submit"):
+        next_result["ok"] = False
+        next_result["status"] = "not-implemented"
+        next_result["reason"] = "workflow_scheduler_not_bound"
+        next_result["executionReady"] = False
+        next_result["canRun"] = False
+        return next_result
+    next_result["ok"] = True
+    next_result["status"] = "ready"
+    next_result["reason"] = ""
+    next_result["executionReady"] = True
+    next_result["canRun"] = True
+    return next_result
 
 
 def _public_workflow_job(job: dict[str, Any]) -> dict[str, Any]:

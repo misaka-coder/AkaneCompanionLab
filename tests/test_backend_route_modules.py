@@ -12,7 +12,9 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
+from companion_v01.background_tasks import BackgroundTaskRunner
 from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
+from companion_v01.local_workflow_execution import WorkflowExecutionRequest
 from companion_v01.routes.capabilities import build_capabilities_router
 from companion_v01.routes.control_center import (
     build_control_center_router,
@@ -38,6 +40,25 @@ class FakeRuntimeMetrics:
 
     def snapshot(self) -> dict[str, float]:
         return dict(self.counters)
+
+
+class FakeWorkflowRunner:
+    def __init__(self, result: dict[str, Any]) -> None:
+        self.result = result
+        self.requests: list[WorkflowExecutionRequest] = []
+
+    def execute_workflow(self, request: WorkflowExecutionRequest) -> dict[str, Any]:
+        self.requests.append(request)
+        return self.result
+
+
+class ExplodingWorkflowRunner:
+    def __init__(self) -> None:
+        self.requests: list[WorkflowExecutionRequest] = []
+
+    def execute_workflow(self, request: WorkflowExecutionRequest) -> dict[str, Any]:
+        self.requests.append(request)
+        raise RuntimeError(r"secret token leaked from C:\Users\Lenovo\portrait.png")
 
 
 class FakeGuard:
@@ -1494,6 +1515,155 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertIn(("capabilities.workflow_job_start", False), runtime.observed)
             self.assertIn(("capabilities.workflow_job_status", True), runtime.observed)
             self.assertIn(("capabilities.workflow_job_status", False), runtime.observed)
+
+    def test_capabilities_workflow_job_routes_use_bound_background_runner(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        background = BackgroundTaskRunner({"workflow": 1})
+        self.addCleanup(background.close)
+        runner = FakeWorkflowRunner(
+            {
+                "ok": True,
+                "status": "completed",
+                "reason": "cutout_done",
+                "outputs": [
+                    {"handle": "portrait_cutout", "kind": "image", "contentType": "image/png"},
+                    {"handle": "token_secret_output", "kind": "image", "contentType": "image/png"},
+                    {"handle": r"C:\Users\Lenovo\portrait.png", "kind": "image"},
+                ],
+            }
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    workflow_runner=runner,
+                    background_tasks=background,
+                )
+            )
+            client = TestClient(app)
+            client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188"},
+            )
+            client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": "workflows/comfyui/portrait_cutout.json",
+                    "slotMapping": {
+                        "input_image_handle": "input_image",
+                        "output_image_handle": "output_image",
+                    },
+                },
+            )
+
+            preflight = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            ).json()
+            self.assertTrue(preflight["ok"])
+            self.assertEqual(preflight["status"], "ready")
+            self.assertTrue(preflight["executionReady"])
+            self.assertTrue(preflight["canRun"])
+            self.assertTrue(preflight["checks"]["runnerBound"])
+
+            started = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
+                json={
+                    "inputImageHandle": "portrait_source",
+                    "outputImageHandle": "portrait_cutout",
+                    "imageBytes": "RAW_IMAGE_BYTES_SHOULD_NOT_ECHO",
+                },
+            ).json()
+            self.assertTrue(started["ok"])
+            self.assertEqual(started["status"], "queued")
+            self.assertIn(started["jobStatus"], {"queued", "running", "completed"})
+            self.assertTrue(started["job"]["runner"]["bound"])
+            job_id = started["jobId"]
+
+            self.assertTrue(background.wait_idle(lane="workflow", timeout=2.0))
+            status_payload = client.get(
+                f"/capabilities/workflow-jobs/{job_id}?user_id=desktop&real_user_id=master"
+            ).json()
+            self.assertTrue(status_payload["ok"])
+            self.assertEqual(status_payload["status"], "completed")
+            self.assertEqual(status_payload["reason"], "cutout_done")
+            self.assertEqual(
+                status_payload["job"]["outputs"],
+                [{"handle": "portrait_cutout", "kind": "image", "contentType": "image/png"}],
+            )
+            self.assertEqual(len(runner.requests), 1)
+            self.assertEqual(runner.requests[0].profile_user_id, "master")
+            self.assertEqual(runner.requests[0].session_id, "desktop")
+            self.assertEqual(runner.requests[0].inputs["inputImageHandle"], "portrait_source")
+            self.assertEqual(runner.requests[0].inputs["outputImageHandle"], "portrait_cutout")
+            self.assertNotIn("_workflow", status_payload["job"])
+            combined_text = json.dumps([started, status_payload], ensure_ascii=False).lower()
+            for forbidden in (
+                "raw_image_bytes_should_not_echo",
+                "token_secret_output",
+                "users\\lenovo",
+                "portrait.png",
+                str(Path(temp_dir)).lower(),
+            ):
+                self.assertNotIn(forbidden, combined_text)
+            self.assertIn(("capabilities.workflow_job_start", True), runtime.observed)
+            self.assertIn(("capabilities.workflow_job_status", True), runtime.observed)
+
+    def test_capabilities_workflow_job_runner_failure_is_structured(self) -> None:
+        background = BackgroundTaskRunner({"workflow": 1})
+        self.addCleanup(background.close)
+        runner = ExplodingWorkflowRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    resolve_identity_from_query=resolve_query,
+                    workflow_runner=runner,
+                    background_tasks=background,
+                )
+            )
+            client = TestClient(app)
+            client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188"},
+            )
+            client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": "workflows/comfyui/portrait_cutout.json",
+                    "slotMapping": {
+                        "input_image_handle": "input_image",
+                        "output_image_handle": "output_image",
+                    },
+                },
+            )
+
+            started = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            ).json()
+            self.assertTrue(started["ok"])
+            self.assertTrue(background.wait_idle(lane="workflow", timeout=2.0))
+
+            status_payload = client.get(
+                f"/capabilities/workflow-jobs/{started['jobId']}?user_id=desktop&real_user_id=master"
+            ).json()
+            self.assertTrue(status_payload["ok"])
+            self.assertEqual(status_payload["status"], "failed")
+            self.assertEqual(status_payload["reason"], "workflow_runner_failed")
+            self.assertEqual(status_payload["job"]["outputs"], [])
+            self.assertEqual(len(runner.requests), 1)
+            combined_text = json.dumps([started, status_payload], ensure_ascii=False).lower()
+            for forbidden in ("secret", "token", "users\\lenovo", "portrait.png", str(Path(temp_dir)).lower()):
+                self.assertNotIn(forbidden, combined_text)
 
     def test_capabilities_local_environment_check_is_discovery_not_enablement(self) -> None:
         runtime = FakeRuntimeMetrics()

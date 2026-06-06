@@ -394,6 +394,7 @@ app.include_router(
         runtime_metrics=runtime_metrics,
         log_event=_log_event,
         resolve_identity_from_query=_resolve_identity_from_query,
+        background_tasks=getattr(engine, "background_tasks", None),
     )
 )
 app.include_router(
