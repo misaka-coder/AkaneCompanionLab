@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from typing import Any
 
 import config
 
 from .llm_runtime import LLMRuntime
+from . import final_output_engine
 from .memory_rendering import (
     render_semantic_summary_snippet,
     render_summary_timeline,
@@ -34,11 +36,13 @@ class MemoryCompactionService:
         vector_store: VectorStore,
         llm: LLMRuntime,
         prompt_builder: PromptBuilder,
+        persona_context_provider: Callable[..., dict[str, Any]] | None = None,
     ):
         self.store = store
         self.vector_store = vector_store
         self.llm = llm
         self.prompt_builder = prompt_builder
+        self.persona_context_provider = persona_context_provider
         self._summary_generation = 0
         self._summary_generation_lock = threading.Lock()
         self.summary_queue = SummaryTaskQueue(self._process_summary_task)
@@ -108,7 +112,12 @@ class MemoryCompactionService:
             )
             if len(batch) < summary_batch_size:
                 return
-            summary_payload = self._summarize_batch(batch)
+            summary_payload = self._summarize_batch(
+                batch,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
             if not self._is_summary_generation_current(generation):
                 return
             summary_tags = extract_semantic_tags(
@@ -119,6 +128,12 @@ class MemoryCompactionService:
                 ),
                 limit=8,
             )
+            summary_importance = self._coerce_importance(summary_payload.get("importance", 0.5))
+            summary_metadata = self._normalize_memory_metadata(
+                summary_payload.get("memory_metadata"),
+                fallback_keywords=summary_tags,
+                fallback_importance=summary_importance,
+            )
             summary_record = self.store.add_summary(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -128,7 +143,7 @@ class MemoryCompactionService:
                 time_of_day=batch[-1]["time_of_day"],
                 period_label=summary_payload.get("period_label", ""),
                 event_type=summary_payload.get("event_type", "日常"),
-                importance=self._coerce_importance(summary_payload.get("importance", 0.5)),
+                importance=summary_importance,
                 diary_summary=summary_payload.get("diary_summary", ""),
                 key_events=list(summary_payload.get("key_events") or []),
                 core_facts=list(summary_payload.get("core_facts") or []),
@@ -136,6 +151,7 @@ class MemoryCompactionService:
                 source_start_seq=batch[0]["seq_no"],
                 source_end_seq=batch[-1]["seq_no"],
                 source_ids=[item["source_id"] for item in batch],
+                memory_metadata=summary_metadata,
             )
             self.store.mark_messages_summarized([item["source_id"] for item in batch], summary_record["summary_id"])
             self._upsert_summary_record(summary_record)
@@ -168,7 +184,12 @@ class MemoryCompactionService:
             )
             if len(batch) < semantic_batch_size:
                 return
-            semantic_payload = self._semanticize_summary_batch(batch)
+            semantic_payload = self._semanticize_summary_batch(
+                batch,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
             if not self._is_summary_generation_current(generation):
                 return
             period_start_ts = min(
@@ -187,6 +208,12 @@ class MemoryCompactionService:
                 + list(semantic_payload.get("open_loops") or [])
             )
             semantic_tags = extract_semantic_tags(semantic_text, limit=10)
+            incoming_importance = self._coerce_importance(semantic_payload.get("importance", 0.6))
+            incoming_metadata = self._normalize_memory_metadata(
+                semantic_payload.get("memory_metadata"),
+                fallback_keywords=semantic_tags,
+                fallback_importance=incoming_importance,
+            )
             incoming_record = {
                 "profile_user_id": profile_user_id,
                 "session_id": session_id,
@@ -196,13 +223,14 @@ class MemoryCompactionService:
                 "period_end_ts": period_end_ts,
                 "date_label": timestamp_to_date_label(period_end_ts),
                 "time_of_day": infer_time_of_day(period_end_ts),
-                "importance": self._coerce_importance(semantic_payload.get("importance", 0.6)),
+                "importance": incoming_importance,
                 "semantic_summary": str(semantic_payload.get("semantic_summary") or "").strip(),
                 "stable_facts": list(semantic_payload.get("stable_facts") or []),
                 "recurring_topics": list(semantic_payload.get("recurring_topics") or []),
                 "important_people": list(semantic_payload.get("important_people") or []),
                 "open_loops": list(semantic_payload.get("open_loops") or []),
                 "semantic_tags": semantic_tags,
+                "memory_metadata": incoming_metadata,
                 "source_summary_ids": [item["summary_id"] for item in batch],
             }
             reinforcement_target = self._select_semantic_reinforcement_target(
@@ -233,6 +261,7 @@ class MemoryCompactionService:
                     open_loops=incoming_record["open_loops"],
                     semantic_tags=incoming_record["semantic_tags"],
                     source_summary_ids=incoming_record["source_summary_ids"],
+                    memory_metadata=incoming_record["memory_metadata"],
                 )
             self.store.mark_summaries_semanticized(
                 [item["summary_id"] for item in batch],
@@ -253,7 +282,14 @@ class MemoryCompactionService:
         with self._summary_generation_lock:
             return int(generation) == int(self._summary_generation)
 
-    def _summarize_batch(self, batch: list[dict[str, Any]]) -> dict[str, Any]:
+    def _summarize_batch(
+        self,
+        batch: list[dict[str, Any]],
+        *,
+        profile_user_id: str = "",
+        session_id: str = "",
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
         transcript = render_chat_timeline(batch)
         fallback = {
             "diary_summary": self.prompt_builder.persona.build_summary_fallback_diary(
@@ -264,10 +300,16 @@ class MemoryCompactionService:
             "importance": 0.5,
             "key_events": [item["content"][:24] for item in batch[:3]],
             "core_facts": extract_semantic_tags(transcript, limit=4),
+            "memory_metadata": {},
         }
         system_prompt, user_prompt = self.prompt_builder.build_summary_prompts(
             transcript=transcript,
             batch_size=len(batch),
+            **self._build_memory_persona_prompt_kwargs(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            ),
         )
         result = self.llm.call_aux_json(
             system_prompt=system_prompt,
@@ -282,7 +324,14 @@ class MemoryCompactionService:
             result["core_facts"] = fallback["core_facts"]
         return result
 
-    def _semanticize_summary_batch(self, batch: list[dict[str, Any]]) -> dict[str, Any]:
+    def _semanticize_summary_batch(
+        self,
+        batch: list[dict[str, Any]],
+        *,
+        profile_user_id: str = "",
+        session_id: str = "",
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
         source_text = render_summary_timeline(batch, store=self.store)
         source_tags = extract_semantic_tags(source_text, limit=6)
         stable_facts = source_tags[:4]
@@ -297,9 +346,15 @@ class MemoryCompactionService:
             "recurring_topics": recurring_topics,
             "important_people": [],
             "open_loops": [],
+            "memory_metadata": {},
         }
         system_prompt, user_prompt = self.prompt_builder.build_semantic_summary_prompts(
             source_text=source_text,
+            **self._build_memory_persona_prompt_kwargs(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            ),
         )
         result = self.llm.call_aux_json(
             system_prompt=system_prompt,
@@ -315,6 +370,7 @@ class MemoryCompactionService:
         normalized["recurring_topics"] = self._normalize_string_list(normalized.get("recurring_topics"), limit=6) or fallback["recurring_topics"]
         normalized["important_people"] = self._normalize_string_list(normalized.get("important_people"), limit=6)
         normalized["open_loops"] = self._normalize_string_list(normalized.get("open_loops"), limit=6)
+        normalized["memory_metadata"] = normalized.get("memory_metadata") if isinstance(normalized.get("memory_metadata"), dict) else fallback["memory_metadata"]
         return normalized
 
     def _select_semantic_reinforcement_target(
@@ -413,12 +469,18 @@ class MemoryCompactionService:
             "recurring_topics": merged_recurring_topics,
             "important_people": merged_important_people,
             "open_loops": merged_open_loops,
+            "memory_metadata": dict(existing_record.get("memory_metadata") or {}),
         }
         existing_text = render_semantic_summary_snippet(existing_record, store=self.store)
         incoming_text = render_semantic_summary_snippet(incoming_record, store=self.store)
         system_prompt, user_prompt = self.prompt_builder.build_semantic_reinforcement_prompts(
             existing_text=existing_text,
             incoming_text=incoming_text,
+            **self._build_memory_persona_prompt_kwargs(
+                profile_user_id=str(existing_record.get("profile_user_id") or incoming_record.get("profile_user_id") or ""),
+                session_id=str(existing_record.get("session_id") or incoming_record.get("session_id") or ""),
+                character_pack_id=str(existing_record.get("character_pack_id") or incoming_record.get("character_pack_id") or ""),
+            ),
         )
         result = self.llm.call_aux_json(
             system_prompt=system_prompt,
@@ -434,6 +496,7 @@ class MemoryCompactionService:
         normalized["recurring_topics"] = self._normalize_string_list(normalized.get("recurring_topics"), limit=8) or fallback["recurring_topics"]
         normalized["important_people"] = self._normalize_string_list(normalized.get("important_people"), limit=8) or fallback["important_people"]
         normalized["open_loops"] = self._normalize_string_list(normalized.get("open_loops"), limit=8) or fallback["open_loops"]
+        normalized["memory_metadata"] = normalized.get("memory_metadata") if isinstance(normalized.get("memory_metadata"), dict) else fallback["memory_metadata"]
 
         merged_period_start = min(
             int(existing_record.get("period_start_ts") or existing_record.get("timestamp") or incoming_record["period_start_ts"]),
@@ -451,6 +514,11 @@ class MemoryCompactionService:
             + list(normalized.get("open_loops") or [])
         )
         semantic_tags = extract_semantic_tags(merged_text, limit=10)
+        normalized_metadata = self._normalize_memory_metadata(
+            normalized.get("memory_metadata"),
+            fallback_keywords=semantic_tags,
+            fallback_importance=normalized["importance"],
+        )
         updated = self.store.update_semantic_summary(
             semantic_id=existing_record["semantic_id"],
             timestamp=merged_period_end,
@@ -468,6 +536,7 @@ class MemoryCompactionService:
             source_summary_ids=merged_source_summary_ids,
             reinforcement_count=existing_count + 1,
             last_reinforced_ts=int(incoming_record.get("timestamp") or merged_period_end),
+            memory_metadata=normalized_metadata,
         )
         return updated or existing_record
 
@@ -534,6 +603,53 @@ class MemoryCompactionService:
                 break
 
         return items
+
+    def _build_memory_persona_prompt_kwargs(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, str]:
+        provider = self.persona_context_provider
+        if provider is None:
+            return {"persona_system_context": "", "persona_reference_context": ""}
+        try:
+            context = provider(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+        except Exception:
+            return {"persona_system_context": "", "persona_reference_context": ""}
+        if not isinstance(context, dict):
+            return {"persona_system_context": "", "persona_reference_context": ""}
+        return {
+            "persona_system_context": str(context.get("system_context") or "").strip(),
+            "persona_reference_context": str(context.get("reference_context") or "").strip(),
+        }
+
+    def _normalize_memory_metadata(
+        self,
+        value: Any,
+        *,
+        fallback_keywords: list[str],
+        fallback_importance: float,
+        fallback_confidence: float = 0.6,
+    ) -> dict[str, Any]:
+        raw = value if isinstance(value, dict) else {}
+        metadata = final_output_engine.normalize_memory_metadata(
+            self,
+            raw,
+            legacy_memory_tags=fallback_keywords,
+        )
+        if not metadata.get("keywords"):
+            metadata["keywords"] = self._normalize_string_list(fallback_keywords, limit=4, max_length=16)
+        if "importance" not in raw:
+            metadata["importance"] = self._coerce_importance(fallback_importance)
+        if "confidence" not in raw:
+            metadata["confidence"] = float(max(0.0, min(1.0, fallback_confidence)))
+        return metadata
 
     def _merge_unique_strings(
         self,

@@ -4,7 +4,7 @@ from typing import Any
 
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
 from .persona_config import PERSONA
-from .text_utils import join_tags
+from .text_utils import normalize_text, parse_joined_tags
 
 _MUSIC_FALLBACK_ACTIONS = (
     (["暂停", "停一下", "先停", "停一停"], "pause"),
@@ -14,6 +14,75 @@ _MUSIC_FALLBACK_ACTIONS = (
     (["放首歌", "放歌", "播放音乐", "播音乐", "放一首", "来首歌"], "play"),
 )
 _MUSIC_FALLBACK_NEGATIONS = ("不要", "别", "先别", "不用", "不想", "不要再", "别再")
+
+_MEMORY_SUBJECT_SCOPE_ALIASES = {
+    "user": "user",
+    "self": "user",
+    "player": "user",
+    "用户": "user",
+    "玩家": "user",
+    "主人": "user",
+    "assistant": "assistant",
+    "akane": "assistant",
+    "character": "assistant",
+    "角色": "assistant",
+    "助手": "assistant",
+    "当前助手": "assistant",
+    "other": "other",
+    "third_party": "other",
+    "别人": "other",
+    "他人": "other",
+    "动物": "other",
+    "relationship": ["user", "assistant"],
+    "shared": ["user", "assistant"],
+    "关系": ["user", "assistant"],
+    "共同关系": ["user", "assistant"],
+    "约定": ["user", "assistant"],
+    "topic": "other",
+    "project": "other",
+    "object": "other",
+    "话题": "other",
+    "项目": "other",
+}
+
+_MEMORY_CATEGORY_ALIASES = {
+    "casual": "casual",
+    "闲聊": "casual",
+    "preference": "preference",
+    "偏好": "preference",
+    "喜好": "preference",
+    "personal_profile": "personal_profile",
+    "profile": "personal_profile",
+    "身份": "personal_profile",
+    "习惯": "personal_profile",
+    "plan_goal": "plan_goal",
+    "plan": "plan_goal",
+    "goal": "plan_goal",
+    "计划": "plan_goal",
+    "目标": "plan_goal",
+    "project_work": "project_work",
+    "project": "project_work",
+    "work": "project_work",
+    "项目": "project_work",
+    "创作": "project_work",
+    "relationship": "relationship",
+    "关系": "relationship",
+    "emotion_state": "emotion_state",
+    "emotion": "emotion_state",
+    "mood": "emotion_state",
+    "情绪": "emotion_state",
+    "状态": "emotion_state",
+    "life_event": "life_event",
+    "event": "life_event",
+    "生活事件": "life_event",
+    "memory_query": "memory_query",
+    "memory": "memory_query",
+    "记忆查询": "memory_query",
+    "system_meta": "system_meta",
+    "system": "system_meta",
+    "meta": "system_meta",
+    "系统": "system_meta",
+}
 
 
 def normalize_final_output(
@@ -77,7 +146,13 @@ def normalize_final_output(
     normalized["speech"] = speech
     normalized["speech_segments"] = speech_segments
     normalized["code_snippet"] = normalize_code_snippet(normalized.get("code_snippet"))
-    normalized["memory_tags"] = join_tags(engine._normalize_memory_tags(normalized.get("memory_tags")))
+    memory_metadata = normalize_memory_metadata(
+        engine,
+        normalized.get("memory_metadata"),
+        legacy_memory_tags=normalized.get("memory_tags"),
+    )
+    normalized["memory_metadata"] = memory_metadata
+    normalized.pop("memory_tags", None)
     normalized["choices"] = engine._normalize_choices(normalized.get("choices"))
     persona_service = engine._get_persona_card_service()
     current_persona_id = (
@@ -120,6 +195,129 @@ def normalize_final_output(
         )
     normalized = engine._get_output_adapter_registry().normalize(normalized, client_context)
     return normalized
+
+
+def normalize_memory_metadata(
+    engine: Any,
+    value: Any,
+    *,
+    legacy_memory_tags: Any = None,
+) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    keyword_inputs = _collect_tag_inputs(raw.get("keywords"), raw.get("memory_tags"), legacy_memory_tags)
+    keywords = _normalize_memory_keywords(engine, keyword_inputs)
+    subject_scopes = _normalize_enum_list(
+        raw.get("subject_scopes") or raw.get("subjects") or raw.get("scope"),
+        aliases=_MEMORY_SUBJECT_SCOPE_ALIASES,
+        limit=3,
+    )
+    categories = _normalize_enum_list(
+        raw.get("categories") or raw.get("category"),
+        aliases=_MEMORY_CATEGORY_ALIASES,
+        limit=3,
+    )
+    return {
+        "keywords": keywords,
+        "subject_scopes": subject_scopes,
+        "categories": categories,
+        "importance": _coerce_unit_float(raw.get("importance"), default=0.0),
+        "confidence": _coerce_unit_float(raw.get("confidence"), default=0.0),
+    }
+
+
+def extract_memory_keywords(engine: Any, final_output: dict[str, Any]) -> list[str]:
+    output = final_output if isinstance(final_output, dict) else {}
+    metadata = output.get("memory_metadata")
+    if isinstance(metadata, dict):
+        keywords = metadata.get("keywords")
+    else:
+        keywords = output.get("memory_tags")
+    if hasattr(engine, "_normalize_memory_tags"):
+        normalized = engine._normalize_memory_tags(keywords)
+        if isinstance(normalized, list):
+            return [str(item).strip() for item in normalized if str(item).strip()][:4]
+    return _normalize_memory_keywords(engine, _collect_tag_inputs(keywords))
+
+
+def _collect_tag_inputs(*values: Any) -> list[str]:
+    items: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, list):
+            for item in value:
+                if str(item or "").strip():
+                    items.append(str(item).strip())
+            continue
+        if isinstance(value, str):
+            normalized = (
+                value.replace("，", ",")
+                .replace("、", ",")
+                .replace("；", ",")
+                .replace(";", ",")
+                .replace("|", ",")
+            )
+            items.extend(parse_joined_tags(normalized))
+            continue
+        text = str(value or "").strip()
+        if text:
+            items.append(text)
+    return items
+
+
+def _normalize_memory_keywords(engine: Any, raw_items: list[str]) -> list[str]:
+    if hasattr(engine, "_normalize_memory_tags"):
+        normalized = engine._normalize_memory_tags(raw_items)
+        if isinstance(normalized, list):
+            return [str(item).strip() for item in normalized if str(item).strip()][:4]
+        if isinstance(normalized, str):
+            raw_items = _collect_tag_inputs(normalized)
+    normalized_items: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        compact = normalize_text(item).strip("[](){}\"' ")
+        if not compact or len(compact) > 16:
+            continue
+        dedupe_key = compact.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized_items.append(compact)
+        if len(normalized_items) >= 4:
+            break
+    return normalized_items
+
+
+def _normalize_enum_list(
+    value: Any,
+    *,
+    aliases: dict[str, str | list[str]],
+    limit: int,
+) -> list[str]:
+    normalized_items: list[str] = []
+    seen: set[str] = set()
+    for item in _collect_tag_inputs(value):
+        if len(normalized_items) >= limit:
+            break
+        key = normalize_text(item).lower()
+        mapped = aliases.get(key) or aliases.get(key.replace("-", "_"))
+        mapped_items = mapped if isinstance(mapped, list) else [mapped]
+        for mapped_item in mapped_items:
+            if len(normalized_items) >= limit:
+                break
+            if not mapped_item or mapped_item in seen:
+                continue
+            seen.add(mapped_item)
+            normalized_items.append(mapped_item)
+    return normalized_items
+
+
+def _coerce_unit_float(value: Any, *, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return float(max(0.0, min(1.0, number)))
 
 
 def normalize_speech_payload(

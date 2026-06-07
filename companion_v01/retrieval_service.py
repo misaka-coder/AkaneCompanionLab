@@ -16,6 +16,7 @@ from .text_utils import (
     detect_time_of_day_from_text,
     extract_semantic_tags,
     normalize_text,
+    parse_joined_tags,
     render_chat_line,
     render_chat_timeline,
     timestamp_to_datetime_label,
@@ -130,6 +131,63 @@ TASK_LIKE_ROUTER_QUERY_MARKERS = [
     "模型",
     "路由",
 ]
+PRECISION_SOURCE_LAYERS = {"raw", "summary", "semantic_summary"}
+PRECISION_SUBJECT_SCOPES = {"user", "assistant", "other"}
+PRECISION_CATEGORIES = {
+    "casual",
+    "preference",
+    "personal_profile",
+    "plan_goal",
+    "project_work",
+    "relationship",
+    "emotion_state",
+    "life_event",
+    "memory_query",
+    "system_meta",
+}
+PRECISION_SOURCE_LAYER_ALIASES = {
+    "semantic": "semantic_summary",
+    "semantic_memory": "semantic_summary",
+    "long_term": "semantic_summary",
+    "longterm": "semantic_summary",
+    "长期记忆": "semantic_summary",
+    "摘要": "summary",
+    "原始": "raw",
+    "原始对话": "raw",
+}
+PRECISION_SUBJECT_SCOPE_ALIASES = {
+    "用户": "user",
+    "玩家": "user",
+    "主人": "user",
+    "我": "user",
+    "assistant": "assistant",
+    "akane": "assistant",
+    "角色": "assistant",
+    "助手": "assistant",
+    "其它": "other",
+    "其他": "other",
+    "别人": "other",
+    "他人": "other",
+    "项目": "other",
+    "话题": "other",
+}
+PRECISION_CATEGORY_ALIASES = {
+    "闲聊": "casual",
+    "偏好": "preference",
+    "喜好": "preference",
+    "个人资料": "personal_profile",
+    "计划": "plan_goal",
+    "目标": "plan_goal",
+    "项目": "project_work",
+    "工作": "project_work",
+    "关系": "relationship",
+    "情绪": "emotion_state",
+    "状态": "emotion_state",
+    "生活事件": "life_event",
+    "回忆": "memory_query",
+    "记忆查询": "memory_query",
+    "系统": "system_meta",
+}
 
 
 class RetrievalService:
@@ -227,6 +285,11 @@ class RetrievalService:
         query: str | None = None,
         keywords: list[str] | None = None,
         time_hint: dict[str, Any] | None = None,
+        source_layers: list[str] | None = None,
+        subject_scopes: list[str] | None = None,
+        categories: list[str] | None = None,
+        importance_min: float | int | str | None = None,
+        limit: int | None = None,
         exclude_source_ids: list[str] | None = None,
         verifier_debug_enabled: bool | None = None,
         route: str = "memory_search",
@@ -243,6 +306,13 @@ class RetrievalService:
             fallback_query=original_query,
             keywords=normalized_keywords,
         )
+        precision_filters = self._normalize_precision_filters(
+            source_layers=source_layers,
+            subject_scopes=subject_scopes,
+            categories=categories,
+            importance_min=importance_min,
+            limit=limit,
+        )
         router_output = self._finalize_router_output(
             need_retrieval=True,
             route=route or "memory_search",
@@ -252,6 +322,7 @@ class RetrievalService:
             index_current_message=self._should_index_current_message_default(original_query),
             debug_enabled=False,
         )
+        router_output["precision_filters"] = precision_filters
         retrieval_result, verifier_output, confirmed_snippets, verifier_timing = self._run_retrieval_chain(
             profile_user_id=profile_user_id,
             character_pack_id=character_pack_id,
@@ -453,6 +524,7 @@ class RetrievalService:
         )
         attempts_debug: list[dict[str, Any]] = []
         for attempt in range(2):
+            precision_filters = self._normalize_precision_filters(current_router.get("precision_filters"))
             excluded_before_attempt = sorted(accumulated_exclude_ids)
             retrieval_result = self._retrieve_memories(
                 profile_user_id=profile_user_id,
@@ -460,6 +532,11 @@ class RetrievalService:
                 query=current_router.get("rewritten_query") or original_query,
                 keywords=list(current_router.get("keywords") or []),
                 time_hint=self._normalize_time_hint(current_router.get("time_hint")),
+                source_layers=precision_filters.get("source_layers"),
+                subject_scopes=precision_filters.get("subject_scopes"),
+                categories=precision_filters.get("categories"),
+                importance_min=precision_filters.get("importance_min"),
+                limit=precision_filters.get("limit"),
                 exclude_source_ids=list(accumulated_exclude_ids),
             )
             verifier_output, verifier_attempt_timing = self._verify_memories(
@@ -482,6 +559,7 @@ class RetrievalService:
                     "query": str(current_router.get("rewritten_query") or original_query),
                     "keywords": list(current_router.get("keywords") or []),
                     "time_hint": self._normalize_time_hint(current_router.get("time_hint")),
+                    "precision_filters": precision_filters,
                     "excluded_source_ids": excluded_before_attempt,
                     "retrieved_source_ids": retrieved_source_ids,
                     "selected_indexes": list(verifier_output.get("selected_indexes") or []),
@@ -518,6 +596,7 @@ class RetrievalService:
                     verifier_output.get("retry_time_hint"),
                     default=current_router.get("time_hint"),
                 ),
+                "precision_filters": precision_filters,
                 "reason": verifier_output.get("reason", ""),
                 "confidence": 0.5,
             }
@@ -558,9 +637,23 @@ class RetrievalService:
         query: str,
         keywords: list[str],
         time_hint: dict[str, Any] | None,
+        source_layers: list[str] | None = None,
+        subject_scopes: list[str] | None = None,
+        categories: list[str] | None = None,
+        importance_min: float | int | str | None = None,
+        limit: int | None = None,
         exclude_source_ids: list[str],
     ) -> dict[str, Any]:
         normalized_time_hint = self._normalize_time_hint(time_hint)
+        precision_filters = self._normalize_precision_filters(
+            source_layers=source_layers,
+            subject_scopes=subject_scopes,
+            categories=categories,
+            importance_min=importance_min,
+            limit=limit,
+        )
+        retrieval_limit = int(precision_filters.get("limit") or 4)
+        candidate_pool_size = max(10, min(80, retrieval_limit * 10))
         excluded_ids = {
             str(source_id).strip()
             for source_id in (exclude_source_ids or [])
@@ -573,9 +666,9 @@ class RetrievalService:
                 character_pack_id=character_pack_id,
                 query_text=query,
                 time_hint=normalized_time_hint,
-                n_results=10,
+                n_results=candidate_pool_size,
             )
-            if hit["source_id"] not in excluded_ids
+            if str(hit.get("source_id") or "").strip() not in excluded_ids
         ]
         keyword_hits = [
             hit
@@ -585,25 +678,31 @@ class RetrievalService:
                 query_text=query,
                 keywords=keywords,
                 time_hint=normalized_time_hint,
-                n_results=10,
+                n_results=candidate_pool_size,
             )
-            if hit["source_id"] not in excluded_ids
+            if str(hit.get("source_id") or "").strip() not in excluded_ids
         ]
+        semantic_hits, keyword_hits, precision_debug = self._apply_precision_filter_relaxation(
+            semantic_hits=semantic_hits,
+            keyword_hits=keyword_hits,
+            precision_filters=precision_filters,
+        )
         fused_hits = fuse_with_rrf(semantic_hits, keyword_hits)
         fused_hits = self._rerank_fused_hits(
             query=query,
             keywords=keywords,
             fused_hits=fused_hits,
-        )[:4]
+        )[:retrieval_limit]
         memory_snippets = self._build_memory_snippets(fused_hits)
         return {
-            "filtered_candidate_count": len({hit["source_id"] for hit in semantic_hits + keyword_hits}),
+            "filtered_candidate_count": precision_debug["candidate_count_after"],
             "time_filter": {
                 "date_label": normalized_time_hint.get("date_label"),
                 "time_of_day": normalized_time_hint.get("time_of_day"),
                 "relative_time": normalized_time_hint.get("relative_time"),
                 "matched": bool(normalized_time_hint.get("date_label") or normalized_time_hint.get("time_of_day")),
             },
+            "precision_filters": precision_debug,
             "fused_hits": [
                 {
                     "source_id": hit["source_id"],
@@ -621,6 +720,188 @@ class RetrievalService:
             "memory_snippets": memory_snippets,
         }
 
+    def _apply_precision_filter_relaxation(
+        self,
+        *,
+        semantic_hits: list[dict[str, Any]],
+        keyword_hits: list[dict[str, Any]],
+        precision_filters: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        requested_filters = self._normalize_precision_filters(precision_filters)
+        candidate_hits = self._unique_hits_by_source_id([*semantic_hits, *keyword_hits])
+        candidate_count_before = len(candidate_hits)
+        target_count = max(1, min(int(requested_filters.get("limit") or 4), 4))
+        stages = self._build_precision_filter_stages(requested_filters)
+
+        selected_stage = stages[-1]
+        selected_candidates: list[dict[str, Any]] = []
+        for stage in stages:
+            matching_candidates = self._filter_hits_by_precision(candidate_hits, stage["filters"])
+            selected_stage = stage
+            selected_candidates = matching_candidates
+            if len(matching_candidates) >= target_count:
+                break
+
+        allowed_source_ids = {
+            str(hit.get("source_id") or "").strip()
+            for hit in selected_candidates
+            if str(hit.get("source_id") or "").strip()
+        }
+        filtered_semantic_hits = [
+            hit
+            for hit in semantic_hits
+            if str(hit.get("source_id") or "").strip() in allowed_source_ids
+        ]
+        filtered_keyword_hits = [
+            hit
+            for hit in keyword_hits
+            if str(hit.get("source_id") or "").strip() in allowed_source_ids
+        ]
+        applied_filters = self._precision_filter_names(selected_stage["filters"])
+        return filtered_semantic_hits, filtered_keyword_hits, {
+            "requested_filters": {
+                "source_layers": list(requested_filters.get("source_layers") or []),
+                "subject_scopes": list(requested_filters.get("subject_scopes") or []),
+                "categories": list(requested_filters.get("categories") or []),
+                "importance_min": requested_filters.get("importance_min"),
+                "limit": int(requested_filters.get("limit") or 4),
+            },
+            "applied_filters": applied_filters,
+            "relaxed_filters": list(selected_stage.get("relaxed_filters") or []),
+            "relaxation_stage": str(selected_stage.get("name") or "strict"),
+            "candidate_count_before": candidate_count_before,
+            "candidate_count_after": len(selected_candidates),
+            "target_count": target_count,
+        }
+
+    def _build_precision_filter_stages(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        current = {
+            "source_layers": list(filters.get("source_layers") or []),
+            "subject_scopes": list(filters.get("subject_scopes") or []),
+            "categories": list(filters.get("categories") or []),
+            "importance_min": filters.get("importance_min"),
+            "limit": int(filters.get("limit") or 4),
+        }
+        stages: list[dict[str, Any]] = []
+        relaxed_filters: list[str] = []
+
+        def add_stage(name: str) -> None:
+            stages.append(
+                {
+                    "name": name,
+                    "filters": {
+                        "source_layers": list(current["source_layers"]),
+                        "subject_scopes": list(current["subject_scopes"]),
+                        "categories": list(current["categories"]),
+                        "importance_min": current["importance_min"],
+                        "limit": current["limit"],
+                    },
+                    "relaxed_filters": list(relaxed_filters),
+                }
+            )
+
+        if not self._precision_filter_names(current):
+            add_stage("no_precision_filters")
+            return stages
+
+        add_stage("strict")
+        if current["importance_min"] is not None:
+            current["importance_min"] = None
+            relaxed_filters.append("importance_min")
+            add_stage("drop_importance_min")
+        if current["categories"]:
+            current["categories"] = []
+            relaxed_filters.append("categories")
+            add_stage("drop_categories")
+        if current["subject_scopes"]:
+            current["subject_scopes"] = []
+            relaxed_filters.append("subject_scopes")
+            add_stage("drop_subject_scopes")
+        if current["source_layers"]:
+            current["source_layers"] = []
+            relaxed_filters.append("source_layers")
+            add_stage("no_precision_filters")
+        return stages
+
+    def _unique_hits_by_source_id(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        unique_hits: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for hit in hits:
+            source_id = str(hit.get("source_id") or "").strip()
+            if not source_id or source_id in seen:
+                continue
+            seen.add(source_id)
+            unique_hits.append(hit)
+        return unique_hits
+
+    def _filter_hits_by_precision(
+        self,
+        hits: list[dict[str, Any]],
+        filters: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return [hit for hit in hits if self._hit_matches_precision_filters(hit, filters)]
+
+    def _hit_matches_precision_filters(self, hit: dict[str, Any], filters: dict[str, Any]) -> bool:
+        source_layers = set(filters.get("source_layers") or [])
+        if source_layers:
+            entry_type = str(hit.get("entry_type") or (hit.get("metadata") or {}).get("entry_type") or "").strip()
+            if entry_type not in source_layers:
+                return False
+
+        subject_scopes = set(filters.get("subject_scopes") or [])
+        if subject_scopes:
+            hit_subjects = set(self._metadata_list(hit, "memory_subject_scopes_text"))
+            if not hit_subjects.intersection(subject_scopes):
+                return False
+
+        categories = set(filters.get("categories") or [])
+        if categories:
+            hit_categories = set(self._metadata_list(hit, "memory_categories_text"))
+            if not hit_categories.intersection(categories):
+                return False
+
+        importance_min = filters.get("importance_min")
+        if importance_min is not None and self._hit_memory_importance(hit) < float(importance_min):
+            return False
+        return True
+
+    def _metadata_list(self, hit: dict[str, Any], key: str) -> list[str]:
+        metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+        raw_value = metadata.get(key)
+        if isinstance(raw_value, list):
+            raw_items = raw_value
+        else:
+            raw_items = parse_joined_tags(str(raw_value or ""))
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            text = normalize_text(str(item or "")).strip().lower().replace("-", "_")
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        return normalized
+
+    def _hit_memory_importance(self, hit: dict[str, Any]) -> float:
+        metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+        try:
+            value = float(metadata.get("memory_importance"))
+        except (TypeError, ValueError):
+            value = 0.0
+        return float(max(0.0, min(1.0, value)))
+
+    def _precision_filter_names(self, filters: dict[str, Any]) -> list[str]:
+        names: list[str] = []
+        if filters.get("source_layers"):
+            names.append("source_layers")
+        if filters.get("subject_scopes"):
+            names.append("subject_scopes")
+        if filters.get("categories"):
+            names.append("categories")
+        if filters.get("importance_min") is not None:
+            names.append("importance_min")
+        return names
+
     def _build_memory_snippets(self, fused_hits: list[dict[str, Any]]) -> list[str]:
         snippets: list[str] = []
         seen: set[str] = set()
@@ -637,7 +918,13 @@ class RetrievalService:
                 dedupe_key = f"semantic::{record['semantic_id']}"
             else:
                 window = 2 if self._is_question_like(record.get("content", "")) else 1
-                context_rows = self.store.get_context_slice(record["session_id"], record["seq_no"], window=window)
+                context_rows = self.store.get_context_slice(
+                    record["session_id"],
+                    record["seq_no"],
+                    window=window,
+                    profile_user_id=str(record.get("profile_user_id") or ""),
+                    character_pack_id=str(record.get("character_pack_id") or ""),
+                )
                 snippet = self._render_raw_snippet(context_rows)
                 dedupe_key = f"raw::{record['session_id']}::{record['seq_no']}"
             snippet_key = snippet.strip()
@@ -1440,6 +1727,95 @@ class RetrievalService:
                 break
         return normalized
 
+    def _normalize_precision_filters(
+        self,
+        value: Any = None,
+        *,
+        source_layers: Any = None,
+        subject_scopes: Any = None,
+        categories: Any = None,
+        importance_min: Any = None,
+        limit: Any = None,
+    ) -> dict[str, Any]:
+        raw = value if isinstance(value, dict) else {}
+        raw_source_layers = source_layers if source_layers is not None else raw.get("source_layers")
+        raw_subject_scopes = subject_scopes if subject_scopes is not None else raw.get("subject_scopes")
+        raw_categories = categories if categories is not None else raw.get("categories")
+        raw_importance_min = importance_min if importance_min is not None else raw.get("importance_min")
+        raw_limit = limit if limit is not None else raw.get("limit")
+        return {
+            "source_layers": self._normalize_precision_enum_list(
+                raw_source_layers,
+                allowed=PRECISION_SOURCE_LAYERS,
+                aliases=PRECISION_SOURCE_LAYER_ALIASES,
+                limit=3,
+            ),
+            "subject_scopes": self._normalize_precision_enum_list(
+                raw_subject_scopes,
+                allowed=PRECISION_SUBJECT_SCOPES,
+                aliases=PRECISION_SUBJECT_SCOPE_ALIASES,
+                limit=3,
+            ),
+            "categories": self._normalize_precision_enum_list(
+                raw_categories,
+                allowed=PRECISION_CATEGORIES,
+                aliases=PRECISION_CATEGORY_ALIASES,
+                limit=4,
+            ),
+            "importance_min": self._coerce_optional_unit_float(raw_importance_min),
+            "limit": self._coerce_retrieval_limit(raw_limit),
+        }
+
+    def _normalize_precision_enum_list(
+        self,
+        value: Any,
+        *,
+        allowed: set[str],
+        aliases: dict[str, str],
+        limit: int,
+    ) -> list[str]:
+        if isinstance(value, str):
+            raw_items = [part for part in re.split(r"[,，;；|、\s]+", value) if part]
+        elif isinstance(value, (list, tuple, set)):
+            raw_items = []
+            for item in value:
+                raw_items.extend(part for part in re.split(r"[,，;；|、\s]+", str(item or "")) if part)
+        elif value is None:
+            raw_items = []
+        else:
+            raw_items = [str(value or "")]
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            key = normalize_text(str(item or "")).strip("[](){}\"' ").lower().replace("-", "_")
+            mapped = aliases.get(key) or key
+            if mapped not in allowed or mapped in seen:
+                continue
+            seen.add(mapped)
+            normalized.append(mapped)
+            if len(normalized) >= max(1, int(limit)):
+                break
+        return normalized
+
+    def _coerce_optional_unit_float(self, value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return float(max(0.0, min(1.0, number)))
+
+    def _coerce_retrieval_limit(self, value: Any) -> int:
+        if value in (None, ""):
+            return 4
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return 4
+        return max(1, min(12, number))
+
     def _looks_like_router_task_query(self, text: str) -> bool:
         raw = normalize_text(text or "")
         if not raw:
@@ -1467,9 +1843,19 @@ class RetrievalService:
         start_record = None
         end_record = None
         if session_id and start_seq is not None:
-            start_record = self.store.get_message_by_seq_no(session_id, int(start_seq))
+            start_record = self.store.get_message_by_seq_no(
+                session_id,
+                int(start_seq),
+                profile_user_id=str(record.get("profile_user_id") or ""),
+                character_pack_id=str(record.get("character_pack_id") or ""),
+            )
         if session_id and end_seq is not None:
-            end_record = self.store.get_message_by_seq_no(session_id, int(end_seq))
+            end_record = self.store.get_message_by_seq_no(
+                session_id,
+                int(end_seq),
+                profile_user_id=str(record.get("profile_user_id") or ""),
+                character_pack_id=str(record.get("character_pack_id") or ""),
+            )
         start_ts = (start_record or {}).get("timestamp")
         end_ts = (end_record or {}).get("timestamp") or record.get("timestamp")
         return (

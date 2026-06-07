@@ -10,7 +10,6 @@ COMMON_RESPONSE_BLOCKS = (
     "json_object_only",
     "mode_schema_contract",
     "field_order",
-    "memory_tags",
     "reply_bubbles",
     "code_snippet",
     "status_choices",
@@ -18,6 +17,7 @@ COMMON_RESPONSE_BLOCKS = (
     "tool_execution_intent",
     "time_awareness",
     "persona_state",
+    "memory_metadata",
 )
 
 SCENE_STATIC_SYSTEM_BLOCKS = (
@@ -84,12 +84,13 @@ class PromptBlockRegistry:
                     "speech_segments 最多 3 条，每条都应是自然完整的小气泡，不要把同一句话硬拆碎，也不要和 speech 重复写同一整段。"
                 ),
             ),
-            "memory_tags": PromptBlock(
-                id="memory_tags",
+            "memory_metadata": PromptBlock(
+                id="memory_metadata",
                 text=(
-                    "memory_tags 只用于后续记忆检索，目标是给“用户当前这句话”补几个便于召回的关键词。\n"
-                    "只有当用户当前这句话本身包含以后可能需要回忆的事实、事件、安排、偏好、身份线索时，才输出 1 到 4 个关键词或短短语；否则输出空字符串。\n"
-                    "关键词要短，优先使用平时聊天里会说的名词或短短语，用逗号分隔。"
+                    "memory_metadata 只用于后台记忆入库，不会展示给用户。\n"
+                    "如果当前用户消息没有值得长期检索的事实，keywords/subject_scopes/categories 输出空数组，importance 输出 0。\n"
+                    "keywords 写 0-4 个短词；subject_scopes 从 user, assistant, other 中选；categories 从 casual, preference, personal_profile, plan_goal, project_work, relationship, emotion_state, life_event, memory_query, system_meta 中选。\n"
+                    "拿不准可留空或多选；importance 和 confidence 必须是 0-1 数字。"
                 ),
             ),
             "tool_call": PromptBlock(

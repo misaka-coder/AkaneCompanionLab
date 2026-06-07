@@ -110,6 +110,21 @@ class VectorStoreLogicTests(unittest.TestCase):
         self.assertIn("欢迎回来", combined)
         self.assertIn("上课", combined)
 
+    def test_keyword_doc_text_includes_memory_metadata_tags(self) -> None:
+        store = VectorStore.__new__(VectorStore)
+        combined = store._keyword_doc_text(
+            "普通文本",
+            {
+                "memory_keywords_text": "可乐,饮料",
+                "memory_categories_text": "preference",
+                "memory_subject_scopes_text": "user",
+            },
+        )
+
+        self.assertIn("可乐", combined)
+        self.assertIn("preference", combined)
+        self.assertIn("user", combined)
+
     def test_build_collection_name_keeps_legacy_name_for_default_hashed_provider(self) -> None:
         self.assertEqual(
             VectorStore._build_collection_name(HashedEmbeddingProvider()),

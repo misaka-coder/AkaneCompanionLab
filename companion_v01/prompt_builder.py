@@ -120,9 +120,8 @@ class PromptBuilder:
             "speech_segments": [],
             "tool_call": None,
             "code_snippet": "",
-            "memory_tags": "",
             "status": "final",
-            "score": 0.0,    
+            "score": 0.0,
             "choices": [],
             "character": {
                 "outfit": visual_defaults["outfit"],
@@ -135,6 +134,13 @@ class PromptBuilder:
             },
             "persona": {
                 "active": str(persona_active_id or ""),
+            },
+            "memory_metadata": {
+                "keywords": [],
+                "subject_scopes": [],
+                "categories": [],
+                "importance": 0.0,
+                "confidence": 0.0,
             },
         }
         if debug_enabled:
@@ -187,18 +193,34 @@ class PromptBuilder:
         *,
         transcript: str,
         batch_size: int,
+        persona_system_context: str = "",
+        persona_reference_context: str = "",
     ) -> tuple[str, str]:
         return (
-            self.persona.summary_system_prompt,
+            self._append_memory_persona_context(
+                self.persona.summary_system_prompt,
+                persona_system_context=persona_system_context,
+                persona_reference_context=persona_reference_context,
+            ),
             self.persona.summary_user_prompt_template.format(
                 transcript=transcript,
                 batch_size=int(batch_size),
             ),
         )
 
-    def build_semantic_summary_prompts(self, *, source_text: str) -> tuple[str, str]:
+    def build_semantic_summary_prompts(
+        self,
+        *,
+        source_text: str,
+        persona_system_context: str = "",
+        persona_reference_context: str = "",
+    ) -> tuple[str, str]:
         return (
-            self.persona.semantic_summary_system_prompt,
+            self._append_memory_persona_context(
+                self.persona.semantic_summary_system_prompt,
+                persona_system_context=persona_system_context,
+                persona_reference_context=persona_reference_context,
+            ),
             self.persona.semantic_summary_user_prompt_template.format(source_text=source_text),
         )
 
@@ -207,11 +229,39 @@ class PromptBuilder:
         *,
         existing_text: str,
         incoming_text: str,
+        persona_system_context: str = "",
+        persona_reference_context: str = "",
     ) -> tuple[str, str]:
         return (
-            self.persona.semantic_reinforcement_system_prompt,
+            self._append_memory_persona_context(
+                self.persona.semantic_reinforcement_system_prompt,
+                persona_system_context=persona_system_context,
+                persona_reference_context=persona_reference_context,
+            ),
             self.persona.semantic_reinforcement_user_prompt_template.format(
                 existing_text=existing_text,
                 incoming_text=incoming_text,
             ),
+        )
+
+    def _append_memory_persona_context(
+        self,
+        system_prompt: str,
+        *,
+        persona_system_context: str = "",
+        persona_reference_context: str = "",
+    ) -> str:
+        context_parts = [
+            str(persona_system_context or "").strip(),
+            str(persona_reference_context or "").strip(),
+        ]
+        context_text = "\n\n".join(part for part in context_parts if part)
+        if not context_text:
+            return system_prompt
+        return (
+            f"{system_prompt.rstrip()}\n\n"
+            "[CURRENT ASSISTANT MEMORY PERSPECTIVE]\n"
+            "下面是当前前台角色/表达侧面的记忆视角，只用于决定当前助手会在意什么、怎样概括和取舍。\n"
+            "不要把这些设定本身当作对话事实写进摘要、稳定事实或长期记忆。\n"
+            f"{context_text}"
         )

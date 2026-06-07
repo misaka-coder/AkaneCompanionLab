@@ -266,7 +266,6 @@ def print_debug(payload: dict, frame: dict) -> None:
         "speech_segments",
         "tool_call",
         "code_snippet",
-        "memory_tags",
         "status",
         "score",
         "choices",
@@ -276,6 +275,7 @@ def print_debug(payload: dict, frame: dict) -> None:
         "character",
         "scene",
         "persona",
+        "memory_metadata",
     ):
         if key == "thought" and key not in frame:
             continue

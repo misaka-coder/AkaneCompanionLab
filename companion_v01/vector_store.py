@@ -197,7 +197,10 @@ class VectorStore:
 
     def _keyword_doc_text(self, document: str, metadata: dict[str, Any]) -> str:
         tag_text = str(metadata.get("semantic_tags_text", "") or "")
-        return f"{document} {tag_text}".strip()
+        memory_keywords = str(metadata.get("memory_keywords_text", "") or "")
+        memory_categories = str(metadata.get("memory_categories_text", "") or "")
+        memory_subjects = str(metadata.get("memory_subject_scopes_text", "") or "")
+        return f"{document} {tag_text} {memory_keywords} {memory_categories} {memory_subjects}".strip()
 
     def _bm25_score(
         self,

@@ -18,6 +18,25 @@ class RetrievalServiceTests(unittest.TestCase):
             prompt_builder=PromptBuilder(PERSONA),
         )
 
+    def _install_fake_vector_hits(
+        self,
+        service: RetrievalService,
+        *,
+        semantic_hits: list[dict[str, object]],
+        keyword_hits: list[dict[str, object]] | None = None,
+    ) -> None:
+        class FakeVectorStore:
+            def semantic_search(self, **kwargs):
+                self.semantic_kwargs = kwargs
+                return list(semantic_hits)
+
+            def keyword_search(self, **kwargs):
+                self.keyword_kwargs = kwargs
+                return list(keyword_hits or [])
+
+        service.vector_store = FakeVectorStore()
+        service._build_memory_snippets = lambda fused_hits: [hit["source_id"] for hit in fused_hits]
+
     def test_run_returns_pipeline_result_without_retrieval(self) -> None:
         service = self._build_service()
         service._build_router_output = lambda **kwargs: (
@@ -47,6 +66,147 @@ class RetrievalServiceTests(unittest.TestCase):
         self.assertEqual(result.router_output["route"], "direct_answer")
         self.assertEqual(result.router_timing["mode"], "skip")
         self.assertEqual(result.verifier_output["match_result"], "skip")
+
+    def test_retrieve_memories_category_filter_uses_or_admission(self) -> None:
+        service = self._build_service()
+        self._install_fake_vector_hits(
+            service,
+            semantic_hits=[
+                {
+                    "source_id": "single_category",
+                    "document": "用户喜欢喝可乐",
+                    "metadata": {
+                        "entry_type": "raw",
+                        "memory_categories_text": "preference",
+                        "memory_subject_scopes_text": "user",
+                        "memory_importance": 0.7,
+                    },
+                    "semantic_score": 0.9,
+                },
+                {
+                    "source_id": "double_category",
+                    "document": "用户和 Akane 约定晚点继续聊",
+                    "metadata": {
+                        "entry_type": "summary",
+                        "memory_categories_text": "preference,relationship",
+                        "memory_subject_scopes_text": "user,assistant",
+                        "memory_importance": 0.8,
+                    },
+                    "semantic_score": 0.8,
+                },
+                {
+                    "source_id": "project_memory",
+                    "document": "向量检索项目要继续优化",
+                    "metadata": {
+                        "entry_type": "semantic_summary",
+                        "memory_categories_text": "project_work",
+                        "memory_subject_scopes_text": "other",
+                        "memory_importance": 0.9,
+                    },
+                    "semantic_score": 0.7,
+                },
+            ],
+        )
+
+        result = service._retrieve_memories(
+            profile_user_id="user-1",
+            query="我喜欢什么",
+            keywords=["喜欢", "可乐"],
+            time_hint=None,
+            categories=["preference", "relationship"],
+            limit=2,
+            exclude_source_ids=[],
+        )
+
+        self.assertEqual([hit["source_id"] for hit in result["fused_hits"]], ["single_category", "double_category"])
+        self.assertEqual(result["precision_filters"]["relaxation_stage"], "strict")
+        self.assertEqual(result["precision_filters"]["applied_filters"], ["categories"])
+
+    def test_retrieve_memories_source_layer_filter_limits_candidates(self) -> None:
+        service = self._build_service()
+        self._install_fake_vector_hits(
+            service,
+            semantic_hits=[
+                {
+                    "source_id": "raw_memory",
+                    "document": "原始对话里提到糖水",
+                    "metadata": {"entry_type": "raw", "memory_importance": 0.5},
+                    "semantic_score": 0.9,
+                },
+                {
+                    "source_id": "semantic_memory",
+                    "document": "长期记忆：用户偏好甜饮",
+                    "metadata": {"entry_type": "semantic_summary", "memory_importance": 0.9},
+                    "semantic_score": 0.8,
+                },
+            ],
+        )
+
+        result = service._retrieve_memories(
+            profile_user_id="user-1",
+            query="用户饮料偏好",
+            keywords=["饮料", "偏好"],
+            time_hint=None,
+            source_layers=["semantic_summary"],
+            limit=1,
+            exclude_source_ids=[],
+        )
+
+        self.assertEqual([hit["source_id"] for hit in result["fused_hits"]], ["semantic_memory"])
+        self.assertEqual(result["precision_filters"]["applied_filters"], ["source_layers"])
+
+    def test_retrieve_memories_relaxes_importance_when_candidate_count_is_too_low(self) -> None:
+        service = self._build_service()
+        self._install_fake_vector_hits(
+            service,
+            semantic_hits=[
+                {
+                    "source_id": "high_importance",
+                    "document": "用户喜欢可乐",
+                    "metadata": {
+                        "entry_type": "raw",
+                        "memory_categories_text": "preference",
+                        "memory_importance": 0.9,
+                    },
+                    "semantic_score": 0.9,
+                },
+                {
+                    "source_id": "lower_importance",
+                    "document": "用户也提过喜欢橙汁",
+                    "metadata": {
+                        "entry_type": "raw",
+                        "memory_categories_text": "preference",
+                        "memory_importance": 0.4,
+                    },
+                    "semantic_score": 0.8,
+                },
+                {
+                    "source_id": "wrong_category",
+                    "document": "桌宠窗口调试完成",
+                    "metadata": {
+                        "entry_type": "raw",
+                        "memory_categories_text": "project_work",
+                        "memory_importance": 0.95,
+                    },
+                    "semantic_score": 0.7,
+                },
+            ],
+        )
+
+        result = service._retrieve_memories(
+            profile_user_id="user-1",
+            query="我喜欢喝什么",
+            keywords=["喜欢", "饮料"],
+            time_hint=None,
+            categories=["preference"],
+            importance_min=0.8,
+            limit=2,
+            exclude_source_ids=[],
+        )
+
+        self.assertEqual([hit["source_id"] for hit in result["fused_hits"]], ["high_importance", "lower_importance"])
+        self.assertEqual(result["precision_filters"]["relaxation_stage"], "drop_importance_min")
+        self.assertEqual(result["precision_filters"]["relaxed_filters"], ["importance_min"])
 
     def test_run_retrieval_chain_excludes_previous_fused_hits_on_retry(self) -> None:
         service = self._build_service()

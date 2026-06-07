@@ -117,6 +117,32 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("请回忆一下具体的事情或话题", user_prompt)
         self.assertIn("主人对什么有执念", user_prompt)
 
+    def test_memory_summary_prompts_can_include_persona_perspective_without_fact_pollution(self) -> None:
+        builder = PromptBuilder(load_persona_config())
+
+        summary_system, _ = builder.build_summary_prompts(
+            transcript="User: 我喜欢喝可乐。",
+            batch_size=1,
+            persona_system_context="角色设定：Mika 会认真记住主人的偏好。",
+            persona_reference_context="表达侧面：温柔吐槽。",
+        )
+        semantic_system, _ = builder.build_semantic_summary_prompts(
+            source_text="主人提到自己喜欢喝可乐。",
+            persona_system_context="角色设定：Mika 会认真记住主人的偏好。",
+        )
+        reinforcement_system, _ = builder.build_semantic_reinforcement_prompts(
+            existing_text="已有长期记忆",
+            incoming_text="新的摘要",
+            persona_system_context="角色设定：Mika 会认真记住主人的偏好。",
+        )
+
+        for prompt in (summary_system, semantic_system, reinforcement_system):
+            self.assertIn("[CURRENT ASSISTANT MEMORY PERSPECTIVE]", prompt)
+            self.assertIn("只用于决定当前助手会在意什么", prompt)
+            self.assertIn("不要把这些设定本身当作对话事实", prompt)
+            self.assertIn("Mika", prompt)
+        self.assertIn("温柔吐槽", summary_system)
+
     def test_build_final_generation_context_uses_persona_and_debug_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             toml_path = Path(temp_dir) / "persona_profiles.toml"
@@ -305,6 +331,9 @@ system = "semantic reinforcement system"
         self.assertIn("desktop_pet 桌宠模式", result["system_prompt"])
         self.assertIn("角色包身份：Mika", result["system_prompt"])
         self.assertIn("字段固定为 emotion, speech", result["system_prompt"])
+        self.assertIn("memory_metadata", result["system_prompt"])
+        self.assertIn("memory_metadata", result["fallback"])
+        self.assertNotIn("memory_tags", result["fallback"])
         self.assertNotIn("scene.major 表示场景大类", result["system_prompt"])
         self.assertNotIn("像 galgame 选项", result["system_prompt"])
 

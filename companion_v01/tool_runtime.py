@@ -60,8 +60,11 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
             "仍然觉得需要主动回想更早内容时使用。"
             "这是内部记忆检索工具，不是对用户说出口的话。"
             "格式为 {\"type\":\"retrieve_memory\",\"query\":\"简短搜索短句\",\"keywords\":[\"关键词\"],"
-            "\"time_hint\":{\"date_label\":\"YYYY-MM-DD\",\"time_of_day\":\"morning|afternoon|night|midnight\"}}。"
+            "\"time_hint\":{\"date_label\":\"YYYY-MM-DD\",\"time_of_day\":\"morning|afternoon|night|midnight\"},"
+            "\"source_layers\":[\"raw\",\"summary\",\"semantic_summary\"],\"subject_scopes\":[\"user\",\"assistant\",\"other\"],"
+            "\"categories\":[\"preference\",\"plan_goal\",\"project_work\"],\"importance_min\":0.0,\"limit\":4}。"
             "query 要写具体实体、地点、人物、事件或偏好，不要写“帮我回忆一下”这类空泛句。"
+            "source_layers、subject_scopes、categories、importance_min 只在你有把握时填写；subject_scopes/categories 多选是 OR 命中，不要求全中。"
             "只有当前可见记忆不足以回答时才调用；如果不需要检索，tool_call 输出 null。"
         )
 
@@ -118,15 +121,121 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
                     if text:
                         time_hint[key] = text
 
+        source_layers = self._normalize_enum_list(
+            value.get("source_layers") or value.get("layers") or value.get("source_layer"),
+            allowed={"raw", "summary", "semantic_summary"},
+            aliases={"semantic": "semantic_summary", "long_term": "semantic_summary", "longterm": "semantic_summary"},
+            limit=3,
+        )
+        subject_scopes = self._normalize_enum_list(
+            value.get("subject_scopes") or value.get("subjects") or value.get("scope"),
+            allowed={"user", "assistant", "other"},
+            aliases={
+                "用户": "user",
+                "玩家": "user",
+                "主人": "user",
+                "角色": "assistant",
+                "助手": "assistant",
+                "akane": "assistant",
+                "别人": "other",
+                "他人": "other",
+                "topic": "other",
+                "project": "other",
+            },
+            limit=3,
+        )
+        categories = self._normalize_enum_list(
+            value.get("categories") or value.get("category"),
+            allowed={
+                "casual",
+                "preference",
+                "personal_profile",
+                "plan_goal",
+                "project_work",
+                "relationship",
+                "emotion_state",
+                "life_event",
+                "memory_query",
+                "system_meta",
+            },
+            aliases={
+                "偏好": "preference",
+                "喜好": "preference",
+                "计划": "plan_goal",
+                "目标": "plan_goal",
+                "项目": "project_work",
+                "情绪": "emotion_state",
+                "状态": "emotion_state",
+                "系统": "system_meta",
+            },
+            limit=4,
+        )
+        raw_importance_min = value.get("importance_min") if "importance_min" in value else value.get("min_importance")
+        importance_min = self._coerce_optional_float(raw_importance_min)
+        limit = self._coerce_optional_int(value.get("limit"))
+
         return {
             "type": self.tool_type,
             "query": query[:200],
             "keywords": keywords,
             "time_hint": time_hint,
+            "source_layers": source_layers,
+            "subject_scopes": subject_scopes,
+            "categories": categories,
+            "importance_min": importance_min,
+            "limit": limit,
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         return self.retrieve_fn(call=call, context=context)
+
+    def _normalize_enum_list(
+        self,
+        value: Any,
+        *,
+        allowed: set[str],
+        aliases: dict[str, str] | None = None,
+        limit: int,
+    ) -> list[str]:
+        if isinstance(value, str):
+            raw_items = [part for part in re.split(r"[,，;；|、\s]+", value) if part]
+        elif isinstance(value, list):
+            raw_items = []
+            for item in value:
+                raw_items.extend(part for part in re.split(r"[,，;；|、\s]+", str(item or "")) if part)
+        else:
+            raw_items = []
+        aliases = aliases or {}
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            key = normalize_text(item).strip("[](){}\"' ").lower().replace("-", "_")
+            mapped = aliases.get(key) or key
+            if mapped not in allowed or mapped in seen:
+                continue
+            seen.add(mapped)
+            normalized.append(mapped)
+            if len(normalized) >= limit:
+                break
+        return normalized
+
+    def _coerce_optional_float(self, value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return float(max(0.0, min(1.0, number)))
+
+    def _coerce_optional_int(self, value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return max(1, min(12, number))
 
 
 class CallNPCToolHandler(BaseToolHandler):

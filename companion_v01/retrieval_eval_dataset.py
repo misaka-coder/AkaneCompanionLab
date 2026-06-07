@@ -306,6 +306,8 @@ def _build_raw_eval_source(
         session_id=str(record.get("session_id") or ""),
         center_seq_no=int(record.get("seq_no") or 0),
         window=max(0, int(context_window)),
+        profile_user_id=str(record.get("profile_user_id") or ""),
+        character_pack_id=str(record.get("character_pack_id") or ""),
     )
     focus_line = render_chat_line(
         role=str(record.get("role") or "user"),

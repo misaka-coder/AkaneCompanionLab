@@ -109,6 +109,8 @@ class MemoryStoreEvalTurnTests(unittest.TestCase):
                         for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
                     }
                     self.assertIn("character_pack_id", columns)
+                    if table_name in {"chat_messages", "memory_summaries", "memory_semantic_summaries"}:
+                        self.assertIn("memory_metadata_json", columns)
 
                 summary_columns = {
                     row[1]
@@ -192,6 +194,80 @@ class MemoryStoreEvalTurnTests(unittest.TestCase):
 
             self.assertEqual([item["seq_no"] for item in recent_messages], [3, 4, 5])
             self.assertEqual([item["content"] for item in recent_messages], ["message-3", "message-4", "message-5"])
+
+    def test_memory_metadata_round_trips_across_memory_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            raw_metadata = {
+                "keywords": ["可乐", "饮料"],
+                "subject_scopes": ["user"],
+                "categories": ["preference"],
+                "importance": 0.7,
+                "confidence": 0.8,
+            }
+            summary_metadata = {
+                "keywords": ["学习规划"],
+                "subject_scopes": ["user"],
+                "categories": ["plan_goal"],
+                "importance": 0.82,
+                "confidence": 0.84,
+            }
+            semantic_metadata = {
+                "keywords": ["长期学习"],
+                "subject_scopes": ["user"],
+                "categories": ["plan_goal"],
+                "importance": 0.9,
+                "confidence": 0.86,
+            }
+
+            raw = store.add_message(
+                profile_user_id="master",
+                session_id="session-1",
+                role="user",
+                content="我喜欢喝可乐。",
+                timestamp=100,
+                memory_metadata=raw_metadata,
+            )
+            summary = store.add_summary(
+                profile_user_id="master",
+                session_id="session-1",
+                timestamp=200,
+                date_label="2026-06-05",
+                time_of_day="night",
+                period_label="学习片段",
+                event_type="学习",
+                importance=0.82,
+                diary_summary="主人聊了学习规划。",
+                key_events=["整理复习计划"],
+                core_facts=["用户在整理复习计划"],
+                semantic_tags=["学习", "规划"],
+                source_start_seq=1,
+                source_end_seq=1,
+                source_ids=[raw["source_id"]],
+                memory_metadata=summary_metadata,
+            )
+            semantic = store.add_semantic_summary(
+                profile_user_id="master",
+                session_id="session-1",
+                timestamp=300,
+                period_start_ts=200,
+                period_end_ts=300,
+                date_label="2026-06-05",
+                time_of_day="night",
+                importance=0.9,
+                semantic_summary="主人长期关注学习规划。",
+                stable_facts=["用户长期关注学习规划"],
+                recurring_topics=["学习规划"],
+                important_people=[],
+                open_loops=[],
+                semantic_tags=["学习", "规划"],
+                source_summary_ids=[summary["summary_id"]],
+                memory_metadata=semantic_metadata,
+            )
+
+            self.assertEqual(store.get_message_by_source_id(raw["source_id"])["memory_metadata"], raw_metadata)
+            self.assertEqual(store.get_summary_by_id(summary["summary_id"])["memory_metadata"], summary_metadata)
+            self.assertEqual(store.get_semantic_summary_by_id(semantic["semantic_id"])["memory_metadata"], semantic_metadata)
 
     def test_character_pack_id_scopes_raw_and_visible_memory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -294,6 +370,59 @@ class MemoryStoreEvalTurnTests(unittest.TestCase):
             self.assertEqual([item["content"] for item in kaju_raw], ["Kaju remembers the lunchbox."])
             self.assertEqual([item["character_pack_id"] for item in akane_episodic], ["akane"])
             self.assertEqual([item["semantic_summary"] for item in kaju_semantic], ["Kaju has a lunchbox memory."])
+
+    def test_context_slice_can_scope_same_session_character_pack_sequences(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            akane_first = store.add_message(
+                profile_user_id="master",
+                session_id="shared_session",
+                character_pack_id="akane",
+                role="user",
+                content="akane first",
+                timestamp=100,
+            )
+            store.add_message(
+                profile_user_id="master",
+                session_id="shared_session",
+                character_pack_id="akane",
+                role="assistant",
+                content="akane second",
+                timestamp=101,
+            )
+            store.add_message(
+                profile_user_id="master",
+                session_id="shared_session",
+                character_pack_id="kaju",
+                role="user",
+                content="kaju first",
+                timestamp=102,
+            )
+            store.add_message(
+                profile_user_id="master",
+                session_id="shared_session",
+                character_pack_id="kaju",
+                role="assistant",
+                content="kaju second",
+                timestamp=103,
+            )
+
+            akane_slice = store.get_context_slice(
+                "shared_session",
+                akane_first["seq_no"],
+                window=1,
+                profile_user_id="master",
+                character_pack_id="akane",
+            )
+            kaju_first = store.get_message_by_seq_no(
+                "shared_session",
+                1,
+                profile_user_id="master",
+                character_pack_id="kaju",
+            )
+
+            self.assertEqual([item["content"] for item in akane_slice], ["akane first", "akane second"])
+            self.assertEqual(kaju_first["content"], "kaju first")
 
     def test_get_latest_eval_turn_returns_most_recent_final_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

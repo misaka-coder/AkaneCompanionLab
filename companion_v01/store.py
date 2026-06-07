@@ -22,6 +22,16 @@ def normalize_character_pack_id(value: Any) -> str:
     return pack_id
 
 
+def _loads_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    try:
+        payload = json.loads(str(value or "{}"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 class MemoryStore:
     def __init__(self, base_dir: Path):
         self.base_dir = Path(base_dir)
@@ -56,6 +66,7 @@ class MemoryStore:
                     date_label TEXT NOT NULL,
                     time_of_day TEXT NOT NULL,
                     semantic_tags_json TEXT NOT NULL,
+                    memory_metadata_json TEXT NOT NULL DEFAULT '{}',
                     index_in_vector INTEGER NOT NULL DEFAULT 1,
                     is_summarized INTEGER NOT NULL DEFAULT 0,
                     summary_id TEXT NOT NULL DEFAULT ''
@@ -82,6 +93,7 @@ class MemoryStore:
                     key_events_json TEXT NOT NULL,
                     core_facts_json TEXT NOT NULL,
                     semantic_tags_json TEXT NOT NULL,
+                    memory_metadata_json TEXT NOT NULL DEFAULT '{}',
                     is_semanticized INTEGER NOT NULL DEFAULT 0,
                     semantic_id TEXT NOT NULL DEFAULT '',
                     source_start_seq INTEGER NOT NULL,
@@ -110,6 +122,7 @@ class MemoryStore:
                     important_people_json TEXT NOT NULL,
                     open_loops_json TEXT NOT NULL,
                     semantic_tags_json TEXT NOT NULL,
+                    memory_metadata_json TEXT NOT NULL DEFAULT '{}',
                     source_summary_ids_json TEXT NOT NULL,
                     reinforcement_count INTEGER NOT NULL DEFAULT 1,
                     last_reinforced_ts INTEGER NOT NULL
@@ -433,6 +446,12 @@ class MemoryStore:
             )
             self._ensure_column(
                 conn=conn,
+                table_name="chat_messages",
+                column_name="memory_metadata_json",
+                column_definition="TEXT NOT NULL DEFAULT '{}'",
+            )
+            self._ensure_column(
+                conn=conn,
                 table_name="memory_summaries",
                 column_name="character_pack_id",
                 column_definition="TEXT NOT NULL DEFAULT ''",
@@ -451,9 +470,21 @@ class MemoryStore:
             )
             self._ensure_column(
                 conn=conn,
+                table_name="memory_summaries",
+                column_name="memory_metadata_json",
+                column_definition="TEXT NOT NULL DEFAULT '{}'",
+            )
+            self._ensure_column(
+                conn=conn,
                 table_name="memory_semantic_summaries",
                 column_name="character_pack_id",
                 column_definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn=conn,
+                table_name="memory_semantic_summaries",
+                column_name="memory_metadata_json",
+                column_definition="TEXT NOT NULL DEFAULT '{}'",
             )
             self._ensure_column(
                 conn=conn,
@@ -1234,6 +1265,7 @@ class MemoryStore:
         date_label: str | None = None,
         time_of_day: str | None = None,
         semantic_tags: list[str] | None = None,
+        memory_metadata: dict[str, Any] | None = None,
         index_in_vector: bool = True,
     ) -> dict[str, Any]:
         ts = int(timestamp or time.time())
@@ -1254,6 +1286,7 @@ class MemoryStore:
             "date_label": str(date_label or timestamp_to_date_label(ts)),
             "time_of_day": str(time_of_day or infer_time_of_day(ts)),
             "semantic_tags_json": json.dumps(semantic_tags or [], ensure_ascii=False),
+            "memory_metadata_json": json.dumps(memory_metadata or {}, ensure_ascii=False),
             "index_in_vector": 1 if bool(index_in_vector) else 0,
             "is_summarized": 0,
             "summary_id": "",
@@ -1270,8 +1303,8 @@ class MemoryStore:
                 INSERT INTO chat_messages (
                     source_id, profile_user_id, session_id, character_pack_id, seq_no, role, content,
                     timestamp, date_label, time_of_day, semantic_tags_json,
-                    index_in_vector, is_summarized, summary_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    memory_metadata_json, index_in_vector, is_summarized, summary_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record["source_id"],
@@ -1285,6 +1318,7 @@ class MemoryStore:
                     record["date_label"],
                     record["time_of_day"],
                     record["semantic_tags_json"],
+                    record["memory_metadata_json"],
                     record["index_in_vector"],
                     record["is_summarized"],
                     record["summary_id"],
@@ -1302,6 +1336,20 @@ class MemoryStore:
                 """,
                 (
                     json.dumps(semantic_tags or [], ensure_ascii=False),
+                    str(source_id),
+                ),
+            )
+
+    def update_message_memory_metadata(self, source_id: str, memory_metadata: dict[str, Any] | None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE chat_messages
+                SET memory_metadata_json = ?
+                WHERE source_id = ?
+                """,
+                (
+                    json.dumps(memory_metadata or {}, ensure_ascii=False),
                     str(source_id),
                 ),
             )
@@ -1424,6 +1472,7 @@ class MemoryStore:
         source_start_seq: int,
         source_end_seq: int,
         source_ids: list[str],
+        memory_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized_character_pack_id = normalize_character_pack_id(character_pack_id)
         payload = {
@@ -1441,6 +1490,7 @@ class MemoryStore:
             "key_events_json": json.dumps(key_events, ensure_ascii=False),
             "core_facts_json": json.dumps(core_facts, ensure_ascii=False),
             "semantic_tags_json": json.dumps(semantic_tags, ensure_ascii=False),
+            "memory_metadata_json": json.dumps(memory_metadata or {}, ensure_ascii=False),
             "source_start_seq": int(source_start_seq),
             "source_end_seq": int(source_end_seq),
             "source_ids_json": json.dumps(source_ids, ensure_ascii=False),
@@ -1451,8 +1501,9 @@ class MemoryStore:
                 INSERT INTO memory_summaries (
                     summary_id, profile_user_id, session_id, character_pack_id, timestamp, date_label, time_of_day,
                     period_label, event_type, importance, diary_summary, key_events_json,
-                    core_facts_json, semantic_tags_json, is_semanticized, semantic_id, source_start_seq, source_end_seq, source_ids_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    core_facts_json, semantic_tags_json, memory_metadata_json, is_semanticized, semantic_id,
+                    source_start_seq, source_end_seq, source_ids_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload["summary_id"],
@@ -1469,6 +1520,7 @@ class MemoryStore:
                     payload["key_events_json"],
                     payload["core_facts_json"],
                     payload["semantic_tags_json"],
+                    payload["memory_metadata_json"],
                     0,
                     "",
                     payload["source_start_seq"],
@@ -1609,6 +1661,7 @@ class MemoryStore:
         open_loops: list[str],
         semantic_tags: list[str],
         source_summary_ids: list[str],
+        memory_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized_character_pack_id = normalize_character_pack_id(character_pack_id)
         payload = {
@@ -1629,6 +1682,7 @@ class MemoryStore:
             "important_people_json": json.dumps(important_people, ensure_ascii=False),
             "open_loops_json": json.dumps(open_loops, ensure_ascii=False),
             "semantic_tags_json": json.dumps(semantic_tags, ensure_ascii=False),
+            "memory_metadata_json": json.dumps(memory_metadata or {}, ensure_ascii=False),
             "source_summary_ids_json": json.dumps(source_summary_ids, ensure_ascii=False),
             "reinforcement_count": 1,
             "last_reinforced_ts": int(timestamp),
@@ -1640,9 +1694,9 @@ class MemoryStore:
                     semantic_id, profile_user_id, session_id, character_pack_id, created_at, timestamp,
                     period_start_ts, period_end_ts, date_label, time_of_day, importance,
                     semantic_summary, stable_facts_json, recurring_topics_json,
-                    important_people_json, open_loops_json, semantic_tags_json,
+                    important_people_json, open_loops_json, semantic_tags_json, memory_metadata_json,
                     source_summary_ids_json, reinforcement_count, last_reinforced_ts
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload["semantic_id"],
@@ -1662,6 +1716,7 @@ class MemoryStore:
                     payload["important_people_json"],
                     payload["open_loops_json"],
                     payload["semantic_tags_json"],
+                    payload["memory_metadata_json"],
                     payload["source_summary_ids_json"],
                     payload["reinforcement_count"],
                     payload["last_reinforced_ts"],
@@ -1688,6 +1743,7 @@ class MemoryStore:
         source_summary_ids: list[str],
         reinforcement_count: int,
         last_reinforced_ts: int,
+        memory_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         payload = {
             "semantic_id": str(semantic_id),
@@ -1703,6 +1759,7 @@ class MemoryStore:
             "important_people_json": json.dumps(important_people, ensure_ascii=False),
             "open_loops_json": json.dumps(open_loops, ensure_ascii=False),
             "semantic_tags_json": json.dumps(semantic_tags, ensure_ascii=False),
+            "memory_metadata_json": json.dumps(memory_metadata or {}, ensure_ascii=False),
             "source_summary_ids_json": json.dumps(source_summary_ids, ensure_ascii=False),
             "reinforcement_count": max(1, int(reinforcement_count)),
             "last_reinforced_ts": int(last_reinforced_ts),
@@ -1714,7 +1771,7 @@ class MemoryStore:
                 SET timestamp = ?, period_start_ts = ?, period_end_ts = ?, date_label = ?, time_of_day = ?,
                     importance = ?, semantic_summary = ?, stable_facts_json = ?, recurring_topics_json = ?,
                     important_people_json = ?, open_loops_json = ?, semantic_tags_json = ?,
-                    source_summary_ids_json = ?, reinforcement_count = ?, last_reinforced_ts = ?
+                    memory_metadata_json = ?, source_summary_ids_json = ?, reinforcement_count = ?, last_reinforced_ts = ?
                 WHERE semantic_id = ?
                 """,
                 (
@@ -1730,6 +1787,7 @@ class MemoryStore:
                     payload["important_people_json"],
                     payload["open_loops_json"],
                     payload["semantic_tags_json"],
+                    payload["memory_metadata_json"],
                     payload["source_summary_ids_json"],
                     payload["reinforcement_count"],
                     payload["last_reinforced_ts"],
@@ -1800,15 +1858,31 @@ class MemoryStore:
             ).fetchone()
         return self._row_to_message(dict(row)) if row else None
 
-    def get_message_by_seq_no(self, session_id: str, seq_no: int) -> dict[str, Any] | None:
+    def get_message_by_seq_no(
+        self,
+        session_id: str,
+        seq_no: int,
+        *,
+        profile_user_id: str = "",
+        character_pack_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        clauses = ["session_id = ?", "seq_no = ?"]
+        params: list[Any] = [str(session_id), int(seq_no)]
+        normalized_profile_user_id = str(profile_user_id or "").strip()
+        if normalized_profile_user_id:
+            clauses.append("profile_user_id = ?")
+            params.append(normalized_profile_user_id)
+        if character_pack_id is not None:
+            clauses.append("character_pack_id = ?")
+            params.append(normalize_character_pack_id(character_pack_id))
         with self._connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT * FROM chat_messages
-                WHERE session_id = ? AND seq_no = ?
+                WHERE {' AND '.join(clauses)}
                 LIMIT 1
                 """,
-                (session_id, int(seq_no)),
+                params,
             ).fetchone()
         return self._row_to_message(dict(row)) if row else None
 
@@ -1835,18 +1909,34 @@ class MemoryStore:
             return self.get_summary_by_id(source_id)
         return self.get_message_by_source_id(source_id)
 
-    def get_context_slice(self, session_id: str, center_seq_no: int, window: int = 1) -> list[dict[str, Any]]:
+    def get_context_slice(
+        self,
+        session_id: str,
+        center_seq_no: int,
+        window: int = 1,
+        *,
+        profile_user_id: str = "",
+        character_pack_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         start_seq = max(1, int(center_seq_no) - int(window))
         end_seq = int(center_seq_no) + int(window)
+        clauses = ["session_id = ?", "seq_no BETWEEN ? AND ?"]
+        params: list[Any] = [str(session_id), start_seq, end_seq]
+        normalized_profile_user_id = str(profile_user_id or "").strip()
+        if normalized_profile_user_id:
+            clauses.append("profile_user_id = ?")
+            params.append(normalized_profile_user_id)
+        if character_pack_id is not None:
+            clauses.append("character_pack_id = ?")
+            params.append(normalize_character_pack_id(character_pack_id))
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM chat_messages
-                WHERE session_id = ?
-                  AND seq_no BETWEEN ? AND ?
+                WHERE {' AND '.join(clauses)}
                 ORDER BY seq_no ASC
                 """,
-                (session_id, start_seq, end_seq),
+                params,
             ).fetchall()
         return [self._row_to_message(dict(row)) for row in rows]
 
@@ -4681,6 +4771,7 @@ class MemoryStore:
             "date_label": row["date_label"],
             "time_of_day": row["time_of_day"],
             "semantic_tags": json.loads(row.get("semantic_tags_json") or "[]"),
+            "memory_metadata": _loads_json_object(row.get("memory_metadata_json")),
             "index_in_vector": bool(int(row.get("index_in_vector", 1) or 0)),
             "is_summarized": int(row.get("is_summarized", 0)),
             "summary_id": row.get("summary_id", "") or "",
@@ -4704,6 +4795,7 @@ class MemoryStore:
             "key_events": json.loads(row.get("key_events_json") or "[]"),
             "core_facts": json.loads(row.get("core_facts_json") or "[]"),
             "semantic_tags": json.loads(row.get("semantic_tags_json") or "[]"),
+            "memory_metadata": _loads_json_object(row.get("memory_metadata_json")),
             "is_semanticized": int(row.get("is_semanticized", 0)),
             "semantic_id": row.get("semantic_id", "") or "",
             "source_start_seq": int(row["source_start_seq"]),
@@ -4732,6 +4824,7 @@ class MemoryStore:
             "important_people": json.loads(row.get("important_people_json") or "[]"),
             "open_loops": json.loads(row.get("open_loops_json") or "[]"),
             "semantic_tags": json.loads(row.get("semantic_tags_json") or "[]"),
+            "memory_metadata": _loads_json_object(row.get("memory_metadata_json")),
             "source_summary_ids": json.loads(row.get("source_summary_ids_json") or "[]"),
             "reinforcement_count": int(row.get("reinforcement_count", 1) or 1),
             "last_reinforced_ts": int(row.get("last_reinforced_ts", row["timestamp"]) or row["timestamp"]),

@@ -56,7 +56,6 @@ from .text_utils import (
     detect_time_of_day_from_text,
     extract_semantic_tags,
     infer_time_of_day,
-    join_tags,
     normalize_text,
     parse_joined_tags,
     render_chat_line,
@@ -202,6 +201,7 @@ class AkaneMemoryEngine:
             vector_store=self.vector_store,
             llm=self.llm,
             prompt_builder=self.prompt_builder,
+            persona_context_provider=self._build_memory_compaction_persona_context,
         )
         self.task_worker_service = TaskWorkerService(
             llm=self.llm,
@@ -654,6 +654,35 @@ class AkaneMemoryEngine:
         self.persona_card_service = service
         return service
 
+    def _build_memory_compaction_persona_context(
+        self,
+        *,
+        profile_user_id: str = "",
+        session_id: str = "",
+        character_pack_id: str = "",
+    ) -> dict[str, str]:
+        contexts: list[dict[str, Any]] = []
+        if character_pack_id:
+            contexts.append(
+                self._build_desktop_pet_character_pack_prompt_context(
+                    character_pack_id=character_pack_id,
+                    resource_manifest=None,
+                )
+            )
+        persona_service = self._get_persona_card_service()
+        if persona_service is not None and profile_user_id and session_id:
+            try:
+                contexts.append(
+                    persona_service.build_prompt_context(
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        visible_limit=5,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("memory compaction persona context failed: %s", exc)
+        return self._merge_prompt_persona_contexts(*contexts)
+
     def _get_task_workspace_service(self) -> TaskWorkspaceService | None:
         service = getattr(self, "task_workspace_service", None)
         if service is not None:
@@ -788,6 +817,7 @@ class AkaneMemoryEngine:
                 vector_store=self.vector_store,
                 llm=self.llm,
                 prompt_builder=self._get_prompt_builder(),
+                persona_context_provider=self._build_memory_compaction_persona_context,
             )
             self.compaction_service = compaction_service
         return compaction_service
@@ -1589,8 +1619,20 @@ class AkaneMemoryEngine:
                 client_context, turn_character_pack_id,
             )["assistant_name"],
         )
-        memory_tags = self._normalize_memory_tags(final_output.get("memory_tags"))
-        final_output["memory_tags"] = join_tags(memory_tags)
+        memory_tags = final_output_engine.extract_memory_keywords(self, final_output)
+        memory_metadata = final_output.get("memory_metadata")
+        if not isinstance(memory_metadata, dict):
+            memory_metadata = final_output_engine.normalize_memory_metadata(self, None)
+        else:
+            memory_metadata = dict(memory_metadata)
+        memory_metadata["keywords"] = memory_tags
+        final_output["memory_metadata"] = memory_metadata
+        final_output.pop("memory_tags", None)
+        if not transient_user_turn:
+            user_record = self._apply_memory_metadata_to_user_record(
+                user_record=user_record,
+                memory_metadata=memory_metadata,
+            )
         if memory_tags and not transient_user_turn:
             user_record = self._apply_memory_tags_to_user_record(
                 user_record=user_record,
@@ -1955,8 +1997,20 @@ class AkaneMemoryEngine:
                 client_context, turn_character_pack_id,
             )["assistant_name"],
         )
-        memory_tags = self._normalize_memory_tags(final_output.get("memory_tags"))
-        final_output["memory_tags"] = join_tags(memory_tags)
+        memory_tags = final_output_engine.extract_memory_keywords(self, final_output)
+        memory_metadata = final_output.get("memory_metadata")
+        if not isinstance(memory_metadata, dict):
+            memory_metadata = final_output_engine.normalize_memory_metadata(self, None)
+        else:
+            memory_metadata = dict(memory_metadata)
+        memory_metadata["keywords"] = memory_tags
+        final_output["memory_metadata"] = memory_metadata
+        final_output.pop("memory_tags", None)
+        if not transient_user_turn:
+            user_record = self._apply_memory_metadata_to_user_record(
+                user_record=user_record,
+                memory_metadata=memory_metadata,
+            )
         if memory_tags and not transient_user_turn:
             user_record = self._apply_memory_tags_to_user_record(
                 user_record=user_record,
@@ -2724,6 +2778,18 @@ class AkaneMemoryEngine:
 
         user_record["semantic_tags"] = merged_tags
         self.store.update_message_semantic_tags(user_record["source_id"], merged_tags)
+        self._upsert_raw_record(user_record)
+        return user_record
+
+    def _apply_memory_metadata_to_user_record(
+        self,
+        *,
+        user_record: dict[str, Any],
+        memory_metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        metadata = dict(memory_metadata or {})
+        user_record["memory_metadata"] = metadata
+        self.store.update_message_memory_metadata(user_record["source_id"], metadata)
         self._upsert_raw_record(user_record)
         return user_record
 

@@ -524,7 +524,13 @@ def _covered_source_ids_for_anchor(
     if not session_id or seq_no <= 0:
         return [normalized_source_id]
     window = 2 if retrieval_service._is_question_like(str(record.get("content") or "")) else 1
-    rows = retrieval_service.store.get_context_slice(session_id, seq_no, window=window)
+    rows = retrieval_service.store.get_context_slice(
+        session_id,
+        seq_no,
+        window=window,
+        profile_user_id=str(record.get("profile_user_id") or ""),
+        character_pack_id=str(record.get("character_pack_id") or ""),
+    )
     expanded = [
         str(row.get("source_id") or "").strip()
         for row in rows

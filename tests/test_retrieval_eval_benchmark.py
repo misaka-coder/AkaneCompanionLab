@@ -253,14 +253,25 @@ class RetrievalEvalBenchmarkTests(unittest.TestCase):
                     return {
                         "source_id": "raw-2",
                         "entry_type": "raw",
+                        "profile_user_id": "user-1",
                         "session_id": "session-1",
+                        "character_pack_id": "akane",
                         "seq_no": 2,
                         "content": "你还记得吗？",
                     }
                 return None
 
-            def get_context_slice(self, session_id: str, center_seq_no: int, window: int = 1):
+            def get_context_slice(
+                self,
+                session_id: str,
+                center_seq_no: int,
+                window: int = 1,
+                *,
+                profile_user_id: str = "",
+                character_pack_id: str | None = None,
+            ):
                 self.last_window = window
+                self.last_scope = (profile_user_id, character_pack_id)
                 return [
                     {"source_id": "raw-1"},
                     {"source_id": "raw-2"},
@@ -274,12 +285,14 @@ class RetrievalEvalBenchmarkTests(unittest.TestCase):
             def _is_question_like(self, text: str) -> bool:
                 return True
 
+        retrieval_service = StubRetrievalService()
         expanded = _expand_context_source_ids(
             source_ids=["raw-2"],
-            retrieval_service=StubRetrievalService(),
+            retrieval_service=retrieval_service,
         )
 
         self.assertEqual(expanded, ["raw-1", "raw-2", "raw-3"])
+        self.assertEqual(retrieval_service.store.last_scope, ("user-1", "akane"))
 
 
 if __name__ == "__main__":

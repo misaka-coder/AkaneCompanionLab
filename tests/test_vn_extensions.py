@@ -301,6 +301,81 @@ class EngineExtensionTests(unittest.TestCase):
 
         self.assertEqual(normalized["code_snippet"], 'System.out.println("hi");')
 
+    def test_normalize_final_output_groups_memory_metadata(self) -> None:
+        normalized = self.engine._normalize_final_output(
+            result={
+                "emotion": "normal",
+                "speech": "可乐这件事我记住啦。",
+                "speech_segments": [],
+                "tool_call": None,
+                "code_snippet": "",
+                "memory_tags": "旧词,可乐",
+                "memory_metadata": {
+                    "keywords": ["可乐", "饮料", "可乐"],
+                    "subject_scopes": ["用户", "relationship", "topic", "unknown"],
+                    "categories": ["偏好", "project_work", "unknown"],
+                    "importance": 1.2,
+                    "confidence": "0.75",
+                },
+                "status": "final",
+                "score": 0.0,
+                "choices": [],
+                "character": {"outfit": "default"},
+                "scene": {"major": "home", "minor": "room", "background": "night", "bgm": ""},
+            },
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "night",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=True,
+            debug_enabled=False,
+        )
+
+        self.assertEqual(normalized["memory_metadata"]["keywords"], ["可乐", "饮料", "旧词"])
+        self.assertEqual(normalized["memory_metadata"]["subject_scopes"], ["user", "assistant", "other"])
+        self.assertEqual(normalized["memory_metadata"]["categories"], ["preference", "project_work"])
+        self.assertEqual(normalized["memory_metadata"]["importance"], 1.0)
+        self.assertEqual(normalized["memory_metadata"]["confidence"], 0.75)
+        self.assertNotIn("memory_tags", normalized)
+
+    def test_normalize_final_output_migrates_legacy_memory_tags(self) -> None:
+        normalized = self.engine._normalize_final_output(
+            result={
+                "emotion": "normal",
+                "speech": "嗯嗯。",
+                "speech_segments": [],
+                "tool_call": None,
+                "code_snippet": "",
+                "memory_tags": "可乐,饮料,喜欢",
+                "status": "final",
+                "score": 0.0,
+                "choices": [],
+                "character": {"outfit": "default"},
+                "scene": {"major": "home", "minor": "room", "background": "night", "bgm": ""},
+            },
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "night",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=True,
+            debug_enabled=False,
+        )
+
+        self.assertEqual(normalized["memory_metadata"]["keywords"], ["可乐", "饮料", "喜欢"])
+        self.assertEqual(normalized["memory_metadata"]["subject_scopes"], [])
+        self.assertEqual(normalized["memory_metadata"]["categories"], [])
+        self.assertEqual(normalized["memory_metadata"]["importance"], 0.0)
+        self.assertEqual(normalized["memory_metadata"]["confidence"], 0.0)
+        self.assertNotIn("memory_tags", normalized)
+
     def test_normalize_final_output_wraps_plain_speech_as_single_segment(self) -> None:
         normalized = self.engine._normalize_final_output(
             result={
@@ -1572,6 +1647,55 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertEqual(len(snippets), 1)
             self.assertIn("长期语义记忆", snippets[0])
             self.assertIn("反复提到课程安排", snippets[0])
+
+    def test_summary_compaction_passes_persona_perspective_to_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            captured_prompts: list[str] = []
+
+            class StubLLM:
+                def call_aux_json(self, **kwargs):
+                    captured_prompts.append(str(kwargs.get("system_prompt") or ""))
+                    return {
+                        "diary_summary": "主人提到自己喜欢喝可乐，我顺手记下来了。",
+                        "period_label": "偏好片段",
+                        "event_type": "偏好",
+                        "importance": 0.72,
+                        "key_events": ["主人说喜欢喝可乐"],
+                        "core_facts": ["用户喜欢喝可乐"],
+                    }
+
+            service = MemoryCompactionService(
+                store=store,
+                vector_store=object(),
+                llm=StubLLM(),
+                prompt_builder=PromptBuilder(PERSONA),
+                persona_context_provider=lambda **_kwargs: {
+                    "system_context": "角色设定：Mika 会认真记住主人的偏好。",
+                    "reference_context": "表达侧面：温柔吐槽。",
+                },
+            )
+            try:
+                service._summarize_batch(
+                    [
+                        {
+                            "role": "user",
+                            "content": "我喜欢喝可乐。",
+                            "timestamp": 1712400000,
+                        }
+                    ],
+                    profile_user_id="user-1",
+                    session_id="session-1",
+                    character_pack_id="mika",
+                )
+            finally:
+                service.close()
+
+            self.assertEqual(len(captured_prompts), 1)
+            self.assertIn("[CURRENT ASSISTANT MEMORY PERSPECTIVE]", captured_prompts[0])
+            self.assertIn("Mika", captured_prompts[0])
+            self.assertIn("温柔吐槽", captured_prompts[0])
+            self.assertIn("不要把这些设定本身当作对话事实", captured_prompts[0])
 
     def test_run_semantic_summary_cycle_creates_semantic_memory_and_marks_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

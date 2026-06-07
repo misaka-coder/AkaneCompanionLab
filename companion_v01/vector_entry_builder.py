@@ -5,6 +5,28 @@ from typing import Any
 from .text_utils import join_tags
 
 
+def _memory_metadata_fields(record: dict[str, Any]) -> dict[str, Any]:
+    metadata = record.get("memory_metadata") if isinstance(record.get("memory_metadata"), dict) else {}
+    keywords = list(metadata.get("keywords") or [])
+    subject_scopes = list(metadata.get("subject_scopes") or [])
+    categories = list(metadata.get("categories") or [])
+    try:
+        importance = float(metadata.get("importance"))
+    except (TypeError, ValueError):
+        importance = float(record.get("importance") or 0.0)
+    try:
+        confidence = float(metadata.get("confidence"))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return {
+        "memory_keywords_text": join_tags(keywords),
+        "memory_subject_scopes_text": join_tags(subject_scopes),
+        "memory_categories_text": join_tags(categories),
+        "memory_importance": float(max(0.0, min(1.0, importance))),
+        "memory_confidence": float(max(0.0, min(1.0, confidence))),
+    }
+
+
 def build_raw_vector_entry(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "source_id": record["source_id"],
@@ -20,6 +42,7 @@ def build_raw_vector_entry(record: dict[str, Any]) -> dict[str, Any]:
             "speaker": record["role"],
             "entry_type": "raw",
             "semantic_tags_text": join_tags(record.get("semantic_tags") or []),
+            **_memory_metadata_fields(record),
         },
     }
 
@@ -44,6 +67,7 @@ def build_summary_vector_entry(record: dict[str, Any]) -> dict[str, Any]:
             "speaker": "summary",
             "entry_type": "summary",
             "semantic_tags_text": join_tags(record.get("semantic_tags") or []),
+            **_memory_metadata_fields(record),
         },
     }
 
@@ -70,5 +94,6 @@ def build_semantic_summary_vector_entry(record: dict[str, Any]) -> dict[str, Any
             "speaker": "semantic_summary",
             "entry_type": "semantic_summary",
             "semantic_tags_text": join_tags(record.get("semantic_tags") or []),
+            **_memory_metadata_fields(record),
         },
     }

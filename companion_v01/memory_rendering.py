@@ -21,9 +21,19 @@ def resolve_record_time_range(record: dict[str, Any], *, store: Any) -> tuple[in
     start_record = None
     end_record = None
     if session_id and start_seq is not None:
-        start_record = store.get_message_by_seq_no(session_id, int(start_seq))
+        start_record = store.get_message_by_seq_no(
+            session_id,
+            int(start_seq),
+            profile_user_id=str(record.get("profile_user_id") or ""),
+            character_pack_id=str(record.get("character_pack_id") or ""),
+        )
     if session_id and end_seq is not None:
-        end_record = store.get_message_by_seq_no(session_id, int(end_seq))
+        end_record = store.get_message_by_seq_no(
+            session_id,
+            int(end_seq),
+            profile_user_id=str(record.get("profile_user_id") or ""),
+            character_pack_id=str(record.get("character_pack_id") or ""),
+        )
     start_ts = (start_record or {}).get("timestamp")
     end_ts = (end_record or {}).get("timestamp") or record.get("timestamp")
     return (

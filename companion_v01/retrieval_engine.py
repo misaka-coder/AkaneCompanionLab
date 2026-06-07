@@ -175,6 +175,11 @@ def execute_retrieve_memory_tool(
     query = normalize_text(str(call.get("query") or "")).strip()
     keywords = [str(item).strip() for item in list(call.get("keywords") or []) if str(item).strip()]
     time_hint = call.get("time_hint") if isinstance(call.get("time_hint"), dict) else None
+    source_layers = [str(item).strip() for item in list(call.get("source_layers") or []) if str(item).strip()]
+    subject_scopes = [str(item).strip() for item in list(call.get("subject_scopes") or []) if str(item).strip()]
+    categories = [str(item).strip() for item in list(call.get("categories") or []) if str(item).strip()]
+    importance_min = call.get("importance_min")
+    limit = call.get("limit")
     current_user_record = (
         engine.store.get_message_by_source_id(context.current_user_source_id)
         if str(context.current_user_source_id or "").strip()
@@ -221,6 +226,11 @@ def execute_retrieve_memory_tool(
         query=query,
         keywords=keywords,
         time_hint=time_hint,
+        source_layers=source_layers,
+        subject_scopes=subject_scopes,
+        categories=categories,
+        importance_min=importance_min,
+        limit=limit,
         exclude_source_ids=exclude_source_ids,
         verifier_debug_enabled=False,
         route="post_retrieval",
@@ -248,6 +258,11 @@ def execute_retrieve_memory_tool(
                     "query": query,
                     "keywords": keywords,
                     "time_hint": time_hint or {},
+                    "source_layers": source_layers,
+                    "subject_scopes": subject_scopes,
+                    "categories": categories,
+                    "importance_min": importance_min,
+                    "limit": limit,
                 },
                 "retrieval_result": pipeline.retrieval_result,
                 "verifier_output": pipeline.verifier_output,
