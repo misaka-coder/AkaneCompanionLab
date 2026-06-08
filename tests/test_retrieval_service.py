@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
+import tempfile
 import unittest
 
 from companion_v01.persona_config import PERSONA
 from companion_v01.prompt_builder import PromptBuilder
 from companion_v01.retrieval_service import RetrievalService
+from companion_v01.store import MemoryStore
 
 
 class RetrievalServiceTests(unittest.TestCase):
@@ -121,6 +124,62 @@ class RetrievalServiceTests(unittest.TestCase):
         self.assertEqual([hit["source_id"] for hit in result["fused_hits"]], ["single_category", "double_category"])
         self.assertEqual(result["precision_filters"]["relaxation_stage"], "strict")
         self.assertEqual(result["precision_filters"]["applied_filters"], ["categories"])
+
+    def test_retrieve_memories_filters_hits_by_store_character_pack_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            akane_record = store.add_message(
+                profile_user_id="user-1",
+                session_id="qq-session",
+                character_pack_id="",
+                role="user",
+                content="Akane default memory about cat ears.",
+                timestamp=1712400000,
+            )
+            reimu_record = store.add_message(
+                profile_user_id="user-1",
+                session_id="qq-session",
+                character_pack_id="reimu",
+                role="user",
+                content="Reimu shrine memory.",
+                timestamp=1712400001,
+            )
+            service = RetrievalService(
+                store=store,
+                vector_store=object(),
+                llm=object(),
+                prompt_builder=PromptBuilder(PERSONA),
+            )
+            self._install_fake_vector_hits(
+                service,
+                semantic_hits=[
+                    {
+                        "source_id": akane_record["source_id"],
+                        "document": "Akane default memory about cat ears.",
+                        "metadata": {"entry_type": "raw", "character_pack_id": "reimu"},
+                        "semantic_score": 0.95,
+                    },
+                    {
+                        "source_id": reimu_record["source_id"],
+                        "document": "Reimu shrine memory.",
+                        "metadata": {"entry_type": "raw", "character_pack_id": "reimu"},
+                        "semantic_score": 0.9,
+                    },
+                ],
+            )
+
+            result = service._retrieve_memories(
+                profile_user_id="user-1",
+                character_pack_id="reimu",
+                query="shrine memory",
+                keywords=["memory"],
+                time_hint=None,
+                limit=4,
+                exclude_source_ids=[],
+            )
+
+            self.assertEqual([hit["source_id"] for hit in result["fused_hits"]], [reimu_record["source_id"]])
+            self.assertEqual(result["memory_snippets"], [reimu_record["source_id"]])
 
     def test_retrieve_memories_source_layer_filter_limits_candidates(self) -> None:
         service = self._build_service()

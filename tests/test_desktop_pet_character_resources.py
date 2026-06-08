@@ -54,6 +54,41 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         self.assertIn("开心", prompt_context)
         self.assertIn("害羞", prompt_context)
 
+    def test_list_character_packs_returns_safe_display_metadata(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        characters_dir = Path(temp_dir.name) / "characters"
+        write_json(
+            characters_dir / "reimu" / "character.json",
+            {
+                "identity": {
+                    "name": "Reimu",
+                    "app_name": "Reimu Pet",
+                    "user_title": "你",
+                }
+            },
+        )
+        write_json(characters_dir / "bad/name" / "character.json", {"identity": {"name": "Bad"}})
+        (characters_dir / "no_json").mkdir(parents=True, exist_ok=True)
+
+        service = DesktopPetCharacterResourceService(characters_dir=characters_dir)
+        packs = service.list_character_packs()
+
+        self.assertEqual(
+            packs,
+            [
+                {
+                    "pack_id": "reimu",
+                    "id": "reimu",
+                    "name": "Reimu",
+                    "app_name": "Reimu Pet",
+                    "user_title": "你",
+                }
+            ],
+        )
+        serialized = json.dumps(packs, ensure_ascii=False)
+        self.assertNotIn(str(characters_dir), serialized)
+
     def test_character_pack_metadata_drives_desktop_persona_context_and_aliases(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
@@ -116,6 +151,53 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
             service.build_persona_prompt_context("../web"),
             {"system_context": "", "reference_context": "", "active_id": ""},
         )
+
+    def test_character_pack_metadata_drives_qq_persona_context_without_desktop_render_rules(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        characters_dir = Path(temp_dir.name) / "characters"
+        pack_dir = characters_dir / "mika_pack"
+
+        write_bytes(pack_dir / "assets" / "characters" / "猫娘" / "开心.png")
+        write_json(
+            pack_dir / "character.json",
+            {
+                "identity": {
+                    "id": "mika_pack",
+                    "name": "Mika",
+                    "app_name": "Mika Pet",
+                    "user_title": "店长",
+                    "self_reference": "我",
+                    "relationship": "会在 QQ 里陪店长聊天的看板娘。",
+                },
+                "appearance": {
+                    "default_outfit": "猫娘",
+                    "default_emotion": "开心",
+                },
+                "persona_form": {
+                    "speaking_style": "温柔但简短。",
+                    "boundaries": "不要把自己说成通用客服。",
+                },
+                "emotion_aliases": {"cheerful": ["开心"]},
+            },
+        )
+
+        service = DesktopPetCharacterResourceService(characters_dir=characters_dir)
+        context = service.build_persona_prompt_context("mika_pack", client_mode="qq_text")
+
+        self.assertIn("[CHARACTER PACK - qq_text]", context["system_context"])
+        self.assertIn("当前 QQ 聊天角色包：Mika Pet / Mika", context["system_context"])
+        self.assertIn("默认称呼用户：店长", context["system_context"])
+        self.assertIn("QQ 端只发送文字", context["system_context"])
+        self.assertIn("角色自称：我", context["system_context"])
+        self.assertIn("会在 QQ 里陪店长聊天", context["system_context"])
+        self.assertIn("说话风格: 温柔但简短。", context["reference_context"])
+        self.assertIn("边界与禁忌: 不要把自己说成通用客服。", context["reference_context"])
+        self.assertNotIn("desktop_pet only", context["system_context"])
+        self.assertNotIn("emotion 必须", context["system_context"])
+        self.assertNotIn("character.outfit", context["system_context"])
+        self.assertNotIn("默认服装", context["system_context"])
+        self.assertNotIn("cheerful -> 开心", context["system_context"])
 
     def test_v02_persona_form_fields_are_available_to_desktop_prompt(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()

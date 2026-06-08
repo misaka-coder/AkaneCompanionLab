@@ -99,7 +99,11 @@ def normalize_final_output(
     user_message: str = "",
 ) -> dict[str, Any]:
     client_context = client_context or engine._resolve_client_protocol_context({})
-    manifest_service = resource_manifest or engine.resource_manifest
+    manifest_service = (
+        None
+        if client_context.effective_mode == ClientMode.QQ_TEXT
+        else resource_manifest or engine.resource_manifest
+    )
     raw_result = result if isinstance(result, dict) else {}
     normalized = dict(raw_result or {})
     persona_request_present = "persona" in raw_result

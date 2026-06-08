@@ -237,8 +237,8 @@ class VectorStore:
         time_hint: dict[str, Any] | None,
     ) -> dict[str, Any]:
         clauses: list[dict[str, Any]] = [{"profile_user_id": str(profile_user_id)}]
-        normalized_character_pack_id = str(character_pack_id or "").strip()
-        if normalized_character_pack_id:
+        if character_pack_id is not None:
+            normalized_character_pack_id = str(character_pack_id or "").strip()
             clauses.append({"character_pack_id": normalized_character_pack_id})
         hint = time_hint if isinstance(time_hint, dict) else {}
         if hint.get("date_label"):

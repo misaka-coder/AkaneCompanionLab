@@ -7,6 +7,39 @@ from unittest.mock import patch
 from companion_v01.qq_gateway import NapCatQQGateway
 
 
+class FakeCharacterResourceService:
+    def __init__(self) -> None:
+        self.packs = {
+            "reimu": {
+                "pack_id": "reimu",
+                "name": "Reimu",
+                "app_name": "Reimu Pet",
+                "user_title": "你",
+            },
+            "mika_sample": {
+                "pack_id": "mika_sample",
+                "name": "Mika",
+                "app_name": "Mika Pet",
+                "user_title": "店长",
+            },
+        }
+
+    def list_character_packs(self):
+        return list(self.packs.values())
+
+    def build_character_identity(self, character_pack_id: str):
+        item = self.packs.get(character_pack_id)
+        if not item:
+            return {}
+        return {
+            "character_id": character_pack_id,
+            "assistant_name": item["name"],
+            "app_name": item["app_name"],
+            "user_label": item["user_title"],
+            "pack_id": character_pack_id,
+        }
+
+
 class QQGatewayTests(unittest.TestCase):
     def test_render_reply_messages_prefers_speech_segments(self) -> None:
         gateway = NapCatQQGateway()
@@ -62,7 +95,7 @@ class QQGatewayTests(unittest.TestCase):
                 "post_type": "message",
                 "message_type": "private",
                 "self_id": 2184046306,
-                "user_id": 1906243651,
+                "user_id": 111222333,
                 "message_id": "old-message-1",
                 "time": int(time.time()) - 3600,
                 "raw_message": "在吗",
@@ -236,6 +269,197 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(context.sender_label, "休比")
         self.assertEqual(payload["message"], "【休比】你好")
         self.assertIn("【昵称】", payload["extra_context"])
+
+    @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "reimu_demo")
+    def test_turn_payload_includes_configured_character_pack_id(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": 2184046306,
+            "user_id": 1906243651,
+            "message_id": "character-pack-1",
+            "raw_message": "在吗",
+        }
+
+        context = gateway.build_message_context(event)
+        payload = context.to_turn_payload()
+        delivery_context = context.to_delivery_context()
+
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.character_pack_id, "reimu_demo")
+        self.assertEqual(payload["character_pack_id"], "reimu_demo")
+        self.assertEqual(payload["qq_delivery_context"]["character_pack_id"], "reimu_demo")
+        self.assertEqual(delivery_context["character_pack_id"], "reimu_demo")
+        self.assertEqual(gateway.status()["character_pack_id"], "reimu_demo")
+
+    @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "../bad")
+    def test_turn_payload_omits_invalid_character_pack_id(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": 2184046306,
+            "user_id": 1906243651,
+            "message_id": "character-pack-invalid-1",
+            "raw_message": "在吗",
+        }
+
+        context = gateway.build_message_context(event)
+        payload = context.to_turn_payload()
+
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.character_pack_id, "")
+        self.assertNotIn("character_pack_id", payload)
+        self.assertNotIn("character_pack_id", payload["qq_delivery_context"])
+
+    def test_character_command_switches_current_qq_session(self) -> None:
+        gateway = NapCatQQGateway()
+        service = FakeCharacterResourceService()
+        switch_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 111222333,
+                "message_id": "switch-character-1",
+                "raw_message": "切换角色 reimu",
+            }
+        )
+
+        result = gateway.handle_character_command(
+            switch_context,
+            character_resource_service=service,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "switched")
+        self.assertEqual(result["character_pack_id"], "reimu")
+        self.assertEqual(gateway.resolve_character_pack_id("qq_pri_111222333"), "reimu")
+
+        next_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 111222333,
+                "message_id": "switch-character-2",
+                "raw_message": "在吗",
+            }
+        )
+        self.assertEqual(next_context.character_pack_id, "reimu")
+        self.assertEqual(next_context.to_turn_payload()["character_pack_id"], "reimu")
+
+    def test_character_command_lists_current_and_resets_to_default(self) -> None:
+        gateway = NapCatQQGateway()
+        service = FakeCharacterResourceService()
+        list_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 111222333,
+                "message_id": "character-list-1",
+                "raw_message": "角色列表",
+            }
+        )
+        list_result = gateway.handle_character_command(list_context, character_resource_service=service)
+
+        self.assertIsNotNone(list_result)
+        self.assertEqual(list_result["status"], "listed")
+        self.assertIn("reimu", list_result["reply"])
+        self.assertIn("mika_sample", list_result["reply"])
+
+        gateway.set_session_character_pack_id("qq_pri_111222333", "reimu")
+        current_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 111222333,
+                "message_id": "character-current-1",
+                "raw_message": "当前角色",
+            }
+        )
+        current_result = gateway.handle_character_command(current_context, character_resource_service=service)
+
+        self.assertIsNotNone(current_result)
+        self.assertEqual(current_result["status"], "current")
+        self.assertIn("reimu", current_result["reply"])
+        self.assertIn("本会话临时切换", current_result["reply"])
+
+        reset_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 111222333,
+                "message_id": "character-reset-1",
+                "raw_message": "切回默认角色",
+            }
+        )
+        reset_result = gateway.handle_character_command(reset_context, character_resource_service=service)
+
+        self.assertIsNotNone(reset_result)
+        self.assertEqual(reset_result["status"], "default")
+        self.assertEqual(gateway.resolve_character_pack_id("qq_pri_111222333"), "")
+
+    def test_character_command_can_force_builtin_akane(self) -> None:
+        gateway = NapCatQQGateway()
+        service = FakeCharacterResourceService()
+        gateway.set_session_character_pack_id("qq_pri_111222333", "reimu")
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 111222333,
+                "message_id": "character-builtin-1",
+                "raw_message": "切回Akane",
+            }
+        )
+
+        result = gateway.handle_character_command(context, character_resource_service=service)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "builtin")
+        self.assertEqual(result["character_pack_id"], "")
+        self.assertEqual(gateway.resolve_character_pack_id("qq_pri_111222333"), "")
+
+    def test_character_command_rejects_unknown_or_invalid_pack(self) -> None:
+        gateway = NapCatQQGateway()
+        service = FakeCharacterResourceService()
+        unknown_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 111222333,
+                "message_id": "character-unknown-1",
+                "raw_message": "切换角色 missing_pack",
+            }
+        )
+        invalid_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 111222333,
+                "message_id": "character-invalid-1",
+                "raw_message": "切换角色 ../bad",
+            }
+        )
+
+        unknown = gateway.handle_character_command(unknown_context, character_resource_service=service)
+        invalid = gateway.handle_character_command(invalid_context, character_resource_service=service)
+
+        self.assertIsNotNone(unknown)
+        self.assertFalse(unknown["ok"])
+        self.assertEqual(unknown["status"], "unknown_character_pack")
+        self.assertIsNotNone(invalid)
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["status"], "invalid_character_pack_id")
 
     def test_extracts_image_and_file_attachments_from_segments(self) -> None:
         gateway = NapCatQQGateway()

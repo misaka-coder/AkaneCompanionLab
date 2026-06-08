@@ -190,6 +190,25 @@ class VectorStoreLogicTests(unittest.TestCase):
             {"$and": [{"profile_user_id": "master"}, {"character_pack_id": "kaju"}]},
         )
 
+    def test_semantic_search_can_scope_to_builtin_empty_character_pack_id(self) -> None:
+        store = VectorStore.__new__(VectorStore)
+        store._lock = threading.RLock()
+        store.embedding_provider = DummyEmbeddingProvider()
+        store.collection = FakeCollection()
+
+        store.semantic_search(
+            profile_user_id="master",
+            character_pack_id="",
+            query_text="旧默认记忆",
+            time_hint=None,
+            n_results=4,
+        )
+
+        self.assertEqual(
+            store.collection.last_query["where"],
+            {"$and": [{"profile_user_id": "master"}, {"character_pack_id": ""}]},
+        )
+
     def test_upsert_entries_uses_batch_embedding_interface(self) -> None:
         store = VectorStore.__new__(VectorStore)
         store._lock = threading.RLock()

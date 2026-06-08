@@ -60,6 +60,36 @@ class DesktopPetCharacterResourceService:
         manifest.refresh()
         return manifest.build_runtime_manifest()
 
+    def list_character_packs(self) -> list[dict[str, str]]:
+        """List installed Creator Kit character packs without exposing paths."""
+        try:
+            entries = sorted(self.characters_dir.iterdir(), key=lambda item: item.name.lower())
+        except OSError:
+            return []
+        packs: list[dict[str, str]] = []
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            pack_id = sanitize_character_pack_id(entry.name)
+            if not pack_id or pack_id != entry.name:
+                continue
+            if not (entry / "character.json").is_file():
+                continue
+            identity = _as_dict(_load_json(entry / "character.json").get("identity"))
+            name = _clean_text(identity.get("name")) or pack_id
+            app_name = _clean_text(identity.get("app_name")) or name
+            user_title = _clean_text(identity.get("user_title")) or "用户"
+            packs.append(
+                {
+                    "pack_id": pack_id,
+                    "id": pack_id,
+                    "name": name,
+                    "app_name": app_name,
+                    "user_title": user_title,
+                }
+            )
+        return packs
+
     def build_character_identity(self, character_pack_id: str) -> dict[str, str]:
         """Return the resolved display identity for a character pack.
 
@@ -92,6 +122,7 @@ class DesktopPetCharacterResourceService:
         character_pack_id: str,
         *,
         resource_manifest: ResourceManifest | None = None,
+        client_mode: str = "desktop_pet",
     ) -> dict[str, str]:
         pack_id = sanitize_character_pack_id(character_pack_id)
         if not pack_id:
@@ -105,6 +136,7 @@ class DesktopPetCharacterResourceService:
             pack_dir=pack_dir,
             resource_manifest=resource_manifest,
         )
+        mode = str(client_mode or "desktop_pet").strip().lower()
 
         character = _load_json(pack_dir / "character.json")
         identity = _as_dict(character.get("identity"))
@@ -125,14 +157,30 @@ class DesktopPetCharacterResourceService:
         music_emotion = _clean_text(appearance.get("music_emotion"))
         proactive_prompt = _clean_text(dialogue.get("proactive_wake_prompt"))
 
-        system_lines = [
-            "[DESKTOP CHARACTER PACK - desktop_pet only]",
-            f"- 当前角色包：{app_name} / {name} (pack_id={pack_id}, identity.id={identity_id})",
-            f"- 默认称呼用户：{user_title}",
-            "- 这是 desktop_pet 客户端本轮选中的角色包；底层项目名、进程名或旧提示里的 Akane 只是项目代号，当前桌宠身份优先服从这个角色包。",
-            "- emotion 必须从当前角色包资源清单里的可用表情中选择；如果想表达的情绪没有对应图片，选择语义最接近的可用表情，不要编造新的 emotion。",
-            "- character.outfit 优先沿用当前服装；只有用户明确要求或资源清单确实支持时才切换。",
-        ]
+        if mode == "desktop_pet":
+            system_lines = [
+                "[DESKTOP CHARACTER PACK - desktop_pet only]",
+                f"- 当前角色包：{app_name} / {name} (pack_id={pack_id}, identity.id={identity_id})",
+                f"- 默认称呼用户：{user_title}",
+                "- 这是 desktop_pet 客户端本轮选中的角色包；底层项目名、进程名或旧提示里的 Akane 只是项目代号，当前桌宠身份优先服从这个角色包。",
+                "- emotion 必须从当前角色包资源清单里的可用表情中选择；如果想表达的情绪没有对应图片，选择语义最接近的可用表情，不要编造新的 emotion。",
+                "- character.outfit 优先沿用当前服装；只有用户明确要求或资源清单确实支持时才切换。",
+            ]
+        elif mode == "qq_text":
+            system_lines = [
+                "[CHARACTER PACK - qq_text]",
+                f"- 当前 QQ 聊天角色包：{app_name} / {name} (pack_id={pack_id}, identity.id={identity_id})",
+                f"- 默认称呼用户：{user_title}",
+                "- 这是 QQ 文字客户端本轮选中的角色包；底层项目名、进程名或旧提示里的 Akane 只是项目代号，当前聊天身份优先服从这个角色包。",
+                "- QQ 端只发送文字、文件或工具结果，不渲染桌宠立绘、服装、场景或 BGM；保持角色语气和边界，不要规划视觉演出。",
+            ]
+        else:
+            system_lines = [
+                "[CHARACTER PACK]",
+                f"- 当前角色包：{app_name} / {name} (pack_id={pack_id}, identity.id={identity_id})",
+                f"- 默认称呼用户：{user_title}",
+                "- 底层项目名、进程名或旧提示里的 Akane 只是项目代号；当前角色身份优先服从这个角色包。",
+            ]
         if self_reference:
             system_lines.append(f"- 角色自称：{self_reference}")
         if relationship:
@@ -144,13 +192,13 @@ class DesktopPetCharacterResourceService:
             default_parts.append(f"默认表情={default_emotion}")
         if music_emotion:
             default_parts.append(f"音乐表情={music_emotion}")
-        if default_parts:
+        if mode == "desktop_pet" and default_parts:
             system_lines.append(f"- 角色包默认值：{'; '.join(default_parts)}")
         if proactive_prompt:
             system_lines.append(f"- 主动搭话风格参考：{proactive_prompt}")
 
         alias_lines = _format_alias_lines(emotion_aliases, available_emotions=available_emotions)
-        if alias_lines:
+        if mode == "desktop_pet" and alias_lines:
             system_lines.append("- 常用情绪意图映射（语义标签 -> 当前角色包表情优先级）：")
             system_lines.extend(f"  - {line}" for line in alias_lines[:ALIAS_PROMPT_LIMIT])
 

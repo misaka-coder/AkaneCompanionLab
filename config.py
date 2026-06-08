@@ -161,6 +161,8 @@ class Settings(BaseSettings):
     QQ_ONEBOT_HTTP_URL: str = "http://127.0.0.1:3001"
     # Bot 自己的 QQ 号
     QQ_BOT_QQ: str = ""
+    # QQ 文字聊天默认使用的 Creator Kit 角色包 id（留空=Akane 默认人设）
+    QQ_CHARACTER_PACK_ID: str = ""
     # 允许群聊使用明文（非 JSON 卡片）模式
     QQ_GROUP_PLAINTEXT_ENABLED: bool = False
     # 群聊对话跟随 TTL（秒），超时后新卡片
@@ -304,7 +306,7 @@ def _apply_settings(s: Settings) -> None:
     global TTS_VOICE, TTS_RATE, TTS_VOLUME, TTS_PITCH, STREAMING_TTS_ENABLED
     global PUBLIC_GUARD_ENABLED, MAX_CONCURRENT_THINKS, DAILY_THINK_LIMIT
     global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, MAX_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
-    global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ
+    global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ, QQ_CHARACTER_PACK_ID
     global QQ_GROUP_PLAINTEXT_ENABLED, QQ_GROUP_FOLLOW_TTL_SECONDS, QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS
     global QQ_ATTACHMENT_DEBOUNCE_SECONDS, QQ_ATTACHMENT_READY_WAIT_SECONDS, QQ_REPLY_SEGMENT_DELAY_SECONDS
     global QQ_EVENT_MAX_AGE_SECONDS, QQ_ALLOW_STALE_EVENTS, QQ_REQUIRE_FILE_DELIVERY_INTENT
@@ -375,6 +377,12 @@ def _apply_settings(s: Settings) -> None:
     QQ_BRIDGE_ENABLED = bool(s.QQ_BRIDGE_ENABLED)
     QQ_ONEBOT_HTTP_URL = str(s.QQ_ONEBOT_HTTP_URL or "http://127.0.0.1:3001").strip().rstrip("/") or "http://127.0.0.1:3001"
     QQ_BOT_QQ = str(s.QQ_BOT_QQ or "").strip()
+    raw_qq_character_pack_id = str(s.QQ_CHARACTER_PACK_ID or "").strip()
+    QQ_CHARACTER_PACK_ID = (
+        raw_qq_character_pack_id
+        if raw_qq_character_pack_id and re.fullmatch(r"[A-Za-z0-9_.-]+", raw_qq_character_pack_id)
+        else ""
+    )
     QQ_GROUP_PLAINTEXT_ENABLED = bool(s.QQ_GROUP_PLAINTEXT_ENABLED)
     QQ_GROUP_FOLLOW_TTL_SECONDS = max(20, int(s.QQ_GROUP_FOLLOW_TTL_SECONDS))
     QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS = max(

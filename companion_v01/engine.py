@@ -517,6 +517,8 @@ class AkaneMemoryEngine:
         character_pack_id: str = "",
     ) -> ResourceManifest | None:
         raw_mode = client_mode.value if isinstance(client_mode, ClientMode) else str(client_mode or "").strip()
+        if raw_mode == ClientMode.QQ_TEXT.value:
+            return None
         mode = ClientMode.DESKTOP_PET if raw_mode == ClientMode.DESKTOP_PET.value else None
         if mode != ClientMode.DESKTOP_PET:
             return self.resource_manifest
@@ -532,6 +534,8 @@ class AkaneMemoryEngine:
         payload: dict[str, Any],
         client_context: ClientProtocolContext,
     ) -> ResourceManifest | None:
+        if client_context.effective_mode == ClientMode.QQ_TEXT:
+            return None
         if client_context.effective_mode != ClientMode.DESKTOP_PET:
             return self.resource_manifest
         return self._resolve_resource_manifest_for_client(
@@ -566,12 +570,12 @@ class AkaneMemoryEngine:
     ) -> dict[str, str]:
         """Resolve display speaker identity for the current turn.
 
-        DesktopPet mode with a valid character pack  →  character pack identity.
-        All other modes  →  persona_profiles.toml defaults (PERSONA).
+        DesktopPet / QQ text modes with a valid character pack  →  character pack identity.
+        Other modes  →  persona_profiles.toml defaults (PERSONA).
         """
         if (
             client_context is not None
-            and client_context.effective_mode == ClientMode.DESKTOP_PET
+            and client_context.effective_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}
         ):
             service = getattr(self, "desktop_pet_character_resources", None)
             if service is not None and character_pack_id:
@@ -603,6 +607,7 @@ class AkaneMemoryEngine:
         *,
         character_pack_id: str,
         resource_manifest: ResourceManifest | None = None,
+        client_mode: str = ClientMode.DESKTOP_PET.value,
     ) -> dict[str, str]:
         service = getattr(self, "desktop_pet_character_resources", None)
         if service is None or not character_pack_id:
@@ -614,6 +619,7 @@ class AkaneMemoryEngine:
             context = builder(
                 character_pack_id,
                 resource_manifest=resource_manifest,
+                client_mode=client_mode,
             )
         except Exception as exc:
             logger.warning("desktop pet character pack prompt context failed: %s", exc)
@@ -667,9 +673,10 @@ class AkaneMemoryEngine:
                 self._build_desktop_pet_character_pack_prompt_context(
                     character_pack_id=character_pack_id,
                     resource_manifest=None,
+                    client_mode="memory",
                 )
             )
-        persona_service = self._get_persona_card_service()
+        persona_service = self._get_persona_card_service() if not character_pack_id else None
         if persona_service is not None and profile_user_id and session_id:
             try:
                 contexts.append(
@@ -2297,13 +2304,17 @@ class AkaneMemoryEngine:
             else final_debug_enabled
         )
         debug_enabled = bool(requested_debug_enabled and prompt_profile.supports_thought_debug)
-        resource_manifest = resource_manifest or self.resource_manifest
+        if client_context.effective_mode == ClientMode.QQ_TEXT:
+            resource_manifest = None
+        else:
+            resource_manifest = resource_manifest or self.resource_manifest
         manifest = resource_manifest.refresh() if resource_manifest else None
         runtime_projection = self._get_user_runtime_projection(profile_user_id)
         user_bgm_tracks = list(runtime_projection.get("extra_bgm_tracks") or [])
         user_scene_groups = list(runtime_projection.get("extra_scene_groups") or [])
         user_character_outfits = list(runtime_projection.get("extra_character_outfits") or [])
         desktop_pet_character_only = client_context.effective_mode == ClientMode.DESKTOP_PET
+        character_pack_persona_enabled = client_context.effective_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}
         raw_text = render_chat_timeline(recent_raw)
         current_message_text = self._render_current_message_line(
             current_user_record=recent_raw[-1] if recent_raw else {
@@ -2409,21 +2420,27 @@ class AkaneMemoryEngine:
             else ""
         )
         persona_service = self._get_persona_card_service()
+        profile_persona_enabled = not (character_pack_persona_enabled and bool(character_pack_id))
         persona_context = (
             persona_service.build_prompt_context(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 visible_limit=5,
             )
-            if persona_service is not None and prompt_profile.includes(PromptModule.PERSONA)
+            if (
+                profile_persona_enabled
+                and persona_service is not None
+                and prompt_profile.includes(PromptModule.PERSONA)
+            )
             else {"system_context": "", "reference_context": "", "active_id": ""}
         )
         character_pack_persona_context = (
             self._build_desktop_pet_character_pack_prompt_context(
                 character_pack_id=character_pack_id,
                 resource_manifest=resource_manifest,
+                client_mode=client_context.effective_mode.value,
             )
-            if desktop_pet_character_only and prompt_profile.includes(PromptModule.PERSONA)
+            if character_pack_persona_enabled and prompt_profile.includes(PromptModule.PERSONA)
             else {"system_context": "", "reference_context": "", "active_id": ""}
         )
         persona_context = self._merge_prompt_persona_contexts(
@@ -2558,6 +2575,14 @@ class AkaneMemoryEngine:
                 fallback_payload["activity"] = None
         generation_context["allow_tool_call"] = effective_allow_tool_call
         generation_context["prompt_profile"] = prompt_profile.to_public_dict()
+        if client_context.effective_mode == ClientMode.QQ_TEXT:
+            fallback_payload = generation_context.get("fallback")
+            if isinstance(fallback_payload, dict):
+                fallback_payload.pop("character", None)
+                fallback_payload.pop("scene", None)
+                fallback_payload.pop("live2d", None)
+                fallback_payload.pop("pet", None)
+                fallback_payload.pop("activity", None)
         return generation_context
 
     def _normalize_final_output(

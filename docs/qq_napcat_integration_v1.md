@@ -24,6 +24,7 @@ QQ_BRIDGE_ENABLED=true
 QQ_ONEBOT_HTTP_URL=http://127.0.0.1:3001
 QQ_BOT_QQ=你的机器人QQ号
 MASTER_QQ=你的主人QQ号
+QQ_CHARACTER_PACK_ID=
 QQ_GROUP_PLAINTEXT_ENABLED=false
 QQ_GROUP_FOLLOW_TTL_SECONDS=180
 QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS=180
@@ -41,6 +42,7 @@ QQ_REQUIRE_FILE_DELIVERY_INTENT=true
 - `QQ_ONEBOT_HTTP_URL`：NapCat OneBot HTTP 地址。
 - `QQ_BOT_QQ`：机器人 QQ，用于识别群聊里是否被 at。
 - `MASTER_QQ`：主创 QQ。该 QQ 的私聊会映射到 `master` 记忆身份。
+- `QQ_CHARACTER_PACK_ID`：QQ 文字聊天默认使用的 Creator Kit 角色包 id。留空时使用内置 Akane 人设；例如设为 `reimu` 后，QQ 每轮会把 `character_pack_id=reimu` 传给后端，角色包 persona 会进入 `qq_text` prompt，聊天记忆也会按该角色包隔离。
 - `QQ_GROUP_PLAINTEXT_ENABLED`：是否允许群聊不 at 也回复。默认关闭。
 - `QQ_GROUP_FOLLOW_TTL_SECONDS`：旧配置名，仍可作为附件缓冲窗口的兜底 TTL。
 - `QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS`：群聊被 at 后，允许同一用户补发图片/文件的时间窗口。普通文字不受这个窗口影响。
@@ -95,11 +97,26 @@ QQ 入口会把消息转成：
 ```json
 {
   "client_mode": "qq_text",
-  "client_capabilities": ["speech_segments", "file_drop", "choices", "tool_actions"]
+  "client_capabilities": ["speech_segments", "file_drop", "choices", "tool_actions"],
+  "character_pack_id": "可选；来自 QQ_CHARACTER_PACK_ID"
 }
 ```
 
 `qq_text` 模式不会要求模型输出 `scene`、`character`、`bgm`、`live2d`、`pet` 等演出字段。后端 `QQTextOutputAdapter` 也会剥掉这些字段，保证 QQ 侧只拿纯文本回复。
+
+如果配置了 `QQ_CHARACTER_PACK_ID`，后端只注入该角色包的身份、称呼、说话风格、边界和 persona 参考；不会把桌宠服装、立绘、场景或 BGM 渲染规则带到 QQ prompt。
+
+### QQ 角色切换指令
+
+QQ 支持会话级角色切换；私聊和每个群聊各自保存当前角色包，重启后回到 `.env` 中的 `QQ_CHARACTER_PACK_ID` 默认值。
+
+- `角色列表`：列出当前已安装的 Creator Kit 角色包。
+- `当前角色`：查看当前 QQ 会话正在使用的角色。
+- `切换角色 reimu` / `使用角色 reimu`：把当前 QQ 会话切到指定角色包。
+- `切回默认角色`：清除当前会话临时切换，恢复 `QQ_CHARACTER_PACK_ID`。
+- `切回Akane`：当前会话强制使用内置 Akane 人设，不绑定角色包。
+
+切换成功后，后续 QQ 消息会继续带对应 `character_pack_id`，聊天记忆也按该角色包隔离。
 
 ## 6. QQ 附件
 

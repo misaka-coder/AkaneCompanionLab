@@ -39,6 +39,48 @@ QQ_FILE_DELIVERY_NEGATIVE_RE = re.compile(
     r"(不要发|别发|先别发|不用发|不用发送|不要发送|不发送|别发送|别传|不用传)",
     re.IGNORECASE,
 )
+QQ_CHARACTER_PACK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+QQ_CHARACTER_COMMAND_PREFIX_RE = re.compile(r"^[!/／]?(?:qq)?\s*", re.IGNORECASE)
+QQ_CHARACTER_LIST_COMMANDS = {
+    "角色列表",
+    "可用角色",
+    "可用角色列表",
+    "有哪些角色",
+    "查看角色列表",
+}
+QQ_CHARACTER_CURRENT_COMMANDS = {
+    "当前角色",
+    "现在角色",
+    "角色状态",
+    "qq当前角色",
+}
+QQ_CHARACTER_DEFAULT_COMMANDS = {
+    "切回默认角色",
+    "恢复默认角色",
+    "使用默认角色",
+    "清除角色切换",
+    "取消角色切换",
+    "重置角色",
+}
+QQ_CHARACTER_BUILTIN_COMMANDS = {
+    "切回akane",
+    "切回Akane",
+    "切回内置Akane",
+    "切回内置akane",
+    "使用Akane",
+    "使用akane",
+    "切回默认Akane",
+    "切回默认akane",
+}
+QQ_CHARACTER_BUILTIN_IDS = {"akane", "builtin", "built-in", "内置", "内置akane"}
+QQ_CHARACTER_SWITCH_PATTERNS = (
+    re.compile(r"^(?:切换|更换|换)(?:到|成)?(?:QQ)?角色(?:为|到|成)?[:：\s]+(.+)$", re.IGNORECASE),
+    re.compile(r"^(?:使用|启用)(?:QQ)?角色[:：\s]+(.+)$", re.IGNORECASE),
+    re.compile(r"^角色(?:切换|切到|改为|换成)[:：\s]+(.+)$", re.IGNORECASE),
+    re.compile(r"^角色[:：\s]+(.+)$", re.IGNORECASE),
+    re.compile(r"^(?:切换到|切到|换成)[:：\s]+([A-Za-z0-9_.-]+)$", re.IGNORECASE),
+    re.compile(r"^character[:：\s]+(.+)$", re.IGNORECASE),
+)
 
 
 @dataclass(frozen=True)
@@ -55,6 +97,7 @@ class QQMessageContext:
     raw_message: str = ""
     extra_context: str = ""
     sender_label: str = ""
+    character_pack_id: str = ""
     attachments: list[dict[str, Any]] | None = None
 
     def to_turn_payload(self) -> dict[str, Any]:
@@ -62,7 +105,7 @@ class QQMessageContext:
         if self.is_group:
             label = self.sender_label or (f"QQ {self.user_id}" if self.user_id else "群成员")
             message = f"【{label}】{message}"
-        return {
+        payload = {
             "user_id": self.session_id,
             "real_user_id": self.profile_user_id,
             "message": message,
@@ -71,9 +114,13 @@ class QQMessageContext:
             "extra_context": self.extra_context,
             "qq_delivery_context": self.to_delivery_context(),
         }
+        character_pack_id = _safe_character_pack_id(self.character_pack_id)
+        if character_pack_id:
+            payload["character_pack_id"] = character_pack_id
+        return payload
 
     def to_delivery_context(self) -> dict[str, Any]:
-        return {
+        payload = {
             "is_group": bool(self.is_group),
             "target_id": int(self.target_id or 0),
             "user_id": int(self.user_id or 0),
@@ -84,6 +131,10 @@ class QQMessageContext:
             "raw_message": self.raw_message,
             "sender_label": self.sender_label,
         }
+        character_pack_id = _safe_character_pack_id(self.character_pack_id)
+        if character_pack_id:
+            payload["character_pack_id"] = character_pack_id
+        return payload
 
 
 class NapCatQQGateway:
@@ -92,6 +143,8 @@ class NapCatQQGateway:
         self.recent_event_fingerprints: dict[str, float] = {}
         self.attachment_debounce_state: dict[str, dict[str, Any]] = {}
         self._attachment_debounce_lock = threading.RLock()
+        self.character_pack_overrides: dict[str, str] = {}
+        self._character_pack_lock = threading.RLock()
 
     def status(self) -> dict[str, Any]:
         return {
@@ -103,6 +156,9 @@ class NapCatQQGateway:
             "event_max_age_seconds": int(getattr(config, "QQ_EVENT_MAX_AGE_SECONDS", 300) or 0),
             "allow_stale_events": bool(getattr(config, "QQ_ALLOW_STALE_EVENTS", False)),
             "require_file_delivery_intent": bool(getattr(config, "QQ_REQUIRE_FILE_DELIVERY_INTENT", True)),
+            "character_pack_id": self.character_pack_id,
+            "default_character_pack_id": self.default_character_pack_id,
+            "active_character_override_count": len(self.character_pack_overrides),
             "active_group_attachment_buffer_count": len(self.group_follow_state),
             "active_attachment_debounce_count": len(self.attachment_debounce_state),
         }
@@ -114,6 +170,14 @@ class NapCatQQGateway:
     @property
     def bot_qq(self) -> str:
         return str(getattr(config, "QQ_BOT_QQ", "") or "").strip()
+
+    @property
+    def character_pack_id(self) -> str:
+        return self.default_character_pack_id
+
+    @property
+    def default_character_pack_id(self) -> str:
+        return _safe_character_pack_id(getattr(config, "QQ_CHARACTER_PACK_ID", ""))
 
     @property
     def master_qq(self) -> str:
@@ -173,6 +237,7 @@ class NapCatQQGateway:
             elif not allow_group_plaintext:
                 return QQMessageContext(False, "group_message_without_mention")
 
+        character_pack_id = self.resolve_character_pack_id(session_id)
         return QQMessageContext(
             should_respond=True,
             reason="private"
@@ -187,6 +252,7 @@ class NapCatQQGateway:
             clean_message=clean_message,
             raw_message=raw_message,
             sender_label=sender_label,
+            character_pack_id=character_pack_id,
             attachments=attachments,
             extra_context=self.build_extra_context(
                 event=event,
@@ -215,8 +281,290 @@ class NapCatQQGateway:
             clean_message=str(value.get("clean_message") or ""),
             raw_message=str(value.get("raw_message") or ""),
             sender_label=str(value.get("sender_label") or ""),
+            character_pack_id=_safe_character_pack_id(value.get("character_pack_id") or value.get("characterPackId")),
             attachments=[],
         )
+
+    def resolve_character_pack_id(self, session_id: str) -> str:
+        key = str(session_id or "").strip()
+        if not key:
+            return self.default_character_pack_id
+        with self._character_pack_lock:
+            if key in self.character_pack_overrides:
+                return _safe_character_pack_id(self.character_pack_overrides.get(key))
+        return self.default_character_pack_id
+
+    def handle_character_command(
+        self,
+        context: QQMessageContext,
+        *,
+        character_resource_service: Any = None,
+    ) -> dict[str, Any] | None:
+        command = self.parse_character_command(context.clean_message)
+        if command is None:
+            return None
+
+        action = str(command.get("action") or "")
+        if action == "list":
+            packs = self._list_character_packs(character_resource_service)
+            if not packs:
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "status": "no_character_packs",
+                    "reply": "当前还没有可用角色包。",
+                    "character_pack_id": self.resolve_character_pack_id(context.session_id),
+                    "available_packs": [],
+                }
+            labels = [self._format_pack_label(item) for item in packs[:20]]
+            suffix = f"；还有 {len(packs) - len(labels)} 个未显示" if len(packs) > len(labels) else ""
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "listed",
+                "reply": "可用角色包：" + "、".join(labels) + suffix + "。发送“切换角色 角色包id”即可切换当前 QQ 会话。",
+                "character_pack_id": self.resolve_character_pack_id(context.session_id),
+                "available_packs": [str(item.get("pack_id") or "") for item in packs if str(item.get("pack_id") or "")],
+            }
+
+        if action == "current":
+            active_pack_id = self.resolve_character_pack_id(context.session_id)
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "current",
+                "reply": self._build_current_character_reply(
+                    active_pack_id,
+                    character_resource_service=character_resource_service,
+                    session_id=context.session_id,
+                ),
+                "character_pack_id": active_pack_id,
+            }
+
+        if action == "default":
+            self.clear_session_character_override(context.session_id)
+            active_pack_id = self.resolve_character_pack_id(context.session_id)
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "default",
+                "reply": self._build_default_character_reply(
+                    active_pack_id,
+                    character_resource_service=character_resource_service,
+                ),
+                "character_pack_id": active_pack_id,
+            }
+
+        if action == "builtin":
+            self.set_session_character_pack_id(context.session_id, "")
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "builtin",
+                "reply": "已切回内置 Akane 人设。之后这个 QQ 会话会使用未绑定角色包的默认聊天记忆。",
+                "character_pack_id": "",
+            }
+
+        if action == "switch":
+            requested_pack_id = _safe_character_pack_id(command.get("pack_id"))
+            if not requested_pack_id:
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "status": "invalid_character_pack_id",
+                    "reply": "这个角色包 id 不太对。只能使用字母、数字、下划线、点和短横线，比如 reimu。",
+                    "character_pack_id": self.resolve_character_pack_id(context.session_id),
+                }
+            if requested_pack_id.lower() in QQ_CHARACTER_BUILTIN_IDS:
+                self.set_session_character_pack_id(context.session_id, "")
+                return {
+                    "handled": True,
+                    "ok": True,
+                    "status": "builtin",
+                    "reply": "已切回内置 Akane 人设。之后这个 QQ 会话会使用未绑定角色包的默认聊天记忆。",
+                    "character_pack_id": "",
+                }
+            identity = self._resolve_pack_identity(
+                requested_pack_id,
+                character_resource_service=character_resource_service,
+            )
+            if not identity:
+                packs = self._list_character_packs(character_resource_service)
+                available = "、".join(str(item.get("pack_id") or "") for item in packs[:12] if str(item.get("pack_id") or ""))
+                hint = f"当前可用：{available}。" if available else "可以先在角色工坊创建或导入角色包。"
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "status": "unknown_character_pack",
+                    "reply": f"没有找到角色包 {requested_pack_id}。{hint}",
+                    "character_pack_id": self.resolve_character_pack_id(context.session_id),
+                    "requested_pack_id": requested_pack_id,
+                }
+            self.set_session_character_pack_id(context.session_id, requested_pack_id)
+            label = self._format_identity_label(identity)
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "switched",
+                "reply": f"已切换本 QQ 会话角色为 {label}（{requested_pack_id}）。之后的聊天和记忆会按这个角色包隔离。",
+                "character_pack_id": requested_pack_id,
+                "requested_pack_id": requested_pack_id,
+            }
+
+        return None
+
+    def parse_character_command(self, message: str) -> dict[str, str] | None:
+        text = self._normalize_character_command_text(message)
+        if not text:
+            return None
+        if text in QQ_CHARACTER_LIST_COMMANDS:
+            return {"action": "list"}
+        if text in QQ_CHARACTER_CURRENT_COMMANDS:
+            return {"action": "current"}
+        if text in QQ_CHARACTER_DEFAULT_COMMANDS:
+            return {"action": "default"}
+        if text in QQ_CHARACTER_BUILTIN_COMMANDS:
+            return {"action": "builtin"}
+        for pattern in QQ_CHARACTER_SWITCH_PATTERNS:
+            match = pattern.fullmatch(text)
+            if not match:
+                continue
+            pack_id = _clean_character_pack_argument(match.group(1))
+            if pack_id.lower() in QQ_CHARACTER_BUILTIN_IDS:
+                return {"action": "builtin", "pack_id": pack_id}
+            return {"action": "switch", "pack_id": pack_id}
+        return None
+
+    def set_session_character_pack_id(self, session_id: str, character_pack_id: str) -> None:
+        key = str(session_id or "").strip()
+        if not key:
+            return
+        with self._character_pack_lock:
+            self.character_pack_overrides[key] = _safe_character_pack_id(character_pack_id)
+
+    def clear_session_character_override(self, session_id: str) -> None:
+        key = str(session_id or "").strip()
+        if not key:
+            return
+        with self._character_pack_lock:
+            self.character_pack_overrides.pop(key, None)
+
+    def _normalize_character_command_text(self, message: str) -> str:
+        text = str(message or "").strip()
+        if not text:
+            return ""
+        text = re.sub(r"\s+", " ", text)
+        text = QQ_CHARACTER_COMMAND_PREFIX_RE.sub("", text, count=1).strip()
+        return text.strip()
+
+    def _list_character_packs(self, character_resource_service: Any = None) -> list[dict[str, str]]:
+        if character_resource_service is None:
+            return []
+        listing = getattr(character_resource_service, "list_character_packs", None)
+        if listing is None:
+            return []
+        try:
+            raw_items = listing()
+        except Exception:
+            return []
+        normalized: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in raw_items if isinstance(raw_items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            pack_id = _safe_character_pack_id(item.get("pack_id") or item.get("id"))
+            if not pack_id or pack_id in seen:
+                continue
+            seen.add(pack_id)
+            normalized.append(
+                {
+                    "pack_id": pack_id,
+                    "name": str(item.get("name") or pack_id).strip()[:80],
+                    "app_name": str(item.get("app_name") or item.get("appName") or item.get("name") or pack_id).strip()[:80],
+                    "user_title": str(item.get("user_title") or item.get("userTitle") or "").strip()[:80],
+                }
+            )
+        return normalized
+
+    def _resolve_pack_identity(
+        self,
+        pack_id: str,
+        *,
+        character_resource_service: Any = None,
+    ) -> dict[str, str]:
+        normalized_pack_id = _safe_character_pack_id(pack_id)
+        if not normalized_pack_id or character_resource_service is None:
+            return {}
+        builder = getattr(character_resource_service, "build_character_identity", None)
+        if builder is None:
+            return {}
+        try:
+            identity = builder(normalized_pack_id)
+        except Exception:
+            return {}
+        if not isinstance(identity, dict) or not identity:
+            return {}
+        resolved_pack_id = _safe_character_pack_id(identity.get("pack_id") or normalized_pack_id)
+        if resolved_pack_id != normalized_pack_id:
+            return {}
+        assistant_name = str(identity.get("assistant_name") or identity.get("name") or normalized_pack_id).strip()
+        app_name = str(identity.get("app_name") or assistant_name or normalized_pack_id).strip()
+        user_label = str(identity.get("user_label") or "").strip()
+        return {
+            "pack_id": normalized_pack_id,
+            "assistant_name": assistant_name[:80] or normalized_pack_id,
+            "app_name": app_name[:80] or assistant_name[:80] or normalized_pack_id,
+            "user_label": user_label[:80],
+        }
+
+    def _format_pack_label(self, item: dict[str, Any]) -> str:
+        pack_id = str(item.get("pack_id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        app_name = str(item.get("app_name") or "").strip()
+        display = " / ".join(part for part in (app_name, name) if part and part != pack_id)
+        return f"{pack_id}（{display}）" if display else pack_id
+
+    def _format_identity_label(self, identity: dict[str, Any]) -> str:
+        assistant_name = str(identity.get("assistant_name") or "").strip()
+        app_name = str(identity.get("app_name") or "").strip()
+        label = " / ".join(part for part in (app_name, assistant_name) if part)
+        return label or str(identity.get("pack_id") or "角色包").strip() or "角色包"
+
+    def _build_current_character_reply(
+        self,
+        active_pack_id: str,
+        *,
+        character_resource_service: Any = None,
+        session_id: str = "",
+    ) -> str:
+        key = str(session_id or "").strip()
+        with self._character_pack_lock:
+            has_override = bool(key and key in self.character_pack_overrides)
+        if not active_pack_id:
+            source = "本会话临时切换" if has_override else "QQ 默认配置"
+            return f"当前 QQ 会话使用内置 Akane 人设（来源：{source}）。"
+        identity = self._resolve_pack_identity(
+            active_pack_id,
+            character_resource_service=character_resource_service,
+        )
+        label = self._format_identity_label(identity) if identity else active_pack_id
+        source = "本会话临时切换" if has_override else "QQ 默认配置"
+        return f"当前 QQ 会话角色：{label}（{active_pack_id}，来源：{source}）。"
+
+    def _build_default_character_reply(
+        self,
+        active_pack_id: str,
+        *,
+        character_resource_service: Any = None,
+    ) -> str:
+        if not active_pack_id:
+            return "已恢复 QQ 默认角色：内置 Akane 人设。"
+        identity = self._resolve_pack_identity(
+            active_pack_id,
+            character_resource_service=character_resource_service,
+        )
+        label = self._format_identity_label(identity) if identity else active_pack_id
+        return f"已恢复 QQ 默认角色：{label}（{active_pack_id}）。"
 
     def extract_message_text(self, event: dict[str, Any]) -> str:
         raw_message = str(event.get("raw_message") or "").strip()
@@ -890,3 +1238,17 @@ class NapCatQQGateway:
             return int(value or 0)
         except Exception:
             return 0
+
+
+def _safe_character_pack_id(value: Any) -> str:
+    pack_id = str(value or "").strip()
+    if not pack_id or not QQ_CHARACTER_PACK_ID_RE.fullmatch(pack_id):
+        return ""
+    return pack_id
+
+
+def _clean_character_pack_argument(value: Any) -> str:
+    text = str(value or "").strip()
+    text = text.strip("`'\"“”‘’")
+    text = text.rstrip("。.!！?？,，;；")
+    return text.strip()

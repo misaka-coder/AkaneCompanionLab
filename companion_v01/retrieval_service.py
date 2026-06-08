@@ -11,7 +11,7 @@ import config
 from .llm_runtime import LLMRuntime
 from .prompt_builder import PromptBuilder
 from .retrieval_types import RetrievalPipelineResult
-from .store import MemoryStore
+from .store import MemoryStore, normalize_character_pack_id
 from .text_utils import (
     detect_time_of_day_from_text,
     extract_semantic_tags,
@@ -682,6 +682,14 @@ class RetrievalService:
             )
             if str(hit.get("source_id") or "").strip() not in excluded_ids
         ]
+        semantic_hits = self._filter_hits_by_character_pack_id(
+            semantic_hits,
+            character_pack_id=character_pack_id,
+        )
+        keyword_hits = self._filter_hits_by_character_pack_id(
+            keyword_hits,
+            character_pack_id=character_pack_id,
+        )
         semantic_hits, keyword_hits, precision_debug = self._apply_precision_filter_relaxation(
             semantic_hits=semantic_hits,
             keyword_hits=keyword_hits,
@@ -719,6 +727,39 @@ class RetrievalService:
             ],
             "memory_snippets": memory_snippets,
         }
+
+    def _filter_hits_by_character_pack_id(
+        self,
+        hits: list[dict[str, Any]],
+        *,
+        character_pack_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if character_pack_id is None:
+            return hits
+
+        expected_pack_id = normalize_character_pack_id(character_pack_id)
+        getter = getattr(self.store, "get_record_by_source_id", None)
+        filtered_hits: list[dict[str, Any]] = []
+        for hit in hits:
+            source_id = str(hit.get("source_id") or "").strip()
+            if not source_id:
+                continue
+            if callable(getter):
+                try:
+                    record = getter(source_id)
+                except Exception:
+                    record = None
+                if isinstance(record, dict):
+                    record_pack_id = normalize_character_pack_id(record.get("character_pack_id"))
+                    if record_pack_id == expected_pack_id:
+                        filtered_hits.append(hit)
+                    continue
+
+            metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+            metadata_pack_id = normalize_character_pack_id(metadata.get("character_pack_id"))
+            if metadata_pack_id == expected_pack_id:
+                filtered_hits.append(hit)
+        return filtered_hits
 
     def _apply_precision_filter_relaxation(
         self,
