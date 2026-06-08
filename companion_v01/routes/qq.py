@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import re
+import uuid
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+
+from .voice import (
+    GPT_SOVITS_PROVIDER_ID,
+    _coerce_synthesized_audio,
+    _resolve_tts_runtime_provider,
+)
 
 
 LogEvent = Callable[..., None]
@@ -124,6 +132,269 @@ def _send_pending_stage_messages(
     return []
 
 
+def _normalize_reply_medium(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "text": "text",
+        "文字": "text",
+        "文本": "text",
+        "voice": "voice",
+        "audio": "voice",
+        "record": "voice",
+        "语音": "voice",
+        "both": "both",
+        "all": "both",
+        "text_voice": "both",
+        "voice_text": "both",
+        "文字语音": "both",
+        "双发": "both",
+        "auto": "auto",
+        "自动": "auto",
+    }
+    return aliases.get(text, "")
+
+
+def _streaming_allows_text(reply_mode: str, delivery_hint: str) -> bool:
+    mode = _normalize_reply_medium(reply_mode) or "auto"
+    hint = _normalize_reply_medium(delivery_hint)
+    if mode == "auto":
+        return hint in {"text", "both"}
+    return mode in {"text", "both"}
+
+
+def _frame_reply_medium(frame: dict[str, Any], *, delivery_hint: str = "") -> str:
+    delivery = frame.get("delivery") if isinstance(frame.get("delivery"), dict) else {}
+    return (
+        _normalize_reply_medium(frame.get("reply_medium"))
+        or _normalize_reply_medium(delivery.get("medium"))
+        or _normalize_reply_medium(delivery_hint)
+    )
+
+
+def _resolve_delivery_medium(
+    *,
+    context: Any,
+    qq_gateway: Any,
+    frame: dict[str, Any],
+    delivery_hint: str = "",
+) -> dict[str, str]:
+    reply_mode = _normalize_reply_medium(getattr(context, "reply_mode", "")) or _normalize_reply_medium(
+        qq_gateway.resolve_reply_mode(getattr(context, "session_id", ""))
+    ) or "auto"
+    model_medium = _frame_reply_medium(frame, delivery_hint=delivery_hint) or "text"
+    medium = model_medium if reply_mode == "auto" else reply_mode
+    if medium not in {"text", "voice", "both"}:
+        medium = "text"
+    return {
+        "reply_mode": reply_mode,
+        "model_medium": model_medium,
+        "medium": medium,
+    }
+
+
+def _media_type_extension(media_type: str) -> str:
+    clean = str(media_type or "").split(";", 1)[0].strip().lower()
+    return {
+        "audio/mpeg": "mp3",
+        "audio/mp3": "mp3",
+        "audio/wav": "wav",
+        "audio/x-wav": "wav",
+        "audio/ogg": "ogg",
+        "audio/opus": "opus",
+        "audio/flac": "flac",
+        "audio/aac": "aac",
+        "audio/mp4": "m4a",
+    }.get(clean, "wav")
+
+
+def _run_async_safely(awaitable: Any) -> Any:
+    return asyncio.run(awaitable)
+
+
+def _resolve_qq_tts_profile_user_id(*, config_module: Any, context: Any) -> str:
+    raw_value = str(getattr(config_module, "QQ_TTS_PROFILE_USER_ID", "") or "").strip()
+    if not raw_value:
+        raw_value = str(getattr(config_module, "WEB_OWNER_PROFILE_USER_ID", "") or "master").strip()
+    if raw_value.lower() in {"conversation", "context", "current"}:
+        raw_value = str(getattr(context, "profile_user_id", "") or "master").strip()
+    if not raw_value or not re.fullmatch(r"[A-Za-z0-9_.-]+", raw_value):
+        return "master"
+    return raw_value
+
+
+def _synthesize_qq_voice_file(
+    *,
+    engine: Any,
+    config_module: Any,
+    tts_client: Any,
+    text: str,
+    context: Any,
+    gpt_sovits_client_factory: Callable[[str], Any] | None = None,
+) -> dict[str, Any]:
+    clean_text = str(text or "").strip()
+    if not clean_text:
+        return {"ok": False, "reason": "empty_voice_text"}
+
+    data_dir = Path(str(getattr(config_module, "DATA_DIR", "users_data") or "users_data"))
+    base_dir = data_dir
+    tts_profile_user_id = _resolve_qq_tts_profile_user_id(config_module=config_module, context=context)
+    payload = {
+        "text": clean_text,
+        "real_user_id": tts_profile_user_id,
+        "profile_user_id": tts_profile_user_id,
+        "character_pack_id": str(getattr(context, "character_pack_id", "") or ""),
+    }
+    resolution = _resolve_tts_runtime_provider(
+        engine=engine,
+        payload=payload,
+        base_dir=base_dir,
+        config_module=config_module,
+        edge_tts_available=tts_client is not None,
+        gpt_sovits_client_factory=gpt_sovits_client_factory,
+    )
+
+    active_provider = str(resolution.get("activeProviderId") or "")
+    if active_provider == GPT_SOVITS_PROVIDER_ID:
+        synthesize_kwargs: dict[str, Any] = {
+            "voice_profile_id": str(resolution.get("voiceProfileId") or ""),
+        }
+        voice_profile = resolution.get("voiceProfile")
+        if isinstance(voice_profile, dict) and voice_profile:
+            synthesize_kwargs["profile"] = voice_profile
+        result = _run_async_safely(resolution["client"].synthesize(clean_text, **synthesize_kwargs))
+        audio, media_type = _coerce_synthesized_audio(result, default_media_type="audio/wav")
+    elif tts_client is not None:
+        result = _run_async_safely(tts_client.synthesize(clean_text))
+        audio, media_type = _coerce_synthesized_audio(result, default_media_type="audio/mpeg")
+    else:
+        return {"ok": False, "reason": "tts_unavailable", "resolution": resolution}
+
+    cache_dir = data_dir / "qq_voice_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    ext = _media_type_extension(media_type)
+    path = cache_dir / f"qq_reply_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}.{ext}"
+    path.write_bytes(audio)
+    return {
+        "ok": True,
+        "path": str(path),
+        "media_type": media_type,
+        "provider": active_provider,
+        "resolution_status": str(resolution.get("status") or ""),
+        "tts_profile_user_id": tts_profile_user_id,
+    }
+
+
+def _send_qq_delivery(
+    *,
+    engine: Any,
+    qq_gateway: Any,
+    context: Any,
+    frame: dict[str, Any],
+    reply_messages: list[str],
+    unsent_reply_messages: list[str],
+    streamed_messages: list[str],
+    config_module: Any,
+    tts_client: Any = None,
+    gpt_sovits_client_factory: Callable[[str], Any] | None = None,
+    delivery_hint: str = "",
+) -> dict[str, Any]:
+    plan = _resolve_delivery_medium(
+        context=context,
+        qq_gateway=qq_gateway,
+        frame=frame,
+        delivery_hint=delivery_hint,
+    )
+    medium = plan["medium"]
+    text_enabled = medium in {"text", "both"}
+    voice_enabled = medium in {"voice", "both"}
+    text_send_result = {"ok": True, "count": 0, "results": []}
+    voice_send_result = {"ok": True, "count": 0, "results": []}
+
+    if text_enabled:
+        text_send_result = qq_gateway.send_replies(context, unsent_reply_messages)
+
+    voice_reason = ""
+    if voice_enabled:
+        max_segments = max(1, min(10, int(getattr(config_module, "QQ_VOICE_MAX_SEGMENTS", 3) or 3)))
+        voice_messages = [str(message or "").strip() for message in reply_messages if str(message or "").strip()]
+        voice_text = "\n".join(voice_messages[:max_segments]).strip()
+        max_auto_chars = max(20, min(1200, int(getattr(config_module, "QQ_VOICE_MAX_TEXT_CHARS", 280) or 280)))
+        if plan["reply_mode"] == "auto" and len(voice_text) > max_auto_chars:
+            voice_enabled = False
+            voice_reason = "auto_voice_text_too_long"
+            if not text_enabled and not streamed_messages and unsent_reply_messages:
+                text_enabled = True
+                text_send_result = qq_gateway.send_replies(context, unsent_reply_messages)
+                text_send_result["fallback_from_voice"] = True
+        elif voice_text:
+            try:
+                voice_file = _synthesize_qq_voice_file(
+                    engine=engine,
+                    config_module=config_module,
+                    tts_client=tts_client,
+                    text=voice_text,
+                    context=context,
+                    gpt_sovits_client_factory=gpt_sovits_client_factory,
+                )
+            except Exception as exc:
+                voice_file = {"ok": False, "reason": str(exc)[:200]}
+            if voice_file.get("ok"):
+                result = qq_gateway.send_voice(
+                    context,
+                    audio_path=str(voice_file.get("path") or ""),
+                    name="akane_reply",
+                )
+                result["provider"] = str(voice_file.get("provider") or "")
+                result["media_type"] = str(voice_file.get("media_type") or "")
+                result["tts_profile_user_id"] = str(voice_file.get("tts_profile_user_id") or "")
+                voice_send_result = {
+                    "ok": bool(result.get("ok")),
+                    "count": 1,
+                    "results": [result],
+                }
+                voice_reason = "" if result.get("ok") else str(result.get("reason") or "voice_send_failed")
+            else:
+                voice_send_result = {
+                    "ok": False,
+                    "count": 0,
+                    "reason": str(voice_file.get("reason") or "voice_synthesis_failed"),
+                    "results": [],
+                }
+                voice_reason = str(voice_file.get("reason") or "voice_synthesis_failed")
+
+    needs_text_fallback = (
+        voice_enabled
+        and not bool(voice_send_result.get("ok"))
+        and not text_enabled
+        and not streamed_messages
+        and unsent_reply_messages
+    )
+    if needs_text_fallback:
+        text_send_result = qq_gateway.send_replies(context, unsent_reply_messages)
+        text_send_result["fallback_from_voice"] = True
+
+    combined_results = [
+        *list(text_send_result.get("results") or []),
+        *list(voice_send_result.get("results") or []),
+    ]
+    ok_parts = [bool(text_send_result.get("ok"))]
+    if voice_enabled:
+        ok_parts.append(bool(voice_send_result.get("ok")) or needs_text_fallback)
+    return {
+        "ok": all(ok_parts),
+        "count": len(combined_results),
+        "results": combined_results,
+        "delivery": {
+            **plan,
+            "text_enabled": bool(text_enabled),
+            "voice_enabled": bool(voice_enabled),
+            "voice_reason": voice_reason,
+        },
+        "text_result": text_send_result,
+        "voice_result": voice_send_result,
+    }
+
+
 def _process_qq_turn_streaming(
     *,
     engine: Any,
@@ -131,11 +402,17 @@ def _process_qq_turn_streaming(
     context: Any,
     turn_payload: dict[str, Any],
     config_module: Any,
+    tts_client: Any = None,
+    gpt_sovits_client_factory: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
     pending_stage_messages: list[str] = []
     streamed_messages: list[str] = []
     stream_send_results: list[dict[str, Any]] = []
     frame: dict[str, Any] = {}
+    delivery_hint = ""
+    active_reply_mode = _normalize_reply_medium(getattr(context, "reply_mode", "")) or _normalize_reply_medium(
+        qq_gateway.resolve_reply_mode(getattr(context, "session_id", ""))
+    ) or "auto"
     max_streamed = max(0, min(20, int(getattr(config_module, "QQ_STREAM_MAX_SEGMENTS", getattr(config_module, "QQ_REPLY_MAX_SEGMENTS", 8)) or 0)))
     stream_enabled = bool(getattr(config_module, "QQ_STREAM_REPLIES_ENABLED", True)) and max_streamed > 0
 
@@ -143,6 +420,9 @@ def _process_qq_turn_streaming(
         if not isinstance(stream_event, dict):
             continue
         event_type = str(stream_event.get("type") or "").strip()
+        if event_type == "delivery_hint":
+            delivery_hint = _normalize_reply_medium(stream_event.get("medium")) or delivery_hint
+            continue
         if event_type == "speech_segment" and stream_enabled:
             text = str(stream_event.get("text") or "").strip()
             if not text:
@@ -152,7 +432,11 @@ def _process_qq_turn_streaming(
                 continue
             pending_stage_messages.append(text)
             continue
-        if event_type == "assistant_stage_decision" and pending_stage_messages:
+        if (
+            event_type == "assistant_stage_decision"
+            and pending_stage_messages
+            and _streaming_allows_text(active_reply_mode, delivery_hint)
+        ):
             pending_stage_messages = _send_pending_stage_messages(
                 qq_gateway=qq_gateway,
                 context=context,
@@ -165,7 +449,12 @@ def _process_qq_turn_streaming(
         if event_type == "final_ui" and isinstance(stream_event.get("payload"), dict):
             frame = dict(stream_event.get("payload") or {})
 
-    if stream_enabled and pending_stage_messages and not frame:
+    if (
+        stream_enabled
+        and pending_stage_messages
+        and not frame
+        and _streaming_allows_text(active_reply_mode, delivery_hint)
+    ):
         pending_stage_messages = _send_pending_stage_messages(
             qq_gateway=qq_gateway,
             context=context,
@@ -180,7 +469,19 @@ def _process_qq_turn_streaming(
 
     reply_messages = qq_gateway.render_reply_messages(frame)
     unsent_reply_messages = _filter_unsent_reply_messages(reply_messages, streamed_messages)
-    send_result = qq_gateway.send_replies(context, unsent_reply_messages)
+    send_result = _send_qq_delivery(
+        engine=engine,
+        qq_gateway=qq_gateway,
+        context=context,
+        frame=frame,
+        reply_messages=reply_messages,
+        unsent_reply_messages=unsent_reply_messages,
+        streamed_messages=streamed_messages,
+        config_module=config_module,
+        tts_client=tts_client,
+        gpt_sovits_client_factory=gpt_sovits_client_factory,
+        delivery_hint=delivery_hint,
+    )
     if streamed_messages:
         combined_results = [*stream_send_results, *list(send_result.get("results") or [])]
         send_result = {
@@ -189,6 +490,9 @@ def _process_qq_turn_streaming(
             "streamed_count": len(streamed_messages),
             "deferred_count": len(unsent_reply_messages),
             "results": combined_results,
+            "delivery": send_result.get("delivery"),
+            "text_result": send_result.get("text_result"),
+            "voice_result": send_result.get("voice_result"),
         }
 
     file_send_result = qq_gateway.send_generated_files(
@@ -216,6 +520,8 @@ def build_qq_router(
     runtime_metrics: Any,
     logger: Any,
     log_event: LogEvent,
+    tts_client: Any = None,
+    gpt_sovits_client_factory: Callable[[str], Any] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -279,6 +585,39 @@ def build_qq_router(
                         "session_id": context.session_id,
                         "profile_user_id": context.profile_user_id,
                         "character_pack_id": str(character_command_result.get("character_pack_id") or ""),
+                        "send_result": send_result,
+                    }
+                )
+
+            reply_mode_command_result = qq_gateway.handle_reply_mode_command(context)
+            if isinstance(reply_mode_command_result, dict):
+                reply = str(reply_mode_command_result.get("reply") or "").strip()
+                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                duration_ms = (time.perf_counter() - started_at) * 1000
+                runtime_metrics.observe_request(
+                    "qq_napcat_event",
+                    duration_ms=duration_ms,
+                    ok=bool(send_result.get("ok")),
+                )
+                log_event(
+                    "qq_reply_mode_command",
+                    session_id=context.session_id,
+                    profile_user_id=context.profile_user_id,
+                    command_status=str(reply_mode_command_result.get("status") or ""),
+                    command_ok=bool(reply_mode_command_result.get("ok")),
+                    reply_mode=str(reply_mode_command_result.get("reply_mode") or ""),
+                    sent=bool(send_result.get("ok")),
+                    duration_ms=round(duration_ms, 1),
+                )
+                return JSONResponse(
+                    {
+                        "status": "ok" if send_result.get("ok") else "send_failed",
+                        "reason": "qq_reply_mode_command",
+                        "command_status": str(reply_mode_command_result.get("status") or ""),
+                        "command_ok": bool(reply_mode_command_result.get("ok")),
+                        "session_id": context.session_id,
+                        "profile_user_id": context.profile_user_id,
+                        "reply_mode": str(reply_mode_command_result.get("reply_mode") or ""),
                         "send_result": send_result,
                     }
                 )
@@ -363,6 +702,8 @@ def build_qq_router(
                 context=context,
                 turn_payload=turn_payload,
                 config_module=config_module,
+                tts_client=tts_client,
+                gpt_sovits_client_factory=gpt_sovits_client_factory,
             )
             frame = dict(turn_result.get("frame") or {})
             reply_messages = list(turn_result.get("reply_messages") or [])

@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     CHAT_BASE_URL: str = ""
     CHAT_MODEL_NAME: str = ""
     CHAT_API_PROTOCOL: str = "auto"
+    # DeepSeek 等 OpenAI 兼容模型的思考模式控制：
+    # default/空 = 不传参数，沿用服务商默认；disabled = 关闭；enabled = 开启。
+    LLM_THINKING_MODE: str = "disabled"
 
     # === 视觉 / 图像理解 ===
     VISION_API_KEY: str = ""
@@ -140,6 +143,17 @@ class Settings(BaseSettings):
     TTS_PITCH: str = "+4Hz"
     # 流式 TTS（边生成边播放）
     STREAMING_TTS_ENABLED: bool = True
+    # GPT-SoVITS 外部 API 默认参数（角色 voice profile 可覆盖部分字段）
+    GPT_SOVITS_TTS_TIMEOUT_SECONDS: float = 45.0
+    GPT_SOVITS_TEXT_LANG: str = "zh"
+    GPT_SOVITS_MEDIA_TYPE: str = "wav"
+    GPT_SOVITS_STREAMING_MODE: bool = False
+    GPT_SOVITS_PARALLEL_INFER: bool | None = None
+    GPT_SOVITS_SPLIT_BUCKET: bool | None = None
+    GPT_SOVITS_BATCH_SIZE: int | None = None
+    GPT_SOVITS_SPEED_FACTOR: float | None = None
+    GPT_SOVITS_FRAGMENT_INTERVAL: float | None = None
+    GPT_SOVITS_TEXT_SPLIT_METHOD: str = ""
 
     # === 系统音乐感知 / 在线歌词 ===
     # 是否允许根据系统媒体的歌名/歌手访问在线歌词 provider
@@ -174,6 +188,14 @@ class Settings(BaseSettings):
     QQ_BOT_QQ: str = ""
     # QQ 文字聊天默认使用的 Creator Kit 角色包 id（留空=Akane 默认人设）
     QQ_CHARACTER_PACK_ID: str = ""
+    # QQ 回复投递模式：text=只文字 voice=只语音 both=文字+语音 auto=模型用 reply_medium 决定
+    QQ_REPLY_MODE: str = "auto"
+    # QQ 语音合成读取的本地能力配置 profile（留空=WEB_OWNER_PROFILE_USER_ID/master）
+    QQ_TTS_PROFILE_USER_ID: str = ""
+    # QQ 语音回复最大合成文本长度，超过后降级为文字
+    QQ_VOICE_MAX_TEXT_CHARS: int = 280
+    # QQ 语音回复最多合成的 speech segment 数
+    QQ_VOICE_MAX_SEGMENTS: int = 3
     # 允许群聊使用明文（非 JSON 卡片）模式
     QQ_GROUP_PLAINTEXT_ENABLED: bool = False
     # 群聊对话跟随 TTL（秒），超时后新卡片
@@ -312,13 +334,18 @@ def _apply_settings(s: Settings) -> None:
     global AUX_API_KEY, AUX_BASE_URL, AUX_MODEL_NAME, AUX_API_PROTOCOL
     global CHAT_API_KEY, CHAT_BASE_URL, CHAT_MODEL_NAME, CHAT_API_PROTOCOL
     global VISION_API_KEY, VISION_BASE_URL, VISION_MODEL_NAME, VISION_API_PROTOCOL
+    global LLM_THINKING_MODE
     global VISION_ENABLED, VISION_REQUEST_TIMEOUT, VISION_PROMPT_VERSION
     global VISION_AUTO_SCENE_OBSERVE, VISION_AUTO_GIFT_OBSERVE, VISION_AUTO_OUTFIT_OBSERVE, VISION_MAX_IMAGE_BYTES
     global TTS_VOICE, TTS_RATE, TTS_VOLUME, TTS_PITCH, STREAMING_TTS_ENABLED
+    global GPT_SOVITS_TTS_TIMEOUT_SECONDS, GPT_SOVITS_TEXT_LANG, GPT_SOVITS_MEDIA_TYPE
+    global GPT_SOVITS_STREAMING_MODE, GPT_SOVITS_PARALLEL_INFER, GPT_SOVITS_SPLIT_BUCKET
+    global GPT_SOVITS_BATCH_SIZE, GPT_SOVITS_SPEED_FACTOR, GPT_SOVITS_FRAGMENT_INTERVAL, GPT_SOVITS_TEXT_SPLIT_METHOD
     global MUSIC_ONLINE_LYRICS_ENABLED, MUSIC_ONLINE_LYRICS_PROVIDERS
     global PUBLIC_GUARD_ENABLED, MAX_CONCURRENT_THINKS, DAILY_THINK_LIMIT
     global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, MAX_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
     global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ, QQ_CHARACTER_PACK_ID
+    global QQ_REPLY_MODE, QQ_TTS_PROFILE_USER_ID, QQ_VOICE_MAX_TEXT_CHARS, QQ_VOICE_MAX_SEGMENTS
     global QQ_GROUP_PLAINTEXT_ENABLED, QQ_GROUP_FOLLOW_TTL_SECONDS, QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS
     global QQ_ATTACHMENT_DEBOUNCE_SECONDS, QQ_ATTACHMENT_READY_WAIT_SECONDS, QQ_REPLY_SEGMENT_DELAY_SECONDS
     global QQ_EVENT_MAX_AGE_SECONDS, QQ_ALLOW_STALE_EVENTS, QQ_REQUIRE_FILE_DELIVERY_INTENT
@@ -353,6 +380,7 @@ def _apply_settings(s: Settings) -> None:
     CHAT_BASE_URL = s.CHAT_BASE_URL or TEXT_BASE_URL
     CHAT_MODEL_NAME = s.CHAT_MODEL_NAME or TEXT_MODEL_NAME
     CHAT_API_PROTOCOL = s.CHAT_API_PROTOCOL or TEXT_API_PROTOCOL
+    LLM_THINKING_MODE = str(s.LLM_THINKING_MODE or "disabled").strip().lower()
 
     VISION_API_KEY = s.VISION_API_KEY or ""
     VISION_BASE_URL = s.VISION_BASE_URL or ""
@@ -372,6 +400,16 @@ def _apply_settings(s: Settings) -> None:
     TTS_VOLUME = s.TTS_VOLUME or "+0%"
     TTS_PITCH = s.TTS_PITCH or "+4Hz"
     STREAMING_TTS_ENABLED = bool(s.STREAMING_TTS_ENABLED)
+    GPT_SOVITS_TTS_TIMEOUT_SECONDS = float(max(1.0, s.GPT_SOVITS_TTS_TIMEOUT_SECONDS))
+    GPT_SOVITS_TEXT_LANG = str(s.GPT_SOVITS_TEXT_LANG or "zh").strip() or "zh"
+    GPT_SOVITS_MEDIA_TYPE = str(s.GPT_SOVITS_MEDIA_TYPE or "wav").strip() or "wav"
+    GPT_SOVITS_STREAMING_MODE = bool(s.GPT_SOVITS_STREAMING_MODE)
+    GPT_SOVITS_PARALLEL_INFER = s.GPT_SOVITS_PARALLEL_INFER
+    GPT_SOVITS_SPLIT_BUCKET = s.GPT_SOVITS_SPLIT_BUCKET
+    GPT_SOVITS_BATCH_SIZE = s.GPT_SOVITS_BATCH_SIZE
+    GPT_SOVITS_SPEED_FACTOR = s.GPT_SOVITS_SPEED_FACTOR
+    GPT_SOVITS_FRAGMENT_INTERVAL = s.GPT_SOVITS_FRAGMENT_INTERVAL
+    GPT_SOVITS_TEXT_SPLIT_METHOD = str(s.GPT_SOVITS_TEXT_SPLIT_METHOD or "").strip()
     MUSIC_ONLINE_LYRICS_ENABLED = bool(s.MUSIC_ONLINE_LYRICS_ENABLED)
     MUSIC_ONLINE_LYRICS_PROVIDERS = (
         str(s.MUSIC_ONLINE_LYRICS_PROVIDERS or "Lrclib,NetEase,Musixmatch,Megalobiz").strip()
@@ -401,6 +439,16 @@ def _apply_settings(s: Settings) -> None:
         if raw_qq_character_pack_id and re.fullmatch(r"[A-Za-z0-9_.-]+", raw_qq_character_pack_id)
         else ""
     )
+    raw_qq_reply_mode = str(s.QQ_REPLY_MODE or "auto").strip().lower()
+    QQ_REPLY_MODE = raw_qq_reply_mode if raw_qq_reply_mode in {"text", "voice", "both", "auto"} else "auto"
+    raw_qq_tts_profile_user_id = str(s.QQ_TTS_PROFILE_USER_ID or s.WEB_OWNER_PROFILE_USER_ID or "master").strip()
+    QQ_TTS_PROFILE_USER_ID = (
+        raw_qq_tts_profile_user_id
+        if raw_qq_tts_profile_user_id and re.fullmatch(r"[A-Za-z0-9_.-]+", raw_qq_tts_profile_user_id)
+        else "master"
+    )
+    QQ_VOICE_MAX_TEXT_CHARS = max(20, min(1200, int(s.QQ_VOICE_MAX_TEXT_CHARS)))
+    QQ_VOICE_MAX_SEGMENTS = max(1, min(10, int(s.QQ_VOICE_MAX_SEGMENTS)))
     QQ_GROUP_PLAINTEXT_ENABLED = bool(s.QQ_GROUP_PLAINTEXT_ENABLED)
     QQ_GROUP_FOLLOW_TTL_SECONDS = max(20, int(s.QQ_GROUP_FOLLOW_TTL_SECONDS))
     QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS = max(

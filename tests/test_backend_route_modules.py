@@ -1646,6 +1646,13 @@ for line in sys.stdin:
                     "mediaType": "wav",
                     "refAudioPath": r"C:\voices\reimu_ref.wav",
                     "promptText": "主人，今天也要一起努力。",
+                    "streamingMode": True,
+                    "parallelInfer": True,
+                    "splitBucket": False,
+                    "batchSize": 1,
+                    "speedFactor": 1.05,
+                    "fragmentInterval": 0.1,
+                    "textSplitMethod": "cut5",
                 },
             )
             gpt_client = FakeGptSovitsClient()
@@ -1694,6 +1701,13 @@ for line in sys.stdin:
                         "mediaType": "wav",
                         "refAudioPath": r"C:\voices\reimu_ref.wav",
                         "promptText": "主人，今天也要一起努力。",
+                        "streamingMode": True,
+                        "parallelInfer": True,
+                        "splitBucket": False,
+                        "batchSize": 1,
+                        "speedFactor": 1.05,
+                        "fragmentInterval": 0.1,
+                        "textSplitMethod": "cut5",
                     },
                 )
             ],
@@ -2948,6 +2962,13 @@ for line in sys.stdin:
                     "mediaType": "wav",
                     "refAudioPath": r"C:\Users\Lenovo\voices\reimu_ref.wav",
                     "promptText": "主人，今天也要一起努力。",
+                    "streamingMode": True,
+                    "parallelInfer": True,
+                    "splitBucket": False,
+                    "batchSize": 1,
+                    "speedFactor": 1.05,
+                    "fragmentInterval": 0.1,
+                    "textSplitMethod": "cut5",
                     "token": "must-not-return",
                 },
             )
@@ -2987,6 +3008,13 @@ for line in sys.stdin:
             stored_profile = config_data["voiceProfiles"]["reimu_main"]
             self.assertEqual(stored_profile["refAudioPath"], r"C:\Users\Lenovo\voices\reimu_ref.wav")
             self.assertEqual(stored_profile["promptText"], "主人，今天也要一起努力。")
+            self.assertEqual(stored_profile["streamingMode"], True)
+            self.assertEqual(stored_profile["parallelInfer"], True)
+            self.assertEqual(stored_profile["splitBucket"], False)
+            self.assertEqual(stored_profile["batchSize"], 1)
+            self.assertEqual(stored_profile["speedFactor"], 1.05)
+            self.assertEqual(stored_profile["fragmentInterval"], 0.1)
+            self.assertEqual(stored_profile["textSplitMethod"], "cut5")
 
             update = client.post(
                 "/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/reimu_main/config?user_id=desktop&real_user_id=master",
@@ -2997,6 +3025,9 @@ for line in sys.stdin:
             stored_profile = config_data["voiceProfiles"]["reimu_main"]
             self.assertEqual(stored_profile["refAudioPath"], r"C:\Users\Lenovo\voices\reimu_ref.wav")
             self.assertEqual(stored_profile["promptText"], "主人，今天也要一起努力。")
+            self.assertEqual(stored_profile["streamingMode"], True)
+            self.assertEqual(stored_profile["batchSize"], 1)
+            self.assertEqual(stored_profile["textSplitMethod"], "cut5")
             self.assertIn(("capabilities.voice_profile_config", True), runtime.observed)
             self.assertIn(("capabilities.voice_profiles", True), runtime.observed)
 

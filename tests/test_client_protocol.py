@@ -160,8 +160,8 @@ class ClientProtocolTests(unittest.TestCase):
         self.assertNotIn("scene.major", profile.system_prompt_override)
         self.assertIn("当前是 QQ 文字聊天模式", profile.system_prompt_override)
         self.assertIn("qq_text", profile.mode_prompt_override(debug_enabled=False))
-        self.assertIn("字段固定为 emotion, speech, speech_segments, tool_call", profile.mode_prompt_override(debug_enabled=False))
-        self.assertIn('"speech":"主人，我在哦。","speech_segments":[],"tool_call":null', profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn("字段固定为 emotion, reply_medium, speech, speech_segments, tool_call", profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn('"reply_medium":"text","speech":"主人，我在哦。","speech_segments":[],"tool_call":null', profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("不要输出 scene", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("thought", profile.mode_prompt_override(debug_enabled=True).split("字段固定为", 1)[-1].split("。", 1)[0])
 

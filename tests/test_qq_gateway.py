@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
@@ -460,6 +462,75 @@ class QQGatewayTests(unittest.TestCase):
         self.assertIsNotNone(invalid)
         self.assertFalse(invalid["ok"])
         self.assertEqual(invalid["status"], "invalid_character_pack_id")
+
+    @patch("companion_v01.qq_gateway.config.QQ_REPLY_MODE", "auto")
+    def test_reply_mode_command_switches_current_qq_session(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 111222333,
+                "message_id": "reply-mode-voice-1",
+                "raw_message": "语音模式",
+            }
+        )
+
+        result = gateway.handle_reply_mode_command(context)
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "switched")
+        self.assertEqual(result["reply_mode"], "voice")
+        self.assertEqual(gateway.resolve_reply_mode("qq_pri_111222333"), "voice")
+
+        next_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 111222333,
+                "message_id": "reply-mode-voice-2",
+                "raw_message": "在吗",
+            }
+        )
+        self.assertEqual(next_context.reply_mode, "voice")
+        self.assertEqual(next_context.to_turn_payload()["qq_reply_mode"], "voice")
+        self.assertEqual(next_context.to_delivery_context()["reply_mode"], "voice")
+        self.assertIn("当前 QQ 回复投递模式：语音模式", next_context.extra_context)
+
+    def test_send_voice_uses_onebot_record_segment(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 2184046306,
+                "user_id": 111222333,
+                "message_id": "send-voice-1",
+                "raw_message": "在吗",
+            }
+        )
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "reply.wav"
+            audio_path.write_bytes(b"RIFF....WAVE")
+            with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+                result = gateway.send_voice(context, audio_path=str(audio_path), name="reply")
+
+        self.assertTrue(result["ok"])
+        payload = mocked_post.call_args.kwargs["json"]
+        self.assertEqual(payload["user_id"], 111222333)
+        self.assertEqual(payload["message"][0]["type"], "record")
+        self.assertIn("file", payload["message"][0]["data"])
 
     def test_extracts_image_and_file_attachments_from_segments(self) -> None:
         gateway = NapCatQQGateway()

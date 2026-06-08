@@ -83,6 +83,71 @@ _MEMORY_CATEGORY_ALIASES = {
     "meta": "system_meta",
     "系统": "system_meta",
 }
+_REPLY_MEDIUM_ALIASES = {
+    "text": "text",
+    "文字": "text",
+    "文本": "text",
+    "voice": "voice",
+    "audio": "voice",
+    "record": "voice",
+    "语音": "voice",
+    "both": "both",
+    "all": "both",
+    "text_voice": "both",
+    "voice_text": "both",
+    "文字语音": "both",
+    "双发": "both",
+}
+
+_MEMORY_MOOD_TAG_ALIASES = {
+    "calm": "calm",
+    "平静": "calm",
+    "安静": "calm",
+    "warm": "warm",
+    "温柔": "warm",
+    "温暖": "warm",
+    "affectionate": "affectionate",
+    "亲近": "affectionate",
+    "亲昵": "affectionate",
+    "happy": "happy",
+    "开心": "happy",
+    "高兴": "happy",
+    "playful": "playful",
+    "俏皮": "playful",
+    "吐槽": "playful",
+    "curious": "curious",
+    "好奇": "curious",
+    "thoughtful": "thoughtful",
+    "认真": "thoughtful",
+    "思考": "thoughtful",
+    "touched": "touched",
+    "感动": "touched",
+    "触动": "touched",
+    "proud": "proud",
+    "骄傲": "proud",
+    "欣慰": "proud",
+    "worried": "worried",
+    "担心": "worried",
+    "忧虑": "worried",
+    "lonely": "lonely",
+    "孤单": "lonely",
+    "寂寞": "lonely",
+    "sad": "sad",
+    "难过": "sad",
+    "低落": "sad",
+    "embarrassed": "embarrassed",
+    "害羞": "embarrassed",
+    "不好意思": "embarrassed",
+    "tense": "tense",
+    "紧张": "tense",
+    "压迫": "tense",
+    "annoyed": "annoyed",
+    "烦躁": "annoyed",
+    "不爽": "annoyed",
+    "determined": "determined",
+    "坚定": "determined",
+    "认真推进": "determined",
+}
 
 
 def normalize_final_output(
@@ -149,6 +214,16 @@ def normalize_final_output(
     )
     normalized["speech"] = speech
     normalized["speech_segments"] = speech_segments
+    if client_context.effective_mode == ClientMode.QQ_TEXT:
+        normalized["reply_medium"] = _normalize_reply_medium(
+            normalized.get("reply_medium"),
+            delivery=normalized.get("delivery"),
+            default="text",
+        )
+        normalized["delivery"] = {"medium": normalized["reply_medium"]}
+    else:
+        normalized.pop("reply_medium", None)
+        normalized.pop("delivery", None)
     normalized["code_snippet"] = normalize_code_snippet(normalized.get("code_snippet"))
     memory_metadata = normalize_memory_metadata(
         engine,
@@ -201,6 +276,19 @@ def normalize_final_output(
     return normalized
 
 
+def _normalize_reply_medium(
+    value: Any,
+    *,
+    delivery: Any = None,
+    default: str = "text",
+) -> str:
+    raw_value = value
+    if not str(raw_value or "").strip() and isinstance(delivery, dict):
+        raw_value = delivery.get("medium") or delivery.get("reply_medium")
+    text = str(raw_value or "").strip().lower().replace("-", "_")
+    return _REPLY_MEDIUM_ALIASES.get(text, default)
+
+
 def normalize_memory_metadata(
     engine: Any,
     value: Any,
@@ -220,10 +308,16 @@ def normalize_memory_metadata(
         aliases=_MEMORY_CATEGORY_ALIASES,
         limit=3,
     )
+    mood_tags = _normalize_enum_list(
+        raw.get("mood_tags") or raw.get("moods") or raw.get("memory_mood") or raw.get("mood"),
+        aliases=_MEMORY_MOOD_TAG_ALIASES,
+        limit=3,
+    )
     return {
         "keywords": keywords,
         "subject_scopes": subject_scopes,
         "categories": categories,
+        "mood_tags": mood_tags,
         "importance": _coerce_unit_float(raw.get("importance"), default=0.0),
         "confidence": _coerce_unit_float(raw.get("confidence"), default=0.0),
     }

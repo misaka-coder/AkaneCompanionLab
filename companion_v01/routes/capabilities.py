@@ -761,6 +761,13 @@ async def _run_provider_tts_test(
                 timeout_seconds=timeout_seconds,
                 text_lang=text_lang,
                 media_type=media_type,
+                streaming_mode=bool(getattr(config_module, "GPT_SOVITS_STREAMING_MODE", False)),
+                parallel_infer=getattr(config_module, "GPT_SOVITS_PARALLEL_INFER", None),
+                split_bucket=getattr(config_module, "GPT_SOVITS_SPLIT_BUCKET", None),
+                batch_size=getattr(config_module, "GPT_SOVITS_BATCH_SIZE", None),
+                speed_factor=getattr(config_module, "GPT_SOVITS_SPEED_FACTOR", None),
+                fragment_interval=getattr(config_module, "GPT_SOVITS_FRAGMENT_INTERVAL", None),
+                text_split_method=str(getattr(config_module, "GPT_SOVITS_TEXT_SPLIT_METHOD", "") or ""),
             )
             result = await client.synthesize(text, voice_profile_id=voice_profile_id, profile=voice_profile)
         audio, media_type = _coerce_provider_tts_test_audio(result)
@@ -834,8 +841,8 @@ def _safe_provider_tts_test_text(value: Any) -> str:
     return text[:PROVIDER_TTS_TEST_TEXT_MAX_CHARS]
 
 
-def _provider_tts_test_profile_payload(payload: Mapping[str, Any]) -> dict[str, str]:
-    profile: dict[str, str] = {}
+def _provider_tts_test_profile_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    profile: dict[str, Any] = {}
     text_lang = _safe_provider_tts_profile_id(payload.get("textLang") or payload.get("text_lang"))
     prompt_lang = _safe_provider_tts_profile_id(payload.get("promptLang") or payload.get("prompt_lang"))
     media_type = _safe_provider_tts_profile_id(payload.get("mediaType") or payload.get("media_type"))
@@ -851,6 +858,37 @@ def _provider_tts_test_profile_payload(payload: Mapping[str, Any]) -> dict[str, 
         profile["refAudioPath"] = ref_audio_path
     if prompt_text:
         profile["promptText"] = prompt_text
+    streaming_mode = _safe_optional_bool(payload.get("streamingMode") if "streamingMode" in payload else payload.get("streaming_mode"))
+    if streaming_mode is not None:
+        profile["streamingMode"] = streaming_mode
+    parallel_infer = _safe_optional_bool(payload.get("parallelInfer") if "parallelInfer" in payload else payload.get("parallel_infer"))
+    if parallel_infer is not None:
+        profile["parallelInfer"] = parallel_infer
+    split_bucket = _safe_optional_bool(payload.get("splitBucket") if "splitBucket" in payload else payload.get("split_bucket"))
+    if split_bucket is not None:
+        profile["splitBucket"] = split_bucket
+    batch_size = _safe_optional_int(payload.get("batchSize") if "batchSize" in payload else payload.get("batch_size"), minimum=1, maximum=32)
+    if batch_size is not None:
+        profile["batchSize"] = batch_size
+    speed_factor = _safe_optional_float(
+        payload.get("speedFactor") if "speedFactor" in payload else payload.get("speed_factor"),
+        minimum=0.5,
+        maximum=2.0,
+    )
+    if speed_factor is not None:
+        profile["speedFactor"] = speed_factor
+    fragment_interval = _safe_optional_float(
+        payload.get("fragmentInterval") if "fragmentInterval" in payload else payload.get("fragment_interval"),
+        minimum=0.0,
+        maximum=2.0,
+    )
+    if fragment_interval is not None:
+        profile["fragmentInterval"] = fragment_interval
+    text_split_method = _safe_provider_tts_profile_id(
+        payload.get("textSplitMethod") if "textSplitMethod" in payload else payload.get("text_split_method")
+    )
+    if text_split_method:
+        profile["textSplitMethod"] = text_split_method
     return profile
 
 
@@ -872,6 +910,39 @@ def _safe_provider_tts_profile_id(value: Any) -> str:
     ):
         return ""
     return text
+
+
+def _safe_optional_bool(value: Any) -> bool | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return None
+
+
+def _safe_optional_int(value: Any, *, minimum: int, maximum: int) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(minimum, min(maximum, number))
+
+
+def _safe_optional_float(value: Any, *, minimum: float, maximum: float) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(minimum, min(maximum, number))
 
 
 def _safe_provider_prompt_text(value: Any) -> str:

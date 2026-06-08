@@ -81,6 +81,37 @@ QQ_CHARACTER_SWITCH_PATTERNS = (
     re.compile(r"^(?:切换到|切到|换成)[:：\s]+([A-Za-z0-9_.-]+)$", re.IGNORECASE),
     re.compile(r"^character[:：\s]+(.+)$", re.IGNORECASE),
 )
+QQ_REPLY_MODES = {"text", "voice", "both", "auto"}
+QQ_REPLY_MODE_LABELS = {
+    "text": "文字模式",
+    "voice": "语音模式",
+    "both": "双发模式",
+    "auto": "自动模式",
+}
+QQ_REPLY_MODE_CURRENT_COMMANDS = {
+    "当前回复模式",
+    "回复模式",
+    "当前投递模式",
+    "qq回复模式",
+}
+QQ_REPLY_MODE_DEFAULT_COMMANDS = {
+    "切回默认回复模式",
+    "恢复默认回复模式",
+    "重置回复模式",
+}
+QQ_REPLY_MODE_SWITCH_COMMANDS = {
+    "文字模式": "text",
+    "文本模式": "text",
+    "只发文字": "text",
+    "只发文本": "text",
+    "语音模式": "voice",
+    "只发语音": "voice",
+    "双发模式": "both",
+    "文字语音模式": "both",
+    "文字加语音": "both",
+    "自动模式": "auto",
+    "自动回复模式": "auto",
+}
 
 
 @dataclass(frozen=True)
@@ -98,6 +129,7 @@ class QQMessageContext:
     extra_context: str = ""
     sender_label: str = ""
     character_pack_id: str = ""
+    reply_mode: str = ""
     attachments: list[dict[str, Any]] | None = None
 
     def to_turn_payload(self) -> dict[str, Any]:
@@ -117,6 +149,9 @@ class QQMessageContext:
         character_pack_id = _safe_character_pack_id(self.character_pack_id)
         if character_pack_id:
             payload["character_pack_id"] = character_pack_id
+        reply_mode = _safe_reply_mode(self.reply_mode, default="")
+        if reply_mode:
+            payload["qq_reply_mode"] = reply_mode
         return payload
 
     def to_delivery_context(self) -> dict[str, Any]:
@@ -134,6 +169,9 @@ class QQMessageContext:
         character_pack_id = _safe_character_pack_id(self.character_pack_id)
         if character_pack_id:
             payload["character_pack_id"] = character_pack_id
+        reply_mode = _safe_reply_mode(self.reply_mode, default="")
+        if reply_mode:
+            payload["reply_mode"] = reply_mode
         return payload
 
 
@@ -145,6 +183,8 @@ class NapCatQQGateway:
         self._attachment_debounce_lock = threading.RLock()
         self.character_pack_overrides: dict[str, str] = {}
         self._character_pack_lock = threading.RLock()
+        self.reply_mode_overrides: dict[str, str] = {}
+        self._reply_mode_lock = threading.RLock()
 
     def status(self) -> dict[str, Any]:
         return {
@@ -159,6 +199,9 @@ class NapCatQQGateway:
             "character_pack_id": self.character_pack_id,
             "default_character_pack_id": self.default_character_pack_id,
             "active_character_override_count": len(self.character_pack_overrides),
+            "reply_mode": self.default_reply_mode,
+            "default_reply_mode": self.default_reply_mode,
+            "active_reply_mode_override_count": len(self.reply_mode_overrides),
             "active_group_attachment_buffer_count": len(self.group_follow_state),
             "active_attachment_debounce_count": len(self.attachment_debounce_state),
         }
@@ -178,6 +221,10 @@ class NapCatQQGateway:
     @property
     def default_character_pack_id(self) -> str:
         return _safe_character_pack_id(getattr(config, "QQ_CHARACTER_PACK_ID", ""))
+
+    @property
+    def default_reply_mode(self) -> str:
+        return _safe_reply_mode(getattr(config, "QQ_REPLY_MODE", "auto"), default="auto")
 
     @property
     def master_qq(self) -> str:
@@ -238,6 +285,7 @@ class NapCatQQGateway:
                 return QQMessageContext(False, "group_message_without_mention")
 
         character_pack_id = self.resolve_character_pack_id(session_id)
+        reply_mode = self.resolve_reply_mode(session_id)
         return QQMessageContext(
             should_respond=True,
             reason="private"
@@ -253,6 +301,7 @@ class NapCatQQGateway:
             raw_message=raw_message,
             sender_label=sender_label,
             character_pack_id=character_pack_id,
+            reply_mode=reply_mode,
             attachments=attachments,
             extra_context=self.build_extra_context(
                 event=event,
@@ -260,6 +309,7 @@ class NapCatQQGateway:
                 user_id=user_id,
                 group_id=group_id,
                 sender_label=sender_label,
+                reply_mode=reply_mode,
             ),
         )
 
@@ -282,6 +332,7 @@ class NapCatQQGateway:
             raw_message=str(value.get("raw_message") or ""),
             sender_label=str(value.get("sender_label") or ""),
             character_pack_id=_safe_character_pack_id(value.get("character_pack_id") or value.get("characterPackId")),
+            reply_mode=_safe_reply_mode(value.get("reply_mode") or value.get("replyMode"), default=""),
             attachments=[],
         )
 
@@ -448,6 +499,100 @@ class NapCatQQGateway:
             return
         with self._character_pack_lock:
             self.character_pack_overrides.pop(key, None)
+
+    def resolve_reply_mode(self, session_id: str) -> str:
+        key = str(session_id or "").strip()
+        if not key:
+            return self.default_reply_mode
+        with self._reply_mode_lock:
+            if key in self.reply_mode_overrides:
+                return _safe_reply_mode(self.reply_mode_overrides.get(key), default=self.default_reply_mode)
+        return self.default_reply_mode
+
+    def handle_reply_mode_command(self, context: QQMessageContext) -> dict[str, Any] | None:
+        command = self.parse_reply_mode_command(context.clean_message)
+        if command is None:
+            return None
+
+        action = str(command.get("action") or "")
+        if action == "current":
+            active_mode = self.resolve_reply_mode(context.session_id)
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "current",
+                "reply": self._build_current_reply_mode_reply(active_mode, session_id=context.session_id),
+                "reply_mode": active_mode,
+            }
+        if action == "default":
+            self.clear_session_reply_mode_override(context.session_id)
+            active_mode = self.resolve_reply_mode(context.session_id)
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "default",
+                "reply": f"已恢复 QQ 默认回复模式：{self._format_reply_mode_label(active_mode)}。",
+                "reply_mode": active_mode,
+            }
+        if action == "switch":
+            reply_mode = _safe_reply_mode(command.get("reply_mode"), default="")
+            if not reply_mode:
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "status": "invalid_reply_mode",
+                    "reply": "回复模式只能是文字模式、语音模式、双发模式或自动模式。",
+                    "reply_mode": self.resolve_reply_mode(context.session_id),
+                }
+            self.set_session_reply_mode(context.session_id, reply_mode)
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "switched",
+                "reply": f"已把当前 QQ 会话切到{self._format_reply_mode_label(reply_mode)}。",
+                "reply_mode": reply_mode,
+            }
+        return None
+
+    def parse_reply_mode_command(self, message: str) -> dict[str, str] | None:
+        text = self._normalize_character_command_text(message)
+        if not text:
+            return None
+        if text in QQ_REPLY_MODE_CURRENT_COMMANDS:
+            return {"action": "current"}
+        if text in QQ_REPLY_MODE_DEFAULT_COMMANDS:
+            return {"action": "default"}
+        if text in QQ_REPLY_MODE_SWITCH_COMMANDS:
+            return {"action": "switch", "reply_mode": QQ_REPLY_MODE_SWITCH_COMMANDS[text]}
+        match = re.fullmatch(r"^(?:切换|更换|设置|设为)(?:QQ)?回复模式[:：\s]+(.+)$", text, re.IGNORECASE)
+        if match:
+            return {"action": "switch", "reply_mode": _clean_reply_mode_argument(match.group(1))}
+        return None
+
+    def set_session_reply_mode(self, session_id: str, reply_mode: str) -> None:
+        key = str(session_id or "").strip()
+        mode = _safe_reply_mode(reply_mode, default="")
+        if not key or not mode:
+            return
+        with self._reply_mode_lock:
+            self.reply_mode_overrides[key] = mode
+
+    def clear_session_reply_mode_override(self, session_id: str) -> None:
+        key = str(session_id or "").strip()
+        if not key:
+            return
+        with self._reply_mode_lock:
+            self.reply_mode_overrides.pop(key, None)
+
+    def _build_current_reply_mode_reply(self, active_mode: str, *, session_id: str = "") -> str:
+        key = str(session_id or "").strip()
+        with self._reply_mode_lock:
+            has_override = bool(key and key in self.reply_mode_overrides)
+        source = "本会话临时切换" if has_override else "QQ 默认配置"
+        return f"当前 QQ 会话回复模式：{self._format_reply_mode_label(active_mode)}（来源：{source}）。"
+
+    def _format_reply_mode_label(self, reply_mode: str) -> str:
+        return QQ_REPLY_MODE_LABELS.get(_safe_reply_mode(reply_mode), QQ_REPLY_MODE_LABELS["auto"])
 
     def _normalize_character_command_text(self, message: str) -> str:
         text = str(message or "").strip()
@@ -751,6 +896,7 @@ class NapCatQQGateway:
         user_id: int,
         group_id: int,
         sender_label: str = "",
+        reply_mode: str = "",
     ) -> str:
         sender_label = str(sender_label or self.resolve_sender_label(event=event, user_id=user_id)).strip()
         lines = [
@@ -764,6 +910,12 @@ class NapCatQQGateway:
             lines.append(f"群号：{group_id or 'unknown'}")
             lines.append("群聊消息会带有【昵称】标记；这是说话人标记，不是用户正文。")
         lines.append("这是纯文字客户端；不需要切换场景、BGM 或立绘。")
+        active_reply_mode = _safe_reply_mode(reply_mode, default=self.default_reply_mode)
+        lines.append(
+            "当前 QQ 回复投递模式："
+            f"{self._format_reply_mode_label(active_reply_mode)}。"
+            "只有自动模式会参考 reply_medium；文字/语音/双发模式由后端强制执行。"
+        )
         lines.append("QQ 会尽早发送 speech 中已经成句的内容；为了响应更快，优先把正文写进 speech，并用自然标点或换行分隔。")
         lines.append("QQ 里音视频转码、分离人声伴奏、降噪、转写、切片打包这类可能耗时的媒体处理，优先用 delegate_task 交给后台工坊；前台只简短说已经开始，完成后系统会主动通知并交付。")
         return "\n".join(lines)
@@ -986,6 +1138,41 @@ class NapCatQQGateway:
             }
             try:
                 response = requests.post(f"{self.onebot_http_url}/{action}", json=payload, timeout=20)
+                response.raise_for_status()
+                data = response.json()
+                return {"ok": True, "action": action, "data": data, "file": clean_path}
+            except Exception as exc:
+                last_error = str(exc)
+        return {"ok": False, "action": action, "reason": last_error, "file": clean_path}
+
+    def send_voice(self, context: QQMessageContext, *, audio_path: str, name: str = "") -> dict[str, Any]:
+        clean_path = str(audio_path or "").strip()
+        if not context.target_id or not clean_path:
+            return {"ok": False, "reason": "empty_target_or_audio"}
+
+        path_obj = Path(clean_path)
+        if not path_obj.exists():
+            return {"ok": False, "reason": "audio_not_found", "file": clean_path}
+
+        action = "send_group_msg" if context.is_group else "send_private_msg"
+        base_payload = {"group_id": context.target_id} if context.is_group else {"user_id": context.target_id}
+        file_candidates = [path_obj.resolve().as_uri(), str(path_obj.resolve())]
+        last_error = ""
+        for file_value in file_candidates:
+            payload = {
+                **base_payload,
+                "message": [
+                    {
+                        "type": "record",
+                        "data": {
+                            "file": file_value,
+                            "summary": name or path_obj.name,
+                        },
+                    }
+                ],
+            }
+            try:
+                response = requests.post(f"{self.onebot_http_url}/{action}", json=payload, timeout=30)
                 response.raise_for_status()
                 data = response.json()
                 return {"ok": True, "action": action, "data": data, "file": clean_path}
@@ -1248,6 +1435,41 @@ def _safe_character_pack_id(value: Any) -> str:
 
 
 def _clean_character_pack_argument(value: Any) -> str:
+    text = str(value or "").strip()
+    text = text.strip("`'\"“”‘’")
+    text = text.rstrip("。.!！?？,，;；")
+    return text.strip()
+
+
+def _safe_reply_mode(value: Any, *, default: str = "auto") -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "text": "text",
+        "文字": "text",
+        "文本": "text",
+        "voice": "voice",
+        "audio": "voice",
+        "record": "voice",
+        "语音": "voice",
+        "both": "both",
+        "all": "both",
+        "text_voice": "both",
+        "voice_text": "both",
+        "文字语音": "both",
+        "双发": "both",
+        "auto": "auto",
+        "automatic": "auto",
+        "自动": "auto",
+    }
+    if not text:
+        return default if default in QQ_REPLY_MODES else "auto"
+    mode = aliases.get(text, "")
+    if mode:
+        return mode
+    return default if default in QQ_REPLY_MODES else "auto"
+
+
+def _clean_reply_mode_argument(value: Any) -> str:
     text = str(value or "").strip()
     text = text.strip("`'\"“”‘’")
     text = text.rstrip("。.!！?？,，;；")

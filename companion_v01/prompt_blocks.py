@@ -88,8 +88,9 @@ class PromptBlockRegistry:
                 id="memory_metadata",
                 text=(
                     "memory_metadata 只用于后台记忆入库，不会展示给用户。\n"
-                    "如果当前用户消息没有值得长期检索的事实，keywords/subject_scopes/categories 输出空数组，importance 输出 0。\n"
+                    "如果当前用户消息没有值得长期检索的事实，keywords/subject_scopes/categories/mood_tags 输出空数组，importance 输出 0。\n"
                     "keywords 写 0-4 个短词；subject_scopes 从 user, assistant, other 中选；categories 从 casual, preference, personal_profile, plan_goal, project_work, relationship, emotion_state, life_event, memory_query, system_meta 中选。\n"
+                    "mood_tags 是你当时记住这件事时的情感余温，从 calm, warm, affectionate, happy, playful, curious, thoughtful, touched, proud, worried, lonely, sad, embarrassed, tense, annoyed, determined 中选 0-3 个。\n"
                     "拿不准可留空或多选；importance 和 confidence 必须是 0-1 数字。"
                 ),
             ),

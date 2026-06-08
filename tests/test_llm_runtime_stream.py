@@ -40,6 +40,17 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
         self.assertEqual(segment_events, [{"type": "speech_segment", "index": 1, "text": "第二句。"}])
         self.assertEqual(tap.latest_speech, "第一句。\n第二句。")
 
+    def test_emits_delivery_hint_before_speech_when_reply_medium_closes(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+
+        events = tap.feed('{"emotion":"happy","reply_medium":"voice","speech":"第一句。')
+
+        self.assertIn({"type": "delivery_hint", "medium": "voice"}, events)
+        self.assertEqual(tap.latest_reply_medium, "voice")
+        delivery_index = events.index({"type": "delivery_hint", "medium": "voice"})
+        first_speech_index = next(index for index, event in enumerate(events) if event.get("type") == "speech_chunk")
+        self.assertLess(delivery_index, first_speech_index)
+
     def test_speech_segments_array_does_not_duplicate_speech_field_segments(self) -> None:
         tap = _TopLevelJSONStreamTap()
         events = []

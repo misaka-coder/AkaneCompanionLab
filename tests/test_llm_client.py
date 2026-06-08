@@ -134,6 +134,42 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertNotIn("prompt_cache_key", payload)
         self.assertNotIn("prompt_cache_retention", payload)
 
+    def test_llm_runtime_disables_deepseek_thinking_by_default(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-flash",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            stream=True,
+            json_mode=True,
+        )
+
+        self.assertEqual(payload["extra_body"], {"thinking": {"type": "disabled"}})
+
+    def test_llm_runtime_does_not_send_deepseek_thinking_control_to_other_hosts(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.example.test/v1"),
+            model="chat-model",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            stream=True,
+            json_mode=True,
+        )
+
+        self.assertNotIn("extra_body", payload)
+
     def test_llm_runtime_retries_without_prompt_cache_hints_when_client_rejects_them(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         calls: list[dict[str, object]] = []

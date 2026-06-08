@@ -355,6 +355,7 @@ if qq_gateway is not None:
             runtime_metrics=runtime_metrics,
             logger=logger,
             log_event=_log_event,
+            tts_client=tts_client,
         )
     )
 app.include_router(

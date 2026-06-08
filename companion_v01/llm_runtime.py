@@ -22,6 +22,28 @@ JSON_ESCAPE_MAP = {
     "r": "\r",
     "t": "\t",
 }
+REPLY_MEDIUM_ALIASES = {
+    "text": "text",
+    "文字": "text",
+    "文本": "text",
+    "voice": "voice",
+    "audio": "voice",
+    "record": "voice",
+    "语音": "voice",
+    "both": "both",
+    "all": "both",
+    "text_voice": "both",
+    "voice_text": "both",
+    "文字语音": "both",
+    "双发": "both",
+}
+
+
+def normalize_reply_medium(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    if not text:
+        return ""
+    return REPLY_MEDIUM_ALIASES.get(text, "")
 
 
 @dataclass
@@ -49,6 +71,7 @@ class ChatJSONStreamResult:
     error: str
     latest_emotion: str
     latest_speech: str
+    latest_reply_medium: str
     stopped_early: bool = False
     early_tool_call: dict[str, Any] | None = None
 
@@ -69,7 +92,9 @@ class _TopLevelJSONStreamTap:
         self.unicode_buffer: list[str] | None = None
         self.latest_emotion = ""
         self.latest_speech = ""
+        self.latest_reply_medium = ""
         self._ui_emitted = False
+        self._delivery_hint_emitted = False
         self._speech_segment_count = 0
         self._last_segment_end = 0
         self._max_speech_segments = 3
@@ -248,6 +273,13 @@ class _TopLevelJSONStreamTap:
                     if text and not self._ui_emitted:
                         self._ui_emitted = True
                         events.append({"type": "ui", "emotion": text})
+                elif self.captured_value_key == "reply_medium":
+                    medium = normalize_reply_medium(text)
+                    if medium:
+                        self.latest_reply_medium = medium
+                        if not self._delivery_hint_emitted:
+                            self._delivery_hint_emitted = True
+                            events.append({"type": "delivery_hint", "medium": medium})
                 self.expecting_value = False
                 self.captured_value_key = None
             self.string_role = ""
@@ -614,6 +646,8 @@ class LLMRuntime:
             parsed["emotion"] = tap.latest_emotion
         if tap.latest_speech and not parsed.get("speech"):
             parsed["speech"] = tap.latest_speech
+        if tap.latest_reply_medium and not parsed.get("reply_medium"):
+            parsed["reply_medium"] = tap.latest_reply_medium
 
         elapsed_ms = round((time.perf_counter() - start_at) * 1000, 1)
         return ChatJSONStreamResult(
@@ -623,6 +657,7 @@ class LLMRuntime:
             error=error,
             latest_emotion=tap.latest_emotion,
             latest_speech=tap.latest_speech,
+            latest_reply_medium=tap.latest_reply_medium,
             stopped_early=stopped_early,
             early_tool_call=early_tool_call,
         )
@@ -761,6 +796,7 @@ class LLMRuntime:
             payload["stream"] = True
         if json_mode and self._should_use_response_json_mode(bundle):
             payload["response_format"] = {"type": "json_object"}
+        payload.update(self._build_reasoning_control_kwargs(bundle=bundle))
         payload.update(
             self._build_prompt_cache_kwargs(
                 bundle=bundle,
@@ -768,6 +804,30 @@ class LLMRuntime:
             )
         )
         return payload
+
+    def _build_reasoning_control_kwargs(self, *, bundle: ModelBundle) -> dict[str, Any]:
+        mode = str(getattr(config, "LLM_THINKING_MODE", "disabled") or "").strip().lower()
+        if mode in {"", "default", "auto"}:
+            return {}
+        if mode not in {"enabled", "disabled"}:
+            return {}
+        if not self._supports_deepseek_thinking_control(bundle):
+            return {}
+        return {"extra_body": {"thinking": {"type": mode}}}
+
+    def _supports_deepseek_thinking_control(self, bundle: ModelBundle) -> bool:
+        protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        if protocol != "openai":
+            return False
+        model = str(getattr(bundle, "model", "") or "").strip().lower()
+        if model.startswith("deepseek-"):
+            return True
+        base_url = str(getattr(bundle.client, "base_url", "") or "").strip()
+        try:
+            hostname = str(urlparse(base_url).hostname or "").strip().lower()
+        except Exception:
+            hostname = ""
+        return hostname == "api.deepseek.com" or hostname.endswith(".deepseek.com")
 
     def _normalize_user_image_items(self, value: Any) -> list[dict[str, Any]]:
         if not isinstance(value, list):
@@ -994,6 +1054,7 @@ class LLMRuntime:
         tap.feed(text)
         speech = str(tap.latest_speech or "").strip()
         emotion = str(tap.latest_emotion or "").strip()
+        reply_medium = normalize_reply_medium(tap.latest_reply_medium)
         raw_segments = self._extract_json_key_value(text, "speech_segments")
         segments: list[str] = []
         if isinstance(raw_segments, list):
@@ -1004,11 +1065,13 @@ class LLMRuntime:
                     segments.append(segment[:500])
                 if len(segments) >= 3:
                     break
-        if not speech and not emotion and not segments:
+        if not speech and not emotion and not segments and not reply_medium:
             return None
         recovered = dict(fallback)
         if emotion:
             recovered["emotion"] = emotion
+        if reply_medium:
+            recovered["reply_medium"] = reply_medium
         if segments:
             recovered["speech"] = "\n".join(segments)
             recovered["speech_segments"] = segments

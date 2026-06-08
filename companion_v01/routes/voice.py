@@ -336,6 +336,13 @@ def _default_gpt_sovits_client_factory(config_module: Any) -> Callable[[str], Gp
     timeout_seconds = float(getattr(config_module, "GPT_SOVITS_TTS_TIMEOUT_SECONDS", 45.0) or 45.0)
     text_lang = str(getattr(config_module, "GPT_SOVITS_TEXT_LANG", "zh") or "zh")
     media_type = str(getattr(config_module, "GPT_SOVITS_MEDIA_TYPE", "wav") or "wav")
+    streaming_mode = bool(getattr(config_module, "GPT_SOVITS_STREAMING_MODE", False))
+    parallel_infer = getattr(config_module, "GPT_SOVITS_PARALLEL_INFER", None)
+    split_bucket = getattr(config_module, "GPT_SOVITS_SPLIT_BUCKET", None)
+    batch_size = getattr(config_module, "GPT_SOVITS_BATCH_SIZE", None)
+    speed_factor = getattr(config_module, "GPT_SOVITS_SPEED_FACTOR", None)
+    fragment_interval = getattr(config_module, "GPT_SOVITS_FRAGMENT_INTERVAL", None)
+    text_split_method = str(getattr(config_module, "GPT_SOVITS_TEXT_SPLIT_METHOD", "") or "")
 
     def factory(endpoint: str) -> GptSovitsTTSClient:
         return GptSovitsTTSClient(
@@ -343,6 +350,13 @@ def _default_gpt_sovits_client_factory(config_module: Any) -> Callable[[str], Gp
             timeout_seconds=timeout_seconds,
             text_lang=text_lang,
             media_type=media_type,
+            streaming_mode=streaming_mode,
+            parallel_infer=parallel_infer,
+            split_bucket=split_bucket,
+            batch_size=batch_size,
+            speed_factor=speed_factor,
+            fragment_interval=fragment_interval,
+            text_split_method=text_split_method,
         )
 
     return factory

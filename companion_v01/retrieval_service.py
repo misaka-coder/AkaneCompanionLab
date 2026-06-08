@@ -9,6 +9,7 @@ from typing import Any
 import config
 
 from .llm_runtime import LLMRuntime
+from .memory_rendering import render_memory_mood_line
 from .prompt_builder import PromptBuilder
 from .retrieval_types import RetrievalPipelineResult
 from .store import MemoryStore, normalize_character_pack_id
@@ -1646,7 +1647,35 @@ class RetrievalService:
     def _render_raw_snippet(self, rows: list[dict[str, Any]]) -> str:
         if not rows:
             return ""
-        return "【原始对话回忆】\n" + render_chat_timeline(rows)
+        parts = ["【原始对话回忆】"]
+        mood_line = self._render_raw_memory_mood_line(rows)
+        if mood_line:
+            parts.append(mood_line)
+        parts.append(render_chat_timeline(rows))
+        return "\n".join(parts)
+
+    def _render_raw_memory_mood_line(self, rows: list[dict[str, Any]]) -> str:
+        mood_tags: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            metadata = row.get("memory_metadata") if isinstance(row.get("memory_metadata"), dict) else {}
+            raw_tags = metadata.get("mood_tags") if isinstance(metadata, dict) else []
+            if not isinstance(raw_tags, list):
+                continue
+            for item in raw_tags:
+                tag = normalize_text(str(item or "")).strip()
+                if not tag:
+                    continue
+                key = tag.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                mood_tags.append(tag)
+                if len(mood_tags) >= 3:
+                    return "记忆情绪：" + " / ".join(mood_tags)
+        if not mood_tags:
+            return ""
+        return "记忆情绪：" + " / ".join(mood_tags)
 
     def _render_summary_snippet(self, record: dict[str, Any]) -> str:
         labels = []
@@ -1661,6 +1690,9 @@ class RetrievalService:
         core_facts = "；".join(record.get("core_facts") or [])
         prefix = f"【摘要回忆】[{ ' | '.join(labels) }] " if labels else "【摘要回忆】"
         parts = [f"{prefix}{record.get('diary_summary', '')}"]
+        mood_line = render_memory_mood_line(record)
+        if mood_line:
+            parts.append(mood_line)
         if key_events:
             parts.append(f"关键事件：{key_events}")
         if core_facts:
@@ -1676,6 +1708,9 @@ class RetrievalService:
             labels.append(f"重要度:{float(record.get('importance') or 0.0):.2f}")
         prefix = f"【长期语义记忆】[{ ' | '.join(labels) }] " if labels else "【长期语义记忆】"
         parts = [f"{prefix}{record.get('semantic_summary', '')}"]
+        mood_line = render_memory_mood_line(record)
+        if mood_line:
+            parts.append(mood_line)
         stable_facts = "；".join(record.get("stable_facts") or [])
         recurring_topics = "；".join(record.get("recurring_topics") or [])
         important_people = "；".join(record.get("important_people") or [])

@@ -26,6 +26,13 @@ PRIVATE_VOICE_PROFILE_FIELDS = {
     "mediaType",
     "refAudioPath",
     "promptText",
+    "streamingMode",
+    "parallelInfer",
+    "splitBucket",
+    "batchSize",
+    "speedFactor",
+    "fragmentInterval",
+    "textSplitMethod",
     "updatedAt",
 }
 PRIVATE_MCP_SERVER_FIELDS = {
@@ -235,6 +242,18 @@ def save_voice_profile_config(
         normalized["refAudioPath"] = str(existing_profile.get("refAudioPath") or "")
     if not prompt_text_submitted and not normalized["promptText"]:
         normalized["promptText"] = str(existing_profile.get("promptText") or "")
+    optional_voice_fields = {
+        "streamingMode": ("streamingMode", "streaming_mode"),
+        "parallelInfer": ("parallelInfer", "parallel_infer"),
+        "splitBucket": ("splitBucket", "split_bucket"),
+        "batchSize": ("batchSize", "batch_size"),
+        "speedFactor": ("speedFactor", "speed_factor"),
+        "fragmentInterval": ("fragmentInterval", "fragment_interval"),
+        "textSplitMethod": ("textSplitMethod", "text_split_method"),
+    }
+    for canonical_key, aliases in optional_voice_fields.items():
+        if not any(alias in payload for alias in aliases) and normalized.get(canonical_key) in (None, ""):
+            normalized[canonical_key] = existing_profile.get(canonical_key)
     voice_profiles[profile_id] = {
         "providerId": normalized["providerId"],
         "enabled": bool(normalized["enabled"]),
@@ -244,6 +263,13 @@ def save_voice_profile_config(
         "mediaType": normalized["mediaType"],
         "refAudioPath": normalized["refAudioPath"],
         "promptText": normalized["promptText"],
+        "streamingMode": normalized["streamingMode"],
+        "parallelInfer": normalized["parallelInfer"],
+        "splitBucket": normalized["splitBucket"],
+        "batchSize": normalized["batchSize"],
+        "speedFactor": normalized["speedFactor"],
+        "fragmentInterval": normalized["fragmentInterval"],
+        "textSplitMethod": normalized["textSplitMethod"],
         "updatedAt": _now_iso(),
     }
     write_capability_config(
@@ -279,7 +305,7 @@ def get_voice_profile_runtime_config(
     profile = config.get("voiceProfiles", {}).get(profile_id)
     if not isinstance(profile, Mapping) or profile.get("enabled") is False:
         return {}
-    return {
+    result: dict[str, Any] = {
         "id": profile_id,
         "providerId": str(profile.get("providerId") or "provider.tts.gpt_sovits.local"),
         "textLang": str(profile.get("textLang") or ""),
@@ -288,6 +314,14 @@ def get_voice_profile_runtime_config(
         "refAudioPath": str(profile.get("refAudioPath") or ""),
         "promptText": str(profile.get("promptText") or ""),
     }
+    for key in ("streamingMode", "parallelInfer", "splitBucket", "batchSize", "speedFactor", "fragmentInterval"):
+        value = profile.get(key)
+        if value is not None:
+            result[key] = value
+    text_split_method = str(profile.get("textSplitMethod") or "")
+    if text_split_method:
+        result["textSplitMethod"] = text_split_method
+    return result
 
 
 def list_mcp_server_configs(
@@ -1146,6 +1180,13 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
         "textLang": str(config.get("textLang") or "zh")[:20],
         "promptLang": str(config.get("promptLang") or "zh")[:20],
         "mediaType": str(config.get("mediaType") or "wav")[:20],
+        "streamingMode": bool(config.get("streamingMode")),
+        "parallelInfer": config.get("parallelInfer") if isinstance(config.get("parallelInfer"), bool) else None,
+        "splitBucket": config.get("splitBucket") if isinstance(config.get("splitBucket"), bool) else None,
+        "batchSize": config.get("batchSize") if isinstance(config.get("batchSize"), int) else None,
+        "speedFactor": config.get("speedFactor") if isinstance(config.get("speedFactor"), (int, float)) else None,
+        "fragmentInterval": config.get("fragmentInterval") if isinstance(config.get("fragmentInterval"), (int, float)) else None,
+        "textSplitMethod": str(config.get("textSplitMethod") or "")[:40],
         "hasReferenceAudio": bool(ref_audio_path),
         "referenceAudioName": _safe_path_basename(ref_audio_path),
         "promptTextLength": len(prompt_text),
@@ -1301,6 +1342,34 @@ def normalize_voice_profile_config_payload(profile_id: str, payload: Mapping[str
         "mediaType": _safe_short_token(payload.get("mediaType") or payload.get("media_type") or "wav", default="wav"),
         "refAudioPath": ref_audio_path,
         "promptText": prompt_text,
+        "streamingMode": _safe_optional_bool(
+            payload.get("streamingMode") if "streamingMode" in payload else payload.get("streaming_mode"),
+        ),
+        "parallelInfer": _safe_optional_bool(
+            payload.get("parallelInfer") if "parallelInfer" in payload else payload.get("parallel_infer")
+        ),
+        "splitBucket": _safe_optional_bool(
+            payload.get("splitBucket") if "splitBucket" in payload else payload.get("split_bucket")
+        ),
+        "batchSize": _safe_optional_int(
+            payload.get("batchSize") if "batchSize" in payload else payload.get("batch_size"),
+            minimum=1,
+            maximum=32,
+        ),
+        "speedFactor": _safe_optional_float(
+            payload.get("speedFactor") if "speedFactor" in payload else payload.get("speed_factor"),
+            minimum=0.5,
+            maximum=2.0,
+        ),
+        "fragmentInterval": _safe_optional_float(
+            payload.get("fragmentInterval") if "fragmentInterval" in payload else payload.get("fragment_interval"),
+            minimum=0.0,
+            maximum=2.0,
+        ),
+        "textSplitMethod": _safe_short_token(
+            payload.get("textSplitMethod") if "textSplitMethod" in payload else payload.get("text_split_method"),
+            default="",
+        ),
     }
 
 
@@ -1834,6 +1903,13 @@ def _sanitize_voice_profile_configs(raw_profiles: Any) -> tuple[dict[str, dict[s
             "mediaType": normalized["mediaType"],
             "refAudioPath": normalized["refAudioPath"],
             "promptText": normalized["promptText"],
+            "streamingMode": normalized["streamingMode"],
+            "parallelInfer": normalized["parallelInfer"],
+            "splitBucket": normalized["splitBucket"],
+            "batchSize": normalized["batchSize"],
+            "speedFactor": normalized["speedFactor"],
+            "fragmentInterval": normalized["fragmentInterval"],
+            "textSplitMethod": normalized["textSplitMethod"],
         }
         updated_at = _safe_short_text((raw_config or {}).get("updatedAt")) if isinstance(raw_config, Mapping) else ""
         if updated_at:
@@ -2245,6 +2321,39 @@ def _safe_short_token(value: Any, *, default: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", text):
         return default
     return text
+
+
+def _safe_optional_bool(value: Any, *, default: bool | None = None) -> bool | None:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
+def _safe_optional_int(value: Any, *, minimum: int, maximum: int) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(minimum, min(maximum, number))
+
+
+def _safe_optional_float(value: Any, *, minimum: float, maximum: float) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(minimum, min(maximum, number))
 
 
 def _safe_private_prompt_text(value: Any) -> str:

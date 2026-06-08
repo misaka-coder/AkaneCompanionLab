@@ -139,6 +139,7 @@ class PromptBuilder:
                 "keywords": [],
                 "subject_scopes": [],
                 "categories": [],
+                "mood_tags": [],
                 "importance": 0.0,
                 "confidence": 0.0,
             },
@@ -172,6 +173,8 @@ class PromptBuilder:
             f"可用视觉资源：\n{resource_context}\n\n"
             f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
             f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
+            "如果下面的记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
+            "回应时自然带着这份余温即可，不要把它当作用户事实，也不要生硬复述标签。\n\n"
             f"较长期的语义记忆（最多3条）：\n{semantic_summary_text or '(无)'}\n\n"
             f"最近可见的阶段摘要（5~10条弹性窗口）：\n{episodic_summary_text or '(无)'}\n\n"
             f"当前会话中所有未总结的原始消息：\n{raw_text or '(无)'}\n\n"
@@ -260,8 +263,8 @@ class PromptBuilder:
             return system_prompt
         return (
             f"{system_prompt.rstrip()}\n\n"
-            "[CURRENT ASSISTANT MEMORY PERSPECTIVE]\n"
-            "下面是当前前台角色/表达侧面的记忆视角，只用于决定当前助手会在意什么、怎样概括和取舍。\n"
-            "不要把这些设定本身当作对话事实写进摘要、稳定事实或长期记忆。\n"
+            "[CURRENT CHARACTER MEMORY SELF]\n"
+            "下面是你此刻的角色身份与表达侧面；整理记忆时就按这个身份记。\n"
+            "角色设定只决定你的记忆口吻、在意点和情感余温，不是这段对话发生过的事实。\n"
             f"{context_text}"
         )

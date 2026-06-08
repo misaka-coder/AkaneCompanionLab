@@ -127,12 +127,26 @@ class GptSovitsTTSClient:
         timeout_seconds: float = 45.0,
         text_lang: str = "zh",
         media_type: str = "wav",
+        streaming_mode: bool = False,
+        parallel_infer: bool | None = None,
+        split_bucket: bool | None = None,
+        batch_size: int | None = None,
+        speed_factor: float | None = None,
+        fragment_interval: float | None = None,
+        text_split_method: str = "",
     ) -> None:
         self.endpoint = _normalize_loopback_endpoint(endpoint).rstrip("/")
         self.session = session or requests.Session()
         self.timeout_seconds = max(1.0, float(timeout_seconds or 45.0))
         self.text_lang = _safe_short_token(text_lang, default="zh")
         self.media_type = _safe_short_token(media_type, default="wav")
+        self.streaming_mode = bool(streaming_mode)
+        self.parallel_infer = _safe_optional_bool(parallel_infer)
+        self.split_bucket = _safe_optional_bool(split_bucket)
+        self.batch_size = _safe_optional_int(batch_size, minimum=1, maximum=32)
+        self.speed_factor = _safe_optional_float(speed_factor, minimum=0.5, maximum=2.0)
+        self.fragment_interval = _safe_optional_float(fragment_interval, minimum=0.0, maximum=2.0)
+        self.text_split_method = _safe_short_token(text_split_method, default="")
 
     async def synthesize(
         self,
@@ -162,8 +176,14 @@ class GptSovitsTTSClient:
             "text": text,
             "text_lang": profile.get("textLang") or self.text_lang,
             "media_type": profile.get("mediaType") or self.media_type,
-            "streaming_mode": False,
+            "streaming_mode": profile.get("streamingMode", self.streaming_mode),
         }
+        _set_optional_payload_value(payload, "parallel_infer", profile.get("parallelInfer", self.parallel_infer))
+        _set_optional_payload_value(payload, "split_bucket", profile.get("splitBucket", self.split_bucket))
+        _set_optional_payload_value(payload, "batch_size", profile.get("batchSize", self.batch_size))
+        _set_optional_payload_value(payload, "speed_factor", profile.get("speedFactor", self.speed_factor))
+        _set_optional_payload_value(payload, "fragment_interval", profile.get("fragmentInterval", self.fragment_interval))
+        _set_optional_payload_value(payload, "text_split_method", profile.get("textSplitMethod", self.text_split_method))
         if voice_profile_id:
             payload["voice_profile_id"] = voice_profile_id
         if profile.get("promptLang"):
@@ -195,6 +215,12 @@ class GptSovitsTTSClient:
         if not response_media_type.startswith("audio/"):
             response_media_type = "audio/wav"
         return SynthesizedAudio(audio=content, media_type=response_media_type)
+
+
+def _set_optional_payload_value(payload: dict[str, Any], key: str, value: Any) -> None:
+    if value in (None, ""):
+        return
+    payload[key] = value
 
 
 def _normalize_loopback_endpoint(endpoint: str) -> str:
@@ -232,10 +258,43 @@ def _safe_media_type(value: Any) -> str:
     return media_type[:80]
 
 
-def _safe_gpt_sovits_profile(profile: Mapping[str, Any] | None) -> dict[str, str]:
+def _safe_optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return None
+
+
+def _safe_optional_int(value: Any, *, minimum: int, maximum: int) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(minimum, min(maximum, number))
+
+
+def _safe_optional_float(value: Any, *, minimum: float, maximum: float) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(minimum, min(maximum, number))
+
+
+def _safe_gpt_sovits_profile(profile: Mapping[str, Any] | None) -> dict[str, Any]:
     if not isinstance(profile, Mapping):
         return {}
-    result: dict[str, str] = {}
+    result: dict[str, Any] = {}
     text_lang = _safe_short_token(profile.get("textLang") or profile.get("text_lang"), default="")
     if text_lang:
         result["textLang"] = text_lang
@@ -251,6 +310,42 @@ def _safe_gpt_sovits_profile(profile: Mapping[str, Any] | None) -> dict[str, str
     ref_audio_path = _safe_local_path(profile.get("refAudioPath") or profile.get("ref_audio_path"))
     if ref_audio_path:
         result["refAudioPath"] = ref_audio_path
+    streaming_mode = _safe_optional_bool(profile.get("streamingMode") if "streamingMode" in profile else profile.get("streaming_mode"))
+    if streaming_mode is not None:
+        result["streamingMode"] = streaming_mode
+    parallel_infer = _safe_optional_bool(profile.get("parallelInfer") if "parallelInfer" in profile else profile.get("parallel_infer"))
+    if parallel_infer is not None:
+        result["parallelInfer"] = parallel_infer
+    split_bucket = _safe_optional_bool(profile.get("splitBucket") if "splitBucket" in profile else profile.get("split_bucket"))
+    if split_bucket is not None:
+        result["splitBucket"] = split_bucket
+    batch_size = _safe_optional_int(
+        profile.get("batchSize") if "batchSize" in profile else profile.get("batch_size"),
+        minimum=1,
+        maximum=32,
+    )
+    if batch_size is not None:
+        result["batchSize"] = batch_size
+    speed_factor = _safe_optional_float(
+        profile.get("speedFactor") if "speedFactor" in profile else profile.get("speed_factor"),
+        minimum=0.5,
+        maximum=2.0,
+    )
+    if speed_factor is not None:
+        result["speedFactor"] = speed_factor
+    fragment_interval = _safe_optional_float(
+        profile.get("fragmentInterval") if "fragmentInterval" in profile else profile.get("fragment_interval"),
+        minimum=0.0,
+        maximum=2.0,
+    )
+    if fragment_interval is not None:
+        result["fragmentInterval"] = fragment_interval
+    text_split_method = _safe_short_token(
+        profile.get("textSplitMethod") if "textSplitMethod" in profile else profile.get("text_split_method"),
+        default="",
+    )
+    if text_split_method:
+        result["textSplitMethod"] = text_split_method
     return result
 
 

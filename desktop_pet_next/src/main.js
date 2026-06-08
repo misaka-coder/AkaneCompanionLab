@@ -59,6 +59,8 @@ const TTS_PREWARM_TIMEOUT_MS = 12 * 1000;
 const TTS_PREWARM_COOLDOWN_MS = 10 * 60 * 1000;
 const ASR_TIMEOUT_MS = 2 * 60 * 1000;
 const DESKTOP_CONTEXT_POLL_MS = 1500;
+const DESKTOP_CONTEXT_TURN_WAIT_MS = 280;
+const DESKTOP_CONTEXT_TURN_WAIT_FOCUSED_MS = 1200;
 const DESKTOP_CONTEXT_MAX_AGE_MS = 2 * 60 * 1000;
 const SCREEN_VISION_FRAME_INTERVAL_MS = 1500;
 const DEFAULT_SCREEN_VISION_FRAMES_PER_CLIP = 4;
@@ -85,8 +87,8 @@ const MUSIC_TIMELINE_INITIAL_DELAY_MS = 6500;
 const SYSTEM_MEDIA_POLL_MS = 2000;
 const SYSTEM_MEDIA_MAX_AGE_MS = 10000;
 const SYSTEM_MEDIA_LYRICS_RETRY_MS = 30000;
-const SYSTEM_MEDIA_LYRICS_TURN_WAIT_MS = 1800;
-const SYSTEM_MEDIA_LYRICS_TURN_WAIT_FOCUSED_MS = 9000;
+const SYSTEM_MEDIA_LYRICS_TURN_WAIT_MS = 1200;
+const SYSTEM_MEDIA_LYRICS_TURN_WAIT_FOCUSED_MS = 2400;
 const CLIPBOARD_TEXT_LIMIT = 600;
 const BACKEND_RETRY_MS = 30 * 1000;
 const WORKSPACE_TASK_POLL_MS = 12 * 1000;
@@ -310,6 +312,7 @@ let saveTimer = 0;
 let webglProbe = null;
 let sending = false;
 let activeTurnToken = 0;
+let activeTurnLatencyTrace = null;
 let thinkController = null;
 let runtimeMode = "idle";
 let bubbleToken = 0;
@@ -3410,6 +3413,26 @@ function isLyricsFocusedTurnMessage(message) {
   return /歌词|唱到|唱的是|哪一句|这一句|当前.*(歌|音乐)|这首|正在放|播放|听/.test(text);
 }
 
+function shouldWaitForSystemMediaLyricsForTurn(message, options = {}) {
+  if (options.waitForLyricsHydration === false) return false;
+  if (options.waitForLyricsHydration === true) return true;
+  return isLyricsFocusedTurnMessage(message);
+}
+
+function isDesktopContextFocusedTurnMessage(message) {
+  const text = String(message || "").trim().toLowerCase();
+  if (!text) return false;
+  return /剪贴板|复制|粘贴|当前窗口|前台|这个窗口|正在看|屏幕|网页|浏览器|页面/.test(text);
+}
+
+function getDesktopContextTurnWaitMs(message, options = {}) {
+  if (options.waitDesktopContext === false) return 0;
+  if (options.waitDesktopContext === true || isDesktopContextFocusedTurnMessage(message)) {
+    return DESKTOP_CONTEXT_TURN_WAIT_FOCUSED_MS;
+  }
+  return DESKTOP_CONTEXT_TURN_WAIT_MS;
+}
+
 function waitForSystemMediaLyrics(request, timeoutMs) {
   if (!request || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.resolve({ timedOut: false });
   let timeoutId = 0;
@@ -3424,13 +3447,13 @@ function waitForSystemMediaLyrics(request, timeoutMs) {
 }
 
 async function hydrateSystemMediaLyricsForTurn(message, options = {}) {
-  if (!isFreshSystemMedia(systemMedia)) return;
+  if (!isFreshSystemMedia(systemMedia)) return { waited: false, status: "unavailable" };
   const trackKey = String(systemMedia.trackKey || "").trim();
-  if (!trackKey || !systemMedia.title) return;
+  if (!trackKey || !systemMedia.title) return { waited: false, status: "unavailable" };
   const cached = systemMediaLyricsCache.get(trackKey);
   if (cached) {
     systemMediaLyrics = { ...cached, cached: true, segments: Array.isArray(cached.segments) ? [...cached.segments] : [] };
-    return;
+    return { waited: false, status: "cached" };
   }
   if (
     systemMediaLyrics.trackKey === trackKey &&
@@ -3438,14 +3461,18 @@ async function hydrateSystemMediaLyricsForTurn(message, options = {}) {
     Array.isArray(systemMediaLyrics.segments) &&
     systemMediaLyrics.segments.length > 0
   ) {
-    return;
+    return { waited: false, status: "ready" };
   }
   const focused = isLyricsFocusedTurnMessage(message);
-  const timeoutMs = focused ? SYSTEM_MEDIA_LYRICS_TURN_WAIT_FOCUSED_MS : SYSTEM_MEDIA_LYRICS_TURN_WAIT_MS;
+  const shouldWait = shouldWaitForSystemMediaLyricsForTurn(message, options);
+  const timeoutMs = shouldWait
+    ? (focused ? SYSTEM_MEDIA_LYRICS_TURN_WAIT_FOCUSED_MS : SYSTEM_MEDIA_LYRICS_TURN_WAIT_MS)
+    : 0;
   const force =
     focused ||
     (systemMediaLyrics.trackKey === trackKey && systemMediaLyrics.reason === "backend_offline");
   const request = ensureSystemMediaLyrics(systemMedia, { force });
+  if (!timeoutMs) return { waited: false, status: "background" };
   const result = await waitForSystemMediaLyrics(request, timeoutMs);
   if (
     result.timedOut &&
@@ -3460,6 +3487,11 @@ async function hydrateSystemMediaLyricsForTurn(message, options = {}) {
     };
     scheduleMusicSnapshot(120);
   }
+  return {
+    waited: true,
+    timedOut: Boolean(result.timedOut),
+    status: systemMediaLyrics.status || "unavailable"
+  };
 }
 
 function normalizeSystemMediaLyricsSnapshot(payload, fallbackTrackKey = "") {
@@ -3558,6 +3590,45 @@ function summarizeSystemMediaLyrics() {
     current: lyric.text || "",
     previous: lyric.previousText || "",
     next: lyric.nextText || ""
+  };
+}
+
+function waitForLatencyBudget(promise, timeoutMs, fallbackFactory, timeoutEvent) {
+  const timeout = Number(timeoutMs);
+  if (!Number.isFinite(timeout) || timeout <= 0) {
+    return Promise.resolve(typeof fallbackFactory === "function" ? fallbackFactory() : null);
+  }
+
+  let timeoutId = 0;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((resolve) => {
+      timeoutId = window.setTimeout(() => {
+        markTurnLatency(timeoutEvent || "latency-budget-timeout", { timeoutMs: timeout });
+        resolve(typeof fallbackFactory === "function" ? fallbackFactory() : null);
+      }, timeout);
+    })
+  ]).finally(() => {
+    if (timeoutId) window.clearTimeout(timeoutId);
+  });
+}
+
+function buildCachedDesktopContextForTurn() {
+  if (!state.desktopContextEnabled) return null;
+  const foreground = isFreshForegroundCache(lastDesktopForeground)
+    ? normalizeForegroundContext(lastDesktopForeground)
+    : null;
+  if (!foreground) return null;
+  return {
+    ok: true,
+    enabled: true,
+    captured_at: Date.now(),
+    platform: navigator.platform || "unknown",
+    foreground,
+    clipboard: {
+      included: false,
+      reason: state.clipboardContextEnabled ? "latency_budget" : "disabled"
+    }
   };
 }
 
@@ -3982,6 +4053,60 @@ function isAbortLike(error) {
   return name === "aborterror" || message.includes("abort") || message.includes("cancel");
 }
 
+function nowForTurnLatency() {
+  return window.performance?.now ? window.performance.now() : Date.now();
+}
+
+function isTurnLatencyDebugEnabled() {
+  try {
+    const storage = window.localStorage;
+    return storage?.getItem("akane.debug.turn") === "1" || storage?.getItem("akane.debug.latency") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function createTurnLatencyTrace(kind, turnToken, details = {}) {
+  if (!isTurnLatencyDebugEnabled()) return null;
+  const startedAt = nowForTurnLatency();
+  const seen = new Set();
+  const trace = {
+    turnToken,
+    mark(event, eventDetails = {}) {
+      if (!isTurnActive(turnToken)) return;
+      const elapsedMs = Math.round((nowForTurnLatency() - startedAt) * 10) / 10;
+      console.debug("[Akane Turn]", event, {
+        ms: elapsedMs,
+        kind,
+        turnToken,
+        ...details,
+        ...eventDetails
+      });
+    },
+    markOnce(event, eventDetails = {}) {
+      if (seen.has(event)) return;
+      seen.add(event);
+      trace.mark(event, eventDetails);
+    }
+  };
+  trace.mark("turn-created");
+  return trace;
+}
+
+function markTurnLatency(event, details = {}) {
+  activeTurnLatencyTrace?.mark(event, details);
+}
+
+function markTurnLatencyOnce(event, details = {}) {
+  activeTurnLatencyTrace?.markOnce(event, details);
+}
+
+function finishTurnLatencyTrace(turnToken) {
+  if (activeTurnLatencyTrace?.turnToken === turnToken) {
+    activeTurnLatencyTrace = null;
+  }
+}
+
 async function sendMessage(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed) return;
@@ -3989,6 +4114,7 @@ async function sendMessage(text) {
   rememberInputHistory(trimmed);
   interruptReply({ announce: false });
   const turnToken = ++activeTurnToken;
+  activeTurnLatencyTrace = createTurnLatencyTrace("user", turnToken, { messageLength: trimmed.length });
   sending = true;
   let restoreText = "";
   cancelEmotionPreview({ restore: true });
@@ -4000,11 +4126,14 @@ async function sendMessage(text) {
   resetStreamingReplyState(turnToken);
   desktopFileDeliveryHandled.clear();
   showThinking();
+  markTurnLatency("thinking-shown");
   scheduleSettingsSnapshot();
 
   try {
     if (resourceState.health !== "online") {
+      markTurnLatency("resource-reload-start", { health: resourceState.health });
       const healthy = await reloadCharacterResources();
+      markTurnLatency("resource-reload-finished", { healthy, health: resourceState.health });
       if (!healthy) throw new Error("后端未连接");
     }
     if (!isTurnActive(turnToken)) return;
@@ -4017,6 +4146,7 @@ async function sendMessage(text) {
     firstSpeechSegmentShown = false;
     showError(isAbortLike(error) ? "请求超时" : formatError(error));
   } finally {
+    markTurnLatency("turn-finished");
     if (isTurnActive(turnToken)) {
       sending = false;
       if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
@@ -4031,6 +4161,7 @@ async function sendMessage(text) {
       updateActivityControls();
       scheduleSettingsSnapshot();
     }
+    finishTurnLatencyTrace(turnToken);
   }
 }
 
@@ -4087,6 +4218,7 @@ function canStartProactiveWake() {
 
 async function sendProactiveWake() {
   const turnToken = ++activeTurnToken;
+  activeTurnLatencyTrace = createTurnLatencyTrace("proactive", turnToken);
   const startedAt = Date.now();
   proactiveWakeLastAt = startedAt;
   proactiveWakeNextAllowedAt = startedAt + getProactiveWakeIntervalMs();
@@ -4102,7 +4234,9 @@ async function sendProactiveWake() {
 
   try {
     if (resourceState.health !== "online") {
+      markTurnLatency("resource-reload-start", { health: resourceState.health });
       const healthy = await reloadCharacterResources({ silent: true });
+      markTurnLatency("resource-reload-finished", { healthy, health: resourceState.health });
       if (!healthy) return;
     }
     if (!isTurnActive(turnToken)) return;
@@ -4118,6 +4252,7 @@ async function sendProactiveWake() {
     firstSpeechSegmentShown = false;
     setRuntimeStatus(`主动搭话暂时失败：${formatError(error)}`, { mode: "error" });
   } finally {
+    markTurnLatency("turn-finished");
     proactiveWakeRunning = false;
     if (isTurnActive(turnToken)) {
       sending = false;
@@ -4130,6 +4265,7 @@ async function sendProactiveWake() {
       updateActivityControls();
       scheduleSettingsSnapshot();
     }
+    finishTurnLatencyTrace(turnToken);
   }
 }
 
@@ -4187,10 +4323,40 @@ async function* sendThinkStream(message, turnToken, options = {}) {
   const controller = new AbortController();
   thinkController = controller;
   const timeoutId = window.setTimeout(() => controller.abort(), THINK_TIMEOUT_MS);
-  const desktopContextPromise = collectDesktopContextForTurn();
-  const lyricsHydrationPromise = hydrateSystemMediaLyricsForTurn(message, options);
-  const desktopContext = await desktopContextPromise;
-  await lyricsHydrationPromise;
+  markTurnLatency("turn-context-start");
+  const desktopContextPromise = collectDesktopContextForTurn()
+    .then((desktopContext) => {
+      markTurnLatency("desktop-context-ready", { included: Boolean(desktopContext) });
+      return desktopContext;
+    })
+    .catch((error) => {
+      markTurnLatency("desktop-context-error", { error: formatError(error).slice(0, 120) });
+      return null;
+    });
+  const lyricsHydrationPromise = hydrateSystemMediaLyricsForTurn(message, options)
+    .then((result) => {
+      markTurnLatency("lyrics-hydration-ready", {
+        waited: Boolean(result?.waited),
+        timedOut: Boolean(result?.timedOut),
+        status: String(result?.status || systemMediaLyrics.status || "")
+      });
+      return result;
+    })
+    .catch((error) => {
+      markTurnLatency("lyrics-hydration-error", { error: formatError(error).slice(0, 120) });
+      return { waited: false, status: "error" };
+    });
+  const desktopContext = await waitForLatencyBudget(
+    desktopContextPromise,
+    getDesktopContextTurnWaitMs(message, options),
+    buildCachedDesktopContextForTurn,
+    "desktop-context-timeout"
+  );
+  if (shouldWaitForSystemMediaLyricsForTurn(message, options)) {
+    await lyricsHydrationPromise;
+  } else {
+    markTurnLatency("lyrics-hydration-background");
+  }
   if (!isTurnActive(turnToken)) return;
   const requestInit = {
     method: "POST",
@@ -4220,7 +4386,9 @@ async function* sendThinkStream(message, turnToken, options = {}) {
 
   let response;
   try {
+    markTurnLatency("think-request-start");
     response = await backendFetch(buildBackendEndpointUrl("think", "/think", { t: Date.now() }), requestInit);
+    markTurnLatency("think-response-headers", { status: response.status });
   } finally {
     window.clearTimeout(timeoutId);
     if (thinkController === controller) thinkController = null;
@@ -4248,6 +4416,7 @@ async function processThinkStream(stream, turnToken) {
     const type = String(event?.type || "").trim().toLowerCase();
 
     if (type === "turn_start") {
+      markTurnLatency("stream-turn-start");
       showThinking();
     } else if (type === "ui") {
       applyPayloadEmotion(event);
@@ -4256,6 +4425,7 @@ async function processThinkStream(stream, turnToken) {
       if (chunk) partialSpeech += chunk;
     } else if (type === "speech_segment") {
       const text = String(event?.text || "").trim();
+      if (text) markTurnLatencyOnce("first-speech-segment", { chars: text.length, index: event?.index });
       queueStreamedReplySegment(text, turnToken, event?.index);
       queueStreamedTtsSegment(text, turnToken, event?.index);
     } else if (type === "file_ready" || type === "generated_file_ready") {
@@ -6435,6 +6605,7 @@ function showNextStreamedReplySegment() {
   streamedReplyLastShownAt = Date.now();
   firstSpeechSegmentShown = true;
   displayReplyBubbleText(text, { speaking: true });
+  markTurnLatencyOnce("first-bubble-displayed", { chars: String(text || "").length });
 
   if (streamedReplyQueue.length) {
     scheduleStreamedReplyDisplay();

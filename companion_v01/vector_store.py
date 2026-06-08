@@ -200,7 +200,8 @@ class VectorStore:
         memory_keywords = str(metadata.get("memory_keywords_text", "") or "")
         memory_categories = str(metadata.get("memory_categories_text", "") or "")
         memory_subjects = str(metadata.get("memory_subject_scopes_text", "") or "")
-        return f"{document} {tag_text} {memory_keywords} {memory_categories} {memory_subjects}".strip()
+        memory_moods = str(metadata.get("memory_mood_tags_text", "") or "")
+        return f"{document} {tag_text} {memory_keywords} {memory_categories} {memory_subjects} {memory_moods}".strip()
 
     def _bm25_score(
         self,

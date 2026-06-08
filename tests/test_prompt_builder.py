@@ -137,9 +137,10 @@ class PromptBuilderTests(unittest.TestCase):
         )
 
         for prompt in (summary_system, semantic_system, reinforcement_system):
-            self.assertIn("[CURRENT ASSISTANT MEMORY PERSPECTIVE]", prompt)
-            self.assertIn("只用于决定当前助手会在意什么", prompt)
-            self.assertIn("不要把这些设定本身当作对话事实", prompt)
+            self.assertIn("[CURRENT CHARACTER MEMORY SELF]", prompt)
+            self.assertIn("你此刻的角色身份与表达侧面", prompt)
+            self.assertIn("整理记忆时就按这个身份记", prompt)
+            self.assertIn("不是这段对话发生过的事实", prompt)
             self.assertIn("Mika", prompt)
         self.assertIn("温柔吐槽", summary_system)
 
@@ -227,6 +228,10 @@ system = "semantic reinforcement system"
             self.assertLess(result["system_prompt"].index("debug mode"), result["system_prompt"].index("persona state"))
             self.assertLess(result["system_prompt"].index("- fake tool"), result["system_prompt"].index("persona state"))
             self.assertIn("较长期的语义记忆", result["user_prompt"])
+            self.assertIn("记忆情绪", result["user_prompt"])
+            self.assertIn("情感余温", result["user_prompt"])
+            self.assertIn("不要把它当作用户事实", result["user_prompt"])
+            self.assertIn("回应时自然带着这份余温即可", result["user_prompt"])
             self.assertIn("extra", result["user_prompt"])
             self.assertIn("persona refs", result["user_prompt"])
 
@@ -333,6 +338,7 @@ system = "semantic reinforcement system"
         self.assertIn("字段固定为 emotion, speech", result["system_prompt"])
         self.assertIn("memory_metadata", result["system_prompt"])
         self.assertIn("memory_metadata", result["fallback"])
+        self.assertIn("mood_tags", result["fallback"]["memory_metadata"])
         self.assertNotIn("memory_tags", result["fallback"])
         self.assertNotIn("scene.major 表示场景大类", result["system_prompt"])
         self.assertNotIn("像 galgame 选项", result["system_prompt"])

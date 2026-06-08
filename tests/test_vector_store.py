@@ -118,12 +118,14 @@ class VectorStoreLogicTests(unittest.TestCase):
                 "memory_keywords_text": "可乐,饮料",
                 "memory_categories_text": "preference",
                 "memory_subject_scopes_text": "user",
+                "memory_mood_tags_text": "warm,playful",
             },
         )
 
         self.assertIn("可乐", combined)
         self.assertIn("preference", combined)
         self.assertIn("user", combined)
+        self.assertIn("playful", combined)
 
     def test_build_collection_name_keeps_legacy_name_for_default_hashed_provider(self) -> None:
         self.assertEqual(

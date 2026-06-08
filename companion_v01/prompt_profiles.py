@@ -142,15 +142,19 @@ class PromptProfileRegistry:
                 system_prompt_override=build_qq_text_system_prompt(),
                 fast_mode_prompt=(
                     "\n当前模式：qq_text，debug_enabled=false。\n"
-                    "字段固定为 emotion, speech, speech_segments, tool_call, code_snippet, status, score, choices, persona, memory_metadata。\n"
+                    "字段固定为 emotion, reply_medium, speech, speech_segments, tool_call, code_snippet, status, score, choices, persona, memory_metadata。\n"
+                    'reply_medium 只用于 QQ 自动回复模式的投递偏好，只能是 "text"、"voice" 或 "both"；代码、长解释、列表和文件说明优先 text，短句、亲密私聊或用户发来语音时可用 voice。\n'
+                    "必须先输出 emotion，再输出 reply_medium，然后才输出 speech 和 speech_segments，便于 QQ 端尽早决定是否合成语音。\n"
                     "输出格式示例如下：\n"
-                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","score":0.0,"choices":[],"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
+                    '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","score":0.0,"choices":[],"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
                 ),
                 debug_mode_prompt=(
                     "\n当前模式：qq_text，debug_enabled=true。\n"
-                    "字段固定为 emotion, speech, speech_segments, tool_call, code_snippet, status, score, choices, persona, memory_metadata。\n"
+                    "字段固定为 emotion, reply_medium, speech, speech_segments, tool_call, code_snippet, status, score, choices, persona, memory_metadata。\n"
+                    'reply_medium 只用于 QQ 自动回复模式的投递偏好，只能是 "text"、"voice" 或 "both"；代码、长解释、列表和文件说明优先 text，短句、亲密私聊或用户发来语音时可用 voice。\n'
+                    "必须先输出 emotion，再输出 reply_medium，然后才输出 speech 和 speech_segments，便于 QQ 端尽早决定是否合成语音。\n"
                     "输出格式示例如下：\n"
-                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","score":0.0,"choices":[],"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
+                    '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","score":0.0,"choices":[],"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
                 ),
             ),
         }

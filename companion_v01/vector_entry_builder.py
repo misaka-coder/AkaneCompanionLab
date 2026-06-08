@@ -10,6 +10,7 @@ def _memory_metadata_fields(record: dict[str, Any]) -> dict[str, Any]:
     keywords = list(metadata.get("keywords") or [])
     subject_scopes = list(metadata.get("subject_scopes") or [])
     categories = list(metadata.get("categories") or [])
+    mood_tags = list(metadata.get("mood_tags") or [])
     try:
         importance = float(metadata.get("importance"))
     except (TypeError, ValueError):
@@ -22,6 +23,7 @@ def _memory_metadata_fields(record: dict[str, Any]) -> dict[str, Any]:
         "memory_keywords_text": join_tags(keywords),
         "memory_subject_scopes_text": join_tags(subject_scopes),
         "memory_categories_text": join_tags(categories),
+        "memory_mood_tags_text": join_tags(mood_tags),
         "memory_importance": float(max(0.0, min(1.0, importance))),
         "memory_confidence": float(max(0.0, min(1.0, confidence))),
     }

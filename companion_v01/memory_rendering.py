@@ -66,6 +66,21 @@ def build_summary_time_range_label(record: dict[str, Any], *, store: Any) -> str
     return format_time_range_label(start_ts=start_ts, end_ts=end_ts)
 
 
+def render_memory_mood_line(record: dict[str, Any]) -> str:
+    metadata = record.get("memory_metadata") if isinstance(record.get("memory_metadata"), dict) else {}
+    mood_tags = metadata.get("mood_tags") if isinstance(metadata, dict) else []
+    if not isinstance(mood_tags, list):
+        mood_tags = []
+    rendered = [
+        normalize_text(str(item or "")).strip()
+        for item in mood_tags
+        if normalize_text(str(item or "")).strip()
+    ]
+    if not rendered:
+        return ""
+    return "记忆情绪：" + " / ".join(rendered[:3])
+
+
 def render_summary_snippet(record: dict[str, Any], *, store: Any) -> str:
     labels = []
     time_range_label = build_summary_time_range_label(record, store=store)
@@ -79,6 +94,9 @@ def render_summary_snippet(record: dict[str, Any], *, store: Any) -> str:
     core_facts = "；".join(record.get("core_facts") or [])
     prefix = f"【摘要回忆】[{ ' | '.join(labels) }] " if labels else "【摘要回忆】"
     parts = [f"{prefix}{record.get('diary_summary', '')}"]
+    mood_line = render_memory_mood_line(record)
+    if mood_line:
+        parts.append(mood_line)
     if key_events:
         parts.append(f"关键事件：{key_events}")
     if core_facts:
@@ -95,6 +113,9 @@ def render_semantic_summary_snippet(record: dict[str, Any], *, store: Any) -> st
         labels.append(f"重要度:{float(record.get('importance') or 0.0):.2f}")
     prefix = f"【长期语义记忆】[{ ' | '.join(labels) }] " if labels else "【长期语义记忆】"
     parts = [f"{prefix}{record.get('semantic_summary', '')}"]
+    mood_line = render_memory_mood_line(record)
+    if mood_line:
+        parts.append(mood_line)
     stable_facts = "；".join(record.get("stable_facts") or [])
     recurring_topics = "；".join(record.get("recurring_topics") or [])
     important_people = "；".join(record.get("important_people") or [])
@@ -128,6 +149,9 @@ def render_summary_timeline(summaries: list[dict[str, Any]], *, store: Any) -> s
 
         header = f"[{' | '.join(labels)}] 摘要: {normalize_text(item.get('diary_summary', ''))}"
         details: list[str] = [header]
+        mood_line = render_memory_mood_line(item)
+        if mood_line:
+            details.append(mood_line)
         key_events = item.get("key_events") or []
         core_facts = item.get("core_facts") or []
         if key_events:
@@ -160,6 +184,9 @@ def render_semantic_summary_timeline(summaries: list[dict[str, Any]], *, store: 
         labels.append(f"强化:{int(item.get('reinforcement_count') or 1)}")
         header = f"[{' | '.join(labels)}] 长期记忆: {normalize_text(item.get('semantic_summary', ''))}"
         details: list[str] = [header]
+        mood_line = render_memory_mood_line(item)
+        if mood_line:
+            details.append(mood_line)
         stable_facts = item.get("stable_facts") or []
         recurring_topics = item.get("recurring_topics") or []
         important_people = item.get("important_people") or []

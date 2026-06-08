@@ -14,6 +14,7 @@ from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
 from companion_v01.client_protocol import ClientMode
 from companion_v01.memory_compaction_service import MemoryCompactionService
+from companion_v01.memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from companion_v01.mode_profiles import ModeProfileRegistry
 from companion_v01.persona_config import PERSONA
 from companion_v01.prompt_builder import PromptBuilder
@@ -322,6 +323,7 @@ class EngineExtensionTests(unittest.TestCase):
                     "keywords": ["可乐", "饮料", "可乐"],
                     "subject_scopes": ["用户", "relationship", "topic", "unknown"],
                     "categories": ["偏好", "project_work", "unknown"],
+                    "mood_tags": ["开心", "warm", "未知", "吐槽"],
                     "importance": 1.2,
                     "confidence": "0.75",
                 },
@@ -346,6 +348,7 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertEqual(normalized["memory_metadata"]["keywords"], ["可乐", "饮料", "旧词"])
         self.assertEqual(normalized["memory_metadata"]["subject_scopes"], ["user", "assistant", "other"])
         self.assertEqual(normalized["memory_metadata"]["categories"], ["preference", "project_work"])
+        self.assertEqual(normalized["memory_metadata"]["mood_tags"], ["happy", "warm", "playful"])
         self.assertEqual(normalized["memory_metadata"]["importance"], 1.0)
         self.assertEqual(normalized["memory_metadata"]["confidence"], 0.75)
         self.assertNotIn("memory_tags", normalized)
@@ -380,6 +383,7 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertEqual(normalized["memory_metadata"]["keywords"], ["可乐", "饮料", "喜欢"])
         self.assertEqual(normalized["memory_metadata"]["subject_scopes"], [])
         self.assertEqual(normalized["memory_metadata"]["categories"], [])
+        self.assertEqual(normalized["memory_metadata"]["mood_tags"], [])
         self.assertEqual(normalized["memory_metadata"]["importance"], 0.0)
         self.assertEqual(normalized["memory_metadata"]["confidence"], 0.0)
         self.assertNotIn("memory_tags", normalized)
@@ -1642,6 +1646,14 @@ class EngineExtensionTests(unittest.TestCase):
                 open_loops=["还要继续复习"],
                 semantic_tags=["课程", "学习"],
                 source_summary_ids=["summary::1"],
+                memory_metadata={
+                    "keywords": ["课程", "学习"],
+                    "subject_scopes": ["user"],
+                    "categories": ["plan_goal"],
+                    "mood_tags": ["warm", "proud"],
+                    "importance": 0.85,
+                    "confidence": 0.8,
+                },
             )
             service = RetrievalService(
                 store=store,
@@ -1655,6 +1667,106 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertEqual(len(snippets), 1)
             self.assertIn("长期语义记忆", snippets[0])
             self.assertIn("反复提到课程安排", snippets[0])
+            self.assertIn("记忆情绪：warm / proud", snippets[0])
+
+    def test_build_memory_snippets_can_render_raw_memory_mood(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            raw = store.add_message(
+                profile_user_id="user-1",
+                session_id="session-1",
+                role="user",
+                content="我今天其实有点累，但还是想继续推进项目。",
+                timestamp=int(datetime(2026, 4, 10, 20, 0).timestamp()),
+                memory_metadata={
+                    "keywords": ["项目", "疲惫"],
+                    "subject_scopes": ["user"],
+                    "categories": ["emotion_state", "project_work"],
+                    "mood_tags": ["worried", "determined"],
+                    "importance": 0.76,
+                    "confidence": 0.8,
+                },
+            )
+            service = RetrievalService(
+                store=store,
+                vector_store=object(),
+                llm=object(),
+                prompt_builder=PromptBuilder(PERSONA),
+            )
+
+            snippets = service._build_memory_snippets([{"source_id": raw["source_id"]}])
+
+            self.assertEqual(len(snippets), 1)
+            self.assertIn("原始对话回忆", snippets[0])
+            self.assertIn("记忆情绪：worried / determined", snippets[0])
+            self.assertIn("继续推进项目", snippets[0])
+
+    def test_visible_summary_timelines_render_memory_mood(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            raw = store.add_message(
+                profile_user_id="user-1",
+                session_id="session-1",
+                role="user",
+                content="我喜欢喝可乐。",
+                timestamp=int(datetime(2026, 4, 10, 20, 0).timestamp()),
+            )
+            summary = store.add_summary(
+                profile_user_id="user-1",
+                session_id="session-1",
+                timestamp=int(datetime(2026, 4, 10, 20, 5).timestamp()),
+                date_label="2026-04-10",
+                time_of_day="night",
+                period_label="偏好片段",
+                event_type="偏好",
+                importance=0.72,
+                diary_summary="主人说自己喜欢喝可乐，我顺手记了下来。",
+                key_events=["主人说喜欢喝可乐"],
+                core_facts=["用户喜欢喝可乐"],
+                semantic_tags=["可乐", "饮料"],
+                source_start_seq=raw["seq_no"],
+                source_end_seq=raw["seq_no"],
+                source_ids=[raw["source_id"]],
+                memory_metadata={
+                    "keywords": ["可乐", "饮料"],
+                    "subject_scopes": ["user"],
+                    "categories": ["preference"],
+                    "mood_tags": ["warm", "playful"],
+                    "importance": 0.72,
+                    "confidence": 0.8,
+                },
+            )
+            semantic = store.add_semantic_summary(
+                profile_user_id="user-1",
+                session_id="session-1",
+                timestamp=int(datetime(2026, 4, 10, 20, 10).timestamp()),
+                period_start_ts=int(datetime(2026, 4, 10, 20, 0).timestamp()),
+                period_end_ts=int(datetime(2026, 4, 10, 20, 10).timestamp()),
+                date_label="2026-04-10",
+                time_of_day="night",
+                importance=0.8,
+                semantic_summary="主人有一条稳定的饮料偏好：喜欢可乐。",
+                stable_facts=["用户喜欢可乐"],
+                recurring_topics=["饮料偏好"],
+                important_people=[],
+                open_loops=[],
+                semantic_tags=["可乐", "饮料"],
+                source_summary_ids=[summary["summary_id"]],
+                memory_metadata={
+                    "keywords": ["可乐", "饮料"],
+                    "subject_scopes": ["user"],
+                    "categories": ["preference"],
+                    "mood_tags": ["warm"],
+                    "importance": 0.8,
+                    "confidence": 0.84,
+                },
+            )
+
+            summary_text = render_summary_timeline([summary], store=store)
+            semantic_text = render_semantic_summary_timeline([semantic], store=store)
+
+            self.assertIn("记忆情绪：warm / playful", summary_text)
+            self.assertIn("记忆情绪：warm", semantic_text)
 
     def test_summary_compaction_passes_persona_perspective_to_llm(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1700,10 +1812,10 @@ class EngineExtensionTests(unittest.TestCase):
                 service.close()
 
             self.assertEqual(len(captured_prompts), 1)
-            self.assertIn("[CURRENT ASSISTANT MEMORY PERSPECTIVE]", captured_prompts[0])
+            self.assertIn("[CURRENT CHARACTER MEMORY SELF]", captured_prompts[0])
             self.assertIn("Mika", captured_prompts[0])
             self.assertIn("温柔吐槽", captured_prompts[0])
-            self.assertIn("不要把这些设定本身当作对话事实", captured_prompts[0])
+            self.assertIn("不是这段对话发生过的事实", captured_prompts[0])
 
     def test_run_semantic_summary_cycle_creates_semantic_memory_and_marks_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
