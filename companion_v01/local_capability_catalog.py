@@ -3,17 +3,21 @@ from __future__ import annotations
 import importlib.util
 import shutil
 import socket
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .capability_registry import CapabilityRegistry
 from .local_capability_config import (
+    build_mcp_server_config_entry,
+    build_mcp_tool_config_entry,
     build_provider_config_entry,
     build_workflow_config_entry,
     CONFIGURABLE_PROVIDER_SPECS,
     CONFIGURABLE_WORKFLOW_SPECS,
 )
+from .music_lyrics import build_music_lyrics_provider_status
 
 
 SCHEMA_VERSION = 1
@@ -139,6 +143,8 @@ def build_local_capability_catalog(
     profile_user_id: str = "",
     provider_configs: Mapping[str, Any] | None = None,
     workflow_configs: Mapping[str, Any] | None = None,
+    mcp_server_configs: Mapping[str, Any] | None = None,
+    character_voice: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     entries = []
     entries.extend(_build_backend_tool_entries(getattr(engine, "tool_handlers", {}) or {}))
@@ -146,8 +152,10 @@ def build_local_capability_catalog(
     configurable_provider_entries = _build_configurable_provider_entries(provider_configs or {})
     entries.extend(configurable_provider_entries)
     entries.extend(_build_workflow_entries(configurable_provider_entries, workflow_configs or {}))
+    entries.extend(_build_mcp_entries(mcp_server_configs or {}))
     entries.extend(_build_prompt_module_entries())
     entries = sorted(entries, key=lambda item: (str(item.get("kind") or ""), str(item.get("id") or "")))
+    resolutions = _build_voice_provider_resolutions(entries, character_voice=character_voice)
 
     return {
         "ok": True,
@@ -161,6 +169,7 @@ def build_local_capability_catalog(
             "localDiscoveryPath": LOCAL_DISCOVERY_PATH,
         },
         "summary": _summarize_entries(entries),
+        "resolutions": resolutions,
         "capabilities": entries,
     }
 
@@ -239,7 +248,41 @@ def _build_provider_entries(*, config_module: Any = None, tts_client: Any = None
 
     tts_status = "ready" if tts_client is not None else "disabled"
     tts_reason = "" if tts_client is not None else "tts_client_unavailable"
+    system_media_ready = sys.platform == "win32"
+    lyrics_status = build_music_lyrics_provider_status(config_module)
     entries = [
+        {
+            "id": "provider.music.system_media",
+            "kind": "provider",
+            "type": "music_perception_provider",
+            "source": "tauri_bridge",
+            "adapter": "winrt_smtc",
+            "executionMode": "internal",
+            "name": "系统媒体感知",
+            "enabled": system_media_ready,
+            "status": "ready" if system_media_ready else "unavailable",
+            "reason": "" if system_media_ready else "unsupported_platform",
+            "risk": "low",
+            "requiresConfirmation": False,
+            "usedBy": ["desktop_pet"],
+            "summary": "读取系统正在播放的歌曲和进度",
+        },
+        {
+            "id": "provider.music.lyrics.online",
+            "kind": "provider",
+            "type": "music_lyrics_provider",
+            "source": "builtin",
+            "adapter": "syncedlyrics",
+            "executionMode": "internal",
+            "name": "在线歌词检索",
+            "enabled": bool(lyrics_status.get("enabled")),
+            "status": str(lyrics_status.get("status") or "unavailable"),
+            "reason": str(lyrics_status.get("reason") or ""),
+            "risk": "medium",
+            "requiresConfirmation": False,
+            "usedBy": ["desktop_pet"],
+            "summary": "根据歌名和歌手搜索同步歌词",
+        },
         {
             "id": "provider.tts.edge",
             "kind": "provider",
@@ -258,6 +301,23 @@ def _build_provider_entries(*, config_module: Any = None, tts_client: Any = None
                 "voice": _safe_config_value(config_module, "TTS_VOICE", "zh-CN-XiaoxiaoNeural"),
                 "streaming": bool(_safe_config_value(config_module, "STREAMING_TTS_ENABLED", True)),
             },
+        },
+        {
+            "id": "provider.voice.text_only",
+            "kind": "provider",
+            "type": "tts_provider",
+            "source": "builtin",
+            "adapter": "text_only",
+            "executionMode": "internal",
+            "name": "文字气泡兜底",
+            "enabled": True,
+            "status": "ready",
+            "reason": "",
+            "risk": "low",
+            "requiresConfirmation": False,
+            "usedBy": ["voice", "desktop_pet"],
+            "fallbackOnly": True,
+            "summary": "语音不可用时仍显示文本回复",
         },
         {
             "id": "provider.media.ffmpeg",
@@ -312,8 +372,220 @@ def _build_provider_entries(*, config_module: Any = None, tts_client: Any = None
                 "language": _safe_config_value(config_module, "ASR_LANGUAGE", "zh"),
             },
         },
+        {
+            "id": "provider.asr.text_input",
+            "kind": "provider",
+            "type": "asr_provider",
+            "source": "builtin",
+            "adapter": "text_input",
+            "executionMode": "internal",
+            "name": "文本输入兜底",
+            "enabled": True,
+            "status": "ready",
+            "reason": "",
+            "risk": "low",
+            "requiresConfirmation": False,
+            "usedBy": ["voice", "desktop_pet"],
+            "fallbackOnly": True,
+            "summary": "语音输入不可用时继续使用文本输入",
+        },
     ]
     return entries
+
+
+def _build_voice_provider_resolutions(
+    entries: list[dict[str, Any]],
+    *,
+    character_voice: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    by_id = {str(entry.get("id") or ""): entry for entry in entries}
+    character_voice = character_voice if isinstance(character_voice, Mapping) else {}
+    requested_tts = _normalize_voice_provider_id(character_voice.get("provider")) or "provider.tts.edge"
+    voice_profile_id = _safe_public_text(character_voice.get("profileId") or character_voice.get("profile_id"))
+    request_source = "character_pack" if character_voice.get("provider") else "default"
+
+    tts_resolution = _resolve_first_ready_provider(
+        capability_id="voice.tts.character",
+        requested_provider_id=requested_tts,
+        candidates=[requested_tts, "provider.tts.edge", "provider.voice.text_only"],
+        entries_by_id=by_id,
+        request_source=request_source,
+        extra_reason=_voice_request_blocker(requested_tts, voice_profile_id),
+        voice_profile_id=voice_profile_id,
+    )
+    asr_resolution = _resolve_first_ready_provider(
+        capability_id="voice.input.asr",
+        requested_provider_id="provider.asr.faster_whisper",
+        candidates=["provider.asr.faster_whisper", "provider.asr.text_input"],
+        entries_by_id=by_id,
+        request_source="default",
+    )
+    return {
+        "voice.tts.character": tts_resolution,
+        "voice.input.asr": asr_resolution,
+    }
+
+
+def _resolve_first_ready_provider(
+    *,
+    capability_id: str,
+    requested_provider_id: str,
+    candidates: list[str],
+    entries_by_id: Mapping[str, Mapping[str, Any]],
+    request_source: str,
+    extra_reason: str = "",
+    voice_profile_id: str = "",
+) -> dict[str, Any]:
+    unique_candidates = []
+    for candidate in candidates:
+        candidate_id = str(candidate or "").strip()
+        if candidate_id and candidate_id not in unique_candidates:
+            unique_candidates.append(candidate_id)
+
+    active_provider_id = ""
+    if not extra_reason:
+        for candidate_id in unique_candidates:
+            entry = entries_by_id.get(candidate_id)
+            if _is_provider_ready(entry):
+                active_provider_id = candidate_id
+                break
+    if not active_provider_id:
+        for fallback_id in unique_candidates:
+            if _is_provider_ready(entries_by_id.get(fallback_id)):
+                active_provider_id = fallback_id
+                break
+
+    requested_entry = entries_by_id.get(requested_provider_id)
+    active_entry = entries_by_id.get(active_provider_id)
+    status = "ready" if active_provider_id and active_provider_id == requested_provider_id and not extra_reason else "degraded"
+    if not active_provider_id:
+        status = "unavailable"
+    reason = extra_reason or _resolution_reason(
+        requested_provider_id=requested_provider_id,
+        active_provider_id=active_provider_id,
+        requested_entry=requested_entry,
+    )
+    return {
+        "capabilityId": capability_id,
+        "strategy": "first_ready",
+        "status": status,
+        "reason": reason if status != "ready" else "",
+        "requestSource": request_source,
+        "requestedProviderId": requested_provider_id,
+        "requestedProviderName": _provider_name(requested_entry, requested_provider_id),
+        "activeProviderId": active_provider_id,
+        "activeProviderName": _provider_name(active_entry, active_provider_id),
+        "fallbackProviderId": active_provider_id if active_provider_id != requested_provider_id else "",
+        "voiceProfileId": voice_profile_id,
+        "candidates": [
+            _candidate_summary(candidate_id, entries_by_id.get(candidate_id))
+            for candidate_id in unique_candidates
+        ],
+    }
+
+
+def _normalize_voice_provider_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    allowed_provider_ids = {
+        "provider.tts.edge",
+        "provider.tts.gpt_sovits.local",
+        "provider.voice.text_only",
+    }
+    aliases = {
+        "edge": "provider.tts.edge",
+        "edge_tts": "provider.tts.edge",
+        "edge-tts": "provider.tts.edge",
+        "provider.tts.edge": "provider.tts.edge",
+        "gpt_sovits": "provider.tts.gpt_sovits.local",
+        "gpt-sovits": "provider.tts.gpt_sovits.local",
+        "gptsovits": "provider.tts.gpt_sovits.local",
+        "provider.tts.gpt_sovits.local": "provider.tts.gpt_sovits.local",
+        "text": "provider.voice.text_only",
+        "text_only": "provider.voice.text_only",
+        "none": "provider.voice.text_only",
+        "provider.voice.text_only": "provider.voice.text_only",
+    }
+    normalized = aliases.get(raw.lower(), raw)
+    return normalized if normalized in allowed_provider_ids else ""
+
+
+def _voice_request_blocker(requested_provider_id: str, voice_profile_id: str) -> str:
+    if requested_provider_id == "provider.tts.gpt_sovits.local" and not voice_profile_id:
+        return "requested_voice_profile_missing"
+    return ""
+
+
+def _is_provider_ready(entry: Mapping[str, Any] | None) -> bool:
+    if not isinstance(entry, Mapping):
+        return False
+    status = str(entry.get("status") or "").strip()
+    return entry.get("enabled") is not False and status in {"ready", "available", "ok"}
+
+
+def _resolution_reason(
+    *,
+    requested_provider_id: str,
+    active_provider_id: str,
+    requested_entry: Mapping[str, Any] | None,
+) -> str:
+    if not active_provider_id:
+        return "no_ready_provider"
+    if requested_provider_id == active_provider_id:
+        return ""
+    if not isinstance(requested_entry, Mapping):
+        return "requested_provider_unknown"
+    status = str(requested_entry.get("status") or "").strip()
+    reason = str(requested_entry.get("reason") or "").strip()
+    if status == "missing_config":
+        return "requested_provider_missing_config"
+    if status == "missing_executor":
+        return "requested_provider_missing_executor"
+    if status == "missing_model":
+        return "requested_provider_missing_model"
+    if status == "unreachable":
+        return "requested_provider_unreachable"
+    if status == "disabled":
+        return "requested_provider_disabled"
+    if status == "configured":
+        return "requested_provider_pending_health_check"
+    if reason:
+        return reason[:120]
+    return "requested_provider_not_ready"
+
+
+def _provider_name(entry: Mapping[str, Any] | None, provider_id: str) -> str:
+    if isinstance(entry, Mapping):
+        return str(entry.get("name") or entry.get("id") or provider_id or "").strip()
+    return str(provider_id or "").strip()
+
+
+def _candidate_summary(provider_id: str, entry: Mapping[str, Any] | None) -> dict[str, Any]:
+    return {
+        "providerId": provider_id,
+        "name": _provider_name(entry, provider_id),
+        "status": str((entry or {}).get("status") or "unavailable"),
+        "ready": _is_provider_ready(entry),
+    }
+
+
+def _safe_public_text(value: Any) -> str:
+    text = str(value or "").strip()
+    text = text.replace("\\", "/")
+    lowered = text.lower()
+    if (
+        "://" in text
+        or "/" in text
+        or ":" in text
+        or ".." in text
+        or "token" in lowered
+        or "secret" in lowered
+        or "password" in lowered
+        or "api_key" in lowered
+    ):
+        return ""
+    return text[:120]
 
 
 def _build_configurable_provider_entries(provider_configs: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -334,6 +606,25 @@ def _build_workflow_entries(
         build_workflow_config_entry(spec, workflow_map.get(spec.id), providers_by_id.get(spec.provider_id))
         for spec in CONFIGURABLE_WORKFLOW_SPECS
     ]
+
+
+def _build_mcp_entries(mcp_server_configs: Mapping[str, Any]) -> list[dict[str, Any]]:
+    server_map = mcp_server_configs if isinstance(mcp_server_configs, Mapping) else {}
+    entries: list[dict[str, Any]] = []
+    for server_id, server_config in sorted(server_map.items(), key=lambda item: str(item[0])):
+        if not isinstance(server_config, Mapping):
+            continue
+        server_entry = build_mcp_server_config_entry(str(server_id), server_config)
+        if not server_entry.get("serverId"):
+            continue
+        entries.append(server_entry)
+        if server_entry.get("status") != "ready":
+            continue
+        for tool in server_config.get("tools") or []:
+            tool_entry = build_mcp_tool_config_entry(str(server_id), tool if isinstance(tool, Mapping) else {})
+            if tool_entry.get("id"):
+                entries.append(tool_entry)
+    return entries
 
 
 def _build_prompt_module_entries() -> list[dict[str, Any]]:

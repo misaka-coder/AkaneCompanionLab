@@ -17,12 +17,49 @@ PROFILE_ID_SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXY
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 PUBLIC_PROVIDER_FIELDS = {"enabled", "endpoint", "updatedAt", "lastHealth"}
 PUBLIC_WORKFLOW_FIELDS = {"enabled", "workflowPath", "slotMapping", "updatedAt"}
+PRIVATE_VOICE_PROFILE_FIELDS = {
+    "providerId",
+    "enabled",
+    "displayName",
+    "textLang",
+    "promptLang",
+    "mediaType",
+    "refAudioPath",
+    "promptText",
+    "updatedAt",
+}
+PRIVATE_MCP_SERVER_FIELDS = {
+    "enabled",
+    "displayName",
+    "transport",
+    "command",
+    "args",
+    "cwd",
+    "env",
+    "tools",
+    "lastDiscovery",
+    "updatedAt",
+}
 WORKFLOW_PATH_MAX_LENGTH = 220
 WORKFLOW_SLOT_MAX_LENGTH = 80
+VOICE_PROFILE_TEXT_MAX_LENGTH = 300
+VOICE_PROFILE_PATH_MAX_LENGTH = 500
+MCP_SERVER_ID_MAX_LENGTH = 80
+MCP_SERVER_TEXT_MAX_LENGTH = 240
+MCP_SERVER_PATH_MAX_LENGTH = 500
+MCP_SERVER_ARG_MAX_LENGTH = 240
+MCP_SERVER_ARG_MAX_COUNT = 24
+MCP_SERVER_ENV_MAX_COUNT = 12
+MCP_TOOL_NAME_MAX_LENGTH = 80
+MCP_TOOL_DESCRIPTION_MAX_LENGTH = 240
+MCP_TOOL_MAX_COUNT = 64
+MCP_SCHEMA_PROPERTY_MAX_COUNT = 24
 WORKFLOW_SLOT_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 WORKFLOW_COMFYUI_SLOT_PATH_RE = re.compile(r"^[A-Za-z0-9_-]{1,60}\.inputs\.[A-Za-z0-9_.-]{1,120}$")
 WORKFLOW_ASSET_HANDLE_MAX_LENGTH = 120
 WORKFLOW_ASSET_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
+MCP_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
+MCP_SAFE_TYPE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
 WORKFLOW_CONFIG_FILE_MAX_BYTES = 4 * 1024 * 1024
 
 
@@ -137,6 +174,309 @@ def get_provider_config_entries(
     return list_provider_configs(base_dir=base_dir, profile_user_id=profile_user_id)["providers"]
 
 
+def list_voice_profile_configs(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+) -> dict[str, Any]:
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    profiles = [
+        build_voice_profile_config_entry(profile_id, profile_config)
+        for profile_id, profile_config in sorted((config.get("voiceProfiles") or {}).items())
+    ]
+    return {
+        "ok": True,
+        "status": "available",
+        "schemaVersion": CONFIG_SCHEMA_VERSION,
+        "generatedAt": _now_iso(),
+        "execution": "config-skeleton",
+        "configStatus": config.get("configStatus") or "available",
+        "warnings": list(config.get("warnings") or []),
+        "configScope": _public_config_scope(profile_user_id),
+        "voiceProfiles": profiles,
+        "summary": _summarize_voice_profile_entries(profiles),
+    }
+
+
+def save_voice_profile_config(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    voice_profile_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    profile_id = _safe_voice_profile_id(voice_profile_id)
+    if not profile_id:
+        return {"ok": False, "status": "invalid_voice_profile", "reason": "voice_profile_id_invalid"}
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    if config.get("configStatus") == "invalid_config":
+        return {
+            "ok": False,
+            "status": "invalid_config",
+            "voiceProfileId": profile_id,
+            "reason": config.get("reason") or "provider_config_file_invalid",
+            "configScope": _public_config_scope(profile_user_id),
+        }
+
+    voice_profiles = dict(config.get("voiceProfiles") or {})
+    existing_profile = voice_profiles.get(profile_id)
+    existing_profile = existing_profile if isinstance(existing_profile, Mapping) else {}
+    normalized = normalize_voice_profile_config_payload(profile_id, payload)
+    if not normalized["ok"]:
+        return {
+            "ok": False,
+            "status": normalized["status"],
+            "voiceProfileId": profile_id,
+            "reason": normalized.get("reason") or "invalid_voice_profile_config",
+        }
+    ref_audio_submitted = "refAudioPath" in payload or "ref_audio_path" in payload
+    prompt_text_submitted = "promptText" in payload or "prompt_text" in payload
+    if not ref_audio_submitted and not normalized["refAudioPath"]:
+        normalized["refAudioPath"] = str(existing_profile.get("refAudioPath") or "")
+    if not prompt_text_submitted and not normalized["promptText"]:
+        normalized["promptText"] = str(existing_profile.get("promptText") or "")
+    voice_profiles[profile_id] = {
+        "providerId": normalized["providerId"],
+        "enabled": bool(normalized["enabled"]),
+        "displayName": normalized["displayName"],
+        "textLang": normalized["textLang"],
+        "promptLang": normalized["promptLang"],
+        "mediaType": normalized["mediaType"],
+        "refAudioPath": normalized["refAudioPath"],
+        "promptText": normalized["promptText"],
+        "updatedAt": _now_iso(),
+    }
+    write_capability_config(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        config={
+            "schemaVersion": CONFIG_SCHEMA_VERSION,
+            "providers": config.get("providers", {}),
+            "workflows": config.get("workflows", {}),
+            "voiceProfiles": voice_profiles,
+            "mcpServers": config.get("mcpServers", {}),
+        },
+    )
+    return {
+        "ok": True,
+        "status": "saved",
+        "voiceProfileId": profile_id,
+        "configScope": _public_config_scope(profile_user_id),
+        "voiceProfile": build_voice_profile_config_entry(profile_id, voice_profiles[profile_id]),
+    }
+
+
+def get_voice_profile_runtime_config(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    voice_profile_id: str,
+) -> dict[str, Any]:
+    profile_id = _safe_voice_profile_id(voice_profile_id)
+    if not profile_id:
+        return {}
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    profile = config.get("voiceProfiles", {}).get(profile_id)
+    if not isinstance(profile, Mapping) or profile.get("enabled") is False:
+        return {}
+    return {
+        "id": profile_id,
+        "providerId": str(profile.get("providerId") or "provider.tts.gpt_sovits.local"),
+        "textLang": str(profile.get("textLang") or ""),
+        "promptLang": str(profile.get("promptLang") or ""),
+        "mediaType": str(profile.get("mediaType") or ""),
+        "refAudioPath": str(profile.get("refAudioPath") or ""),
+        "promptText": str(profile.get("promptText") or ""),
+    }
+
+
+def list_mcp_server_configs(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+) -> dict[str, Any]:
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    servers = [
+        build_mcp_server_config_entry(server_id, server_config)
+        for server_id, server_config in sorted((config.get("mcpServers") or {}).items())
+    ]
+    return {
+        "ok": True,
+        "status": "available",
+        "schemaVersion": CONFIG_SCHEMA_VERSION,
+        "generatedAt": _now_iso(),
+        "execution": "config-skeleton",
+        "configStatus": config.get("configStatus") or "available",
+        "warnings": list(config.get("warnings") or []),
+        "configScope": _public_config_scope(profile_user_id),
+        "mcpServers": servers,
+        "summary": _summarize_mcp_server_entries(servers),
+    }
+
+
+def save_mcp_server_config(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    server_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    safe_server_id = _safe_mcp_server_id(server_id)
+    if not safe_server_id:
+        return {"ok": False, "status": "invalid_mcp_server", "reason": "mcp_server_id_invalid"}
+    normalized = normalize_mcp_server_config_payload(safe_server_id, payload)
+    if not normalized["ok"]:
+        return {
+            "ok": False,
+            "status": normalized["status"],
+            "serverId": safe_server_id,
+            "reason": normalized.get("reason") or "invalid_mcp_server_config",
+        }
+
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    if config.get("configStatus") == "invalid_config":
+        return {
+            "ok": False,
+            "status": "invalid_config",
+            "serverId": safe_server_id,
+            "reason": config.get("reason") or "provider_config_file_invalid",
+            "configScope": _public_config_scope(profile_user_id),
+        }
+
+    servers = dict(config.get("mcpServers") or {})
+    existing = servers.get(safe_server_id) if isinstance(servers.get(safe_server_id), Mapping) else {}
+    next_server = {
+        "enabled": bool(normalized["enabled"]),
+        "displayName": normalized["displayName"],
+        "transport": normalized["transport"],
+        "command": normalized["command"],
+        "args": normalized["args"],
+        "cwd": normalized["cwd"],
+        "env": normalized["env"],
+        "updatedAt": _now_iso(),
+    }
+    if existing.get("command") == normalized["command"] and isinstance(existing.get("tools"), list):
+        next_server["tools"] = list(existing.get("tools") or [])
+    if existing.get("command") == normalized["command"] and isinstance(existing.get("lastDiscovery"), Mapping):
+        next_server["lastDiscovery"] = dict(existing.get("lastDiscovery") or {})
+    servers[safe_server_id] = next_server
+    write_capability_config(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        config={
+            "schemaVersion": CONFIG_SCHEMA_VERSION,
+            "providers": config.get("providers", {}),
+            "workflows": config.get("workflows", {}),
+            "voiceProfiles": config.get("voiceProfiles", {}),
+            "mcpServers": servers,
+        },
+    )
+    return {
+        "ok": True,
+        "status": "saved",
+        "serverId": safe_server_id,
+        "autoEnable": False,
+        "configScope": _public_config_scope(profile_user_id),
+        "mcpServer": build_mcp_server_config_entry(safe_server_id, next_server),
+    }
+
+
+def get_mcp_server_runtime_config(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    server_id: str,
+) -> dict[str, Any]:
+    safe_server_id = _safe_mcp_server_id(server_id)
+    if not safe_server_id:
+        return {}
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    server = config.get("mcpServers", {}).get(safe_server_id)
+    if not isinstance(server, Mapping):
+        return {}
+    return {
+        "serverId": safe_server_id,
+        "enabled": bool(server.get("enabled")),
+        "displayName": str(server.get("displayName") or safe_server_id),
+        "transport": str(server.get("transport") or "stdio"),
+        "command": str(server.get("command") or ""),
+        "args": list(server.get("args") or []) if isinstance(server.get("args"), list) else [],
+        "cwd": str(server.get("cwd") or ""),
+        "env": dict(server.get("env") or {}) if isinstance(server.get("env"), Mapping) else {},
+    }
+
+
+def save_mcp_server_discovery(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    server_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    safe_server_id = _safe_mcp_server_id(server_id)
+    if not safe_server_id:
+        return {"ok": False, "status": "invalid_mcp_server", "reason": "mcp_server_id_invalid"}
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    server = config.get("mcpServers", {}).get(safe_server_id)
+    if not isinstance(server, Mapping):
+        return {
+            "ok": False,
+            "status": "missing_config",
+            "serverId": safe_server_id,
+            "reason": "mcp_server_config_missing",
+        }
+    if server.get("enabled") is False:
+        return {
+            "ok": False,
+            "status": "disabled",
+            "serverId": safe_server_id,
+            "reason": "mcp_server_disabled",
+        }
+    normalized = normalize_mcp_tool_discovery_payload(safe_server_id, payload)
+    if not normalized["ok"]:
+        return {
+            "ok": False,
+            "status": normalized["status"],
+            "serverId": safe_server_id,
+            "reason": normalized.get("reason") or "invalid_mcp_discovery_payload",
+        }
+
+    last_discovery = {
+        "status": "ready",
+        "discoveredAt": _now_iso(),
+        "toolCount": len(normalized["tools"]),
+    }
+    servers = dict(config.get("mcpServers") or {})
+    servers[safe_server_id] = {
+        **server,
+        "tools": normalized["tools"],
+        "lastDiscovery": last_discovery,
+    }
+    write_capability_config(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        config={
+            "schemaVersion": CONFIG_SCHEMA_VERSION,
+            "providers": config.get("providers", {}),
+            "workflows": config.get("workflows", {}),
+            "voiceProfiles": config.get("voiceProfiles", {}),
+            "mcpServers": servers,
+        },
+    )
+    return {
+        "ok": True,
+        "status": "discovered",
+        "serverId": safe_server_id,
+        "toolCount": len(normalized["tools"]),
+        "mcpServer": build_mcp_server_config_entry(safe_server_id, servers[safe_server_id]),
+        "tools": [
+            build_mcp_tool_config_entry(safe_server_id, tool)
+            for tool in normalized["tools"]
+        ],
+        "refresh": True,
+    }
+
+
 def list_workflow_configs(
     *,
     base_dir: Path | str | None,
@@ -214,6 +554,8 @@ def save_provider_config(
         "schemaVersion": CONFIG_SCHEMA_VERSION,
         "providers": providers,
         "workflows": config.get("workflows", {}),
+        "voiceProfiles": config.get("voiceProfiles", {}),
+        "mcpServers": config.get("mcpServers", {}),
     }
     write_capability_config(base_dir=base_dir, profile_user_id=profile_user_id, config=config)
     return {
@@ -301,6 +643,8 @@ def check_provider_health(
                 "schemaVersion": CONFIG_SCHEMA_VERSION,
                 "providers": providers,
                 "workflows": config.get("workflows", {}),
+                "voiceProfiles": config.get("voiceProfiles", {}),
+                "mcpServers": config.get("mcpServers", {}),
             },
         )
 
@@ -359,6 +703,8 @@ def save_workflow_config(
             "schemaVersion": CONFIG_SCHEMA_VERSION,
             "providers": config.get("providers", {}),
             "workflows": workflows,
+            "voiceProfiles": config.get("voiceProfiles", {}),
+            "mcpServers": config.get("mcpServers", {}),
         },
     )
     provider_entries = get_provider_config_entries(base_dir=base_dir, profile_user_id=profile_user_id)
@@ -372,6 +718,99 @@ def save_workflow_config(
         "autoEnable": False,
         "configScope": _public_config_scope(profile_user_id),
         "workflow": workflow,
+    }
+
+
+def save_workflow_file(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    workflow_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    spec = CONFIGURABLE_WORKFLOW_BY_ID.get(str(workflow_id or "").strip())
+    if spec is None:
+        return {"ok": False, "status": "unknown_workflow", "workflowId": str(workflow_id or "").strip()}
+
+    workflow_path_value = payload.get("workflowPath")
+    if workflow_path_value is None:
+        workflow_path_value = payload.get("workflowRef")
+    if workflow_path_value is None:
+        workflow_path_value = spec.default_workflow_path
+    normalized_path = normalize_workflow_path(str(workflow_path_value or "").strip())
+    if not normalized_path["ok"]:
+        return {
+            "ok": False,
+            "status": normalized_path["status"],
+            "workflowId": spec.id,
+            "reason": normalized_path.get("reason") or "invalid_workflow_config",
+        }
+
+    workflow_text = payload.get("workflowJson")
+    if workflow_text is None:
+        workflow_text = payload.get("workflowText")
+    workflow_text = str(workflow_text or "")
+    if not workflow_text.strip():
+        return {
+            "ok": False,
+            "status": "invalid_workflow_config",
+            "workflowId": spec.id,
+            "reason": "workflow_file_required",
+        }
+    if len(workflow_text.encode("utf-8")) > WORKFLOW_CONFIG_FILE_MAX_BYTES:
+        return {
+            "ok": False,
+            "status": "invalid_workflow_config",
+            "workflowId": spec.id,
+            "reason": "workflow_file_too_large",
+        }
+
+    try:
+        workflow_json = json.loads(workflow_text)
+    except json.JSONDecodeError:
+        return {
+            "ok": False,
+            "status": "invalid_workflow_config",
+            "workflowId": spec.id,
+            "reason": "workflow_file_invalid_json",
+        }
+    if not isinstance(workflow_json, Mapping) or not workflow_json:
+        return {
+            "ok": False,
+            "status": "invalid_workflow_config",
+            "workflowId": spec.id,
+            "reason": "workflow_json_invalid",
+        }
+
+    target_path = resolve_workflow_config_file_path(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        workflow_path=str(normalized_path["workflowPath"]),
+    )
+    if target_path is None:
+        return {
+            "ok": False,
+            "status": "invalid_workflow_config",
+            "workflowId": spec.id,
+            "reason": "workflow_path_must_be_safe_relative_json",
+        }
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    payload_text = json.dumps(workflow_json, ensure_ascii=False, indent=2, sort_keys=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(target_path.parent), delete=False) as handle:
+        tmp_path = Path(handle.name)
+        handle.write(payload_text)
+        handle.write("\n")
+    tmp_path.replace(target_path)
+
+    return {
+        "ok": True,
+        "status": "workflow_file_saved",
+        "workflowId": spec.id,
+        "workflowPath": str(normalized_path["workflowPath"]),
+        "configScope": _public_config_scope(profile_user_id),
+        "executionReady": False,
+        "autoEnable": False,
     }
 
 
@@ -681,6 +1120,128 @@ def build_workflow_config_entry(
     }
 
 
+def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] | None) -> dict[str, Any]:
+    config = config if isinstance(config, Mapping) else {}
+    safe_id = _safe_voice_profile_id(profile_id)
+    provider_id = str(config.get("providerId") or "provider.tts.gpt_sovits.local").strip()
+    enabled = bool(config.get("enabled"))
+    ref_audio_path = str(config.get("refAudioPath") or "").strip()
+    prompt_text = str(config.get("promptText") or "").strip()
+    configured = bool(ref_audio_path and prompt_text)
+    status = "ready" if enabled and configured else "missing_config" if enabled else "disabled"
+    return {
+        "id": safe_id,
+        "voiceProfileId": safe_id,
+        "kind": "voice_profile",
+        "type": "tts_voice_profile",
+        "source": "profile_config",
+        "adapter": "gpt_sovits",
+        "executionMode": "external",
+        "providerId": provider_id,
+        "name": str(config.get("displayName") or safe_id or "GPT-SoVITS 声线").strip()[:80],
+        "enabled": enabled,
+        "configured": configured,
+        "status": status,
+        "reason": "" if status == "ready" else ("voice_profile_disabled" if not enabled else "voice_profile_reference_missing"),
+        "textLang": str(config.get("textLang") or "zh")[:20],
+        "promptLang": str(config.get("promptLang") or "zh")[:20],
+        "mediaType": str(config.get("mediaType") or "wav")[:20],
+        "hasReferenceAudio": bool(ref_audio_path),
+        "referenceAudioName": _safe_path_basename(ref_audio_path),
+        "promptTextLength": len(prompt_text),
+        "updatedAt": str(config.get("updatedAt") or "")[:80],
+        "risk": "medium",
+        "requiresConfirmation": False,
+        "usedBy": ["voice", "desktop_pet"],
+    }
+
+
+def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | None) -> dict[str, Any]:
+    config = config if isinstance(config, Mapping) else {}
+    safe_id = _safe_mcp_server_id(server_id)
+    enabled = bool(config.get("enabled"))
+    command = str(config.get("command") or "").strip()
+    transport = str(config.get("transport") or "stdio").strip() or "stdio"
+    tools = config.get("tools") if isinstance(config.get("tools"), list) else []
+    last_discovery = config.get("lastDiscovery") if isinstance(config.get("lastDiscovery"), Mapping) else {}
+    configured = bool(command and transport == "stdio")
+    discovered = bool(last_discovery.get("status") == "ready")
+    status = (
+        "ready"
+        if enabled and configured and discovered
+        else "configured"
+        if enabled and configured
+        else "missing_config"
+        if enabled
+        else "disabled"
+    )
+    reason = ""
+    if status == "missing_config":
+        reason = "mcp_server_command_missing"
+    elif status == "configured":
+        reason = "mcp_tools_not_discovered"
+    elif status == "disabled":
+        reason = "mcp_server_disabled"
+    return {
+        "id": f"provider.mcp.{safe_id}",
+        "serverId": safe_id,
+        "kind": "provider",
+        "type": "mcp_provider",
+        "source": "mcp",
+        "adapter": "mcp_stdio",
+        "executionMode": "external",
+        "name": str(config.get("displayName") or safe_id or "MCP Server").strip()[:80],
+        "enabled": enabled,
+        "configured": configured,
+        "status": status,
+        "reason": reason,
+        "transport": transport,
+        "commandName": _safe_path_basename(command),
+        "argsCount": len(config.get("args") or []) if isinstance(config.get("args"), list) else 0,
+        "envCount": len(config.get("env") or {}) if isinstance(config.get("env"), Mapping) else 0,
+        "toolCount": len(tools),
+        "lastDiscovery": {
+            "status": str(last_discovery.get("status") or "")[:80],
+            "discoveredAt": str(last_discovery.get("discoveredAt") or "")[:80],
+            "toolCount": int(last_discovery.get("toolCount") or 0),
+        } if last_discovery else {},
+        "risk": "medium",
+        "requiresConfirmation": True,
+        "usedBy": ["agent_prompt", "external_tools"],
+        "configurable": True,
+    }
+
+
+def build_mcp_tool_config_entry(server_id: str, tool: Mapping[str, Any] | None) -> dict[str, Any]:
+    tool = tool if isinstance(tool, Mapping) else {}
+    safe_server_id = _safe_mcp_server_id(server_id)
+    tool_name = _safe_mcp_tool_name(tool.get("name"))
+    public_id = f"mcp.{safe_server_id}.{tool_name}" if safe_server_id and tool_name else ""
+    risk = _infer_mcp_tool_risk(tool_name, str(tool.get("description") or ""))
+    return {
+        "id": public_id,
+        "serverId": safe_server_id,
+        "kind": "mcp_tool",
+        "type": "tool",
+        "source": "mcp",
+        "adapter": "mcp_stdio",
+        "executionMode": "external",
+        "toolType": tool_name,
+        "name": tool_name,
+        "description": _safe_public_mcp_text(tool.get("description"), limit=MCP_TOOL_DESCRIPTION_MAX_LENGTH),
+        "group": "mcp",
+        "enabled": True,
+        "status": "available",
+        "reason": "",
+        "risk": risk,
+        "requiresConfirmation": risk == "high",
+        "usedBy": ["agent_prompt"],
+        "providerId": f"provider.mcp.{safe_server_id}",
+        "inputSchema": _normalize_mcp_input_schema(tool.get("inputSchema") or tool.get("input_schema")),
+        "exposedToPrompt": False,
+    }
+
+
 def normalize_provider_config_payload(spec: ProviderConfigSpec, payload: Mapping[str, Any]) -> dict[str, Any]:
     endpoint_value = payload.get("endpoint")
     if endpoint_value is None:
@@ -719,6 +1280,83 @@ def normalize_workflow_config_payload(spec: WorkflowConfigSpec, payload: Mapping
         "workflowPath": normalized_path["workflowPath"],
         "slotMapping": normalized_slots["slotMapping"],
     }
+
+
+def normalize_voice_profile_config_payload(profile_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    payload = payload if isinstance(payload, Mapping) else {}
+    provider_id = str(payload.get("providerId") or payload.get("provider_id") or "provider.tts.gpt_sovits.local").strip()
+    if provider_id != "provider.tts.gpt_sovits.local":
+        return {"ok": False, "status": "unsupported_provider", "reason": "voice_profile_provider_not_supported"}
+    ref_audio_path = _safe_private_local_path(payload.get("refAudioPath") or payload.get("ref_audio_path"))
+    prompt_text = _safe_private_prompt_text(payload.get("promptText") or payload.get("prompt_text"))
+    display_name = _safe_short_text(payload.get("displayName") or payload.get("name") or profile_id) or profile_id
+    return {
+        "ok": True,
+        "status": "valid",
+        "providerId": provider_id,
+        "enabled": bool(payload.get("enabled", True)),
+        "displayName": display_name[:80],
+        "textLang": _safe_short_token(payload.get("textLang") or payload.get("text_lang") or "zh", default="zh"),
+        "promptLang": _safe_short_token(payload.get("promptLang") or payload.get("prompt_lang") or "zh", default="zh"),
+        "mediaType": _safe_short_token(payload.get("mediaType") or payload.get("media_type") or "wav", default="wav"),
+        "refAudioPath": ref_audio_path,
+        "promptText": prompt_text,
+    }
+
+
+def normalize_mcp_server_config_payload(server_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    payload = payload if isinstance(payload, Mapping) else {}
+    transport = str(payload.get("transport") or "stdio").strip().lower()
+    if transport != "stdio":
+        return {"ok": False, "status": "unsupported_transport", "reason": "mcp_transport_not_supported"}
+    command = _safe_private_mcp_path(payload.get("command"))
+    if not command:
+        return {"ok": False, "status": "missing_config", "reason": "mcp_server_command_required"}
+    args = _safe_mcp_args(payload.get("args"))
+    if args is None:
+        return {"ok": False, "status": "invalid_config", "reason": "mcp_server_args_invalid"}
+    env = _safe_mcp_env(payload.get("env"))
+    if env is None:
+        return {"ok": False, "status": "invalid_config", "reason": "mcp_server_env_invalid"}
+    cwd = _safe_private_mcp_path(payload.get("cwd"))
+    return {
+        "ok": True,
+        "status": "valid",
+        "enabled": bool(payload.get("enabled", True)),
+        "displayName": _safe_short_text(payload.get("displayName") or payload.get("name") or server_id, limit=80) or server_id,
+        "transport": transport,
+        "command": command,
+        "args": args,
+        "cwd": cwd,
+        "env": env,
+    }
+
+
+def normalize_mcp_tool_discovery_payload(server_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    payload = payload if isinstance(payload, Mapping) else {}
+    raw_tools = payload.get("tools")
+    if raw_tools is None and isinstance(payload.get("capabilities"), Mapping):
+        raw_tools = payload.get("capabilities", {}).get("tools")
+    if not isinstance(raw_tools, list):
+        return {"ok": False, "status": "invalid_discovery", "reason": "mcp_tools_must_be_list"}
+    tools: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_tool in raw_tools[:MCP_TOOL_MAX_COUNT]:
+        tool = _normalize_mcp_tool_config(server_id, raw_tool)
+        if not tool:
+            continue
+        name = tool["name"]
+        if name in seen:
+            suffix = 2
+            unique = f"{name}_{suffix}"
+            while unique in seen:
+                suffix += 1
+                unique = f"{name}_{suffix}"
+            tool["name"] = unique[:MCP_TOOL_NAME_MAX_LENGTH]
+            name = tool["name"]
+        seen.add(name)
+        tools.append(tool)
+    return {"ok": True, "status": "valid", "tools": tools}
 
 
 def normalize_local_http_endpoint(endpoint: str) -> dict[str, Any]:
@@ -957,6 +1595,8 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
             "configStatus": "missing",
             "providers": {},
             "workflows": {},
+            "voiceProfiles": {},
+            "mcpServers": {},
             "warnings": [],
         }
     try:
@@ -969,6 +1609,8 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
             "reason": "provider_config_file_invalid_json",
             "providers": {},
             "workflows": {},
+            "voiceProfiles": {},
+            "mcpServers": {},
             "warnings": [{"status": "invalid_config", "reason": "provider_config_file_invalid_json"}],
         }
     if not isinstance(data, dict):
@@ -978,16 +1620,22 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
             "reason": "provider_config_root_must_be_object",
             "providers": {},
             "workflows": {},
+            "voiceProfiles": {},
+            "mcpServers": {},
             "warnings": [{"status": "invalid_config", "reason": "provider_config_root_must_be_object"}],
         }
     providers, provider_warnings = _sanitize_provider_configs(data.get("providers"))
     workflows, workflow_warnings = _sanitize_workflow_configs(data.get("workflows"))
-    warnings = [*provider_warnings, *workflow_warnings]
+    voice_profiles, voice_profile_warnings = _sanitize_voice_profile_configs(data.get("voiceProfiles"))
+    mcp_servers, mcp_server_warnings = _sanitize_mcp_server_configs(data.get("mcpServers"))
+    warnings = [*provider_warnings, *workflow_warnings, *voice_profile_warnings, *mcp_server_warnings]
     return {
         "schemaVersion": CONFIG_SCHEMA_VERSION,
         "configStatus": "partial_invalid_config" if warnings else "available",
         "providers": providers,
         "workflows": workflows,
+        "voiceProfiles": voice_profiles,
+        "mcpServers": mcp_servers,
         "warnings": warnings,
     }
 
@@ -1081,6 +1729,33 @@ def _summarize_workflow_entries(entries: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
+def _summarize_voice_profile_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    by_status: dict[str, int] = {}
+    for entry in entries:
+        status = str(entry.get("status") or "unknown")
+        by_status[status] = int(by_status.get(status, 0)) + 1
+    return {
+        "total": len(entries),
+        "configured": sum(1 for entry in entries if entry.get("configured")),
+        "enabled": sum(1 for entry in entries if entry.get("enabled")),
+        "byStatus": by_status,
+    }
+
+
+def _summarize_mcp_server_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    by_status: dict[str, int] = {}
+    for entry in entries:
+        status = str(entry.get("status") or "unknown")
+        by_status[status] = int(by_status.get(status, 0)) + 1
+    return {
+        "total": len(entries),
+        "configured": sum(1 for entry in entries if entry.get("configured")),
+        "enabled": sum(1 for entry in entries if entry.get("enabled")),
+        "discoveredTools": sum(int(entry.get("toolCount") or 0) for entry in entries),
+        "byStatus": by_status,
+    }
+
+
 def _socket_health_check(host: str, port: int, timeout_seconds: float) -> tuple[bool, str]:
     try:
         with socket.create_connection((host, port), timeout=timeout_seconds):
@@ -1125,6 +1800,91 @@ def _sanitize_workflow_configs(raw_workflows: Any) -> tuple[dict[str, dict[str, 
         if warning:
             warnings.append(warning)
     return workflows, warnings
+
+
+def _sanitize_voice_profile_configs(raw_profiles: Any) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    profiles: dict[str, dict[str, Any]] = {}
+    warnings: list[dict[str, Any]] = []
+    if raw_profiles in (None, ""):
+        return profiles, warnings
+    if not isinstance(raw_profiles, Mapping):
+        return profiles, [{"status": "invalid_config", "reason": "voice_profiles_must_be_object"}]
+
+    for raw_profile_id, raw_config in raw_profiles.items():
+        profile_id = _safe_voice_profile_id(raw_profile_id)
+        if not profile_id:
+            warnings.append({"status": "invalid_config", "reason": "voice_profile_id_invalid"})
+            continue
+        normalized = normalize_voice_profile_config_payload(profile_id, raw_config if isinstance(raw_config, Mapping) else {})
+        if not normalized.get("ok"):
+            warnings.append(
+                {
+                    "voiceProfileId": profile_id,
+                    "status": normalized.get("status") or "invalid_config",
+                    "reason": normalized.get("reason") or "invalid_voice_profile_config",
+                }
+            )
+            continue
+        profiles[profile_id] = {
+            "providerId": normalized["providerId"],
+            "enabled": bool(normalized["enabled"]),
+            "displayName": normalized["displayName"],
+            "textLang": normalized["textLang"],
+            "promptLang": normalized["promptLang"],
+            "mediaType": normalized["mediaType"],
+            "refAudioPath": normalized["refAudioPath"],
+            "promptText": normalized["promptText"],
+        }
+        updated_at = _safe_short_text((raw_config or {}).get("updatedAt")) if isinstance(raw_config, Mapping) else ""
+        if updated_at:
+            profiles[profile_id]["updatedAt"] = updated_at
+    return profiles, warnings
+
+
+def _sanitize_mcp_server_configs(raw_servers: Any) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    servers: dict[str, dict[str, Any]] = {}
+    warnings: list[dict[str, Any]] = []
+    if raw_servers in (None, ""):
+        return servers, warnings
+    if not isinstance(raw_servers, Mapping):
+        return servers, [{"status": "invalid_config", "reason": "mcp_servers_must_be_object"}]
+
+    for raw_server_id, raw_config in raw_servers.items():
+        server_id = _safe_mcp_server_id(raw_server_id)
+        if not server_id:
+            warnings.append({"status": "invalid_config", "reason": "mcp_server_id_invalid"})
+            continue
+        normalized = normalize_mcp_server_config_payload(server_id, raw_config if isinstance(raw_config, Mapping) else {})
+        if not normalized.get("ok"):
+            warnings.append(
+                {
+                    "serverId": server_id,
+                    "status": normalized.get("status") or "invalid_config",
+                    "reason": normalized.get("reason") or "invalid_mcp_server_config",
+                }
+            )
+            continue
+        server: dict[str, Any] = {
+            "enabled": bool(normalized["enabled"]),
+            "displayName": normalized["displayName"],
+            "transport": normalized["transport"],
+            "command": normalized["command"],
+            "args": normalized["args"],
+            "cwd": normalized["cwd"],
+            "env": normalized["env"],
+        }
+        updated_at = _safe_short_text((raw_config or {}).get("updatedAt")) if isinstance(raw_config, Mapping) else ""
+        if updated_at:
+            server["updatedAt"] = updated_at
+        raw_tools = (raw_config or {}).get("tools") if isinstance(raw_config, Mapping) else None
+        normalized_tools = normalize_mcp_tool_discovery_payload(server_id, {"tools": raw_tools or []})
+        if normalized_tools.get("ok") and normalized_tools.get("tools"):
+            server["tools"] = normalized_tools["tools"]
+        last_discovery = _sanitize_mcp_last_discovery((raw_config or {}).get("lastDiscovery") if isinstance(raw_config, Mapping) else None)
+        if last_discovery:
+            server["lastDiscovery"] = last_discovery
+        servers[server_id] = server
+    return servers, warnings
 
 
 def _sanitize_provider_config_entry(
@@ -1232,6 +1992,25 @@ def _sanitize_last_health(raw_last_health: Any) -> dict[str, Any]:
     return sanitized
 
 
+def _sanitize_mcp_last_discovery(raw_last_discovery: Any) -> dict[str, Any]:
+    if not isinstance(raw_last_discovery, Mapping):
+        return {}
+    status = str(raw_last_discovery.get("status") or "").strip()
+    if status not in {"ready", "unavailable", "failed"}:
+        return {}
+    result: dict[str, Any] = {"status": status}
+    discovered_at = _safe_short_text(raw_last_discovery.get("discoveredAt"))
+    if discovered_at:
+        result["discoveredAt"] = discovered_at
+    try:
+        result["toolCount"] = max(0, min(MCP_TOOL_MAX_COUNT, int(raw_last_discovery.get("toolCount") or 0)))
+    except Exception:
+        result["toolCount"] = 0
+    if status != "ready":
+        result["reason"] = _safe_reason(raw_last_discovery.get("reason") or "mcp_discovery_failed")
+    return result
+
+
 def _config_for_write(config: Mapping[str, Any]) -> dict[str, Any]:
     raw_providers = config.get("providers") if isinstance(config.get("providers"), Mapping) else {}
     providers, _warnings = _sanitize_provider_configs(raw_providers)
@@ -1255,10 +2034,30 @@ def _config_for_write(config: Mapping[str, Any]) -> dict[str, Any]:
             for key, value in workflow_config.items()
             if key in PUBLIC_WORKFLOW_FIELDS and value not in (None, "")
         }
+    raw_voice_profiles = config.get("voiceProfiles") if isinstance(config.get("voiceProfiles"), Mapping) else {}
+    voice_profiles, _voice_profile_warnings = _sanitize_voice_profile_configs(raw_voice_profiles)
+    write_voice_profiles: dict[str, dict[str, Any]] = {}
+    for profile_id, profile_config in voice_profiles.items():
+        write_voice_profiles[profile_id] = {
+            key: value
+            for key, value in profile_config.items()
+            if key in PRIVATE_VOICE_PROFILE_FIELDS and value not in (None, "")
+        }
+    raw_mcp_servers = config.get("mcpServers") if isinstance(config.get("mcpServers"), Mapping) else {}
+    mcp_servers, _mcp_server_warnings = _sanitize_mcp_server_configs(raw_mcp_servers)
+    write_mcp_servers: dict[str, dict[str, Any]] = {}
+    for server_id, server_config in mcp_servers.items():
+        write_mcp_servers[server_id] = {
+            key: value
+            for key, value in server_config.items()
+            if key in PRIVATE_MCP_SERVER_FIELDS and value not in (None, "", [], {})
+        }
     return {
         "schemaVersion": CONFIG_SCHEMA_VERSION,
         "providers": write_providers,
         "workflows": write_workflows,
+        "voiceProfiles": write_voice_profiles,
+        "mcpServers": write_mcp_servers,
     }
 
 
@@ -1281,6 +2080,202 @@ def _safe_workflow_path_for_output(value: Any) -> str:
 def _safe_slot_mapping_for_output(spec: WorkflowConfigSpec, value: Any) -> dict[str, str]:
     normalized = normalize_workflow_slot_mapping(spec, value)
     return dict(normalized.get("slotMapping") or {}) if normalized.get("ok") else {}
+
+
+def _normalize_mcp_tool_config(server_id: str, raw_tool: Any) -> dict[str, Any]:
+    if not isinstance(raw_tool, Mapping):
+        return {}
+    tool_name = _safe_mcp_tool_name(raw_tool.get("name"))
+    if not tool_name:
+        return {}
+    description = _safe_public_mcp_text(raw_tool.get("description"), limit=MCP_TOOL_DESCRIPTION_MAX_LENGTH)
+    return {
+        "name": tool_name,
+        "description": description,
+        "inputSchema": _normalize_mcp_input_schema(raw_tool.get("inputSchema") or raw_tool.get("input_schema")),
+        "risk": _infer_mcp_tool_risk(tool_name, description),
+    }
+
+
+def _normalize_mcp_input_schema(raw_schema: Any) -> dict[str, Any]:
+    if not isinstance(raw_schema, Mapping):
+        return {"type": "object", "properties": {}, "required": []}
+    schema_type = str(raw_schema.get("type") or "object").strip().lower()
+    if schema_type != "object":
+        schema_type = "object"
+    raw_properties = raw_schema.get("properties") if isinstance(raw_schema.get("properties"), Mapping) else {}
+    properties: dict[str, dict[str, str]] = {}
+    for raw_name, raw_property in list(raw_properties.items())[:MCP_SCHEMA_PROPERTY_MAX_COUNT]:
+        prop_name = _safe_mcp_property_name(raw_name)
+        if not prop_name:
+            continue
+        prop = raw_property if isinstance(raw_property, Mapping) else {}
+        prop_type = _safe_mcp_schema_type(prop.get("type"))
+        properties[prop_name] = {
+            "type": prop_type or "string",
+            "description": _safe_public_mcp_text(prop.get("description"), limit=120),
+        }
+    raw_required = raw_schema.get("required") if isinstance(raw_schema.get("required"), list) else []
+    required = []
+    for item in raw_required[:MCP_SCHEMA_PROPERTY_MAX_COUNT]:
+        prop_name = _safe_mcp_property_name(item)
+        if prop_name and prop_name in properties and prop_name not in required:
+            required.append(prop_name)
+    return {
+        "type": schema_type,
+        "properties": properties,
+        "required": required,
+    }
+
+
+def _safe_mcp_server_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    safe = "".join(ch if ch in PROFILE_ID_SAFE_CHARS else "_" for ch in raw)
+    safe = safe.strip("._-")
+    return safe[:MCP_SERVER_ID_MAX_LENGTH] if safe else ""
+
+
+def _safe_mcp_tool_name(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if any(marker in lowered for marker in ("api_key", "password", "secret", "token")):
+        return ""
+    safe = "".join(ch if ch in PROFILE_ID_SAFE_CHARS else "_" for ch in raw)
+    safe = safe.strip("._-")
+    return safe[:MCP_TOOL_NAME_MAX_LENGTH] if safe else ""
+
+
+def _safe_mcp_property_name(value: Any) -> str:
+    return _safe_mcp_tool_name(value)
+
+
+def _safe_mcp_schema_type(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text or not MCP_SAFE_TYPE_RE.fullmatch(text):
+        return "string"
+    if text not in {"string", "number", "integer", "boolean", "array", "object", "null"}:
+        return "string"
+    return text
+
+
+def _safe_public_mcp_text(value: Any, *, limit: int = MCP_SERVER_TEXT_MAX_LENGTH) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\s+", " ", text).strip()
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("api_key", "password", "secret", "token")):
+        return ""
+    text = re.sub(r"[A-Za-z]:[\\/][^\s]+", "[local_path]", text)
+    return text[:limit]
+
+
+def _safe_private_mcp_path(value: Any) -> str:
+    text = str(value or "").strip().replace("\r", "").replace("\n", "")
+    if not text:
+        return ""
+    lowered = text.lower()
+    if "://" in text or any(marker in lowered for marker in ("api_key", "password", "secret", "token")):
+        return ""
+    return text[:MCP_SERVER_PATH_MAX_LENGTH]
+
+
+def _safe_mcp_args(value: Any) -> list[str] | None:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        return None
+    args: list[str] = []
+    for item in value[:MCP_SERVER_ARG_MAX_COUNT]:
+        text = str(item or "").strip().replace("\r", "").replace("\n", "")
+        lowered = text.lower()
+        if not text:
+            continue
+        if any(marker in lowered for marker in ("api_key", "password", "secret", "token")):
+            return None
+        args.append(text[:MCP_SERVER_ARG_MAX_LENGTH])
+    return args
+
+
+def _safe_mcp_env(value: Any) -> dict[str, str] | None:
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, Mapping):
+        return None
+    env: dict[str, str] = {}
+    for raw_key, raw_value in list(value.items())[:MCP_SERVER_ENV_MAX_COUNT]:
+        key = str(raw_key or "").strip()
+        lowered_key = key.lower()
+        if not key or not MCP_ENV_KEY_RE.fullmatch(key):
+            return None
+        if any(marker in lowered_key for marker in ("api_key", "password", "secret", "token")):
+            return None
+        text = str(raw_value or "").strip().replace("\r", "").replace("\n", "")
+        lowered_value = text.lower()
+        if any(marker in lowered_value for marker in ("api_key", "password", "secret", "token")):
+            return None
+        env[key] = text[:MCP_SERVER_TEXT_MAX_LENGTH]
+    return env
+
+
+def _infer_mcp_tool_risk(tool_name: str, description: str) -> str:
+    text = f"{tool_name} {description}".lower()
+    if re.search(r"\b(delete|remove|write|edit|shell|terminal|exec|command|browser|click|open_url|navigate|download|upload)\b", text):
+        return "high"
+    if re.search(r"\b(file|read|http|fetch|search|web|workspace|local)\b", text):
+        return "medium"
+    return "medium"
+
+
+def _safe_voice_profile_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    safe = "".join(ch if ch in PROFILE_ID_SAFE_CHARS else "_" for ch in raw)
+    safe = safe.strip("._-")
+    return safe[:120] if safe else ""
+
+
+def _safe_short_token(value: Any, *, default: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", text):
+        return default
+    return text
+
+
+def _safe_private_prompt_text(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("api_key", "password", "secret", "token")):
+        return ""
+    return text[:VOICE_PROFILE_TEXT_MAX_LENGTH]
+
+
+def _safe_private_local_path(value: Any) -> str:
+    text = str(value or "").strip().replace("\r", "").replace("\n", "")
+    if not text:
+        return ""
+    lowered = text.lower()
+    if "://" in text or any(marker in lowered for marker in ("api_key", "password", "secret", "token")):
+        return ""
+    return text[:VOICE_PROFILE_PATH_MAX_LENGTH]
+
+
+def _safe_path_basename(value: Any) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return ""
+    name = text.rsplit("/", 1)[-1].strip()
+    if not name or name in {".", ".."}:
+        return ""
+    return name[:120]
 
 
 def _required_slots_present(spec: WorkflowConfigSpec, slot_mapping: Any) -> bool:

@@ -2,22 +2,20 @@
 
 这是从主项目中独立出来的陪伴型 `Akane V0.1` 试验目录。
 
-当前只保留这几部分：
+仓库按公开源码、工具、文档和本地私有材料分层：
 
-- `companion_v01/`
-  - 新记忆引擎实现
-- `launch_akane_memory_v01.py`
-  - 本地启动入口
-- `start_akane_preview.ps1`
-  - 本地预览启动脚本
-- `启动_Akane预览.bat`
-  - Windows 双击启动入口
-- `config.py`
-  - 最小配置入口
-- `services/llm_client.py`
-  - LLM 客户端
-- `documents/`
-  - 当前框架和项目文档
+- `companion_v01/`：FastAPI 后端和 Akane 运行时模块
+- `services/`：共享服务客户端
+- `web/`：后端直接 serve 的静态 Web 前端
+- `desktop_pet/`：旧 Electron 桌宠 V0，冻结保留
+- `desktop_pet_next/`：Tauri/WebView2 桌宠主线
+- `desktop_pet_creator_kit/`：角色包创建工具
+- `tests/`：测试套件
+- `docs/` / `documents/`：工程文档、设计文档和项目资料
+- `scripts/` / `maintenance/`：可共享开发工具和运维脚本
+- `local_research/`：本地私有语料、抽取产物、临时研究资料，已被 Git 忽略
+
+更详细的布局说明见 `docs/repository_layout.md`。
 
 ## 启动
 

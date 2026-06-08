@@ -11,6 +11,7 @@ logger = logging.getLogger("akane.config")
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = str(BASE_DIR / "users_data")
 Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
+DEFAULT_EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
 
 
 class Settings(BaseSettings):
@@ -24,10 +25,14 @@ class Settings(BaseSettings):
     # === Embedding / 向量记忆 ===
     # 提供者：auto=huggingface→hashed 自动回退  huggingface  hashed
     EMBEDDING_PROVIDER: str = "auto"
-    # HuggingFace 模型名（中文推荐 BAAI/bge-small-zh-v1.5）
-    EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-zh-v1.5"
+    # HuggingFace 模型名或本地模型目录（推荐 BAAI/bge-m3）
+    EMBEDDING_MODEL_NAME: str = DEFAULT_EMBEDDING_MODEL_NAME
     # 设备：空=自动  cuda  cpu
     EMBEDDING_DEVICE: str = ""
+    # 只使用本地缓存/本地模型目录，避免启动时联网下载
+    EMBEDDING_LOCAL_FILES_ONLY: bool = True
+    # HuggingFace/sentence-transformers 缓存目录（留空=默认缓存）
+    EMBEDDING_CACHE_FOLDER: str = ""
     # Embedding 模型缓存大小
     EMBEDDING_CACHE_SIZE: int = 2048
     # 重建索引时的批量大小
@@ -135,6 +140,12 @@ class Settings(BaseSettings):
     TTS_PITCH: str = "+4Hz"
     # 流式 TTS（边生成边播放）
     STREAMING_TTS_ENABLED: bool = True
+
+    # === 系统音乐感知 / 在线歌词 ===
+    # 是否允许根据系统媒体的歌名/歌手访问在线歌词 provider
+    MUSIC_ONLINE_LYRICS_ENABLED: bool = True
+    # syncedlyrics provider 顺序，逗号分隔
+    MUSIC_ONLINE_LYRICS_PROVIDERS: str = "Lrclib,NetEase,Musixmatch,Megalobiz"
 
     # === 公开访问保护 & 限流 ===
     # 总开关
@@ -304,6 +315,7 @@ def _apply_settings(s: Settings) -> None:
     global VISION_ENABLED, VISION_REQUEST_TIMEOUT, VISION_PROMPT_VERSION
     global VISION_AUTO_SCENE_OBSERVE, VISION_AUTO_GIFT_OBSERVE, VISION_AUTO_OUTFIT_OBSERVE, VISION_MAX_IMAGE_BYTES
     global TTS_VOICE, TTS_RATE, TTS_VOLUME, TTS_PITCH, STREAMING_TTS_ENABLED
+    global MUSIC_ONLINE_LYRICS_ENABLED, MUSIC_ONLINE_LYRICS_PROVIDERS
     global PUBLIC_GUARD_ENABLED, MAX_CONCURRENT_THINKS, DAILY_THINK_LIMIT
     global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, MAX_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
     global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ, QQ_CHARACTER_PACK_ID
@@ -316,7 +328,8 @@ def _apply_settings(s: Settings) -> None:
     global REMOTE_MEDIA_YTDLP_USER_AGENT, REMOTE_MEDIA_YTDLP_REFERER
     global WEB_IDENTITY_MODE, WEB_OWNER_PROFILE_USER_ID
     global RUN_MODE, PERSONA_CONFIG_PATH, PERSONA_VARIANT
-    global EMBEDDING_PROVIDER, EMBEDDING_MODEL_NAME, EMBEDDING_DEVICE, EMBEDDING_CACHE_SIZE, EMBEDDING_REINDEX_BATCH_SIZE
+    global EMBEDDING_PROVIDER, EMBEDDING_MODEL_NAME, EMBEDDING_DEVICE, EMBEDDING_LOCAL_FILES_ONLY, EMBEDDING_CACHE_FOLDER
+    global EMBEDDING_CACHE_SIZE, EMBEDDING_REINDEX_BATCH_SIZE
     global ENABLE_VECTOR_MEMORY, ENABLE_SEMANTIC_MEMORY, ENABLE_SEMANTIC_REINFORCEMENT, PRE_RETRIEVAL_DEFAULT_ENABLED
     global PROMPT_CACHE_HINTS_ENABLED, PROMPT_CACHE_HINTS_FORCE, PROMPT_CACHE_NAMESPACE, PROMPT_CACHE_RETENTION
     global ROUTER_DEBUG, VERIFIER_DEBUG, FINAL_DEBUG
@@ -359,6 +372,11 @@ def _apply_settings(s: Settings) -> None:
     TTS_VOLUME = s.TTS_VOLUME or "+0%"
     TTS_PITCH = s.TTS_PITCH or "+4Hz"
     STREAMING_TTS_ENABLED = bool(s.STREAMING_TTS_ENABLED)
+    MUSIC_ONLINE_LYRICS_ENABLED = bool(s.MUSIC_ONLINE_LYRICS_ENABLED)
+    MUSIC_ONLINE_LYRICS_PROVIDERS = (
+        str(s.MUSIC_ONLINE_LYRICS_PROVIDERS or "Lrclib,NetEase,Musixmatch,Megalobiz").strip()
+        or "Lrclib,NetEase,Musixmatch,Megalobiz"
+    )
     PUBLIC_GUARD_ENABLED = bool(s.PUBLIC_GUARD_ENABLED)
     MAX_CONCURRENT_THINKS = max(0, int(s.MAX_CONCURRENT_THINKS))
     DAILY_THINK_LIMIT = max(0, int(s.DAILY_THINK_LIMIT))
@@ -422,8 +440,10 @@ def _apply_settings(s: Settings) -> None:
     PERSONA_CONFIG_PATH = s.PERSONA_CONFIG_PATH or ""
     PERSONA_VARIANT = str(s.PERSONA_VARIANT or "default").strip() or "default"
     EMBEDDING_PROVIDER = str(s.EMBEDDING_PROVIDER or "auto").strip().lower() or "auto"
-    EMBEDDING_MODEL_NAME = str(s.EMBEDDING_MODEL_NAME or "BAAI/bge-small-zh-v1.5").strip() or "BAAI/bge-small-zh-v1.5"
+    EMBEDDING_MODEL_NAME = str(s.EMBEDDING_MODEL_NAME or DEFAULT_EMBEDDING_MODEL_NAME).strip() or DEFAULT_EMBEDDING_MODEL_NAME
     EMBEDDING_DEVICE = str(s.EMBEDDING_DEVICE or "").strip()
+    EMBEDDING_LOCAL_FILES_ONLY = bool(s.EMBEDDING_LOCAL_FILES_ONLY)
+    EMBEDDING_CACHE_FOLDER = str(s.EMBEDDING_CACHE_FOLDER or "").strip()
     EMBEDDING_CACHE_SIZE = max(0, int(s.EMBEDDING_CACHE_SIZE))
     EMBEDDING_REINDEX_BATCH_SIZE = max(1, int(s.EMBEDDING_REINDEX_BATCH_SIZE))
     ENABLE_VECTOR_MEMORY = s.ENABLE_VECTOR_MEMORY

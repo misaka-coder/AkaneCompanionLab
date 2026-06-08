@@ -379,8 +379,10 @@ class AkaneMemoryEngine:
         if provider_mode in {"auto", "huggingface", "hf", "sentence-transformer", "sentence-transformers"}:
             try:
                 base_provider = HuggingFaceEmbeddingProvider(
-                    model_name=str(getattr(config, "EMBEDDING_MODEL_NAME", "") or "BAAI/bge-small-zh-v1.5"),
+                    model_name=str(getattr(config, "EMBEDDING_MODEL_NAME", "") or "BAAI/bge-m3"),
                     device=str(getattr(config, "EMBEDDING_DEVICE", "") or "").strip() or None,
+                    local_files_only=bool(getattr(config, "EMBEDDING_LOCAL_FILES_ONLY", True)),
+                    cache_folder=str(getattr(config, "EMBEDDING_CACHE_FOLDER", "") or "").strip() or None,
                 )
             except Exception:
                 base_provider = HashedEmbeddingProvider()

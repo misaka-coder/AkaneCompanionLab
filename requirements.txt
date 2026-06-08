@@ -12,3 +12,4 @@ pypdf
 reportlab
 tzdata
 yt-dlp
+syncedlyrics

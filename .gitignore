@@ -26,6 +26,17 @@ users_data/
 *.sqlite-shm
 *.sqlite-wal
 
+# Private research corpora and derived notes kept out of open-source releases
+local_research/
+*.epub
+epub_output/
+epub_v2/
+*_evidence.jsonl
+*_scenes_raw.json
+*_all.txt
+makeine_characters.json
+败犬女主太多了！/
+
 # Logs and temporary outputs
 *.log
 runtime_logs/

@@ -51,6 +51,12 @@ const BASE_CAPABILITIES = ["speech_segments", "tts", "file_drop", "tool_actions"
 const AUDIO_PLAYBACK_CAPABILITY = "audio_playback";
 const THINK_TIMEOUT_MS = 5 * 60 * 1000;
 const TTS_TIMEOUT_MS = 45 * 1000;
+const TTS_SLOW_REQUEST_MS = 1200;
+const TTS_CHUNK_SOFT_LIMIT = 24;
+const TTS_PREWARM_TEXT = "嗯。";
+const TTS_PREWARM_DELAY_MS = 650;
+const TTS_PREWARM_TIMEOUT_MS = 12 * 1000;
+const TTS_PREWARM_COOLDOWN_MS = 10 * 60 * 1000;
 const ASR_TIMEOUT_MS = 2 * 60 * 1000;
 const DESKTOP_CONTEXT_POLL_MS = 1500;
 const DESKTOP_CONTEXT_MAX_AGE_MS = 2 * 60 * 1000;
@@ -76,6 +82,11 @@ const PROACTIVE_WAKE_RETRY_MS = 15000;
 const MUSIC_TIMELINE_POLL_MS = 8000;
 const MUSIC_TIMELINE_RETRY_MS = 30000;
 const MUSIC_TIMELINE_INITIAL_DELAY_MS = 6500;
+const SYSTEM_MEDIA_POLL_MS = 2000;
+const SYSTEM_MEDIA_MAX_AGE_MS = 10000;
+const SYSTEM_MEDIA_LYRICS_RETRY_MS = 30000;
+const SYSTEM_MEDIA_LYRICS_TURN_WAIT_MS = 1800;
+const SYSTEM_MEDIA_LYRICS_TURN_WAIT_FOCUSED_MS = 9000;
 const CLIPBOARD_TEXT_LIMIT = 600;
 const BACKEND_RETRY_MS = 30 * 1000;
 const WORKSPACE_TASK_POLL_MS = 12 * 1000;
@@ -205,6 +216,9 @@ function getProfileUserId() {
 function buildBackendCharacterContext() {
   return {
     client_mode: CLIENT_MODE,
+    user_id: state.sessionId || "desktop_pet_next",
+    session_id: state.sessionId || "desktop_pet_next",
+    real_user_id: getProfileUserId(),
     character_pack_id: getCurrentCharacterPackId()
   };
 }
@@ -337,6 +351,13 @@ let lastAppliedLayoutSignature = "";
 let musicSnapshotTimer = 0;
 let musicTimelineTimer = 0;
 let musicTimelineSourceId = "";
+let systemMediaPollTimer = 0;
+let systemMedia = emptySystemMediaSnapshot();
+let systemMediaLyrics = emptySystemMediaLyricsSnapshot();
+let systemMediaLyricsLoading = false;
+let systemMediaLyricsLastAttemptAt = 0;
+const systemMediaLyricsCache = new Map();
+const systemMediaLyricsRequests = new Map();
 let ttsToken = 0;
 let ttsController = null;
 let ttsObjectUrl = "";
@@ -344,6 +365,20 @@ let ttsActive = false;
 let ttsQueue = [];
 let lastTtsSignature = "";
 let resolveTtsWait = null;
+let streamingTtsTurnToken = 0;
+let streamingTtsText = "";
+const streamingTtsSegmentKeys = new Set();
+let streamingReplyTurnToken = 0;
+let streamingReplyText = "";
+let streamingReplyFinalized = false;
+let streamedReplyLastShownAt = 0;
+let streamedReplyLastShownText = "";
+let streamedReplyQueue = [];
+const streamingReplySegmentKeys = new Set();
+let ttsPrewarmTimer = 0;
+let ttsPrewarmController = null;
+let ttsPrewarmInFlightKey = "";
+const ttsPrewarmReadyAtByKey = new Map();
 let musicTrack = null;
 let musicQueue = [];
 let musicQueueIndex = -1;
@@ -492,6 +527,7 @@ async function boot() {
     await reloadCharacterResources({ startup: true });
     void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
     scheduleDesktopContextPoll();
+    scheduleSystemMediaPoll({ immediate: true });
     scheduleScreenVisionCapture({ immediate: true });
     scheduleProactiveWake();
     scheduleWorkspaceTaskWatch({ delayMs: 2000 });
@@ -897,6 +933,7 @@ async function registerWindowListeners() {
   window.addEventListener("beforeunload", () => {
     unlistenFns.forEach((unlisten) => unlisten());
     window.clearTimeout(desktopContextPollTimer);
+    window.clearTimeout(systemMediaPollTimer);
     window.clearTimeout(proactiveWakeTimer);
     stopScreenVisionCapture({ clearRemote: false });
     window.clearTimeout(backendRetryTimer);
@@ -1539,7 +1576,10 @@ function updateVisualOpacity(value, { saveNow = false } = {}) {
 function setVoiceEnabled(enabled) {
   state.voiceEnabled = Boolean(enabled);
   if (!state.voiceEnabled) {
+    cancelTtsPrewarm();
     stopTts();
+  } else {
+    scheduleTtsPrewarm({ force: true, delayMs: 200 });
   }
   scheduleSave(0);
   setRuntimeStatus(state.voiceEnabled ? "语音播放已开启" : "语音播放已关闭", { mode: "idle" });
@@ -2792,6 +2832,9 @@ async function reloadCharacterResources({ startup = false, userTriggered = false
     if (!silent || runtimeMode === "offline" || runtimeMode === "checking") {
       setRuntimeStatus(message, { mode: "idle" });
     }
+    if (state.voiceEnabled) {
+      scheduleTtsPrewarm({ delayMs: startup ? 900 : 300 });
+    }
     return true;
   } catch (error) {
     resourceState.healthMessage = formatError(error);
@@ -3088,6 +3131,434 @@ async function refreshDesktopForegroundCache() {
       capturedAt: Number(snapshot?.capturedAt || Date.now())
     };
   }
+}
+
+function scheduleSystemMediaPoll({ immediate = false } = {}) {
+  window.clearTimeout(systemMediaPollTimer);
+  systemMediaPollTimer = 0;
+  if (!isTauriRuntime) return;
+
+  const delay = immediate ? 0 : SYSTEM_MEDIA_POLL_MS;
+  systemMediaPollTimer = window.setTimeout(async () => {
+    systemMediaPollTimer = 0;
+    await refreshSystemMediaSnapshot();
+    scheduleSystemMediaPoll();
+  }, delay);
+}
+
+async function refreshSystemMediaSnapshot() {
+  const previous = systemMedia;
+  const snapshot = await tauriCall("get_current_system_media", {}, { quiet: true });
+  systemMedia = normalizeSystemMediaSnapshot(snapshot);
+  const trackChanged = systemMedia.trackKey !== previous.trackKey;
+  const statusChanged =
+    systemMedia.playbackStatus !== previous.playbackStatus ||
+    systemMedia.status !== previous.status ||
+    systemMedia.isPlaying !== previous.isPlaying;
+  const progressChanged = Math.abs(safePositiveSeconds(systemMedia.positionSeconds) - safePositiveSeconds(previous.positionSeconds)) >= 1.2;
+  if (trackChanged) {
+    applySystemMediaLyricsForTrack(systemMedia);
+  }
+  if (isFreshSystemMedia(systemMedia)) {
+    void ensureSystemMediaLyrics(systemMedia);
+  } else if (trackChanged || statusChanged) {
+    systemMediaLyrics = emptySystemMediaLyricsSnapshot({
+      trackKey: systemMedia.trackKey || "",
+      status: systemMedia.status === "unavailable" ? "unavailable" : "not-found",
+      reason: systemMedia.reason || "system_media_unavailable"
+    });
+  }
+  if (
+    trackChanged ||
+    statusChanged ||
+    (systemMedia.ok && progressChanged)
+  ) {
+    scheduleMusicSnapshot(120);
+  }
+}
+
+function emptySystemMediaSnapshot() {
+  return {
+    ok: false,
+    status: "unavailable",
+    reason: "not-polled",
+    capturedAt: 0,
+    platform: "",
+    trackKey: "",
+    title: "",
+    artist: "",
+    album: "",
+    sourceApp: "",
+    playbackStatus: "unknown",
+    isPlaying: false,
+    positionSeconds: 0,
+    durationSeconds: 0
+  };
+}
+
+function normalizeSystemMediaSnapshot(value) {
+  if (!value || typeof value !== "object") return emptySystemMediaSnapshot();
+  const title = cleanSystemMediaText(value.title, 120);
+  const artist = cleanSystemMediaText(value.artist, 100);
+  const album = cleanSystemMediaText(value.album, 120);
+  const sourceApp = cleanSystemMediaText(value.sourceApp || value.source_app, 120);
+  const playbackStatus = String(value.playbackStatus || value.playback_status || "unknown").trim().toLowerCase() || "unknown";
+  const trackKey =
+    cleanSystemMediaText(value.trackKey || value.track_key, 220) ||
+    simpleHash(`${sourceApp}|${title}|${artist}|${album}`);
+  const capturedAt = Number(value.capturedAt || value.captured_at || Date.now());
+  return {
+    ok: Boolean(value.ok) && Boolean(title || artist) && !isOwnSystemMediaSource(sourceApp),
+    status: String(value.status || "").trim().toLowerCase() || (value.ok ? "ready" : "unavailable"),
+    reason: cleanSystemMediaText(value.reason, 180),
+    capturedAt: Number.isFinite(capturedAt) ? capturedAt : Date.now(),
+    platform: cleanSystemMediaText(value.platform, 40),
+    trackKey,
+    title,
+    artist,
+    album,
+    sourceApp,
+    playbackStatus,
+    isPlaying: Boolean(value.isPlaying || value.is_playing || playbackStatus === "playing"),
+    positionSeconds: safePositiveSeconds(value.positionSeconds ?? value.position_seconds),
+    durationSeconds: safePositiveSeconds(value.durationSeconds ?? value.duration_seconds)
+  };
+}
+
+function cleanSystemMediaText(value, limit = 120) {
+  const text = String(value || "").replace(/\x00/g, " ").replace(/\s+/g, " ").trim();
+  return limit > 0 && text.length > limit ? text.slice(0, limit) : text;
+}
+
+function safePositiveSeconds(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+}
+
+function isOwnSystemMediaSource(sourceApp) {
+  const source = String(sourceApp || "").toLowerCase();
+  return source.includes("akane_desktop_pet_next") || source.includes("akane desktop pet");
+}
+
+function isFreshSystemMedia(snapshot = systemMedia) {
+  if (!snapshot?.ok || snapshot.status !== "ready") return false;
+  if (!snapshot.title && !snapshot.artist) return false;
+  if (snapshot.playbackStatus === "closed" || snapshot.playbackStatus === "stopped") return false;
+  const capturedAt = Number(snapshot.capturedAt || 0);
+  return capturedAt > 0 && Date.now() - capturedAt <= SYSTEM_MEDIA_MAX_AGE_MS;
+}
+
+function summarizeSystemMedia(snapshot = systemMedia) {
+  return {
+    ok: Boolean(snapshot?.ok),
+    status: snapshot?.status || "unavailable",
+    reason: snapshot?.reason || "",
+    capturedAt: Number(snapshot?.capturedAt || 0),
+    platform: snapshot?.platform || "",
+    trackKey: snapshot?.trackKey || "",
+    title: snapshot?.title || "",
+    artist: snapshot?.artist || "",
+    album: snapshot?.album || "",
+    sourceApp: snapshot?.sourceApp || "",
+    playbackStatus: snapshot?.playbackStatus || "unknown",
+    isPlaying: Boolean(snapshot?.isPlaying),
+    positionSeconds: safePositiveSeconds(snapshot?.positionSeconds),
+    durationSeconds: safePositiveSeconds(snapshot?.durationSeconds),
+    fresh: isFreshSystemMedia(snapshot)
+  };
+}
+
+function emptySystemMediaLyricsSnapshot(overrides = {}) {
+  return {
+    ok: false,
+    status: "unavailable",
+    reason: "not-polled",
+    trackKey: "",
+    source: "",
+    confidence: "",
+    lineCount: 0,
+    segments: [],
+    cached: false,
+    updatedAt: 0,
+    ...overrides
+  };
+}
+
+function applySystemMediaLyricsForTrack(snapshot = systemMedia) {
+  systemMediaLyricsLastAttemptAt = 0;
+  const trackKey = String(snapshot?.trackKey || "").trim();
+  if (!trackKey) {
+    systemMediaLyrics = emptySystemMediaLyricsSnapshot({ reason: "track_key_missing" });
+    return;
+  }
+  const cached = systemMediaLyricsCache.get(trackKey);
+  if (cached) {
+    systemMediaLyrics = { ...cached, cached: true, segments: Array.isArray(cached.segments) ? [...cached.segments] : [] };
+    return;
+  }
+  systemMediaLyrics = emptySystemMediaLyricsSnapshot({
+    status: "pending",
+    reason: "lyrics_lookup_pending",
+    trackKey
+  });
+}
+
+async function ensureSystemMediaLyrics(snapshot = systemMedia, options = {}) {
+  if (!isFreshSystemMedia(snapshot)) return;
+  const trackKey = String(snapshot.trackKey || "").trim();
+  if (!trackKey || !snapshot.title) return;
+  const cached = systemMediaLyricsCache.get(trackKey);
+  if (cached) {
+    if (systemMediaLyrics.trackKey !== trackKey || systemMediaLyrics.status === "pending") {
+      systemMediaLyrics = { ...cached, cached: true, segments: Array.isArray(cached.segments) ? [...cached.segments] : [] };
+      scheduleMusicSnapshot(120);
+    }
+    return;
+  }
+  const pendingRequest = systemMediaLyricsRequests.get(trackKey);
+  if (pendingRequest) return pendingRequest;
+  const now = Date.now();
+  const force = Boolean(options.force);
+  if (!force && systemMediaLyricsLastAttemptAt && now - systemMediaLyricsLastAttemptAt < SYSTEM_MEDIA_LYRICS_RETRY_MS) return;
+  if (resourceState.health !== "online") {
+    systemMediaLyrics = emptySystemMediaLyricsSnapshot({
+      status: "unavailable",
+      reason: "backend_offline",
+      trackKey
+    });
+    scheduleMusicSnapshot(120);
+    return;
+  }
+
+  systemMediaLyricsLoading = true;
+  systemMediaLyricsLastAttemptAt = now;
+  const currentTrackKey = String(systemMedia.trackKey || "").trim();
+  if (currentTrackKey === trackKey || systemMediaLyrics.trackKey === trackKey) {
+    systemMediaLyrics = {
+      ...systemMediaLyrics,
+      trackKey,
+      status: systemMediaLyrics.status === "ready" ? systemMediaLyrics.status : "pending",
+      reason: "lyrics_lookup_pending"
+    };
+  }
+  scheduleMusicSnapshot(120);
+
+  const request = (async () => {
+    try {
+      const sessionId = state.sessionId || "desktop_pet_next";
+      const profileUserId = getProfileUserId();
+      const response = await backendFetch(
+        buildBackendEndpointUrl("music_lyrics", "/capabilities/music/lyrics", {
+          user_id: sessionId,
+          session_id: sessionId,
+          real_user_id: profileUserId,
+          t: Date.now()
+        }),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({
+            user_id: sessionId,
+            session_id: sessionId,
+            real_user_id: profileUserId,
+            trackKey,
+            title: snapshot.title || "",
+            artist: snapshot.artist || "",
+            album: snapshot.album || "",
+            source: "system_media",
+            positionSeconds: safePositiveSeconds(snapshot.positionSeconds)
+          }),
+          connectTimeout: 20_000
+        }
+      );
+      const payload = await readJsonResponse(response);
+      const normalized = normalizeSystemMediaLyricsSnapshot(payload, trackKey);
+      if (normalized.status !== "pending" && normalized.status !== "unavailable") {
+        systemMediaLyricsCache.set(trackKey, normalized);
+      }
+      if (normalized.status === "disabled") {
+        systemMediaLyricsCache.set(trackKey, normalized);
+      }
+      if (String(systemMedia.trackKey || "").trim() === trackKey || systemMediaLyrics.trackKey === trackKey) {
+        systemMediaLyrics = normalized;
+      }
+      return normalized;
+    } catch {
+      const failed = emptySystemMediaLyricsSnapshot({
+        status: "unavailable",
+        reason: "lyrics_request_failed",
+        trackKey
+      });
+      if (String(systemMedia.trackKey || "").trim() === trackKey || systemMediaLyrics.trackKey === trackKey) {
+        systemMediaLyrics = failed;
+      }
+      return failed;
+    } finally {
+      systemMediaLyricsRequests.delete(trackKey);
+      systemMediaLyricsLoading = systemMediaLyricsRequests.size > 0;
+      scheduleMusicSnapshot(120);
+    }
+  })();
+  systemMediaLyricsRequests.set(trackKey, request);
+  return request;
+}
+
+function isLyricsFocusedTurnMessage(message) {
+  const text = String(message || "").trim().toLowerCase();
+  if (!text) return false;
+  return /歌词|唱到|唱的是|哪一句|这一句|当前.*(歌|音乐)|这首|正在放|播放|听/.test(text);
+}
+
+function waitForSystemMediaLyrics(request, timeoutMs) {
+  if (!request || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.resolve({ timedOut: false });
+  let timeoutId = 0;
+  return Promise.race([
+    Promise.resolve(request).then((value) => ({ timedOut: false, value })),
+    new Promise((resolve) => {
+      timeoutId = window.setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+    })
+  ]).finally(() => {
+    if (timeoutId) window.clearTimeout(timeoutId);
+  });
+}
+
+async function hydrateSystemMediaLyricsForTurn(message, options = {}) {
+  if (!isFreshSystemMedia(systemMedia)) return;
+  const trackKey = String(systemMedia.trackKey || "").trim();
+  if (!trackKey || !systemMedia.title) return;
+  const cached = systemMediaLyricsCache.get(trackKey);
+  if (cached) {
+    systemMediaLyrics = { ...cached, cached: true, segments: Array.isArray(cached.segments) ? [...cached.segments] : [] };
+    return;
+  }
+  if (
+    systemMediaLyrics.trackKey === trackKey &&
+    systemMediaLyrics.status === "ready" &&
+    Array.isArray(systemMediaLyrics.segments) &&
+    systemMediaLyrics.segments.length > 0
+  ) {
+    return;
+  }
+  const focused = isLyricsFocusedTurnMessage(message);
+  const timeoutMs = focused ? SYSTEM_MEDIA_LYRICS_TURN_WAIT_FOCUSED_MS : SYSTEM_MEDIA_LYRICS_TURN_WAIT_MS;
+  const force =
+    focused ||
+    (systemMediaLyrics.trackKey === trackKey && systemMediaLyrics.reason === "backend_offline");
+  const request = ensureSystemMediaLyrics(systemMedia, { force });
+  const result = await waitForSystemMediaLyrics(request, timeoutMs);
+  if (
+    result.timedOut &&
+    String(systemMedia.trackKey || "").trim() === trackKey &&
+    systemMediaLyrics.trackKey === trackKey &&
+    systemMediaLyrics.status === "pending"
+  ) {
+    systemMediaLyrics = {
+      ...systemMediaLyrics,
+      reason: "lyrics_lookup_slow",
+      updatedAt: Date.now()
+    };
+    scheduleMusicSnapshot(120);
+  }
+}
+
+function normalizeSystemMediaLyricsSnapshot(payload, fallbackTrackKey = "") {
+  const value = payload && typeof payload === "object" ? payload : {};
+  const status = String(value.status || (value.ok ? "ready" : "unavailable")).trim().toLowerCase() || "unavailable";
+  const confidence = String(value.confidence || "").trim().toLowerCase();
+  const source = cleanSystemMediaText(value.source || value.provider || "", 80);
+  const segments =
+    status === "ready" && confidence !== "low"
+      ? normalizeTimelineLyricSegments(value.segments)
+      : [];
+  return emptySystemMediaLyricsSnapshot({
+    ok: Boolean(value.ok) && status === "ready" && segments.length > 0,
+    status,
+    reason: cleanSystemMediaText(value.reason, 120),
+    trackKey: cleanSystemMediaText(value.trackKey || value.track_key || fallbackTrackKey, 220),
+    source,
+    confidence,
+    lineCount: segments.length || Number(value.lineCount || value.line_count || 0) || 0,
+    segments,
+    cached: Boolean(value.cached),
+    updatedAt: Date.now()
+  });
+}
+
+function buildSystemMediaLyricSnapshot(timeSeconds = safePositiveSeconds(systemMedia.positionSeconds)) {
+  const trackKey = String(systemMedia.trackKey || "").trim();
+  if (!trackKey || systemMediaLyrics.trackKey !== trackKey) return null;
+  const status = String(systemMediaLyrics.status || "unavailable").trim().toLowerCase();
+  const lines = Array.isArray(systemMediaLyrics.segments) ? systemMediaLyrics.segments : [];
+  if (status !== "ready" || !lines.length || systemMediaLyrics.confidence === "low") {
+    return {
+      source: systemMediaLyrics.source ? `online:${systemMediaLyrics.source}` : "online",
+      status,
+      reason: systemMediaLyrics.reason || "",
+      confidence: systemMediaLyrics.confidence || "",
+      lineCount: Number(systemMediaLyrics.lineCount || 0),
+      index: -1,
+      timeSeconds: 0,
+      text: "",
+      previousText: "",
+      nextText: ""
+    };
+  }
+  let currentIndex = -1;
+  const currentTime = Number.isFinite(timeSeconds) ? Math.max(0, timeSeconds) : 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const start = safePositiveSeconds(lines[index].timeSeconds);
+    const end = safePositiveSeconds(lines[index].endSeconds);
+    if (start <= currentTime + 0.12) currentIndex = index;
+    if (end > currentTime + 0.12) break;
+  }
+  const current = currentIndex >= 0 ? lines[currentIndex] : null;
+  const previous = currentIndex > 0 ? lines[currentIndex - 1] : null;
+  const next = lines[Math.max(0, currentIndex + 1)] || null;
+  return {
+    source: systemMediaLyrics.source ? `online:${systemMediaLyrics.source}` : "online",
+    status,
+    reason: systemMediaLyrics.reason || "",
+    confidence: systemMediaLyrics.confidence || "",
+    lineCount: lines.length,
+    index: currentIndex,
+    timeSeconds: current?.timeSeconds ?? 0,
+    text: cleanSystemMediaText(current?.text || "", 120),
+    previousText: cleanSystemMediaText(previous?.text || "", 100),
+    nextText: cleanSystemMediaText(next?.text || "", 100)
+  };
+}
+
+function summarizeSystemMediaLyrics() {
+  const lyric = buildSystemMediaLyricSnapshot();
+  if (!lyric) {
+    return {
+      ok: false,
+      status: systemMediaLyrics.status || "unavailable",
+      reason: systemMediaLyrics.reason || "",
+      source: systemMediaLyrics.source || "",
+      confidence: systemMediaLyrics.confidence || "",
+      lineCount: Number(systemMediaLyrics.lineCount || 0),
+      cached: Boolean(systemMediaLyrics.cached),
+      index: -1,
+      current: "",
+      previous: "",
+      next: ""
+    };
+  }
+  return {
+    ok: Boolean(lyric.text),
+    status: lyric.status || "unavailable",
+    reason: lyric.reason || "",
+    source: lyric.source || "",
+    confidence: lyric.confidence || "",
+    lineCount: Number(lyric.lineCount || 0),
+    cached: Boolean(systemMediaLyrics.cached),
+    index: lyric.index ?? -1,
+    current: lyric.text || "",
+    previous: lyric.previousText || "",
+    next: lyric.nextText || ""
+  };
 }
 
 async function collectDesktopContextForTurn() {
@@ -3461,12 +3932,15 @@ function interruptReply({ announce = false } = {}) {
     thinkController = null;
   }
 
+  cancelTtsPrewarm();
   stopTts();
   clearLocalInteraction();
   firstSpeechSegmentShown = false;
   lastTurnSignature = "";
   lastTurnTextKey = "";
   lastActivityActionSignature = "";
+  resetStreamingTtsState();
+  resetStreamingReplyState();
   desktopFileDeliveryHandled.clear();
   window.clearTimeout(bubbleTimer);
   window.clearTimeout(segmentTimer);
@@ -3522,6 +3996,8 @@ async function sendMessage(text) {
   firstSpeechSegmentShown = false;
   lastTurnSignature = "";
   lastTurnTextKey = "";
+  resetStreamingTtsState(turnToken);
+  resetStreamingReplyState(turnToken);
   desktopFileDeliveryHandled.clear();
   showThinking();
   scheduleSettingsSnapshot();
@@ -3619,6 +4095,8 @@ async function sendProactiveWake() {
   firstSpeechSegmentShown = false;
   lastTurnSignature = "";
   lastTurnTextKey = "";
+  resetStreamingTtsState(turnToken);
+  resetStreamingReplyState(turnToken);
   desktopFileDeliveryHandled.clear();
   scheduleSettingsSnapshot();
 
@@ -3709,7 +4187,10 @@ async function* sendThinkStream(message, turnToken, options = {}) {
   const controller = new AbortController();
   thinkController = controller;
   const timeoutId = window.setTimeout(() => controller.abort(), THINK_TIMEOUT_MS);
-  const desktopContext = await collectDesktopContextForTurn();
+  const desktopContextPromise = collectDesktopContextForTurn();
+  const lyricsHydrationPromise = hydrateSystemMediaLyricsForTurn(message, options);
+  const desktopContext = await desktopContextPromise;
+  await lyricsHydrationPromise;
   if (!isTurnActive(turnToken)) return;
   const requestInit = {
     method: "POST",
@@ -3775,10 +4256,8 @@ async function processThinkStream(stream, turnToken) {
       if (chunk) partialSpeech += chunk;
     } else if (type === "speech_segment") {
       const text = String(event?.text || "").trim();
-      if (text && !rendered && !firstSpeechSegmentShown) {
-        firstSpeechSegmentShown = true;
-        showBubbleText(text, { transient: false, kind: "reply" });
-      }
+      queueStreamedReplySegment(text, turnToken, event?.index);
+      queueStreamedTtsSegment(text, turnToken, event?.index);
     } else if (type === "file_ready" || type === "generated_file_ready") {
       void handleDesktopFileDeliveryEvent(event);
     } else if (type === "final" || type === "final_ui") {
@@ -3835,9 +4314,13 @@ function renderPayload(
     if (!force && (signature === lastTurnSignature || (textKey && textKey === lastTurnTextKey))) return false;
     lastTurnSignature = signature;
     lastTurnTextKey = textKey;
-    showSpeechSegments(segments, { speaking });
+    if (source === "live" && streamingReplyText) {
+      queueLiveReplyPayloadItems(segments, { speaking });
+    } else {
+      showSpeechSegments(segments, { speaking });
+    }
     if (source === "live") setRuntimeStatus("回复中", { mode: "replying" });
-    if (source === "live") queueTtsItems(segments, signature);
+    if (source === "live") queueLiveTtsPayloadItems(segments, signature);
     return true;
   }
 
@@ -3850,14 +4333,16 @@ function renderPayload(
   if (!force && (signature === lastTurnSignature || (textKey && textKey === lastTurnTextKey))) return false;
   lastTurnSignature = signature;
   lastTurnTextKey = textKey;
-  if (displaySegments.length) {
+  if (source === "live" && streamingReplyText) {
+    queueLiveReplyPayloadItems(displaySegments.length ? displaySegments : [speech], { speaking });
+  } else if (displaySegments.length) {
     showSpeechSegments(displaySegments, { speaking });
   } else {
     showBubbleText(speech, { transient: false, dismiss: true, speaking, kind: "reply" });
   }
   if (source === "live") {
     setRuntimeStatus("回复中", { mode: "replying" });
-    queueTtsItems(displaySegments.length ? displaySegments : [speech], signature);
+    queueLiveTtsPayloadItems(displaySegments.length ? displaySegments : [speech], signature);
   }
   return true;
 }
@@ -4226,18 +4711,11 @@ function showSpeechSegments(segments, { speaking = true } = {}) {
   const showNext = () => {
     if (token !== bubbleToken) return;
     const text = items[index];
-    setBubbleContent(text);
-    els.bubble.classList.add("visible");
-    scheduleNativeHitTestSync({ force: true });
-    if (speaking) setPetMotion("speaking");
-    updateActivityControls();
+    displayReplyBubbleText(text, { speaking });
     index += 1;
 
     if (index < items.length) {
-      segmentTimer = window.setTimeout(
-        showNext,
-        Math.max(SEGMENT_MIN_MS, Math.min(SEGMENT_MAX_MS, text.length * SEGMENT_CHAR_RATE))
-      );
+      segmentTimer = window.setTimeout(showNext, getSegmentDisplayDelay(text));
       return;
     }
 
@@ -4245,6 +4723,20 @@ function showSpeechSegments(segments, { speaking = true } = {}) {
   };
 
   showNext();
+}
+
+function displayReplyBubbleText(text, { speaking = true } = {}) {
+  bubbleKind = "reply";
+  replyDisplayActive = true;
+  setBubbleContent(text);
+  els.bubble.classList.add("visible");
+  scheduleNativeHitTestSync({ force: true });
+  if (speaking) setPetMotion("speaking");
+  updateActivityControls();
+}
+
+function getSegmentDisplayDelay(text) {
+  return Math.max(SEGMENT_MIN_MS, Math.min(SEGMENT_MAX_MS, String(text || "").length * SEGMENT_CHAR_RATE));
 }
 
 function showBubbleText(
@@ -5679,6 +6171,8 @@ function buildMusicSnapshot() {
     paused: musicPaused,
     loading: musicLoading,
     displayName: getMusicDisplayName(),
+    systemMedia: summarizeSystemMedia(),
+    systemLyrics: summarizeSystemMediaLyrics(),
     recommendations: buildMusicRecommendationsSnapshot()
   };
 }
@@ -5696,6 +6190,9 @@ function buildDesktopMusicActivity() {
   const recs = buildMusicRecommendationsSnapshot();
   const recsSummary = recs.map(({ title, reason, sourceId }) => ({ title, reason, source_id: sourceId || "" }));
   const catalog = buildPlayableMusicCatalog();
+  const systemActivity = buildSystemMediaActivity({ recommendations: recsSummary, catalog });
+
+  if (shouldUseSystemMediaActivity(systemActivity)) return systemActivity;
 
   if (!musicTrack) {
     if (recs.length > 0 || catalog.length > 0) {
@@ -5738,6 +6235,52 @@ function buildDesktopMusicActivity() {
     lyric_previous: currentLyric?.previousText || "",
     lyric_next: currentLyric?.nextText || "",
     recommendations: recsSummary,
+    catalog
+  };
+}
+
+function shouldUseSystemMediaActivity(systemActivity) {
+  if (!systemActivity) return false;
+  if (!musicTrack) return true;
+  return !musicPlaying;
+}
+
+function buildSystemMediaActivity({ recommendations = [], catalog = [] } = {}) {
+  if (!isFreshSystemMedia(systemMedia)) return null;
+  const titleParts = [systemMedia.title, systemMedia.artist].filter(Boolean);
+  const title = titleParts.length ? titleParts.join(" - ") : "系统正在播放的音乐";
+  const currentLyric = buildSystemMediaLyricSnapshot(systemMedia.positionSeconds);
+  const status = systemMedia.isPlaying
+    ? "running"
+    : systemMedia.playbackStatus === "paused"
+      ? "paused"
+      : "stopped";
+  if (status === "stopped") return null;
+  return {
+    type: "audio_playback",
+    title,
+    source_id: `system_media:${systemMedia.trackKey || simpleHash(title)}`,
+    handle: "system_media_current",
+    status,
+    progress_seconds: safePositiveSeconds(systemMedia.positionSeconds),
+    duration_seconds: safePositiveSeconds(systemMedia.durationSeconds),
+    source_kind: "system_media",
+    source_app: systemMedia.sourceApp || "",
+    artist: systemMedia.artist || "",
+    album: systemMedia.album || "",
+    system_media: true,
+    playback_status: systemMedia.playbackStatus || "unknown",
+    lyric_file_name: currentLyric?.text ? currentLyric.source || "online" : "",
+    lyric_line_count: currentLyric?.text ? currentLyric.lineCount || 0 : 0,
+    lyric_index: currentLyric?.text ? currentLyric.index ?? -1 : -1,
+    lyric_current: currentLyric?.text || "",
+    lyric_previous: currentLyric?.previousText || "",
+    lyric_next: currentLyric?.nextText || "",
+    lyric_status: currentLyric?.status || systemMediaLyrics.status || "unavailable",
+    lyric_reason: currentLyric?.reason || systemMediaLyrics.reason || "",
+    lyric_confidence: currentLyric?.confidence || systemMediaLyrics.confidence || "",
+    lyric_source: currentLyric?.source || systemMediaLyrics.source || "",
+    recommendations,
     catalog
   };
 }
@@ -5787,7 +6330,289 @@ function buildPlayableMusicCatalog() {
   return catalog.slice(0, 12);
 }
 
-function queueTtsItems(items, signature = "") {
+function resetStreamingReplyState(turnToken = 0) {
+  streamingReplyTurnToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
+  streamingReplyText = "";
+  streamingReplyFinalized = false;
+  streamedReplyLastShownAt = 0;
+  streamedReplyLastShownText = "";
+  streamedReplyQueue = [];
+  streamingReplySegmentKeys.clear();
+}
+
+function ensureStreamingReplyTurn(turnToken) {
+  const normalizedToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
+  if (streamingReplyTurnToken === normalizedToken) return;
+  resetStreamingReplyState(normalizedToken);
+}
+
+function queueStreamedReplySegment(text, turnToken, segmentIndex = null) {
+  const normalized = normalizeTtsText(text);
+  if (!normalized || !isTurnActive(turnToken)) return false;
+
+  ensureStreamingReplyTurn(turnToken);
+  const textKey = buildSpeechTextKey(normalized);
+  if (!textKey) return false;
+  const numericIndex = Number(segmentIndex);
+  const segmentKey = Number.isFinite(numericIndex)
+    ? `${numericIndex}:${textKey}`
+    : textKey;
+  if (streamingReplySegmentKeys.has(segmentKey)) return false;
+
+  streamingReplySegmentKeys.add(segmentKey);
+  streamingReplyText = normalizeTtsText(streamingReplyText ? `${streamingReplyText}${normalized}` : normalized);
+  streamedReplyQueue.push(normalized);
+  const immediate = !replyDisplayActive || bubbleKind === "thinking" || !streamedReplyLastShownText;
+  scheduleStreamedReplyDisplay({ immediate });
+  return true;
+}
+
+function queueLiveReplyPayloadItems(items, { speaking = true } = {}) {
+  const normalized = (Array.isArray(items) ? items : [items])
+    .map((item) => normalizeTtsText(item))
+    .filter(Boolean);
+  if (!normalized.length) {
+    finalizeStreamedReplyDisplay();
+    return false;
+  }
+
+  const tail = removeStreamingReplyPrefix(normalized.join(""));
+  if (tail) {
+    const tailSegments = splitSpeechText(tail);
+    for (const segment of tailSegments) {
+      queueStreamedReplySegment(segment, activeTurnToken);
+    }
+    if (speaking) setPetMotion("speaking");
+  }
+  finalizeStreamedReplyDisplay();
+  return true;
+}
+
+function removeStreamingReplyPrefix(text) {
+  const finalText = normalizeTtsText(text);
+  const prefix = normalizeTtsText(streamingReplyText);
+  if (!finalText || !prefix) return finalText;
+  if (finalText.startsWith(prefix)) return normalizeTtsText(finalText.slice(prefix.length));
+
+  const finalKey = buildSpeechTextKey(finalText);
+  const prefixKey = buildSpeechTextKey(prefix);
+  if (!prefixKey || !finalKey.startsWith(prefixKey)) return "";
+  if (finalKey.length <= prefixKey.length) return "";
+
+  let compactCount = 0;
+  let sliceIndex = 0;
+  for (let index = 0; index < finalText.length; index += 1) {
+    if (!/\s/.test(finalText[index])) compactCount += 1;
+    if (compactCount >= prefixKey.length) {
+      sliceIndex = index + 1;
+      break;
+    }
+  }
+  return normalizeTtsText(finalText.slice(sliceIndex));
+}
+
+function scheduleStreamedReplyDisplay({ immediate = false } = {}) {
+  if (!streamedReplyQueue.length || segmentTimer) return;
+  if (immediate) {
+    showNextStreamedReplySegment();
+    return;
+  }
+  const elapsed = Date.now() - streamedReplyLastShownAt;
+  const delay = Math.max(0, getSegmentDisplayDelay(streamedReplyLastShownText) - elapsed);
+  segmentTimer = window.setTimeout(() => {
+    segmentTimer = 0;
+    showNextStreamedReplySegment();
+  }, delay);
+}
+
+function showNextStreamedReplySegment() {
+  window.clearTimeout(segmentTimer);
+  segmentTimer = 0;
+  if (!streamedReplyQueue.length || !isTurnActive(streamingReplyTurnToken)) return;
+
+  const text = streamedReplyQueue.shift();
+  streamedReplyLastShownText = text;
+  streamedReplyLastShownAt = Date.now();
+  firstSpeechSegmentShown = true;
+  displayReplyBubbleText(text, { speaking: true });
+
+  if (streamedReplyQueue.length) {
+    scheduleStreamedReplyDisplay();
+  } else if (streamingReplyFinalized) {
+    scheduleBubbleReset(Math.max(String(text || "").length, 4), bubbleToken);
+  }
+}
+
+function finalizeStreamedReplyDisplay() {
+  if (!streamingReplyText) return;
+  streamingReplyFinalized = true;
+  if (streamedReplyQueue.length) {
+    scheduleStreamedReplyDisplay();
+    return;
+  }
+  if (replyDisplayActive && bubbleKind === "reply") {
+    scheduleBubbleReset(Math.max(String(streamedReplyLastShownText || "").length, 4), bubbleToken);
+  }
+}
+
+function resetStreamingTtsState(turnToken = 0) {
+  streamingTtsTurnToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
+  streamingTtsText = "";
+  streamingTtsSegmentKeys.clear();
+}
+
+function ensureStreamingTtsTurn(turnToken) {
+  const normalizedToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
+  if (streamingTtsTurnToken === normalizedToken) return;
+  resetStreamingTtsState(normalizedToken);
+}
+
+function queueStreamedTtsSegment(text, turnToken, segmentIndex = null) {
+  const normalized = normalizeTtsText(text);
+  if (!normalized || !isTurnActive(turnToken) || !state.voiceEnabled) return;
+  if (resourceState.tts?.enabled === false) return;
+
+  ensureStreamingTtsTurn(turnToken);
+  const textKey = buildSpeechTextKey(normalized);
+  if (!textKey) return;
+  const numericIndex = Number(segmentIndex);
+  const segmentKey = Number.isFinite(numericIndex)
+    ? `${numericIndex}:${textKey}`
+    : textKey;
+  if (streamingTtsSegmentKeys.has(segmentKey)) return;
+
+  streamingTtsSegmentKeys.add(segmentKey);
+  streamingTtsText = normalizeTtsText(streamingTtsText ? `${streamingTtsText}${normalized}` : normalized);
+  queueTtsItems([normalized], `stream:${turnToken}:${segmentKey}`, { append: true });
+}
+
+function queueLiveTtsPayloadItems(items, signature = "") {
+  const normalized = (Array.isArray(items) ? items : [items])
+    .map((item) => normalizeTtsText(item))
+    .filter(Boolean);
+  if (!normalized.length) return;
+
+  if (streamingTtsText) {
+    const tail = removeStreamingTtsPrefix(normalized.join(""));
+    if (tail) {
+      queueTtsItems([tail], signature ? `${signature}:tail` : "stream-tail", { append: true });
+    }
+    return;
+  }
+
+  queueTtsItems(normalized, signature);
+}
+
+function removeStreamingTtsPrefix(text) {
+  const finalText = normalizeTtsText(text);
+  const prefix = normalizeTtsText(streamingTtsText);
+  if (!finalText || !prefix) return finalText;
+  if (finalText.startsWith(prefix)) return normalizeTtsText(finalText.slice(prefix.length));
+
+  const finalKey = buildSpeechTextKey(finalText);
+  const prefixKey = buildSpeechTextKey(prefix);
+  if (!prefixKey || !finalKey.startsWith(prefixKey)) return "";
+  if (finalKey.length <= prefixKey.length) return "";
+
+  let compactCount = 0;
+  let sliceIndex = 0;
+  for (let index = 0; index < finalText.length; index += 1) {
+    if (!/\s/.test(finalText[index])) compactCount += 1;
+    if (compactCount >= prefixKey.length) {
+      sliceIndex = index + 1;
+      break;
+    }
+  }
+  return normalizeTtsText(finalText.slice(sliceIndex));
+}
+
+function scheduleTtsPrewarm({ force = false, delayMs = TTS_PREWARM_DELAY_MS } = {}) {
+  window.clearTimeout(ttsPrewarmTimer);
+  ttsPrewarmTimer = 0;
+  if (!canRunTtsPrewarm()) return;
+  ttsPrewarmTimer = window.setTimeout(() => {
+    ttsPrewarmTimer = 0;
+    void runTtsPrewarm({ force });
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
+function cancelTtsPrewarm() {
+  window.clearTimeout(ttsPrewarmTimer);
+  ttsPrewarmTimer = 0;
+  if (ttsPrewarmController) {
+    ttsPrewarmController.abort();
+    ttsPrewarmController = null;
+  }
+  ttsPrewarmInFlightKey = "";
+}
+
+function canRunTtsPrewarm() {
+  if (!state.voiceEnabled || resourceState.health !== "online" || resourceState.tts?.enabled === false) return false;
+  if (sending || ttsActive || ttsQueue.length > 0 || replyDisplayActive || proactiveWakeRunning) return false;
+  if (voiceInputState === "recording" || voiceInputState === "processing") return false;
+  return true;
+}
+
+function getTtsPrewarmKey() {
+  return [
+    getCharacterRuntimeKey(),
+    String(resourceState.tts?.endpoint || ""),
+    String(resourceState.tts?.responseMediaType || "")
+  ].join("::");
+}
+
+async function runTtsPrewarm({ force = false } = {}) {
+  if (!canRunTtsPrewarm()) return;
+  const key = getTtsPrewarmKey();
+  const warmedAt = Number(ttsPrewarmReadyAtByKey.get(key) || 0);
+  if (!force && warmedAt && Date.now() - warmedAt < TTS_PREWARM_COOLDOWN_MS) return;
+  if (ttsPrewarmInFlightKey === key) return;
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), TTS_PREWARM_TIMEOUT_MS);
+  const startedAt = performance.now();
+  ttsPrewarmController = controller;
+  ttsPrewarmInFlightKey = key;
+
+  try {
+    const requestInit = {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        text: TTS_PREWARM_TEXT,
+        ...buildBackendCharacterContext()
+      })
+    };
+    if (isTauriRuntime) {
+      requestInit.connectTimeout = TTS_PREWARM_TIMEOUT_MS;
+    } else {
+      requestInit.signal = controller.signal;
+    }
+
+    const response = await backendFetch(buildBackendEndpointUrl("tts", "/tts", { t: Date.now() }), requestInit);
+    if (response.ok) {
+      await response.arrayBuffer();
+      ttsPrewarmReadyAtByKey.set(key, Date.now());
+      logTtsTiming("prewarm-ready", {
+        requestMs: Math.round(performance.now() - startedAt),
+        character: getCurrentCharacterPackId()
+      });
+    } else {
+      logTtsTiming("prewarm-skipped", { status: response.status });
+    }
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      logTtsTiming("prewarm-failed", { error: formatError(error) });
+    }
+  } finally {
+    window.clearTimeout(timeoutId);
+    if (ttsPrewarmController === controller) ttsPrewarmController = null;
+    if (ttsPrewarmInFlightKey === key) ttsPrewarmInFlightKey = "";
+  }
+}
+
+function queueTtsItems(items, signature = "", { append = false } = {}) {
   const normalized = (Array.isArray(items) ? items : [items])
     .map((item) => normalizeTtsText(item))
     .filter(Boolean);
@@ -5796,13 +6621,26 @@ function queueTtsItems(items, signature = "") {
     setRuntimeStatus("后端语音暂未开启", { mode: "error" });
     return;
   }
+  const nextItems = buildTtsQueueItems(normalized);
+  if (!nextItems.length) return;
+  cancelTtsPrewarm();
+
+  if (append) {
+    ttsQueue.push(...nextItems);
+    if (!ttsActive) {
+      ttsToken += 1;
+      void runTtsQueue(ttsToken);
+    }
+    return;
+  }
+
   if (signature && signature === lastTtsSignature) return;
 
   stopTts({ resetSignature: false });
   lastTtsSignature = signature || `tts:${normalized.join("\u241e")}`;
   ttsToken += 1;
   const token = ttsToken;
-  ttsQueue = normalized;
+  ttsQueue = nextItems;
   void runTtsQueue(token);
 }
 
@@ -5836,12 +6674,34 @@ function stopTts({ resetSignature = true } = {}) {
 
 async function runTtsQueue(token) {
   setTtsActive(true);
+  let pendingPrepared = startNextTtsPrepare(token);
   try {
-    while (token === ttsToken && state.voiceEnabled && ttsQueue.length > 0) {
-      const text = ttsQueue.shift();
-      if (text) await playTtsText(text, token);
+    while (token === ttsToken && state.voiceEnabled) {
+      if (!pendingPrepared) pendingPrepared = startNextTtsPrepare(token);
+      if (!pendingPrepared) break;
+
+      const prepared = await pendingPrepared;
+      if (prepared?.audio && (token !== ttsToken || !state.voiceEnabled)) {
+        discardPreparedTtsAudio(prepared.audio);
+        break;
+      }
+
+      const nextPrepared = token === ttsToken && state.voiceEnabled ? startNextTtsPrepare(token) : null;
+      pendingPrepared = nextPrepared;
+      if (prepared?.error) {
+        reportTtsError(prepared.error, token);
+      } else if (prepared?.audio) {
+        try {
+          await playPreparedTtsAudio(prepared.audio, token);
+        } catch (error) {
+          reportTtsError(error, token);
+        }
+      }
     }
   } finally {
+    if (token !== ttsToken || !state.voiceEnabled) {
+      discardPendingTtsPrepare(pendingPrepared);
+    }
     if (token === ttsToken) {
       ttsQueue = [];
       setTtsActive(false);
@@ -5849,9 +6709,26 @@ async function runTtsQueue(token) {
   }
 }
 
-async function playTtsText(text, token) {
+function startNextTtsPrepare(token) {
+  while (ttsQueue.length > 0) {
+    const text = ttsQueue.shift();
+    if (!text) continue;
+    return fetchTtsAudio(text, token)
+      .then((audio) => ({ text, audio }))
+      .catch((error) => ({ text, error }));
+  }
+  return null;
+}
+
+async function fetchTtsAudio(text, token) {
   const controller = new AbortController();
+  const startedAt = performance.now();
   const timeoutId = window.setTimeout(() => controller.abort(), TTS_TIMEOUT_MS);
+  const slowTimerId = window.setTimeout(() => {
+    if (token === ttsToken && ttsController === controller && !controller.signal.aborted) {
+      setRuntimeStatus("语音生成中...", { mode: "speaking" });
+    }
+  }, TTS_SLOW_REQUEST_MS);
   ttsController = controller;
 
   try {
@@ -5874,26 +6751,87 @@ async function playTtsText(text, token) {
     if (!response.ok) throw new Error(await readBackendErrorMessage(response, `TTS HTTP ${response.status}`));
 
     const arrayBuffer = await response.arrayBuffer();
-    if (token !== ttsToken || controller.signal.aborted) return;
+    if (token !== ttsToken) return null;
+    if (controller.signal.aborted) throw createAbortError();
 
     const contentType = response.headers.get("content-type") || "audio/mpeg";
     const blob = new Blob([arrayBuffer], { type: contentType });
-    ttsObjectUrl = URL.createObjectURL(blob);
+    const finishedAt = performance.now();
+    const audio = {
+      text,
+      contentType,
+      objectUrl: URL.createObjectURL(blob),
+      requestMs: Math.round(finishedAt - startedAt)
+    };
+    logTtsTiming("prepared", {
+      requestMs: audio.requestMs,
+      textLength: text.length,
+      contentType: audio.contentType
+    });
+    return audio;
+  } finally {
+    window.clearTimeout(timeoutId);
+    window.clearTimeout(slowTimerId);
+    if (ttsController === controller) ttsController = null;
+  }
+}
+
+async function playPreparedTtsAudio(prepared, token) {
+  if (!prepared?.objectUrl) return;
+  ttsObjectUrl = prepared.objectUrl;
+  prepared.objectUrl = "";
+  try {
     els.voicePlayer.src = ttsObjectUrl;
     els.voicePlayer.currentTime = 0;
     els.voicePlayer.volume = state.voiceVolume;
+    setRuntimeStatus("语音播放中", { mode: "speaking" });
+    const playRequestedAt = performance.now();
     await els.voicePlayer.play();
-    if (token !== ttsToken || controller.signal.aborted) return;
+    if (token !== ttsToken) return;
+    logTtsTiming("playback-started", {
+      requestMs: prepared.requestMs,
+      playStartupMs: Math.round(performance.now() - playRequestedAt),
+      textLength: prepared.text?.length || 0
+    });
     await waitForTtsAudio(token);
-  } catch (error) {
-    if (!controller.signal.aborted && token === ttsToken) {
-      setRuntimeStatus(`语音播放失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
-    }
   } finally {
-    window.clearTimeout(timeoutId);
-    if (ttsController === controller) ttsController = null;
     cleanupTtsObjectUrl();
   }
+}
+
+function discardPreparedTtsAudio(prepared) {
+  if (!prepared?.objectUrl) return;
+  URL.revokeObjectURL(prepared.objectUrl);
+  prepared.objectUrl = "";
+}
+
+function discardPendingTtsPrepare(pendingPrepared) {
+  if (!pendingPrepared) return;
+  pendingPrepared
+    .then((prepared) => {
+      if (prepared?.audio) discardPreparedTtsAudio(prepared.audio);
+    })
+    .catch(() => {});
+}
+
+function reportTtsError(error, token) {
+  if (token !== ttsToken) return;
+  setRuntimeStatus(`语音播放失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
+}
+
+function createAbortError() {
+  const error = new Error("请求超时");
+  error.name = "AbortError";
+  return error;
+}
+
+function logTtsTiming(event, details = {}) {
+  try {
+    if (window.localStorage?.getItem("akane.debug.tts") !== "1") return;
+  } catch {
+    return;
+  }
+  console.debug("[Akane TTS]", event, details);
 }
 
 function waitForTtsAudio(token) {
@@ -5954,6 +6892,57 @@ function setTtsActive(active) {
 
 function normalizeTtsText(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function buildTtsQueueItems(items) {
+  const source = (Array.isArray(items) ? items : [items])
+    .map((item) => normalizeTtsText(item))
+    .filter(Boolean);
+  if (!source.length) return [];
+
+  const chunks = [];
+  let current = "";
+  const pushCurrent = () => {
+    if (!current.trim()) return;
+    chunks.push(current.trim());
+    current = "";
+  };
+
+  for (const item of source) {
+    const pieces = splitTtsTextForLatency(item);
+    for (const piece of pieces) {
+      const text = normalizeTtsText(piece);
+      if (!text) continue;
+      const glue = current && /[。！？!?；;，,、…]$/.test(current) ? "" : "，";
+      const next = current ? `${current}${glue}${text}` : text;
+      if (current && next.length > TTS_CHUNK_SOFT_LIMIT) {
+        pushCurrent();
+        current = text;
+      } else {
+        current = next;
+      }
+    }
+  }
+
+  pushCurrent();
+  return chunks.length ? chunks : source;
+}
+
+function splitTtsTextForLatency(text) {
+  const normalized = normalizeTtsText(text);
+  if (!normalized) return [];
+  const phraseMatches = normalized.match(/[^。！？!?；;，,、…]+[。！？!?；;，,、…]?/g) || [normalized];
+  const pieces = [];
+  for (const phrase of phraseMatches) {
+    const cleanPhrase = normalizeTtsText(phrase);
+    if (!cleanPhrase) continue;
+    if (cleanPhrase.length <= TTS_CHUNK_SOFT_LIMIT) {
+      pieces.push(cleanPhrase);
+    } else {
+      pieces.push(...hardWrapText(cleanPhrase, TTS_CHUNK_SOFT_LIMIT));
+    }
+  }
+  return pieces.length ? pieces : [normalized];
 }
 
 async function probeClickThrough(durationMs) {

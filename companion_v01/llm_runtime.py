@@ -73,6 +73,10 @@ class _TopLevelJSONStreamTap:
         self._speech_segment_count = 0
         self._last_segment_end = 0
         self._max_speech_segments = 3
+        self._speech_segments_array_depth: int | None = None
+        self._emitted_speech_segment_keys: set[str] = set()
+        self._top_level_speech_seen = False
+        self._latest_speech_segments: list[str] = []
 
     def feed(self, text: Any) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
@@ -100,6 +104,15 @@ class _TopLevelJSONStreamTap:
             if char in " \t\r\n":
                 continue
 
+            if self._speech_segments_array_depth is not None:
+                if char == '"' and self.depth == self._speech_segments_array_depth:
+                    self._start_string("speech_segment")
+                    continue
+                if char == "]" and self.depth == self._speech_segments_array_depth:
+                    self._speech_segments_array_depth = None
+                    self.depth = max(0, self.depth - 1)
+                    continue
+
             if char == "{":
                 self.depth += 1
                 if self.depth == 1:
@@ -114,6 +127,8 @@ class _TopLevelJSONStreamTap:
             if char == "[":
                 self.depth += 1
                 if self.expecting_value:
+                    if self.current_key == "speech_segments" and self.depth == 2:
+                        self._speech_segments_array_depth = self.depth
                     self.expecting_value = False
                 continue
 
@@ -164,15 +179,11 @@ class _TopLevelJSONStreamTap:
                     match = re.search(r"[。！？!?\n]", remaining)
                     if match:
                         end = self._last_segment_end + match.end()
-                        segment_text = self.latest_speech[self._last_segment_end:end].strip()
-                        if segment_text:
-                            self._speech_segment_count += 1
-                            events.append({
-                                "type": "speech_segment",
-                                "index": self._speech_segment_count - 1,
-                                "text": segment_text,
-                            })
-                            self._last_segment_end = end
+                        self._emit_speech_segment(
+                            events,
+                            self.latest_speech[self._last_segment_end:end],
+                        )
+                        self._last_segment_end = end
         return events
 
     def _start_string(self, role: str) -> None:
@@ -224,6 +235,13 @@ class _TopLevelJSONStreamTap:
                 self.current_key = text
                 self.expecting_key = False
                 self.expecting_colon = True
+            elif self.string_role == "speech_segment":
+                segment_text = self._normalize_speech_segment_text(text)
+                if segment_text:
+                    self._latest_speech_segments.append(segment_text)
+                    if not self._top_level_speech_seen:
+                        self.latest_speech = "\n".join(self._latest_speech_segments)
+                    self._emit_speech_segment(events, segment_text)
             else:
                 if self.captured_value_key == "emotion":
                     self.latest_emotion = text
@@ -241,7 +259,31 @@ class _TopLevelJSONStreamTap:
     def _append_string_char(self, char: str, speech_delta: list[str]) -> None:
         self.string_buffer.append(char)
         if self.string_role == "value" and self.captured_value_key == "speech":
+            if not self._top_level_speech_seen and self._latest_speech_segments:
+                self.latest_speech = ""
+            self._top_level_speech_seen = True
             speech_delta.append(char)
+
+    def _emit_speech_segment(self, events: list[dict[str, Any]], text: str) -> bool:
+        if self._speech_segment_count >= self._max_speech_segments:
+            return False
+        segment_text = self._normalize_speech_segment_text(text)
+        if not segment_text:
+            return False
+        key = re.sub(r"\s+", "", segment_text)
+        if not key or key in self._emitted_speech_segment_keys:
+            return False
+        self._emitted_speech_segment_keys.add(key)
+        self._speech_segment_count += 1
+        events.append({
+            "type": "speech_segment",
+            "index": self._speech_segment_count - 1,
+            "text": segment_text,
+        })
+        return True
+
+    def _normalize_speech_segment_text(self, text: Any) -> str:
+        return " ".join(str(text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines()).strip()
 
     def _reset_top_level_pair(self) -> None:
         self.current_key = ""

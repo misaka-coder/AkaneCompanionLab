@@ -31,9 +31,9 @@ function makeCapabilitiesCatalogBody() {
     execution: "read-only",
     providerConfigStatus: "available",
     summary: {
-      total: 9,
-      byStatus: { ready: 4, missing_executor: 1, disabled: 1, missing_config: 2, configured: 1 },
-      byKind: { tool: 3, provider: 5, workflow: 1 },
+      total: 12,
+      byStatus: { ready: 5, available: 2, missing_executor: 1, disabled: 1, missing_config: 2, configured: 1 },
+      byKind: { tool: 3, provider: 6, workflow: 1, mcp_tool: 2 },
     },
     capabilities: [
       {
@@ -155,6 +155,68 @@ function makeCapabilitiesCatalogBody() {
         defaultEndpoint: "http://127.0.0.1:9880",
         risk: "medium",
         usedBy: ["voice", "desktop_pet"],
+      },
+      {
+        id: "provider.mcp.browser",
+        serverId: "browser",
+        kind: "provider",
+        type: "mcp_provider",
+        source: "mcp",
+        adapter: "mcp_stdio",
+        executionMode: "external",
+        name: "Browser MCP",
+        enabled: true,
+        configured: true,
+        configurable: true,
+        status: "ready",
+        reason: "",
+        transport: "stdio",
+        commandName: "C:\\Users\\Lenovo\\mcp\\browser-mcp.exe",
+        argsCount: 2,
+        envCount: 1,
+        toolCount: 2,
+        lastDiscovery: { status: "ready", discoveredAt: "2026-06-07T01:02:03Z", toolCount: 2 },
+        risk: "medium",
+        requiresConfirmation: true,
+        usedBy: ["agent_prompt", "external_tools"],
+      },
+      {
+        id: "mcp.browser.read_page",
+        serverId: "browser",
+        kind: "mcp_tool",
+        type: "tool",
+        source: "mcp",
+        adapter: "mcp_stdio",
+        executionMode: "external",
+        toolType: "read_page",
+        providerId: "provider.mcp.browser",
+        name: "read_page",
+        description: "Read current browser page",
+        enabled: true,
+        status: "available",
+        risk: "medium",
+        requiresConfirmation: false,
+        exposedToPrompt: false,
+        inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+      },
+      {
+        id: "mcp.browser.browser_click",
+        serverId: "browser",
+        kind: "mcp_tool",
+        type: "tool",
+        source: "mcp",
+        adapter: "mcp_stdio",
+        executionMode: "external",
+        toolType: "browser_click",
+        providerId: "provider.mcp.browser",
+        name: "browser_click",
+        description: "Click a browser page element",
+        enabled: true,
+        status: "available",
+        risk: "high",
+        requiresConfirmation: true,
+        exposedToPrompt: false,
+        inputSchema: { type: "object", properties: { selector: { type: "string" } }, required: ["selector"] },
       },
       {
         id: "workflow.workshop.portrait.cutout",
@@ -438,9 +500,30 @@ function makeSnapshotFetch({
     abilities.providers.every((provider) => typeof provider.defaultEndpoint === "string"),
     "1.21i provider summaries should include safe default endpoint hints"
   );
+  assert.equal(
+    abilities.providers.some((provider) => provider.id === "provider.mcp.browser"),
+    false,
+    "1.21i2 MCP providers should not be rendered as localhost endpoint config rows"
+  );
   const providerText = JSON.stringify(abilities.providers);
   for (const forbidden of ["token=", "secret", "C:/", "cachedPath"]) {
     assert.equal(providerText.includes(forbidden), false, `1.21j provider summary should not expose ${forbidden}`);
+  }
+  assert.ok(Array.isArray(abilities.mcpServers), "1.21j2 MCP server summaries should be an array");
+  assert.equal(abilities.mcpServers.length, 1, "1.21j3 MCP server summaries should include configured server");
+  const browserMcp = abilities.mcpServers[0];
+  assert.equal(browserMcp.title, "Browser MCP", "1.21j4 MCP summary should preserve display name");
+  assert.equal(browserMcp.commandName, "browser-mcp.exe", "1.21j5 MCP summary should only expose command basename");
+  assert.equal(browserMcp.toolCount, 2, "1.21j6 MCP summary should include discovered tool count");
+  assert.equal(browserMcp.highRiskCount, 1, "1.21j7 MCP summary should count high-risk tools");
+  assert.equal(browserMcp.promptExposedCount, 0, "1.21j8 MCP tools should remain hidden from prompt by default");
+  assert.ok(
+    browserMcp.safeToolLabels.includes("浏览器上下文") || browserMcp.safeToolLabels.includes("需确认的操作"),
+    "1.21j9 MCP summary should translate raw tool ids into user-facing capability labels"
+  );
+  const mcpText = JSON.stringify(abilities.mcpServers);
+  for (const forbidden of ["Lenovo", "C:", "api_key", "secret", "read_page", "browser_click"]) {
+    assert.equal(mcpText.includes(forbidden), false, `1.21j10 MCP summary should not expose raw or sensitive detail ${forbidden}`);
   }
   assert.ok(
     abilities.workflows.some((workflow) => workflow.title === "透明背景处理" && workflow.statusLabel === "未配置"),

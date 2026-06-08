@@ -149,6 +149,8 @@ def build_desktop_activity_prompt(
     )
     source_id = sanitize_desktop_context_text(activity.get("source_id") or activity.get("handle"), 60)
     status = str(activity.get("status") or "").strip().lower() or "unknown"
+    source_kind = str(activity.get("source_kind") or activity.get("sourceKind") or "").strip().lower()
+    is_external_system_media = source_kind == "system_media" or activity.get("system_media") is True
     progress = format_activity_time(activity.get("progress_seconds"))
     duration = format_activity_time(activity.get("duration_seconds"))
 
@@ -248,23 +250,29 @@ def build_desktop_activity_prompt(
         if lyric_next and lyric_current:
             lines.append(f"- 下一句歌词：{lyric_next}")
     if activity_type == "audio_playback":
-        lines.append(
-            "- 普通音频不会因为本轮消息自动暂停；如果你想控制播放，请输出 activity action。"
-        )
+        if is_external_system_media:
+            lines.append("- 系统媒体感知是只读线索；本轮不要输出播放、暂停、切歌等 activity action。")
+        else:
+            lines.append(
+                "- 普通音频不会因为本轮消息自动暂停；如果你想控制播放，请输出 activity action。"
+            )
     elif status == "interrupted":
         lines.append(
             "- 主人发消息时表演已暂停；如果你想继续表演，需要输出 activity action，而不是假装仍在继续。"
         )
-    lines.append(
-        '- 可选 activity 输出：{"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"可选 workspace:attachment:xxx / workspace:generated:xxx / file/audio/gen handle"}；不需要控制时输出 null。'
-    )
-    lines.append(
-        "- activity 是给桌宠执行的请求，不是执行成功回执；speech 里不要说已经播放、已经暂停或已经继续，"
-        "可以自然说“我来试试”“我帮你继续”。"
-    )
-    lines.append(
-        "- 切换到某个具体音频时，play 应尽量带 source_id（推荐列表中已有 source_id）；只继续当前音频时，用 resume + target=current。"
-    )
+    if is_external_system_media:
+        lines.append("- 可选 activity 输出：null。")
+    else:
+        lines.append(
+            '- 可选 activity 输出：{"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"可选 workspace:attachment:xxx / workspace:generated:xxx / file/audio/gen handle"}；不需要控制时输出 null。'
+        )
+        lines.append(
+            "- activity 是给桌宠执行的请求，不是执行成功回执；speech 里不要说已经播放、已经暂停或已经继续，"
+            "可以自然说“我来试试”“我帮你继续”。"
+        )
+        lines.append(
+            "- 切换到某个具体音频时，play 应尽量带 source_id（推荐列表中已有 source_id）；只继续当前音频时，用 resume + target=current。"
+        )
     activity_prompt = "\n".join(lines)
     timeline_prompt = build_desktop_music_timeline_prompt(
         engine,
@@ -291,12 +299,19 @@ def build_desktop_music_timeline_prompt(
         or activity.get("lyricNext")
     ):
         return ""
+    status = str(activity.get("status") or "").strip().lower()
+    progress_seconds = safe_activity_seconds(activity.get("progress_seconds"))
+    source_kind = str(activity.get("source_kind") or activity.get("sourceKind") or "").strip().lower()
+    is_external_system_media = source_kind == "system_media" or activity.get("system_media") is True
+    if is_external_system_media:
+        return build_system_media_no_lyrics_prompt(activity)
     service = engine._get_desktop_music_timeline_service()
     if service is None:
         return ""
-    status = str(activity.get("status") or "").strip().lower()
-    progress_seconds = safe_activity_seconds(activity.get("progress_seconds"))
-    should_prepare = status in {"running", "paused", "interrupted"} or progress_seconds > 0
+    should_prepare = (
+        not is_external_system_media
+        and (status in {"running", "paused", "interrupted"} or progress_seconds > 0)
+    )
     if should_prepare:
         try:
             service.prepare_timeline(
@@ -311,6 +326,37 @@ def build_desktop_music_timeline_prompt(
         session_id=session_id,
         activity=activity,
     )
+
+
+def build_system_media_no_lyrics_prompt(activity: dict[str, Any]) -> str:
+    title = sanitize_desktop_context_text(activity.get("title"), 120) or "当前系统音乐"
+    lyric_status = str(activity.get("lyric_status") or activity.get("lyricStatus") or "").strip().lower()
+    lyric_reason = str(activity.get("lyric_reason") or activity.get("lyricReason") or "").strip().lower()
+    lines = [
+        "【当前音乐位置】",
+        f"- 正在播放：{title}",
+    ]
+    progress = format_activity_time(activity.get("progress_seconds"))
+    duration = format_activity_time(activity.get("duration_seconds"))
+    if progress:
+        timing = f"当前进度：{progress}"
+        if duration:
+            timing += f" / {duration}"
+        lines.append(f"- {timing}。")
+    if lyric_status == "low-confidence":
+        lines.append("- 在线歌词匹配可信度不够，当前不要引用歌词原文。")
+    elif lyric_status == "not-found":
+        lines.append("- 暂时没有找到这首歌的同步歌词。")
+    elif lyric_status == "disabled":
+        lines.append("- 在线歌词检索已关闭。")
+    elif lyric_status == "unavailable":
+        reason_hint = "provider 不可用" if lyric_reason else "歌词线索暂不可用"
+        lines.append(f"- {reason_hint}，当前不能确定唱到哪一句。")
+    else:
+        lines.append("- 歌词线索还没准备好，当前还不能确定唱到哪一句。")
+    lines.append("- 你现在只知道系统正在播放的歌曲、播放状态和进度；不要编造歌词内容。")
+    lines.append("- 请把这理解成你自然注意到旁边正在播放的音乐，不要说自己在读文件。")
+    return "\n".join(lines)
 
 
 def safe_activity_seconds(value: Any) -> float:

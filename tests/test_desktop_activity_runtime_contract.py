@@ -538,6 +538,45 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertNotIn("歌词线索还没准备好", prompt)
         self.assert_no_music_backend_terms(prompt)
 
+    def test_system_media_activity_skips_backend_timeline_prepare(self) -> None:
+        class PrepareAwareTimelineService:
+            def __init__(self):
+                self.prepared_activity = None
+
+            def prepare_timeline(self, *, profile_user_id: str, session_id: str, activity: dict):
+                self.prepared_activity = dict(activity)
+                return {"ok": True, "timeline": None, "scheduled": True}
+
+            def build_prompt_projection(self, *, profile_user_id: str, session_id: str, activity: dict):
+                return "【当前音乐位置】\n- 这首歌的歌词线索还没准备好。"
+
+        service = PrepareAwareTimelineService()
+        self.engine.desktop_music_timeline_service = service
+        prompt = self.engine._build_desktop_activity_prompt(
+            {
+                "type": "audio_playback",
+                "status": "running",
+                "title": "晴天 - 周杰伦",
+                "source_id": "system_media:qqmusic-qingtian",
+                "source_kind": "system_media",
+                "system_media": True,
+                "progress_seconds": 135,
+            },
+            _desktop_context(),
+            profile_user_id="master",
+            session_id="desktop_pet_test",
+        )
+
+        self.assertIsNone(service.prepared_activity)
+        self.assertIn("晴天 - 周杰伦", prompt)
+        self.assertIn("进度 02:15", prompt)
+        self.assertIn("歌词线索还没准备好", prompt)
+        self.assertIn("系统媒体感知是只读线索", prompt)
+        self.assertIn("可选 activity 输出：null", prompt)
+        self.assertNotIn('"action":"play|pause|resume|stop|previous|next"', prompt)
+        self.assertNotIn("切换到某个具体音频", prompt)
+        self.assert_no_music_backend_terms(prompt)
+
     def test_ready_audio_does_not_start_timeline_prepare(self) -> None:
         class PrepareAwareTimelineService:
             def __init__(self):

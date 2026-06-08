@@ -83,6 +83,22 @@ exposes completed outputs through a profile-scoped byte route. The workshop now
 shows "自动抠图" only when the catalog reports the workflow as `ready` and
 `executionReady:true`; generated portraits are written back only through the
 Tauri `import_generated_portrait_image` safe character-pack boundary.
+Phase 6A adds MCP catalog visibility in the control-center abilities page. MCP
+servers are rendered as a separate read-only "外部 MCP 工具" status panel with
+tool counts, user-facing capability labels, prompt exposure state, and
+confirmation/risk hints. MCP providers are intentionally not rendered as
+localhost endpoint config rows, and the UI does not expose command paths, cwd,
+args, env values, raw tool IDs, or any execution button.
+Phase 6B binds a minimal production stdio MCP discoverer. It starts the
+configured server without shell interpolation, performs only `initialize` and
+`tools/list`, applies a timeout, suppresses stderr from public responses, and
+passes discovered tool summaries through the existing sanitizer. It still never
+calls MCP tools.
+Phase 6C adds the minimal control-center MCP configuration entrance. The
+abilities page can expand an MCP server row, save stdio server config through
+`abilities.mcp.config.save`, and manually run tool discovery through
+`abilities.mcp.discover`. The collapsed dashboard remains compact and safe; the
+private command/cwd/args/env values are saved locally but not echoed back.
 
 Files:
 
@@ -2131,14 +2147,18 @@ Frontend configuration entrance:
 - `abilities.provider.config.save` and `abilities.provider.healthCheck` are
   real backend-route actions. They go through the action router and data source,
   then call the provider config/health-check routes.
+- `abilities.provider.ttsTest` is now a real backend-route action for
+  `provider.tts.gpt_sovits.local`. It sends only a localhost endpoint, short
+  test text, and optional safe `voiceProfileId` to
+  `/capabilities/providers/{providerId}/tts-test`, receives a bounded audio
+  sample, and plays it in the control center.
 - Mock source does not fake provider write success; it returns
   `not-implemented`.
 
 Still not implemented:
 
 - no ComfyUI workflow execution
-- no GPT-SoVITS synthesis call
-- no model path picker
+- no GPT-SoVITS model path picker or profile-to-model manager
 - no workflow slot mapping
 
 ### Phase 3: Workflow Skeleton
@@ -2395,6 +2415,15 @@ Implemented Phase 4I:
   `inputs` paths. Failure reasons stay as safe short enums such as
   `workflow_file_missing`, `workflow_file_invalid_json`, or
   `slot_mapping_target_missing`.
+- Control center abilities UI provides a real "导入 JSON" action for this
+  workflow. The frontend reads a user-selected ComfyUI API workflow `.json`
+  file, sends only `workflowPath` and `workflowJson` through
+  `abilities.workflow.file.import`, and the backend stores it through
+  `POST /capabilities/workflows/{workflowId}/file` under the current profile's
+  capability directory. Users do not need to create
+  `users_data/<profile>/capabilities/...` folders by hand. The import response
+  returns only the safe relative `workflowPath`; it does not expose absolute
+  paths, execute ComfyUI, or write character assets.
 - `GET /capabilities/workflow-jobs/{jobId}/outputs/{outputHandle}` returns
   completed image bytes only for the same resolved profile id. It returns 404
   for wrong profile or unknown output and 409 before completion.
@@ -2412,7 +2441,8 @@ Implemented Phase 4I:
 
 Acceptance:
 
-- workflow JSON path can be configured
+- workflow JSON path can be configured and the JSON file can be imported from
+  the control center without manual folder placement
 - required slots are validated
 - test run can fail with structured reason
 - configured cutout can run through ComfyUI and write back through Tauri import
@@ -2463,6 +2493,81 @@ Acceptance:
 - missing voice models degrade cleanly
 - status records requested provider and active fallback provider when degraded
 
+Implemented Phase 5:
+
+- `/capabilities` now exposes voice provider entries and resolution records.
+  Built-in provider entries include `provider.tts.edge`,
+  `provider.voice.text_only`, `provider.asr.faster_whisper`, and
+  `provider.asr.text_input`; the external configurable provider
+  `provider.tts.gpt_sovits.local` remains under the provider config routes.
+- `resolutions.voice.tts.character` uses a `first_ready` policy. A character
+  pack may request a voice provider through `character.json.voice.provider` and
+  `character.json.voice.profile_id`. The response records
+  `requestedProviderId`, `activeProviderId`, optional `fallbackProviderId`,
+  `voiceProfileId`, `status`, and safe short `reason` values.
+- Missing GPT-SoVITS voice profile information degrades to Edge TTS with
+  `reason: requested_voice_profile_missing`. If Edge is unavailable, the
+  explicit fallback is `provider.voice.text_only`, meaning Akane still replies
+  through text bubbles rather than pretending audio synthesis succeeded.
+- `resolutions.voice.input.asr` resolves faster-whisper first, then degrades to
+  `provider.asr.text_input` when local ASR is missing or unavailable. Text input
+  is represented as a fallback provider, not as fake speech recognition.
+- `DesktopPetCharacterResourceService.build_character_voice_preference()` reads
+  only declarative voice hints from a character pack. It does not read model
+  files, grant execution permissions, or expose local absolute paths.
+- The control center voice page renders compact provider status rows for TTS
+  and ASR. It shows the active provider, whether the route is degraded, and the
+  gentle reason, without exposing raw local paths, tokens, prompt text, or model
+  internals.
+- The `/tts` runtime route now uses the same character voice hints and
+  profile-scoped provider config. When a character requests
+  `provider.tts.gpt_sovits.local`, has a safe `profile_id`, and the user has
+  enabled a loopback GPT-SoVITS endpoint, Akane calls the external
+  GPT-SoVITS-compatible `/tts` API and returns its audio media type to the
+  desktop client.
+- GPT-SoVITS synthesis failure degrades to Edge TTS instead of surfacing a hard
+  desktop error when Edge is available. The response includes safe provider
+  headers such as `X-Akane-TTS-Provider`, `X-Akane-TTS-Requested-Provider`,
+  `X-Akane-TTS-Fallback`, and `X-Akane-TTS-Reason`; logs record provider ids
+  and exception type only, not external error text that may contain paths.
+- The desktop pet `/tts` request now sends `real_user_id`, `session_id`, and
+  `character_pack_id`, so synthesis can resolve the same per-profile capability
+  config that the control center edits.
+- The control center GPT-SoVITS provider row now has a short test control. It can
+  test a typed sentence against the configured/local endpoint, optionally pass a
+  safe `voiceProfileId`, and play the returned audio sample locally. This action
+  is bounded, returns structured failure states, does not save model/profile
+  fields, and does not auto-enable the provider.
+- The control center GPT-SoVITS provider row now also has a compact voice profile
+  form. It saves profile-scoped request fields through
+  `/capabilities/providers/{providerId}/voice-profiles/{voiceProfileId}/config`:
+  `displayName`, `enabled`, `textLang`, `promptLang`, `mediaType`,
+  `refAudioPath`, and `promptText`. Public catalog/list responses expose only
+  safe summaries such as `referenceAudioName` and `promptTextLength`; full local
+  paths and prompt/reference text stay inside
+  `users_data/<profile_user_id>/capabilities/capabilities.yaml`.
+- `/capabilities/voice-profiles` lists saved voice profile summaries for the
+  current profile. The abilities page reads it as an optional catalog: failure to
+  read profile summaries does not block the rest of the control center.
+- The `/tts` runtime passes a saved voice profile payload to the external
+  GPT-SoVITS-compatible client when a character pack requests
+  `provider.tts.gpt_sovits.local` plus a matching safe `profile_id`. This means
+  Akane can send reference audio path / reference text / language fields to a
+  local wrapper API, while still falling back to Edge TTS if the external call
+  fails.
+
+Still intentionally not done:
+
+- Akane does not yet manage GPT-SoVITS model files, GPT/Sovits weight selection,
+  model downloads, or profile-to-model binding workflows. V1 stores request
+  profile fields for an external local API; it does not load `.pth` / `.ckpt`
+  weights by itself. If a downloaded voice model requires selecting weights in
+  GPT-SoVITS first, that still happens in the external GPT-SoVITS app or a
+  user-provided wrapper.
+- RVC chaining is still reserved for a later voice conversion provider phase.
+- The voice page does not expose model file pickers or raw advanced
+  GPT-SoVITS/RVC parameters.
+
 ### Phase 6: MCP Provider
 
 Goal:
@@ -2478,6 +2583,66 @@ Acceptance:
 - schemas are normalized
 - risk/confirmation defaults applied
 - execution is logged
+
+Implemented Phase 6 foundation:
+
+- Profile-scoped MCP server config now lives in
+  `users_data/<profile_user_id>/capabilities/capabilities.yaml` under
+  `mcpServers`. V1 supports `stdio` servers with private `command`, `args`,
+  `cwd`, and safe non-secret `env` values.
+- Public MCP server responses expose only safe summaries: `serverId`,
+  display name, transport, command file name, args/env counts, discovery status,
+  and tool count. Full command paths, cwd, args, env values, API keys, tokens,
+  passwords, and secrets must not appear in `/capabilities`,
+  `/capabilities/mcp-servers`, snapshots, logs, or prompt context.
+- Backend routes:
+  - `GET /capabilities/mcp-servers`
+  - `POST /capabilities/mcp-servers/{serverId}/config`
+  - `POST /capabilities/mcp-servers/{serverId}/discover`
+- Discovery is explicit and requires a real `mcp_tool_discoverer` binding. If no
+  discoverer is bound, the discover route returns structured
+  `not-implemented` with `reason: mcp_discoverer_not_bound`; it does not fake a
+  successful connection or invent tools.
+- Production now binds a minimal `McpStdioToolDiscoverer` for stdio servers. It
+  performs only MCP `initialize` plus `tools/list`, never `tools/call`, uses
+  `create_subprocess_exec` without shell interpolation, applies a bounded
+  timeout, and discards stderr from public responses.
+- Discovered MCP tools are sanitized and stored as summaries only. Tool IDs are
+  normalized as `mcp.{serverId}.{toolName}` with duplicate tool names made
+  unique. Input schemas are reduced to bounded object schemas containing safe
+  property names, types, descriptions, and required fields only; defaults,
+  examples, and secret-looking fields are discarded.
+- `/capabilities` now merges configured/discovered MCP servers into the catalog:
+  the server appears as a provider (`provider.mcp.{serverId}`), and discovered
+  tools appear as `kind: "mcp_tool"`, `source: "mcp"`, `adapter:
+  "mcp_stdio"`, `executionMode: "external"`.
+- MCP tools are intentionally marked `exposedToPrompt: false` in this slice.
+  This is a catalog/discovery foundation, not prompt-time tool exposure and not
+  tool execution.
+- Risk defaults are applied at discovery time. Browser/click/write/delete/shell
+  style tools are `risk: high` and `requiresConfirmation: true`.
+- The control-center abilities page renders MCP servers in a dedicated status
+  panel. It shows display name, transport, command basename, discovered tool
+  count, broad user-facing tool categories, prompt exposure state, and
+  risk/confirmation hints. Expanding a row exposes a compact stdio config form
+  and a manual discovery button. It does not render raw tool IDs, input schema
+  parameter walls, full command paths, cwd, args, env values, or execution
+  buttons. Saved private command/cwd/args/env values are intentionally not
+  echoed back; modifying an existing server requires re-entering private
+  command details.
+
+Still intentionally not done:
+
+- Akane does not execute MCP tools yet.
+- MCP tools are not merged into `CapabilityRegistry.select()` and are not
+  available to every prompt turn.
+- The frontend MCP form is config/discovery only. It does not call tools, expose
+  MCP tools to prompt selection, or manage secret-bearing env values.
+- No secret-bearing env support exists. API keys and tokens need a separate
+  encrypted or user-approved secret store before they can be supported.
+- No MCP tool call runner is bound in production yet. A later slice should add
+  confirmation UX and a separate execution policy before any `tools/call`
+  support.
 
 ### Phase 7: Permission And Confirmation UX
 

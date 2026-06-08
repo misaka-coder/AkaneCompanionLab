@@ -10,11 +10,18 @@ const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);
 const providerBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave,
-  CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck
+  CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck,
+  CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest,
+  CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave
 ]);
 const workflowBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave,
+  CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport,
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate
+]);
+const mcpBackendActionIds = new Set([
+  CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave,
+  CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover
 ]);
 const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.chatNew]: "newSession",
@@ -122,7 +129,7 @@ export function createMockControlCenterSource(data = mockData) {
     },
     async runAction(actionId, payload = {}) {
       const normalizedActionId = normalizeActionId(actionId);
-      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId)) {
+      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId)) {
         return createNotImplementedActionResult(normalizedActionId);
       }
       return {
@@ -231,15 +238,16 @@ export function createBackendControlCenterSource(options = {}) {
       }
 
       setFallbackReason("unified-snapshot-unavailable");
-      const [health, diagnostics, workspace, resourceManifest, metrics, capabilitiesCatalog] = await Promise.all([
+      const [health, diagnostics, workspace, resourceManifest, metrics, capabilitiesCatalog, voiceProfilesCatalog] = await Promise.all([
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/health", { t: commonParams.t })),
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/desktop-pet/diagnostics", commonParams)),
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/desktop-pet/workspace/summary", commonParams)),
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/resource-manifest", commonParams)),
         fetchText(fetchImpl, buildBackendUrl(baseUrl, "/metrics", { t: commonParams.t })),
-        readCapabilitiesCatalog(fetchImpl, baseUrl, commonParams)
+        readCapabilitiesCatalog(fetchImpl, baseUrl, commonParams),
+        readVoiceProfilesCatalog(fetchImpl, baseUrl, commonParams)
       ]);
-      if (![health, diagnostics, workspace, resourceManifest, metrics, capabilitiesCatalog].some((item) => item.ok)) {
+      if (![health, diagnostics, workspace, resourceManifest, metrics, capabilitiesCatalog, voiceProfilesCatalog].some((item) => item.ok)) {
         setFallbackReason("all-backend-endpoints-failed");
         return null;
       }
@@ -256,7 +264,8 @@ export function createBackendControlCenterSource(options = {}) {
           workspace,
           resourceManifest,
           metrics,
-          capabilitiesCatalog
+          capabilitiesCatalog,
+          voiceProfilesCatalog
         },
         overviewRuntime: buildOverviewRuntimePatch({
           health: health.data,
@@ -281,7 +290,8 @@ export function createBackendControlCenterSource(options = {}) {
         voiceRuntime: buildVoiceRuntimePatch({
           health: health.data,
           diagnostics: diagnostics.data,
-          petState
+          petState,
+          capabilitiesCatalog: capabilitiesCatalog.data
         }),
         perceptionRuntime: buildPerceptionRuntimePatch({
           petState,
@@ -292,7 +302,8 @@ export function createBackendControlCenterSource(options = {}) {
           diagnostics: diagnostics.data,
           workspace: workspace.data,
           capabilitiesCatalog: capabilitiesCatalog.data,
-          connected: health.ok || diagnostics.ok || capabilitiesCatalog.ok
+          voiceProfilesCatalog: voiceProfilesCatalog.data,
+          connected: health.ok || diagnostics.ok || capabilitiesCatalog.ok || voiceProfilesCatalog.ok
         }),
         advancedRuntime: buildAdvancedRuntimePatch({
           health: health.data,
@@ -322,13 +333,15 @@ export function createBackendControlCenterSource(options = {}) {
         return createNotImplementedActionResult(normalizedActionId);
       }
 
-      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId)) {
+      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId)) {
         if (typeof fetchImpl !== "function") {
           return createNotImplementedActionResult(normalizedActionId);
         }
         const routeAction = providerBackendActionIds.has(normalizedActionId)
           ? runProviderBackendAction
-          : runWorkflowBackendAction;
+          : workflowBackendActionIds.has(normalizedActionId)
+            ? runWorkflowBackendAction
+            : runMcpBackendAction;
         return routeAction(fetchImpl, baseUrl, normalizedActionId, payload, {
           user_id: sessionId,
           real_user_id: profileUserId,
@@ -376,6 +389,70 @@ export function createBackendControlCenterSource(options = {}) {
   return source;
 }
 
+async function runMcpBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
+  const serverId = String(payload.serverId || payload.server_id || payload.id || "").trim();
+  if (!serverId) {
+    return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "serverId is required" };
+  }
+  const endpoint = `/capabilities/mcp-servers/${encodeURIComponent(serverId)}/${mcpActionPath(actionId)}`;
+  const body = buildMcpActionBody(actionId, payload);
+  try {
+    const response = await fetchImpl(buildBackendUrl(baseUrl, endpoint, params), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store"
+    });
+    if (response.status === 404 || response.status === 405) {
+      return createNotImplementedActionResult(actionId);
+    }
+    if (!response.ok) {
+      return { ok: false, status: `http-${response.status}`, actionId, serverId, refresh: false };
+    }
+    const result = await readActionResponse(response);
+    return {
+      ...result,
+      ok: Boolean(result?.ok),
+      actionId,
+      serverId,
+      refresh: result?.refresh === undefined ? true : Boolean(result.refresh)
+    };
+  } catch (error) {
+    return { ok: false, status: "request-failed", actionId, serverId, refresh: false, error: formatDataSourceError(error) };
+  }
+}
+
+function mcpActionPath(actionId) {
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave) return "config";
+  return "discover";
+}
+
+function buildMcpActionBody(actionId, payload = {}) {
+  if (actionId !== CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave) return {};
+  const body = {
+    enabled: Boolean(payload.enabled),
+    transport: "stdio",
+    command: String(payload.command || "").trim()
+  };
+  const displayName = String(payload.displayName || payload.name || "").trim();
+  if (displayName) body.displayName = displayName;
+  const cwd = String(payload.cwd || "").trim();
+  if (cwd) body.cwd = cwd;
+  const args = Array.isArray(payload.args)
+    ? payload.args.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  if (args.length) body.args = args;
+  const env = payload.env && typeof payload.env === "object" && !Array.isArray(payload.env) ? payload.env : {};
+  const safeEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    const envKey = String(key || "").trim();
+    const envValue = String(value || "").trim();
+    if (envKey && envValue) safeEnv[envKey] = envValue;
+  }
+  if (Object.keys(safeEnv).length) body.env = safeEnv;
+  return body;
+}
+
 async function runWorkflowBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
   const workflowId = String(payload.workflowId || payload.workflow_id || payload.id || "").trim();
   if (!workflowId) {
@@ -410,11 +487,18 @@ async function runWorkflowBackendAction(fetchImpl, baseUrl, actionId, payload = 
 }
 
 function workflowActionPath(actionId) {
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport) return "file";
   if (actionId === CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave) return "config";
   return "validate";
 }
 
 function buildWorkflowActionBody(actionId, payload = {}) {
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport) {
+    return {
+      workflowPath: String(payload.workflowPath || "").trim(),
+      workflowJson: String(payload.workflowJson || payload.workflowText || "")
+    };
+  }
   if (actionId === CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave) {
     return {
       enabled: Boolean(payload.enabled),
@@ -433,7 +517,13 @@ async function runProviderBackendAction(fetchImpl, baseUrl, actionId, payload = 
   if (!providerId) {
     return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "providerId is required" };
   }
-  const endpoint = `/capabilities/providers/${encodeURIComponent(providerId)}/${providerActionPath(actionId)}`;
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave) {
+    const voiceProfileId = String(payload.voiceProfileId || payload.voice_profile_id || payload.profileId || "").trim();
+    if (!voiceProfileId) {
+      return { ok: false, status: "invalid-payload", actionId, providerId, refresh: false, error: "voiceProfileId is required" };
+    }
+  }
+  const endpoint = `/capabilities/providers/${encodeURIComponent(providerId)}/${providerActionPath(actionId, payload)}`;
   const body = buildProviderActionBody(actionId, payload);
   try {
     const response = await fetchImpl(buildBackendUrl(baseUrl, endpoint, params), {
@@ -461,13 +551,55 @@ async function runProviderBackendAction(fetchImpl, baseUrl, actionId, payload = 
   }
 }
 
-function providerActionPath(actionId) {
+function providerActionPath(actionId, payload = {}) {
   if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave) return "config";
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest) return "tts-test";
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave) {
+    const voiceProfileId = String(payload.voiceProfileId || payload.voice_profile_id || payload.profileId || "").trim();
+    return `voice-profiles/${encodeURIComponent(voiceProfileId)}/config`;
+  }
   return "health-check";
 }
 
 function buildProviderActionBody(actionId, payload = {}) {
   const endpoint = String(payload.endpoint || "").trim();
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest) {
+    const body = {
+      ...(endpoint ? { endpoint } : {}),
+      text: String(payload.text || payload.testText || "").trim(),
+      voiceProfileId: String(payload.voiceProfileId || payload.profileId || "").trim()
+    };
+    for (const [bodyKey, payloadKey] of [
+      ["textLang", "textLang"],
+      ["promptLang", "promptLang"],
+      ["mediaType", "mediaType"],
+      ["refAudioPath", "refAudioPath"],
+      ["promptText", "promptText"]
+    ]) {
+      const value = String(payload[payloadKey] || "").trim();
+      if (value) body[bodyKey] = value;
+    }
+    return body;
+  }
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave) {
+    const body = {
+      enabled: payload.voiceProfileEnabled === undefined ? true : Boolean(payload.voiceProfileEnabled)
+    };
+    for (const [bodyKey, payloadKey] of [
+      ["displayName", "displayName"],
+      ["textLang", "textLang"],
+      ["promptLang", "promptLang"],
+      ["mediaType", "mediaType"],
+      ["refAudioPath", "refAudioPath"],
+      ["promptText", "promptText"]
+    ]) {
+      const value = String(payload[payloadKey] || "").trim();
+      if (value) body[bodyKey] = value;
+    }
+    return {
+      ...body
+    };
+  }
   if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave) {
     return {
       enabled: Boolean(payload.enabled),
@@ -635,6 +767,22 @@ async function readCapabilitiesCatalog(fetchImpl, baseUrl, params = {}) {
   const payload = asObject(result.data);
   if (payload.ok !== true || !Array.isArray(payload.capabilities)) {
     return { ok: false, status: "invalid-capabilities-catalog", data: null };
+  }
+  return {
+    ok: true,
+    status: payload.status || result.status || "available",
+    data: payload
+  };
+}
+
+async function readVoiceProfilesCatalog(fetchImpl, baseUrl, params = {}) {
+  const result = await fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/capabilities/voice-profiles", params));
+  if (!result.ok) {
+    return { ok: false, status: result.status || "unavailable", data: null, error: result.error || null };
+  }
+  const payload = asObject(result.data);
+  if (payload.ok !== true || !Array.isArray(payload.voiceProfiles)) {
+    return { ok: false, status: "invalid-voice-profiles-catalog", data: null };
   }
   return {
     ok: true,
@@ -902,13 +1050,15 @@ export function buildCharacterRuntimePatchFromSettingsSnapshot(runtimeSnapshot) 
   return Object.keys(patch).length ? patch : null;
 }
 
-function buildVoiceRuntimePatch({ health, diagnostics, petState }) {
+function buildVoiceRuntimePatch({ health, diagnostics, petState, capabilitiesCatalog }) {
   const healthData = asObject(health);
   const diagnosticsData = asObject(diagnostics);
   const runtime = asObject(diagnosticsData.runtime);
   const runtimeMetrics = asObject(runtime.metrics);
   const healthTts = asObject(healthData.tts);
   const healthAsr = asObject(healthData.asr);
+  const ttsResolution = normalizeVoiceProviderResolution(capabilitiesCatalog, "voice.tts.character");
+  const asrResolution = normalizeVoiceProviderResolution(capabilitiesCatalog, "voice.input.asr");
 
   const serviceOk = stringValue(healthData?.status) === "ok" || stringValue(diagnosticsData?.status) === "ok";
   const ttsEnabled = petState?.voiceEnabled ?? healthTts.enabled ?? serviceOk;
@@ -917,10 +1067,10 @@ function buildVoiceRuntimePatch({ health, diagnostics, petState }) {
   const asrEnabled = petState?.voiceInputEnabled ?? asrAvailable;
   const overallState = serviceOk ? "正常运行" : "未连接";
   const overallTone = serviceOk ? "good" : "warning";
-  const ttsOnline = healthTts.endpoint ? "在线" : serviceOk ? "未启用" : "离线";
-  const ttsTone = healthTts.endpoint ? "good" : "warning";
-  const asrOnline = asrAvailable ? "在线" : "未启用";
-  const asrTone = asrAvailable ? "good" : "muted";
+  const ttsOnline = ttsResolution?.activeProviderName || (healthTts.endpoint ? "在线" : serviceOk ? "未启用" : "离线");
+  const ttsTone = ttsResolution?.statusTone || (healthTts.endpoint ? "good" : "warning");
+  const asrOnline = asrResolution?.activeProviderName || (asrAvailable ? "在线" : "未启用");
+  const asrTone = asrResolution?.statusTone || (asrAvailable ? "good" : "muted");
   const networkState = serviceOk ? "良好" : "离线";
   const networkTone = serviceOk ? "good" : "warning";
   const latency = inferLatencyLabel(runtimeMetrics);
@@ -933,10 +1083,12 @@ function buildVoiceRuntimePatch({ health, diagnostics, petState }) {
     tts: {
       enabled: Boolean(ttsEnabled),
       volume: ttsVolume,
+      ...(ttsResolution ? { providerStatus: ttsResolution } : {}),
       ...(petVoiceSpeed ? { speed: petVoiceSpeed } : {}),
     },
     asr: {
-      enabled: Boolean(asrEnabled)
+      enabled: Boolean(asrEnabled),
+      ...(asrResolution ? { providerStatus: asrResolution } : {})
     },
     ...(petWakeWord ? { wakeWord: petWakeWord } : {}),
     ...(petWakeSensitivity ? { wakeSensitivity: petWakeSensitivity } : {}),
@@ -948,6 +1100,59 @@ function buildVoiceRuntimePatch({ health, diagnostics, petState }) {
       { label: "网络状态", value: networkState, tone: networkTone }
     ]
   };
+}
+
+function normalizeVoiceProviderResolution(catalog, capabilityId) {
+  const resolutions = asObject(asObject(catalog).resolutions);
+  const raw = asObject(resolutions[capabilityId]);
+  if (!raw.capabilityId && !raw.activeProviderId && !raw.requestedProviderId) return null;
+  const status = stringValue(raw.status || "unavailable");
+  const reason = stringValue(raw.reason);
+  return {
+    capabilityId: stringValue(raw.capabilityId || capabilityId),
+    status,
+    statusLabel: voiceProviderStatusLabel(status),
+    statusTone: voiceProviderStatusTone(status),
+    reason,
+    reasonLabel: voiceProviderReasonLabel(reason),
+    requestSource: stringValue(raw.requestSource),
+    requestedProviderId: stringValue(raw.requestedProviderId),
+    requestedProviderName: stringValue(raw.requestedProviderName || raw.requestedProviderId),
+    activeProviderId: stringValue(raw.activeProviderId),
+    activeProviderName: stringValue(raw.activeProviderName || raw.activeProviderId),
+    fallbackProviderId: stringValue(raw.fallbackProviderId),
+    voiceProfileId: stringValue(raw.voiceProfileId)
+  };
+}
+
+function voiceProviderStatusLabel(status) {
+  const labels = {
+    ready: "已就绪",
+    degraded: "已降级",
+    unavailable: "不可用"
+  };
+  return labels[status] || "待确认";
+}
+
+function voiceProviderStatusTone(status) {
+  if (status === "ready") return "good";
+  if (status === "degraded") return "warning";
+  return "muted";
+}
+
+function voiceProviderReasonLabel(reason) {
+  const labels = {
+    requested_voice_profile_missing: "角色声线档案未配置，先使用兜底通道",
+    requested_provider_missing_config: "请求的语音服务还未配置",
+    requested_provider_missing_executor: "请求的本地执行器未安装或未发现",
+    requested_provider_missing_model: "请求的声线模型缺失",
+    requested_provider_unreachable: "请求的语音服务暂时未连接",
+    requested_provider_disabled: "请求的语音服务已关闭",
+    requested_provider_pending_health_check: "请求的语音服务已保存，等待连接检查",
+    requested_provider_unknown: "角色请求的语音服务暂不认识",
+    no_ready_provider: "没有可用的语音通道"
+  };
+  return labels[reason] || reason || "";
 }
 
 function coerceVolumePercent(value, fallback) {
@@ -1040,20 +1245,28 @@ export function buildMusicRuntimePatch({ musicSnapshot, petState }) {
   if (!musicSnapshot || typeof musicSnapshot !== "object") return null;
 
   const track = musicSnapshot.track;
-  const displayName = stringValue(track?.displayName || musicSnapshot.displayName);
-  const hasTrack = Boolean(displayName);
+  const localDisplayName = stringValue(track?.displayName || musicSnapshot.displayName);
+  const systemMedia = normalizeSystemMediaRuntime(musicSnapshot.systemMedia, musicSnapshot.systemLyrics);
+  const hasSystemTrack = systemMedia.ready && !Boolean(musicSnapshot.playing);
+  const hasTrack = Boolean(localDisplayName) && !hasSystemTrack;
+  const displayName = hasTrack ? localDisplayName : hasSystemTrack ? systemMedia.title : "";
   const queue = Array.isArray(musicSnapshot.queue) ? musicSnapshot.queue : [];
   const rawQueueIndex = Number(musicSnapshot.queueIndex);
   const queueIndex = Number.isInteger(rawQueueIndex) ? rawQueueIndex : -1;
   const activeQueueIndex = queueIndex >= 0 && queueIndex < queue.length ? queueIndex : -1;
-  const progressSec = Number.isFinite(musicSnapshot.progressSeconds) ? Math.max(0, musicSnapshot.progressSeconds) : 0;
-  const durationSec = Number.isFinite(musicSnapshot.durationSeconds) ? Math.max(0, musicSnapshot.durationSeconds) : 0;
+  const progressSec = hasSystemTrack
+    ? systemMedia.positionSeconds
+    : Number.isFinite(musicSnapshot.progressSeconds) ? Math.max(0, musicSnapshot.progressSeconds) : 0;
+  const durationSec = hasSystemTrack
+    ? systemMedia.durationSeconds
+    : Number.isFinite(musicSnapshot.durationSeconds) ? Math.max(0, musicSnapshot.durationSeconds) : 0;
   const progress = durationSec > 0 ? Math.min(100, Math.round((progressSec / durationSec) * 100)) : 0;
   const volume = coerceVolumePercent(petState?.voiceVolume, 68);
   const currentLyric = musicSnapshot.currentLyric && typeof musicSnapshot.currentLyric === "object"
     ? musicSnapshot.currentLyric
     : null;
   const hasLyrics = Boolean(currentLyric && currentLyric.lineCount > 0);
+  const hasSystemLyrics = hasSystemTrack && Boolean(systemMedia.lyrics.current || systemMedia.lyrics.previous || systemMedia.lyrics.next);
 
   const nowPlaying = {
     title: hasTrack ? displayName : "暂无播放",
@@ -1069,6 +1282,13 @@ export function buildMusicRuntimePatch({ musicSnapshot, petState }) {
     paused: Boolean(musicSnapshot.paused),
     cover: "music"
   };
+  if (hasSystemTrack) {
+    nowPlaying.title = systemMedia.title;
+    nowPlaying.artist = systemMedia.artist;
+    nowPlaying.quality = "系统媒体";
+    nowPlaying.playing = systemMedia.isPlaying;
+    nowPlaying.paused = systemMedia.playbackStatus === "paused";
+  }
 
   const playlist = hasTrack
     ? queue.map((item, index) => ({
@@ -1090,12 +1310,26 @@ export function buildMusicRuntimePatch({ musicSnapshot, petState }) {
     if (currentLyric.nextText) lines.push(currentLyric.nextText);
     lyrics = lines;
     activeLyric = currentLyric.previousText ? 1 : 0;
+  } else if (hasSystemLyrics) {
+    const lines = [];
+    if (systemMedia.lyrics.previous) lines.push(systemMedia.lyrics.previous);
+    const currentIndex = systemMedia.lyrics.current ? lines.length : -1;
+    if (systemMedia.lyrics.current) lines.push(systemMedia.lyrics.current);
+    if (systemMedia.lyrics.next) lines.push(systemMedia.lyrics.next);
+    lyrics = lines;
+    activeLyric = currentIndex;
   } else {
-    lyrics = ["当前音乐暂无歌词"];
+    lyrics = [hasSystemTrack ? "当前系统音乐暂无可用歌词" : "当前音乐暂无歌词"];
     activeLyric = -1;
   }
 
-  const info = hasTrack
+  const info = hasSystemTrack
+    ? [
+        { label: "系统媒体", value: systemMedia.statusLabel },
+        { label: "歌词", value: systemMedia.lyrics.statusDetail || systemMedia.lyrics.statusLabel },
+        { label: "来源", value: systemMedia.sourceApp || "-" }
+      ]
+    : hasTrack
     ? [
         { label: "时长", value: formatSeconds(durationSec) },
         { label: "来源", value: "本地音乐" },
@@ -1107,7 +1341,9 @@ export function buildMusicRuntimePatch({ musicSnapshot, petState }) {
         { label: "音质", value: "-" }
       ];
 
-  const bottomStatus = hasTrack
+  const bottomStatus = hasSystemTrack
+    ? `System music: ${systemMedia.statusLabel} · Lyrics: ${systemMedia.lyrics.statusDetail || systemMedia.lyrics.statusLabel}`
+    : hasTrack
     ? `${musicSnapshot.playing ? "正在播放" : musicSnapshot.paused ? "已暂停" : "已停止"} · ${queue.length > 0 && activeQueueIndex >= 0 ? `${activeQueueIndex + 1}/${queue.length}` : "单曲"}`
     : "暂无播放 · 等待音乐加入队列";
 
@@ -1135,10 +1371,96 @@ export function buildMusicRuntimePatch({ musicSnapshot, petState }) {
 
   return {
     nowPlaying, playlist, lyrics, activeLyric, info, bottomStatus,
+    systemMedia,
     ...(petPlayMode ? { currentPlayMode: petPlayMode } : {}),
     ...(typeof petVolumeNormalization === "boolean" ? { volumeNormalization: petVolumeNormalization } : {}),
     recommendations,
   };
+}
+
+function normalizeSystemMediaRuntime(systemMediaSnapshot, systemLyricsSnapshot) {
+  const media = systemMediaSnapshot && typeof systemMediaSnapshot === "object" ? systemMediaSnapshot : {};
+  const lyric = systemLyricsSnapshot && typeof systemLyricsSnapshot === "object" ? systemLyricsSnapshot : {};
+  const title = stringValue(media.title);
+  const artist = stringValue(media.artist);
+  const sourceApp = stringValue(media.sourceApp || media.source_app);
+  const status = stringValue(media.status || "unavailable").toLowerCase();
+  const playbackStatus = stringValue(media.playbackStatus || media.playback_status || "unknown").toLowerCase();
+  const positionSeconds = Number.isFinite(media.positionSeconds) ? Math.max(0, media.positionSeconds) : 0;
+  const durationSeconds = Number.isFinite(media.durationSeconds) ? Math.max(0, media.durationSeconds) : 0;
+  const lyricStatus = stringValue(lyric.status || "unavailable").toLowerCase();
+  const lyricReason = stringValue(lyric.reason);
+  const lyricFound = lyricStatus === "ready" && Boolean(lyric.current || lyric.previous || lyric.next);
+  const lyricStatusLabel = lyricFound ? "Found" : lyricsStatusLabel(lyricStatus, lyricReason);
+  const lyricReasonLabel = lyricsReasonLabel(lyricReason);
+  return {
+    ready: Boolean(media.ok && media.fresh && (title || artist) && status === "ready"),
+    status,
+    statusLabel: systemMediaStatusLabel(status),
+    title: title && artist ? `${title} - ${artist}` : title || artist || "系统正在播放的音乐",
+    artist,
+    sourceApp: shortSystemMediaSource(sourceApp),
+    playbackStatus,
+    isPlaying: Boolean(media.isPlaying || playbackStatus === "playing"),
+    positionSeconds,
+    durationSeconds,
+    lyrics: {
+      status: lyricStatus,
+      statusLabel: lyricStatusLabel,
+      statusDetail: lyricReasonLabel ? `${lyricStatusLabel} · ${lyricReasonLabel}` : lyricStatusLabel,
+      reason: lyricReason,
+      reasonLabel: lyricReasonLabel,
+      source: stringValue(lyric.source),
+      confidence: stringValue(lyric.confidence),
+      lineCount: Number(lyric.lineCount || 0),
+      current: stringValue(lyric.current),
+      previous: stringValue(lyric.previous),
+      next: stringValue(lyric.next)
+    }
+  };
+}
+
+function systemMediaStatusLabel(status) {
+  return {
+    ready: "Ready",
+    empty: "Empty",
+    unavailable: "Unavailable"
+  }[status] || "Unavailable";
+}
+
+function lyricsStatusLabel(status, reason = "") {
+  if (status === "pending" && reason === "lyrics_lookup_slow") return "Checking";
+  if (status === "unavailable" && reason === "backend_offline") return "Unavailable";
+  return {
+    ready: "Found",
+    "not-found": "Not found",
+    disabled: "Disabled",
+    unavailable: "Unavailable",
+    pending: "Checking",
+    "low-confidence": "Unavailable"
+  }[status] || "Unavailable";
+}
+
+function lyricsReasonLabel(reason) {
+  return {
+    lyrics_lookup_pending: "pending",
+    lyrics_lookup_slow: "provider slow",
+    lyrics_request_failed: "request failed",
+    lyrics_provider_failed: "provider failed",
+    backend_offline: "backend offline",
+    syncedlyrics_missing: "dependency missing",
+    network_lyrics_disabled: "disabled",
+    lyrics_not_found: "not found",
+    ambiguous_track_metadata: "low confidence",
+    insufficient_synced_lines: "low confidence"
+  }[reason] || "";
+}
+
+function shortSystemMediaSource(value) {
+  const text = stringValue(value).replace(/\.(exe|app)$/i, "");
+  if (!text) return "";
+  const parts = text.split(/[.!\\/:]+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1].slice(0, 40) : text.slice(0, 40);
 }
 
 export function buildOverviewEmotionRuntimePatchFromSettingsSnapshot(runtimeSnapshot) {
@@ -1171,7 +1493,7 @@ function formatSeconds(seconds) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalog, connected }) {
+function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalog, voiceProfilesCatalog, connected }) {
   const diagnosticsData = asObject(diagnostics);
   const capabilities = asObject(diagnosticsData.capabilities);
   const catalogEntries = normalizeCapabilityCatalogEntries(capabilitiesCatalog);
@@ -1216,7 +1538,8 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalo
       note: buildAbilityOverviewNote({ serviceOk, catalogEntries, catalogSummary })
     },
     modules: moduleCards,
-    providers: buildAbilityProviderCards(catalogEntries, capabilitiesCatalog),
+    providers: buildAbilityProviderCards(catalogEntries, capabilitiesCatalog, voiceProfilesCatalog),
+    mcpServers: buildAbilityMcpServerCards(catalogEntries),
     workflows: buildAbilityWorkflows(moduleCards, catalogEntries),
     calls: buildAbilityStatusRows({
       syncedAt,
@@ -1264,6 +1587,7 @@ function normalizeCapabilityCatalogEntries(catalog) {
       capabilityId: stringValue(entry.capabilityId),
       workflowId: stringValue(entry.workflowId),
       providerId: stringValue(entry.providerId),
+      serverId: stringValue(entry.serverId),
       toolType: stringValue(entry.toolType),
       group: stringValue(entry.group),
       name: stringValue(entry.name),
@@ -1278,6 +1602,14 @@ function normalizeCapabilityCatalogEntries(catalog) {
       executionReady: Boolean(entry.executionReady),
       endpoint: stringValue(entry.endpoint),
       defaultEndpoint: stringValue(entry.defaultEndpoint),
+      transport: stringValue(entry.transport),
+      commandName: safeDisplayBasename(entry.commandName),
+      argsCount: positiveNumber(entry.argsCount),
+      envCount: positiveNumber(entry.envCount),
+      toolCount: positiveNumber(entry.toolCount),
+      lastDiscovery: asObject(entry.lastDiscovery),
+      inputSchema: asObject(entry.inputSchema),
+      exposedToPrompt: Boolean(entry.exposedToPrompt),
       workflowPath: stringValue(entry.workflowPath),
       defaultWorkflowPath: stringValue(entry.defaultWorkflowPath),
       autoEnabled: Boolean(entry.autoEnabled),
@@ -1396,13 +1728,15 @@ function buildCapabilityCatalogModuleCards({ entries, workspaceCounts, workspace
   return cards.slice(0, 8);
 }
 
-function buildAbilityProviderCards(entries, catalog) {
+function buildAbilityProviderCards(entries, catalog, voiceProfilesCatalog = null) {
   const payload = asObject(catalog);
   const configStatus = stringValue(payload.providerConfigStatus || payload.configStatus || "available");
+  const voiceProfiles = normalizeVoiceProfileEntries(voiceProfilesCatalog);
   return entries
-    .filter((entry) => entry.kind === "provider" && entry.configurable)
+    .filter((entry) => entry.kind === "provider" && entry.configurable && entry.source !== "mcp" && entry.adapter !== "mcp_stdio")
     .map((entry) => {
       const status = mapCapabilityStatus(entry.status);
+      const providerVoiceProfiles = voiceProfiles.filter((profile) => profile.providerId === entry.id);
       return {
         id: entry.id,
         name: entry.name || providerDisplayName(entry),
@@ -1420,11 +1754,110 @@ function buildAbilityProviderCards(entries, catalog) {
         configurable: true,
         endpoint: entry.endpoint,
         defaultEndpoint: entry.defaultEndpoint,
+        voiceProfiles: providerVoiceProfiles,
+        defaultVoiceProfile: providerVoiceProfiles.find((profile) => profile.status === "ready") || providerVoiceProfiles[0] || null,
         usedByLabel: providerUsedByLabel(entry.usedBy),
         configStatus,
         actionsEnabled: configStatus !== "invalid_config"
       };
     });
+}
+
+function buildAbilityMcpServerCards(entries) {
+  const toolsByProvider = new Map();
+  for (const entry of entries) {
+    if (entry.kind !== "mcp_tool") continue;
+    const providerId = entry.providerId || (entry.serverId ? `provider.mcp.${entry.serverId}` : "");
+    if (!providerId) continue;
+    if (!toolsByProvider.has(providerId)) toolsByProvider.set(providerId, []);
+    toolsByProvider.get(providerId).push(entry);
+  }
+  return entries
+    .filter((entry) => entry.kind === "provider" && (entry.source === "mcp" || entry.adapter === "mcp_stdio"))
+    .map((entry) => {
+      const status = mapCapabilityStatus(entry.status);
+      const tools = toolsByProvider.get(entry.id) || [];
+      const highRiskCount = tools.filter((tool) => tool.risk === "high" || tool.requiresConfirmation).length;
+      const discoveredAt = stringValue(entry.lastDiscovery?.discoveredAt);
+      return {
+        id: entry.id,
+        serverId: entry.serverId,
+        title: entry.name || "MCP 外部工具",
+        status: entry.status || "missing_config",
+        statusLabel: status.label,
+        statusTone: status.tone,
+        reason: mcpServerReasonLabel(entry),
+        enabled: Boolean(entry.enabled),
+        configured: Boolean(entry.configured),
+        transport: entry.transport || "stdio",
+        commandName: entry.commandName || "",
+        toolCount: entry.toolCount || tools.length,
+        safeToolLabels: summarizeMcpToolLabels(tools),
+        highRiskCount,
+        promptExposedCount: tools.filter((tool) => tool.exposedToPrompt).length,
+        requiresConfirmation: Boolean(entry.requiresConfirmation || highRiskCount),
+        lastDiscoveryLabel: discoveredAt ? "已发现工具" : "未执行发现"
+      };
+    });
+}
+
+function summarizeMcpToolLabels(tools) {
+  const labels = [];
+  for (const tool of tools) {
+    const label = mcpToolCapabilityLabel(tool);
+    if (label && !labels.includes(label)) labels.push(label);
+    if (labels.length >= 4) break;
+  }
+  return labels.length ? labels : ["等待工具发现"];
+}
+
+function mcpToolCapabilityLabel(tool) {
+  const text = capabilityEntryText(tool);
+  if (/shell|terminal|cmd|powershell|exec|command|process|delete|remove|write|modify|click/.test(text)) return "需确认的操作";
+  if (/browser|page|tab|url|web|navigate|read_page|search/.test(text)) return "浏览器上下文";
+  if (/screenshot|screen|image|vision|ocr/.test(text)) return "屏幕与图像";
+  if (/file|folder|workspace|path|document/.test(text)) return "文件上下文";
+  if (/memory|retrieve|query/.test(text)) return "检索资料";
+  return "外部工具";
+}
+
+function mcpServerReasonLabel(entry) {
+  const status = entry.status || "";
+  if (status === "ready") return "工具已发现，暂未开放自动调用";
+  if (status === "configured") return "已保存，等待发现工具";
+  if (status === "missing_config") return "需要配置本地 MCP 启动命令";
+  if (status === "disabled") return "已配置但未启用";
+  if (status === "invalid_config") return "配置需要修复";
+  return entry.reason || "等待同步";
+}
+
+function normalizeVoiceProfileEntries(catalog) {
+  return asArray(asObject(catalog).voiceProfiles)
+    .map((entry) => {
+      const voiceProfileId = stringValue(entry.voiceProfileId || entry.id);
+      const status = stringValue(entry.status || (entry.enabled === false ? "disabled" : "missing_config"));
+      const mappedStatus = mapCapabilityStatus(status);
+      return {
+        id: voiceProfileId,
+        voiceProfileId,
+        providerId: stringValue(entry.providerId || "provider.tts.gpt_sovits.local"),
+        name: stringValue(entry.name || voiceProfileId || "GPT-SoVITS 声线"),
+        enabled: entry.enabled !== false,
+        configured: Boolean(entry.configured),
+        status,
+        statusLabel: mappedStatus.label,
+        statusTone: mappedStatus.tone,
+        reason: stringValue(entry.reason),
+        textLang: stringValue(entry.textLang || "zh"),
+        promptLang: stringValue(entry.promptLang || "zh"),
+        mediaType: stringValue(entry.mediaType || "wav"),
+        hasReferenceAudio: Boolean(entry.hasReferenceAudio),
+        referenceAudioName: stringValue(entry.referenceAudioName),
+        promptTextLength: positiveNumber(entry.promptTextLength),
+        updatedAt: stringValue(entry.updatedAt)
+      };
+    })
+    .filter((entry) => entry.voiceProfileId);
 }
 
 function providerDisplayName(entry) {
@@ -2170,6 +2603,12 @@ function stringValue(value) {
   return String(value || "").trim();
 }
 
+function safeDisplayBasename(value) {
+  const raw = stringValue(value);
+  if (!raw) return "";
+  return raw.split(/[\\/]/).filter(Boolean).pop() || raw;
+}
+
 function positiveNumber(value) {
   const number = Number(value || 0);
   return Number.isFinite(number) && number > 0 ? number : 0;
@@ -2248,6 +2687,11 @@ async function tryReadUnifiedSnapshot(fetchImpl, baseUrl, scope = {}) {
       baseUrl,
       requestParams || { t: String(Date.now()) }
     );
+    const voiceProfilesCatalog = await readVoiceProfilesCatalog(
+      fetchImpl,
+      baseUrl,
+      requestParams || { t: String(Date.now()) }
+    );
     const metricsText = typeof metrics.data === "string" ? metrics.data : "";
     return {
       ...mockData,
@@ -2261,7 +2705,8 @@ async function tryReadUnifiedSnapshot(fetchImpl, baseUrl, scope = {}) {
         workspace,
         resourceManifest,
         metrics,
-        capabilitiesCatalog
+        capabilitiesCatalog,
+        voiceProfilesCatalog
       },
       overviewRuntime: buildOverviewRuntimePatch({
         health: health.data,
@@ -2286,7 +2731,8 @@ async function tryReadUnifiedSnapshot(fetchImpl, baseUrl, scope = {}) {
       voiceRuntime: buildVoiceRuntimePatch({
         health: health.data,
         diagnostics: diagnostics.data,
-        petState
+        petState,
+        capabilitiesCatalog: capabilitiesCatalog.data
       }),
       perceptionRuntime: buildPerceptionRuntimePatch({
         petState,
@@ -2297,7 +2743,8 @@ async function tryReadUnifiedSnapshot(fetchImpl, baseUrl, scope = {}) {
         diagnostics: diagnostics.data,
         workspace: workspace.data,
         capabilitiesCatalog: capabilitiesCatalog.data,
-        connected: health.ok || diagnostics.ok || capabilitiesCatalog.ok
+        voiceProfilesCatalog: voiceProfilesCatalog.data,
+        connected: health.ok || diagnostics.ok || capabilitiesCatalog.ok || voiceProfilesCatalog.ok
       }),
       advancedRuntime: buildAdvancedRuntimePatch({
         health: health.data,

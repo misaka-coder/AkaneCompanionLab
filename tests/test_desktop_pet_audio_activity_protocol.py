@@ -129,6 +129,10 @@ class TestLayer1PromptSchema:
         assert "activity" in fast, f"desktop_pet fast_mode 应含 activity:\n{fast}"
         assert "activity" in debug, f"desktop_pet debug_mode 应含 activity:\n{debug}"
         assert '"activity":null' in fast
+        assert "memory_metadata" in fast
+        assert "memory_metadata" in debug
+        assert "memory_tags" not in fast
+        assert "memory_tags" not in debug
 
     def test_web_prompt_excludes_activity(self):
         registry = PromptProfileRegistry()

@@ -15,7 +15,11 @@ use tauri::{
     WebviewWindowBuilder, Window,
 };
 #[cfg(windows)]
-use windows::core::{BOOL, PWSTR};
+use windows::core::{Interface, BOOL, PWSTR};
+#[cfg(windows)]
+use windows::Media::Control::{
+    GlobalSystemMediaTransportControlsSession, GlobalSystemMediaTransportControlsSessionManager,
+};
 #[cfg(windows)]
 use windows::Win32::{
     Foundation::{CloseHandle, HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -191,6 +195,25 @@ struct DesktopContextSnapshot {
     captured_at: u128,
     platform: String,
     foreground: ForegroundWindowInfo,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemMediaSnapshot {
+    ok: bool,
+    status: String,
+    reason: String,
+    captured_at: u128,
+    platform: String,
+    track_key: String,
+    title: String,
+    artist: String,
+    album: String,
+    source_app: String,
+    playback_status: String,
+    is_playing: bool,
+    position_seconds: Option<f64>,
+    duration_seconds: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -473,6 +496,13 @@ fn get_desktop_context_snapshot() -> DesktopContextSnapshot {
         platform: std::env::consts::OS.to_string(),
         foreground: collect_foreground_window(),
     }
+}
+
+#[tauri::command]
+async fn get_current_system_media() -> SystemMediaSnapshot {
+    tauri::async_runtime::spawn_blocking(read_current_system_media)
+        .await
+        .unwrap_or_else(|error| system_media_unavailable("join_failed", error.to_string()))
 }
 
 #[tauri::command]
@@ -2884,6 +2914,192 @@ fn current_time_millis() -> u128 {
         .unwrap_or(0)
 }
 
+fn system_media_unavailable(reason: &str, _detail: impl ToString) -> SystemMediaSnapshot {
+    SystemMediaSnapshot {
+        ok: false,
+        status: "unavailable".to_string(),
+        reason: reason.to_string(),
+        captured_at: current_time_millis(),
+        platform: std::env::consts::OS.to_string(),
+        track_key: String::new(),
+        title: String::new(),
+        artist: String::new(),
+        album: String::new(),
+        source_app: String::new(),
+        playback_status: "unknown".to_string(),
+        is_playing: false,
+        position_seconds: None,
+        duration_seconds: None,
+    }
+}
+
+#[cfg(not(windows))]
+fn read_current_system_media() -> SystemMediaSnapshot {
+    system_media_unavailable("unsupported_platform", std::env::consts::OS)
+}
+
+#[cfg(windows)]
+fn read_current_system_media() -> SystemMediaSnapshot {
+    match read_current_system_media_windows() {
+        Ok(snapshot) => snapshot,
+        Err(error) => system_media_unavailable("read_failed", error),
+    }
+}
+
+#[cfg(windows)]
+fn read_current_system_media_windows() -> Result<SystemMediaSnapshot, String> {
+    let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+        .map_err(|error| error.to_string())?
+        .get()
+        .map_err(|error| error.to_string())?;
+    let current_session = manager
+        .GetCurrentSession()
+        .map_err(|error| error.to_string())?;
+    let current_snapshot = if current_session.as_raw().is_null() {
+        None
+    } else {
+        read_system_media_session(&current_session).ok()
+    };
+
+    if let Some(snapshot) = current_snapshot.as_ref() {
+        if snapshot.ok && snapshot.playback_status == "playing" {
+            return Ok(snapshot.clone());
+        }
+    }
+
+    let sessions = manager.GetSessions().map_err(|error| error.to_string())?;
+    let size = sessions.Size().map_err(|error| error.to_string())?;
+    let mut fallback_snapshot: Option<SystemMediaSnapshot> = None;
+    for index in 0..size {
+        let session = sessions.GetAt(index).map_err(|error| error.to_string())?;
+        if session.as_raw().is_null() {
+            continue;
+        }
+        let snapshot = match read_system_media_session(&session) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if snapshot.ok && snapshot.playback_status == "playing" {
+            return Ok(snapshot);
+        }
+        if fallback_snapshot.is_none() && snapshot.ok {
+            fallback_snapshot = Some(snapshot);
+        }
+    }
+
+    if let Some(snapshot) = current_snapshot {
+        return Ok(snapshot);
+    }
+    if let Some(snapshot) = fallback_snapshot {
+        return Ok(snapshot);
+    }
+    Ok(system_media_unavailable("no_active_session", ""))
+}
+
+#[cfg(windows)]
+fn read_system_media_session(
+    session: &GlobalSystemMediaTransportControlsSession,
+) -> Result<SystemMediaSnapshot, String> {
+    let media = session
+        .TryGetMediaPropertiesAsync()
+        .map_err(|error| error.to_string())?
+        .get()
+        .map_err(|error| error.to_string())?;
+    let timeline = session
+        .GetTimelineProperties()
+        .map_err(|error| error.to_string())?;
+    let playback = session
+        .GetPlaybackInfo()
+        .map_err(|error| error.to_string())?;
+    let raw_status = playback
+        .PlaybackStatus()
+        .map_err(|error| error.to_string())?;
+
+    let title = media
+        .Title()
+        .map_err(|error| error.to_string())?
+        .to_string();
+    let artist = media
+        .Artist()
+        .map_err(|error| error.to_string())?
+        .to_string();
+    let album = media
+        .AlbumTitle()
+        .map_err(|error| error.to_string())?
+        .to_string();
+    let source_app = session
+        .SourceAppUserModelId()
+        .map_err(|error| error.to_string())?
+        .to_string();
+    let playback_status = playback_status_label(raw_status.0);
+    let position_seconds =
+        time_span_seconds(timeline.Position().map_err(|error| error.to_string())?);
+    let start_seconds = time_span_seconds(timeline.StartTime().map_err(|error| error.to_string())?);
+    let end_seconds = time_span_seconds(timeline.EndTime().map_err(|error| error.to_string())?);
+    let duration_seconds = match (start_seconds, end_seconds) {
+        (Some(start), Some(end)) if end > start => Some(end - start),
+        _ => None,
+    };
+    let track_key = build_system_media_track_key(&source_app, &title, &artist, &album);
+    let has_track = !title.trim().is_empty() || !artist.trim().is_empty();
+
+    Ok(SystemMediaSnapshot {
+        ok: has_track,
+        status: if has_track { "ready" } else { "empty" }.to_string(),
+        reason: String::new(),
+        captured_at: current_time_millis(),
+        platform: "windows".to_string(),
+        track_key,
+        title,
+        artist,
+        album,
+        source_app,
+        playback_status,
+        is_playing: raw_status.0 == 4,
+        position_seconds,
+        duration_seconds,
+    })
+}
+
+#[cfg(windows)]
+fn playback_status_label(value: i32) -> String {
+    match value {
+        0 => "closed",
+        1 => "opened",
+        2 => "changing",
+        3 => "stopped",
+        4 => "playing",
+        5 => "paused",
+        _ => "unknown",
+    }
+    .to_string()
+}
+
+#[cfg(windows)]
+fn time_span_seconds(value: windows::Foundation::TimeSpan) -> Option<f64> {
+    let seconds = value.Duration as f64 / 10_000_000.0;
+    if seconds.is_finite() && seconds >= 0.0 {
+        Some(seconds)
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn build_system_media_track_key(
+    source_app: &str,
+    title: &str,
+    artist: &str,
+    album: &str,
+) -> String {
+    [source_app, title, artist, album]
+        .into_iter()
+        .map(|part| part.trim().to_lowercase())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
 fn normalize_pet_state(state: &mut PetState) {
     state.scale = clamp(state.scale, 0.75, 1.45);
     state.opacity = clamp(state.opacity, 0.55, 1.0);
@@ -3269,6 +3485,7 @@ fn main() {
             save_pet_state,
             activate_character_pack,
             get_desktop_context_snapshot,
+            get_current_system_media,
             prepare_audio_asset,
             list_character_packs,
             install_character_pack_zip_file,

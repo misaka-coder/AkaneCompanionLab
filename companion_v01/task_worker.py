@@ -10,6 +10,7 @@ import config
 
 from .background_tasks import BackgroundTaskRunner
 from .llm_runtime import LLMRuntime
+from .store import normalize_character_pack_id
 from .task_workspace import TaskWorkspaceService
 from .tool_runtime import BaseToolHandler, ToolExecutionContext, ToolExecutionResult
 
@@ -1013,6 +1014,7 @@ class TaskWorkerService:
             "group_id": self._coerce_positive_int(value.get("group_id")),
             "session_id": str(value.get("session_id") or "")[:120],
             "profile_user_id": str(value.get("profile_user_id") or "")[:120],
+            "character_pack_id": normalize_character_pack_id(value.get("character_pack_id") or value.get("characterPackId")),
             "clean_message": str(value.get("clean_message") or "")[:1000],
             "raw_message": str(value.get("raw_message") or "")[:1000],
             "sender_label": str(value.get("sender_label") or "")[:120],

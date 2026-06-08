@@ -234,6 +234,9 @@ function adaptMusicPage(page, runtime = {}) {
   }
   if (Array.isArray(runtime.info)) music.info = runtime.info;
   if (runtime.bottomStatus !== undefined) music.bottomStatus = runtime.bottomStatus;
+  if (runtime.systemMedia && typeof runtime.systemMedia === "object") {
+    music.systemMedia = runtime.systemMedia;
+  }
   if ("recommendations" in runtime && Array.isArray(runtime.recommendations)) {
     music.recommendations = runtime.recommendations;
   }
@@ -260,6 +263,9 @@ function adaptAbilitiesPage(page, runtime = {}) {
   }
   if (Array.isArray(runtime.providers)) {
     abilities.providers = runtime.providers;
+  }
+  if (Array.isArray(runtime.mcpServers)) {
+    abilities.mcpServers = runtime.mcpServers;
   }
   if (Array.isArray(runtime.workflows) && runtime.workflows.length) {
     abilities.workflows = runtime.workflows;

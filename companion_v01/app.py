@@ -22,6 +22,7 @@ from services.tts_client import EdgeTTSClient
 from .engine import AkaneMemoryEngine
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
+from .mcp_stdio_discoverer import McpStdioToolDiscoverer
 from .public_guard import PublicThinkGuard
 from .qq_gateway import NapCatQQGateway
 from .resource_manifest import ResourceManifest
@@ -396,6 +397,7 @@ app.include_router(
         log_event=_log_event,
         resolve_identity_from_query=_resolve_identity_from_query,
         background_tasks=getattr(engine, "background_tasks", None),
+        mcp_tool_discoverer=McpStdioToolDiscoverer(),
         workflow_runner=ComfyUiWorkflowRunner(config_base_dir=Path(config.DATA_DIR)),
     )
 )

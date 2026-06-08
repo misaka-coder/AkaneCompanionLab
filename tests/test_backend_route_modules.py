@@ -2,19 +2,24 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from companion_v01.background_tasks import BackgroundTaskRunner
 from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
+from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config
 from companion_v01.local_workflow_execution import WorkflowExecutionAsset, WorkflowExecutionRequest
+from companion_v01.mcp_stdio_discoverer import McpStdioToolDiscoverer
+from companion_v01.music_lyrics import parse_lrc_segments
 from companion_v01.routes.capabilities import build_capabilities_router
 from companion_v01.routes.control_center import (
     build_control_center_router,
@@ -23,8 +28,11 @@ from companion_v01.routes.control_center import (
 from companion_v01.routes.core import build_core_router
 from companion_v01.routes.desktop_pet import build_desktop_pet_router
 from companion_v01.routes.gifts import build_gifts_router
+from companion_v01.routes.qq import build_qq_router
 from companion_v01.routes.sessions import build_sessions_router
 from companion_v01.routes.think import build_think_router
+from companion_v01.routes.voice import build_voice_router
+from companion_v01.qq_gateway import NapCatQQGateway
 
 
 class FakeRuntimeMetrics:
@@ -509,6 +517,83 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"], "invalid_payload")
         self.assertIn(("think_once", False), runtime.observed)
+
+    def test_qq_router_character_command_switches_without_llm_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+
+        class FakeCharacterResources:
+            def list_character_packs(self):
+                return [
+                    {
+                        "pack_id": "reimu",
+                        "name": "Reimu",
+                        "app_name": "Reimu Pet",
+                        "user_title": "你",
+                    }
+                ]
+
+            def build_character_identity(self, character_pack_id: str):
+                if character_pack_id != "reimu":
+                    return {}
+                return {
+                    "character_id": "reimu",
+                    "assistant_name": "Reimu",
+                    "app_name": "Reimu Pet",
+                    "user_label": "你",
+                    "pack_id": "reimu",
+                }
+
+        class FakeEngine:
+            desktop_pet_character_resources = FakeCharacterResources()
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "should not run"}}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": 2184046306,
+                    "user_id": 111222333,
+                    "message_id": "route-character-switch-1",
+                    "raw_message": "切换角色 reimu",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_character_command")
+        self.assertEqual(payload["command_status"], "switched")
+        self.assertEqual(payload["character_pack_id"], "reimu")
+        self.assertEqual(gateway.resolve_character_pack_id("qq_pri_111222333"), "reimu")
+        self.assertEqual(process_calls, [])
+        mocked_post.assert_called_once()
+        sent_payload = mocked_post.call_args.kwargs["json"]
+        self.assertIn("已切换本 QQ 会话角色为", sent_payload["message"])
 
     # ---------- control center action contract ----------
 
@@ -1151,6 +1236,887 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertNotIn(sensitive, body)
         self.assertIn(("capabilities.catalog", True), runtime.observed)
 
+    def test_capabilities_mcp_server_config_and_discovery_merge_safe_catalog_entries(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        discoverer_calls: list[dict[str, Any]] = []
+
+        async def fake_mcp_discoverer(*, server: dict[str, Any]) -> dict[str, Any]:
+            discoverer_calls.append(server)
+            return {
+                "tools": [
+                    {
+                        "name": "read_page",
+                        "description": "Read the current browser page without controlling it.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "url": {"type": "string", "description": "Page URL"},
+                                "api_key": {"type": "string", "description": "must be dropped"},
+                            },
+                            "required": ["url", "api_key"],
+                        },
+                    },
+                    {
+                        "name": "browser_click",
+                        "description": "Click a browser element.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "selector": {"type": "string", "description": "CSS selector"},
+                            },
+                            "required": ["selector"],
+                        },
+                    },
+                ]
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    mcp_tool_discoverer=fake_mcp_discoverer,
+                )
+            )
+            client = TestClient(app)
+
+            saved = client.post(
+                "/capabilities/mcp-servers/browser/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "displayName": "Browser MCP",
+                    "transport": "stdio",
+                    "command": r"C:\Users\Lenovo\mcp\browser-mcp.exe",
+                    "args": ["--profile", "akane"],
+                    "cwd": r"C:\Users\Lenovo\mcp",
+                    "env": {"MCP_MODE": "local"},
+                },
+            )
+            self.assertEqual(saved.status_code, 200)
+            saved_payload = saved.json()
+            self.assertTrue(saved_payload["ok"])
+            self.assertEqual(saved_payload["mcpServer"]["status"], "configured")
+            self.assertEqual(saved_payload["mcpServer"]["commandName"], "browser-mcp.exe")
+            self.assertEqual(saved_payload["mcpServer"]["argsCount"], 2)
+            self.assertNotIn("lenovo", saved.text.lower())
+            self.assertNotIn(r"c:\users", saved.text.lower())
+
+            discovered = client.post(
+                "/capabilities/mcp-servers/browser/discover?user_id=desktop&real_user_id=master",
+                json={},
+            )
+            self.assertEqual(discovered.status_code, 200)
+            discovered_payload = discovered.json()
+            self.assertTrue(discovered_payload["ok"])
+            self.assertEqual(discovered_payload["status"], "discovered")
+            self.assertEqual(discovered_payload["toolCount"], 2)
+            self.assertEqual(discoverer_calls[0]["command"], r"C:\Users\Lenovo\mcp\browser-mcp.exe")
+            discovered_text = discovered.text.lower()
+            self.assertNotIn("lenovo", discovered_text)
+            self.assertNotIn("api_key", discovered_text)
+            self.assertNotIn("secret", discovered_text)
+
+            catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            by_id = {item["id"]: item for item in catalog["capabilities"]}
+            self.assertEqual(by_id["provider.mcp.browser"]["status"], "ready")
+            self.assertIn("mcp.browser.read_page", by_id)
+            self.assertIn("mcp.browser.browser_click", by_id)
+            read_page = by_id["mcp.browser.read_page"]
+            browser_click = by_id["mcp.browser.browser_click"]
+            self.assertEqual(read_page["kind"], "mcp_tool")
+            self.assertEqual(read_page["source"], "mcp")
+            self.assertEqual(read_page["adapter"], "mcp_stdio")
+            self.assertFalse(read_page["exposedToPrompt"])
+            self.assertEqual(read_page["inputSchema"]["required"], ["url"])
+            self.assertNotIn("api_key", json.dumps(read_page, ensure_ascii=False).lower())
+            self.assertEqual(browser_click["risk"], "high")
+            self.assertTrue(browser_click["requiresConfirmation"])
+            self.assertIn(("capabilities.mcp_server_config", True), runtime.observed)
+            self.assertIn(("capabilities.mcp_server_discover", True), runtime.observed)
+            self.assertIn(("capabilities.catalog", True), runtime.observed)
+
+    def test_capabilities_mcp_discovery_is_not_implemented_without_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+            saved = client.post(
+                "/capabilities/mcp-servers/browser/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "command": "browser-mcp"},
+            ).json()
+            self.assertTrue(saved["ok"])
+            discovered = client.post(
+                "/capabilities/mcp-servers/browser/discover?user_id=desktop&real_user_id=master",
+                json={},
+            ).json()
+            self.assertFalse(discovered["ok"])
+            self.assertEqual(discovered["status"], "not-implemented")
+            self.assertEqual(discovered["reason"], "mcp_discoverer_not_bound")
+
+    def test_capabilities_mcp_stdio_discoverer_lists_tools_without_calling_them(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server_script = Path(temp_dir) / "fake_mcp_server.py"
+            server_script.write_text(
+                """
+import json
+import sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if message.get("id") == 1 and method == "initialize":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "fake-browser", "version": "0.1"}
+            }
+        }), flush=True)
+    elif method == "tools/list":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {
+                "tools": [
+                    {
+                        "name": "read_page",
+                        "description": "Read the browser page.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "url": {"type": "string", "description": "Page URL"},
+                                "api_key": {"type": "string", "description": "drop me"}
+                            },
+                            "required": ["url", "api_key"]
+                        }
+                    },
+                    {
+                        "name": "browser_click",
+                        "description": "Click a browser element.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "selector": {"type": "string", "description": "CSS selector"}
+                            },
+                            "required": ["selector"]
+                        }
+                    }
+                ]
+            }
+        }), flush=True)
+""",
+                encoding="utf-8",
+            )
+            runtime = FakeRuntimeMetrics()
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    mcp_tool_discoverer=McpStdioToolDiscoverer(timeout_seconds=4),
+                )
+            )
+            client = TestClient(app)
+            saved = client.post(
+                "/capabilities/mcp-servers/browser/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "displayName": "Browser MCP",
+                    "command": sys.executable,
+                    "args": [str(server_script)],
+                    "cwd": temp_dir,
+                },
+            )
+            self.assertEqual(saved.status_code, 200)
+            self.assertTrue(saved.json()["ok"])
+            self.assertNotIn(temp_dir.lower(), saved.text.lower())
+
+            discovered = client.post(
+                "/capabilities/mcp-servers/browser/discover?user_id=desktop&real_user_id=master",
+                json={},
+            )
+            self.assertEqual(discovered.status_code, 200)
+            discovered_payload = discovered.json()
+            self.assertTrue(discovered_payload["ok"])
+            self.assertEqual(discovered_payload["status"], "discovered")
+            self.assertEqual(discovered_payload["toolCount"], 2)
+            self.assertNotIn(temp_dir.lower(), discovered.text.lower())
+            self.assertNotIn("api_key", discovered.text.lower())
+
+            catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            by_id = {item["id"]: item for item in catalog["capabilities"]}
+            self.assertEqual(by_id["provider.mcp.browser"]["status"], "ready")
+            self.assertEqual(by_id["mcp.browser.read_page"]["inputSchema"]["required"], ["url"])
+            self.assertEqual(by_id["mcp.browser.browser_click"]["risk"], "high")
+            self.assertFalse(by_id["mcp.browser.read_page"]["exposedToPrompt"])
+            self.assertIn(("capabilities.mcp_server_discover", True), runtime.observed)
+
+    def test_capabilities_catalog_resolves_voice_provider_with_degradation(self) -> None:
+        class FakeCharacterVoiceService:
+            def __init__(self) -> None:
+                self.profile_id = ""
+
+            def build_character_voice_preference(self, character_pack_id: str) -> dict[str, str]:
+                return {
+                    "packId": character_pack_id,
+                    "provider": "gpt_sovits",
+                    "profileId": self.profile_id,
+                    "notes": r"do not leak C:\Users\Lenovo\voice.txt token=secret",
+                }
+
+        voice_service = FakeCharacterVoiceService()
+        runtime = FakeRuntimeMetrics()
+        checks: list[tuple[str, int, float]] = []
+
+        def fake_health_checker(host: str, port: int, timeout_seconds: float) -> tuple[bool, str]:
+            checks.append((host, port, timeout_seconds))
+            return True, ""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(
+                        tool_handlers={},
+                        desktop_pet_character_resources=voice_service,
+                    ),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, STREAMING_TTS_ENABLED=True),
+                    tts_client=object(),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    provider_health_checker=fake_health_checker,
+                )
+            )
+            client = TestClient(app)
+
+            degraded = client.get(
+                "/capabilities?user_id=desktop&real_user_id=master&character_pack_id=reimu"
+            ).json()
+            by_id = {item["id"]: item for item in degraded["capabilities"]}
+            self.assertIn("provider.voice.text_only", by_id)
+            self.assertIn("provider.asr.text_input", by_id)
+            tts_resolution = degraded["resolutions"]["voice.tts.character"]
+            self.assertEqual(tts_resolution["status"], "degraded")
+            self.assertEqual(tts_resolution["requestedProviderId"], "provider.tts.gpt_sovits.local")
+            self.assertEqual(tts_resolution["activeProviderId"], "provider.tts.edge")
+            self.assertEqual(tts_resolution["fallbackProviderId"], "provider.tts.edge")
+            self.assertEqual(tts_resolution["reason"], "requested_voice_profile_missing")
+            self.assertEqual(tts_resolution["requestSource"], "character_pack")
+
+            voice_service.profile_id = "reimu_main"
+            saved = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:9880"},
+            ).json()
+            self.assertTrue(saved["ok"])
+            health = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/health-check?user_id=desktop&real_user_id=master",
+                json={},
+            ).json()
+            self.assertTrue(health["ok"])
+            ready = client.get(
+                "/capabilities?user_id=desktop&real_user_id=master&character_pack_id=reimu"
+            ).json()
+            ready_resolution = ready["resolutions"]["voice.tts.character"]
+            self.assertEqual(ready_resolution["status"], "ready")
+            self.assertEqual(ready_resolution["requestedProviderId"], "provider.tts.gpt_sovits.local")
+            self.assertEqual(ready_resolution["activeProviderId"], "provider.tts.gpt_sovits.local")
+            self.assertEqual(ready_resolution["fallbackProviderId"], "")
+            self.assertEqual(ready_resolution["voiceProfileId"], "reimu_main")
+            self.assertEqual(checks, [("127.0.0.1", 9880, 0.35)])
+
+            serialized = json.dumps([degraded, ready], ensure_ascii=False).lower()
+            self.assertNotIn("token", serialized)
+            self.assertNotIn("secret", serialized)
+            self.assertNotIn(str(Path(temp_dir)).lower(), serialized)
+            self.assertIn(("capabilities.catalog", True), runtime.observed)
+
+    def test_tts_route_uses_edge_by_default_with_provider_headers(self) -> None:
+        class FakeEdgeTTS:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            async def synthesize(self, text: str) -> bytes:
+                self.calls.append(text)
+                return f"edge:{text}".encode("utf-8")
+
+        edge = FakeEdgeTTS()
+        runtime = FakeRuntimeMetrics()
+        app = FastAPI()
+        app.include_router(
+            build_voice_router(
+                engine=SimpleNamespace(),
+                config_module=SimpleNamespace(DATA_DIR=None),
+                tts_client=edge,
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        response = TestClient(app).post("/tts", json={"text": "你好", "real_user_id": "master"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"edge:\xe4\xbd\xa0\xe5\xa5\xbd")
+        self.assertEqual(response.headers.get("x-akane-tts-provider"), "provider.tts.edge")
+        self.assertEqual(response.headers.get("x-akane-tts-requested-provider"), "provider.tts.edge")
+        self.assertEqual(response.headers.get("x-akane-tts-status"), "ready")
+        self.assertEqual(edge.calls, ["你好"])
+        self.assertIn(("tts", True), runtime.observed)
+
+    def test_tts_route_degrades_character_gpt_sovits_request_without_profile(self) -> None:
+        class FakeCharacterVoiceService:
+            def build_character_voice_preference(self, character_pack_id: str) -> dict[str, str]:
+                return {"packId": character_pack_id, "provider": "gpt_sovits", "profileId": ""}
+
+        class FakeEdgeTTS:
+            async def synthesize(self, text: str) -> bytes:
+                return b"edge-audio"
+
+        app = FastAPI()
+        app.include_router(
+            build_voice_router(
+                engine=SimpleNamespace(desktop_pet_character_resources=FakeCharacterVoiceService()),
+                config_module=SimpleNamespace(DATA_DIR=None),
+                tts_client=FakeEdgeTTS(),
+                runtime_metrics=FakeRuntimeMetrics(),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        response = TestClient(app).post(
+            "/tts",
+            json={"text": "测试", "real_user_id": "master", "character_pack_id": "reimu"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"edge-audio")
+        self.assertEqual(response.headers.get("x-akane-tts-requested-provider"), "provider.tts.gpt_sovits.local")
+        self.assertEqual(response.headers.get("x-akane-tts-provider"), "provider.tts.edge")
+        self.assertEqual(response.headers.get("x-akane-tts-fallback"), "provider.tts.edge")
+        self.assertEqual(response.headers.get("x-akane-tts-reason"), "requested_voice_profile_missing")
+
+    def test_tts_route_uses_configured_gpt_sovits_for_character_voice(self) -> None:
+        class FakeCharacterVoiceService:
+            def build_character_voice_preference(self, character_pack_id: str) -> dict[str, str]:
+                return {"packId": character_pack_id, "provider": "gpt_sovits", "profileId": "reimu_main"}
+
+        class FakeGptSovitsClient:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str, dict[str, Any]]] = []
+
+            async def synthesize(
+                self,
+                text: str,
+                *,
+                voice_profile_id: str = "",
+                profile: dict[str, Any] | None = None,
+            ) -> SimpleNamespace:
+                self.calls.append((text, voice_profile_id, dict(profile or {})))
+                return SimpleNamespace(audio=b"gpt-audio", media_type="audio/wav")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_provider_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                provider_id="provider.tts.gpt_sovits.local",
+                payload={"enabled": True, "endpoint": "http://127.0.0.1:9880"},
+            )
+            save_voice_profile_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                voice_profile_id="reimu_main",
+                payload={
+                    "enabled": True,
+                    "displayName": "Reimu Main",
+                    "textLang": "zh",
+                    "promptLang": "zh",
+                    "mediaType": "wav",
+                    "refAudioPath": r"C:\voices\reimu_ref.wav",
+                    "promptText": "主人，今天也要一起努力。",
+                },
+            )
+            gpt_client = FakeGptSovitsClient()
+            factory_calls: list[str] = []
+
+            def factory(endpoint: str) -> FakeGptSovitsClient:
+                factory_calls.append(endpoint)
+                return gpt_client
+
+            app = FastAPI()
+            app.include_router(
+                build_voice_router(
+                    engine=SimpleNamespace(desktop_pet_character_resources=FakeCharacterVoiceService()),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    tts_client=object(),
+                    runtime_metrics=FakeRuntimeMetrics(),
+                    log_event=lambda *_args, **_kwargs: None,
+                    gpt_sovits_client_factory=factory,
+                )
+            )
+
+            response = TestClient(app).post(
+                "/tts",
+                json={"text": "角色语音", "real_user_id": "master", "character_pack_id": "reimu"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"gpt-audio")
+        self.assertEqual(response.headers.get("content-type"), "audio/wav")
+        self.assertEqual(response.headers.get("x-akane-tts-provider"), "provider.tts.gpt_sovits.local")
+        self.assertEqual(response.headers.get("x-akane-tts-requested-provider"), "provider.tts.gpt_sovits.local")
+        self.assertEqual(response.headers.get("x-akane-tts-fallback"), "")
+        self.assertEqual(response.headers.get("x-akane-tts-reason"), "")
+        self.assertEqual(factory_calls, ["http://127.0.0.1:9880"])
+        self.assertEqual(
+            gpt_client.calls,
+            [
+                (
+                    "角色语音",
+                    "reimu_main",
+                    {
+                        "id": "reimu_main",
+                        "providerId": "provider.tts.gpt_sovits.local",
+                        "textLang": "zh",
+                        "promptLang": "zh",
+                        "mediaType": "wav",
+                        "refAudioPath": r"C:\voices\reimu_ref.wav",
+                        "promptText": "主人，今天也要一起努力。",
+                    },
+                )
+            ],
+        )
+
+    def test_tts_route_uses_request_voice_profile_for_speech_preview(self) -> None:
+        class FakeGptSovitsClient:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str, dict[str, Any]]] = []
+
+            async def synthesize(
+                self,
+                text: str,
+                *,
+                voice_profile_id: str = "",
+                profile: dict[str, Any] | None = None,
+            ) -> SimpleNamespace:
+                self.calls.append((text, voice_profile_id, dict(profile or {})))
+                return SimpleNamespace(audio=b"speech-preview-audio", media_type="audio/wav")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_provider_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                provider_id="provider.tts.gpt_sovits.local",
+                payload={"enabled": True, "endpoint": "http://127.0.0.1:9880"},
+            )
+            save_voice_profile_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                voice_profile_id="dania",
+                payload={
+                    "enabled": True,
+                    "displayName": "Dania",
+                    "textLang": "zh",
+                    "promptLang": "zh",
+                    "mediaType": "wav",
+                    "refAudioPath": r"C:\voices\dania_ref.wav",
+                    "promptText": "怎么啊？如果有你在也不放心。",
+                },
+            )
+            gpt_client = FakeGptSovitsClient()
+
+            app = FastAPI()
+            app.include_router(
+                build_voice_router(
+                    engine=SimpleNamespace(),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    tts_client=object(),
+                    runtime_metrics=FakeRuntimeMetrics(),
+                    log_event=lambda *_args, **_kwargs: None,
+                    gpt_sovits_client_factory=lambda _endpoint: gpt_client,
+                )
+            )
+
+            response = TestClient(app).post(
+                "/tts",
+                json={
+                    "text": "这是从角色 speech 字段拿来预览的一句台词。",
+                    "real_user_id": "master",
+                    "voiceProfileId": "dania",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"speech-preview-audio")
+        self.assertEqual(response.headers.get("x-akane-tts-provider"), "provider.tts.gpt_sovits.local")
+        self.assertEqual(response.headers.get("x-akane-tts-requested-provider"), "provider.tts.gpt_sovits.local")
+        self.assertEqual(
+            gpt_client.calls,
+            [
+                (
+                    "这是从角色 speech 字段拿来预览的一句台词。",
+                    "dania",
+                    {
+                        "id": "dania",
+                        "providerId": "provider.tts.gpt_sovits.local",
+                        "textLang": "zh",
+                        "promptLang": "zh",
+                        "mediaType": "wav",
+                        "refAudioPath": r"C:\voices\dania_ref.wav",
+                        "promptText": "怎么啊？如果有你在也不放心。",
+                    },
+                )
+            ],
+        )
+
+    def test_tts_route_falls_back_to_edge_when_gpt_sovits_call_fails_without_leak(self) -> None:
+        class FakeCharacterVoiceService:
+            def build_character_voice_preference(self, character_pack_id: str) -> dict[str, str]:
+                return {"packId": character_pack_id, "provider": "gpt_sovits", "profileId": "reimu_main"}
+
+        class FakeEdgeTTS:
+            async def synthesize(self, text: str) -> bytes:
+                return b"edge-after-gpt-fail"
+
+        class ExplodingGptSovitsClient:
+            async def synthesize(
+                self,
+                text: str,
+                *,
+                voice_profile_id: str = "",
+                profile: dict[str, Any] | None = None,
+            ) -> bytes:
+                raise RuntimeError(r"secret token from C:\Users\Lenovo\voice.wav")
+
+        logs: list[dict[str, Any]] = []
+
+        def log_event(event: str, **fields: Any) -> None:
+            logs.append({"event": event, **fields})
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_provider_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                provider_id="provider.tts.gpt_sovits.local",
+                payload={"enabled": True, "endpoint": "http://localhost:9880"},
+            )
+            app = FastAPI()
+            app.include_router(
+                build_voice_router(
+                    engine=SimpleNamespace(desktop_pet_character_resources=FakeCharacterVoiceService()),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    tts_client=FakeEdgeTTS(),
+                    runtime_metrics=FakeRuntimeMetrics(),
+                    log_event=log_event,
+                    gpt_sovits_client_factory=lambda _endpoint: ExplodingGptSovitsClient(),
+                )
+            )
+
+            response = TestClient(app).post(
+                "/tts",
+                json={"text": "失败回退", "real_user_id": "master", "character_pack_id": "reimu"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"edge-after-gpt-fail")
+        self.assertEqual(response.headers.get("x-akane-tts-provider"), "provider.tts.edge")
+        self.assertEqual(response.headers.get("x-akane-tts-fallback"), "provider.tts.edge")
+        self.assertEqual(response.headers.get("x-akane-tts-reason"), "gpt_sovits_failed")
+        serialized_logs = json.dumps(logs, ensure_ascii=False).lower()
+        self.assertIn("tts_provider_fallback", serialized_logs)
+        self.assertNotIn("secret", serialized_logs)
+        self.assertNotIn("token", serialized_logs)
+        self.assertNotIn("users", serialized_logs)
+
+    def test_lrc_parser_normalizes_segments_without_metadata(self) -> None:
+        segments = parse_lrc_segments(
+            "\n".join(
+                [
+                    "[ar:周杰伦]",
+                    "[ti:晴天]",
+                    "[00:01.00][00:03.50]故事的小黄花",
+                    "[00:07.000]<00:07.10>从出生那年就飘着",
+                    "[00:09.00]",
+                ]
+            )
+        )
+
+        self.assertEqual(
+            segments,
+            [
+                {"start": 1.0, "end": 3.5, "text": "故事的小黄花"},
+                {"start": 3.5, "end": 7.0, "text": "故事的小黄花"},
+                {"start": 7.0, "end": 12.0, "text": "从出生那年就飘着"},
+            ],
+        )
+
+    def test_music_lyrics_route_caches_ready_segments_profile_scoped(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        calls: list[tuple[str, tuple[str, ...]]] = []
+
+        def fake_search(query: str, providers: list[str]) -> str:
+            calls.append((query, tuple(providers)))
+            return "[00:01.00]第一句\n[00:04.20]第二句\n[00:07.50]第三句"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(
+                        DATA_DIR=temp_dir,
+                        MUSIC_ONLINE_LYRICS_ENABLED=True,
+                        MUSIC_ONLINE_LYRICS_PROVIDERS="Lrclib,NetEase",
+                    ),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    lyrics_searcher=fake_search,
+                )
+            )
+            client = TestClient(app)
+            payload = {
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "trackKey": "qqmusic::晴天::周杰伦",
+                "title": "晴天",
+                "artist": "周杰伦",
+                "album": "叶惠美",
+                "source": "system_media",
+                "positionSeconds": 135,
+            }
+
+            first = client.post("/capabilities/music/lyrics", json=payload)
+            second = client.post("/capabilities/music/lyrics", json=payload)
+
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(second.status_code, 200)
+            first_payload = first.json()
+            second_payload = second.json()
+            self.assertTrue(first_payload["ok"])
+            self.assertEqual(first_payload["status"], "ready")
+            self.assertFalse(first_payload["cached"])
+            self.assertEqual(first_payload["lineCount"], 3)
+            self.assertEqual(first_payload["segments"][0], {"start": 1.0, "end": 4.2, "text": "第一句"})
+            self.assertTrue(second_payload["cached"])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][0], "晴天 周杰伦")
+            self.assertEqual(calls[0][1], ("Lrclib", "NetEase"))
+
+            cache_root = Path(temp_dir) / "master" / "music" / "lyrics_cache"
+            self.assertTrue(cache_root.exists())
+            combined = json.dumps([first_payload, second_payload], ensure_ascii=False).lower()
+            self.assertNotIn(str(Path(temp_dir)).lower(), combined)
+            self.assertNotIn("api_key", combined)
+            self.assertIn(("capabilities.music_lyrics", True), runtime.observed)
+
+    def test_music_lyrics_route_uses_body_identity_when_query_identity_is_absent(self) -> None:
+        calls: list[str] = []
+
+        def fake_search(query: str, _providers: list[str]) -> str:
+            calls.append(query)
+            return "[00:01.00]第一句\n[00:04.00]第二句"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, MUSIC_ONLINE_LYRICS_ENABLED=True),
+                    resolve_identity_from_query=resolve_query,
+                    lyrics_searcher=fake_search,
+                )
+            )
+            response = TestClient(app).post(
+                "/capabilities/music/lyrics?t=1",
+                json={
+                    "user_id": "desktop_pet_next",
+                    "real_user_id": "body_master",
+                    "title": "晴天",
+                    "artist": "周杰伦",
+                    "source": "system_media",
+                },
+            )
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(calls, ["晴天 周杰伦"])
+            self.assertTrue((Path(temp_dir) / "body_master" / "music" / "lyrics_cache").exists())
+            self.assertFalse((Path(temp_dir) / "session" / "music" / "lyrics_cache").exists())
+
+            mixed = TestClient(app).post(
+                "/capabilities/music/lyrics?user_id=query_session&t=2",
+                json={
+                    "real_user_id": "mixed_master",
+                    "title": "七里香",
+                    "artist": "周杰伦",
+                    "source": "system_media",
+                },
+            )
+            self.assertEqual(mixed.status_code, 200)
+            self.assertTrue((Path(temp_dir) / "mixed_master" / "music" / "lyrics_cache").exists())
+            self.assertFalse((Path(temp_dir) / "query_session" / "music" / "lyrics_cache").exists())
+
+    def test_music_lyrics_route_derives_artist_from_combined_title(self) -> None:
+        calls: list[str] = []
+
+        def fake_search(query: str, _providers: list[str]) -> str:
+            calls.append(query)
+            return "[00:34.68]我说了所有的谎\n[00:42.97]你全都相信\n[00:50.55]简单的我爱你"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, MUSIC_ONLINE_LYRICS_ENABLED=True),
+                    resolve_identity_from_query=resolve_query,
+                    lyrics_searcher=fake_search,
+                )
+            )
+            result = TestClient(app).post(
+                "/capabilities/music/lyrics",
+                json={
+                    "user_id": "desktop",
+                    "real_user_id": "master",
+                    "trackKey": "qqmusic::淘汰::陈奕迅",
+                    "title": "淘汰 - 陈奕迅",
+                    "artist": "",
+                    "source": "system_media",
+                },
+            ).json()
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "ready")
+            self.assertEqual(result["confidence"], "medium")
+            self.assertEqual(result["lineCount"], 3)
+            self.assertEqual(calls, ["淘汰 陈奕迅"])
+
+    def test_music_lyrics_route_cleans_noisy_system_media_artist_for_lookup(self) -> None:
+        calls: list[str] = []
+
+        def fake_search(query: str, _providers: list[str]) -> str:
+            calls.append(query)
+            return "[00:49.00]重力が眠りにつく\n[00:55.00]一千年に一度の今日"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, MUSIC_ONLINE_LYRICS_ENABLED=True),
+                    resolve_identity_from_query=resolve_query,
+                    lyrics_searcher=fake_search,
+                )
+            )
+            client = TestClient(app)
+            payload = {
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "trackKey": "system::grand_escape",
+                "title": "グランドエスケープ feat.三浦透子",
+                "artist": "RADWIMPS (ラッドウィンプス)/三浦透子 (みうら とうこ)",
+                "source": "system_media",
+            }
+
+            first = client.post("/capabilities/music/lyrics", json=payload).json()
+            second = client.post("/capabilities/music/lyrics", json=payload).json()
+
+            self.assertTrue(first["ok"])
+            self.assertEqual(first["status"], "ready")
+            self.assertEqual(calls, ["グランドエスケープ feat.三浦透子 RADWIMPS 三浦透子"])
+            self.assertTrue(second["cached"])
+            self.assertEqual(len(calls), 1)
+
+    def test_music_lyrics_route_returns_structured_failures_without_network(self) -> None:
+        disabled_app = FastAPI()
+        disabled_app.include_router(
+            build_capabilities_router(
+                engine=SimpleNamespace(tool_handlers={}),
+                config_module=SimpleNamespace(MUSIC_ONLINE_LYRICS_ENABLED=False),
+                resolve_identity_from_query=resolve_query,
+            )
+        )
+        disabled = TestClient(disabled_app).post(
+            "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
+            json={"title": "晴天", "artist": "周杰伦"},
+        ).json()
+        self.assertFalse(disabled["ok"])
+        self.assertEqual(disabled["status"], "disabled")
+        self.assertEqual(disabled["reason"], "network_lyrics_disabled")
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "companion_v01.music_lyrics.syncedlyrics_available",
+            return_value=False,
+        ):
+            missing_dep_app = FastAPI()
+            missing_dep_app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, MUSIC_ONLINE_LYRICS_ENABLED=True),
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            missing_dep = TestClient(missing_dep_app).post(
+                "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
+                json={"title": "晴天", "artist": "周杰伦"},
+            ).json()
+            self.assertFalse(missing_dep["ok"])
+            self.assertEqual(missing_dep["status"], "unavailable")
+            self.assertEqual(missing_dep["reason"], "syncedlyrics_missing")
+            self.assertEqual(missing_dep["segments"], [])
+
+        calls: list[str] = []
+
+        def not_found_search(query: str, _providers: list[str]) -> str:
+            calls.append(query)
+            return ""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            not_found_app = FastAPI()
+            not_found_app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, MUSIC_ONLINE_LYRICS_ENABLED=True),
+                    resolve_identity_from_query=resolve_query,
+                    lyrics_searcher=not_found_search,
+                )
+            )
+            client = TestClient(not_found_app)
+            not_found = client.post(
+                "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
+                json={"title": "晴天", "artist": "周杰伦"},
+            ).json()
+            cached = client.post(
+                "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
+                json={"title": "晴天", "artist": "周杰伦"},
+            ).json()
+            low_confidence = client.post(
+                "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
+                json={"title": "只有歌名"},
+            ).json()
+
+            self.assertFalse(not_found["ok"])
+            self.assertEqual(not_found["status"], "not-found")
+            self.assertEqual(not_found["reason"], "lyrics_not_found")
+            self.assertTrue(cached["cached"])
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(low_confidence["ok"])
+            self.assertEqual(low_confidence["status"], "low-confidence")
+            self.assertEqual(low_confidence["segments"], [])
+
     def test_capabilities_workflows_are_read_only_and_do_not_fake_readiness(self) -> None:
         runtime = FakeRuntimeMetrics()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1282,7 +2248,38 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(validated_missing_file["reason"], "workflow_file_missing")
             self.assertFalse(validated_missing_file["checks"]["workflowFile"])
 
-            write_valid_cutout_workflow(temp_dir)
+            rejected_workflow_file = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/file?user_id=desktop&real_user_id=master",
+                json={
+                    "workflowPath": r"workflows\comfyui\portrait_cutout.json",
+                    "workflowJson": "{not-json",
+                },
+            ).json()
+            self.assertFalse(rejected_workflow_file["ok"])
+            self.assertEqual(rejected_workflow_file["status"], "invalid_workflow_config")
+            self.assertEqual(rejected_workflow_file["reason"], "workflow_file_invalid_json")
+
+            imported_workflow_file = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/file?user_id=desktop&real_user_id=master",
+                json={
+                    "workflowPath": r"workflows\comfyui\portrait_cutout.json",
+                    "workflowJson": json.dumps(
+                        {
+                            "12": {"class_type": "LoadImage", "inputs": {"image": "old.png"}},
+                            "20": {"class_type": "SaveImage", "inputs": {"filename_prefix": "old"}},
+                        }
+                    ),
+                },
+            ).json()
+            self.assertTrue(imported_workflow_file["ok"])
+            self.assertEqual(imported_workflow_file["status"], "workflow_file_saved")
+            self.assertEqual(imported_workflow_file["workflowPath"], "workflows/comfyui/portrait_cutout.json")
+            imported_file_path = Path(temp_dir) / "master" / "capabilities" / "workflows" / "comfyui" / "portrait_cutout.json"
+            self.assertTrue(imported_file_path.is_file())
+            imported_text = imported_file_path.read_text(encoding="utf-8").lower()
+            self.assertNotIn(str(Path(temp_dir)).lower(), imported_text)
+            self.assertNotIn("token", imported_text)
+
             validated = client.post(
                 "/capabilities/workflows/workflow.workshop.portrait.cutout/validate?user_id=desktop&real_user_id=master"
             ).json()
@@ -1325,6 +2322,8 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertIn(rejected_slots["status"], {"missing_slot_mapping", "invalid_workflow_config"})
             self.assertIn(("capabilities.workflow_config", True), runtime.observed)
             self.assertIn(("capabilities.workflow_config", False), runtime.observed)
+            self.assertIn(("capabilities.workflow_file", True), runtime.observed)
+            self.assertIn(("capabilities.workflow_file", False), runtime.observed)
             self.assertIn(("capabilities.workflow_validate", True), runtime.observed)
 
     def test_capabilities_workflow_preflight_is_safe_and_inert(self) -> None:
@@ -1867,6 +2866,177 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(invalid["status"], "invalid_config")
             self.assertIn(("capabilities.provider_config", True), runtime.observed)
             self.assertIn(("capabilities.provider_config", False), runtime.observed)
+
+    def test_capabilities_provider_tts_test_returns_short_audio_without_persisting_profile(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        calls: list[dict[str, str]] = []
+
+        async def fake_tts_runner(*, endpoint: str, text: str, voice_profile_id: str):
+            calls.append({"endpoint": endpoint, "text": text, "voiceProfileId": voice_profile_id})
+            return SimpleNamespace(audio=b"wav-bytes", media_type="audio/wav")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    provider_tts_test_runner=fake_tts_runner,
+                )
+            )
+            client = TestClient(app)
+
+            response = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/tts-test?user_id=desktop&real_user_id=master",
+                json={
+                    "endpoint": "http://localhost:9880/ui?token=secret",
+                    "text": "  你好，测试一下  ",
+                    "voiceProfileId": r"reimu_main",
+                    "token": "must-not-return",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "tts-test-ready")
+        self.assertEqual(payload["providerId"], "provider.tts.gpt_sovits.local")
+        self.assertEqual(payload["mediaType"], "audio/wav")
+        self.assertEqual(payload["audioBase64"], "d2F2LWJ5dGVz")
+        self.assertEqual(payload["audioBytes"], 9)
+        self.assertEqual(payload["voiceProfileId"], "reimu_main")
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "endpoint": "http://127.0.0.1:9880",
+                    "text": "你好，测试一下",
+                    "voiceProfileId": "reimu_main",
+                }
+            ],
+        )
+        serialized = response.text.lower()
+        self.assertNotIn("token", serialized)
+        self.assertNotIn("secret", serialized)
+        config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+        self.assertFalse(config_path.exists(), "tts-test must not persist profile or provider config")
+        self.assertIn(("capabilities.provider_tts_test", True), runtime.observed)
+
+    def test_capabilities_voice_profile_config_saves_private_fields_without_public_leak(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            response = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/reimu_main/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "displayName": "Reimu Main",
+                    "textLang": "zh",
+                    "promptLang": "zh",
+                    "mediaType": "wav",
+                    "refAudioPath": r"C:\Users\Lenovo\voices\reimu_ref.wav",
+                    "promptText": "主人，今天也要一起努力。",
+                    "token": "must-not-return",
+                },
+            )
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["status"], "saved")
+            self.assertEqual(payload["voiceProfileId"], "reimu_main")
+            public_profile = payload["voiceProfile"]
+            self.assertEqual(public_profile["voiceProfileId"], "reimu_main")
+            self.assertEqual(public_profile["providerId"], "provider.tts.gpt_sovits.local")
+            self.assertEqual(public_profile["referenceAudioName"], "reimu_ref.wav")
+            self.assertEqual(public_profile["promptTextLength"], len("主人，今天也要一起努力。"))
+            response_text = response.text.lower()
+            self.assertNotIn(r"c:\users", response_text)
+            self.assertNotIn("lenovo", response_text)
+            self.assertNotIn(str(Path(temp_dir)).lower(), response_text)
+            self.assertNotIn("主人，今天也要一起努力", response.text)
+            self.assertNotIn("token", response_text)
+            self.assertNotIn("secret", response_text)
+
+            profiles_payload = client.get(
+                "/capabilities/voice-profiles?user_id=desktop&real_user_id=master"
+            ).json()
+            profiles_text = json.dumps(profiles_payload, ensure_ascii=False).lower()
+            self.assertTrue(profiles_payload["ok"])
+            self.assertEqual(profiles_payload["summary"]["total"], 1)
+            self.assertNotIn(r"c:\users", profiles_text)
+            self.assertNotIn("lenovo", profiles_text)
+            self.assertNotIn(str(Path(temp_dir)).lower(), profiles_text)
+            self.assertNotIn("主人，今天也要一起努力", json.dumps(profiles_payload, ensure_ascii=False))
+
+            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            config_text = config_path.read_text(encoding="utf-8")
+            config_data = json.loads(config_text)
+            stored_profile = config_data["voiceProfiles"]["reimu_main"]
+            self.assertEqual(stored_profile["refAudioPath"], r"C:\Users\Lenovo\voices\reimu_ref.wav")
+            self.assertEqual(stored_profile["promptText"], "主人，今天也要一起努力。")
+
+            update = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/reimu_main/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "displayName": "Reimu Updated", "textLang": "ja"},
+            ).json()
+            self.assertTrue(update["ok"])
+            config_data = json.loads(config_path.read_text(encoding="utf-8"))
+            stored_profile = config_data["voiceProfiles"]["reimu_main"]
+            self.assertEqual(stored_profile["refAudioPath"], r"C:\Users\Lenovo\voices\reimu_ref.wav")
+            self.assertEqual(stored_profile["promptText"], "主人，今天也要一起努力。")
+            self.assertIn(("capabilities.voice_profile_config", True), runtime.observed)
+            self.assertIn(("capabilities.voice_profiles", True), runtime.observed)
+
+    def test_capabilities_provider_tts_test_degrades_with_safe_reason(self) -> None:
+        runtime = FakeRuntimeMetrics()
+
+        def exploding_tts_runner(*, endpoint: str, text: str, voice_profile_id: str):
+            raise RuntimeError(r"secret token from C:\Users\Lenovo\voice.wav")
+
+        app = FastAPI()
+        app.include_router(
+            build_capabilities_router(
+                engine=SimpleNamespace(tool_handlers={}),
+                config_module=SimpleNamespace(DATA_DIR=None),
+                runtime_metrics=runtime,
+                provider_tts_test_runner=exploding_tts_runner,
+            )
+        )
+        client = TestClient(app)
+
+        failed = client.post(
+            "/capabilities/providers/provider.tts.gpt_sovits.local/tts-test",
+            json={"endpoint": "http://127.0.0.1:9880", "text": "测试"},
+        )
+        unsupported = client.post(
+            "/capabilities/providers/provider.comfyui.local/tts-test",
+            json={"endpoint": "http://127.0.0.1:8188"},
+        )
+
+        self.assertEqual(failed.status_code, 200)
+        payload = failed.json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "tts-test-failed")
+        self.assertEqual(payload["reason"], "provider_tts_test_failed")
+        self.assertNotIn("secret", failed.text.lower())
+        self.assertNotIn("token", failed.text.lower())
+        self.assertNotIn("users", failed.text.lower())
+        self.assertEqual(unsupported.status_code, 200)
+        self.assertEqual(unsupported.json()["status"], "unsupported_provider")
+        self.assertIn(("capabilities.provider_tts_test", False), runtime.observed)
 
     def test_capabilities_provider_config_load_sanitizes_manual_secret_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

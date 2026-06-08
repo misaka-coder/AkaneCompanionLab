@@ -6,12 +6,19 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from ..desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, build_desktop_pet_error_payload
+from ..local_capability_config import (
+    CONFIGURABLE_PROVIDER_BY_ID,
+    build_provider_config_entry,
+    get_voice_profile_runtime_config,
+    load_capability_config,
+)
+from services.tts_client import GptSovitsTTSClient, SynthesizedAudio
 
 
 LogEvent = Callable[..., None]
@@ -24,8 +31,14 @@ def build_voice_router(
     tts_client: Any,
     runtime_metrics: Any,
     log_event: LogEvent,
+    capability_config_base_dir: str | Path | None = None,
+    gpt_sovits_client_factory: Callable[[str], Any] | None = None,
 ) -> APIRouter:
     router = APIRouter()
+    provider_config_base_dir = _resolve_provider_config_base_dir(
+        capability_config_base_dir=capability_config_base_dir,
+        config_module=config_module,
+    )
 
     @router.post("/asr")
     async def asr(request: Request) -> JSONResponse:
@@ -125,6 +138,54 @@ def build_voice_router(
                 headers={"Cache-Control": "no-store"},
             )
 
+        resolution = _resolve_tts_runtime_provider(
+            engine=engine,
+            payload=payload,
+            base_dir=provider_config_base_dir,
+            config_module=config_module,
+            edge_tts_available=tts_client is not None,
+            gpt_sovits_client_factory=gpt_sovits_client_factory,
+        )
+        headers = _tts_response_headers(resolution)
+
+        if resolution["activeProviderId"] == GPT_SOVITS_PROVIDER_ID:
+            try:
+                synthesize_kwargs: dict[str, Any] = {
+                    "voice_profile_id": str(resolution.get("voiceProfileId") or ""),
+                }
+                voice_profile = resolution.get("voiceProfile")
+                if isinstance(voice_profile, Mapping) and voice_profile:
+                    synthesize_kwargs["profile"] = voice_profile
+                result = await resolution["client"].synthesize(text, **synthesize_kwargs)
+                audio, media_type = _coerce_synthesized_audio(result, default_media_type="audio/wav")
+                duration_ms = (time.perf_counter() - started_at) * 1000
+                runtime_metrics.observe_request("tts", duration_ms=duration_ms, ok=True)
+                log_event(
+                    "tts_complete",
+                    duration_ms=round(duration_ms, 1),
+                    text_length=len(text),
+                    provider=GPT_SOVITS_PROVIDER_ID,
+                    status=resolution.get("status"),
+                )
+                return Response(content=audio, media_type=media_type, headers=headers)
+            except Exception as exc:
+                resolution = {
+                    **resolution,
+                    "status": "degraded",
+                    "activeProviderId": EDGE_TTS_PROVIDER_ID if tts_client is not None else "",
+                    "fallbackProviderId": EDGE_TTS_PROVIDER_ID if tts_client is not None else "",
+                    "reason": "gpt_sovits_failed",
+                }
+                headers = _tts_response_headers(resolution)
+                log_event(
+                    "tts_provider_fallback",
+                    provider=GPT_SOVITS_PROVIDER_ID,
+                    fallbackProviderId=resolution.get("fallbackProviderId"),
+                    reason="gpt_sovits_failed",
+                    errorType=_safe_tts_reason(type(exc).__name__),
+                    text_length=len(text),
+                )
+
         if tts_client is None:
             runtime_metrics.observe_request("tts", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
             return JSONResponse(
@@ -134,11 +195,12 @@ def build_voice_router(
                     retryable=False,
                 ),
                 status_code=503,
-                headers={"Cache-Control": "no-store"},
+                headers=headers,
             )
 
         try:
-            audio = await tts_client.synthesize(text)
+            result = await tts_client.synthesize(text)
+            audio, media_type = _coerce_synthesized_audio(result, default_media_type="audio/mpeg")
         except ValueError as exc:
             runtime_metrics.observe_request("tts", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
             log_event("tts_error", message=str(exc), text_length=len(text))
@@ -149,7 +211,7 @@ def build_voice_router(
                     retryable=False,
                 ),
                 status_code=400,
-                headers={"Cache-Control": "no-store"},
+                headers=headers,
             )
         except Exception as exc:
             runtime_metrics.observe_request("tts", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
@@ -161,22 +223,332 @@ def build_voice_router(
                     retryable=True,
                 ),
                 status_code=502,
-                headers={"Cache-Control": "no-store"},
+                headers=headers,
             )
 
         duration_ms = (time.perf_counter() - started_at) * 1000
         runtime_metrics.observe_request("tts", duration_ms=duration_ms, ok=True)
-        log_event("tts_complete", duration_ms=round(duration_ms, 1), text_length=len(text))
+        log_event(
+            "tts_complete",
+            duration_ms=round(duration_ms, 1),
+            text_length=len(text),
+            provider=resolution.get("activeProviderId") or EDGE_TTS_PROVIDER_ID,
+            status=resolution.get("status"),
+        )
         return Response(
             content=audio,
-            media_type="audio/mpeg",
-            headers={
-                "Cache-Control": "no-store",
-                "X-Akane-Contract": DESKTOP_PET_CONTRACT_VERSION,
-            },
+            media_type=media_type,
+            headers=headers,
         )
 
     return router
+
+
+GPT_SOVITS_PROVIDER_ID = "provider.tts.gpt_sovits.local"
+EDGE_TTS_PROVIDER_ID = "provider.tts.edge"
+TEXT_ONLY_PROVIDER_ID = "provider.voice.text_only"
+
+
+def _resolve_tts_runtime_provider(
+    *,
+    engine: Any,
+    payload: Mapping[str, Any],
+    base_dir: Path | None,
+    config_module: Any,
+    edge_tts_available: bool,
+    gpt_sovits_client_factory: Callable[[str], Any] | None,
+) -> dict[str, Any]:
+    payload_voice = _resolve_payload_voice_preference(payload)
+    character_voice = payload_voice or _resolve_character_voice_preference(engine, payload)
+    request_source = "payload" if payload_voice else ("character_pack" if character_voice else "default")
+    raw_provider = str(character_voice.get("provider") or "").strip()
+    voice_profile_id = _safe_voice_profile_id(character_voice.get("profileId") or character_voice.get("profile_id"))
+    requested_provider_id = _normalize_voice_provider_id(raw_provider)
+    if not requested_provider_id:
+        requested_provider_id = GPT_SOVITS_PROVIDER_ID if voice_profile_id and not raw_provider else EDGE_TTS_PROVIDER_ID
+    profile_user_id = _resolve_profile_user_id(payload)
+    resolution: dict[str, Any] = {
+        "status": "ready",
+        "reason": "",
+        "requestSource": request_source,
+        "requestedProviderId": requested_provider_id,
+        "activeProviderId": EDGE_TTS_PROVIDER_ID if edge_tts_available else "",
+        "fallbackProviderId": "",
+        "voiceProfileId": voice_profile_id,
+        "profileUserId": profile_user_id,
+        "client": None,
+        "voiceProfile": {},
+    }
+
+    if requested_provider_id != GPT_SOVITS_PROVIDER_ID:
+        if not edge_tts_available:
+            resolution.update({"status": "unavailable", "reason": "tts_client_unavailable"})
+        return resolution
+
+    if not voice_profile_id:
+        return _with_edge_fallback(
+            resolution,
+            edge_tts_available=edge_tts_available,
+            reason="requested_voice_profile_missing",
+        )
+
+    provider_spec = CONFIGURABLE_PROVIDER_BY_ID.get(GPT_SOVITS_PROVIDER_ID)
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    provider_config = config.get("providers", {}).get(GPT_SOVITS_PROVIDER_ID)
+    provider_entry = build_provider_config_entry(provider_spec, provider_config) if provider_spec is not None else {}
+    status = str(provider_entry.get("status") or "").strip()
+    endpoint = str(provider_entry.get("endpoint") or "").strip()
+    if status not in {"configured", "ready"} or not endpoint:
+        return _with_edge_fallback(
+            resolution,
+            edge_tts_available=edge_tts_available,
+            reason=_provider_unavailable_reason(status),
+        )
+
+    try:
+        factory = gpt_sovits_client_factory or _default_gpt_sovits_client_factory(config_module)
+        client = factory(endpoint)
+    except Exception:
+        return _with_edge_fallback(
+            resolution,
+            edge_tts_available=edge_tts_available,
+            reason="gpt_sovits_client_unavailable",
+        )
+
+    resolution.update(
+        {
+            "status": "ready",
+            "reason": "",
+            "activeProviderId": GPT_SOVITS_PROVIDER_ID,
+            "fallbackProviderId": "",
+            "client": client,
+            "voiceProfile": get_voice_profile_runtime_config(
+                base_dir=base_dir,
+                profile_user_id=profile_user_id,
+                voice_profile_id=voice_profile_id,
+            ),
+        }
+    )
+    return resolution
+
+
+def _default_gpt_sovits_client_factory(config_module: Any) -> Callable[[str], GptSovitsTTSClient]:
+    timeout_seconds = float(getattr(config_module, "GPT_SOVITS_TTS_TIMEOUT_SECONDS", 45.0) or 45.0)
+    text_lang = str(getattr(config_module, "GPT_SOVITS_TEXT_LANG", "zh") or "zh")
+    media_type = str(getattr(config_module, "GPT_SOVITS_MEDIA_TYPE", "wav") or "wav")
+
+    def factory(endpoint: str) -> GptSovitsTTSClient:
+        return GptSovitsTTSClient(
+            endpoint,
+            timeout_seconds=timeout_seconds,
+            text_lang=text_lang,
+            media_type=media_type,
+        )
+
+    return factory
+
+
+def _with_edge_fallback(
+    resolution: dict[str, Any],
+    *,
+    edge_tts_available: bool,
+    reason: str,
+) -> dict[str, Any]:
+    active = EDGE_TTS_PROVIDER_ID if edge_tts_available else ""
+    return {
+        **resolution,
+        "status": "degraded" if active else "unavailable",
+        "reason": reason,
+        "activeProviderId": active,
+        "fallbackProviderId": active,
+        "client": None,
+    }
+
+
+def _resolve_payload_voice_preference(payload: Mapping[str, Any]) -> dict[str, str]:
+    provider = _safe_voice_hint_text(
+        payload.get("voiceProvider")
+        or payload.get("voice_provider")
+        or payload.get("ttsProvider")
+        or payload.get("tts_provider")
+        or payload.get("ttsProviderId")
+        or payload.get("tts_provider_id")
+        or payload.get("requestedProviderId")
+    )
+    profile_id = _safe_voice_profile_id(
+        payload.get("voiceProfileId")
+        or payload.get("voice_profile_id")
+        or payload.get("profileId")
+        or payload.get("profile_id")
+    )
+    if not (provider or profile_id):
+        return {}
+    return {
+        "provider": provider,
+        "profileId": profile_id,
+    }
+
+
+def _resolve_character_voice_preference(engine: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
+    pack_id = str(
+        payload.get("character_pack_id")
+        or payload.get("characterPackId")
+        or payload.get("character_pack")
+        or ""
+    ).strip()
+    if not pack_id:
+        return {}
+    service = getattr(engine, "desktop_pet_character_resources", None)
+    builder = getattr(service, "build_character_voice_preference", None)
+    if not callable(builder):
+        return {}
+    try:
+        result = builder(pack_id)
+    except Exception:
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
+def _resolve_profile_user_id(payload: Mapping[str, Any]) -> str:
+    value = str(
+        payload.get("real_user_id")
+        or payload.get("profileUserId")
+        or payload.get("profile_user_id")
+        or ""
+    ).strip()
+    return value or "master"
+
+
+def _safe_voice_hint_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or len(text) > 120:
+        return ""
+    lowered = text.lower()
+    if (
+        "://" in text
+        or "/" in text
+        or "\\" in text
+        or ":" in text
+        or ".." in text
+        or "token" in lowered
+        or "secret" in lowered
+        or "password" in lowered
+        or "api_key" in lowered
+    ):
+        return ""
+    return text
+
+
+def _normalize_voice_provider_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    aliases = {
+        "edge": EDGE_TTS_PROVIDER_ID,
+        "edge_tts": EDGE_TTS_PROVIDER_ID,
+        "edge-tts": EDGE_TTS_PROVIDER_ID,
+        EDGE_TTS_PROVIDER_ID: EDGE_TTS_PROVIDER_ID,
+        "gpt_sovits": GPT_SOVITS_PROVIDER_ID,
+        "gpt-sovits": GPT_SOVITS_PROVIDER_ID,
+        "gptsovits": GPT_SOVITS_PROVIDER_ID,
+        GPT_SOVITS_PROVIDER_ID: GPT_SOVITS_PROVIDER_ID,
+        "text": TEXT_ONLY_PROVIDER_ID,
+        "text_only": TEXT_ONLY_PROVIDER_ID,
+        "none": TEXT_ONLY_PROVIDER_ID,
+        TEXT_ONLY_PROVIDER_ID: TEXT_ONLY_PROVIDER_ID,
+    }
+    return aliases.get(raw.lower(), "")
+
+
+def _safe_voice_profile_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or len(text) > 120:
+        return ""
+    lowered = text.lower()
+    if (
+        "://" in text
+        or "/" in text
+        or "\\" in text
+        or ":" in text
+        or ".." in text
+        or "token" in lowered
+        or "secret" in lowered
+        or "password" in lowered
+        or "api_key" in lowered
+    ):
+        return ""
+    return text
+
+
+def _provider_unavailable_reason(status: str) -> str:
+    if status == "missing_config":
+        return "requested_provider_missing_config"
+    if status == "disabled":
+        return "requested_provider_disabled"
+    if status == "invalid_config":
+        return "requested_provider_invalid_config"
+    if status == "unreachable":
+        return "requested_provider_unreachable"
+    if status:
+        return "requested_provider_not_ready"
+    return "requested_provider_unknown"
+
+
+def _coerce_synthesized_audio(result: Any, *, default_media_type: str) -> tuple[bytes, str]:
+    if isinstance(result, bytes):
+        audio = result
+        media_type = default_media_type
+    elif isinstance(result, SynthesizedAudio):
+        audio = result.audio
+        media_type = result.media_type or default_media_type
+    else:
+        audio = bytes(getattr(result, "audio", b"") or b"")
+        media_type = str(getattr(result, "media_type", "") or default_media_type)
+    if not audio:
+        raise RuntimeError("tts returned empty audio")
+    return audio, _safe_media_type(media_type, default=default_media_type)
+
+
+def _safe_media_type(value: Any, *, default: str) -> str:
+    text = str(value or "").split(";", 1)[0].strip().lower()
+    if "/" not in text or any(ch in text for ch in "\r\n"):
+        return default
+    return text[:80]
+
+
+def _tts_response_headers(resolution: Mapping[str, Any]) -> dict[str, str]:
+    requested = str(resolution.get("requestedProviderId") or EDGE_TTS_PROVIDER_ID)
+    active = str(resolution.get("activeProviderId") or "")
+    return {
+        "Cache-Control": "no-store",
+        "X-Akane-Contract": DESKTOP_PET_CONTRACT_VERSION,
+        "X-Akane-TTS-Requested-Provider": requested,
+        "X-Akane-TTS-Provider": active,
+        "X-Akane-TTS-Status": str(resolution.get("status") or ""),
+        "X-Akane-TTS-Fallback": str(resolution.get("fallbackProviderId") or ""),
+        "X-Akane-TTS-Reason": _safe_tts_reason(resolution.get("reason")),
+    }
+
+
+def _safe_tts_reason(value: Any) -> str:
+    reason = str(value or "").strip()
+    if not reason:
+        return ""
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in reason)
+    return safe[:120]
+
+
+def _resolve_provider_config_base_dir(
+    *,
+    capability_config_base_dir: str | Path | None,
+    config_module: Any = None,
+) -> Path | None:
+    if capability_config_base_dir is not None:
+        return Path(capability_config_base_dir)
+    data_dir = getattr(config_module, "DATA_DIR", None)
+    if data_dir:
+        return Path(data_dir)
+    return None
 
 
 def run_asr_transcription(

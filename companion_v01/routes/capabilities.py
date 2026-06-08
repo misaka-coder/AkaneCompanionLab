@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import re
 import threading
@@ -8,18 +9,25 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from ..local_capability_config import (
     check_provider_health,
+    get_mcp_server_runtime_config,
+    list_mcp_server_configs,
     list_provider_configs,
+    list_voice_profile_configs,
     load_capability_config,
     preflight_workflow_execution,
+    save_workflow_file,
     save_workflow_config,
     save_provider_config,
+    save_mcp_server_config,
+    save_mcp_server_discovery,
+    save_voice_profile_config,
     validate_workflow_config,
     validate_workflow_runtime_binding,
 )
@@ -30,6 +38,8 @@ from ..local_workflow_execution import (
     normalize_workflow_asset,
     normalize_workflow_asset_handle,
 )
+from ..music_lyrics import LyricsSearchFunc, OnlineLyricsService
+from services.tts_client import GptSovitsTTSClient, SynthesizedAudio
 from ..local_capability_catalog import (
     build_local_capability_catalog,
     build_local_workflow_catalog,
@@ -39,7 +49,13 @@ from ..local_capability_catalog import (
 
 LogEvent = Callable[..., None]
 ProviderHealthChecker = Callable[[str, int, float], tuple[bool, str]]
+ProviderTtsTestRunner = Callable[..., Any]
+McpToolDiscoverer = Callable[..., Any]
 WORKFLOW_JOB_ID_RE = re.compile(r"^workflowjob_[a-f0-9]{32}$")
+GPT_SOVITS_PROVIDER_ID = "provider.tts.gpt_sovits.local"
+PROVIDER_TTS_TEST_DEFAULT_TEXT = "你好，主人，本地语音服务已经接通。"
+PROVIDER_TTS_TEST_TEXT_MAX_CHARS = 120
+PROVIDER_TTS_TEST_AUDIO_MAX_BYTES = 2 * 1024 * 1024
 
 
 def build_capabilities_router(
@@ -53,8 +69,11 @@ def build_capabilities_router(
     local_environment_probe: Callable[[], dict[str, Any]] | None = None,
     capability_config_base_dir: str | Path | None = None,
     provider_health_checker: ProviderHealthChecker | None = None,
+    provider_tts_test_runner: ProviderTtsTestRunner | None = None,
+    mcp_tool_discoverer: McpToolDiscoverer | None = None,
     workflow_runner: Any = None,
     background_tasks: Any = None,
+    lyrics_searcher: LyricsSearchFunc | None = None,
 ) -> APIRouter:
     router = APIRouter()
     workflow_jobs: dict[str, dict[str, Any]] = {}
@@ -63,11 +82,17 @@ def build_capabilities_router(
         capability_config_base_dir=capability_config_base_dir,
         config_module=config_module,
     )
+    lyrics_service = OnlineLyricsService(
+        base_dir=provider_config_base_dir,
+        config_module=config_module,
+        search_func=lyrics_searcher,
+    )
 
     @router.get("/capabilities")
     async def read_capabilities(request: Request) -> JSONResponse:
         started_at = time.perf_counter()
         _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        character_voice = _resolve_character_voice_preference(engine, request)
         provider_config = load_capability_config(
             base_dir=provider_config_base_dir,
             profile_user_id=profile_user_id,
@@ -79,6 +104,8 @@ def build_capabilities_router(
             profile_user_id=profile_user_id,
             provider_configs=provider_config.get("providers", {}),
             workflow_configs=provider_config.get("workflows", {}),
+            mcp_server_configs=provider_config.get("mcpServers", {}),
+            character_voice=character_voice,
         )
         _mark_workflows_execution_ready(
             payload,
@@ -98,6 +125,33 @@ def build_capabilities_router(
         )
         return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
+    @router.post("/capabilities/music/lyrics")
+    async def resolve_music_lyrics(request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        payload = await _read_json_object(request)
+        _session_id, profile_user_id = _resolve_identity_with_payload(
+            request,
+            payload,
+            resolve_identity_from_query,
+        )
+        result = await asyncio.to_thread(
+            lyrics_service.resolve_lyrics,
+            profile_user_id=profile_user_id,
+            payload=payload,
+        )
+        ok = bool(result.get("ok"))
+        _observe_request(runtime_metrics, "capabilities.music_lyrics", started_at, ok)
+        _log_best_effort(
+            log_event,
+            "capabilities_music_lyrics",
+            status=result.get("status"),
+            reason=result.get("reason"),
+            cached=bool(result.get("cached")),
+            lineCount=int(result.get("lineCount") or 0),
+        )
+        status_code = 400 if result.get("status") == "invalid_request" else 200
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
+
     @router.get("/capabilities/providers")
     async def read_capability_providers(request: Request) -> JSONResponse:
         started_at = time.perf_counter()
@@ -114,6 +168,81 @@ def build_capabilities_router(
             total=payload.get("summary", {}).get("total"),
         )
         return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    @router.get("/capabilities/voice-profiles")
+    async def read_capability_voice_profiles(request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = list_voice_profile_configs(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+        )
+        _observe_request(runtime_metrics, "capabilities.voice_profiles", started_at, True)
+        _log_best_effort(
+            log_event,
+            "capabilities_voice_profiles",
+            status=payload.get("status"),
+            total=payload.get("summary", {}).get("total"),
+        )
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    @router.get("/capabilities/mcp-servers")
+    async def read_capability_mcp_servers(request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = list_mcp_server_configs(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+        )
+        _observe_request(runtime_metrics, "capabilities.mcp_servers", started_at, True)
+        _log_best_effort(
+            log_event,
+            "capabilities_mcp_servers",
+            status=payload.get("status"),
+            total=payload.get("summary", {}).get("total"),
+        )
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    @router.post("/capabilities/mcp-servers/{server_id}/config")
+    async def write_capability_mcp_server_config(server_id: str, request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = await _read_json_object(request)
+        result = save_mcp_server_config(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+            server_id=server_id,
+            payload=payload,
+        )
+        _observe_request(runtime_metrics, "capabilities.mcp_server_config", started_at, bool(result.get("ok")))
+        _log_best_effort(
+            log_event,
+            "capabilities_mcp_server_config",
+            status=result.get("status"),
+            serverId=result.get("serverId"),
+        )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @router.post("/capabilities/mcp-servers/{server_id}/discover")
+    async def discover_capability_mcp_server_tools(server_id: str, request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        result = await _discover_mcp_server_tools(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+            server_id=server_id,
+            discoverer=mcp_tool_discoverer,
+        )
+        _observe_request(runtime_metrics, "capabilities.mcp_server_discover", started_at, bool(result.get("ok")))
+        _log_best_effort(
+            log_event,
+            "capabilities_mcp_server_discover",
+            status=result.get("status"),
+            serverId=result.get("serverId"),
+            toolCount=result.get("toolCount"),
+            reason=result.get("reason"),
+        )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @router.get("/capabilities/workflows")
     async def read_capability_workflows(request: Request) -> JSONResponse:
@@ -180,6 +309,27 @@ def build_capabilities_router(
         _log_best_effort(
             log_event,
             "capabilities_workflow_validate",
+            status=result.get("status"),
+            workflowId=result.get("workflowId"),
+        )
+        status_code = 404 if result.get("status") == "unknown_workflow" else 200
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+    @router.post("/capabilities/workflows/{workflow_id}/file")
+    async def import_capability_workflow_file(workflow_id: str, request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = await _read_json_object(request)
+        result = save_workflow_file(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+            workflow_id=workflow_id,
+            payload=payload,
+        )
+        _observe_request(runtime_metrics, "capabilities.workflow_file", started_at, bool(result.get("ok")))
+        _log_best_effort(
+            log_event,
+            "capabilities_workflow_file",
             status=result.get("status"),
             workflowId=result.get("workflowId"),
         )
@@ -408,6 +558,60 @@ def build_capabilities_router(
         status_code = 404 if result.get("status") == "unknown_provider" else 200
         return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
 
+    @router.post("/capabilities/providers/{provider_id}/tts-test")
+    async def test_capability_provider_tts(provider_id: str, request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = await _read_json_object(request)
+        result = await _run_provider_tts_test(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+            provider_id=provider_id,
+            payload=payload,
+            config_module=config_module,
+            runner=provider_tts_test_runner,
+        )
+        ok = bool(result.get("ok"))
+        _observe_request(runtime_metrics, "capabilities.provider_tts_test", started_at, ok)
+        _log_best_effort(
+            log_event,
+            "capabilities_provider_tts_test",
+            status=result.get("status"),
+            providerId=result.get("providerId"),
+            reason=result.get("reason"),
+            audioBytes=result.get("audioBytes"),
+        )
+        status_code = 404 if result.get("status") == "unknown_provider" else 200
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+    @router.post("/capabilities/providers/{provider_id}/voice-profiles/{voice_profile_id}/config")
+    async def write_capability_provider_voice_profile(
+        provider_id: str,
+        voice_profile_id: str,
+        request: Request,
+    ) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = await _read_json_object(request)
+        payload = {**payload, "providerId": provider_id}
+        result = save_voice_profile_config(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+            voice_profile_id=voice_profile_id,
+            payload=payload,
+        )
+        ok = bool(result.get("ok"))
+        _observe_request(runtime_metrics, "capabilities.voice_profile_config", started_at, ok)
+        _log_best_effort(
+            log_event,
+            "capabilities_voice_profile_config",
+            status=result.get("status"),
+            providerId=provider_id,
+            voiceProfileId=result.get("voiceProfileId"),
+        )
+        status_code = 404 if result.get("status") == "unknown_provider" else 200
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
+
     @router.post("/capabilities/local-environment-check")
     async def check_local_environment() -> JSONResponse:
         started_at = time.perf_counter()
@@ -446,6 +650,271 @@ def build_capabilities_router(
     return router
 
 
+async def _discover_mcp_server_tools(
+    *,
+    base_dir: Path | None,
+    profile_user_id: str,
+    server_id: str,
+    discoverer: McpToolDiscoverer | None,
+) -> dict[str, Any]:
+    server = get_mcp_server_runtime_config(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        server_id=server_id,
+    )
+    safe_server_id = str(server.get("serverId") or server_id or "").strip()
+    if not server:
+        return {
+            "ok": False,
+            "status": "missing_config",
+            "serverId": safe_server_id,
+            "reason": "mcp_server_config_missing",
+            "refresh": False,
+        }
+    if not server.get("enabled"):
+        return {
+            "ok": False,
+            "status": "disabled",
+            "serverId": safe_server_id,
+            "reason": "mcp_server_disabled",
+            "refresh": False,
+        }
+    if discoverer is None:
+        return {
+            "ok": False,
+            "status": "not-implemented",
+            "serverId": safe_server_id,
+            "reason": "mcp_discoverer_not_bound",
+            "refresh": False,
+        }
+    try:
+        discovered = discoverer(server=server)
+        if hasattr(discovered, "__await__"):
+            discovered = await discovered
+    except Exception:
+        return {
+            "ok": False,
+            "status": "discovery-failed",
+            "serverId": safe_server_id,
+            "reason": "mcp_discovery_failed",
+            "refresh": False,
+        }
+    payload = discovered if isinstance(discovered, Mapping) else {"tools": discovered if isinstance(discovered, list) else []}
+    return save_mcp_server_discovery(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        server_id=safe_server_id,
+        payload=payload,
+    )
+
+
+async def _run_provider_tts_test(
+    *,
+    base_dir: Path | None,
+    profile_user_id: str,
+    provider_id: str,
+    payload: dict[str, Any],
+    config_module: Any = None,
+    runner: ProviderTtsTestRunner | None = None,
+) -> dict[str, Any]:
+    provider_id = str(provider_id or "").strip()
+    if provider_id != GPT_SOVITS_PROVIDER_ID:
+        return {
+            "ok": False,
+            "status": "unsupported_provider",
+            "providerId": provider_id,
+            "reason": "provider_tts_test_not_supported",
+            "refresh": False,
+        }
+
+    endpoint_result = _resolve_provider_tts_test_endpoint(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        payload=payload,
+    )
+    if not endpoint_result.get("ok"):
+        return {
+            "ok": False,
+            "status": endpoint_result.get("status") or "missing_config",
+            "providerId": provider_id,
+            "reason": endpoint_result.get("reason") or "provider_endpoint_missing",
+            "refresh": False,
+        }
+
+    text = _safe_provider_tts_test_text(payload.get("text"))
+    voice_profile_id = _safe_provider_tts_profile_id(
+        payload.get("voiceProfileId") or payload.get("voice_profile_id") or payload.get("profileId")
+    )
+    voice_profile = _provider_tts_test_profile_payload(payload)
+    endpoint = str(endpoint_result.get("endpoint") or "")
+    try:
+        if runner is not None:
+            result = runner(endpoint=endpoint, text=text, voice_profile_id=voice_profile_id)
+            if hasattr(result, "__await__"):
+                result = await result
+        else:
+            timeout_seconds = float(getattr(config_module, "GPT_SOVITS_TTS_TIMEOUT_SECONDS", 45.0) or 45.0)
+            text_lang = str(getattr(config_module, "GPT_SOVITS_TEXT_LANG", "zh") or "zh")
+            media_type = str(getattr(config_module, "GPT_SOVITS_MEDIA_TYPE", "wav") or "wav")
+            client = GptSovitsTTSClient(
+                endpoint,
+                timeout_seconds=timeout_seconds,
+                text_lang=text_lang,
+                media_type=media_type,
+            )
+            result = await client.synthesize(text, voice_profile_id=voice_profile_id, profile=voice_profile)
+        audio, media_type = _coerce_provider_tts_test_audio(result)
+    except ValueError:
+        return {
+            "ok": False,
+            "status": "invalid_config",
+            "providerId": provider_id,
+            "reason": "provider_tts_test_invalid_config",
+            "refresh": False,
+        }
+    except Exception:
+        return {
+            "ok": False,
+            "status": "tts-test-failed",
+            "providerId": provider_id,
+            "reason": "provider_tts_test_failed",
+            "refresh": False,
+        }
+
+    if len(audio) > PROVIDER_TTS_TEST_AUDIO_MAX_BYTES:
+        return {
+            "ok": False,
+            "status": "tts-test-too-large",
+            "providerId": provider_id,
+            "reason": "provider_tts_test_audio_too_large",
+            "refresh": False,
+        }
+    return {
+        "ok": True,
+        "status": "tts-test-ready",
+        "providerId": provider_id,
+        "mediaType": media_type,
+        "audioBase64": base64.b64encode(audio).decode("ascii"),
+        "audioBytes": len(audio),
+        "textLength": len(text),
+        "voiceProfileId": voice_profile_id,
+        "profileApplied": bool(voice_profile),
+        "refresh": False,
+    }
+
+
+def _resolve_provider_tts_test_endpoint(
+    *,
+    base_dir: Path | None,
+    profile_user_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    endpoint_value = str(payload.get("endpoint") or "").strip()
+    if endpoint_value:
+        from ..local_capability_config import normalize_local_http_endpoint
+
+        normalized = normalize_local_http_endpoint(endpoint_value)
+        if not normalized.get("ok"):
+            return normalized
+        return {"ok": True, "status": "valid", "endpoint": normalized["endpoint"]}
+
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    saved = config.get("providers", {}).get(GPT_SOVITS_PROVIDER_ID)
+    endpoint = str((saved or {}).get("endpoint") or "").strip() if isinstance(saved, dict) else ""
+    if not endpoint:
+        return {"ok": False, "status": "missing_config", "reason": "provider_endpoint_missing"}
+    return {"ok": True, "status": "valid", "endpoint": endpoint}
+
+
+def _safe_provider_tts_test_text(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return PROVIDER_TTS_TEST_DEFAULT_TEXT
+    return text[:PROVIDER_TTS_TEST_TEXT_MAX_CHARS]
+
+
+def _provider_tts_test_profile_payload(payload: Mapping[str, Any]) -> dict[str, str]:
+    profile: dict[str, str] = {}
+    text_lang = _safe_provider_tts_profile_id(payload.get("textLang") or payload.get("text_lang"))
+    prompt_lang = _safe_provider_tts_profile_id(payload.get("promptLang") or payload.get("prompt_lang"))
+    media_type = _safe_provider_tts_profile_id(payload.get("mediaType") or payload.get("media_type"))
+    ref_audio_path = _safe_provider_private_path(payload.get("refAudioPath") or payload.get("ref_audio_path"))
+    prompt_text = _safe_provider_prompt_text(payload.get("promptText") or payload.get("prompt_text"))
+    if text_lang:
+        profile["textLang"] = text_lang
+    if prompt_lang:
+        profile["promptLang"] = prompt_lang
+    if media_type:
+        profile["mediaType"] = media_type
+    if ref_audio_path:
+        profile["refAudioPath"] = ref_audio_path
+    if prompt_text:
+        profile["promptText"] = prompt_text
+    return profile
+
+
+def _safe_provider_tts_profile_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or len(text) > 120:
+        return ""
+    lowered = text.lower()
+    if (
+        "://" in text
+        or "/" in text
+        or "\\" in text
+        or ":" in text
+        or ".." in text
+        or "token" in lowered
+        or "secret" in lowered
+        or "password" in lowered
+        or "api_key" in lowered
+    ):
+        return ""
+    return text
+
+
+def _safe_provider_prompt_text(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("api_key", "password", "secret", "token")):
+        return ""
+    return text[:300]
+
+
+def _safe_provider_private_path(value: Any) -> str:
+    text = str(value or "").strip().replace("\r", "").replace("\n", "")
+    if not text:
+        return ""
+    lowered = text.lower()
+    if "://" in text or any(marker in lowered for marker in ("api_key", "password", "secret", "token")):
+        return ""
+    return text[:500]
+
+
+def _coerce_provider_tts_test_audio(result: Any) -> tuple[bytes, str]:
+    if isinstance(result, bytes):
+        audio = result
+        media_type = "audio/wav"
+    elif isinstance(result, SynthesizedAudio):
+        audio = result.audio
+        media_type = result.media_type or "audio/wav"
+    else:
+        audio = bytes(getattr(result, "audio", b"") or b"")
+        media_type = str(getattr(result, "media_type", "") or "audio/wav")
+    if not audio:
+        raise RuntimeError("provider_tts_test_empty_audio")
+    media_type = str(media_type or "audio/wav").split(";", 1)[0].strip().lower()
+    if "/" not in media_type or any(ch in media_type for ch in "\r\n"):
+        media_type = "audio/wav"
+    if not media_type.startswith("audio/"):
+        media_type = "audio/wav"
+    return audio, media_type[:80]
+
+
 async def _read_json_object(request: Request) -> dict[str, Any]:
     try:
         payload = await request.json()
@@ -469,6 +938,51 @@ def _resolve_identity(
         return resolve_identity_from_query(request)
     session_id = str(request.query_params.get("user_id") or request.query_params.get("session_id") or "default_session")
     profile_user_id = str(request.query_params.get("real_user_id") or request.query_params.get("profileUserId") or session_id)
+    return session_id, profile_user_id
+
+
+def _resolve_character_voice_preference(engine: Any, request: Request) -> dict[str, Any]:
+    pack_id = str(
+        request.query_params.get("character_pack_id")
+        or request.query_params.get("characterPackId")
+        or request.query_params.get("character_pack")
+        or ""
+    ).strip()
+    if not pack_id:
+        return {}
+    service = getattr(engine, "desktop_pet_character_resources", None)
+    builder = getattr(service, "build_character_voice_preference", None)
+    if not callable(builder):
+        return {}
+    try:
+        result = builder(pack_id)
+    except Exception:
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
+def _resolve_identity_with_payload(
+    request: Request,
+    payload: dict[str, Any],
+    resolve_identity_from_query: Callable[[Request], tuple[str, str]] | None,
+) -> tuple[str, str]:
+    base_session_id, base_profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+    query_session = str(request.query_params.get("user_id") or request.query_params.get("session_id") or "").strip()
+    query_profile = str(request.query_params.get("real_user_id") or request.query_params.get("profileUserId") or "").strip()
+    body = payload if isinstance(payload, dict) else {}
+    body_session = str(body.get("user_id") or body.get("session_id") or "").strip()
+    body_profile = str(
+        body.get("real_user_id")
+        or body.get("profileUserId")
+        or body.get("profile_user_id")
+        or ""
+    ).strip()
+    session_id = str(query_session or body_session or base_session_id or "default_session").strip() or "default_session"
+    profile_user_id = (
+        str(query_profile or body_profile or base_profile_user_id or session_id)
+        .strip()
+        or session_id
+    )
     return session_id, profile_user_id
 
 

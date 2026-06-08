@@ -48,10 +48,12 @@ const SCREEN_VISION_INTERVAL_OPTIONS_SEC = Object.freeze([15, 25, 30, 60, 120, 3
 const SCREEN_VISION_FRAME_COUNT_MIN = 1;
 const SCREEN_VISION_FRAME_COUNT_MAX = 5;
 const MUSIC_PLAY_MODE_OPTIONS = Object.freeze(["列表循环", "单曲循环", "随机播放"]);
+const WORKFLOW_FILE_IMPORT_MAX_BYTES = 4 * 1024 * 1024;
 const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 let latestRuntimeSnapshot = null;
 let runtimeSnapshotHydrateTimer = 0;
 let renderedPageId = "";
+let providerTestAudioUrl = "";
 const runtimePatchSignatures = {
   music: "",
   overview: "",
@@ -107,8 +109,12 @@ const state = {
   advancedCoreSwitches: buildAdvancedCoreSwitchState(advancedPage.coreSettings),
   expandedPerceptionCard: null,
   activeProviderConfigId: "",
+  activeMcpConfigId: "",
   activeWorkflowConfigId: "",
   providerActionStatus: {},
+  mcpActionStatus: {},
+  mcpConfigDrafts: {},
+  providerVoiceProfileDrafts: {},
   workflowActionStatus: {},
   showAllAbilityCalls: false,
   showAllDiagnosticLogs: false
@@ -259,6 +265,10 @@ function syncProviderInteractiveState() {
   if (state.activeWorkflowConfigId && !workflows.some((item) => item.workflowId === state.activeWorkflowConfigId || item.id === state.activeWorkflowConfigId)) {
     state.activeWorkflowConfigId = "";
   }
+  const mcpServers = buildVisibleMcpServers();
+  if (state.activeMcpConfigId && !mcpServers.some((item) => item.serverId === state.activeMcpConfigId || item.id === state.activeMcpConfigId)) {
+    state.activeMcpConfigId = "";
+  }
 }
 
 function renderShell() {
@@ -381,6 +391,46 @@ function bindEvents() {
       return;
     }
 
+    const providerTtsTestButton = event.target.closest("[data-provider-tts-test]");
+    if (providerTtsTestButton) {
+      if (providerTtsTestButton.dataset.actionUnavailable === "true") return;
+      void runProviderConfigAction(
+        providerTtsTestButton,
+        CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest
+      );
+      return;
+    }
+
+    const providerVoiceProfileSaveButton = event.target.closest("[data-provider-voice-profile-save]");
+    if (providerVoiceProfileSaveButton) {
+      if (providerVoiceProfileSaveButton.dataset.actionUnavailable === "true") return;
+      void runProviderConfigAction(
+        providerVoiceProfileSaveButton,
+        CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave
+      );
+      return;
+    }
+
+    const mcpSaveButton = event.target.closest("[data-mcp-config-save]");
+    if (mcpSaveButton) {
+      if (mcpSaveButton.dataset.actionUnavailable === "true") return;
+      void runMcpConfigAction(
+        mcpSaveButton,
+        CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave
+      );
+      return;
+    }
+
+    const mcpDiscoverButton = event.target.closest("[data-mcp-discover]");
+    if (mcpDiscoverButton) {
+      if (mcpDiscoverButton.dataset.actionUnavailable === "true") return;
+      void runMcpConfigAction(
+        mcpDiscoverButton,
+        CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover
+      );
+      return;
+    }
+
     const workflowSaveButton = event.target.closest("[data-workflow-config-save]");
     if (workflowSaveButton) {
       if (workflowSaveButton.dataset.actionUnavailable === "true") return;
@@ -398,6 +448,14 @@ function bindEvents() {
         workflowValidateButton,
         CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate
       );
+      return;
+    }
+
+    const workflowImportButton = event.target.closest("[data-workflow-file-import]");
+    if (workflowImportButton) {
+      if (workflowImportButton.disabled) return;
+      const row = workflowImportButton.closest("[data-workflow-row]");
+      row?.querySelector?.("[data-workflow-file-input]")?.click();
       return;
     }
 
@@ -563,6 +621,17 @@ function bindEvents() {
       );
     }
   });
+
+  root.addEventListener("change", (event) => {
+    const workflowFileInput = event.target.closest("[data-workflow-file-input]");
+    if (workflowFileInput) {
+      void importWorkflowFile(workflowFileInput);
+    }
+  });
+
+  window.addEventListener("beforeunload", () => {
+    cleanupProviderTestAudioUrl();
+  });
 }
 
 async function runProviderConfigAction(button, actionId) {
@@ -571,7 +640,22 @@ async function runProviderConfigAction(button, actionId) {
   state.providerActionStatus[payload.providerId] = "处理中";
   renderActivePage();
   const result = await actionRouter.run(actionId, payload, { source: "control-center-lab" });
-  state.providerActionStatus[payload.providerId] = providerActionStatusLabel(result);
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest && result?.ok) {
+    state.providerActionStatus[payload.providerId] = await playProviderTestAudio(result);
+  } else {
+    state.providerActionStatus[payload.providerId] = providerActionStatusLabel(result);
+  }
+  renderActivePage();
+}
+
+async function runMcpConfigAction(button, actionId) {
+  const payload = readMcpConfigPayload(button);
+  if (!payload.serverId) return;
+  state.activeMcpConfigId = payload.serverId;
+  state.mcpActionStatus[payload.serverId] = actionId === CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover ? "正在发现工具" : "正在保存";
+  renderActivePage();
+  const result = await actionRouter.run(actionId, payload, { source: "control-center-lab" });
+  state.mcpActionStatus[payload.serverId] = mcpActionStatusLabel(result);
   renderActivePage();
 }
 
@@ -585,17 +669,157 @@ async function runWorkflowConfigAction(button, actionId) {
   renderActivePage();
 }
 
+async function importWorkflowFile(input) {
+  const row = input?.closest?.("[data-workflow-row]");
+  const workflowId = String(input?.dataset?.workflowId || row?.dataset?.workflowId || "").trim();
+  const file = input?.files?.[0] || null;
+  if (input) input.value = "";
+  if (!workflowId || !file) return;
+  if (!file.name.toLowerCase().endsWith(".json")) {
+    state.workflowActionStatus[workflowId] = "请选择 JSON 文件";
+    renderActivePage();
+    return;
+  }
+  if (file.size <= 0 || file.size > WORKFLOW_FILE_IMPORT_MAX_BYTES) {
+    state.workflowActionStatus[workflowId] = "文件大小不合适";
+    renderActivePage();
+    return;
+  }
+  const workflowPathInput = row?.querySelector?.("[data-workflow-path-input]");
+  const workflowPath = String(workflowPathInput?.value || "").trim() || "workflows/comfyui/portrait_cutout.json";
+  state.workflowActionStatus[workflowId] = "正在导入";
+  renderActivePage();
+  try {
+    const workflowJson = await file.text();
+    const result = await actionRouter.run(
+      CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport,
+      { workflowId, workflowPath, workflowJson },
+      { source: "control-center-lab" }
+    );
+    if (result?.ok && result.workflowPath) {
+      updateWorkflowPath(workflowId, result.workflowPath);
+    }
+    state.workflowActionStatus[workflowId] = workflowActionStatusLabel(result);
+  } catch (error) {
+    state.workflowActionStatus[workflowId] = `导入失败：${formatError(error)}`;
+  }
+  renderActivePage();
+}
+
+function updateWorkflowPath(workflowId, workflowPath) {
+  const workflows = Array.isArray(abilitiesPage.workflows) ? abilitiesPage.workflows : [];
+  const item = workflows.find((workflow) => (
+    workflow?.workflowId === workflowId || workflow?.id === workflowId
+  ));
+  if (item) {
+    item.workflowPath = workflowPath;
+  }
+}
+
 function readProviderConfigPayload(button) {
   const providerId = String(button?.dataset?.providerId || "").trim();
   const row = button?.closest?.("[data-provider-row]");
   const endpointInput = row?.querySelector?.("[data-provider-endpoint-input]");
   const enabledInput = row?.querySelector?.("[data-provider-enabled-input]");
-  return {
+  const ttsTestTextInput = row?.querySelector?.("[data-provider-tts-test-text]");
+  const ttsProfileInput = row?.querySelector?.("[data-provider-tts-profile-input]");
+  const profileNameInput = row?.querySelector?.("[data-provider-voice-profile-name-input]");
+  const profileEnabledInput = row?.querySelector?.("[data-provider-voice-profile-enabled-input]");
+  const textLangInput = row?.querySelector?.("[data-provider-text-lang-input]");
+  const promptLangInput = row?.querySelector?.("[data-provider-prompt-lang-input]");
+  const mediaTypeInput = row?.querySelector?.("[data-provider-media-type-input]");
+  const refAudioPathInput = row?.querySelector?.("[data-provider-ref-audio-path-input]");
+  const promptTextInput = row?.querySelector?.("[data-provider-prompt-text-input]");
+  const voiceProfileId = String(ttsProfileInput?.value || "").trim();
+  const payload = {
     page: state.activePage,
     providerId,
     endpoint: String(endpointInput?.value || "").trim(),
-    enabled: Boolean(enabledInput?.checked)
+    enabled: Boolean(enabledInput?.checked),
+    text: String(ttsTestTextInput?.value || "").trim(),
+    voiceProfileId,
+    displayName: String(profileNameInput?.value || "").trim(),
+    voiceProfileEnabled: profileEnabledInput ? Boolean(profileEnabledInput.checked) : true,
+    textLang: String(textLangInput?.value || "").trim(),
+    promptLang: String(promptLangInput?.value || "").trim(),
+    mediaType: String(mediaTypeInput?.value || "").trim(),
+    refAudioPath: String(refAudioPathInput?.value || "").trim(),
+    promptText: String(promptTextInput?.value || "").trim()
   };
+  if (providerId && voiceProfileId) {
+    state.providerVoiceProfileDrafts[providerId] = {
+      ...(state.providerVoiceProfileDrafts[providerId] || {}),
+      voiceProfileId,
+      displayName: payload.displayName,
+      voiceProfileEnabled: payload.voiceProfileEnabled,
+      textLang: payload.textLang,
+      promptLang: payload.promptLang,
+      mediaType: payload.mediaType,
+      refAudioPath: payload.refAudioPath,
+      promptText: payload.promptText
+    };
+  }
+  return payload;
+}
+
+function readMcpConfigPayload(button) {
+  const row = button?.closest?.("[data-mcp-row]");
+  const initialServerId = String(button?.dataset?.serverId || row?.dataset?.mcpServerId || "").trim();
+  const serverIdInput = row?.querySelector?.("[data-mcp-server-id-input]");
+  const displayNameInput = row?.querySelector?.("[data-mcp-display-name-input]");
+  const commandInput = row?.querySelector?.("[data-mcp-command-input]");
+  const argsInput = row?.querySelector?.("[data-mcp-args-input]");
+  const cwdInput = row?.querySelector?.("[data-mcp-cwd-input]");
+  const envInput = row?.querySelector?.("[data-mcp-env-input]");
+  const enabledInput = row?.querySelector?.("[data-mcp-enabled-input]");
+  const serverId = String(serverIdInput?.value || initialServerId).trim();
+  const payload = {
+    page: state.activePage,
+    serverId,
+    displayName: String(displayNameInput?.value || "").trim(),
+    command: String(commandInput?.value || "").trim(),
+    args: parseMcpArgs(String(argsInput?.value || "")),
+    cwd: String(cwdInput?.value || "").trim(),
+    env: parseMcpEnv(String(envInput?.value || "")),
+    enabled: enabledInput ? Boolean(enabledInput.checked) : true
+  };
+  if (serverId) {
+    if (initialServerId && initialServerId !== serverId) {
+      delete state.mcpConfigDrafts[initialServerId];
+    }
+    state.mcpConfigDrafts[serverId] = {
+      serverId,
+      displayName: payload.displayName,
+      command: payload.command,
+      argsText: String(argsInput?.value || "").trim(),
+      cwd: payload.cwd,
+      envText: String(envInput?.value || "").trim(),
+      enabled: payload.enabled
+    };
+  }
+  return payload;
+}
+
+function parseMcpArgs(value) {
+  return String(value || "")
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 24);
+}
+
+function parseMcpEnv(value) {
+  const env = {};
+  for (const line of String(value || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const separator = trimmed.indexOf("=");
+    if (separator <= 0) continue;
+    const key = trimmed.slice(0, separator).trim();
+    const val = trimmed.slice(separator + 1).trim();
+    if (key && val) env[key] = val;
+  }
+  return env;
 }
 
 function readWorkflowConfigPayload(button) {
@@ -617,20 +841,70 @@ function readWorkflowConfigPayload(button) {
 
 function providerActionStatusLabel(result) {
   if (!result) return "未完成";
-  if (result.status === "saved") return result.ok ? "已保存" : "保存失败";
+  if (result.status === "tts-test-ready") return "试听成功";
+  if (result.status === "tts-test-failed") return "试听失败";
+  if (result.status === "tts-test-too-large") return "测试音频过大";
+  if (result.status === "invalid_voice_profile") return "声线 ID 需要修正";
+  if (result.status === "saved") return result.ok ? (result.voiceProfileId ? "声线档案已保存" : "已保存") : "保存失败";
   if (result.status === "ready") return "连接正常";
   if (result.status === "unreachable") return "未连接";
+  if (result.status === "missing_config") return "待填写地址";
+  if (result.status === "unsupported_provider") return "暂不支持试听";
   if (result.status === "invalid_config") return "配置异常";
   if (result.status === "not-implemented") return "当前环境不可写";
   return result.ok ? "已完成" : "操作失败";
 }
 
+function mcpActionStatusLabel(result) {
+  if (!result) return "未完成";
+  if (result.status === "saved") return result.ok ? "MCP 配置已保存" : "保存失败";
+  if (result.status === "discovered") return result.ok ? `发现 ${Number(result.toolCount || 0)} 个工具` : "发现失败";
+  if (result.status === "missing_config") return "需要填写启动命令";
+  if (result.status === "invalid_config") return "配置异常";
+  if (result.status === "invalid_mcp_server") return "服务 ID 需要修正";
+  if (result.status === "discovery-failed") return "发现工具失败";
+  if (result.status === "not-implemented") return "当前环境未绑定发现器";
+  if (result.status === "request-failed") return "请求失败";
+  return result.ok ? "已完成" : "操作失败";
+}
+
+async function playProviderTestAudio(result) {
+  const audioBase64 = String(result?.audioBase64 || "");
+  if (!audioBase64) return "试听成功";
+  try {
+    cleanupProviderTestAudioUrl();
+    const binary = window.atob(audioBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    const blob = new Blob([bytes], { type: result.mediaType || "audio/wav" });
+    providerTestAudioUrl = URL.createObjectURL(blob);
+    const audio = new Audio(providerTestAudioUrl);
+    await audio.play();
+    return "试听音频已播放";
+  } catch (error) {
+    return `播放失败：${formatError(error)}`;
+  }
+}
+
+function cleanupProviderTestAudioUrl() {
+  if (providerTestAudioUrl) {
+    URL.revokeObjectURL(providerTestAudioUrl);
+    providerTestAudioUrl = "";
+  }
+}
+
 function workflowActionStatusLabel(result) {
   if (!result) return "未完成";
+  if (result.status === "workflow_file_saved") return "已导入工作流文件";
   if (result.status === "saved") return result.ok ? "已保存绑定" : "保存失败";
   if (result.status === "validated_config") return "配置可保存";
   if (result.status === "missing_workflow") return "待绑定";
   if (result.status === "missing_slot_mapping") return "槽位待补齐";
+  if (result.status === "invalid_workflow_config" && result.reason === "workflow_file_invalid_json") return "JSON 格式错误";
+  if (result.status === "invalid_workflow_config" && result.reason === "workflow_json_invalid") return "不是 API 工作流";
+  if (result.status === "invalid_workflow_config" && result.reason === "workflow_file_required") return "文件为空";
   if (result.status === "invalid_workflow_config") return "绑定配置异常";
   if (result.status === "invalid_config") return "配置异常";
   if (result.status === "not-implemented") return "当前环境不可写";
@@ -1230,6 +1504,7 @@ function renderTtsCard() {
         </div>
         <button type="button" data-voice-toggle="ttsEnabled" aria-pressed="${ttsEnabled}">${icon("checkCircle")} ${ttsEnabled ? "已启用" : "已关闭"}</button>
       </div>
+      ${renderVoiceProviderStatus(voicePage.tts.providerStatus, "朗读通道")}
       <div class="voice-form-grid">
         <label><span>${icon("user")} 选择音色</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSelectTtsVoice}" data-payload-field="ttsVoice" data-payload-value="${escapeAttr(voicePage.tts.voice)}">${icon("equalizer")} ${escapeHtml(voicePage.tts.voice)} ${icon("chevronDown")}</button></label>
         <label>
@@ -1258,6 +1533,7 @@ function renderAsrCard() {
         </div>
         <button type="button" data-voice-toggle="asrEnabled" aria-pressed="${asrEnabled}">${icon("checkCircle")} ${asrEnabled ? "已启用" : "已关闭"}</button>
       </div>
+      ${renderVoiceProviderStatus(voicePage.asr.providerStatus, "识别通道")}
       <div class="voice-form-grid">
         <label><span>${icon("mic")} 麦克风设备</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSelectAsrDevice}" data-payload-field="asrDevice" data-payload-value="${escapeAttr(voicePage.asr.device)}">${escapeHtml(voicePage.asr.device)} ${icon("chevronDown")}</button></label>
         <label><span>${icon("settings")} 识别语言</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSetAsrLanguage}" data-payload-field="asrLanguage" data-payload-value="${escapeAttr(voicePage.asr.language)}">${escapeHtml(voicePage.asr.language)} ${icon("chevronDown")}</button></label>
@@ -1265,6 +1541,26 @@ function renderAsrCard() {
         <label><span>实时输入</span><em class="voice-live-wave">${Array.from({ length: 24 }, (_, index) => `<i style="--bar: ${((index * 7) % 24) + 8}px"></i>`).join("")}</em></label>
       </div>
     </article>
+  `;
+}
+
+function renderVoiceProviderStatus(providerStatus, label) {
+  if (!providerStatus || typeof providerStatus !== "object") return "";
+  const statusTone = providerStatus.statusTone || "muted";
+  const activeName = providerStatus.activeProviderName || "待确认";
+  const requestedName = providerStatus.requestedProviderName || "";
+  const degraded = Boolean(providerStatus.fallbackProviderId);
+  const reason = providerStatus.reasonLabel || providerStatus.reason || "";
+  const profile = providerStatus.voiceProfileId ? ` · ${providerStatus.voiceProfileId}` : "";
+  const detail = degraded && requestedName
+    ? `${reason || "已自动降级"} · 请求 ${requestedName}${profile}`
+    : reason || "当前通道可用";
+  return `
+    <div class="voice-provider-status ${escapeAttr(statusTone)}">
+      <span>${icon(statusTone === "good" ? "checkCircle" : "info")} ${escapeHtml(label)}</span>
+      <strong>${escapeHtml(activeName)}</strong>
+      <small>${escapeHtml(detail)}</small>
+    </div>
   `;
 }
 
@@ -1402,6 +1698,7 @@ function renderMusicPage() {
               </div>
             </div>
           </div>
+          ${renderSystemMediaStatus(musicPage)}
           <div class="play-mode-row">
             <span>${icon("repeat")} 播放模式</span>
             <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicSetPlayMode}" data-payload-field="playMode" data-payload-value="${escapeAttr(musicPage.currentPlayMode || "列表循环")}">${icon("repeat")} ${escapeHtml(musicPage.currentPlayMode || "列表循环")} ${icon("chevronDown")}</button>
@@ -1479,6 +1776,31 @@ function renderMusicPage() {
       </footer>
     </section>
   `;
+}
+
+function renderSystemMediaStatus(musicPage) {
+  const systemMedia = musicPage?.systemMedia && typeof musicPage.systemMedia === "object" ? musicPage.systemMedia : null;
+  if (!systemMedia) return "";
+  const status = systemMedia.statusLabel || "Unavailable";
+  const lyrics = systemMedia.lyrics?.statusDetail || systemMedia.lyrics?.statusLabel || "Unavailable";
+  const source = systemMedia.sourceApp ? ` · ${systemMedia.sourceApp}` : "";
+  const timing = systemMedia.durationSeconds > 0
+    ? ` · ${formatMusicSeconds(systemMedia.positionSeconds)} / ${formatMusicSeconds(systemMedia.durationSeconds)}`
+    : "";
+  return `
+    <div class="system-media-status">
+      <span>${icon("equalizer")} System music: ${escapeHtml(status)}</span>
+      <strong>${escapeHtml(lyrics)}</strong>
+      <small>${escapeHtml(`${systemMedia.title || "No system track"}${source}${timing}`)}</small>
+    </div>
+  `;
+}
+
+function formatMusicSeconds(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds) || 0));
+  const minutes = Math.floor(value / 60);
+  const secs = value % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 }
 
 function renderRecommendBody(musicPage) {
@@ -1606,6 +1928,7 @@ function renderAbilitiesPage() {
             </div>
           </article>
           ${renderProviderPanel()}
+          ${renderMcpPanel()}
           <article class="glass-card workflow-card">
             <h2>本地工作流 ${icon("info")}</h2>
             <div class="workflow-list">
@@ -2108,6 +2431,202 @@ function renderProviderPanel() {
   `;
 }
 
+function renderMcpPanel() {
+  const servers = buildVisibleMcpServers();
+  const readyCount = servers.filter((item) => item.status === "ready").length;
+  const toolCount = servers.reduce((sum, item) => sum + Number(item.toolCount || 0), 0);
+  return `
+    <article class="glass-card mcp-panel">
+      <div class="card-heading">
+        <h2>${icon("sparkle")} 外部 MCP 工具</h2>
+        <span>${readyCount}/${servers.length} 就绪 · ${toolCount} 个工具</span>
+      </div>
+      <div class="mcp-server-list">
+        ${servers.map(renderMcpServerRow).join("")}
+      </div>
+      <p class="mcp-panel-note">${icon("shield")} 当前仅同步工具目录，不会自动调用外部 MCP，也不会把工具直接暴露给提示词。</p>
+    </article>
+  `;
+}
+
+function buildVisibleMcpServers() {
+  const servers = Array.isArray(abilitiesPage.mcpServers) ? abilitiesPage.mcpServers : [];
+  if (servers.length) return servers;
+  const draftId = Object.keys(state.mcpConfigDrafts || {})[0] || "custom";
+  const draft = state.mcpConfigDrafts[draftId] || {};
+  return [{
+    id: `provider.mcp.${draft.serverId || draftId}`,
+    serverId: draft.serverId || draftId,
+    title: draft.displayName || "自定义 MCP",
+    status: "missing_config",
+    statusLabel: "未配置",
+    statusTone: "warning",
+    reason: "填写本地 MCP stdio 启动命令后，可以手动发现工具目录",
+    enabled: draft.enabled ?? true,
+    configured: false,
+    transport: "stdio",
+    commandName: "",
+    toolCount: 0,
+    safeToolLabels: ["等待工具发现"],
+    highRiskCount: 0,
+    promptExposedCount: 0,
+    requiresConfirmation: true,
+    lastDiscoveryLabel: "未执行发现",
+    isDraft: true
+  }];
+}
+
+function renderMcpServerRow(server) {
+  const serverId = server.serverId || "";
+  const isOpen = state.activeMcpConfigId === serverId;
+  const statusTone = server.statusTone || "warning";
+  const toolLabels = Array.isArray(server.safeToolLabels) ? server.safeToolLabels : [];
+  const commandName = server.commandName || "本地启动器";
+  const statusMessage = state.mcpActionStatus[serverId] || server.reason || server.statusLabel || "待确认";
+  const safetyText = server.highRiskCount
+    ? `${server.highRiskCount} 个高风险工具需确认`
+    : server.requiresConfirmation
+      ? "调用前需要确认"
+      : "低风险只读目录";
+  const promptText = server.promptExposedCount
+      ? `${server.promptExposedCount} 个工具已开放给提示词`
+      : "暂未开放给提示词";
+  return `
+    <section class="mcp-server-row ${isOpen ? "is-open" : ""}" data-mcp-row data-mcp-server-id="${escapeAttr(serverId)}">
+      <div class="mcp-server-head">
+        <span class="provider-icon mcp-icon">${icon("cube")}</span>
+        <div>
+          <div class="provider-title-line">
+            <h3>${escapeHtml(server.title || "MCP 外部工具")}</h3>
+            <span class="module-status ${escapeAttr(statusTone)}">${escapeHtml(server.statusLabel || "待确认")}</span>
+          </div>
+          <p>${escapeHtml(statusMessage)}</p>
+        </div>
+        <button
+          type="button"
+          data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesMcpConfigOpen}"
+          data-payload-server-id="${escapeAttr(serverId)}"
+          aria-expanded="${isOpen}"
+        >${isOpen ? "收起" : "配置"} ${icon("chevronDown")}</button>
+      </div>
+      <div class="mcp-meta-row">
+        <span>${icon("wifi")} ${escapeHtml(server.transport || "stdio")}</span>
+        <span>${icon("folder")} ${escapeHtml(commandName)}</span>
+        <strong>${escapeHtml(server.lastDiscoveryLabel || "未执行发现")}</strong>
+      </div>
+      <div class="mcp-tool-strip">
+        ${toolLabels.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
+      </div>
+      <div class="mcp-safety-row">
+        <span>${icon("shield")} ${escapeHtml(safetyText)}</span>
+        <span>${icon("info")} ${escapeHtml(promptText)}</span>
+      </div>
+      ${isOpen ? renderMcpConfigBody(server) : ""}
+    </section>
+  `;
+}
+
+function renderMcpConfigBody(server) {
+  const serverId = server.serverId || "custom";
+  const draft = state.mcpConfigDrafts[serverId] || {};
+  const displayName = draft.displayName ?? (server.isDraft ? "" : server.title || "");
+  const commandPlaceholder = server.commandName
+    ? `已保存 ${server.commandName}；修改时重新填写完整命令`
+    : "例如 python 或 npx";
+  const argsPlaceholder = "每行一个参数，例如\n-m\nmy_mcp_server";
+  const envPlaceholder = "可选，每行 KEY=VALUE；不要填写 API key / token";
+  return `
+    <div class="mcp-config-body">
+      <div class="mcp-config-fields">
+        <label>
+          <span>服务 ID</span>
+          <input
+            type="text"
+            value="${escapeAttr(draft.serverId || serverId)}"
+            placeholder="custom"
+            data-mcp-server-id-input
+            autocomplete="off"
+            spellcheck="false"
+            ${server.isDraft ? "" : "readonly"}
+          />
+        </label>
+        <label>
+          <span>显示名</span>
+          <input
+            type="text"
+            value="${escapeAttr(displayName)}"
+            placeholder="Browser MCP"
+            data-mcp-display-name-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label class="span-2">
+          <span>启动命令</span>
+          <input
+            type="text"
+            value="${escapeAttr(draft.command || "")}"
+            placeholder="${escapeAttr(commandPlaceholder)}"
+            data-mcp-command-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label class="span-2">
+          <span>工作目录</span>
+          <input
+            type="text"
+            value="${escapeAttr(draft.cwd || "")}"
+            placeholder="可选；仅保存到本地配置，不在面板回显"
+            data-mcp-cwd-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label>
+          <span>启动参数</span>
+          <textarea
+            data-mcp-args-input
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="${escapeAttr(argsPlaceholder)}"
+          >${escapeHtml(draft.argsText || "")}</textarea>
+        </label>
+        <label>
+          <span>环境变量</span>
+          <textarea
+            data-mcp-env-input
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="${escapeAttr(envPlaceholder)}"
+          >${escapeHtml(draft.envText || "")}</textarea>
+        </label>
+      </div>
+      <div class="mcp-config-footer">
+        <label class="provider-toggle mcp-enable-toggle">
+          <input type="checkbox" data-mcp-enabled-input ${(draft.enabled ?? server.enabled) ? "checked" : ""} />
+          <span>启用此 MCP</span>
+        </label>
+        <div class="provider-config-actions mcp-config-actions">
+          <button
+            type="button"
+            data-mcp-discover
+            data-server-id="${escapeAttr(serverId)}"
+            data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover}"
+          >${icon("sparkle")} 发现工具</button>
+          <button
+            type="button"
+            data-mcp-config-save
+            data-server-id="${escapeAttr(serverId)}"
+            data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave}"
+          >${icon("checkCircle")} 保存配置</button>
+        </div>
+      </div>
+      <p>${icon("shield")} 已保存命令和路径不会在控制中心回显；发现工具只读取 tools/list，不会调用工具。</p>
+    </div>
+  `;
+}
+
 function renderProviderRow(provider) {
   const providerId = provider.id || "";
   const isOpen = state.activeProviderConfigId === providerId;
@@ -2150,7 +2669,10 @@ function renderProviderConfigBody(provider, endpoint, defaultEndpoint) {
   const actionsDisabled = provider.actionsEnabled === false;
   const healthActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck}"`;
   const saveActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave}"`;
+  const ttsTestActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest}"`;
+  const voiceProfileSaveActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave}"`;
   const disabledAttr = actionsDisabled ? ' aria-disabled="true" disabled' : "";
+  const voiceProfile = provider.adapter === "gpt_sovits" ? getProviderVoiceProfileDraft(provider) : null;
   return `
     <div class="provider-config-body">
       <label>
@@ -2184,7 +2706,162 @@ function renderProviderConfigBody(provider, endpoint, defaultEndpoint) {
           ${disabledAttr}
         >${icon("checkCircle")} 保存配置</button>
       </div>
+      ${provider.adapter === "gpt_sovits" ? `
+        ${renderProviderVoiceProfileConfig(providerId, voiceProfile, voiceProfileSaveActionAttr, ttsTestActionAttr, disabledAttr)}
+      ` : ""}
       <p>${icon("shield")} 只接受本机 localhost / 127.0.0.1 地址；检查连接不会自动启用能力。</p>
+    </div>
+  `;
+}
+
+function getProviderVoiceProfileDraft(provider) {
+  const providerId = provider?.id || "";
+  const saved = provider?.defaultVoiceProfile || {};
+  const draft = state.providerVoiceProfileDrafts[providerId] || {};
+  return {
+    voiceProfileId: draft.voiceProfileId || saved.voiceProfileId || "",
+    displayName: draft.displayName || saved.name || "",
+    voiceProfileEnabled: draft.voiceProfileEnabled ?? saved.enabled ?? true,
+    textLang: draft.textLang || saved.textLang || "zh",
+    promptLang: draft.promptLang || saved.promptLang || "zh",
+    mediaType: draft.mediaType || saved.mediaType || "wav",
+    refAudioPath: draft.refAudioPath || "",
+    promptText: draft.promptText || "",
+    referenceAudioName: saved.referenceAudioName || "",
+    promptTextLength: saved.promptTextLength || 0,
+    statusLabel: saved.statusLabel || "",
+    statusTone: saved.statusTone || "warning"
+  };
+}
+
+function renderProviderVoiceProfileConfig(providerId, profile, saveActionAttr, ttsTestActionAttr, disabledAttr) {
+  const savedSummary = profile.referenceAudioName || profile.promptTextLength
+    ? `
+      <p class="provider-voice-profile-summary">
+        ${icon("shield")}
+        已保存：${escapeHtml(profile.referenceAudioName || "参考音频")} · 参考文本 ${escapeHtml(String(profile.promptTextLength || 0))} 字
+      </p>
+    `
+    : "";
+  return `
+    <div class="provider-voice-profile">
+      <div class="provider-voice-profile-head">
+        <strong>${icon("mic")} 声线档案</strong>
+        <span>角色包里的 profile_id 会匹配这里的声线 ID</span>
+      </div>
+      <div class="provider-voice-profile-fields">
+        <label>
+          <span>声线 ID</span>
+          <input
+            type="text"
+            value="${escapeAttr(profile.voiceProfileId)}"
+            placeholder="例如 reimu_main"
+            data-provider-voice-profile-id-input
+            data-provider-tts-profile-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label>
+          <span>显示名</span>
+          <input
+            type="text"
+            value="${escapeAttr(profile.displayName)}"
+            placeholder="Akane 主声线"
+            data-provider-voice-profile-name-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label>
+          <span>文本语言</span>
+          <input
+            type="text"
+            value="${escapeAttr(profile.textLang)}"
+            placeholder="zh"
+            data-provider-text-lang-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label>
+          <span>参考语言</span>
+          <input
+            type="text"
+            value="${escapeAttr(profile.promptLang)}"
+            placeholder="zh"
+            data-provider-prompt-lang-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label>
+          <span>返回格式</span>
+          <input
+            type="text"
+            value="${escapeAttr(profile.mediaType)}"
+            placeholder="wav"
+            data-provider-media-type-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label class="provider-toggle voice-profile-enable-toggle">
+          <input type="checkbox" data-provider-voice-profile-enabled-input ${profile.voiceProfileEnabled ? "checked" : ""} />
+          <span>启用档案</span>
+        </label>
+        <label class="span-2">
+          <span>参考音频路径</span>
+          <input
+            type="text"
+            value="${escapeAttr(profile.refAudioPath)}"
+            placeholder="${escapeAttr(profile.referenceAudioName ? `已保存 ${profile.referenceAudioName}；需要替换时再填写` : "D:\\voices\\akane_ref.wav")}"
+            data-provider-ref-audio-path-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label class="span-2">
+          <span>参考文本</span>
+          <input
+            type="text"
+            value="${escapeAttr(profile.promptText)}"
+            placeholder="${escapeAttr(profile.promptTextLength ? `已保存 ${profile.promptTextLength} 字；需要替换时再填写` : "参考音频对应的原文")}"
+            data-provider-prompt-text-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+      </div>
+      ${savedSummary}
+      <div class="provider-voice-profile-actions">
+        <button
+          type="button"
+          data-provider-voice-profile-save
+          data-provider-id="${escapeAttr(providerId)}"
+          ${saveActionAttr}
+          ${disabledAttr}
+        >${icon("checkCircle")} 保存声线档案</button>
+      </div>
+    </div>
+    <div class="provider-tts-test">
+      <label>
+        <span>测试台词</span>
+        <input
+          type="text"
+          value="你好，主人，本地语音服务已经接通。"
+          data-provider-tts-test-text
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+      <button
+        type="button"
+        data-provider-tts-test
+        data-provider-id="${escapeAttr(providerId)}"
+        ${ttsTestActionAttr}
+        ${disabledAttr}
+      >${icon("play")} 使用此声线试听</button>
     </div>
   `;
 }
@@ -2281,6 +2958,19 @@ function renderWorkflowConfigBody(item) {
           <span>启用绑定</span>
         </label>
         <div class="provider-config-actions workflow-config-actions">
+          <input
+            type="file"
+            accept="application/json,.json"
+            data-workflow-file-input
+            data-workflow-id="${escapeAttr(workflowId)}"
+            hidden
+          />
+          <button
+            type="button"
+            data-workflow-file-import
+            data-workflow-id="${escapeAttr(workflowId)}"
+            ${disabledAttr}
+          >${icon("upload")} 导入 JSON</button>
           <button
             type="button"
             data-workflow-validate
@@ -2297,7 +2987,7 @@ function renderWorkflowConfigBody(item) {
           >${icon("checkCircle")} 保存绑定</button>
         </div>
       </div>
-      <p>${icon("shield")} 这里只保存安全相对引用和槽位名；不会读取、上传或执行 ComfyUI 工作流。</p>
+      <p>${icon("shield")} 导入只会把 API 工作流 JSON 保存到当前用户能力目录；验证不执行 ComfyUI，真正处理发生在角色工坊自动抠图时。</p>
     </div>
   `;
 }
@@ -2634,6 +3324,12 @@ function createRuntimeActionRouter(dataSource) {
     [CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen]: (payload) => {
       const providerId = String(payload?.providerId || "").trim();
       state.activeProviderConfigId = state.activeProviderConfigId === providerId ? "" : providerId;
+      renderActivePage();
+      return { ok: true, refresh: false };
+    },
+    [CONTROL_CENTER_ACTIONS.abilitiesMcpConfigOpen]: (payload) => {
+      const serverId = String(payload?.serverId || "").trim();
+      state.activeMcpConfigId = state.activeMcpConfigId === serverId ? "" : serverId;
       renderActivePage();
       return { ok: true, refresh: false };
     },

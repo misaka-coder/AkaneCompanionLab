@@ -66,8 +66,14 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   abilitiesProviderConfigOpen: "abilities.provider.config.open",
   abilitiesProviderConfigSave: "abilities.provider.config.save",
   abilitiesProviderHealthCheck: "abilities.provider.healthCheck",
+  abilitiesProviderTtsTest: "abilities.provider.ttsTest",
+  abilitiesProviderVoiceProfileSave: "abilities.provider.voiceProfile.save",
+  abilitiesMcpConfigOpen: "abilities.mcp.config.open",
+  abilitiesMcpConfigSave: "abilities.mcp.config.save",
+  abilitiesMcpDiscover: "abilities.mcp.discover",
   abilitiesWorkflowConfigOpen: "abilities.workflow.config.open",
   abilitiesWorkflowConfigSave: "abilities.workflow.config.save",
+  abilitiesWorkflowFileImport: "abilities.workflow.file.import",
   abilitiesWorkflowValidate: "abilities.workflow.validate",
   abilitiesLogsViewAll: "abilities.logs.viewAll",
   abilitiesSafetyDetails: "abilities.safety.details",
@@ -132,7 +138,12 @@ export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.musicPlayWorkspaceRecommendation,
   CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave,
   CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck,
+  CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest,
+  CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave,
+  CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave,
+  CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover,
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave,
+  CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport,
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate
 ]);
 

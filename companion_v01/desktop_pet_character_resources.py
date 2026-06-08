@@ -117,6 +117,33 @@ class DesktopPetCharacterResourceService:
             "pack_id": pack_id,
         }
 
+    def build_character_voice_preference(self, character_pack_id: str) -> dict[str, str]:
+        """Return the character pack's preferred voice provider hints.
+
+        The values are declarative preferences only. They do not grant access to
+        local model files and should be resolved by the capability registry
+        before any runtime uses them.
+        """
+        pack_id = sanitize_character_pack_id(character_pack_id)
+        if not pack_id:
+            return {}
+        pack_dir = self._resolve_pack_dir(pack_id)
+        if pack_dir is None or not pack_dir.is_dir():
+            return {}
+        character = _load_json(pack_dir / "character.json")
+        voice = _as_dict(character.get("voice"))
+        provider = _clean_text(voice.get("provider"))
+        profile_id = _clean_text(voice.get("profile_id") or voice.get("profileId"))
+        notes = _truncate_text(_clean_text(voice.get("notes")), limit=160)
+        if not (provider or profile_id or notes):
+            return {}
+        return {
+            "packId": pack_id,
+            "provider": provider,
+            "profileId": profile_id,
+            "notes": notes,
+        }
+
     def build_persona_prompt_context(
         self,
         character_pack_id: str,

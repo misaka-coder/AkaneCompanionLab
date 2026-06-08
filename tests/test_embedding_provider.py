@@ -100,6 +100,56 @@ class EmbeddingProviderTests(unittest.TestCase):
             any("pynvml package is deprecated" in str(item.message) for item in captured)
         )
 
+    def test_huggingface_provider_can_load_from_local_cache_only(self) -> None:
+        captured_kwargs: dict[str, object] = {}
+
+        class StubSentenceTransformer:
+            def __init__(
+                self,
+                model_name: str,
+                device=None,
+                local_files_only: bool = False,
+                cache_folder: str | None = None,
+            ) -> None:
+                captured_kwargs.update(
+                    {
+                        "model_name": model_name,
+                        "device": device,
+                        "local_files_only": local_files_only,
+                        "cache_folder": cache_folder,
+                    }
+                )
+
+            def get_sentence_embedding_dimension(self) -> int:
+                return 3
+
+            def encode(self, texts, **kwargs):
+                return [[1.0, 0.0, 0.0] for _ in texts]
+
+        fake_module = types.SimpleNamespace(SentenceTransformer=StubSentenceTransformer)
+        with patch.dict("sys.modules", {"sentence_transformers": fake_module}), patch.dict(
+            "os.environ",
+            {},
+            clear=True,
+        ):
+            provider = HuggingFaceEmbeddingProvider(
+                model_name="BAAI/bge-m3",
+                device="cpu",
+                local_files_only=True,
+                cache_folder="models/cache",
+            )
+
+        self.assertEqual(provider.dimension, 3)
+        self.assertEqual(
+            captured_kwargs,
+            {
+                "model_name": "BAAI/bge-m3",
+                "device": "cpu",
+                "local_files_only": True,
+                "cache_folder": "models/cache",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

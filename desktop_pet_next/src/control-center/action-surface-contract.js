@@ -13,6 +13,7 @@ export const CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails,
   CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll,
   CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen,
+  CONTROL_CENTER_ACTIONS.abilitiesMcpConfigOpen,
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigOpen,
   CONTROL_CENTER_ACTIONS.advancedLogsMore
 ]);
@@ -108,8 +109,14 @@ export const CONTROL_CENTER_ACTION_SURFACES = Object.freeze([
   clientHandled("abilities", CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen, "Local toggle: expands local provider configuration details."),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave, "backend-route", "POST /capabilities/providers/{providerId}/config"),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck, "backend-route", "POST /capabilities/providers/{providerId}/health-check"),
+  bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest, "backend-route", "POST /capabilities/providers/{providerId}/tts-test"),
+  bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave, "backend-route", "POST /capabilities/providers/{providerId}/voice-profiles/{voiceProfileId}/config"),
+  clientHandled("abilities", CONTROL_CENTER_ACTIONS.abilitiesMcpConfigOpen, "Local toggle: expands MCP server configuration details."),
+  bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave, "backend-route", "POST /capabilities/mcp-servers/{serverId}/config"),
+  bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover, "backend-route", "POST /capabilities/mcp-servers/{serverId}/discover"),
   clientHandled("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigOpen, "Local toggle: expands local workflow binding details."),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave, "backend-route", "POST /capabilities/workflows/{workflowId}/config"),
+  bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport, "backend-route", "POST /capabilities/workflows/{workflowId}/file"),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate, "backend-route", "POST /capabilities/workflows/{workflowId}/validate"),
   clientHandled("abilities", CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll, "Local toggle: expands ability call history rows."),
   deferred("abilities", CONTROL_CENTER_ACTIONS.abilitiesSafetyDetails, "Requires policy detail route."),

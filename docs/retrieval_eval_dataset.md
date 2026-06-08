@@ -1,11 +1,11 @@
 **Retrieval Eval Dataset**
 
-`generate_retrieval_eval_set.py` can build a review-first retrieval evaluation candidate set from Akane's SQLite memory store.
+`scripts/retrieval/generate_retrieval_eval_set.py` can build a review-first retrieval evaluation candidate set from Akane's SQLite memory store.
 
 Example:
 
 ```bash
-python generate_retrieval_eval_set.py --count 50
+python scripts/retrieval/generate_retrieval_eval_set.py --count 50
 ```
 
 Useful flags:

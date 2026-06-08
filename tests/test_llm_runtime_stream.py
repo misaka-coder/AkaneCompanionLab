@@ -24,6 +24,38 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
         self.assertEqual(tap.latest_emotion, "happy")
         self.assertEqual(tap.latest_speech, "喵呜，主人欢迎回来……课上辛苦啦！")
 
+    def test_emits_speech_segments_from_array_as_each_item_closes(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+
+        first_events = tap.feed('{"emotion":"happy","speech":"","speech_segments":["第一句。')
+        self.assertFalse([event for event in first_events if event.get("type") == "speech_segment"])
+
+        second_events = tap.feed('","第二句。')
+        segment_events = [event for event in second_events if event.get("type") == "speech_segment"]
+        self.assertEqual(segment_events, [{"type": "speech_segment", "index": 0, "text": "第一句。"}])
+        self.assertEqual(tap.latest_speech, "第一句。")
+
+        third_events = tap.feed('"],"tool_call":null}')
+        segment_events = [event for event in third_events if event.get("type") == "speech_segment"]
+        self.assertEqual(segment_events, [{"type": "speech_segment", "index": 1, "text": "第二句。"}])
+        self.assertEqual(tap.latest_speech, "第一句。\n第二句。")
+
+    def test_speech_segments_array_does_not_duplicate_speech_field_segments(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = []
+
+        events.extend(tap.feed('{"emotion":"happy","speech":"第一句。","speech_segments":["第一句。","第二句。"]}'))
+
+        segment_events = [event for event in events if event.get("type") == "speech_segment"]
+        self.assertEqual(
+            segment_events,
+            [
+                {"type": "speech_segment", "index": 0, "text": "第一句。"},
+                {"type": "speech_segment", "index": 1, "text": "第二句。"},
+            ],
+        )
+        self.assertEqual(tap.latest_speech, "第一句。")
+
     def test_leading_tool_call_probe_handles_null(self) -> None:
         runtime = object.__new__(LLMRuntime)
 

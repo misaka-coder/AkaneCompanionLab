@@ -42,6 +42,7 @@ DESKTOP_PET_ENDPOINTS = {
     "screen_vision_latest": "/desktop-pet/vision/latest",
     "screen_vision_reaction": "/desktop-pet/vision/reaction",
     "screen_vision_clear": "/desktop-pet/vision/clear",
+    "music_lyrics": "/capabilities/music/lyrics",
 }
 
 

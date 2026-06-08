@@ -260,6 +260,50 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         self.assertIn("互动原则: 不要长篇说教", context["reference_context"])
         self.assertIn("又卡住了？把问题说出来。", context["reference_context"])
 
+    def test_character_voice_preference_is_declarative_and_sanitized(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        characters_dir = Path(temp_dir.name) / "characters"
+        pack_dir = characters_dir / "voice_demo"
+
+        write_json(
+            pack_dir / "character.json",
+            {
+                "identity": {
+                    "id": "voice_demo",
+                    "name": "Voice Demo",
+                    "app_name": "Voice Demo",
+                    "user_title": "用户",
+                },
+                "appearance": {},
+                "dialogue": {},
+                "voice": {
+                    "provider": "gpt_sovits",
+                    "profile_id": "voice_main",
+                    "notes": "本地声线档案，不包含路径。",
+                    "model_path": r"C:\Users\Lenovo\secret.pth",
+                    "token": "secret",
+                },
+            },
+        )
+
+        service = DesktopPetCharacterResourceService(characters_dir=characters_dir)
+        voice = service.build_character_voice_preference("voice_demo")
+
+        self.assertEqual(
+            voice,
+            {
+                "packId": "voice_demo",
+                "provider": "gpt_sovits",
+                "profileId": "voice_main",
+                "notes": "本地声线档案，不包含路径。",
+            },
+        )
+        serialized = json.dumps(voice, ensure_ascii=False).lower()
+        self.assertNotIn("secret", serialized)
+        self.assertNotIn("model_path", serialized)
+        self.assertEqual(service.build_character_voice_preference("../web"), {})
+
 
 if __name__ == "__main__":
     unittest.main()

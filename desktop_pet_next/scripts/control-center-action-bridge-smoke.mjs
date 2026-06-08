@@ -404,6 +404,12 @@ for (const [label, expected] of labelCases) {
     "abilities"
   );
   assert.equal(workflowPayload.workflowId, "workflow.workshop.portrait.cutout", "payload helper should keep workflowId");
+
+  const mcpPayload = createControlCenterActionPayloadFromDataset(
+    { payloadServerId: "browser" },
+    "abilities"
+  );
+  assert.equal(mcpPayload.serverId, "browser", "payload helper should keep MCP serverId");
 }
 
 assert.ok(afterActionLog.length >= bridgedActionCases.length, "onAfterAction should receive refresh results");
@@ -564,8 +570,10 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
         headers: { get: () => "application/json" },
         json: async () => ({
           ok: true,
-          status: String(url).includes("health-check") ? "ready" : "saved",
+          status: String(url).includes("tts-test") ? "tts-test-ready" : String(url).includes("health-check") ? "ready" : "saved",
           providerId: "provider.comfyui.local",
+          mediaType: "audio/wav",
+          audioBase64: "d2F2",
           refresh: true
         })
       };
@@ -587,13 +595,142 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
   });
   assert.equal(healthResult.status, "ready", "provider health check should hit provider health route");
 
-  assert.equal(fetchCalls.length, 2, "provider save/check should make two backend requests");
+  const testResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest, {
+    providerId: "provider.tts.gpt_sovits.local",
+    endpoint: "http://127.0.0.1:9880/ui?token=secret",
+    text: "测试本地声线",
+    voiceProfileId: "reimu_main",
+    textLang: "zh",
+    promptLang: "zh",
+    mediaType: "wav",
+    refAudioPath: "C:\\voices\\reimu_ref.wav",
+    promptText: "参考文本",
+    token: "must-not-send"
+  });
+  assert.equal(testResult.status, "tts-test-ready", "provider tts test should hit provider tts-test route");
+  assert.equal(testResult.audioBase64, "d2F2", "provider tts test should return audio payload");
+
+  const voiceProfileResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave, {
+    providerId: "provider.tts.gpt_sovits.local",
+    voiceProfileId: "reimu_main",
+    displayName: "Reimu Main",
+    voiceProfileEnabled: true,
+    textLang: "zh",
+    promptLang: "zh",
+    mediaType: "wav",
+    refAudioPath: "C:\\voices\\reimu_ref.wav",
+    promptText: "参考文本",
+    token: "must-not-send"
+  });
+  assert.equal(voiceProfileResult.status, "saved", "provider voice profile save should hit provider voice profile route");
+
+  assert.equal(fetchCalls.length, 4, "provider save/check/test/profile should make four backend requests");
   assert.ok(fetchCalls[0].url.includes("/capabilities/providers/provider.comfyui.local/config"), "save should use provider config route");
   assert.ok(fetchCalls[1].url.includes("/capabilities/providers/provider.comfyui.local/health-check"), "health should use provider health route");
+  assert.ok(fetchCalls[2].url.includes("/capabilities/providers/provider.tts.gpt_sovits.local/tts-test"), "tts test should use provider tts-test route");
+  assert.ok(fetchCalls[3].url.includes("/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/reimu_main/config"), "voice profile save should use provider voice profile route");
   assert.equal(fetchCalls.some((call) => call.url.includes("/control-center/actions")), false, "provider actions must not use inert control-center action endpoint");
   const saveBody = JSON.parse(fetchCalls[0].options.body);
   assert.deepEqual(saveBody, { enabled: true, endpoint: "http://127.0.0.1:8188/ui?token=secret" }, "provider save should only send enabled and endpoint");
   assert.equal("token" in saveBody, false, "provider save must not forward arbitrary token fields");
+  const testBody = JSON.parse(fetchCalls[2].options.body);
+  assert.deepEqual(
+    testBody,
+    {
+      endpoint: "http://127.0.0.1:9880/ui?token=secret",
+      text: "测试本地声线",
+      voiceProfileId: "reimu_main",
+      textLang: "zh",
+      promptLang: "zh",
+      mediaType: "wav",
+      refAudioPath: "C:\\voices\\reimu_ref.wav",
+      promptText: "参考文本"
+    },
+    "provider tts test should only send endpoint/text/profile fields"
+  );
+  assert.equal("token" in testBody, false, "provider tts test must not forward arbitrary token fields");
+  const voiceProfileBody = JSON.parse(fetchCalls[3].options.body);
+  assert.deepEqual(
+    voiceProfileBody,
+    {
+      enabled: true,
+      displayName: "Reimu Main",
+      textLang: "zh",
+      promptLang: "zh",
+      mediaType: "wav",
+      refAudioPath: "C:\\voices\\reimu_ref.wav",
+      promptText: "参考文本"
+    },
+    "provider voice profile save should only send voice profile config fields"
+  );
+  assert.equal("token" in voiceProfileBody, false, "provider voice profile save must not forward arbitrary token fields");
+}
+
+// MCP config/discovery actions are bridged to dedicated backend routes, not /control-center/actions.
+{
+  const fetchCalls = [];
+  const backendSource = createBackendControlCenterSource({
+    baseUrl: "http://mcp-action-test",
+    sessionId: "desktop",
+    profileUserId: "master",
+    fetchImpl: async (url, options = {}) => {
+      fetchCalls.push({ url: String(url), options });
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({
+          ok: true,
+          status: String(url).includes("discover") ? "discovered" : "saved",
+          serverId: "browser",
+          toolCount: 2,
+          refresh: true
+        })
+      };
+    }
+  });
+
+  const saveResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave, {
+    serverId: "browser",
+    displayName: "Browser MCP",
+    enabled: true,
+    command: "C:\\mcp\\browser-mcp.exe",
+    args: ["--profile", "akane"],
+    cwd: "C:\\mcp",
+    env: { MCP_MODE: "local" },
+    token: "must-not-send"
+  });
+  assert.equal(saveResult.status, "saved", "MCP config save should hit MCP config route");
+  assert.equal(saveResult.refresh, true, "MCP config save should request refresh");
+
+  const discoverResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover, {
+    serverId: "browser",
+    token: "must-not-send"
+  });
+  assert.equal(discoverResult.status, "discovered", "MCP discover should hit MCP discover route");
+  assert.equal(discoverResult.toolCount, 2, "MCP discover should return tool count");
+
+  assert.equal(fetchCalls.length, 2, "MCP save/discover should make two backend requests");
+  assert.ok(fetchCalls[0].url.includes("/capabilities/mcp-servers/browser/config"), "MCP save should use MCP config route");
+  assert.ok(fetchCalls[1].url.includes("/capabilities/mcp-servers/browser/discover"), "MCP discover should use MCP discover route");
+  assert.equal(fetchCalls.some((call) => call.url.includes("/control-center/actions")), false, "MCP actions must not use inert control-center action endpoint");
+  const saveBody = JSON.parse(fetchCalls[0].options.body);
+  assert.deepEqual(
+    saveBody,
+    {
+      enabled: true,
+      transport: "stdio",
+      command: "C:\\mcp\\browser-mcp.exe",
+      displayName: "Browser MCP",
+      cwd: "C:\\mcp",
+      args: ["--profile", "akane"],
+      env: { MCP_MODE: "local" }
+    },
+    "MCP save should only send whitelisted config fields"
+  );
+  assert.equal("token" in saveBody, false, "MCP save must not forward arbitrary token fields");
+  const discoverBody = JSON.parse(fetchCalls[1].options.body);
+  assert.deepEqual(discoverBody, {}, "MCP discover should not send arbitrary payload fields");
 }
 
 // Workflow binding actions are bridged to dedicated backend routes, not /control-center/actions.
@@ -631,14 +768,23 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
   assert.equal(saveResult.status, "saved", "workflow config save should hit workflow config route");
   assert.equal(saveResult.refresh, true, "workflow config save should request refresh");
 
+  const importResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport, {
+    workflowId: "workflow.workshop.portrait.cutout",
+    workflowPath: "workflows/comfyui/portrait_cutout.json",
+    workflowJson: "{\"12\":{\"class_type\":\"LoadImage\",\"inputs\":{\"image\":\"old.png\"}}}",
+    token: "must-not-send"
+  });
+  assert.equal(importResult.status, "saved", "workflow file import should hit workflow file route");
+
   const validateResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate, {
     workflowId: "workflow.workshop.portrait.cutout"
   });
   assert.equal(validateResult.status, "validated_config", "workflow validate should hit workflow validate route");
 
-  assert.equal(fetchCalls.length, 2, "workflow save/validate should make two backend requests");
+  assert.equal(fetchCalls.length, 3, "workflow save/import/validate should make three backend requests");
   assert.ok(fetchCalls[0].url.includes("/capabilities/workflows/workflow.workshop.portrait.cutout/config"), "workflow save should use workflow config route");
-  assert.ok(fetchCalls[1].url.includes("/capabilities/workflows/workflow.workshop.portrait.cutout/validate"), "workflow validate should use workflow validate route");
+  assert.ok(fetchCalls[1].url.includes("/capabilities/workflows/workflow.workshop.portrait.cutout/file"), "workflow file import should use workflow file route");
+  assert.ok(fetchCalls[2].url.includes("/capabilities/workflows/workflow.workshop.portrait.cutout/validate"), "workflow validate should use workflow validate route");
   assert.equal(fetchCalls.some((call) => call.url.includes("/control-center/actions")), false, "workflow actions must not use inert control-center action endpoint");
   const saveBody = JSON.parse(fetchCalls[0].options.body);
   assert.deepEqual(
@@ -654,6 +800,16 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
     "workflow save should only send enabled, workflowPath, and safe slot mapping"
   );
   assert.equal("token" in saveBody, false, "workflow save must not forward arbitrary token fields");
+  const importBody = JSON.parse(fetchCalls[1].options.body);
+  assert.deepEqual(
+    importBody,
+    {
+      workflowPath: "workflows/comfyui/portrait_cutout.json",
+      workflowJson: "{\"12\":{\"class_type\":\"LoadImage\",\"inputs\":{\"image\":\"old.png\"}}}"
+    },
+    "workflow file import should only send safe workflow path and JSON text"
+  );
+  assert.equal("token" in importBody, false, "workflow file import must not forward arbitrary token fields");
 }
 
 // ---------- deferred voice actions ----------
@@ -1009,12 +1165,26 @@ for (const actionId of deferredAbilitiesActionIds) {
   assert.equal(providerMockResult.status, "not-implemented", "mock source must not fake provider config save");
   assert.equal(providerMockResult.refresh, false, "mock provider config save should not request refresh");
 
+  const voiceProfileMockResult = await mockAbRouter.run(
+    CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave,
+    { providerId: "provider.tts.gpt_sovits.local", voiceProfileId: "reimu_main", enabled: true }
+  );
+  assert.equal(voiceProfileMockResult.status, "not-implemented", "mock source must not fake provider voice profile save");
+  assert.equal(voiceProfileMockResult.refresh, false, "mock provider voice profile save should not request refresh");
+
   const workflowMockResult = await mockAbRouter.run(
     CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave,
     { workflowId: "workflow.workshop.portrait.cutout", workflowPath: "workflows/comfyui/portrait_cutout.json", enabled: true }
   );
   assert.equal(workflowMockResult.status, "not-implemented", "mock source must not fake workflow config save");
   assert.equal(workflowMockResult.refresh, false, "mock workflow config save should not request refresh");
+
+  const mcpMockResult = await mockAbRouter.run(
+    CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave,
+    { serverId: "browser", command: "browser-mcp", enabled: true }
+  );
+  assert.equal(mcpMockResult.status, "not-implemented", "mock source must not fake MCP config save");
+  assert.equal(mcpMockResult.refresh, false, "mock MCP config save should not request refresh");
 }
 
 // ---------- deferred advanced + shell actions ----------
@@ -1732,10 +1902,10 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
 
 const clientHandledActionIds = new Set(CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS);
 
-// Client-handled action surface contract: all 5 should be in the surface contract with client-handled status
+// Client-handled action surface contract: all local UI handlers should be in the surface contract.
 {
   const clientHandledSurfaces = listControlCenterActionSurfaces(CONTROL_CENTER_ACTION_SURFACE_STATUS.clientHandled);
-  assert.equal(clientHandledSurfaces.length, 5, "should have 5 client-handled surfaces");
+  assert.equal(clientHandledSurfaces.length, CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS.length, "client-handled surface count should match catalog");
   for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
     const surface = clientHandledSurfaces.find((s) => s.actionId === actionId);
     assert.ok(surface, `${actionId} should appear in client-handled surfaces`);
@@ -1778,6 +1948,10 @@ for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
       handlerLog.push({ actionId: CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen, payload });
       return { ok: true, refresh: false };
     },
+    [CONTROL_CENTER_ACTIONS.abilitiesMcpConfigOpen]: (payload) => {
+      handlerLog.push({ actionId: CONTROL_CENTER_ACTIONS.abilitiesMcpConfigOpen, payload });
+      return { ok: true, refresh: false };
+    },
     [CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigOpen]: (payload) => {
       handlerLog.push({ actionId: CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigOpen, payload });
       return { ok: true, refresh: false };
@@ -1792,6 +1966,7 @@ for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
     { id: CONTROL_CENTER_ACTIONS.perceptionActiveWindowDetails, payload: { featureId: "activeWindow" } },
     { id: CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll, payload: { page: "abilities" } },
     { id: CONTROL_CENTER_ACTIONS.abilitiesProviderConfigOpen, payload: { page: "abilities", providerId: "provider.comfyui.local" } },
+    { id: CONTROL_CENTER_ACTIONS.abilitiesMcpConfigOpen, payload: { page: "abilities", serverId: "browser" } },
     { id: CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigOpen, payload: { page: "abilities", workflowId: "workflow.workshop.portrait.cutout" } },
     { id: CONTROL_CENTER_ACTIONS.advancedLogsMore, payload: { page: "advanced" } }
   ];
@@ -1804,7 +1979,7 @@ for (const actionId of CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS) {
     assert.notEqual(result.status, "failed", `${testCase.id} should not be failed`);
   }
 
-  assert.equal(handlerLog.length, 5, "all 5 client-handled handlers should be called");
+  assert.equal(handlerLog.length, chCases.length, "all client-handled handlers should be called");
   assert.equal(emitLog.length, beforeEmitLen, "client-handled actions should NOT emit");
   assert.equal(invokeLog.length, beforeInvokeLen, "client-handled actions should NOT invoke");
 }
@@ -1915,7 +2090,7 @@ console.log(
     `${directNotImplementedCases.length} not-implemented checks, ${labelCases.length} interval labels, ` +
     "4 hardening checks, 4 window action checks, 3 voice setting checks, 1 character preview action check, 5 advanced action checks, " +
     `${deferredSurfaces.length} deferred surface checks, 2 character warning checks, 3 screen vision control checks, ` +
-    "7 data-* payload helper checks, " +
+    "8 data-* payload helper checks, " +
     "6 overview music control checks, 9 overview voice checks, 17 overview sense checks, " +
     `${deferredVoiceActionIds.length} deferred voice action ids, ` +
     `${deferredMusicActionIds.length} deferred music action ids, 4 playlist id checks, 9 payload shape checks, 4 voice/music contract field checks, ` +
@@ -1927,6 +2102,6 @@ console.log(
     "2 snapshot valid path checks, 4 snapshot fallback checks, " +
     "4 character resources checks, 13 character consistency checks, 2 abilities modules checks, 4 field degradation checks, " +
     "4 abilities-from-tools checks, 4 advanced metrics checks, " +
-    "5 client-handled surface checks, 5 client-handled router tests, 5 client-handled dataSource not-implemented, " +
+    `${CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS.length} client-handled surface/router/dataSource checks, ` +
     "3 bare-router not-implemented, 2 display-only action checks, 3 forbidden action checks, 1 exitPet safety check"
 );

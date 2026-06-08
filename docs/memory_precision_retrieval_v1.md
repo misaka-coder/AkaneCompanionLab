@@ -25,7 +25,23 @@ time_range + source_layers + subject_scopes + categories = filter signals
 importance/confidence = cautious threshold or rerank signals
 ```
 
-## 2. Non-Goals
+## 2. Recommended V1 Runtime Baseline
+
+The precision filters only show their value when the semantic recall layer is
+good enough. For the V1 local baseline:
+
+- Embedding model: `BAAI/bge-m3`.
+- Vector database: keep the current local Chroma `PersistentClient` first.
+- Startup behavior: use local-cache-only loading by default; if the model is
+  not cached or `EMBEDDING_MODEL_NAME` does not point to a local directory,
+  fall back to hashed embeddings instead of blocking backend startup on network
+  retries.
+
+This keeps the database adapter stable while making the semantic side strong
+enough to expose the benefit of `memory_metadata` filters. Qdrant or LanceDB can
+be evaluated after the BGE-M3 baseline has benchmark data.
+
+## 3. Non-Goals
 
 - Do not make retrieval depend on a single exact category.
 - Do not reward records merely because they match more categories.
@@ -35,7 +51,7 @@ importance/confidence = cautious threshold or rerank signals
 
 The system should become more precise without becoming brittle.
 
-## 3. Retrieval Tool Parameters
+## 4. Retrieval Tool Parameters
 
 Proposed `retrieve_memory` call shape:
 
@@ -65,7 +81,7 @@ Field roles:
 | `importance_min` | optional threshold for broad searches | cautious filter |
 | `limit` | desired final snippets | output control |
 
-## 4. Subject Scopes
+## 5. Subject Scopes
 
 `subject_scopes` is a coarse "which side is this memory about" field. It is
 more stable than exact entities and useful for filtering roleplay memories.
@@ -109,7 +125,7 @@ Examples:
 }
 ```
 
-## 5. Categories
+## 6. Categories
 
 `categories` is a stable coarse taxonomy. It should be small enough that models
 can choose reliably.
@@ -139,7 +155,7 @@ Rules:
 Reason: category is a gate, not the similarity engine. Ranking should still come
 from query similarity, keyword match, time match, importance, and source layer.
 
-## 6. Entities Are Not Hard Filters
+## 7. Entities Are Not Hard Filters
 
 Exact entities are useful, but they are not stable enough for V1 hard filtering.
 
@@ -163,7 +179,7 @@ hard/OR filters: time_range, source_layers, subject_scopes, categories
 similarity: query, keywords
 ```
 
-## 7. Importance And Confidence
+## 8. Importance And Confidence
 
 Importance is already present on summaries and semantic summaries. It can be
 extended to raw/event-like records later.
@@ -183,7 +199,7 @@ Recommended V1 behavior:
 Confidence has a similar role. It is useful for filtering obviously unreliable
 records, but should not block recall unless the record is known bad.
 
-## 8. Filter Relaxation
+## 9. Filter Relaxation
 
 Every precision filter must have an automatic fallback path.
 
@@ -205,7 +221,7 @@ Rules:
 - If time was vague ("上次", "之前"), treat it as weak and relax earlier.
 - Never relax profile/character-pack safety boundaries.
 
-## 9. Ranking
+## 10. Ranking
 
 After filtering, rank with a fused score.
 
@@ -235,7 +251,7 @@ Layer notes:
 - `summary` is best for older episodes and medium-range recall.
 - `semantic_summary` is best for stable facts and repeated themes.
 
-## 10. Ingestion Metadata
+## 11. Ingestion Metadata
 
 When records are saved or summarized, attach structured metadata:
 
@@ -260,7 +276,7 @@ If model output is missing or invalid:
 - default `categories` to `[]` or `casual` only when clearly low-value
 - keep the record searchable by query/keywords
 
-## 11. Final Output Metadata Group
+## 12. Final Output Metadata Group
 
 The final Akane response will eventually need to output memory storage metadata.
 Those fields should not be scattered across the top-level JSON.
@@ -313,7 +329,7 @@ importance 是 0-1 数字，confidence 是你对这些标签的把握。
 This keeps memory fields together and prevents future prompt/schema drift where
 importance, categories, and keywords appear in unrelated positions.
 
-## 12. Debug Payload
+## 13. Debug Payload
 
 Precision retrieval must be observable. Each retrieval should expose:
 
@@ -337,7 +353,7 @@ Precision retrieval must be observable. Each retrieval should expose:
 
 This is required for tuning. Without it, precision retrieval becomes guesswork.
 
-## 13. Implementation Slices
+## 14. Implementation Slices
 
 Suggested order:
 
@@ -351,7 +367,7 @@ Suggested order:
 7. Update retrieval eval dataset/report to show filter hit statistics.
 8. Only then consider event-card memory as a separate layer.
 
-## 14. Design Summary
+## 15. Design Summary
 
 V1 precision retrieval should be conservative:
 

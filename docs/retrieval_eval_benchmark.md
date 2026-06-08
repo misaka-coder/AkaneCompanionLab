@@ -1,11 +1,11 @@
 **Retrieval Eval Benchmark**
 
-`run_retrieval_eval_benchmark.py` runs Akane's full retrieval pipeline against a JSONL evaluation set and writes both a summary JSON report and a per-case JSONL report.
+`scripts/retrieval/run_retrieval_eval_benchmark.py` runs Akane's full retrieval pipeline against a JSONL evaluation set and writes both a summary JSON report and a per-case JSONL report.
 
 Example:
 
 ```bash
-python run_retrieval_eval_benchmark.py documents/projects/retrieval_eval_candidates_20260410_212043.jsonl
+python scripts/retrieval/run_retrieval_eval_benchmark.py documents/projects/retrieval_eval_candidates_20260410_212043.jsonl
 ```
 
 Useful flags:
@@ -14,7 +14,7 @@ Useful flags:
 - `--limit 20`: quick smoke run on the first 20 rows
 - `--force-retrieval`: ignore router gating and force every sample through the retrieval chain
 - `--embedding-provider hashed`: force hashed embeddings for A/B comparison
-- `--embedding-provider huggingface --embedding-model-name BAAI/bge-small-zh-v1.5`: force local semantic embeddings
+- `--embedding-provider huggingface --embedding-model-name BAAI/bge-m3`: force the recommended BGE-M3 semantic embeddings
 - `--embedding-cache-size 0`: temporarily disable embedding cache
 - `--output <path>` / `--details-output <path>`: custom report paths
 
@@ -36,3 +36,4 @@ Notes:
 - It uses the current vector collection for the chosen embedding provider.
 - If the collection has fewer rows than SQLite can vectorize, the script prints a warning because the benchmark may be measuring an incomplete index.
 - `--force-retrieval` is useful when you want to measure pure retrieval accuracy without letting router skip most samples.
+- `EMBEDDING_LOCAL_FILES_ONLY=true` is the default. Cache or download `BAAI/bge-m3` first, or set `EMBEDDING_MODEL_NAME` to a local model directory, before expecting the HuggingFace provider to replace the hashed fallback.

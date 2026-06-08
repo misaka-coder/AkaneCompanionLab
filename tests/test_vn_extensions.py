@@ -145,13 +145,21 @@ class EngineExtensionTests(unittest.TestCase):
         stub_provider = StubHFProvider()
         with patch.object(config, "EMBEDDING_PROVIDER", "auto"), patch.object(
             config, "EMBEDDING_CACHE_SIZE", 32
-        ), patch.object(config, "EMBEDDING_MODEL_NAME", "BAAI/bge-small-zh-v1.5"), patch.object(
+        ), patch.object(config, "EMBEDDING_MODEL_NAME", "BAAI/bge-m3"), patch.object(
             config, "EMBEDDING_DEVICE", ""
-        ), patch("companion_v01.engine.HuggingFaceEmbeddingProvider", return_value=stub_provider):
+        ), patch.object(config, "EMBEDDING_LOCAL_FILES_ONLY", True), patch.object(
+            config, "EMBEDDING_CACHE_FOLDER", "models/cache"
+        ), patch("companion_v01.engine.HuggingFaceEmbeddingProvider", return_value=stub_provider) as provider_cls:
             provider = self.engine._build_embedding_provider()
 
         self.assertIsInstance(provider, CachedEmbeddingProvider)
         self.assertIs(provider.inner, stub_provider)
+        provider_cls.assert_called_once_with(
+            model_name="BAAI/bge-m3",
+            device=None,
+            local_files_only=True,
+            cache_folder="models/cache",
+        )
 
     def test_run_embedding_reindex_batches_raw_summary_and_semantic_records(self) -> None:
         class StubStore:

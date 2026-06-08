@@ -426,8 +426,11 @@ def _build_embedding_provider(
     cache_size: int | None = None,
 ) -> tuple[BaseEmbeddingProvider, str, str]:
     requested = str(provider_mode or getattr(config, "EMBEDDING_PROVIDER", "auto") or "auto").strip().lower() or "auto"
-    requested_model_name = str(model_name or getattr(config, "EMBEDDING_MODEL_NAME", "") or "BAAI/bge-small-zh-v1.5").strip() or "BAAI/bge-small-zh-v1.5"
+    default_model_name = str(getattr(config, "DEFAULT_EMBEDDING_MODEL_NAME", "BAAI/bge-m3") or "BAAI/bge-m3")
+    requested_model_name = str(model_name or getattr(config, "EMBEDDING_MODEL_NAME", "") or default_model_name).strip() or default_model_name
     requested_device = str(device or getattr(config, "EMBEDDING_DEVICE", "") or "").strip() or None
+    local_files_only = bool(getattr(config, "EMBEDDING_LOCAL_FILES_ONLY", True))
+    cache_folder = str(getattr(config, "EMBEDDING_CACHE_FOLDER", "") or "").strip() or None
     resolved_cache_size = int(getattr(config, "EMBEDDING_CACHE_SIZE", 0) if cache_size is None else cache_size)
 
     base_provider: BaseEmbeddingProvider = HashedEmbeddingProvider()
@@ -437,6 +440,8 @@ def _build_embedding_provider(
             base_provider = HuggingFaceEmbeddingProvider(
                 model_name=requested_model_name,
                 device=requested_device,
+                local_files_only=local_files_only,
+                cache_folder=cache_folder,
             )
         except Exception as exc:
             base_provider = HashedEmbeddingProvider()
