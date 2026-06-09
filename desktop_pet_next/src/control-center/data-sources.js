@@ -238,16 +238,17 @@ export function createBackendControlCenterSource(options = {}) {
       }
 
       setFallbackReason("unified-snapshot-unavailable");
-      const [health, diagnostics, workspace, resourceManifest, metrics, capabilitiesCatalog, voiceProfilesCatalog] = await Promise.all([
+      const [health, diagnostics, workspace, resourceManifest, metrics, capabilitiesCatalog, voiceProfilesCatalog, approvalRequestsCatalog] = await Promise.all([
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/health", { t: commonParams.t })),
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/desktop-pet/diagnostics", commonParams)),
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/desktop-pet/workspace/summary", commonParams)),
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/resource-manifest", commonParams)),
         fetchText(fetchImpl, buildBackendUrl(baseUrl, "/metrics", { t: commonParams.t })),
         readCapabilitiesCatalog(fetchImpl, baseUrl, commonParams),
-        readVoiceProfilesCatalog(fetchImpl, baseUrl, commonParams)
+        readVoiceProfilesCatalog(fetchImpl, baseUrl, commonParams),
+        readApprovalRequestsCatalog(fetchImpl, baseUrl, commonParams)
       ]);
-      if (![health, diagnostics, workspace, resourceManifest, metrics, capabilitiesCatalog, voiceProfilesCatalog].some((item) => item.ok)) {
+      if (![health, diagnostics, workspace, resourceManifest, metrics, capabilitiesCatalog, voiceProfilesCatalog, approvalRequestsCatalog].some((item) => item.ok)) {
         setFallbackReason("all-backend-endpoints-failed");
         return null;
       }
@@ -265,7 +266,8 @@ export function createBackendControlCenterSource(options = {}) {
           resourceManifest,
           metrics,
           capabilitiesCatalog,
-          voiceProfilesCatalog
+          voiceProfilesCatalog,
+          approvalRequestsCatalog
         },
         overviewRuntime: buildOverviewRuntimePatch({
           health: health.data,
@@ -303,7 +305,8 @@ export function createBackendControlCenterSource(options = {}) {
           workspace: workspace.data,
           capabilitiesCatalog: capabilitiesCatalog.data,
           voiceProfilesCatalog: voiceProfilesCatalog.data,
-          connected: health.ok || diagnostics.ok || capabilitiesCatalog.ok || voiceProfilesCatalog.ok
+          approvalRequestsCatalog: approvalRequestsCatalog.data,
+          connected: health.ok || diagnostics.ok || capabilitiesCatalog.ok || voiceProfilesCatalog.ok || approvalRequestsCatalog.ok
         }),
         advancedRuntime: buildAdvancedRuntimePatch({
           health: health.data,
@@ -783,6 +786,22 @@ async function readVoiceProfilesCatalog(fetchImpl, baseUrl, params = {}) {
   const payload = asObject(result.data);
   if (payload.ok !== true || !Array.isArray(payload.voiceProfiles)) {
     return { ok: false, status: "invalid-voice-profiles-catalog", data: null };
+  }
+  return {
+    ok: true,
+    status: payload.status || result.status || "available",
+    data: payload
+  };
+}
+
+async function readApprovalRequestsCatalog(fetchImpl, baseUrl, params = {}) {
+  const result = await fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/capabilities/approval-requests", params));
+  if (!result.ok) {
+    return { ok: false, status: result.status || "unavailable", data: null, error: result.error || null };
+  }
+  const payload = asObject(result.data);
+  if (payload.ok !== true || !Array.isArray(payload.approvalRequests)) {
+    return { ok: false, status: "invalid-approval-requests", data: null };
   }
   return {
     ok: true,
@@ -1493,10 +1512,11 @@ function formatSeconds(seconds) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalog, voiceProfilesCatalog, connected }) {
+function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalog, voiceProfilesCatalog, approvalRequestsCatalog, connected }) {
   const diagnosticsData = asObject(diagnostics);
   const capabilities = asObject(diagnosticsData.capabilities);
   const catalogEntries = normalizeCapabilityCatalogEntries(capabilitiesCatalog);
+  const approvalRequests = normalizeApprovalRequestsCatalog(approvalRequestsCatalog);
   const catalogSummary = summarizeCapabilityCatalogEntries(catalogEntries);
   const safety = asObject(diagnosticsData.safety);
   const runtime = asObject(diagnosticsData.runtime);
@@ -1513,6 +1533,7 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalo
   const availableModuleCount = moduleCards.length;
   const toolCount = catalogEntries.length ? catalogSummary.total : tools.length;
   const pendingApprovalCount = catalogEntries.length ? catalogSummary.needsAttention : countPendingSafetyItems(safety);
+  const activeApprovalCount = positiveNumber(approvalRequests.pendingCount);
   const availability = serviceOk
     ? (catalogEntries.length ? catalogSummary.availability : Math.min(100, Math.max(0, toolCount ? 98 : 72)))
     : 0;
@@ -1523,7 +1544,7 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalo
     ? [
         { label: "能力模块", value: String(availableModuleCount) },
         { label: "可用能力", value: String(catalogSummary.ready) },
-        { label: "待完善", value: String(catalogSummary.needsAttention) }
+        { label: activeApprovalCount ? "待确认" : "待完善", value: String(activeApprovalCount || catalogSummary.needsAttention) }
       ]
     : [
         { label: "可用模块", value: String(availableModuleCount || effectiveModules.length || declared.length || 0) },
@@ -1549,9 +1570,10 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalo
       catalogSummary,
       workspaceCounts: mergeWorkspaceCounts(workspaceCounts, workspaceDataCounts),
       safety,
+      approvalRequests,
       runtimeMetrics
     }),
-    safety: buildAbilitySafetyPanel(safety, serviceOk),
+    safety: buildAbilitySafetyPanel(safety, serviceOk, approvalRequests),
     live2d: {
       status: "预留",
       items: [
@@ -1561,6 +1583,33 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalo
         { label: "物理", value: "待接入" }
       ]
     }
+  };
+}
+
+function normalizeApprovalRequestsCatalog(catalog) {
+  const payload = asObject(catalog);
+  const requests = asArray(payload.approvalRequests)
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => ({
+      requestId: stringValue(entry.requestId),
+      status: stringValue(entry.status || "pending"),
+      decision: stringValue(entry.decision),
+      capabilityId: stringValue(entry.capabilityId),
+      actionId: stringValue(entry.actionId),
+      title: stringValue(entry.title || "能力请求"),
+      summary: stringValue(entry.summary),
+      risk: stringValue(entry.risk || "medium"),
+      approvalMode: normalizeApprovalMode(entry.approvalMode, entry),
+      approvalReason: stringValue(entry.approvalReason),
+      requestedBy: stringValue(entry.requestedBy || "akane"),
+      createdAt: stringValue(entry.createdAt),
+      expiresAt: stringValue(entry.expiresAt)
+    }))
+    .filter((entry) => entry.requestId || entry.capabilityId || entry.actionId);
+  return {
+    pendingCount: positiveNumber(payload.pendingCount ?? requests.filter((entry) => entry.status === "pending").length),
+    approvalRequests: requests,
+    status: stringValue(payload.status || "available")
   };
 }
 
@@ -1597,6 +1646,8 @@ function normalizeCapabilityCatalogEntries(catalog) {
       reason: stringValue(entry.reason),
       risk: stringValue(entry.risk),
       requiresConfirmation: Boolean(entry.requiresConfirmation),
+      approvalMode: normalizeApprovalMode(entry.approvalMode, entry),
+      approvalReason: stringValue(entry.approvalReason),
       configured: Boolean(entry.configured),
       configurable: Boolean(entry.configurable),
       executionReady: Boolean(entry.executionReady),
@@ -1620,6 +1671,39 @@ function normalizeCapabilityCatalogEntries(catalog) {
       slots: asObject(entry.slots)
     }))
     .filter((entry) => entry.id || entry.name || entry.group || entry.type);
+}
+
+function normalizeApprovalMode(mode, entry = {}) {
+  const normalized = stringValue(mode);
+  if (["trusted_auto_allow", "ask_each_time", "disabled"].includes(normalized)) return normalized;
+  const status = stringValue(entry.status || (entry.enabled === false ? "disabled" : "ready"));
+  const unavailableStatuses = new Set([
+    "configured",
+    "disabled",
+    "error",
+    "invalid_config",
+    "misconfigured",
+    "missing_config",
+    "missing_executor",
+    "missing_model",
+    "missing_slot_mapping",
+    "missing_workflow",
+    "unavailable",
+    "unreachable",
+    "unsupported_platform"
+  ]);
+  if (entry.enabled === false || unavailableStatuses.has(status)) return "disabled";
+  if (entry.requiresConfirmation || entry.risk === "high") return "ask_each_time";
+  return "trusted_auto_allow";
+}
+
+function approvalModeLabel(mode) {
+  const labels = {
+    trusted_auto_allow: "自动允许",
+    ask_each_time: "每次确认",
+    disabled: "暂不可用"
+  };
+  return labels[mode] || "待确认";
 }
 
 function summarizeCapabilityCatalogEntries(entries) {
@@ -1690,7 +1774,7 @@ function buildCapabilityCatalogModuleCards({ entries, workspaceCounts, workspace
       permission: "安全与确认",
       tone: "pink",
       icon: "shield",
-      match: (entry) => entry.requiresConfirmation || entry.risk === "high" || capabilityEntryText(entry).match(/guard|safe|security|approval|sandbox/)
+      match: (entry) => entry.requiresConfirmation || entry.approvalMode === "ask_each_time" || entry.risk === "high" || capabilityEntryText(entry).match(/guard|safe|security|approval|sandbox/)
     }
   ];
 
@@ -1779,6 +1863,7 @@ function buildAbilityMcpServerCards(entries) {
       const tools = toolsByProvider.get(entry.id) || [];
       const highRiskCount = tools.filter((tool) => tool.risk === "high" || tool.requiresConfirmation).length;
       const discoveredAt = stringValue(entry.lastDiscovery?.discoveredAt);
+      const approvalMode = mcpServerApprovalMode(entry, tools);
       return {
         id: entry.id,
         serverId: entry.serverId,
@@ -1795,10 +1880,21 @@ function buildAbilityMcpServerCards(entries) {
         safeToolLabels: summarizeMcpToolLabels(tools),
         highRiskCount,
         promptExposedCount: tools.filter((tool) => tool.exposedToPrompt).length,
-        requiresConfirmation: Boolean(entry.requiresConfirmation || highRiskCount),
+        requiresConfirmation: Boolean(highRiskCount),
+        approvalMode,
+        approvalLabel: approvalModeLabel(approvalMode),
         lastDiscoveryLabel: discoveredAt ? "已发现工具" : "未执行发现"
       };
     });
+}
+
+function mcpServerApprovalMode(entry, tools = []) {
+  const baseMode = normalizeApprovalMode(entry.approvalMode, entry);
+  if (baseMode === "disabled" || !isCapabilityReady(entry)) return "disabled";
+  if (tools.some((tool) => normalizeApprovalMode(tool.approvalMode, tool) === "ask_each_time")) {
+    return "ask_each_time";
+  }
+  return baseMode;
 }
 
 function summarizeMcpToolLabels(tools) {
@@ -2264,8 +2360,9 @@ function mapWorkflowStatus(status) {
   return mapCapabilityStatus(status);
 }
 
-function buildAbilityStatusRows({ syncedAt, serviceOk, toolCount, moduleCount, catalogSummary, workspaceCounts, safety, runtimeMetrics }) {
+function buildAbilityStatusRows({ syncedAt, serviceOk, toolCount, moduleCount, catalogSummary, workspaceCounts, safety, approvalRequests, runtimeMetrics }) {
   const hasCatalog = Boolean(catalogSummary?.total);
+  const pendingApprovalCount = positiveNumber(approvalRequests?.pendingCount);
   const rows = [
     {
       time: syncedAt,
@@ -2295,18 +2392,26 @@ function buildAbilityStatusRows({ syncedAt, serviceOk, toolCount, moduleCount, c
   rows.push({
     time: syncedAt,
     module: "安全边界",
-    description: buildSafetyDescription(safety),
-    status: safety?.secrets_exposed ? "已拦截" : "成功",
+    description: buildSafetyDescription(safety, approvalRequests),
+    status: pendingApprovalCount ? "待确认" : safety?.secrets_exposed ? "已拦截" : "成功",
     duration: "-",
-    method: "策略检查"
+    method: pendingApprovalCount ? "审批队列" : "策略检查"
   });
   return rows;
 }
 
-function buildAbilitySafetyPanel(safety, serviceOk) {
+function buildAbilitySafetyPanel(safety, serviceOk, approvalRequests = {}) {
+  const pendingApprovalCount = positiveNumber(approvalRequests.pendingCount);
+  const latestRequest = asArray(approvalRequests.approvalRequests).find((item) => item.status === "pending") || null;
   return {
-    status: serviceOk ? "已生效" : "待连接",
+    status: pendingApprovalCount ? `${pendingApprovalCount} 项待确认` : serviceOk ? "已生效" : "待连接",
     items: [
+      {
+        label: "审批请求队列",
+        status: pendingApprovalCount
+          ? `${pendingApprovalCount} 项待确认`
+          : "空闲"
+      },
       {
         label: "桌面动作执行",
         status: safety?.desktop_actions_require_client === false ? "自动执行" : "客户端确认"
@@ -2321,13 +2426,15 @@ function buildAbilitySafetyPanel(safety, serviceOk) {
       },
       {
         label: "外部网络与危险操作",
-        status: "需审批"
+        status: latestRequest ? latestRequest.title : "需审批"
       }
     ]
   };
 }
 
-function buildSafetyDescription(safety) {
+function buildSafetyDescription(safety, approvalRequests = {}) {
+  const pendingApprovalCount = positiveNumber(approvalRequests.pendingCount);
+  if (pendingApprovalCount) return `有 ${pendingApprovalCount} 项能力请求等待用户确认`;
   if (safety?.secrets_exposed) return "检测到敏感信息暴露风险，已进入保护状态";
   if (safety?.full_disk_scan) return "全盘扫描能力需要审批后才可执行";
   return "桌面危险动作保持客户端确认，敏感信息未暴露";
@@ -2692,6 +2799,11 @@ async function tryReadUnifiedSnapshot(fetchImpl, baseUrl, scope = {}) {
       baseUrl,
       requestParams || { t: String(Date.now()) }
     );
+    const approvalRequestsCatalog = await readApprovalRequestsCatalog(
+      fetchImpl,
+      baseUrl,
+      requestParams || { t: String(Date.now()) }
+    );
     const metricsText = typeof metrics.data === "string" ? metrics.data : "";
     return {
       ...mockData,
@@ -2706,7 +2818,8 @@ async function tryReadUnifiedSnapshot(fetchImpl, baseUrl, scope = {}) {
         resourceManifest,
         metrics,
         capabilitiesCatalog,
-        voiceProfilesCatalog
+        voiceProfilesCatalog,
+        approvalRequestsCatalog
       },
       overviewRuntime: buildOverviewRuntimePatch({
         health: health.data,
@@ -2744,7 +2857,8 @@ async function tryReadUnifiedSnapshot(fetchImpl, baseUrl, scope = {}) {
         workspace: workspace.data,
         capabilitiesCatalog: capabilitiesCatalog.data,
         voiceProfilesCatalog: voiceProfilesCatalog.data,
-        connected: health.ok || diagnostics.ok || capabilitiesCatalog.ok || voiceProfilesCatalog.ok
+        approvalRequestsCatalog: approvalRequestsCatalog.data,
+        connected: health.ok || diagnostics.ok || capabilitiesCatalog.ok || voiceProfilesCatalog.ok || approvalRequestsCatalog.ok
       }),
       advancedRuntime: buildAdvancedRuntimePatch({
         health: health.data,

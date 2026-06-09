@@ -48,7 +48,7 @@ from . import task_workspace_engine
 from .task_worker import TaskWorkerService
 from .task_worker_tool import DelegateTaskToolHandler
 from . import tool_orchestration_engine
-from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler
+from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, OpenBrowserToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler, WebSearchToolHandler
 from . import visual_context_engine
 from .vision_service import VisionObservationService
 from .store import MemoryStore
@@ -2940,6 +2940,10 @@ class AkaneMemoryEngine:
             "delegate_task": DelegateTaskToolHandler(
                 task_worker_service=self._get_task_worker_service(),
             ),
+            "web_search": WebSearchToolHandler(
+                config_base_dir=Path(getattr(config, "DATA_DIR", "users_data") or "users_data"),
+            ),
+            "open_browser": OpenBrowserToolHandler(),
         }
 
     def _resolve_tool_handlers(

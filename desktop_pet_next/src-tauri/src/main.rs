@@ -4,6 +4,7 @@ use std::{
     collections::HashMap,
     fs,
     io::Write,
+    net::IpAddr,
     path::{Path, PathBuf},
     process::Command,
     sync::{Mutex, OnceLock},
@@ -673,6 +674,12 @@ fn open_local_file(path: String) -> Result<(), String> {
 fn show_item_in_folder(path: String) -> Result<(), String> {
     let path = canonical_existing_path(&path)?;
     reveal_path_in_file_manager(&path)
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let url = normalize_public_external_url(&url)?;
+    open_url_with_system(&url)
 }
 
 #[tauri::command]
@@ -2328,6 +2335,91 @@ fn open_path_with_system(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn open_url_with_system(url: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("explorer");
+        command.arg(url);
+        command
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(url);
+        command
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    command.spawn().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn normalize_public_external_url(raw_url: &str) -> Result<String, String> {
+    let url = raw_url.trim();
+    if url.is_empty() || url.len() > 1600 {
+        return Err("网址为空或过长。".to_string());
+    }
+    if url.chars().any(|ch| ch.is_control() || ch.is_whitespace()) {
+        return Err("网址包含不安全字符。".to_string());
+    }
+
+    let scheme_end = url.find("://").ok_or_else(|| "只支持 http/https 网址。".to_string())?;
+    let scheme = url[..scheme_end].to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err("只支持 http/https 网址。".to_string());
+    }
+    let after_scheme = &url[scheme_end + 3..];
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+    if authority.is_empty() || authority.contains('@') {
+        return Err("网址主机不安全。".to_string());
+    }
+
+    let host = if authority.starts_with('[') {
+        let end = authority.find(']').ok_or_else(|| "网址主机不安全。".to_string())?;
+        authority[1..end].to_string()
+    } else {
+        authority
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .trim_matches('.')
+            .to_string()
+    };
+    if is_private_or_local_host(&host) {
+        return Err("不能打开 localhost 或内网地址。".to_string());
+    }
+    Ok(url.to_string())
+}
+
+fn is_private_or_local_host(host: &str) -> bool {
+    let lowered = host.trim().trim_matches(['[', ']']).to_ascii_lowercase();
+    if lowered.is_empty() || lowered == "localhost" || lowered.ends_with(".local") {
+        return true;
+    }
+    if let Ok(ip) = lowered.parse::<IpAddr>() {
+        return ip.is_loopback()
+            || ip.is_unspecified()
+            || ip.is_multicast()
+            || match ip {
+                IpAddr::V4(value) => {
+                    value.is_private() || value.is_link_local() || value.octets()[0] == 0
+                }
+                IpAddr::V6(value) => value.is_unique_local() || value.is_unicast_link_local(),
+            };
+    }
+    false
+}
+
 fn reveal_path_in_file_manager(path: &Path) -> Result<(), String> {
     if path.is_dir() {
         return open_path_in_file_manager(path);
@@ -3493,6 +3585,7 @@ fn main() {
             open_character_packs_folder,
             open_local_file,
             show_item_in_folder,
+            open_external_url,
             export_file_to_desktop,
             apply_window_state,
             set_visual_scale,

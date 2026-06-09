@@ -1867,6 +1867,28 @@ button[data-action-unavailable="true"]:disabled {
   font-weight: 850;
 }
 
+.mcp-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.mcp-heading-actions button {
+  min-height: 28px;
+  padding: 5px 9px;
+  color: #6f5bcf;
+  border: 1px solid rgb(126 107 212 / 0.24);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.66);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.mcp-heading-actions button:hover {
+  background: #f5f1ff;
+}
+
 .mcp-panel {
   padding: 14px 16px;
 }

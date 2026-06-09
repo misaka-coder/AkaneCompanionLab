@@ -279,6 +279,7 @@ def _normalize_web_identity_mode(value: str) -> str:
 # and should not trigger a warning.
 # ---------------------------------------------------------------------------
 _KNOWN_EXTERNAL_ENV_KEYS: set[str] = {
+    "ANYSEARCH_API_KEY",
     "COMPANION_HOST",
     "COMPANION_PORT",
 }

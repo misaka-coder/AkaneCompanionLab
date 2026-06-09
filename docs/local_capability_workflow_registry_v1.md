@@ -99,6 +99,21 @@ abilities page can expand an MCP server row, save stdio server config through
 `abilities.mcp.config.save`, and manually run tool discovery through
 `abilities.mcp.discover`. The collapsed dashboard remains compact and safe; the
 private command/cwd/args/env values are saved locally but not echoed back.
+Phase 6D adds an AnySearch MCP search preset in the control-center abilities
+page. The preset fills the stdio proxy command (`npx mcp-remote`) and stores
+only the `${ANYSEARCH_API_KEY}` environment-variable placeholder, never the real
+key. Actual API keys/tokens are still rejected if pasted into args or env fields,
+and public catalog responses continue to hide command args and env values.
+Phase 6E binds the first narrow MCP execution path: Akane exposes a built-in
+`web_search` tool that can call the configured `anysearch` MCP server for
+read-only public search/extract/sub-domain queries. Generic discovered MCP tools
+remain catalog-only and `exposedToPrompt:false`; the model sees `web_search`,
+not arbitrary MCP tool IDs.
+Phase 7A adds the first desktop browser action boundary: Akane exposes
+`open_browser` only in desktop-pet mode. The backend does not open the browser
+itself; it emits a `browser_open_requested` tool event for a public `http/https`
+URL, and the Tauri desktop client validates and opens it through the system
+browser. It does not read pages, click, download, upload, or fill forms.
 
 Files:
 
@@ -116,6 +131,10 @@ Files:
     metadata.
 - `companion_v01/routes/capabilities.py`
   - `GET /capabilities`
+  - `GET /capabilities/approval-requests`
+  - `POST /capabilities/approval-requests`
+  - `GET /capabilities/approval-requests/{requestId}`
+  - `POST /capabilities/approval-requests/{requestId}/decision`
   - `POST /capabilities/local-environment-check`
   - `GET /capabilities/providers`
   - `GET /capabilities/workflows`
@@ -631,6 +650,8 @@ Suggested shape:
   "status": "ready",
   "risk": "medium",
   "requiresConfirmation": false,
+  "approvalMode": "trusted_auto_allow",
+  "approvalReason": "trusted_runtime_boundary",
   "usedBy": ["workshop"],
   "providerId": "provider.comfyui.local",
   "workflowId": "workflow.comfyui.portrait_cutout",
@@ -2603,10 +2624,14 @@ Implemented Phase 6 foundation:
   discoverer is bound, the discover route returns structured
   `not-implemented` with `reason: mcp_discoverer_not_bound`; it does not fake a
   successful connection or invent tools.
-- Production now binds a minimal `McpStdioToolDiscoverer` for stdio servers. It
-  performs only MCP `initialize` plus `tools/list`, never `tools/call`, uses
-  `create_subprocess_exec` without shell interpolation, applies a bounded
-  timeout, and discards stderr from public responses.
+- Production now binds a minimal `McpStdioToolDiscoverer` for stdio discovery.
+  Discovery performs only MCP `initialize` plus `tools/list`, never
+  `tools/call`, uses `create_subprocess_exec` without shell interpolation,
+  applies a bounded timeout, and discards stderr from public responses.
+- Production also has a minimal `McpStdioToolCaller` for one bounded
+  `tools/call` request. It is not exposed as a generic MCP execution surface;
+  V1 uses it only behind the built-in `web_search` handler for the configured
+  `anysearch` server.
 - Discovered MCP tools are sanitized and stored as summaries only. Tool IDs are
   normalized as `mcp.{serverId}.{toolName}` with duplicate tool names made
   unique. Input schemas are reduced to bounded object schemas containing safe
@@ -2617,10 +2642,13 @@ Implemented Phase 6 foundation:
   tools appear as `kind: "mcp_tool"`, `source: "mcp"`, `adapter:
   "mcp_stdio"`, `executionMode: "external"`.
 - MCP tools are intentionally marked `exposedToPrompt: false` in this slice.
-  This is a catalog/discovery foundation, not prompt-time tool exposure and not
-  tool execution.
-- Risk defaults are applied at discovery time. Browser/click/write/delete/shell
-  style tools are `risk: high` and `requiresConfirmation: true`.
+  Generic discovered MCP tools remain catalog/discovery only. The prompt-time
+  execution surface is the built-in `web_search` tool, which maps to a
+  conservative AnySearch allowlist instead of exposing raw MCP tool IDs.
+- Risk defaults are applied at discovery time. Read-only search/fetch/extract
+  style tools can run under a low-friction policy when the user explicitly asks
+  for them. Browser click/write/delete/upload/shell style tools are `risk: high`
+  and `requiresConfirmation: true`.
 - The control-center abilities page renders MCP servers in a dedicated status
   panel. It shows display name, transport, command basename, discovered tool
   count, broad user-facing tool categories, prompt exposure state, and
@@ -2630,19 +2658,31 @@ Implemented Phase 6 foundation:
   buttons. Saved private command/cwd/args/env values are intentionally not
   echoed back; modifying an existing server requires re-entering private
   command details.
+- The MCP panel offers a compact AnySearch search preset. It pre-fills the
+  stdio proxy command and uses `${ANYSEARCH_API_KEY}` as a non-secret
+  environment placeholder. Users with an AnySearch key set that variable in the
+  backend launch environment or `.env`; users without a key can remove the
+  header args and use anonymous AnySearch access with lower limits.
+- `CapabilityRegistry` now includes a built-in `web_search` tool in the `web`
+  layer for desktop pet, QQ text, and web scene modes. The handler supports
+  `search`, `batch_search`, `extract`, and `get_sub_domains`, clamps result and
+  text sizes, rejects localhost/private/file URLs for extraction, returns
+  structured unavailable followup when AnySearch is not configured, and redacts
+  known key/header/local-path material from followup context.
 
 Still intentionally not done:
 
-- Akane does not execute MCP tools yet.
-- MCP tools are not merged into `CapabilityRegistry.select()` and are not
-  available to every prompt turn.
+- Akane does not execute arbitrary discovered MCP tools.
+- Discovered MCP tools are not merged into `CapabilityRegistry.select()` and
+  are not available to prompt turns as raw `mcp.{serverId}.{toolName}` actions.
 - The frontend MCP form is config/discovery only. It does not call tools, expose
-  MCP tools to prompt selection, or manage secret-bearing env values.
-- No secret-bearing env support exists. API keys and tokens need a separate
-  encrypted or user-approved secret store before they can be supported.
-- No MCP tool call runner is bound in production yet. A later slice should add
-  confirmation UX and a separate execution policy before any `tools/call`
-  support.
+  MCP tools to prompt selection, or manage real secret-bearing env values.
+- No secret store exists yet. Real API keys and tokens are not accepted in MCP
+  args/env fields; only explicit environment-variable placeholders such as
+  `${ANYSEARCH_API_KEY}` may be stored.
+- Browser control/click/form-fill/download/upload and arbitrary MCP execution
+  still require a later confirmation UX and a separate execution policy before
+  any `tools/call` support beyond the AnySearch read-only allowlist.
 
 ### Phase 7: Permission And Confirmation UX
 
@@ -2650,12 +2690,77 @@ Goal:
 
 - high-risk tools ask before executing
 - user sees what Akane wants to do and why
+- low-risk user-requested web search/open actions stay smooth
 
 Acceptance:
 
-- browser open/control requires confirmation
+- user-requested public web search can run without per-call confirmation
+- opening a user-provided URL can run without per-call confirmation
+- automatically inferred searches that include private context can ask first
+- browser control/click/form-fill/download/upload requires confirmation
 - arbitrary file read/write requires confirmation or explicit UI initiation
 - denied actions return structured followup context
+- user can choose an approval mode per capability/provider, such as
+  `ask_each_time`, `trusted_auto_allow`, or `disabled`
+
+Implemented Phase 7A foundation:
+
+- `CapabilityRegistry` includes `open_browser` only for desktop pet mode under
+  the `desktop_browser` layer.
+- `OpenBrowserToolHandler` accepts only explicit public `http` / `https` URLs,
+  rejects localhost, private IPs, `file:` URLs, credential-bearing URLs, and
+  whitespace/control characters, and returns a `browser_open_requested` event.
+- The backend never opens a browser directly. It only proposes the desktop
+  action through `ToolExecutionResult.stream_events`.
+- `desktop_pet_next/src/main.js` handles `browser_open_requested` from streamed
+  tool events and final `tool_events`, deduplicates per URL, revalidates the
+  URL in the client, and invokes Tauri `open_external_url`.
+- `desktop_pet_next/src-tauri/src/main.rs` exposes `open_external_url`, performs
+  another public URL validation pass, and opens the URL with the OS default
+  browser without shell interpolation.
+- Browser click/form-fill/download/upload/current-page extraction are still not
+  implemented. They remain future higher-risk actions requiring explicit
+  confirmation policy and UI.
+
+Implemented Phase 7B foundation:
+
+- Every public capability catalog entry now carries `approvalMode` and
+  `approvalReason` in addition to `risk` and `requiresConfirmation`.
+- Supported modes are `trusted_auto_allow`, `ask_each_time`, and `disabled`.
+- Ready low/medium risk tools such as `web_search` and public `open_browser`
+  are marked `trusted_auto_allow`; they still keep their existing validation
+  boundaries and do not gain new execution privileges.
+- High-risk discovered MCP tools, such as browser click/navigation/download
+  tools, are marked `ask_each_time`.
+- Not-ready entries, including disabled providers, missing configs, unavailable
+  platforms, and unbound workflows, are marked `disabled`.
+- The control center preserves these fields from `/capabilities` and displays a
+  compact MCP policy label such as "自动允许", "每次确认", or "暂不可用".
+- This is metadata only. It does not implement the final approval modal or make
+  raw MCP tools available to the prompt.
+
+Implemented Phase 7C foundation:
+
+- `companion_v01/capability_approval.py` provides an in-memory approval request
+  queue for the current backend process.
+- `/capabilities/approval-requests` lists pending approval requests for the
+  current profile. `include_resolved=1` includes approved, denied, and expired
+  items for lightweight diagnostics.
+- `POST /capabilities/approval-requests` creates a pending request only for
+  `ask_each_time` or high-risk/confirmation-required operations. Requests that
+  are already `trusted_auto_allow` return `not_required`, and disabled
+  capabilities return `disabled`.
+- `POST /capabilities/approval-requests/{requestId}/decision` accepts
+  `approved` or `denied`. Approved requests receive a short-lived
+  `approvalGrant` object for future execution binding.
+- Request previews are public-only: API keys, tokens, authorization headers,
+  password/secret fields, and local absolute paths are removed or redacted
+  before they reach HTTP responses, logs, snapshots, or prompt context.
+- The control center reads the approval queue as a degradable runtime source and
+  shows pending request counts in the abilities safety panel.
+- This still does not execute browser click/form-fill/download/upload or raw
+  MCP tools. Those actions require a later binding that consumes approval grants
+  and revalidates the actual operation.
 
 ### Phase 8: Local Plugin System
 

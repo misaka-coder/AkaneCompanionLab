@@ -14,6 +14,7 @@ from .local_capability_config import (
     build_mcp_tool_config_entry,
     build_provider_config_entry,
     build_workflow_config_entry,
+    with_capability_approval_metadata,
     CONFIGURABLE_PROVIDER_SPECS,
     CONFIGURABLE_WORKFLOW_SPECS,
 )
@@ -58,6 +59,8 @@ TOOL_GROUPS: dict[str, str] = {
     "send_generated_file": "file_handoff",
     "send_sticker": "stickers",
     "manage_generated_file": "generated_files",
+    "web_search": "web",
+    "open_browser": "desktop_browser",
 }
 
 TOOL_USED_BY: dict[str, list[str]] = {
@@ -66,6 +69,8 @@ TOOL_USED_BY: dict[str, list[str]] = {
     "manage_gift": ["agent", "web_scene"],
     "manage_artifact": ["agent", "web_scene"],
     "send_sticker": ["agent", "qq_text"],
+    "web_search": ["agent", "desktop_pet", "qq_text", "web_scene"],
+    "open_browser": ["agent", "desktop_pet"],
 }
 
 LOW_RISK_TOOLS = {
@@ -76,6 +81,7 @@ LOW_RISK_TOOLS = {
     "read_attachment_section",
     "inspect_media_info",
     "inspect_generated_file",
+    "web_search",
 }
 
 MEDIUM_RISK_TOOLS = {
@@ -97,6 +103,7 @@ MEDIUM_RISK_TOOLS = {
     "manage_task_workspace",
     "delegate_task",
     "manage_persona",
+    "open_browser",
     "manage_gift",
     "manage_artifact",
 }
@@ -154,6 +161,7 @@ def build_local_capability_catalog(
     entries.extend(_build_workflow_entries(configurable_provider_entries, workflow_configs or {}))
     entries.extend(_build_mcp_entries(mcp_server_configs or {}))
     entries.extend(_build_prompt_module_entries())
+    entries = [with_capability_approval_metadata(entry) for entry in entries]
     entries = sorted(entries, key=lambda item: (str(item.get("kind") or ""), str(item.get("id") or "")))
     resolutions = _build_voice_provider_resolutions(entries, character_voice=character_voice)
 
@@ -182,6 +190,7 @@ def build_local_workflow_catalog(
 ) -> dict[str, Any]:
     provider_entries = _build_configurable_provider_entries(provider_configs or {})
     workflows = _build_workflow_entries(provider_entries, workflow_configs or {})
+    workflows = [with_capability_approval_metadata(entry) for entry in workflows]
     return {
         "ok": True,
         "status": "available",
@@ -199,7 +208,10 @@ def build_local_workflow_catalog(
 
 
 def probe_known_local_services(*, timeout_seconds: float = 0.35) -> dict[str, Any]:
-    services = [_probe_local_service(target, timeout_seconds=timeout_seconds) for target in KNOWN_LOCAL_SERVICE_PROBES]
+    services = [
+        with_capability_approval_metadata(_probe_local_service(target, timeout_seconds=timeout_seconds))
+        for target in KNOWN_LOCAL_SERVICE_PROBES
+    ]
     return {
         "ok": True,
         "status": "checked",

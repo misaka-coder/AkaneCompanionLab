@@ -1,9 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
+import ipaddress
+import inspect
+import json
+import os
 import re
-from typing import Any, Callable
+import threading
+from pathlib import Path
+from typing import Any, Callable, Mapping
+from urllib.parse import urlparse
 
+import config
+
+from .local_capability_config import get_mcp_server_runtime_config
+from .mcp_stdio_discoverer import McpStdioDiscoveryError, McpStdioToolCaller
 from .npc_runtime import GenericNPCRuntime
 from .store import MemoryStore
 from .task_workspace import TaskWorkspaceService
@@ -58,14 +70,16 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
         return (
             "- retrieve_memory：当你看完当前原始上下文、阶段摘要、长期语义记忆和可用回忆片段后，"
             "仍然觉得需要主动回想更早内容时使用。"
-            "这是内部记忆检索工具，不是对用户说出口的话。"
+            "它在系统里叫工具，但对你来说就是自己的深层记忆空间；这是你在心里翻回忆，不是对用户说出口的话。"
             "格式为 {\"type\":\"retrieve_memory\",\"query\":\"简短搜索短句\",\"keywords\":[\"关键词\"],"
             "\"time_hint\":{\"date_label\":\"YYYY-MM-DD\",\"time_of_day\":\"morning|afternoon|night|midnight\"},"
             "\"source_layers\":[\"raw\",\"summary\",\"semantic_summary\"],\"subject_scopes\":[\"user\",\"assistant\",\"other\"],"
             "\"categories\":[\"preference\",\"plan_goal\",\"project_work\"],\"importance_min\":0.0,\"limit\":4}。"
             "query 要写具体实体、地点、人物、事件或偏好，不要写“帮我回忆一下”这类空泛句。"
             "source_layers、subject_scopes、categories、importance_min 只在你有把握时填写；subject_scopes/categories 多选是 OR 命中，不要求全中。"
-            "只有当前可见记忆不足以回答时才调用；如果不需要检索，tool_call 输出 null。"
+            "当用户问生日、重要日期、偏好、称呼、旧约定、跨端聊过的人/事/项目等个人旧事实，而当前可见记忆没有明确答案时，可以自然在这里翻一下。"
+            "当前可见记忆已经足够时无需调用；只要你觉得更早的记忆可能有帮助，就可以调用。"
+            "如果不需要检索，tool_call 输出 null。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -1169,6 +1183,601 @@ class FetchMediaFromUrlToolHandler(BaseToolHandler):
             if text.startswith(("http://", "https://")) and text not in urls:
                 urls.append(text[:1000])
         return urls[:8]
+
+
+class OpenBrowserToolHandler(BaseToolHandler):
+    tool_type = "open_browser"
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- open_browser：仅当用户明确要求你打开一个公开网页 URL 时使用。"
+            "格式为 {\"type\":\"open_browser\",\"url\":\"https://...\",\"reason\":\"为什么打开\"}。"
+            "它只会向桌宠前端请求打开系统浏览器，不读取网页、不点击、不下载、不填写表单。"
+            "不要用它打开 localhost、内网地址、file 路径、登录页、付费页、用户私密链接或不确定的网址；"
+            "如果用户只是要你查资料，优先用 web_search，而不是直接打开浏览器。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        url = self._normalize_public_url(value.get("url") or value.get("link") or value.get("href"))
+        if not url:
+            return None
+        label = normalize_text(str(value.get("label") or value.get("title") or "")).strip()
+        reason = normalize_text(str(value.get("reason") or "")).strip()
+        return {
+            "type": self.tool_type,
+            "url": url,
+            "label": label[:80],
+            "reason": reason[:120],
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        url = str(call.get("url") or "").strip()
+        label = str(call.get("label") or "").strip()[:80]
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "browser_open_requested",
+                    "url": url,
+                    "label": label,
+                    "reason": str(call.get("reason") or "").strip()[:120],
+                    "client_mode": context.client_mode,
+                    "requires_confirmation": False,
+                }
+            ],
+            followup_context=(
+                f"你刚刚请求桌宠打开这个公开网页：{url}。"
+                "如果桌宠端可用，它会交给系统浏览器打开；不要声称你已经读取了网页内容。"
+            ),
+            state_updates={"browser_open_requested": True},
+        )
+
+    def _normalize_public_url(self, value: Any) -> str:
+        url = str(value or "").strip()
+        if len(url) > 1600:
+            url = url[:1600]
+        if any(ord(ch) < 32 for ch in url) or re.search(r"\s", url):
+            return ""
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return ""
+        if parsed.username or parsed.password:
+            return ""
+        hostname = parsed.hostname or ""
+        if not hostname or self._is_private_or_local_host(hostname):
+            return ""
+        return url
+
+    def _is_private_or_local_host(self, hostname: str) -> bool:
+        host = str(hostname or "").strip().lower().strip("[]")
+        if not host or host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".local"):
+            return True
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return bool(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved)
+
+
+class WebSearchToolHandler(BaseToolHandler):
+    tool_type = "web_search"
+
+    ALLOWED_ACTIONS = {"search", "batch_search", "extract", "get_sub_domains"}
+    MAX_QUERY_LENGTH = 240
+    MAX_QUERIES = 4
+    MAX_RESULTS = 10
+    MAX_FOLLOWUP_CHARS = 6000
+    MAX_EXTRACT_CHARS = 5000
+
+    def __init__(
+        self,
+        *,
+        config_base_dir: Path | str | None = None,
+        server_id: str = "anysearch",
+        mcp_tool_caller: Any = None,
+    ) -> None:
+        self.config_base_dir = config_base_dir if config_base_dir is not None else getattr(config, "DATA_DIR", None)
+        self.server_id = str(server_id or "anysearch").strip() or "anysearch"
+        self.mcp_tool_caller = mcp_tool_caller or McpStdioToolCaller(timeout_seconds=20)
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- web_search：当用户明确要你联网搜索、查最新资料、核对网页内容，或给出一个公开网页 URL 要你提取内容时使用。"
+            "搜索格式为 {\"type\":\"web_search\",\"action\":\"search\",\"query\":\"搜索词\",\"max_results\":5}；"
+            "网页提取格式为 {\"type\":\"web_search\",\"action\":\"extract\",\"url\":\"https://...\",\"max_chars\":3000}。"
+            "只搜索或提取公开网页；不要用它访问 localhost、内网地址、file 路径、登录页、付费页或用户私密链接。"
+            "如果用户没有要求联网，且你不确定是否需要实时信息，先自然询问或直接基于已有知识回答，不要为了炫技搜索。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        action = self._normalize_action(value)
+        if action == "extract":
+            url = self._normalize_public_url(value.get("url") or value.get("link"))
+            if not url:
+                return None
+            return {
+                "type": self.tool_type,
+                "action": "extract",
+                "url": url,
+                "max_chars": self._coerce_int(value.get("max_chars"), minimum=500, maximum=self.MAX_EXTRACT_CHARS, default=3000),
+            }
+        if action == "batch_search":
+            queries = self._normalize_queries(value.get("queries") or value.get("query"))
+            if not queries:
+                return None
+            return {
+                "type": self.tool_type,
+                "action": "batch_search",
+                "queries": queries,
+                "max_results": self._coerce_int(value.get("max_results"), minimum=1, maximum=5, default=3),
+            }
+        if action == "get_sub_domains":
+            domains = self._normalize_domains(value.get("domains") or value.get("domain"))
+            if not domains:
+                return None
+            return {
+                "type": self.tool_type,
+                "action": "get_sub_domains",
+                "domains": domains,
+            }
+        query = normalize_text(str(value.get("query") or value.get("keyword") or value.get("prompt") or "")).strip()
+        if not query:
+            return None
+        normalized = {
+            "type": self.tool_type,
+            "action": "search",
+            "query": query[: self.MAX_QUERY_LENGTH],
+            "max_results": self._coerce_int(value.get("max_results"), minimum=1, maximum=self.MAX_RESULTS, default=5),
+        }
+        domain = self._normalize_domain(value.get("domain"))
+        if domain:
+            normalized["domain"] = domain
+        sub_domain = self._normalize_domain(value.get("sub_domain") or value.get("subDomain"))
+        if sub_domain:
+            normalized["sub_domain"] = sub_domain
+        return normalized
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        server = get_mcp_server_runtime_config(
+            base_dir=self.config_base_dir,
+            profile_user_id=context.profile_user_id,
+            server_id=self.server_id,
+        )
+        if not server:
+            return self._failure("missing_config", "AnySearch MCP 还没有配置。请先在能力面板保存 AnySearch 预设。")
+        if not bool(server.get("enabled")):
+            return self._failure("disabled", "AnySearch MCP 当前是关闭状态。")
+        if not str(server.get("command") or "").strip():
+            return self._failure("missing_command", "AnySearch MCP 缺少启动命令。")
+
+        action = str(call.get("action") or "search").strip()
+        arguments = self._build_mcp_arguments(call)
+        redaction_terms = self._redaction_terms_for_server(server)
+        try:
+            result = self._run_coro_blocking(
+                self._call_mcp(server=server, tool_name=action, arguments=arguments)
+            )
+        except McpStdioDiscoveryError as exc:
+            return self._failure(str(exc) or "mcp_call_failed", "AnySearch MCP 调用失败或超时。")
+        except Exception:
+            return self._failure("mcp_call_failed", "AnySearch MCP 调用失败。")
+
+        followup = self._format_followup(
+            action=action,
+            call=call,
+            result=result if isinstance(result, dict) else {},
+            redaction_terms=redaction_terms,
+        )
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "web_search_completed",
+                    "provider": "anysearch",
+                    "action": action,
+                    "status": "ok",
+                }
+            ],
+            followup_context=followup,
+            state_updates={"web_search_status": "ok", "web_search_provider": "anysearch"},
+        )
+
+    async def _call_mcp(
+        self,
+        *,
+        server: Mapping[str, Any],
+        tool_name: str,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        result = self.mcp_tool_caller(server=server, tool_name=tool_name, arguments=arguments)
+        if inspect.isawaitable(result):
+            result = await result
+        return result if isinstance(result, dict) else {}
+
+    def _build_mcp_arguments(self, call: Mapping[str, Any]) -> dict[str, Any]:
+        action = str(call.get("action") or "search")
+        if action == "extract":
+            return {"url": str(call.get("url") or "")}
+        if action == "batch_search":
+            max_results = int(call.get("max_results") or 3)
+            return {
+                "queries": [
+                    {"query": query, "max_results": max_results}
+                    for query in list(call.get("queries") or [])[: self.MAX_QUERIES]
+                ]
+            }
+        if action == "get_sub_domains":
+            domains = list(call.get("domains") or [])
+            return {"domain": domains[0]} if len(domains) == 1 else {"domains": domains[: self.MAX_QUERIES]}
+        args: dict[str, Any] = {
+            "query": str(call.get("query") or ""),
+            "max_results": int(call.get("max_results") or 5),
+        }
+        for key in ("domain", "sub_domain"):
+            if call.get(key):
+                args[key] = str(call.get(key) or "")
+        return args
+
+    def _format_followup(
+        self,
+        *,
+        action: str,
+        call: Mapping[str, Any],
+        result: Mapping[str, Any],
+        redaction_terms: list[str],
+    ) -> str:
+        if bool(result.get("isError") or result.get("is_error")):
+            return "AnySearch 返回了错误状态；请自然告诉用户这次联网检索没有拿到可靠结果。"
+        payload = self._extract_payload(result, redaction_terms=redaction_terms)
+        if action == "extract":
+            return self._format_extract_followup(call=call, payload=payload, redaction_terms=redaction_terms)
+        if action == "get_sub_domains":
+            return self._format_sub_domains_followup(call=call, payload=payload, redaction_terms=redaction_terms)
+        return self._format_search_followup(action=action, call=call, payload=payload, redaction_terms=redaction_terms)
+
+    def _format_search_followup(
+        self,
+        *,
+        action: str,
+        call: Mapping[str, Any],
+        payload: Any,
+        redaction_terms: list[str],
+    ) -> str:
+        results = self._coerce_search_results(payload)
+        query_label = str(call.get("query") or " / ".join(str(item) for item in call.get("queries") or [])).strip()
+        lines = ["【AnySearch 联网搜索结果】"]
+        if query_label:
+            lines.append(f"查询：{self._sanitize_output(query_label, redaction_terms=redaction_terms)[:240]}")
+        if not results:
+            text = self._payload_to_text(payload, redaction_terms=redaction_terms)
+            if text:
+                lines.append(self._clip(text, self.MAX_FOLLOWUP_CHARS - 120))
+            else:
+                lines.append("没有拿到可用搜索结果。")
+        else:
+            for index, item in enumerate(results[: self.MAX_RESULTS], start=1):
+                title = self._sanitize_output(str(item.get("title") or item.get("name") or "无标题"), redaction_terms=redaction_terms)[:160]
+                url = self._sanitize_output(str(item.get("url") or item.get("link") or ""), redaction_terms=redaction_terms)[:500]
+                snippet = self._sanitize_output(
+                    str(item.get("snippet") or item.get("summary") or item.get("description") or item.get("content") or ""),
+                    redaction_terms=redaction_terms,
+                )
+                lines.append(f"{index}. {title}")
+                if url:
+                    lines.append(f"   URL: {url}")
+                if snippet:
+                    lines.append(f"   摘要: {self._clip(snippet, 420)}")
+        lines.append("请只基于这些公开搜索结果回答；没查到或不确定的部分要明确说明。")
+        return self._clip("\n".join(lines), self.MAX_FOLLOWUP_CHARS)
+
+    def _format_extract_followup(
+        self,
+        *,
+        call: Mapping[str, Any],
+        payload: Any,
+        redaction_terms: list[str],
+    ) -> str:
+        max_chars = int(call.get("max_chars") or 3000)
+        data = self._first_mapping(payload)
+        title = self._sanitize_output(str(data.get("title") or data.get("name") or ""), redaction_terms=redaction_terms)
+        text = self._sanitize_output(
+            str(data.get("text") or data.get("content") or data.get("markdown") or data.get("body") or ""),
+            redaction_terms=redaction_terms,
+        )
+        if not text:
+            text = self._payload_to_text(payload, redaction_terms=redaction_terms)
+        lines = [
+            "【AnySearch 网页内容提取结果】",
+            f"URL: {self._sanitize_output(str(call.get('url') or ''), redaction_terms=redaction_terms)[:500]}",
+        ]
+        if title:
+            lines.append(f"标题：{self._clip(title, 160)}")
+        lines.append("正文摘录：")
+        lines.append(self._clip(text or "没有拿到可用正文。", max_chars))
+        return self._clip("\n".join(lines), self.MAX_FOLLOWUP_CHARS)
+
+    def _format_sub_domains_followup(
+        self,
+        *,
+        call: Mapping[str, Any],
+        payload: Any,
+        redaction_terms: list[str],
+    ) -> str:
+        text = self._payload_to_text(payload, redaction_terms=redaction_terms)
+        domains = ", ".join(str(item) for item in call.get("domains") or [])
+        lines = [
+            "【AnySearch 域名能力结果】",
+            f"域名：{self._sanitize_output(domains, redaction_terms=redaction_terms)[:240]}",
+            self._clip(text or "没有拿到可用结果。", 3000),
+        ]
+        return self._clip("\n".join(lines), self.MAX_FOLLOWUP_CHARS)
+
+    def _extract_payload(self, result: Mapping[str, Any], *, redaction_terms: list[str]) -> Any:
+        for key in ("results", "items", "data", "result"):
+            value = result.get(key)
+            if value not in (None, "", [], {}):
+                return value
+        content = result.get("content")
+        if isinstance(content, list):
+            texts = []
+            for item in content:
+                if isinstance(item, Mapping):
+                    text = str(item.get("text") or item.get("content") or "").strip()
+                else:
+                    text = str(item or "").strip()
+                if text:
+                    parsed = self._try_parse_json_text(text)
+                    if parsed is not None:
+                        return parsed
+                    texts.append(text)
+            if texts:
+                return "\n".join(self._sanitize_output(text, redaction_terms=redaction_terms) for text in texts)
+        return dict(result)
+
+    def _try_parse_json_text(self, text: str) -> Any | None:
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    def _coerce_search_results(self, payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, Mapping):
+            for key in ("results", "items", "data"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return [dict(item) for item in value if isinstance(item, Mapping)]
+            if any(key in payload for key in ("title", "url", "link", "snippet", "content")):
+                return [dict(payload)]
+        if isinstance(payload, list):
+            results = []
+            for item in payload:
+                if isinstance(item, Mapping):
+                    results.append(dict(item))
+                elif isinstance(item, str):
+                    results.append({"title": item})
+            return results
+        return []
+
+    def _payload_to_text(self, payload: Any, *, redaction_terms: list[str]) -> str:
+        if isinstance(payload, str):
+            return self._sanitize_output(payload, redaction_terms=redaction_terms)
+        try:
+            return self._sanitize_output(json.dumps(payload, ensure_ascii=False, default=str), redaction_terms=redaction_terms)
+        except Exception:
+            return self._sanitize_output(str(payload), redaction_terms=redaction_terms)
+
+    def _first_mapping(self, payload: Any) -> dict[str, Any]:
+        if isinstance(payload, Mapping):
+            return dict(payload)
+        if isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, Mapping):
+                    return dict(item)
+        return {}
+
+    def _failure(self, status: str, message: str) -> ToolExecutionResult:
+        reason = str(status or "unavailable").strip()[:120]
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[{"type": "web_search_completed", "provider": "anysearch", "status": "unavailable", "reason": reason}],
+            followup_context=f"AnySearch 联网能力暂时不可用：{message} 状态：{reason}。请自然告知用户，并不要编造搜索结果。",
+            state_updates={"web_search_status": "unavailable", "web_search_reason": reason},
+        )
+
+    def _normalize_action(self, value: Mapping[str, Any]) -> str:
+        raw = str(value.get("action") or "").strip().lower().replace("-", "_")
+        if not raw:
+            if value.get("url") or value.get("link"):
+                return "extract"
+            if isinstance(value.get("queries"), list):
+                return "batch_search"
+            return "search"
+        aliases = {
+            "lookup": "search",
+            "web": "search",
+            "read": "extract",
+            "read_url": "extract",
+            "page": "extract",
+            "subdomains": "get_sub_domains",
+            "domains": "get_sub_domains",
+        }
+        action = aliases.get(raw, raw)
+        return action if action in self.ALLOWED_ACTIONS else "search"
+
+    def _normalize_queries(self, value: Any) -> list[str]:
+        raw_items: list[Any]
+        if isinstance(value, list):
+            raw_items = value
+        elif isinstance(value, str):
+            raw_items = [part for part in re.split(r"[\n;；]+", value) if part]
+        else:
+            raw_items = []
+        queries: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            if isinstance(item, Mapping):
+                text = str(item.get("query") or item.get("keyword") or "").strip()
+            else:
+                text = str(item or "").strip()
+            text = normalize_text(text)
+            dedupe_key = text.lower()
+            if not text or dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            queries.append(text[: self.MAX_QUERY_LENGTH])
+            if len(queries) >= self.MAX_QUERIES:
+                break
+        return queries
+
+    def _normalize_domains(self, value: Any) -> list[str]:
+        raw_items = value if isinstance(value, list) else [value]
+        domains: list[str] = []
+        for item in raw_items:
+            domain = self._normalize_domain(item)
+            if domain and domain not in domains:
+                domains.append(domain)
+            if len(domains) >= self.MAX_QUERIES:
+                break
+        return domains
+
+    def _normalize_domain(self, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        if "://" in text:
+            parsed = urlparse(text)
+            text = parsed.hostname or ""
+        text = text.strip(".")
+        if not re.fullmatch(r"[a-z0-9.-]{1,253}", text):
+            return ""
+        if text in {"localhost"} or text.endswith(".local"):
+            return ""
+        if self._is_private_or_local_host(text):
+            return ""
+        return text[:253]
+
+    def _normalize_public_url(self, value: Any) -> str:
+        url = str(value or "").strip()
+        if len(url) > 1600:
+            url = url[:1600]
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return ""
+        hostname = parsed.hostname or ""
+        if not hostname or self._is_private_or_local_host(hostname):
+            return ""
+        return url
+
+    def _is_private_or_local_host(self, hostname: str) -> bool:
+        host = str(hostname or "").strip().lower().strip("[]")
+        if not host or host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".local"):
+            return True
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return bool(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved)
+
+    def _coerce_int(self, value: Any, *, minimum: int, maximum: int, default: int) -> int:
+        try:
+            number = int(value)
+        except Exception:
+            number = default
+        return max(minimum, min(maximum, number))
+
+    def _redaction_terms_for_server(self, server: Mapping[str, Any]) -> list[str]:
+        terms: list[str] = []
+        args = [str(item or "") for item in server.get("args") or []]
+        wanted = {
+            match.group(1)
+            for arg in args
+            for match in re.finditer(r"\$\{([A-Z_][A-Z0-9_]{0,79})\}", arg)
+        }
+        raw_env = server.get("env") if isinstance(server.get("env"), Mapping) else {}
+        for key in wanted:
+            env_value = os.environ.get(key)
+            if env_value:
+                terms.append(env_value)
+        for key, value in raw_env.items():
+            if any(marker in str(key).lower() for marker in ("api_key", "password", "secret", "token")):
+                terms.append(str(value or ""))
+        for env_path in self._candidate_env_files(str(server.get("cwd") or "").strip() or None):
+            try:
+                if not env_path.is_file() or env_path.stat().st_size > 128 * 1024:
+                    continue
+                for line in env_path.read_text(encoding="utf-8").splitlines():
+                    if "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    if key.strip() in wanted:
+                        terms.append(value.strip().strip("\"'"))
+            except OSError:
+                continue
+        return [term for term in terms if len(term) >= 4]
+
+    def _candidate_env_files(self, cwd: str | None) -> list[Path]:
+        paths: list[Path] = []
+        if cwd:
+            paths.append(Path(cwd) / ".env")
+        paths.append(Path.cwd() / ".env")
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            try:
+                key = str(path.resolve())
+            except OSError:
+                key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(path)
+        return unique
+
+    def _sanitize_output(self, value: str, *, redaction_terms: list[str]) -> str:
+        text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+        for term in redaction_terms:
+            if term:
+                text = text.replace(term, "[redacted]")
+        text = re.sub(r"(?i)authorization:\s*bearer\s+[^\s]+", "Authorization: Bearer [redacted]", text)
+        text = re.sub(r"(?i)\b(api[_-]?key|password|secret|token)\s*[:=]\s*[^\s,;]+", r"\1=[redacted]", text)
+        text = re.sub(r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s]+", "[local_path]", text)
+        return text.strip()
+
+    def _clip(self, value: str, limit: int) -> str:
+        text = str(value or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 20)].rstrip() + "\n...[truncated]"
+
+    def _run_coro_blocking(self, coro: Any) -> Any:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+
+        result_box: dict[str, Any] = {}
+        error_box: dict[str, BaseException] = {}
+
+        def runner() -> None:
+            try:
+                result_box["value"] = asyncio.run(coro)
+            except BaseException as exc:
+                error_box["error"] = exc
+
+        thread = threading.Thread(target=runner, daemon=True)
+        thread.start()
+        thread.join()
+        if "error" in error_box:
+            raise error_box["error"]
+        return result_box.get("value")
 
 
 class ComposeFileToolHandler(BaseToolHandler):

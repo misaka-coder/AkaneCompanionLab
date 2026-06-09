@@ -49,6 +49,15 @@ const SCREEN_VISION_FRAME_COUNT_MIN = 1;
 const SCREEN_VISION_FRAME_COUNT_MAX = 5;
 const MUSIC_PLAY_MODE_OPTIONS = Object.freeze(["列表循环", "单曲循环", "随机播放"]);
 const WORKFLOW_FILE_IMPORT_MAX_BYTES = 4 * 1024 * 1024;
+const ANYSEARCH_MCP_PRESET = Object.freeze({
+  serverId: "anysearch",
+  displayName: "AnySearch 网页搜索",
+  command: "npx",
+  argsText: "-y\nmcp-remote\nhttps://api.anysearch.com/mcp\n--header\nAuthorization: Bearer ${ANYSEARCH_API_KEY}",
+  reason: "推荐搜索 MCP；API key 通过本机环境变量 ANYSEARCH_API_KEY 传入，不保存在 Akane 配置里。",
+  toolLabels: ["网页搜索", "正文提取", "垂直搜索"],
+  lastDiscoveryLabel: "预设待保存"
+});
 const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 let latestRuntimeSnapshot = null;
 let runtimeSnapshotHydrateTimer = 0;
@@ -408,6 +417,12 @@ function bindEvents() {
         providerVoiceProfileSaveButton,
         CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave
       );
+      return;
+    }
+
+    const mcpPresetButton = event.target.closest("[data-mcp-preset]");
+    if (mcpPresetButton) {
+      applyMcpPreset(mcpPresetButton.dataset.mcpPreset);
       return;
     }
 
@@ -820,6 +835,22 @@ function parseMcpEnv(value) {
     if (key && val) env[key] = val;
   }
   return env;
+}
+
+function applyMcpPreset(presetId) {
+  if (String(presetId || "") !== "anysearch") return;
+  const serverId = ANYSEARCH_MCP_PRESET.serverId;
+  state.activeMcpConfigId = serverId;
+  state.mcpConfigDrafts[serverId] = {
+    serverId,
+    displayName: ANYSEARCH_MCP_PRESET.displayName,
+    command: ANYSEARCH_MCP_PRESET.command,
+    argsText: ANYSEARCH_MCP_PRESET.argsText,
+    cwd: "",
+    envText: "",
+    enabled: true
+  };
+  renderActivePage();
 }
 
 function readWorkflowConfigPayload(button) {
@@ -2439,7 +2470,10 @@ function renderMcpPanel() {
     <article class="glass-card mcp-panel">
       <div class="card-heading">
         <h2>${icon("sparkle")} 外部 MCP 工具</h2>
-        <span>${readyCount}/${servers.length} 就绪 · ${toolCount} 个工具</span>
+        <div class="mcp-heading-actions">
+          <button type="button" data-mcp-preset="anysearch">${icon("search")} AnySearch 预设</button>
+          <span>${readyCount}/${servers.length} 就绪 · ${toolCount} 个工具</span>
+        </div>
       </div>
       <div class="mcp-server-list">
         ${servers.map(renderMcpServerRow).join("")}
@@ -2451,8 +2485,15 @@ function renderMcpPanel() {
 
 function buildVisibleMcpServers() {
   const servers = Array.isArray(abilitiesPage.mcpServers) ? abilitiesPage.mcpServers : [];
-  if (servers.length) return servers;
-  const draftId = Object.keys(state.mcpConfigDrafts || {})[0] || "custom";
+  if (servers.length) {
+    const hasAnySearch = servers.some((item) => item.serverId === ANYSEARCH_MCP_PRESET.serverId);
+    if (!hasAnySearch && state.mcpConfigDrafts[ANYSEARCH_MCP_PRESET.serverId]) {
+      return [buildAnySearchDraftMcpServer(), ...servers];
+    }
+    return servers;
+  }
+  const draftId = Object.keys(state.mcpConfigDrafts || {})[0] || ANYSEARCH_MCP_PRESET.serverId;
+  if (draftId === ANYSEARCH_MCP_PRESET.serverId) return [buildAnySearchDraftMcpServer()];
   const draft = state.mcpConfigDrafts[draftId] || {};
   return [{
     id: `provider.mcp.${draft.serverId || draftId}`,
@@ -2470,10 +2511,39 @@ function buildVisibleMcpServers() {
     safeToolLabels: ["等待工具发现"],
     highRiskCount: 0,
     promptExposedCount: 0,
-    requiresConfirmation: true,
+    requiresConfirmation: false,
+    approvalMode: "disabled",
+    approvalLabel: "暂不可用",
     lastDiscoveryLabel: "未执行发现",
     isDraft: true
   }];
+}
+
+function buildAnySearchDraftMcpServer() {
+  const draft = state.mcpConfigDrafts[ANYSEARCH_MCP_PRESET.serverId] || {};
+  return {
+    id: `provider.mcp.${ANYSEARCH_MCP_PRESET.serverId}`,
+    serverId: ANYSEARCH_MCP_PRESET.serverId,
+    title: draft.displayName || ANYSEARCH_MCP_PRESET.displayName,
+    status: "missing_config",
+    statusLabel: "预设",
+    statusTone: "warning",
+    reason: ANYSEARCH_MCP_PRESET.reason,
+    enabled: draft.enabled ?? true,
+    configured: false,
+    transport: "stdio",
+    commandName: draft.command || ANYSEARCH_MCP_PRESET.command,
+    toolCount: 0,
+    safeToolLabels: ANYSEARCH_MCP_PRESET.toolLabels,
+    highRiskCount: 0,
+    promptExposedCount: 0,
+    requiresConfirmation: false,
+    approvalMode: "disabled",
+    approvalLabel: "暂不可用",
+    lastDiscoveryLabel: ANYSEARCH_MCP_PRESET.lastDiscoveryLabel,
+    isDraft: true,
+    preset: "anysearch"
+  };
 }
 
 function renderMcpServerRow(server) {
@@ -2483,11 +2553,12 @@ function renderMcpServerRow(server) {
   const toolLabels = Array.isArray(server.safeToolLabels) ? server.safeToolLabels : [];
   const commandName = server.commandName || "本地启动器";
   const statusMessage = state.mcpActionStatus[serverId] || server.reason || server.statusLabel || "待确认";
+  const approvalLabel = server.approvalLabel || approvalModeUiLabel(server.approvalMode);
   const safetyText = server.highRiskCount
-    ? `${server.highRiskCount} 个高风险工具需确认`
+    ? `${server.highRiskCount} 个高风险工具 · ${approvalLabel}`
     : server.requiresConfirmation
-      ? "调用前需要确认"
-      : "低风险只读目录";
+      ? `调用前需要确认 · ${approvalLabel}`
+      : approvalLabel;
   const promptText = server.promptExposedCount
       ? `${server.promptExposedCount} 个工具已开放给提示词`
       : "暂未开放给提示词";
@@ -2526,15 +2597,31 @@ function renderMcpServerRow(server) {
   `;
 }
 
+function approvalModeUiLabel(mode) {
+  const labels = {
+    trusted_auto_allow: "自动允许",
+    ask_each_time: "每次确认",
+    disabled: "暂不可用"
+  };
+  return labels[mode] || "待确认";
+}
+
 function renderMcpConfigBody(server) {
   const serverId = server.serverId || "custom";
   const draft = state.mcpConfigDrafts[serverId] || {};
-  const displayName = draft.displayName ?? (server.isDraft ? "" : server.title || "");
+  const isAnySearchPreset = server.preset === "anysearch" || serverId === ANYSEARCH_MCP_PRESET.serverId;
+  const displayName = draft.displayName ?? (isAnySearchPreset ? ANYSEARCH_MCP_PRESET.displayName : server.isDraft ? "" : server.title || "");
+  const commandValue = draft.command ?? (isAnySearchPreset ? ANYSEARCH_MCP_PRESET.command : "");
+  const argsValue = draft.argsText ?? (isAnySearchPreset ? ANYSEARCH_MCP_PRESET.argsText : "");
   const commandPlaceholder = server.commandName
     ? `已保存 ${server.commandName}；修改时重新填写完整命令`
     : "例如 python 或 npx";
-  const argsPlaceholder = "每行一个参数，例如\n-m\nmy_mcp_server";
-  const envPlaceholder = "可选，每行 KEY=VALUE；不要填写 API key / token";
+  const argsPlaceholder = isAnySearchPreset
+    ? "AnySearch 预设参数；使用 ANYSEARCH_API_KEY 环境变量，不要填真实 key"
+    : "每行一个参数，例如\n-m\nmy_mcp_server";
+  const envPlaceholder = isAnySearchPreset
+    ? "留空；请在启动 Akane 的环境里设置 ANYSEARCH_API_KEY"
+    : "可选，每行 KEY=VALUE；不要填写 API key / token";
   return `
     <div class="mcp-config-body">
       <div class="mcp-config-fields">
@@ -2565,7 +2652,7 @@ function renderMcpConfigBody(server) {
           <span>启动命令</span>
           <input
             type="text"
-            value="${escapeAttr(draft.command || "")}"
+            value="${escapeAttr(commandValue)}"
             placeholder="${escapeAttr(commandPlaceholder)}"
             data-mcp-command-input
             autocomplete="off"
@@ -2590,7 +2677,7 @@ function renderMcpConfigBody(server) {
             autocomplete="off"
             spellcheck="false"
             placeholder="${escapeAttr(argsPlaceholder)}"
-          >${escapeHtml(draft.argsText || "")}</textarea>
+          >${escapeHtml(argsValue)}</textarea>
         </label>
         <label>
           <span>环境变量</span>
@@ -2622,7 +2709,7 @@ function renderMcpConfigBody(server) {
           >${icon("checkCircle")} 保存配置</button>
         </div>
       </div>
-      <p>${icon("shield")} 已保存命令和路径不会在控制中心回显；发现工具只读取 tools/list，不会调用工具。</p>
+      <p>${icon("shield")} ${isAnySearchPreset ? "AnySearch API key 只通过本机环境变量读取；控制中心不会保存或回显真实 key。" : "已保存命令和路径不会在控制中心回显；发现工具只读取 tools/list，不会调用工具。"}</p>
     </div>
   `;
 }

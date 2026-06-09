@@ -15,6 +15,29 @@ CONFIG_SCHEMA_VERSION = 1
 PROFILE_CONFIG_PATH_TEMPLATE = "users_data/<profile_user_id>/capabilities/capabilities.yaml"
 PROFILE_ID_SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+APPROVAL_MODE_TRUSTED_AUTO_ALLOW = "trusted_auto_allow"
+APPROVAL_MODE_ASK_EACH_TIME = "ask_each_time"
+APPROVAL_MODE_DISABLED = "disabled"
+APPROVAL_MODES = {
+    APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+    APPROVAL_MODE_ASK_EACH_TIME,
+    APPROVAL_MODE_DISABLED,
+}
+APPROVAL_DISABLED_STATUSES = {
+    "configured",
+    "disabled",
+    "error",
+    "invalid_config",
+    "misconfigured",
+    "missing_config",
+    "missing_executor",
+    "missing_model",
+    "missing_slot_mapping",
+    "missing_workflow",
+    "unavailable",
+    "unreachable",
+    "unsupported_platform",
+}
 PUBLIC_PROVIDER_FIELDS = {"enabled", "endpoint", "updatedAt", "lastHealth"}
 PUBLIC_WORKFLOW_FIELDS = {"enabled", "workflowPath", "slotMapping", "updatedAt"}
 PRIVATE_VOICE_PROFILE_FIELDS = {
@@ -61,6 +84,8 @@ MCP_TOOL_NAME_MAX_LENGTH = 80
 MCP_TOOL_DESCRIPTION_MAX_LENGTH = 240
 MCP_TOOL_MAX_COUNT = 64
 MCP_SCHEMA_PROPERTY_MAX_COUNT = 24
+MCP_ENV_PLACEHOLDER_RE = re.compile(r"\$\{[A-Z_][A-Z0-9_]{0,79}\}")
+MCP_SECRET_MARKERS = ("api_key", "password", "secret", "token")
 WORKFLOW_SLOT_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 WORKFLOW_COMFYUI_SLOT_PATH_RE = re.compile(r"^[A-Za-z0-9_-]{1,60}\.inputs\.[A-Za-z0-9_.-]{1,120}$")
 WORKFLOW_ASSET_HANDLE_MAX_LENGTH = 120
@@ -71,6 +96,52 @@ WORKFLOW_CONFIG_FILE_MAX_BYTES = 4 * 1024 * 1024
 
 
 HealthChecker = Callable[[str, int, float], tuple[bool, str]]
+
+
+def capability_approval_mode(
+    *,
+    enabled: bool = True,
+    status: str = "",
+    risk: str = "",
+    requires_confirmation: bool = False,
+) -> str:
+    normalized_status = str(status or "").strip().lower()
+    normalized_risk = str(risk or "").strip().lower()
+    if not enabled or normalized_status in APPROVAL_DISABLED_STATUSES:
+        return APPROVAL_MODE_DISABLED
+    if requires_confirmation or normalized_risk == "high":
+        return APPROVAL_MODE_ASK_EACH_TIME
+    return APPROVAL_MODE_TRUSTED_AUTO_ALLOW
+
+
+def with_capability_approval_metadata(entry: Mapping[str, Any]) -> dict[str, Any]:
+    public_entry = dict(entry)
+    raw_mode = str(public_entry.get("approvalMode") or "").strip()
+    mode = (
+        raw_mode
+        if raw_mode in APPROVAL_MODES
+        else capability_approval_mode(
+            enabled=public_entry.get("enabled") is not False,
+            status=str(public_entry.get("status") or ""),
+            risk=str(public_entry.get("risk") or ""),
+            requires_confirmation=bool(public_entry.get("requiresConfirmation")),
+        )
+    )
+    public_entry["approvalMode"] = mode
+    if not str(public_entry.get("approvalReason") or "").strip():
+        public_entry["approvalReason"] = _approval_reason(public_entry, mode)
+    return public_entry
+
+
+def _approval_reason(entry: Mapping[str, Any], mode: str) -> str:
+    if mode == APPROVAL_MODE_DISABLED:
+        if entry.get("enabled") is False:
+            return "capability_disabled"
+        status = re.sub(r"[^a-z0-9_.-]+", "_", str(entry.get("status") or "").strip().lower())[:80]
+        return f"status_{status}" if status else "capability_not_ready"
+    if mode == APPROVAL_MODE_ASK_EACH_TIME:
+        return "requires_confirmation"
+    return "trusted_runtime_boundary"
 
 
 @dataclass(frozen=True)
@@ -1072,7 +1143,7 @@ def build_provider_config_entry(spec: ProviderConfigSpec, config: Mapping[str, A
         enabled=enabled,
         last_health=last_health,
     )
-    return {
+    return with_capability_approval_metadata({
         "id": spec.id,
         "kind": "provider",
         "type": spec.type,
@@ -1091,7 +1162,7 @@ def build_provider_config_entry(spec: ProviderConfigSpec, config: Mapping[str, A
         "defaultEndpoint": spec.default_endpoint,
         "autoEnabled": False,
         "configurable": True,
-    }
+    })
 
 
 def build_workflow_config_entry(
@@ -1115,7 +1186,7 @@ def build_workflow_config_entry(
         enabled=enabled,
         configured=configured,
     )
-    return {
+    return with_capability_approval_metadata({
         "id": spec.id,
         "kind": "workflow",
         "type": spec.type,
@@ -1151,7 +1222,7 @@ def build_workflow_config_entry(
             "outputImage": "asset_handle",
             "pathPolicy": "safe-handle-only",
         },
-    }
+    })
 
 
 def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1163,7 +1234,7 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
     prompt_text = str(config.get("promptText") or "").strip()
     configured = bool(ref_audio_path and prompt_text)
     status = "ready" if enabled and configured else "missing_config" if enabled else "disabled"
-    return {
+    return with_capability_approval_metadata({
         "id": safe_id,
         "voiceProfileId": safe_id,
         "kind": "voice_profile",
@@ -1194,7 +1265,7 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
         "risk": "medium",
         "requiresConfirmation": False,
         "usedBy": ["voice", "desktop_pet"],
-    }
+    })
 
 
 def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1223,7 +1294,7 @@ def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | No
         reason = "mcp_tools_not_discovered"
     elif status == "disabled":
         reason = "mcp_server_disabled"
-    return {
+    return with_capability_approval_metadata({
         "id": f"provider.mcp.{safe_id}",
         "serverId": safe_id,
         "kind": "provider",
@@ -1247,10 +1318,10 @@ def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | No
             "toolCount": int(last_discovery.get("toolCount") or 0),
         } if last_discovery else {},
         "risk": "medium",
-        "requiresConfirmation": True,
+        "requiresConfirmation": False,
         "usedBy": ["agent_prompt", "external_tools"],
         "configurable": True,
-    }
+    })
 
 
 def build_mcp_tool_config_entry(server_id: str, tool: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1259,7 +1330,7 @@ def build_mcp_tool_config_entry(server_id: str, tool: Mapping[str, Any] | None) 
     tool_name = _safe_mcp_tool_name(tool.get("name"))
     public_id = f"mcp.{safe_server_id}.{tool_name}" if safe_server_id and tool_name else ""
     risk = _infer_mcp_tool_risk(tool_name, str(tool.get("description") or ""))
-    return {
+    return with_capability_approval_metadata({
         "id": public_id,
         "serverId": safe_server_id,
         "kind": "mcp_tool",
@@ -1280,7 +1351,7 @@ def build_mcp_tool_config_entry(server_id: str, tool: Mapping[str, Any] | None) 
         "providerId": f"provider.mcp.{safe_server_id}",
         "inputSchema": _normalize_mcp_input_schema(tool.get("inputSchema") or tool.get("input_schema")),
         "exposedToPrompt": False,
-    }
+    })
 
 
 def normalize_provider_config_payload(spec: ProviderConfigSpec, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -2253,9 +2324,24 @@ def _safe_private_mcp_path(value: Any) -> str:
     if not text:
         return ""
     lowered = text.lower()
-    if "://" in text or any(marker in lowered for marker in ("api_key", "password", "secret", "token")):
+    if "://" in text or any(marker in lowered for marker in MCP_SECRET_MARKERS):
         return ""
     return text[:MCP_SERVER_PATH_MAX_LENGTH]
+
+
+def _mcp_text_has_secret_literal(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    without_placeholders = MCP_ENV_PLACEHOLDER_RE.sub("", text)
+    lowered = without_placeholders.lower()
+    if any(marker in lowered for marker in MCP_SECRET_MARKERS):
+        return True
+    if re.search(r"(?i)\bbearer\s+[^\s$][^\s]*", without_placeholders):
+        return True
+    if re.search(r"(?i)\b(sk-[A-Za-z0-9]|ghp_[A-Za-z0-9]|xox[baprs]-[A-Za-z0-9])", without_placeholders):
+        return True
+    return False
 
 
 def _safe_mcp_args(value: Any) -> list[str] | None:
@@ -2269,7 +2355,9 @@ def _safe_mcp_args(value: Any) -> list[str] | None:
         lowered = text.lower()
         if not text:
             continue
-        if any(marker in lowered for marker in ("api_key", "password", "secret", "token")):
+        if any(marker in lowered for marker in MCP_SECRET_MARKERS) and not MCP_ENV_PLACEHOLDER_RE.search(text):
+            return None
+        if _mcp_text_has_secret_literal(text):
             return None
         args.append(text[:MCP_SERVER_ARG_MAX_LENGTH])
     return args
@@ -2286,11 +2374,11 @@ def _safe_mcp_env(value: Any) -> dict[str, str] | None:
         lowered_key = key.lower()
         if not key or not MCP_ENV_KEY_RE.fullmatch(key):
             return None
-        if any(marker in lowered_key for marker in ("api_key", "password", "secret", "token")):
+        if any(marker in lowered_key for marker in MCP_SECRET_MARKERS):
             return None
         text = str(raw_value or "").strip().replace("\r", "").replace("\n", "")
         lowered_value = text.lower()
-        if any(marker in lowered_value for marker in ("api_key", "password", "secret", "token")):
+        if any(marker in lowered_value for marker in MCP_SECRET_MARKERS) or _mcp_text_has_secret_literal(text):
             return None
         env[key] = text[:MCP_SERVER_TEXT_MAX_LENGTH]
     return env
@@ -2298,7 +2386,7 @@ def _safe_mcp_env(value: Any) -> dict[str, str] | None:
 
 def _infer_mcp_tool_risk(tool_name: str, description: str) -> str:
     text = f"{tool_name} {description}".lower()
-    if re.search(r"\b(delete|remove|write|edit|shell|terminal|exec|command|browser|click|open_url|navigate|download|upload)\b", text):
+    if re.search(r"\b(delete|remove|write|edit|shell|terminal|exec|command|click|open_url|navigate|download|upload)\b", text):
         return "high"
     if re.search(r"\b(file|read|http|fetch|search|web|workspace|local)\b", text):
         return "medium"

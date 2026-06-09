@@ -4430,6 +4430,8 @@ async function processThinkStream(stream, turnToken) {
       queueStreamedTtsSegment(text, turnToken, event?.index);
     } else if (type === "file_ready" || type === "generated_file_ready") {
       void handleDesktopFileDeliveryEvent(event);
+    } else if (type === "browser_open_requested") {
+      void handleBrowserOpenEvent(event);
     } else if (type === "final" || type === "final_ui") {
       const payload = event?.payload || event;
       if (renderPayload(payload)) {
@@ -4476,6 +4478,7 @@ function renderPayload(
   applyPayloadEmotion(payload, { persist: persistEmotion });
   applyPayloadActivity(payload);
   applyPayloadFileDeliveries(payload);
+  applyPayloadBrowserEvents(payload);
 
   const segments = normalizeSegments(payload.speech_segments || payload.segments);
   if (segments.length > 0) {
@@ -4653,6 +4656,67 @@ function applyPayloadFileDeliveries(payload) {
       void handleDesktopFileDeliveryEvent(event);
     }
   }
+}
+
+function applyPayloadBrowserEvents(payload) {
+  const events = Array.isArray(payload?.tool_events) ? payload.tool_events : [];
+  for (const event of events) {
+    const type = String(event?.type || "").trim().toLowerCase();
+    if (type === "browser_open_requested") {
+      void handleBrowserOpenEvent(event);
+    }
+  }
+}
+
+const browserOpenHandled = new Set();
+
+async function handleBrowserOpenEvent(event) {
+  if (!event || typeof event !== "object") return;
+  const url = normalizePublicBrowserUrl(event.url);
+  if (!url) {
+    setRuntimeStatus("浏览器打开请求被拦截：网址不安全", { mode: "error" });
+    showBubbleText("这个网址看起来不适合直接打开，我先拦住了。", {
+      transient: true,
+      durationMs: 2600,
+      kind: "error"
+    });
+    return;
+  }
+  const key = `browser:${url}`;
+  if (browserOpenHandled.has(key)) return;
+  browserOpenHandled.add(key);
+  const label = String(event.label || event.title || "").trim() || url;
+  const result = await tauriCall("open_external_url", { url }, { quiet: true });
+  if (result !== null) {
+    setRuntimeStatus(`已打开网页：${label}`, { mode: "idle" });
+  } else {
+    setRuntimeStatus("打开网页失败", { mode: "error" });
+    showBubbleText("网页没有打开成功，可能是桌面端暂时接不上系统浏览器。", {
+      transient: true,
+      durationMs: 2600,
+      kind: "error"
+    });
+  }
+}
+
+function normalizePublicBrowserUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 1600 || /\s|[\u0000-\u001f]/.test(raw)) return "";
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return "";
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) return "";
+  if (parsed.username || parsed.password) return "";
+  const host = parsed.hostname.toLowerCase();
+  if (!host || host === "localhost" || host.endsWith(".local")) return "";
+  if (/^(127\.|10\.|0\.|169\.254\.|192\.168\.)/.test(host)) return "";
+  const private172 = host.match(/^172\.(\d+)\./);
+  if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return "";
+  if (host === "::1" || host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) return "";
+  return parsed.href;
 }
 
 async function handleDesktopFileDeliveryEvent(event) {

@@ -61,6 +61,9 @@ COMMON_TOOL_NAMES = (
     "delegate_task",
 )
 
+WEB_SEARCH_TOOL_NAMES = ("web_search",)
+DESKTOP_BROWSER_TOOL_NAMES = ("open_browser",)
+
 WEB_SCENE_TOOL_NAMES = (
     "call_npc",
     "check_inventory",
@@ -229,6 +232,22 @@ class CapabilityRegistry:
                 modes=COMMON_CLIENT_MODES,
                 tools=COMMON_TOOL_NAMES,
                 light_hint="你可以主动检索长期记忆，也可以设置/查看/取消提醒、维护表达侧面；短任务直接调用工具完成，复杂多步任务可以记录到任务工作区，也可以委派给后台工坊分担。",
+                trigger=_always,
+            ),
+            CapabilityModule(
+                name="internet_access",
+                layer="web",
+                modes=COMMON_CLIENT_MODES,
+                tools=WEB_SEARCH_TOOL_NAMES,
+                light_hint="当用户明确要求联网搜索、查询最新信息或读取公开网页时，你可以使用受限的 AnySearch 联网搜索能力；不要用它访问私密、内网或需要登录的内容。",
+                trigger=_always,
+            ),
+            CapabilityModule(
+                name="desktop_browser_open",
+                layer="desktop_browser",
+                modes=(ClientMode.DESKTOP_PET,),
+                tools=DESKTOP_BROWSER_TOOL_NAMES,
+                light_hint="桌宠模式下，当用户明确要求打开某个公开网页 URL 时，你可以请求桌宠前端交给系统浏览器打开；不要用它读取网页、点击或下载。",
                 trigger=_always,
             ),
             CapabilityModule(

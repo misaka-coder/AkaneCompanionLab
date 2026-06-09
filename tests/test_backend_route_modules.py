@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -18,7 +20,7 @@ from companion_v01.background_tasks import BackgroundTaskRunner
 from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
 from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config
 from companion_v01.local_workflow_execution import WorkflowExecutionAsset, WorkflowExecutionRequest
-from companion_v01.mcp_stdio_discoverer import McpStdioToolDiscoverer
+from companion_v01.mcp_stdio_discoverer import McpStdioToolCaller, McpStdioToolDiscoverer
 from companion_v01.music_lyrics import parse_lrc_segments
 from companion_v01.routes.capabilities import build_capabilities_router
 from companion_v01.routes.control_center import (
@@ -1162,6 +1164,8 @@ class BackendRouteModuleTests(unittest.TestCase):
                 "retrieve_memory": object(),
                 "compose_file": object(),
                 "transcribe_media": object(),
+                "web_search": object(),
+                "open_browser": object(),
             }
         )
         app = FastAPI()
@@ -1201,6 +1205,8 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertIn("tool.retrieve_memory", by_id)
         self.assertIn("tool.compose_file", by_id)
         self.assertIn("tool.transcribe_media", by_id)
+        self.assertIn("tool.web_search", by_id)
+        self.assertIn("tool.open_browser", by_id)
         self.assertIn("provider.tts.edge", by_id)
         self.assertIn("provider.asr.faster_whisper", by_id)
         self.assertIn("workflow.workshop.portrait.cutout", by_id)
@@ -1209,6 +1215,13 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(by_id["tool.compose_file"]["adapter"], "tool_runtime")
         self.assertEqual(by_id["tool.compose_file"]["status"], "ready")
         self.assertEqual(by_id["tool.transcribe_media"]["risk"], "medium")
+        self.assertEqual(by_id["tool.web_search"]["group"], "web")
+        self.assertEqual(by_id["tool.web_search"]["risk"], "low")
+        self.assertFalse(by_id["tool.web_search"]["requiresConfirmation"])
+        self.assertEqual(by_id["tool.web_search"]["approvalMode"], "trusted_auto_allow")
+        self.assertEqual(by_id["tool.open_browser"]["group"], "desktop_browser")
+        self.assertEqual(by_id["tool.open_browser"]["risk"], "medium")
+        self.assertEqual(by_id["tool.open_browser"]["approvalMode"], "trusted_auto_allow")
 
         tts_provider = by_id["provider.tts.edge"]
         self.assertEqual(tts_provider["type"], "tts_provider")
@@ -1224,6 +1237,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(cutout_workflow["providerId"], "provider.comfyui.local")
         self.assertEqual(cutout_workflow["status"], "missing_config")
         self.assertFalse(cutout_workflow["enabled"])
+        self.assertEqual(cutout_workflow["approvalMode"], "disabled")
         self.assertEqual(cutout_workflow["inputSchema"]["pathPolicy"], "safe-handle-only")
 
         # Product names must stay in adapter/provider ids, not base source/type.
@@ -1235,6 +1249,95 @@ class BackendRouteModuleTests(unittest.TestCase):
         for sensitive in ("api_key", "password", "secret", "token", "prompt_text", "chat_message"):
             self.assertNotIn(sensitive, body)
         self.assertIn(("capabilities.catalog", True), runtime.observed)
+
+    def test_capabilities_approval_request_lifecycle_is_structured_and_redacted(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        app = FastAPI()
+        app.include_router(
+            build_capabilities_router(
+                engine=SimpleNamespace(tool_handlers={}),
+                config_module=SimpleNamespace(),
+                runtime_metrics=runtime,
+                resolve_identity_from_query=resolve_query,
+            )
+        )
+        client = TestClient(app)
+
+        empty = client.get("/capabilities/approval-requests?user_id=desktop&real_user_id=master").json()
+        self.assertTrue(empty["ok"])
+        self.assertEqual(empty["pendingCount"], 0)
+        self.assertEqual(empty["approvalRequests"], [])
+
+        created_response = client.post(
+            "/capabilities/approval-requests?user_id=desktop&real_user_id=master",
+            json={
+                "capabilityId": "mcp.browser.browser_click",
+                "actionId": "browser_click",
+                "title": "点击浏览器元素",
+                "summary": "Click the selected page element for the user.",
+                "risk": "high",
+                "approvalMode": "ask_each_time",
+                "payloadPreview": {
+                    "selector": "#play",
+                    "localPath": r"C:\Users\Lenovo\secret.txt",
+                    "api_key": "real-secret-value",
+                    "nested": {"token": "real-token", "label": "公开标签"},
+                },
+            },
+        )
+        self.assertEqual(created_response.status_code, 200)
+        created = created_response.json()
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["status"], "pending")
+        request_id = created["requestId"]
+        self.assertTrue(request_id.startswith("approvalreq_"))
+        request = created["request"]
+        self.assertEqual(request["approvalMode"], "ask_each_time")
+        self.assertEqual(request["risk"], "high")
+        self.assertEqual(request["payloadPreview"]["selector"], "#play")
+        created_text = created_response.text.lower()
+        self.assertNotIn("api_key", created_text)
+        self.assertNotIn("real-secret", created_text)
+        self.assertNotIn("real-token", created_text)
+        self.assertNotIn("lenovo", created_text)
+        self.assertNotIn(r"c:\users", created_text)
+
+        listed = client.get("/capabilities/approval-requests?user_id=desktop&real_user_id=master").json()
+        self.assertEqual(listed["pendingCount"], 1)
+        self.assertEqual(listed["approvalRequests"][0]["requestId"], request_id)
+
+        approved = client.post(
+            f"/capabilities/approval-requests/{request_id}/decision?user_id=desktop&real_user_id=master",
+            json={"decision": "approved"},
+        ).json()
+        self.assertTrue(approved["ok"])
+        self.assertEqual(approved["status"], "approved")
+        self.assertEqual(approved["approvalGrant"]["requestId"], request_id)
+        self.assertTrue(approved["approvalGrant"]["grantId"].startswith("approvalgrant_"))
+
+        resolved = client.get(
+            "/capabilities/approval-requests?user_id=desktop&real_user_id=master&include_resolved=1"
+        ).json()
+        self.assertEqual(resolved["pendingCount"], 0)
+        self.assertEqual(resolved["approvalRequests"][0]["status"], "approved")
+
+        repeated = client.post(
+            f"/capabilities/approval-requests/{request_id}/decision?user_id=desktop&real_user_id=master",
+            json={"decision": "denied"},
+        )
+        self.assertEqual(repeated.status_code, 409)
+        self.assertEqual(repeated.json()["reason"], "approval_request_already_resolved")
+
+        not_required = client.post(
+            "/capabilities/approval-requests?user_id=desktop&real_user_id=master",
+            json={"capabilityId": "tool.web_search", "risk": "low", "approvalMode": "trusted_auto_allow"},
+        )
+        self.assertEqual(not_required.status_code, 400)
+        self.assertEqual(not_required.json()["status"], "not_required")
+
+        self.assertIn(("capabilities.approval_requests", True), runtime.observed)
+        self.assertIn(("capabilities.approval_request_create", True), runtime.observed)
+        self.assertIn(("capabilities.approval_request_decision", True), runtime.observed)
 
     def test_capabilities_mcp_server_config_and_discovery_merge_safe_catalog_entries(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -1301,6 +1404,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(saved_payload["mcpServer"]["status"], "configured")
             self.assertEqual(saved_payload["mcpServer"]["commandName"], "browser-mcp.exe")
             self.assertEqual(saved_payload["mcpServer"]["argsCount"], 2)
+            self.assertEqual(saved_payload["mcpServer"]["approvalMode"], "disabled")
             self.assertNotIn("lenovo", saved.text.lower())
             self.assertNotIn(r"c:\users", saved.text.lower())
 
@@ -1322,6 +1426,8 @@ class BackendRouteModuleTests(unittest.TestCase):
             catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
             by_id = {item["id"]: item for item in catalog["capabilities"]}
             self.assertEqual(by_id["provider.mcp.browser"]["status"], "ready")
+            self.assertFalse(by_id["provider.mcp.browser"]["requiresConfirmation"])
+            self.assertEqual(by_id["provider.mcp.browser"]["approvalMode"], "trusted_auto_allow")
             self.assertIn("mcp.browser.read_page", by_id)
             self.assertIn("mcp.browser.browser_click", by_id)
             read_page = by_id["mcp.browser.read_page"]
@@ -1331,12 +1437,133 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(read_page["adapter"], "mcp_stdio")
             self.assertFalse(read_page["exposedToPrompt"])
             self.assertEqual(read_page["inputSchema"]["required"], ["url"])
+            self.assertEqual(read_page["approvalMode"], "trusted_auto_allow")
             self.assertNotIn("api_key", json.dumps(read_page, ensure_ascii=False).lower())
             self.assertEqual(browser_click["risk"], "high")
             self.assertTrue(browser_click["requiresConfirmation"])
+            self.assertEqual(browser_click["approvalMode"], "ask_each_time")
             self.assertIn(("capabilities.mcp_server_config", True), runtime.observed)
             self.assertIn(("capabilities.mcp_server_discover", True), runtime.observed)
             self.assertIn(("capabilities.catalog", True), runtime.observed)
+
+    def test_capabilities_mcp_anysearch_env_placeholder_is_allowed_without_key_leak(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        discoverer_calls: list[dict[str, Any]] = []
+
+        async def fake_mcp_discoverer(*, server: dict[str, Any]) -> dict[str, Any]:
+            discoverer_calls.append(server)
+            return {
+                "tools": [
+                    {
+                        "name": "search",
+                        "description": "Execute a public web search.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string", "description": "Search query"},
+                                "max_results": {"type": "integer", "description": "Result count"},
+                            },
+                            "required": ["query"],
+                        },
+                    },
+                    {
+                        "name": "extract",
+                        "description": "Extract readable public page content from a URL.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"url": {"type": "string", "description": "Page URL"}},
+                            "required": ["url"],
+                        },
+                    },
+                ]
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    mcp_tool_discoverer=fake_mcp_discoverer,
+                )
+            )
+            client = TestClient(app)
+
+            saved = client.post(
+                "/capabilities/mcp-servers/anysearch/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "displayName": "AnySearch 网页搜索",
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": [
+                        "-y",
+                        "mcp-remote",
+                        "https://api.anysearch.com/mcp",
+                        "--header",
+                        "Authorization: Bearer ${ANYSEARCH_API_KEY}",
+                    ],
+                },
+            )
+            self.assertEqual(saved.status_code, 200)
+            saved_payload = saved.json()
+            self.assertTrue(saved_payload["ok"])
+            self.assertEqual(saved_payload["mcpServer"]["status"], "configured")
+            self.assertEqual(saved_payload["mcpServer"]["commandName"], "npx")
+            self.assertEqual(saved_payload["mcpServer"]["argsCount"], 5)
+            self.assertNotIn("authorization", saved.text.lower())
+            self.assertNotIn("bearer", saved.text.lower())
+            self.assertNotIn("anysearch_api_key", saved.text.lower())
+
+            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            self.assertIn("${ANYSEARCH_API_KEY}", config_path.read_text(encoding="utf-8"))
+
+            discovered = client.post(
+                "/capabilities/mcp-servers/anysearch/discover?user_id=desktop&real_user_id=master",
+                json={},
+            ).json()
+            self.assertTrue(discovered["ok"])
+            self.assertEqual(discovered["toolCount"], 2)
+            self.assertEqual(discoverer_calls[0]["args"][-1], "Authorization: Bearer ${ANYSEARCH_API_KEY}")
+
+            catalog_text = client.get("/capabilities?user_id=desktop&real_user_id=master").text
+            catalog = json.loads(catalog_text)
+            by_id = {item["id"]: item for item in catalog["capabilities"]}
+            self.assertEqual(by_id["provider.mcp.anysearch"]["status"], "ready")
+            self.assertFalse(by_id["provider.mcp.anysearch"]["requiresConfirmation"])
+            self.assertEqual(by_id["provider.mcp.anysearch"]["approvalMode"], "trusted_auto_allow")
+            self.assertIn("mcp.anysearch.search", by_id)
+            self.assertIn("mcp.anysearch.extract", by_id)
+            self.assertFalse(by_id["mcp.anysearch.search"]["requiresConfirmation"])
+            self.assertEqual(by_id["mcp.anysearch.search"]["approvalMode"], "trusted_auto_allow")
+            self.assertFalse(by_id["mcp.anysearch.search"]["exposedToPrompt"])
+            self.assertNotIn("authorization", catalog_text.lower())
+            self.assertNotIn("bearer", catalog_text.lower())
+            self.assertNotIn("anysearch_api_key", catalog_text.lower())
+
+            inline_secret = client.post(
+                "/capabilities/mcp-servers/unsafe/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "command": "npx",
+                    "args": ["--header", "Authorization: Bearer real-secret-value"],
+                },
+            ).json()
+            self.assertFalse(inline_secret["ok"])
+            self.assertEqual(inline_secret["reason"], "mcp_server_args_invalid")
+
+            env_secret = client.post(
+                "/capabilities/mcp-servers/unsafe-env/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "command": "npx",
+                    "env": {"ANYSEARCH_API_KEY": "real-secret-value"},
+                },
+            ).json()
+            self.assertFalse(env_secret["ok"])
+            self.assertEqual(env_secret["reason"], "mcp_server_env_invalid")
 
     def test_capabilities_mcp_discovery_is_not_implemented_without_runner(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1463,6 +1690,164 @@ for line in sys.stdin:
             self.assertEqual(by_id["mcp.browser.browser_click"]["risk"], "high")
             self.assertFalse(by_id["mcp.browser.read_page"]["exposedToPrompt"])
             self.assertIn(("capabilities.mcp_server_discover", True), runtime.observed)
+
+    def test_capabilities_mcp_stdio_discoverer_hydrates_env_placeholder_from_dotenv(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, ".env").write_text("ANYSEARCH_API_KEY=dotenv-secret\n", encoding="utf-8")
+            server_script = Path(temp_dir) / "fake_anysearch_mcp.py"
+            server_script.write_text(
+                """
+import json
+import os
+import sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if message.get("id") == 1 and method == "initialize":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "fake-anysearch", "version": "0.1"}
+            }
+        }), flush=True)
+    elif method == "tools/list":
+        has_key = os.environ.get("ANYSEARCH_API_KEY") == "dotenv-secret"
+        has_arg_key = len(sys.argv) > 1 and sys.argv[-1] == "Authorization: Bearer dotenv-secret"
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {
+                "tools": [
+                    {
+                        "name": "search",
+                        "description": "Search public web pages.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string", "description": "Search query"}},
+                            "required": ["query"]
+                        }
+                    }
+                ] if has_key and has_arg_key else []
+            }
+        }), flush=True)
+""",
+                encoding="utf-8",
+            )
+            runtime = FakeRuntimeMetrics()
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    mcp_tool_discoverer=McpStdioToolDiscoverer(timeout_seconds=4),
+                )
+            )
+            client = TestClient(app)
+            with patch.dict(os.environ, {"ANYSEARCH_API_KEY": ""}):
+                saved = client.post(
+                    "/capabilities/mcp-servers/anysearch/config?user_id=desktop&real_user_id=master",
+                    json={
+                        "enabled": True,
+                        "displayName": "AnySearch",
+                        "command": sys.executable,
+                        "args": [str(server_script), "Authorization: Bearer ${ANYSEARCH_API_KEY}"],
+                        "cwd": temp_dir,
+                    },
+                )
+                self.assertTrue(saved.json()["ok"])
+                discovered = client.post(
+                    "/capabilities/mcp-servers/anysearch/discover?user_id=desktop&real_user_id=master",
+                    json={},
+                )
+            self.assertTrue(discovered.json()["ok"])
+            self.assertEqual(discovered.json()["toolCount"], 1)
+            self.assertNotIn("dotenv-secret", discovered.text)
+            self.assertNotIn("ANYSEARCH_API_KEY", discovered.text)
+            catalog_text = client.get("/capabilities?user_id=desktop&real_user_id=master").text
+            self.assertNotIn("dotenv-secret", catalog_text)
+            self.assertNotIn("ANYSEARCH_API_KEY", catalog_text)
+            self.assertIn(("capabilities.mcp_server_discover", True), runtime.observed)
+
+    def test_capabilities_mcp_stdio_tool_caller_calls_single_tool_with_dotenv_hydration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, ".env").write_text("ANYSEARCH_API_KEY=dotenv-secret\n", encoding="utf-8")
+            server_script = Path(temp_dir) / "fake_anysearch_call_mcp.py"
+            server_script.write_text(
+                """
+import json
+import os
+import sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if message.get("id") == 1 and method == "initialize":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "fake-anysearch", "version": "0.1"}
+            }
+        }), flush=True)
+    elif method == "tools/list":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "error": {"code": -32000, "message": "tools/list should not be called"}
+        }), flush=True)
+    elif method == "tools/call":
+        has_key = os.environ.get("ANYSEARCH_API_KEY") == "dotenv-secret"
+        has_arg_key = len(sys.argv) > 1 and sys.argv[-1] == "Authorization: Bearer dotenv-secret"
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "tool": message.get("params", {}).get("name"),
+                        "arguments": message.get("params", {}).get("arguments"),
+                        "has_key": has_key,
+                        "has_arg_key": has_arg_key
+                    }, ensure_ascii=False)
+                }]
+            }
+        }), flush=True)
+""",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"ANYSEARCH_API_KEY": ""}):
+                result = asyncio.run(
+                    McpStdioToolCaller(timeout_seconds=4)(
+                        server={
+                            "transport": "stdio",
+                            "command": sys.executable,
+                            "args": [str(server_script), "Authorization: Bearer ${ANYSEARCH_API_KEY}"],
+                            "cwd": temp_dir,
+                            "env": {},
+                        },
+                        tool_name="search",
+                        arguments={"query": "Akane AnySearch", "max_results": 2},
+                    )
+                )
+
+            self.assertIn("content", result)
+            text = result["content"][0]["text"]
+            payload = json.loads(text)
+            self.assertEqual(payload["tool"], "search")
+            self.assertEqual(payload["arguments"], {"query": "Akane AnySearch", "max_results": 2})
+            self.assertTrue(payload["has_key"])
+            self.assertTrue(payload["has_arg_key"])
+            self.assertNotIn("dotenv-secret", json.dumps(result, ensure_ascii=False))
 
     def test_capabilities_catalog_resolves_voice_provider_with_degradation(self) -> None:
         class FakeCharacterVoiceService:

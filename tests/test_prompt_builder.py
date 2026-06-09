@@ -78,6 +78,8 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("仅包含紧邻当前消息之前的局部窗口", user_prompt)
         self.assertIn("向过去要事实", user_prompt)
         self.assertIn("问昨天买了什么、之前去过哪里、上次说过什么，通常 need_retrieval=true", user_prompt)
+        self.assertIn("生日、重要日期、偏好、称呼、旧约定", user_prompt)
+        self.assertIn("当前助手自己的深层记忆空间", user_prompt)
         self.assertIn("接当前话题不等于一定不检索", user_prompt)
         self.assertIn("我也记不清了，反正有几个扬州城地点，你再想想", user_prompt)
         self.assertIn("那个/那几个/那件事/那个地方/那个项目", user_prompt)
@@ -94,6 +96,8 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("不要把“最近窗口里有没有完整答案”当成标准；如果当前问题需要更早历史事实，应该检索", user_prompt)
         self.assertIn("不要写成“请查找……”这类任务描述", user_prompt)
         self.assertIn("index_current_message=true", user_prompt)
+        self.assertIn("信息量很低的纯追问可以设为 false", user_prompt)
+        self.assertIn("不影响是否需要检索", user_prompt)
 
     def test_build_verifier_prompts_mentions_selection_event_and_numbered_snippets(self) -> None:
         builder = PromptBuilder(load_persona_config())

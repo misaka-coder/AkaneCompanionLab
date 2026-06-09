@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
+from ..capability_approval import CapabilityApprovalStore
 from ..local_capability_config import (
     check_provider_health,
     get_mcp_server_runtime_config,
@@ -78,6 +79,7 @@ def build_capabilities_router(
     router = APIRouter()
     workflow_jobs: dict[str, dict[str, Any]] = {}
     workflow_jobs_lock = threading.RLock()
+    approval_store = CapabilityApprovalStore()
     provider_config_base_dir = _resolve_provider_config_base_dir(
         capability_config_base_dir=capability_config_base_dir,
         config_module=config_module,
@@ -243,6 +245,92 @@ def build_capabilities_router(
             reason=result.get("reason"),
         )
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @router.get("/capabilities/approval-requests")
+    async def read_capability_approval_requests(request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        include_resolved = _safe_bool_query(request.query_params.get("include_resolved"))
+        limit = _safe_positive_int(request.query_params.get("limit"), default=20, maximum=50)
+        payload = approval_store.list_requests(
+            profile_user_id=profile_user_id,
+            include_resolved=include_resolved,
+            limit=limit,
+        )
+        _observe_request(runtime_metrics, "capabilities.approval_requests", started_at, True)
+        _log_best_effort(
+            log_event,
+            "capabilities_approval_requests",
+            status=payload.get("status"),
+            pendingCount=payload.get("pendingCount"),
+        )
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    @router.post("/capabilities/approval-requests")
+    async def create_capability_approval_request(request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = await _read_json_object(request)
+        result = approval_store.create_request(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            payload=payload,
+        )
+        ok = bool(result.get("ok"))
+        _observe_request(runtime_metrics, "capabilities.approval_request_create", started_at, ok)
+        _log_best_effort(
+            log_event,
+            "capabilities_approval_request_create",
+            status=result.get("status"),
+            requestId=result.get("requestId"),
+            reason=result.get("reason"),
+        )
+        status_code = 400 if result.get("status") in {"invalid_request", "not_required", "disabled"} else 200
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+    @router.get("/capabilities/approval-requests/{request_id}")
+    async def read_capability_approval_request(request_id: str, request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        result = approval_store.get_request(profile_user_id=profile_user_id, request_id=request_id)
+        _observe_request(runtime_metrics, "capabilities.approval_request_read", started_at, bool(result.get("ok")))
+        _log_best_effort(
+            log_event,
+            "capabilities_approval_request_read",
+            status=result.get("status"),
+            reason=result.get("reason"),
+        )
+        status_code = 404 if result.get("status") == "not_found" else 400 if result.get("status") == "invalid_request" else 200
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+    @router.post("/capabilities/approval-requests/{request_id}/decision")
+    async def decide_capability_approval_request(request_id: str, request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = await _read_json_object(request)
+        result = approval_store.decide_request(
+            profile_user_id=profile_user_id,
+            request_id=request_id,
+            payload=payload,
+        )
+        ok = bool(result.get("ok"))
+        _observe_request(runtime_metrics, "capabilities.approval_request_decision", started_at, ok)
+        _log_best_effort(
+            log_event,
+            "capabilities_approval_request_decision",
+            status=result.get("status"),
+            requestId=result.get("requestId"),
+            reason=result.get("reason"),
+        )
+        if result.get("status") == "not_found":
+            status_code = 404
+        elif result.get("status") == "invalid_request":
+            status_code = 400
+        elif result.get("reason") == "approval_request_already_resolved":
+            status_code = 409
+        else:
+            status_code = 200
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
 
     @router.get("/capabilities/workflows")
     async def read_capability_workflows(request: Request) -> JSONResponse:
@@ -992,6 +1080,19 @@ async def _read_json_object(request: Request) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _safe_bool_query(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on", "include", "resolved"}
+
+
+def _safe_positive_int(value: Any, *, default: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(1, min(maximum, number))
 
 
 async def _maybe_thread(callback: Callable[[], dict[str, Any]]) -> dict[str, Any]:
