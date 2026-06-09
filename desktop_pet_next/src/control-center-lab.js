@@ -63,6 +63,12 @@ let latestRuntimeSnapshot = null;
 let runtimeSnapshotHydrateTimer = 0;
 let renderedPageId = "";
 let providerTestAudioUrl = "";
+let providerTestAudio = {
+  providerId: "",
+  url: "",
+  mediaType: "",
+  audioBytes: 0
+};
 const runtimePatchSignatures = {
   music: "",
   overview: "",
@@ -410,12 +416,42 @@ function bindEvents() {
       return;
     }
 
+    const providerVoiceProfileInspectButton = event.target.closest("[data-provider-voice-profile-inspect]");
+    if (providerVoiceProfileInspectButton) {
+      if (providerVoiceProfileInspectButton.dataset.actionUnavailable === "true") return;
+      void runProviderConfigAction(
+        providerVoiceProfileInspectButton,
+        CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileInspectFolder
+      );
+      return;
+    }
+
     const providerVoiceProfileSaveButton = event.target.closest("[data-provider-voice-profile-save]");
     if (providerVoiceProfileSaveButton) {
       if (providerVoiceProfileSaveButton.dataset.actionUnavailable === "true") return;
       void runProviderConfigAction(
         providerVoiceProfileSaveButton,
         CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave
+      );
+      return;
+    }
+
+    const providerVoiceProfileAssignButton = event.target.closest("[data-provider-voice-profile-assign]");
+    if (providerVoiceProfileAssignButton) {
+      if (providerVoiceProfileAssignButton.dataset.actionUnavailable === "true") return;
+      void runProviderConfigAction(
+        providerVoiceProfileAssignButton,
+        CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter
+      );
+      return;
+    }
+
+    const providerVoiceProfileClearButton = event.target.closest("[data-provider-voice-profile-clear]");
+    if (providerVoiceProfileClearButton) {
+      if (providerVoiceProfileClearButton.dataset.actionUnavailable === "true") return;
+      void runProviderConfigAction(
+        providerVoiceProfileClearButton,
+        CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter
       );
       return;
     }
@@ -652,11 +688,17 @@ function bindEvents() {
 async function runProviderConfigAction(button, actionId) {
   const payload = readProviderConfigPayload(button);
   if (!payload.providerId) return;
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest) {
+    cleanupProviderTestAudioUrl();
+  }
   state.providerActionStatus[payload.providerId] = "处理中";
   renderActivePage();
   const result = await actionRouter.run(actionId, payload, { source: "control-center-lab" });
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileInspectFolder && result?.ok) {
+    applyProviderVoiceProfileSuggestion(payload.providerId, result, payload);
+  }
   if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest && result?.ok) {
-    state.providerActionStatus[payload.providerId] = await playProviderTestAudio(result);
+    state.providerActionStatus[payload.providerId] = await playProviderTestAudio(payload.providerId, result);
   } else {
     state.providerActionStatus[payload.providerId] = providerActionStatusLabel(result);
   }
@@ -740,6 +782,7 @@ function readProviderConfigPayload(button) {
   const ttsProfileInput = row?.querySelector?.("[data-provider-tts-profile-input]");
   const profileNameInput = row?.querySelector?.("[data-provider-voice-profile-name-input]");
   const profileEnabledInput = row?.querySelector?.("[data-provider-voice-profile-enabled-input]");
+  const modelFolderPathInput = row?.querySelector?.("[data-provider-model-folder-path-input]");
   const textLangInput = row?.querySelector?.("[data-provider-text-lang-input]");
   const promptLangInput = row?.querySelector?.("[data-provider-prompt-lang-input]");
   const mediaTypeInput = row?.querySelector?.("[data-provider-media-type-input]");
@@ -749,24 +792,27 @@ function readProviderConfigPayload(button) {
   const payload = {
     page: state.activePage,
     providerId,
+    characterPackId: getCurrentControlCenterCharacterPackId(),
     endpoint: String(endpointInput?.value || "").trim(),
     enabled: Boolean(enabledInput?.checked),
     text: String(ttsTestTextInput?.value || "").trim(),
     voiceProfileId,
     displayName: String(profileNameInput?.value || "").trim(),
     voiceProfileEnabled: profileEnabledInput ? Boolean(profileEnabledInput.checked) : true,
+    folderPath: String(modelFolderPathInput?.value || "").trim(),
     textLang: String(textLangInput?.value || "").trim(),
     promptLang: String(promptLangInput?.value || "").trim(),
     mediaType: String(mediaTypeInput?.value || "").trim(),
     refAudioPath: String(refAudioPathInput?.value || "").trim(),
     promptText: String(promptTextInput?.value || "").trim()
   };
-  if (providerId && voiceProfileId) {
+  if (providerId && (ttsProfileInput || modelFolderPathInput || profileNameInput)) {
     state.providerVoiceProfileDrafts[providerId] = {
       ...(state.providerVoiceProfileDrafts[providerId] || {}),
       voiceProfileId,
       displayName: payload.displayName,
       voiceProfileEnabled: payload.voiceProfileEnabled,
+      folderPath: payload.folderPath,
       textLang: payload.textLang,
       promptLang: payload.promptLang,
       mediaType: payload.mediaType,
@@ -775,6 +821,35 @@ function readProviderConfigPayload(button) {
     };
   }
   return payload;
+}
+
+function getCurrentControlCenterCharacterPackId() {
+  return String(
+    latestRuntimeSnapshot?.state?.characterPackId ||
+      characterPage.selectedPackId ||
+      characterPage.selectedPack ||
+      ""
+  ).trim();
+}
+
+function applyProviderVoiceProfileSuggestion(providerId, result, payload = {}) {
+  const suggested = result?.suggestedProfile && typeof result.suggestedProfile === "object" ? result.suggestedProfile : {};
+  const current = state.providerVoiceProfileDrafts[providerId] || {};
+  const warnings = Array.isArray(result?.warnings) ? result.warnings.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  state.providerVoiceProfileDrafts[providerId] = {
+    ...current,
+    folderPath: payload.folderPath || current.folderPath || "",
+    voiceProfileId: String(suggested.voiceProfileId || current.voiceProfileId || "").trim(),
+    displayName: String(suggested.displayName || suggested.name || current.displayName || "").trim(),
+    voiceProfileEnabled: suggested.enabled === undefined ? (current.voiceProfileEnabled ?? true) : Boolean(suggested.enabled),
+    textLang: String(suggested.textLang || current.textLang || "zh").trim(),
+    promptLang: String(suggested.promptLang || current.promptLang || "zh").trim(),
+    mediaType: String(suggested.mediaType || current.mediaType || "wav").trim(),
+    refAudioPath: String(suggested.refAudioPath || current.refAudioPath || "").trim(),
+    promptText: String(suggested.promptText || current.promptText || "").trim(),
+    inspectWarnings: warnings,
+    detected: result?.detected && typeof result.detected === "object" ? result.detected : {}
+  };
 }
 
 function readMcpConfigPayload(button) {
@@ -872,10 +947,22 @@ function readWorkflowConfigPayload(button) {
 
 function providerActionStatusLabel(result) {
   if (!result) return "未完成";
+  if (result.status === "inspected") return Array.isArray(result.warnings) && result.warnings.length ? "已识别，仍需补几项" : "已自动填入声线";
+  if (result.status === "missing_model_folder") return "模型文件夹不存在";
+  if (result.status === "missing_model_files") return "未找到模型文件";
+  if (result.reason === "model_folder_must_be_absolute") return "需要填写完整文件夹路径";
+  if (result.reason === "model_folder_path_invalid") return "模型路径需要修正";
   if (result.status === "tts-test-ready") return "试听成功";
+  if (result.reason === "provider_tts_test_empty_audio") return "试听失败：未返回音频";
+  if (result.reason === "provider_tts_test_invalid_config") return "试听配置异常";
+  if (result.reason === "provider_tts_test_failed" && result.profileApplied === false && result.voiceProfileId) return "试听失败：声线档案未应用";
   if (result.status === "tts-test-failed") return "试听失败";
   if (result.status === "tts-test-too-large") return "测试音频过大";
   if (result.status === "invalid_voice_profile") return "声线 ID 需要修正";
+  if (result.status === "assigned") return result.ok ? "已设为当前角色声音" : "设置角色声音失败";
+  if (result.status === "cleared") return result.ok ? "已恢复默认声线" : "恢复默认声线失败";
+  if (result.status === "invalid-payload" && result.actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter) return "请选择声线和当前角色包";
+  if (result.status === "invalid-payload" && result.actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter) return "请选择当前角色包";
   if (result.status === "saved") return result.ok ? (result.voiceProfileId ? "声线档案已保存" : "已保存") : "保存失败";
   if (result.status === "ready") return "连接正常";
   if (result.status === "unreachable") return "未连接";
@@ -899,23 +986,36 @@ function mcpActionStatusLabel(result) {
   return result.ok ? "已完成" : "操作失败";
 }
 
-async function playProviderTestAudio(result) {
+async function playProviderTestAudio(providerId, result) {
   const audioBase64 = String(result?.audioBase64 || "");
   if (!audioBase64) return "试听成功";
+  cleanupProviderTestAudioUrl();
+  let audioUrl = "";
   try {
-    cleanupProviderTestAudioUrl();
     const binary = window.atob(audioBase64);
     const bytes = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index += 1) {
       bytes[index] = binary.charCodeAt(index);
     }
     const blob = new Blob([bytes], { type: result.mediaType || "audio/wav" });
-    providerTestAudioUrl = URL.createObjectURL(blob);
-    const audio = new Audio(providerTestAudioUrl);
+    audioUrl = URL.createObjectURL(blob);
+    providerTestAudioUrl = audioUrl;
+    providerTestAudio = {
+      providerId: String(providerId || ""),
+      url: audioUrl,
+      mediaType: result.mediaType || "audio/wav",
+      audioBytes: bytes.length
+    };
+  } catch (error) {
+    cleanupProviderTestAudioUrl();
+    return `试听失败：${formatError(error)}`;
+  }
+  try {
+    const audio = new Audio(audioUrl);
     await audio.play();
     return "试听音频已播放";
   } catch (error) {
-    return `播放失败：${formatError(error)}`;
+    return "试听已生成，请点播放器播放";
   }
 }
 
@@ -924,6 +1024,12 @@ function cleanupProviderTestAudioUrl() {
     URL.revokeObjectURL(providerTestAudioUrl);
     providerTestAudioUrl = "";
   }
+  providerTestAudio = {
+    providerId: "",
+    url: "",
+    mediaType: "",
+    audioBytes: 0
+  };
 }
 
 function workflowActionStatusLabel(result) {
@@ -2783,7 +2889,10 @@ function renderProviderConfigBody(provider, endpoint, defaultEndpoint) {
   const healthActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck}"`;
   const saveActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave}"`;
   const ttsTestActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest}"`;
+  const voiceProfileInspectActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileInspectFolder}"`;
   const voiceProfileSaveActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave}"`;
+  const voiceProfileAssignActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter}"`;
+  const voiceProfileClearActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter}"`;
   const disabledAttr = actionsDisabled ? ' aria-disabled="true" disabled' : "";
   const voiceProfile = provider.adapter === "gpt_sovits" ? getProviderVoiceProfileDraft(provider) : null;
   return `
@@ -2820,7 +2929,7 @@ function renderProviderConfigBody(provider, endpoint, defaultEndpoint) {
         >${icon("checkCircle")} 保存配置</button>
       </div>
       ${provider.adapter === "gpt_sovits" ? `
-        ${renderProviderVoiceProfileConfig(providerId, voiceProfile, voiceProfileSaveActionAttr, ttsTestActionAttr, disabledAttr)}
+        ${renderProviderVoiceProfileConfig(providerId, voiceProfile, voiceProfileInspectActionAttr, voiceProfileSaveActionAttr, voiceProfileAssignActionAttr, voiceProfileClearActionAttr, ttsTestActionAttr, disabledAttr)}
       ` : ""}
       <p>${icon("shield")} 只接受本机 localhost / 127.0.0.1 地址；检查连接不会自动启用能力。</p>
     </div>
@@ -2835,11 +2944,14 @@ function getProviderVoiceProfileDraft(provider) {
     voiceProfileId: draft.voiceProfileId || saved.voiceProfileId || "",
     displayName: draft.displayName || saved.name || "",
     voiceProfileEnabled: draft.voiceProfileEnabled ?? saved.enabled ?? true,
+    folderPath: draft.folderPath || "",
     textLang: draft.textLang || saved.textLang || "zh",
     promptLang: draft.promptLang || saved.promptLang || "zh",
     mediaType: draft.mediaType || saved.mediaType || "wav",
     refAudioPath: draft.refAudioPath || "",
     promptText: draft.promptText || "",
+    inspectWarnings: Array.isArray(draft.inspectWarnings) ? draft.inspectWarnings : [],
+    detected: draft.detected && typeof draft.detected === "object" ? draft.detected : {},
     referenceAudioName: saved.referenceAudioName || "",
     promptTextLength: saved.promptTextLength || 0,
     statusLabel: saved.statusLabel || "",
@@ -2847,7 +2959,46 @@ function getProviderVoiceProfileDraft(provider) {
   };
 }
 
-function renderProviderVoiceProfileConfig(providerId, profile, saveActionAttr, ttsTestActionAttr, disabledAttr) {
+function renderProviderVoiceCurrentSummary(providerId) {
+  const voice = characterPage?.voice && typeof characterPage.voice === "object" ? characterPage.voice : {};
+  const provider = String(voice.provider || voice.providerId || "").trim();
+  const profileId = String(voice.profileId || voice.profile_id || "").trim();
+  const isCurrentProvider = isProviderVoiceMatch(providerId, provider);
+  if (!provider && !profileId) {
+    return `
+      <p class="provider-voice-profile-summary provider-voice-profile-current is-default">
+        ${icon("checkCircle")} 当前角色：默认声线
+      </p>
+    `;
+  }
+  const providerLabel = providerVoiceDisplayName(provider);
+  const profile = profileId ? ` · ${escapeHtml(profileId)}` : "";
+  const suffix = isCurrentProvider ? "" : " · 其他提供方";
+  return `
+    <p class="provider-voice-profile-summary provider-voice-profile-current">
+      ${icon("mic")} 当前角色：${escapeHtml(providerLabel)}${profile}${suffix}
+    </p>
+  `;
+}
+
+function isProviderVoiceMatch(providerId, provider) {
+  const normalizedProviderId = String(providerId || "").trim();
+  const normalizedProvider = String(provider || "").trim();
+  if (!normalizedProvider) return false;
+  if (normalizedProviderId === normalizedProvider) return true;
+  return normalizedProvider === "gpt_sovits" && normalizedProviderId === "provider.tts.gpt_sovits.local";
+}
+
+function providerVoiceDisplayName(provider) {
+  const normalized = String(provider || "").trim();
+  if (!normalized) return "默认声线";
+  if (normalized === "gpt_sovits" || normalized === "provider.tts.gpt_sovits.local") return "GPT-SoVITS";
+  if (normalized === "provider.tts.edge" || normalized === "edge") return "Microsoft Edge";
+  return normalized;
+}
+
+function renderProviderVoiceProfileConfig(providerId, profile, inspectActionAttr, saveActionAttr, assignActionAttr, clearActionAttr, ttsTestActionAttr, disabledAttr) {
+  const currentVoiceSummary = renderProviderVoiceCurrentSummary(providerId);
   const savedSummary = profile.referenceAudioName || profile.promptTextLength
     ? `
       <p class="provider-voice-profile-summary">
@@ -2856,11 +3007,34 @@ function renderProviderVoiceProfileConfig(providerId, profile, saveActionAttr, t
       </p>
     `
     : "";
+  const inspectSummary = renderProviderVoiceInspectSummary(profile);
+  const testStatus = String(state.providerActionStatus[providerId] || "").trim();
   return `
     <div class="provider-voice-profile">
       <div class="provider-voice-profile-head">
         <strong>${icon("mic")} 声线档案</strong>
         <span>角色包里的 profile_id 会匹配这里的声线 ID</span>
+      </div>
+      ${currentVoiceSummary}
+      <div class="provider-voice-profile-folder">
+        <label>
+          <span>模型文件夹</span>
+          <input
+            type="text"
+            value="${escapeAttr(profile.folderPath)}"
+            placeholder="F:\\models\\dania"
+            data-provider-model-folder-path-input
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <button
+          type="button"
+          data-provider-voice-profile-inspect
+          data-provider-id="${escapeAttr(providerId)}"
+          ${inspectActionAttr}
+          ${disabledAttr}
+        >${icon("search")} 自动识别声线</button>
       </div>
       <div class="provider-voice-profile-fields">
         <label>
@@ -2947,6 +3121,7 @@ function renderProviderVoiceProfileConfig(providerId, profile, saveActionAttr, t
         </label>
       </div>
       ${savedSummary}
+      ${inspectSummary}
       <div class="provider-voice-profile-actions">
         <button
           type="button"
@@ -2955,6 +3130,20 @@ function renderProviderVoiceProfileConfig(providerId, profile, saveActionAttr, t
           ${saveActionAttr}
           ${disabledAttr}
         >${icon("checkCircle")} 保存声线档案</button>
+        <button
+          type="button"
+          data-provider-voice-profile-assign
+          data-provider-id="${escapeAttr(providerId)}"
+          ${assignActionAttr}
+          ${disabledAttr}
+        >${icon("mic")} 设为当前角色声音</button>
+        <button
+          type="button"
+          data-provider-voice-profile-clear
+          data-provider-id="${escapeAttr(providerId)}"
+          ${clearActionAttr}
+          ${disabledAttr}
+        >${icon("undo")} 恢复默认声线</button>
       </div>
     </div>
     <div class="provider-tts-test">
@@ -2975,8 +3164,61 @@ function renderProviderVoiceProfileConfig(providerId, profile, saveActionAttr, t
         ${ttsTestActionAttr}
         ${disabledAttr}
       >${icon("play")} 使用此声线试听</button>
+      ${testStatus ? `<strong class="provider-tts-test-status">${escapeHtml(testStatus)}</strong>` : ""}
+    </div>
+    ${renderProviderTtsTestPlayer(providerId)}
+  `;
+}
+
+function renderProviderTtsTestPlayer(providerId) {
+  if (providerTestAudio.providerId !== providerId || !providerTestAudio.url) return "";
+  const mediaType = String(providerTestAudio.mediaType || "audio/wav").split(";", 1)[0];
+  const sizeLabel = providerTestAudio.audioBytes > 0 ? `${Math.ceil(providerTestAudio.audioBytes / 1024)} KB` : "";
+  return `
+    <div class="provider-tts-test-player">
+      <audio
+        controls
+        preload="metadata"
+        src="${escapeAttr(providerTestAudio.url)}"
+        data-provider-test-audio
+        data-provider-id="${escapeAttr(providerId)}"
+      ></audio>
+      <span>${icon("volume")} ${escapeHtml([mediaType, sizeLabel].filter(Boolean).join(" · "))}</span>
     </div>
   `;
+}
+
+function renderProviderVoiceInspectSummary(profile) {
+  const detected = profile.detected || {};
+  const detectedItems = [
+    detected.configFileName ? `配置 ${detected.configFileName}` : "",
+    detected.referenceAudioName ? `参考音频 ${detected.referenceAudioName}` : "",
+    detected.gptWeightName ? `GPT ${detected.gptWeightName}` : "",
+    detected.sovitsWeightName ? `SoVITS ${detected.sovitsWeightName}` : ""
+  ].filter(Boolean);
+  const warningLabels = (Array.isArray(profile.inspectWarnings) ? profile.inspectWarnings : [])
+    .map(providerVoiceInspectWarningLabel)
+    .filter(Boolean);
+  if (!detectedItems.length && !warningLabels.length) return "";
+  const summary = detectedItems.length ? `识别到：${detectedItems.join(" · ")}` : "";
+  const warning = warningLabels.length ? `提示：${warningLabels.join("、")}` : "";
+  return `
+    <p class="provider-voice-profile-summary provider-voice-profile-inspect-summary">
+      ${icon(warningLabels.length ? "alert" : "checkCircle")}
+      ${escapeHtml([summary, warning].filter(Boolean).join("；"))}
+    </p>
+  `;
+}
+
+function providerVoiceInspectWarningLabel(reason) {
+  const labels = {
+    tts_infer_yaml_missing: "没有 tts_infer.yaml",
+    reference_audio_missing: "参考音频待补",
+    prompt_text_missing: "参考文本待补",
+    gpt_weight_missing: "GPT 权重未识别",
+    sovits_weight_missing: "SoVITS 权重未识别"
+  };
+  return labels[reason] || "";
 }
 
 function renderWorkflow(item) {

@@ -131,6 +131,27 @@ const bridgedActionCases = [
     invoke: "open_character_packs_folder"
   },
   {
+    id: CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter,
+    payload: {
+      providerId: "provider.tts.gpt_sovits.local",
+      voiceProfileId: "dania",
+      characterPackId: "akane_sample"
+    },
+    context: { source: "lab" },
+    invoke: "set_character_voice_profile",
+    status: "assigned"
+  },
+  {
+    id: CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter,
+    payload: {
+      providerId: "provider.tts.gpt_sovits.local",
+      characterPackId: "akane_sample"
+    },
+    context: { source: "lab" },
+    invoke: "clear_character_voice_profile",
+    status: "cleared"
+  },
+  {
     id: CONTROL_CENTER_ACTIONS.perceptionDesktopContextSetEnabled,
     payload: { value: true, featureId: "activeWindow" },
     context: { source: "lab" },
@@ -260,7 +281,7 @@ for (const testCase of bridgedActionCases) {
   const result = await router.run(testCase.id, testCase.payload, testCase.context);
   assert.deepEqual(
     { ok: result.ok, status: result.status, actionId: result.actionId, refresh: result.refresh },
-    { ok: true, status: "executed", actionId: testCase.id, refresh: true },
+    { ok: true, status: testCase.status || "executed", actionId: testCase.id, refresh: true },
     `${testCase.id} should execute`
   );
 
@@ -277,6 +298,33 @@ for (const testCase of bridgedActionCases) {
   if (testCase.invoke) {
     const entry = invokeLog.find((item) => item.command === testCase.invoke);
     assert.ok(entry, `${testCase.id} should invoke ${testCase.invoke}`);
+    if (testCase.id === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter) {
+      assert.deepEqual(
+        entry.payload,
+        {
+          request: {
+            packId: "akane_sample",
+            provider: "provider.tts.gpt_sovits.local",
+            profileId: "dania",
+            notes: "控制中心声线 dania"
+          }
+        },
+        "character voice assignment should invoke with safe pack/profile fields"
+      );
+      const refreshEntry = emitLog.find((item) => item.payload.command === "refreshCharacterPacks");
+      assert.ok(refreshEntry, "character voice assignment should refresh runtime character packs");
+      assert.deepEqual(refreshEntry.payload.value, { selectPackId: "akane_sample", apply: true });
+    }
+    if (testCase.id === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter) {
+      assert.deepEqual(
+        entry.payload,
+        { packId: "akane_sample" },
+        "character voice clear should invoke with only the safe pack id"
+      );
+      const refreshEntry = emitLog.find((item) => item.payload.command === "refreshCharacterPacks");
+      assert.ok(refreshEntry, "character voice clear should refresh runtime character packs");
+      assert.deepEqual(refreshEntry.payload.value, { selectPackId: "akane_sample", apply: true });
+    }
   }
 }
 
@@ -570,8 +618,17 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
         headers: { get: () => "application/json" },
         json: async () => ({
           ok: true,
-          status: String(url).includes("tts-test") ? "tts-test-ready" : String(url).includes("health-check") ? "ready" : "saved",
+          status: String(url).includes("inspect-folder")
+            ? "inspected"
+            : String(url).includes("tts-test")
+              ? "tts-test-ready"
+              : String(url).includes("health-check")
+                ? "ready"
+                : "saved",
           providerId: "provider.comfyui.local",
+          suggestedProfile: String(url).includes("inspect-folder")
+            ? { voiceProfileId: "reimu_main", displayName: "Reimu Main", refAudioPath: "C:\\voices\\reimu_ref.wav", promptText: "参考文本" }
+            : undefined,
           mediaType: "audio/wav",
           audioBase64: "d2F2",
           refresh: true
@@ -610,6 +667,14 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
   assert.equal(testResult.status, "tts-test-ready", "provider tts test should hit provider tts-test route");
   assert.equal(testResult.audioBase64, "d2F2", "provider tts test should return audio payload");
 
+  const inspectResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileInspectFolder, {
+    providerId: "provider.tts.gpt_sovits.local",
+    folderPath: "C:\\models\\reimu",
+    token: "must-not-send"
+  });
+  assert.equal(inspectResult.status, "inspected", "provider voice profile inspect should hit provider inspect-folder route");
+  assert.equal(inspectResult.suggestedProfile.voiceProfileId, "reimu_main", "provider inspect should return suggested profile");
+
   const voiceProfileResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave, {
     providerId: "provider.tts.gpt_sovits.local",
     voiceProfileId: "reimu_main",
@@ -624,11 +689,12 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
   });
   assert.equal(voiceProfileResult.status, "saved", "provider voice profile save should hit provider voice profile route");
 
-  assert.equal(fetchCalls.length, 4, "provider save/check/test/profile should make four backend requests");
+  assert.equal(fetchCalls.length, 5, "provider save/check/test/inspect/profile should make five backend requests");
   assert.ok(fetchCalls[0].url.includes("/capabilities/providers/provider.comfyui.local/config"), "save should use provider config route");
   assert.ok(fetchCalls[1].url.includes("/capabilities/providers/provider.comfyui.local/health-check"), "health should use provider health route");
   assert.ok(fetchCalls[2].url.includes("/capabilities/providers/provider.tts.gpt_sovits.local/tts-test"), "tts test should use provider tts-test route");
-  assert.ok(fetchCalls[3].url.includes("/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/reimu_main/config"), "voice profile save should use provider voice profile route");
+  assert.ok(fetchCalls[3].url.includes("/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/inspect-folder"), "voice profile inspect should use provider voice profile inspect route");
+  assert.ok(fetchCalls[4].url.includes("/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/reimu_main/config"), "voice profile save should use provider voice profile route");
   assert.equal(fetchCalls.some((call) => call.url.includes("/control-center/actions")), false, "provider actions must not use inert control-center action endpoint");
   const saveBody = JSON.parse(fetchCalls[0].options.body);
   assert.deepEqual(saveBody, { enabled: true, endpoint: "http://127.0.0.1:8188/ui?token=secret" }, "provider save should only send enabled and endpoint");
@@ -649,7 +715,16 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
     "provider tts test should only send endpoint/text/profile fields"
   );
   assert.equal("token" in testBody, false, "provider tts test must not forward arbitrary token fields");
-  const voiceProfileBody = JSON.parse(fetchCalls[3].options.body);
+  const inspectBody = JSON.parse(fetchCalls[3].options.body);
+  assert.deepEqual(
+    inspectBody,
+    {
+      folderPath: "C:\\models\\reimu"
+    },
+    "provider voice profile inspect should only send folderPath"
+  );
+  assert.equal("token" in inspectBody, false, "provider voice profile inspect must not forward arbitrary token fields");
+  const voiceProfileBody = JSON.parse(fetchCalls[4].options.body);
   assert.deepEqual(
     voiceProfileBody,
     {
@@ -1210,6 +1285,27 @@ for (const actionId of deferredAbilitiesActionIds) {
   );
   assert.equal(voiceProfileMockResult.status, "not-implemented", "mock source must not fake provider voice profile save");
   assert.equal(voiceProfileMockResult.refresh, false, "mock provider voice profile save should not request refresh");
+
+  const voiceProfileInspectMockResult = await mockAbRouter.run(
+    CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileInspectFolder,
+    { providerId: "provider.tts.gpt_sovits.local", folderPath: "C:\\models\\reimu" }
+  );
+  assert.equal(voiceProfileInspectMockResult.status, "not-implemented", "mock source must not fake provider voice profile inspect");
+  assert.equal(voiceProfileInspectMockResult.refresh, false, "mock provider voice profile inspect should not request refresh");
+
+  const voiceProfileAssignMockResult = await mockAbRouter.run(
+    CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter,
+    { providerId: "provider.tts.gpt_sovits.local", voiceProfileId: "dania", characterPackId: "akane_sample" }
+  );
+  assert.equal(voiceProfileAssignMockResult.status, "not-implemented", "mock source must not fake character voice assignment");
+  assert.equal(voiceProfileAssignMockResult.refresh, false, "mock character voice assignment should not request refresh");
+
+  const voiceProfileClearMockResult = await mockAbRouter.run(
+    CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter,
+    { providerId: "provider.tts.gpt_sovits.local", characterPackId: "akane_sample" }
+  );
+  assert.equal(voiceProfileClearMockResult.status, "not-implemented", "mock source must not fake character voice clear");
+  assert.equal(voiceProfileClearMockResult.refresh, false, "mock character voice clear should not request refresh");
 
   const workflowMockResult = await mockAbRouter.run(
     CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave,

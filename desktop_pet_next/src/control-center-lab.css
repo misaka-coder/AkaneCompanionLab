@@ -2315,6 +2315,26 @@ button[data-action-unavailable="true"]:disabled {
   white-space: nowrap;
 }
 
+.provider-voice-profile-folder {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 9px;
+  align-items: end;
+}
+
+.provider-voice-profile-folder button {
+  min-height: 36px;
+  padding: 0 13px;
+  color: #fff;
+  border: 0;
+  border-radius: 9px;
+  background: #6f7df0;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+  box-shadow: 0 8px 16px rgb(64 126 214 / 0.14);
+}
+
 .provider-voice-profile-fields {
   display: grid;
   grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) repeat(3, minmax(74px, 0.45fr)) auto;
@@ -2338,8 +2358,33 @@ button[data-action-unavailable="true"]:disabled {
   color: #6c7692;
 }
 
+.provider-voice-profile-current {
+  width: fit-content;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid rgb(90 127 240 / 0.16);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.5);
+  color: #4d6388;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.provider-voice-profile-current.is-default {
+  color: #687589;
+  border-color: rgb(104 117 137 / 0.16);
+  background: rgb(255 255 255 / 0.36);
+}
+
+.provider-voice-profile-inspect-summary {
+  align-items: flex-start;
+  line-height: 1.35;
+}
+
 .provider-voice-profile-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-start;
 }
 
@@ -2354,6 +2399,44 @@ button[data-action-unavailable="true"]:disabled {
   font-size: 12px;
   font-weight: 900;
   box-shadow: 0 8px 16px rgb(64 126 214 / 0.14);
+}
+
+.provider-tts-test-status {
+  grid-column: 1 / -1;
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  color: #5d7191;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.provider-tts-test-player {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid rgb(98 148 221 / 0.16);
+  border-radius: 10px;
+  background: rgb(246 251 255 / 0.72);
+}
+
+.provider-tts-test-player audio {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+}
+
+.provider-tts-test-player span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #55739b;
+  font-size: 11px;
+  font-weight: 850;
+  white-space: nowrap;
 }
 
 .provider-config-body > p {
@@ -6410,6 +6493,22 @@ button[data-action-unavailable="true"]:disabled {
     justify-self: start;
   }
 
+  .provider-tts-test-player {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .provider-tts-test-player span {
+    white-space: normal;
+  }
+
+  .provider-voice-profile-folder {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .provider-voice-profile-folder button {
+    justify-self: start;
+  }
+
   .provider-voice-profile-fields {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -6664,9 +6763,25 @@ button[data-action-unavailable="true"]:disabled {
     justify-self: stretch;
   }
 
+  .provider-tts-test-player {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .provider-tts-test-player span {
+    white-space: normal;
+  }
+
   .provider-voice-profile-head {
     display: grid;
     justify-content: stretch;
+  }
+
+  .provider-voice-profile-folder {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .provider-voice-profile-folder button {
+    width: 100%;
   }
 
   .provider-voice-profile-fields {

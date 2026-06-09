@@ -101,6 +101,9 @@ function adaptCharacterPage(page, runtime = {}) {
   if (Array.isArray(runtime.actions) && runtime.actions.length) {
     character.actions = runtime.actions;
   }
+  if (Object.prototype.hasOwnProperty.call(runtime, "voice")) {
+    character.voice = normalizeCharacterVoice(runtime.voice);
+  }
   if (character.warning && typeof character.warning === "object") {
     character.warning = {
       ...character.warning,
@@ -108,6 +111,15 @@ function adaptCharacterPage(page, runtime = {}) {
     };
   }
   return character;
+}
+
+function normalizeCharacterVoice(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    provider: String(source.provider || "").trim(),
+    profileId: String(source.profileId || source.profile_id || "").trim(),
+    notes: String(source.notes || "").trim()
+  };
 }
 
 function normalizeCharacterAvailablePacks(packs, selectedPackId) {

@@ -328,6 +328,15 @@ struct CreateCharacterPackRequest {
     user_title: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetCharacterVoiceProfileRequest {
+    pack_id: String,
+    provider: String,
+    profile_id: String,
+    notes: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UploadPortraitResult {
@@ -881,6 +890,134 @@ fn save_character_pack(
     }
 
     /* return updated registry item – reuse validated struct */
+    let asset_root = validated
+        .assets
+        .asset_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("assets");
+    let outfits = list_character_pack_outfits(&pack_dir, asset_root);
+    let asset_count = outfits.iter().map(|outfit| outfit.emotions.len()).sum();
+
+    Ok(CharacterPackRegistryItem {
+        id: pack_id,
+        source: character_path.to_string_lossy().to_string(),
+        installed_path: pack_dir.to_string_lossy().to_string(),
+        asset_count,
+        profile,
+        outfits,
+    })
+}
+
+#[tauri::command]
+fn set_character_voice_profile(
+    request: SetCharacterVoiceProfileRequest,
+) -> Result<CharacterPackRegistryItem, String> {
+    let pack_id = sanitize_pack_id(&request.pack_id);
+    if pack_id.is_empty() {
+        return Err("无效的角色包 ID。".to_string());
+    }
+    let provider = normalize_character_voice_provider(&request.provider)?;
+    let profile_id = sanitize_voice_profile_id(&request.profile_id);
+    if profile_id.is_empty() {
+        return Err("声线 ID 不能为空。".to_string());
+    }
+    let notes = sanitize_voice_notes(request.notes.as_deref());
+
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    if !pack_dir.is_dir() {
+        return Err(format!("角色包 {pack_id} 不存在。"));
+    }
+
+    let character_path = pack_dir.join("character.json");
+    if !character_path.is_file() {
+        return Err(format!("{pack_id} 缺少 character.json。"));
+    }
+
+    let raw = fs::read_to_string(&character_path).map_err(|error| error.to_string())?;
+    let mut profile: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|error| format!("character.json 无效：{error}"))?;
+    let Some(obj) = profile.as_object_mut() else {
+        return Err("character.json 根节点必须是对象。".to_string());
+    };
+
+    obj.insert(
+        "voice".to_string(),
+        serde_json::json!({
+            "provider": provider,
+            "profile_id": profile_id,
+            "notes": notes,
+        }),
+    );
+
+    let validated: CharacterPackJson = serde_json::from_value(profile.clone())
+        .map_err(|error| format!("更新后的角色语音配置无效：{error}"))?;
+    let updated =
+        serde_json::to_string_pretty(&profile).map_err(|error| format!("序列化失败：{error}"))?;
+    write_text_atomic(&character_path, &updated)?;
+
+    let asset_root = validated
+        .assets
+        .asset_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("assets");
+    let outfits = list_character_pack_outfits(&pack_dir, asset_root);
+    let asset_count = outfits.iter().map(|outfit| outfit.emotions.len()).sum();
+
+    Ok(CharacterPackRegistryItem {
+        id: pack_id,
+        source: character_path.to_string_lossy().to_string(),
+        installed_path: pack_dir.to_string_lossy().to_string(),
+        asset_count,
+        profile,
+        outfits,
+    })
+}
+
+#[tauri::command]
+fn clear_character_voice_profile(pack_id: String) -> Result<CharacterPackRegistryItem, String> {
+    let pack_id = sanitize_pack_id(&pack_id);
+    if pack_id.is_empty() {
+        return Err("无效的角色包 ID。".to_string());
+    }
+
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    if !pack_dir.is_dir() {
+        return Err(format!("角色包 {pack_id} 不存在。"));
+    }
+
+    let character_path = pack_dir.join("character.json");
+    if !character_path.is_file() {
+        return Err(format!("{pack_id} 缺少 character.json。"));
+    }
+
+    let raw = fs::read_to_string(&character_path).map_err(|error| error.to_string())?;
+    let mut profile: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|error| format!("character.json 无效：{error}"))?;
+    let Some(obj) = profile.as_object_mut() else {
+        return Err("character.json 根节点必须是对象。".to_string());
+    };
+
+    obj.insert(
+        "voice".to_string(),
+        serde_json::json!({
+            "provider": "",
+            "profile_id": "",
+            "notes": "",
+        }),
+    );
+
+    let validated: CharacterPackJson = serde_json::from_value(profile.clone())
+        .map_err(|error| format!("更新后的角色语音配置无效：{error}"))?;
+    let updated =
+        serde_json::to_string_pretty(&profile).map_err(|error| format!("序列化失败：{error}"))?;
+    write_text_atomic(&character_path, &updated)?;
+
     let asset_root = validated
         .assets
         .asset_root
@@ -2370,7 +2507,9 @@ fn normalize_public_external_url(raw_url: &str) -> Result<String, String> {
         return Err("网址包含不安全字符。".to_string());
     }
 
-    let scheme_end = url.find("://").ok_or_else(|| "只支持 http/https 网址。".to_string())?;
+    let scheme_end = url
+        .find("://")
+        .ok_or_else(|| "只支持 http/https 网址。".to_string())?;
     let scheme = url[..scheme_end].to_ascii_lowercase();
     if scheme != "http" && scheme != "https" {
         return Err("只支持 http/https 网址。".to_string());
@@ -2385,7 +2524,9 @@ fn normalize_public_external_url(raw_url: &str) -> Result<String, String> {
     }
 
     let host = if authority.starts_with('[') {
-        let end = authority.find(']').ok_or_else(|| "网址主机不安全。".to_string())?;
+        let end = authority
+            .find(']')
+            .ok_or_else(|| "网址主机不安全。".to_string())?;
         authority[1..end].to_string()
     } else {
         authority
@@ -2648,6 +2789,51 @@ fn sanitize_pack_id(value: &str) -> String {
     } else {
         clean
     }
+}
+
+fn sanitize_voice_profile_id(value: &str) -> String {
+    let safe = value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(|ch| ch == '_' || ch == '.' || ch == '-')
+        .to_string();
+    safe.chars().take(120).collect()
+}
+
+fn normalize_character_voice_provider(value: &str) -> Result<String, String> {
+    let raw = value.trim().to_ascii_lowercase();
+    match raw.as_str() {
+        "" | "gpt_sovits" | "gpt-sovits" | "gptsovits" | "provider.tts.gpt_sovits.local" => {
+            Ok("gpt_sovits".to_string())
+        }
+        _ => Err("当前只支持把角色声线设置为 GPT-SoVITS 声线档案。".to_string()),
+    }
+}
+
+fn sanitize_voice_notes(value: Option<&str>) -> String {
+    let text = value.unwrap_or("").replace(['\r', '\n'], " ");
+    let text = text.trim();
+    if text.is_empty() {
+        return "由控制中心设置。".to_string();
+    }
+    let lowered = text.to_ascii_lowercase();
+    if lowered.contains("api_key")
+        || lowered.contains("password")
+        || lowered.contains("secret")
+        || lowered.contains("token")
+        || text.contains("://")
+    {
+        return "由控制中心设置。".to_string();
+    }
+    text.chars().take(160).collect()
 }
 
 fn normalize_zip_path(value: &str) -> Result<String, String> {
@@ -3603,6 +3789,8 @@ fn main() {
             open_workshop_window,
             get_window_geometry,
             save_character_pack,
+            set_character_voice_profile,
+            clear_character_voice_profile,
             create_character_pack,
             create_portrait_outfit,
             upload_portrait_image,

@@ -3409,6 +3409,10 @@ for line in sys.stdin:
         self.assertEqual(payload["audioBase64"], "d2F2LWJ5dGVz")
         self.assertEqual(payload["audioBytes"], 9)
         self.assertEqual(payload["voiceProfileId"], "reimu_main")
+        self.assertEqual(payload["profileSource"], "missing")
+        self.assertFalse(payload["profileApplied"])
+        self.assertEqual(payload["checks"]["endpoint"], True)
+        self.assertEqual(payload["checks"]["voiceProfileId"], True)
         self.assertEqual(
             calls,
             [
@@ -3425,6 +3429,84 @@ for line in sys.stdin:
         config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
         self.assertFalse(config_path.exists(), "tts-test must not persist profile or provider config")
         self.assertIn(("capabilities.provider_tts_test", True), runtime.observed)
+
+    def test_capabilities_provider_tts_test_loads_saved_voice_profile_fields(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        calls: list[dict[str, Any]] = []
+
+        class CapturingGptSovitsClient:
+            def __init__(self, endpoint: str, **_kwargs: Any) -> None:
+                self.endpoint = endpoint
+
+            async def synthesize(self, text: str, *, voice_profile_id: str = "", profile: dict[str, Any] | None = None):
+                calls.append(
+                    {
+                        "endpoint": self.endpoint,
+                        "text": text,
+                        "voiceProfileId": voice_profile_id,
+                        "profile": dict(profile or {}),
+                    }
+                )
+                return SimpleNamespace(audio=b"saved-profile-wav", media_type="audio/wav")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_voice_profile_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                voice_profile_id="dania",
+                payload={
+                    "providerId": "provider.tts.gpt_sovits.local",
+                    "enabled": True,
+                    "displayName": "Dania",
+                    "textLang": "zh",
+                    "promptLang": "zh",
+                    "mediaType": "wav",
+                    "refAudioPath": r"C:\voices\dania_ref.wav",
+                    "promptText": "这是保存好的参考文本。",
+                },
+            )
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            with patch("companion_v01.routes.capabilities.GptSovitsTTSClient", CapturingGptSovitsClient):
+                response = client.post(
+                    "/capabilities/providers/provider.tts.gpt_sovits.local/tts-test?user_id=desktop&real_user_id=master",
+                    json={
+                        "endpoint": "http://127.0.0.1:9880",
+                        "text": "  你好  ",
+                        "voiceProfileId": "dania",
+                    },
+                )
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["status"], "tts-test-ready")
+            self.assertEqual(payload["audioBase64"], "c2F2ZWQtcHJvZmlsZS13YXY=")
+            self.assertEqual(payload["voiceProfileId"], "dania")
+            self.assertEqual(payload["profileApplied"], True)
+            self.assertEqual(payload["profileSource"], "saved")
+            self.assertEqual(payload["checks"]["refAudio"], True)
+            self.assertEqual(payload["checks"]["promptText"], True)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["endpoint"], "http://127.0.0.1:9880")
+            self.assertEqual(calls[0]["text"], "你好")
+            self.assertEqual(calls[0]["voiceProfileId"], "dania")
+            self.assertEqual(calls[0]["profile"]["refAudioPath"], r"C:\voices\dania_ref.wav")
+            self.assertEqual(calls[0]["profile"]["promptText"], "这是保存好的参考文本。")
+            self.assertEqual(calls[0]["profile"]["promptLang"], "zh")
+            response_text = response.text.lower()
+            self.assertNotIn(r"c:\voices", response_text)
+            self.assertNotIn("保存好的参考文本", response.text)
+            self.assertIn(("capabilities.provider_tts_test", True), runtime.observed)
 
     def test_capabilities_voice_profile_config_saves_private_fields_without_public_leak(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -3519,6 +3601,118 @@ for line in sys.stdin:
             self.assertIn(("capabilities.voice_profile_config", True), runtime.observed)
             self.assertIn(("capabilities.voice_profiles", True), runtime.observed)
 
+    def test_capabilities_voice_profile_folder_inspect_suggests_profile_without_persisting(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir = Path(temp_dir) / "models" / "dania"
+            model_dir.mkdir(parents=True)
+            ref_audio = model_dir / "output.wav_0009342720_0009558400.wav"
+            ref_audio.write_bytes(b"RIFFfake-wav")
+            (model_dir / "dania-e15.ckpt").write_bytes(b"gpt")
+            (model_dir / "dania_e16_s2192.pth").write_bytes(b"sovits")
+            (model_dir / "tts_infer.yaml").write_text(
+                "\n".join(
+                    [
+                        "prompt_text: 你好，今天也要一起努力。",
+                        "prompt_lang: zh",
+                        "text_lang: zh",
+                        "media_type: wav",
+                        "ref_audio_path: output.wav_0009342720_0009558400.wav",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            response = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/inspect-folder?user_id=desktop&real_user_id=master",
+                json={"folderPath": str(model_dir), "token": "must-not-return"},
+            )
+            payload = response.json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["status"], "inspected")
+            self.assertEqual(payload["providerId"], "provider.tts.gpt_sovits.local")
+            suggested = payload["suggestedProfile"]
+            self.assertEqual(suggested["voiceProfileId"], "dania")
+            self.assertEqual(suggested["displayName"], "dania")
+            self.assertEqual(suggested["textLang"], "zh")
+            self.assertEqual(suggested["promptLang"], "zh")
+            self.assertEqual(suggested["mediaType"], "wav")
+            self.assertEqual(suggested["refAudioPath"], str(ref_audio.resolve()))
+            self.assertEqual(suggested["promptText"], "你好，今天也要一起努力。")
+            self.assertEqual(payload["warnings"], [])
+            self.assertEqual(payload["detected"]["configFileName"], "tts_infer.yaml")
+            self.assertEqual(payload["detected"]["referenceAudioName"], ref_audio.name)
+            self.assertEqual(payload["detected"]["gptWeightName"], "dania-e15.ckpt")
+            self.assertEqual(payload["detected"]["sovitsWeightName"], "dania_e16_s2192.pth")
+            self.assertFalse(payload["autoEnable"])
+            self.assertFalse(payload["refresh"])
+            self.assertNotIn("token", response.text.lower())
+            self.assertIn(("capabilities.voice_profile_folder_inspect", True), runtime.observed)
+
+            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            self.assertFalse(config_path.exists(), "inspect-folder must not persist a voice profile")
+            profiles_payload = client.get(
+                "/capabilities/voice-profiles?user_id=desktop&real_user_id=master"
+            ).json()
+            profiles_text = json.dumps(profiles_payload, ensure_ascii=False).lower()
+            self.assertEqual(profiles_payload["summary"]["total"], 0)
+            self.assertNotIn(str(model_dir).lower(), profiles_text)
+            self.assertNotIn("你好，今天也要一起努力", json.dumps(profiles_payload, ensure_ascii=False))
+
+    def test_capabilities_voice_profile_folder_inspect_rejects_unsafe_or_missing_paths(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+            base_url = "/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/inspect-folder?user_id=desktop&real_user_id=master"
+            readme_only_dir = Path(temp_dir) / "readme_only"
+            readme_only_dir.mkdir()
+            (readme_only_dir / "README.md").write_text("not a voice model", encoding="utf-8")
+
+            unsafe = client.post(base_url, json={"folderPath": "https://example.com/model"}).json()
+            relative = client.post(base_url, json={"folderPath": "models/dania"}).json()
+            missing = client.post(base_url, json={"folderPath": str(Path(temp_dir) / "missing")}).json()
+            no_model_files = client.post(base_url, json={"folderPath": str(readme_only_dir)}).json()
+            unsupported = client.post(
+                "/capabilities/providers/provider.comfyui.local/voice-profiles/inspect-folder?user_id=desktop&real_user_id=master",
+                json={"folderPath": str(Path(temp_dir))},
+            ).json()
+
+            self.assertFalse(unsafe["ok"])
+            self.assertEqual(unsafe["status"], "invalid_request")
+            self.assertEqual(unsafe["reason"], "model_folder_path_invalid")
+            self.assertFalse(relative["ok"])
+            self.assertEqual(relative["reason"], "model_folder_must_be_absolute")
+            self.assertFalse(missing["ok"])
+            self.assertEqual(missing["status"], "missing_model_folder")
+            self.assertEqual(missing["reason"], "model_folder_not_found")
+            self.assertFalse(no_model_files["ok"])
+            self.assertEqual(no_model_files["status"], "missing_model_files")
+            self.assertEqual(no_model_files["reason"], "model_folder_has_no_supported_files")
+            self.assertFalse(unsupported["ok"])
+            self.assertEqual(unsupported["status"], "unsupported_provider")
+            self.assertIn(("capabilities.voice_profile_folder_inspect", False), runtime.observed)
+
     def test_capabilities_provider_tts_test_degrades_with_safe_reason(self) -> None:
         runtime = FakeRuntimeMetrics()
 
@@ -3550,6 +3744,8 @@ for line in sys.stdin:
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["status"], "tts-test-failed")
         self.assertEqual(payload["reason"], "provider_tts_test_failed")
+        self.assertEqual(payload["profileSource"], "none")
+        self.assertEqual(payload["checks"]["endpoint"], True)
         self.assertNotIn("secret", failed.text.lower())
         self.assertNotIn("token", failed.text.lower())
         self.assertNotIn("users", failed.text.lower())

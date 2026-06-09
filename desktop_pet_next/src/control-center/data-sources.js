@@ -12,6 +12,7 @@ const providerBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave,
   CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck,
   CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest,
+  CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileInspectFolder,
   CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave
 ]);
 const workflowBackendActionIds = new Set([
@@ -25,6 +26,10 @@ const mcpBackendActionIds = new Set([
 ]);
 const approvalPolicyBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave
+]);
+const tauriInvokeOnlyActionIds = new Set([
+  CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter,
+  CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter
 ]);
 const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.chatNew]: "newSession",
@@ -132,7 +137,7 @@ export function createMockControlCenterSource(data = mockData) {
     },
     async runAction(actionId, payload = {}) {
       const normalizedActionId = normalizeActionId(actionId);
-      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId)) {
+      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId) || tauriInvokeOnlyActionIds.has(normalizedActionId)) {
         return createNotImplementedActionResult(normalizedActionId);
       }
       return {
@@ -560,6 +565,12 @@ async function runProviderBackendAction(fetchImpl, baseUrl, actionId, payload = 
       return { ok: false, status: "invalid-payload", actionId, providerId, refresh: false, error: "voiceProfileId is required" };
     }
   }
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileInspectFolder) {
+    const folderPath = String(payload.folderPath || payload.modelFolderPath || payload.path || "").trim();
+    if (!folderPath) {
+      return { ok: false, status: "invalid-payload", actionId, providerId, refresh: false, error: "folderPath is required" };
+    }
+  }
   const endpoint = `/capabilities/providers/${encodeURIComponent(providerId)}/${providerActionPath(actionId, payload)}`;
   const body = buildProviderActionBody(actionId, payload);
   try {
@@ -591,6 +602,7 @@ async function runProviderBackendAction(fetchImpl, baseUrl, actionId, payload = 
 function providerActionPath(actionId, payload = {}) {
   if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave) return "config";
   if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest) return "tts-test";
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileInspectFolder) return "voice-profiles/inspect-folder";
   if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave) {
     const voiceProfileId = String(payload.voiceProfileId || payload.voice_profile_id || payload.profileId || "").trim();
     return `voice-profiles/${encodeURIComponent(voiceProfileId)}/config`;
@@ -617,6 +629,11 @@ function buildProviderActionBody(actionId, payload = {}) {
       if (value) body[bodyKey] = value;
     }
     return body;
+  }
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileInspectFolder) {
+    return {
+      folderPath: String(payload.folderPath || payload.modelFolderPath || payload.path || "").trim()
+    };
   }
   if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave) {
     const body = {
@@ -664,6 +681,13 @@ async function runTauriControlCenterAction(actionId, payload, context, options) 
   }
 
   try {
+    if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter) {
+      return await runTauriCharacterVoiceProfileAssignment(payload, context, options, bridge);
+    }
+    if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter) {
+      return await runTauriCharacterVoiceProfileClear(payload, context, options, bridge);
+    }
+
     if (command && typeof bridge.invoke === "function") {
       await bridge.invoke(command, {});
       return { ok: true, status: "executed", actionId, payload, refresh: true };
@@ -695,6 +719,92 @@ async function runTauriControlCenterAction(actionId, payload, context, options) 
   } catch (error) {
     return { ok: false, status: "failed", actionId, payload, error: formatDataSourceError(error), refresh: true };
   }
+}
+
+async function runTauriCharacterVoiceProfileAssignment(payload = {}, context = {}, options = {}, bridge) {
+  if (typeof bridge.invoke !== "function") {
+    return createNotImplementedActionResult(CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter);
+  }
+  const voiceProfileId = String(payload.voiceProfileId || payload.voice_profile_id || payload.profileId || payload.value || "").trim();
+  const packId = resolveCharacterVoiceActionPackId(payload, options);
+  if (!voiceProfileId || !packId) {
+    return {
+      ok: false,
+      status: "invalid-payload",
+      actionId: CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter,
+      refresh: false,
+      error: !voiceProfileId ? "voiceProfileId is required" : "characterPackId is required"
+    };
+  }
+  const provider = String(payload.provider || payload.voiceProvider || payload.providerId || "gpt_sovits").trim();
+  const notes = String(payload.notes || `控制中心声线 ${voiceProfileId}`).trim();
+  const request = {
+    packId,
+    provider,
+    profileId: voiceProfileId,
+    ...(notes ? { notes } : {})
+  };
+  const result = await bridge.invoke("set_character_voice_profile", { request });
+  if (typeof bridge.emit === "function") {
+    await bridge.emit(SETTINGS_COMMAND_EVENT, {
+      command: "refreshCharacterPacks",
+      value: { selectPackId: packId, apply: true },
+      source: context?.source || payload?.source || "control-center"
+    });
+  }
+  return {
+    ok: true,
+    status: "assigned",
+    actionId: CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter,
+    provider,
+    voiceProfileId,
+    characterPackId: packId,
+    characterName: String(result?.profile?.identity?.name || ""),
+    refresh: true
+  };
+}
+
+async function runTauriCharacterVoiceProfileClear(payload = {}, context = {}, options = {}, bridge) {
+  if (typeof bridge.invoke !== "function") {
+    return createNotImplementedActionResult(CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter);
+  }
+  const packId = resolveCharacterVoiceActionPackId(payload, options);
+  if (!packId) {
+    return {
+      ok: false,
+      status: "invalid-payload",
+      actionId: CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter,
+      refresh: false,
+      error: "characterPackId is required"
+    };
+  }
+  const result = await bridge.invoke("clear_character_voice_profile", { packId });
+  if (typeof bridge.emit === "function") {
+    await bridge.emit(SETTINGS_COMMAND_EVENT, {
+      command: "refreshCharacterPacks",
+      value: { selectPackId: packId, apply: true },
+      source: context?.source || payload?.source || "control-center"
+    });
+  }
+  return {
+    ok: true,
+    status: "cleared",
+    actionId: CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter,
+    characterPackId: packId,
+    characterName: String(result?.profile?.identity?.name || ""),
+    refresh: true
+  };
+}
+
+function resolveCharacterVoiceActionPackId(payload = {}, options = {}) {
+  return String(
+    payload.characterPackId ||
+      payload.character_pack_id ||
+      payload.packId ||
+      payload.pack_id ||
+      options.characterPackId ||
+      ""
+  ).trim();
 }
 
 async function runTauriWindowAction(actionId, windowAction, bridge) {
@@ -982,6 +1092,7 @@ function buildCharacterRuntimePatch({
   const identity = asObject(profile.identity);
   const appearance = asObject(profile.appearance);
   const assets = asObject(profile.assets);
+  const voice = normalizeCharacterVoicePreference(profile.voice);
   const characters = asObject(manifest.characters);
   const rawOutfits = asArray(characters.outfits);
   const allOutfits = normalizeOutfitCards(rawOutfits, {
@@ -1014,6 +1125,7 @@ function buildCharacterRuntimePatch({
     selectedPack: displayName,
     ...(packId ? { selectedPackId: packId } : {}),
     ...(availablePacks.length ? { availablePacks } : {}),
+    voice,
     packInfo: [
       { label: "名称", value: displayName },
       { label: "版本", value: version || "resource-manifest" },
@@ -1078,11 +1190,13 @@ export function buildCharacterRuntimePatchFromSettingsSnapshot(runtimeSnapshot) 
   const defaultEmotion = stringValue(character.defaultEmotion || activePack?.defaultEmotion || resource.defaultEmotion);
   const assetCount = positiveNumber(character.assetCount || activePack?.assetCount);
   const resourceEmotionCount = positiveNumber(resource.emotionCount);
+  const voice = normalizeCharacterVoicePreference(character.voice);
 
   const patch = {
     ...(displayName ? { selectedPack: displayName } : {}),
     ...(selectedPackId ? { selectedPackId } : {}),
-    ...(availablePacks.length ? { availablePacks } : {})
+    ...(availablePacks.length ? { availablePacks } : {}),
+    voice
   };
 
   if (displayName || schemaVersion || defaultOutfit || defaultEmotion || assetCount || resourceEmotionCount) {
@@ -1101,6 +1215,15 @@ export function buildCharacterRuntimePatchFromSettingsSnapshot(runtimeSnapshot) 
   }
 
   return Object.keys(patch).length ? patch : null;
+}
+
+function normalizeCharacterVoicePreference(value) {
+  const source = asObject(value);
+  return {
+    provider: stringValue(source.provider),
+    profileId: stringValue(source.profileId || source.profile_id),
+    notes: stringValue(source.notes)
+  };
 }
 
 function buildVoiceRuntimePatch({ health, diagnostics, petState, capabilitiesCatalog }) {

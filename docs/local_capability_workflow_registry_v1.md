@@ -2199,13 +2199,35 @@ Frontend configuration entrance:
   test text, and optional safe `voiceProfileId` to
   `/capabilities/providers/{providerId}/tts-test`, receives a bounded audio
   sample, and plays it in the control center.
+- `abilities.provider.voiceProfile.inspectFolder` is a real backend-route action
+  for `provider.tts.gpt_sovits.local`. It sends only a user-entered local model
+  folder path to `/capabilities/providers/{providerId}/voice-profiles/inspect-folder`
+  and returns suggested form fields from `tts_infer.yaml`, reference audio,
+  `.ckpt`, and `.pth` files. It does not persist config, load weights, switch
+  the external GPT-SoVITS runtime, or auto-enable the provider.
+- `abilities.provider.voiceProfile.save` persists a profile-scoped GPT-SoVITS
+  voice profile through
+  `/capabilities/providers/{providerId}/voice-profiles/{voiceProfileId}/config`.
+  Public catalogs expose only safe summary fields such as reference audio
+  basename and prompt text length.
+- `abilities.provider.voiceProfile.assignToCurrentCharacter` is a Tauri invoke
+  action. It writes only the current character pack `voice.provider` and
+  `voice.profile_id` fields through `set_character_voice_profile`, using atomic
+  file replacement. It does not write private model paths into the character
+  pack and does not change the external GPT-SoVITS runtime weights.
+- `abilities.provider.voiceProfile.clearCurrentCharacter` is a Tauri invoke
+  action. It clears the current character pack voice preference through
+  `clear_character_voice_profile`, using atomic file replacement. It restores
+  the default TTS fallback for that character and does not delete saved voice
+  profiles, private model paths, or external GPT-SoVITS runtime weights.
 - Mock source does not fake provider write success; it returns
   `not-implemented`.
 
 Still not implemented:
 
 - no ComfyUI workflow execution
-- no GPT-SoVITS model path picker or profile-to-model manager
+- no GPT-SoVITS folder picker dialog, model download manager, or runtime weight
+  switcher
 - no workflow slot mapping
 
 ### Phase 3: Workflow Skeleton
@@ -2583,8 +2605,9 @@ Implemented Phase 5:
 - The control center GPT-SoVITS provider row now has a short test control. It can
   test a typed sentence against the configured/local endpoint, optionally pass a
   safe `voiceProfileId`, and play the returned audio sample locally. This action
-  is bounded, returns structured failure states, does not save model/profile
-  fields, and does not auto-enable the provider.
+  is bounded, returns structured failure states, renders a fallback audio player
+  when audio is available, does not save model/profile fields, and does not
+  auto-enable the provider.
 - The control center GPT-SoVITS provider row now also has a compact voice profile
   form. It saves profile-scoped request fields through
   `/capabilities/providers/{providerId}/voice-profiles/{voiceProfileId}/config`:
@@ -2593,6 +2616,13 @@ Implemented Phase 5:
   safe summaries such as `referenceAudioName` and `promptTextLength`; full local
   paths and prompt/reference text stay inside
   `users_data/<profile_user_id>/capabilities/capabilities.yaml`.
+- The same provider row has a folder inspect helper. A user can paste a local
+  GPT-SoVITS voice model folder such as `F:\models\dania`; the backend scans a
+  bounded local file set, reads simple scalar values from `tts_infer.yaml`, and
+  suggests `voiceProfileId`, display name, language/media fields, reference audio
+  path, and reference text for the form. This is a private action response for
+  form filling only: it is not included in public catalogs, does not persist
+  anything, and does not load `.ckpt` / `.pth` weights.
 - `/capabilities/voice-profiles` lists saved voice profile summaries for the
   current profile. The abilities page reads it as an optional catalog: failure to
   read profile summaries does not block the rest of the control center.
@@ -2605,12 +2635,12 @@ Implemented Phase 5:
 
 Still intentionally not done:
 
-- Akane does not yet manage GPT-SoVITS model files, GPT/Sovits weight selection,
-  model downloads, or profile-to-model binding workflows. V1 stores request
-  profile fields for an external local API; it does not load `.pth` / `.ckpt`
-  weights by itself. If a downloaded voice model requires selecting weights in
-  GPT-SoVITS first, that still happens in the external GPT-SoVITS app or a
-  user-provided wrapper.
+- Akane does not yet manage GPT-SoVITS downloads, GPT/Sovits weight selection,
+  or profile-to-model binding workflows. The folder inspect helper only suggests
+  request profile fields for an external local API; it does not load `.pth` /
+  `.ckpt` weights by itself. If a downloaded voice model requires selecting
+  weights in GPT-SoVITS first, that still happens in the external GPT-SoVITS app
+  or a user-provided wrapper.
 - RVC chaining is still reserved for a later voice conversion provider phase.
 - The voice page does not expose model file pickers or raw advanced
   GPT-SoVITS/RVC parameters.

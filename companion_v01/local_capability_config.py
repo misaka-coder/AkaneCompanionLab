@@ -80,6 +80,12 @@ WORKFLOW_PATH_MAX_LENGTH = 220
 WORKFLOW_SLOT_MAX_LENGTH = 80
 VOICE_PROFILE_TEXT_MAX_LENGTH = 300
 VOICE_PROFILE_PATH_MAX_LENGTH = 500
+VOICE_MODEL_FOLDER_MAX_LENGTH = 500
+VOICE_MODEL_FOLDER_MAX_SCAN_FILES = 240
+VOICE_MODEL_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg"}
+VOICE_MODEL_CONFIG_FILENAMES = ("tts_infer.yaml", "tts_infer.yml")
+VOICE_MODEL_GPT_EXTENSIONS = {".ckpt"}
+VOICE_MODEL_SOVITS_EXTENSIONS = {".pth"}
 MCP_SERVER_ID_MAX_LENGTH = 80
 MCP_SERVER_TEXT_MAX_LENGTH = 240
 MCP_SERVER_PATH_MAX_LENGTH = 500
@@ -402,6 +408,173 @@ def list_voice_profile_configs(
         "configScope": _public_config_scope(profile_user_id),
         "voiceProfiles": profiles,
         "summary": _summarize_voice_profile_entries(profiles),
+    }
+
+
+def inspect_gpt_sovits_voice_model_folder(
+    *,
+    provider_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    provider_id = str(provider_id or "").strip()
+    if provider_id != "provider.tts.gpt_sovits.local":
+        return {
+            "ok": False,
+            "status": "unsupported_provider",
+            "providerId": provider_id,
+            "reason": "voice_model_folder_inspect_not_supported",
+            "refresh": False,
+        }
+
+    payload = payload if isinstance(payload, Mapping) else {}
+    folder_value = (
+        payload.get("folderPath")
+        or payload.get("folder_path")
+        or payload.get("modelFolderPath")
+        or payload.get("model_folder_path")
+        or payload.get("path")
+    )
+    normalized_folder = _safe_private_local_path(folder_value)
+    if not normalized_folder:
+        return {
+            "ok": False,
+            "status": "invalid_request",
+            "providerId": provider_id,
+            "reason": "model_folder_path_invalid",
+            "refresh": False,
+        }
+    if len(normalized_folder) > VOICE_MODEL_FOLDER_MAX_LENGTH:
+        return {
+            "ok": False,
+            "status": "invalid_request",
+            "providerId": provider_id,
+            "reason": "model_folder_path_too_long",
+            "refresh": False,
+        }
+
+    folder = Path(normalized_folder).expanduser()
+    if not folder.is_absolute():
+        return {
+            "ok": False,
+            "status": "invalid_request",
+            "providerId": provider_id,
+            "reason": "model_folder_must_be_absolute",
+            "refresh": False,
+        }
+    try:
+        folder = folder.resolve()
+    except OSError:
+        return {
+            "ok": False,
+            "status": "invalid_request",
+            "providerId": provider_id,
+            "reason": "model_folder_path_invalid",
+            "refresh": False,
+        }
+    if not folder.is_dir():
+        return {
+            "ok": False,
+            "status": "missing_model_folder",
+            "providerId": provider_id,
+            "reason": "model_folder_not_found",
+            "refresh": False,
+        }
+
+    files = _scan_voice_model_folder_files(folder)
+    yaml_path = _find_voice_model_yaml(folder, files)
+    yaml_values = _parse_voice_model_yaml_scalars(yaml_path) if yaml_path else {}
+
+    folder_name = _safe_short_text(folder.name, limit=80) or "gpt_sovits_voice"
+    profile_id = _safe_voice_profile_id(
+        _first_voice_model_yaml_value(yaml_values, "voice_profile_id", "profile_id", "id")
+        or folder_name
+    )
+    display_name = _safe_short_text(
+        _first_voice_model_yaml_value(yaml_values, "display_name", "voice_name", "name")
+        or folder_name,
+        limit=80,
+    ) or profile_id or "GPT-SoVITS Voice"
+
+    yaml_ref_audio = _resolve_voice_model_file_from_yaml(
+        folder,
+        _first_voice_model_yaml_value(yaml_values, "ref_audio_path", "reference_audio_path", "prompt_audio_path"),
+        VOICE_MODEL_AUDIO_EXTENSIONS,
+    )
+    ref_audio_path = yaml_ref_audio or _best_voice_model_file(files, VOICE_MODEL_AUDIO_EXTENSIONS, ("ref", "prompt", "sample", "output"))
+    prompt_text = _safe_private_prompt_text(
+        _first_voice_model_yaml_value(yaml_values, "prompt_text", "reference_text", "ref_text")
+    )
+    text_lang = _safe_short_token(
+        _first_voice_model_yaml_value(yaml_values, "text_lang", "text_language") or "zh",
+        default="zh",
+    )
+    prompt_lang = _safe_short_token(
+        _first_voice_model_yaml_value(yaml_values, "prompt_lang", "prompt_language", "ref_lang") or text_lang,
+        default="zh",
+    )
+    media_type = _safe_short_token(
+        _first_voice_model_yaml_value(yaml_values, "media_type", "return_media_type") or "wav",
+        default="wav",
+    )
+
+    gpt_weight = _resolve_voice_model_file_from_yaml(
+        folder,
+        _first_voice_model_yaml_value(yaml_values, "gpt_path", "t2s_weights_path", "t2s_weights"),
+        VOICE_MODEL_GPT_EXTENSIONS,
+    ) or _best_voice_model_file(files, VOICE_MODEL_GPT_EXTENSIONS, ("gpt", "t2s"))
+    sovits_weight = _resolve_voice_model_file_from_yaml(
+        folder,
+        _first_voice_model_yaml_value(yaml_values, "sovits_path", "vits_weights_path", "vits_weights"),
+        VOICE_MODEL_SOVITS_EXTENSIONS,
+    ) or _best_voice_model_file(files, VOICE_MODEL_SOVITS_EXTENSIONS, ("sovits", "vits"))
+
+    if yaml_path is None and not ref_audio_path and not gpt_weight and not sovits_weight:
+        return {
+            "ok": False,
+            "status": "missing_model_files",
+            "providerId": provider_id,
+            "reason": "model_folder_has_no_supported_files",
+            "refresh": False,
+        }
+
+    warnings: list[str] = []
+    if yaml_path is None:
+        warnings.append("tts_infer_yaml_missing")
+    if not ref_audio_path:
+        warnings.append("reference_audio_missing")
+    if not prompt_text:
+        warnings.append("prompt_text_missing")
+    if not gpt_weight:
+        warnings.append("gpt_weight_missing")
+    if not sovits_weight:
+        warnings.append("sovits_weight_missing")
+
+    return {
+        "ok": True,
+        "status": "inspected",
+        "providerId": provider_id,
+        "suggestedProfile": {
+            "voiceProfileId": profile_id or "gpt_sovits_voice",
+            "displayName": display_name,
+            "enabled": True,
+            "textLang": text_lang,
+            "promptLang": prompt_lang,
+            "mediaType": media_type,
+            "refAudioPath": str(ref_audio_path) if ref_audio_path else "",
+            "promptText": prompt_text,
+        },
+        "detected": {
+            "folderName": folder_name,
+            "configFileName": _safe_path_basename(yaml_path) if yaml_path else "",
+            "referenceAudioName": _safe_path_basename(ref_audio_path),
+            "gptWeightName": _safe_path_basename(gpt_weight),
+            "sovitsWeightName": _safe_path_basename(sovits_weight),
+            "audioCandidateCount": sum(1 for item in files if item.suffix.lower() in VOICE_MODEL_AUDIO_EXTENSIONS),
+            "scannedFileCount": len(files),
+        },
+        "warnings": warnings,
+        "autoEnable": False,
+        "refresh": False,
     }
 
 
@@ -2530,6 +2703,141 @@ def _safe_mcp_env(value: Any) -> dict[str, str] | None:
             return None
         env[key] = text[:MCP_SERVER_TEXT_MAX_LENGTH]
     return env
+
+
+def _scan_voice_model_folder_files(folder: Path) -> list[Path]:
+    files: list[Path] = []
+
+    def append_file(candidate: Path) -> None:
+        if len(files) >= VOICE_MODEL_FOLDER_MAX_SCAN_FILES:
+            return
+        try:
+            if candidate.is_file():
+                files.append(candidate)
+        except OSError:
+            return
+
+    try:
+        children = sorted(folder.iterdir(), key=lambda item: item.name.lower())
+    except OSError:
+        return []
+
+    for child in children:
+        if len(files) >= VOICE_MODEL_FOLDER_MAX_SCAN_FILES:
+            break
+        if child.name.startswith("."):
+            continue
+        append_file(child)
+        try:
+            is_nested_dir = child.is_dir() and not child.is_symlink()
+        except OSError:
+            is_nested_dir = False
+        if not is_nested_dir:
+            continue
+        try:
+            nested_children = sorted(child.iterdir(), key=lambda item: item.name.lower())
+        except OSError:
+            continue
+        for nested in nested_children:
+            if len(files) >= VOICE_MODEL_FOLDER_MAX_SCAN_FILES:
+                break
+            if not nested.name.startswith("."):
+                append_file(nested)
+    return files
+
+
+def _find_voice_model_yaml(folder: Path, files: list[Path]) -> Path | None:
+    for filename in VOICE_MODEL_CONFIG_FILENAMES:
+        candidate = folder / filename
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    yaml_files = [
+        item for item in files
+        if item.suffix.lower() in {".yaml", ".yml"}
+    ]
+    for item in yaml_files:
+        name = item.name.lower()
+        if "tts" in name or "infer" in name or "sovits" in name:
+            return item
+    return yaml_files[0] if yaml_files else None
+
+
+def _parse_voice_model_yaml_scalars(path: Path | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return {}
+    scalars: dict[str, str] = {}
+    for raw_line in text[:65536].splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        raw_key, raw_value = line.split(":", 1)
+        key = raw_key.strip().strip("'\"").lower().replace("-", "_")
+        if not key or not re.fullmatch(r"[a-z0-9_.]+", key):
+            continue
+        value = raw_value.strip()
+        if not value or value in {"|", ">", "-", "[]", "{}"}:
+            continue
+        if value.startswith("#"):
+            continue
+        if " #" in value:
+            value = value.split(" #", 1)[0].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        value = value.strip()
+        if value:
+            scalars[key] = value
+    return scalars
+
+
+def _first_voice_model_yaml_value(values: Mapping[str, str], *keys: str) -> str:
+    for key in keys:
+        normalized_key = key.strip().lower().replace("-", "_")
+        value = str(values.get(normalized_key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_voice_model_file_from_yaml(folder: Path, value: Any, allowed_suffixes: set[str]) -> Path | None:
+    text = _safe_private_local_path(value)
+    if not text:
+        return None
+    candidate = Path(text).expanduser()
+    try:
+        candidate = candidate.resolve() if candidate.is_absolute() else (folder / text).resolve()
+    except OSError:
+        return None
+    if candidate.suffix.lower() not in allowed_suffixes:
+        return None
+    try:
+        return candidate if candidate.is_file() else None
+    except OSError:
+        return None
+
+
+def _best_voice_model_file(files: list[Path], allowed_suffixes: set[str], preferred_markers: tuple[str, ...]) -> Path | None:
+    candidates = [item for item in files if item.suffix.lower() in allowed_suffixes]
+    if not candidates:
+        return None
+
+    def score(path: Path) -> tuple[int, int, int, str]:
+        name = path.name.lower()
+        marker_index = next((index for index, marker in enumerate(preferred_markers) if marker in name), len(preferred_markers))
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        empty_penalty = 1 if size <= 0 else 0
+        return (marker_index, empty_penalty, size, name)
+
+    return sorted(candidates, key=score)[0]
 
 
 def _infer_mcp_tool_risk(tool_name: str, description: str) -> str:

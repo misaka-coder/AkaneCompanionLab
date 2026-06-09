@@ -19,6 +19,8 @@ from ..local_capability_config import (
     check_provider_health,
     get_approval_policy_config,
     get_mcp_server_runtime_config,
+    get_voice_profile_runtime_config,
+    inspect_gpt_sovits_voice_model_folder,
     list_mcp_server_configs,
     list_provider_configs,
     list_voice_profile_configs,
@@ -719,6 +721,30 @@ def build_capabilities_router(
         status_code = 404 if result.get("status") == "unknown_provider" else 200
         return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
 
+    @router.post("/capabilities/providers/{provider_id}/voice-profiles/inspect-folder")
+    async def inspect_capability_provider_voice_profile_folder(provider_id: str, request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, _profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = await _read_json_object(request)
+        result = await asyncio.to_thread(
+            inspect_gpt_sovits_voice_model_folder,
+            provider_id=provider_id,
+            payload=payload,
+        )
+        ok = bool(result.get("ok"))
+        _observe_request(runtime_metrics, "capabilities.voice_profile_folder_inspect", started_at, ok)
+        _log_best_effort(
+            log_event,
+            "capabilities_voice_profile_folder_inspect",
+            status=result.get("status"),
+            providerId=provider_id,
+            voiceProfileId=result.get("suggestedProfile", {}).get("voiceProfileId")
+            if isinstance(result.get("suggestedProfile"), Mapping)
+            else "",
+            reason=result.get("reason"),
+        )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
     @router.post("/capabilities/providers/{provider_id}/voice-profiles/{voice_profile_id}/config")
     async def write_capability_provider_voice_profile(
         provider_id: str,
@@ -881,7 +907,28 @@ async def _run_provider_tts_test(
         payload.get("voiceProfileId") or payload.get("voice_profile_id") or payload.get("profileId")
     )
     voice_profile = _provider_tts_test_profile_payload(payload)
+    profile_source = "payload" if voice_profile else "none"
+    if voice_profile_id:
+        saved_profile = get_voice_profile_runtime_config(
+            base_dir=base_dir,
+            profile_user_id=profile_user_id,
+            voice_profile_id=voice_profile_id,
+        )
+        if saved_profile.get("providerId") == GPT_SOVITS_PROVIDER_ID:
+            voice_profile = {
+                **saved_profile,
+                **voice_profile,
+            }
+            profile_source = "saved+payload" if profile_source == "payload" else "saved"
+        elif profile_source == "none":
+            profile_source = "missing"
     endpoint = str(endpoint_result.get("endpoint") or "")
+    profile_checks = _provider_tts_test_profile_checks(
+        endpoint=endpoint,
+        voice_profile_id=voice_profile_id,
+        voice_profile=voice_profile,
+        profile_source=profile_source,
+    )
     try:
         if runner is not None:
             result = runner(endpoint=endpoint, text=text, voice_profile_id=voice_profile_id)
@@ -912,6 +959,23 @@ async def _run_provider_tts_test(
             "status": "invalid_config",
             "providerId": provider_id,
             "reason": "provider_tts_test_invalid_config",
+            "voiceProfileId": voice_profile_id,
+            "profileApplied": bool(voice_profile),
+            "profileSource": profile_source,
+            "checks": profile_checks,
+            "refresh": False,
+        }
+    except RuntimeError as exc:
+        reason = str(exc) if str(exc) == "provider_tts_test_empty_audio" else "provider_tts_test_failed"
+        return {
+            "ok": False,
+            "status": "tts-test-failed",
+            "providerId": provider_id,
+            "reason": reason,
+            "voiceProfileId": voice_profile_id,
+            "profileApplied": bool(voice_profile),
+            "profileSource": profile_source,
+            "checks": profile_checks,
             "refresh": False,
         }
     except Exception:
@@ -920,6 +984,10 @@ async def _run_provider_tts_test(
             "status": "tts-test-failed",
             "providerId": provider_id,
             "reason": "provider_tts_test_failed",
+            "voiceProfileId": voice_profile_id,
+            "profileApplied": bool(voice_profile),
+            "profileSource": profile_source,
+            "checks": profile_checks,
             "refresh": False,
         }
 
@@ -941,6 +1009,8 @@ async def _run_provider_tts_test(
         "textLength": len(text),
         "voiceProfileId": voice_profile_id,
         "profileApplied": bool(voice_profile),
+        "profileSource": profile_source,
+        "checks": profile_checks,
         "refresh": False,
     }
 
@@ -1025,6 +1095,23 @@ def _provider_tts_test_profile_payload(payload: Mapping[str, Any]) -> dict[str, 
     if text_split_method:
         profile["textSplitMethod"] = text_split_method
     return profile
+
+
+def _provider_tts_test_profile_checks(
+    *,
+    endpoint: str,
+    voice_profile_id: str,
+    voice_profile: Mapping[str, Any],
+    profile_source: str,
+) -> dict[str, bool | str]:
+    return {
+        "endpoint": bool(str(endpoint or "").strip()),
+        "voiceProfileId": bool(str(voice_profile_id or "").strip()),
+        "profileApplied": bool(voice_profile),
+        "profileSource": str(profile_source or "none")[:40],
+        "refAudio": bool(str(voice_profile.get("refAudioPath") or "").strip()),
+        "promptText": bool(str(voice_profile.get("promptText") or "").strip()),
+    }
 
 
 def _safe_provider_tts_profile_id(value: Any) -> str:
