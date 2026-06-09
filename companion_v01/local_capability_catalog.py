@@ -10,11 +10,11 @@ from typing import Any, Mapping
 
 from .capability_registry import CapabilityRegistry
 from .local_capability_config import (
+    apply_approval_policy_to_entry,
     build_mcp_server_config_entry,
     build_mcp_tool_config_entry,
     build_provider_config_entry,
     build_workflow_config_entry,
-    with_capability_approval_metadata,
     CONFIGURABLE_PROVIDER_SPECS,
     CONFIGURABLE_WORKFLOW_SPECS,
 )
@@ -61,6 +61,7 @@ TOOL_GROUPS: dict[str, str] = {
     "manage_generated_file": "generated_files",
     "web_search": "web",
     "open_browser": "desktop_browser",
+    "browser_page": "desktop_browser",
 }
 
 TOOL_USED_BY: dict[str, list[str]] = {
@@ -71,6 +72,7 @@ TOOL_USED_BY: dict[str, list[str]] = {
     "send_sticker": ["agent", "qq_text"],
     "web_search": ["agent", "desktop_pet", "qq_text", "web_scene"],
     "open_browser": ["agent", "desktop_pet"],
+    "browser_page": ["agent", "desktop_pet"],
 }
 
 LOW_RISK_TOOLS = {
@@ -104,6 +106,7 @@ MEDIUM_RISK_TOOLS = {
     "delegate_task",
     "manage_persona",
     "open_browser",
+    "browser_page",
     "manage_gift",
     "manage_artifact",
 }
@@ -151,6 +154,7 @@ def build_local_capability_catalog(
     provider_configs: Mapping[str, Any] | None = None,
     workflow_configs: Mapping[str, Any] | None = None,
     mcp_server_configs: Mapping[str, Any] | None = None,
+    approval_policy: Mapping[str, Any] | None = None,
     character_voice: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     entries = []
@@ -161,7 +165,7 @@ def build_local_capability_catalog(
     entries.extend(_build_workflow_entries(configurable_provider_entries, workflow_configs or {}))
     entries.extend(_build_mcp_entries(mcp_server_configs or {}))
     entries.extend(_build_prompt_module_entries())
-    entries = [with_capability_approval_metadata(entry) for entry in entries]
+    entries = [apply_approval_policy_to_entry(entry, approval_policy) for entry in entries]
     entries = sorted(entries, key=lambda item: (str(item.get("kind") or ""), str(item.get("id") or "")))
     resolutions = _build_voice_provider_resolutions(entries, character_voice=character_voice)
 
@@ -187,10 +191,11 @@ def build_local_workflow_catalog(
     profile_user_id: str = "",
     provider_configs: Mapping[str, Any] | None = None,
     workflow_configs: Mapping[str, Any] | None = None,
+    approval_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider_entries = _build_configurable_provider_entries(provider_configs or {})
     workflows = _build_workflow_entries(provider_entries, workflow_configs or {})
-    workflows = [with_capability_approval_metadata(entry) for entry in workflows]
+    workflows = [apply_approval_policy_to_entry(entry, approval_policy) for entry in workflows]
     return {
         "ok": True,
         "status": "available",
@@ -209,7 +214,7 @@ def build_local_workflow_catalog(
 
 def probe_known_local_services(*, timeout_seconds: float = 0.35) -> dict[str, Any]:
     services = [
-        with_capability_approval_metadata(_probe_local_service(target, timeout_seconds=timeout_seconds))
+        apply_approval_policy_to_entry(_probe_local_service(target, timeout_seconds=timeout_seconds), None)
         for target in KNOWN_LOCAL_SERVICE_PROBES
     ]
     return {
@@ -230,26 +235,29 @@ def _build_backend_tool_entries(tool_handlers: Mapping[str, Any]) -> list[dict[s
     for tool_name in sorted(str(name or "").strip() for name in tool_handlers.keys()):
         if not tool_name:
             continue
+        status = _tool_runtime_status(tool_handlers.get(tool_name))
         group = TOOL_GROUPS.get(tool_name, "backend")
-        entries.append(
-            {
-                "id": f"tool.{tool_name}",
-                "kind": "tool",
-                "type": "tool",
-                "source": "backend_tool",
-                "adapter": TOOL_RUNTIME_ADAPTER,
-                "executionMode": "internal",
-                "toolType": tool_name,
-                "name": _humanize_tool_name(tool_name),
-                "description": _tool_description(tool_name, group),
-                "group": group,
-                "enabled": True,
-                "status": "ready",
-                "risk": _tool_risk(tool_name),
-                "requiresConfirmation": False,
-                "usedBy": TOOL_USED_BY.get(tool_name, ["agent"]),
-            }
-        )
+        entry = {
+            "id": f"tool.{tool_name}",
+            "kind": "tool",
+            "type": "tool",
+            "source": "backend_tool",
+            "adapter": TOOL_RUNTIME_ADAPTER,
+            "executionMode": "internal",
+            "toolType": tool_name,
+            "name": _humanize_tool_name(tool_name),
+            "description": _tool_description(tool_name, group),
+            "group": group,
+            "enabled": bool(status.get("enabled")),
+            "status": str(status.get("status") or "ready"),
+            "risk": _tool_risk(tool_name),
+            "requiresConfirmation": False,
+            "usedBy": TOOL_USED_BY.get(tool_name, ["agent"]),
+        }
+        reason = str(status.get("reason") or "").strip()
+        if reason:
+            entry["reason"] = reason
+        entries.append(entry)
     return entries
 
 
@@ -725,7 +733,26 @@ def _tool_risk(tool_name: str) -> str:
 
 
 def _tool_description(tool_name: str, group: str) -> str:
+    if tool_name == "browser_page":
+        return "Visible Akane-managed browser window with accessibility snapshots, visible link/video candidates, element refs, scrolling, and approval-gated click/fill/press actions."
     return f"Built-in Akane backend tool `{tool_name}` in the `{group}` capability group."
+
+
+def _tool_runtime_status(handler: Any) -> dict[str, Any]:
+    status_fn = getattr(handler, "capability_status", None)
+    if callable(status_fn):
+        try:
+            status = status_fn()
+        except Exception:
+            return {"enabled": False, "status": "unavailable", "reason": "tool_status_failed"}
+        if isinstance(status, Mapping):
+            normalized_status = str(status.get("status") or "ready").strip() or "ready"
+            return {
+                "enabled": bool(status.get("enabled", normalized_status not in {"disabled", "unavailable", "missing_executor"})),
+                "status": normalized_status,
+                "reason": str(status.get("reason") or "").strip()[:160],
+            }
+    return {"enabled": True, "status": "ready", "reason": ""}
 
 
 def _humanize_tool_name(tool_name: str) -> str:

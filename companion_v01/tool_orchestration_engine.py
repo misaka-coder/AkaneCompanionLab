@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Mapping
 
 import config
 
@@ -10,13 +10,73 @@ from .client_protocol import ClientMode
 from .tool_runtime import ToolExecutionContext
 
 
-def max_tool_rounds() -> int:
-    raw_value = getattr(config, "MAX_TOOL_ROUNDS", 3)
+def _bounded_int(raw_value: Any, *, default: int, lower: int = 1, upper: int = 12) -> int:
     try:
         value = int(raw_value)
     except Exception:
-        value = 3
-    return max(1, min(5, value))
+        value = default
+    return max(lower, min(upper, value))
+
+
+def max_tool_rounds() -> int:
+    return _bounded_int(getattr(config, "MAX_TOOL_ROUNDS", 3), default=3, lower=1, upper=5)
+
+
+def _configured_family_budget(family: str, *, fallback: int) -> int:
+    clean_family = str(family or "").strip()
+    if clean_family == "web_research":
+        return _bounded_int(getattr(config, "MAX_WEB_RESEARCH_TOOL_ROUNDS", fallback), default=fallback)
+    if clean_family == "browser_control":
+        return _bounded_int(getattr(config, "MAX_BROWSER_TOOL_ROUNDS", fallback), default=fallback)
+    return _bounded_int(fallback, default=max_tool_rounds())
+
+
+def tool_metadata_dict(handler: Any, *, tool_type: str = "") -> dict[str, Any]:
+    raw_metadata: Any = None
+    if handler is not None and hasattr(handler, "tool_metadata"):
+        try:
+            raw_metadata = handler.tool_metadata()
+        except Exception:
+            raw_metadata = None
+    if isinstance(raw_metadata, Mapping):
+        metadata = dict(raw_metadata)
+    elif raw_metadata is not None:
+        metadata = {
+            "family": getattr(raw_metadata, "family", ""),
+            "operation": getattr(raw_metadata, "operation", ""),
+            "risk": getattr(raw_metadata, "risk", ""),
+            "default_round_budget": getattr(raw_metadata, "default_round_budget", 3),
+            "background": getattr(raw_metadata, "background", False),
+        }
+    else:
+        metadata = {}
+    metadata["tool_type"] = str(tool_type or getattr(handler, "tool_type", "") or "").strip()
+    metadata["family"] = str(metadata.get("family") or "general").strip() or "general"
+    metadata["operation"] = str(metadata.get("operation") or "mixed").strip() or "mixed"
+    metadata["risk"] = str(metadata.get("risk") or "medium").strip() or "medium"
+    metadata["default_round_budget"] = _bounded_int(
+        metadata.get("default_round_budget", 3),
+        default=max_tool_rounds(),
+    )
+    metadata["background"] = bool(metadata.get("background"))
+    return metadata
+
+
+def resolve_tool_round_budget(
+    handlers: Mapping[str, Any],
+    tool_call: Mapping[str, Any],
+    *,
+    current_budget: int | None = None,
+) -> int:
+    base_budget = max_tool_rounds() if current_budget is None else _bounded_int(current_budget, default=max_tool_rounds())
+    tool_type = str((tool_call or {}).get("type") or "").strip()
+    if not tool_type:
+        return base_budget
+    handler = handlers.get(tool_type) if isinstance(handlers, Mapping) else None
+    metadata = tool_metadata_dict(handler, tool_type=tool_type)
+    fallback = max(base_budget, int(metadata.get("default_round_budget") or base_budget))
+    family_budget = _configured_family_budget(str(metadata.get("family") or ""), fallback=fallback)
+    return max(base_budget, family_budget)
 
 
 def tool_call_signature(tool_call: dict[str, Any]) -> str:
@@ -41,7 +101,12 @@ def describe_tool_call_for_prompt(tool_call: dict[str, Any]) -> str:
         return f"{tool_type} {details!r}"[:500]
 
 
-def build_multi_tool_followup_context(tool_followups: list[str], *, allow_more: bool) -> str:
+def build_multi_tool_followup_context(
+    tool_followups: list[str],
+    *,
+    allow_more: bool,
+    stop_reason: str = "",
+) -> str:
     lines: list[str] = ["【本轮工具执行记录】"]
     if tool_followups:
         lines.extend([str(item).strip() for item in tool_followups if str(item).strip()])
@@ -50,9 +115,12 @@ def build_multi_tool_followup_context(tool_followups: list[str], *, allow_more: 
     if allow_more:
         lines.append(
             "如果任务还没完成，可以继续在 tool_call 字段调用下一步必要工具；"
-            "如果结果已经足够，请将 tool_call 设为 null，并自然回复主人。"
+            "如果用户已经明确交代了下一步，且下一步仍在安全边界和授权范围内，不要为了确认而停下询问；"
+            "如果结果已经足够、下一步不明确、或遇到真实阻塞，请将 tool_call 设为 null，并自然回复主人。"
         )
     else:
+        if str(stop_reason or "").strip() == "tool_budget_exhausted":
+            lines.append("本轮工具预算已经用完；请停止继续调用工具，基于已有搜索、网页或操作结果直接总结。")
         lines.append("本轮不要再调用工具，请将 tool_call 设为 null，并基于已有结果自然回复主人。")
     return "\n\n".join(lines)
 

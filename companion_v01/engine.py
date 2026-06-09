@@ -48,7 +48,7 @@ from . import task_workspace_engine
 from .task_worker import TaskWorkerService
 from .task_worker_tool import DelegateTaskToolHandler
 from . import tool_orchestration_engine
-from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, OpenBrowserToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler, WebSearchToolHandler
+from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, BrowserPageToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, OpenBrowserToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler, WebSearchToolHandler
 from . import visual_context_engine
 from .vision_service import VisionObservationService
 from .store import MemoryStore
@@ -1457,12 +1457,13 @@ class AkaneMemoryEngine:
         tool_followups: list[str] = []
         seen_tool_calls: set[str] = set()
         max_tool_rounds = self._max_tool_rounds()
+        tool_round_index = 0
         memory_exclude_source_ids = [
             str(hit.get("source_id") or "").strip()
             for hit in retrieval_result.get("fused_hits", [])
             if str(hit.get("source_id") or "").strip()
         ]
-        for tool_round_index in range(max_tool_rounds):
+        while tool_round_index < max_tool_rounds:
             final_output = self._promote_narrated_tool_call(
                 final_output,
                 user_message=user_message,
@@ -1478,6 +1479,13 @@ class AkaneMemoryEngine:
             )
             if not tool_call:
                 break
+            max_tool_rounds = self._resolve_tool_round_budget(
+                current_budget=max_tool_rounds,
+                tool_call=tool_call,
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
 
             tool_signature = self._tool_call_signature(tool_call)
             if tool_signature in seen_tool_calls:
@@ -1599,7 +1607,11 @@ class AkaneMemoryEngine:
                 current_visual_payload=payload.get("current_visual"),
                 extra_user_context=self._merge_extra_user_context(
                     turn_extra_user_context,
-                    self._build_multi_tool_followup_context(tool_followups, allow_more=allow_more_tools),
+                    self._build_multi_tool_followup_context(
+                        tool_followups,
+                        allow_more=allow_more_tools,
+                        stop_reason="tool_budget_exhausted" if not allow_more_tools else "",
+                    ),
                 ),
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
@@ -1608,6 +1620,7 @@ class AkaneMemoryEngine:
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
             )
+            tool_round_index += 1
 
         final_output = self._apply_persona_state_to_final_output(
             profile_user_id=profile_user_id,
@@ -1828,12 +1841,13 @@ class AkaneMemoryEngine:
         tool_followups: list[str] = []
         seen_tool_calls: set[str] = set()
         max_tool_rounds = self._max_tool_rounds()
+        tool_round_index = 0
         memory_exclude_source_ids = [
             str(hit.get("source_id") or "").strip()
             for hit in retrieval_result.get("fused_hits", [])
             if str(hit.get("source_id") or "").strip()
         ]
-        for tool_round_index in range(max_tool_rounds):
+        while tool_round_index < max_tool_rounds:
             final_output = self._promote_narrated_tool_call(
                 final_output,
                 user_message=user_message,
@@ -1854,6 +1868,13 @@ class AkaneMemoryEngine:
             }
             if not tool_call:
                 break
+            max_tool_rounds = self._resolve_tool_round_budget(
+                current_budget=max_tool_rounds,
+                tool_call=tool_call,
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
 
             tool_signature = self._tool_call_signature(tool_call)
             if tool_signature in seen_tool_calls:
@@ -1977,7 +1998,11 @@ class AkaneMemoryEngine:
                 current_visual_payload=payload.get("current_visual"),
                 extra_user_context=self._merge_extra_user_context(
                     turn_extra_user_context,
-                    self._build_multi_tool_followup_context(tool_followups, allow_more=allow_more_tools),
+                    self._build_multi_tool_followup_context(
+                        tool_followups,
+                        allow_more=allow_more_tools,
+                        stop_reason="tool_budget_exhausted" if not allow_more_tools else "",
+                    ),
                 ),
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
@@ -1986,6 +2011,7 @@ class AkaneMemoryEngine:
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
             )
+            tool_round_index += 1
 
         final_output = self._apply_persona_state_to_final_output(
             profile_user_id=profile_user_id,
@@ -2675,6 +2701,25 @@ class AkaneMemoryEngine:
     def _max_tool_rounds(self) -> int:
         return tool_orchestration_engine.max_tool_rounds()
 
+    def _resolve_tool_round_budget(
+        self,
+        *,
+        current_budget: int,
+        tool_call: dict[str, Any],
+        client_context: ClientProtocolContext | None = None,
+        profile_user_id: str = "",
+        session_id: str = "",
+    ) -> int:
+        return tool_orchestration_engine.resolve_tool_round_budget(
+            self._resolve_tool_handlers(
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            ),
+            tool_call,
+            current_budget=current_budget,
+        )
+
     def _tool_call_signature(self, tool_call: dict[str, Any]) -> str:
         return tool_orchestration_engine.tool_call_signature(tool_call)
 
@@ -2749,10 +2794,17 @@ class AkaneMemoryEngine:
     def _compact_task_workspace_for_event(self, task: dict[str, Any]) -> dict[str, Any]:
         return task_workspace_engine.compact_task_workspace_for_event(task)
 
-    def _build_multi_tool_followup_context(self, tool_followups: list[str], *, allow_more: bool) -> str:
+    def _build_multi_tool_followup_context(
+        self,
+        tool_followups: list[str],
+        *,
+        allow_more: bool,
+        stop_reason: str = "",
+    ) -> str:
         return tool_orchestration_engine.build_multi_tool_followup_context(
             tool_followups,
             allow_more=allow_more,
+            stop_reason=stop_reason,
         )
 
     def _normalize_memory_tags(self, value: Any) -> list[str]:
@@ -2944,6 +2996,7 @@ class AkaneMemoryEngine:
                 config_base_dir=Path(getattr(config, "DATA_DIR", "users_data") or "users_data"),
             ),
             "open_browser": OpenBrowserToolHandler(),
+            "browser_page": BrowserPageToolHandler(),
         }
 
     def _resolve_tool_handlers(

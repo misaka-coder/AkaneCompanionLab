@@ -114,6 +114,7 @@ export const CONTROL_CENTER_ACTION_SURFACES = Object.freeze([
   clientHandled("abilities", CONTROL_CENTER_ACTIONS.abilitiesMcpConfigOpen, "Local toggle: expands MCP server configuration details."),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave, "backend-route", "POST /capabilities/mcp-servers/{serverId}/config"),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover, "backend-route", "POST /capabilities/mcp-servers/{serverId}/discover"),
+  bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave, "backend-route", "POST /capabilities/approval-policy"),
   clientHandled("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigOpen, "Local toggle: expands local workflow binding details."),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave, "backend-route", "POST /capabilities/workflows/{workflowId}/config"),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport, "backend-route", "POST /capabilities/workflows/{workflowId}/file"),

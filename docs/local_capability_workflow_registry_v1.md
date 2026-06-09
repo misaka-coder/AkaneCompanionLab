@@ -114,6 +114,30 @@ Phase 7A adds the first desktop browser action boundary: Akane exposes
 itself; it emits a `browser_open_requested` tool event for a public `http/https`
 URL, and the Tauri desktop client validates and opens it through the system
 browser. It does not read pages, click, download, upload, or fill forms.
+Phase 7E adds the first managed browser boundary: Akane exposes `browser_page`
+only in desktop-pet mode. It operates on an Akane-owned visible browser window
+and supports only public URL navigation, current-page status, bounded page
+state snapshots, page scrolling, and visible element summaries. The primary
+observation surface is a visible link/video candidate list plus a Playwright
+accessibility snapshot with element refs, filtered toward the current viewport
+so scrolling changes what the model sees.
+Playwright is optional; when the local
+runtime does not have it installed, the tool reports `missing_executor` /
+`playwright_not_installed` instead of pretending to read the page. It still does
+not control the user's already-open browser tabs, log in, download, upload,
+expose JavaScript execution, or read private/local URLs.
+Phase 7F adds the first controlled browser action boundary behind the same
+`browser_page` tool: `click`, `fill`, and `press` can execute only when the
+profile approval policy is `trusted_auto_allow` or a future injected approval
+checker accepts the action. The default `ask_each_time` policy returns a
+structured `capability_approval_required` event and does not touch the page.
+Control actions keep hard selector/text/key validation and still do not support
+login, payment, order, delete, publish, upload, download, file picker, or
+JavaScript evaluation.
+Click actions may target a current visible candidate by 1-based
+`candidate_index`; the runner resolves that candidate to a public URL and
+navigates directly. This is preferred for dynamic video/card pages where DOM
+click behavior or popup handling is unreliable.
 
 Files:
 
@@ -131,6 +155,8 @@ Files:
     metadata.
 - `companion_v01/routes/capabilities.py`
   - `GET /capabilities`
+  - `GET /capabilities/approval-policy`
+  - `POST /capabilities/approval-policy`
   - `GET /capabilities/approval-requests`
   - `POST /capabilities/approval-requests`
   - `GET /capabilities/approval-requests/{requestId}`
@@ -2761,6 +2787,102 @@ Implemented Phase 7C foundation:
 - This still does not execute browser click/form-fill/download/upload or raw
   MCP tools. Those actions require a later binding that consumes approval grants
   and revalidates the actual operation.
+
+Implemented Phase 7D profile policy:
+
+- The profile-scoped capability config stores `approvalPolicy.defaultMode`.
+  The default is conservative: `ask_each_time`.
+- `GET /capabilities/approval-policy` returns the public policy summary and the
+  two supported global modes: `ask_each_time` ("请求批准") and
+  `trusted_auto_allow` ("完全访问").
+- `POST /capabilities/approval-policy` saves only the selected `defaultMode`.
+  Unknown modes return `invalid_config`; arbitrary extra payload fields are not
+  persisted.
+- `/capabilities` and `/capabilities/workflows` apply the policy when projecting
+  public catalog entries. When the policy is `trusted_auto_allow`, high-risk or
+  confirmation-required ready entries are reported as
+  `approvalMode: "trusted_auto_allow"` with
+  `approvalReason: "user_policy_trusted_auto_allow"`.
+- Disabled/not-ready entries remain `approvalMode: "disabled"` regardless of
+  policy. "完全访问" skips per-call approval only; it does not bypass public URL
+  validation, safe-handle path policy, local/private address restrictions,
+  secret redaction, config validation, or missing-runner checks.
+- The control center abilities safety panel exposes the two-mode policy switch
+  through `abilities.approvalPolicy.save`, a dedicated backend-route action for
+  `POST /capabilities/approval-policy`.
+
+Implemented Phase 7E managed browser read V1:
+
+- `BrowserPageToolHandler` exposes `browser_page` as a prompt-visible tool only
+  for desktop-pet mode through the `desktop_browser` capability layer.
+- Tool selection is intentionally split: `web_search` finds candidate public
+  pages and extracts public page text without opening a browser window,
+  `open_browser` opens a selected URL in the user's system browser without
+  reading it, and `browser_page` opens/operates an Akane-managed visible
+  browser window for model context. The managed window is not the user's
+  arbitrary already-open Edge/Chrome tab. `open_for_user:true` remains a
+  compatibility flag for also emitting a separate `browser_open_requested`
+  event, but it is normally unnecessary when the intended surface is the
+  managed browser window.
+- Supported read actions are `navigate`, `read_text`, `current`, `snapshot`,
+  `scroll`, and `elements`. `navigate` requires a public `http` / `https` URL.
+  `read_text` can either read the current Akane-managed browser window or
+  navigate to a supplied public URL first. `snapshot` returns the current page
+  state without navigating. `scroll` only scrolls the managed window and returns
+  a bounded page-state snapshot after scrolling. `elements` returns a bounded
+  visible link/button/input summary for orientation before any future approved
+  action.
+- Page-state snapshots use Playwright's accessibility snapshot in AI mode with
+  element refs such as `[ref=e12]`, filtered by viewport box coordinates when
+  available. This follows the browser-agent pattern used by Playwright MCP /
+  browser-use style tools: observe the page, pick a ref, then act on that ref.
+- Snapshots also prepend a bounded `Visible link/video candidates` list. A
+  click action can pass `candidate_index` to open one of those visible public
+  links directly, which is the preferred path for Bilibili-style video cards.
+- Browser Control V1 adds high-risk actions `click`, `fill`, and `press`.
+  `click` requires a `candidate_index`, snapshot ref, or bounded selector;
+  `fill` requires either a snapshot ref or a bounded selector plus bounded text;
+  `press` accepts a snapshot ref/selector plus only a small key whitelist such
+  as Enter, Escape, Tab, arrow keys, PageUp/PageDown, Home, and End.
+  Secret-looking selectors/text, password/token fields, and obvious
+  destructive/login/payment/upload/download targets are rejected before any
+  approval policy is considered.
+- By default, high-risk control actions return a `capability_approval_required`
+  stream event with safe payload preview and no page side effect. If the
+  profile policy is switched to `trusted_auto_allow`, the same actions execute
+  through the managed Playwright page while preserving the selector/text/key
+  validation. A future approval-grant binding can be injected through
+  `approval_checker` without exposing raw MCP browser tools to the prompt.
+- The tool rejects localhost, private IPs, `.local` hosts, `file:` paths,
+  credential-bearing URLs, whitespace/control-character URLs, and obvious
+  secret-bearing query parameters such as `token=` or `api_key=`.
+- Execution uses `ManagedBrowserPageRunner`, a small optional Playwright runner
+  serialized through a single worker thread. By default it launches a visible
+  browser window, using the system Edge channel on Windows and falling back to
+  bundled Chromium when the channel is unavailable. Playwright is not a hard
+  project dependency; missing runtime support returns structured `unavailable`
+  / `playwright_not_installed` followup context.
+- Stream events include only action/status/title/URL metadata. Page body text
+  appears only in bounded followup context for the model continuation and is
+  sanitized for common secret/header/local-path patterns.
+- The capability catalog reads `capability_status()` from tool handlers when
+  available, so `browser_page` can appear as `missing_executor` until the local
+  browser runner is installed.
+- `python scripts/probe_browser_page.py` probes the current runtime. Without
+  Playwright installed it exits successfully with `missing_executor` metadata;
+  add `--require-ready` when a real browser read must be treated as mandatory.
+  The probe supports `--action scroll`, `--action elements`, and
+  `--candidate-index` for candidate-based click checks; when a URL is supplied
+  for current-page actions, it first navigates to the URL and then performs the
+  requested action.
+- On Windows, `powershell -ExecutionPolicy Bypass -File scripts/install_browser_page_runner.ps1`
+  installs the optional Playwright/Chromium runner into the project `.venv` when
+  present, then runs the mandatory probe. This is an explicit local setup step;
+  the backend does not install browser binaries by itself.
+- Full arbitrary browser automation remains out of scope. Upload, download,
+  file picker, JavaScript evaluation, login/payment/order/destructive flows, and
+  arbitrary MCP browser tools still require a later stronger approval-grant
+  execution binding.
 
 ### Phase 8: Local Plugin System
 

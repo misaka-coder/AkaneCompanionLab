@@ -71,6 +71,7 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   abilitiesMcpConfigOpen: "abilities.mcp.config.open",
   abilitiesMcpConfigSave: "abilities.mcp.config.save",
   abilitiesMcpDiscover: "abilities.mcp.discover",
+  abilitiesApprovalPolicySave: "abilities.approvalPolicy.save",
   abilitiesWorkflowConfigOpen: "abilities.workflow.config.open",
   abilitiesWorkflowConfigSave: "abilities.workflow.config.save",
   abilitiesWorkflowFileImport: "abilities.workflow.file.import",
@@ -142,6 +143,7 @@ export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileSave,
   CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave,
   CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover,
+  CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave,
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave,
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport,
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate

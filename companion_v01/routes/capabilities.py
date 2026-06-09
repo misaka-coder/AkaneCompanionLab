@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, Response
 from ..capability_approval import CapabilityApprovalStore
 from ..local_capability_config import (
     check_provider_health,
+    get_approval_policy_config,
     get_mcp_server_runtime_config,
     list_mcp_server_configs,
     list_provider_configs,
@@ -28,6 +29,7 @@ from ..local_capability_config import (
     save_provider_config,
     save_mcp_server_config,
     save_mcp_server_discovery,
+    save_approval_policy_config,
     save_voice_profile_config,
     validate_workflow_config,
     validate_workflow_runtime_binding,
@@ -107,6 +109,7 @@ def build_capabilities_router(
             provider_configs=provider_config.get("providers", {}),
             workflow_configs=provider_config.get("workflows", {}),
             mcp_server_configs=provider_config.get("mcpServers", {}),
+            approval_policy=provider_config.get("approvalPolicy", {}),
             character_voice=character_voice,
         )
         _mark_workflows_execution_ready(
@@ -118,6 +121,10 @@ def build_capabilities_router(
         )
         payload["providerConfigStatus"] = provider_config.get("configStatus") or "available"
         payload["providerConfigWarnings"] = list(provider_config.get("warnings") or [])
+        payload["approvalPolicy"] = get_approval_policy_config(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+        )["approvalPolicy"]
         _observe_request(runtime_metrics, "capabilities.catalog", started_at, True)
         _log_best_effort(
             log_event,
@@ -126,6 +133,45 @@ def build_capabilities_router(
             total=payload.get("summary", {}).get("total"),
         )
         return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    @router.get("/capabilities/approval-policy")
+    async def read_capability_approval_policy(request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = get_approval_policy_config(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+        )
+        _observe_request(runtime_metrics, "capabilities.approval_policy", started_at, True)
+        _log_best_effort(
+            log_event,
+            "capabilities_approval_policy",
+            status=payload.get("status"),
+            defaultMode=payload.get("approvalPolicy", {}).get("defaultMode"),
+        )
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    @router.post("/capabilities/approval-policy")
+    async def write_capability_approval_policy(request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        payload = await _read_json_object(request)
+        result = save_approval_policy_config(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+            payload=payload,
+        )
+        ok = bool(result.get("ok"))
+        _observe_request(runtime_metrics, "capabilities.approval_policy_save", started_at, ok)
+        _log_best_effort(
+            log_event,
+            "capabilities_approval_policy_save",
+            status=result.get("status"),
+            reason=result.get("reason"),
+            defaultMode=result.get("approvalPolicy", {}).get("defaultMode"),
+        )
+        status_code = 400 if result.get("status") == "invalid_config" else 200
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
 
     @router.post("/capabilities/music/lyrics")
     async def resolve_music_lyrics(request: Request) -> JSONResponse:
@@ -344,6 +390,7 @@ def build_capabilities_router(
             profile_user_id=profile_user_id,
             provider_configs=provider_config.get("providers", {}),
             workflow_configs=provider_config.get("workflows", {}),
+            approval_policy=provider_config.get("approvalPolicy", {}),
         )
         _mark_workflows_execution_ready(
             payload,

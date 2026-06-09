@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import ipaddress
 import inspect
 import json
@@ -14,7 +15,8 @@ from urllib.parse import urlparse
 
 import config
 
-from .local_capability_config import get_mcp_server_runtime_config
+from .browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner
+from .local_capability_config import get_approval_policy_config, get_mcp_server_runtime_config
 from .mcp_stdio_discoverer import McpStdioDiscoveryError, McpStdioToolCaller
 from .npc_runtime import GenericNPCRuntime
 from .store import MemoryStore
@@ -43,8 +45,61 @@ class ToolExecutionResult:
     state_updates: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ToolMetadata:
+    family: str = "general"
+    operation: str = "mixed"
+    risk: str = "medium"
+    default_round_budget: int = 3
+    background: bool = False
+
+
+TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
+    "retrieve_memory": ToolMetadata(family="memory", operation="read", risk="low", default_round_budget=3),
+    "set_reminder": ToolMetadata(family="reminder", operation="control", risk="low", default_round_budget=3),
+    "list_reminders": ToolMetadata(family="reminder", operation="read", risk="low", default_round_budget=3),
+    "cancel_reminder": ToolMetadata(family="reminder", operation="control", risk="low", default_round_budget=3),
+    "call_npc": ToolMetadata(family="web_scene", operation="mixed", risk="low", default_round_budget=3),
+    "check_inventory": ToolMetadata(family="web_scene", operation="read", risk="low", default_round_budget=3),
+    "manage_gift": ToolMetadata(family="web_scene", operation="control", risk="low", default_round_budget=3),
+    "manage_artifact": ToolMetadata(family="web_scene", operation="control", risk="low", default_round_budget=3),
+    "manage_persona": ToolMetadata(family="persona", operation="control", risk="medium", default_round_budget=3),
+    "manage_task_workspace": ToolMetadata(family="task_workspace", operation="control", risk="medium", default_round_budget=3),
+    "delegate_task": ToolMetadata(family="background_task", operation="background", risk="medium", default_round_budget=3, background=True),
+    "web_search": ToolMetadata(family="web_research", operation="read", risk="low", default_round_budget=8),
+    "open_browser": ToolMetadata(family="browser_control", operation="control", risk="medium", default_round_budget=6),
+    "browser_page": ToolMetadata(family="browser_control", operation="mixed", risk="medium", default_round_budget=10),
+    "fetch_media_from_url": ToolMetadata(family="media_fetch", operation="control", risk="medium", default_round_budget=4),
+    "sync_attachment_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
+    "inspect_attachment": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
+    "retry_attachment": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=3),
+    "clear_attachment_focus": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=3),
+    "read_attachment_section": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
+    "compose_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4),
+    "revise_generated_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4),
+    "apply_style_to_existing_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4),
+    "inspect_generated_file": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
+    "manage_generated_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=3),
+    "send_file": ToolMetadata(family="file_handoff", operation="control", risk="medium", default_round_budget=3),
+    "send_generated_file": ToolMetadata(family="file_handoff", operation="control", risk="medium", default_round_budget=3),
+    "send_sticker": ToolMetadata(family="social_delivery", operation="control", risk="low", default_round_budget=3),
+    "inspect_media_info": ToolMetadata(family="media_workbench", operation="read", risk="low", default_round_budget=3),
+    "separate_audio_stems": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True),
+    "clean_voice_track": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True),
+    "transcribe_media": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True),
+    "prepare_voice_dataset": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True),
+    "convert_media_file": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True),
+}
+
+
 class BaseToolHandler:
     tool_type: str = ""
+
+    def tool_metadata(self) -> ToolMetadata:
+        metadata = TOOL_METADATA_BY_TYPE.get(str(self.tool_type or "").strip())
+        if metadata is not None:
+            return metadata
+        return ToolMetadata()
 
     def build_prompt_instruction(self) -> str:
         raise NotImplementedError
@@ -1193,6 +1248,8 @@ class OpenBrowserToolHandler(BaseToolHandler):
             "- open_browser：仅当用户明确要求你打开一个公开网页 URL 时使用。"
             "格式为 {\"type\":\"open_browser\",\"url\":\"https://...\",\"reason\":\"为什么打开\"}。"
             "它只会向桌宠前端请求打开系统浏览器，不读取网页、不点击、不下载、不填写表单。"
+            "当用户说“打开给我看”“用浏览器打开”“打开这个链接/页面”时，优先使用 open_browser；"
+            "如果还要你自己读取、滚动或操作页面，则用 browser_page 打开 Akane 托管浏览器窗口。"
             "不要用它打开 localhost、内网地址、file 路径、登录页、付费页、用户私密链接或不确定的网址；"
             "如果用户只是要你查资料，优先用 web_search，而不是直接打开浏览器。"
         )
@@ -1232,6 +1289,7 @@ class OpenBrowserToolHandler(BaseToolHandler):
             followup_context=(
                 f"你刚刚请求桌宠打开这个公开网页：{url}。"
                 "如果桌宠端可用，它会交给系统浏览器打开；不要声称你已经读取了网页内容。"
+                "如果接下来还需要你自己读取页面正文，请另外调用 browser_page。"
             ),
             state_updates={"browser_open_requested": True},
         )
@@ -1263,6 +1321,572 @@ class OpenBrowserToolHandler(BaseToolHandler):
         return bool(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved)
 
 
+class BrowserPageToolHandler(BaseToolHandler):
+    tool_type = "browser_page"
+
+    ALLOWED_ACTIONS = {"navigate", "read_text", "current", "snapshot", "scroll", "elements", "click", "fill", "press"}
+    CONTROL_ACTIONS = {"click", "fill", "press"}
+    CONTROL_ACTION_ID_PREFIX = "browser_page"
+    ALLOWED_PRESS_KEYS = {
+        "Enter",
+        "Escape",
+        "Tab",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowRight",
+        "PageDown",
+        "PageUp",
+        "Home",
+        "End",
+    }
+    SECRET_MARKERS = ("api_key", "apikey", "authorization", "bearer", "cookie", "password", "secret", "token")
+    MAX_TEXT_CHARS = 5000
+    MAX_ELEMENT_LIMIT = 40
+    MAX_SELECTOR_CHARS = 220
+    MAX_FILL_TEXT_CHARS = 500
+
+    def __init__(self, *, browser_runner: Any = None, config_base_dir: Path | str | None = None, approval_checker: Callable[..., bool] | None = None) -> None:
+        self.browser_runner = browser_runner or ManagedBrowserPageRunner()
+        self.config_base_dir = config_base_dir if config_base_dir is not None else getattr(config, "DATA_DIR", None)
+        self.approval_checker = approval_checker
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- browser_page：仅在桌宠模式下，当用户明确要你打开并读取、滚动或操作一个公开网页，"
+            "或继续处理 Akane 托管浏览器窗口的当前页面时使用。"
+            "它会操作 Akane 自己启动的可见托管浏览器窗口，不会接管用户手动打开的 Edge/Chrome 标签页。"
+            "打开并读取托管窗口格式为 {\"type\":\"browser_page\",\"action\":\"navigate\",\"url\":\"https://...\",\"max_chars\":3000}；"
+            "一般不需要 open_for_user；只有用户还要求额外用系统浏览器打开同一链接给人看时，才加 \"open_for_user\":true；"
+            "读取当前页格式为 {\"type\":\"browser_page\",\"action\":\"read_text\",\"max_chars\":3000}；"
+            "观察当前页面状态格式为 {\"type\":\"browser_page\",\"action\":\"snapshot\",\"max_chars\":3000}，"
+            "返回 accessibility snapshot 和元素 ref；"
+            "滚动当前页格式为 {\"type\":\"browser_page\",\"action\":\"scroll\",\"scroll_delta\":800,\"max_chars\":3000}；"
+            "查看当前页可见链接/按钮/输入框摘要格式为 {\"type\":\"browser_page\",\"action\":\"elements\",\"element_limit\":20}；"
+            "如果用户已经明确给出多步浏览目标，例如“打开某站、滚动、点第一个视频/链接、告诉我当前页”，"
+            "不要每完成一步就询问用户；在工具轮次预算和授权边界内继续调用下一步 browser_page，"
+            "直到任务完成、候选不存在、页面不可用、需要登录/支付/上传/下载等真实阻塞，或控制动作缺少批准。"
+            "高风险控制动作只有在用户已批准或能力策略为完全访问时才会执行："
+            "snapshot 返回的 Visible link/video candidates 可直接按序号点击，"
+            "例如 {\"type\":\"browser_page\",\"action\":\"click\",\"candidate_index\":1}；"
+            "优先先 snapshot，再用 ref 点击/输入，例如 {\"type\":\"browser_page\",\"action\":\"click\",\"ref\":\"e3\"}；"
+            "CSS selector 仅作兼容，点击格式为 {\"type\":\"browser_page\",\"action\":\"click\",\"selector\":\"button:has-text('搜索')\"}；"
+            "输入格式为 {\"type\":\"browser_page\",\"action\":\"fill\",\"ref\":\"e4\",\"text\":\"搜索词\"}；"
+            "按键格式为 {\"type\":\"browser_page\",\"action\":\"press\",\"ref\":\"e4\",\"key\":\"Enter\"}。"
+            "查看当前页状态格式为 {\"type\":\"browser_page\",\"action\":\"current\"}。"
+            "如果用户只要求“打开给我看/在普通浏览器打开”且不需要你读取或操作，使用 open_browser；"
+            "只有用户要你自己读取、总结、核对页面正文时才使用 browser_page。"
+            "navigate/read_text/current/snapshot/scroll 会返回当前页面状态，不等于整站完整阅读；"
+            "scroll 只滚动并返回滚动后的页面状态，elements 只列出候选元素；不要声称已经点击或输入。"
+            "click/fill/press 不可用于登录、支付、下单、授权、删除、发布、下载、上传、文件选择或私密表单；"
+            "不要用它执行脚本、读取 localhost/内网/file 路径或用户私密链接。"
+            "如果只是搜索资料，优先用 web_search；web_search 只返回结果，不会打开或滚动浏览器，"
+            "需要打开某条搜索结果时再用 browser_page.navigate 或 open_browser。"
+        )
+
+    def capability_status(self) -> dict[str, Any]:
+        status_fn = getattr(self.browser_runner, "capability_status", None)
+        if callable(status_fn):
+            try:
+                status = status_fn()
+            except Exception:
+                return {"enabled": False, "status": "unavailable", "reason": "browser_runner_status_failed"}
+            if isinstance(status, Mapping):
+                return {
+                    "enabled": bool(status.get("enabled")),
+                    "status": str(status.get("status") or "unavailable").strip() or "unavailable",
+                    "reason": str(status.get("reason") or "").strip()[:160],
+                }
+        return {"enabled": True, "status": "ready", "reason": ""}
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        action = self._normalize_action(value)
+        url = ""
+        if action in {"navigate", "read_text"} and (value.get("url") or value.get("link") or value.get("href")):
+            url = self._normalize_public_url(value.get("url") or value.get("link") or value.get("href"))
+            if not url:
+                return None
+        if action == "navigate" and not url:
+            return None
+        raw_target = value.get("target")
+        selector = self._normalize_selector(value.get("selector") or raw_target)
+        ref = self._normalize_ref(value.get("ref") or value.get("element_ref") or value.get("target_ref") or raw_target)
+        candidate_index = self._normalize_candidate_index(
+            value.get("candidate_index")
+            or value.get("candidateIndex")
+            or value.get("candidate")
+            or value.get("index")
+        )
+        if action != "click":
+            candidate_index = 0
+        if action in {"click", "fill"} and not selector and not ref and candidate_index <= 0:
+            return None
+        text = self._normalize_fill_text(value.get("text") or value.get("value") or value.get("query"))
+        if action == "fill" and not text:
+            return None
+        key = self._normalize_press_key(value.get("key") or value.get("press"))
+        if action == "press" and not key:
+            return None
+        return {
+            "type": self.tool_type,
+            "action": action,
+            "url": url,
+            "max_chars": self._coerce_int(value.get("max_chars"), minimum=500, maximum=self.MAX_TEXT_CHARS, default=3000),
+            "open_for_user": self._coerce_bool(value.get("open_for_user") or value.get("openForUser")),
+            "scroll_delta": self._coerce_int(value.get("scroll_delta") or value.get("delta"), minimum=-2400, maximum=2400, default=800),
+            "element_limit": self._coerce_int(value.get("element_limit") or value.get("limit"), minimum=1, maximum=self.MAX_ELEMENT_LIMIT, default=20),
+            "selector": selector,
+            "ref": ref,
+            "text": text,
+            "key": key,
+            "candidate_index": candidate_index,
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        action = str(call.get("action") or "current").strip() or "current"
+        url = str(call.get("url") or "").strip()
+        open_for_user = bool(call.get("open_for_user"))
+        max_chars = self._coerce_int(call.get("max_chars"), minimum=500, maximum=self.MAX_TEXT_CHARS, default=3000)
+        scroll_delta = self._coerce_int(call.get("scroll_delta"), minimum=-2400, maximum=2400, default=800)
+        element_limit = self._coerce_int(call.get("element_limit"), minimum=1, maximum=self.MAX_ELEMENT_LIMIT, default=20)
+        selector = str(call.get("selector") or "").strip()
+        ref = str(call.get("ref") or "").strip()
+        text = str(call.get("text") or "").strip()
+        key = str(call.get("key") or "").strip()
+        candidate_index = self._coerce_int(call.get("candidate_index"), minimum=0, maximum=30, default=0)
+        if action in self.CONTROL_ACTIONS:
+            authorization = self._authorize_control_action(action=action, call=call, context=context)
+            if not authorization.get("ok"):
+                return self._approval_required(action=action, call=call, context=context, authorization=authorization)
+        run_kwargs: dict[str, Any] = {"action": action, "url": url, "max_chars": max_chars}
+        if action == "scroll":
+            run_kwargs["scroll_delta"] = scroll_delta
+        if action == "elements":
+            run_kwargs["element_limit"] = element_limit
+        if action in self.CONTROL_ACTIONS:
+            run_kwargs["selector"] = selector
+            run_kwargs["ref"] = ref
+            run_kwargs["text"] = text
+            run_kwargs["key"] = key
+            if action == "click":
+                run_kwargs["candidate_index"] = candidate_index
+        try:
+            result = self.browser_runner.run(**run_kwargs)
+        except Exception:
+            result = BrowserPageResult(
+                ok=False,
+                status="unavailable",
+                action=action,
+                reason="browser_runner_failed",
+            )
+        normalized = self._normalize_result(result, fallback_action=action)
+        open_event_url = url or str(normalized.url or "").strip()
+        open_event = self._build_open_event(open_event_url, normalized.title, client_mode=context.client_mode) if open_for_user else None
+        if not normalized.ok:
+            return self._failure(normalized, open_event=open_event)
+
+        safe_url = self._sanitize_output(normalized.url)[:800]
+        safe_title = self._clip(self._sanitize_output(normalized.title), 180)
+        safe_text = self._clip(self._sanitize_output(normalized.text), max_chars)
+        lines = ["【Akane 托管浏览器窗口】", f"动作：{normalized.action}"]
+        if safe_url:
+            lines.append(f"URL: {safe_url}")
+        if safe_title:
+            lines.append(f"标题：{safe_title}")
+        if safe_text:
+            lines.append("元素摘要：" if normalized.action == "elements" else "页面状态快照：")
+            lines.append(safe_text)
+            if normalized.action == "elements":
+                lines.append("这些只是可见候选元素摘要，不表示已经点击或输入。需要实际操作时必须等待后续确认能力。")
+            elif normalized.action in self.CONTROL_ACTIONS:
+                lines.append("高风险浏览器控制动作已在授权边界内执行；请基于当前页面状态继续，不要追加未授权动作。")
+            else:
+                lines.append("请只基于这份公开页面状态回答；没读到或不确定的内容要明确说明。")
+        else:
+            lines.append("当前页没有拿到可用正文。不要声称已经读取到未出现在这里的内容。")
+        if open_event:
+            lines.append("同时已请求桌宠把该公开网页交给系统浏览器打开给用户看。")
+        else:
+            lines.append("页面已在 Akane 托管浏览器窗口中处理；这不是用户手动打开的系统浏览器标签页。")
+        next_hint = self._build_browser_next_hint(normalized.action, safe_text)
+        if next_hint:
+            lines.append(next_hint)
+        events = []
+        if open_event:
+            events.append(open_event)
+        events.append(
+            {
+                "type": "browser_page_read",
+                "provider": "managed_browser",
+                "action": normalized.action,
+                "status": normalized.status,
+                "url": safe_url,
+                "title": safe_title,
+                "client_mode": context.client_mode,
+                "scroll_delta": scroll_delta if normalized.action == "scroll" else 0,
+                "element_count": self._count_element_summary_lines(safe_text) if normalized.action == "elements" else 0,
+                "requires_confirmation": False,
+            }
+        )
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=events,
+            followup_context=self._clip("\n".join(lines), self.MAX_TEXT_CHARS + 700),
+            state_updates={
+                "browser_page_status": normalized.status,
+                "browser_page_url": safe_url,
+                "browser_page_title": safe_title,
+                "browser_open_requested": bool(open_event),
+                "browser_page_element_count": self._count_element_summary_lines(safe_text) if normalized.action == "elements" else 0,
+                "browser_page_next_hint": next_hint,
+                "browser_control_status": normalized.status if normalized.action in self.CONTROL_ACTIONS else "",
+            },
+        )
+
+    def _failure(self, result: BrowserPageResult, *, open_event: dict[str, Any] | None = None) -> ToolExecutionResult:
+        status = str(result.status or "unavailable").strip()[:120] or "unavailable"
+        reason = self._clip(self._sanitize_output(result.reason), 180)
+        events = []
+        if open_event:
+            events.append(open_event)
+        events.append(
+            {
+                "type": "browser_page_read",
+                "provider": "managed_browser",
+                "action": str(result.action or "current").strip() or "current",
+                "status": "unavailable",
+                "reason": reason or status,
+            }
+        )
+        open_note = "已另外请求桌宠打开该公开网页给用户看；" if open_event else ""
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=events,
+            followup_context=(
+                f"{open_note}Akane 托管浏览器页面暂时不可用：{status}"
+                f"{' / ' + reason if reason else ''}。请自然告诉用户这次没有读取到网页内容，不要编造页面结果。"
+            ),
+            state_updates={
+                "browser_page_status": "unavailable",
+                "browser_page_reason": reason or status,
+                "browser_open_requested": bool(open_event),
+            },
+        )
+
+    def _normalize_result(self, value: Any, *, fallback_action: str) -> BrowserPageResult:
+        if isinstance(value, BrowserPageResult):
+            return value
+        if isinstance(value, Mapping):
+            return BrowserPageResult(
+                ok=bool(value.get("ok")),
+                status=str(value.get("status") or ("available" if value.get("ok") else "unavailable")),
+                action=str(value.get("action") or fallback_action),
+                url=str(value.get("url") or ""),
+                title=str(value.get("title") or ""),
+                text=str(value.get("text") or ""),
+                reason=str(value.get("reason") or ""),
+            )
+        return BrowserPageResult(ok=False, status="unavailable", action=fallback_action, reason="invalid_runner_result")
+
+    def _build_browser_next_hint(self, action: str, text: str) -> str:
+        clean_action = str(action or "").strip()
+        clean_text = str(text or "")
+        has_visible_candidates = "Visible link/video candidates:" in clean_text
+        has_refs = "[ref=" in clean_text
+        if clean_action in {"navigate", "snapshot", "current", "read_text", "scroll"}:
+            if has_visible_candidates:
+                return (
+                    "下一步提示：如果用户目标需要进入某个可见链接/视频，可继续调用 "
+                    "browser_page click 并使用 candidate_index；如果只是要总结当前可见内容，就停止工具并回答。"
+                )
+            if has_refs:
+                return (
+                    "下一步提示：如果用户目标需要操作当前可见控件，可继续调用 browser_page click/fill/press 并使用 ref；"
+                    "如果只是阅读当前页，就基于已有内容回答。"
+                )
+            return (
+                "下一步提示：如果用户明确还要继续查看后续内容，可继续调用 browser_page scroll；"
+                "如果当前内容已经足够，就停止工具并回答。"
+            )
+        if clean_action == "elements":
+            return (
+                "下一步提示：如果元素摘要里有目标，可继续用 ref 或 candidate_index 操作；"
+                "如果没有目标，先 snapshot 或 scroll 获取更多上下文。"
+            )
+        if clean_action in self.CONTROL_ACTIONS:
+            return (
+                "下一步提示：控制动作后应先 snapshot 或 read_text 观察页面变化；"
+                "不要假设点击、输入或按键已经产生了未返回的新内容。"
+            )
+        return ""
+
+    def _normalize_action(self, value: Mapping[str, Any]) -> str:
+        raw = str(value.get("action") or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if not raw:
+            return "navigate" if (value.get("url") or value.get("link") or value.get("href")) else "current"
+        aliases = {
+            "open": "navigate",
+            "go": "navigate",
+            "goto": "navigate",
+            "visit": "navigate",
+            "read": "read_text",
+            "read_page": "read_text",
+            "extract": "read_text",
+            "extract_text": "read_text",
+            "list_elements": "elements",
+            "inspect_elements": "elements",
+            "interactive_elements": "elements",
+            "visible_elements": "elements",
+            "tap": "click",
+            "type": "fill",
+            "input": "fill",
+            "press_key": "press",
+            "status": "current",
+            "current_page": "current",
+            "info": "current",
+            "state": "snapshot",
+            "observe": "snapshot",
+            "snapshot_page": "snapshot",
+            "page_snapshot": "snapshot",
+            "accessibility_snapshot": "snapshot",
+        }
+        action = aliases.get(raw, raw)
+        return action if action in self.ALLOWED_ACTIONS else "current"
+
+    def _normalize_public_url(self, value: Any) -> str:
+        url = str(value or "").strip()
+        if len(url) > 1600:
+            url = url[:1600]
+        if any(ord(ch) < 32 for ch in url) or re.search(r"\s", url):
+            return ""
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return ""
+        if parsed.username or parsed.password:
+            return ""
+        if re.search(r"(?i)(api[_-]?key|password|secret|token)=", parsed.query or ""):
+            return ""
+        hostname = parsed.hostname or ""
+        if not hostname or self._is_private_or_local_host(hostname):
+            return ""
+        return url
+
+    def _is_private_or_local_host(self, hostname: str) -> bool:
+        host = str(hostname or "").strip().lower().strip("[]")
+        if not host or host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".local"):
+            return True
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return bool(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved)
+
+    def _coerce_int(self, value: Any, *, minimum: int, maximum: int, default: int) -> int:
+        try:
+            number = int(value)
+        except Exception:
+            number = default
+        return max(minimum, min(maximum, number))
+
+    def _coerce_bool(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        text = str(value or "").strip().lower()
+        return text in {"1", "true", "yes", "y", "on", "打开", "是", "需要"}
+
+    def _normalize_selector(self, value: Any) -> str:
+        selector = str(value or "").strip()
+        if not selector or len(selector) > self.MAX_SELECTOR_CHARS:
+            return ""
+        if any(ord(ch) < 32 for ch in selector):
+            return ""
+        lowered = selector.lower()
+        if any(marker in lowered for marker in self.SECRET_MARKERS):
+            return ""
+        if re.search(r"(?i)(login|signin|sign-in|checkout|payment|delete|remove|publish|post|upload|download|logout)", selector):
+            return ""
+        return selector
+
+    def _normalize_ref(self, value: Any) -> str:
+        ref = str(value or "").strip()
+        if not ref:
+            return ""
+        if ref.startswith("[ref=") and ref.endswith("]"):
+            ref = ref[5:-1].strip()
+        if ref.startswith("ref="):
+            ref = ref[4:].strip()
+        return ref if re.fullmatch(r"e\d{1,6}", ref) else ""
+
+    def _normalize_candidate_index(self, value: Any) -> int:
+        if value in (None, ""):
+            return 0
+        try:
+            number = int(value)
+        except Exception:
+            return 0
+        return max(0, min(30, number))
+
+    def _normalize_fill_text(self, value: Any) -> str:
+        text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not text or len(text) > self.MAX_FILL_TEXT_CHARS:
+            return ""
+        lowered = text.lower()
+        if any(marker in lowered for marker in ("authorization:", "bearer ", "password=", "api_key=", "token=", "secret=")):
+            return ""
+        return text
+
+    def _normalize_press_key(self, value: Any) -> str:
+        raw = str(value or "Enter").strip()
+        aliases = {
+            "return": "Enter",
+            "esc": "Escape",
+            "escape": "Escape",
+            "enter": "Enter",
+            "tab": "Tab",
+            "down": "ArrowDown",
+            "up": "ArrowUp",
+            "left": "ArrowLeft",
+            "right": "ArrowRight",
+            "pagedown": "PageDown",
+            "pageup": "PageUp",
+            "home": "Home",
+            "end": "End",
+        }
+        key = aliases.get(raw.lower().replace(" ", ""), raw)
+        return key if key in self.ALLOWED_PRESS_KEYS else ""
+
+    def _authorize_control_action(
+        self,
+        *,
+        action: str,
+        call: Mapping[str, Any],
+        context: ToolExecutionContext,
+    ) -> dict[str, Any]:
+        action_id = f"{self.CONTROL_ACTION_ID_PREFIX}.{action}"
+        if self._approval_checker_allows(action_id=action_id, call=call, context=context):
+            return {"ok": True, "mode": "approval_grant"}
+        if self._profile_policy_allows(context):
+            return {"ok": True, "mode": "trusted_auto_allow"}
+        return {
+            "ok": False,
+            "status": "approval_required",
+            "approvalMode": "ask_each_time",
+            "capabilityId": "tool.browser_page",
+            "actionId": action_id,
+            "risk": "high",
+            "reason": "browser_control_requires_approval",
+        }
+
+    def _approval_checker_allows(self, *, action_id: str, call: Mapping[str, Any], context: ToolExecutionContext) -> bool:
+        if not callable(self.approval_checker):
+            return False
+        try:
+            return bool(
+                self.approval_checker(
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                    capability_id="tool.browser_page",
+                    action_id=action_id,
+                    call=dict(call),
+                    request_context=dict(context.request_context or {}),
+                )
+            )
+        except Exception:
+            return False
+
+    def _profile_policy_allows(self, context: ToolExecutionContext) -> bool:
+        try:
+            payload = get_approval_policy_config(
+                base_dir=self.config_base_dir,
+                profile_user_id=context.profile_user_id,
+            )
+        except Exception:
+            return False
+        policy = payload.get("approvalPolicy") if isinstance(payload, Mapping) else {}
+        return str((policy or {}).get("defaultMode") or "").strip() == "trusted_auto_allow"
+
+    def _approval_required(
+        self,
+        *,
+        action: str,
+        call: Mapping[str, Any],
+        context: ToolExecutionContext,
+        authorization: Mapping[str, Any],
+    ) -> ToolExecutionResult:
+        selector = self._clip(self._sanitize_output(str(call.get("selector") or "")), 120)
+        ref = self._clip(self._sanitize_output(str(call.get("ref") or "")), 40)
+        candidate_index = self._coerce_int(call.get("candidate_index"), minimum=0, maximum=30, default=0)
+        preview: dict[str, Any] = {"action": action}
+        if selector:
+            preview["selector"] = selector
+        if ref:
+            preview["ref"] = ref
+        if candidate_index > 0:
+            preview["candidateIndex"] = candidate_index
+        if action == "press" and call.get("key"):
+            preview["key"] = str(call.get("key") or "")
+        if action == "fill":
+            preview["textLength"] = len(str(call.get("text") or ""))
+        event = {
+            "type": "capability_approval_required",
+            "capabilityId": "tool.browser_page",
+            "actionId": str(authorization.get("actionId") or f"browser_page.{action}"),
+            "title": "浏览器控制需要确认",
+            "summary": "Akane 想对托管网页执行点击、输入或按键动作。",
+            "risk": "high",
+            "approvalMode": "ask_each_time",
+            "approvalReason": str(authorization.get("reason") or "browser_control_requires_approval"),
+            "payloadPreview": preview,
+            "client_mode": context.client_mode,
+        }
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[event],
+            followup_context=(
+                "浏览器控制动作需要用户确认：当前没有有效授权或“完全访问”策略。"
+                "请自然告诉用户需要在能力审批中允许后再执行；不要声称已经点击、输入或按键。"
+            ),
+            state_updates={
+                "browser_control_status": "approval_required",
+                "browser_control_action": action,
+            },
+        )
+
+    def _build_open_event(self, url: str, title: str = "", *, client_mode: str = "") -> dict[str, Any] | None:
+        safe_url = self._normalize_public_url(url)
+        if not safe_url:
+            return None
+        return {
+            "type": "browser_open_requested",
+            "url": safe_url,
+            "label": self._clip(self._sanitize_output(title), 80),
+            "reason": "browser_page_open_for_user",
+            "client_mode": str(client_mode or ""),
+            "requires_confirmation": False,
+        }
+
+    def _count_element_summary_lines(self, text: str) -> int:
+        return sum(1 for line in str(text or "").splitlines() if re.match(r"^\d+\.\s+", line.strip()))
+
+    def _sanitize_output(self, value: str) -> str:
+        text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"(?i)authorization:\s*bearer\s+[^\s]+", "Authorization: Bearer [redacted]", text)
+        text = re.sub(r"(?i)\b(api[_-]?key|password|secret|token)\s*[:=]\s*[^\s,;]+", r"\1=[redacted]", text)
+        text = re.sub(r"(?i)([?&](?:api[_-]?key|password|secret|token)=)[^&#\s]+", r"\1[redacted]", text)
+        text = re.sub(r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s]+", "[local_path]", text)
+        return text.strip()
+
+    def _clip(self, value: str, limit: int) -> str:
+        text = str(value or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 20)].rstrip() + "\n...[truncated]"
+
+
 class WebSearchToolHandler(BaseToolHandler):
     tool_type = "web_search"
 
@@ -1290,6 +1914,8 @@ class WebSearchToolHandler(BaseToolHandler):
             "搜索格式为 {\"type\":\"web_search\",\"action\":\"search\",\"query\":\"搜索词\",\"max_results\":5}；"
             "网页提取格式为 {\"type\":\"web_search\",\"action\":\"extract\",\"url\":\"https://...\",\"max_chars\":3000}。"
             "只搜索或提取公开网页；不要用它访问 localhost、内网地址、file 路径、登录页、付费页或用户私密链接。"
+            "web_search 不会打开浏览器窗口、滚动网页或点击链接；如果用户要看页面或需要你继续操作某条结果，"
+            "再调用 browser_page.navigate 或 open_browser。"
             "如果用户没有要求联网，且你不确定是否需要实时信息，先自然询问或直接基于已有知识回答，不要为了炫技搜索。"
         )
 

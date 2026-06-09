@@ -538,7 +538,19 @@ export const abilitiesPage = {
   ],
   safety: {
     status: "已生效",
+    approvalPolicy: {
+      defaultMode: "ask_each_time",
+      label: "请求批准",
+      summary: "高风险能力在执行前创建审批请求，由用户允许或拒绝。",
+      requiresConfirmationByDefault: true,
+      trustedAutoAllowHighRisk: false,
+      availableModes: [
+        { id: "ask_each_time", label: "请求批准", summary: "高风险动作先进入审批队列。" },
+        { id: "trusted_auto_allow", label: "完全访问", summary: "跳过高风险动作的逐次确认，但不跳过硬安全校验。" }
+      ]
+    },
     items: [
+      { label: "当前审批模式", status: "请求批准" },
       { label: "系统设置修改", status: "需审批" },
       { label: "注册表与系统目录访问", status: "需审批" },
       { label: "网络请求（外部）", status: "需审批" },

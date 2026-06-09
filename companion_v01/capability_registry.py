@@ -62,7 +62,7 @@ COMMON_TOOL_NAMES = (
 )
 
 WEB_SEARCH_TOOL_NAMES = ("web_search",)
-DESKTOP_BROWSER_TOOL_NAMES = ("open_browser",)
+DESKTOP_BROWSER_TOOL_NAMES = ("open_browser", "browser_page")
 
 WEB_SCENE_TOOL_NAMES = (
     "call_npc",
@@ -239,7 +239,7 @@ class CapabilityRegistry:
                 layer="web",
                 modes=COMMON_CLIENT_MODES,
                 tools=WEB_SEARCH_TOOL_NAMES,
-                light_hint="当用户明确要求联网搜索、查询最新信息或读取公开网页时，你可以使用受限的 AnySearch 联网搜索能力；不要用它访问私密、内网或需要登录的内容。",
+                light_hint="当用户明确要求联网搜索、查询最新信息或读取公开网页时，你可以使用受限的 AnySearch 联网搜索能力；它只返回搜索/提取结果，不会打开或滚动浏览器。不要用它访问私密、内网或需要登录的内容。",
                 trigger=_always,
             ),
             CapabilityModule(
@@ -247,7 +247,7 @@ class CapabilityRegistry:
                 layer="desktop_browser",
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=DESKTOP_BROWSER_TOOL_NAMES,
-                light_hint="桌宠模式下，当用户明确要求打开某个公开网页 URL 时，你可以请求桌宠前端交给系统浏览器打开；不要用它读取网页、点击或下载。",
+                light_hint="桌宠模式下，open_browser 只把公开网页交给用户的系统浏览器打开；browser_page 会打开并操作 Akane 可见托管浏览器窗口，用于读取、滚动、按可见候选序号打开链接，以及经授权的点击/输入。不要接管用户手动打开的浏览器标签页，不要登录、下载、上传或访问私密/内网内容。",
                 trigger=_always,
             ),
             CapabilityModule(

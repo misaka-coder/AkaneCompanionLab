@@ -18,6 +18,11 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 APPROVAL_MODE_TRUSTED_AUTO_ALLOW = "trusted_auto_allow"
 APPROVAL_MODE_ASK_EACH_TIME = "ask_each_time"
 APPROVAL_MODE_DISABLED = "disabled"
+APPROVAL_POLICY_DEFAULT_MODE = APPROVAL_MODE_ASK_EACH_TIME
+APPROVAL_POLICY_MODES = {
+    APPROVAL_MODE_ASK_EACH_TIME,
+    APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+}
 APPROVAL_MODES = {
     APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
     APPROVAL_MODE_ASK_EACH_TIME,
@@ -70,6 +75,7 @@ PRIVATE_MCP_SERVER_FIELDS = {
     "lastDiscovery",
     "updatedAt",
 }
+PUBLIC_APPROVAL_POLICY_FIELDS = {"defaultMode", "updatedAt"}
 WORKFLOW_PATH_MAX_LENGTH = 220
 WORKFLOW_SLOT_MAX_LENGTH = 80
 VOICE_PROFILE_TEXT_MAX_LENGTH = 300
@@ -131,6 +137,64 @@ def with_capability_approval_metadata(entry: Mapping[str, Any]) -> dict[str, Any
     if not str(public_entry.get("approvalReason") or "").strip():
         public_entry["approvalReason"] = _approval_reason(public_entry, mode)
     return public_entry
+
+
+def apply_approval_policy_to_entry(entry: Mapping[str, Any], approval_policy: Mapping[str, Any] | None) -> dict[str, Any]:
+    public_entry = with_capability_approval_metadata(entry)
+    policy = normalize_approval_policy_config(approval_policy)
+    if policy["defaultMode"] != APPROVAL_MODE_TRUSTED_AUTO_ALLOW:
+        return public_entry
+    if public_entry.get("approvalMode") == APPROVAL_MODE_DISABLED:
+        return public_entry
+    if str(public_entry.get("risk") or "").strip().lower() != "high" and not public_entry.get("requiresConfirmation"):
+        return public_entry
+    return {
+        **public_entry,
+        "approvalMode": APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+        "approvalReason": "user_policy_trusted_auto_allow",
+        "requiresConfirmation": False,
+    }
+
+
+def normalize_approval_policy_config(raw_policy: Any) -> dict[str, Any]:
+    raw = raw_policy if isinstance(raw_policy, Mapping) else {}
+    default_mode = str(raw.get("defaultMode") or raw.get("default_mode") or APPROVAL_POLICY_DEFAULT_MODE).strip()
+    if default_mode not in APPROVAL_POLICY_MODES:
+        default_mode = APPROVAL_POLICY_DEFAULT_MODE
+    updated_at = _safe_short_text(raw.get("updatedAt") or raw.get("updated_at"))
+    return {
+        "defaultMode": default_mode,
+        "updatedAt": updated_at,
+    }
+
+
+def build_approval_policy_entry(policy: Mapping[str, Any] | None) -> dict[str, Any]:
+    normalized = normalize_approval_policy_config(policy)
+    default_mode = normalized["defaultMode"]
+    return {
+        "defaultMode": default_mode,
+        "label": "完全访问" if default_mode == APPROVAL_MODE_TRUSTED_AUTO_ALLOW else "请求批准",
+        "summary": (
+            "高风险能力在执行前自动允许；仍保留 URL、路径、密钥和本地边界校验。"
+            if default_mode == APPROVAL_MODE_TRUSTED_AUTO_ALLOW
+            else "高风险能力在执行前创建审批请求，由用户允许或拒绝。"
+        ),
+        "requiresConfirmationByDefault": default_mode == APPROVAL_MODE_ASK_EACH_TIME,
+        "trustedAutoAllowHighRisk": default_mode == APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+        "availableModes": [
+            {
+                "id": APPROVAL_MODE_ASK_EACH_TIME,
+                "label": "请求批准",
+                "summary": "高风险动作先进入审批队列。",
+            },
+            {
+                "id": APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+                "label": "完全访问",
+                "summary": "跳过高风险动作的逐次确认，但不跳过硬安全校验。",
+            },
+        ],
+        "updatedAt": normalized["updatedAt"],
+    }
 
 
 def _approval_reason(entry: Mapping[str, Any], mode: str) -> str:
@@ -250,6 +314,71 @@ def get_provider_config_entries(
     profile_user_id: str,
 ) -> list[dict[str, Any]]:
     return list_provider_configs(base_dir=base_dir, profile_user_id=profile_user_id)["providers"]
+
+
+def get_approval_policy_config(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+) -> dict[str, Any]:
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    return {
+        "ok": True,
+        "status": "available",
+        "schemaVersion": CONFIG_SCHEMA_VERSION,
+        "generatedAt": _now_iso(),
+        "configStatus": config.get("configStatus") or "available",
+        "warnings": list(config.get("warnings") or []),
+        "configScope": _public_config_scope(profile_user_id),
+        "approvalPolicy": build_approval_policy_entry(config.get("approvalPolicy")),
+    }
+
+
+def save_approval_policy_config(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    normalized = normalize_approval_policy_config(payload)
+    if str(payload.get("defaultMode") or payload.get("default_mode") or "").strip() not in APPROVAL_POLICY_MODES:
+        return {
+            "ok": False,
+            "status": "invalid_config",
+            "reason": "approval_policy_mode_invalid",
+            "configScope": _public_config_scope(profile_user_id),
+        }
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    if config.get("configStatus") == "invalid_config":
+        return {
+            "ok": False,
+            "status": "invalid_config",
+            "reason": config.get("reason") or "provider_config_file_invalid",
+            "configScope": _public_config_scope(profile_user_id),
+        }
+    approval_policy = {
+        "defaultMode": normalized["defaultMode"],
+        "updatedAt": _now_iso(),
+    }
+    write_capability_config(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        config={
+            "schemaVersion": CONFIG_SCHEMA_VERSION,
+            "approvalPolicy": approval_policy,
+            "providers": config.get("providers", {}),
+            "workflows": config.get("workflows", {}),
+            "voiceProfiles": config.get("voiceProfiles", {}),
+            "mcpServers": config.get("mcpServers", {}),
+        },
+    )
+    return {
+        "ok": True,
+        "status": "saved",
+        "configScope": _public_config_scope(profile_user_id),
+        "approvalPolicy": build_approval_policy_entry(approval_policy),
+        "refresh": True,
+    }
 
 
 def list_voice_profile_configs(
@@ -1737,6 +1866,7 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
             "workflows": {},
             "voiceProfiles": {},
             "mcpServers": {},
+            "approvalPolicy": normalize_approval_policy_config({}),
             "warnings": [],
         }
     try:
@@ -1751,6 +1881,7 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
             "workflows": {},
             "voiceProfiles": {},
             "mcpServers": {},
+            "approvalPolicy": normalize_approval_policy_config({}),
             "warnings": [{"status": "invalid_config", "reason": "provider_config_file_invalid_json"}],
         }
     if not isinstance(data, dict):
@@ -1762,12 +1893,14 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
             "workflows": {},
             "voiceProfiles": {},
             "mcpServers": {},
+            "approvalPolicy": normalize_approval_policy_config({}),
             "warnings": [{"status": "invalid_config", "reason": "provider_config_root_must_be_object"}],
         }
     providers, provider_warnings = _sanitize_provider_configs(data.get("providers"))
     workflows, workflow_warnings = _sanitize_workflow_configs(data.get("workflows"))
     voice_profiles, voice_profile_warnings = _sanitize_voice_profile_configs(data.get("voiceProfiles"))
     mcp_servers, mcp_server_warnings = _sanitize_mcp_server_configs(data.get("mcpServers"))
+    approval_policy = normalize_approval_policy_config(data.get("approvalPolicy"))
     warnings = [*provider_warnings, *workflow_warnings, *voice_profile_warnings, *mcp_server_warnings]
     return {
         "schemaVersion": CONFIG_SCHEMA_VERSION,
@@ -1776,6 +1909,7 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
         "workflows": workflows,
         "voiceProfiles": voice_profiles,
         "mcpServers": mcp_servers,
+        "approvalPolicy": approval_policy,
         "warnings": warnings,
     }
 
@@ -1785,7 +1919,15 @@ def write_capability_config(*, base_dir: Path | str | None, profile_user_id: str
     if path is None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(_config_for_write(config), ensure_ascii=False, indent=2, sort_keys=True)
+    writable_config = dict(config)
+    if "approvalPolicy" not in writable_config and path.exists():
+        try:
+            raw_existing = json.loads(path.read_text(encoding="utf-8") or "{}")
+        except Exception:
+            raw_existing = {}
+        if isinstance(raw_existing, Mapping):
+            writable_config["approvalPolicy"] = raw_existing.get("approvalPolicy")
+    payload = json.dumps(_config_for_write(writable_config), ensure_ascii=False, indent=2, sort_keys=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
         tmp_path = Path(handle.name)
         handle.write(payload)
@@ -2159,6 +2301,7 @@ def _sanitize_mcp_last_discovery(raw_last_discovery: Any) -> dict[str, Any]:
 
 
 def _config_for_write(config: Mapping[str, Any]) -> dict[str, Any]:
+    approval_policy = normalize_approval_policy_config(config.get("approvalPolicy"))
     raw_providers = config.get("providers") if isinstance(config.get("providers"), Mapping) else {}
     providers, _warnings = _sanitize_provider_configs(raw_providers)
     write_providers: dict[str, dict[str, Any]] = {}
@@ -2201,6 +2344,11 @@ def _config_for_write(config: Mapping[str, Any]) -> dict[str, Any]:
         }
     return {
         "schemaVersion": CONFIG_SCHEMA_VERSION,
+        "approvalPolicy": {
+            key: value
+            for key, value in approval_policy.items()
+            if key in PUBLIC_APPROVAL_POLICY_FIELDS and value not in (None, "")
+        },
         "providers": write_providers,
         "workflows": write_workflows,
         "voiceProfiles": write_voice_profiles,

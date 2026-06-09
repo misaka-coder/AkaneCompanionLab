@@ -984,6 +984,32 @@ function renderActivePage() {
 }
 
 function applyLocalActionOptimisticUpdate(actionId, payload) {
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave) {
+    const defaultMode = String(payload.defaultMode || payload.value || "").trim();
+    if (["ask_each_time", "trusted_auto_allow"].includes(defaultMode)) {
+      const currentSafety = abilitiesPage.safety || {};
+      const currentPolicy = currentSafety.approvalPolicy || {};
+      const label = defaultMode === "trusted_auto_allow" ? "完全访问" : "请求批准";
+      abilitiesPage.safety = {
+        ...currentSafety,
+        approvalPolicy: {
+          ...currentPolicy,
+          defaultMode,
+          label,
+          summary: defaultMode === "trusted_auto_allow"
+            ? "高风险能力自动允许；URL、路径、密钥和本地边界校验仍保持开启。"
+            : "高风险能力在执行前创建审批请求，由用户允许或拒绝。",
+          trustedAutoAllowHighRisk: defaultMode === "trusted_auto_allow",
+          requiresConfirmationByDefault: defaultMode !== "trusted_auto_allow"
+        },
+        items: (Array.isArray(currentSafety.items) ? currentSafety.items : []).map((item) => (
+          item.label === "当前审批模式" ? { ...item, status: label } : item
+        ))
+      };
+      renderActivePage();
+    }
+    return;
+  }
   if (actionId === CONTROL_CENTER_ACTIONS.musicSetPlayMode) {
     const nextMode = nextMusicPlayMode(musicPage.currentPlayMode);
     musicPage.currentPlayMode = nextMode;
@@ -3108,14 +3134,36 @@ function renderCallsTable() {
 }
 
 function renderSafetyPanel() {
+  const safety = abilitiesPage.safety || {};
+  const policy = normalizeApprovalPolicyForUi(safety.approvalPolicy);
+  const items = Array.isArray(safety.items) ? safety.items : [];
   return `
     <article class="glass-card side-status-panel safety-panel">
       <div class="card-heading">
         <h2>${icon("shield")} 安全边界</h2>
-        <span>${escapeHtml(abilitiesPage.safety.status)}</span>
+        <span>${escapeHtml(safety.status || "待连接")}</span>
       </div>
+      <div class="approval-policy-control" role="group" aria-label="能力审批模式">
+        ${policy.availableModes.map((mode) => {
+          const active = mode.id === policy.defaultMode;
+          return `
+            <button
+              class="${active ? "active" : ""}"
+              type="button"
+              data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave}"
+              data-payload-field="defaultMode"
+              data-payload-value="${escapeAttr(mode.id)}"
+              aria-pressed="${active}"
+            >
+              <strong>${escapeHtml(mode.label)}</strong>
+              <span>${escapeHtml(mode.summary)}</span>
+            </button>
+          `;
+        }).join("")}
+      </div>
+      <p class="approval-policy-note">${icon("lock")} ${escapeHtml(policy.summary)}</p>
       <div class="side-list">
-        ${abilitiesPage.safety.items.map((item) => `
+        ${items.map((item) => `
           <div>
             <span>${icon("checkCircle")} ${escapeHtml(item.label)}</span>
             <strong>${icon("clock")} ${escapeHtml(item.status)}</strong>
@@ -3125,6 +3173,47 @@ function renderSafetyPanel() {
       <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesSafetyDetails}">查看详细策略 ${icon("chevron")}</button>
     </article>
   `;
+}
+
+function normalizeApprovalPolicyForUi(policy) {
+  const data = policy && typeof policy === "object" ? policy : {};
+  const defaultMode = ["ask_each_time", "trusted_auto_allow"].includes(String(data.defaultMode || ""))
+    ? String(data.defaultMode)
+    : "ask_each_time";
+  const fallbackModes = [
+    {
+      id: "ask_each_time",
+      label: "请求批准",
+      summary: "危险动作进入审批队列"
+    },
+    {
+      id: "trusted_auto_allow",
+      label: "完全访问",
+      summary: "跳过逐次确认"
+    }
+  ];
+  const availableModes = (Array.isArray(data.availableModes) && data.availableModes.length ? data.availableModes : fallbackModes)
+    .map((item) => ({
+      id: String(item?.id || "").trim(),
+      label: String(item?.label || "").trim(),
+      summary: String(item?.summary || "").trim()
+    }))
+    .filter((item) => ["ask_each_time", "trusted_auto_allow"].includes(item.id))
+    .map((item) => ({
+      ...item,
+      label: item.label || (item.id === "trusted_auto_allow" ? "完全访问" : "请求批准"),
+      summary: item.summary || (item.id === "trusted_auto_allow" ? "跳过逐次确认" : "危险动作进入审批队列")
+    }));
+  return {
+    defaultMode,
+    label: String(data.label || "").trim() || (defaultMode === "trusted_auto_allow" ? "完全访问" : "请求批准"),
+    summary: String(data.summary || "").trim() || (
+      defaultMode === "trusted_auto_allow"
+        ? "完全访问会跳过逐次审批，但 URL、路径、密钥和本地边界校验仍然开启。"
+        : "请求批准会让高风险能力先进入审批队列。"
+    ),
+    availableModes: availableModes.length ? availableModes : fallbackModes
+  };
 }
 
 function renderLive2dPanel() {

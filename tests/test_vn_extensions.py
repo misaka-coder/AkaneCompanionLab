@@ -23,7 +23,7 @@ from companion_v01.store import MemoryStore
 from companion_v01.text_utils import render_chat_line, render_chat_timeline, resolve_speaker_name
 from companion_v01.artifact_system import ArtifactContainerService
 from companion_v01.gift_system import GiftSystemService
-from companion_v01.tool_runtime import CancelReminderToolHandler, CheckInventoryToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGiftToolHandler, SetReminderToolHandler, ToolExecutionContext, ToolExecutionResult
+from companion_v01.tool_runtime import CancelReminderToolHandler, CheckInventoryToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGiftToolHandler, SetReminderToolHandler, ToolExecutionContext, ToolExecutionResult, ToolMetadata
 
 
 class TextUtilsSpeakerTests(unittest.TestCase):
@@ -585,10 +585,57 @@ class EngineExtensionTests(unittest.TestCase):
 
     def test_multi_tool_followup_context_allows_or_blocks_more_tools(self) -> None:
         allow_context = self.engine._build_multi_tool_followup_context(["第 1 次工具结果：ok"], allow_more=True)
-        block_context = self.engine._build_multi_tool_followup_context(["第 1 次工具结果：ok"], allow_more=False)
+        block_context = self.engine._build_multi_tool_followup_context(
+            ["第 1 次工具结果：ok"],
+            allow_more=False,
+            stop_reason="tool_budget_exhausted",
+        )
 
         self.assertIn("可以继续在 tool_call 字段调用下一步必要工具", allow_context)
+        self.assertIn("不要为了确认而停下询问", allow_context)
+        self.assertIn("工具预算已经用完", block_context)
         self.assertIn("本轮不要再调用工具", block_context)
+
+    def test_tool_round_budget_expands_from_tool_metadata_without_hiding_tools(self) -> None:
+        class StubTool:
+            def __init__(self, metadata: ToolMetadata) -> None:
+                self._metadata = metadata
+
+            def tool_metadata(self) -> ToolMetadata:
+                return self._metadata
+
+        self.engine.tool_handlers = {
+            "fake_search": StubTool(ToolMetadata(family="web_research", operation="read", risk="low", default_round_budget=8)),
+            "fake_browser": StubTool(ToolMetadata(family="browser_control", operation="mixed", risk="medium", default_round_budget=10)),
+            "fake_plain": StubTool(ToolMetadata(family="general", operation="mixed", risk="medium", default_round_budget=3)),
+        }
+
+        with (
+            patch.object(config, "MAX_TOOL_ROUNDS", 3, create=True),
+            patch.object(config, "MAX_WEB_RESEARCH_TOOL_ROUNDS", 7, create=True),
+            patch.object(config, "MAX_BROWSER_TOOL_ROUNDS", 11, create=True),
+        ):
+            self.assertEqual(
+                self.engine._resolve_tool_round_budget(
+                    current_budget=3,
+                    tool_call={"type": "fake_search"},
+                ),
+                7,
+            )
+            self.assertEqual(
+                self.engine._resolve_tool_round_budget(
+                    current_budget=3,
+                    tool_call={"type": "fake_browser"},
+                ),
+                11,
+            )
+            self.assertEqual(
+                self.engine._resolve_tool_round_budget(
+                    current_budget=3,
+                    tool_call={"type": "fake_plain"},
+                ),
+                3,
+            )
 
     def test_build_tool_prompt_context_includes_registered_tools(self) -> None:
         class StubTool:
@@ -741,6 +788,7 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("call_npc", scene_tools)
         self.assertIn("web_search", scene_tools)
         self.assertNotIn("open_browser", scene_tools)
+        self.assertNotIn("browser_page", scene_tools)
         self.assertNotIn("transcribe_media", scene_tools)
         self.assertNotIn("send_sticker", scene_tools)
 
@@ -749,12 +797,14 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("send_sticker", qq_tools)
         self.assertIn("web_search", qq_tools)
         self.assertNotIn("open_browser", qq_tools)
+        self.assertNotIn("browser_page", qq_tools)
         self.assertNotIn("manage_gift", qq_tools)
 
         self.assertIn("transcribe_media", desktop_tools)
         self.assertIn("send_file", desktop_tools)
         self.assertIn("web_search", desktop_tools)
         self.assertIn("open_browser", desktop_tools)
+        self.assertIn("browser_page", desktop_tools)
         self.assertNotIn("send_sticker", desktop_tools)
         self.assertNotIn("manage_gift", desktop_tools)
 
@@ -778,6 +828,7 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("send_file", desktop_selection.tool_names)
         self.assertIn("web_search", desktop_selection.tool_names)
         self.assertIn("open_browser", desktop_selection.tool_names)
+        self.assertIn("browser_page", desktop_selection.tool_names)
         self.assertNotIn("send_sticker", desktop_selection.tool_names)
 
         qq_selection = registry.select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT))

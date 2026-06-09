@@ -733,6 +733,45 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
   assert.deepEqual(discoverBody, {}, "MCP discover should not send arbitrary payload fields");
 }
 
+// Approval policy save is bridged to its dedicated backend route, not /control-center/actions.
+{
+  const fetchCalls = [];
+  const backendSource = createBackendControlCenterSource({
+    baseUrl: "http://approval-policy-action-test",
+    sessionId: "desktop",
+    profileUserId: "master",
+    fetchImpl: async (url, options = {}) => {
+      fetchCalls.push({ url: String(url), options });
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({
+          ok: true,
+          status: "saved",
+          approvalPolicy: {
+            defaultMode: "trusted_auto_allow"
+          },
+          refresh: true
+        })
+      };
+    }
+  });
+
+  const saveResult = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave, {
+    defaultMode: "trusted_auto_allow",
+    token: "must-not-send"
+  });
+  assert.equal(saveResult.status, "saved", "approval policy save should hit approval policy route");
+  assert.equal(saveResult.refresh, true, "approval policy save should request refresh");
+  assert.equal(fetchCalls.length, 1, "approval policy save should make one backend request");
+  assert.ok(fetchCalls[0].url.includes("/capabilities/approval-policy"), "approval policy save should use approval policy route");
+  assert.equal(fetchCalls[0].url.includes("/control-center/actions"), false, "approval policy save must not use inert control-center action endpoint");
+  const saveBody = JSON.parse(fetchCalls[0].options.body);
+  assert.deepEqual(saveBody, { defaultMode: "trusted_auto_allow" }, "approval policy save should only send defaultMode");
+  assert.equal("token" in saveBody, false, "approval policy save must not forward arbitrary token fields");
+}
+
 // Workflow binding actions are bridged to dedicated backend routes, not /control-center/actions.
 {
   const fetchCalls = [];
@@ -1185,6 +1224,13 @@ for (const actionId of deferredAbilitiesActionIds) {
   );
   assert.equal(mcpMockResult.status, "not-implemented", "mock source must not fake MCP config save");
   assert.equal(mcpMockResult.refresh, false, "mock MCP config save should not request refresh");
+
+  const approvalPolicyMockResult = await mockAbRouter.run(
+    CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave,
+    { defaultMode: "trusted_auto_allow" }
+  );
+  assert.equal(approvalPolicyMockResult.status, "not-implemented", "mock source must not fake approval policy save");
+  assert.equal(approvalPolicyMockResult.refresh, false, "mock approval policy save should not request refresh");
 }
 
 // ---------- deferred advanced + shell actions ----------

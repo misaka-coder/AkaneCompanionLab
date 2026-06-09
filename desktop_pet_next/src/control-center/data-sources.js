@@ -23,6 +23,9 @@ const mcpBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave,
   CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover
 ]);
+const approvalPolicyBackendActionIds = new Set([
+  CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave
+]);
 const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.chatNew]: "newSession",
   [CONTROL_CENTER_ACTIONS.chatStop]: "stopReply",
@@ -129,7 +132,7 @@ export function createMockControlCenterSource(data = mockData) {
     },
     async runAction(actionId, payload = {}) {
       const normalizedActionId = normalizeActionId(actionId);
-      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId)) {
+      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId)) {
         return createNotImplementedActionResult(normalizedActionId);
       }
       return {
@@ -336,7 +339,7 @@ export function createBackendControlCenterSource(options = {}) {
         return createNotImplementedActionResult(normalizedActionId);
       }
 
-      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId)) {
+      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId)) {
         if (typeof fetchImpl !== "function") {
           return createNotImplementedActionResult(normalizedActionId);
         }
@@ -344,7 +347,9 @@ export function createBackendControlCenterSource(options = {}) {
           ? runProviderBackendAction
           : workflowBackendActionIds.has(normalizedActionId)
             ? runWorkflowBackendAction
-            : runMcpBackendAction;
+            : mcpBackendActionIds.has(normalizedActionId)
+              ? runMcpBackendAction
+              : runApprovalPolicyBackendAction;
         return routeAction(fetchImpl, baseUrl, normalizedActionId, payload, {
           user_id: sessionId,
           real_user_id: profileUserId,
@@ -390,6 +395,35 @@ export function createBackendControlCenterSource(options = {}) {
     }
   };
   return source;
+}
+
+async function runApprovalPolicyBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
+  const body = {
+    defaultMode: String(payload.defaultMode || payload.default_mode || payload.value || "").trim()
+  };
+  try {
+    const response = await fetchImpl(buildBackendUrl(baseUrl, "/capabilities/approval-policy", params), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store"
+    });
+    if (response.status === 404 || response.status === 405) {
+      return createNotImplementedActionResult(actionId);
+    }
+    if (!response.ok) {
+      return { ok: false, status: `http-${response.status}`, actionId, refresh: false };
+    }
+    const result = await readActionResponse(response);
+    return {
+      ...result,
+      ok: Boolean(result?.ok),
+      actionId,
+      refresh: result?.refresh === undefined ? true : Boolean(result.refresh)
+    };
+  } catch (error) {
+    return { ok: false, status: "request-failed", actionId, refresh: false, error: formatDataSourceError(error) };
+  }
 }
 
 async function runMcpBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
@@ -1516,6 +1550,7 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalo
   const diagnosticsData = asObject(diagnostics);
   const capabilities = asObject(diagnosticsData.capabilities);
   const catalogEntries = normalizeCapabilityCatalogEntries(capabilitiesCatalog);
+  const approvalPolicy = normalizeApprovalPolicyEntry(capabilitiesCatalog?.approvalPolicy);
   const approvalRequests = normalizeApprovalRequestsCatalog(approvalRequestsCatalog);
   const catalogSummary = summarizeCapabilityCatalogEntries(catalogEntries);
   const safety = asObject(diagnosticsData.safety);
@@ -1571,9 +1606,10 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalo
       workspaceCounts: mergeWorkspaceCounts(workspaceCounts, workspaceDataCounts),
       safety,
       approvalRequests,
+      approvalPolicy,
       runtimeMetrics
     }),
-    safety: buildAbilitySafetyPanel(safety, serviceOk, approvalRequests),
+    safety: buildAbilitySafetyPanel(safety, serviceOk, approvalRequests, approvalPolicy),
     live2d: {
       status: "预留",
       items: [
@@ -1610,6 +1646,52 @@ function normalizeApprovalRequestsCatalog(catalog) {
     pendingCount: positiveNumber(payload.pendingCount ?? requests.filter((entry) => entry.status === "pending").length),
     approvalRequests: requests,
     status: stringValue(payload.status || "available")
+  };
+}
+
+function normalizeApprovalPolicyEntry(entry) {
+  const payload = asObject(entry);
+  const defaultMode = normalizeApprovalMode(payload.defaultMode || payload.default_mode || "ask_each_time", {
+    requiresConfirmation: true,
+    risk: "high"
+  });
+  const mode = defaultMode === "trusted_auto_allow" ? "trusted_auto_allow" : "ask_each_time";
+  const availableModes = asArray(payload.availableModes).length
+    ? asArray(payload.availableModes)
+    : [
+        {
+          id: "ask_each_time",
+          label: "请求批准",
+          summary: "高风险动作先进入审批队列。"
+        },
+        {
+          id: "trusted_auto_allow",
+          label: "完全访问",
+          summary: "跳过高风险动作的逐次确认，但不跳过硬安全校验。"
+        }
+      ];
+  return {
+    defaultMode: mode,
+    label: stringValue(payload.label) || (mode === "trusted_auto_allow" ? "完全访问" : "请求批准"),
+    summary: stringValue(payload.summary) || (
+      mode === "trusted_auto_allow"
+        ? "高风险能力自动允许；URL、路径、密钥和本地边界校验仍保持开启。"
+        : "高风险能力在执行前创建审批请求，由用户允许或拒绝。"
+    ),
+    trustedAutoAllowHighRisk: mode === "trusted_auto_allow",
+    requiresConfirmationByDefault: mode !== "trusted_auto_allow",
+    updatedAt: stringValue(payload.updatedAt),
+    availableModes: availableModes
+      .map((item) => asObject(item))
+      .map((item) => {
+        const id = stringValue(item.id);
+        return {
+          id,
+          label: stringValue(item.label) || (id === "trusted_auto_allow" ? "完全访问" : "请求批准"),
+          summary: stringValue(item.summary)
+        };
+      })
+      .filter((item) => ["ask_each_time", "trusted_auto_allow"].includes(item.id))
   };
 }
 
@@ -2360,7 +2442,7 @@ function mapWorkflowStatus(status) {
   return mapCapabilityStatus(status);
 }
 
-function buildAbilityStatusRows({ syncedAt, serviceOk, toolCount, moduleCount, catalogSummary, workspaceCounts, safety, approvalRequests, runtimeMetrics }) {
+function buildAbilityStatusRows({ syncedAt, serviceOk, toolCount, moduleCount, catalogSummary, workspaceCounts, safety, approvalRequests, approvalPolicy, runtimeMetrics }) {
   const hasCatalog = Boolean(catalogSummary?.total);
   const pendingApprovalCount = positiveNumber(approvalRequests?.pendingCount);
   const rows = [
@@ -2392,7 +2474,7 @@ function buildAbilityStatusRows({ syncedAt, serviceOk, toolCount, moduleCount, c
   rows.push({
     time: syncedAt,
     module: "安全边界",
-    description: buildSafetyDescription(safety, approvalRequests),
+    description: buildSafetyDescription(safety, approvalRequests, approvalPolicy),
     status: pendingApprovalCount ? "待确认" : safety?.secrets_exposed ? "已拦截" : "成功",
     duration: "-",
     method: pendingApprovalCount ? "审批队列" : "策略检查"
@@ -2400,12 +2482,19 @@ function buildAbilityStatusRows({ syncedAt, serviceOk, toolCount, moduleCount, c
   return rows;
 }
 
-function buildAbilitySafetyPanel(safety, serviceOk, approvalRequests = {}) {
+function buildAbilitySafetyPanel(safety, serviceOk, approvalRequests = {}, approvalPolicy = null) {
   const pendingApprovalCount = positiveNumber(approvalRequests.pendingCount);
   const latestRequest = asArray(approvalRequests.approvalRequests).find((item) => item.status === "pending") || null;
+  const policy = approvalPolicy || normalizeApprovalPolicyEntry(null);
+  const approvalRequirementLabel = policy.defaultMode === "trusted_auto_allow" ? "自动允许" : "请求批准";
   return {
     status: pendingApprovalCount ? `${pendingApprovalCount} 项待确认` : serviceOk ? "已生效" : "待连接",
+    approvalPolicy: policy,
     items: [
+      {
+        label: "当前审批模式",
+        status: policy.label || approvalRequirementLabel
+      },
       {
         label: "审批请求队列",
         status: pendingApprovalCount
@@ -2426,15 +2515,16 @@ function buildAbilitySafetyPanel(safety, serviceOk, approvalRequests = {}) {
       },
       {
         label: "外部网络与危险操作",
-        status: latestRequest ? latestRequest.title : "需审批"
+        status: latestRequest ? latestRequest.title : approvalRequirementLabel
       }
     ]
   };
 }
 
-function buildSafetyDescription(safety, approvalRequests = {}) {
+function buildSafetyDescription(safety, approvalRequests = {}, approvalPolicy = null) {
   const pendingApprovalCount = positiveNumber(approvalRequests.pendingCount);
   if (pendingApprovalCount) return `有 ${pendingApprovalCount} 项能力请求等待用户确认`;
+  if (approvalPolicy?.defaultMode === "trusted_auto_allow") return "高风险能力已按用户策略自动允许，硬安全校验保持开启";
   if (safety?.secrets_exposed) return "检测到敏感信息暴露风险，已进入保护状态";
   if (safety?.full_disk_scan) return "全盘扫描能力需要审批后才可执行";
   return "桌面危险动作保持客户端确认，敏感信息未暴露";

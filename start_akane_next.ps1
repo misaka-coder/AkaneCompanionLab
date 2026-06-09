@@ -1,6 +1,7 @@
 param(
     [int]$BackendPort = 9999,
     [switch]$SkipBackend,
+    [switch]$ReuseBackend,
     [switch]$SkipDesktop,
     [switch]$NoBuild,
     [switch]$Dev,
@@ -52,6 +53,81 @@ function Test-TcpPort {
     } finally {
         $client.Close()
     }
+}
+
+function Get-BackendHealth {
+    param(
+        [string]$HostName,
+        [int]$Port
+    )
+
+    $healthUrl = "http://{0}:{1}/health" -f $HostName, $Port
+    try {
+        return Invoke-RestMethod -Uri $healthUrl -TimeoutSec 2
+    } catch {
+        return $null
+    }
+}
+
+function Test-AkaneBackendHealth {
+    param([object]$Health)
+
+    if ($null -eq $Health) {
+        return $false
+    }
+
+    $status = [string]($Health.status)
+    $pidValue = 0
+    try {
+        $pidValue = [int]($Health.pid)
+    } catch {
+        $pidValue = 0
+    }
+
+    $contracts = $Health.contracts
+    $desktopPetContract = if ($null -ne $contracts) { $contracts.desktop_pet } else { $null }
+    return ($status -eq "ok" -and $pidValue -gt 0 -and $null -ne $desktopPetContract)
+}
+
+function Test-AkaneBackendProcess {
+    param([int]$ProcessId)
+
+    if ($ProcessId -le 0) {
+        return $false
+    }
+
+    try {
+        $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId"
+    } catch {
+        return $false
+    }
+
+    if ($null -eq $processInfo) {
+        return $false
+    }
+
+    $commandLine = [string]($processInfo.CommandLine)
+    return [bool]($commandLine -match "launch_akane_memory_v01\.py|companion_v01\.app:app")
+}
+
+function Stop-AkaneBackendProcess {
+    param(
+        [int]$ProcessId,
+        [int]$Port
+    )
+
+    Write-Host "[INFO] Stopping existing Akane backend PID: $ProcessId"
+    Stop-Process -Id $ProcessId -Force -ErrorAction Stop
+
+    for ($i = 0; $i -lt 40; $i++) {
+        Start-Sleep -Milliseconds 250
+        if (-not (Test-TcpPort -HostName "127.0.0.1" -Port $Port)) {
+            Write-Host "[INFO] Previous backend stopped."
+            return
+        }
+    }
+
+    throw "Backend process $ProcessId was stopped, but port $Port is still busy."
 }
 
 function Resolve-Python {
@@ -168,8 +244,28 @@ if (-not $LegacySettings) {
 
 if (-not $SkipBackend) {
     if (Test-TcpPort -HostName "127.0.0.1" -Port $BackendPort) {
-        Write-Host "[INFO] Backend already listening on port $BackendPort. Reusing it."
-    } else {
+        if ($ReuseBackend) {
+            Write-Host "[INFO] Backend already listening on port $BackendPort. Reusing it because -ReuseBackend was set."
+        } else {
+            $health = Get-BackendHealth -HostName "127.0.0.1" -Port $BackendPort
+            $healthPid = 0
+            try {
+                $healthPid = [int]($health.pid)
+            } catch {
+                $healthPid = 0
+            }
+
+            if ((Test-AkaneBackendHealth -Health $health) -and (Test-AkaneBackendProcess -ProcessId $healthPid)) {
+                Write-Host "[INFO] Backend already listening on port $BackendPort. Restarting Akane backend for fresh code."
+                Stop-AkaneBackendProcess -ProcessId $healthPid -Port $BackendPort
+            } else {
+                Write-Host "[WARN] Port $BackendPort is already in use, but it was not recognized as a managed Akane backend."
+                Write-Host "[WARN] Keeping the existing service. Use -SkipBackend or free the port if this is unexpected."
+            }
+        }
+    }
+
+    if (-not (Test-TcpPort -HostName "127.0.0.1" -Port $BackendPort)) {
         $python = Resolve-Python -ProjectDir $projectDir
         $env:COMPANION_PORT = "$BackendPort"
         Write-Host "[INFO] Starting backend with: $python"

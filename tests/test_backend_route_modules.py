@@ -1166,6 +1166,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                 "transcribe_media": object(),
                 "web_search": object(),
                 "open_browser": object(),
+                "browser_page": object(),
             }
         )
         app = FastAPI()
@@ -1207,6 +1208,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertIn("tool.transcribe_media", by_id)
         self.assertIn("tool.web_search", by_id)
         self.assertIn("tool.open_browser", by_id)
+        self.assertIn("tool.browser_page", by_id)
         self.assertIn("provider.tts.edge", by_id)
         self.assertIn("provider.asr.faster_whisper", by_id)
         self.assertIn("workflow.workshop.portrait.cutout", by_id)
@@ -1222,6 +1224,9 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(by_id["tool.open_browser"]["group"], "desktop_browser")
         self.assertEqual(by_id["tool.open_browser"]["risk"], "medium")
         self.assertEqual(by_id["tool.open_browser"]["approvalMode"], "trusted_auto_allow")
+        self.assertEqual(by_id["tool.browser_page"]["group"], "desktop_browser")
+        self.assertEqual(by_id["tool.browser_page"]["risk"], "medium")
+        self.assertEqual(by_id["tool.browser_page"]["approvalMode"], "trusted_auto_allow")
 
         tts_provider = by_id["provider.tts.edge"]
         self.assertEqual(tts_provider["type"], "tts_provider")
@@ -1338,6 +1343,104 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertIn(("capabilities.approval_requests", True), runtime.observed)
         self.assertIn(("capabilities.approval_request_create", True), runtime.observed)
         self.assertIn(("capabilities.approval_request_decision", True), runtime.observed)
+
+    def test_capabilities_approval_policy_can_switch_high_risk_catalog_entries(self) -> None:
+        runtime = FakeRuntimeMetrics()
+
+        async def fake_mcp_discoverer(*, server: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "tools": [
+                    {
+                        "name": "read_page",
+                        "description": "Read a public browser page.",
+                        "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
+                    },
+                    {
+                        "name": "browser_click",
+                        "description": "Click a browser element on behalf of the user.",
+                        "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]},
+                    },
+                ]
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    mcp_tool_discoverer=fake_mcp_discoverer,
+                )
+            )
+            client = TestClient(app)
+
+            default_policy = client.get("/capabilities/approval-policy?user_id=desktop&real_user_id=master")
+            self.assertEqual(default_policy.status_code, 200)
+            self.assertEqual(default_policy.json()["approvalPolicy"]["defaultMode"], "ask_each_time")
+
+            client.post(
+                "/capabilities/mcp-servers/browser/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "displayName": "Browser MCP", "command": "browser-mcp"},
+            )
+            client.post("/capabilities/mcp-servers/browser/discover?user_id=desktop&real_user_id=master", json={})
+
+            catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            by_id = {item["id"]: item for item in catalog["capabilities"]}
+            self.assertEqual(catalog["approvalPolicy"]["defaultMode"], "ask_each_time")
+            self.assertEqual(by_id["mcp.browser.browser_click"]["risk"], "high")
+            self.assertTrue(by_id["mcp.browser.browser_click"]["requiresConfirmation"])
+            self.assertEqual(by_id["mcp.browser.browser_click"]["approvalMode"], "ask_each_time")
+            self.assertEqual(by_id["workflow.workshop.portrait.cutout"]["approvalMode"], "disabled")
+
+            saved = client.post(
+                "/capabilities/approval-policy?user_id=desktop&real_user_id=master",
+                json={"defaultMode": "trusted_auto_allow", "api_key": "must-not-leak"},
+            )
+            self.assertEqual(saved.status_code, 200)
+            self.assertTrue(saved.json()["ok"])
+            self.assertEqual(saved.json()["approvalPolicy"]["defaultMode"], "trusted_auto_allow")
+            self.assertNotIn("must-not-leak", saved.text)
+
+            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            config_text = config_path.read_text(encoding="utf-8")
+            self.assertIn('"approvalPolicy"', config_text)
+            self.assertIn('"trusted_auto_allow"', config_text)
+            self.assertNotIn("must-not-leak", config_text)
+
+            # Saving another config family must preserve the profile approval policy.
+            client.post(
+                "/capabilities/mcp-servers/browser/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "displayName": "Browser MCP", "command": "browser-mcp"},
+            )
+            preserved = client.get("/capabilities/approval-policy?user_id=desktop&real_user_id=master").json()
+            self.assertEqual(preserved["approvalPolicy"]["defaultMode"], "trusted_auto_allow")
+
+            trusted_catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            trusted_by_id = {item["id"]: item for item in trusted_catalog["capabilities"]}
+            trusted_click = trusted_by_id["mcp.browser.browser_click"]
+            self.assertEqual(trusted_catalog["approvalPolicy"]["defaultMode"], "trusted_auto_allow")
+            self.assertEqual(trusted_click["approvalMode"], "trusted_auto_allow")
+            self.assertEqual(trusted_click["approvalReason"], "user_policy_trusted_auto_allow")
+            self.assertFalse(trusted_click["requiresConfirmation"])
+            self.assertEqual(trusted_by_id["workflow.workshop.portrait.cutout"]["approvalMode"], "disabled")
+
+            workflows = client.get("/capabilities/workflows?user_id=desktop&real_user_id=master").json()
+            workflow_by_id = {item["id"]: item for item in workflows["workflows"]}
+            self.assertEqual(workflow_by_id["workflow.workshop.portrait.cutout"]["approvalMode"], "disabled")
+
+            invalid = client.post(
+                "/capabilities/approval-policy?user_id=desktop&real_user_id=master",
+                json={"defaultMode": "always_yes"},
+            )
+            self.assertEqual(invalid.status_code, 400)
+            self.assertEqual(invalid.json()["status"], "invalid_config")
+            self.assertEqual(invalid.json()["reason"], "approval_policy_mode_invalid")
+
+            self.assertIn(("capabilities.approval_policy", True), runtime.observed)
+            self.assertIn(("capabilities.approval_policy_save", True), runtime.observed)
+            self.assertIn(("capabilities.catalog", True), runtime.observed)
 
     def test_capabilities_mcp_server_config_and_discovery_merge_safe_catalog_entries(self) -> None:
         runtime = FakeRuntimeMetrics()
