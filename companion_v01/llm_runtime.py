@@ -395,6 +395,8 @@ class LLMRuntime:
         temperature: float = 0.7,
         prompt_cache_key: str = "",
         user_images: list[dict[str, Any]] | None = None,
+        native_tools: list[dict[str, Any]] | None = None,
+        native_tool_choice: Any = "",
     ) -> dict[str, Any]:
         self._record_metric("chat_json_calls")
         return self._call_json(
@@ -405,6 +407,8 @@ class LLMRuntime:
             temperature=temperature,
             prompt_cache_key=prompt_cache_key,
             user_images=user_images,
+            native_tools=native_tools,
+            native_tool_choice=native_tool_choice,
         )
 
     def call_aux_ndjson(
@@ -459,6 +463,8 @@ class LLMRuntime:
         temperature: float,
         prompt_cache_key: str,
         user_images: list[dict[str, Any]] | None = None,
+        native_tools: list[dict[str, Any]] | None = None,
+        native_tool_choice: Any = "",
     ) -> dict[str, Any]:
         try:
             response = self._create_completion(
@@ -471,8 +477,13 @@ class LLMRuntime:
                     json_mode=True,
                     prompt_cache_key=prompt_cache_key,
                     user_images=user_images,
+                    native_tools=native_tools,
+                    native_tool_choice=native_tool_choice,
                 ),
             )
+            native_tool_call = self._extract_native_tool_call(response)
+            if native_tool_call is not None:
+                return {"tool_call": native_tool_call}
             content = self._extract_text(response)
             parsed = self._extract_json(content)
             if isinstance(parsed, dict):
@@ -777,6 +788,8 @@ class LLMRuntime:
         json_mode: bool = False,
         prompt_cache_key: str = "",
         user_images: list[dict[str, Any]] | None = None,
+        native_tools: list[dict[str, Any]] | None = None,
+        native_tool_choice: Any = "",
     ) -> dict[str, Any]:
         user_content: str | list[dict[str, Any]]
         image_items = self._normalize_user_image_items(user_images)
@@ -796,6 +809,12 @@ class LLMRuntime:
             payload["stream"] = True
         if json_mode and self._should_use_response_json_mode(bundle):
             payload["response_format"] = {"type": "json_object"}
+        normalized_tools = self._normalize_native_tools(native_tools)
+        if normalized_tools and self._should_send_native_tools(bundle):
+            payload["tools"] = normalized_tools
+            tool_choice = self._normalize_native_tool_choice(native_tool_choice)
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
         payload.update(self._build_reasoning_control_kwargs(bundle=bundle))
         payload.update(
             self._build_prompt_cache_kwargs(
@@ -804,6 +823,87 @@ class LLMRuntime:
             )
         )
         return payload
+
+    def _should_send_native_tools(self, bundle: ModelBundle) -> bool:
+        protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        return protocol == "openai"
+
+    def _normalize_native_tools(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        tools: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in value[:64]:
+            if not isinstance(raw, dict):
+                continue
+            if str(raw.get("type") or "").strip() != "function":
+                continue
+            function = raw.get("function")
+            if not isinstance(function, dict):
+                continue
+            name = str(function.get("name") or "").strip()
+            if not name or name in seen or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+                continue
+            parameters = function.get("parameters")
+            if not isinstance(parameters, dict):
+                parameters = {"type": "object", "additionalProperties": True}
+            description = " ".join(str(function.get("description") or "").split())[:900]
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": description or f"Call Akane tool {name}.",
+                        "parameters": parameters,
+                    },
+                }
+            )
+            seen.add(name)
+        return tools
+
+    def _normalize_native_tool_choice(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return value
+        raw = str(value or "").strip().lower()
+        return raw if raw in {"auto", "none", "required"} else ""
+
+    def _extract_native_tool_call(self, response: Any) -> dict[str, Any] | None:
+        try:
+            message = response.choices[0].message
+        except Exception:
+            return None
+        tool_calls = self._get_attr_or_key(message, "tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            return None
+        first = tool_calls[0]
+        function = self._get_attr_or_key(first, "function")
+        if not isinstance(function, dict):
+            function = {
+                "name": self._get_attr_or_key(function, "name"),
+                "arguments": self._get_attr_or_key(function, "arguments"),
+            }
+        name = str(function.get("name") or "").strip()
+        if not name or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+            return None
+        arguments = self._decode_native_tool_arguments(function.get("arguments"))
+        return {**arguments, "type": name}
+
+    def _decode_native_tool_arguments(self, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        raw = str(value or "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+
+    def _get_attr_or_key(self, value: Any, key: str) -> Any:
+        if isinstance(value, dict):
+            return value.get(key)
+        return getattr(value, key, None)
 
     def _build_reasoning_control_kwargs(self, *, bundle: ModelBundle) -> dict[str, Any]:
         mode = str(getattr(config, "LLM_THINKING_MODE", "disabled") or "").strip().lower()

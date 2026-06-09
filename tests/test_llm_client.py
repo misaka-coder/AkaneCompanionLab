@@ -114,6 +114,86 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(payload["prompt_cache_key"], "akane:chat:final")
         self.assertEqual(payload["prompt_cache_retention"], "24h")
 
+    def test_llm_runtime_adds_native_tools_only_when_explicit_for_openai(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.openai.com/v1"),
+            model="gpt-5",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertEqual(payload["tool_choice"], "auto")
+
+    def test_llm_runtime_skips_native_tools_for_non_openai_protocol(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="ollama", base_url="http://127.0.0.1:11434/v1"),
+            model="qwen2.5:7b",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertNotIn("tools", payload)
+        self.assertNotIn("tool_choice", payload)
+
+    def test_llm_runtime_extracts_native_tool_call_to_akane_shape(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                function=SimpleNamespace(
+                                    name="web_search",
+                                    arguments='{"query":"Akane","max_results":3,"type":"ignored"}',
+                                )
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+
+        self.assertEqual(
+            runtime._extract_native_tool_call(response),
+            {"type": "web_search", "query": "Akane", "max_results": 3},
+        )
+
     def test_llm_runtime_skips_prompt_cache_hints_for_non_openai_base_url_by_default(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
