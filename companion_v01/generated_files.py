@@ -14,7 +14,7 @@ import zipfile
 from array import array
 from copy import copy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import generated_files_cards, generated_files_delivery, generated_files_io, generated_files_media
 from .attachment_inbox import AttachmentInboxService
@@ -71,9 +71,20 @@ class GeneratedFileService:
         base_dir: Path,
         store: MemoryStore,
         attachment_service: AttachmentInboxService,
+        legacy_base_dirs: list[Path] | tuple[Path, ...] | None = None,
+        ensure_storage_ready: Callable[[], Any] | None = None,
+        work_dir: Path | None = None,
     ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.work_dir = Path(work_dir) if work_dir is not None else self.base_dir
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        self.legacy_base_dirs = [
+            Path(item)
+            for item in list(legacy_base_dirs or [])
+            if Path(item) != self.base_dir
+        ]
+        self.ensure_storage_ready = ensure_storage_ready
         self.store = store
         self.attachment_service = attachment_service
         self._whisper_model_cache: dict[tuple[str, str, str], Any] = {}
@@ -625,7 +636,35 @@ class GeneratedFileService:
         relpath = str(generated.get("storage_relpath") or "").strip()
         if not relpath:
             return self.base_dir
-        return self.base_dir / Path(relpath)
+        relative_path = Path(relpath)
+        if relative_path.is_absolute():
+            return self.base_dir
+        storage_roots = [self.base_dir, *self.legacy_base_dirs]
+        fallback = self.base_dir
+        for index, storage_root in enumerate(storage_roots):
+            candidate = (storage_root / relative_path).resolve()
+            try:
+                candidate.relative_to(storage_root.resolve())
+            except Exception:
+                continue
+            if index == 0:
+                fallback = candidate
+            if candidate.exists():
+                return candidate
+        return fallback
+
+    def is_managed_storage_path(self, path: Path) -> bool:
+        try:
+            resolved = Path(path).resolve()
+        except Exception:
+            return False
+        for storage_root in [self.base_dir, *self.legacy_base_dirs]:
+            try:
+                resolved.relative_to(storage_root.resolve())
+                return True
+            except Exception:
+                continue
+        return False
 
     def mark_delivery_status(
         self,
@@ -2006,11 +2045,23 @@ class GeneratedFileService:
         output_format: str,
         timestamp: int,
     ) -> Path:
-        profile_slug = self._safe_filename(profile_user_id or "profile")[:48]
-        session_slug = self._safe_filename(session_id or "session")[:48]
-        date_slug = time.strftime("%Y%m%d", time.localtime(timestamp))
-        filename = f"{timestamp}_{self._safe_filename(title)[:60] or 'akane_output'}.{output_format}"
-        return self.base_dir / profile_slug / session_slug / date_slug / filename
+        if self.ensure_storage_ready is not None:
+            self.ensure_storage_ready()
+        local_time = time.localtime(timestamp)
+        date_slug = time.strftime("%Y-%m-%d", local_time)
+        time_slug = time.strftime("%H%M%S", local_time)
+        readable_title = self._safe_filename(title)[:60] or "akane_output"
+        output_dir = self.base_dir / date_slug
+        output_path = output_dir / f"{time_slug}_{readable_title}.{output_format}"
+        sequence = 2
+        while output_path.exists():
+            output_path = output_dir / f"{time_slug}_{readable_title}_{sequence}.{output_format}"
+            sequence += 1
+        try:
+            output_path.resolve(strict=False).relative_to(self.base_dir.resolve())
+        except Exception:
+            raise RuntimeError("generated output destination escaped the managed workspace") from None
+        return output_path
 
     def _storage_relpath(self, path: Path) -> str:
         try:

@@ -5,7 +5,7 @@ import importlib.util
 import time
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .store import MemoryStore
 
@@ -27,9 +27,22 @@ class AttachmentInboxService:
     resources, generated outputs, or long-term memory.
     """
 
-    def __init__(self, *, store: MemoryStore, base_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        store: MemoryStore,
+        base_dir: Path | None = None,
+        legacy_base_dirs: list[Path] | tuple[Path, ...] | None = None,
+        workspace_uri_resolver: Callable[[str], Path | None] | None = None,
+    ) -> None:
         self.store = store
         self.base_dir = Path(base_dir) if base_dir is not None else None
+        self.legacy_base_dirs = [
+            Path(item)
+            for item in list(legacy_base_dirs or [])
+            if self.base_dir is None or Path(item) != self.base_dir
+        ]
+        self.workspace_uri_resolver = workspace_uri_resolver
 
     def create_pending(
         self,
@@ -74,24 +87,17 @@ class AttachmentInboxService:
         detail: dict[str, Any] | None = None,
         timestamp: int | None = None,
     ) -> dict[str, Any] | None:
-        updated = self.store.update_attachment_inbox_item(
+        return self.store.mark_attachment_inbox_item_ready(
             profile_user_id=profile_user_id,
             session_id=session_id,
             attachment_id=attachment_id,
-            status="ready",
             summary_title=summary_title,
             short_hint=short_hint,
             detail=detail if isinstance(detail, dict) else {},
-            updated_at=timestamp,
+            focus_batch_seconds=AUTO_FOCUS_BATCH_SECONDS,
+            focus_max_items=AUTO_FOCUS_MAX_ITEMS,
+            timestamp=timestamp,
         )
-        if updated is not None:
-            self._auto_focus_recent_batch(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                anchor=updated,
-                timestamp=timestamp,
-            )
-        return updated
 
     def wait_for_attachments_settled(
         self,
@@ -1196,20 +1202,34 @@ class AttachmentInboxService:
         return ""
 
     def _resolve_storage_path(self, item: dict[str, Any]) -> Path | None:
-        if self.base_dir is None:
-            return None
         relpath = str(item.get("storage_relpath") or "").strip()
         if not relpath:
             return None
-        candidate = (self.base_dir / Path(relpath)).resolve()
-        try:
-            base = self.base_dir.resolve()
-            candidate.relative_to(base)
-        except Exception:
+        if relpath.lower().startswith("workspace:"):
+            if self.workspace_uri_resolver is None:
+                return None
+            try:
+                candidate = self.workspace_uri_resolver(relpath)
+            except Exception:
+                return None
+            if isinstance(candidate, Path) and candidate.exists() and candidate.is_file():
+                return candidate
             return None
-        if not candidate.exists() or not candidate.is_file():
-            return None
-        return candidate
+        storage_roots = [
+            root
+            for root in [self.base_dir, *self.legacy_base_dirs]
+            if isinstance(root, Path)
+        ]
+        for storage_root in storage_roots:
+            candidate = (storage_root / Path(relpath)).resolve()
+            try:
+                base = storage_root.resolve()
+                candidate.relative_to(base)
+            except Exception:
+                continue
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
 
     def _read_text_file_section(self, path: Path, *, section: str, max_chars: int) -> str:
         payload = path.read_bytes()[: max(256 * 1024, max_chars * 4)]

@@ -38,6 +38,7 @@ class MemoryStore:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.base_dir / "akane_memory_v01.db"
         self._attachment_inbox_write_lock = threading.Lock()
+        self._workspace_file_write_lock = threading.Lock()
         self._init_db()
 
     @contextmanager
@@ -336,6 +337,25 @@ class MemoryStore:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_files_profile_session_handle
                 ON generated_files(profile_user_id, session_id, generated_handle)
                 WHERE generated_handle != '';
+
+                CREATE TABLE IF NOT EXISTS workspace_file_states (
+                    profile_user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    workspace_uri TEXT NOT NULL,
+                    focus_rank INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    last_used_at INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(profile_user_id, session_id, workspace_uri)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_workspace_file_states_focus
+                ON workspace_file_states(
+                    profile_user_id,
+                    session_id,
+                    focus_rank,
+                    updated_at DESC
+                );
 
                 CREATE TABLE IF NOT EXISTS desktop_music_timelines (
                     timeline_id TEXT PRIMARY KEY,
@@ -690,6 +710,17 @@ class MemoryStore:
             )
             conn.execute(
                 """
+                CREATE INDEX IF NOT EXISTS idx_workspace_file_states_focus
+                ON workspace_file_states(
+                    profile_user_id,
+                    session_id,
+                    focus_rank,
+                    updated_at DESC
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_desktop_music_timeline_source
                 ON desktop_music_timelines(profile_user_id, session_id, source_id)
                 WHERE source_id != ''
@@ -833,6 +864,7 @@ class MemoryStore:
             conn.execute("DELETE FROM persona_events")
             conn.execute("DELETE FROM persona_session_states")
             conn.execute("DELETE FROM attachment_inbox_items")
+            conn.execute("DELETE FROM workspace_file_states")
             conn.execute("DELETE FROM desktop_music_timelines")
 
     def _build_default_session_title(
@@ -2357,6 +2389,105 @@ class MemoryStore:
             ).fetchone()
         return self._row_to_attachment_inbox_item(dict(updated)) if updated else None
 
+    def mark_attachment_inbox_item_ready(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        attachment_id: str,
+        summary_title: str,
+        short_hint: str,
+        detail: dict[str, Any],
+        focus_batch_seconds: int,
+        focus_max_items: int,
+        timestamp: int | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_id = str(attachment_id or "").strip()
+        if not normalized_id:
+            return None
+        effective_ts = int(timestamp or time.time())
+        profile_id = str(profile_user_id)
+        session = str(session_id)
+        threshold = effective_ts - max(0, int(focus_batch_seconds or 0))
+        with self._attachment_inbox_write_lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE attachment_inbox_items
+                    SET status = 'ready', summary_title = ?, short_hint = ?,
+                        detail_json = ?, error_message = '', updated_at = ?
+                    WHERE profile_user_id = ? AND session_id = ? AND attachment_id = ?
+                    """,
+                    (
+                        str(summary_title or "").strip(),
+                        str(short_hint or "").strip(),
+                        json.dumps(detail if isinstance(detail, dict) else {}, ensure_ascii=False),
+                        effective_ts,
+                        profile_id,
+                        session,
+                        normalized_id,
+                    ),
+                )
+                candidates = conn.execute(
+                    """
+                    SELECT attachment_id
+                    FROM (
+                        SELECT attachment_id, created_at, sequence_no, updated_at
+                        FROM attachment_inbox_items
+                        WHERE profile_user_id = ? AND session_id = ? AND status = 'ready'
+                          AND COALESCE(NULLIF(updated_at, 0), created_at) >= ?
+                        ORDER BY created_at DESC, sequence_no DESC, updated_at DESC
+                        LIMIT ?
+                    )
+                    ORDER BY created_at ASC, sequence_no ASC, updated_at ASC
+                    """,
+                    (
+                        profile_id,
+                        session,
+                        threshold,
+                        max(1, int(focus_max_items or 1)),
+                    ),
+                ).fetchall()
+                attachment_ids = [
+                    str(row["attachment_id"] or "").strip()
+                    for row in candidates
+                    if str(row["attachment_id"] or "").strip()
+                ]
+                conn.execute(
+                    """
+                    UPDATE attachment_inbox_items
+                    SET focus_rank = 0, updated_at = ?
+                    WHERE profile_user_id = ? AND session_id = ?
+                      AND status IN ('ready', 'pending_observation', 'failed')
+                    """,
+                    (effective_ts, profile_id, session),
+                )
+                for rank, focused_id in enumerate(attachment_ids, start=1):
+                    conn.execute(
+                        """
+                        UPDATE attachment_inbox_items
+                        SET focus_rank = ?, last_used_at = ?, updated_at = ?
+                        WHERE profile_user_id = ? AND session_id = ? AND attachment_id = ?
+                          AND status = 'ready'
+                        """,
+                        (
+                            rank,
+                            effective_ts,
+                            effective_ts,
+                            profile_id,
+                            session,
+                            focused_id,
+                        ),
+                    )
+                updated = conn.execute(
+                    """
+                    SELECT * FROM attachment_inbox_items
+                    WHERE profile_user_id = ? AND session_id = ? AND attachment_id = ?
+                    """,
+                    (profile_id, session, normalized_id),
+                ).fetchone()
+        return self._row_to_attachment_inbox_item(dict(updated)) if updated else None
+
     def get_attachment_inbox_item(
         self,
         *,
@@ -2376,6 +2507,34 @@ class MemoryStore:
                 """,
                 (str(profile_user_id), str(session_id), normalized_id),
             ).fetchone()
+        return self._row_to_attachment_inbox_item(dict(row)) if row else None
+
+    def get_attachment_inbox_item_by_storage_relpath(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        storage_relpath: str,
+        statuses: list[str] | tuple[str, ...] | set[str] | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_relpath = str(storage_relpath or "").strip()
+        if not normalized_relpath:
+            return None
+        normalized_statuses = self._normalize_attachment_status_list(statuses)
+        query = [
+            """
+            SELECT * FROM attachment_inbox_items
+            WHERE profile_user_id = ? AND session_id = ? AND storage_relpath = ?
+            """
+        ]
+        params: list[Any] = [str(profile_user_id), str(session_id), normalized_relpath]
+        if normalized_statuses:
+            placeholders = ", ".join("?" for _ in normalized_statuses)
+            query.append(f"AND status IN ({placeholders})")
+            params.extend(normalized_statuses)
+        query.append("ORDER BY updated_at DESC, created_at DESC LIMIT 1")
+        with self._connect() as conn:
+            row = conn.execute("\n".join(query), tuple(params)).fetchone()
         return self._row_to_attachment_inbox_item(dict(row)) if row else None
 
     def list_attachment_inbox_items(
@@ -2666,6 +2825,138 @@ class MemoryStore:
                 (str(profile_user_id), str(session_id), *normalized_ids),
             ).fetchall()
         return [self._row_to_attachment_inbox_item(dict(row)) for row in rows]
+
+    def list_workspace_file_states(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        focused_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT profile_user_id, session_id, workspace_uri, focus_rank,
+                   created_at, updated_at, last_used_at
+            FROM workspace_file_states
+            WHERE profile_user_id = ? AND session_id = ?
+        """
+        params: list[Any] = [str(profile_user_id), str(session_id)]
+        if focused_only:
+            query += " AND focus_rank > 0"
+        query += " ORDER BY CASE WHEN focus_rank > 0 THEN 0 ELSE 1 END, focus_rank ASC, updated_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_workspace_file_focus(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        workspace_uris: list[str],
+        action: str,
+        timestamp: int | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_action = str(action or "").strip().lower()
+        if normalized_action not in {"add", "set", "remove"}:
+            raise ValueError(f"unsupported workspace focus action: {normalized_action}")
+
+        normalized_uris: list[str] = []
+        for workspace_uri in workspace_uris or []:
+            normalized = str(workspace_uri or "").strip()
+            if normalized and normalized not in normalized_uris:
+                normalized_uris.append(normalized)
+
+        effective_ts = int(timestamp or time.time())
+        profile_id = str(profile_user_id)
+        session = str(session_id)
+        with self._workspace_file_write_lock:
+            with self._connect() as conn:
+                if normalized_action == "set":
+                    conn.execute(
+                        """
+                        UPDATE workspace_file_states
+                        SET focus_rank = 0, updated_at = ?
+                        WHERE profile_user_id = ? AND session_id = ? AND focus_rank > 0
+                        """,
+                        (effective_ts, profile_id, session),
+                    )
+
+                if normalized_action in {"add", "set"}:
+                    row = conn.execute(
+                        """
+                        SELECT COALESCE(MAX(focus_rank), 0) AS max_rank
+                        FROM workspace_file_states
+                        WHERE profile_user_id = ? AND session_id = ?
+                        """,
+                        (profile_id, session),
+                    ).fetchone()
+                    next_rank = int(row["max_rank"] or 0) + 1 if row else 1
+                    for workspace_uri in normalized_uris:
+                        existing = conn.execute(
+                            """
+                            SELECT focus_rank
+                            FROM workspace_file_states
+                            WHERE profile_user_id = ? AND session_id = ? AND workspace_uri = ?
+                            """,
+                            (profile_id, session, workspace_uri),
+                        ).fetchone()
+                        if normalized_action == "add" and existing and int(existing["focus_rank"] or 0) > 0:
+                            conn.execute(
+                                """
+                                UPDATE workspace_file_states
+                                SET last_used_at = ?, updated_at = ?
+                                WHERE profile_user_id = ? AND session_id = ? AND workspace_uri = ?
+                                """,
+                                (effective_ts, effective_ts, profile_id, session, workspace_uri),
+                            )
+                            continue
+                        conn.execute(
+                            """
+                            INSERT INTO workspace_file_states (
+                                profile_user_id, session_id, workspace_uri, focus_rank,
+                                created_at, updated_at, last_used_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(profile_user_id, session_id, workspace_uri)
+                            DO UPDATE SET
+                                focus_rank = excluded.focus_rank,
+                                updated_at = excluded.updated_at,
+                                last_used_at = excluded.last_used_at
+                            """,
+                            (
+                                profile_id,
+                                session,
+                                workspace_uri,
+                                next_rank,
+                                effective_ts,
+                                effective_ts,
+                                effective_ts,
+                            ),
+                        )
+                        next_rank += 1
+                else:
+                    for workspace_uri in normalized_uris:
+                        conn.execute(
+                            """
+                            INSERT INTO workspace_file_states (
+                                profile_user_id, session_id, workspace_uri, focus_rank,
+                                created_at, updated_at, last_used_at
+                            ) VALUES (?, ?, ?, 0, ?, ?, 0)
+                            ON CONFLICT(profile_user_id, session_id, workspace_uri)
+                            DO UPDATE SET focus_rank = 0, updated_at = excluded.updated_at
+                            """,
+                            (
+                                profile_id,
+                                session,
+                                workspace_uri,
+                                effective_ts,
+                                effective_ts,
+                            ),
+                        )
+
+        return self.list_workspace_file_states(
+            profile_user_id=profile_id,
+            session_id=session,
+        )
 
     def add_generated_file(
         self,

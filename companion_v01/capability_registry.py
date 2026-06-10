@@ -63,6 +63,12 @@ COMMON_TOOL_NAMES = (
 
 WEB_SEARCH_TOOL_NAMES = ("web_search",)
 DESKTOP_BROWSER_TOOL_NAMES = ("open_browser", "browser_page")
+DESKTOP_WORKSPACE_TOOL_NAMES = (
+    "list_workspace",
+    "read_workspace",
+    "focus_workspace",
+    "register_workspace_items",
+)
 
 WEB_SCENE_TOOL_NAMES = (
     "call_npc",
@@ -248,6 +254,14 @@ class CapabilityRegistry:
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=DESKTOP_BROWSER_TOOL_NAMES,
                 light_hint="桌宠模式下，open_browser 只把公开网页交给用户的系统浏览器打开；browser_page 会打开并操作 Akane 可见托管浏览器窗口，用于读取、滚动、按可见候选序号打开链接，以及经授权的点击/输入。不要接管用户手动打开的浏览器标签页，不要登录、下载、上传或访问私密/内网内容。",
+                trigger=_always,
+            ),
+            CapabilityModule(
+                name="desktop_file_workspace",
+                layer="desktop_workspace",
+                modes=(ClientMode.DESKTOP_PET,),
+                tools=DESKTOP_WORKSPACE_TOOL_NAMES,
+                light_hint="桌宠模式下，你始终拥有一个可主动查询的 Akane 文件工作区。用户提到刚放入、寻找、处理或清理某个文件时，先从 workspace:/ 调用 list_workspace 查询，不要先让用户提供本机绝对路径；你也可以批量读取、聚焦材料，并把文件原地登记为文档或媒体工具可用的附件 handle。",
                 trigger=_always,
             ),
             CapabilityModule(

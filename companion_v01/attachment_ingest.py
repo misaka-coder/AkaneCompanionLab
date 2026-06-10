@@ -10,7 +10,7 @@ import subprocess
 import time
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse, unquote
 
 import requests
@@ -89,6 +89,13 @@ AUDIO_MEDIA_SUFFIXES = {
     ".opus",
 }
 
+IMAGE_SUFFIXES = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+}
+
 REMOTE_MEDIA_DEFAULT_TIMEOUT = 180.0
 REMOTE_MEDIA_DEFAULT_MAX_BYTES = 1024 * 1024 * 1024
 REMOTE_MEDIA_DEFAULT_MAX_URLS = 8
@@ -132,11 +139,21 @@ class AttachmentIngestService:
         base_dir: Path,
         store: MemoryStore,
         attachment_service: AttachmentInboxService,
-        vision_service: VisionObservationService,
+        vision_service: VisionObservationService | None,
         background_tasks: BackgroundTaskRunner | None = None,
+        legacy_base_dirs: list[Path] | tuple[Path, ...] | None = None,
+        ensure_storage_ready: Callable[[], Any] | None = None,
+        workspace_uri_resolver: Callable[[str], Path | None] | None = None,
     ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.legacy_base_dirs = [
+            Path(item)
+            for item in list(legacy_base_dirs or [])
+            if Path(item) != self.base_dir
+        ]
+        self.ensure_storage_ready = ensure_storage_ready
+        self.workspace_uri_resolver = workspace_uri_resolver
         self.store = store
         self.attachment_service = attachment_service
         self.vision_service = vision_service
@@ -242,6 +259,96 @@ class AttachmentIngestService:
             or item
         )
 
+    def register_workspace_file(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        workspace_uri: str,
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        normalized_uri = str(workspace_uri or "").strip()
+        if not normalized_uri.lower().startswith("workspace:"):
+            raise ValueError("workspace registration requires a workspace:/ URI")
+        if self.workspace_uri_resolver is None:
+            raise RuntimeError("workspace file resolver is unavailable")
+        source_path = self.workspace_uri_resolver(normalized_uri)
+        if source_path is None or not source_path.exists() or not source_path.is_file():
+            raise FileNotFoundError(normalized_uri)
+
+        effective_ts = int(timestamp or time.time())
+        mime_type = str(mimetypes.guess_type(source_path.name)[0] or "").strip()
+        file_ext = source_path.suffix.lower()
+        kind = self._infer_local_kind(source_path=source_path, mime_type=mime_type)
+        existing = self.store.get_attachment_inbox_item_by_storage_relpath(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            storage_relpath=normalized_uri,
+            statuses=["ready", "pending_observation", "failed"],
+        )
+        if existing is not None and str(existing.get("status") or "") == "pending_observation":
+            return {
+                "status": "already_registered",
+                "workspace_uri": normalized_uri,
+                "item": existing,
+            }
+
+        if existing is None:
+            item = self.attachment_service.create_pending(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                source="workspace",
+                kind=kind,
+                origin_name=self._clean_filename(source_path.name),
+                mime_type=mime_type,
+                file_ext=file_ext,
+                file_size=source_path.stat().st_size,
+                storage_relpath=normalized_uri,
+                timestamp=effective_ts,
+            )
+            registration_status = "registered"
+        else:
+            item = self.store.update_attachment_inbox_item(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                attachment_id=str(existing.get("attachment_id") or ""),
+                status="pending_observation",
+                short_hint="正在重新读取这个工作区文件。",
+                detail={},
+                error_message="",
+                mime_type=mime_type,
+                file_ext=file_ext,
+                file_size=source_path.stat().st_size,
+                storage_relpath=normalized_uri,
+                updated_at=effective_ts,
+            ) or existing
+            registration_status = "refreshed"
+
+        self._process_qq_attachment(
+            item,
+            {
+                "workspace_uri": normalized_uri,
+                "origin_name": source_path.name,
+                "mime_type": mime_type,
+                "file_ext": file_ext,
+                "kind": kind,
+            },
+            effective_ts,
+        )
+        latest = (
+            self.store.get_attachment_inbox_item(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                attachment_id=str(item.get("attachment_id") or ""),
+            )
+            or item
+        )
+        return {
+            "status": registration_status,
+            "workspace_uri": normalized_uri,
+            "item": latest,
+        }
+
     def _process_qq_attachment(
         self,
         item: dict[str, Any],
@@ -254,7 +361,8 @@ class AttachmentIngestService:
                 self._mark_failed(item, "没有可下载或可读取的附件地址。", timestamp=timestamp)
                 return
 
-            relpath = self._storage_relpath(source_path)
+            workspace_uri = str(payload.get("workspace_uri") or "").strip()
+            relpath = workspace_uri or self._storage_relpath(source_path)
             mime_type = str(payload.get("mime_type") or mimetypes.guess_type(str(source_path))[0] or "").strip()
             file_ext = source_path.suffix.lower()
             self.store.update_attachment_inbox_item(
@@ -697,11 +805,7 @@ class AttachmentIngestService:
         item: dict[str, Any],
         descriptor: RemoteMediaDescriptor,
     ) -> Path:
-        target_dir = (
-            self.base_dir
-            / self._safe_path_part(item.get("profile_user_id"))
-            / self._safe_path_part(item.get("session_id"))
-        )
+        target_dir = self._workspace_date_dir(item)
         target_dir.mkdir(parents=True, exist_ok=True)
         handle = self._safe_path_part(item.get("attachment_handle") or item.get("attachment_id"))
         timeout = float(getattr(config, "REMOTE_MEDIA_DOWNLOAD_TIMEOUT", REMOTE_MEDIA_DEFAULT_TIMEOUT) or REMOTE_MEDIA_DEFAULT_TIMEOUT)
@@ -709,7 +813,12 @@ class AttachmentIngestService:
 
         if descriptor.download_mode == "direct":
             suffix = f".{descriptor.ext.lstrip('.')}" if descriptor.ext else ".bin"
-            target_path = target_dir / f"{handle}{suffix}"
+            target_path = self._available_attachment_path(
+                target_dir=target_dir,
+                handle=handle,
+                origin_name=descriptor.origin_name,
+                suffix=suffix,
+            )
             self._download_to_path(
                 url=descriptor.source_url,
                 target_path=target_path,
@@ -722,10 +831,15 @@ class AttachmentIngestService:
             )
             return target_path
 
+        download_stem = self._available_attachment_stem(
+            target_dir=target_dir,
+            handle=handle,
+            origin_name=descriptor.origin_name,
+        )
         return self._download_remote_media_with_yt_dlp(
             descriptor=descriptor,
             target_dir=target_dir,
-            handle=handle,
+            handle=download_stem,
             timeout=timeout,
             max_bytes=max_bytes,
         )
@@ -1007,11 +1121,21 @@ class AttachmentIngestService:
             "file_size": self._safe_int(item.get("file_size")),
         }
         storage_relpath = str(item.get("storage_relpath") or "").strip()
-        if storage_relpath:
-            candidate = self.base_dir / Path(storage_relpath)
-            if candidate.exists() and candidate.is_file():
-                payload["path"] = str(candidate)
+        if storage_relpath.lower().startswith("workspace:") and self.workspace_uri_resolver is not None:
+            candidate = self.workspace_uri_resolver(storage_relpath)
+            if candidate is not None and candidate.exists() and candidate.is_file():
+                payload["workspace_uri"] = storage_relpath
                 return payload
+        if storage_relpath:
+            for storage_root in [self.base_dir, *self.legacy_base_dirs]:
+                candidate = (storage_root / Path(storage_relpath)).resolve()
+                try:
+                    candidate.relative_to(storage_root.resolve())
+                except Exception:
+                    continue
+                if candidate.exists() and candidate.is_file():
+                    payload["path"] = str(candidate)
+                    return payload
         recovered_url = self._extract_url(previous_error)
         if recovered_url:
             payload["url"] = recovered_url
@@ -1022,6 +1146,16 @@ class AttachmentIngestService:
         return match.group(0).strip().rstrip("。.,，") if match else ""
 
     def _materialize_attachment_file(self, *, item: dict[str, Any], payload: dict[str, Any]) -> Path | None:
+        workspace_uri = str(payload.get("workspace_uri") or "").strip()
+        if workspace_uri:
+            if self.workspace_uri_resolver is None:
+                raise RuntimeError("workspace file resolver is unavailable")
+            source_path = self.workspace_uri_resolver(workspace_uri)
+            if source_path is None or not source_path.exists() or not source_path.is_file():
+                raise FileNotFoundError(workspace_uri)
+            return source_path
+        if self.ensure_storage_ready is not None:
+            self.ensure_storage_ready()
         origin_name = self._clean_filename(
             payload.get("origin_name")
             or payload.get("name")
@@ -1031,13 +1165,23 @@ class AttachmentIngestService:
             or ""
         )
         suffix = self._guess_suffix(origin_name=origin_name, payload=payload, kind=str(item.get("kind") or "file"))
-        target_dir = (
-            self.base_dir
-            / self._safe_path_part(item.get("profile_user_id"))
-            / self._safe_path_part(item.get("session_id"))
-        )
+        target_dir = self._workspace_date_dir(item)
         target_dir.mkdir(parents=True, exist_ok=True)
-        target_path = target_dir / f"{self._safe_path_part(item.get('attachment_handle') or item.get('attachment_id'))}{suffix}"
+        try:
+            target_dir.resolve().relative_to(self.base_dir.resolve())
+        except Exception:
+            raise RuntimeError("attachment destination escaped the managed workspace") from None
+        handle = self._safe_path_part(item.get("attachment_handle") or item.get("attachment_id"))
+        target_path = self._available_attachment_path(
+            target_dir=target_dir,
+            handle=handle,
+            origin_name=origin_name,
+            suffix=suffix,
+        )
+        try:
+            target_path.resolve(strict=False).relative_to(self.base_dir.resolve())
+        except Exception:
+            raise RuntimeError("attachment destination escaped the managed workspace") from None
 
         local_path = str(payload.get("path") or payload.get("local_path") or "").strip()
         if local_path:
@@ -1740,6 +1884,53 @@ class AttachmentIngestService:
         except ValueError:
             return str(path)
 
+    def _workspace_date_dir(self, item: dict[str, Any]) -> Path:
+        timestamp = self._safe_int(item.get("created_at")) or int(time.time())
+        date_slug = time.strftime("%Y-%m-%d", time.localtime(timestamp))
+        target_dir = self.base_dir / date_slug
+        try:
+            target_dir.resolve(strict=False).relative_to(self.base_dir.resolve())
+        except Exception:
+            raise RuntimeError("attachment destination escaped the managed workspace") from None
+        return target_dir
+
+    def _available_attachment_path(
+        self,
+        *,
+        target_dir: Path,
+        handle: str,
+        origin_name: str,
+        suffix: str,
+    ) -> Path:
+        stem = self._available_attachment_stem(
+            target_dir=target_dir,
+            handle=handle,
+            origin_name=origin_name,
+            suffix=suffix,
+        )
+        return target_dir / f"{stem}{suffix}"
+
+    def _available_attachment_stem(
+        self,
+        *,
+        target_dir: Path,
+        handle: str,
+        origin_name: str,
+        suffix: str = "",
+    ) -> str:
+        clean_suffix = str(suffix or "").lower()
+        safe_origin_name = self._safe_path_part(origin_name) if origin_name else ""
+        origin_stem = Path(safe_origin_name).stem if safe_origin_name else ""
+        base_stem = f"{handle}__{origin_stem}" if origin_stem else handle
+        candidate_stem = base_stem
+        sequence = 2
+        while any(target_dir.glob(f"{candidate_stem}.*")) or (
+            clean_suffix and (target_dir / f"{candidate_stem}{clean_suffix}").exists()
+        ):
+            candidate_stem = f"{base_stem}_{sequence}"
+            sequence += 1
+        return candidate_stem
+
     def _guess_suffix(self, *, origin_name: str, payload: dict[str, Any], kind: str) -> str:
         suffix = Path(origin_name).suffix.lower()
         if suffix:
@@ -1766,6 +1957,17 @@ class AttachmentIngestService:
             return "audio"
         if kind in {"image", "document", "audio", "file"}:
             return kind
+        return "file"
+
+    def _infer_local_kind(self, *, source_path: Path, mime_type: str) -> str:
+        suffix = source_path.suffix.lower()
+        normalized_mime = str(mime_type or "").strip().lower()
+        if suffix in IMAGE_SUFFIXES or normalized_mime.startswith("image/"):
+            return "image"
+        if suffix in AUDIO_MEDIA_SUFFIXES or normalized_mime.startswith("audio/"):
+            return "audio"
+        if suffix in TEXT_SUFFIXES or suffix in DOCUMENT_SUFFIXES or normalized_mime.startswith("text/"):
+            return "document"
         return "file"
 
     def _file_kind_from_suffix(self, suffix: str) -> str:

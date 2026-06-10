@@ -48,7 +48,7 @@ from . import task_workspace_engine
 from .task_worker import TaskWorkerService
 from .task_worker_tool import DelegateTaskToolHandler
 from . import tool_orchestration_engine
-from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, BrowserPageToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, OpenBrowserToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler, WebSearchToolHandler
+from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, BrowserPageToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, FocusWorkspaceToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ListWorkspaceToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, OpenBrowserToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, ReadWorkspaceToolHandler, RegisterWorkspaceItemsToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler, WebSearchToolHandler
 from . import visual_context_engine
 from .vision_service import VisionObservationService
 from .store import MemoryStore
@@ -70,6 +70,7 @@ from .vector_entry_builder import (
 )
 from .vector_store import VectorStore
 from .vision_observation_router import VisionObservationRouter
+from .workspace_files import WorkspaceFileService
 
 logger = logging.getLogger("akane.engine")
 
@@ -121,9 +122,21 @@ class AkaneMemoryEngine:
             },
             default_workers=int(getattr(config, "BACKGROUND_DEFAULT_WORKERS", 1) or 1),
         )
+        self.workspace_file_service = WorkspaceFileService(
+            root_dir=getattr(config, "AKANE_WORKSPACE_ROOT", ""),
+            store=self.store,
+            max_read_bytes=int(
+                getattr(config, "AKANE_WORKSPACE_MAX_READ_BYTES", 64 * 1024 * 1024)
+                or (64 * 1024 * 1024)
+            ),
+        )
+        attachment_workspace_dir = self.workspace_file_service.layer_dir("Inbox")
+        generated_workspace_dir = self.workspace_file_service.layer_dir("Outputs")
         self.attachment_inbox_service = AttachmentInboxService(
             store=self.store,
-            base_dir=self.base_dir / "attachment_inbox_files",
+            base_dir=attachment_workspace_dir,
+            legacy_base_dirs=[self.base_dir / "attachment_inbox_files"],
+            workspace_uri_resolver=self.workspace_file_service.resolve_file_uri,
         )
         if getattr(config, "VISION_ENABLED", True):
             self.vision_observation_router: VisionObservationRouter | None = VisionObservationRouter(
@@ -140,9 +153,12 @@ class AkaneMemoryEngine:
         self.persona_card_service = PersonaCardService(store=self.store)
         self.task_workspace_service = TaskWorkspaceService(store=self.store)
         self.generated_file_service = GeneratedFileService(
-            base_dir=self.base_dir / "generated_files",
+            base_dir=generated_workspace_dir,
             store=self.store,
             attachment_service=self.attachment_inbox_service,
+            legacy_base_dirs=[self.base_dir / "generated_files"],
+            ensure_storage_ready=self.workspace_file_service.ensure_layout,
+            work_dir=self.base_dir / "generated_work",
         )
         self.desktop_music_timeline_service = DesktopMusicTimelineService(
             store=self.store,
@@ -180,11 +196,14 @@ class AkaneMemoryEngine:
             self.vision_service = None
             self.desktop_screen_vision = None
         self.attachment_ingest_service = AttachmentIngestService(
-            base_dir=self.base_dir / "attachment_inbox_files",
+            base_dir=attachment_workspace_dir,
             store=self.store,
             attachment_service=self.attachment_inbox_service,
             vision_service=self.vision_service,
             background_tasks=self.background_tasks,
+            legacy_base_dirs=[self.base_dir / "attachment_inbox_files"],
+            ensure_storage_ready=self.workspace_file_service.ensure_layout,
+            workspace_uri_resolver=self.workspace_file_service.resolve_file_uri,
         )
         self.prompt_builder = PromptBuilder(PERSONA)
         self.mode_profile_registry = ModeProfileRegistry()
@@ -729,9 +748,17 @@ class AkaneMemoryEngine:
         store = getattr(self, "store", None)
         if store is None:
             return None
+        workspace_service = self._get_workspace_file_service()
+        base_dir = (
+            workspace_service.layer_dir("Inbox")
+            if workspace_service is not None
+            else self.base_dir / "attachment_inbox_files"
+        )
         service = AttachmentInboxService(
             store=store,
-            base_dir=self.base_dir / "attachment_inbox_files",
+            base_dir=base_dir,
+            legacy_base_dirs=[self.base_dir / "attachment_inbox_files"],
+            workspace_uri_resolver=workspace_service.resolve_file_uri if workspace_service is not None else None,
         )
         self.attachment_inbox_service = service
         return service
@@ -742,19 +769,46 @@ class AkaneMemoryEngine:
             return service
         store = getattr(self, "store", None)
         vision_service = getattr(self, "vision_service", None)
-        if store is None or vision_service is None:
+        if store is None:
             return None
         attachment_service = self._get_attachment_inbox_service()
         if attachment_service is None:
             return None
+        workspace_service = self._get_workspace_file_service()
+        base_dir = (
+            workspace_service.layer_dir("Inbox")
+            if workspace_service is not None
+            else self.base_dir / "attachment_inbox_files"
+        )
         service = AttachmentIngestService(
-            base_dir=self.base_dir / "attachment_inbox_files",
+            base_dir=base_dir,
             store=store,
             attachment_service=attachment_service,
             vision_service=vision_service,
             background_tasks=getattr(self, "background_tasks", None),
+            legacy_base_dirs=[self.base_dir / "attachment_inbox_files"],
+            ensure_storage_ready=workspace_service.ensure_layout if workspace_service is not None else None,
+            workspace_uri_resolver=workspace_service.resolve_file_uri if workspace_service is not None else None,
         )
         self.attachment_ingest_service = service
+        return service
+
+    def _get_workspace_file_service(self) -> WorkspaceFileService | None:
+        service = getattr(self, "workspace_file_service", None)
+        if service is not None:
+            return service
+        store = getattr(self, "store", None)
+        if store is None:
+            return None
+        service = WorkspaceFileService(
+            root_dir=getattr(config, "AKANE_WORKSPACE_ROOT", ""),
+            store=store,
+            max_read_bytes=int(
+                getattr(config, "AKANE_WORKSPACE_MAX_READ_BYTES", 64 * 1024 * 1024)
+                or (64 * 1024 * 1024)
+            ),
+        )
+        self.workspace_file_service = service
         return service
 
     def _get_generated_file_service(self) -> GeneratedFileService | None:
@@ -767,10 +821,19 @@ class AkaneMemoryEngine:
         attachment_service = self._get_attachment_inbox_service()
         if attachment_service is None:
             return None
+        workspace_service = self._get_workspace_file_service()
+        base_dir = (
+            workspace_service.layer_dir("Outputs")
+            if workspace_service is not None
+            else self.base_dir / "generated_files"
+        )
         service = GeneratedFileService(
-            base_dir=self.base_dir / "generated_files",
+            base_dir=base_dir,
             store=store,
             attachment_service=attachment_service,
+            legacy_base_dirs=[self.base_dir / "generated_files"],
+            ensure_storage_ready=workspace_service.ensure_layout if workspace_service is not None else None,
+            work_dir=self.base_dir / "generated_work",
         )
         self.generated_file_service = service
         return service
@@ -2388,6 +2451,19 @@ class AkaneMemoryEngine:
             )
             else ""
         )
+        workspace_file_service = self._get_workspace_file_service()
+        workspace_file_context = (
+            workspace_file_service.build_prompt_context(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
+            if (
+                workspace_file_service is not None
+                and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
+                and client_context.effective_mode == ClientMode.DESKTOP_PET
+            )
+            else ""
+        )
         task_workspace_service = self._get_task_workspace_service()
         task_workspace_context = (
             task_workspace_service.build_prompt_context(
@@ -2491,6 +2567,7 @@ class AkaneMemoryEngine:
                 else "",
                 extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",
                 task_workspace_context,
+                workspace_file_context,
                 attachment_focus_context,
                 generated_file_context,
                 pending_gift_context,
@@ -2927,6 +3004,19 @@ class AkaneMemoryEngine:
             ),
             "clear_attachment_focus": ClearAttachmentFocusToolHandler(
                 attachment_service=self._get_attachment_inbox_service()
+            ),
+            "list_workspace": ListWorkspaceToolHandler(
+                workspace_service=self._get_workspace_file_service()
+            ),
+            "read_workspace": ReadWorkspaceToolHandler(
+                workspace_service=self._get_workspace_file_service()
+            ),
+            "focus_workspace": FocusWorkspaceToolHandler(
+                workspace_service=self._get_workspace_file_service()
+            ),
+            "register_workspace_items": RegisterWorkspaceItemsToolHandler(
+                workspace_service=self._get_workspace_file_service(),
+                attachment_ingest_service=self._get_attachment_ingest_service(),
             ),
             "retry_attachment": RetryAttachmentToolHandler(
                 attachment_ingest_service=self._get_attachment_ingest_service()

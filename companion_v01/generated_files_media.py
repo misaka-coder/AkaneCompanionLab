@@ -1416,7 +1416,7 @@ def separate_audio_stems(
 
     base_name = Path(str(source.get("title") or source_path.stem)).stem.strip() or source_path.stem or "audio"
     separation_title = service._normalize_title(output_title) or base_name
-    work_dir = service.base_dir / "_audio_separation_tmp" / service._safe_filename(profile_user_id or "profile")[:48] / service._safe_filename(session_id or "session")[:48] / str(effective_ts)
+    work_dir = service.work_dir / "_audio_separation_tmp" / service._safe_filename(profile_user_id or "profile")[:48] / service._safe_filename(session_id or "session")[:48] / str(effective_ts)
     extracted_input_path: Path | None = None
     try:
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -1727,7 +1727,7 @@ def clean_voice_track(
     }.get(normalized_mode, "净化")
     clean_title = service._normalize_title(output_title) or f"{base_name}_{clean_label}"
     work_dir = (
-        service.base_dir
+        service.work_dir
         / "_voice_clean_tmp"
         / service._safe_filename(profile_user_id or "profile")[:48]
         / service._safe_filename(session_id or "session")[:48]
@@ -2034,7 +2034,7 @@ def prepare_voice_dataset(
         timestamp=effective_ts,
     )
     work_dir = (
-        service.base_dir
+        service.work_dir
         / "_voice_dataset_tmp"
         / service._safe_filename(profile_user_id or "profile")[:48]
         / service._safe_filename(session_id or "session")[:48]
@@ -2323,7 +2323,7 @@ def transcribe_media(
     normalized_compute_type = service._normalize_whisper_compute_type(compute_type)
     normalized_language = service._normalize_transcript_language(language)
     work_dir = (
-        service.base_dir
+        service.work_dir
         / "_transcribe_tmp"
         / service._safe_filename(profile_user_id or "profile")[:48]
         / service._safe_filename(session_id or "session")[:48]

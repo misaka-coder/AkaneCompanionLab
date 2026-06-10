@@ -45,6 +45,10 @@ Tools are split into capability packs:
   - `manage_generated_file`
 - `desktop`
   - `fetch_media_from_url`
+  - `list_workspace`
+  - `read_workspace`
+  - `focus_workspace`
+  - `register_workspace_items`
   - `sync_attachment_workspace`
   - `inspect_attachment`
   - `read_attachment_section`
@@ -143,6 +147,14 @@ Each tool handler should:
   - does not summarize, transcribe, convert, or resend by itself; after success Akane should continue with `inspect_attachment`, `inspect_media_info`, `transcribe_media`, `convert_media_file`, or `send_file`
   - supports direct media URLs immediately, and uses `yt-dlp` for ordinary public video/audio pages when installed
   - rejects playlists/collections and should not be used for login-only, paid, DRM, or private links
+- `register_workspace_items`
+  - registers files already present under the configured Akane workspace as attachment handles without copying or moving them
+  - accepts one or more `workspace:/` files or directories and supports bounded recursive batch registration
+  - stores only the safe workspace URI in attachment state; absolute local paths are not added to prompts or tool results
+  - reuses the existing handle for the same active workspace URI and refreshes its parsed metadata when registered again
+  - makes the returned handle available to existing document, media, conversion, transcription, and file-delivery tools
+  - desktop turns always receive a compact workspace overview and recent-file manifest, so Akane can discover newly added files and call `list_workspace` without asking the user for an absolute path
+  - new visible files use readable date folders such as `Inbox/2026-06-10` and `Outputs/2026-06-10`; internal session UUIDs remain database identifiers and are not used as folder names
 - `compose_file`
   - creates a new generated file such as `gen_001` from temporary attachments, generated files, or current dialogue content
   - keeps the model-facing interface high level: sources, task, output format, title, and final content/table

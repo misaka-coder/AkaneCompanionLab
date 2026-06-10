@@ -685,11 +685,7 @@ def normalize_generated_file_action(service: Any, value: Any) -> str:
 
 def delete_generated_file_on_disk(service: Any, item: dict[str, Any]) -> tuple[bool, str]:
     path = service.absolute_path(item)
-    try:
-        base = service.base_dir.resolve()
-        resolved = path.resolve()
-        resolved.relative_to(base)
-    except Exception:
+    if not service.is_managed_storage_path(path):
         return False, "unsafe_path"
     if not path.exists():
         return False, "missing"
