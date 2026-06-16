@@ -28,8 +28,10 @@ Install Python 3.11 or newer, then double-click:
 ```
 
 The first run creates `.venv`, installs Python dependencies, and creates
-`.env`. Configure one LLM API or an external Ollama endpoint, save the file,
-then run the same launcher again.
+`.env`. Run the same launcher again — if no model is configured yet, the
+desktop app automatically opens the Control Center model page. Enter your LLM
+API key or external Ollama endpoint there and save; no manual `.env` editing
+is required to get started.
 
 `Auto` mode reuses a desktop build already produced inside the current source
 checkout, builds the Tauri app when Node.js and Rust are installed, and

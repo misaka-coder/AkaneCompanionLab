@@ -170,7 +170,8 @@ const state = {
   providerVoiceProfileDrafts: {},
   workflowActionStatus: {},
   showAllAbilityCalls: false,
-  showAllDiagnosticLogs: false
+  showAllDiagnosticLogs: false,
+  qqSelfCheckResult: null
 };
 
 // Shell may fail mid-render (e.g. missing asset). Events must always bind so
@@ -2477,6 +2478,7 @@ function renderAbilitiesPage() {
             </div>
           </article>
           ${renderProviderPanel()}
+          ${renderQqPanel()}
           ${renderMcpPanel()}
           <article class="glass-card workflow-card">
             <h2>本地工作流 ${icon("info")}</h2>
@@ -3023,6 +3025,72 @@ function renderProviderPanel() {
   `;
 }
 
+function renderQqPanel() {
+  const qq = abilitiesPage.qqStatus || {};
+  const enabled = Boolean(qq.enabled);
+  const onebotUrl = String(qq.onebotHttpUrl || qq.onebot_http_url || "http://127.0.0.1:3001");
+  const botQq = String(qq.botQq || qq.bot_qq || "");
+  const selfCheckResult = state.qqSelfCheckResult || null;
+  const selfCheckStatus = String(selfCheckResult?.status || "");
+  const selfCheckReason = String(selfCheckResult?.reason || "");
+  const selfCheckNickname = String(selfCheckResult?.payload?.nickname || selfCheckResult?.nickname || "");
+  const selfCheckBotQq = String(selfCheckResult?.payload?.botQq || selfCheckResult?.bot_qq || "");
+  const statusTone = !enabled ? "warning"
+    : selfCheckStatus === "connected" ? "good"
+    : selfCheckStatus ? "danger"
+    : "warning";
+  const statusLabel = !enabled ? "未启用"
+    : selfCheckStatus === "connected" ? "已连接"
+    : selfCheckStatus === "bridge_disabled" ? "Bridge 未启用"
+    : selfCheckStatus === "unreachable" ? "端口不可达"
+    : selfCheckStatus === "auth_failed" ? "鉴权失败"
+    : selfCheckStatus === "timeout" ? "连接超时"
+    : selfCheckStatus ? "连接失败"
+    : "待自检";
+  const selfCheckActionAttr = ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesQqSelfCheck}"`;
+  return `
+    <article class="glass-card qq-panel">
+      <div class="card-heading">
+        <h2>${icon("message")} QQ / NapCat</h2>
+        <span class="module-status ${escapeAttr(statusTone)}">${escapeHtml(statusLabel)}</span>
+      </div>
+      <div class="qq-self-check">
+        <div class="qq-status-row">
+          <span>${icon("wifi")} OneBot 地址</span>
+          <strong>${escapeHtml(onebotUrl)}</strong>
+        </div>
+        <div class="qq-status-row">
+          <span>${icon("settings")} Bridge 状态</span>
+          <strong>${enabled ? "已启用" : "未启用（QQ_BRIDGE_ENABLED=false）"}</strong>
+        </div>
+        ${botQq || selfCheckBotQq ? `
+        <div class="qq-status-row">
+          <span>${icon("mic")} Bot QQ</span>
+          <strong>${escapeHtml(selfCheckBotQq || botQq)}${selfCheckNickname ? ` · ${escapeHtml(selfCheckNickname)}` : ""}</strong>
+        </div>` : ""}
+        ${selfCheckReason ? `
+        <p class="qq-self-check-reason ${escapeAttr(selfCheckStatus === "connected" ? "good" : "warn")}">
+          ${icon(selfCheckStatus === "connected" ? "checkCircle" : "alert")} ${escapeHtml(selfCheckReason)}
+        </p>` : ""}
+        <div class="qq-self-check-actions">
+          <button
+            type="button"
+            ${selfCheckActionAttr}
+          >${icon("search")} 执行自检</button>
+          ${selfCheckStatus === "connected" ? `
+          <div class="qq-check-items">
+            <span class="qq-check-item good">${icon("checkCircle")} Bridge 已启用</span>
+            <span class="qq-check-item good">${icon("checkCircle")} 端口可达</span>
+            <span class="qq-check-item good">${icon("checkCircle")} 登录信息</span>
+            <span class="qq-check-item warn">${icon("info")} 发送测试：未执行</span>
+          </div>` : ""}
+        </div>
+        <p class="qq-external-note">${icon("shield")} Akane 不内置 NapCat。需要用户在本机自行部署 NapCat / 其他 OneBot v11 兼容服务，并在 .env 配置 QQ_BRIDGE_ENABLED=true 和 QQ_ONEBOT_HTTP_URL。</p>
+      </div>
+    </article>
+  `;
+}
+
 function renderMcpPanel() {
   const servers = buildVisibleMcpServers();
   const readyCount = servers.filter((item) => item.status === "ready").length;
@@ -3067,22 +3135,47 @@ function renderMcpManagerGuide() {
   `;
 }
 
-function renderGptSoVitsGuide() {
+function resolveGptSoVitsWizardStep(provider) {
+  if (!provider || provider.adapter !== "gpt_sovits") return 1;
+  const hasEndpoint = Boolean(provider.endpoint);
+  const healthOk = provider.status === "ready";
+  const hasVoiceProfile = Boolean(provider.defaultVoiceProfile);
+  const voice = characterPage?.voice && typeof characterPage.voice === "object" ? characterPage.voice : {};
+  const charProvider = String(voice.provider || "").trim();
+  const charProfileId = String(voice.profileId || "").trim();
+  const isBound = isProviderVoiceMatch(provider.id || "", charProvider) && Boolean(charProfileId);
+  if (isBound) return 5;
+  if (hasVoiceProfile) return 4;
+  if (healthOk) return 3;
+  if (hasEndpoint) return 2;
+  return 1;
+}
+
+function renderGptSoVitsGuide(activeStep = 1) {
+  // [index, title, default-body, active-status]
   const steps = [
-    ["1", "连接服务", "填写 endpoint → 保存服务地址 → 健康检查"],
-    ["2", "识别声线", "填写本地模型文件夹 → 识别模型文件夹"],
-    ["3", "保存档案", "确认声线信息 → 保存声线档案"],
-    ["4", "试听并绑定角色", "试听一句 → 设为当前角色声音"]
+    ["1", "连接服务", "填写服务地址并保存", "待填写服务地址"],
+    ["2", "检查连接", "点击健康检查确认连通", "连接失败，请检查"],
+    ["3", "声线档案", "识别模型文件夹并保存档案", "待保存声线档案"],
+    ["4", "绑定角色", "试听确认后设为当前声音", "待绑定当前角色"],
+    ["5", "已完成", "当前角色使用此声线", "当前角色已绑定"]
   ];
   return `
     <div class="gpt-sovits-guide" aria-label="GPT-SoVITS 配置向导">
-      ${steps.map(([index, title, body]) => `
-        <span>
-          <strong>${escapeHtml(index)}</strong>
-          <em>${escapeHtml(title)}</em>
-          <small>${escapeHtml(body)}</small>
-        </span>
-      `).join("")}
+      ${steps.map(([index, title, body, statusText], i) => {
+        const stepNum = i + 1;
+        const isDone = stepNum < activeStep;
+        const isActive = stepNum === activeStep;
+        const cls = isDone ? "is-done" : isActive ? "is-active" : "";
+        const displayText = isDone ? "已完成" : isActive ? statusText : body;
+        return `
+          <span${cls ? ` class="${escapeAttr(cls)}"` : ""}>
+            <strong>${escapeHtml(index)}</strong>
+            <em>${escapeHtml(title)}</em>
+            <small>${escapeHtml(displayText)}</small>
+          </span>
+        `;
+      }).join("")}
     </div>
   `;
 }
@@ -3451,6 +3544,7 @@ function renderProviderConfigBody(provider, endpoint, defaultEndpoint) {
   const inputValue = endpoint || defaultEndpoint || "";
   const actionsDisabled = provider.actionsEnabled === false;
   const healthActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck}"`;
+  const wizardStep = provider.adapter === "gpt_sovits" ? resolveGptSoVitsWizardStep(provider) : 0;
   const saveActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave}"`;
   const ttsTestActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderTtsTest}"`;
   const voiceProfileInspectActionAttr = actionsDisabled ? "" : ` data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileInspectFolder}"`;
@@ -3461,7 +3555,7 @@ function renderProviderConfigBody(provider, endpoint, defaultEndpoint) {
   const voiceProfile = provider.adapter === "gpt_sovits" ? getProviderVoiceProfileDraft(provider) : null;
   return `
     <div class="provider-config-body">
-      ${provider.adapter === "gpt_sovits" ? renderGptSoVitsGuide() : ""}
+      ${provider.adapter === "gpt_sovits" ? renderGptSoVitsGuide(wizardStep) : ""}
       <label>
         <span>本地服务地址</span>
         <input
@@ -4332,6 +4426,11 @@ function createRuntimeActionRouter(dataSource) {
 }
 
 function handleControlCenterActionResult(result) {
+  if (result?.actionId === CONTROL_CENTER_ACTIONS.abilitiesQqSelfCheck) {
+    state.qqSelfCheckResult = result;
+    renderActivePage();
+    return;
+  }
   if (!result?.refresh) return;
   scheduleRuntimeSnapshotHydrate();
   if (isTauriRuntime) {

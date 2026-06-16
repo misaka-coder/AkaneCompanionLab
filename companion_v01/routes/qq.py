@@ -529,6 +529,12 @@ def build_qq_router(
     async def qq_napcat_status() -> JSONResponse:
         return JSONResponse({"status": "ok", "data": qq_gateway.status()})
 
+    @router.post("/api/qq/self-check")
+    async def qq_self_check() -> JSONResponse:
+        """QQ / NapCat 连通性自检。主动测试 OneBot HTTP API 可达性和鉴权，返回结构化诊断。"""
+        result = qq_gateway.self_check()
+        return JSONResponse({"status": "ok", "data": result})
+
     @router.post("/api/qq/napcat/event")
     async def qq_napcat_event(request: Request) -> JSONResponse:
         started_at = time.perf_counter()

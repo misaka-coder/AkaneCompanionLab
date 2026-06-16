@@ -79,6 +79,7 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   abilitiesWorkflowConfigSave: "abilities.workflow.config.save",
   abilitiesWorkflowFileImport: "abilities.workflow.file.import",
   abilitiesWorkflowValidate: "abilities.workflow.validate",
+  abilitiesQqSelfCheck: "abilities.qq.selfCheck",
   abilitiesLogsViewAll: "abilities.logs.viewAll",
   abilitiesSafetyDetails: "abilities.safety.details",
   abilitiesLive2dOpenSettings: "abilities.live2d.openSettings",
@@ -152,7 +153,8 @@ export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave,
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave,
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport,
-  CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate
+  CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate,
+  CONTROL_CENTER_ACTIONS.abilitiesQqSelfCheck
 ]);
 
 const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);

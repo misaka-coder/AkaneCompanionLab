@@ -122,6 +122,7 @@ export const CONTROL_CENTER_ACTION_SURFACES = Object.freeze([
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave, "backend-route", "POST /capabilities/workflows/{workflowId}/config"),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport, "backend-route", "POST /capabilities/workflows/{workflowId}/file"),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate, "backend-route", "POST /capabilities/workflows/{workflowId}/validate"),
+  bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesQqSelfCheck, "backend-route", "POST /api/qq/self-check"),
   clientHandled("abilities", CONTROL_CENTER_ACTIONS.abilitiesLogsViewAll, "Local toggle: expands ability call history rows."),
   deferred("abilities", CONTROL_CENTER_ACTIONS.abilitiesSafetyDetails, "Requires policy detail route."),
   deferred("abilities", CONTROL_CENTER_ACTIONS.abilitiesLive2dOpenSettings, "Requires Live2D settings owner."),

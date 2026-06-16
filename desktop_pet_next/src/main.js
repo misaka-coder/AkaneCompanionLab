@@ -6567,7 +6567,10 @@ function buildDesktopMusicActivity() {
 function shouldUseSystemMediaActivity(systemActivity) {
   if (!systemActivity) return false;
   if (!musicTrack) return true;
-  return !musicPlaying;
+  // Local track loaded: keep local context while playing or paused
+  if (musicPlaying || musicPaused) return false;
+  // Local track stopped: yield to system media only if it is actively playing
+  return Boolean(systemMedia.isPlaying);
 }
 
 function buildSystemMediaActivity({ recommendations = [], catalog = [] } = {}) {

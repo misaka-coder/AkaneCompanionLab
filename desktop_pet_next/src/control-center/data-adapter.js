@@ -297,6 +297,9 @@ function adaptAbilitiesPage(page, runtime = {}) {
   if (Array.isArray(runtime.mcpServers)) {
     abilities.mcpServers = runtime.mcpServers;
   }
+  if (runtime.qqStatus && typeof runtime.qqStatus === "object") {
+    abilities.qqStatus = runtime.qqStatus;
+  }
   if (Array.isArray(runtime.workflows) && runtime.workflows.length) {
     abilities.workflows = runtime.workflows;
   }

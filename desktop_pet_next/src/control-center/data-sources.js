@@ -27,6 +27,9 @@ const mcpBackendActionIds = new Set([
 const approvalPolicyBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave
 ]);
+const qqBackendActionIds = new Set([
+  CONTROL_CENTER_ACTIONS.abilitiesQqSelfCheck
+]);
 const tauriInvokeOnlyActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter,
   CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter
@@ -137,7 +140,7 @@ export function createMockControlCenterSource(data = mockData) {
     },
     async runAction(actionId, payload = {}) {
       const normalizedActionId = normalizeActionId(actionId);
-      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId) || tauriInvokeOnlyActionIds.has(normalizedActionId)) {
+      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId) || qqBackendActionIds.has(normalizedActionId) || tauriInvokeOnlyActionIds.has(normalizedActionId)) {
         return createNotImplementedActionResult(normalizedActionId);
       }
       return {
@@ -401,7 +404,7 @@ export function createBackendControlCenterSource(options = {}) {
         return createNotImplementedActionResult(normalizedActionId);
       }
 
-      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId)) {
+      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId) || qqBackendActionIds.has(normalizedActionId)) {
         if (typeof fetchImpl !== "function") {
           return createNotImplementedActionResult(normalizedActionId);
         }
@@ -411,7 +414,9 @@ export function createBackendControlCenterSource(options = {}) {
             ? runWorkflowBackendAction
             : mcpBackendActionIds.has(normalizedActionId)
               ? runMcpBackendAction
-              : runApprovalPolicyBackendAction;
+              : qqBackendActionIds.has(normalizedActionId)
+                ? runQqBackendAction
+                : runApprovalPolicyBackendAction;
         return routeAction(fetchImpl, baseUrl, normalizedActionId, payload, {
           user_id: sessionId,
           real_user_id: profileUserId,
@@ -482,6 +487,44 @@ async function runApprovalPolicyBackendAction(fetchImpl, baseUrl, actionId, payl
       ok: Boolean(result?.ok),
       actionId,
       refresh: result?.refresh === undefined ? true : Boolean(result.refresh)
+    };
+  } catch (error) {
+    return { ok: false, status: "request-failed", actionId, refresh: false, error: formatDataSourceError(error) };
+  }
+}
+
+async function runQqBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
+  // abilities.qq.selfCheck → POST /api/qq/self-check
+  // 不暴露 token/cookie/本地路径；结果里敏感字段由后端过滤
+  try {
+    const response = await fetchImpl(buildBackendUrl(baseUrl, "/api/qq/self-check", params), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({}),
+      cache: "no-store"
+    });
+    if (response.status === 404 || response.status === 405) {
+      return createNotImplementedActionResult(actionId);
+    }
+    if (!response.ok) {
+      return { ok: false, status: `http-${response.status}`, actionId, refresh: false };
+    }
+    const envelope = await readActionResponse(response);
+    const data = envelope?.data || envelope || {};
+    return {
+      ok: Boolean(data.ok),
+      status: String(data.status || (data.ok ? "connected" : "failed")),
+      actionId,
+      refresh: false,
+      reason: String(data.reason || ""),
+      payload: {
+        selfCheckStatus: String(data.status || ""),
+        reason: String(data.reason || ""),
+        onebotHttpUrl: String(data.onebot_http_url || ""),
+        botQq: String(data.bot_qq || ""),
+        nickname: String(data.nickname || ""),
+        checks: data.checks && typeof data.checks === "object" ? data.checks : {}
+      }
     };
   } catch (error) {
     return { ok: false, status: "request-failed", actionId, refresh: false, error: formatDataSourceError(error) };
@@ -1480,7 +1523,11 @@ export function buildMusicRuntimePatch({ musicSnapshot, petState }) {
   const track = musicSnapshot.track;
   const localDisplayName = stringValue(track?.displayName || musicSnapshot.displayName);
   const systemMedia = normalizeSystemMediaRuntime(musicSnapshot.systemMedia, musicSnapshot.systemLyrics);
-  const hasSystemTrack = systemMedia.ready && !Boolean(musicSnapshot.playing);
+  const hasSystemTrack = systemMedia.ready
+    && !Boolean(musicSnapshot.playing)
+    && !Boolean(musicSnapshot.paused)
+    && !Boolean(localDisplayName)
+    && !Number(musicSnapshot.queueCount);
   const hasTrack = Boolean(localDisplayName) && !hasSystemTrack;
   const displayName = hasTrack ? localDisplayName : hasSystemTrack ? systemMedia.title : "";
   const queue = Array.isArray(musicSnapshot.queue) ? musicSnapshot.queue : [];
@@ -2249,7 +2296,7 @@ function providerDisplayName(entry) {
 
 function providerDescription(entry) {
   if (entry.adapter === "comfyui") return "用于角色立绘处理、透明背景抠图和图像工作流预留";
-  if (entry.adapter === "gpt_sovits") return "用于后续角色语音合成与自定义声线配置";
+  if (entry.adapter === "gpt_sovits") return "外部 GPT-SoVITS 兼容服务；配置后用于角色语音合成与自定义声线";
   return entry.type === "tts_provider" ? "本地语音能力提供方" : "本地能力执行器";
 }
 

@@ -885,5 +885,134 @@ class QQGatewayTests(unittest.TestCase):
         mocked_post.assert_not_called()
 
 
+class QQGatewaySelfCheckTests(unittest.TestCase):
+    """self_check() 方法的结构化诊断测试，不依赖真实 NapCat 服务。"""
+
+    def setUp(self) -> None:
+        self.master_qq_patcher = patch(
+            "companion_v01.qq_gateway.config.MASTER_QQ",
+            str(QQ_MASTER_FIXTURE_ID),
+        )
+        self.bot_qq_patcher = patch(
+            "companion_v01.qq_gateway.config.QQ_BOT_QQ",
+            str(QQ_BOT_FIXTURE_ID),
+        )
+        self.master_qq_patcher.start()
+        self.bot_qq_patcher.start()
+        self.addCleanup(self.master_qq_patcher.stop)
+        self.addCleanup(self.bot_qq_patcher.stop)
+
+    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", False)
+    def test_self_check_returns_bridge_disabled_when_not_enabled(self) -> None:
+        gateway = NapCatQQGateway()
+        result = gateway.self_check()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "bridge_disabled")
+        self.assertIn("QQ_BRIDGE_ENABLED", result["reason"])
+        self.assertNotIn("token", result.get("reason", "").lower())
+
+    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "not-a-url")
+    def test_self_check_returns_invalid_url_for_bad_format(self) -> None:
+        gateway = NapCatQQGateway()
+        result = gateway.self_check()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "invalid_url")
+
+    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    def test_self_check_returns_unreachable_on_connection_error(self) -> None:
+        import requests as req_module
+        gateway = NapCatQQGateway()
+        with patch("companion_v01.qq_gateway.requests.get",
+                   side_effect=req_module.exceptions.ConnectionError("refused")):
+            result = gateway.self_check()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "unreachable")
+        self.assertIn("端口", result["reason"])
+
+    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    def test_self_check_returns_timeout_on_request_timeout(self) -> None:
+        import requests as req_module
+        gateway = NapCatQQGateway()
+        with patch("companion_v01.qq_gateway.requests.get",
+                   side_effect=req_module.exceptions.Timeout("timed out")):
+            result = gateway.self_check()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "timeout")
+
+    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    def test_self_check_returns_auth_failed_on_401(self) -> None:
+        gateway = NapCatQQGateway()
+
+        class FakeResponse:
+            status_code = 401
+            def raise_for_status(self): pass
+            def json(self): return {}
+
+        with patch("companion_v01.qq_gateway.requests.get", return_value=FakeResponse()):
+            result = gateway.self_check()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "auth_failed")
+        self.assertIn("鉴权", result["reason"])
+
+    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    def test_self_check_returns_connected_on_success(self) -> None:
+        gateway = NapCatQQGateway()
+
+        class FakeResponse:
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self):
+                return {
+                    "retcode": 0,
+                    "data": {"user_id": 12345678, "nickname": "阿卡内测试号"},
+                }
+
+        with patch("companion_v01.qq_gateway.requests.get", return_value=FakeResponse()):
+            result = gateway.self_check()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "connected")
+        self.assertEqual(result["bot_qq"], "12345678")
+        self.assertEqual(result["nickname"], "阿卡内测试号")
+        self.assertTrue(result["checks"]["bridge_enabled"])
+        self.assertTrue(result["checks"]["url_reachable"])
+        self.assertTrue(result["checks"]["login_info"])
+        self.assertEqual(result["checks"]["send_test"], "not_tested")
+        # 不能暴露 token/cookie/path
+        result_str = str(result)
+        self.assertNotIn("token", result_str.lower())
+        self.assertNotIn("cookie", result_str.lower())
+
+    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    def test_self_check_does_not_expose_sensitive_fields(self) -> None:
+        """self_check 结果只暴露安全字段（user_id、nickname），不包含 token / cookie / 路径。"""
+        gateway = NapCatQQGateway()
+
+        class FakeResponse:
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self):
+                return {
+                    "retcode": 0,
+                    "data": {
+                        "user_id": 99999,
+                        "nickname": "test",
+                        "token": "should-not-leak",
+                        "cookie": "also-secret",
+                    },
+                }
+
+        with patch("companion_v01.qq_gateway.requests.get", return_value=FakeResponse()):
+            result = gateway.self_check()
+        result_str = str(result)
+        self.assertNotIn("should-not-leak", result_str)
+        self.assertNotIn("also-secret", result_str)
+
+
 if __name__ == "__main__":
     unittest.main()

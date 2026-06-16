@@ -88,7 +88,8 @@ function Test-PublicFileExcluded {
         ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus",
         ".webm", ".mp4", ".mov", ".mkv",
         ".pptx", ".pdf", ".docx", ".xlsx",
-        ".zip", ".7z", ".rar", ".exe", ".dll", ".pdb"
+        ".zip", ".7z", ".rar", ".exe", ".dll", ".pdb",
+        ".db", ".sqlite", ".sqlite3"
     )
     return $binaryExclusions -contains $extension
 }

@@ -216,6 +216,112 @@ class NapCatQQGateway:
             "active_attachment_debounce_count": len(self.attachment_debounce_state),
         }
 
+    def self_check(self) -> dict[str, Any]:
+        """主动对 OneBot HTTP API 做连通性自检，返回结构化诊断结果。
+
+        不执行任何消息发送动作，只检查：
+        1. QQ bridge 是否已在配置里启用
+        2. OneBot URL 格式是否合理
+        3. /get_login_info 是否可达（连通性 + 鉴权）
+        4. 返回登录账号信息（安全字段：user_id/nickname）
+
+        不暴露 token、cookie 或本地绝对路径。
+        """
+        enabled = bool(getattr(config, "QQ_BRIDGE_ENABLED", False))
+        if not enabled:
+            return {
+                "ok": False,
+                "status": "bridge_disabled",
+                "reason": "QQ_BRIDGE_ENABLED 未启用；在 .env 里设置 QQ_BRIDGE_ENABLED=true 并配置 NapCat。",
+                "onebot_http_url": self.onebot_http_url,
+            }
+
+        url = self.onebot_http_url
+        if not url or not (url.startswith("http://") or url.startswith("https://")):
+            return {
+                "ok": False,
+                "status": "invalid_url",
+                "reason": f"OneBot URL 格式不正确：{url!r}",
+                "onebot_http_url": url,
+            }
+
+        try:
+            response = requests.get(f"{url}/get_login_info", timeout=5)
+        except requests.exceptions.ConnectionError:
+            return {
+                "ok": False,
+                "status": "unreachable",
+                "reason": f"无法连接到 {url}：端口不可达，请确认 NapCat 已启动并监听该端口。",
+                "onebot_http_url": url,
+            }
+        except requests.exceptions.Timeout:
+            return {
+                "ok": False,
+                "status": "timeout",
+                "reason": f"连接 {url} 超时（5 秒）：NapCat 可能正在启动或端口被防火墙拦截。",
+                "onebot_http_url": url,
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "connection_error",
+                "reason": f"连接异常：{type(exc).__name__}",
+                "onebot_http_url": url,
+            }
+
+        if response.status_code == 401 or response.status_code == 403:
+            return {
+                "ok": False,
+                "status": "auth_failed",
+                "reason": f"鉴权失败（HTTP {response.status_code}）：请检查 NapCat 访问令牌配置。",
+                "onebot_http_url": url,
+            }
+
+        if response.status_code != 200:
+            return {
+                "ok": False,
+                "status": "http_error",
+                "reason": f"OneBot 返回 HTTP {response.status_code}，预期 200。",
+                "onebot_http_url": url,
+            }
+
+        try:
+            data = response.json()
+        except Exception:
+            return {
+                "ok": False,
+                "status": "invalid_response",
+                "reason": "OneBot 返回了非 JSON 响应，可能是服务未完全启动。",
+                "onebot_http_url": url,
+            }
+
+        retcode = data.get("retcode", data.get("status"))
+        inner_data = data.get("data") or {}
+        user_id = inner_data.get("user_id") or ""
+        nickname = inner_data.get("nickname") or ""
+
+        if retcode not in (0, "ok"):
+            return {
+                "ok": False,
+                "status": "onebot_error",
+                "reason": f"OneBot 接口返回错误：retcode={retcode!r}",
+                "onebot_http_url": url,
+            }
+
+        return {
+            "ok": True,
+            "status": "connected",
+            "onebot_http_url": url,
+            "bot_qq": str(user_id) if user_id else self.bot_qq,
+            "nickname": str(nickname),
+            "checks": {
+                "bridge_enabled": True,
+                "url_reachable": True,
+                "login_info": True,
+                "send_test": "not_tested",
+            },
+        }
+
     @property
     def onebot_http_url(self) -> str:
         return str(getattr(config, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001") or "").strip().rstrip("/") or "http://127.0.0.1:3001"
