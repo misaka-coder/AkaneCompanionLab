@@ -45,6 +45,7 @@
       <nav class="workshop-tabs" role="tablist" aria-label="工坊页面">
         <button role="tab" aria-selected="true" data-tab="list" type="button">角色列表</button>
         <button role="tab" aria-selected="false" data-tab="persona" type="button">角色设定</button>
+        <button role="tab" aria-selected="false" data-tab="context" type="button">角色资料</button>
         <button role="tab" aria-selected="false" data-tab="portraits" type="button">立绘管理</button>
         <button role="tab" aria-selected="false" data-tab="calibration" type="button">显示校准</button>
         <button role="tab" aria-selected="false" data-tab="test" type="button">测试对话</button>
@@ -97,27 +98,27 @@
 
             <div class="form-field">
               <label for="field-name">角色名称 <span class="field-hint">— 角色的名字，显示在界面上</span></label>
-              <input id="field-name" type="text" class="form-input" placeholder="例如：博丽灵梦" maxlength="80" />
+              <input id="field-name" type="text" class="form-input" maxlength="80" />
             </div>
 
             <div class="form-field">
               <label for="field-app-name">应用显示名称 <span class="field-hint">— 窗口标题、桌宠菜单等位置显示的名字</span></label>
-              <input id="field-app-name" type="text" class="form-input" placeholder="例如：灵梦Pet" maxlength="80" />
+              <input id="field-app-name" type="text" class="form-input" maxlength="80" />
             </div>
 
             <div class="form-field">
               <label for="field-user-title">对用户的称呼 <span class="field-hint">— 角色如何称呼使用者</span></label>
-              <input id="field-user-title" type="text" class="form-input" placeholder="例如：你、主人、御主" maxlength="40" />
+              <input id="field-user-title" type="text" class="form-input" maxlength="40" />
             </div>
 
             <div class="form-field">
               <label for="field-self-reference">自称 <span class="field-hint">— 角色如何称呼自己</span></label>
-              <input id="field-self-reference" type="text" class="form-input" placeholder="例如：我、咱、妾身" maxlength="40" />
+              <input id="field-self-reference" type="text" class="form-input" maxlength="40" />
             </div>
 
             <div class="form-field">
               <label for="field-relationship">关系简述 <span class="field-hint">— 用一两句话描述角色与用户的关系</span></label>
-              <input id="field-relationship" type="text" class="form-input" placeholder="例如：住在桌面边上的巫女，会吐槽但也会帮忙。" maxlength="200" />
+              <input id="field-relationship" type="text" class="form-input" maxlength="200" />
             </div>
           </fieldset>
 
@@ -131,60 +132,65 @@
 
             <div class="form-field">
               <label for="field-personality-keywords">性格关键词 <span class="field-hint">— 用逗号或空格分隔，描述角色的性格特质</span></label>
-              <input id="field-personality-keywords" type="text" class="form-input" placeholder="例如：慵懒、毒舌、现实、心软" maxlength="200" />
+              <input id="field-personality-keywords" type="text" class="form-input" maxlength="200" />
             </div>
 
             <div class="form-field">
               <label for="field-character-core">角色核心 <span class="field-hint">— 一段话概括角色最重要的魅力和内核</span></label>
-              <textarea id="field-character-core" class="form-input form-textarea" rows="3" placeholder="例如：看起来没什么干劲，但其实很可靠。关心通常藏在吐槽和提醒里。" maxlength="800"></textarea>
+              <textarea id="field-character-core" class="form-input form-textarea" rows="3" maxlength="800"></textarea>
             </div>
 
             <div class="form-field">
               <label for="field-behavior-style">行为倾向 <span class="field-hint">— 忙碌、低落、开玩笑、认真工作时如何回应</span></label>
-              <textarea id="field-behavior-style" class="form-input form-textarea" rows="4" placeholder="例如：用户忙碌时少打扰；用户低落时不煽情，平静地陪着；用户乱熬夜时会直接吐槽。" maxlength="1000"></textarea>
+              <textarea id="field-behavior-style" class="form-input form-textarea" rows="4" maxlength="1000"></textarea>
             </div>
 
             <div class="form-field">
               <label for="field-speaking-style">说话风格 <span class="field-hint">— 描述角色的句式、语气、用词习惯</span></label>
-              <textarea id="field-speaking-style" class="form-input form-textarea" rows="3" placeholder="例如：短句偏多，吐槽自然，不写解释性设定说明。" maxlength="500"></textarea>
+              <textarea id="field-speaking-style" class="form-input form-textarea" rows="3" maxlength="500"></textarea>
             </div>
 
             <div class="form-field">
               <label for="field-catchphrases">口头禅 / 常用表达 <span class="field-hint">— 每行一个，角色经常会说的话</span></label>
-              <textarea id="field-catchphrases" class="form-input form-textarea" rows="3" placeholder="例如：&#10;真麻烦啊&#10;先说好，我可不是免费劳动力。" maxlength="400"></textarea>
+              <textarea id="field-catchphrases" class="form-input form-textarea" rows="3" maxlength="400"></textarea>
             </div>
 
             <div class="form-field">
               <label for="field-boundaries">边界与禁忌 <span class="field-hint">— 角色不会做或不会说的话，行为边界</span></label>
-              <textarea id="field-boundaries" class="form-input form-textarea" rows="2" placeholder="例如：不要过度撒娇，不要把自己说成通用客服。" maxlength="500"></textarea>
+              <textarea id="field-boundaries" class="form-input form-textarea" rows="2" maxlength="500"></textarea>
             </div>
 
             <div class="form-field">
               <label for="field-interaction-principles">互动原则 <span class="field-hint">— 和用户相处时稳定遵守的原则</span></label>
-              <textarea id="field-interaction-principles" class="form-input form-textarea" rows="3" placeholder="例如：不要长篇说教；关心要藏在具体提醒里；正事上直接指出问题。" maxlength="800"></textarea>
+              <textarea id="field-interaction-principles" class="form-input form-textarea" rows="3" maxlength="800"></textarea>
             </div>
 
             <div class="form-field">
               <label for="field-proactive-style">主动搭话风格 <span class="field-hint">— 当用户沉默时，角色如何自然发起对话</span></label>
-              <textarea id="field-proactive-style" class="form-input form-textarea" rows="2" placeholder="例如：看到用户停顿时先轻轻吐槽一句，再问是否需要帮忙。" maxlength="400"></textarea>
+              <textarea id="field-proactive-style" class="form-input form-textarea" rows="2" maxlength="400"></textarea>
             </div>
 
             <div class="form-field">
               <label for="field-extra-setting">补充设定 <span class="field-hint">— 世界观、背景故事、额外创作文本（自由填写）</span></label>
-              <textarea id="field-extra-setting" class="form-input form-textarea" rows="4" placeholder="例如：角色来自某个世界观，有特定的背景故事……" maxlength="2000"></textarea>
+              <textarea id="field-extra-setting" class="form-input form-textarea" rows="4" maxlength="2000"></textarea>
             </div>
           </fieldset>
 
-          <!-- Example Lines -->
+          <!-- Example / click feedback lines -->
           <fieldset class="form-section">
             <legend class="form-section-title">
               <span class="section-icon">📝</span>
-              示例台词
+              示例 / 点击反馈台词
             </legend>
-            <p class="form-section-desc">写几句角色的示例台词，帮助模型理解角色的说话方式。可以指定每条台词对应的表情。</p>
+            <p class="form-section-desc">这组台词会帮助模型理解说话方式，也会作为点击桌宠时的本地反馈。每条台词可以指定要切换到的表情或立绘。</p>
 
+            <div class="example-lines-heading" aria-hidden="true">
+              <span>台词</span>
+              <span>表情 / 立绘</span>
+              <span></span>
+            </div>
             <div id="example-lines-container" class="example-lines-list"></div>
-            <button id="add-example-line" type="button" class="btn-add-line">＋ 添加示例台词</button>
+            <button id="add-example-line" type="button" class="btn-add-line">＋ 添加台词</button>
           </fieldset>
 
           <!-- Save bar -->
@@ -207,10 +213,39 @@
             <li><strong>说话风格</strong>比关键词更具体——描述句长、用词、是否吐槽、是否说教等。</li>
             <li><strong>口头禅</strong>可以是一句话，也可以是一个表达习惯。每行一条。</li>
             <li><strong>边界</strong>用来防止角色跑偏——写清楚 TA 不会做的事。</li>
-            <li><strong>示例台词</strong>写 3-5 条最典型的对话，这是帮助模型"入戏"最有效的方式之一。</li>
+            <li><strong>点击反馈台词</strong>会同时用于提示词示例和鼠标点击桌宠时的本地反馈。</li>
             <li><strong>补充设定</strong>可以写世界观、背景故事等自由文本。</li>
           </ul>
           <p class="help-note">💾 当前为本地草稿模式。填写完毕后点击"保存草稿"，数据会保存在浏览器中。后端保存功能将在后续版本开放。</p>
+        </aside>
+      </section>
+
+      <!-- Tab: Character Context Libraries -->
+      <section class="workshop-body context-library-panel" data-tab-panel="context" hidden>
+        <div class="context-library-main">
+          <div class="context-library-empty-state" id="context-library-empty-state">
+            <p>请先从<strong>角色列表</strong>中选择一个角色包。</p>
+          </div>
+          <div id="context-library-content" hidden>
+            <div class="section-heading">
+              <div>
+                <h2>角色资料库</h2>
+                <p class="section-subtitle">把关系、经历、世界观或任何自定义资料分开放。模型会先看到目录说明，需要细节时再读取对应 Markdown。</p>
+              </div>
+              <button id="create-context-library" type="button" class="btn-primary">新建资料库</button>
+            </div>
+            <div id="context-library-list" class="context-library-list" aria-live="polite"></div>
+            <p id="context-library-status" class="context-library-status">资料库配置保存在当前角色包中。</p>
+          </div>
+        </div>
+        <aside class="detail-panel">
+          <h2>提示词里会看到什么</h2>
+          <div class="context-prompt-explainer">
+            <p><strong>资料库名称</strong>帮助角色理解这组文件属于哪类知识。</p>
+            <p><strong>内容说明</strong>告诉角色这里具体记录了什么。</p>
+            <p><strong>读取时机</strong>告诉角色什么话题出现时应主动加载。</p>
+          </div>
+          <p class="help-note">工坊会自动写入 character.json。你只需要往新文件夹里放以主题命名的 .md 文件，不需要手写 JSON。</p>
         </aside>
       </section>
 
@@ -225,7 +260,7 @@
               <div class="section-heading">
                 <h2>服装与表情</h2>
                 <div class="portrait-import-actions">
-                  <input id="new-outfit-id" type="text" class="form-input compact-input" placeholder="新服装名，如 巫女服" maxlength="80" />
+                  <input id="new-outfit-id" type="text" class="form-input compact-input" aria-label="新服装名" maxlength="80" />
                   <button id="add-outfit-btn" type="button" class="btn-add-line">创建服装</button>
                 </div>
               </div>
@@ -249,10 +284,10 @@
               <p class="preview-placeholder">点击表情名称预览</p>
             </div>
             <div class="help-list portrait-hints">
-              <p>1. 输入服装名并创建，例如“巫女服”。</p>
+              <p>1. 输入服装名并创建。</p>
               <p>2. 在服装卡片中批量导入 PNG/JPEG/WebP。</p>
               <p>3. 点击一张表情，在这里设为默认立绘。</p>
-              <p>图片文件名会成为 emotion 名，例如“开心.png”对应“开心”。</p>
+              <p>图片文件名会成为表情名。</p>
             </div>
           </aside>
         </div>
@@ -359,7 +394,7 @@
             </div>
             <div id="test-chat-log" class="test-chat-log" aria-live="polite"></div>
             <form id="test-chat-form" class="test-chat-form" autocomplete="off">
-              <textarea id="test-chat-input" class="form-input form-textarea" rows="3" placeholder="输入一句话，测试当前角色的人设语气。" maxlength="800"></textarea>
+              <textarea id="test-chat-input" class="form-input form-textarea" rows="3" aria-label="测试对话输入" maxlength="800"></textarea>
               <button id="test-chat-send" type="submit" class="btn-primary">发送测试</button>
             </form>
             <p id="test-chat-status" class="test-chat-status">等待测试输入。</p>
@@ -400,25 +435,54 @@
         <p class="dialog-desc">创建一个新的角色包。之后可以在「角色设定」中编辑详细的身份和人格信息。</p>
         <div class="form-field">
           <label for="create-pack-id">保存名 <span class="field-hint">— 用作文件夹名，建议拼音或英文</span></label>
-          <input id="create-pack-id" type="text" class="form-input" placeholder="例如：lingmeng" maxlength="60" required />
+          <input id="create-pack-id" type="text" class="form-input" maxlength="60" required />
         </div>
         <div class="form-field">
           <label for="create-name">角色名称 <span class="field-hint">— 角色的显示名称</span></label>
-          <input id="create-name" type="text" class="form-input" placeholder="例如：博丽灵梦" maxlength="80" required />
+          <input id="create-name" type="text" class="form-input" maxlength="80" required />
         </div>
         <div class="form-field">
-          <label for="create-app-name">应用显示名称 <span class="field-hint">— 窗口标题等位置显示的名称</span></label>
-          <input id="create-app-name" type="text" class="form-input" placeholder="例如：灵梦 Pet（留空则自动生成）" maxlength="80" />
+          <label for="create-app-name">应用显示名称 <span class="field-hint">— 窗口标题等位置显示的名称，留空则自动生成</span></label>
+          <input id="create-app-name" type="text" class="form-input" maxlength="80" />
         </div>
         <div class="form-field">
-          <label for="create-user-title">对用户的称呼 <span class="field-hint">— 角色如何称呼使用者</span></label>
-          <input id="create-user-title" type="text" class="form-input" placeholder="例如：主人（留空则使用默认值）" maxlength="40" />
+          <label for="create-user-title">对用户的称呼 <span class="field-hint">— 角色如何称呼使用者，留空则使用默认值</span></label>
+          <input id="create-user-title" type="text" class="form-input" maxlength="40" />
         </div>
         <div class="dialog-actions">
           <button type="button" id="create-cancel" class="btn-secondary">取消</button>
           <button type="submit" class="btn-primary">创建</button>
         </div>
         <p id="create-error" class="dialog-error" hidden></p>
+      </form>
+    </dialog>
+
+    <!-- Create Context Library Dialog -->
+    <dialog id="context-library-dialog" class="dialog-overlay">
+      <form id="context-library-form" class="dialog-form" method="dialog" autocomplete="off" novalidate>
+        <h2>新建角色资料库</h2>
+        <p class="dialog-desc">用普通话说明这组资料是什么。工坊会自动创建文件夹并更新角色配置。</p>
+        <div class="form-field">
+          <label for="context-library-name">资料库名称 <span class="field-hint">— 例如“人物关系”“重要经历”“符卡资料”</span></label>
+          <input id="context-library-name" type="text" class="form-input" maxlength="80" required />
+        </div>
+        <div class="form-field">
+          <label for="context-library-folder">文件夹名 <span class="field-hint">— 可留空，自动使用资料库名称</span></label>
+          <input id="context-library-folder" type="text" class="form-input" maxlength="80" />
+        </div>
+        <div class="form-field">
+          <label for="context-library-description">这里存什么 <span class="field-hint">— 例如“记录我与其他人物的关系、态度和共同经历”</span></label>
+          <textarea id="context-library-description" class="form-input form-textarea" rows="3" maxlength="400" required></textarea>
+        </div>
+        <div class="form-field">
+          <label for="context-library-load-when">什么时候读取 <span class="field-hint">— 例如“谈到具体人物或共同经历时读取”</span></label>
+          <textarea id="context-library-load-when" class="form-input form-textarea" rows="2" maxlength="300" required></textarea>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="context-library-cancel" class="btn-secondary">取消</button>
+          <button type="submit" class="btn-primary">创建资料库</button>
+        </div>
+        <p id="context-library-error" class="dialog-error" hidden></p>
       </form>
     </dialog>
 

@@ -2251,6 +2251,99 @@ body {
   color: rgba(144, 93, 70, 0.82);
 }
 
+.model-service-settings {
+  scroll-margin-top: 12px;
+}
+
+.model-service-settings__status {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 13px;
+  padding: 12px 14px;
+  border: 1px solid rgba(183, 133, 113, 0.16);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.model-service-settings__status strong {
+  color: #875343;
+}
+
+.model-service-settings__status span {
+  color: rgba(112, 77, 60, 0.74);
+  font-size: 12px;
+}
+
+.model-service-settings__form {
+  display: grid;
+  gap: 11px;
+}
+
+.model-service-settings__form label {
+  display: grid;
+  gap: 6px;
+  color: rgba(92, 61, 46, 0.88);
+  font-size: 13px;
+}
+
+.model-service-settings__form input[type="text"],
+.model-service-settings__form input[type="password"],
+.model-service-settings__form select {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid rgba(183, 133, 113, 0.2);
+  border-radius: 13px;
+  outline: none;
+  color: rgba(92, 61, 46, 0.92);
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.model-service-settings__form input:focus,
+.model-service-settings__form select:focus {
+  border-color: rgba(183, 133, 113, 0.46);
+  box-shadow: 0 0 0 3px rgba(183, 133, 113, 0.09);
+}
+
+.model-service-settings__vision {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.model-service-settings__vision input {
+  width: 18px;
+  height: 18px;
+  accent-color: #b77961;
+}
+
+.model-service-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.model-service-settings__actions button {
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid rgba(183, 133, 113, 0.22);
+  border-radius: 999px;
+  color: #875343;
+  background: rgba(255, 249, 244, 0.72);
+  cursor: pointer;
+}
+
+.model-service-settings__actions button:last-child {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #b77961, #dc8f9d);
+}
+
+.model-service-settings__actions button:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

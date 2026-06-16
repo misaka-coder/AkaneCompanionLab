@@ -9,6 +9,15 @@ from unittest.mock import patch
 from companion_v01.qq_gateway import NapCatQQGateway
 
 
+QQ_BOT_FIXTURE_ID = 10001
+QQ_MASTER_FIXTURE_ID = 10002
+QQ_USER_FIXTURE_ID = 10003
+QQ_OTHER_USER_FIXTURE_ID = 10004
+QQ_THIRD_USER_FIXTURE_ID = 10005
+QQ_GROUP_FIXTURE_ID = 20001
+QQ_FILE_GROUP_FIXTURE_ID = 20002
+
+
 class FakeCharacterResourceService:
     def __init__(self) -> None:
         self.packs = {
@@ -43,6 +52,20 @@ class FakeCharacterResourceService:
 
 
 class QQGatewayTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.master_qq_patcher = patch(
+            "companion_v01.qq_gateway.config.MASTER_QQ",
+            str(QQ_MASTER_FIXTURE_ID),
+        )
+        self.bot_qq_patcher = patch(
+            "companion_v01.qq_gateway.config.QQ_BOT_QQ",
+            str(QQ_BOT_FIXTURE_ID),
+        )
+        self.master_qq_patcher.start()
+        self.bot_qq_patcher.start()
+        self.addCleanup(self.master_qq_patcher.stop)
+        self.addCleanup(self.bot_qq_patcher.stop)
+
     def test_render_reply_messages_prefers_speech_segments(self) -> None:
         gateway = NapCatQQGateway()
 
@@ -74,8 +97,8 @@ class QQGatewayTests(unittest.TestCase):
         event = {
             "post_type": "message",
             "message_type": "private",
-            "self_id": 2184046306,
-            "user_id": 1906243651,
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
             "message_id": "abc-1",
             "raw_message": "在吗",
         }
@@ -96,8 +119,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 111222333,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "old-message-1",
                 "time": int(time.time()) - 3600,
                 "raw_message": "在吗",
@@ -116,8 +139,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 1906243651,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "old-message-debug-1",
                 "time": int(time.time()) - 3600,
                 "raw_message": "在吗",
@@ -131,21 +154,21 @@ class QQGatewayTests(unittest.TestCase):
         mention_event = {
             "post_type": "message",
             "message_type": "group",
-            "self_id": 2184046306,
-            "user_id": 1906243651,
-            "group_id": 123456,
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
             "message_id": "group-1",
             "message": [
-                {"type": "at", "data": {"qq": "2184046306"}},
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
                 {"type": "text", "data": {"text": " 在吗"}},
             ],
         }
         follow_event = {
             "post_type": "message",
             "message_type": "group",
-            "self_id": 2184046306,
-            "user_id": 1906243651,
-            "group_id": 123456,
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
             "message_id": "group-2",
             "message": [
                 {"type": "text", "data": {"text": "我是在回复别人"}},
@@ -165,21 +188,21 @@ class QQGatewayTests(unittest.TestCase):
         mention_event = {
             "post_type": "message",
             "message_type": "group",
-            "self_id": 2184046306,
-            "user_id": 1906243651,
-            "group_id": 123456,
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
             "message_id": "group-buffer-1",
             "message": [
-                {"type": "at", "data": {"qq": "2184046306"}},
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
                 {"type": "text", "data": {"text": " 我等下补图"}},
             ],
         }
         image_event = {
             "post_type": "message",
             "message_type": "group",
-            "self_id": 2184046306,
-            "user_id": 1906243651,
-            "group_id": 123456,
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
             "message_id": "group-buffer-2",
             "message": [
                 {
@@ -198,7 +221,7 @@ class QQGatewayTests(unittest.TestCase):
         }
         other_user_image_event = {
             **image_event,
-            "user_id": 222333444,
+            "user_id": QQ_OTHER_USER_FIXTURE_ID,
             "message_id": "group-buffer-4",
         }
 
@@ -223,19 +246,19 @@ class QQGatewayTests(unittest.TestCase):
         first_event = {
             "post_type": "message",
             "message_type": "group",
-            "self_id": 2184046306,
-            "user_id": 111222333,
-            "group_id": 123456,
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
             "message_id": "group-member-1",
             "sender": {"card": "休比", "nickname": "fallback"},
             "message": [
-                {"type": "at", "data": {"qq": "2184046306"}},
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
                 {"type": "text", "data": {"text": " 你好"}},
             ],
         }
         second_event = {
             **first_event,
-            "user_id": 444555666,
+            "user_id": QQ_THIRD_USER_FIXTURE_ID,
             "message_id": "group-member-2",
         }
 
@@ -244,23 +267,23 @@ class QQGatewayTests(unittest.TestCase):
 
         self.assertTrue(first.should_respond)
         self.assertTrue(second.should_respond)
-        self.assertEqual(first.session_id, "qq_group_shared_123456")
-        self.assertEqual(second.session_id, "qq_group_shared_123456")
-        self.assertEqual(first.profile_user_id, "qq_group_shared_123456")
-        self.assertEqual(second.profile_user_id, "qq_group_shared_123456")
+        self.assertEqual(first.session_id, f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
+        self.assertEqual(second.session_id, f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
+        self.assertEqual(first.profile_user_id, f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
+        self.assertEqual(second.profile_user_id, f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
 
     def test_group_turn_payload_keeps_sender_label_for_shared_memory(self) -> None:
         gateway = NapCatQQGateway()
         event = {
             "post_type": "message",
             "message_type": "group",
-            "self_id": 2184046306,
-            "user_id": 111222333,
-            "group_id": 123456,
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
             "message_id": "group-speaker-1",
             "sender": {"card": "休比", "nickname": "fallback"},
             "message": [
-                {"type": "at", "data": {"qq": "2184046306"}},
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
                 {"type": "text", "data": {"text": " 你好"}},
             ],
         }
@@ -278,8 +301,8 @@ class QQGatewayTests(unittest.TestCase):
         event = {
             "post_type": "message",
             "message_type": "private",
-            "self_id": 2184046306,
-            "user_id": 1906243651,
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
             "message_id": "character-pack-1",
             "raw_message": "在吗",
         }
@@ -301,8 +324,8 @@ class QQGatewayTests(unittest.TestCase):
         event = {
             "post_type": "message",
             "message_type": "private",
-            "self_id": 2184046306,
-            "user_id": 1906243651,
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
             "message_id": "character-pack-invalid-1",
             "raw_message": "在吗",
         }
@@ -322,8 +345,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 111222333,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "switch-character-1",
                 "raw_message": "切换角色 reimu",
             }
@@ -338,14 +361,14 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "switched")
         self.assertEqual(result["character_pack_id"], "reimu")
-        self.assertEqual(gateway.resolve_character_pack_id("qq_pri_111222333"), "reimu")
+        self.assertEqual(gateway.resolve_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}"), "reimu")
 
         next_context = gateway.build_message_context(
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 111222333,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "switch-character-2",
                 "raw_message": "在吗",
             }
@@ -360,8 +383,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 111222333,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "character-list-1",
                 "raw_message": "角色列表",
             }
@@ -373,13 +396,13 @@ class QQGatewayTests(unittest.TestCase):
         self.assertIn("reimu", list_result["reply"])
         self.assertIn("mika_sample", list_result["reply"])
 
-        gateway.set_session_character_pack_id("qq_pri_111222333", "reimu")
+        gateway.set_session_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}", "reimu")
         current_context = gateway.build_message_context(
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 111222333,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "character-current-1",
                 "raw_message": "当前角色",
             }
@@ -395,8 +418,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 111222333,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "character-reset-1",
                 "raw_message": "切回默认角色",
             }
@@ -405,18 +428,18 @@ class QQGatewayTests(unittest.TestCase):
 
         self.assertIsNotNone(reset_result)
         self.assertEqual(reset_result["status"], "default")
-        self.assertEqual(gateway.resolve_character_pack_id("qq_pri_111222333"), "")
+        self.assertEqual(gateway.resolve_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}"), "")
 
     def test_character_command_can_force_builtin_akane(self) -> None:
         gateway = NapCatQQGateway()
         service = FakeCharacterResourceService()
-        gateway.set_session_character_pack_id("qq_pri_111222333", "reimu")
+        gateway.set_session_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}", "reimu")
         context = gateway.build_message_context(
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 111222333,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "character-builtin-1",
                 "raw_message": "切回Akane",
             }
@@ -427,7 +450,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["status"], "builtin")
         self.assertEqual(result["character_pack_id"], "")
-        self.assertEqual(gateway.resolve_character_pack_id("qq_pri_111222333"), "")
+        self.assertEqual(gateway.resolve_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}"), "")
 
     def test_character_command_rejects_unknown_or_invalid_pack(self) -> None:
         gateway = NapCatQQGateway()
@@ -436,8 +459,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 111222333,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "character-unknown-1",
                 "raw_message": "切换角色 missing_pack",
             }
@@ -446,8 +469,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 111222333,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "character-invalid-1",
                 "raw_message": "切换角色 ../bad",
             }
@@ -470,8 +493,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 111222333,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "reply-mode-voice-1",
                 "raw_message": "语音模式",
             }
@@ -483,14 +506,14 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "switched")
         self.assertEqual(result["reply_mode"], "voice")
-        self.assertEqual(gateway.resolve_reply_mode("qq_pri_111222333"), "voice")
+        self.assertEqual(gateway.resolve_reply_mode(f"qq_pri_{QQ_USER_FIXTURE_ID}"), "voice")
 
         next_context = gateway.build_message_context(
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 111222333,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "reply-mode-voice-2",
                 "raw_message": "在吗",
             }
@@ -506,8 +529,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 111222333,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "send-voice-1",
                 "raw_message": "在吗",
             }
@@ -528,7 +551,7 @@ class QQGatewayTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         payload = mocked_post.call_args.kwargs["json"]
-        self.assertEqual(payload["user_id"], 111222333)
+        self.assertEqual(payload["user_id"], QQ_USER_FIXTURE_ID)
         self.assertEqual(payload["message"][0]["type"], "record")
         self.assertIn("file", payload["message"][0]["data"])
 
@@ -537,8 +560,8 @@ class QQGatewayTests(unittest.TestCase):
         event = {
             "post_type": "message",
             "message_type": "private",
-            "self_id": 2184046306,
-            "user_id": 1906243651,
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
             "message_id": "attachment-1",
             "message": [
                 {"type": "text", "data": {"text": "看看这个"}},
@@ -579,8 +602,8 @@ class QQGatewayTests(unittest.TestCase):
         event = {
             "post_type": "message",
             "message_type": "private",
-            "self_id": 2184046306,
-            "user_id": 1906243651,
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
             "message_id": "attachment-raw-1",
             "raw_message": "[CQ:image,file=cat.png,url=http://127.0.0.1/cat.png]",
         }
@@ -599,8 +622,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 1906243651,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "debounce-1",
                 "raw_message": "[CQ:image,file=one.png,url=http://127.0.0.1/one.png]",
             }
@@ -621,8 +644,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 1906243651,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "debounce-disabled-1",
                 "raw_message": "[CQ:image,file=one.png,url=http://127.0.0.1/one.png]",
             }
@@ -640,8 +663,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 1906243651,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "generated-send-1",
                 "raw_message": "发我文件",
             }
@@ -676,7 +699,7 @@ class QQGatewayTests(unittest.TestCase):
         url = mocked_post.call_args.args[0]
         payload = mocked_post.call_args.kwargs["json"]
         self.assertTrue(url.endswith("/upload_private_file"))
-        self.assertEqual(payload["user_id"], 1906243651)
+        self.assertEqual(payload["user_id"], QQ_MASTER_FIXTURE_ID)
         self.assertEqual(payload["file"], "C:/tmp/akane.md")
         self.assertEqual(payload["name"], "Akane整理.md")
 
@@ -687,8 +710,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 1906243651,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "generated-block-1",
                 "raw_message": "在吗",
             }
@@ -717,6 +740,53 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(result["reason"], "missing_file_delivery_intent")
         mocked_post.assert_not_called()
 
+    @patch("companion_v01.qq_gateway.config.QQ_REQUIRE_FILE_DELIVERY_INTENT", True)
+    def test_send_generated_files_allows_current_generated_file_without_repeated_delivery_phrase(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "generated-current-1",
+                "raw_message": "嗯？好了吗",
+            }
+        )
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            result = gateway.send_generated_files(
+                context,
+                [
+                    {
+                        "type": "generated_file_ready",
+                        "send_to_user": True,
+                        "generated_file": {
+                            "generated_id": "generated::1",
+                            "absolute_path": "C:/tmp/story.md",
+                            "output_title": "会说话的猫和它的室友",
+                            "file_ext": "md",
+                            "created_by_tool": "compose_file",
+                            "delivery_status": "pending",
+                        },
+                    }
+                ],
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["count"], 1)
+        mocked_post.assert_called_once()
+        payload = mocked_post.call_args.kwargs["json"]
+        self.assertEqual(payload["file"], "C:/tmp/story.md")
+        self.assertEqual(payload["name"], "会说话的猫和它的室友.md")
+
     def test_file_delivery_intent_respects_negative_request(self) -> None:
         gateway = NapCatQQGateway()
 
@@ -729,12 +799,12 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "group",
-                "self_id": 2184046306,
-                "group_id": 12345,
-                "user_id": 1906243651,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "group_id": QQ_FILE_GROUP_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "file-ready-1",
                 "message": [
-                    {"type": "at", "data": {"qq": "2184046306"}},
+                    {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
                     {"type": "text", "data": {"text": " 发我文件"}},
                 ],
             }
@@ -769,7 +839,7 @@ class QQGatewayTests(unittest.TestCase):
         url = mocked_post.call_args.args[0]
         payload = mocked_post.call_args.kwargs["json"]
         self.assertTrue(url.endswith("/upload_group_file"))
-        self.assertEqual(payload["group_id"], 12345)
+        self.assertEqual(payload["group_id"], QQ_FILE_GROUP_FIXTURE_ID)
         self.assertEqual(payload["file"], "C:/tmp/video.mp4")
         self.assertEqual(payload["name"], "video.mp4")
 
@@ -779,8 +849,8 @@ class QQGatewayTests(unittest.TestCase):
             {
                 "post_type": "message",
                 "message_type": "private",
-                "self_id": 2184046306,
-                "user_id": 1906243651,
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "file-ready-desktop-1",
                 "raw_message": "发我文件",
             }

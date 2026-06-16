@@ -152,7 +152,7 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
             {"system_context": "", "reference_context": "", "active_id": ""},
         )
 
-    def test_character_pack_metadata_drives_qq_persona_context_without_desktop_render_rules(self) -> None:
+    def test_character_pack_metadata_drives_qq_persona_context_with_shared_emotion_ids(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         characters_dir = Path(temp_dir.name) / "characters"
@@ -191,13 +191,64 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         self.assertIn("QQ 端只发送文字", context["system_context"])
         self.assertIn("角色自称：我", context["system_context"])
         self.assertIn("会在 QQ 里陪店长聊天", context["system_context"])
+        self.assertIn("图片文件名去掉扩展名", context["system_context"])
+        self.assertIn("- 猫娘: 开心", context["system_context"])
+        self.assertIn("cheerful -> 开心", context["system_context"])
         self.assertIn("说话风格: 温柔但简短。", context["reference_context"])
         self.assertIn("边界与禁忌: 不要把自己说成通用客服。", context["reference_context"])
         self.assertNotIn("desktop_pet only", context["system_context"])
-        self.assertNotIn("emotion 必须", context["system_context"])
         self.assertNotIn("character.outfit", context["system_context"])
         self.assertNotIn("默认服装", context["system_context"])
-        self.assertNotIn("cheerful -> 开心", context["system_context"])
+
+    def test_qq_examples_and_output_collapse_to_only_existing_emotion_image(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        characters_dir = Path(temp_dir.name) / "characters"
+        pack_dir = characters_dir / "reimu_pack"
+
+        write_bytes(pack_dir / "assets" / "characters" / "default" / "害羞.png")
+        write_json(
+            pack_dir / "character.json",
+            {
+                "identity": {"id": "reimu_pack", "name": "Reimu"},
+                "appearance": {
+                    "default_outfit": "default",
+                    "default_emotion": "普通",
+                },
+                "persona_form": {
+                    "example_lines": [
+                        {"text": "原本标成开心。", "emotion": "开心"},
+                        {"text": "原本标成生气。", "emotion": "生气"},
+                    ]
+                },
+                "dialogue": {
+                    "local_click_lines": [
+                        {"text": "原本标成疑惑。", "emotion": "疑惑"},
+                    ]
+                },
+                "emotion_aliases": {
+                    "happy": ["开心", "害羞"],
+                    "angry": ["生气", "害羞"],
+                },
+            },
+        )
+
+        service = DesktopPetCharacterResourceService(characters_dir=characters_dir)
+        manifest = service.get_manifest("reimu_pack")
+        self.assertIsNotNone(manifest)
+        context = service.build_persona_prompt_context(
+            "reimu_pack",
+            resource_manifest=manifest,
+            client_mode="qq_text",
+        )
+
+        combined = "\n".join([context["system_context"], context["reference_context"]])
+        self.assertIn("- default: 害羞", combined)
+        self.assertEqual(combined.count("emotion=害羞"), 3)
+        self.assertNotIn("emotion=开心", combined)
+        self.assertNotIn("emotion=生气", combined)
+        self.assertNotIn("emotion=疑惑", combined)
+        self.assertEqual(manifest.normalize_emotion_output({"emotion": "开心"})["emotion"], "害羞")
 
     def test_v02_persona_form_fields_are_available_to_desktop_prompt(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
@@ -281,7 +332,7 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
                     "provider": "gpt_sovits",
                     "profile_id": "voice_main",
                     "notes": "本地声线档案，不包含路径。",
-                    "model_path": r"C:\Users\Lenovo\secret.pth",
+                    "model_path": r"C:\Users\ExampleUser\secret.pth",
                     "token": "secret",
                 },
             },

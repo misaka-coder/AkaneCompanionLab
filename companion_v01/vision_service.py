@@ -63,6 +63,15 @@ class VisionObservationService:
         with self._lock:
             self._jobs_in_flight.clear()
 
+    def reload_client(self) -> dict[str, Any]:
+        client = self._build_client()
+        with self._lock:
+            self._client = client
+        return {
+            "status": "reloaded" if client is not None else "not_configured",
+            "model": str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
+        }
+
     def build_scene_prompt_context(
         self,
         *,

@@ -38,6 +38,10 @@ use windows::Win32::{
 };
 
 const STATE_FILE: &str = "pet_state.json";
+const DATA_ROOT_ENV: &str = "AKANE_DATA_ROOT";
+const APP_DIRECTORY_NAME: &str = "Akane";
+const CHARACTER_PACK_TEMPLATE_JSON: &str =
+    include_str!("../../../desktop_pet_creator_kit/templates/character_pack/character.json");
 const BASE_WIDTH: f64 = 340.0;
 const BASE_HEIGHT: f64 = 560.0;
 const DEFAULT_BACKEND_URL: &str = "http://127.0.0.1:9999";
@@ -49,6 +53,7 @@ const MAX_AUDIO_FILE_BYTES: u64 = 300 * 1024 * 1024;
 const MAX_LYRIC_FILE_BYTES: u64 = 512 * 1024;
 const MAX_CHARACTER_PACK_ZIP_BYTES: usize = 300 * 1024 * 1024;
 const MAX_PORTRAIT_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+const PRIVATE_LOCAL_DIRECTORY: &str = "_local";
 const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "webm",
 ];
@@ -219,6 +224,22 @@ struct SystemMediaSnapshot {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SystemMediaControlResult {
+    ok: bool,
+    status: String,
+    reason: String,
+    action: String,
+    captured_at: u128,
+    platform: String,
+    track_key: String,
+    title: String,
+    artist: String,
+    source_app: String,
+    playback_status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct PreparedAudioAsset {
     original_path: String,
     cached_path: String,
@@ -317,6 +338,8 @@ struct SaveCharacterPackRequest {
     pack_id: String,
     identity: serde_json::Value,
     persona_form: serde_json::Value,
+    #[serde(default)]
+    dialogue: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -326,6 +349,16 @@ struct CreateCharacterPackRequest {
     name: String,
     app_name: String,
     user_title: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateCharacterContextLibraryRequest {
+    pack_id: String,
+    folder: String,
+    name: String,
+    description: String,
+    load_when: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -513,6 +546,13 @@ async fn get_current_system_media() -> SystemMediaSnapshot {
     tauri::async_runtime::spawn_blocking(read_current_system_media)
         .await
         .unwrap_or_else(|error| system_media_unavailable("join_failed", error.to_string()))
+}
+
+#[tauri::command]
+async fn control_system_media(action: String) -> SystemMediaControlResult {
+    tauri::async_runtime::spawn_blocking(move || control_system_media_blocking(action))
+        .await
+        .unwrap_or_else(|error| system_media_control_unavailable("", "join_failed", error.to_string()))
 }
 
 #[tauri::command]
@@ -840,6 +880,7 @@ fn save_character_pack(
 
     require_optional_object(&request.identity, "identity")?;
     require_optional_object(&request.persona_form, "persona_form")?;
+    require_optional_object(&request.dialogue, "dialogue")?;
 
     let Some(obj) = profile.as_object_mut() else {
         return Err("character.json 根节点必须是对象。".to_string());
@@ -860,6 +901,16 @@ fn save_character_pack(
         return Err("persona_form 必须是对象。".to_string());
     }
     deep_merge_json(persona_form, &request.persona_form);
+
+    if !request.dialogue.is_null() {
+        let dialogue = obj
+            .entry("dialogue".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if !dialogue.is_object() {
+            return Err("dialogue 必须是对象。".to_string());
+        }
+        deep_merge_json(dialogue, &request.dialogue);
+    }
 
     /* validate merged result still parses as CharacterPackJson */
     let validated: CharacterPackJson = serde_json::from_value(profile.clone())
@@ -1068,12 +1119,10 @@ fn create_character_pack(
         return Err(format!("角色包 {pack_id} 已存在。"));
     }
 
-    /* load template character.json and fill in user-provided fields */
-    let template_path = creator_kit_template_path()?;
-    let template_raw =
-        fs::read_to_string(&template_path).map_err(|error| format!("读取模板失败：{error}"))?;
+    /* load the build-time embedded template and fill in user-provided fields */
+    let template_raw = CHARACTER_PACK_TEMPLATE_JSON;
     let mut character_json: serde_json::Value =
-        serde_json::from_str(&template_raw).map_err(|error| format!("模板 JSON 无效：{error}"))?;
+        serde_json::from_str(template_raw).map_err(|error| format!("模板 JSON 无效：{error}"))?;
 
     if let Some(obj) = character_json.as_object_mut() {
         if let Some(identity) = obj.get_mut("identity").and_then(|v| v.as_object_mut()) {
@@ -1147,6 +1196,133 @@ fn create_character_pack(
             .join("character.json")
             .to_string_lossy()
             .to_string(),
+        installed_path: pack_dir.to_string_lossy().to_string(),
+        asset_count,
+        profile,
+        outfits,
+    })
+}
+
+#[tauri::command]
+fn create_character_context_library(
+    request: CreateCharacterContextLibraryRequest,
+) -> Result<CharacterPackRegistryItem, String> {
+    let pack_id = sanitize_pack_id(&request.pack_id);
+    if pack_id.is_empty() {
+        return Err("无效的角色包 ID。".to_string());
+    }
+    let folder = sanitize_context_library_folder(&request.folder);
+    if folder.is_empty() {
+        return Err("资料库文件夹名不能为空。".to_string());
+    }
+    if folder.chars().count() > 80 {
+        return Err("资料库文件夹名过长，请控制在 80 个字符以内。".to_string());
+    }
+    if folder.eq_ignore_ascii_case(PRIVATE_LOCAL_DIRECTORY) || folder.eq_ignore_ascii_case("assets")
+    {
+        return Err("这个文件夹名由角色包保留，请换一个名称。".to_string());
+    }
+    let name = request.name.trim();
+    let description = request.description.trim();
+    let load_when = request.load_when.trim();
+    if name.is_empty() {
+        return Err("资料库名称不能为空。".to_string());
+    }
+    if description.is_empty() {
+        return Err("请说明这个资料库保存什么内容。".to_string());
+    }
+    if load_when.is_empty() {
+        return Err("请说明角色应在什么时候读取这个资料库。".to_string());
+    }
+    if name.chars().count() > 80
+        || description.chars().count() > 400
+        || load_when.chars().count() > 300
+    {
+        return Err("资料库说明过长，请精简后再保存。".to_string());
+    }
+
+    let characters_dir = creator_kit_characters_dir()?;
+    let pack_dir = safe_child_path(&characters_dir, &pack_id)?;
+    if !pack_dir.is_dir() {
+        return Err(format!("角色包 {pack_id} 不存在。"));
+    }
+    let character_path = pack_dir.join("character.json");
+    let raw = fs::read_to_string(&character_path).map_err(|error| error.to_string())?;
+    let mut profile: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|error| format!("character.json 无效：{error}"))?;
+    let Some(profile_object) = profile.as_object_mut() else {
+        return Err("character.json 根节点必须是对象。".to_string());
+    };
+
+    let libraries = profile_object
+        .entry("context_libraries".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+    let Some(libraries) = libraries.as_array_mut() else {
+        return Err("context_libraries 必须是数组。".to_string());
+    };
+    if libraries.iter().any(|library| {
+        library
+            .get("folder")
+            .and_then(|value| value.as_str())
+            .map(|value| value.eq_ignore_ascii_case(&folder))
+            .unwrap_or(false)
+    }) {
+        return Err(format!("资料库文件夹 {folder} 已经登记过了。"));
+    }
+
+    let library_dir = safe_child_path(&pack_dir, &folder)?;
+    if library_dir.exists() && !library_dir.is_dir() {
+        return Err(format!("{folder} 已存在，但不是文件夹。"));
+    }
+    let created_directory = !library_dir.exists();
+    fs::create_dir_all(&library_dir).map_err(|error| error.to_string())?;
+
+    libraries.push(serde_json::json!({
+        "folder": folder,
+        "name": name,
+        "description": description,
+        "load_when": load_when,
+        "aliases": {}
+    }));
+
+    let validated: CharacterPackJson = match serde_json::from_value(profile.clone()) {
+        Ok(value) => value,
+        Err(error) => {
+            if created_directory {
+                let _ = fs::remove_dir(&library_dir);
+            }
+            return Err(format!("更新后的角色数据无效：{error}"));
+        }
+    };
+    let updated = match serde_json::to_string_pretty(&profile) {
+        Ok(value) => value,
+        Err(error) => {
+            if created_directory {
+                let _ = fs::remove_dir(&library_dir);
+            }
+            return Err(format!("序列化角色数据失败：{error}"));
+        }
+    };
+    if let Err(error) = write_text_atomic(&character_path, &updated) {
+        if created_directory {
+            let _ = fs::remove_dir(&library_dir);
+        }
+        return Err(error);
+    }
+
+    let asset_root = validated
+        .assets
+        .asset_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("assets");
+    let outfits = list_character_pack_outfits(&pack_dir, asset_root);
+    let asset_count = outfits.iter().map(|outfit| outfit.emotions.len()).sum();
+
+    Ok(CharacterPackRegistryItem {
+        id: pack_id,
+        source: character_path.to_string_lossy().to_string(),
         installed_path: pack_dir.to_string_lossy().to_string(),
         asset_count,
         profile,
@@ -1562,6 +1738,9 @@ fn export_character_pack_blocking(
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() && name.eq_ignore_ascii_case(PRIVATE_LOCAL_DIRECTORY) {
+                continue;
+            }
             let relative = format!("{prefix}/{name}");
 
             if path.is_dir() {
@@ -1916,6 +2095,19 @@ fn sanitize_asset_id(value: &str) -> String {
     clean.trim_matches(|ch| ch == '_' || ch == '.').to_string()
 }
 
+fn sanitize_context_library_folder(value: &str) -> String {
+    let clean: String = value
+        .trim()
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            ch if ch.is_whitespace() => '_',
+            _ => ch,
+        })
+        .collect();
+    clean.trim_matches(|ch| ch == '_' || ch == '.').to_string()
+}
+
 /// Generate the default `persona.md` content for a character pack.
 /// This is regenerated on every save until a manual-editing feature is added.
 fn persona_md_text(name: &str, user_title: &str) -> String {
@@ -2011,6 +2203,8 @@ fn install_character_pack_zip(
     let temp_pack_dir = temp_root.join(&pack_id);
     let characters_dir = creator_kit_characters_dir()?;
     let destination = safe_child_path(&characters_dir, &pack_id)?;
+    let backup_name = format!(".{pack_id}.backup_{}", current_time_millis());
+    let backup = safe_child_path(&characters_dir, &backup_name)?;
 
     if destination.exists() && !overwrite {
         return Err(format!("角色包 {pack_id} 已存在。勾选覆盖同名后再导入。"));
@@ -2021,11 +2215,34 @@ fn install_character_pack_zip(
         let validation = validate_imported_character_pack(&temp_pack_dir)?;
 
         fs::create_dir_all(&characters_dir).map_err(|error| error.to_string())?;
+        let mut has_backup = false;
         if destination.exists() {
             assert_safe_remove_target(&characters_dir, &destination)?;
-            fs::remove_dir_all(&destination).map_err(|error| error.to_string())?;
+            fs::rename(&destination, &backup).map_err(|error| error.to_string())?;
+            has_backup = true;
         }
-        fs::rename(&temp_pack_dir, &destination).map_err(|error| error.to_string())?;
+        if let Err(error) = fs::rename(&temp_pack_dir, &destination) {
+            if has_backup {
+                let _ = fs::rename(&backup, &destination);
+            }
+            return Err(error.to_string());
+        }
+        if has_backup {
+            let previous_local = safe_child_path(&backup, PRIVATE_LOCAL_DIRECTORY)?;
+            if previous_local.exists() {
+                let installed_local = safe_child_path(&destination, PRIVATE_LOCAL_DIRECTORY)?;
+                if installed_local.exists() {
+                    fs::remove_dir_all(&installed_local).map_err(|error| error.to_string())?;
+                }
+                if let Err(error) = fs::rename(&previous_local, &installed_local) {
+                    assert_safe_remove_target(&characters_dir, &destination)?;
+                    let _ = fs::remove_dir_all(&destination);
+                    let _ = fs::rename(&backup, &destination);
+                    return Err(format!("保留角色本机私有数据失败：{error}"));
+                }
+            }
+            let _ = fs::remove_dir_all(&backup);
+        }
 
         Ok(CharacterPackInstallResult {
             pack_id,
@@ -2036,6 +2253,10 @@ fn install_character_pack_zip(
                 .iter()
                 .filter(|entry| entry.name.starts_with(&format!("{root}/")))
                 .filter(|entry| !entry.name.ends_with('/'))
+                .filter(|entry| {
+                    let relative = entry.name.trim_start_matches(&format!("{root}/"));
+                    !is_private_local_relative_path(relative)
+                })
                 .count(),
             requires_restart: false,
             warnings: validation.warnings,
@@ -2180,6 +2401,9 @@ fn extract_character_pack_entries(
         if relative.is_empty() {
             continue;
         }
+        if is_private_local_relative_path(relative) {
+            continue;
+        }
         let target = safe_child_path(target_dir, relative)?;
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -2187,6 +2411,15 @@ fn extract_character_pack_entries(
         fs::write(target, &entry.data).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn is_private_local_relative_path(relative: &str) -> bool {
+    relative
+        .replace('\\', "/")
+        .split('/')
+        .next()
+        .map(|part| part.eq_ignore_ascii_case(PRIVATE_LOCAL_DIRECTORY))
+        .unwrap_or(false)
 }
 
 fn validate_imported_character_pack(pack_dir: &Path) -> Result<CharacterPackValidation, String> {
@@ -2376,38 +2609,63 @@ fn is_supported_character_image(path: &Path) -> bool {
 }
 
 fn creator_kit_characters_dir() -> Result<PathBuf, String> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let desktop_pet_next = manifest_dir
-        .parent()
-        .ok_or_else(|| "无法定位 desktop_pet_next。".to_string())?;
-    let repo_root = desktop_pet_next
-        .parent()
-        .ok_or_else(|| "无法定位项目根目录。".to_string())?;
-    let characters_dir = repo_root.join("desktop_pet_creator_kit").join("characters");
-    if !characters_dir
-        .parent()
-        .is_some_and(|parent| parent.exists())
-    {
-        return Err("没有找到 desktop_pet_creator_kit。".to_string());
-    }
+    let characters_dir = akane_data_root()?.join("characters");
+    fs::create_dir_all(&characters_dir).map_err(|error| error.to_string())?;
     Ok(characters_dir)
 }
 
-fn creator_kit_template_path() -> Result<PathBuf, String> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .ok_or_else(|| "无法定位项目根目录。".to_string())?;
-    let template_path = repo_root
-        .join("desktop_pet_creator_kit")
-        .join("templates")
-        .join("character_pack")
-        .join("character.json");
-    if !template_path.is_file() {
-        return Err("找不到角色包模板文件。".to_string());
+fn akane_data_root() -> Result<PathBuf, String> {
+    if let Some(explicit) = std::env::var_os(DATA_ROOT_ENV).filter(|value| !value.is_empty()) {
+        return absolute_path(PathBuf::from(explicit));
     }
-    Ok(template_path)
+
+    #[cfg(windows)]
+    {
+        if let Some(base) = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA"))
+        {
+            return Ok(PathBuf::from(base).join(APP_DIRECTORY_NAME));
+        }
+        if let Some(home) = std::env::var_os("USERPROFILE") {
+            return Ok(PathBuf::from(home)
+                .join("AppData")
+                .join("Local")
+                .join(APP_DIRECTORY_NAME));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return Ok(PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join(APP_DIRECTORY_NAME));
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(base) = std::env::var_os("XDG_DATA_HOME") {
+            return Ok(PathBuf::from(base).join(APP_DIRECTORY_NAME));
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return Ok(PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join(APP_DIRECTORY_NAME));
+        }
+    }
+
+    Err("无法定位 Akane 用户数据目录。".to_string())
+}
+
+fn absolute_path(path: PathBuf) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    std::env::current_dir()
+        .map(|current| current.join(path))
+        .map_err(|error| error.to_string())
 }
 
 fn open_path_in_file_manager(path: &Path) -> Result<(), String> {
@@ -3026,12 +3284,17 @@ fn close_pet_app(app: AppHandle) -> Result<(), String> {
 }
 
 fn settings_window_url() -> &'static str {
-    // The control center is now the default settings entry. Keep the old
-    // settings.html behind an explicit rollback flag so agents do not drift
-    // back to the legacy settings surface while implementing new features.
-    match std::env::var("AKANE_LEGACY_SETTINGS") {
-        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => "settings.html",
-        _ => "control-center-lab.html",
+    if env_flag_enabled("AKANE_OPEN_MODEL_SETTINGS") {
+        "control-center-lab.html?page=model"
+    } else {
+        "control-center-lab.html"
+    }
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => value == "1" || value.eq_ignore_ascii_case("true"),
+        Err(_) => false,
     }
 }
 
@@ -3175,10 +3438,22 @@ fn place_window_bottom_right(window: &Window) -> Result<(), String> {
 }
 
 fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_config_dir()
-        .map(|dir| dir.join(STATE_FILE))
-        .map_err(|error| error.to_string())
+    let path = akane_data_root()?.join("state").join(STATE_FILE);
+    if !path.exists() {
+        let legacy_path = app
+            .path()
+            .app_config_dir()
+            .map(|dir| dir.join(STATE_FILE))
+            .map_err(|error| error.to_string())?;
+        if legacy_path.is_file() {
+            let parent = path
+                .parent()
+                .ok_or_else(|| "无法定位桌宠状态目录。".to_string())?;
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            fs::copy(legacy_path, &path).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(path)
 }
 
 fn clamp(value: f64, min: f64, max: f64) -> f64 {
@@ -3208,6 +3483,82 @@ fn system_media_unavailable(reason: &str, _detail: impl ToString) -> SystemMedia
         is_playing: false,
         position_seconds: None,
         duration_seconds: None,
+    }
+}
+
+fn normalize_system_media_control_action(action: &str) -> String {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "play" | "resume" => "play",
+        "pause" => "pause",
+        "stop" => "stop",
+        "next" | "skip" => "next",
+        "previous" | "prev" => "previous",
+        _ => "",
+    }
+    .to_string()
+}
+
+fn system_media_control_unavailable(
+    action: &str,
+    reason: &str,
+    _detail: impl ToString,
+) -> SystemMediaControlResult {
+    SystemMediaControlResult {
+        ok: false,
+        status: "unavailable".to_string(),
+        reason: reason.to_string(),
+        action: normalize_system_media_control_action(action),
+        captured_at: current_time_millis(),
+        platform: std::env::consts::OS.to_string(),
+        track_key: String::new(),
+        title: String::new(),
+        artist: String::new(),
+        source_app: String::new(),
+        playback_status: "unknown".to_string(),
+    }
+}
+
+fn system_media_control_from_snapshot(
+    action: &str,
+    ok: bool,
+    status: &str,
+    reason: &str,
+    snapshot: Option<SystemMediaSnapshot>,
+) -> SystemMediaControlResult {
+    let media = snapshot.unwrap_or_else(|| system_media_unavailable(reason, ""));
+    SystemMediaControlResult {
+        ok,
+        status: status.to_string(),
+        reason: reason.to_string(),
+        action: action.to_string(),
+        captured_at: current_time_millis(),
+        platform: media.platform,
+        track_key: media.track_key,
+        title: media.title,
+        artist: media.artist,
+        source_app: media.source_app,
+        playback_status: media.playback_status,
+    }
+}
+
+fn control_system_media_blocking(action: String) -> SystemMediaControlResult {
+    let normalized = normalize_system_media_control_action(&action);
+    if normalized.is_empty() {
+        return system_media_control_unavailable(&action, "invalid_action", "");
+    }
+    control_system_media_platform(&normalized)
+}
+
+#[cfg(not(windows))]
+fn control_system_media_platform(action: &str) -> SystemMediaControlResult {
+    system_media_control_unavailable(action, "unsupported_platform", std::env::consts::OS)
+}
+
+#[cfg(windows)]
+fn control_system_media_platform(action: &str) -> SystemMediaControlResult {
+    match control_system_media_windows(action) {
+        Ok(result) => result,
+        Err(error) => system_media_control_unavailable(action, "control_failed", error),
     }
 }
 
@@ -3272,6 +3623,92 @@ fn read_current_system_media_windows() -> Result<SystemMediaSnapshot, String> {
         return Ok(snapshot);
     }
     Ok(system_media_unavailable("no_active_session", ""))
+}
+
+#[cfg(windows)]
+fn control_system_media_windows(action: &str) -> Result<SystemMediaControlResult, String> {
+    let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+        .map_err(|error| error.to_string())?
+        .get()
+        .map_err(|error| error.to_string())?;
+    let session = match select_system_media_control_session(&manager)? {
+        Some(value) => value,
+        None => return Ok(system_media_control_unavailable(action, "no_active_session", "")),
+    };
+    let before = read_system_media_session(&session).ok();
+    let executed = match action {
+        "play" => session
+            .TryPlayAsync()
+            .map_err(|error| error.to_string())?
+            .get()
+            .map_err(|error| error.to_string())?,
+        "pause" => session
+            .TryPauseAsync()
+            .map_err(|error| error.to_string())?
+            .get()
+            .map_err(|error| error.to_string())?,
+        "stop" => session
+            .TryStopAsync()
+            .map_err(|error| error.to_string())?
+            .get()
+            .map_err(|error| error.to_string())?,
+        "next" => session
+            .TrySkipNextAsync()
+            .map_err(|error| error.to_string())?
+            .get()
+            .map_err(|error| error.to_string())?,
+        "previous" => session
+            .TrySkipPreviousAsync()
+            .map_err(|error| error.to_string())?
+            .get()
+            .map_err(|error| error.to_string())?,
+        _ => return Ok(system_media_control_unavailable(action, "invalid_action", "")),
+    };
+    let after = read_system_media_session(&session).ok().or(before);
+    Ok(system_media_control_from_snapshot(
+        action,
+        executed,
+        if executed { "executed" } else { "not-executed" },
+        if executed { "" } else { "session_rejected" },
+        after,
+    ))
+}
+
+#[cfg(windows)]
+fn select_system_media_control_session(
+    manager: &GlobalSystemMediaTransportControlsSessionManager,
+) -> Result<Option<GlobalSystemMediaTransportControlsSession>, String> {
+    let current_session = manager
+        .GetCurrentSession()
+        .map_err(|error| error.to_string())?;
+    if !current_session.as_raw().is_null() {
+        return Ok(Some(current_session));
+    }
+
+    let sessions = manager.GetSessions().map_err(|error| error.to_string())?;
+    let size = sessions.Size().map_err(|error| error.to_string())?;
+    let mut fallback: Option<GlobalSystemMediaTransportControlsSession> = None;
+    for index in 0..size {
+        let session = sessions.GetAt(index).map_err(|error| error.to_string())?;
+        if session.as_raw().is_null() {
+            continue;
+        }
+        let playback = match session.GetPlaybackInfo() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let raw_status = match playback.PlaybackStatus() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if raw_status.0 == 4 {
+            return Ok(Some(session));
+        }
+        if fallback.is_none() {
+            fallback = Some(session);
+        }
+    }
+    Ok(fallback)
 }
 
 #[cfg(windows)]
@@ -3740,6 +4177,11 @@ fn get_y_lparam(lparam: LPARAM) -> i32 {
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
+            let characters_dir = creator_kit_characters_dir()?;
+            app.asset_protocol_scope()
+                .allow_directory(&characters_dir, true)
+                .map_err(|error| error.to_string())?;
+
             #[cfg(windows)]
             {
                 if let Some(window) = app.get_webview_window("main") {
@@ -3756,6 +4198,15 @@ fn main() {
                 }
             }
 
+            if env_flag_enabled("AKANE_OPEN_SETTINGS_ON_START") {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = open_settings_window(app_handle).await {
+                        eprintln!("Akane settings window could not open on startup: {error}");
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3764,6 +4215,7 @@ fn main() {
             activate_character_pack,
             get_desktop_context_snapshot,
             get_current_system_media,
+            control_system_media,
             prepare_audio_asset,
             list_character_packs,
             install_character_pack_zip_file,
@@ -3792,6 +4244,7 @@ fn main() {
             set_character_voice_profile,
             clear_character_voice_profile,
             create_character_pack,
+            create_character_context_library,
             create_portrait_outfit,
             upload_portrait_image,
             import_generated_portrait_image,

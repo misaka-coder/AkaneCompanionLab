@@ -571,9 +571,10 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("晴天 - 周杰伦", prompt)
         self.assertIn("进度 02:15", prompt)
         self.assertIn("歌词线索还没准备好", prompt)
-        self.assertIn("系统媒体感知是只读线索", prompt)
-        self.assertIn("可选 activity 输出：null", prompt)
-        self.assertNotIn('"action":"play|pause|resume|stop|previous|next"', prompt)
+        self.assertIn("系统媒体来自 Windows 当前媒体会话", prompt)
+        self.assertIn("系统媒体控制请求，不是执行成功回执", prompt)
+        self.assertIn('"action":"play|pause|resume|stop|previous|next"', prompt)
+        self.assertIn('"source_id":"system_media:qqmusic-qingtian"', prompt)
         self.assertNotIn("切换到某个具体音频", prompt)
         self.assert_no_music_backend_terms(prompt)
 

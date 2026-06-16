@@ -29,6 +29,8 @@ LOCAL_DISCOVERY_PATH = "users_data/_local/capabilities/discovery.json"
 
 TOOL_GROUPS: dict[str, str] = {
     "retrieve_memory": "memory",
+    "read_memory_timeline": "memory",
+    "load_character_context": "character_context",
     "set_reminder": "reminders",
     "list_reminders": "reminders",
     "cancel_reminder": "reminders",
@@ -62,9 +64,11 @@ TOOL_GROUPS: dict[str, str] = {
     "web_search": "web",
     "open_browser": "desktop_browser",
     "browser_page": "desktop_browser",
+    "open_music_search": "music",
 }
 
 TOOL_USED_BY: dict[str, list[str]] = {
+    "load_character_context": ["agent", "desktop_pet", "qq_text"],
     "call_npc": ["agent", "web_scene"],
     "check_inventory": ["agent", "web_scene"],
     "manage_gift": ["agent", "web_scene"],
@@ -73,10 +77,13 @@ TOOL_USED_BY: dict[str, list[str]] = {
     "web_search": ["agent", "desktop_pet", "qq_text", "web_scene"],
     "open_browser": ["agent", "desktop_pet"],
     "browser_page": ["agent", "desktop_pet"],
+    "open_music_search": ["agent", "desktop_pet"],
 }
 
 LOW_RISK_TOOLS = {
     "retrieve_memory",
+    "read_memory_timeline",
+    "load_character_context",
     "list_reminders",
     "check_inventory",
     "inspect_attachment",
@@ -107,6 +114,7 @@ MEDIUM_RISK_TOOLS = {
     "manage_persona",
     "open_browser",
     "browser_page",
+    "open_music_search",
     "manage_gift",
     "manage_artifact",
 }
@@ -286,6 +294,22 @@ def _build_provider_entries(*, config_module: Any = None, tts_client: Any = None
             "requiresConfirmation": False,
             "usedBy": ["desktop_pet"],
             "summary": "读取系统正在播放的歌曲和进度",
+        },
+        {
+            "id": "provider.music.system_media_control",
+            "kind": "provider",
+            "type": "music_playback_provider",
+            "source": "tauri_bridge",
+            "adapter": "winrt_smtc",
+            "executionMode": "internal",
+            "name": "系统媒体控制",
+            "enabled": system_media_ready,
+            "status": "ready" if system_media_ready else "unavailable",
+            "reason": "" if system_media_ready else "unsupported_platform",
+            "risk": "medium",
+            "requiresConfirmation": False,
+            "usedBy": ["desktop_pet"],
+            "summary": "请求当前系统播放器播放、暂停、停止、上一首或下一首",
         },
         {
             "id": "provider.music.lyrics.online",
@@ -735,6 +759,8 @@ def _tool_risk(tool_name: str) -> str:
 def _tool_description(tool_name: str, group: str) -> str:
     if tool_name == "browser_page":
         return "Visible Akane-managed browser window with accessibility snapshots, visible link/video candidates, element refs, scrolling, and approval-gated click/fill/press actions."
+    if tool_name == "open_music_search":
+        return "Open a public music-platform search page for a requested song; it does not guarantee playback or control the player."
     return f"Built-in Akane backend tool `{tool_name}` in the `{group}` capability group."
 
 

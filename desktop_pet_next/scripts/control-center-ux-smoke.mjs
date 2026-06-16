@@ -67,11 +67,17 @@ console.log("3/6 built CSS has scrollbar prevention and disabled action styling"
   console.log("4/6 window chrome action IDs present in bundle");
 
   // Nav page labels
-  const navLabels = ["总览", "角色", "语音", "音乐", "桌面感知", "能力", "高级"];
+  const navLabels = ["总览", "模型", "角色", "语音", "音乐", "桌面感知", "能力", "高级"];
   for (const label of navLabels) {
     assert.ok(jsContent.includes(label), `UX: JS bundle should render nav item "${label}"`);
   }
-  console.log("5/6 all 7 nav page labels present in bundle");
+  for (const label of ["产品化状态", "开源前验收", "这些不是要隐藏的功能"]) {
+    assert.ok(jsContent.includes(label), `UX: JS bundle should render productization label "${label}"`);
+  }
+  for (const label of ["MCP 配置向导", "添加自定义 stdio", "保存并发现工具", "HTTP / Streamable", "默认不进提示词"]) {
+    assert.ok(jsContent.includes(label), `UX: JS bundle should render MCP manager label "${label}"`);
+  }
+  console.log("5/6 all 8 nav page labels present in bundle");
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +86,7 @@ console.log("3/6 built CSS has scrollbar prevention and disabled action styling"
 
 const screenshotNames = [
   "control-center-overview.png",
+  "control-center-model.png",
   "control-center-music.png",
   "control-center-voice.png",
   "control-center-advanced.png",
@@ -116,6 +123,7 @@ if (puppeteer) {
 
     const pageNavMap = [
       ["control-center-overview.png", "overview"],
+      ["control-center-model.png", "model"],
       ["control-center-music.png", "music"],
       ["control-center-voice.png", "voice"],
       ["control-center-advanced.png", "advanced"],

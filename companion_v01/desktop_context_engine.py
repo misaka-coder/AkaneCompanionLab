@@ -251,7 +251,9 @@ def build_desktop_activity_prompt(
             lines.append(f"- 下一句歌词：{lyric_next}")
     if activity_type == "audio_playback":
         if is_external_system_media:
-            lines.append("- 系统媒体感知是只读线索；本轮不要输出播放、暂停、切歌等 activity action。")
+            lines.append(
+                "- 系统媒体来自 Windows 当前媒体会话；你可以请求桌宠对当前系统播放器执行播放、暂停、停止、上一首或下一首。"
+            )
         else:
             lines.append(
                 "- 普通音频不会因为本轮消息自动暂停；如果你想控制播放，请输出 activity action。"
@@ -261,7 +263,13 @@ def build_desktop_activity_prompt(
             "- 主人发消息时表演已暂停；如果你想继续表演，需要输出 activity action，而不是假装仍在继续。"
         )
     if is_external_system_media:
-        lines.append("- 可选 activity 输出：null。")
+        lines.append(
+            f'- 可选 activity 输出：{{"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"{source_id}"}}；不需要控制时输出 null。'
+        )
+        lines.append(
+            "- activity 是给桌宠执行的系统媒体控制请求，不是执行成功回执；speech 里不要说已经播放、已经暂停或已经切歌，"
+            "可以自然说“我帮你试一下”“我去切一下”。如果播放器不支持系统媒体控制，前端会自己提示失败。"
+        )
     else:
         lines.append(
             '- 可选 activity 输出：{"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"可选 workspace:attachment:xxx / workspace:generated:xxx / file/audio/gen handle"}；不需要控制时输出 null。'

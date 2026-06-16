@@ -369,6 +369,44 @@ class DesktopPetBackendContractTests(unittest.TestCase):
         self.assertNotIn("last_scene", normalized["_runtime_state"])
         self.assertEqual(normalized["_runtime_state"]["last_character"]["outfit_id"], "猫娘")
 
+    def test_qq_final_output_uses_character_pack_emotion_image_ids(self) -> None:
+        web_temp = tempfile.TemporaryDirectory()
+        character_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(web_temp.cleanup)
+        self.addCleanup(character_temp.cleanup)
+
+        web_assets = Path(web_temp.name) / "assets"
+        character_assets = Path(character_temp.name) / "assets"
+        write_bytes(web_assets / "characters" / "猫娘" / "开心.png")
+        write_bytes(character_assets / "characters" / "default" / "害羞.png")
+
+        web_manifest = ResourceManifest(web_assets)
+        character_manifest = ResourceManifest(character_assets)
+        visual_defaults = character_manifest.refresh()["defaults"]
+        qq_context = ClientProtocolContext(
+            requested_mode=ClientMode.QQ_TEXT,
+            effective_mode=ClientMode.QQ_TEXT,
+        )
+
+        normalized = normalize_final_output(
+            FakeEngine(web_manifest),
+            result={
+                "emotion": "开心",
+                "reply_medium": "text",
+                "speech": "测试。",
+            },
+            visual_defaults=visual_defaults,
+            allow_tool_call=False,
+            debug_enabled=False,
+            client_context=qq_context,
+            resource_manifest=character_manifest,
+        )
+
+        self.assertEqual(normalized["emotion"], "害羞")
+        self.assertEqual(normalized["client_mode"], "qq_text")
+        self.assertNotIn("character", normalized)
+        self.assertNotIn("scene", normalized)
+
 
 if __name__ == "__main__":
     unittest.main()

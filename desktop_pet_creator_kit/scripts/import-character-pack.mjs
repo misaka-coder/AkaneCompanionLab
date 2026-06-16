@@ -12,6 +12,7 @@ const kitRoot = path.resolve(scriptDir, "..");
 const validatorPath = path.join(scriptDir, "validate-character-pack.mjs");
 const DEFAULT_CHARACTERS_DIR = path.join(kitRoot, "characters");
 const SUPPORTED_METHODS = new Set([0, 8]);
+const PRIVATE_LOCAL_DIRECTORY = "_local";
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
@@ -30,6 +31,10 @@ async function main() {
   const tempRoot = path.join(kitRoot, `.tmp_import_${process.pid}_${Date.now()}`);
   const tempPackDir = path.join(tempRoot, packId);
   const destination = resolveInside(charactersDir, packId);
+  const backupPath = resolveInside(
+    charactersDir,
+    `.${packId}.backup_${process.pid}_${Date.now()}`
+  );
 
   if (await pathExists(destination)) {
     if (!options.force) {
@@ -46,10 +51,20 @@ async function main() {
 
     await fs.mkdir(charactersDir, { recursive: true });
     if (await pathExists(destination)) {
-      await fs.rm(destination, { recursive: true, force: true });
+      await fs.rename(destination, backupPath);
     }
-    await fs.rename(tempPackDir, destination);
+    try {
+      await fs.rename(tempPackDir, destination);
+      await restorePrivateLocalDirectory(backupPath, destination);
+    } catch (error) {
+      await fs.rm(destination, { recursive: true, force: true });
+      if (await pathExists(backupPath)) {
+        await fs.rename(backupPath, destination);
+      }
+      throw error;
+    }
     runValidator(destination);
+    await fs.rm(backupPath, { recursive: true, force: true });
 
     console.log("");
     console.log("Akane Creator Kit character pack import");
@@ -179,11 +194,24 @@ async function extractPackEntries({ entries, root, targetDir }) {
     if (entry.directory) continue;
     if (rootPrefix && !entry.name.startsWith(rootPrefix)) continue;
     const relativePath = normalizeZipPath(rootPrefix ? entry.name.slice(rootPrefix.length) : entry.name);
-    if (!relativePath) continue;
+    if (!relativePath || isPrivateLocalPath(relativePath)) continue;
     const targetPath = resolveInside(targetDir, relativePath);
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, entry.data);
   }
+}
+
+async function restorePrivateLocalDirectory(backupDir, destination) {
+  if (!(await pathExists(backupDir))) return;
+  const source = resolveInside(backupDir, PRIVATE_LOCAL_DIRECTORY);
+  if (!(await pathExists(source))) return;
+  const target = resolveInside(destination, PRIVATE_LOCAL_DIRECTORY);
+  await fs.rm(target, { recursive: true, force: true });
+  await fs.rename(source, target);
+}
+
+function isPrivateLocalPath(relativePath) {
+  return normalizeZipPath(relativePath).split("/")[0].toLowerCase() === PRIVATE_LOCAL_DIRECTORY;
 }
 
 function runValidator(targetDir) {

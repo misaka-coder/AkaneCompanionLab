@@ -9,7 +9,7 @@ from typing import Any
 import config
 
 from .llm_runtime import LLMRuntime
-from .memory_rendering import render_memory_mood_line
+from .memory_rendering import render_memory_mood_line, render_relative_time_anchor_line
 from .prompt_builder import PromptBuilder
 from .retrieval_types import RetrievalPipelineResult
 from .store import MemoryStore, normalize_character_pack_id
@@ -1690,6 +1690,16 @@ class RetrievalService:
         core_facts = "；".join(record.get("core_facts") or [])
         prefix = f"【摘要回忆】[{ ' | '.join(labels) }] " if labels else "【摘要回忆】"
         parts = [f"{prefix}{record.get('diary_summary', '')}"]
+        anchor_line = render_relative_time_anchor_line(
+            text=" ".join(
+                [str(record.get("diary_summary") or "")]
+                + [str(event) for event in (record.get("key_events") or [])]
+                + [str(fact) for fact in (record.get("core_facts") or [])]
+            ),
+            time_range_label=time_range_label,
+        )
+        if anchor_line:
+            parts.append(anchor_line)
         mood_line = render_memory_mood_line(record)
         if mood_line:
             parts.append(mood_line)
@@ -1708,6 +1718,18 @@ class RetrievalService:
             labels.append(f"重要度:{float(record.get('importance') or 0.0):.2f}")
         prefix = f"【长期语义记忆】[{ ' | '.join(labels) }] " if labels else "【长期语义记忆】"
         parts = [f"{prefix}{record.get('semantic_summary', '')}"]
+        anchor_line = render_relative_time_anchor_line(
+            text=" ".join(
+                [str(record.get("semantic_summary") or "")]
+                + [str(fact) for fact in (record.get("stable_facts") or [])]
+                + [str(topic) for topic in (record.get("recurring_topics") or [])]
+                + [str(person) for person in (record.get("important_people") or [])]
+                + [str(item_text) for item_text in (record.get("open_loops") or [])]
+            ),
+            time_range_label=time_range_label,
+        )
+        if anchor_line:
+            parts.append(anchor_line)
         mood_line = render_memory_mood_line(record)
         if mood_line:
             parts.append(mood_line)

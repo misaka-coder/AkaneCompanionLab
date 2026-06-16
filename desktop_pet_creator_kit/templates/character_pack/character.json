@@ -22,6 +22,7 @@
     ],
     "extra_setting": ""
   },
+  "context_libraries": [],
   "appearance": {
     "default_outfit": "default",
     "default_emotion": "normal",

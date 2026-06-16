@@ -147,6 +147,18 @@ export function createMockControlCenterSource(data = mockData) {
         payload,
         refresh: true
       };
+    },
+    async readModelService() {
+      return data.modelPage || null;
+    },
+    async runModelServiceAction(actionId, payload = {}) {
+      return {
+        ok: true,
+        status: "mocked",
+        actionId,
+        payload,
+        models: actionId === "models" ? ["deepseek-chat", "deepseek-reasoner"] : undefined
+      };
     }
   };
 }
@@ -183,6 +195,12 @@ export function createTauriControlCenterSource(options = {}) {
         return createNotImplementedActionResult(normalizedActionId);
       }
       return result;
+    },
+    async readModelService() {
+      return null;
+    },
+    async runModelServiceAction(actionId) {
+      return { ok: false, status: "not-available", actionId };
     }
   };
 }
@@ -324,6 +342,45 @@ export function createBackendControlCenterSource(options = {}) {
           petState
         })
       };
+    },
+    async readModelService() {
+      if (typeof fetchImpl !== "function") return null;
+      const result = await fetchJson(
+        fetchImpl,
+        buildBackendUrl(baseUrl, "/control-center/model-service", { t: String(Date.now()) })
+      );
+      return result.ok && result.data && typeof result.data === "object" ? result.data : null;
+    },
+    async runModelServiceAction(actionId, payload = {}) {
+      if (typeof fetchImpl !== "function") {
+        return { ok: false, status: "not-available", actionId };
+      }
+      const actionPath = actionId === "save" ? "" : `/${encodeURIComponent(actionId)}`;
+      try {
+        const response = await fetchImpl(
+          buildBackendUrl(baseUrl, `/control-center/model-service${actionPath}`),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify(payload),
+            cache: "no-store"
+          }
+        );
+        const result = await readActionResponse(response);
+        return {
+          ...result,
+          ok: response.ok && Boolean(result?.ok),
+          actionId,
+          status: result?.status || (response.ok ? "available" : `http-${response.status}`)
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          status: "request-failed",
+          actionId,
+          error: formatDataSourceError(error)
+        };
+      }
     },
     readInitialState() {
       return {
@@ -2083,6 +2140,7 @@ function buildAbilityMcpServerCards(entries) {
         commandName: entry.commandName || "",
         toolCount: entry.toolCount || tools.length,
         safeToolLabels: summarizeMcpToolLabels(tools),
+        toolDetails: summarizeMcpToolDetails(tools),
         highRiskCount,
         promptExposedCount: tools.filter((tool) => tool.exposedToPrompt).length,
         requiresConfirmation: Boolean(highRiskCount),
@@ -2110,6 +2168,28 @@ function summarizeMcpToolLabels(tools) {
     if (labels.length >= 4) break;
   }
   return labels.length ? labels : ["等待工具发现"];
+}
+
+function summarizeMcpToolDetails(tools) {
+  const seen = new Map();
+  const details = [];
+  for (const tool of tools) {
+    const label = mcpToolCapabilityLabel(tool);
+    const count = (seen.get(label) || 0) + 1;
+    seen.set(label, count);
+    const approvalMode = normalizeApprovalMode(tool.approvalMode, tool);
+    const riskLabel = tool.risk === "high" || tool.requiresConfirmation ? "高风险" : "普通";
+    details.push({
+      title: count > 1 ? `${label} ${count}` : label,
+      riskLabel,
+      approvalLabel: approvalModeLabel(approvalMode),
+      promptLabel: tool.exposedToPrompt ? "已进提示词" : "默认不进提示词",
+      statusLabel: mapCapabilityStatus(tool.status).label,
+      schemaFields: Object.keys(asObject(tool.inputSchema?.properties)).slice(0, 6)
+    });
+    if (details.length >= 8) break;
+  }
+  return details;
 }
 
 function mcpToolCapabilityLabel(tool) {

@@ -33,6 +33,9 @@ class FakeCharacterResourceService:
             "active_id": character_pack_id,
         }
 
+    def get_manifest(self, character_pack_id: str):
+        return {"pack_id": character_pack_id}
+
 
 class FakeCatgirlResourceManifest:
     def refresh(self):
@@ -58,6 +61,43 @@ class FakeCatgirlResourceManifest:
 
     def normalize_visual_output(self, value, **kwargs):
         return value
+
+
+class FakeSingleEmotionManifest:
+    def refresh(self):
+        return self.build_runtime_manifest()
+
+    def build_runtime_manifest(self, **kwargs):
+        return {
+            "characters": {
+                "outfits": [
+                    {
+                        "id": "default",
+                        "emotions": [{"id": "害羞", "name": "害羞"}],
+                    }
+                ]
+            },
+            "defaults": {
+                "major": "default",
+                "minor": "default",
+                "background": "default",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "害羞",
+            },
+        }
+
+    def normalize_visual_output(self, value, **kwargs):
+        normalized = dict(value or {})
+        normalized["emotion"] = "害羞"
+        normalized["character"] = {"outfit": "default"}
+        normalized["scene"] = {
+            "major": "default",
+            "minor": "default",
+            "background": "default",
+            "bgm": "",
+        }
+        return normalized
 
 
 class FakeGiftService:
@@ -109,6 +149,19 @@ class CharacterPackQQModeTests(unittest.TestCase):
         self.assertEqual(prompt_context["system_context"], "qq_text:reimu_demo")
         self.assertEqual(prompt_context["active_id"], "reimu_demo")
 
+    def test_qq_text_turn_uses_selected_character_pack_manifest(self) -> None:
+        context = ClientProtocolContext(
+            requested_mode=ClientMode.QQ_TEXT,
+            effective_mode=ClientMode.QQ_TEXT,
+        )
+
+        manifest = self.engine._resolve_turn_resource_manifest(
+            {"character_pack_id": "reimu_demo"},
+            context,
+        )
+
+        self.assertEqual(manifest, {"pack_id": "reimu_demo"})
+
     def test_qq_text_generation_context_does_not_leak_global_catgirl_resources_or_persona_cards(self) -> None:
         self.engine.resource_manifest = FakeCatgirlResourceManifest()
         self.engine.gift_service = FakeGiftService()
@@ -159,6 +212,42 @@ class CharacterPackQQModeTests(unittest.TestCase):
         self.assertEqual(generation_context["fallback"]["persona"]["active"], "reimu_demo")
         self.assertNotIn("character", generation_context["fallback"])
         self.assertNotIn("scene", generation_context["fallback"])
+
+    def test_qq_text_format_example_uses_character_pack_default_emotion(self) -> None:
+        self.engine.resource_manifest = FakeCatgirlResourceManifest()
+        self.engine.gift_service = FakeGiftService()
+        self.engine.persona_card_service = FakeAkanePersonaCardService()
+        self.engine.vision_service = None
+        self.engine.store = None
+        context = ClientProtocolContext(
+            requested_mode=ClientMode.QQ_TEXT,
+            effective_mode=ClientMode.QQ_TEXT,
+            capabilities=("speech_segments",),
+        )
+
+        generation_context = self.engine._prepare_final_response_context(
+            session_id="qq-session",
+            user_message="你好",
+            recent_raw=[{"role": "user", "content": "你好", "timestamp": 1712400000}],
+            recent_episodic_summaries=[],
+            recent_semantic_summaries=[],
+            confirmed_snippets=[],
+            now_ts=1712400000,
+            profile_user_id="master",
+            current_visual_payload={
+                "emotion": "害羞",
+                "character": {"outfit": "default"},
+            },
+            client_context=context,
+            resource_manifest=FakeSingleEmotionManifest(),
+            character_pack_id="reimu_demo",
+            allow_tool_call=False,
+            final_debug_enabled=False,
+        )
+
+        self.assertIn('"emotion":"害羞"', generation_context["system_prompt"])
+        self.assertNotIn('"emotion":"normal"', generation_context["system_prompt"])
+        self.assertEqual(generation_context["fallback"]["emotion"], "害羞")
 
     def test_memory_compaction_persona_context_skips_akane_persona_cards_for_character_pack(self) -> None:
         self.engine.persona_card_service = FakeAkanePersonaCardService()

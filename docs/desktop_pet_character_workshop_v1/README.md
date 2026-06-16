@@ -7,7 +7,9 @@ This directory is the handoff entry for the next desktop pet mainline work.
 1. `design.md` - product direction, data model, memory rules, renderer boundaries, and acceptance criteria.
 2. `execution_plan.md` - implementation phases and verification checklist.
 3. `workshop-ui-design.md` - post-V1 workshop visual redesign direction and implementation slices.
-4. `agent_prompts.md` - prompts for Claude Code or other coding agents, including optional subagent splits.
+4. `character_lore_prompt_v1.md` - layered character prompt, structured local lore, automatic retrieval, on-demand relationship/event inspection, and low-barrier authoring rules.
+5. `reimu_source_research_v1.md` - evidence-first source acquisition and character research plan for a canon-grounded Reimu pack.
+6. `agent_prompts.md` - prompts for Claude Code or other coding agents, including optional subagent splits.
 
 ## Project Direction
 
@@ -26,13 +28,14 @@ Updated: 2026-06-05
 - The old Electron `desktop_pet` remains untouched by this slice.
 - **Phase 3A** implemented: workshop persona form UI with tab navigation (角色列表 / 角色设定). The form loads identity fields (name, user_title, self_reference, relationship) and persona fields (personality_keywords, speaking_style, catchphrases, boundaries, proactive_style, extra_setting, example_lines) from the selected character pack's `character.json`. Drafts auto-save to `localStorage`.
 - **Phase 3B** implemented: `save_character_pack` and `create_character_pack` Tauri commands. The workshop now saves persona edits directly to `character.json` on disk (merges identity + persona_form fields), and can create new character packs from the UI with a "新建角色" dialog.
-- Repair pass: fixed desktop runtime layout lookup to use the active character profile instead of an undefined registry, kept all workshop tab panels inside the main shell, made v0.1 packs gain `persona_form` on save, constrained portrait file writes to safe character-pack paths, and made `control-center-lab.html` the default settings entry with `AKANE_LEGACY_SETTINGS=1` as rollback.
+- Repair pass: fixed desktop runtime layout lookup to use the active character profile instead of an undefined registry, kept all workshop tab panels inside the main shell, made v0.1 packs gain `persona_form` on save, constrained portrait file writes to safe character-pack paths, and made `control-center-lab.html` the sole settings implementation.
 - Memory isolation pass: character switching keeps per-pack runtime state in `pet_state.json`; backend memory reads/writes now scope raw chat, episodic summaries, semantic summaries, sessions, eval turns, and vector search by `character_pack_id` when present. Music/gift libraries still use the shared user profile.
 - **Phase 6 first slice** implemented: workshop "测试对话" tab sends `/think` with the selected `character_pack_id`, `client_mode=desktop_pet`, and an isolated workshop test profile/session. It renders speech segments, final emotion, prompt-field summary, and memory scope indicators without exposing full system prompts or reusing the production desktop-pet session/profile.
 - **Phase 6 save-boundary slice** implemented: when testing the pack currently being edited, the workshop now requires persona changes to be written to `character.json` before calling `/think`; localStorage fallback remains available for ordinary draft saves but no longer pretends to update backend-visible prompt data during test chat.
 - **Phase 6 apply/visual slice** implemented: the test panel can apply the selected pack to the desktop pet through the existing `setCharacterPack` settings command, and its `/think` request now includes backend-safe current visual metadata (pack id, outfit, emotion, available emotion ids, and saved numeric layout) while the UI shows a lightweight calibrated portrait preview.
 - **Phase 7 demo-readiness slice** implemented: the workshop highlights "新建角色" / "导入角色包" when there are no custom packs yet, surfaces missing default outfit/emotion/portrait readiness in the list and portrait tabs, shows no-outfit/no-expression upload states, and adds small state feedback for save success, character switching, expression preview, and create-form validation.
 - **Bubble calibration slice** implemented: saved per-outfit bubble anchors now affect the desktop-pet runtime bubble position, and the workshop calibration preview uses a draggable sample bubble plus lightweight style presets (`soft`, `paper`, `clear`, `dark`) instead of a decorative marker.
+- **Context-library authoring slice** implemented: the workshop `角色资料` tab creates arbitrary character knowledge folders and writes their name, purpose, and loading guidance into `character.json` automatically. Creators no longer need to hand-edit `context_libraries`; a library enters the runtime prompt after it contains at least one Markdown file.
 - **Post-V1 UI redesign baseline** drafted in `workshop-ui-design.md`: the workshop should become a quiet, efficient character editor with a compact character list, visible hierarchy, fewer card blocks, calmer typography/colors, and only light anime-flavored details.
 
 ## Workshop User Flow

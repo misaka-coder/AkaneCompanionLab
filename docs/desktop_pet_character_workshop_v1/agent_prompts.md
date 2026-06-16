@@ -9,7 +9,7 @@ This file contains prompts for vibe-coding agents and optional subagents. Use it
 
 Use subagents for analysis, UI review, backend-storage review, or isolated implementation work.
 
-Do not let multiple agents edit the same large file at the same time. `desktop_pet_next/src/main.js`, `desktop_pet_next/src/settings.js`, and `companion_v01/engine.py` are especially conflict-prone.
+Do not let multiple agents edit the same large file at the same time. `desktop_pet_next/src/main.js`, `desktop_pet_next/src/control-center-lab.js`, and `companion_v01/engine.py` are especially conflict-prone.
 
 Good subagent split:
 
@@ -96,7 +96,8 @@ Read:
 - docs/desktop_pet_character_workshop_v1_design.md
 - docs/desktop_pet_character_workshop_v1_execution_plan.md
 - desktop_pet_next/src/main.js
-- desktop_pet_next/src/settings.js
+- desktop_pet_next/src/control-center-lab.js
+- desktop_pet_next/src/control-center/data-sources.js
 - desktop_pet_next/src/character-profile.js
 - desktop_pet_next/src/visual-renderer.js
 - desktop_pet_next/src-tauri/src/main.rs
@@ -179,7 +180,8 @@ Relevant files:
 - desktop_pet_next/src/workshop.js
 - desktop_pet_next/src/workshop.css
 - desktop_pet_next/src/main.js
-- desktop_pet_next/src/settings.js
+- desktop_pet_next/src/control-center-lab.js
+- desktop_pet_next/src/control-center/data-sources.js
 - desktop_pet_next/src/character-profile.js
 
 UX requirements:

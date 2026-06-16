@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第一期视觉稿预览</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #667085;
+      --line: #d5d9e2;
+      --paper: #f7f8fb;
+      --white: #ffffff;
+      --blue: #2563eb;
+      --green: #16a34a;
+      --amber: #d97706;
+      --violet: #7c3aed;
+      --red: #dc2626;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+      letter-spacing: 0;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 32px 0 48px;
+    }
+
+    header {
+      display: grid;
+      gap: 10px;
+      padding: 8px 0 24px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 32px;
+      line-height: 1.2;
+      font-weight: 800;
+    }
+
+    .subtitle {
+      margin: 0;
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+
+    .section {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 300px;
+      gap: 20px;
+      align-items: stretch;
+      padding: 28px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .board {
+      min-height: 430px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--white);
+      box-shadow: 0 10px 30px rgba(23, 32, 51, 0.06);
+      overflow: hidden;
+    }
+
+    .board h2 {
+      margin: 0 0 22px;
+      font-size: 24px;
+      line-height: 1.3;
+    }
+
+    .caption {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-height: 430px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .caption h3 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.4;
+    }
+
+    .caption p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.8;
+    }
+
+    .file {
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      color: #475467;
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .flow {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-height: 150px;
+    }
+
+    .node {
+      display: grid;
+      place-items: center;
+      min-width: 128px;
+      min-height: 78px;
+      padding: 12px;
+      border: 2px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      text-align: center;
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
+    .node.blue {
+      border-color: #93c5fd;
+      background: #dbeafe;
+      color: #1e3a8a;
+    }
+
+    .node.green {
+      border-color: #86efac;
+      background: #dcfce7;
+      color: #166534;
+    }
+
+    .node.amber {
+      border-color: #fbbf24;
+      background: #fef3c7;
+      color: #78350f;
+    }
+
+    .node.violet {
+      border-color: #c4b5fd;
+      background: #ede9fe;
+      color: #4c1d95;
+    }
+
+    .node.red {
+      border-color: #fca5a5;
+      background: #fee2e2;
+      color: #7f1d1d;
+    }
+
+    .arrow {
+      position: relative;
+      flex: 1 1 42px;
+      min-width: 42px;
+      height: 2px;
+      background: #475467;
+    }
+
+    .arrow::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -1px;
+      width: 10px;
+      height: 10px;
+      border-top: 2px solid #475467;
+      border-right: 2px solid #475467;
+      transform: translateY(-50%) rotate(45deg);
+    }
+
+    .problem-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-top: 34px;
+    }
+
+    .problem {
+      display: grid;
+      place-items: center;
+      min-height: 118px;
+      padding: 18px;
+      border-radius: 8px;
+      border: 2px dashed currentColor;
+      font-size: 22px;
+      font-weight: 800;
+      text-align: center;
+      line-height: 1.45;
+    }
+
+    .problem.red {
+      color: var(--red);
+      background: #fff1f2;
+    }
+
+    .problem.amber {
+      color: var(--amber);
+      background: #fffbeb;
+    }
+
+    .problem.violet {
+      color: var(--violet);
+      background: #f5f3ff;
+    }
+
+    .closing-line {
+      margin-top: 28px;
+      padding: 16px 18px;
+      border-left: 5px solid var(--blue);
+      background: #f8fafc;
+      color: #344054;
+      font-size: 18px;
+      line-height: 1.7;
+    }
+
+    .hub-layout {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      gap: 44px;
+      align-items: center;
+      min-height: 320px;
+    }
+
+    .clients {
+      display: grid;
+      gap: 20px;
+    }
+
+    .brain {
+      display: grid;
+      gap: 18px;
+      align-content: center;
+      min-height: 260px;
+      padding: 28px;
+      border: 3px solid #172033;
+      border-radius: 8px;
+      background: #f8fafc;
+    }
+
+    .brain strong {
+      font-size: 26px;
+      line-height: 1.3;
+      text-align: center;
+    }
+
+    .brain-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+
+    .chip {
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      text-align: center;
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .pipeline {
+      display: grid;
+      gap: 22px;
+    }
+
+    .json-box {
+      max-width: 640px;
+      margin: 10px auto 0;
+      padding: 22px 26px;
+      border: 2px solid #172033;
+      border-radius: 8px;
+      background: #f8fafc;
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 20px;
+      line-height: 1.6;
+      white-space: pre-line;
+    }
+
+    .memory-stack {
+      display: grid;
+      gap: 20px;
+      justify-items: center;
+      padding-top: 10px;
+    }
+
+    .memory-layer {
+      display: grid;
+      grid-template-columns: 160px minmax(0, 1fr);
+      align-items: center;
+      gap: 20px;
+      min-height: 88px;
+      padding: 16px 22px;
+      border: 2px solid currentColor;
+      border-radius: 8px;
+      width: 100%;
+    }
+
+    .memory-layer.raw {
+      max-width: 760px;
+      color: var(--blue);
+      background: #dbeafe;
+    }
+
+    .memory-layer.summary {
+      max-width: 620px;
+      color: var(--green);
+      background: #dcfce7;
+    }
+
+    .memory-layer.long {
+      max-width: 470px;
+      color: var(--amber);
+      background: #fef3c7;
+    }
+
+    .memory-layer b {
+      font-size: 24px;
+      color: inherit;
+    }
+
+    .memory-layer span {
+      color: #344054;
+      font-size: 17px;
+      line-height: 1.6;
+    }
+
+    .down {
+      width: 2px;
+      height: 26px;
+      background: #475467;
+      position: relative;
+    }
+
+    .down::after {
+      content: "";
+      position: absolute;
+      bottom: -1px;
+      left: 50%;
+      width: 10px;
+      height: 10px;
+      border-right: 2px solid #475467;
+      border-bottom: 2px solid #475467;
+      transform: translateX(-50%) rotate(45deg);
+    }
+
+    @media (max-width: 900px) {
+      main {
+        width: min(100% - 20px, 680px);
+        padding-top: 20px;
+      }
+
+      .section {
+        grid-template-columns: 1fr;
+      }
+
+      .caption {
+        min-height: 0;
+      }
+
+      .flow {
+        flex-wrap: wrap;
+      }
+
+      .arrow {
+        flex: 0 0 36px;
+      }
+
+      .problem-grid,
+      .brain-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .hub-layout {
+        grid-template-columns: 1fr;
+        gap: 20px;
+      }
+
+      .memory-layer {
+        grid-template-columns: 1fr;
+        gap: 6px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>第一期视觉稿预览</h1>
+      <p class="subtitle">这一版先追求“真实、能讲清楚、不尴尬”。正式录制时可以用 Excalidraw 导入对应文件，一边讲一边放大、框选或移动节点。</p>
+    </header>
+
+    <section class="section">
+      <div class="board">
+        <h2>1. 普通聊天 Demo 的局限</h2>
+        <div class="flow">
+          <div class="node blue">用户</div>
+          <div class="arrow"></div>
+          <div class="node">LLM<br>聊天接口</div>
+          <div class="arrow"></div>
+          <div class="node green">回复文本</div>
+        </div>
+        <div class="problem-grid">
+          <div class="problem red">只会回复<br>不会行动</div>
+          <div class="problem amber">不记得长期<br>相处关系</div>
+          <div class="problem violet">不会理解<br>资源和场景</div>
+        </div>
+        <div class="closing-line">所以这一期不是讲“我做了一个聊天框”，而是讲我怎么把它往陪伴系统方向拆。</div>
+      </div>
+      <aside class="caption">
+        <h3>录制时怎么讲</h3>
+        <p>先承认起点很普通：AI 聊天 Demo。然后说自己真正卡住的是“怎么让它像一个系统”，而不是一句话问模型。</p>
+        <p>这张图适合开头 30 秒内出现，帮助观众知道你不是来包装项目，而是在复盘一个真实工程问题。</p>
+        <div class="file">excalidraw/01_plain_chat_demo.excalidraw</div>
+      </aside>
+    </section>
+
+    <section class="section">
+      <div class="board">
+        <h2>2. 三端入口共用后端大脑</h2>
+        <div class="hub-layout">
+          <div class="clients">
+            <div class="node blue">Web 端<br>galgame 对话</div>
+            <div class="node green">桌宠端<br>桌面陪伴</div>
+            <div class="node amber">QQ 端<br>随手聊天</div>
+          </div>
+          <div class="brain">
+            <strong>FastAPI 后端大脑</strong>
+            <div class="brain-grid">
+              <div class="chip">人格</div>
+              <div class="chip">记忆</div>
+              <div class="chip">工具</div>
+              <div class="chip">资源</div>
+              <div class="chip">情绪</div>
+              <div class="chip">输出协议</div>
+            </div>
+          </div>
+        </div>
+        <div class="closing-line">入口可以变，但人格和记忆不能分裂，这是“陪伴感”的底层要求。</div>
+      </div>
+      <aside class="caption">
+        <h3>录制时怎么讲</h3>
+        <p>这里讲项目不是一个单页面，而是三个对话入口：桌宠、Web、QQ。它们定位不同，但都交给同一个后端大脑处理。</p>
+        <p>重点别讲成架构炫技，要讲成体验原因：用户换入口以后，角色仍然应该是同一个人。</p>
+        <div class="file">excalidraw/02_multi_client_brain.excalidraw</div>
+      </aside>
+    </section>
+
+    <section class="section">
+      <div class="board">
+        <h2>3. 一次对话的处理链路</h2>
+        <div class="pipeline">
+          <div class="flow">
+            <div class="node blue">用户输入<br>+ 客户端</div>
+            <div class="arrow"></div>
+            <div class="node green">检索记忆<br>和资源</div>
+            <div class="arrow"></div>
+            <div class="node amber">组装 Prompt<br>约束输出</div>
+            <div class="arrow"></div>
+            <div class="node violet">模型输出<br>JSON</div>
+          </div>
+          <div class="json-box">{
+  emotion,
+  speech_segments,
+  scene,
+  character,
+  tool_call
+}</div>
+        </div>
+        <div class="closing-line">JSON 不是为了显得高级，而是为了让界面、语音、表情、工具调用都能稳定接住模型输出。</div>
+      </div>
+      <aside class="caption">
+        <h3>录制时怎么讲</h3>
+        <p>这一段可以配合代码或接口返回。把“问模型”拆成四步，观众会更容易理解为什么项目里会有那么多模块。</p>
+        <p>你可以强调真实工程里最难的不是让模型说一句话，而是让它说的话能被系统可靠执行。</p>
+        <div class="file">excalidraw/03_turn_pipeline.excalidraw</div>
+      </aside>
+    </section>
+
+    <section class="section">
+      <div class="board">
+        <h2>4. 三层记忆结构</h2>
+        <div class="memory-stack">
+          <div class="memory-layer raw">
+            <b>原始对话</b>
+            <span>保留细节：今天具体聊了什么、什么时候发生。</span>
+          </div>
+          <div class="down"></div>
+          <div class="memory-layer summary">
+            <b>摘要</b>
+            <span>把一段聊天压成可回看的事件和结论。</span>
+          </div>
+          <div class="down"></div>
+          <div class="memory-layer long">
+            <b>长期记忆</b>
+            <span>可检索的偏好、关系、长期事实。</span>
+          </div>
+        </div>
+        <div class="closing-line">下一次聊天时，系统按时间、关键词、语义一起找回相关记忆。</div>
+      </div>
+      <aside class="caption">
+        <h3>录制时怎么讲</h3>
+        <p>这一张图负责承接你稿子里最值得讲的技术点：不是把所有聊天记录硬塞进上下文，而是原始记录、摘要、长期记忆分层。</p>
+        <p>它既能解释 SQLite、向量库和检索，也能自然引出“为什么 AI 会记得以前聊过的事”。</p>
+        <div class="file">excalidraw/04_layered_memory.excalidraw</div>
+      </aside>
+    </section>
+  </main>
+</body>
+</html>

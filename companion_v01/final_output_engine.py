@@ -165,7 +165,7 @@ def normalize_final_output(
 ) -> dict[str, Any]:
     client_context = client_context or engine._resolve_client_protocol_context({})
     manifest_service = (
-        None
+        resource_manifest
         if client_context.effective_mode == ClientMode.QQ_TEXT
         else resource_manifest or engine.resource_manifest
     )
@@ -265,13 +265,18 @@ def normalize_final_output(
     normalized["scene"].setdefault("background", visual_defaults["background"])
     normalized["scene"].setdefault("bgm", visual_defaults["bgm"])
     if manifest_service:
-        runtime_projection = engine._get_user_runtime_projection(profile_user_id)
-        normalized = manifest_service.normalize_visual_output(
-            normalized,
-            extra_bgm_tracks=list(runtime_projection.get("extra_bgm_tracks") or []),
-            extra_scene_groups=list(runtime_projection.get("extra_scene_groups") or []),
-            extra_character_outfits=list(runtime_projection.get("extra_character_outfits") or []),
-        )
+        if client_context.effective_mode == ClientMode.QQ_TEXT:
+            normalize_emotion = getattr(manifest_service, "normalize_emotion_output", None)
+            if callable(normalize_emotion):
+                normalized = normalize_emotion(normalized)
+        else:
+            runtime_projection = engine._get_user_runtime_projection(profile_user_id)
+            normalized = manifest_service.normalize_visual_output(
+                normalized,
+                extra_bgm_tracks=list(runtime_projection.get("extra_bgm_tracks") or []),
+                extra_scene_groups=list(runtime_projection.get("extra_scene_groups") or []),
+                extra_character_outfits=list(runtime_projection.get("extra_character_outfits") or []),
+            )
     normalized = engine._get_output_adapter_registry().normalize(normalized, client_context)
     return normalized
 

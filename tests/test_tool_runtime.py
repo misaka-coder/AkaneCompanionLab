@@ -5,12 +5,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from companion_v01.local_capability_config import save_approval_policy_config, save_mcp_server_config
 from companion_v01.browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner
 from companion_v01.tool_runtime import (
     BrowserPageToolHandler,
     OpenBrowserToolHandler,
+    OpenMusicSearchToolHandler,
     RetrieveMemoryToolHandler,
     ToolMetadata,
     ToolExecutionContext,
@@ -116,7 +118,7 @@ class WebSearchToolHandlerTests(unittest.TestCase):
                 {
                     "type": "web_search",
                     "action": "extract",
-                    "url": "file:///C:/Users/Lenovo/private.txt",
+                    "url": "file:///C:/Users/ExampleUser/private.txt",
                 }
             )
         )
@@ -196,6 +198,73 @@ class WebSearchToolHandlerTests(unittest.TestCase):
             self.assertIn("AnySearch 联网能力暂时不可用", result.followup_context)
             self.assertIn("missing_config", result.followup_context)
 
+    def test_qq_search_uses_owner_capability_profile_by_default(self) -> None:
+        class FakeCaller:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def __call__(self, *, server: dict, tool_name: str, arguments: dict) -> dict:
+                self.calls.append({"server": server, "tool_name": tool_name, "arguments": arguments})
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "results": [
+                                        {
+                                            "title": "公开搜索结果",
+                                            "url": "https://example.com/news",
+                                            "snippet": "QQ 群聊也可以使用 owner 配置的搜索能力。",
+                                        }
+                                    ]
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ]
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            saved = save_mcp_server_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                server_id="anysearch",
+                payload={
+                    "enabled": True,
+                    "displayName": "AnySearch",
+                    "command": "fake-anysearch",
+                    "args": [],
+                    "cwd": temp_dir,
+                },
+            )
+            self.assertTrue(saved["ok"])
+
+            caller = FakeCaller()
+            handler = WebSearchToolHandler(config_base_dir=temp_dir, mcp_tool_caller=caller)
+            call = handler.normalize_call({"type": "web_search", "query": "今天新闻", "max_results": 3})
+            self.assertIsNotNone(call)
+            assert call is not None
+            context = ToolExecutionContext(
+                profile_user_id="qq_group_shared_123456",
+                session_id="qq_group_shared_123456",
+                now_ts=1712400000,
+                visual_payload={},
+                client_mode="qq_text",
+            )
+
+            with patch("companion_v01.tool_runtime.config.QQ_WEB_SEARCH_PROFILE_USER_ID", ""), patch(
+                "companion_v01.tool_runtime.config.WEB_OWNER_PROFILE_USER_ID",
+                "master",
+            ):
+                result = handler.execute(call=call, context=context)
+
+            self.assertEqual(caller.calls[0]["tool_name"], "search")
+            self.assertEqual(caller.calls[0]["arguments"], {"query": "今天新闻", "max_results": 3})
+            self.assertEqual(result.state_updates["web_search_status"], "ok")
+            self.assertEqual(result.state_updates["web_search_profile_user_id"], "master")
+            self.assertIn("公开搜索结果", result.followup_context)
+
 
 class OpenBrowserToolHandlerTests(unittest.TestCase):
     def _context(self) -> ToolExecutionContext:
@@ -243,7 +312,7 @@ class OpenBrowserToolHandlerTests(unittest.TestCase):
         for url in (
             "http://127.0.0.1:9999/health",
             "http://localhost/admin",
-            "file:///C:/Users/Lenovo/private.txt",
+            "file:///C:/Users/ExampleUser/private.txt",
             "https://user:pass@example.com/private",
             "https://example.com/a b",
         ):
@@ -262,6 +331,78 @@ class OpenBrowserToolHandlerTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["url"], "https://example.com")
         self.assertFalse(result.stream_events[0]["requires_confirmation"])
         self.assertIn("不要声称你已经读取了网页内容", result.followup_context)
+
+
+class OpenMusicSearchToolHandlerTests(unittest.TestCase):
+    def _context(self) -> ToolExecutionContext:
+        return ToolExecutionContext(
+            profile_user_id="master",
+            session_id="desktop",
+            now_ts=1712400000,
+            visual_payload={},
+            client_mode="desktop_pet",
+        )
+
+    def test_prompt_instruction_frames_search_as_not_playback(self) -> None:
+        instruction = OpenMusicSearchToolHandler().build_prompt_instruction()
+
+        self.assertIn("点歌", instruction)
+        self.assertIn("公开音乐平台搜索页", instruction)
+        self.assertIn("不会自动点击播放", instruction)
+        self.assertIn("不要声称歌曲已经开始播放", instruction)
+
+    def test_normalize_call_builds_safe_song_search_request(self) -> None:
+        handler = OpenMusicSearchToolHandler()
+
+        call = handler.normalize_call(
+            {
+                "type": "open_music_search",
+                "title": "晴天",
+                "artist": "周杰伦",
+                "platform": "网易云",
+            }
+        )
+
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual(call["title"], "晴天")
+        self.assertEqual(call["artist"], "周杰伦")
+        self.assertEqual(call["platform"], "netease_music")
+        self.assertEqual(call["query"], "晴天 周杰伦")
+
+    def test_normalize_call_defaults_platform_and_rejects_secret_or_url_query(self) -> None:
+        handler = OpenMusicSearchToolHandler()
+
+        call = handler.normalize_call({"type": "open_music_search", "query": "夜に駆ける"})
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual(call["platform"], "qq_music")
+
+        self.assertIsNone(handler.normalize_call({"type": "open_music_search", "query": "https://example.com/song"}))
+        self.assertIsNone(handler.normalize_call({"type": "open_music_search", "query": "token=secret"}))
+
+    def test_execute_emits_browser_open_request_without_claiming_playback(self) -> None:
+        handler = OpenMusicSearchToolHandler()
+        call = handler.normalize_call(
+            {
+                "type": "open_music_search",
+                "title": "晴天",
+                "artist": "周杰伦",
+                "platform": "qq_music",
+            }
+        )
+        self.assertIsNotNone(call)
+        assert call is not None
+
+        result = handler.execute(call=call, context=self._context())
+
+        self.assertEqual(result.tool_type, "open_music_search")
+        self.assertEqual(result.stream_events[0]["type"], "browser_open_requested")
+        self.assertIn("y.qq.com", result.stream_events[0]["url"])
+        self.assertFalse(result.stream_events[0]["requires_confirmation"])
+        self.assertEqual(result.state_updates["music_request_status"], "opened_search")
+        self.assertEqual(result.state_updates["music_request_platform"], "qq_music")
+        self.assertIn("不代表歌曲已经开始播放", result.followup_context)
 
 
 class BrowserPageToolHandlerTests(unittest.TestCase):
@@ -377,7 +518,7 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
             "http://127.0.0.1:9999/health",
             "http://localhost/admin",
             "http://10.0.0.4/admin",
-            "file:///C:/Users/Lenovo/private.txt",
+            "file:///C:/Users/ExampleUser/private.txt",
             "https://user:pass@example.com/private",
             "https://example.com/a b",
             "https://example.com/?token=secret-value",

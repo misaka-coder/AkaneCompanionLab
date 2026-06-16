@@ -37,6 +37,10 @@ from companion_v01.routes.voice import build_voice_router
 from companion_v01.qq_gateway import NapCatQQGateway
 
 
+QQ_BOT_FIXTURE_ID = 10001
+QQ_USER_FIXTURE_ID = 10003
+
+
 class FakeRuntimeMetrics:
     def __init__(self) -> None:
         self.observed: list[tuple[str, bool]] = []
@@ -68,7 +72,7 @@ class ExplodingWorkflowRunner:
 
     def execute_workflow(self, request: WorkflowExecutionRequest) -> dict[str, Any]:
         self.requests.append(request)
-        raise RuntimeError(r"secret token leaked from C:\Users\Lenovo\portrait.png")
+        raise RuntimeError(r"secret token leaked from C:\Users\ExampleUser\portrait.png")
 
 
 class FakeGuard:
@@ -579,8 +583,8 @@ class BackendRouteModuleTests(unittest.TestCase):
                 json={
                     "post_type": "message",
                     "message_type": "private",
-                    "self_id": 2184046306,
-                    "user_id": 111222333,
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
                     "message_id": "route-character-switch-1",
                     "raw_message": "切换角色 reimu",
                 },
@@ -591,7 +595,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(payload["reason"], "qq_character_command")
         self.assertEqual(payload["command_status"], "switched")
         self.assertEqual(payload["character_pack_id"], "reimu")
-        self.assertEqual(gateway.resolve_character_pack_id("qq_pri_111222333"), "reimu")
+        self.assertEqual(gateway.resolve_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}"), "reimu")
         self.assertEqual(process_calls, [])
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
@@ -1167,6 +1171,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                 "web_search": object(),
                 "open_browser": object(),
                 "browser_page": object(),
+                "open_music_search": object(),
             }
         )
         app = FastAPI()
@@ -1209,7 +1214,9 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertIn("tool.web_search", by_id)
         self.assertIn("tool.open_browser", by_id)
         self.assertIn("tool.browser_page", by_id)
+        self.assertIn("tool.open_music_search", by_id)
         self.assertIn("provider.tts.edge", by_id)
+        self.assertIn("provider.music.system_media_control", by_id)
         self.assertIn("provider.asr.faster_whisper", by_id)
         self.assertIn("workflow.workshop.portrait.cutout", by_id)
 
@@ -1227,6 +1234,10 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(by_id["tool.browser_page"]["group"], "desktop_browser")
         self.assertEqual(by_id["tool.browser_page"]["risk"], "medium")
         self.assertEqual(by_id["tool.browser_page"]["approvalMode"], "trusted_auto_allow")
+        self.assertEqual(by_id["tool.open_music_search"]["group"], "music")
+        self.assertEqual(by_id["tool.open_music_search"]["risk"], "medium")
+        self.assertEqual(by_id["provider.music.system_media_control"]["type"], "music_playback_provider")
+        self.assertEqual(by_id["provider.music.system_media_control"]["risk"], "medium")
 
         tts_provider = by_id["provider.tts.edge"]
         self.assertEqual(tts_provider["type"], "tts_provider")
@@ -1284,7 +1295,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                 "approvalMode": "ask_each_time",
                 "payloadPreview": {
                     "selector": "#play",
-                    "localPath": r"C:\Users\Lenovo\secret.txt",
+                    "localPath": r"C:\Users\ExampleUser\secret.txt",
                     "api_key": "real-secret-value",
                     "nested": {"token": "real-token", "label": "公开标签"},
                 },
@@ -1304,7 +1315,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertNotIn("api_key", created_text)
         self.assertNotIn("real-secret", created_text)
         self.assertNotIn("real-token", created_text)
-        self.assertNotIn("lenovo", created_text)
+        self.assertNotIn("exampleuser", created_text)
         self.assertNotIn(r"c:\users", created_text)
 
         listed = client.get("/capabilities/approval-requests?user_id=desktop&real_user_id=master").json()
@@ -1495,9 +1506,9 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "enabled": True,
                     "displayName": "Browser MCP",
                     "transport": "stdio",
-                    "command": r"C:\Users\Lenovo\mcp\browser-mcp.exe",
+                    "command": r"C:\Users\ExampleUser\mcp\browser-mcp.exe",
                     "args": ["--profile", "akane"],
-                    "cwd": r"C:\Users\Lenovo\mcp",
+                    "cwd": r"C:\Users\ExampleUser\mcp",
                     "env": {"MCP_MODE": "local"},
                 },
             )
@@ -1508,7 +1519,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(saved_payload["mcpServer"]["commandName"], "browser-mcp.exe")
             self.assertEqual(saved_payload["mcpServer"]["argsCount"], 2)
             self.assertEqual(saved_payload["mcpServer"]["approvalMode"], "disabled")
-            self.assertNotIn("lenovo", saved.text.lower())
+            self.assertNotIn("exampleuser", saved.text.lower())
             self.assertNotIn(r"c:\users", saved.text.lower())
 
             discovered = client.post(
@@ -1520,9 +1531,9 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertTrue(discovered_payload["ok"])
             self.assertEqual(discovered_payload["status"], "discovered")
             self.assertEqual(discovered_payload["toolCount"], 2)
-            self.assertEqual(discoverer_calls[0]["command"], r"C:\Users\Lenovo\mcp\browser-mcp.exe")
+            self.assertEqual(discoverer_calls[0]["command"], r"C:\Users\ExampleUser\mcp\browser-mcp.exe")
             discovered_text = discovered.text.lower()
-            self.assertNotIn("lenovo", discovered_text)
+            self.assertNotIn("exampleuser", discovered_text)
             self.assertNotIn("api_key", discovered_text)
             self.assertNotIn("secret", discovered_text)
 
@@ -1962,7 +1973,7 @@ for line in sys.stdin:
                     "packId": character_pack_id,
                     "provider": "gpt_sovits",
                     "profileId": self.profile_id,
-                    "notes": r"do not leak C:\Users\Lenovo\voice.txt token=secret",
+                    "notes": r"do not leak C:\Users\ExampleUser\voice.txt token=secret",
                 }
 
         voice_service = FakeCharacterVoiceService()
@@ -2300,7 +2311,7 @@ for line in sys.stdin:
                 voice_profile_id: str = "",
                 profile: dict[str, Any] | None = None,
             ) -> bytes:
-                raise RuntimeError(r"secret token from C:\Users\Lenovo\voice.wav")
+                raise RuntimeError(r"secret token from C:\Users\ExampleUser\voice.wav")
 
         logs: list[dict[str, Any]] = []
 
@@ -2807,7 +2818,7 @@ for line in sys.stdin:
 
             rejected_path = client.post(
                 "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
-                json={"enabled": True, "workflowPath": r"C:\Users\Lenovo\workflow.json"},
+                json={"enabled": True, "workflowPath": r"C:\Users\ExampleUser\workflow.json"},
             ).json()
             self.assertFalse(rejected_path["ok"])
             self.assertEqual(rejected_path["status"], "invalid_workflow_config")
@@ -2872,7 +2883,7 @@ for line in sys.stdin:
             rejected = client.post(
                 "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
                 json={
-                    "inputImageHandle": r"C:\Users\Lenovo\secret.png",
+                    "inputImageHandle": r"C:\Users\ExampleUser\secret.png",
                     "outputImageHandle": "portrait_cutout",
                 },
             ).json()
@@ -3081,7 +3092,7 @@ for line in sys.stdin:
                 "outputs": [
                     {"handle": "portrait_cutout", "kind": "image", "contentType": "image/png"},
                     {"handle": "token_secret_output", "kind": "image", "contentType": "image/png"},
-                    {"handle": r"C:\Users\Lenovo\portrait.png", "kind": "image"},
+                    {"handle": r"C:\Users\ExampleUser\portrait.png", "kind": "image"},
                 ],
                 "outputAssets": [
                     WorkflowExecutionAsset(
@@ -3203,7 +3214,7 @@ for line in sys.stdin:
             for forbidden in (
                 "raw_image_bytes_should_not_echo",
                 "token_secret_output",
-                "users\\lenovo",
+                "users\\exampleuser",
                 "portrait.png",
                 str(Path(temp_dir)).lower(),
             ):
@@ -3260,7 +3271,7 @@ for line in sys.stdin:
             self.assertEqual(status_payload["job"]["outputs"], [])
             self.assertEqual(len(runner.requests), 1)
             combined_text = json.dumps([started, status_payload], ensure_ascii=False).lower()
-            for forbidden in ("secret", "token", "users\\lenovo", "portrait.png", str(Path(temp_dir)).lower()):
+            for forbidden in ("secret", "token", "users\\exampleuser", "portrait.png", str(Path(temp_dir)).lower()):
                 self.assertNotIn(forbidden, combined_text)
 
     def test_capabilities_local_environment_check_is_discovery_not_enablement(self) -> None:
@@ -3530,7 +3541,7 @@ for line in sys.stdin:
                     "textLang": "zh",
                     "promptLang": "zh",
                     "mediaType": "wav",
-                    "refAudioPath": r"C:\Users\Lenovo\voices\reimu_ref.wav",
+                    "refAudioPath": r"C:\Users\ExampleUser\voices\reimu_ref.wav",
                     "promptText": "主人，今天也要一起努力。",
                     "streamingMode": True,
                     "parallelInfer": True,
@@ -3555,7 +3566,7 @@ for line in sys.stdin:
             self.assertEqual(public_profile["promptTextLength"], len("主人，今天也要一起努力。"))
             response_text = response.text.lower()
             self.assertNotIn(r"c:\users", response_text)
-            self.assertNotIn("lenovo", response_text)
+            self.assertNotIn("exampleuser", response_text)
             self.assertNotIn(str(Path(temp_dir)).lower(), response_text)
             self.assertNotIn("主人，今天也要一起努力", response.text)
             self.assertNotIn("token", response_text)
@@ -3568,7 +3579,7 @@ for line in sys.stdin:
             self.assertTrue(profiles_payload["ok"])
             self.assertEqual(profiles_payload["summary"]["total"], 1)
             self.assertNotIn(r"c:\users", profiles_text)
-            self.assertNotIn("lenovo", profiles_text)
+            self.assertNotIn("exampleuser", profiles_text)
             self.assertNotIn(str(Path(temp_dir)).lower(), profiles_text)
             self.assertNotIn("主人，今天也要一起努力", json.dumps(profiles_payload, ensure_ascii=False))
 
@@ -3576,7 +3587,7 @@ for line in sys.stdin:
             config_text = config_path.read_text(encoding="utf-8")
             config_data = json.loads(config_text)
             stored_profile = config_data["voiceProfiles"]["reimu_main"]
-            self.assertEqual(stored_profile["refAudioPath"], r"C:\Users\Lenovo\voices\reimu_ref.wav")
+            self.assertEqual(stored_profile["refAudioPath"], r"C:\Users\ExampleUser\voices\reimu_ref.wav")
             self.assertEqual(stored_profile["promptText"], "主人，今天也要一起努力。")
             self.assertEqual(stored_profile["streamingMode"], True)
             self.assertEqual(stored_profile["parallelInfer"], True)
@@ -3593,7 +3604,7 @@ for line in sys.stdin:
             self.assertTrue(update["ok"])
             config_data = json.loads(config_path.read_text(encoding="utf-8"))
             stored_profile = config_data["voiceProfiles"]["reimu_main"]
-            self.assertEqual(stored_profile["refAudioPath"], r"C:\Users\Lenovo\voices\reimu_ref.wav")
+            self.assertEqual(stored_profile["refAudioPath"], r"C:\Users\ExampleUser\voices\reimu_ref.wav")
             self.assertEqual(stored_profile["promptText"], "主人，今天也要一起努力。")
             self.assertEqual(stored_profile["streamingMode"], True)
             self.assertEqual(stored_profile["batchSize"], 1)
@@ -3717,7 +3728,7 @@ for line in sys.stdin:
         runtime = FakeRuntimeMetrics()
 
         def exploding_tts_runner(*, endpoint: str, text: str, voice_profile_id: str):
-            raise RuntimeError(r"secret token from C:\Users\Lenovo\voice.wav")
+            raise RuntimeError(r"secret token from C:\Users\ExampleUser\voice.wav")
 
         app = FastAPI()
         app.include_router(
@@ -3769,7 +3780,7 @@ for line in sys.stdin:
                                 "lastHealth": {
                                     "status": "unreachable",
                                     "endpoint": "http://127.0.0.1:8188/ui?token=secret",
-                                    "reason": r"failed token=secret C:\Users\Lenovo\secret.txt",
+                                    "reason": r"failed token=secret C:\Users\ExampleUser\secret.txt",
                                 },
                             },
                             "provider.tts.gpt_sovits.local": {

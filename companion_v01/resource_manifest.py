@@ -384,6 +384,55 @@ class ResourceManifest:
 
         return "\n".join(lines) if outfit_lines else "当前没有额外的角色视觉资源。"
 
+    def build_emotion_prompt_context(self) -> str:
+        manifest = self.build_runtime_manifest()
+        lines = [
+            "emotion 与桌宠共用当前角色包的表情图片变量。",
+            "即使当前客户端不渲染立绘，也必须直接使用图片文件名去掉扩展名后的稳定 id；不要编造或改写 emotion。",
+        ]
+        outfit_lines: list[str] = []
+        for outfit in manifest["characters"]["outfits"]:
+            emotion_ids = ", ".join(
+                str(emotion.get("id") or "").strip()
+                for emotion in outfit.get("emotions") or []
+                if str(emotion.get("id") or "").strip()
+            )
+            if emotion_ids:
+                outfit_lines.append(f"- {outfit['id']}: {emotion_ids}")
+        if outfit_lines:
+            lines.append("当前角色包可用 emotion：")
+            lines.extend(outfit_lines)
+        return "\n".join(lines)
+
+    def normalize_emotion_id(self, value: Any, *, preferred_outfit: str = "") -> str:
+        manifest = self.build_runtime_manifest()
+        defaults = manifest["defaults"]
+        outfits = manifest["characters"]["outfits"]
+        outfit = (
+            self._find_outfit(manifest, preferred_outfit)
+            or self._find_outfit(manifest, defaults["outfit"])
+            or outfits[0]
+        )
+        requested = _normalize_emotion_id(value) or defaults["emotion"]
+        emotion = self._find_emotion_with_aliases(outfit, requested)
+        if emotion is None:
+            for candidate_outfit in outfits:
+                emotion = self._find_emotion_with_aliases(candidate_outfit, requested)
+                if emotion is not None:
+                    break
+        if emotion is None:
+            emotion = self._find_emotion_with_aliases(outfit, defaults["emotion"]) or outfit["emotions"][0]
+        return str(emotion["id"])
+
+    def normalize_emotion_output(self, result: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(result or {})
+        character = normalized.get("character") if isinstance(normalized.get("character"), dict) else {}
+        normalized["emotion"] = self.normalize_emotion_id(
+            normalized.get("emotion"),
+            preferred_outfit=str(character.get("outfit") or ""),
+        )
+        return normalized
+
     def normalize_visual_output(
         self,
         result: dict[str, Any],

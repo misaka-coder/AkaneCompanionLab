@@ -1,8 +1,9 @@
 [package]
 name = "akane_desktop_pet_next"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 description = "Tauri/WebView2 prototype shell for Akane desktop pet."
 authors = ["Akane Companion Lab"]
+license = "Apache-2.0"
 edition = "2021"
 
 [build-dependencies]

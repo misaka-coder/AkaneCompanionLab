@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import ipaddress
 import inspect
 import json
@@ -11,7 +11,7 @@ import re
 import threading
 from pathlib import Path
 from typing import Any, Callable, Mapping
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 import config
 
@@ -57,6 +57,18 @@ class ToolMetadata:
 
 TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     "retrieve_memory": ToolMetadata(family="memory", operation="read", risk="low", default_round_budget=3),
+    "read_memory_timeline": ToolMetadata(
+        family="memory",
+        operation="read",
+        risk="low",
+        default_round_budget=3,
+    ),
+    "load_character_context": ToolMetadata(
+        family="character_context",
+        operation="read",
+        risk="low",
+        default_round_budget=3,
+    ),
     "set_reminder": ToolMetadata(family="reminder", operation="control", risk="low", default_round_budget=3),
     "list_reminders": ToolMetadata(family="reminder", operation="read", risk="low", default_round_budget=3),
     "cancel_reminder": ToolMetadata(family="reminder", operation="control", risk="low", default_round_budget=3),
@@ -70,6 +82,7 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     "web_search": ToolMetadata(family="web_research", operation="read", risk="low", default_round_budget=8),
     "open_browser": ToolMetadata(family="browser_control", operation="control", risk="medium", default_round_budget=6),
     "browser_page": ToolMetadata(family="browser_control", operation="mixed", risk="medium", default_round_budget=10),
+    "open_music_search": ToolMetadata(family="music_request", operation="control", risk="medium", default_round_budget=4),
     "fetch_media_from_url": ToolMetadata(family="media_fetch", operation="control", risk="medium", default_round_budget=4),
     "sync_attachment_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
     "inspect_attachment": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
@@ -138,6 +151,7 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
             "query 要写具体实体、地点、人物、事件或偏好，不要写“帮我回忆一下”这类空泛句。"
             "source_layers、subject_scopes、categories、importance_min 只在你有把握时填写；subject_scopes/categories 多选是 OR 命中，不要求全中。"
             "当用户问生日、重要日期、偏好、称呼、旧约定、跨端聊过的人/事/项目等个人旧事实，而当前可见记忆没有明确答案时，可以自然在这里翻一下。"
+            "如果用户明确要求查看某一天、某段日期或某个时段的原始逐句对话，不要用本工具，改用 read_memory_timeline。"
             "当前可见记忆已经足够时无需调用；只要你觉得更早的记忆可能有帮助，就可以调用。"
             "如果不需要检索，tool_call 输出 null。"
         )
@@ -310,6 +324,183 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
         except (TypeError, ValueError):
             return None
         return max(1, min(12, number))
+
+
+class ReadMemoryTimelineToolHandler(BaseToolHandler):
+    tool_type = "read_memory_timeline"
+
+    def __init__(self, *, timeline_service: Any) -> None:
+        self.timeline_service = timeline_service
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- read_memory_timeline：只在用户明确提到某一天、连续日期范围或上午/下午/夜晚/凌晨，"
+            "并希望查看、核对或回想当时的原始逐句对话时使用。"
+            "它按数据库时间精确读取原始聊天，不做向量搜索，也不读取阶段摘要或长期记忆。"
+            "格式为 {\"type\":\"read_memory_timeline\",\"date_from\":\"YYYY-MM-DD\","
+            "\"date_to\":\"YYYY-MM-DD\",\"time_periods\":[\"morning|afternoon|night|midnight\"]}。"
+            "查单日时 date_from 与 date_to 填同一天；全天可省略 time_periods。"
+            "普通的“你记得某人/某件事吗”“我们聊过什么”仍使用 retrieve_memory，"
+            "不要为了找语义事实先大范围翻时间线。"
+            "这也是你在心里翻共同记录，不要先在 speech 里宣布要调用工具。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+
+        single_date = str(value.get("date") or value.get("date_label") or "").strip()
+        date_from = str(value.get("date_from") or single_date).strip()
+        date_to = str(value.get("date_to") or single_date or date_from).strip()
+        if self._parse_date(date_from) is None or self._parse_date(date_to) is None:
+            return None
+
+        raw_periods = value.get("time_periods")
+        if raw_periods is None:
+            raw_periods = value.get("periods") or value.get("time_of_day")
+        if isinstance(raw_periods, str):
+            period_values = [
+                item for item in re.split(r"[,，;；|、\s]+", raw_periods) if item
+            ]
+        elif isinstance(raw_periods, list):
+            period_values = [str(item or "") for item in raw_periods]
+        else:
+            period_values = []
+        periods = self.timeline_service.normalize_time_periods(period_values)
+        return {
+            "type": self.tool_type,
+            "date_from": date_from,
+            "date_to": date_to,
+            "time_periods": periods,
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        result = self.timeline_service.read(
+            profile_user_id=context.profile_user_id,
+            character_pack_id=context.character_pack_id,
+            date_from=str(call.get("date_from") or ""),
+            date_to=str(call.get("date_to") or ""),
+            time_periods=list(call.get("time_periods") or []),
+            exclude_source_ids=[context.current_user_source_id]
+            if context.current_user_source_id
+            else [],
+        )
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            followup_context=self.timeline_service.render_tool_context(result),
+            state_updates={
+                "memory_timeline": {
+                    "status": str(result.get("status") or ""),
+                    "reason": str(result.get("reason") or ""),
+                    "date_from": str(result.get("date_from") or ""),
+                    "date_to": str(result.get("date_to") or ""),
+                    "time_periods": list(result.get("time_periods") or []),
+                    "active_dates": list(result.get("active_dates") or []),
+                    "message_count": int(result.get("message_count") or 0),
+                }
+            },
+        )
+
+    @staticmethod
+    def _parse_date(value: Any) -> date | None:
+        try:
+            return date.fromisoformat(str(value or "").strip())
+        except ValueError:
+            return None
+
+
+class LoadCharacterContextToolHandler(BaseToolHandler):
+    tool_type = "load_character_context"
+
+    def __init__(self, *, context_library_service: Any) -> None:
+        self.context_library_service = context_library_service
+
+    def build_prompt_instruction(self) -> str:
+        # The active character pack renders its exact libraries and targets.
+        return ""
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+
+        raw_targets = value.get("targets")
+        if raw_targets is None:
+            raw_targets = value.get("files")
+        if isinstance(raw_targets, str):
+            candidates = [
+                part.strip()
+                for part in re.split(r"[,，;；、\n]+", raw_targets)
+                if part.strip()
+            ]
+        elif isinstance(raw_targets, (list, tuple, set)):
+            candidates = [str(item or "").strip() for item in raw_targets]
+        else:
+            candidates = []
+
+        targets: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            target = normalize_text(candidate).strip()
+            if not target or target in seen:
+                continue
+            seen.add(target)
+            targets.append(target)
+        if not targets:
+            return None
+        return {"type": self.tool_type, "targets": targets}
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        service = self.context_library_service
+        if service is None:
+            return ToolExecutionResult(
+                tool_type=self.tool_type,
+                followup_context=(
+                    "【角色资料读取结果】\n"
+                    "status=unavailable\nreason=context_library_service_unavailable\n"
+                    "请不要猜测缺失的角色设定，基于当前已经可见的信息自然回应。"
+                ),
+                state_updates={
+                    "character_context": {
+                        "status": "unavailable",
+                        "loaded": [],
+                        "failed": list(call.get("targets") or []),
+                    }
+                },
+            )
+
+        result = service.load_context(
+            str(context.character_pack_id or ""),
+            list(call.get("targets") or []),
+        )
+        loaded_targets = [
+            str(item.get("target") or "")
+            for item in result.get("loaded") or []
+            if isinstance(item, dict) and str(item.get("target") or "")
+        ]
+        failed_targets = [
+            {
+                "target": str(item.get("target") or ""),
+                "status": str(item.get("status") or "unavailable"),
+                "reason": str(item.get("reason") or ""),
+            }
+            for item in result.get("failed") or []
+            if isinstance(item, dict)
+        ]
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            followup_context=str(result.get("followup_context") or ""),
+            state_updates={
+                "character_context": {
+                    "status": str(result.get("status") or "unavailable"),
+                    "loaded": loaded_targets,
+                    "failed": failed_targets,
+                }
+            },
+        )
 
 
 class CallNPCToolHandler(BaseToolHandler):
@@ -1700,6 +1891,135 @@ class OpenBrowserToolHandler(BaseToolHandler):
         return bool(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved)
 
 
+class OpenMusicSearchToolHandler(BaseToolHandler):
+    tool_type = "open_music_search"
+
+    PLATFORM_URLS: dict[str, tuple[str, str]] = {
+        "qq_music": ("QQ 音乐", "https://y.qq.com/n/ryqq/search?w={query}"),
+        "netease_music": ("网易云音乐", "https://music.163.com/#/search/m/?s={query}&type=1"),
+        "bilibili": ("哔哩哔哩", "https://search.bilibili.com/all?keyword={query}"),
+        "youtube": ("YouTube", "https://www.youtube.com/results?search_query={query}"),
+    }
+
+    PLATFORM_ALIASES: dict[str, str] = {
+        "qq": "qq_music",
+        "qqmusic": "qq_music",
+        "qq_music": "qq_music",
+        "yqq": "qq_music",
+        "qq音乐": "qq_music",
+        "qq 音乐": "qq_music",
+        "netease": "netease_music",
+        "netease_music": "netease_music",
+        "163": "netease_music",
+        "网易": "netease_music",
+        "网易云": "netease_music",
+        "网易云音乐": "netease_music",
+        "b站": "bilibili",
+        "bili": "bilibili",
+        "bilibili": "bilibili",
+        "哔哩哔哩": "bilibili",
+        "youtube": "youtube",
+        "yt": "youtube",
+        "油管": "youtube",
+    }
+
+    SECRET_MARKERS = ("api_key", "apikey", "authorization", "bearer", "cookie", "password", "secret", "token")
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- open_music_search：桌宠模式下，当用户明确要“点歌/放一首歌/搜一首歌给我听”时使用。"
+            "它只会把歌名歌手变成公开音乐平台搜索页并请求桌宠打开浏览器，不会自动点击播放、登录、下载或控制播放器。"
+            "格式为 {\"type\":\"open_music_search\",\"title\":\"歌名\",\"artist\":\"歌手\",\"platform\":\"qq_music\"}。"
+            "platform 可选 qq_music、netease_music、bilibili、youtube；用户没指定平台时默认 qq_music。"
+            "如果用户要你继续在页面里点击或输入，应在打开后按 browser_page 的授权边界继续操作；"
+            "不要声称歌曲已经开始播放，除非后续页面状态明确显示已播放。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        title = self._normalize_query_part(
+            value.get("title")
+            or value.get("song")
+            or value.get("name")
+            or value.get("query")
+            or value.get("keyword")
+        )
+        artist = self._normalize_query_part(value.get("artist") or value.get("singer") or value.get("author"))
+        if not title:
+            return None
+        platform = self._normalize_platform(value.get("platform") or value.get("provider") or value.get("site"))
+        query = " ".join(part for part in (title, artist) if part).strip()
+        if not query:
+            return None
+        label = f"{title}{' - ' + artist if artist else ''}"
+        return {
+            "type": self.tool_type,
+            "title": title,
+            "artist": artist,
+            "platform": platform,
+            "query": query[:160],
+            "label": label[:100],
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        platform = self._normalize_platform(call.get("platform"))
+        platform_label, template = self.PLATFORM_URLS[platform]
+        query = self._normalize_query_part(call.get("query")) or self._normalize_query_part(call.get("title"))
+        artist = self._normalize_query_part(call.get("artist"))
+        if artist and artist not in query:
+            query = f"{query} {artist}".strip()
+        url = template.format(query=quote_plus(query))
+        title = str(call.get("title") or query or "").strip()[:80]
+        label = str(call.get("label") or title or platform_label).strip()[:100]
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "browser_open_requested",
+                    "url": url,
+                    "label": label,
+                    "reason": "music_search_request",
+                    "client_mode": context.client_mode,
+                    "requires_confirmation": False,
+                }
+            ],
+            followup_context=(
+                f"你刚刚为用户在{platform_label}打开了公开音乐搜索页：{url}。"
+                "这只是搜索/打开入口，不代表歌曲已经开始播放。"
+                "如果用户还要求你继续点进结果或尝试播放，需要按 browser_page 的授权边界继续操作；"
+                "不能登录、下载、绕过会员/版权限制，也不要声称已经播放成功。"
+            ),
+            state_updates={
+                "music_request_status": "opened_search",
+                "music_request_platform": platform,
+                "music_request_query": query[:160],
+                "music_request_url": url,
+            },
+        )
+
+    def _normalize_platform(self, value: Any) -> str:
+        raw = normalize_text(str(value or "")).strip().lower().replace("-", "_").replace(" ", "_")
+        if not raw:
+            return "qq_music"
+        return self.PLATFORM_ALIASES.get(raw, raw if raw in self.PLATFORM_URLS else "qq_music")
+
+    def _normalize_query_part(self, value: Any) -> str:
+        text = normalize_text(str(value or "")).strip()
+        if not text or len(text) > 160:
+            return ""
+        lowered = text.lower()
+        if any(marker in lowered for marker in self.SECRET_MARKERS):
+            return ""
+        if re.search(r"(?i)\bhttps?://|file://|localhost|127\.0\.0\.1", text):
+            return ""
+        if any(ord(ch) < 32 for ch in text):
+            return ""
+        return re.sub(r"\s+", " ", text)[:120]
+
+
 class BrowserPageToolHandler(BaseToolHandler):
     tool_type = "browser_page"
 
@@ -2351,9 +2671,10 @@ class WebSearchToolHandler(BaseToolHandler):
         return normalized
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        runtime_profile_user_id = self._resolve_runtime_profile_user_id(context)
         server = get_mcp_server_runtime_config(
             base_dir=self.config_base_dir,
-            profile_user_id=context.profile_user_id,
+            profile_user_id=runtime_profile_user_id,
             server_id=self.server_id,
         )
         if not server:
@@ -2392,8 +2713,24 @@ class WebSearchToolHandler(BaseToolHandler):
                 }
             ],
             followup_context=followup,
-            state_updates={"web_search_status": "ok", "web_search_provider": "anysearch"},
+            state_updates={
+                "web_search_status": "ok",
+                "web_search_provider": "anysearch",
+                "web_search_profile_user_id": runtime_profile_user_id,
+            },
         )
+
+    def _resolve_runtime_profile_user_id(self, context: ToolExecutionContext) -> str:
+        if str(context.client_mode or "").strip().lower() != "qq_text":
+            return str(context.profile_user_id or "").strip() or "master"
+        raw_value = str(getattr(config, "QQ_WEB_SEARCH_PROFILE_USER_ID", "") or "").strip()
+        if not raw_value:
+            raw_value = str(getattr(config, "WEB_OWNER_PROFILE_USER_ID", "") or "master").strip()
+        if raw_value.lower() in {"conversation", "context", "current"}:
+            raw_value = str(context.profile_user_id or "").strip()
+        if not raw_value or not re.fullmatch(r"[A-Za-z0-9_.-]+", raw_value):
+            return "master"
+        return raw_value
 
     async def _call_mcp(
         self,

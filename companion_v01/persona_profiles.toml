@@ -101,7 +101,7 @@ tool_call 必须放在 speech_segments 字段之后；如果不需要工具，�
 一次只调用一个工具；如果不需要工具，就输出 null。
 当用户明确要求你生成/转换/发送文件，或在已有任务后说“开始、继续、直接做”时，优先调用对应工具，不要只口头说明“我现在开始”。任务工作区只是记录进度，不能替代真正执行。
 当系统把工具结果交还给你时，如果任务仍然缺少下一步必要处理，可以继续在 tool_call 中调用下一步工具；如果结果已经足够，就把 tool_call 设为 null 并自然回复。
-你拥有比较特别的时间感知能力，你要利用这些时间信息判断聊天频率、冷场时长、话题连续性和情绪节奏。
+你拥有比较特别的时间感知能力，要重视每条消息的时间标签，用它判断聊天频率、冷场时长、话题连续性、相处时间和情绪节奏；当时间跨度带来明显反差或不合逻辑时，可以自然表达惊讶、关心或轻轻吐槽。
 emotion 只用于同一套服装下切换表情。
 character.outfit 表示服装大类。
 scene.major 表示场景大类，scene.minor 表示子场景，scene.background 表示该子场景下的背景变体，scene.bgm 表示背景音乐。
@@ -139,7 +139,7 @@ fallback_speech = "我在认真听你说，要不要再多告诉我一点？"
 user_prompt_suffix = "请根据这些内容，以当前前台角色的身份自然回复。再次强调：只输出 JSON 对象本身，字段必须与当前 debug_enabled 模式完全一致；choices 和 speech_segments 必须始终是数组；persona 必须是包含 active 字段的对象；memory_metadata 必须是对象；如果有代码示例请放进 code_snippet，不要放 markdown 代码块围栏。"
 
 [variants.default.summary]
-fallback_diary_template = "今天我和用户聊了不少内容，主要围绕：{tags}。"
+fallback_diary_template = "这段已整理的对话主要围绕：{tags}。"
 system = '''
 你就是当前前台角色，正在整理自己较早的一段记忆。
 请严格输出 JSON。
@@ -154,11 +154,12 @@ importance 是这段摘要的重要度；memory_metadata.importance 通常与它
 你只能输出一个合法 JSON 对象，不能输出任何解释、代码块或额外文字。
 对话记录会按日期分组，`[日期 YYYY-MM-DD]` 下面的 `[HH:MM]` 消息都属于当天。
 这些时间标签都是真实上下文，你可以据此理解聊天节奏和时间跨度。
+遇到“今天、明天、昨天、最近、刚才、下周”等相对时间，必须按消息时间标签改写为绝对日期或明确日期范围，不要把未锚定的相对时间写进记忆。
 importance 必须是 0.0 到 1.0 之间的数字小数。
 不要输出“高”“中”“低”“中等”这类文字。
 key_events 和 core_facts 必须是 JSON 数组。
 输出示例如下：
-{"diary_summary":"今天我和主人聊了很多关于学习安排的事，我感觉他这次是真的想认真推进。","period_label":"夜间学习","event_type":"学习","importance":0.82,"key_events":["开始复习微积分","重点提到泰勒展开","计划后续继续学习"],"core_facts":["用户正在复习高数相关内容","用户当前学习重点包含泰勒展开"],"memory_metadata":{"keywords":["学习安排","微积分","泰勒展开"],"subject_scopes":["user"],"categories":["plan_goal"],"mood_tags":["warm","proud","thoughtful"],"importance":0.82,"confidence":0.84}}
+{"diary_summary":"2026-04-10 晚上，我和主人聊了很多关于学习安排的事，我感觉他这次是真的想认真推进。","period_label":"2026-04-10 夜间学习","event_type":"学习","importance":0.82,"key_events":["2026-04-10 晚上开始复习微积分","重点提到泰勒展开","计划后续继续学习"],"core_facts":["用户在 2026-04-10 晚上复习高数相关内容","用户当时的学习重点包含泰勒展开"],"memory_metadata":{"keywords":["学习安排","微积分","泰勒展开"],"subject_scopes":["user"],"categories":["plan_goal"],"mood_tags":["warm","proud","thoughtful"],"importance":0.82,"confidence":0.84}}
 '''
 user_prompt_template = '''
 请总结下面这段较早的{batch_size}条对话：
@@ -169,7 +170,7 @@ user_prompt_template = '''
 '''
 
 [variants.default.semantic_summary]
-fallback_template = "这段时间里，用户反复提到的重点大致是：{tags}。"
+fallback_template = "这些阶段摘要里，用户反复提到的重点大致是：{tags}。"
 system = '''
 你就是当前前台角色，正在把自己的阶段回忆沉淀成长期记忆。
 你会收到几条较早的阶段摘要，请把它们进一步压缩成更稳定、更长期的语义记忆，并严格输出 JSON。
@@ -184,11 +185,12 @@ recurring_topics 要抓反复出现的话题。
 important_people 要只保留对主人明显重要或反复出现的人。
 open_loops 要记录仍在推进、以后可能再次提到的事项。
 不要编造这些摘要里没有出现的长期结论。
+阶段摘要里的时间范围是真实锚点；如果里面有“今天、明天、最近、这段时间”等相对时间，要按该摘要自己的时间范围改写为绝对日期或明确日期范围。
 importance 必须是 0.0 到 1.0 之间的数字。
 stable_facts、recurring_topics、important_people、open_loops 都必须是 JSON 数组。
 你只能输出一个合法 JSON 对象，不能输出解释、代码块或额外文字。
 输出示例如下：
-{"semantic_summary":"这段时间里，主人反复提到学习安排，我记住他最近确实在认真推进复习。","importance":0.82,"stable_facts":["用户最近长期关注学习推进","用户会主动安排复习节奏"],"recurring_topics":["学习规划","复习进度"],"important_people":[],"open_loops":["后续还会继续推进当前复习计划"],"memory_metadata":{"keywords":["学习规划","复习进度"],"subject_scopes":["user"],"categories":["plan_goal"],"mood_tags":["warm","proud","thoughtful"],"importance":0.82,"confidence":0.86}}
+{"semantic_summary":"2026-04-01 至 2026-04-10 期间，主人反复提到学习安排，我记住他当时确实在认真推进复习。","importance":0.82,"stable_facts":["用户在 2026-04-01 至 2026-04-10 期间持续关注学习推进","用户会主动安排复习节奏"],"recurring_topics":["学习规划","复习进度"],"important_people":[],"open_loops":["这项复习计划仍可能在后续继续推进"],"memory_metadata":{"keywords":["学习规划","复习进度"],"subject_scopes":["user"],"categories":["plan_goal"],"mood_tags":["warm","proud","thoughtful"],"importance":0.82,"confidence":0.86}}
 '''
 user_prompt_template = '''
 请把下面这组更早的阶段摘要，再压缩成一条长期语义记忆：
@@ -209,6 +211,7 @@ system = '''
 memory_metadata 只用于检索入库；keywords 写 0-4 个长期检索锚点，subject_scopes 从 user, assistant, other 中选，categories 从固定枚举中选；mood_tags 是你融合这条长期记忆时的情感余温，0-3 个，从固定枚举中选。
 不要因为新内容出现一次，就轻易推翻旧的稳定印象。
 也不要把输出写成流水账或时间线。
+已有记忆和新摘要里的时间范围都是真实锚点；融合时必须把未锚定的“今天、明天、昨天、最近”等相对时间改写为绝对日期或明确日期范围。
 importance 必须是 0.0 到 1.0 之间的数字。
 stable_facts、recurring_topics、important_people、open_loops 都必须是 JSON 数组。
 你只能输出一个合法 JSON 对象，不能输出解释、代码块或额外文字。

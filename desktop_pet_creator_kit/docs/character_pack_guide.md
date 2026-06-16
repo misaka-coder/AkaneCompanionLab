@@ -62,11 +62,15 @@ my_character/
   character.json
   character.toml
   persona.md
+  relationships/        # Optional shareable character knowledge
+  events/               # Optional shareable character knowledge
   assets/
     characters/
       default/
         normal.png
         happy.png
+  _local/               # Private runtime data; never exported
+    memory/
 ```
 
 `character.json` is the current runtime file.
@@ -76,7 +80,75 @@ more creator-friendly format.
 
 `persona.md` is desktop-pet persona reference text. In `desktop_pet` mode the
 backend reads it, together with `character.json`, and adds it to the final prompt
-for the selected pack only. QQ and Web modes keep their separate prompt profiles.
+for the selected pack only. `qq_text` also uses the selected character pack,
+while Web scene modes keep their separate prompt profiles.
+
+## Optional Context Libraries
+
+Character packs may declare zero or more creator-defined context libraries.
+Folder types are not hardcoded: each library explains what it contains and when
+the character should read it.
+
+In the Tauri character workshop, use the `角色资料` tab and choose
+`新建资料库`. Fill in the library name, what it stores, and when the character
+should read it. The workshop creates the folder and updates
+`context_libraries` automatically, so ordinary creators do not need to edit
+JSON. The JSON below remains the portable file format and advanced editing
+surface.
+
+```json
+{
+  "context_libraries": [
+    {
+      "folder": "relationships",
+      "name": "人物关系",
+      "description": "记录我与重要人物的关系、态度和共同经历。",
+      "load_when": "谈到具体人物或共同经历时读取。",
+      "aliases": {
+        "魔理沙": ["雾雨魔理沙", "黑白"]
+      }
+    },
+    {
+      "folder": "spell_cards",
+      "name": "符卡资料",
+      "description": "记录符卡、招式和使用背景。",
+      "load_when": "讨论战斗或具体招式时读取。"
+    }
+  ]
+}
+```
+
+Each declared folder is a direct child of the character pack. Markdown files
+inside these declared folders are shareable character knowledge. `_local` is a
+reserved folder name and cannot be declared as a context library.
+inside it stay flat:
+
+```text
+my_character/
+  character.json
+  relationships/
+    魔理沙.md
+    八云紫.md
+  spell_cards/
+    梦想封印.md
+```
+
+`aliases` is optional. Its key is a Markdown file name without `.md`, and its
+value is a list of precise alternative names. Use it for stable names such as
+`黑白 -> 魔理沙`; avoid broad words such as `书`, `麻烦`, or `日常`, which would
+cause unrelated conversations to load the file.
+
+At runtime the backend injects the declared purpose, loading guidance, and exact
+file targets into the selected character's prompt. A direct file-name mention
+or configured alias in the current user message is loaded automatically. The
+model can batch-read
+additional targets such as `relationships/魔理沙` with the internal
+`load_character_context` tool. It cannot list arbitrary directories or read
+files outside the active pack. Empty or missing libraries inject no prompt.
+
+The final response debug payload records only matched terms, targets, statuses,
+and tool rounds under `_debug.character_context`. It does not include file
+contents or local absolute paths.
 
 ## Minimal Runtime Fields
 
@@ -170,7 +242,8 @@ dist/my_character.zip
 
 The zip contains the pack folder, an `akane-export.json` manifest, and a small
 `INSTALL.md` handoff note. This is the first delivery shape for paid setup or
-creator handoff.
+creator handoff. The private `_local/` directory is always excluded, including
+its memory mirror and any other machine-local runtime data.
 
 ## Samples
 
@@ -195,6 +268,10 @@ it into `characters/<pack_id>/`. Existing packs are not overwritten unless
 ```powershell
 npm run import -- ./dist/my_character.zip --as my_character_v2 --force
 ```
+
+When an existing pack is overwritten, its `_local/` directory is preserved and
+reattached to the newly installed pack. Imported zip entries under `_local/`
+are ignored, so shared packs cannot inject or replace private local memory.
 
 The Tauri settings window has the same first install path for Creator Kit
 exported zips. Use `导入 zip` or drag a zip onto the character-pack area. New

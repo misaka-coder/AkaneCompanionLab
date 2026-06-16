@@ -126,7 +126,11 @@ npm run build
 
 `npm run verify:control-center` runs the full control-center verification matrix: smoke actions + runtime probe + build, with a required-file existence gate before execution.
 
-The settings window opens `control-center-lab.html` by default. Set `AKANE_LEGACY_SETTINGS=1` only when you need the old `settings.html` rollback surface. `npm run dev:control-center` remains available as an explicit control-center development entry. Settings and workspace windows are non-topmost so the pet keeps its always-on-top priority.
+The settings window has one implementation: `control-center-lab.html`. The
+`settings.html` path is only a compatibility redirect for stale links and must
+not own features. `npm run dev:control-center` remains available as an explicit
+control-center development entry. Settings and workspace windows are
+non-topmost so the pet keeps its always-on-top priority.
 
 ### Control Center Verification Matrix
 
@@ -167,7 +171,7 @@ npm run tauri -- build
 
 The build command is only a packaging smoke test for the Next prototype. It does not replace the Electron stable app.
 
-After packaging, launch the release exe directly:
+Launch the release build through the guarded launcher:
 
 ```powershell
 npm run start:release
@@ -179,11 +183,16 @@ Or run the script by itself:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-next.ps1
 ```
 
-If the release exe is missing, rebuild first with `npm run tauri -- build`, or run:
+The launcher automatically builds when the release exe is missing, when the
+source files are newer than the exe, or when `-Rebuild` is passed:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-next.ps1 -BuildIfMissing
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-next.ps1 -Rebuild
 ```
+
+Use `-NoBuild` only when you intentionally want to launch an existing exe even
+after local source changes. The legacy `-BuildIfMissing` flag is still accepted
+for old commands, but it is no longer required.
 
 ## Daily Smoke Test
 

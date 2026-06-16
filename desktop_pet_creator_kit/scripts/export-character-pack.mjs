@@ -13,6 +13,7 @@ const DEFAULT_PACK = path.join(kitRoot, "characters", "akane_sample");
 const EXPORT_FORMAT = "akane.character_pack_export.v0.1";
 const ZIP_UTF8_FLAG = 0x0800;
 const IGNORED_FILE_NAMES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
+const PRIVATE_LOCAL_DIRECTORY = "_local";
 
 const args = process.argv.slice(2);
 const packArg = readPositionalArg(args) || DEFAULT_PACK;
@@ -87,6 +88,10 @@ async function collectFiles(rootDir) {
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
     for (const entry of entries) {
       if (IGNORED_FILE_NAMES.has(entry.name)) continue;
+      if (
+        entry.isDirectory() &&
+        entry.name.toLowerCase() === PRIVATE_LOCAL_DIRECTORY
+      ) continue;
       const absolutePath = path.join(currentDir, entry.name);
       if (entry.isDirectory()) {
         await walk(absolutePath);

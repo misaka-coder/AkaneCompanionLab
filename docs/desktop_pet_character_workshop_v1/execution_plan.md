@@ -30,7 +30,7 @@ Updated: 2026-06-05
 - **Phase 4A complete**: `upload_portrait_image` (magic-byte detection, atomic write, Unicode-safe IDs), `list_pack_assets`, `delete/rename` commands, `set_default_emotion` Tauri commands. Workshop "立绘管理" tab: outfit cards, upload, preview, delete/rename, set-default/music, missing-emotion warnings.
 - **Phase 4B complete**: `save_calibration` + `resize_pet_window` Tauri commands. Workshop "显示校准" tab: outfit selector, 7 sliders (window W/H, scale, offset X/Y, bubble X/Y), auto-layout from image aspect ratio, real-time draggable bubble preview, and lightweight bubble style presets. `setLayout` added to visual-renderer and now applies portrait plus bubble layout; `applyCharacterLayout` in main.js uses signature-based debounce to avoid redundant window resizes. Atomic writes + validation on all new commands.
 - **Phase 3 import/export complete**: `export_character_pack` Tauri command (recursive zip via `zip` crate, saves to desktop). Workshop header buttons: 📥 Import (file picker → `install_character_pack_zip_bytes`, refresh list), 📤 Export (call `export_character_pack`, show result, open folder).
-- Repair pass complete: replaced the undefined `characterPackRegistry` layout lookup, restored valid workshop DOM nesting, made `save_character_pack` create missing `persona_form` for v0.1 packs, routed portrait asset paths through safe child resolution, changed empty sanitized asset ids to hard errors, and switched the default settings entry to `control-center-lab.html` with `AKANE_LEGACY_SETTINGS=1` as rollback.
+- Repair pass complete: replaced the undefined `characterPackRegistry` layout lookup, restored valid workshop DOM nesting, made `save_character_pack` create missing `persona_form` for v0.1 packs, routed portrait asset paths through safe child resolution, changed empty sanitized asset ids to hard errors, and made `control-center-lab.html` the sole settings implementation.
 - Memory isolation pass complete: `character_pack_id` is persisted on chat messages, chat sessions, episodic summaries, semantic summaries, eval turns, and vector metadata. Desktop-pet turn processing, background summary compaction, explicit `retrieve_memory`, and `/sessions` reads now scope to the active character when a pack id is present. Shared music/gift resources intentionally remain profile-scoped.
 - **Phase 6 first slice complete**: workshop "测试对话" tab sends `/think` with the selected `character_pack_id`, `client_mode=desktop_pet`, an isolated `workshop_test_*` session/profile, and a minimal current visual payload. It renders user/assistant messages, streamed/final speech segments, final emotion, prompt-field summary, and memory scope indicators. Full system prompt text remains hidden.
 - **Phase 6 save-boundary slice complete**: if the selected pack has unsaved persona edits, test chat now requires a successful file save before `/think`; ordinary save still falls back to localStorage, but test chat stops when the backend-visible `character.json` was not updated.
@@ -45,7 +45,8 @@ Goal: understand exact current boundaries before editing.
 Read:
 
 - `desktop_pet_next/src/main.js`
-- `desktop_pet_next/src/settings.js`
+- `desktop_pet_next/src/control-center-lab.js`
+- `desktop_pet_next/src/control-center/data-sources.js`
 - `desktop_pet_next/src/character-profile.js`
 - `desktop_pet_next/src/visual-renderer.js`
 - `desktop_pet_next/src-tauri/src/main.rs`
@@ -120,7 +121,8 @@ Likely files:
 
 - `desktop_pet_next/src-tauri/src/main.rs`
 - `desktop_pet_next/src/main.js`
-- `desktop_pet_next/src/settings.js`
+- `desktop_pet_next/src/control-center-lab.js`
+- `desktop_pet_next/src/control-center/data-sources.js`
 - `desktop_pet_next/src/character-profile.js`
 - `desktop_pet_next/README.md`
 - tests may need updates in `tests/test_desktop_pet_frontend_contract.py`
@@ -178,7 +180,8 @@ Likely files:
 - `desktop_pet_next/src/workshop.js`
 - `desktop_pet_next/src/workshop.css`
 - `desktop_pet_next/src/main.js`
-- `desktop_pet_next/src/settings.js`
+- `desktop_pet_next/src/control-center-lab.js`
+- `desktop_pet_next/src/control-center/data-sources.js`
 - `desktop_pet_next/index.html` if menu wiring requires it
 
 Tasks:

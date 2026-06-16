@@ -2,6 +2,7 @@ export const CONTROL_CENTER_SCHEMA_VERSION = "control-center.snapshot.v0.1";
 
 export const CONTROL_CENTER_PAGE_IDS = Object.freeze([
   "overview",
+  "model",
   "character",
   "voice",
   "music",
@@ -38,6 +39,7 @@ export const CONTROL_CENTER_DATA_LAYERS = Object.freeze({
 /**
  * @typedef {Object} ControlCenterPages
  * @property {Object} overview
+ * @property {Object} model
  * @property {Object} character
  * @property {Object} voice
  * @property {Object} music

@@ -145,8 +145,25 @@ class PromptBuilderTests(unittest.TestCase):
             self.assertIn("你此刻的角色身份与表达侧面", prompt)
             self.assertIn("整理记忆时就按这个身份记", prompt)
             self.assertIn("不是这段对话发生过的事实", prompt)
+            self.assertIn("[MEMORY TIME ANCHOR RULES]", prompt)
+            self.assertIn("相对 YYYY-MM-DD 的", prompt)
+            self.assertIn("不要留下未锚定的相对时间", prompt)
             self.assertIn("Mika", prompt)
         self.assertIn("温柔吐槽", summary_system)
+
+    def test_build_summary_prompts_can_include_reference_summaries_for_consistency(self) -> None:
+        builder = PromptBuilder(load_persona_config())
+
+        _, user_prompt = builder.build_summary_prompts(
+            transcript="[日期 2026-04-11]\n[20:00] User: 我明天继续复习。",
+            batch_size=1,
+            reference_summary_text="[2026-04-10 20:00 ~ 20:20] 摘要: 用户在推进复习计划。",
+        )
+
+        self.assertIn("可参考的既有阶段摘要", user_prompt)
+        self.assertIn("人物关系、项目脉络、时间线和记忆口吻一致", user_prompt)
+        self.assertIn("不要把参考摘要里出现、但本段原始对话没有出现的内容写成这段的新事实", user_prompt)
+        self.assertIn("用户在推进复习计划", user_prompt)
 
     def test_build_final_generation_context_uses_persona_and_debug_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

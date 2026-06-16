@@ -141,6 +141,101 @@ function validateVoice(character) {
   getOptionalString(character.voice, "notes", "voice.notes");
 }
 
+async function validateContextLibraries(character) {
+  const libraries = character.context_libraries;
+  if (libraries === undefined) return;
+  if (!Array.isArray(libraries)) {
+    addError("context_libraries must be an array when provided.");
+    return;
+  }
+
+  const seenFolders = new Set();
+  const seenAliases = new Map();
+  for (const [index, library] of libraries.entries()) {
+    const label = `context_libraries[${index}]`;
+    if (!isObject(library)) {
+      addError(`${label} must be an object.`);
+      continue;
+    }
+    const folder = getRequiredString(library, "folder", `${label}.folder`);
+    getOptionalString(library, "name", `${label}.name`);
+    getOptionalString(library, "description", `${label}.description`);
+    getOptionalString(library, "load_when", `${label}.load_when`);
+    const aliasKeys = [];
+    if (library.aliases !== undefined) {
+      if (!isObject(library.aliases)) {
+        addError(`${label}.aliases must be an object when provided.`);
+      } else {
+        for (const [fileName, rawAliases] of Object.entries(library.aliases)) {
+          const cleanFileName = String(fileName || "").trim();
+          if (!cleanFileName) {
+            addError(`${label}.aliases contains an empty file name.`);
+            continue;
+          }
+          aliasKeys.push(cleanFileName);
+          if (!Array.isArray(rawAliases)) {
+            addError(`${label}.aliases.${cleanFileName} must be an array of strings.`);
+            continue;
+          }
+          for (const [aliasIndex, rawAlias] of rawAliases.entries()) {
+            const alias = typeof rawAlias === "string" ? rawAlias.trim() : "";
+            if (!alias) {
+              addError(`${label}.aliases.${cleanFileName}[${aliasIndex}] must be a non-empty string.`);
+              continue;
+            }
+            const previous = seenAliases.get(alias);
+            if (previous && previous !== `${folder}/${cleanFileName}`) {
+              addWarning(
+                `Alias "${alias}" is shared by ${previous} and ${folder}/${cleanFileName}; both files may auto-load.`
+              );
+            } else {
+              seenAliases.set(alias, `${folder}/${cleanFileName}`);
+            }
+          }
+        }
+      }
+    }
+    if (!folder) continue;
+    if (
+      folder === "." ||
+      folder === ".." ||
+      folder.toLowerCase() === "_local" ||
+      folder.includes("/") ||
+      folder.includes("\\") ||
+      path.basename(folder) !== folder
+    ) {
+      addError(`${label}.folder must be a shareable direct child folder name; "_local" is reserved.`);
+      continue;
+    }
+    if (seenFolders.has(folder)) {
+      addError(`${label}.folder duplicates "${folder}".`);
+      continue;
+    }
+    seenFolders.add(folder);
+
+    const libraryDir = path.join(packDir, folder);
+    if (!(await pathExists(libraryDir))) {
+      addWarning(`${label}.folder "${folder}" does not exist yet.`);
+      continue;
+    }
+    const entries = await fs.readdir(libraryDir, { withFileTypes: true });
+    const markdownFiles = entries.filter(
+      (entry) => entry.isFile() && path.extname(entry.name).toLowerCase() === ".md"
+    );
+    if (!markdownFiles.length) {
+      addWarning(`${label}.folder "${folder}" has no direct .md files.`);
+    }
+    const markdownNames = new Set(
+      markdownFiles.map((entry) => path.basename(entry.name, path.extname(entry.name)))
+    );
+    for (const aliasKey of aliasKeys) {
+      if (!markdownNames.has(aliasKey)) {
+        addWarning(`${label}.aliases.${aliasKey} has no matching direct .md file.`);
+      }
+    }
+  }
+}
+
 async function pathExists(targetPath) {
   try {
     await fs.access(targetPath);
@@ -308,6 +403,7 @@ async function validatePack() {
   getOptionalString(dialogue, "proactive_wake_prompt", "dialogue.proactive_wake_prompt");
   validateAliases(character);
   validatePersonaForm(character);
+  await validateContextLibraries(character);
   validateLayout(character);
   validateVoice(character);
 

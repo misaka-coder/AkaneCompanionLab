@@ -789,6 +789,7 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("web_search", scene_tools)
         self.assertNotIn("open_browser", scene_tools)
         self.assertNotIn("browser_page", scene_tools)
+        self.assertNotIn("open_music_search", scene_tools)
         self.assertNotIn("transcribe_media", scene_tools)
         self.assertNotIn("send_sticker", scene_tools)
 
@@ -798,6 +799,7 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("web_search", qq_tools)
         self.assertNotIn("open_browser", qq_tools)
         self.assertNotIn("browser_page", qq_tools)
+        self.assertNotIn("open_music_search", qq_tools)
         self.assertNotIn("manage_gift", qq_tools)
 
         self.assertIn("transcribe_media", desktop_tools)
@@ -805,6 +807,7 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("web_search", desktop_tools)
         self.assertIn("open_browser", desktop_tools)
         self.assertIn("browser_page", desktop_tools)
+        self.assertIn("open_music_search", desktop_tools)
         self.assertNotIn("send_sticker", desktop_tools)
         self.assertNotIn("manage_gift", desktop_tools)
 
@@ -819,16 +822,19 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("media_workbench", desktop_selection.module_names)
         self.assertIn("internet_access", desktop_selection.module_names)
         self.assertIn("desktop_browser_open", desktop_selection.module_names)
+        self.assertIn("desktop_music_request", desktop_selection.module_names)
         self.assertIn("desktop_workspace", desktop_selection.layer_names)
         self.assertIn("shared_media", desktop_selection.layer_names)
         self.assertIn("web", desktop_selection.layer_names)
         self.assertIn("desktop_browser", desktop_selection.layer_names)
+        self.assertIn("music_request", desktop_selection.layer_names)
         self.assertNotIn("qq_delivery", desktop_selection.layer_names)
         self.assertIn("convert_media_file", desktop_selection.tool_names)
         self.assertIn("send_file", desktop_selection.tool_names)
         self.assertIn("web_search", desktop_selection.tool_names)
         self.assertIn("open_browser", desktop_selection.tool_names)
         self.assertIn("browser_page", desktop_selection.tool_names)
+        self.assertIn("open_music_search", desktop_selection.tool_names)
         self.assertNotIn("send_sticker", desktop_selection.tool_names)
 
         qq_selection = registry.select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT))
@@ -1731,6 +1737,8 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("长期语义记忆", snippets[0])
             self.assertIn("反复提到课程安排", snippets[0])
             self.assertIn("记忆情绪：warm / proud", snippets[0])
+            self.assertIn("相对时间锚点", snippets[0])
+            self.assertIn("2026-04-01 08:00 ~ 2026-04-10 20:00", snippets[0])
 
     def test_build_memory_snippets_can_render_raw_memory_mood(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1783,8 +1791,8 @@ class EngineExtensionTests(unittest.TestCase):
                 period_label="偏好片段",
                 event_type="偏好",
                 importance=0.72,
-                diary_summary="主人说自己喜欢喝可乐，我顺手记了下来。",
-                key_events=["主人说喜欢喝可乐"],
+                diary_summary="今天主人说自己喜欢喝可乐，我顺手记了下来。",
+                key_events=["今天主人说喜欢喝可乐"],
                 core_facts=["用户喜欢喝可乐"],
                 semantic_tags=["可乐", "饮料"],
                 source_start_seq=raw["seq_no"],
@@ -1830,15 +1838,48 @@ class EngineExtensionTests(unittest.TestCase):
 
             self.assertIn("记忆情绪：warm / playful", summary_text)
             self.assertIn("记忆情绪：warm", semantic_text)
+            self.assertIn("相对时间锚点", summary_text)
+            self.assertIn("2026-04-10 20:00 ~ 20:00", summary_text)
 
     def test_summary_compaction_passes_persona_perspective_to_llm(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))
-            captured_prompts: list[str] = []
+            previous_raw = store.add_message(
+                profile_user_id="user-1",
+                session_id="session-1",
+                character_pack_id="mika",
+                role="user",
+                content="我最近在推进复习计划。",
+                timestamp=int(datetime(2026, 4, 10, 20, 0).timestamp()),
+            )
+            store.add_summary(
+                profile_user_id="user-1",
+                session_id="session-1",
+                character_pack_id="mika",
+                timestamp=int(datetime(2026, 4, 10, 20, 5).timestamp()),
+                date_label="2026-04-10",
+                time_of_day="night",
+                period_label="复习片段",
+                event_type="学习",
+                importance=0.72,
+                diary_summary="2026-04-10 晚上，主人提到自己在推进复习计划。",
+                key_events=["2026-04-10 晚上主人提到复习计划"],
+                core_facts=["用户在 2026-04-10 晚上推进复习计划"],
+                semantic_tags=["复习", "学习计划"],
+                source_start_seq=previous_raw["seq_no"],
+                source_end_seq=previous_raw["seq_no"],
+                source_ids=[previous_raw["source_id"]],
+            )
+            captured_prompts: list[dict[str, str]] = []
 
             class StubLLM:
                 def call_aux_json(self, **kwargs):
-                    captured_prompts.append(str(kwargs.get("system_prompt") or ""))
+                    captured_prompts.append(
+                        {
+                            "system": str(kwargs.get("system_prompt") or ""),
+                            "user": str(kwargs.get("user_prompt") or ""),
+                        }
+                    )
                     return {
                         "diary_summary": "主人提到自己喜欢喝可乐，我顺手记下来了。",
                         "period_label": "偏好片段",
@@ -1875,10 +1916,13 @@ class EngineExtensionTests(unittest.TestCase):
                 service.close()
 
             self.assertEqual(len(captured_prompts), 1)
-            self.assertIn("[CURRENT CHARACTER MEMORY SELF]", captured_prompts[0])
-            self.assertIn("Mika", captured_prompts[0])
-            self.assertIn("温柔吐槽", captured_prompts[0])
-            self.assertIn("不是这段对话发生过的事实", captured_prompts[0])
+            self.assertIn("[CURRENT CHARACTER MEMORY SELF]", captured_prompts[0]["system"])
+            self.assertIn("Mika", captured_prompts[0]["system"])
+            self.assertIn("温柔吐槽", captured_prompts[0]["system"])
+            self.assertIn("不是这段对话发生过的事实", captured_prompts[0]["system"])
+            self.assertIn("可参考的既有阶段摘要", captured_prompts[0]["user"])
+            self.assertIn("主人提到自己在推进复习计划", captured_prompts[0]["user"])
+            self.assertIn("不要把参考摘要里出现", captured_prompts[0]["user"])
 
     def test_run_semantic_summary_cycle_creates_semantic_memory_and_marks_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -7,6 +7,15 @@ from .persona_config import PersonaConfig
 from .prompt_blocks import CURRENT_ASSISTANT_STATE_MARKER
 
 
+MEMORY_TIME_ANCHOR_RULES = """
+[MEMORY TIME ANCHOR RULES]
+对话、摘要和长期记忆里的 `[日期 YYYY-MM-DD]`、`[HH:MM]`、时间范围都是真实时间锚点。
+整理任何会入库的记忆字段时，遇到“今天、明天、昨天、前天、后天、今晚、明早、下周、上周、最近、刚才、一会儿、过几天、当前、现在”等相对时间，必须按源消息或源摘要的时间锚点改写为绝对日期、绝对日期范围，或“相对 YYYY-MM-DD 的‘明天’”这类有锚点的说法。
+diary_summary、key_events、core_facts、semantic_summary、stable_facts、open_loops 等字段里不要留下未锚定的相对时间。
+如果源摘要里已经有未锚定的相对时间，先用它自己的时间范围重新解释，再继续压缩或融合。
+""".strip()
+
+
 class PromptBuilder:
     def __init__(self, persona: PersonaConfig):
         self.persona = persona
@@ -197,19 +206,30 @@ class PromptBuilder:
         *,
         transcript: str,
         batch_size: int,
+        reference_summary_text: str = "",
         persona_system_context: str = "",
         persona_reference_context: str = "",
     ) -> tuple[str, str]:
+        system_prompt = self._append_memory_persona_context(
+            self.persona.summary_system_prompt,
+            persona_system_context=persona_system_context,
+            persona_reference_context=persona_reference_context,
+        )
+        user_prompt = self.persona.summary_user_prompt_template.format(
+            transcript=transcript,
+            batch_size=int(batch_size),
+        )
+        reference_summary_text = str(reference_summary_text or "").strip()
+        if reference_summary_text:
+            user_prompt = (
+                f"{user_prompt.rstrip()}\n\n"
+                "可参考的既有阶段摘要（只用于保持人物关系、项目脉络、时间线和记忆口吻一致；"
+                "不要把参考摘要里出现、但本段原始对话没有出现的内容写成这段的新事实）：\n"
+                f"{reference_summary_text}\n"
+            )
         return (
-            self._append_memory_persona_context(
-                self.persona.summary_system_prompt,
-                persona_system_context=persona_system_context,
-                persona_reference_context=persona_reference_context,
-            ),
-            self.persona.summary_user_prompt_template.format(
-                transcript=transcript,
-                batch_size=int(batch_size),
-            ),
+            self._append_memory_time_anchor_rules(system_prompt),
+            user_prompt,
         )
 
     def build_semantic_summary_prompts(
@@ -219,12 +239,13 @@ class PromptBuilder:
         persona_system_context: str = "",
         persona_reference_context: str = "",
     ) -> tuple[str, str]:
+        system_prompt = self._append_memory_persona_context(
+            self.persona.semantic_summary_system_prompt,
+            persona_system_context=persona_system_context,
+            persona_reference_context=persona_reference_context,
+        )
         return (
-            self._append_memory_persona_context(
-                self.persona.semantic_summary_system_prompt,
-                persona_system_context=persona_system_context,
-                persona_reference_context=persona_reference_context,
-            ),
+            self._append_memory_time_anchor_rules(system_prompt),
             self.persona.semantic_summary_user_prompt_template.format(source_text=source_text),
         )
 
@@ -236,12 +257,13 @@ class PromptBuilder:
         persona_system_context: str = "",
         persona_reference_context: str = "",
     ) -> tuple[str, str]:
+        system_prompt = self._append_memory_persona_context(
+            self.persona.semantic_reinforcement_system_prompt,
+            persona_system_context=persona_system_context,
+            persona_reference_context=persona_reference_context,
+        )
         return (
-            self._append_memory_persona_context(
-                self.persona.semantic_reinforcement_system_prompt,
-                persona_system_context=persona_system_context,
-                persona_reference_context=persona_reference_context,
-            ),
+            self._append_memory_time_anchor_rules(system_prompt),
             self.persona.semantic_reinforcement_user_prompt_template.format(
                 existing_text=existing_text,
                 incoming_text=incoming_text,
@@ -269,3 +291,7 @@ class PromptBuilder:
             "角色设定只决定你的记忆口吻、在意点和情感余温，不是这段对话发生过的事实。\n"
             f"{context_text}"
         )
+
+    @staticmethod
+    def _append_memory_time_anchor_rules(system_prompt: str) -> str:
+        return f"{system_prompt.rstrip()}\n\n{MEMORY_TIME_ANCHOR_RULES}"

@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Video 01 Visual Preview</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #1f2933;
+        --muted: #667085;
+        --line: #d0d5dd;
+        --paper: #fffdf8;
+        --blue: #d0ebff;
+        --green: #d3f9d8;
+        --amber: #fff3bf;
+        --red: #ffe3e3;
+        --violet: #e5dbff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #f4f1ea;
+        color: var(--ink);
+        font-family: "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+        line-height: 1.6;
+      }
+
+      main {
+        width: min(1120px, calc(100vw - 32px));
+        margin: 32px auto 56px;
+      }
+
+      h1 {
+        margin: 0 0 6px;
+        font-size: 30px;
+        letter-spacing: 0;
+      }
+
+      .lead {
+        margin: 0 0 28px;
+        color: var(--muted);
+      }
+
+      .board {
+        margin: 22px 0;
+        padding: 26px;
+        background: var(--paper);
+        border: 1px solid #e4dfd4;
+        border-radius: 8px;
+      }
+
+      .board h2 {
+        margin: 0 0 22px;
+        font-size: 23px;
+        letter-spacing: 0;
+      }
+
+      .flow {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        flex-wrap: wrap;
+      }
+
+      .node {
+        min-width: 150px;
+        min-height: 68px;
+        display: grid;
+        place-items: center;
+        padding: 12px 16px;
+        border: 2px solid #1f2933;
+        border-radius: 8px;
+        text-align: center;
+        font-weight: 700;
+      }
+
+      .node small {
+        display: block;
+        margin-top: 3px;
+        color: #344054;
+        font-weight: 500;
+      }
+
+      .blue { background: var(--blue); }
+      .green { background: var(--green); }
+      .amber { background: var(--amber); }
+      .red { background: var(--red); }
+      .violet { background: var(--violet); }
+      .white { background: #f8f9fa; }
+
+      .arrow {
+        font-size: 28px;
+        color: #344054;
+      }
+
+      .questions {
+        margin: 24px 0 0;
+        padding-left: 22px;
+        font-size: 18px;
+      }
+
+      .three {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 18px;
+      }
+
+      .merge {
+        display: grid;
+        place-items: center;
+        margin-top: 24px;
+      }
+
+      .down {
+        margin: 12px 0;
+        font-size: 30px;
+        text-align: center;
+      }
+
+      .pipeline {
+        display: grid;
+        grid-template-columns: minmax(260px, 420px) minmax(260px, 1fr);
+        gap: 34px;
+        align-items: start;
+      }
+
+      .steps {
+        margin: 0;
+        padding-left: 28px;
+        font-size: 18px;
+      }
+
+      .steps li {
+        margin: 8px 0;
+      }
+
+      .note {
+        padding: 18px;
+        background: #f3f0ff;
+        border: 2px solid #7c3aed;
+        border-radius: 8px;
+        color: #322653;
+      }
+
+      .memory {
+        display: grid;
+        gap: 18px;
+      }
+
+      .memory .node {
+        min-height: 84px;
+        justify-items: start;
+        text-align: left;
+      }
+
+      .memory-arrow {
+        text-align: center;
+        color: #667085;
+        font-weight: 700;
+      }
+
+      .footer-note {
+        margin-top: 20px;
+        color: var(--muted);
+        text-align: center;
+        font-size: 18px;
+      }
+
+      @media (max-width: 860px) {
+        .three,
+        .pipeline {
+          grid-template-columns: 1fr;
+        }
+
+        .flow {
+          flex-direction: column;
+          align-items: stretch;
+        }
+
+        .arrow {
+          transform: rotate(90deg);
+          text-align: center;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>第一期视频视觉稿预览</h1>
+      <p class="lead">这页是快速预览，正式录制建议用同目录下的 Excalidraw 文件。</p>
+
+      <section class="board">
+        <h2>1. 普通聊天 Demo：能跑，但很快会遇到边界</h2>
+        <div class="flow">
+          <div class="node blue">用户输入</div>
+          <div class="arrow">→</div>
+          <div class="node amber">Prompt</div>
+          <div class="arrow">→</div>
+          <div class="node green">LLM</div>
+          <div class="arrow">→</div>
+          <div class="node red">回复</div>
+        </div>
+        <ol class="questions">
+          <li>怎么记得以前聊过什么？</li>
+          <li>怎么处理提醒、文件、音乐这些真实动作？</li>
+          <li>怎么在 Web / 桌宠 / QQ 保持同一个角色？</li>
+          <li>怎么让回复还没生成完，前端已经能先显示文字和表情？</li>
+        </ol>
+      </section>
+
+      <section class="board">
+        <h2>2. 三个入口，不是三套 AI</h2>
+        <div class="three">
+          <div class="node blue">Web 端<small>对话驱动的 galgame</small></div>
+          <div class="node green">桌宠端<small>日常陪伴 / 桌面上下文</small></div>
+          <div class="node amber">QQ 端<small>轻量聊天 / 文件任务</small></div>
+        </div>
+        <div class="down">↓</div>
+        <div class="merge">
+          <div class="node violet">POST /think</div>
+          <div class="down">↓</div>
+          <div class="node white">AkaneMemoryEngine<small>同一个后端大脑</small></div>
+        </div>
+      </section>
+
+      <section class="board">
+        <h2>3. 一条消息进入系统后，大概经历什么？</h2>
+        <div class="pipeline">
+          <ol class="steps">
+            <li>用户发消息</li>
+            <li>前端 <strong>sendMessage</strong></li>
+            <li>POST <strong>/think</strong></li>
+            <li>确认身份和 session</li>
+            <li>保存用户消息</li>
+            <li>读取可见上下文</li>
+            <li>前置记忆检索</li>
+            <li>拼接 Prompt</li>
+            <li>LLM 生成结构化 JSON</li>
+            <li>检查 tool_call / 执行工具</li>
+            <li>NDJSON 流式返回前端</li>
+          </ol>
+          <div class="note">
+            <strong>第一期只讲主链路。</strong>
+            <p>目标是让观众知道入口在哪里、数据怎么流、为什么它不是普通聊天框。</p>
+            <p>RAG / Tool Calling 的细节留到后面单独讲。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="board">
+        <h2>4. 长期记忆：不是全塞进 Prompt，而是逐层沉淀</h2>
+        <div class="memory">
+          <div class="node blue">Layer 1：原始对话 raw message<small>细节最多，也最容易变多</small></div>
+          <div class="memory-arrow">压缩 ↓</div>
+          <div class="node green">Layer 2：阶段摘要 episodic summary<small>把一段时间聊过什么压缩下来</small></div>
+          <div class="memory-arrow">再压缩 ↓</div>
+          <div class="node violet">Layer 3：长期语义记忆 semantic summary<small>稳定事实 / 长期偏好 / 反复话题 / open loop</small></div>
+        </div>
+        <p class="footer-note">SQLite 保存权威数据；ChromaDB 是检索索引。检索命中 source_id 后，再回 SQLite 还原上下文。</p>
+      </section>
+    </main>
+  </body>
+</html>

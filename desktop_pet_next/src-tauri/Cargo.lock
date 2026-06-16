@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "akane_desktop_pet_next"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde",
  "serde_json",

@@ -110,6 +110,43 @@
             </button>
           </div>
 
+          <section class="settings-section model-service-settings" id="model-service-settings">
+            <div class="settings-section__title">模型服务</div>
+            <div class="model-service-settings__status">
+              <strong id="model-service-status">正在读取配置</strong>
+              <span id="model-service-status-detail">请稍候</span>
+            </div>
+            <div class="model-service-settings__form">
+              <label>
+                <span>服务商</span>
+                <select id="model-service-provider"></select>
+              </label>
+              <label>
+                <span>Base URL</span>
+                <input id="model-service-base-url" type="text" placeholder="https://api.example.com/v1" />
+              </label>
+              <label>
+                <span>API Key</span>
+                <input id="model-service-api-key" type="password" placeholder="粘贴服务商提供的 API Key" autocomplete="off" />
+              </label>
+              <label>
+                <span>聊天模型</span>
+                <input id="model-service-chat-model" type="text" list="model-service-model-list" placeholder="检测或手动填写模型名" />
+                <datalist id="model-service-model-list"></datalist>
+              </label>
+              <label class="model-service-settings__vision">
+                <input id="model-service-use-vision" type="checkbox" checked />
+                <span>同时用于图片与屏幕理解</span>
+              </label>
+            </div>
+            <div class="model-service-settings__actions">
+              <button id="model-service-models" type="button">检测模型</button>
+              <button id="model-service-test" type="button">测试 API</button>
+              <button id="model-service-save" type="button">保存并应用</button>
+            </div>
+            <p class="settings-note" id="model-service-message">普通用户只需配置这一处；高级多模型分工仍可使用 .env。</p>
+          </section>
+
           <section class="settings-section">
             <div class="settings-section__title">对话</div>
             <div class="session-toolbar">

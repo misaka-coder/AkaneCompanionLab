@@ -5,12 +5,17 @@ import re
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
+from akane_paths import ensure_akane_data_paths
 
 logger = logging.getLogger("akane.config")
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = str(BASE_DIR / "users_data")
-Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
+AKANE_DATA_PATHS = ensure_akane_data_paths()
+DATA_ROOT = str(AKANE_DATA_PATHS.root)
+DATA_DIR = str(AKANE_DATA_PATHS.users_data)
+CHARACTERS_DIR = str(AKANE_DATA_PATHS.characters)
+STATE_DIR = str(AKANE_DATA_PATHS.state)
+LOG_DIR = str(AKANE_DATA_PATHS.logs)
 DEFAULT_EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
 
 
@@ -192,7 +197,7 @@ class Settings(BaseSettings):
     QQ_BRIDGE_ENABLED: bool = False
     # OneBot HTTP 服务地址
     QQ_ONEBOT_HTTP_URL: str = "http://127.0.0.1:3001"
-    # Bot 自己的 QQ 号
+    # Bot 自己的 QQ 号；留空时仍可使用事件里的 self_id
     QQ_BOT_QQ: str = ""
     # QQ 文字聊天默认使用的 Creator Kit 角色包 id（留空=Akane 默认人设）
     QQ_CHARACTER_PACK_ID: str = ""
@@ -200,6 +205,8 @@ class Settings(BaseSettings):
     QQ_REPLY_MODE: str = "auto"
     # QQ 语音合成读取的本地能力配置 profile（留空=WEB_OWNER_PROFILE_USER_ID/master）
     QQ_TTS_PROFILE_USER_ID: str = ""
+    # QQ 联网搜索读取的本地能力配置 profile（留空=WEB_OWNER_PROFILE_USER_ID/master）
+    QQ_WEB_SEARCH_PROFILE_USER_ID: str = ""
     # QQ 语音回复最大合成文本长度，超过后降级为文字
     QQ_VOICE_MAX_TEXT_CHARS: int = 280
     # QQ 语音回复最多合成的 speech segment 数
@@ -257,8 +264,8 @@ class Settings(BaseSettings):
     # owner 模式下使用的 profile 标识
     WEB_OWNER_PROFILE_USER_ID: str = "master"
 
-    # 主人 QQ 号（owner 模式用于识别自己）
-    MASTER_QQ: int = 1906243651
+    # 主人 QQ 号；留空时私聊使用独立 QQ 身份
+    MASTER_QQ: str = ""
 
     # 监听地址 & 端口
     HOST: str = "0.0.0.0"
@@ -356,7 +363,7 @@ def _apply_settings(s: Settings) -> None:
     global MAX_BROWSER_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
     global AKANE_WORKSPACE_ROOT, AKANE_WORKSPACE_MAX_READ_BYTES
     global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ, QQ_CHARACTER_PACK_ID
-    global QQ_REPLY_MODE, QQ_TTS_PROFILE_USER_ID, QQ_VOICE_MAX_TEXT_CHARS, QQ_VOICE_MAX_SEGMENTS
+    global QQ_REPLY_MODE, QQ_TTS_PROFILE_USER_ID, QQ_WEB_SEARCH_PROFILE_USER_ID, QQ_VOICE_MAX_TEXT_CHARS, QQ_VOICE_MAX_SEGMENTS
     global QQ_GROUP_PLAINTEXT_ENABLED, QQ_GROUP_FOLLOW_TTL_SECONDS, QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS
     global QQ_ATTACHMENT_DEBOUNCE_SECONDS, QQ_ATTACHMENT_READY_WAIT_SECONDS, QQ_REPLY_SEGMENT_DELAY_SECONDS
     global QQ_EVENT_MAX_AGE_SECONDS, QQ_ALLOW_STALE_EVENTS, QQ_REQUIRE_FILE_DELIVERY_INTENT
@@ -447,7 +454,8 @@ def _apply_settings(s: Settings) -> None:
     # === QQ / NapCat ===
     QQ_BRIDGE_ENABLED = bool(s.QQ_BRIDGE_ENABLED)
     QQ_ONEBOT_HTTP_URL = str(s.QQ_ONEBOT_HTTP_URL or "http://127.0.0.1:3001").strip().rstrip("/") or "http://127.0.0.1:3001"
-    QQ_BOT_QQ = str(s.QQ_BOT_QQ or "").strip()
+    raw_qq_bot_qq = str(s.QQ_BOT_QQ or "").strip()
+    QQ_BOT_QQ = raw_qq_bot_qq if raw_qq_bot_qq.isdigit() else ""
     raw_qq_character_pack_id = str(s.QQ_CHARACTER_PACK_ID or "").strip()
     QQ_CHARACTER_PACK_ID = (
         raw_qq_character_pack_id
@@ -460,6 +468,18 @@ def _apply_settings(s: Settings) -> None:
     QQ_TTS_PROFILE_USER_ID = (
         raw_qq_tts_profile_user_id
         if raw_qq_tts_profile_user_id and re.fullmatch(r"[A-Za-z0-9_.-]+", raw_qq_tts_profile_user_id)
+        else "master"
+    )
+    raw_qq_web_search_profile_user_id = str(
+        s.QQ_WEB_SEARCH_PROFILE_USER_ID or s.WEB_OWNER_PROFILE_USER_ID or "master"
+    ).strip()
+    QQ_WEB_SEARCH_PROFILE_USER_ID = (
+        raw_qq_web_search_profile_user_id
+        if raw_qq_web_search_profile_user_id
+        and (
+            raw_qq_web_search_profile_user_id.lower() in {"conversation", "context", "current"}
+            or re.fullmatch(r"[A-Za-z0-9_.-]+", raw_qq_web_search_profile_user_id)
+        )
         else "master"
     )
     QQ_VOICE_MAX_TEXT_CHARS = max(20, min(1200, int(s.QQ_VOICE_MAX_TEXT_CHARS)))
@@ -532,7 +552,8 @@ def _apply_settings(s: Settings) -> None:
     SEMANTIC_REINFORCEMENT_MIN_OVERLAP = max(1, int(s.SEMANTIC_REINFORCEMENT_MIN_OVERLAP))
 
     # === host / port / qq ===
-    MASTER_QQ = s.MASTER_QQ
+    raw_master_qq = str(s.MASTER_QQ or "").strip()
+    MASTER_QQ = raw_master_qq if raw_master_qq.isdigit() else ""
     PORT = s.PORT
     HOST = s.HOST
 

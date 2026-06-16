@@ -58,7 +58,7 @@
 
 - 桌宠角色工坊 V1：`docs/desktop_pet_character_workshop_v1/README.md`
 - 这条主线以 `desktop_pet_next` 为新桌宠主线，旧 Electron `desktop_pet` 冻结，仅保留当前可用状态。
-- 设置窗口默认使用 `control-center-lab.html`；旧 `settings.html` 只作为 `AKANE_LEGACY_SETTINGS=1` 的回退入口。
+- 设置窗口唯一实现为 `control-center-lab.html`。`settings.html` 仅是兼容跳转页；不要在其中新增功能，也不要恢复旧设置实现。
 
 ## Agent 护栏
 

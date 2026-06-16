@@ -336,6 +336,7 @@ class _TopLevelJSONStreamTap:
 
 class LLMRuntime:
     def __init__(self):
+        self._bundle_lock = threading.RLock()
         self.aux = self._build_aux_bundle()
         self.chat = self._build_chat_bundle()
         self._metrics_lock = threading.RLock()
@@ -345,6 +346,18 @@ class LLMRuntime:
             "aux_ndjson_calls": 0,
             "chat_stream_calls": 0,
             "errors": 0,
+        }
+
+    def reload_from_config(self) -> dict[str, str]:
+        aux = self._build_aux_bundle()
+        chat = self._build_chat_bundle()
+        with self._bundle_lock:
+            self.aux = aux
+            self.chat = chat
+        return {
+            "status": "reloaded",
+            "auxModel": aux.model,
+            "chatModel": chat.model,
         }
 
     def _build_aux_bundle(self) -> ModelBundle:

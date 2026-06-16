@@ -4,7 +4,7 @@ setlocal
 set "SCRIPT_DIR=%~dp0"
 set "PROJECT_DIR=%SCRIPT_DIR%.."
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%\start_akane_next.ps1" -Dev %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%\start_akane_next.ps1" %*
 set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (

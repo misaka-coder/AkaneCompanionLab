@@ -58,6 +58,39 @@ const ANYSEARCH_MCP_PRESET = Object.freeze({
   toolLabels: ["网页搜索", "正文提取", "垂直搜索"],
   lastDiscoveryLabel: "预设待保存"
 });
+const MCP_STDIO_TEMPLATES = Object.freeze([
+  {
+    id: "custom-stdio",
+    serverId: "custom_mcp",
+    label: "添加自定义 stdio",
+    displayName: "自定义 MCP",
+    command: "",
+    argsText: "",
+    reason: "填写本地 MCP server 的启动命令，再保存并发现工具。"
+  },
+  {
+    id: "node-stdio",
+    serverId: "node_mcp",
+    label: "Node / npx 模板",
+    displayName: "Node MCP",
+    command: "npx",
+    argsText: "-y\nyour-mcp-server-package",
+    reason: "适合 npm 包形式的 MCP server；把包名替换成真实服务。"
+  },
+  {
+    id: "python-stdio",
+    serverId: "python_mcp",
+    label: "Python 模板",
+    displayName: "Python MCP",
+    command: "python",
+    argsText: "-m\nyour_mcp_server",
+    reason: "适合 Python 模块形式的 MCP server；把模块名替换成真实服务。"
+  }
+]);
+const MCP_TRANSPORT_ROADMAP = Object.freeze([
+  { label: "HTTP / Streamable", status: "后续接入" },
+  { label: "SSE", status: "后续接入" }
+]);
 const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 let latestRuntimeSnapshot = null;
 let runtimeSnapshotHydrateTimer = 0;
@@ -85,6 +118,7 @@ let {
   abilities: abilitiesPage,
   advanced: advancedPage,
   character: characterPage,
+  model: modelPage,
   music: musicPage,
   overview: overviewPage,
   perception: perceptionPage,
@@ -120,6 +154,10 @@ const state = {
   activeInterval: perceptionPage.featureCards.find((card) => card.id === "proactive")?.activeOption || "5 分钟",
   activeVoicePreset: voicePage.tts?.voice || "Akane Voice",
   activeMusicMode: musicPage.modes[0],
+  modelDraft: buildModelServiceDraft(modelPage),
+  modelModels: [],
+  modelActionStatus: "",
+  modelBusyAction: "",
   voice: buildVoiceState(voicePage),
   advancedCoreSwitches: buildAdvancedCoreSwitchState(advancedPage.coreSettings),
   expandedPerceptionCard: null,
@@ -179,8 +217,29 @@ async function hydrateControlCenterSnapshot() {
     const raw = await dataSource.readSnapshot();
     if (!raw) return;
     applyControlCenterSnapshot(createControlCenterSnapshot(raw), { renderShell: false });
+    await hydrateModelService();
   } catch (error) {
     console.info("[control-center] keep mock snapshot:", formatError(error));
+  }
+}
+
+async function hydrateModelService() {
+  if (typeof dataSource?.readModelService !== "function") return;
+  try {
+    const payload = await dataSource.readModelService();
+    if (!payload || typeof payload !== "object") return;
+    modelPage = {
+      ...modelPage,
+      ...payload,
+      providers: Array.isArray(payload.providers) ? payload.providers : modelPage.providers
+    };
+    state.modelDraft = buildModelServiceDraft(modelPage);
+    state.modelActionStatus = "";
+    if (state.activePage === "model") {
+      renderActivePage();
+    }
+  } catch (error) {
+    state.modelActionStatus = `读取配置失败：${formatError(error)}`;
   }
 }
 
@@ -215,6 +274,7 @@ function applyControlCenterSnapshot(nextSnapshot, options = {}) {
     abilities: abilitiesPage,
     advanced: advancedPage,
     character: characterPage,
+    model: modelPage,
     music: musicPage,
     overview: overviewPage,
     perception: perceptionPage,
@@ -243,6 +303,7 @@ function syncInteractiveStateWithSnapshot() {
   }
   syncPerceptionInteractiveState();
   syncVoiceInteractiveState();
+  syncModelInteractiveState();
   syncAdvancedInteractiveState();
   syncProviderInteractiveState();
 }
@@ -269,6 +330,12 @@ function syncAdvancedInteractiveState() {
 
 function syncVoiceInteractiveState() {
   state.voice = buildVoiceState(voicePage);
+}
+
+function syncModelInteractiveState() {
+  if (!state.modelBusyAction) {
+    state.modelDraft = buildModelServiceDraft(modelPage);
+  }
 }
 
 function syncProviderInteractiveState() {
@@ -348,6 +415,12 @@ function renderShell() {
 
 function bindEvents() {
   root.addEventListener("click", (event) => {
+    const modelActionButton = event.target.closest("[data-model-service-action]");
+    if (modelActionButton) {
+      void runModelServiceAction(modelActionButton.dataset.modelServiceAction);
+      return;
+    }
+
     const musicProgressTrack = event.target.closest("[data-music-progress-track]");
     if (musicProgressTrack) {
       const durationSeconds = Number(musicProgressTrack.dataset.durationSeconds || 0);
@@ -459,6 +532,12 @@ function bindEvents() {
     const mcpPresetButton = event.target.closest("[data-mcp-preset]");
     if (mcpPresetButton) {
       applyMcpPreset(mcpPresetButton.dataset.mcpPreset);
+      return;
+    }
+
+    const mcpTemplateButton = event.target.closest("[data-mcp-template]");
+    if (mcpTemplateButton) {
+      applyMcpTemplate(mcpTemplateButton.dataset.mcpTemplate);
       return;
     }
 
@@ -674,6 +753,32 @@ function bindEvents() {
   });
 
   root.addEventListener("change", (event) => {
+    const modelProviderSelect = event.target.closest("[data-model-provider]");
+    if (modelProviderSelect) {
+      const draft = readModelServiceForm();
+      const preset = modelProviderById(modelProviderSelect.value);
+      state.modelDraft = {
+        ...draft,
+        providerId: modelProviderSelect.value,
+        protocol: preset?.protocol || draft.protocol || "openai",
+        baseUrl: preset?.baseUrl || (modelProviderSelect.value === "openai_compatible" ? draft.baseUrl : "")
+      };
+      state.modelModels = [];
+      state.modelActionStatus = preset?.description || "";
+      renderActivePage();
+      return;
+    }
+
+    const modelVisionToggle = event.target.closest("[data-model-use-vision]");
+    if (modelVisionToggle) {
+      state.modelDraft = {
+        ...readModelServiceForm(),
+        useForVision: Boolean(modelVisionToggle.checked)
+      };
+      renderActivePage();
+      return;
+    }
+
     const workflowFileInput = event.target.closest("[data-workflow-file-input]");
     if (workflowFileInput) {
       void importWorkflowFile(workflowFileInput);
@@ -705,12 +810,80 @@ async function runProviderConfigAction(button, actionId) {
   renderActivePage();
 }
 
+async function runModelServiceAction(actionId) {
+  if (!actionId || state.modelBusyAction || typeof dataSource?.runModelServiceAction !== "function") {
+    return;
+  }
+  const draft = readModelServiceForm();
+  state.modelDraft = draft;
+  state.modelBusyAction = actionId;
+  state.modelActionStatus = modelBusyLabel(actionId);
+  renderActivePage();
+  try {
+    const result = await dataSource.runModelServiceAction(actionId, draft);
+    if (actionId === "models" && result?.ok) {
+      state.modelModels = Array.isArray(result.models) ? result.models : [];
+      if (!state.modelDraft.chatModel && state.modelModels.length) {
+        state.modelDraft.chatModel = state.modelModels[0];
+      }
+    }
+    if (actionId === "save" && result?.ok) {
+      modelPage = {
+        ...modelPage,
+        ...result,
+        providers: Array.isArray(result.providers) ? result.providers : modelPage.providers
+      };
+      state.modelDraft = buildModelServiceDraft(modelPage);
+    }
+    state.modelActionStatus = modelActionStatusLabel(actionId, result);
+  } catch (error) {
+    state.modelActionStatus = `操作失败：${formatError(error)}`;
+  } finally {
+    state.modelBusyAction = "";
+    renderActivePage();
+  }
+}
+
+function modelBusyLabel(actionId) {
+  if (actionId === "models") return "正在读取服务商的模型列表...";
+  if (actionId === "test") return "正在发送最小测试请求...";
+  return "正在保存并刷新模型服务...";
+}
+
+function modelActionStatusLabel(actionId, result) {
+  if (!result?.ok) {
+    const reason = String(result?.reason || result?.error || result?.status || "未知错误");
+    return `失败：${reason}`;
+  }
+  if (actionId === "models") {
+    return result.models?.length ? `发现 ${result.models.length} 个模型，可以直接选择。` : "服务可连接，但没有返回模型列表。";
+  }
+  if (actionId === "test") {
+    return `连接成功，模型返回：${String(result.message || "OK")}`;
+  }
+  return "已保存并立即生效。";
+}
+
 async function runMcpConfigAction(button, actionId) {
   const payload = readMcpConfigPayload(button);
   if (!payload.serverId) return;
   state.activeMcpConfigId = payload.serverId;
-  state.mcpActionStatus[payload.serverId] = actionId === CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover ? "正在发现工具" : "正在保存";
+  state.mcpActionStatus[payload.serverId] = actionId === CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover ? "正在保存并发现工具" : "正在保存";
   renderActivePage();
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover) {
+    const saveResult = await actionRouter.run(
+      CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave,
+      payload,
+      { source: "control-center-lab" }
+    );
+    if (!saveResult?.ok) {
+      state.mcpActionStatus[payload.serverId] = `保存失败：${mcpActionStatusLabel(saveResult)}`;
+      renderActivePage();
+      return;
+    }
+    state.mcpActionStatus[payload.serverId] = "已保存，正在测试连接";
+    renderActivePage();
+  }
   const result = await actionRouter.run(actionId, payload, { source: "control-center-lab" });
   state.mcpActionStatus[payload.serverId] = mcpActionStatusLabel(result);
   renderActivePage();
@@ -928,6 +1101,48 @@ function applyMcpPreset(presetId) {
   renderActivePage();
 }
 
+function applyMcpTemplate(templateId) {
+  const template = MCP_STDIO_TEMPLATES.find((item) => item.id === String(templateId || "").trim());
+  if (!template) return;
+  const serverId = uniqueMcpDraftServerId(template.serverId);
+  state.activeMcpConfigId = serverId;
+  state.mcpConfigDrafts[serverId] = {
+    serverId,
+    displayName: template.displayName,
+    command: template.command,
+    argsText: template.argsText,
+    cwd: "",
+    envText: "",
+    enabled: true,
+    templateId: template.id,
+    reason: template.reason
+  };
+  renderActivePage();
+}
+
+function uniqueMcpDraftServerId(baseId) {
+  const base = safeMcpDraftServerId(baseId) || "custom_mcp";
+  const existing = new Set([
+    ...Object.keys(state.mcpConfigDrafts || {}),
+    ...(Array.isArray(abilitiesPage.mcpServers) ? abilitiesPage.mcpServers.map((item) => item.serverId || item.id || "") : [])
+  ].map((item) => String(item || "").trim()).filter(Boolean));
+  if (!existing.has(base)) return base;
+  for (let index = 2; index <= 20; index += 1) {
+    const candidate = `${base}_${index}`;
+    if (!existing.has(candidate)) return candidate;
+  }
+  return `${base}_${Date.now().toString(36).slice(-4)}`;
+}
+
+function safeMcpDraftServerId(value) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/[^A-Za-z0-9_.-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+  return normalized || "custom_mcp";
+}
+
 function readWorkflowConfigPayload(button) {
   const workflowId = String(button?.dataset?.workflowId || "").trim();
   const row = button?.closest?.("[data-workflow-row]");
@@ -978,10 +1193,14 @@ function mcpActionStatusLabel(result) {
   if (result.status === "saved") return result.ok ? "MCP 配置已保存" : "保存失败";
   if (result.status === "discovered") return result.ok ? `发现 ${Number(result.toolCount || 0)} 个工具` : "发现失败";
   if (result.status === "missing_config") return "需要填写启动命令";
+  if (result.status === "disabled") return "服务已关闭，请先启用";
   if (result.status === "invalid_config") return "配置异常";
   if (result.status === "invalid_mcp_server") return "服务 ID 需要修正";
   if (result.status === "discovery-failed") return "发现工具失败";
-  if (result.status === "not-implemented") return "当前环境未绑定发现器";
+  if (result.status === "not-implemented" || result.reason === "mcp_discoverer_not_bound") return "当前后端未绑定 MCP 发现器";
+  if (result.reason === "mcp_server_config_missing") return "请先保存 MCP 配置";
+  if (result.reason === "mcp_server_disabled") return "服务已关闭，请先启用";
+  if (result.reason === "mcp_discovery_failed") return "MCP 启动或 tools/list 失败";
   if (result.status === "request-failed") return "请求失败";
   return result.ok ? "已完成" : "操作失败";
 }
@@ -1070,6 +1289,7 @@ function renderActivePage() {
   }
   const renderers = {
     overview: renderOverviewPage,
+    model: renderModelPage,
     character: renderCharacterPage,
     voice: renderVoicePage,
     music: renderMusicPage,
@@ -1429,6 +1649,171 @@ function renderHealthTile(item) {
 
 function renderStaticSwitch(isOn) {
   return `<span class="static-switch ${isOn ? "is-on" : ""}"><i></i></span>`;
+}
+
+function renderModelPage() {
+  const draft = state.modelDraft || buildModelServiceDraft(modelPage);
+  const provider = modelProviderById(draft.providerId);
+  const configured = String(modelPage.status || "") === "configured";
+  const statusLabel = configured ? "已配置" : "等待配置";
+  const statusDetail = configured
+    ? `${provider?.label || draft.providerId} · ${draft.chatModel || "未选择模型"}`
+    : "填写并测试后即可开始对话";
+  const apiKeyPlaceholder = modelPage.hasApiKey
+    ? "已保存，留空表示继续使用原密钥"
+    : provider?.apiKeyRequired === false
+      ? "本地服务通常无需填写"
+      : "粘贴服务商提供的 API Key";
+  const modelOptions = Array.from(new Set([
+    ...state.modelModels,
+    draft.chatModel
+  ].filter(Boolean)));
+  const busy = Boolean(state.modelBusyAction);
+  return `
+    ${renderPageTitle(modelPage)}
+    <section class="model-service-page">
+      <article class="glass-card model-service-status ${configured ? "is-ready" : "needs-config"}">
+        <div class="model-status-mark">${icon(configured ? "check" : "sparkle")}</div>
+        <div>
+          <span>当前连接</span>
+          <h2>${escapeHtml(statusLabel)}</h2>
+          <p>${escapeHtml(statusDetail)}</p>
+        </div>
+        <div class="model-status-source">
+          <span>配置来源</span>
+          <strong>${escapeHtml(modelPage.source === "local_file" ? "控制中心" : ".env / 默认值")}</strong>
+        </div>
+      </article>
+
+      <div class="model-service-grid">
+        <article class="glass-card model-config-card">
+          <div class="card-heading">
+            <div>
+              <span>基础配置</span>
+              <h2>连接模型服务</h2>
+            </div>
+            <span class="model-protocol-badge">${escapeHtml(draft.protocol || provider?.protocol || "openai")}</span>
+          </div>
+
+          <div class="model-config-form">
+            <label class="span-2">
+              <span>服务商</span>
+              <select data-model-provider>
+                ${(modelPage.providers || []).map((item) => `
+                  <option value="${escapeAttr(item.id)}"${item.id === draft.providerId ? " selected" : ""}>${escapeHtml(item.label)}</option>
+                `).join("")}
+              </select>
+              <small>${escapeHtml(provider?.description || "填写兼容 OpenAI Chat Completions 的服务地址。")}</small>
+            </label>
+
+            <label class="span-2">
+              <span>Base URL</span>
+              <input data-model-base-url type="text" value="${escapeAttr(draft.baseUrl)}" placeholder="https://api.example.com/v1" autocomplete="url" />
+              <small>填写到服务根地址或 /v1，不要填 /chat/completions。</small>
+            </label>
+
+            <label class="span-2">
+              <span>API Key</span>
+              <input data-model-api-key type="password" value="${escapeAttr(draft.apiKey)}" placeholder="${escapeAttr(apiKeyPlaceholder)}" autocomplete="off" />
+              <small>密钥只保存在本机配置文件中，读取接口不会把它返回给界面。</small>
+            </label>
+
+            <label>
+              <span>聊天模型</span>
+              <input data-model-chat-model type="text" list="model-service-models" value="${escapeAttr(draft.chatModel)}" placeholder="先检测，或手动填写模型名" />
+              <datalist id="model-service-models">
+                ${modelOptions.map((model) => `<option value="${escapeAttr(model)}"></option>`).join("")}
+              </datalist>
+            </label>
+
+            <label>
+              <span>请求超时</span>
+              <input data-model-timeout type="number" min="5" max="600" value="${escapeAttr(String(draft.timeoutSeconds || 120))}" />
+              <small>单位：秒</small>
+            </label>
+
+            <label class="model-inline-toggle span-2">
+              <input data-model-use-vision type="checkbox"${draft.useForVision ? " checked" : ""} />
+              <span>
+                <strong>同时用于图片与屏幕理解</strong>
+                <small>主模型支持视觉时可直接开启；也可以在下方填写不同的视觉模型名。</small>
+              </span>
+            </label>
+
+            ${draft.useForVision ? `
+              <label class="span-2">
+                <span>视觉模型（可选）</span>
+                <input data-model-vision-model type="text" list="model-service-models" value="${escapeAttr(draft.visionModel)}" placeholder="留空则使用聊天模型" />
+              </label>
+            ` : ""}
+
+            ${modelPage.hasApiKey ? `
+              <label class="model-clear-key span-2">
+                <input data-model-clear-key type="checkbox" />
+                <span>清除已经保存的 API Key</span>
+              </label>
+            ` : ""}
+          </div>
+
+          <div class="model-config-actions">
+            <button type="button" data-model-service-action="models"${busy ? " disabled" : ""}>${icon("refresh")} ${state.modelBusyAction === "models" ? "检测中" : "检测模型"}</button>
+            <button type="button" data-model-service-action="test"${busy ? " disabled" : ""}>${icon("check")} ${state.modelBusyAction === "test" ? "测试中" : "测试 API"}</button>
+            <button class="primary" type="button" data-model-service-action="save"${busy ? " disabled" : ""}>${icon("checkCircle")} ${state.modelBusyAction === "save" ? "保存中" : "保存并应用"}</button>
+          </div>
+          <p class="model-action-status">${escapeHtml(state.modelActionStatus || "建议先“检测模型”，选好后再“测试 API”，最后保存。")}</p>
+        </article>
+
+        <aside class="glass-card model-guide-card">
+          <span class="model-guide-kicker">首次配置</span>
+          <h2>只需要三样东西</h2>
+          <ol>
+            <li><strong>服务商</strong><span>选择官方服务、本地 Ollama 或兼容中转。</span></li>
+            <li><strong>API Key</strong><span>Ollama 以外通常需要；Akane 不会在响应中回传密钥。</span></li>
+            <li><strong>模型名</strong><span>优先点“检测模型”，不支持列表接口时再手动填写。</span></li>
+          </ol>
+          <div class="model-guide-note">
+            ${icon("info")}
+            <p><strong>高级用户</strong><br />仍可在 <code>.env</code> 中分别配置 CHAT、AUX、TEXT、VISION；控制中心保存的一体化配置优先用于本机日常使用。</p>
+          </div>
+        </aside>
+      </div>
+    </section>
+  `;
+}
+
+function buildModelServiceDraft(source = {}) {
+  return {
+    providerId: String(source.providerId || "openai_compatible"),
+    protocol: String(source.protocol || "openai"),
+    baseUrl: String(source.baseUrl || ""),
+    apiKey: "",
+    chatModel: String(source.chatModel || ""),
+    useForVision: source.useForVision !== false,
+    visionModel: String(source.visionModel || ""),
+    timeoutSeconds: Number(source.timeoutSeconds || 120),
+    clearApiKey: false
+  };
+}
+
+function readModelServiceForm() {
+  const fallback = state.modelDraft || buildModelServiceDraft(modelPage);
+  const providerId = String(root.querySelector("[data-model-provider]")?.value || fallback.providerId);
+  const provider = modelProviderById(providerId);
+  return {
+    providerId,
+    protocol: String(provider?.protocol || fallback.protocol || "openai"),
+    baseUrl: String(root.querySelector("[data-model-base-url]")?.value || fallback.baseUrl || "").trim(),
+    apiKey: String(root.querySelector("[data-model-api-key]")?.value || fallback.apiKey || "").trim(),
+    chatModel: String(root.querySelector("[data-model-chat-model]")?.value || fallback.chatModel || "").trim(),
+    useForVision: Boolean(root.querySelector("[data-model-use-vision]")?.checked ?? fallback.useForVision),
+    visionModel: String(root.querySelector("[data-model-vision-model]")?.value || fallback.visionModel || "").trim(),
+    timeoutSeconds: Number(root.querySelector("[data-model-timeout]")?.value || fallback.timeoutSeconds || 120),
+    clearApiKey: Boolean(root.querySelector("[data-model-clear-key]")?.checked)
+  };
+}
+
+function modelProviderById(providerId) {
+  return (modelPage.providers || []).find((item) => item.id === providerId) || null;
 }
 
 function renderCharacterPage() {
@@ -2081,6 +2466,7 @@ function renderAbilitiesPage() {
       </div>
       <div class="ability-body-grid">
         <div class="ability-left-stack">
+          ${renderProductizationPanel()}
           <article class="glass-card modules-card">
             <div class="card-heading">
               <h2>能力模块 ${icon("info")}</h2>
@@ -2114,6 +2500,49 @@ function renderAbilitiesPage() {
       </div>
     </section>
   `;
+}
+
+function renderProductizationPanel() {
+  const items = Array.isArray(abilitiesPage.productization) ? abilitiesPage.productization : [];
+  if (!items.length) return "";
+  return `
+    <article class="glass-card productization-card">
+      <div class="card-heading">
+        <h2>${icon("checkCircle")} 产品化状态</h2>
+        <span>开源前验收</span>
+      </div>
+      <p class="productization-note">这些不是要隐藏的功能，而是已经做过、正在补成可配置可诊断产品形态的能力。</p>
+      <div class="productization-grid">
+        ${items.map(renderProductizationItem).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function renderProductizationItem(item) {
+  const tone = item.tone || productizationTone(item.status);
+  return `
+    <section class="productization-item ${escapeAttr(tone)}">
+      <header>
+        <strong>${escapeHtml(item.title || "能力")}</strong>
+        <span>${escapeHtml(item.status || "待确认")}</span>
+      </header>
+      <p>${escapeHtml(item.description || "")}</p>
+      <dl>
+        <div><dt>配置</dt><dd>${escapeHtml(item.configure || "待补入口")}</dd></div>
+        <div><dt>验证</dt><dd>${escapeHtml(item.verify || "待补自检")}</dd></div>
+        <div><dt>依赖</dt><dd>${escapeHtml(item.dependency || "无额外依赖")}</dd></div>
+      </dl>
+    </section>
+  `;
+}
+
+function productizationTone(status) {
+  const value = String(status || "").toLowerCase();
+  if (value.includes("ready")) return "green";
+  if (value.includes("alpha")) return "blue";
+  if (value.includes("gap") || value.includes("待") || value.includes("productization")) return "orange";
+  return "muted";
 }
 
 function renderAdvancedPage() {
@@ -2604,43 +3033,125 @@ function renderMcpPanel() {
         <h2>${icon("sparkle")} 外部 MCP 工具</h2>
         <div class="mcp-heading-actions">
           <button type="button" data-mcp-preset="anysearch">${icon("search")} AnySearch 预设</button>
+          <button type="button" data-mcp-template="custom-stdio">${icon("plusCircle")} 添加自定义 stdio</button>
           <span>${readyCount}/${servers.length} 就绪 · ${toolCount} 个工具</span>
         </div>
       </div>
+      ${renderMcpManagerGuide()}
+      ${renderMcpTemplateStrip()}
       <div class="mcp-server-list">
         ${servers.map(renderMcpServerRow).join("")}
       </div>
-      <p class="mcp-panel-note">${icon("shield")} 当前仅同步工具目录，不会自动调用外部 MCP，也不会把工具直接暴露给提示词。</p>
+      <p class="mcp-panel-note">${icon("shield")} 当前首版只支持 stdio MCP；保存并发现只执行 initialize + tools/list，不会调用工具，也不会把工具直接暴露给提示词。</p>
     </article>
+  `;
+}
+
+function renderMcpManagerGuide() {
+  const steps = [
+    ["1", "选择模板", "AnySearch / Node / Python / 自定义 stdio"],
+    ["2", "保存配置", "命令与参数写入本地用户配置"],
+    ["3", "测试并发现", "启动 MCP 并读取 tools/list"],
+    ["4", "安全纳入目录", "默认不自动调用、不进提示词"]
+  ];
+  return `
+    <div class="mcp-manager-guide" aria-label="MCP 配置向导">
+      ${steps.map(([index, title, body]) => `
+        <span>
+          <strong>${escapeHtml(index)}</strong>
+          <em>${escapeHtml(title)}</em>
+          <small>${escapeHtml(body)}</small>
+        </span>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderGptSoVitsGuide() {
+  const steps = [
+    ["1", "连接服务", "填写 endpoint → 保存服务地址 → 健康检查"],
+    ["2", "识别声线", "填写本地模型文件夹 → 识别模型文件夹"],
+    ["3", "保存档案", "确认声线信息 → 保存声线档案"],
+    ["4", "试听并绑定角色", "试听一句 → 设为当前角色声音"]
+  ];
+  return `
+    <div class="gpt-sovits-guide" aria-label="GPT-SoVITS 配置向导">
+      ${steps.map(([index, title, body]) => `
+        <span>
+          <strong>${escapeHtml(index)}</strong>
+          <em>${escapeHtml(title)}</em>
+          <small>${escapeHtml(body)}</small>
+        </span>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderMcpTemplateStrip() {
+  const templateButtons = MCP_STDIO_TEMPLATES
+    .filter((item) => item.id !== "custom-stdio")
+    .map((item) => `
+      <button type="button" data-mcp-template="${escapeAttr(item.id)}">
+        ${icon("sparkle")}
+        <span>${escapeHtml(item.label)}</span>
+      </button>
+    `)
+    .join("");
+  const roadmap = MCP_TRANSPORT_ROADMAP.map((item) => `
+    <span class="mcp-roadmap-chip">
+      ${icon("info")}
+      <b>${escapeHtml(item.label)}</b>
+      <em>${escapeHtml(item.status)}</em>
+    </span>
+  `).join("");
+  return `
+    <div class="mcp-template-strip">
+      <strong>MCP 模板</strong>
+      ${templateButtons}
+      ${roadmap}
+    </div>
   `;
 }
 
 function buildVisibleMcpServers() {
   const servers = Array.isArray(abilitiesPage.mcpServers) ? abilitiesPage.mcpServers : [];
+  const draftRows = buildDraftMcpServers(servers);
   if (servers.length) {
-    const hasAnySearch = servers.some((item) => item.serverId === ANYSEARCH_MCP_PRESET.serverId);
-    if (!hasAnySearch && state.mcpConfigDrafts[ANYSEARCH_MCP_PRESET.serverId]) {
-      return [buildAnySearchDraftMcpServer(), ...servers];
-    }
-    return servers;
+    return [...draftRows, ...servers];
   }
   const draftId = Object.keys(state.mcpConfigDrafts || {})[0] || ANYSEARCH_MCP_PRESET.serverId;
   if (draftId === ANYSEARCH_MCP_PRESET.serverId) return [buildAnySearchDraftMcpServer()];
   const draft = state.mcpConfigDrafts[draftId] || {};
-  return [{
-    id: `provider.mcp.${draft.serverId || draftId}`,
-    serverId: draft.serverId || draftId,
+  return [buildCustomDraftMcpServer(draftId, draft)];
+}
+
+function buildDraftMcpServers(servers = []) {
+  const existingIds = new Set(servers.map((item) => String(item.serverId || item.id || "").trim()).filter(Boolean));
+  return Object.entries(state.mcpConfigDrafts || {})
+    .filter(([serverId]) => !existingIds.has(serverId))
+    .map(([serverId, draft]) => (
+      serverId === ANYSEARCH_MCP_PRESET.serverId
+        ? buildAnySearchDraftMcpServer()
+        : buildCustomDraftMcpServer(serverId, draft)
+    ));
+}
+
+function buildCustomDraftMcpServer(serverId, draft = {}) {
+  return {
+    id: `provider.mcp.${draft.serverId || serverId}`,
+    serverId: draft.serverId || serverId,
     title: draft.displayName || "自定义 MCP",
     status: "missing_config",
     statusLabel: "未配置",
     statusTone: "warning",
-    reason: "填写本地 MCP stdio 启动命令后，可以手动发现工具目录",
+    reason: draft.reason || "填写本地 MCP stdio 启动命令后，可以手动发现工具目录",
     enabled: draft.enabled ?? true,
     configured: false,
     transport: "stdio",
-    commandName: "",
+    commandName: draft.command || "",
     toolCount: 0,
     safeToolLabels: ["等待工具发现"],
+    toolDetails: [],
     highRiskCount: 0,
     promptExposedCount: 0,
     requiresConfirmation: false,
@@ -2648,7 +3159,7 @@ function buildVisibleMcpServers() {
     approvalLabel: "暂不可用",
     lastDiscoveryLabel: "未执行发现",
     isDraft: true
-  }];
+  };
 }
 
 function buildAnySearchDraftMcpServer() {
@@ -2667,6 +3178,12 @@ function buildAnySearchDraftMcpServer() {
     commandName: draft.command || ANYSEARCH_MCP_PRESET.command,
     toolCount: 0,
     safeToolLabels: ANYSEARCH_MCP_PRESET.toolLabels,
+    toolDetails: ANYSEARCH_MCP_PRESET.toolLabels.map((label) => ({
+      title: label,
+      detail: "预设能力，保存并发现后以 MCP 返回的工具目录为准。",
+      riskLabel: "低风险",
+      promptLabel: "默认不进提示词"
+    })),
     highRiskCount: 0,
     promptExposedCount: 0,
     requiresConfirmation: false,
@@ -2832,7 +3349,7 @@ function renderMcpConfigBody(server) {
             data-mcp-discover
             data-server-id="${escapeAttr(serverId)}"
             data-action-id="${CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover}"
-          >${icon("sparkle")} 发现工具</button>
+          >${icon("sparkle")} 保存并发现工具</button>
           <button
             type="button"
             data-mcp-config-save
@@ -2841,7 +3358,54 @@ function renderMcpConfigBody(server) {
           >${icon("checkCircle")} 保存配置</button>
         </div>
       </div>
+      ${renderMcpToolDetails(server)}
+      ${renderMcpDiagnostics(server)}
       <p>${icon("shield")} ${isAnySearchPreset ? "AnySearch API key 只通过本机环境变量读取；控制中心不会保存或回显真实 key。" : "已保存命令和路径不会在控制中心回显；发现工具只读取 tools/list，不会调用工具。"}</p>
+    </div>
+  `;
+}
+
+function renderMcpToolDetails(server) {
+  const tools = Array.isArray(server.toolDetails) ? server.toolDetails : [];
+  if (!tools.length) {
+    return `
+      <div class="mcp-tool-details empty">
+        <strong>${icon("info")} 工具清单</strong>
+        <p>保存并发现工具后，这里会显示安全摘要、风险级别和提示词暴露状态。</p>
+      </div>
+    `;
+  }
+  return `
+    <div class="mcp-tool-details">
+      <strong>${icon("info")} 工具清单</strong>
+      <div>
+        ${tools.slice(0, 8).map((tool) => `
+          <span>
+            <b>${escapeHtml(tool.title || "外部工具")}</b>
+            <em>${escapeHtml(tool.riskLabel || "待确认")}</em>
+            <small>${escapeHtml(tool.promptLabel || "默认不进提示词")}</small>
+          </span>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderMcpDiagnostics(server) {
+  const diagnostics = [
+    ["传输", server.transport || "stdio"],
+    ["启动器", server.commandName || "待填写"],
+    ["发现状态", server.lastDiscoveryLabel || "未执行发现"],
+    ["审批策略", server.approvalLabel || approvalModeUiLabel(server.approvalMode)]
+  ];
+  return `
+    <div class="mcp-diagnostics">
+      ${diagnostics.map(([label, value]) => `
+        <span>
+          <em>${escapeHtml(label)}</em>
+          <strong>${escapeHtml(value)}</strong>
+        </span>
+      `).join("")}
     </div>
   `;
 }
@@ -2897,6 +3461,7 @@ function renderProviderConfigBody(provider, endpoint, defaultEndpoint) {
   const voiceProfile = provider.adapter === "gpt_sovits" ? getProviderVoiceProfileDraft(provider) : null;
   return `
     <div class="provider-config-body">
+      ${provider.adapter === "gpt_sovits" ? renderGptSoVitsGuide() : ""}
       <label>
         <span>本地服务地址</span>
         <input

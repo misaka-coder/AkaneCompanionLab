@@ -48,6 +48,7 @@ export function createControlCenterSnapshot(raw = {}) {
     shell,
     pages: {
       overview: adaptOverviewPage(raw.overviewPage || raw.overview || {}, overviewRuntime),
+      model: adaptModelPage(raw.modelPage || raw.model || {}),
       character: adaptCharacterPage(raw.characterPage || raw.character || {}, characterRuntime),
       voice: adaptVoicePage(raw.voicePage || raw.voice || {}, voiceRuntime),
       music: adaptMusicPage(raw.musicPage || raw.music || {}, musicRuntime),
@@ -58,6 +59,20 @@ export function createControlCenterSnapshot(raw = {}) {
     dataDomains: raw.controlCenterDataDomains || {},
     featureFlags: deriveFeatureFlags(raw)
   };
+}
+
+function adaptModelPage(page) {
+  const model = page && typeof page === "object" ? { ...page } : {};
+  model.providers = Array.isArray(model.providers) ? model.providers : [];
+  model.providerId = String(model.providerId || model.providers[0]?.id || "openai_compatible");
+  model.protocol = String(model.protocol || "openai");
+  model.baseUrl = String(model.baseUrl || "");
+  model.chatModel = String(model.chatModel || "");
+  model.visionModel = String(model.visionModel || "");
+  model.hasApiKey = Boolean(model.hasApiKey);
+  model.useForVision = model.useForVision !== false;
+  model.timeoutSeconds = Number(model.timeoutSeconds || 120);
+  return model;
 }
 
 function adaptCharacterPage(page, runtime = {}) {
@@ -269,6 +284,9 @@ function adaptAbilitiesPage(page, runtime = {}) {
   }
   if (Array.isArray(runtime.quickActions) && runtime.quickActions.length) {
     abilities.quickActions = runtime.quickActions;
+  }
+  if (Array.isArray(runtime.productization) && runtime.productization.length) {
+    abilities.productization = runtime.productization;
   }
   if (Array.isArray(runtime.modules) && runtime.modules.length) {
     abilities.modules = runtime.modules;

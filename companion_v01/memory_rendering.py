@@ -6,6 +6,34 @@ from typing import Any
 from .text_utils import normalize_text, timestamp_to_datetime_label
 
 
+RELATIVE_TIME_TOKENS = (
+    "今天",
+    "今日",
+    "今晚",
+    "今早",
+    "明天",
+    "明早",
+    "明晚",
+    "昨天",
+    "昨晚",
+    "前天",
+    "后天",
+    "上周",
+    "下周",
+    "上个月",
+    "下个月",
+    "去年",
+    "今年",
+    "最近",
+    "这段时间",
+    "当前",
+    "现在",
+    "刚才",
+    "一会儿",
+    "过几天",
+)
+
+
 def resolve_record_time_range(record: dict[str, Any], *, store: Any) -> tuple[int | None, int | None]:
     if record.get("period_start_ts") is not None or record.get("period_end_ts") is not None:
         start_ts = record.get("period_start_ts")
@@ -81,6 +109,15 @@ def render_memory_mood_line(record: dict[str, Any]) -> str:
     return "记忆情绪：" + " / ".join(rendered[:3])
 
 
+def render_relative_time_anchor_line(*, text: str, time_range_label: str) -> str:
+    if not time_range_label:
+        return ""
+    normalized = normalize_text(text)
+    if not any(token in normalized for token in RELATIVE_TIME_TOKENS):
+        return ""
+    return f"相对时间锚点：本条记忆中的今天/明天/昨天/最近等说法，均以 {time_range_label} 为准，不按当前日期重算。"
+
+
 def render_summary_snippet(record: dict[str, Any], *, store: Any) -> str:
     labels = []
     time_range_label = build_summary_time_range_label(record, store=store)
@@ -94,6 +131,16 @@ def render_summary_snippet(record: dict[str, Any], *, store: Any) -> str:
     core_facts = "；".join(record.get("core_facts") or [])
     prefix = f"【摘要回忆】[{ ' | '.join(labels) }] " if labels else "【摘要回忆】"
     parts = [f"{prefix}{record.get('diary_summary', '')}"]
+    anchor_line = render_relative_time_anchor_line(
+        text=" ".join(
+            [str(record.get("diary_summary") or "")]
+            + [str(event) for event in (record.get("key_events") or [])]
+            + [str(fact) for fact in (record.get("core_facts") or [])]
+        ),
+        time_range_label=time_range_label,
+    )
+    if anchor_line:
+        parts.append(anchor_line)
     mood_line = render_memory_mood_line(record)
     if mood_line:
         parts.append(mood_line)
@@ -113,6 +160,18 @@ def render_semantic_summary_snippet(record: dict[str, Any], *, store: Any) -> st
         labels.append(f"重要度:{float(record.get('importance') or 0.0):.2f}")
     prefix = f"【长期语义记忆】[{ ' | '.join(labels) }] " if labels else "【长期语义记忆】"
     parts = [f"{prefix}{record.get('semantic_summary', '')}"]
+    anchor_line = render_relative_time_anchor_line(
+        text=" ".join(
+            [str(record.get("semantic_summary") or "")]
+            + [str(fact) for fact in (record.get("stable_facts") or [])]
+            + [str(topic) for topic in (record.get("recurring_topics") or [])]
+            + [str(person) for person in (record.get("important_people") or [])]
+            + [str(item_text) for item_text in (record.get("open_loops") or [])]
+        ),
+        time_range_label=time_range_label,
+    )
+    if anchor_line:
+        parts.append(anchor_line)
     mood_line = render_memory_mood_line(record)
     if mood_line:
         parts.append(mood_line)
@@ -149,6 +208,16 @@ def render_summary_timeline(summaries: list[dict[str, Any]], *, store: Any) -> s
 
         header = f"[{' | '.join(labels)}] 摘要: {normalize_text(item.get('diary_summary', ''))}"
         details: list[str] = [header]
+        anchor_line = render_relative_time_anchor_line(
+            text=" ".join(
+                [str(item.get("diary_summary") or "")]
+                + [str(event) for event in (item.get("key_events") or [])]
+                + [str(fact) for fact in (item.get("core_facts") or [])]
+            ),
+            time_range_label=time_range_label,
+        )
+        if anchor_line:
+            details.append(anchor_line)
         mood_line = render_memory_mood_line(item)
         if mood_line:
             details.append(mood_line)
@@ -184,6 +253,18 @@ def render_semantic_summary_timeline(summaries: list[dict[str, Any]], *, store: 
         labels.append(f"强化:{int(item.get('reinforcement_count') or 1)}")
         header = f"[{' | '.join(labels)}] 长期记忆: {normalize_text(item.get('semantic_summary', ''))}"
         details: list[str] = [header]
+        anchor_line = render_relative_time_anchor_line(
+            text=" ".join(
+                [str(item.get("semantic_summary") or "")]
+                + [str(fact) for fact in (item.get("stable_facts") or [])]
+                + [str(topic) for topic in (item.get("recurring_topics") or [])]
+                + [str(person) for person in (item.get("important_people") or [])]
+                + [str(item_text) for item_text in (item.get("open_loops") or [])]
+            ),
+            time_range_label=time_range_label,
+        )
+        if anchor_line:
+            details.append(anchor_line)
         mood_line = render_memory_mood_line(item)
         if mood_line:
             details.append(mood_line)

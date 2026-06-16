@@ -291,6 +291,18 @@ class MemoryCompactionService:
         character_pack_id: str = "",
     ) -> dict[str, Any]:
         transcript = render_chat_timeline(batch)
+        summary_reference_text = ""
+        if profile_user_id:
+            summary_reference_limit = max(
+                1,
+                int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))),
+            )
+            reference_summaries = self.store.get_visible_episodic_summaries(
+                profile_user_id,
+                limit=summary_reference_limit,
+                character_pack_id=character_pack_id,
+            )
+            summary_reference_text = render_summary_timeline(reference_summaries, store=self.store)
         fallback = {
             "diary_summary": self.prompt_builder.persona.build_summary_fallback_diary(
                 join_tags(extract_semantic_tags(transcript, limit=4))
@@ -305,6 +317,7 @@ class MemoryCompactionService:
         system_prompt, user_prompt = self.prompt_builder.build_summary_prompts(
             transcript=transcript,
             batch_size=len(batch),
+            reference_summary_text=summary_reference_text,
             **self._build_memory_persona_prompt_kwargs(
                 profile_user_id=profile_user_id,
                 session_id=session_id,

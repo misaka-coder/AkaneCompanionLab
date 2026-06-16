@@ -29,14 +29,8 @@ const bundledCharacterAssets = import.meta.glob("./assets/characters/猫娘/*.{p
   import: "default",
   query: "?url"
 });
-const characterPackCharacterAssets = import.meta.glob(
-  "../../desktop_pet_creator_kit/characters/*/assets/characters/**/*.{png,jpg,jpeg,webp}",
-  {
-    eager: true,
-    import: "default",
-    query: "?url"
-  }
-);
+// Character-pack portraits are loaded from disk through Tauri at runtime.
+const characterPackCharacterAssets = {};
 
 const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 const appWindow = isTauriRuntime ? getCurrentWindow() : null;
@@ -4417,7 +4411,9 @@ async function processThinkStream(stream, turnToken) {
 
     if (type === "turn_start") {
       markTurnLatency("stream-turn-start");
-      showThinking();
+      if (!rendered && !streamingReplyText && !firstSpeechSegmentShown) {
+        showThinking();
+      }
     } else if (type === "ui") {
       applyPayloadEmotion(event);
     } else if (type === "speech_chunk") {
@@ -4426,7 +4422,9 @@ async function processThinkStream(stream, turnToken) {
     } else if (type === "speech_segment") {
       const text = String(event?.text || "").trim();
       if (text) markTurnLatencyOnce("first-speech-segment", { chars: text.length, index: event?.index });
-      queueStreamedReplySegment(text, turnToken, event?.index);
+      if (queueStreamedReplySegment(text, turnToken, event?.index) || streamingReplyText) {
+        rendered = true;
+      }
       queueStreamedTtsSegment(text, turnToken, event?.index);
     } else if (type === "file_ready" || type === "generated_file_ready") {
       void handleDesktopFileDeliveryEvent(event);
@@ -4451,6 +4449,10 @@ async function processThinkStream(stream, turnToken) {
         if (renderPayload(event.partial)) rendered = true;
       }
     } else if (type === "stream_end") {
+      if (streamingReplyText) {
+        finalizeStreamedReplyDisplay();
+        rendered = true;
+      }
       if (event?.partial && !rendered) {
         firstSpeechSegmentShown = false;
         if (renderPayload(event.partial)) rendered = true;
@@ -4466,6 +4468,9 @@ async function processThinkStream(stream, turnToken) {
 
   if (!rendered && streamErrored) {
     throw new Error(streamErrorMessage || "未收到完整回应");
+  }
+  if (!rendered && bubbleKind === "thinking") {
+    hideBubble();
   }
   return rendered;
 }
@@ -4525,6 +4530,83 @@ function applyPayloadEmotion(payload, { persist = true } = {}) {
   if (emotion) setPetEmotion(emotion, { persist });
 }
 
+function isSystemMediaControlAction(action) {
+  return ["play", "resume", "pause", "stop", "next", "skip", "previous", "prev"].includes(String(action || "").trim().toLowerCase());
+}
+
+function normalizeSystemMediaControlAction(action) {
+  const normalized = String(action || "").trim().toLowerCase();
+  if (normalized === "resume") return "play";
+  if (normalized === "skip") return "next";
+  if (normalized === "prev") return "previous";
+  return normalized;
+}
+
+function activityExplicitlyTargetsSystemMedia(activity, sourceId) {
+  const source = String(sourceId || "").trim().toLowerCase();
+  const handle = String(activity?.handle || activity?.target || "").trim().toLowerCase();
+  return (
+    source.startsWith("system_media:") ||
+    source === "system_media_current" ||
+    handle === "system_media" ||
+    handle === "system_media_current" ||
+    activity?.system_media === true ||
+    String(activity?.source_kind || activity?.sourceKind || "").trim().toLowerCase() === "system_media"
+  );
+}
+
+function shouldControlSystemMediaForActivity(activity, action, sourceId) {
+  if (!isSystemMediaControlAction(action) || !isFreshSystemMedia(systemMedia)) return false;
+  if (activityExplicitlyTargetsSystemMedia(activity, sourceId)) return true;
+  if (!musicTrack) return true;
+  const normalized = normalizeSystemMediaControlAction(action);
+  if (!musicPlaying && systemMedia.isPlaying && ["pause", "stop", "next", "previous"].includes(normalized)) return true;
+  if (!musicPlaying && !musicPaused && ["play", "next", "previous"].includes(normalized)) return true;
+  return false;
+}
+
+function systemMediaControlMessage(action, result) {
+  const normalized = normalizeSystemMediaControlAction(action);
+  const title = [result?.title || systemMedia.title, result?.artist || systemMedia.artist].filter(Boolean).join(" - ");
+  const suffix = title ? `：${title}` : "";
+  if (normalized === "play") return `已请求系统播放器继续播放${suffix}`;
+  if (normalized === "pause") return `已请求系统播放器暂停${suffix}`;
+  if (normalized === "stop") return `已请求系统播放器停止${suffix}`;
+  if (normalized === "next") return "已请求系统播放器切到下一首。";
+  if (normalized === "previous") return "已请求系统播放器切到上一首。";
+  return "已请求系统播放器执行操作。";
+}
+
+async function controlSystemMediaPlayback(action) {
+  if (!isTauriRuntime) {
+    notifyMusicActivityUnavailable("系统媒体控制只在桌面端可用。");
+    return false;
+  }
+  const normalized = normalizeSystemMediaControlAction(action);
+  if (!["play", "pause", "stop", "next", "previous"].includes(normalized)) return false;
+  const result = await tauriCall("control_system_media", { action: normalized }, { quiet: true });
+  if (result?.ok) {
+    const message = systemMediaControlMessage(normalized, result);
+    setRuntimeStatus(message, { mode: normalized === "pause" || normalized === "stop" ? "music-paused" : "music" });
+    showBubbleText(message, { transient: true, durationMs: 2200, kind: "music" });
+    window.setTimeout(() => {
+      void refreshSystemMediaSnapshot();
+    }, normalized === "next" || normalized === "previous" ? 600 : 180);
+    window.setTimeout(() => {
+      lastActivityActionSignature = "";
+    }, 900);
+    return true;
+  }
+  const reason = String(result?.reason || "unavailable").trim();
+  const message = reason === "no_active_session"
+    ? "现在没有可控制的系统播放器。"
+    : reason === "session_rejected"
+      ? "这个播放器暂时不接受系统媒体控制。"
+      : "系统媒体控制暂时不可用。";
+  notifyMusicActivityUnavailable(message);
+  return false;
+}
+
 function applyPayloadActivity(payload) {
   const activity = payload?.activity;
   if (!activity || typeof activity !== "object") return;
@@ -4540,10 +4622,19 @@ function applyPayloadActivity(payload) {
     musicQueueIndex,
     musicTrack?.sourceId || "",
     musicPlaying ? "playing" : "not-playing",
-    musicPaused ? "paused" : "not-paused"
+    musicPaused ? "paused" : "not-paused",
+    systemMedia?.trackKey || "",
+    systemMedia?.playbackStatus || "unknown"
   ].join(":");
   if (actionSignature === lastActivityActionSignature) return;
   lastActivityActionSignature = actionSignature;
+
+  if (shouldControlSystemMediaForActivity(activity, action, sourceId)) {
+    void controlSystemMediaPlayback(action);
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+    return;
+  }
 
   if (action === "next" || action === "skip") {
     if (!hasNextMusicTrack()) {

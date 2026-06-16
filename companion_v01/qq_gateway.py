@@ -39,6 +39,16 @@ QQ_FILE_DELIVERY_NEGATIVE_RE = re.compile(
     r"(不要发|别发|先别发|不用发|不用发送|不要发送|不发送|别发送|别传|不用传)",
     re.IGNORECASE,
 )
+QQ_AUTO_DELIVER_GENERATED_TOOLS = {
+    "apply_style_to_existing_file",
+    "clean_voice_track",
+    "compose_file",
+    "convert_media_file",
+    "prepare_voice_dataset",
+    "revise_generated_file",
+    "separate_audio_stems",
+    "transcribe_media",
+}
 QQ_CHARACTER_PACK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 QQ_CHARACTER_COMMAND_PREFIX_RE = re.compile(r"^[!/／]?(?:qq)?\s*", re.IGNORECASE)
 QQ_CHARACTER_LIST_COMMANDS = {
@@ -1008,20 +1018,38 @@ class NapCatQQGateway:
                         "source_type": "generated",
                         "path": path,
                         "name": f"{title}.{ext}" if ext and not title.lower().endswith(f".{ext.lower()}") else title,
+                        "allow_without_delivery_intent": self._allows_current_generated_file_delivery(generated),
                     }
                 )
         if not targets:
             return {"ok": True, "count": 0, "results": []}
 
         if self._should_block_file_delivery(context):
+            blocked_targets = [target for target in targets if not bool(target.get("allow_without_delivery_intent"))]
+            targets = [target for target in targets if bool(target.get("allow_without_delivery_intent"))]
+            if targets and blocked_targets:
+                blocked_count = len(blocked_targets)
+            elif targets:
+                blocked_count = 0
+            else:
+                blocked_count = len(blocked_targets)
             return {
                 "ok": True,
                 "count": 0,
-                "blocked_count": len(targets),
+                "blocked_count": blocked_count,
                 "reason": "missing_file_delivery_intent",
                 "results": [],
-            }
+            } if not targets else self._send_generated_file_targets(context, targets, blocked_count=blocked_count)
 
+        return self._send_generated_file_targets(context, targets)
+
+    def _send_generated_file_targets(
+        self,
+        context: QQMessageContext,
+        targets: list[dict[str, Any]],
+        *,
+        blocked_count: int = 0,
+    ) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
         for target in targets:
             result = self.send_file(
@@ -1035,7 +1063,13 @@ class NapCatQQGateway:
             "ok": all(bool(result.get("ok")) for result in results),
             "count": len(results),
             "results": results,
+            **({"blocked_count": blocked_count} if blocked_count else {}),
         }
+
+    def _allows_current_generated_file_delivery(self, generated: dict[str, Any]) -> bool:
+        created_by_tool = str(generated.get("created_by_tool") or "").strip()
+        delivery_status = str(generated.get("delivery_status") or "pending").strip().lower()
+        return created_by_tool in QQ_AUTO_DELIVER_GENERATED_TOOLS and delivery_status in {"", "pending"}
 
     def _event_allows_qq_file_delivery(self, event: dict[str, Any]) -> bool:
         event_mode = str(event.get("client_mode") or "").strip().lower()

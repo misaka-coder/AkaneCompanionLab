@@ -130,7 +130,8 @@ class PromptBlockRegistry:
             "time_awareness": PromptBlock(
                 id="time_awareness",
                 text=(
-                    "你拥有比较特别的时间感知能力，你要利用这些时间信息判断聊天频率、冷场时长、话题连续性和情绪节奏。"
+                    "你拥有比较特别的时间感知能力，要重视每条消息的时间标签，用它判断聊天频率、冷场时长、话题连续性、相处时间和情绪节奏；"
+                    "当时间跨度带来明显反差或不合逻辑时，可以自然表达惊讶、关心或轻轻吐槽。"
                 ),
             ),
             "persona_state": PromptBlock(

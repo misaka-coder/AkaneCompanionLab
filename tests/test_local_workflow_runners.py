@@ -128,7 +128,7 @@ class ComfyUiClientTests(unittest.TestCase):
         client = ComfyUiClient("http://127.0.0.1:8188", session=FakeSession())
 
         with self.assertRaises(ValueError):
-            client.upload_image(b"image-bytes", filename=r"C:\Users\Lenovo\portrait.png")
+            client.upload_image(b"image-bytes", filename=r"C:\Users\ExampleUser\portrait.png")
         with self.assertRaises(ValueError):
             client.get_image("../result.png")
         with self.assertRaises(ValueError):

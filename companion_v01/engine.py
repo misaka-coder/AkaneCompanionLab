@@ -25,6 +25,7 @@ from .huggingface_provider import HuggingFaceEmbeddingProvider
 from .llm_runtime import LLMRuntime
 from .memory_compaction_service import MemoryCompactionService
 from .memory_rendering import render_semantic_summary_timeline, render_summary_timeline
+from .memory_timeline import MemoryTimelineService
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
 from .desktop_music_timeline import DesktopMusicTimelineService
 from .desktop_screen_vision import DesktopScreenVisionWorkspace
@@ -48,7 +49,7 @@ from . import task_workspace_engine
 from .task_worker import TaskWorkerService
 from .task_worker_tool import DelegateTaskToolHandler
 from . import tool_orchestration_engine
-from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, BrowserPageToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, FocusWorkspaceToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ListWorkspaceToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, OpenBrowserToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, ReadWorkspaceToolHandler, RegisterWorkspaceItemsToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler, WebSearchToolHandler
+from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, BrowserPageToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, FocusWorkspaceToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ListWorkspaceToolHandler, LoadCharacterContextToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, OpenBrowserToolHandler, OpenMusicSearchToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, ReadMemoryTimelineToolHandler, ReadWorkspaceToolHandler, RegisterWorkspaceItemsToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler, WebSearchToolHandler
 from . import visual_context_engine
 from .vision_service import VisionObservationService
 from .store import MemoryStore
@@ -103,6 +104,8 @@ class AkaneMemoryEngine:
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.resource_manifest = resource_manifest
+        self.desktop_pet_character_resources = desktop_pet_character_resources
         self.store = MemoryStore(self.base_dir)
         self.embedding_provider = self._build_embedding_provider()
         self.vector_store = VectorStore(
@@ -122,6 +125,20 @@ class AkaneMemoryEngine:
             },
             default_workers=int(getattr(config, "BACKGROUND_DEFAULT_WORKERS", 1) or 1),
         )
+        self.memory_timeline_service = MemoryTimelineService(
+            store=self.store,
+            root_dir=self.base_dir / "memory",
+            characters_dir=getattr(
+                self.desktop_pet_character_resources,
+                "characters_dir",
+                None,
+            ),
+            background_tasks=self.background_tasks,
+        )
+        self.store.set_message_write_callback(
+            self.memory_timeline_service.handle_message_write
+        )
+        self.memory_timeline_service.schedule_existing_backfill()
         self.workspace_file_service = WorkspaceFileService(
             root_dir=getattr(config, "AKANE_WORKSPACE_ROOT", ""),
             store=self.store,
@@ -167,8 +184,6 @@ class AkaneMemoryEngine:
         )
         self.gift_assets = self.gift_service
         self.npc_runtime = GenericNPCRuntime(self.base_dir / "generic_npc_memory_v01", self.llm)
-        self.resource_manifest = resource_manifest
-        self.desktop_pet_character_resources = desktop_pet_character_resources
         sticker_assets_dir = (
             Path(getattr(resource_manifest, "assets_dir"))
             if resource_manifest is not None and getattr(resource_manifest, "assets_dir", None)
@@ -249,6 +264,7 @@ class AkaneMemoryEngine:
     def reset(self) -> None:
         self._get_compaction_service().reset()
         self.store.reset()
+        self.memory_timeline_service.clear_mirror()
         self.vector_store.reset()
         self.gift_service.reset()
         if self.vision_service is not None:
@@ -256,6 +272,15 @@ class AkaneMemoryEngine:
         if self.desktop_screen_vision is not None:
             self.desktop_screen_vision.reset()
         self.npc_runtime.reset()
+
+    def reload_model_services(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "llm": self.llm.reload_from_config(),
+            "vision": {"status": "disabled"},
+        }
+        if self.vision_service is not None:
+            result["vision"] = self.vision_service.reload_client()
+        return result
 
     def build_resource_manifest(
         self,
@@ -538,16 +563,19 @@ class AkaneMemoryEngine:
         character_pack_id: str = "",
     ) -> ResourceManifest | None:
         raw_mode = client_mode.value if isinstance(client_mode, ClientMode) else str(client_mode or "").strip()
-        if raw_mode == ClientMode.QQ_TEXT.value:
-            return None
-        mode = ClientMode.DESKTOP_PET if raw_mode == ClientMode.DESKTOP_PET.value else None
-        if mode != ClientMode.DESKTOP_PET:
+        character_pack_mode = raw_mode in {
+            ClientMode.DESKTOP_PET.value,
+            ClientMode.QQ_TEXT.value,
+        }
+        if not character_pack_mode:
             return self.resource_manifest
 
         service = getattr(self, "desktop_pet_character_resources", None)
         if service is None:
-            return self.resource_manifest
+            return None if raw_mode == ClientMode.QQ_TEXT.value else self.resource_manifest
         manifest = service.get_manifest(character_pack_id) if character_pack_id else None
+        if raw_mode == ClientMode.QQ_TEXT.value:
+            return manifest
         return manifest or self.resource_manifest
 
     def _resolve_turn_resource_manifest(
@@ -555,9 +583,10 @@ class AkaneMemoryEngine:
         payload: dict[str, Any],
         client_context: ClientProtocolContext,
     ) -> ResourceManifest | None:
-        if client_context.effective_mode == ClientMode.QQ_TEXT:
-            return None
-        if client_context.effective_mode != ClientMode.DESKTOP_PET:
+        if client_context.effective_mode not in {
+            ClientMode.DESKTOP_PET,
+            ClientMode.QQ_TEXT,
+        }:
             return self.resource_manifest
         return self._resolve_resource_manifest_for_client(
             client_mode=client_context.effective_mode.value,
@@ -1580,8 +1609,12 @@ class AkaneMemoryEngine:
                 break
             seen_tool_calls.add(tool_signature)
 
-            internal_memory_tool = str(tool_call.get("type") or "") == "retrieve_memory"
-            preface_turn = None if internal_memory_tool else self._build_assistant_dialogue_turn(final_output.get("speech"))
+            internal_read_tool = str(tool_call.get("type") or "") in {
+                "retrieve_memory",
+                "read_memory_timeline",
+                "load_character_context",
+            }
+            preface_turn = None if internal_read_tool else self._build_assistant_dialogue_turn(final_output.get("speech"))
             if preface_turn:
                 preface_turns.append(preface_turn)
                 preface_record = self.store.add_message(
@@ -1594,6 +1627,7 @@ class AkaneMemoryEngine:
                     date_label=date_label,
                     time_of_day=time_of_day,
                     semantic_tags=extract_semantic_tags(preface_turn["speech"]),
+                    memory_metadata=self._build_assistant_timeline_metadata(final_output),
                 )
                 self._upsert_raw_record(preface_record)
                 self._schedule_summary_cycle(
@@ -1738,6 +1772,7 @@ class AkaneMemoryEngine:
             content=final_output.get("speech", ""),
             timestamp=int(time.time()),
             semantic_tags=extract_semantic_tags(final_output.get("speech", "")),
+            memory_metadata=self._build_assistant_timeline_metadata(final_output),
         )
         self._upsert_raw_record(assistant_record)
         self._schedule_summary_cycle(
@@ -1774,6 +1809,13 @@ class AkaneMemoryEngine:
         if memory_tool_updates:
             debug_payload["memory_tool"] = memory_tool_updates[-1]
             debug_payload["memory_tool_rounds"] = memory_tool_updates
+        character_context_debug = self._build_character_context_debug_payload(
+            character_pack_id=turn_character_pack_id,
+            user_message=user_message,
+            tool_results=tool_results,
+        )
+        if character_context_debug:
+            debug_payload["character_context"] = character_context_debug
         final_output["_debug"] = debug_payload
         return final_output
 
@@ -1969,8 +2011,12 @@ class AkaneMemoryEngine:
                 break
             seen_tool_calls.add(tool_signature)
 
-            internal_memory_tool = str(tool_call.get("type") or "") == "retrieve_memory"
-            preface_turn = None if internal_memory_tool else self._build_assistant_dialogue_turn(final_output.get("speech"))
+            internal_read_tool = str(tool_call.get("type") or "") in {
+                "retrieve_memory",
+                "read_memory_timeline",
+                "load_character_context",
+            }
+            preface_turn = None if internal_read_tool else self._build_assistant_dialogue_turn(final_output.get("speech"))
             if preface_turn:
                 preface_turns.append(preface_turn)
                 preface_record = self.store.add_message(
@@ -1983,6 +2029,7 @@ class AkaneMemoryEngine:
                     date_label=date_label,
                     time_of_day=time_of_day,
                     semantic_tags=extract_semantic_tags(preface_turn["speech"]),
+                    memory_metadata=self._build_assistant_timeline_metadata(final_output),
                 )
                 self._upsert_raw_record(preface_record)
                 self._schedule_summary_cycle(
@@ -2131,6 +2178,7 @@ class AkaneMemoryEngine:
             content=final_output.get("speech", ""),
             timestamp=int(time.time()),
             semantic_tags=extract_semantic_tags(final_output.get("speech", "")),
+            memory_metadata=self._build_assistant_timeline_metadata(final_output),
         )
         self._upsert_raw_record(assistant_record)
         self._schedule_summary_cycle(
@@ -2169,8 +2217,88 @@ class AkaneMemoryEngine:
         if memory_tool_updates:
             debug_payload["memory_tool"] = memory_tool_updates[-1]
             debug_payload["memory_tool_rounds"] = memory_tool_updates
+        character_context_debug = self._build_character_context_debug_payload(
+            character_pack_id=turn_character_pack_id,
+            user_message=user_message,
+            tool_results=tool_results,
+        )
+        if character_context_debug:
+            debug_payload["character_context"] = character_context_debug
         final_output["_debug"] = debug_payload
         yield {"type": "final", "payload": final_output}
+
+    def _build_character_context_debug_payload(
+        self,
+        *,
+        character_pack_id: str,
+        user_message: str,
+        tool_results: list[ToolExecutionResult],
+    ) -> dict[str, Any]:
+        automatic: dict[str, Any] = {}
+        context_library_service = getattr(
+            getattr(self, "desktop_pet_character_resources", None),
+            "context_libraries",
+            None,
+        )
+        automatic_loader = getattr(
+            context_library_service,
+            "load_automatic_context",
+            None,
+        )
+        if automatic_loader is not None and character_pack_id:
+            try:
+                result = automatic_loader(character_pack_id, user_message)
+            except Exception as exc:
+                logger.warning("automatic character context diagnostics failed: %s", exc)
+                result = {}
+            matches = [
+                {
+                    "target": str(item.get("target") or ""),
+                    "matched_terms": [
+                        str(term)
+                        for term in item.get("matched_terms") or []
+                        if str(term).strip()
+                    ],
+                }
+                for item in result.get("matches") or []
+                if isinstance(item, dict) and str(item.get("target") or "").strip()
+            ]
+            loaded = [
+                str(item.get("target") or "")
+                for item in result.get("loaded") or []
+                if isinstance(item, dict) and str(item.get("target") or "").strip()
+            ]
+            failed = [
+                {
+                    "target": str(item.get("target") or ""),
+                    "status": str(item.get("status") or "unavailable"),
+                    "reason": str(item.get("reason") or ""),
+                }
+                for item in result.get("failed") or []
+                if isinstance(item, dict)
+            ]
+            if matches or loaded or failed:
+                automatic = {
+                    "status": str(result.get("status") or "unavailable"),
+                    "matches": matches,
+                    "loaded": loaded,
+                    "failed": failed,
+                }
+
+        tool_rounds = [
+            dict(result.state_updates.get("character_context") or {})
+            for result in tool_results
+            if (
+                isinstance(result.state_updates, dict)
+                and isinstance(result.state_updates.get("character_context"), dict)
+            )
+        ]
+        if not automatic and not tool_rounds:
+            return {}
+        return {
+            "automatic": automatic,
+            "tool_rounds": tool_rounds,
+        }
 
     def _build_retrieval_debug_payload(
         self,
@@ -2395,9 +2523,7 @@ class AkaneMemoryEngine:
             else final_debug_enabled
         )
         debug_enabled = bool(requested_debug_enabled and prompt_profile.supports_thought_debug)
-        if client_context.effective_mode == ClientMode.QQ_TEXT:
-            resource_manifest = None
-        else:
+        if client_context.effective_mode != ClientMode.QQ_TEXT:
             resource_manifest = resource_manifest or self.resource_manifest
         manifest = resource_manifest.refresh() if resource_manifest else None
         runtime_projection = self._get_user_runtime_projection(profile_user_id)
@@ -2547,6 +2673,33 @@ class AkaneMemoryEngine:
             if character_pack_persona_enabled and prompt_profile.includes(PromptModule.PERSONA)
             else {"system_context": "", "reference_context": "", "active_id": ""}
         )
+        if character_pack_persona_enabled and character_pack_id:
+            context_library_service = getattr(
+                getattr(self, "desktop_pet_character_resources", None),
+                "context_libraries",
+                None,
+            )
+            automatic_context_builder = getattr(
+                context_library_service,
+                "build_automatic_context",
+                None,
+            )
+            if automatic_context_builder is not None:
+                try:
+                    automatic_context = str(
+                        automatic_context_builder(character_pack_id, user_message) or ""
+                    ).strip()
+                except Exception as exc:
+                    logger.warning("automatic character context loading failed: %s", exc)
+                    automatic_context = ""
+                if automatic_context:
+                    character_pack_persona_context = dict(character_pack_persona_context)
+                    existing_reference = str(
+                        character_pack_persona_context.get("reference_context") or ""
+                    ).strip()
+                    character_pack_persona_context["reference_context"] = "\n\n".join(
+                        part for part in [existing_reference, automatic_context] if part
+                    )
         persona_context = self._merge_prompt_persona_contexts(
             character_pack_persona_context,
             persona_context,
@@ -2562,6 +2715,11 @@ class AkaneMemoryEngine:
         extra_context_sections = [
             text
             for text in [
+                self._build_memory_relationship_context(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    now_ts=now_ts,
+                ),
                 self._build_client_mode_prompt_context(client_context)
                 if prompt_profile.includes(PromptModule.CLIENT_MODE)
                 else "",
@@ -2619,8 +2777,14 @@ class AkaneMemoryEngine:
                     visual_defaults["emotion"] = str(current_visual_defaults.get("emotion") or visual_defaults["emotion"])
             except Exception as exc:
                 logger.warning("current visual defaults failed: %s", exc)
-        resource_context = (
-            (
+        if client_context.effective_mode == ClientMode.QQ_TEXT:
+            resource_context = (
+                "QQ 端不渲染立绘；emotion 的可选值已由当前角色包表情图片清单约束。"
+                if resource_manifest
+                else "QQ 端不渲染立绘，当前角色包没有可用的表情图片清单。"
+            )
+        else:
+            resource_context = (
                 resource_manifest.build_character_prompt_context(
                     extra_character_outfits=user_character_outfits,
                 )
@@ -2630,10 +2794,7 @@ class AkaneMemoryEngine:
                     extra_scene_groups=user_scene_groups,
                     extra_character_outfits=user_character_outfits,
                 )
-            )
-            if resource_manifest and prompt_profile.includes(PromptModule.RESOURCE_MANIFEST)
-            else "当前没有额外的视觉资源。"
-        )
+            ) if resource_manifest and prompt_profile.includes(PromptModule.RESOURCE_MANIFEST) else "当前没有额外的视觉资源。"
         current_visual_context = (
             self._build_current_visual_context(
                 profile_user_id=profile_user_id,
@@ -2649,6 +2810,19 @@ class AkaneMemoryEngine:
         )
         if visual_observation_sections:
             current_visual_context = "\n\n".join([current_visual_context, *visual_observation_sections])
+        mode_prompt_override = prompt_profile.mode_prompt_override(debug_enabled=debug_enabled)
+        if resource_manifest and client_context.effective_mode in {
+            ClientMode.DESKTOP_PET,
+            ClientMode.QQ_TEXT,
+        }:
+            default_emotion_json = json.dumps(
+                str(visual_defaults.get("emotion") or "normal"),
+                ensure_ascii=False,
+            )
+            mode_prompt_override = mode_prompt_override.replace(
+                '"emotion":"normal"',
+                f'"emotion":{default_emotion_json}',
+            )
         generation_context = self._get_prompt_builder().build_final_generation_context(
             now_ts=now_ts,
             raw_text=raw_text,
@@ -2672,7 +2846,7 @@ class AkaneMemoryEngine:
             ),
             debug_enabled=debug_enabled,
             system_prompt_override=prompt_profile.system_prompt_override,
-            mode_prompt_override=prompt_profile.mode_prompt_override(debug_enabled=debug_enabled),
+            mode_prompt_override=mode_prompt_override,
         )
         if desktop_pet_character_only and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
             fallback_payload = generation_context.get("fallback")
@@ -2949,6 +3123,52 @@ class AkaneMemoryEngine:
         self._upsert_raw_record(user_record)
         return user_record
 
+    def _build_assistant_timeline_metadata(
+        self,
+        final_output: dict[str, Any],
+    ) -> dict[str, Any]:
+        output = final_output if isinstance(final_output, dict) else {}
+        memory_metadata = output.get("memory_metadata")
+        mood_tags = (
+            list(memory_metadata.get("mood_tags") or [])
+            if isinstance(memory_metadata, dict)
+            else []
+        )
+        character = output.get("character")
+        outfit = (
+            str(character.get("outfit") or "").strip()
+            if isinstance(character, dict)
+            else ""
+        )
+        return {
+            "response_emotion": str(output.get("emotion") or "").strip(),
+            "response_outfit": outfit,
+            "mood_tags": mood_tags,
+        }
+
+    def _build_memory_relationship_context(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str,
+        now_ts: int,
+    ) -> str:
+        service = getattr(self, "memory_timeline_service", None)
+        if service is None:
+            return ""
+        try:
+            return str(
+                service.build_acquaintance_prompt(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    now_ts=now_ts,
+                )
+                or ""
+            ).strip()
+        except Exception as exc:
+            logger.warning("memory relationship prompt failed: %s", exc)
+            return ""
+
     def _normalize_choices(self, value: Any) -> list[dict[str, str]]:
         if not isinstance(value, list):
             return []
@@ -2983,6 +3203,16 @@ class AkaneMemoryEngine:
         return {
             "retrieve_memory": RetrieveMemoryToolHandler(
                 retrieve_fn=self._execute_retrieve_memory_tool,
+            ),
+            "read_memory_timeline": ReadMemoryTimelineToolHandler(
+                timeline_service=self.memory_timeline_service,
+            ),
+            "load_character_context": LoadCharacterContextToolHandler(
+                context_library_service=getattr(
+                    self.desktop_pet_character_resources,
+                    "context_libraries",
+                    None,
+                ),
             ),
             "call_npc": CallNPCToolHandler(
                 npc_runtime=self.npc_runtime,
@@ -3086,6 +3316,7 @@ class AkaneMemoryEngine:
                 config_base_dir=Path(getattr(config, "DATA_DIR", "users_data") or "users_data"),
             ),
             "open_browser": OpenBrowserToolHandler(),
+            "open_music_search": OpenMusicSearchToolHandler(),
             "browser_page": BrowserPageToolHandler(),
         }
 
@@ -3232,7 +3463,9 @@ class AkaneMemoryEngine:
         lines.extend(media_routing)
         lines.append("【当前可调用工具】")
         for handler in handlers.values():
-            lines.append(handler.build_prompt_instruction())
+            instruction = str(handler.build_prompt_instruction() or "").strip()
+            if instruction:
+                lines.append(instruction)
         lines.append(
             "重要：真正调用工具只能写在 tool_call 字段；不要在 speech 里写“工具调用：...”或“我调用工具了”来代替。"
             "如果 tool_call 为 null，系统不会执行任何工具，也不要声称工具已经调用或失败。"

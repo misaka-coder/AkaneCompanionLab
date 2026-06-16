@@ -15,6 +15,8 @@
 Tools are split into capability packs:
 
 - `base`
+  - `retrieve_memory`
+  - `read_memory_timeline`
   - `set_reminder`
   - `list_reminders`
   - `cancel_reminder`
@@ -45,6 +47,7 @@ Tools are split into capability packs:
   - `manage_generated_file`
 - `desktop`
   - `fetch_media_from_url`
+  - `open_music_search`
   - `list_workspace`
   - `read_workspace`
   - `focus_workspace`
@@ -104,6 +107,18 @@ Each tool handler should:
 
 ## Current Tool
 
+- `retrieve_memory`
+  - performs semantic recall across the existing raw, episodic-summary, and long-term memory pipeline
+  - is for people, events, preferences, agreements, and other content-based recall
+  - is not used to dump an explicitly dated original transcript
+- `read_memory_timeline`
+  - reads raw dialogue only by an exact `date_from` / `date_to` range and optional time periods
+  - does not run vector search and does not read episodic summaries or long-term semantic memory
+  - is scoped by the current profile and character pack; model-supplied user or character ids are ignored
+  - excludes the current query message from tool results while keeping it in the local daily transcript
+  - for installed character packs, shares its renderer with the rebuildable local Markdown mirror under `desktop_pet_creator_kit/characters/<pack_id>/_local/memory/`
+  - raw records without an installed character-pack owner remain under the compatibility mirror in `users_data/akane_memory_v01/memory/`
+  - daily files keep readable dialogue, actual message time, available memory mood tags, and new assistant response emotion metadata; SQLite remains the source of truth
 - `call_npc`
   - asks a temporary NPC for one short reply
   - streams an `npc_turn` event to the frontend
@@ -147,6 +162,11 @@ Each tool handler should:
   - does not summarize, transcribe, convert, or resend by itself; after success Akane should continue with `inspect_attachment`, `inspect_media_info`, `transcribe_media`, `convert_media_file`, or `send_file`
   - supports direct media URLs immediately, and uses `yt-dlp` for ordinary public video/audio pages when installed
   - rejects playlists/collections and should not be used for login-only, paid, DRM, or private links
+- `open_music_search`
+  - opens a public music-platform search page for a requested song in desktop pet mode
+  - accepts a title, optional artist, and optional platform (`qq_music`, `netease_music`, `bilibili`, `youtube`)
+  - does not claim playback success, click results, log in, download, or control the player
+  - if the user wants Akane to continue operating the page, follow-up browser actions still go through `browser_page` authorization
 - `register_workspace_items`
   - registers files already present under the configured Akane workspace as attachment handles without copying or moving them
   - accepts one or more `workspace:/` files or directories and supports bounded recursive batch registration

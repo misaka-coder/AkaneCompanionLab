@@ -238,6 +238,7 @@ function buildPack({ id, name, appName, userTitle, outfit, emotion, musicEmotion
       example_lines: buildLocalClickLines({ emotion, availableEmotions }).slice(0, 1),
       extra_setting: ""
     },
+    context_libraries: [],
     appearance: {
       default_outfit: outfit,
       default_emotion: emotion,

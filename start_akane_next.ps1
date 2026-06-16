@@ -6,7 +6,7 @@ param(
     [switch]$NoBuild,
     [switch]$Dev,
     [switch]$ControlCenterLab,
-    [switch]$LegacySettings,
+    [switch]$OpenSettings,
     [switch]$Rebuild
 )
 
@@ -183,6 +183,10 @@ function Get-NewestInputWriteTime {
         (Join-Path $DesktopDir "src"),
         (Join-Path $DesktopDir "src-tauri\src"),
         (Join-Path $DesktopDir "src-tauri\capabilities"),
+        (Join-Path $DesktopDir "src-tauri\icons"),
+        (Join-Path $DesktopDir "src-tauri\build.rs"),
+        (Join-Path $DesktopDir "src-tauri\Cargo.toml"),
+        (Join-Path $DesktopDir "src-tauri\Cargo.lock"),
         (Join-Path $DesktopDir "src-tauri\tauri.conf.json"),
         (Join-Path $DesktopDir "package.json"),
         (Join-Path $DesktopDir "package-lock.json"),
@@ -190,6 +194,7 @@ function Get-NewestInputWriteTime {
         (Join-Path $DesktopDir "index.html"),
         (Join-Path $DesktopDir "settings.html"),
         (Join-Path $DesktopDir "workspace.html"),
+        (Join-Path $DesktopDir "workshop.html"),
         (Join-Path $DesktopDir "control-center-lab.html")
     )
 
@@ -224,7 +229,21 @@ if (-not $scriptDir) {
 $projectDir = Find-ProjectRoot -StartDir $scriptDir
 $desktopDir = Join-Path $projectDir "desktop_pet_next"
 $releaseExe = Join-Path $desktopDir "src-tauri\target\release\akane_desktop_pet_next.exe"
-$runtimeLogDir = Join-Path $projectDir "runtime_logs"
+. (Join-Path $projectDir "scripts\akane_data_root.ps1")
+if ([string]$env:AKANE_DATA_ROOT_READY -eq "1" -and [string]$env:AKANE_DATA_ROOT) {
+    $dataRoot = [System.IO.Path]::GetFullPath([string]$env:AKANE_DATA_ROOT)
+} else {
+    $dataStatus = Initialize-AkaneDataRoot -ProjectRoot $projectDir
+    $dataRoot = $dataStatus.Root
+    $env:AKANE_DATA_ROOT_READY = "1"
+    if ($dataStatus.Failed -gt 0) {
+        Write-Host "[WARN] User data root is ready, but $($dataStatus.Failed) legacy files could not be copied."
+    } elseif ($dataStatus.Copied -gt 0) {
+        Write-Host "[INFO] Migrated $($dataStatus.Copied) legacy files without overwriting existing data."
+    }
+}
+$env:AKANE_DATA_ROOT = $dataRoot
+$runtimeLogDir = Join-Path $dataRoot "logs"
 $backendLog = Join-Path $runtimeLogDir "akane_backend.log"
 $backendErrLog = Join-Path $runtimeLogDir "akane_backend.err.log"
 
@@ -234,12 +253,14 @@ Write-Host "[INFO] Akane Next one-click launcher"
 Write-Host "[INFO] Project: $projectDir"
 Write-Host "[INFO] Backend: http://127.0.0.1:$BackendPort/"
 
-if (-not $LegacySettings) {
-    Remove-Item Env:\AKANE_LEGACY_SETTINGS -ErrorAction SilentlyContinue
-    Write-Host "[INFO] Settings center: control-center-lab.html"
+Write-Host "[INFO] Settings center: control-center-lab.html"
+
+if ($OpenSettings) {
+    $env:AKANE_OPEN_SETTINGS_ON_START = "1"
+    $env:AKANE_OPEN_MODEL_SETTINGS = "1"
 } else {
-    $env:AKANE_LEGACY_SETTINGS = "1"
-    Write-Host "[INFO] Settings center: legacy settings.html"
+    Remove-Item Env:\AKANE_OPEN_SETTINGS_ON_START -ErrorAction SilentlyContinue
+    Remove-Item Env:\AKANE_OPEN_MODEL_SETTINGS -ErrorAction SilentlyContinue
 }
 
 if (-not $SkipBackend) {
@@ -279,8 +300,8 @@ if (-not $SkipBackend) {
             -RedirectStandardError $backendErrLog | Out-Null
 
         $ready = $false
-        for ($i = 0; $i -lt 180; $i++) {
-            Start-Sleep -Milliseconds 500
+        for ($i = 0; $i -lt 8; $i++) {
+            Start-Sleep -Milliseconds 250
             if (Test-TcpPort -HostName "127.0.0.1" -Port $BackendPort) {
                 $ready = $true
                 break
@@ -288,9 +309,10 @@ if (-not $SkipBackend) {
         }
 
         if ($ready) {
-            Write-Host "[INFO] Backend is ready."
+            Write-Host "[INFO] Backend is already accepting connections."
         } else {
-            Write-Host "[WARN] Backend did not respond within 90 seconds. Check logs:"
+            Write-Host "[INFO] Backend is still warming up; launching the desktop pet first."
+            Write-Host "[INFO] Backend logs:"
             Write-Host "       $backendLog"
             Write-Host "       $backendErrLog"
         }
@@ -302,11 +324,6 @@ if (-not $SkipDesktop) {
         Ensure-NpmInstall -DesktopDir $desktopDir
         Push-Location -LiteralPath $desktopDir
         try {
-            if ($LegacySettings) {
-                $env:AKANE_LEGACY_SETTINGS = "1"
-            } else {
-                Remove-Item Env:\AKANE_LEGACY_SETTINGS -ErrorAction SilentlyContinue
-            }
             Write-Host "[INFO] Starting Akane Next in Tauri dev mode..."
             & npm run tauri -- dev
             exit $LASTEXITCODE

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -8,11 +9,12 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .text_utils import timestamp_to_date_label, infer_time_of_day
 
 CHARACTER_PACK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+logger = logging.getLogger("akane.store")
 
 
 def normalize_character_pack_id(value: Any) -> str:
@@ -39,6 +41,7 @@ class MemoryStore:
         self.db_path = self.base_dir / "akane_memory_v01.db"
         self._attachment_inbox_write_lock = threading.Lock()
         self._workspace_file_write_lock = threading.Lock()
+        self._message_write_callback: Callable[[dict[str, Any]], None] | None = None
         self._init_db()
 
     @contextmanager
@@ -632,6 +635,9 @@ class MemoryStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_chat_profile_character_time
                 ON chat_messages(profile_user_id, character_pack_id, timestamp);
+
+                CREATE INDEX IF NOT EXISTS idx_chat_profile_character_date_time
+                ON chat_messages(profile_user_id, character_pack_id, date_label, timestamp);
 
                 CREATE INDEX IF NOT EXISTS idx_summary_profile_character_time
                 ON memory_summaries(profile_user_id, character_pack_id, timestamp DESC);
@@ -1258,6 +1264,99 @@ class MemoryStore:
             ).fetchall()
         return [self._row_to_message(dict(row)) for row in rows]
 
+    def set_message_write_callback(
+        self,
+        callback: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        self._message_write_callback = callback
+
+    def _notify_message_write(self, message: dict[str, Any]) -> None:
+        callback = self._message_write_callback
+        if callback is None:
+            return
+        try:
+            callback(dict(message))
+        except Exception as exc:
+            logger.warning("message write callback failed: %s", exc)
+
+    def get_memory_timeline_messages(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+        date_from: str,
+        date_to: str,
+    ) -> list[dict[str, Any]]:
+        normalized_character_pack_id = normalize_character_pack_id(character_pack_id)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM chat_messages
+                WHERE profile_user_id = ?
+                  AND character_pack_id = ?
+                  AND date_label >= ?
+                  AND date_label <= ?
+                ORDER BY timestamp ASC, session_id ASC, seq_no ASC, source_id ASC
+                """,
+                (
+                    str(profile_user_id),
+                    normalized_character_pack_id,
+                    str(date_from),
+                    str(date_to),
+                ),
+            ).fetchall()
+        return [self._row_to_message(dict(row)) for row in rows]
+
+    def list_memory_timeline_days(self) -> list[dict[str, str]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT profile_user_id, character_pack_id, date_label
+                FROM chat_messages
+                WHERE TRIM(COALESCE(date_label, '')) != ''
+                GROUP BY profile_user_id, character_pack_id, date_label
+                ORDER BY profile_user_id ASC, character_pack_id ASC, date_label ASC
+                """
+            ).fetchall()
+        return [
+            {
+                "profile_user_id": str(row["profile_user_id"] or ""),
+                "character_pack_id": normalize_character_pack_id(row["character_pack_id"]),
+                "date_label": str(row["date_label"] or ""),
+            }
+            for row in rows
+        ]
+
+    def get_memory_timeline_stats(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
+        normalized_character_pack_id = normalize_character_pack_id(character_pack_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    MIN(timestamp) AS first_timestamp,
+                    MAX(timestamp) AS last_timestamp,
+                    COUNT(*) AS message_count,
+                    COUNT(DISTINCT date_label) AS active_day_count
+                FROM chat_messages
+                WHERE profile_user_id = ?
+                  AND character_pack_id = ?
+                """,
+                (str(profile_user_id), normalized_character_pack_id),
+            ).fetchone()
+        first_timestamp = int(row["first_timestamp"]) if row and row["first_timestamp"] is not None else 0
+        last_timestamp = int(row["last_timestamp"]) if row and row["last_timestamp"] is not None else 0
+        return {
+            "first_timestamp": first_timestamp,
+            "last_timestamp": last_timestamp,
+            "message_count": int(row["message_count"] or 0) if row else 0,
+            "active_day_count": int(row["active_day_count"] or 0) if row else 0,
+        }
+
     def next_seq_no(
         self,
         session_id: str,
@@ -1356,7 +1455,9 @@ class MemoryStore:
                     record["summary_id"],
                 ),
             )
-        return self._row_to_message(record)
+        message = self._row_to_message(record)
+        self._notify_message_write(message)
+        return message
 
     def update_message_semantic_tags(self, source_id: str, semantic_tags: list[str]) -> None:
         with self._connect() as conn:
@@ -1385,6 +1486,9 @@ class MemoryStore:
                     str(source_id),
                 ),
             )
+        record = self.get_message_by_source_id(source_id)
+        if record is not None:
+            self._notify_message_write(record)
 
     def update_message_index_in_vector(self, source_id: str, index_in_vector: bool) -> None:
         with self._connect() as conn:

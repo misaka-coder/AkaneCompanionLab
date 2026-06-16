@@ -1,2 +1,4 @@
 @echo off
-powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "F:\Akane\AkaneCompanionLab\maintenance\clean-user-caches.ps1"
+setlocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0clean-user-caches.ps1" %*
+exit /b %ERRORLEVEL%

@@ -49,6 +49,19 @@ const settingsPanelEl = document.getElementById("settings-panel");
 const settingsBackdropEl = document.getElementById("settings-backdrop");
 const settingsCloseEl = document.getElementById("settings-close");
 const settingsStatusCopyEl = document.getElementById("settings-status-copy");
+const modelServiceSettingsEl = document.getElementById("model-service-settings");
+const modelServiceStatusEl = document.getElementById("model-service-status");
+const modelServiceStatusDetailEl = document.getElementById("model-service-status-detail");
+const modelServiceProviderEl = document.getElementById("model-service-provider");
+const modelServiceBaseUrlEl = document.getElementById("model-service-base-url");
+const modelServiceApiKeyEl = document.getElementById("model-service-api-key");
+const modelServiceChatModelEl = document.getElementById("model-service-chat-model");
+const modelServiceModelListEl = document.getElementById("model-service-model-list");
+const modelServiceUseVisionEl = document.getElementById("model-service-use-vision");
+const modelServiceModelsEl = document.getElementById("model-service-models");
+const modelServiceTestEl = document.getElementById("model-service-test");
+const modelServiceSaveEl = document.getElementById("model-service-save");
+const modelServiceMessageEl = document.getElementById("model-service-message");
 const giftHandToggleEl = document.getElementById("gift-hand-toggle");
 const giftHandPanelEl = document.getElementById("gift-hand-panel");
 const giftHandCloseEl = document.getElementById("gift-hand-close");
@@ -167,6 +180,8 @@ const state = {
   selectedArtifactContainerType: "music_box",
   selectedArtifactContainerKey: "",
   artifactContainerDetail: null,
+  modelService: null,
+  modelServiceBusy: false,
 };
 
 const identityHelpers = createIdentityHelpers({
@@ -2178,6 +2193,116 @@ async function fetchAppConfig() {
   }
 }
 
+async function fetchModelServiceConfig() {
+  try {
+    const response = await fetch(`/control-center/model-service?t=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    state.modelService = payload;
+    renderModelServiceConfig(payload);
+  } catch (error) {
+    modelServiceStatusEl.textContent = "模型配置暂不可用";
+    modelServiceStatusDetailEl.textContent = String(error);
+  }
+}
+
+function renderModelServiceConfig(payload = {}) {
+  const providers = Array.isArray(payload.providers) ? payload.providers : [];
+  modelServiceProviderEl.replaceChildren(
+    ...providers.map((provider) => {
+      const option = document.createElement("option");
+      option.value = String(provider.id || "");
+      option.textContent = String(provider.label || provider.id || "");
+      option.selected = option.value === String(payload.providerId || "");
+      return option;
+    })
+  );
+  modelServiceBaseUrlEl.value = String(payload.baseUrl || "");
+  modelServiceApiKeyEl.value = "";
+  modelServiceApiKeyEl.placeholder = payload.hasApiKey
+    ? "已保存，留空表示继续使用原密钥"
+    : selectedModelProvider()?.apiKeyRequired === false
+      ? "本地服务通常无需填写"
+      : "粘贴服务商提供的 API Key";
+  modelServiceChatModelEl.value = String(payload.chatModel || "");
+  modelServiceUseVisionEl.checked = payload.useForVision !== false;
+  modelServiceStatusEl.textContent = payload.status === "configured" ? "模型服务已配置" : "尚未配置模型服务";
+  modelServiceStatusDetailEl.textContent = payload.status === "configured"
+    ? `${selectedModelProvider()?.label || payload.providerId || "自定义服务"} · ${payload.chatModel || "未选择模型"}`
+    : "选择服务商并测试连接后即可开始对话";
+}
+
+function selectedModelProvider() {
+  const providers = Array.isArray(state.modelService?.providers) ? state.modelService.providers : [];
+  return providers.find((item) => String(item.id || "") === String(modelServiceProviderEl.value || "")) || null;
+}
+
+function readModelServicePayload() {
+  const provider = selectedModelProvider();
+  return {
+    providerId: String(modelServiceProviderEl.value || "openai_compatible"),
+    protocol: String(provider?.protocol || "openai"),
+    baseUrl: String(modelServiceBaseUrlEl.value || "").trim(),
+    apiKey: String(modelServiceApiKeyEl.value || "").trim(),
+    chatModel: String(modelServiceChatModelEl.value || "").trim(),
+    useForVision: Boolean(modelServiceUseVisionEl.checked),
+    timeoutSeconds: 120,
+  };
+}
+
+async function runModelServiceRequest(action) {
+  if (state.modelServiceBusy) return;
+  state.modelServiceBusy = true;
+  setModelServiceButtonsDisabled(true);
+  modelServiceMessageEl.textContent =
+    action === "models" ? "正在读取模型列表..." : action === "test" ? "正在测试连接..." : "正在保存并应用...";
+  try {
+    const path = action === "save" ? "" : `/${action}`;
+    const response = await fetch(`/control-center/model-service${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(readModelServicePayload()),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok) {
+      throw new Error(String(result.reason || result.status || `HTTP ${response.status}`));
+    }
+    if (action === "models") {
+      const models = Array.isArray(result.models) ? result.models : [];
+      modelServiceModelListEl.replaceChildren(
+        ...models.map((model) => {
+          const option = document.createElement("option");
+          option.value = String(model);
+          return option;
+        })
+      );
+      if (!modelServiceChatModelEl.value && models.length) {
+        modelServiceChatModelEl.value = String(models[0]);
+      }
+      modelServiceMessageEl.textContent = models.length ? `发现 ${models.length} 个模型。` : "服务未返回模型列表，请手动填写模型名。";
+    } else if (action === "test") {
+      modelServiceMessageEl.textContent = `连接成功，模型返回：${String(result.message || "OK")}`;
+    } else {
+      state.modelService = result;
+      renderModelServiceConfig(result);
+      modelServiceMessageEl.textContent = "已保存并立即生效。";
+    }
+  } catch (error) {
+    modelServiceMessageEl.textContent = `操作失败：${String(error?.message || error)}`;
+  } finally {
+    state.modelServiceBusy = false;
+    setModelServiceButtonsDisabled(false);
+  }
+}
+
+function setModelServiceButtonsDisabled(disabled) {
+  for (const button of [modelServiceModelsEl, modelServiceTestEl, modelServiceSaveEl]) {
+    if (button) button.disabled = Boolean(disabled);
+  }
+}
+
 async function applyPayload(payload, options = {}) {
   const resolved = resolveVisualState(payload);
   state.currentVisual = resolved.currentVisual;
@@ -2930,6 +3055,33 @@ settingsCloseEl?.addEventListener("click", () => {
   setSettingsOpen(false);
 });
 
+modelServiceProviderEl?.addEventListener("change", () => {
+  const provider = selectedModelProvider();
+  if (provider?.baseUrl) {
+    modelServiceBaseUrlEl.value = String(provider.baseUrl);
+  } else if (modelServiceProviderEl.value !== "openai_compatible") {
+    modelServiceBaseUrlEl.value = "";
+  }
+  modelServiceApiKeyEl.placeholder = provider?.apiKeyRequired === false
+    ? "本地服务通常无需填写"
+    : state.modelService?.hasApiKey
+      ? "已保存，留空表示继续使用原密钥"
+      : "粘贴服务商提供的 API Key";
+  modelServiceMessageEl.textContent = String(provider?.description || "");
+});
+
+modelServiceModelsEl?.addEventListener("click", () => {
+  void runModelServiceRequest("models");
+});
+
+modelServiceTestEl?.addEventListener("click", () => {
+  void runModelServiceRequest("test");
+});
+
+modelServiceSaveEl?.addEventListener("click", () => {
+  void runModelServiceRequest("save");
+});
+
 settingsBackdropEl?.addEventListener("click", () => {
   setSettingsOpen(false);
 });
@@ -3083,9 +3235,15 @@ if (window.visualViewport) {
 }
 
 void (async () => {
-  await fetchAppConfig();
+  await Promise.all([fetchAppConfig(), fetchModelServiceConfig()]);
   ensureIdentity();
   updateSettingsStatusCopy();
+  if (new URLSearchParams(window.location.search).get("configure") === "model") {
+    setSettingsOpen(true);
+    requestAnimationFrame(() => {
+      modelServiceSettingsEl?.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+  }
   setInterval(() => {
     void pollDueReminders();
   }, REMINDER_POLL_INTERVAL_MS);

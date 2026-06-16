@@ -69,9 +69,19 @@ textarea {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  opacity: 1;
   pointer-events: none;
   animation: pet-idle-breathe 4.2s ease-in-out infinite;
   transform-origin: bottom center;
+  transition: opacity 0.16s ease;
+}
+
+.pet-hitbox img:not([src]),
+.pet-hitbox img[src=""],
+.pet-hitbox img[data-image-state="empty"],
+.pet-hitbox img[data-image-state="loading"],
+.pet-hitbox img[data-image-state="error"] {
+  opacity: 0;
 }
 
 .stage[data-motion="thinking"] .pet-hitbox img {

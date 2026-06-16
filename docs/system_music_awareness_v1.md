@@ -1,18 +1,21 @@
 # System Music Awareness V1
 
-This document defines the first read-only slice for Akane to perceive the music
-currently playing on the user's desktop, reuse that context in prompts, and keep
-the existing local upload / ASR music timeline as a fallback instead of the
-default path.
+This document defines the first lightweight slices for Akane to perceive the
+music currently playing on the user's desktop, reuse that context in prompts,
+optionally request current-session playback controls, and keep the existing
+local upload / ASR music timeline as a fallback instead of the default path.
 
 ## Status
 
 Design target: Phase 1 implemented in desktop pet next; Phase 2/3 implemented
-as an optional online synced-lyrics provider plus prompt integration.
+as an optional online synced-lyrics provider plus prompt integration; Phase 5
+has a lightweight current-session playback control slice for Windows SMTC.
 
-The first implementation should be Windows-only, read-only, and non-blocking.
-It must degrade cleanly on unsupported platforms or when no system media session
-is available.
+The perception and lyrics implementation should be Windows-only, read-mostly,
+and non-blocking. It must degrade cleanly on unsupported platforms or when no
+system media session is available. Playback control is limited to the current
+system media session and returns structured failure when the player rejects a
+command.
 
 Implementation note: V1 uses Windows SMTC only to learn the current track,
 artist, playback state, and timeline position. It does not read platform lyric
@@ -54,9 +57,8 @@ Examples:
 
 ## Non-Goals for V1
 
-V1 does not:
+V1 perception and lyrics do not:
 
-- control playback;
 - search and play requested songs;
 - operate a browser or external music app;
 - require MCP;
@@ -65,8 +67,9 @@ V1 does not:
 - expose local absolute paths, API keys, prompt text, screenshots, clipboard
   content, or full lyric bodies in snapshots.
 
-Playback control and "Akane, play this song" belong to later capability
-orchestration phases.
+Full "Akane, play this song" orchestration belongs to later capability phases.
+Current playback control is only for the already-active system media session:
+play/resume, pause, stop, previous, and next.
 
 ## Layered Music Sources
 
@@ -475,9 +478,24 @@ Expanded diagnostics may show structured status/reason for debugging.
 }
 ```
 
+```json
+{
+  "id": "provider.music.system_media_control",
+  "name": "系统媒体控制",
+  "type": "music_playback_provider",
+  "source": "tauri_bridge",
+  "executionMode": "internal",
+  "status": "ready",
+  "risk": "medium",
+  "summary": "请求当前系统播放器播放、暂停、停止、上一首或下一首"
+}
+```
+
 Risk note:
 
 - System media read is local and low risk.
+- System media control only targets the current OS media session and is medium
+  risk because it changes playback state.
 - Online lyric lookup sends title/artist/album to external providers, so it is
   medium risk and should be configurable.
 
@@ -614,14 +632,33 @@ Acceptance:
 
 ### Phase 5: Future Playback and Song Request Abilities
 
-Deferred until capability permission and provider orchestration are ready.
+Read-only perception remains complete without playback control. Phase 5 adds two
+small safe interaction slices:
+
+- `control_system_media`: a Tauri command that asks Windows SMTC to control the
+  current media session (`play`, `pause`, `stop`, `previous`, `next`) and returns
+  structured success/failure.
+- `open_music_search`: a tool that opens a public music-platform search page for
+  a requested song in desktop pet mode, but must not claim that the song has
+  started playing.
 
 Potential deliverables:
 
+- Current-session playback controls through Windows SMTC.
+- Music search-page opener (`open_music_search`) for `qq_music`,
+  `netease_music`, `bilibili`, and `youtube`.
 - Playback control provider for current session.
 - Music search provider abstraction.
 - Browser/MCP provider for web-player search and play.
 - Explicit user permission and confirmation UX.
+
+Current non-goals:
+
+- auto-clicking the first result by default;
+- logging in, downloading, bypassing membership/copyright limits, or controlling
+  a third-party player beyond the current OS media session without a real
+  provider boundary;
+- returning fake `{ ok: true }` playback results.
 
 ## Tests and Verification
 

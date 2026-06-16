@@ -7,6 +7,8 @@
 .venv/
 venv/
 env/
+!/deploy/env/
+!/deploy/env/.env.vps.example
 __pycache__/
 *.py[cod]
 *.pyo

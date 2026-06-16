@@ -23,6 +23,7 @@ from .engine import AkaneMemoryEngine
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
+from .model_service_config import ModelServiceConfigStore, load_and_apply_saved_model_service
 from .public_guard import PublicThinkGuard
 from .qq_gateway import NapCatQQGateway
 from .resource_manifest import ResourceManifest
@@ -31,6 +32,7 @@ from .routes.control_center import build_control_center_router, build_control_ce
 from .routes.core import build_core_router
 from .routes.desktop_pet import build_desktop_pet_router
 from .routes.gifts import build_gifts_router
+from .routes.model_services import build_model_services_router
 from .routes.qq import build_qq_router
 from .routes.reminders import build_reminders_router
 from .routes.sessions import build_sessions_router
@@ -86,12 +88,20 @@ PROJECT_DIR = APP_DIR.parent
 
 WEB_DIR = PROJECT_DIR / "web"
 ASSETS_DIR = WEB_DIR / "assets"
-CREATOR_KIT_CHARACTERS_DIR = PROJECT_DIR / "desktop_pet_creator_kit" / "characters"
+CREATOR_KIT_CHARACTERS_DIR = Path(config.CHARACTERS_DIR)
 MODULES_DIR = WEB_DIR / "modules"
 VENDOR_DIR = WEB_DIR / "vendor"
 resources = ResourceManifest(ASSETS_DIR)
 desktop_pet_character_resources = DesktopPetCharacterResourceService(
     characters_dir=CREATOR_KIT_CHARACTERS_DIR,
+)
+model_service_config_store = ModelServiceConfigStore(
+    Path(config.DATA_DIR) / "_local" / "model_service.json"
+)
+load_and_apply_saved_model_service(
+    store=model_service_config_store,
+    config_module=config,
+    on_error=lambda exc: logger.warning("Model service config ignored: %s", exc),
 )
 engine = AkaneMemoryEngine(
     Path(config.DATA_DIR) / "akane_memory_v01",
@@ -387,6 +397,15 @@ app.include_router(
             runtime_metrics=runtime_metrics,
             public_guard=public_guard,
         ),
+    )
+)
+app.include_router(
+    build_model_services_router(
+        store=model_service_config_store,
+        config_module=config,
+        engine=engine,
+        runtime_metrics=runtime_metrics,
+        log_event=_log_event,
     )
 )
 app.include_router(

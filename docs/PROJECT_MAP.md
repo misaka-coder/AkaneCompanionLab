@@ -13,7 +13,7 @@ Last updated: 2026-05-04
 ┌──────────────────────────────────────────────────────────────────┐
 │  Tauri Desktop Shell (desktop_pet_next)                          │
 │  ┌─────────────┐  ┌────────────────┐  ┌──────────────────────┐  │
-│  │ main.js      │  │ settings.js    │  │ control-center-lab   │  │
+│  │ main.js      │  │ control-center-lab.js / data-sources.js       │  │
 │  │ (pet window) │  │ (old settings) │  │ (new CC, beta)       │  │
 │  └──────┬───────┘  └──────┬─────────┘  └──────────┬───────────┘  │
 │         │                 │                        │              │
@@ -203,7 +203,7 @@ Built with Tauri v2 + Vite. Entry: `index.html` → `src/main.js`.
 |------|---------------|
 | `index.html` | Main pet window HTML. Mounts `#app`, loads `main.js`. |
 | `control-center-lab.html` | Default control center HTML. Mounts `#app`, loads `control-center-lab.js`. |
-| `settings.html` | Old settings page. Mounts `#app`, loads `settings.js`. Explicit rollback via `AKANE_LEGACY_SETTINGS=1`. |
+| `settings.html` | Compatibility redirect to `control-center-lab.html`; owns no settings behavior. |
 | `workspace.html` | Workspace (hand-side items) window. Loads `workspace.js`. |
 | `vite.config.js` | Vite build configuration. Multi-page: index, settings, workspace, control-center-lab. |
 
@@ -214,10 +214,8 @@ Built with Tauri v2 + Vite. Entry: `index.html` → `src/main.js`.
 | `src/main.js` | **The pet main process (~5400 lines).** Contains: window management, visual renderer, chat pipeline, settings command handler (`handleSettingsCommand` — 40+ commands), desktop context polling, screen vision pipeline, music player, voice I/O (TTS/ASR), session management, `buildSettingsSnapshot`, `broadcastSettingsSnapshot`. Music recommendations pipeline: `buildMusicRecommendationsSnapshot()`, `dedupeMusicRecommendations()`, `refreshWorkspaceMusicRecommendations()`, `scheduleWorkspaceMusicRecommendationsRefresh()`. Idempotent workspace audio playback via `findMusicQueueIndexByWorkspaceAudio()` + `playSourceIdAfterAdd`. `scheduleSettingsSnapshot()` emits after `setPetEmotion()` for live emotion sync. The central nervous system of the desktop app. |
 | `src/character-profile.js` | Character identity, pack selection, outfit/emotion management. `buildCharacterSnapshot`, `selectCharacterPack`, `getActiveCharacterPackId`. |
 | `src/visual-renderer.js` | `createVisualRenderer`. Character rendering: sprite positioning, emotion switching, visual effects, scale/opacity. |
-| `src/settings.js` | Old settings page UI (~1000 lines). Form-based settings for backend URL, character, voice, scale, opacity, etc. Sends `SETTINGS_COMMAND_EVENT` to `main.js`. |
 | `src/workspace.js` | Workspace window UI. Shows hand-side files, outputs, task list. |
 | `src/styles.css` | Main pet window styles. |
-| `src/settings.css` | Old settings page styles. |
 | `src/workspace.css` | Workspace window styles. |
 
 ### Control Center Lab (New, Beta)
@@ -238,7 +236,7 @@ Built with Tauri v2 + Vite. Entry: `index.html` → `src/main.js`.
 
 | File | Responsibility |
 |------|---------------|
-| `src-tauri/src/main.rs` | Tauri app entry. Window creation (pet, settings, workspace). `load_pet_state` command, `settings_window_url()` with `AKANE_LEGACY_SETTINGS` rollback gate. Desktop context snapshot provider. |
+| `src-tauri/src/main.rs` | Tauri app entry. Window creation (pet, control center, workspace). `load_pet_state` command and the single `control-center-lab.html` settings route. Desktop context snapshot provider. |
 | `src-tauri/Cargo.toml` | Rust dependencies. Tauri v2, window APIs, file system. |
 | `src-tauri/tauri.conf.json` | Tauri configuration: window labels, permissions, security policies. |
 
@@ -260,7 +258,7 @@ Run order: `npm run verify:control-center` in `desktop_pet_next/`.
 | Script | Purpose |
 |--------|---------|
 | `desktop_pet_next/scripts/doctor.mjs` | Environment check: Node version, npm deps, Tauri CLI. |
-| `desktop_pet_next/scripts/start-next.ps1` | Launch script for the Tauri desktop pet. |
+| `desktop_pet_next/scripts/start-next.ps1` | Guarded release launcher for the Tauri desktop pet; rebuilds when the release exe is missing, stale, or `-Rebuild` is passed. |
 | `desktop_pet_next/scripts/tauri-with-cargo-path.ps1` | Tauri CLI wrapper with cargo PATH setup. |
 
 ### Python Test Suite

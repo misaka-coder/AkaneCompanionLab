@@ -1,1 +1,12 @@
 dist/
+
+# Local/imported character packs are user content. Keep only repository samples
+# eligible for public review.
+characters/*
+!characters/akane_sample/
+!characters/akane_sample/**
+!characters/mika_sample/
+!characters/mika_sample/**
+
+# Per-character runtime data is private and never belongs in source control.
+characters/**/_local/

@@ -9,6 +9,9 @@ const projectRoot = resolve(__dirname, "..");
 const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
 
 const REQUIRED_FILES = [
+  "control-center-lab.html",
+  "src/control-center-lab.js",
+  "src/control-center-lab.css",
   "src/control-center/action-router.js",
   "src/control-center/action-surface-contract.js",
   "src/control-center/data-sources.js",
@@ -18,11 +21,24 @@ const REQUIRED_FILES = [
   "scripts/control-center-ux-smoke.mjs",
 ];
 
+const FORBIDDEN_LEGACY_FILES = [
+  "src/settings.js",
+  "src/settings.css",
+];
+
 function checkRequiredFiles() {
   const missing = REQUIRED_FILES.filter((rel) => !existsSync(resolve(projectRoot, rel)));
   if (missing.length) {
     console.error("[control-center] MISSING REQUIRED FILES:");
     for (const file of missing) {
+      console.error(`  ${file}`);
+    }
+    process.exit(1);
+  }
+  const legacyFiles = FORBIDDEN_LEGACY_FILES.filter((rel) => existsSync(resolve(projectRoot, rel)));
+  if (legacyFiles.length) {
+    console.error("[control-center] LEGACY SETTINGS IMPLEMENTATION RETURNED:");
+    for (const file of legacyFiles) {
       console.error(`  ${file}`);
     }
     process.exit(1);

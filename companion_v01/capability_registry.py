@@ -53,6 +53,8 @@ CHAT_FILE_CLIENT_MODES = (ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
 
 COMMON_TOOL_NAMES = (
     "retrieve_memory",
+    "read_memory_timeline",
+    "load_character_context",
     "set_reminder",
     "list_reminders",
     "cancel_reminder",
@@ -63,6 +65,7 @@ COMMON_TOOL_NAMES = (
 
 WEB_SEARCH_TOOL_NAMES = ("web_search",)
 DESKTOP_BROWSER_TOOL_NAMES = ("open_browser", "browser_page")
+DESKTOP_MUSIC_REQUEST_TOOL_NAMES = ("open_music_search",)
 DESKTOP_WORKSPACE_TOOL_NAMES = (
     "list_workspace",
     "read_workspace",
@@ -237,7 +240,7 @@ class CapabilityRegistry:
                 layer="common",
                 modes=COMMON_CLIENT_MODES,
                 tools=COMMON_TOOL_NAMES,
-                light_hint="你可以主动检索长期记忆，也可以设置/查看/取消提醒、维护表达侧面；短任务直接调用工具完成，复杂多步任务可以记录到任务工作区，也可以委派给后台工坊分担。",
+                light_hint="你可以按语义检索长期记忆，也可以在用户明确指定日期时读取原始对话时间线；还可以设置/查看/取消提醒、维护表达侧面。短任务直接调用工具完成，复杂多步任务可以记录到任务工作区，也可以委派给后台工坊分担。",
                 trigger=_always,
             ),
             CapabilityModule(
@@ -254,6 +257,14 @@ class CapabilityRegistry:
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=DESKTOP_BROWSER_TOOL_NAMES,
                 light_hint="桌宠模式下，open_browser 只把公开网页交给用户的系统浏览器打开；browser_page 会打开并操作 Akane 可见托管浏览器窗口，用于读取、滚动、按可见候选序号打开链接，以及经授权的点击/输入。不要接管用户手动打开的浏览器标签页，不要登录、下载、上传或访问私密/内网内容。",
+                trigger=_always,
+            ),
+            CapabilityModule(
+                name="desktop_music_request",
+                layer="music_request",
+                modes=(ClientMode.DESKTOP_PET,),
+                tools=DESKTOP_MUSIC_REQUEST_TOOL_NAMES,
+                light_hint="桌宠模式下，当用户明确要点歌或搜索一首歌来听时，可以用 open_music_search 打开公开音乐平台搜索页；它不代表已经播放成功，后续点击/输入仍按浏览器授权边界处理。",
                 trigger=_always,
             ),
             CapabilityModule(

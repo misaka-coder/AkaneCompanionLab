@@ -11,6 +11,7 @@ export function createVisualRenderer({ stage, image } = {}) {
   let currentExpression = null;
   let currentMotion = DEFAULT_MOTION;
 
+  bindImageState();
   setRendererMode(STATIC_RENDERER_MODE);
   setMotion(DEFAULT_MOTION);
 
@@ -40,9 +41,13 @@ export function createVisualRenderer({ stage, image } = {}) {
 
     currentExpression = next;
     if (image) {
+      setImageState("loading");
       image.src = next.url;
       image.dataset.emotion = next.id;
       image.alt = characterLabel || next.name || next.id;
+      if (image.complete && image.naturalWidth > 0) {
+        setImageState("ready");
+      }
     }
     if (stage) {
       stage.dataset.expression = next.id;
@@ -61,6 +66,26 @@ export function createVisualRenderer({ stage, image } = {}) {
       stage.dataset.motion = next;
     }
     return currentMotion;
+  }
+
+  function bindImageState() {
+    if (!image) return;
+    setImageState(image.getAttribute("src") ? "loading" : "empty");
+    image.addEventListener("load", () => {
+      setImageState("ready");
+    });
+    image.addEventListener("error", () => {
+      setImageState("error");
+    });
+  }
+
+  function setImageState(state) {
+    if (image) {
+      image.dataset.imageState = state;
+    }
+    if (stage) {
+      stage.dataset.imageState = state;
+    }
   }
 
   function setLayout(layout) {

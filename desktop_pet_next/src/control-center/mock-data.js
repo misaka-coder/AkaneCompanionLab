@@ -2,6 +2,7 @@ import { CONTROL_CENTER_ACTIONS } from "./action-router.js";
 
 export const navItems = [
   { id: "overview", label: "总览", icon: "home" },
+  { id: "model", label: "模型", icon: "sparkle" },
   { id: "character", label: "角色", icon: "user" },
   { id: "voice", label: "语音", icon: "mic" },
   { id: "music", label: "音乐", icon: "music" },
@@ -35,6 +36,11 @@ export const controlCenterDataDomains = {
     sense: "desktop.sensing",
     abilities: "capability.registry",
     health: "system.metrics"
+  },
+  model: {
+    connection: "model.service",
+    providers: "model.providers",
+    discovery: "model.discovery"
   },
   character: {
     selectedPack: "character.package",
@@ -89,6 +95,48 @@ export const controlCenterDataDomains = {
     abilities: "capability.registry",
     expert: "app.expertOptions"
   }
+};
+
+export const modelPage = {
+  title: "模型服务",
+  accent: "Model",
+  subtitle: "选择服务商、检测可用模型并测试连接。保存后立即用于角色对话。",
+  status: "missing_config",
+  source: "environment",
+  providerId: "deepseek",
+  protocol: "openai",
+  baseUrl: "https://api.deepseek.com/v1",
+  hasApiKey: false,
+  chatModel: "deepseek-chat",
+  useForVision: true,
+  visionModel: "",
+  timeoutSeconds: 120,
+  providers: [
+    {
+      id: "deepseek",
+      label: "DeepSeek",
+      protocol: "openai",
+      baseUrl: "https://api.deepseek.com/v1",
+      apiKeyRequired: true,
+      description: "DeepSeek 官方 OpenAI 兼容接口。"
+    },
+    {
+      id: "openai_compatible",
+      label: "其他 OpenAI 兼容服务",
+      protocol: "openai",
+      baseUrl: "",
+      apiKeyRequired: true,
+      description: "填写服务商给你的 Base URL。"
+    },
+    {
+      id: "ollama",
+      label: "Ollama 本地模型",
+      protocol: "ollama",
+      baseUrl: "http://127.0.0.1:11434",
+      apiKeyRequired: false,
+      description: "本机 Ollama，无需 API Key。"
+    }
+  ]
 };
 
 export const overviewPage = {
@@ -426,6 +474,80 @@ export const abilitiesPage = {
     { label: "安全检查", icon: "shield", tone: "green" },
     { label: "查看日志", icon: "log", tone: "pink" },
     { label: "状态面板", icon: "panel", tone: "blue" }
+  ],
+  productization: [
+    {
+      title: "模型与核心聊天",
+      status: "Ready",
+      tone: "green",
+      description: "可视模型配置、连接测试和对话主链路已经进入首体验。",
+      configure: "模型页",
+      verify: "保存配置后发送一条消息",
+      dependency: "OpenAI 兼容服务、Ollama 或云端 API"
+    },
+    {
+      title: "记忆系统",
+      status: "Alpha",
+      tone: "blue",
+      description: "语义记忆和按时间读取原始对话已接入，仍需要更清楚的用户查看/清理入口。",
+      configure: "自动启用，后续补记忆管理页",
+      verify: "询问过去偏好或读取日期范围",
+      dependency: "SQLite；向量检索可选"
+    },
+    {
+      title: "角色包与知识文件",
+      status: "Alpha",
+      tone: "blue",
+      description: "角色包、表情、关系/知识文件和本地存储已接入，仍需公开样例包打磨。",
+      configure: "角色页 / 角色工坊",
+      verify: "切换角色包并检查表情与人设文件",
+      dependency: "本地角色包资源"
+    },
+    {
+      title: "GPT-SoVITS 语音",
+      status: "Productization Gap",
+      tone: "orange",
+      description: "已有外部端点、健康检查、试听、声线档案和角色绑定，仍需一条完整引导流。",
+      configure: "能力页 · 本地能力环境",
+      verify: "健康检查 → 短试听 → 绑定当前角色",
+      dependency: "用户自备 GPT-SoVITS 兼容服务"
+    },
+    {
+      title: "MCP 外部工具",
+      status: "Productization Gap",
+      tone: "orange",
+      description: "已有保存配置和发现工具，仍需补成服务器管理器：模板、测试、工具列表和错误日志。",
+      configure: "能力页 · 外部 MCP 工具",
+      verify: "保存服务器后执行发现工具",
+      dependency: "用户自备 MCP server"
+    },
+    {
+      title: "音乐陪伴",
+      status: "Productization Gap",
+      tone: "orange",
+      description: "本地拖拽播放、队列、歌词和 Windows 系统音乐感知存在，发布前要先稳住状态机。",
+      configure: "音乐页 / 拖拽本地音频",
+      verify: "拖入音频后测试播放、暂停、下一首、清空",
+      dependency: "Windows 桌宠；系统媒体感知仅 Windows"
+    },
+    {
+      title: "QQ / NapCat",
+      status: "Productization Gap",
+      tone: "orange",
+      description: "OneBot/NapCat 适配存在，但用户仍需要外部服务部署和清晰自检路径。",
+      configure: ".env / QQ 自检脚本",
+      verify: "收发消息、附件、文件发送自检",
+      dependency: "外部 NapCat / OneBot"
+    },
+    {
+      title: "本地工作流",
+      status: "Productization Gap",
+      tone: "orange",
+      description: "工作流绑定、导入、校验和任务接口存在，仍需至少一个端到端公开样例。",
+      configure: "能力页 · 本地工作流",
+      verify: "导入 JSON → 校验 → 从工坊执行",
+      dependency: "用户自备 ComfyUI 等本地服务"
+    }
   ],
   modules: [
     {

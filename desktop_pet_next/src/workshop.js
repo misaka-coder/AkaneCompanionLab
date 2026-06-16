@@ -75,6 +75,20 @@ const els = {
   personaEditingPackName: document.querySelector("#persona-editing-pack-name"),
   personaEditingPackId: document.querySelector("#persona-editing-pack-id"),
   personaEmptyState: document.querySelector("#persona-empty-state"),
+  /* context libraries */
+  contextLibraryContent: document.querySelector("#context-library-content"),
+  contextLibraryEmptyState: document.querySelector("#context-library-empty-state"),
+  contextLibraryList: document.querySelector("#context-library-list"),
+  contextLibraryStatus: document.querySelector("#context-library-status"),
+  createContextLibrary: document.querySelector("#create-context-library"),
+  contextLibraryDialog: document.querySelector("#context-library-dialog"),
+  contextLibraryForm: document.querySelector("#context-library-form"),
+  contextLibraryName: document.querySelector("#context-library-name"),
+  contextLibraryFolder: document.querySelector("#context-library-folder"),
+  contextLibraryDescription: document.querySelector("#context-library-description"),
+  contextLibraryLoadWhen: document.querySelector("#context-library-load-when"),
+  contextLibraryCancel: document.querySelector("#context-library-cancel"),
+  contextLibraryError: document.querySelector("#context-library-error"),
   /* portrait management */
   portraitsContent: document.querySelector("#portraits-content"),
   portraitsEmptyState: document.querySelector("#portraits-empty-state"),
@@ -328,6 +342,17 @@ function bindUi() {
     void createCharacterPack();
   });
 
+  /* context libraries */
+  els.createContextLibrary?.addEventListener("click", () => openContextLibraryDialog());
+  els.contextLibraryCancel?.addEventListener("click", () => els.contextLibraryDialog?.close());
+  els.contextLibraryDialog?.addEventListener("click", (event) => {
+    if (event.target === els.contextLibraryDialog) els.contextLibraryDialog.close();
+  });
+  els.contextLibraryForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void createContextLibrary();
+  });
+
   /* test chat */
   els.testChatForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -376,6 +401,10 @@ function switchTab(tab, packId) {
     if (targetId) {
       startEditingPack(targetId);
     }
+  }
+  if (tab === "context") {
+    const targetId = String(view.workspacePackId || view.activePackId || "").trim();
+    loadContextLibrariesTab(targetId);
   }
   if (tab === "portraits") {
     const targetId = String(view.workspacePackId || view.activePackId || "").trim();
@@ -463,7 +492,8 @@ function setEditingPackLabel(name, packId) {
 function loadPersonaForm(profile) {
   const identity = (profile && typeof profile === "object" ? profile.identity : null) || {};
   const persona = (profile && typeof profile === "object" ? profile.persona_form : null) || {};
-  populateFormFields(identity, persona);
+  const dialogue = (profile && typeof profile === "object" ? profile.dialogue : null) || {};
+  populateFormFields(identity, persona, dialogue);
   view.draftDirty = false;
   updateDraftStatus(false);
 }
@@ -472,13 +502,15 @@ function applyDraftToForm(draft) {
   if (!draft) return;
   const ident = draft.identity || {};
   const persona = draft.persona_form || {};
-  populateFormFields(ident, persona);
+  const dialogue = draft.dialogue || {};
+  populateFormFields(ident, persona, dialogue);
 }
 
 /** one-stop form fill from identity + persona objects */
-function populateFormFields(identity, persona) {
+function populateFormFields(identity, persona, dialogue = {}) {
   identity = identity || {};
   persona = persona || {};
+  dialogue = dialogue || {};
 
   setFieldValue(els.fieldName, identity.name || "");
   setFieldValue(els.fieldAppName, identity.app_name || identity.appName || "");
@@ -495,7 +527,9 @@ function populateFormFields(identity, persona) {
   setFieldValue(els.fieldProactiveStyle, persona.proactive_style || persona.proactiveStyle || "");
   setFieldValue(els.fieldExtraSetting, persona.extra_setting || persona.extraSetting || "");
 
-  const lines = Array.isArray(persona.example_lines) ? persona.example_lines : [];
+  const personaLines = Array.isArray(persona.example_lines) ? persona.example_lines : [];
+  const clickLines = Array.isArray(dialogue.local_click_lines) ? dialogue.local_click_lines : [];
+  const lines = personaLines.length ? personaLines : clickLines;
   renderExampleLines(lines);
 }
 
@@ -508,6 +542,7 @@ function collectFormData() {
     relationship: (els.fieldRelationship?.value || "").trim(),
   };
 
+  const exampleLines = collectExampleLines();
   const personaForm = {
     personality_keywords: splitKeywords(els.fieldPersonalityKeywords?.value || ""),
     character_core: (els.fieldCharacterCore?.value || "").trim(),
@@ -518,13 +553,14 @@ function collectFormData() {
     interaction_principles: (els.fieldInteractionPrinciples?.value || "").trim(),
     proactive_style: (els.fieldProactiveStyle?.value || "").trim(),
     extra_setting: (els.fieldExtraSetting?.value || "").trim(),
-    example_lines: collectExampleLines(),
+    example_lines: exampleLines,
   };
 
   return {
     packId: view.editingPackId,
     identity,
     persona_form: personaForm,
+    dialogue: exampleLines.length ? { local_click_lines: exampleLines } : null,
   };
 }
 
@@ -560,6 +596,7 @@ async function saveDraft(options = {}) {
           packId: view.editingPackId,
           identity: data.identity,
           personaForm: data.persona_form,
+          dialogue: data.dialogue,
         },
       });
       view.editingPackId = String(result?.id || view.editingPackId).trim();
@@ -649,6 +686,7 @@ function persistDraft(packId, data) {
       savedAt: new Date().toISOString(),
       identity: data.identity,
       persona_form: data.persona_form,
+      dialogue: data.dialogue,
     };
     localStorage.setItem(draftKey(packId), JSON.stringify(payload));
     return true;
@@ -725,10 +763,10 @@ function addExampleLineRow(text, emotion) {
   const row = document.createElement("div");
   row.className = "example-line-row";
 
-  const textInput = document.createElement("input");
-  textInput.type = "text";
+  const textInput = document.createElement("textarea");
+  textInput.rows = 2;
   textInput.className = "form-input example-line-text";
-  textInput.placeholder = "台词内容…";
+  textInput.setAttribute("aria-label", "点击反馈台词内容");
   textInput.value = text || "";
   textInput.maxLength = 200;
   textInput.addEventListener("input", () => updateDraftStatus(true));
@@ -736,7 +774,7 @@ function addExampleLineRow(text, emotion) {
   const emotionInput = document.createElement("input");
   emotionInput.type = "text";
   emotionInput.className = "form-input example-line-emotion";
-  emotionInput.placeholder = "表情";
+  emotionInput.setAttribute("aria-label", "点击反馈台词表情或立绘");
   emotionInput.value = emotion || "normal";
   emotionInput.maxLength = 40;
   emotionInput.addEventListener("input", () => updateDraftStatus(true));
@@ -746,7 +784,7 @@ function addExampleLineRow(text, emotion) {
   removeBtn.className = "btn-remove-line";
   removeBtn.setAttribute("data-remove-example", "");
   removeBtn.textContent = "✕";
-  removeBtn.title = "删除这条示例台词";
+  removeBtn.title = "删除这条台词";
 
   row.append(textInput, emotionInput, removeBtn);
   container.appendChild(row);
@@ -980,6 +1018,151 @@ async function createCharacterPack() {
   } catch (error) {
     showCreateError(formatError(error));
     setStatus(`创建失败：${formatError(error)}`);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Character context libraries                                      */
+/* ------------------------------------------------------------------ */
+
+function loadContextLibrariesTab(packId) {
+  const pack = findPack(packId);
+  if (!pack) {
+    if (els.contextLibraryContent) els.contextLibraryContent.hidden = true;
+    if (els.contextLibraryEmptyState) els.contextLibraryEmptyState.hidden = false;
+    return;
+  }
+
+  setWorkspacePack(pack.id);
+  if (els.contextLibraryContent) els.contextLibraryContent.hidden = false;
+  if (els.contextLibraryEmptyState) els.contextLibraryEmptyState.hidden = true;
+  renderContextLibraries(pack);
+}
+
+function renderContextLibraries(pack) {
+  if (!els.contextLibraryList) return;
+  const profile = pack?._rawProfile && typeof pack._rawProfile === "object"
+    ? pack._rawProfile
+    : {};
+  const libraries = Array.isArray(profile.context_libraries)
+    ? profile.context_libraries.filter((item) => item && typeof item === "object")
+    : [];
+
+  els.contextLibraryList.replaceChildren();
+  if (!libraries.length) {
+    const empty = document.createElement("div");
+    empty.className = "context-library-card context-library-card-empty";
+    const title = document.createElement("strong");
+    title.textContent = "还没有角色资料库";
+    const note = document.createElement("p");
+    note.textContent = "新建后，往对应文件夹放入以主题命名的 Markdown 文件即可。";
+    empty.append(title, note);
+    els.contextLibraryList.appendChild(empty);
+    return;
+  }
+
+  for (const library of libraries) {
+    const folder = String(library.folder || "").trim();
+    const name = String(library.name || folder || "未命名资料库").trim();
+    const description = String(library.description || "").trim();
+    const loadWhen = String(library.load_when || library.loadWhen || "").trim();
+    const card = document.createElement("article");
+    card.className = "context-library-card";
+
+    const heading = document.createElement("div");
+    heading.className = "context-library-card-heading";
+    const title = document.createElement("strong");
+    title.textContent = name;
+    const folderLabel = document.createElement("code");
+    folderLabel.textContent = folder || "未设置文件夹";
+    heading.append(title, folderLabel);
+
+    const descriptionLine = document.createElement("p");
+    descriptionLine.textContent = description || "尚未填写内容说明。";
+    const loadLine = document.createElement("p");
+    loadLine.className = "context-library-load-when";
+    loadLine.textContent = `读取时机：${loadWhen || "尚未填写"}`;
+    card.append(heading, descriptionLine, loadLine);
+    els.contextLibraryList.appendChild(card);
+  }
+}
+
+function openContextLibraryDialog() {
+  const packId = String(view.workspacePackId || view.activePackId || "").trim();
+  if (!packId) {
+    setStatus("请先选择一个角色包。");
+    return;
+  }
+  if (!isTauriRuntime) {
+    setStatus("浏览器预览模式不支持创建资料库。");
+    return;
+  }
+  setFieldValue(els.contextLibraryName, "");
+  setFieldValue(els.contextLibraryFolder, "");
+  setFieldValue(els.contextLibraryDescription, "");
+  setFieldValue(els.contextLibraryLoadWhen, "");
+  showContextLibraryError("");
+  els.contextLibraryDialog?.showModal();
+}
+
+function showContextLibraryError(message) {
+  if (!els.contextLibraryError) return;
+  els.contextLibraryError.textContent = String(message || "");
+  els.contextLibraryError.hidden = !message;
+  if (message) flashElement(els.contextLibraryForm, "invalid-flash");
+}
+
+async function createContextLibrary() {
+  const packId = String(view.workspacePackId || view.activePackId || "").trim();
+  const name = String(els.contextLibraryName?.value || "").trim();
+  const folder = String(els.contextLibraryFolder?.value || name).trim();
+  const description = String(els.contextLibraryDescription?.value || "").trim();
+  const loadWhen = String(els.contextLibraryLoadWhen?.value || "").trim();
+
+  if (!name) {
+    showContextLibraryError("请填写资料库名称。");
+    return;
+  }
+  if (!description) {
+    showContextLibraryError("请用一句话说明这里存什么。");
+    return;
+  }
+  if (!loadWhen) {
+    showContextLibraryError("请说明角色应在什么时候读取这组资料。");
+    return;
+  }
+
+  if (els.contextLibraryStatus) {
+    els.contextLibraryStatus.textContent = `正在创建：${name}…`;
+  }
+  try {
+    const result = await invoke("create_character_context_library", {
+      request: {
+        packId,
+        folder,
+        name,
+        description,
+        loadWhen,
+      },
+    });
+    const normalized = normalizePacks([result])[0];
+    const index = view.packs.findIndex((pack) => pack.id === packId);
+    if (index >= 0 && normalized) view.packs[index] = normalized;
+    if (view.editingPackId === packId && result?.profile) {
+      view.editingProfile = result.profile;
+    }
+    els.contextLibraryDialog?.close();
+    renderContextLibraries(normalized || findPack(packId));
+    if (els.contextLibraryStatus) {
+      els.contextLibraryStatus.textContent = `已创建“${name}”。放入 .md 文件后，模型会在提示词中看到它的用途和读取时机。`;
+    }
+    setStatus(`已创建角色资料库：${name}`);
+  } catch (error) {
+    const message = formatError(error);
+    showContextLibraryError(message);
+    if (els.contextLibraryStatus) {
+      els.contextLibraryStatus.textContent = `创建失败：${message}`;
+    }
   }
 }
 
@@ -1907,7 +2090,7 @@ function yieldToUiForLargeFileRead() {
 async function createOutfit(packId) {
   const outfit = String(els.newOutfitId?.value || "").trim();
   if (!outfit) {
-    setStatus("请先填写新服装名，例如 巫女服、校服、summer。");
+    setStatus("请先填写新服装名。");
     setPortraitStatus("请先填写新服装名。", true);
     els.newOutfitId?.focus();
     flashElement(els.newOutfitId, "invalid-flash");
@@ -2385,7 +2568,7 @@ function renderPromptFieldSummary(pack) {
     ["口头禅", `${asArray(persona.catchphrases).length} 条`],
     ["边界", summarizeText(persona.boundaries)],
     ["互动原则", summarizeText(persona.interaction_principles || persona.interactionPrinciples)],
-    ["示例台词", `${asArray(persona.example_lines).length} 条`],
+    ["点击反馈台词", `${asArray(persona.example_lines).length} 条`],
   ];
   els.testPromptFields.replaceChildren(
     ...rows.map(([label, value]) => {
@@ -2924,6 +3107,9 @@ function render() {
 
   if (view.activeTab === "persona" && view.editingPackId !== view.workspacePackId) {
     startEditingPack(view.workspacePackId);
+  }
+  if (view.activeTab === "context") {
+    loadContextLibrariesTab(view.workspacePackId || view.activePackId);
   }
   if (view.activeTab === "test") {
     const targetId = view.workspacePackId || view.testPackId || view.activePackId;

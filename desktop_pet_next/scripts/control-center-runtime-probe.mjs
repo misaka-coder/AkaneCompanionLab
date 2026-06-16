@@ -171,7 +171,7 @@ function makeCapabilitiesCatalogBody() {
         status: "ready",
         reason: "",
         transport: "stdio",
-        commandName: "C:\\Users\\Lenovo\\mcp\\browser-mcp.exe",
+        commandName: "C:\\Users\\ExampleUser\\mcp\\browser-mcp.exe",
         argsCount: 2,
         envCount: 1,
         toolCount: 2,
@@ -517,12 +517,17 @@ function makeSnapshotFetch({
   assert.equal(browserMcp.toolCount, 2, "1.21j6 MCP summary should include discovered tool count");
   assert.equal(browserMcp.highRiskCount, 1, "1.21j7 MCP summary should count high-risk tools");
   assert.equal(browserMcp.promptExposedCount, 0, "1.21j8 MCP tools should remain hidden from prompt by default");
+  assert.ok(Array.isArray(browserMcp.toolDetails), "1.21j8b MCP manager should expose safe tool detail rows");
+  assert.ok(
+    browserMcp.toolDetails.some((tool) => tool.promptLabel === "默认不进提示词"),
+    "1.21j8c MCP manager should show prompt exposure state"
+  );
   assert.ok(
     browserMcp.safeToolLabels.includes("浏览器上下文") || browserMcp.safeToolLabels.includes("需确认的操作"),
     "1.21j9 MCP summary should translate raw tool ids into user-facing capability labels"
   );
   const mcpText = JSON.stringify(abilities.mcpServers);
-  for (const forbidden of ["Lenovo", "C:", "api_key", "secret", "read_page", "browser_click"]) {
+  for (const forbidden of ["ExampleUser", "C:", "api_key", "secret", "read_page", "browser_click"]) {
     assert.equal(mcpText.includes(forbidden), false, `1.21j10 MCP summary should not expose raw or sensitive detail ${forbidden}`);
   }
   assert.ok(

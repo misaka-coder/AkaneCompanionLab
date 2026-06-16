@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .character_context_library import CharacterContextLibraryService
 from .resource_manifest import ResourceManifest
 
 
@@ -24,6 +25,9 @@ class DesktopPetCharacterResourceService:
         self.characters_dir = Path(characters_dir)
         self.public_prefix = f"/{str(public_prefix or '').strip('/')}"
         self._cache: dict[str, tuple[ResourceManifest, float]] = {}
+        self.context_libraries = CharacterContextLibraryService(
+            characters_dir=self.characters_dir,
+        )
 
     def get_manifest(self, character_pack_id: str) -> ResourceManifest | None:
         pack_id = sanitize_character_pack_id(character_pack_id)
@@ -200,6 +204,7 @@ class DesktopPetCharacterResourceService:
                 f"- 默认称呼用户：{user_title}",
                 "- 这是 QQ 文字客户端本轮选中的角色包；底层项目名、进程名或旧提示里的 Akane 只是项目代号，当前聊天身份优先服从这个角色包。",
                 "- QQ 端只发送文字、文件或工具结果，不渲染桌宠立绘、服装、场景或 BGM；保持角色语气和边界，不要规划视觉演出。",
+                "- emotion 仍与桌宠共用当前角色包的表情图片变量，并且会先于 speech 生成；它必须使用现存图片文件名去掉扩展名后的稳定 id。",
             ]
         else:
             system_lines = [
@@ -224,13 +229,31 @@ class DesktopPetCharacterResourceService:
         if proactive_prompt:
             system_lines.append(f"- 主动搭话风格参考：{proactive_prompt}")
 
+        if mode == "qq_text" and resource_manifest is not None:
+            system_lines.append(resource_manifest.build_emotion_prompt_context())
+
         alias_lines = _format_alias_lines(emotion_aliases, available_emotions=available_emotions)
-        if mode == "desktop_pet" and alias_lines:
+        if mode in {"desktop_pet", "qq_text"} and alias_lines:
             system_lines.append("- 常用情绪意图映射（语义标签 -> 当前角色包表情优先级）：")
             system_lines.extend(f"  - {line}" for line in alias_lines[:ALIAS_PROMPT_LIMIT])
+        if mode in {"desktop_pet", "qq_text"}:
+            context_library_prompt = self.context_libraries.build_prompt_context(pack_id)
+            if context_library_prompt:
+                system_lines.append(context_library_prompt)
 
         reference_sections: list[str] = []
-        persona_form_text = _format_persona_form(persona_form)
+        emotion_normalizer = (
+            lambda value: resource_manifest.normalize_emotion_id(
+                value,
+                preferred_outfit=default_outfit,
+            )
+            if resource_manifest is not None
+            else _clean_text(value)
+        )
+        persona_form_text = _format_persona_form(
+            persona_form,
+            emotion_normalizer=emotion_normalizer,
+        )
         if persona_form_text:
             reference_sections.append("[角色包 persona_form]\n" + persona_form_text)
 
@@ -244,7 +267,7 @@ class DesktopPetCharacterResourceService:
         click_lines = _coerce_click_lines(dialogue.get("local_click_lines"))
         if click_lines:
             rendered = [
-                f"- {item['text']} (emotion={item['emotion']})"
+                f"- {item['text']} (emotion={emotion_normalizer(item['emotion'])})"
                 for item in click_lines[:CLICK_LINE_PROMPT_LIMIT]
             ]
             reference_sections.append("[本地点击台词风格参考]\n" + "\n".join(rendered))
@@ -400,7 +423,11 @@ def _coerce_click_lines(value: Any) -> list[dict[str, str]]:
     return items
 
 
-def _format_persona_form(value: dict[str, Any]) -> str:
+def _format_persona_form(
+    value: dict[str, Any],
+    *,
+    emotion_normalizer=None,
+) -> str:
     if not value:
         return ""
     lines: list[str] = []
@@ -429,6 +456,8 @@ def _format_persona_form(value: dict[str, Any]) -> str:
             continue
         text = _clean_text(item.get("text"))
         emotion = _clean_text(item.get("emotion"))
+        if emotion and emotion_normalizer is not None:
+            emotion = _clean_text(emotion_normalizer(emotion))
         if text:
             examples.append(f"- {text}" + (f" (emotion={emotion})" if emotion else ""))
     if examples:

@@ -19,6 +19,7 @@ logger = logging.getLogger("akane.launch")
 
 import uvicorn
 import config
+from akane_paths import migrate_legacy_data
 
 
 def _preflight() -> tuple[str, int]:
@@ -97,6 +98,18 @@ def _collect_ipv4_candidates() -> list[str]:
 
 
 if __name__ == "__main__":
+    migration = migrate_legacy_data(Path(__file__).resolve().parent, paths=config.AKANE_DATA_PATHS)
+    if migration.failed:
+        logger.warning(
+            "User data root is ready, but %s legacy files could not be copied.",
+            migration.failed,
+        )
+    elif migration.copied:
+        logger.info(
+            "Migrated %s legacy files without overwriting existing data.",
+            migration.copied,
+        )
+
     host, port = _preflight()
 
     main_url = f"http://127.0.0.1:{port}/"
