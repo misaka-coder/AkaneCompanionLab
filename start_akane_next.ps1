@@ -151,6 +151,17 @@ function Resolve-Python {
     throw "Python was not found. Install Python or create .venv first."
 }
 
+function Write-AkaneFirstBuildHints {
+    param([string]$Reason)
+
+    Write-Host ""
+    Write-Host "[首次构建提示] 即将从源码构建桌宠 (Tauri release)。原因：$Reason"
+    Write-Host "             首次启动或源码更新后通常需要几分钟，请耐心等待，不要关闭窗口。"
+    Write-Host "             过程中看到 ``Compiling ...`` 与 Rust crate 名字是 cargo 在编译，属正常现象，不是错误。"
+    Write-Host "             构建完成后桌宠会自动打开。"
+    Write-Host ""
+}
+
 function Ensure-NpmInstall {
     param([string]$DesktopDir)
 
@@ -312,6 +323,8 @@ if (-not $SkipBackend) {
             Write-Host "[INFO] Backend is already accepting connections."
         } else {
             Write-Host "[INFO] Backend is still warming up; launching the desktop pet first."
+            Write-Host "[INFO] 后端服务仍在启动 (首次启动可能需要几十秒加载配置)。"
+            Write-Host "[INFO] 桌宠会先打开，后端就绪后会自动连接，无需手动操作；如果几分钟后仍未连接，再查看下方日志。"
             Write-Host "[INFO] Backend logs:"
             Write-Host "       $backendLog"
             Write-Host "       $backendErrLog"
@@ -352,6 +365,15 @@ if (-not $SkipDesktop) {
     }
 
     if ($shouldBuild) {
+        $buildReason = if (-not $releaseExists) {
+            "找不到现成的桌宠 exe (首次启动)"
+        } elseif ($Rebuild) {
+            "调用方指定了 -Rebuild"
+        } else {
+            "源码比已有 exe 新，需要重建"
+        }
+        Write-AkaneFirstBuildHints -Reason $buildReason
+
         Ensure-NpmInstall -DesktopDir $desktopDir
         Push-Location -LiteralPath $desktopDir
         try {
@@ -366,6 +388,7 @@ if (-not $SkipDesktop) {
             if ($LASTEXITCODE -ne 0) {
                 throw "Tauri build failed with exit code $LASTEXITCODE"
             }
+            Write-Host "[INFO] Tauri build finished. Launching the desktop pet next..."
         } finally {
             Pop-Location
         }

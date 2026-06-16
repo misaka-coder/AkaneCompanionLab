@@ -105,6 +105,38 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 首次依赖安装可能需要数分钟。启动失败会给出缺少的 Python、Node、Rust
 或配置项，不会把未启动的能力显示成成功。
 
+### 第一次启动会发生什么
+
+第一次双击 `启动_Akane.bat` 会经历以下几步。每一步都会在终端打印
+`[INFO] / [OK] / [WARN] / [FAIL]` 之一的状态行；看到 `Compiling …`、
+`Downloading …`、`Resolving …` 这类输出不是出错，是 pip / cargo / npm 在
+正常下载和编译依赖。
+
+| 阶段 | 你会看到什么 | 预估耗时 |
+| --- | --- | --- |
+| 准备 Python 环境 | `Creating .venv with Python …` 然后 `Installing Python dependencies…` | 首次 3–8 分钟，看网速 |
+| 准备桌宠依赖 | `desktop_pet_next/node_modules not found. Running npm install...` | 首次 1–3 分钟 |
+| 构建 Tauri 桌宠 | 进入 `[首次构建提示]` 块后开始 cargo `Compiling akane_desktop_pet_next…` 等条目；这是源码构建，不是错误 | 首次 5–15 分钟，CPU 越快越快 |
+| 启动后端 | `Starting backend with: …` / `Backend log: …` | 几秒到几十秒；如果还在 warming up，会提示桌宠会先开，后端就绪后自动连接 |
+| 启动桌宠 | `Starting Akane Next desktop app...` / `Akane Next PID: …` | 几秒，跟着会弹出桌宠窗口 |
+| 配置模型 | 控制中心的"模型"页自动打开 | 取决于你填什么；保存后立即生效 |
+
+其它需要知道的：
+
+- 默认后端监听 `http://127.0.0.1:9999`。如果端口上已经是 Akane 后端，
+  启动器会为 fresh code 自动重启它；如果是未知进程占用，则会保留原服务并
+  提示你手动让出端口或加 `-SkipBackend`。
+- 用户数据、角色包、记忆、聊天数据库统一写入
+  `%LOCALAPPDATA%\Akane\`。卸载或迁移时只需要处理这一个目录。
+  高级部署可以用环境变量 `AKANE_DATA_ROOT` 指向其他绝对路径。
+- 模型 API Key 保存在
+  `%LOCALAPPDATA%\Akane\users_data\_local\model_service.json`（Git 忽略）。
+  仓库根目录的 `.env` 是本地高级配置，已经写在 `.gitignore` 里，不会进入公开
+  导出；公开仓只发 `.env.example`。
+- 如果启动失败，先看终端最后一行 `[FAIL]` 消息，再看下面两个文件：
+  - `%LOCALAPPDATA%\Akane\logs\akane_backend.log`
+  - `%LOCALAPPDATA%\Akane\logs\akane_backend.err.log`
+
 ## 平台与客户端边界
 
 | 能力 | Windows | Linux | macOS |

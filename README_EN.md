@@ -49,6 +49,41 @@ The shared backend and character-pack protocol serve Web, Windows desktop, and
 optional QQ adapters. This does not mean native desktop support has feature
 parity across Windows, Linux, and macOS.
 
+### What happens on first launch
+
+The first double-click of `启动_Akane.bat` walks through the steps below.
+Each step prints an `[INFO] / [OK] / [WARN] / [FAIL]` status line. Long bursts
+of `Compiling …`, `Downloading …`, or `Resolving …` are pip / cargo / npm
+fetching and building dependencies — they are progress, not errors.
+
+| Stage | What you see | Rough time |
+| --- | --- | --- |
+| Python environment | `Creating .venv with Python …` then `Installing Python dependencies…` | 3–8 min on first run |
+| Desktop pet dependencies | `desktop_pet_next/node_modules not found. Running npm install...` | 1–3 min on first run |
+| Tauri desktop build | A `[首次构建提示]` block, then cargo `Compiling akane_desktop_pet_next…` and similar entries | 5–15 min on first run |
+| Backend warmup | `Starting backend with: …` / `Backend log: …`; if it's still warming up, the launcher says the desktop pet will open first and reconnect automatically | seconds to tens of seconds |
+| Desktop pet launch | `Starting Akane Next desktop app...` / `Akane Next PID: …` | a few seconds, then the pet window appears |
+| Model configuration | The Control Center "Model" page opens automatically | depends on what you fill in; takes effect on save |
+
+A few extra things worth knowing:
+
+- The backend listens on `http://127.0.0.1:9999` by default. If the port already
+  hosts a managed Akane backend, the launcher restarts it for fresh code. If an
+  unknown process owns the port, the launcher keeps it running and asks you to
+  free the port or pass `-SkipBackend`.
+- Character packs, memories, chat databases, and logs all land in
+  `%LOCALAPPDATA%\Akane\`. Uninstall or migration only needs to touch that
+  directory. Advanced deployments can point `AKANE_DATA_ROOT` at another
+  absolute path.
+- The LLM API key is stored at
+  `%LOCALAPPDATA%\Akane\users_data\_local\model_service.json` (Git-ignored).
+  The `.env` at the repo root is for advanced local config, listed in
+  `.gitignore`, and never enters the public export — the public repo ships
+  only `.env.example`.
+- When startup fails, read the last `[FAIL]` line in the terminal, then check:
+  - `%LOCALAPPDATA%\Akane\logs\akane_backend.log`
+  - `%LOCALAPPDATA%\Akane\logs\akane_backend.err.log`
+
 ## Minimal Backend Setup
 
 Python 3.11 is recommended.

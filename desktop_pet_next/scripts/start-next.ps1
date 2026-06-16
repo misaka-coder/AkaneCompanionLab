@@ -7,6 +7,17 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Write-AkaneFirstBuildHints {
+  param([string]$Reason)
+
+  Write-Host ""
+  Write-Host "[首次构建提示] 即将从源码构建桌宠 (Tauri release)。原因：$Reason"
+  Write-Host "             首次启动或源码更新后通常需要几分钟，请耐心等待，不要关闭窗口。"
+  Write-Host "             过程中看到 ``Compiling ...`` 与 Rust crate 名字是 cargo 在编译，属正常现象，不是错误。"
+  Write-Host "             构建完成后桌宠会自动打开。"
+  Write-Host ""
+}
+
 function Ensure-NpmInstall {
   param([string]$DesktopDir)
 
@@ -101,6 +112,15 @@ if ($shouldBuild -and $NoBuild) {
 }
 
 if ($shouldBuild) {
+  $buildReason = if (-not $releaseExists) {
+    "找不到现成的桌宠 exe (首次启动)"
+  } elseif ($Rebuild) {
+    "调用方指定了 -Rebuild"
+  } else {
+    "源码比已有 exe 新，需要重建"
+  }
+  Write-AkaneFirstBuildHints -Reason $buildReason
+
   Ensure-NpmInstall -DesktopDir $Root
   if (-not $releaseExists) {
     Write-Host "[INFO] Release exe not found. Building Akane Next..."
@@ -113,6 +133,7 @@ if ($shouldBuild) {
   if ($LASTEXITCODE -ne 0) {
     throw "Tauri build failed with exit code $LASTEXITCODE"
   }
+  Write-Host "[INFO] Tauri build finished. Launching the desktop pet next..."
 } elseif ($BuildIfMissing) {
   Write-Host "[INFO] Release exe already exists and is up to date. -BuildIfMissing is no longer required."
 }
