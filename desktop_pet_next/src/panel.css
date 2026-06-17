@@ -26,6 +26,20 @@
   color-scheme: light;
 }
 
+[data-theme="dark"] {
+  --glass-bg: rgba(14, 17, 24, 0.76);
+  --glass-border: rgba(255, 255, 255, 0.10);
+  --glass-shadow: 0 12px 36px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.16);
+  --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --blue-soft: rgba(100, 140, 255, 0.15);
+  --pink-soft: rgba(240, 100, 140, 0.15);
+  --text: #e8edf5;
+  --text-soft: rgba(232, 237, 245, 0.60);
+  --text-faint: rgba(232, 237, 245, 0.36);
+  --line: rgba(255, 255, 255, 0.07);
+  color-scheme: dark;
+}
+
 *,
 *::before,
 *::after {
@@ -164,6 +178,7 @@ input {
   margin-top: 1px;
 }
 
+.theme-btn,
 .close-btn {
   appearance: none;
   border: none;
@@ -181,13 +196,25 @@ input {
   transition: background 0.15s, color 0.15s;
 }
 
+.theme-btn:hover,
 .close-btn:hover {
   background: rgba(32, 42, 55, 0.09);
   color: var(--text);
 }
 
+.theme-btn:active,
 .close-btn:active {
   background: rgba(32, 42, 55, 0.15);
+}
+
+[data-theme="dark"] .theme-btn:hover,
+[data-theme="dark"] .close-btn:hover {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+[data-theme="dark"] .theme-btn:active,
+[data-theme="dark"] .close-btn:active {
+  background: rgba(255, 255, 255, 0.16);
 }
 
 /* ── Panel body (scrollable) ─────────────────── */
@@ -214,6 +241,54 @@ input {
 .music-section {
   padding: 8px 14px 12px;
   border-bottom: 1px solid var(--line);
+}
+
+.music-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  min-width: 0;
+}
+
+.music-top-row > span {
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.controller-badge {
+  appearance: none;
+  border: 1px solid rgba(35, 178, 116, 0.22);
+  border-radius: 999px;
+  background: rgba(35, 178, 116, 0.08);
+  color: var(--green);
+  cursor: pointer;
+  flex-shrink: 0;
+  max-width: 112px;
+  min-height: 22px;
+  padding: 0 9px;
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 0.14s, border-color 0.14s, color 0.14s;
+}
+
+.controller-badge[data-controller="user"] {
+  border-color: rgba(32, 42, 55, 0.10);
+  background: rgba(32, 42, 55, 0.05);
+  color: var(--text-soft);
+}
+
+.controller-badge:hover {
+  background: var(--blue-soft);
+  border-color: rgba(56, 103, 214, 0.22);
+  color: var(--blue);
 }
 
 .waveform-wrap {

@@ -147,11 +147,12 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('class="glass-card lyric-panel"', control_center_source)
         self.assertIn('class="glass-card queue-panel"', control_center_source)
         self.assertIn("musicPage.playlist.map", control_center_source)
-        self.assertIn("function syncMusicProgressAnimation()", control_center_source)
-        self.assertIn("function updateMusicProgressAnimation(nowMs)", control_center_source)
-        self.assertIn("data-music-elapsed", control_center_source)
-        self.assertIn("data-music-progress-fill", control_center_source)
-        self.assertIn("requestAnimationFrame(updateMusicProgressAnimation)", control_center_source)
+        self.assertIn("播放配置", control_center_source)
+        self.assertIn("面板负责播放控制", control_center_source)
+        self.assertNotIn("${renderOverviewMusicCard()}", control_center_source)
+        self.assertNotIn("data-music-progress-track", control_center_source)
+        self.assertNotIn("data-music-volume-track", control_center_source)
+        self.assertNotIn("music-control-row", control_center_source)
         self.assertIn('id="workspace-music"', workspace_html)
         self.assertIn("renderMusicPanel", workspace_source)
         self.assertIn("buildMusicLyricText", workspace_source)
@@ -760,6 +761,10 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("state.character_pack_id = pack_id.clone()", tauri_source)
         self.assertIn("CHARACTER_PACK_ACTIVATED_EVENT", workshop_source)
         self.assertIn("emit(CHARACTER_PACK_ACTIVATED_EVENT, { packId: activePackId })", workshop_source)
+        self.assertNotIn("packId === view.activePackId) return", workshop_source)
+        self.assertNotIn("applyBtn.disabled = isActive || Boolean(view.pendingApplyPackId)", workshop_source)
+        self.assertIn('applyBtn.disabled = Boolean(view.pendingApplyPackId)', workshop_source)
+        self.assertIn('"重新应用"', workshop_source)
         self.assertNotIn("main_window.reload()", tauri_source)
         self.assertIn("write_text_atomic(&path, &raw_state)", tauri_source)
         self.assertNotIn('app.emit_to(', tauri_source)
@@ -794,15 +799,35 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("async function applyPersistedCharacterActivation(packId)", main_source)
         self.assertIn("async function loadAndApplyPersistedCharacterState", main_source)
         self.assertIn("scheduleSnapshot: false", main_source)
+        self.assertIn("void registerCharacterActivationBridge().catch", main_source)
+        self.assertNotIn("await registerCharacterActivationBridge();", main_source)
         self.assertLess(
             main_source.index('let lastAppliedLayoutSignature = "";'),
             main_source.index("boot();"),
         )
+        self.assertLess(
+            main_source.index("let panelSyncTimer = null;"),
+            main_source.index("boot();"),
+        )
         self.assertIn("void registerSettingsBridge().catch", main_source)
         self.assertIn("setPetEmotion(state.currentEmotion, { persist: false, force: true });", main_source)
-        self.assertIn("await loadAndApplyPersistedCharacterState();\n    scheduleSave(0);", main_source)
-        self.assertIn("await Promise.allSettled([", main_source)
+        self.assertIn("scheduleTauriRuntimeBridges();\n    await loadAndApplyPersistedCharacterState();", main_source)
+        self.assertIn("window.setTimeout(startTauriRuntimeBridges, 0);", main_source)
+        self.assertIn("await reloadCharacterResources({ startup: true });\n    scheduleNativeWindowStateApply({ forceHitTest: true });", main_source)
+        self.assertNotIn("await syncNativeHitTest({ force: true });\n    await reloadCharacterResources", main_source)
+        self.assertNotIn('await invoke("apply_window_state", { state });\n    await applyCharacterLayoutResize();\n    scheduleNativeHitTestSync({ force: true });\n    await reloadCharacterResources', main_source)
+        self.assertIn("void Promise.allSettled([", main_source)
         self.assertIn("resolveAssetUrl(item.path || item.url || item.src", main_source)
+        self.assertIn("function scheduleNativeWindowStateApply", main_source)
+        self.assertIn("function canRenderCurrentLocalResources()", main_source)
+        self.assertIn("function canUseBundledEmotionFallback()", main_source)
+        self.assertIn("entry && !entry.url && canUseBundledEmotionFallback()", main_source)
+        self.assertIn('packId === "akane_sample"', main_source)
+        self.assertIn('emitTo("settings", SETTINGS_SNAPSHOT_EVENT, payload)', main_source)
+        self.assertIn('emitTo("workshop", SETTINGS_SNAPSHOT_EVENT, payload)', main_source)
+        self.assertIn('emitTo("workspace", SETTINGS_SNAPSHOT_EVENT, payload)', main_source)
+        self.assertIn("emit: emitMainEvent", control_center_source)
+        self.assertIn('emitTo("main", eventName, payload)', control_center_source)
         self.assertIn("const runtimePatchSignatures = {", control_center_source)
         self.assertIn("stableRuntimePatchSignature", control_center_source)
         self.assertIn('state.activePage === "music" && changed.music', control_center_source)
@@ -810,6 +835,21 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("characters: { ...ensureCharacterRuntimeMap() }", main_source)
         self.assertIn("characters: HashMap<String, CharacterRuntimeState>", tauri_source)
         self.assertIn("for runtime in state.characters.values_mut()", tauri_source)
+
+    def test_next_pet_window_geometry_does_not_persist_stale_pixel_size(self) -> None:
+        main_source = _read("desktop_pet_next/src/main.js")
+        tauri_source = _read("desktop_pet_next/src-tauri/src/main.rs")
+
+        self.assertIn("function applyWindowGeometryToState(geometry)", main_source)
+        self.assertIn("state.width = null;", main_source)
+        self.assertIn("state.height = null;", main_source)
+        self.assertIn("width: null,\n    height: null,", main_source)
+        self.assertIn("const activePackId = getCurrentCharacterPackId();", main_source)
+        self.assertIn("buildCharacterPackOutfits(activePackId)", main_source)
+        self.assertIn("fn saved_window_position_visible", tauri_source)
+        self.assertIn("normalize_pet_state(&mut state);", tauri_source)
+        self.assertIn("state.width = None;", tauri_source)
+        self.assertIn("runtime.width = None;", tauri_source)
 
     def test_next_visual_renderer_has_static_portrait_adapter_boundary(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")
@@ -948,6 +988,59 @@ class ListeningTogetherT6FrontendContractTests(unittest.TestCase):
 
     def test_current_expression_referenced_in_render(self) -> None:
         self.assertIn("currentExpression", self.cc_src)
+
+
+class FloatingPanelHandoffContractTests(unittest.TestCase):
+    """Verify UI handoff v2 panel tasks stay wired through the main window."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).parent.parent
+        cls.panel_html = (root / "desktop_pet_next" / "panel.html").read_text(encoding="utf-8")
+        cls.panel_js = (root / "desktop_pet_next" / "src" / "panel.js").read_text(encoding="utf-8")
+        cls.panel_css = (root / "desktop_pet_next" / "src" / "panel.css").read_text(encoding="utf-8")
+        cls.main_js = (root / "desktop_pet_next" / "src" / "main.js").read_text(encoding="utf-8")
+        cls.workspace_js = (root / "desktop_pet_next" / "src" / "workspace.js").read_text(encoding="utf-8")
+        cls.tauri_rs = (root / "desktop_pet_next" / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+
+    def test_panel_theme_toggle_persists_locally(self) -> None:
+        self.assertIn('id="theme-toggle-btn"', self.panel_html)
+        self.assertIn('[data-theme="dark"]', self.panel_css)
+        self.assertIn("function applyTheme(theme)", self.panel_js)
+        self.assertIn('localStorage.setItem("panel-theme"', self.panel_js)
+        self.assertIn('localStorage.getItem("panel-theme")', self.panel_js)
+
+    def test_panel_music_state_uses_event_bridge_not_direct_backend(self) -> None:
+        self.assertIn('id="music-controller-badge"', self.panel_html)
+        self.assertIn('"refresh-co-listen"', self.panel_js)
+        self.assertIn('"refresh-music-controller"', self.panel_js)
+        self.assertIn('"set-music-controller"', self.panel_js)
+        self.assertIn("function refreshPanelCoListenSummary()", self.main_js)
+        self.assertIn("function refreshPanelMusicController()", self.main_js)
+        self.assertIn("function setPanelMusicController(controller)", self.main_js)
+        self.assertIn('emitTo("panel", eventName, payload)', self.main_js)
+        self.assertIn('emitTo("main", "panel:action", payload)', self.panel_js)
+        self.assertIn('emitTo("main", SETTINGS_COMMAND_EVENT, payload)', self.workspace_js)
+        self.assertIn('musicController: panelMusicController', self.main_js)
+        self.assertNotIn('/capabilities/music/co_listen_summary"', self.panel_js)
+        self.assertNotIn('/capabilities/music/control_permissions"', self.panel_js)
+
+    def test_panel_workspace_and_workshop_buttons_can_open_without_main_event_bridge(self) -> None:
+        self.assertIn('id="btn-workspace"', self.panel_html)
+        self.assertIn('id="btn-workshop"', self.panel_html)
+        self.assertIn("function openPanelOwnedWindow(command, action)", self.panel_js)
+        self.assertIn('openPanelOwnedWindow("open_workspace_window", "open-workspace")', self.panel_js)
+        self.assertIn('openPanelOwnedWindow("open_workshop_window", "open-workshop")', self.panel_js)
+        self.assertIn("async fn open_workspace_window", self.tauri_rs)
+        self.assertIn("async fn open_workshop_window", self.tauri_rs)
+
+    def test_macos_music_control_uses_applescript_and_linux_stays_structured(self) -> None:
+        self.assertIn('cfg(target_os = "macos")', self.tauri_rs)
+        self.assertIn("fn control_system_media_macos", self.tauri_rs)
+        self.assertIn('Command::new("osascript")', self.tauri_rs)
+        self.assertIn('tell application "Music" to play', self.tauri_rs)
+        self.assertIn("TODO: Linux MPRIS", self.tauri_rs)
+        self.assertIn('system_media_control_unavailable(action, "unsupported_platform"', self.tauri_rs)
 
 
 if __name__ == "__main__":

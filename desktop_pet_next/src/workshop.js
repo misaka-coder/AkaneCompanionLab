@@ -865,7 +865,10 @@ function buildWorkshopSnapshotSignature(state, character) {
 
 async function applyPack(packId) {
   const pack = findPack(packId);
-  if (!pack || packId === view.activePackId) return { ok: true, packId };
+  if (!pack) {
+    setStatus(`应用失败：角色包 ${packId || "未知"} 不存在。`);
+    return { ok: false, packId, reason: "missing-pack" };
+  }
   if (view.pendingApplyPackId) {
     setStatus(`正在等待 ${getPackName(findPack(view.pendingApplyPackId)) || view.pendingApplyPackId} 完成切换。`);
     return { ok: false, packId, reason: "apply-pending" };
@@ -879,22 +882,13 @@ async function applyPack(packId) {
     if (activePackId !== packId) {
       throw new Error(`桌面端返回的角色不一致：请求 ${packId}，实际 ${activePackId || "未知"}`);
     }
-    let mainWindowNotified = true;
-    try {
-      await emit(CHARACTER_PACK_ACTIVATED_EVENT, { packId: activePackId });
-    } catch {
-      mainWindowNotified = false;
-    }
+    await emitCharacterPackActivated(activePackId);
     view.activePackId = activePackId;
     view.activeCharacterName = getPackName(findPack(view.activePackId)) || view.activeCharacterName;
     view.pendingApplyPackId = "";
     render();
     pulsePackCard(packId);
-    setStatus(
-      !mainWindowNotified
-        ? `角色已保存：${getPackName(pack) || packId}。主窗口未收到通知，请重启桌宠。`
-        : `已应用到桌宠：${getPackName(pack) || packId}`
-    );
+    setStatus(`已应用到桌宠：${getPackName(pack) || packId}`);
     return { ok: true, packId };
   } catch (error) {
     view.pendingApplyPackId = "";
@@ -2463,9 +2457,20 @@ async function saveCalibration(packId) {
       if (!pack._rawProfile.layout.outfits) pack._rawProfile.layout.outfits = {};
       pack._rawProfile.layout.outfits[outfitId] = layout;
     }
+    if (String(view.activePackId || "").trim() === String(packId || "").trim()) {
+      await emitCharacterPackActivated(packId);
+    }
     setStatus(`校准已保存（${outfitId}）。`);
   } catch (error) {
     setStatus(`保存校准失败：${formatError(error)}`);
+  }
+}
+
+async function emitCharacterPackActivated(activePackId) {
+  try {
+    await emitTo("main", CHARACTER_PACK_ACTIVATED_EVENT, { packId: activePackId });
+  } catch {
+    await emit(CHARACTER_PACK_ACTIVATED_EVENT, { packId: activePackId });
   }
 }
 
@@ -3165,8 +3170,8 @@ function renderPackList() {
       const applyBtn = document.createElement("button");
       applyBtn.type = "button";
       applyBtn.dataset.applyPack = pack.id;
-      applyBtn.disabled = isActive || Boolean(view.pendingApplyPackId);
-      applyBtn.textContent = isActive ? "已启用" : pack.id === view.pendingApplyPackId ? "应用中" : "应用";
+      applyBtn.disabled = Boolean(view.pendingApplyPackId);
+      applyBtn.textContent = pack.id === view.pendingApplyPackId ? "应用中" : isActive ? "重新应用" : "应用";
 
       actions.append(editBtn, applyBtn);
       card.append(heading, meta, actions);

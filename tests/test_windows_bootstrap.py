@@ -68,6 +68,9 @@ class WindowsBootstrapContractTests(unittest.TestCase):
             self.assertIn("src-tauri\\build.rs", source)
             self.assertIn("settings.html", source)
             self.assertIn("control-center-lab.html", source)
+            self.assertIn("Stop-AkaneDesktopProcesses", source)
+            self.assertIn('Get-Process -Name "akane_desktop_pet_next"', source)
+            self.assertIn("Stopping existing Akane Next desktop PID", source)
 
         self.assertIn("[switch]$NoBuild", direct_launcher)
         self.assertIn("[switch]$Rebuild", direct_launcher)

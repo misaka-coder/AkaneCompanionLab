@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -244,8 +244,8 @@ function persistCurrentCharacterRuntimeState(packId = state.characterPackId || g
     currentEmotion: String(state.currentEmotion || "").trim() || getProfileDefaultEmotion(),
     x: normalizeNullableInteger(state.x),
     y: normalizeNullableInteger(state.y),
-    width: normalizePositiveInteger(state.width),
-    height: normalizePositiveInteger(state.height),
+    width: null,
+    height: null,
     scale: clamp(Number(state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
     opacity: clamp(Number(state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
     updatedAt: Date.now()
@@ -270,8 +270,8 @@ function createCharacterRuntimeState(packId, profile, { seedFromCurrent = false 
     currentEmotion: seedFromCurrent ? String(state.currentEmotion || defaultEmotion).trim() || defaultEmotion : defaultEmotion,
     x: normalizeNullableInteger(state.x),
     y: normalizeNullableInteger(state.y),
-    width: normalizePositiveInteger(state.width),
-    height: normalizePositiveInteger(state.height),
+    width: null,
+    height: null,
     scale: clamp(Number(state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
     opacity: clamp(Number(state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
     updatedAt: Date.now()
@@ -293,8 +293,8 @@ function applyCharacterRuntimeState(packId, profile, options = {}) {
   state.currentEmotion = String(runtime.currentEmotion || defaultEmotion).trim() || defaultEmotion;
   state.x = normalizeNullableInteger(runtime.x);
   state.y = normalizeNullableInteger(runtime.y);
-  state.width = normalizePositiveInteger(runtime.width);
-  state.height = normalizePositiveInteger(runtime.height);
+  state.width = null;
+  state.height = null;
   state.scale = clamp(Number(runtime.scale ?? state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX);
   state.opacity = clamp(Number(runtime.opacity ?? state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1);
 
@@ -357,6 +357,9 @@ let systemMediaLyricsLastAttemptAt = 0;
 const systemMediaLyricsCache = new Map();
 const systemMediaLyricsRequests = new Map();
 const recentTracksHistory = []; // max 5, newest first
+const PANEL_MUSIC_CONTROLS = Object.freeze(["pause", "next", "prev", "recommend"]);
+let panelMusicController = "model";
+let panelSyncTimer = null;
 let ttsToken = 0;
 let ttsController = null;
 let ttsObjectUrl = "";
@@ -487,7 +490,6 @@ const visualRenderer = createVisualRenderer({
   image: els.petImage
 });
 
-setPetEmotion(getProfileDefaultEmotion(), { persist: false, force: true });
 boot();
 
 async function boot() {
@@ -506,25 +508,11 @@ async function boot() {
   }
 
   try {
-    await registerCharacterActivationBridge();
-  } catch (error) {
-    setStatus(`角色切换桥接不可用：${formatError(error)}`);
-  }
-  void registerSettingsBridge().catch((error) => {
-    setStatus(`设置桥接不可用：${formatError(error)}`);
-  });
-  void registerPanelBridge().catch(() => {});
-
-  try {
+    scheduleTauriRuntimeBridges();
     await loadAndApplyPersistedCharacterState();
     scheduleSave(0);
-    await invoke("apply_window_state", { state });
-    await syncNativeHitTest({ force: true });
-    await Promise.allSettled([
-      registerWindowListeners(),
-      registerFileDropHandlers()
-    ]);
     await reloadCharacterResources({ startup: true });
+    scheduleNativeWindowStateApply({ forceHitTest: true });
     void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
     scheduleDesktopContextPoll();
     scheduleSystemMediaPoll({ immediate: true });
@@ -535,6 +523,26 @@ async function boot() {
   } catch (error) {
     setStatus(`Tauri init failed: ${formatError(error)}`);
   }
+}
+
+function scheduleTauriRuntimeBridges() {
+  if (!isTauriRuntime) return;
+  window.setTimeout(startTauriRuntimeBridges, 0);
+}
+
+function startTauriRuntimeBridges() {
+  if (!isTauriRuntime) return;
+  void registerCharacterActivationBridge().catch((error) => {
+    setStatus(`角色切换桥接不可用：${formatError(error)}`);
+  });
+  void registerSettingsBridge().catch((error) => {
+    setStatus(`设置桥接不可用：${formatError(error)}`);
+  });
+  void registerPanelBridge().catch(() => {});
+  void Promise.allSettled([
+    registerWindowListeners(),
+    registerFileDropHandlers()
+  ]);
 }
 
 async function loadAndApplyPersistedCharacterState({ expectedPackId = "" } = {}) {
@@ -558,7 +566,11 @@ async function loadAndApplyPersistedCharacterState({ expectedPackId = "" } = {})
   applyCharacterRuntimeState(pack.packId, pack.profile);
   applyCharacterChrome();
   applyVisualState();
-  setPetEmotion(state.currentEmotion, { persist: false, force: true });
+  if (canRenderCurrentLocalResources()) {
+    setPetEmotion(state.currentEmotion, { persist: false, force: true });
+  } else {
+    state.currentEmotion = getProfileDefaultEmotion();
+  }
   return pack;
 }
 
@@ -604,7 +616,17 @@ function bindUi() {
     cancelLocalClick();
     void openPanelWindow();
   });
-  els.petImage.addEventListener("load", scheduleNativeHitTestSync);
+  els.petImage.addEventListener("load", () => {
+    if (import.meta.env.DEV) {
+      console.log("[pet-image] loaded:", els.petImage.src);
+    }
+    scheduleNativeHitTestSync();
+  });
+  els.petImage.addEventListener("error", () => {
+    const src = els.petImage.src || "";
+    console.error("[pet-image] failed to load:", src.substring(0, 256));
+    setStatus(`立绘加载失败：${src ? src.split("/").pop() : "无图片地址"}`, { durationMs: 3600 });
+  });
 
   els.chatForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -892,7 +914,7 @@ async function continueManualDrag(event) {
 
   const geometry = await tauriCall("move_window_by", { dx, dy }, { quiet: true });
   if (geometry) {
-    Object.assign(state, geometry);
+    applyWindowGeometryToState(geometry);
     scheduleSave(250);
   }
 }
@@ -929,8 +951,9 @@ async function registerWindowListeners() {
   }));
 
   unlistenFns.push(await appWindow.onResized(({ payload }) => {
-    state.width = Math.round(payload.width);
-    state.height = Math.round(payload.height);
+    void payload;
+    state.width = null;
+    state.height = null;
     scheduleNativeHitTestSync({ force: true });
     scheduleSave(250);
   }));
@@ -1005,12 +1028,14 @@ async function registerPanelBridge() {
   unlistenFns.push(await listen("panel:ready", () => {
     schedulePanelStateSync(50);
     if (recentTracksHistory.length) {
-      void emit("panel:recent-update", recentTracksHistory.slice()).catch(() => {});
+      void emitPanelEvent("panel:recent-update", recentTracksHistory.slice());
     }
+    void refreshPanelCoListenSummary();
+    void refreshPanelMusicController();
   }));
 
   unlistenFns.push(await listen("panel:action", (event) => {
-    const { action, muted, value } = event.payload || {};
+    const { action, muted, value, controller } = event.payload || {};
     if (action === "new-session") {
       void startNewSession();
     } else if (action === "open-workspace") {
@@ -1026,22 +1051,31 @@ async function registerPanelBridge() {
     } else if (action === "set-scale" && typeof value === "number") {
       state.scale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, value));
       applyVisualState();
+      schedulePanelStateSync(80);
       scheduleSave(300);
     } else if (action === "set-opacity" && typeof value === "number") {
       state.opacity = Math.min(1, Math.max(0.55, value));
       applyVisualState();
+      schedulePanelStateSync(80);
       scheduleSave(300);
+    } else if (action === "refresh-co-listen") {
+      void refreshPanelCoListenSummary();
+    } else if (action === "refresh-music-controller") {
+      void refreshPanelMusicController();
+    } else if (action === "set-music-controller") {
+      void setPanelMusicController(controller === "user" ? "user" : "model");
     }
   }));
 }
 
 async function applyPersistedCharacterActivation(packId) {
   const pack = await loadAndApplyPersistedCharacterState({ expectedPackId: packId });
-  await invoke("apply_window_state", { state });
   scheduleSave(0);
-  scheduleSettingsSnapshot(0);
   setStatus(`角色包已切换为 ${pack.profile.identity.name}。`, { durationMs: 2400 });
   await reloadCharacterResources({ userTriggered: true });
+  setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { persist: false, force: true });
+  scheduleNativeWindowStateApply({ forceHitTest: true });
+  await broadcastSettingsSnapshot();
   void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
 }
 
@@ -1240,6 +1274,7 @@ function applyCharacterChrome() {
   if (els.hitbox) els.hitbox.setAttribute("aria-label", name);
   visualRenderer.setCharacterLabel(name);
   if (els.close) els.close.title = `关闭 ${appName}`;
+  schedulePanelStateSync(80);
 }
 
 function scheduleSettingsSnapshot(delay = 40) {
@@ -1260,8 +1295,14 @@ function scheduleMusicSnapshot(delay = 420) {
 
 async function broadcastSettingsSnapshot() {
   if (!isTauriRuntime) return;
+  const payload = buildSettingsSnapshot();
+  await Promise.allSettled([
+    emitTo("settings", SETTINGS_SNAPSHOT_EVENT, payload),
+    emitTo("workshop", SETTINGS_SNAPSHOT_EVENT, payload),
+    emitTo("workspace", SETTINGS_SNAPSHOT_EVENT, payload)
+  ]);
   try {
-    await emit(SETTINGS_SNAPSHOT_EVENT, buildSettingsSnapshot());
+    await emit(SETTINGS_SNAPSHOT_EVENT, payload);
   } catch {
     // The settings window may not be open yet.
   }
@@ -1371,7 +1412,7 @@ function buildCurrentExpressionSnapshot() {
       name: state.currentEmotion || "",
       image: state.currentEmotion || "",
       outfitId: state.outfit || "",
-      characterPackId: getActiveCharacterPackId(),
+      characterPackId: getCurrentCharacterPackId(),
       updatedAt: Date.now()
     };
   }
@@ -1380,7 +1421,7 @@ function buildCurrentExpressionSnapshot() {
     name: entry.name || entry.id || state.currentEmotion || "",
     image: entry.image || entry.url || entry.key || entry.id || "",
     outfitId: state.outfit || "",
-    characterPackId: getActiveCharacterPackId(),
+    characterPackId: getCurrentCharacterPackId(),
     updatedAt: Date.now()
   };
 }
@@ -1388,12 +1429,12 @@ function buildCurrentExpressionSnapshot() {
 function normalizeState(value) {
   const incoming = value ?? {};
   const scale = clamp(Number(incoming.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX);
-  const legacySize = isLegacyWindowSize(incoming.width, incoming.height, scale);
+  const _legacySize = isLegacyWindowSize(incoming.width, incoming.height, scale);
   return {
     ...DEFAULT_STATE,
     ...incoming,
-    width: legacySize ? null : incoming.width ?? DEFAULT_STATE.width,
-    height: legacySize ? null : incoming.height ?? DEFAULT_STATE.height,
+    width: null,
+    height: null,
     scale,
     opacity: clamp(Number(incoming.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
     skipTaskbar: Boolean(incoming.skipTaskbar ?? DEFAULT_STATE.skipTaskbar),
@@ -1404,8 +1445,8 @@ function normalizeState(value) {
     characterPackId: normalizeCharacterPackId(incoming.characterPackId),
     characters: normalizeCharacterRuntimeStates(incoming.characters),
     sessionId: String(incoming.sessionId || "").trim() || generateSessionId(),
-    outfit: normalizeOutfitName(incoming.outfit),
-    currentEmotion: resolveEmotionEntry(incoming.currentEmotion).id,
+    outfit: String(incoming.outfit || "").trim(),
+    currentEmotion: String(incoming.currentEmotion || "").trim(),
     restoreLatestOnStartup: Boolean(incoming.restoreLatestOnStartup ?? DEFAULT_STATE.restoreLatestOnStartup),
     voiceEnabled: Boolean(incoming.voiceEnabled ?? DEFAULT_STATE.voiceEnabled),
     voiceInputEnabled: Boolean(incoming.voiceInputEnabled ?? DEFAULT_STATE.voiceInputEnabled),
@@ -1458,12 +1499,12 @@ function normalizeCharacterRuntimeState(value) {
     version: Math.max(1, Math.round(Number(value.version || 1))),
     characterPackId,
     sessionId: String(value.sessionId || value.session_id || "").trim(),
-    outfit: normalizeOutfitName(value.outfit),
+    outfit: String(value.outfit || value.outfit_id || "").trim(),
     currentEmotion: String(value.currentEmotion || value.current_emotion || "").trim(),
     x: normalizeNullableInteger(value.x),
     y: normalizeNullableInteger(value.y),
-    width: normalizePositiveInteger(value.width),
-    height: normalizePositiveInteger(value.height),
+    width: null,
+    height: null,
     scale: clamp(Number(value.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
     opacity: clamp(Number(value.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
     updatedAt: Math.max(0, Math.round(Number(value.updatedAt || value.updated_at || 0)))
@@ -1574,13 +1615,52 @@ function applyCharacterLayout() {
   const sig = `${getCurrentCharacterPackId()}::${outfit}::${winW}x${winH}`;
   if (winW >= 200 && winH >= 200 && sig !== lastAppliedLayoutSignature) {
     lastAppliedLayoutSignature = sig;
-    state.width = winW;
-    state.height = winH;
     if (isTauriRuntime) {
       void invoke("resize_pet_window", { width: winW, height: winH }).catch((error) => {
         setStatus(`窗口校准尺寸应用失败：${formatError(error)}`, { durationMs: 2400 });
       });
     }
+  }
+}
+
+/* Awaited resize to the active character's layout window dimensions.
+   Must be called AFTER apply_window_state to guarantee layout size wins the race. */
+const LAYOUT_RESIZE_MAX_WIDTH = 1200;
+const LAYOUT_RESIZE_MAX_HEIGHT = 1600;
+
+function scheduleNativeWindowStateApply({ forceHitTest = false } = {}) {
+  if (!isTauriRuntime) return;
+  window.setTimeout(() => {
+    void applyNativeWindowState({ forceHitTest }).catch((error) => {
+      setStatus(`窗口状态应用失败：${formatError(error)}`, { durationMs: 2400 });
+    });
+  }, 0);
+}
+
+async function applyNativeWindowState({ forceHitTest = false } = {}) {
+  const geometry = await invoke("apply_window_state", { state });
+  if (geometry) applyWindowGeometryToState(geometry);
+  await applyCharacterLayoutResize();
+  scheduleNativeHitTestSync({ force: forceHitTest });
+}
+
+async function applyCharacterLayoutResize() {
+  if (!isTauriRuntime) return;
+  const profile = getActiveCharacterProfile();
+  const layouts = profile?.layout?.outfits && typeof profile.layout.outfits === "object"
+    ? profile.layout.outfits : {};
+  const outfit = String(state.outfit || getProfileDefaultOutfit()).trim() || getProfileDefaultOutfit();
+  const outfitLayout = layouts[outfit] || layouts[getProfileDefaultOutfit()];
+  if (!outfitLayout) return;
+  let winW = Number(outfitLayout.window?.width) || 0;
+  let winH = Number(outfitLayout.window?.height) || 0;
+  if (winW >= 200 && winH >= 200) {
+    winW = Math.min(winW, LAYOUT_RESIZE_MAX_WIDTH);
+    winH = Math.min(winH, LAYOUT_RESIZE_MAX_HEIGHT);
+    await invoke("resize_pet_window", { width: winW, height: winH }).catch((error) => {
+      setStatus(`窗口校准尺寸应用失败：${formatError(error)}`, { durationMs: 2400 });
+    });
+    lastAppliedLayoutSignature = `${getCurrentCharacterPackId()}::${outfit}::${winW}x${winH}`;
   }
 }
 
@@ -2582,7 +2662,7 @@ function scheduleScaleCommit() {
 
 async function commitVisualScale() {
   const geometry = await tauriCall("set_visual_scale", { scale: state.scale });
-  if (geometry) Object.assign(state, geometry);
+  if (geometry) applyWindowGeometryToState(geometry);
   repositionOpenMenu();
   scheduleNativeHitTestSync({ force: true });
   scheduleSave(0);
@@ -2598,12 +2678,20 @@ async function saveNow() {
   if (!isTauriRuntime) return;
   try {
     const geometry = await invoke("get_window_geometry");
-    Object.assign(state, geometry);
+    applyWindowGeometryToState(geometry);
     persistCurrentCharacterRuntimeState();
     await invoke("save_pet_state", { state });
   } catch (error) {
     setStatus(`Save failed: ${formatError(error)}`);
   }
+}
+
+function applyWindowGeometryToState(geometry) {
+  if (!geometry || typeof geometry !== "object") return;
+  state.x = normalizeNullableInteger(geometry.x);
+  state.y = normalizeNullableInteger(geometry.y);
+  state.width = null;
+  state.height = null;
 }
 
 async function closePetWindow() {
@@ -2644,7 +2732,7 @@ function buildPanelStatePayload() {
   const media = systemMedia || {};
   const playing = media.playbackStatus === "playing";
   return {
-    characterName: getActiveCharacterText("name") || CHARACTER_NAME,
+    characterName: getProfileIdentityText("name", CHARACTER_NAME),
     emotion: state.currentEmotion || getProfileDefaultEmotion(),
     avatarSrc: els.petImage?.src || "",
     musicPlaying: playing,
@@ -2653,13 +2741,12 @@ function buildPanelStatePayload() {
     musicPosition: Number(media.positionSeconds) || 0,
     musicDuration: Number(media.durationSeconds) || 0,
     musicPositionAt: playing ? Date.now() : 0,
+    musicController: panelMusicController,
     muted: !state.voiceEnabled,
     scale: state.scale,
     opacity: state.opacity,
   };
 }
-
-let panelSyncTimer = null;
 
 function schedulePanelStateSync(delayMs = 500) {
   clearTimeout(panelSyncTimer);
@@ -2669,9 +2756,131 @@ function schedulePanelStateSync(delayMs = 500) {
 async function pushPanelStateUpdate() {
   if (!isTauriRuntime) return;
   try {
-    await emit("panel:state-update", buildPanelStatePayload());
+    await emitPanelEvent("panel:state-update", buildPanelStatePayload());
   } catch {
     // Panel may not be open; silent failure is fine
+  }
+}
+
+async function emitPanelEvent(eventName, payload) {
+  try {
+    await emitTo("panel", eventName, payload);
+  } catch {
+    await emit(eventName, payload);
+  }
+}
+
+function getPanelProfileUserId() {
+  return String(getProfileUserId() || state.profileUserId || "master").trim() || "master";
+}
+
+function panelMusicControllerFromControls(controls) {
+  if (!controls || typeof controls !== "object") return panelMusicController;
+  const allEnabled = PANEL_MUSIC_CONTROLS.every((name) => controls[name] !== false);
+  return allEnabled ? "model" : "user";
+}
+
+function updatePanelMusicController(controller) {
+  panelMusicController = controller === "user" ? "user" : "model";
+  schedulePanelStateSync(0);
+}
+
+async function refreshPanelMusicController() {
+  if (!isTauriRuntime) return;
+  const response = await backendFetch(
+    buildBackendEndpointUrl("music_control_permissions", "/capabilities/music/control_permissions", {
+      user_id: state.sessionId || "desktop_pet_next",
+      real_user_id: getPanelProfileUserId(),
+      t: Date.now()
+    }),
+    {
+      method: "GET",
+      cache: "no-store",
+      connectTimeout: 3000
+    }
+  ).catch(() => null);
+  const payload = response?.ok ? await readJsonResponse(response) : null;
+  if (payload?.ok && payload.controls && typeof payload.controls === "object") {
+    updatePanelMusicController(panelMusicControllerFromControls(payload.controls));
+  }
+}
+
+async function setPanelMusicController(controller) {
+  if (!isTauriRuntime) return;
+  const normalized = controller === "user" ? "user" : "model";
+  const previous = panelMusicController;
+  const enabled = normalized === "model";
+  const response = await backendFetch(
+    buildBackendEndpointUrl("music_control_permissions", "/capabilities/music/control_permissions", {
+      user_id: state.sessionId || "desktop_pet_next",
+      real_user_id: getPanelProfileUserId(),
+      t: Date.now()
+    }),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      connectTimeout: 3000,
+      body: JSON.stringify({
+        controls: Object.fromEntries(PANEL_MUSIC_CONTROLS.map((name) => [name, enabled]))
+      })
+    }
+  ).catch(() => null);
+  const payload = response?.ok ? await readJsonResponse(response) : null;
+  if (payload?.ok && payload.controls && typeof payload.controls === "object") {
+    updatePanelMusicController(panelMusicControllerFromControls(payload.controls));
+  } else {
+    updatePanelMusicController(previous);
+  }
+}
+
+function formatPanelRecentTrack(item) {
+  const title = String(item?.title || "").trim() || "某首歌";
+  const artist = String(item?.artist || "").trim();
+  const label = String(item?.last_listened_label || item?.timestamp_display || "").trim();
+  const main = artist ? `${title} · ${artist}` : title;
+  return label ? `${main}（${label}）` : main;
+}
+
+async function refreshPanelCoListenSummary() {
+  if (!isTauriRuntime) return;
+  const media = systemMedia || {};
+  const response = await backendFetch(
+    buildBackendEndpointUrl("music_co_listen_summary", "/capabilities/music/co_listen_summary", {
+      user_id: state.sessionId || "desktop_pet_next",
+      real_user_id: getPanelProfileUserId(),
+      t: Date.now()
+    }),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      connectTimeout: 5000,
+      body: JSON.stringify({
+        title: String(media.title || "").trim(),
+        artist: String(media.artist || "").trim(),
+        album: String(media.album || "").trim(),
+        source_kind: media.ok ? "system_media" : "",
+        source_app: String(media.sourceApp || "").trim(),
+        system_media: Boolean(media.ok),
+        recent_limit: 5
+      })
+    }
+  ).catch(() => null);
+  const payload = response?.ok ? await readJsonResponse(response) : null;
+  if (!payload?.ok) return;
+  const recent = Array.isArray(payload.recent) ? payload.recent : [];
+  if (recent.length) {
+    const items = recent.map(formatPanelRecentTrack).filter(Boolean).slice(0, 5);
+    if (items.length) {
+      void emitPanelEvent("panel:recent-update", items);
+    }
+  }
+  if (Array.isArray(payload.enabled_music_controls)) {
+    const enabledSet = new Set(payload.enabled_music_controls.map((name) => String(name)));
+    updatePanelMusicController(
+      PANEL_MUSIC_CONTROLS.every((name) => enabledSet.has(name)) ? "model" : "user"
+    );
   }
 }
 
@@ -2792,6 +3001,7 @@ async function updateCharacterPack(value) {
     scheduleSave(0);
     setStatus(`角色包已是：${pack.profile.identity.name}`);
     await reloadCharacterResources({ userTriggered: true });
+    setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { persist: false, force: true });
     return {
       requestedPackId,
       activePackId: state.characterPackId,
@@ -2802,13 +3012,14 @@ async function updateCharacterPack(value) {
 
   setStatus(`角色包已切换为 ${pack.profile.identity.name}，正在应用。`, { durationMs: 2400 });
   if (isTauriRuntime) {
-    await invoke("apply_window_state", { state });
     await saveNow();
   }
   await reloadCharacterResources({ userTriggered: true });
+  setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { persist: false, force: true });
+  scheduleNativeWindowStateApply({ forceHitTest: true });
   void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
   return {
-    requestedPackId,
+      requestedPackId,
     activePackId: state.characterPackId,
     characterName: pack.profile.identity.name,
     resourceSource: resourceState.source
@@ -2904,7 +3115,11 @@ async function reloadCharacterResources({ startup = false, userTriggered = false
   const healthy = await checkBackendHealth();
   if (!healthy) {
     useBundledResources();
-    setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { force: true });
+    if (canRenderCurrentLocalResources()) {
+      setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { force: true });
+    } else {
+      state.currentEmotion = getProfileDefaultEmotion();
+    }
     scheduleBackendRetry();
     const message = "本地待机中：后端暂时连不上。";
     if (!silent && (startup || userTriggered)) showBubbleText(message, { transient: true, durationMs: 3200 });
@@ -2930,7 +3145,11 @@ async function reloadCharacterResources({ startup = false, userTriggered = false
   } catch (error) {
     resourceState.healthMessage = formatError(error);
     useBundledResources();
-    setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { force: true });
+    if (canRenderCurrentLocalResources()) {
+      setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { force: true });
+    } else {
+      state.currentEmotion = getProfileDefaultEmotion();
+    }
     const message = `资源暂时没拉到：${friendlyErrorMessage(formatError(error))}`;
     if (!silent && (startup || userTriggered)) showBubbleText(message, { transient: true, durationMs: 3600 });
     setRuntimeStatus(message, { mode: "error" });
@@ -3153,6 +3372,17 @@ function useBundledResources() {
   if (!state.outfit) state.outfit = resourceState.outfit.id;
 }
 
+function canRenderCurrentLocalResources() {
+  if (resourceState.source !== "bundled") return true;
+  return canUseBundledEmotionFallback();
+}
+
+function canUseBundledEmotionFallback() {
+  const packId = normalizeEntryKey(getCurrentCharacterPackId());
+  const identityId = normalizeEntryKey(getActiveCharacterProfile()?.identity?.id);
+  return packId === "akane_sample" || identityId === "akane_sample";
+}
+
 async function ensureBackendSession({ restoreLatest = false } = {}) {
   if (resourceState.health !== "online") return null;
   try {
@@ -3255,7 +3485,7 @@ async function refreshSystemMediaSnapshot() {
       if (idx !== -1) recentTracksHistory.splice(idx, 1);
       recentTracksHistory.unshift(entry);
       if (recentTracksHistory.length > 5) recentTracksHistory.length = 5;
-      void emit("panel:recent-update", recentTracksHistory.slice()).catch(() => {});
+      void emitPanelEvent("panel:recent-update", recentTracksHistory.slice());
     }
   }
   if (isFreshSystemMedia(systemMedia)) {
@@ -7547,7 +7777,30 @@ function setPetEmotion(emotion, { persist = true, force = false } = {}) {
   if (persist && previewEmotionRestore) {
     cancelEmotionPreview({ restore: false });
   }
-  const entry = resolveEmotionEntry(emotion);
+  let entry = resolveEmotionEntry(emotion);
+  if (entry && !entry.url && entry.path && isTauriRuntime) {
+    try {
+      entry = { ...entry, url: convertFileSrc(entry.path) };
+    } catch (error) {
+      console.error("[setPetEmotion] convertFileSrc failed:", entry.path, error);
+    }
+  }
+  if (entry && !entry.url && canUseBundledEmotionFallback()) {
+    const fallback = findEntry(bundledOutfit.emotions, emotion) || bundledOutfit.emotions[0];
+    if (fallback?.url) {
+      console.warn("[setPetEmotion] falling back to bundled emotion:", emotion, fallback);
+      entry = { ...fallback };
+    }
+  }
+  if (!entry?.url) {
+    console.error("[setPetEmotion] resolved entry has no image URL:", emotion, entry);
+    setStatus(`立绘地址缺失：${emotion}`, { durationMs: 3600 });
+    if (entry?.id) state.currentEmotion = entry.id;
+    scheduleSettingsSnapshot();
+    updateMenuLabels();
+    if (persist) scheduleSave(0);
+    return entry?.id || String(emotion || "").trim();
+  }
   if (!force && state.currentEmotion === entry.id && els.petImage.src) return entry.id;
   state.currentEmotion = entry.id;
   visualRenderer.setExpression(entry, { force });
@@ -7741,8 +7994,9 @@ function getDefaultLocalOutfit() {
 }
 
 function refreshLocalResourceAssets() {
-  runtimeCharacterPackOutfits = buildRuntimeCharacterPackOutfits();
-  characterPackOutfits = buildCharacterPackOutfits();
+  const activePackId = getCurrentCharacterPackId();
+  runtimeCharacterPackOutfits = buildRuntimeCharacterPackOutfits(activePackId);
+  characterPackOutfits = buildCharacterPackOutfits(activePackId);
   localOutfits = buildLocalOutfits();
   if (resourceState.source !== "manifest") {
     resourceState.outfit = findEntry(localOutfits, state.outfit) || getDefaultLocalOutfit();
@@ -7756,22 +8010,29 @@ function buildLocalOutfits() {
   return outfits.length ? outfits : [bundledOutfit];
 }
 
-function buildRuntimeCharacterPackOutfits() {
-  const activePackId = getCurrentCharacterPackId();
+function buildRuntimeCharacterPackOutfits(activePackId = getCurrentCharacterPackId()) {
   const pack = runtimeCharacterPacks.find((item) => String(item?.id || item?.packId || "").trim() === activePackId);
   const outfits = Array.isArray(pack?.outfits) ? pack.outfits : [];
-  return outfits
+  const built = outfits
     .map((outfit) => {
       const outfitId = String(outfit?.id || outfit?.name || "").trim();
       const emotions = (Array.isArray(outfit?.emotions) ? outfit.emotions : [])
         .map((emotion) => {
           const id = String(emotion?.id || emotion?.name || "").trim();
           const path = String(emotion?.path || "").trim();
+          let url = "";
+          if (path) {
+            try {
+              url = isTauriRuntime ? convertFileSrc(path) : path;
+            } catch (error) {
+              console.error("[buildRuntimeCharacterPackOutfits] convertFileSrc failed:", path, error);
+            }
+          }
           return {
             id,
             name: String(emotion?.name || id).trim(),
             aliases: [],
-            url: path && isTauriRuntime ? convertFileSrc(path) : path,
+            url: String(url || "").trim(),
             path
           };
         })
@@ -7785,11 +8046,11 @@ function buildRuntimeCharacterPackOutfits() {
     })
     .filter((outfit) => outfit.id && outfit.emotions.length)
     .sort(compareOutfitEntries);
+  return built.length ? built : [];
 }
 
-function buildCharacterPackOutfits() {
+function buildCharacterPackOutfits(activePackId = getActiveCharacterPackId()) {
   const grouped = new Map();
-  const activePackId = getActiveCharacterPackId();
   for (const [path, url] of Object.entries(characterPackCharacterAssets)) {
     const match = path.match(/\/characters\/([^/]+)\/assets\/characters\/([^/]+)\/([^/]+)\.(png|jpe?g|webp)$/i);
     if (!match) continue;
@@ -8023,7 +8284,16 @@ function normalizeBackendUrl(url) {
 }
 
 function normalizeCharacterPackId(value) {
-  return selectCharacterPack(value || getActiveCharacterPackId()).packId;
+  const requested = String(value || "").trim();
+  if (!requested) return getActiveCharacterPackId();
+  const normalized = normalizeEntryKey(requested);
+  const packs = listCharacterPacks();
+  const match =
+    packs.find((pack) => pack.id === requested) ||
+    packs.find((pack) => normalizeEntryKey(pack.id) === normalized) ||
+    packs.find((pack) => pack.characterId === requested) ||
+    packs.find((pack) => normalizeEntryKey(pack.characterId) === normalized);
+  return String(match?.id || getActiveCharacterPackId()).trim();
 }
 
 function normalizeOutfitName(value) {

@@ -130,6 +130,33 @@ function Stop-AkaneBackendProcess {
     throw "Backend process $ProcessId was stopped, but port $Port is still busy."
 }
 
+function Stop-AkaneDesktopProcesses {
+    param([string]$ExePath)
+
+    $targetPath = [System.IO.Path]::GetFullPath($ExePath)
+    $processes = @(Get-Process -Name "akane_desktop_pet_next" -ErrorAction SilentlyContinue)
+    foreach ($process in $processes) {
+        $processPath = ""
+        try {
+            $processPath = [System.IO.Path]::GetFullPath([string]$process.Path)
+        } catch {
+            continue
+        }
+
+        if ($processPath -ine $targetPath) {
+            continue
+        }
+
+        Write-Host "[INFO] Stopping existing Akane Next desktop PID: $($process.Id)"
+        try {
+            Stop-Process -Id $process.Id -Force -ErrorAction Stop
+            Wait-Process -Id $process.Id -Timeout 5 -ErrorAction SilentlyContinue
+        } catch {
+            Write-Host "[WARN] Failed to stop existing Akane Next desktop PID $($process.Id): $($_.Exception.Message)"
+        }
+    }
+}
+
 function Resolve-Python {
     param([string]$ProjectDir)
 
@@ -394,6 +421,7 @@ if (-not $SkipDesktop) {
         }
     }
 
+    Stop-AkaneDesktopProcesses -ExePath $releaseExe
     Write-Host "[INFO] Starting Akane Next desktop app..."
     $desktopProcess = Start-Process -FilePath $releaseExe -WorkingDirectory $desktopDir -PassThru
     Write-Host "[INFO] Akane Next PID: $($desktopProcess.Id)"

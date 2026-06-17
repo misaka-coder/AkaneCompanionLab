@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 import "./workspace.css";
@@ -736,10 +736,15 @@ function extractWorkspaceError(payload) {
 }
 
 async function sendCommand(command, value = null) {
+  const payload = { command, value };
   try {
-    await emit(SETTINGS_COMMAND_EVENT, { command, value });
+    await emitTo("main", SETTINGS_COMMAND_EVENT, payload);
   } catch (error) {
-    setStatus(`命令发送失败：${formatError(error)}`);
+    try {
+      await emit(SETTINGS_COMMAND_EVENT, payload);
+    } catch {
+      setStatus(`命令发送失败：${formatError(error)}`);
+    }
   }
 }
 

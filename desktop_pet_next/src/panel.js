@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./panel.css";
@@ -20,6 +20,7 @@ const state = {
   musicPosition: 0,
   musicDuration: 0,
   musicPositionAt: 0,
+  musicController: "model",
   muted: false,
   scale: 1,
   opacity: 1,
@@ -62,8 +63,11 @@ const els = {
   onlineDot:     document.getElementById("online-dot"),
   charName:      document.getElementById("character-name"),
   charStatus:    document.getElementById("character-status"),
+  themeToggle:   document.getElementById("theme-toggle-btn"),
+  themeIcon:     document.getElementById("theme-icon"),
   closeBtn:      document.getElementById("close-btn"),
   musicSection:  document.getElementById("music-section"),
+  controllerBadge: document.getElementById("music-controller-badge"),
   waveform:      document.getElementById("waveform"),
   musicTitle:    document.getElementById("music-title"),
   musicArtist:   document.getElementById("music-artist"),
@@ -101,6 +105,52 @@ async function tauriCall(command, args = {}) {
     return await invoke(command, args);
   } catch {
     return null;
+  }
+}
+
+async function emitPanelAction(payload) {
+  if (!isTauri) return false;
+  try {
+    await emitTo("main", "panel:action", payload);
+    return true;
+  } catch {
+    try {
+      await emit("panel:action", payload);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function openPanelOwnedWindow(command, action) {
+  await tauriCall(command, {});
+  await emitPanelAction({ action });
+}
+
+function applyTheme(theme) {
+  const nextTheme = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = nextTheme;
+  try {
+    localStorage.setItem("panel-theme", nextTheme);
+  } catch {
+    // Local storage may be unavailable in restricted webviews.
+  }
+  if (els.themeToggle) {
+    els.themeToggle.title = nextTheme === "dark" ? "切换到浅色主题" : "切换到深色主题";
+  }
+  if (els.themeIcon) {
+    els.themeIcon.innerHTML = nextTheme === "dark"
+      ? '<path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z"/><path d="M8 0v1.1M8 14.9V16M0 8h1.1M14.9 8H16M2.3 2.3l.8.8M12.9 12.9l.8.8M2.3 13.7l.8-.8M12.9 3.1l.8-.8"/>'
+      : '<path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 12.5A5.5 5.5 0 1 1 8 2.5a5.5 5.5 0 0 1 0 11z"/>';
+  }
+}
+
+function loadSavedTheme() {
+  try {
+    return localStorage.getItem("panel-theme") || "light";
+  } catch {
+    return "light";
   }
 }
 
@@ -193,6 +243,17 @@ function renderMute() {
   els.btnMute.title = state.muted ? "取消静音" : "静音";
 }
 
+function updateControllerBadge(controller) {
+  const normalized = controller === "user" ? "user" : "model";
+  state.musicController = normalized;
+  if (!els.controllerBadge) return;
+  els.controllerBadge.textContent = normalized === "model" ? "Akane 控制" : "用户控制";
+  els.controllerBadge.dataset.controller = normalized;
+  els.controllerBadge.title = normalized === "model"
+    ? "Akane 可主动暂停、切歌或推荐；点击切回用户控制"
+    : "Akane 会先询问，不主动控制音乐；点击允许 Akane 控制";
+}
+
 function renderSliders() {
   els.scaleSlider.value   = String(state.scale);
   els.opacitySlider.value = String(state.opacity);
@@ -244,6 +305,9 @@ async function setupEventBridge() {
     if (typeof s.musicPosition === "number") state.musicPosition = s.musicPosition;
     if (typeof s.musicDuration === "number") state.musicDuration = s.musicDuration;
     if (typeof s.musicPositionAt === "number") state.musicPositionAt = s.musicPositionAt;
+    if (s.musicController === "model" || s.musicController === "user") {
+      updateControllerBadge(s.musicController);
+    }
     if (typeof s.muted === "boolean" && s.muted !== state.muted) {
       state.muted = s.muted;
       renderMute();
@@ -286,22 +350,27 @@ function renderRecent(items) {
 
 // ── Button wiring ─────────────────────────────────────────────────────────────
 function wireButtons() {
+  els.themeToggle?.addEventListener("click", () => {
+    const current = document.documentElement.dataset.theme || "light";
+    applyTheme(current === "light" ? "dark" : "light");
+  });
+
   els.closeBtn.addEventListener("click", () => {
     appWindow?.close();
   });
 
   els.btnNewSession.addEventListener("click", async () => {
-    await emit("panel:action", { action: "new-session" });
+    await emitPanelAction({ action: "new-session" });
   });
 
   els.btnWorkspace.addEventListener("click", async () => {
-    await emit("panel:action", { action: "open-workspace" });
+    await openPanelOwnedWindow("open_workspace_window", "open-workspace");
   });
 
   els.btnMute.addEventListener("click", async () => {
     state.muted = !state.muted;
     renderMute();
-    await emit("panel:action", { action: "toggle-mute", muted: state.muted });
+    await emitPanelAction({ action: "toggle-mute", muted: state.muted });
   });
 
   els.mcPrev.addEventListener("click", () => {
@@ -319,20 +388,25 @@ function wireButtons() {
     tauriCall("control_system_media", { action: "next" });
   });
 
+  els.controllerBadge?.addEventListener("click", async () => {
+    const next = state.musicController === "model" ? "user" : "model";
+    await emitPanelAction({ action: "set-music-controller", controller: next });
+  });
+
   els.btnStop.addEventListener("click", async () => {
-    await emit("panel:action", { action: "stop-reply" });
+    await emitPanelAction({ action: "stop-reply" });
   });
 
   els.scaleSlider.addEventListener("input", async () => {
     const value = parseFloat(els.scaleSlider.value);
     els.scaleOutput.value = `${Math.round(value * 100)}%`;
-    await emit("panel:action", { action: "set-scale", value });
+    await emitPanelAction({ action: "set-scale", value });
   });
 
   els.opacitySlider.addEventListener("input", async () => {
     const value = parseFloat(els.opacitySlider.value);
     els.opacityOutput.value = `${Math.round(value * 100)}%`;
-    await emit("panel:action", { action: "set-opacity", value });
+    await emitPanelAction({ action: "set-opacity", value });
   });
 
   els.btnSettings.addEventListener("click", () => {
@@ -340,20 +414,22 @@ function wireButtons() {
   });
 
   els.btnWorkshop.addEventListener("click", async () => {
-    await emit("panel:action", { action: "open-workshop" });
+    await openPanelOwnedWindow("open_workshop_window", "open-workshop");
   });
 
   els.btnQuit.addEventListener("click", async () => {
-    await emit("panel:action", { action: "quit" });
+    await emitPanelAction({ action: "quit" });
   });
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
+  applyTheme(loadSavedTheme());
   buildWaveform();
   renderStatus();
   renderMusic();
   renderMute();
+  updateControllerBadge(state.musicController);
   renderSliders();
   wireButtons();
   await setupEventBridge();
@@ -362,7 +438,9 @@ async function init() {
     pollHealth();
     setInterval(pollHealth, 10_000);
     // Signal to main window that panel is ready for a state push
-    await emit("panel:ready", {});
+    await emitTo("main", "panel:ready", {}).catch(() => emit("panel:ready", {}));
+    await emitPanelAction({ action: "refresh-co-listen" });
+    await emitPanelAction({ action: "refresh-music-controller" });
   }
 }
 

@@ -3155,7 +3155,8 @@ fn find_adjacent_lyric_path(audio_path: &PathBuf) -> Option<PathBuf> {
 }
 
 #[tauri::command]
-fn apply_window_state(window: Window, state: PetState) -> Result<WindowGeometry, String> {
+fn apply_window_state(window: Window, mut state: PetState) -> Result<WindowGeometry, String> {
+    normalize_pet_state(&mut state);
     window
         .set_always_on_top(state.always_on_top)
         .map_err(|error| error.to_string())?;
@@ -3166,13 +3167,6 @@ fn apply_window_state(window: Window, state: PetState) -> Result<WindowGeometry,
         .set_ignore_cursor_events(false)
         .map_err(|error| error.to_string())?;
 
-    let has_position = state.x.is_some() && state.y.is_some();
-    if let (Some(x), Some(y)) = (state.x, state.y) {
-        window
-            .set_position(Position::Physical(PhysicalPosition::new(x, y)))
-            .map_err(|error| error.to_string())?;
-    }
-
     if let (Some(width), Some(height)) = (state.width, state.height) {
         window
             .set_size(Size::Physical(PhysicalSize::new(width, height)))
@@ -3181,7 +3175,20 @@ fn apply_window_state(window: Window, state: PetState) -> Result<WindowGeometry,
         set_scaled_size(&window, state.scale)?;
     }
 
-    if !has_position {
+    let restored_position = if let (Some(x), Some(y)) = (state.x, state.y) {
+        if saved_window_position_visible(&window, x, y) {
+            window
+                .set_position(Position::Physical(PhysicalPosition::new(x, y)))
+                .map_err(|error| error.to_string())?;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !restored_position {
         place_window_bottom_right(&window)?;
     }
 
@@ -3495,6 +3502,36 @@ fn place_window_bottom_right(window: &Window) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+fn saved_window_position_visible(window: &Window, x: i32, y: i32) -> bool {
+    let Ok(size) = window.outer_size() else {
+        return false;
+    };
+    let width = size.width as i32;
+    let height = size.height as i32;
+    if width <= 0 || height <= 0 {
+        return false;
+    }
+
+    let right = x.saturating_add(width);
+    let bottom = y.saturating_add(height);
+    let min_visible_width = width.min(96).max(1);
+    let min_visible_height = height.min(96).max(1);
+    let Ok(monitors) = window.available_monitors() else {
+        return false;
+    };
+
+    monitors.into_iter().any(|monitor| {
+        let area = monitor.work_area();
+        let area_left = area.position.x;
+        let area_top = area.position.y;
+        let area_right = area_left.saturating_add(area.size.width as i32);
+        let area_bottom = area_top.saturating_add(area.size.height as i32);
+        let visible_width = right.min(area_right).saturating_sub(x.max(area_left));
+        let visible_height = bottom.min(area_bottom).saturating_sub(y.max(area_top));
+        visible_width >= min_visible_width && visible_height >= min_visible_height
+    })
+}
+
 fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
     let path = akane_data_root()?.join("state").join(STATE_FILE);
     if !path.exists() {
@@ -3607,8 +3644,18 @@ fn control_system_media_blocking(action: String) -> SystemMediaControlResult {
     control_system_media_platform(&normalized)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn control_system_media_platform(action: &str) -> SystemMediaControlResult {
+    match control_system_media_macos(action) {
+        Ok(result) => result,
+        Err(error) => system_media_control_unavailable(action, "control_failed", error),
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn control_system_media_platform(action: &str) -> SystemMediaControlResult {
+    // TODO: Linux MPRIS via D-Bus. Keep a structured unavailable response
+    // until a real MPRIS implementation exists.
     system_media_control_unavailable(action, "unsupported_platform", std::env::consts::OS)
 }
 
@@ -3681,6 +3728,37 @@ fn read_current_system_media_windows() -> Result<SystemMediaSnapshot, String> {
         return Ok(snapshot);
     }
     Ok(system_media_unavailable("no_active_session", ""))
+}
+
+#[cfg(target_os = "macos")]
+fn control_system_media_macos(action: &str) -> Result<SystemMediaControlResult, String> {
+    let script = match action {
+        "play" => r#"tell application "Music" to play"#,
+        "pause" => r#"tell application "Music" to pause"#,
+        "next" => r#"tell application "Music" to next track"#,
+        "previous" => r#"tell application "Music" to previous track"#,
+        "stop" => r#"tell application "Music" to stop"#,
+        _ => {
+            return Ok(system_media_control_unavailable(
+                action,
+                "invalid_action",
+                "",
+            ))
+        }
+    };
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|error| error.to_string())?;
+    let ok = output.status.success();
+    Ok(system_media_control_from_snapshot(
+        action,
+        ok,
+        if ok { "executed" } else { "not-executed" },
+        if ok { "" } else { "apple_music_unavailable" },
+        None,
+    ))
 }
 
 #[cfg(windows)]
@@ -3881,6 +3959,8 @@ fn build_system_media_track_key(
 }
 
 fn normalize_pet_state(state: &mut PetState) {
+    state.width = None;
+    state.height = None;
     state.scale = clamp(state.scale, 0.75, 1.45);
     state.opacity = clamp(state.opacity, 0.55, 1.0);
     state.click_through = false;
@@ -3909,6 +3989,8 @@ fn normalize_character_runtime_state(runtime: &mut CharacterRuntimeState) {
     if runtime.version == 0 {
         runtime.version = 1;
     }
+    runtime.width = None;
+    runtime.height = None;
     runtime.character_pack_id = runtime.character_pack_id.trim().to_string();
     runtime.session_id = runtime.session_id.trim().to_string();
     runtime.outfit = runtime.outfit.trim().to_string();

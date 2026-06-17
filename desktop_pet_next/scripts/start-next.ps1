@@ -78,6 +78,33 @@ function Get-NewestInputWriteTime {
   return $newest
 }
 
+function Stop-AkaneDesktopProcesses {
+  param([string]$ExePath)
+
+  $targetPath = [System.IO.Path]::GetFullPath($ExePath)
+  $processes = @(Get-Process -Name "akane_desktop_pet_next" -ErrorAction SilentlyContinue)
+  foreach ($process in $processes) {
+    $processPath = ""
+    try {
+      $processPath = [System.IO.Path]::GetFullPath([string]$process.Path)
+    } catch {
+      continue
+    }
+
+    if ($processPath -ine $targetPath) {
+      continue
+    }
+
+    Write-Host "[INFO] Stopping existing Akane Next desktop PID: $($process.Id)"
+    try {
+      Stop-Process -Id $process.Id -Force -ErrorAction Stop
+      Wait-Process -Id $process.Id -Timeout 5 -ErrorAction SilentlyContinue
+    } catch {
+      Write-Host "[WARN] Failed to stop existing Akane Next desktop PID $($process.Id): $($_.Exception.Message)"
+    }
+  }
+}
+
 $Root = Split-Path -Parent $PSScriptRoot
 $ExePath = Join-Path $Root "src-tauri\target\release\akane_desktop_pet_next.exe"
 
@@ -138,6 +165,7 @@ if ($shouldBuild) {
   Write-Host "[INFO] Release exe already exists and is up to date. -BuildIfMissing is no longer required."
 }
 
+Stop-AkaneDesktopProcesses -ExePath $ExePath
 $process = Start-Process -FilePath $ExePath -WorkingDirectory $Root -PassThru
 Write-Host "Akane Next 已启动。PID: $($process.Id)"
 Write-Host $ExePath

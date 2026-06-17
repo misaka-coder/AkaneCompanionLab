@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 import akaneNormal from "./assets/characters/猫娘/正常.png";
@@ -102,8 +102,6 @@ let providerTestAudio = {
   mediaType: "",
   audioBytes: 0
 };
-let musicProgressFrame = 0;
-let musicProgressAnchor = null;
 const CO_LISTEN_CONTROL_NAMES = ["pause", "next", "prev", "recommend"];
 let listeningTogetherState = {
   status: "idle",
@@ -216,7 +214,13 @@ function createControlCenterDataSourceOptions(overrides = {}) {
     emotion: params.get("emotion") || petState.currentEmotion || "",
     musicSnapshot: overrides.musicSnapshot || latestRuntimeSnapshot?.music || null,
     petState,
-    availableCharacterPacks: overrides.availableCharacterPacks || []
+    availableCharacterPacks: overrides.availableCharacterPacks || [],
+    tauriBridge: isTauriRuntime
+      ? {
+          invoke,
+          emit: emitMainEvent
+        }
+      : undefined
   };
 }
 
@@ -711,44 +715,6 @@ function bindEvents() {
     const modelActionButton = event.target.closest("[data-model-service-action]");
     if (modelActionButton) {
       void runModelServiceAction(modelActionButton.dataset.modelServiceAction);
-      return;
-    }
-
-    const musicProgressTrack = event.target.closest("[data-music-progress-track]");
-    if (musicProgressTrack) {
-      const durationSeconds = Number(musicProgressTrack.dataset.durationSeconds || 0);
-      if (Number.isFinite(durationSeconds) && durationSeconds > 0) {
-        const percent = percentFromPointerEvent(event, musicProgressTrack);
-        const seconds = Math.round((durationSeconds * percent) / 100);
-        musicPage.nowPlaying = {
-          ...musicPage.nowPlaying,
-          elapsed: formatClockSeconds(seconds),
-          progress: percent,
-          progressSeconds: seconds
-        };
-        renderActivePage();
-        void actionRouter.run(
-          CONTROL_CENTER_ACTIONS.musicSeek,
-          { value: seconds, seconds, percent },
-          { source: "control-center-lab" }
-        );
-      }
-      return;
-    }
-
-    const musicVolumeTrack = event.target.closest("[data-music-volume-track]");
-    if (musicVolumeTrack) {
-      const percent = percentFromPointerEvent(event, musicVolumeTrack);
-      musicPage.nowPlaying = {
-        ...musicPage.nowPlaying,
-        volume: percent
-      };
-      renderActivePage();
-      void actionRouter.run(
-        CONTROL_CENTER_ACTIONS.voiceSetVolume,
-        { value: percent / 100, percent, source: "music" },
-        { source: "control-center-lab" }
-      );
       return;
     }
 
@@ -1608,7 +1574,6 @@ function renderActivePage() {
     }
   });
   renderedPageId = state.activePage;
-  syncMusicProgressAnimation();
 }
 
 function applyLocalActionOptimisticUpdate(actionId, payload) {
@@ -1759,7 +1724,6 @@ function renderOverviewPage() {
         ${renderOverviewPackCard()}
         ${renderOverviewEmotionCard()}
         ${renderOverviewVoiceCard()}
-        ${renderOverviewMusicCard()}
       </div>
 
       ${renderListeningTogetherCard()}
@@ -2510,11 +2474,6 @@ function renderRangeBar(value) {
 function renderMusicPage() {
   const outputDevice = musicPage.outputDevice || "扬声器";
   const volumeNormalization = musicPage.volumeNormalization !== false;
-  const playback = getMusicPlaybackState(musicPage.nowPlaying);
-  const progressSeconds = getMusicProgressSeconds(musicPage.nowPlaying);
-  const durationSeconds = getMusicDurationSeconds(musicPage.nowPlaying);
-  const progressPercent = clampPercent(musicPage.nowPlaying.progress);
-  const volumePercent = clampVoiceVolumePercent(musicPage.nowPlaying.volume);
   return `
     <section class="music-lab-page">
       <header class="music-title-row">
@@ -2529,45 +2488,18 @@ function renderMusicPage() {
 
       <div class="music-top-grid">
         <article class="glass-card now-playing-panel">
-          <h2>${icon("equalizer")} 当前播放</h2>
-          <div class="now-playing-body">
-            <div class="album-art">
-              <img src="${imageFor(musicPage.nowPlaying.cover)}" alt="" />
-              <span>Starry<br />Days</span>
-            </div>
-            <div class="track-main">
-              <h3>${escapeHtml(musicPage.nowPlaying.title)} <span>♥</span></h3>
-              <p>${escapeHtml(musicPage.nowPlaying.artist)} <b>${icon("sparkle")} ${escapeHtml(musicPage.nowPlaying.quality)}</b></p>
-              <div class="time-row">
-                <span data-music-elapsed>${escapeHtml(musicPage.nowPlaying.elapsed)}</span>
-                <span>${escapeHtml(musicPage.nowPlaying.duration)}</span>
-              </div>
-              <div class="pink-progress" data-music-progress-track data-duration-seconds="${durationSeconds}" role="slider" aria-label="播放进度" aria-valuemin="0" aria-valuemax="${durationSeconds}" aria-valuenow="${progressSeconds}"><span data-music-progress-fill style="width: ${progressPercent}%"></span></div>
-              <div class="volume-row">
-                ${icon("volume")}
-                <div class="volume-track" data-music-volume-track role="slider" aria-label="播放音量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${volumePercent}"><span style="width: ${volumePercent}%"></span></div>
-                <strong>${volumePercent}%</strong>
-              </div>
-            </div>
-          </div>
+          <h2>${icon("equalizer")} 播放配置</h2>
           ${renderSystemMediaStatus(musicPage)}
           <div class="play-mode-row">
             <span>${icon("repeat")} 播放模式</span>
             <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicSetPlayMode}" data-payload-field="playMode" data-payload-value="${escapeAttr(musicPage.currentPlayMode || "列表循环")}">${icon("repeat")} ${escapeHtml(musicPage.currentPlayMode || "列表循环")} ${icon("chevronDown")}</button>
-          </div>
-          <div class="music-control-row">
-            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicPrevious}" title="上一首" aria-label="上一首">${icon("previous")}</button>
-            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicNext}" title="下一首" aria-label="下一首">${icon("next")}</button>
-            <button class="pause" type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicPause}" title="${playback.toggleTitle}" aria-label="${playback.toggleTitle}">${icon(playback.toggleIcon)}</button>
-            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicStop}" title="停止" aria-label="停止">${icon("stop")}</button>
-            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicClear}" title="清空" aria-label="清空">${icon("trash")}</button>
           </div>
         </article>
 
         <article class="glass-card lyric-panel">
           <div class="card-heading">
             <h2>${icon("file")} 歌词</h2>
-            <span>${escapeHtml(playback.badge)}</span>
+            <span>面板负责播放控制</span>
           </div>
           <div class="lyric-lines">
             ${musicPage.lyrics.map((line, index) => `
@@ -4561,104 +4493,6 @@ function actionIdForVoiceToggle(key) {
   return map[key] || "";
 }
 
-function getMusicPlaybackState(nowPlaying = {}) {
-  const playing = Boolean(nowPlaying.playing);
-  const paused = Boolean(nowPlaying.paused);
-  if (playing) {
-    return { playing, paused, toggleIcon: "pause", toggleTitle: "暂停", badge: "正在播放" };
-  }
-  if (paused) {
-    return { playing, paused, toggleIcon: "play", toggleTitle: "继续播放", badge: "已暂停" };
-  }
-  return { playing, paused, toggleIcon: "play", toggleTitle: "播放", badge: "待播放" };
-}
-
-function getMusicProgressSeconds(nowPlaying = {}) {
-  const value = Number(nowPlaying.progressSeconds);
-  if (Number.isFinite(value) && value >= 0) return Math.round(value);
-  const duration = getMusicDurationSeconds(nowPlaying);
-  const progress = Number(nowPlaying.progress);
-  if (duration > 0 && Number.isFinite(progress)) {
-    return Math.round((duration * Math.max(0, Math.min(100, progress))) / 100);
-  }
-  return parseClockSeconds(nowPlaying.elapsed);
-}
-
-function getMusicDurationSeconds(nowPlaying = {}) {
-  const value = Number(nowPlaying.durationSeconds);
-  if (Number.isFinite(value) && value > 0) return Math.round(value);
-  return parseClockSeconds(nowPlaying.duration);
-}
-
-function syncMusicProgressAnimation() {
-  if (musicProgressFrame) {
-    cancelAnimationFrame(musicProgressFrame);
-    musicProgressFrame = 0;
-  }
-  musicProgressAnchor = null;
-  if (state.activePage !== "music") return;
-  const nowPlaying = musicPage?.nowPlaying || {};
-  const playback = getMusicPlaybackState(nowPlaying);
-  const durationSeconds = getMusicDurationSeconds(nowPlaying);
-  const progressSeconds = getMusicProgressSeconds(nowPlaying);
-  if (!playback.playing || durationSeconds <= 0 || progressSeconds >= durationSeconds) return;
-  musicProgressAnchor = {
-    startedAtMs: performance.now(),
-    progressSeconds,
-    durationSeconds
-  };
-  musicProgressFrame = requestAnimationFrame(updateMusicProgressAnimation);
-}
-
-function updateMusicProgressAnimation(nowMs) {
-  if (!musicProgressAnchor || state.activePage !== "music") {
-    musicProgressFrame = 0;
-    return;
-  }
-  const elapsedSinceAnchor = Math.max(0, (Number(nowMs) - musicProgressAnchor.startedAtMs) / 1000);
-  const seconds = Math.min(
-    musicProgressAnchor.durationSeconds,
-    musicProgressAnchor.progressSeconds + elapsedSinceAnchor
-  );
-  const percent = musicProgressAnchor.durationSeconds > 0
-    ? Math.min(100, (seconds / musicProgressAnchor.durationSeconds) * 100)
-    : 0;
-  const track = root.querySelector("[data-music-progress-track]");
-  const fill = root.querySelector("[data-music-progress-fill]");
-  const elapsed = root.querySelector("[data-music-elapsed]");
-  if (track) track.setAttribute("aria-valuenow", String(Math.round(seconds)));
-  if (fill) fill.style.width = `${percent}%`;
-  if (elapsed) elapsed.textContent = formatClockSeconds(seconds);
-  if (seconds >= musicProgressAnchor.durationSeconds) {
-    musicProgressFrame = 0;
-    return;
-  }
-  musicProgressFrame = requestAnimationFrame(updateMusicProgressAnimation);
-}
-
-function parseClockSeconds(label) {
-  const parts = String(label || "").trim().split(":").map((part) => Number.parseInt(part, 10));
-  if (parts.length < 2 || parts.some((part) => !Number.isFinite(part))) return 0;
-  if (parts.length === 2) return Math.max(0, parts[0] * 60 + parts[1]);
-  return Math.max(0, parts[0] * 3600 + parts[1] * 60 + parts[2]);
-}
-
-function formatClockSeconds(seconds) {
-  const sec = Math.max(0, Math.round(Number(seconds) || 0));
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
-function percentFromPointerEvent(event, element) {
-  const rect = element.getBoundingClientRect();
-  if (!rect.width) return 0;
-  const raw = ((event.clientX - rect.left) / rect.width) * 100;
-  return Math.max(0, Math.min(100, Math.round(raw)));
-}
-
 function buildAdvancedCoreSwitchState(items) {
   const entries = {};
   for (const item of Array.isArray(items) ? items : []) {
@@ -4681,12 +4515,6 @@ function clampVoiceVolumePercent(value) {
   if (!Number.isFinite(number)) return 80;
   const percent = number <= 1 ? number * 100 : number;
   return Math.max(0, Math.min(100, Math.round(percent)));
-}
-
-function clampPercent(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return 0;
-  return Math.max(0, Math.min(100, Math.round(number)));
 }
 
 function buildScreenVisionState(featureCards) {
@@ -4783,7 +4611,7 @@ function handleControlCenterActionResult(result) {
   if (!result?.refresh) return;
   scheduleRuntimeSnapshotHydrate();
   if (isTauriRuntime) {
-    emit(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot" }).catch(() => {});
+    emitSettingsCommand({ command: "requestSnapshot" }).catch(() => {});
   }
 }
 
@@ -4795,10 +4623,22 @@ async function bindSettingsSnapshotListener() {
       applySettingsSnapshotPatch(latestRuntimeSnapshot);
       refreshListeningTogetherCard().catch(() => {});
     });
-    await emit(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot" });
+    await emitSettingsCommand({ command: "requestSnapshot" });
   } catch {
     // settings window may not be open yet
   }
+}
+
+async function emitMainEvent(eventName, payload) {
+  try {
+    await emitTo("main", eventName, payload);
+  } catch {
+    await emit(eventName, payload);
+  }
+}
+
+async function emitSettingsCommand(payload) {
+  await emitMainEvent(SETTINGS_COMMAND_EVENT, payload);
 }
 
 function applySettingsSnapshotPatch(runtimeSnapshot) {

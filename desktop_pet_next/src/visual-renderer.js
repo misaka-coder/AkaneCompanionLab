@@ -151,7 +151,7 @@ function normalizeExpressionEntry(entry) {
   const source = entry && typeof entry === "object" ? entry : {};
   const id = String(source.id || source.name || "").trim();
   const name = String(source.name || source.id || id).trim();
-  const url = String(source.url || "").trim();
+  const url = String(source.url || source.path || "").trim();
   return { id, name, url };
 }
 
@@ -171,6 +171,7 @@ function applyBubbleLayout(stage, bubble) {
   stage.style.setProperty("--bubble-anchor-y", `${anchorY * 100}%`);
   stage.style.setProperty("--bubble-max-width", `${maxWidth}px`);
   stage.dataset.bubbleStyle = style;
+  stage.dataset.bubbleSide = anchorX >= 0.5 ? "left" : "right";
 }
 
 function resetBubbleLayout(stage) {
@@ -178,6 +179,7 @@ function resetBubbleLayout(stage) {
   stage.style.removeProperty("--bubble-anchor-y");
   stage.style.removeProperty("--bubble-max-width");
   delete stage.dataset.bubbleStyle;
+  delete stage.dataset.bubbleSide;
 }
 
 function normalizeUnit(value, fallback) {

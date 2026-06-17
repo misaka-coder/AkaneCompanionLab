@@ -172,22 +172,21 @@ textarea {
   height: auto;
   min-height: 0;
   max-height: min(calc(184px * var(--pet-scale)), calc(44vh - var(--bubble-safe-top)));
-  transform: translateX(-50%) translateY(-5px) scale(0.985);
-  padding: calc(9px * var(--pet-scale)) calc(14px * var(--pet-scale));
-  border: 1px solid rgb(172 196 228 / 0.46);
-  border-radius: calc(14px * var(--pet-scale));
-  color: #334252;
+  transform: translateX(-50%) translateY(10px) scale(0.96);
+  padding: calc(10px * var(--pet-scale)) calc(15px * var(--pet-scale));
+  border: 1px solid rgb(215 200 182 / 0.42);
+  border-radius: calc(16px * var(--pet-scale));
+  color: #2e3540;
   background:
-    linear-gradient(145deg, rgb(255 255 255 / 0.98), rgb(231 241 255 / 0.91) 72%, rgb(222 235 252 / 0.94));
+    linear-gradient(148deg, rgb(255 254 251 / 0.97), rgb(255 249 240 / 0.93) 60%, rgb(253 244 232 / 0.94));
   box-shadow:
-    0 12px 30px rgb(20 30 50 / 0.16),
-    0 2px 8px rgb(255 255 255 / 0.44) inset,
-    0 -1px 0 rgb(118 152 198 / 0.12) inset;
-  -webkit-backdrop-filter: blur(12px) saturate(1.08);
-  backdrop-filter: blur(12px) saturate(1.08);
-  font-size: calc(12px * var(--pet-scale));
-  font-weight: 540;
-  line-height: 1.55;
+    0 10px 28px rgb(40 28 12 / 0.11),
+    0 2px 8px rgb(255 250 242 / 0.52) inset;
+  -webkit-backdrop-filter: blur(14px) saturate(1.06);
+  backdrop-filter: blur(14px) saturate(1.06);
+  font-size: calc(12.5px * var(--pet-scale));
+  font-weight: 480;
+  line-height: 1.65;
   text-align: left;
   white-space: normal;
   word-break: normal;
@@ -200,13 +199,14 @@ textarea {
   transition:
     opacity 0.2s ease,
     visibility 0.2s ease,
-    transform 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.12);
+    transform 0.3s cubic-bezier(0.16, 0.88, 0.3, 1.06);
 }
 
 .bubble.visible {
   opacity: 1;
   visibility: visible;
   transform: translateX(-50%) translateY(0) scale(1);
+  pointer-events: auto;
 }
 
 .bubble-text {
@@ -247,22 +247,22 @@ textarea {
 .bubble::before {
   inset: 1px 1px auto;
   z-index: 0;
-  height: 42%;
+  height: 38%;
   border-radius: inherit;
   background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.58), rgb(255 255 255 / 0));
+    linear-gradient(180deg, rgb(255 255 255 / 0.48), rgb(255 255 255 / 0));
 }
 
 .bubble::after {
-  left: 58%;
-  bottom: calc(-7px * var(--pet-scale));
+  left: 62%;
+  bottom: calc(-6px * var(--pet-scale));
   z-index: 1;
-  width: calc(10px * var(--pet-scale));
-  height: calc(10px * var(--pet-scale));
-  border-right: 1px solid rgb(172 196 228 / 0.42);
-  border-bottom: 1px solid rgb(172 196 228 / 0.42);
-  background: rgb(231 241 255 / 0.95);
-  box-shadow: 2px 2px 4px rgb(20 30 50 / 0.04);
+  width: calc(9px * var(--pet-scale));
+  height: calc(9px * var(--pet-scale));
+  border-right: 1px solid rgb(215 200 182 / 0.38);
+  border-bottom: 1px solid rgb(215 200 182 / 0.38);
+  background: rgb(254 248 240 / 0.96);
+  box-shadow: 1px 1px 3px rgb(40 28 12 / 0.04);
   transform: translateX(-50%) rotate(45deg);
 }
 
@@ -277,6 +277,15 @@ textarea {
 .bubble-text::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: rgb(140 165 205 / 0.42);
+}
+
+/* Tail direction adapts to bubble position relative to character */
+.stage[data-bubble-side="left"] .bubble::after {
+  left: 62%;
+}
+
+.stage[data-bubble-side="right"] .bubble::after {
+  left: 38%;
 }
 
 .stage[data-bubble-style="paper"] .bubble {
@@ -297,21 +306,21 @@ textarea {
 }
 
 .stage[data-bubble-style="clear"] .bubble {
-  border-color: rgb(255 255 255 / 0.66);
+  border-color: rgb(255 255 255 / 0.55);
   color: #26384c;
   background:
-    linear-gradient(150deg, rgb(255 255 255 / 0.54), rgb(230 241 255 / 0.34));
+    linear-gradient(150deg, rgb(255 255 255 / 0.46), rgb(255 252 248 / 0.28));
   box-shadow:
-    0 12px 32px rgb(20 30 50 / 0.12),
-    0 1px 8px rgb(255 255 255 / 0.58) inset;
-  -webkit-backdrop-filter: blur(18px) saturate(1.18);
-  backdrop-filter: blur(18px) saturate(1.18);
+    0 10px 28px rgb(20 20 10 / 0.09),
+    0 1px 7px rgb(255 255 255 / 0.55) inset;
+  -webkit-backdrop-filter: blur(20px) saturate(1.12);
+  backdrop-filter: blur(20px) saturate(1.12);
 }
 
 .stage[data-bubble-style="clear"] .bubble::after {
-  border-right-color: rgb(255 255 255 / 0.5);
-  border-bottom-color: rgb(255 255 255 / 0.5);
-  background: rgb(255 255 255 / 0.42);
+  border-right-color: rgb(255 255 255 / 0.44);
+  border-bottom-color: rgb(255 255 255 / 0.44);
+  background: rgb(255 253 250 / 0.38);
 }
 
 .stage[data-bubble-style="dark"] .bubble {
@@ -351,28 +360,27 @@ textarea {
   height: var(--chat-input-min-height);
   min-height: var(--chat-input-min-height);
   max-height: var(--chat-input-max-height);
-  padding: calc(10px * var(--pet-scale)) calc(17px * var(--pet-scale));
-  border: 1px solid rgb(176 199 230 / 0.44);
-  border-radius: calc(24px * var(--pet-scale));
+  padding: calc(10px * var(--pet-scale)) calc(18px * var(--pet-scale));
+  border: 1px solid rgb(205 188 168 / 0.38);
+  border-radius: calc(28px * var(--pet-scale));
   outline: none;
   resize: none;
   overflow: hidden;
   scrollbar-width: none;
-  color: #344354;
+  color: #2e3540;
   background:
-    linear-gradient(145deg, rgb(255 255 255 / 0.86), rgb(232 241 255 / 0.68));
+    linear-gradient(148deg, rgb(255 255 255 / 0.76), rgb(255 251 245 / 0.60));
   box-shadow:
-    0 12px 30px rgb(20 30 50 / 0.13),
-    0 1px 9px rgb(255 255 255 / 0.62) inset,
-    0 -1px 0 rgb(120 150 190 / 0.1) inset;
-  -webkit-backdrop-filter: blur(16px) saturate(1.12);
-  backdrop-filter: blur(16px) saturate(1.12);
+    0 8px 24px rgb(40 28 12 / 0.09),
+    0 1px 6px rgb(255 255 255 / 0.58) inset;
+  -webkit-backdrop-filter: blur(18px) saturate(1.06);
+  backdrop-filter: blur(18px) saturate(1.06);
   font-size: calc(13px * var(--pet-scale));
   line-height: 1.6;
   transition:
-    border-color 0.16s ease,
-    box-shadow 0.16s ease,
-    background 0.16s ease;
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease;
 }
 
 .chat-form textarea::-webkit-scrollbar {
@@ -381,17 +389,17 @@ textarea {
 }
 
 .chat-form textarea:focus {
-  border-color: rgb(138 171 218 / 0.72);
+  border-color: rgb(205 170 140 / 0.58);
   background:
-    linear-gradient(145deg, rgb(255 255 255 / 0.92), rgb(232 241 255 / 0.75));
+    linear-gradient(148deg, rgb(255 255 255 / 0.88), rgb(255 250 242 / 0.72));
   box-shadow:
-    0 14px 34px rgb(48 92 150 / 0.17),
-    0 0 0 3px rgb(138 171 218 / 0.12),
-    0 1px 9px rgb(255 255 255 / 0.7) inset;
+    0 10px 28px rgb(60 36 12 / 0.10),
+    0 0 0 3px rgb(205 170 140 / 0.10),
+    0 1px 8px rgb(255 255 255 / 0.65) inset;
 }
 
 .chat-form textarea::placeholder {
-  color: rgb(58 72 88 / 0.36);
+  color: rgb(46 53 64 / 0.30);
 }
 
 .voice-record-button {
@@ -400,19 +408,18 @@ textarea {
   place-items: center;
   width: var(--voice-button-size);
   height: var(--voice-button-size);
-  border: 1px solid rgb(176 199 230 / 0.5);
+  border: 1px solid rgb(205 188 168 / 0.42);
   border-radius: 999px;
-  color: #46566b;
+  color: #5a4e46;
   background:
-    radial-gradient(circle at 36% 28%, rgb(255 255 255 / 0.98), rgb(239 245 255 / 0.94) 46%, rgb(220 232 249 / 0.9));
+    radial-gradient(circle at 38% 30%, rgb(255 255 255 / 0.97), rgb(255 249 240 / 0.92) 48%, rgb(248 238 224 / 0.87));
   box-shadow:
-    0 12px 28px rgb(20 30 50 / 0.14),
-    0 2px 7px rgb(255 255 255 / 0.76) inset,
-    0 -1px 0 rgb(110 140 184 / 0.12) inset;
-  -webkit-backdrop-filter: blur(14px) saturate(1.1);
-  backdrop-filter: blur(14px) saturate(1.1);
+    0 10px 24px rgb(40 28 12 / 0.11),
+    0 2px 6px rgb(255 255 255 / 0.70) inset;
+  -webkit-backdrop-filter: blur(14px) saturate(1.06);
+  backdrop-filter: blur(14px) saturate(1.06);
   cursor: pointer;
-  font-weight: 760;
+  font-weight: 600;
   line-height: 1;
   transition:
     transform 0.16s ease,
@@ -423,18 +430,21 @@ textarea {
 
 .voice-record-button:hover {
   transform: translateY(-1px);
+  background:
+    radial-gradient(circle at 38% 30%, rgb(255 255 255 / 0.99), rgb(255 246 234 / 0.96) 48%, rgb(250 238 220 / 0.92));
   box-shadow:
-    0 14px 32px rgb(20 30 50 / 0.18),
-    0 2px 8px rgb(255 255 255 / 0.78) inset;
+    0 12px 28px rgb(40 28 12 / 0.14),
+    0 2px 7px rgb(255 255 255 / 0.74) inset;
 }
 
 .voice-record-button.recording {
-  color: #f4f8fd;
+  color: #fff8f2;
   background:
-    radial-gradient(circle at 35% 25%, rgb(160 195 235 / 0.98), rgb(80 130 200 / 0.94));
+    radial-gradient(circle at 35% 28%, rgb(224 152 128 / 0.97), rgb(192 92 72 / 0.92));
   box-shadow:
-    0 0 0 5px rgb(80 130 200 / 0.14),
-    0 10px 26px rgb(20 40 80 / 0.2);
+    0 0 0 4px rgb(192 92 72 / 0.14),
+    0 10px 24px rgb(120 40 20 / 0.20);
+  border-color: rgb(192 92 72 / 0.30);
 }
 
 .voice-record-button.processing {
