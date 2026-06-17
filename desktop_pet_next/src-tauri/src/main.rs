@@ -552,7 +552,9 @@ async fn get_current_system_media() -> SystemMediaSnapshot {
 async fn control_system_media(action: String) -> SystemMediaControlResult {
     tauri::async_runtime::spawn_blocking(move || control_system_media_blocking(action))
         .await
-        .unwrap_or_else(|error| system_media_control_unavailable("", "join_failed", error.to_string()))
+        .unwrap_or_else(|error| {
+            system_media_control_unavailable("", "join_failed", error.to_string())
+        })
 }
 
 #[tauri::command]
@@ -3326,6 +3328,62 @@ async fn open_settings_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_panel_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("panel") {
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let panel = WebviewWindowBuilder::new(&app, "panel", WebviewUrl::App("panel.html".into()))
+        .inner_size(400.0, 580.0)
+        .min_inner_size(360.0, 420.0)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(false)
+        .center()
+        .visible(false)
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    // Position next to the pet window; prefer right side, fall back to left if near screen edge
+    if let Some(pet) = app.get_webview_window("main") {
+        if let (Ok(pos), Ok(pet_size)) = (pet.outer_position(), pet.outer_size()) {
+            let panel_w = panel.outer_size().map(|s| s.width as i32).unwrap_or(412);
+            let gap = 6i32;
+            let screen_w = pet
+                .current_monitor()
+                .ok()
+                .flatten()
+                .map(|m| m.size().width as i32)
+                .unwrap_or(1920);
+            let x_right = pos.x + pet_size.width as i32 + gap;
+            let x = if x_right + panel_w <= screen_w {
+                x_right
+            } else {
+                (pos.x - panel_w - gap).max(0)
+            };
+            // Keep panel top within screen height
+            let screen_h = pet
+                .current_monitor()
+                .ok()
+                .flatten()
+                .map(|m| m.size().height as i32)
+                .unwrap_or(1080);
+            let panel_h = panel.outer_size().map(|s| s.height as i32).unwrap_or(592);
+            let y = pos.y.min(screen_h - panel_h).max(0);
+            let _ = panel.set_position(Position::Physical(PhysicalPosition { x, y }));
+        }
+    }
+
+    panel.show().map_err(|error| error.to_string())?;
+    panel.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn open_workspace_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("workspace") {
         window.show().map_err(|error| error.to_string())?;
@@ -3627,88 +3685,95 @@ fn read_current_system_media_windows() -> Result<SystemMediaSnapshot, String> {
 
 #[cfg(windows)]
 fn control_system_media_windows(action: &str) -> Result<SystemMediaControlResult, String> {
-    let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
-        .map_err(|error| error.to_string())?
-        .get()
-        .map_err(|error| error.to_string())?;
-    let session = match select_system_media_control_session(&manager)? {
-        Some(value) => value,
-        None => return Ok(system_media_control_unavailable(action, "no_active_session", "")),
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+        VIRTUAL_KEY, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PLAY_PAUSE, VK_MEDIA_PREV_TRACK, VK_MEDIA_STOP,
     };
-    let before = read_system_media_session(&session).ok();
-    let executed = match action {
-        "play" => session
-            .TryPlayAsync()
-            .map_err(|error| error.to_string())?
-            .get()
-            .map_err(|error| error.to_string())?,
-        "pause" => session
-            .TryPauseAsync()
-            .map_err(|error| error.to_string())?
-            .get()
-            .map_err(|error| error.to_string())?,
-        "stop" => session
-            .TryStopAsync()
-            .map_err(|error| error.to_string())?
-            .get()
-            .map_err(|error| error.to_string())?,
-        "next" => session
-            .TrySkipNextAsync()
-            .map_err(|error| error.to_string())?
-            .get()
-            .map_err(|error| error.to_string())?,
-        "previous" => session
-            .TrySkipPreviousAsync()
-            .map_err(|error| error.to_string())?
-            .get()
-            .map_err(|error| error.to_string())?,
-        _ => return Ok(system_media_control_unavailable(action, "invalid_action", "")),
+
+    let before = read_current_system_media_windows().ok();
+    if action == "play"
+        && before
+            .as_ref()
+            .map(|snapshot| snapshot.playback_status == "playing")
+            .unwrap_or(false)
+    {
+        return Ok(system_media_control_from_snapshot(
+            action,
+            true,
+            "already-playing",
+            "",
+            before,
+        ));
+    }
+    if action == "pause"
+        && before
+            .as_ref()
+            .map(|snapshot| snapshot.playback_status == "paused")
+            .unwrap_or(false)
+    {
+        return Ok(system_media_control_from_snapshot(
+            action,
+            true,
+            "already-paused",
+            "",
+            before,
+        ));
+    }
+
+    // Windows exposes one media key for play/pause. Guard above keeps
+    // explicit play/pause actions idempotent when the current state is known.
+    let vk: VIRTUAL_KEY = match action {
+        "play" | "pause" => VK_MEDIA_PLAY_PAUSE,
+        "next" => VK_MEDIA_NEXT_TRACK,
+        "previous" => VK_MEDIA_PREV_TRACK,
+        "stop" => VK_MEDIA_STOP,
+        _ => {
+            return Ok(system_media_control_unavailable(
+                action,
+                "invalid_action",
+                "",
+            ))
+        }
     };
-    let after = read_system_media_session(&session).ok().or(before);
+
+    let executed = unsafe {
+        let inputs = [
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: vk,
+                        wScan: 0,
+                        dwFlags: KEYBD_EVENT_FLAGS(0),
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            },
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: vk,
+                        wScan: 0,
+                        dwFlags: KEYEVENTF_KEYUP,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            },
+        ];
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) as usize == inputs.len()
+    };
+    let after = read_current_system_media_windows().ok().or(before);
+
     Ok(system_media_control_from_snapshot(
         action,
         executed,
         if executed { "executed" } else { "not-executed" },
-        if executed { "" } else { "session_rejected" },
+        if executed { "" } else { "send_input_failed" },
         after,
     ))
-}
-
-#[cfg(windows)]
-fn select_system_media_control_session(
-    manager: &GlobalSystemMediaTransportControlsSessionManager,
-) -> Result<Option<GlobalSystemMediaTransportControlsSession>, String> {
-    let current_session = manager
-        .GetCurrentSession()
-        .map_err(|error| error.to_string())?;
-    if !current_session.as_raw().is_null() {
-        return Ok(Some(current_session));
-    }
-
-    let sessions = manager.GetSessions().map_err(|error| error.to_string())?;
-    let size = sessions.Size().map_err(|error| error.to_string())?;
-    let mut fallback: Option<GlobalSystemMediaTransportControlsSession> = None;
-    for index in 0..size {
-        let session = sessions.GetAt(index).map_err(|error| error.to_string())?;
-        if session.as_raw().is_null() {
-            continue;
-        }
-        let playback = match session.GetPlaybackInfo() {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        let raw_status = match playback.PlaybackStatus() {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        if raw_status.0 == 4 {
-            return Ok(Some(session));
-        }
-        if fallback.is_none() {
-            fallback = Some(session);
-        }
-    }
-    Ok(fallback)
 }
 
 #[cfg(windows)]
@@ -4237,6 +4302,7 @@ fn main() {
             close_window,
             close_pet_app,
             open_settings_window,
+            open_panel_window,
             open_workspace_window,
             open_workshop_window,
             get_window_geometry,

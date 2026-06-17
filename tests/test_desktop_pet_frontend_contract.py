@@ -423,7 +423,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("renderMcpToolDetails", control_center_source)
         self.assertIn("renderMcpDiagnostics", control_center_source)
         self.assertIn("保存并发现工具", control_center_source)
-        self.assertIn("首版只支持 stdio MCP", control_center_source)
+        self.assertIn("不会主动调用，也不直接进入对话上下文", control_center_source)
         self.assertIn("HTTP / Streamable", control_center_source)
         self.assertIn("ANYSEARCH_API_KEY", control_center_source)
         self.assertIn("AnySearch 网页搜索", control_center_source)

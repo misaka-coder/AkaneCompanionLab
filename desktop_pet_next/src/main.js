@@ -356,6 +356,7 @@ let systemMediaLyricsLoading = false;
 let systemMediaLyricsLastAttemptAt = 0;
 const systemMediaLyricsCache = new Map();
 const systemMediaLyricsRequests = new Map();
+const recentTracksHistory = []; // max 5, newest first
 let ttsToken = 0;
 let ttsController = null;
 let ttsObjectUrl = "";
@@ -512,6 +513,7 @@ async function boot() {
   void registerSettingsBridge().catch((error) => {
     setStatus(`设置桥接不可用：${formatError(error)}`);
   });
+  void registerPanelBridge().catch(() => {});
 
   try {
     await loadAndApplyPersistedCharacterState();
@@ -596,7 +598,12 @@ function bindUi() {
     endManualDrag();
     showChatInput();
   });
-  els.hitbox.addEventListener("contextmenu", openContextMenu);
+  els.hitbox.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelLocalClick();
+    void openPanelWindow();
+  });
   els.petImage.addEventListener("load", scheduleNativeHitTestSync);
 
   els.chatForm.addEventListener("submit", (event) => {
@@ -659,7 +666,7 @@ function bindUi() {
   });
   els.toggle.addEventListener("click", (event) => {
     event.stopPropagation();
-    toggleMenuNear(els.toggle);
+    void openPanelWindow();
   });
   els.close.addEventListener("click", () => {
     void closePetWindow();
@@ -669,7 +676,7 @@ function bindUi() {
     showChatInput();
   });
   els.openSettings.addEventListener("click", () => {
-    void openSettingsWindow();
+    void openPanelWindow();
   });
   els.openWorkshop.addEventListener("click", () => {
     void openWorkshopWindow();
@@ -691,9 +698,9 @@ function bindUi() {
   });
 
   window.addEventListener("contextmenu", (event) => {
-    if (event.target.closest("#debug-menu, #chat-form")) return;
+    if (event.target.closest("#chat-form")) return;
     event.preventDefault();
-    openContextMenu(event);
+    void openPanelWindow();
   });
 
   window.addEventListener("pointerdown", (event) => {
@@ -990,6 +997,42 @@ async function registerCharacterActivationBridge() {
   });
   unlistenFns.push(unlisten);
   characterActivationBridgeRegistered = true;
+}
+
+async function registerPanelBridge() {
+  if (!isTauriRuntime) return;
+
+  unlistenFns.push(await listen("panel:ready", () => {
+    schedulePanelStateSync(50);
+    if (recentTracksHistory.length) {
+      void emit("panel:recent-update", recentTracksHistory.slice()).catch(() => {});
+    }
+  }));
+
+  unlistenFns.push(await listen("panel:action", (event) => {
+    const { action, muted, value } = event.payload || {};
+    if (action === "new-session") {
+      void startNewSession();
+    } else if (action === "open-workspace") {
+      void openWorkspaceWindow();
+    } else if (action === "open-workshop") {
+      void openWorkshopWindow();
+    } else if (action === "toggle-mute" && typeof muted === "boolean") {
+      setVoiceEnabled(!muted);
+    } else if (action === "stop-reply") {
+      interruptReply({ announce: true });
+    } else if (action === "quit") {
+      void closePetWindow();
+    } else if (action === "set-scale" && typeof value === "number") {
+      state.scale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, value));
+      applyVisualState();
+      scheduleSave(300);
+    } else if (action === "set-opacity" && typeof value === "number") {
+      state.opacity = Math.min(1, Math.max(0.55, value));
+      applyVisualState();
+      scheduleSave(300);
+    }
+  }));
 }
 
 async function applyPersistedCharacterActivation(packId) {
@@ -2587,6 +2630,51 @@ async function openSettingsWindow() {
   scheduleSettingsSnapshot(120);
 }
 
+async function openPanelWindow() {
+  closeMenu();
+  if (!isTauriRuntime) {
+    setStatus("面板仅 Tauri 可用");
+    return;
+  }
+  await tauriCall("open_panel_window", {});
+  schedulePanelStateSync(80);
+}
+
+function buildPanelStatePayload() {
+  const media = systemMedia || {};
+  const playing = media.playbackStatus === "playing";
+  return {
+    characterName: getActiveCharacterText("name") || CHARACTER_NAME,
+    emotion: state.currentEmotion || getProfileDefaultEmotion(),
+    avatarSrc: els.petImage?.src || "",
+    musicPlaying: playing,
+    musicTitle: media.title || "",
+    musicArtist: media.artist || "",
+    musicPosition: Number(media.positionSeconds) || 0,
+    musicDuration: Number(media.durationSeconds) || 0,
+    musicPositionAt: playing ? Date.now() : 0,
+    muted: !state.voiceEnabled,
+    scale: state.scale,
+    opacity: state.opacity,
+  };
+}
+
+let panelSyncTimer = null;
+
+function schedulePanelStateSync(delayMs = 500) {
+  clearTimeout(panelSyncTimer);
+  panelSyncTimer = setTimeout(pushPanelStateUpdate, delayMs);
+}
+
+async function pushPanelStateUpdate() {
+  if (!isTauriRuntime) return;
+  try {
+    await emit("panel:state-update", buildPanelStatePayload());
+  } catch {
+    // Panel may not be open; silent failure is fine
+  }
+}
+
 async function openWorkspaceWindow() {
   closeMenu();
   if (!isTauriRuntime) {
@@ -3161,6 +3249,14 @@ async function refreshSystemMediaSnapshot() {
   const progressChanged = Math.abs(safePositiveSeconds(systemMedia.positionSeconds) - safePositiveSeconds(previous.positionSeconds)) >= 1.2;
   if (trackChanged) {
     applySystemMediaLyricsForTrack(systemMedia);
+    if (previous.title && previous.trackKey) {
+      const entry = `${previous.title}${previous.artist ? " · " + previous.artist : ""}`;
+      const idx = recentTracksHistory.indexOf(entry);
+      if (idx !== -1) recentTracksHistory.splice(idx, 1);
+      recentTracksHistory.unshift(entry);
+      if (recentTracksHistory.length > 5) recentTracksHistory.length = 5;
+      void emit("panel:recent-update", recentTracksHistory.slice()).catch(() => {});
+    }
   }
   if (isFreshSystemMedia(systemMedia)) {
     void ensureSystemMediaLyrics(systemMedia);
@@ -3177,6 +3273,7 @@ async function refreshSystemMediaSnapshot() {
     (systemMedia.ok && progressChanged)
   ) {
     scheduleMusicSnapshot(120);
+    schedulePanelStateSync(200);
   }
 }
 

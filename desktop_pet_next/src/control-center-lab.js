@@ -1985,7 +1985,7 @@ function renderModelPage() {
         </div>
         <div class="model-status-source">
           <span>配置来源</span>
-          <strong>${escapeHtml(modelPage.source === "local_file" ? "控制中心" : ".env / 默认值")}</strong>
+          <strong>${escapeHtml(modelPage.source === "local_file" ? "控制中心" : "系统默认")}</strong>
         </div>
       </article>
 
@@ -2354,11 +2354,11 @@ function renderTtsCard() {
           <h2>${icon("volume")} ${escapeHtml(voicePage.tts.title)}</h2>
           <p>${escapeHtml(voicePage.tts.subtitle)}</p>
         </div>
-        <button type="button" data-voice-toggle="ttsEnabled" aria-pressed="${ttsEnabled}">${icon("checkCircle")} ${ttsEnabled ? "已启用" : "已关闭"}</button>
+        <button type="button" data-voice-toggle="ttsEnabled" aria-pressed="${ttsEnabled}">${ttsEnabled ? "朗读开启" : "朗读关闭"}</button>
       </div>
       ${renderVoiceProviderStatus(voicePage.tts.providerStatus, "朗读通道")}
       <div class="voice-form-grid">
-        <label><span>${icon("user")} 选择音色</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSelectTtsVoice}" data-payload-field="ttsVoice" data-payload-value="${escapeAttr(voicePage.tts.voice)}">${icon("equalizer")} ${escapeHtml(voicePage.tts.voice)} ${icon("chevronDown")}</button></label>
+        <label><span>${icon("user")} 选择音色</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSelectTtsVoice}" data-payload-field="ttsVoice" data-payload-value="${escapeAttr(voicePage.tts.voice)}" data-action-unavailable="true" aria-disabled="true" title="音色选择将在后续版本开放">${icon("equalizer")} ${escapeHtml(voicePage.tts.voice)} ${icon("chevronDown")}</button></label>
         <label>
           <span>${icon("volume")} 输出音量</span>
           <div class="voice-stepper">
@@ -2383,12 +2383,12 @@ function renderAsrCard() {
           <h2>${icon("mic")} ${escapeHtml(voicePage.asr.title)}</h2>
           <p>${escapeHtml(voicePage.asr.subtitle)}</p>
         </div>
-        <button type="button" data-voice-toggle="asrEnabled" aria-pressed="${asrEnabled}">${icon("checkCircle")} ${asrEnabled ? "已启用" : "已关闭"}</button>
+        <button type="button" data-voice-toggle="asrEnabled" aria-pressed="${asrEnabled}">${asrEnabled ? "识别开启" : "识别关闭"}</button>
       </div>
       ${renderVoiceProviderStatus(voicePage.asr.providerStatus, "识别通道")}
       <div class="voice-form-grid">
-        <label><span>${icon("mic")} 麦克风设备</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSelectAsrDevice}" data-payload-field="asrDevice" data-payload-value="${escapeAttr(voicePage.asr.device)}">${escapeHtml(voicePage.asr.device)} ${icon("chevronDown")}</button></label>
-        <label><span>${icon("settings")} 识别语言</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSetAsrLanguage}" data-payload-field="asrLanguage" data-payload-value="${escapeAttr(voicePage.asr.language)}">${escapeHtml(voicePage.asr.language)} ${icon("chevronDown")}</button></label>
+        <label><span>${icon("mic")} 麦克风设备</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSelectAsrDevice}" data-payload-field="asrDevice" data-payload-value="${escapeAttr(voicePage.asr.device)}" data-action-unavailable="true" aria-disabled="true" title="设备选择将在后续版本开放">${escapeHtml(voicePage.asr.device)} ${icon("chevronDown")}</button></label>
+        <label><span>${icon("settings")} 识别语言</span><button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.voiceSetAsrLanguage}" data-payload-field="asrLanguage" data-payload-value="${escapeAttr(voicePage.asr.language)}" data-action-unavailable="true" aria-disabled="true" title="语言切换将在后续版本开放">${escapeHtml(voicePage.asr.language)} ${icon("chevronDown")}</button></label>
         <label><span>${icon("equalizer")} 输入灵敏度</span>${renderRangeBar(voicePage.asr.sensitivity)}<strong>${voicePage.asr.sensitivity}%</strong></label>
         <label><span>实时输入</span><em class="voice-live-wave">${Array.from({ length: 24 }, (_, index) => `<i style="--bar: ${((index * 7) % 24) + 8}px"></i>`).join("")}</em></label>
       </div>
@@ -2489,7 +2489,7 @@ function renderVoiceDiagnosticsCard() {
   return `
     <article class="glass-card voice-diagnostics-card">
       <div class="card-heading">
-        <h2>${icon("shield")} ASR / TTS 状态诊断</h2>
+        <h2>${icon("shield")} 语音服务状态</h2>
         <span>${icon("checkCircle")} 一切正常</span>
       </div>
       <p>实时检测语音服务状态</p>
@@ -2612,7 +2612,7 @@ function renderMusicPage() {
         <article class="glass-card recommend-panel">
           <div class="card-heading">
             <h2>${icon("sparkle")} Akane 推荐</h2>
-            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicRefreshRecommendations}" data-payload-source="recommendations">${icon("refresh")} 换一批</button>
+            <button type="button" data-action-id="${CONTROL_CENTER_ACTIONS.musicRefreshRecommendations}" data-payload-source="recommendations" data-action-unavailable="true" aria-disabled="true" title="推荐功能将在后续版本开放">${icon("refresh")} 换一批</button>
           </div>
           ${renderRecommendBody(musicPage)}
         </article>
@@ -3404,7 +3404,7 @@ function renderMcpPanel() {
         <h2>${icon("sparkle")} 外部 MCP 工具</h2>
         <div class="mcp-heading-actions">
           <button type="button" data-mcp-preset="anysearch">${icon("search")} AnySearch 预设</button>
-          <button type="button" data-mcp-template="custom-stdio">${icon("plusCircle")} 添加自定义 stdio</button>
+          <button type="button" data-mcp-template="custom-stdio">${icon("plusCircle")} 添加本地工具</button>
           <span>${readyCount}/${servers.length} 就绪 · ${toolCount} 个工具</span>
         </div>
       </div>
@@ -3413,7 +3413,7 @@ function renderMcpPanel() {
       <div class="mcp-server-list">
         ${servers.map(renderMcpServerRow).join("")}
       </div>
-      <p class="mcp-panel-note">${icon("shield")} 当前首版只支持 stdio MCP；保存并发现只执行 initialize + tools/list，不会调用工具，也不会把工具直接暴露给提示词。</p>
+      <p class="mcp-panel-note">${icon("shield")} 保存后自动发现工具列表，不会主动调用，也不直接进入对话上下文。</p>
     </article>
   `;
 }

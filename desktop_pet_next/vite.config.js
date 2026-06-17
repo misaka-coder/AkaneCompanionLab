@@ -14,6 +14,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, "index.html"),
+        panel: resolve(__dirname, "panel.html"),
         controlCenterLab: resolve(__dirname, "control-center-lab.html"),
         settingsCompatibilityRedirect: resolve(__dirname, "settings.html"),
         workshop: resolve(__dirname, "workshop.html"),
