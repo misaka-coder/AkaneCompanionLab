@@ -1,0 +1,4 @@
+schema: capability_adapter/v1
+provider:
+  type: comfyui
+capabilities: []

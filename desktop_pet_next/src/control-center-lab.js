@@ -102,6 +102,19 @@ let providerTestAudio = {
   mediaType: "",
   audioBytes: 0
 };
+let musicProgressFrame = 0;
+let musicProgressAnchor = null;
+const CO_LISTEN_CONTROL_NAMES = ["pause", "next", "prev", "recommend"];
+let listeningTogetherState = {
+  status: "idle",
+  now: null,
+  recent: [],
+  controls: { pause: true, next: true, prev: true, recommend: true },
+  message: "",
+  lastFetchTrackKey: "",
+  lastFetchAt: 0
+};
+let listeningTogetherRefreshInFlight = null;
 const runtimePatchSignatures = {
   music: "",
   overview: "",
@@ -291,6 +304,285 @@ function applyControlCenterSnapshot(nextSnapshot, options = {}) {
   if (renderPageAfterApply) {
     renderActivePage();
   }
+  refreshListeningTogetherCard().catch(() => {});
+}
+
+function friendlyMusicSourceLabel(sourceValue) {
+  switch (String(sourceValue || "").toLowerCase()) {
+    case "qq_music": return "QQ 音乐";
+    case "netease_music": return "网易云";
+    case "spotify": return "Spotify";
+    case "youtube_music": return "YouTube Music";
+    case "apple_music": return "Apple Music";
+    case "local_akane": return "本地音乐";
+    case "system_media_unknown": return "系统播放器";
+    case "external_unknown": return "其他来源";
+    default: return "";
+  }
+}
+
+function moodPhraseFromEmotion(name) {
+  const n = String(name || "").toLowerCase().trim();
+  const MAP = {
+    "开心": "她好像挺开心的～",
+    "高兴": "她好像挺高兴的～",
+    "兴奋": "她好像很兴奋",
+    "开朗": "她心情看起来不错",
+    "温柔": "她好像很温柔",
+    "平静": "她安静地在听",
+    "默然": "她安静地在听",
+    "思考": "她好像在想什么",
+    "沉思": "她好像在想什么",
+    "好奇": "她好像很好奇",
+    "害羞": "她有点害羞",
+    "难过": "她好像有点难过",
+    "委屈": "她好像有点委屈",
+    "无聊": "她好像有点无聊",
+  };
+  return MAP[n] || "";
+}
+
+async function refreshListeningTogetherCard({ force = false } = {}) {
+  if (listeningTogetherRefreshInFlight) return;
+  const fetchOptions = createControlCenterDataSourceOptions();
+  if (!fetchOptions.fetchImpl || !fetchOptions.baseUrl) return;
+
+  const systemMedia = latestRuntimeSnapshot?.music?.systemMedia;
+  const trackKey = String(systemMedia?.trackKey || "").trim();
+  if (!force && trackKey && trackKey === listeningTogetherState.lastFetchTrackKey) {
+    // Same track was already queried recently; no need to refetch.
+    return;
+  }
+
+  const body = {
+    title: String(systemMedia?.title || "").trim(),
+    artist: String(systemMedia?.artist || "").trim(),
+    album: String(systemMedia?.album || "").trim(),
+    source_kind: systemMedia ? "system_media" : "",
+    source_app: String(systemMedia?.sourceApp || "").trim(),
+    system_media: Boolean(systemMedia),
+    recent_limit: 5
+  };
+
+  const baseUrl = String(fetchOptions.baseUrl).replace(/\/+$/, "");
+  const sessionId = encodeURIComponent(String(fetchOptions.sessionId || "control-center-lab"));
+  const profileUserId = encodeURIComponent(String(fetchOptions.profileUserId || "master"));
+  const url = `${baseUrl}/capabilities/music/co_listen_summary?user_id=${sessionId}&real_user_id=${profileUserId}`;
+
+  listeningTogetherRefreshInFlight = (async () => {
+    try {
+      const response = await fetchOptions.fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      let payload = null;
+      if (response && typeof response.json === "function") {
+        try { payload = await response.json(); } catch { payload = null; }
+      }
+      if (response?.ok && payload?.ok) {
+        const enabledList = Array.isArray(payload.enabled_music_controls) ? payload.enabled_music_controls : null;
+        const controls = enabledList
+          ? {
+              pause: enabledList.includes("pause"),
+              next: enabledList.includes("next"),
+              prev: enabledList.includes("prev"),
+              recommend: enabledList.includes("recommend")
+            }
+          : listeningTogetherState.controls;
+        listeningTogetherState = {
+          status: "ready",
+          now: payload.now || null,
+          recent: Array.isArray(payload.recent) ? payload.recent : [],
+          controls,
+          message: "",
+          lastFetchTrackKey: trackKey,
+          lastFetchAt: Date.now()
+        };
+      } else {
+        listeningTogetherState = {
+          status: "error",
+          now: null,
+          recent: [],
+          message: String(payload?.status || response?.status || "unknown_error"),
+          lastFetchTrackKey: trackKey,
+          lastFetchAt: Date.now()
+        };
+      }
+    } catch (error) {
+      listeningTogetherState = {
+        status: "error",
+        now: null,
+        recent: [],
+        message: typeof formatError === "function" ? formatError(error) : String(error),
+        lastFetchTrackKey: trackKey,
+        lastFetchAt: Date.now()
+      };
+    } finally {
+      listeningTogetherRefreshInFlight = null;
+      if (state.activePage === "overview") {
+        renderActivePage();
+      }
+    }
+  })();
+}
+
+function renderListeningTogetherCard() {
+  const data = listeningTogetherState;
+  const now = data.now;
+  const hasNow = Boolean(now);
+  const hasRecent = Array.isArray(data.recent) && data.recent.length > 0;
+
+  if (!hasNow && !hasRecent) {
+    return "";
+  }
+
+  let nowBlock = "";
+  if (hasNow) {
+    const title = String(now.title || "").trim() || "她还没听清是哪首";
+    const artist = String(now.artist || "").trim();
+    const sourceLabel = friendlyMusicSourceLabel(now.source);
+    const metaParts = [];
+    if (artist) metaParts.push(artist);
+    if (sourceLabel) metaParts.push(sourceLabel);
+    const meta = metaParts.join(" · ");
+    const count = Number(now.co_listen_count || 0);
+    const lastLabel = String(now.last_listened_label || "").trim();
+    let storyText = "";
+    if (now.is_first_listen) {
+      storyText = "这是你们第一次一起听这首。";
+    } else if (count >= 2) {
+      storyText = `已经一起听过 ${count} 次${lastLabel ? `，上次是${lastLabel}` : ""}。`;
+    } else if (count === 1) {
+      storyText = lastLabel ? `这首之前一起听过一次（${lastLabel}）。` : "这首之前一起听过一次。";
+    }
+    const emotionName = String(latestRuntimeSnapshot?.currentExpression?.name || "").trim();
+    const moodLine = moodPhraseFromEmotion(emotionName);
+    nowBlock = `
+      <div class="listening-now">
+        <small>现在听的</small>
+        <strong>${escapeHtml(title)}</strong>
+        ${meta ? `<span>${escapeHtml(meta)}</span>` : ""}
+        ${storyText ? `<p>${escapeHtml(storyText)}</p>` : ""}
+        ${moodLine ? `<p class="mood-line">${escapeHtml(moodLine)}</p>` : ""}
+      </div>
+    `;
+  }
+
+  let recentBlock = "";
+  if (hasRecent) {
+    const rows = data.recent.slice(0, 5).map((item) => {
+      const title = String(item.title || "").trim() || "某首歌";
+      const artist = String(item.artist || "").trim();
+      const lastLabel = String(item.last_listened_label || "").trim();
+      const count = Number(item.co_listen_count || 0);
+      const parts = [];
+      if (artist) parts.push(artist);
+      if (lastLabel) parts.push(`${lastLabel}听过`);
+      if (count >= 2) parts.push(`共 ${count} 次`);
+      const meta = parts.join(" · ");
+      return `
+        <li>
+          <strong>${escapeHtml(title)}</strong>
+          ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
+        </li>
+      `;
+    }).join("");
+    recentBlock = `
+      <div class="listening-recent">
+        <small>最近也一起听过</small>
+        <ul>${rows}</ul>
+      </div>
+    `;
+  }
+
+  const controls = data.controls || { pause: true, next: true, prev: true, recommend: true };
+  const controlDefs = [
+    { id: "pause", label: "让她暂停" },
+    { id: "next", label: "让她切歌" },
+    { id: "prev", label: "让她回上一首" },
+    { id: "recommend", label: "让她推荐新歌" }
+  ];
+  const permissionButtons = controlDefs.map(({ id, label }) => {
+    const enabled = controls[id] !== false;
+    return `<button type="button"
+              data-co-listen-control="${escapeAttr(id)}"
+              data-co-listen-enabled="${enabled ? "true" : "false"}"
+              aria-pressed="${enabled ? "true" : "false"}"
+            >${escapeHtml(label)} · ${enabled ? "开" : "关"}</button>`;
+  }).join("");
+  const permissionsBlock = `
+    <div class="listening-permissions">
+      <small>让她也能</small>
+      <div class="permission-row">${permissionButtons}</div>
+    </div>
+  `;
+
+  return `
+    <article class="glass-card listening-together-card" data-card-id="listening-together">
+      <div class="card-heading">
+        <h2>${icon("music")} 我们的共听</h2>
+      </div>
+      ${nowBlock}
+      ${recentBlock}
+      ${permissionsBlock}
+    </article>
+  `;
+}
+
+async function toggleListeningTogetherControl(controlName, nextEnabled) {
+  const prevControls = { ...(listeningTogetherState.controls || {}) };
+  listeningTogetherState = {
+    ...listeningTogetherState,
+    controls: { ...prevControls, [controlName]: nextEnabled }
+  };
+  renderActivePage();
+
+  const fetchOptions = createControlCenterDataSourceOptions();
+  if (!fetchOptions.fetchImpl || !fetchOptions.baseUrl) return;
+  const baseUrl = String(fetchOptions.baseUrl).replace(/\/+$/, "");
+  const sessionId = encodeURIComponent(String(fetchOptions.sessionId || "control-center-lab"));
+  const profileUserId = encodeURIComponent(String(fetchOptions.profileUserId || "master"));
+  const url = `${baseUrl}/capabilities/music/control_permissions?user_id=${sessionId}&real_user_id=${profileUserId}`;
+
+  try {
+    const response = await fetchOptions.fetchImpl(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ controls: { [controlName]: nextEnabled } })
+    });
+    let payload = null;
+    if (response && typeof response.json === "function") {
+      try { payload = await response.json(); } catch { payload = null; }
+    }
+    if (response?.ok && payload?.ok && payload.controls && typeof payload.controls === "object") {
+      listeningTogetherState = {
+        ...listeningTogetherState,
+        controls: {
+          pause: payload.controls.pause !== false,
+          next: payload.controls.next !== false,
+          prev: payload.controls.prev !== false,
+          recommend: payload.controls.recommend !== false
+        }
+      };
+    } else {
+      listeningTogetherState = {
+        ...listeningTogetherState,
+        controls: prevControls,
+        message: String(payload?.status || response?.status || "toggle_failed")
+      };
+    }
+  } catch (error) {
+    listeningTogetherState = {
+      ...listeningTogetherState,
+      controls: prevControls,
+      message: typeof formatError === "function" ? formatError(error) : String(error)
+    };
+  } finally {
+    if (state.activePage === "overview") {
+      renderActivePage();
+    }
+  }
 }
 
 function syncInteractiveStateWithSnapshot() {
@@ -457,6 +749,14 @@ function bindEvents() {
         { value: percent / 100, percent, source: "music" },
         { source: "control-center-lab" }
       );
+      return;
+    }
+
+    const coListenControlBtn = event.target.closest("[data-co-listen-control]");
+    if (coListenControlBtn) {
+      const controlName = coListenControlBtn.dataset.coListenControl;
+      const currentEnabled = coListenControlBtn.dataset.coListenEnabled !== "false";
+      void toggleListeningTogetherControl(controlName, !currentEnabled);
       return;
     }
 
@@ -1308,6 +1608,7 @@ function renderActivePage() {
     }
   });
   renderedPageId = state.activePage;
+  syncMusicProgressAnimation();
 }
 
 function applyLocalActionOptimisticUpdate(actionId, payload) {
@@ -1460,6 +1761,8 @@ function renderOverviewPage() {
         ${renderOverviewVoiceCard()}
         ${renderOverviewMusicCard()}
       </div>
+
+      ${renderListeningTogetherCard()}
 
       <div class="overview-feature-grid">
         <article class="glass-card overview-sense-card">
@@ -2236,10 +2539,10 @@ function renderMusicPage() {
               <h3>${escapeHtml(musicPage.nowPlaying.title)} <span>♥</span></h3>
               <p>${escapeHtml(musicPage.nowPlaying.artist)} <b>${icon("sparkle")} ${escapeHtml(musicPage.nowPlaying.quality)}</b></p>
               <div class="time-row">
-                <span>${escapeHtml(musicPage.nowPlaying.elapsed)}</span>
+                <span data-music-elapsed>${escapeHtml(musicPage.nowPlaying.elapsed)}</span>
                 <span>${escapeHtml(musicPage.nowPlaying.duration)}</span>
               </div>
-              <div class="pink-progress" data-music-progress-track data-duration-seconds="${durationSeconds}" role="slider" aria-label="播放进度" aria-valuemin="0" aria-valuemax="${durationSeconds}" aria-valuenow="${progressSeconds}"><span style="width: ${progressPercent}%"></span></div>
+              <div class="pink-progress" data-music-progress-track data-duration-seconds="${durationSeconds}" role="slider" aria-label="播放进度" aria-valuemin="0" aria-valuemax="${durationSeconds}" aria-valuenow="${progressSeconds}"><span data-music-progress-fill style="width: ${progressPercent}%"></span></div>
               <div class="volume-row">
                 ${icon("volume")}
                 <div class="volume-track" data-music-volume-track role="slider" aria-label="播放音量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${volumePercent}"><span style="width: ${volumePercent}%"></span></div>
@@ -4287,6 +4590,52 @@ function getMusicDurationSeconds(nowPlaying = {}) {
   return parseClockSeconds(nowPlaying.duration);
 }
 
+function syncMusicProgressAnimation() {
+  if (musicProgressFrame) {
+    cancelAnimationFrame(musicProgressFrame);
+    musicProgressFrame = 0;
+  }
+  musicProgressAnchor = null;
+  if (state.activePage !== "music") return;
+  const nowPlaying = musicPage?.nowPlaying || {};
+  const playback = getMusicPlaybackState(nowPlaying);
+  const durationSeconds = getMusicDurationSeconds(nowPlaying);
+  const progressSeconds = getMusicProgressSeconds(nowPlaying);
+  if (!playback.playing || durationSeconds <= 0 || progressSeconds >= durationSeconds) return;
+  musicProgressAnchor = {
+    startedAtMs: performance.now(),
+    progressSeconds,
+    durationSeconds
+  };
+  musicProgressFrame = requestAnimationFrame(updateMusicProgressAnimation);
+}
+
+function updateMusicProgressAnimation(nowMs) {
+  if (!musicProgressAnchor || state.activePage !== "music") {
+    musicProgressFrame = 0;
+    return;
+  }
+  const elapsedSinceAnchor = Math.max(0, (Number(nowMs) - musicProgressAnchor.startedAtMs) / 1000);
+  const seconds = Math.min(
+    musicProgressAnchor.durationSeconds,
+    musicProgressAnchor.progressSeconds + elapsedSinceAnchor
+  );
+  const percent = musicProgressAnchor.durationSeconds > 0
+    ? Math.min(100, (seconds / musicProgressAnchor.durationSeconds) * 100)
+    : 0;
+  const track = root.querySelector("[data-music-progress-track]");
+  const fill = root.querySelector("[data-music-progress-fill]");
+  const elapsed = root.querySelector("[data-music-elapsed]");
+  if (track) track.setAttribute("aria-valuenow", String(Math.round(seconds)));
+  if (fill) fill.style.width = `${percent}%`;
+  if (elapsed) elapsed.textContent = formatClockSeconds(seconds);
+  if (seconds >= musicProgressAnchor.durationSeconds) {
+    musicProgressFrame = 0;
+    return;
+  }
+  musicProgressFrame = requestAnimationFrame(updateMusicProgressAnimation);
+}
+
 function parseClockSeconds(label) {
   const parts = String(label || "").trim().split(":").map((part) => Number.parseInt(part, 10));
   if (parts.length < 2 || parts.some((part) => !Number.isFinite(part))) return 0;
@@ -4444,6 +4793,7 @@ async function bindSettingsSnapshotListener() {
     await listen(SETTINGS_SNAPSHOT_EVENT, (event) => {
       latestRuntimeSnapshot = event.payload || null;
       applySettingsSnapshotPatch(latestRuntimeSnapshot);
+      refreshListeningTogetherCard().catch(() => {});
     });
     await emit(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot" });
   } catch {

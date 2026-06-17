@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import asyncio
 import json
 import re
 import time
@@ -70,9 +71,6 @@ class ComfyUiWorkflowRunner:
         self.max_poll_seconds = max(self.poll_interval_seconds, float(max_poll_seconds or 60.0))
 
     def execute_workflow(self, request: WorkflowExecutionRequest) -> WorkflowExecutionResult:
-        if request.workflow_id != "workflow.workshop.portrait.cutout":
-            return WorkflowExecutionResult(ok=False, status="failed", reason="unsupported_workflow")
-
         runtime_config = self._load_runtime_config(request)
         if not runtime_config.get("ok"):
             return WorkflowExecutionResult(
@@ -88,46 +86,56 @@ class ComfyUiWorkflowRunner:
             return WorkflowExecutionResult(ok=False, status="failed", reason="input_image_bytes_required")
 
         try:
-            workflow_json = self._read_workflow_json(runtime_config["workflowPath"])
-            client = self.client_factory(runtime_config["endpoint"])
-            uploaded_image = client.upload_image(
-                input_asset.data,
-                filename=_comfyui_upload_filename(request, input_asset),
-                subfolder="akane",
-                image_type="input",
-                overwrite=True,
-                content_type=input_asset.content_type,
+            from ..capability_adapters.comfyui import ComfyUiCapabilityAdapter, ComfyUiWorkflowCapability
+
+            adapter = ComfyUiCapabilityAdapter(
+                provider_id="provider.comfyui.local",
+                endpoint=runtime_config["endpoint"],
+                capabilities=(
+                    ComfyUiWorkflowCapability(
+                        capability_id=request.capability_id,
+                        display_name=request.workflow_id,
+                        workflow_path=runtime_config["workflowPath"],
+                        slot_mapping=runtime_config["slotMapping"],
+                    ),
+                ),
+                client_factory=self.client_factory,
+                sleep=self.sleep,
+                poll_interval_seconds=self.poll_interval_seconds,
+                max_poll_seconds=self.max_poll_seconds,
             )
-            patched_workflow = apply_comfyui_input_slots(
-                workflow_json,
-                runtime_config["slotMapping"],
+            result = _run_adapter_invoke(
+                adapter,
+                request.capability_id,
                 {
-                    "input_image_handle": uploaded_image.filename,
-                    "output_image_handle": output_handle,
+                    "image": input_asset.data,
+                    "output_handle": output_handle,
+                    "content_type": input_asset.content_type,
+                    "upload_filename": _comfyui_upload_filename(request, input_asset),
+                    "client_id": _comfyui_client_id(request),
                 },
             )
-            prompt_id = client.queue_prompt(patched_workflow, client_id=_comfyui_client_id(request))
-            output_ref = self._wait_for_first_output_image(client, prompt_id)
-            image = client.get_image(output_ref)
         except ComfyUiSlotMappingError:
             return WorkflowExecutionResult(ok=False, status="failed", reason="workflow_slot_mapping_invalid")
         except ComfyUiClientError:
             return WorkflowExecutionResult(ok=False, status="failed", reason="comfyui_request_failed")
+        except RuntimeError as exc:
+            return WorkflowExecutionResult(ok=False, status="failed", reason=str(exc) or "workflow_runner_failed")
         except ValueError:
             return WorkflowExecutionResult(ok=False, status="failed", reason="workflow_runtime_config_invalid")
         except Exception:
             return WorkflowExecutionResult(ok=False, status="failed", reason="workflow_runner_failed")
 
-        output_asset = WorkflowExecutionAsset(
-            handle=output_handle,
-            data=image.data,
-            content_type=image.content_type,
-        )
+        content = result.content if isinstance(result.content, Mapping) else {}
+        raw_assets = content.get("outputAssets") if isinstance(content.get("outputAssets"), list) else []
+        output_asset = next((asset for asset in raw_assets if isinstance(asset, WorkflowExecutionAsset)), None)
+        if output_asset is None:
+            return WorkflowExecutionResult(ok=False, status="failed", reason="workflow_runner_invalid_result")
         return WorkflowExecutionResult(
             ok=True,
             status="completed",
             reason="workflow_completed",
-            outputs=({"handle": output_handle, "kind": "image", "contentType": image.content_type},),
+            outputs=({"handle": output_handle, "kind": "image", "contentType": output_asset.content_type},),
             output_assets=(output_asset,),
         )
 
@@ -370,6 +378,10 @@ def _json_response(response: Any, action: str) -> Mapping[str, Any]:
     if not isinstance(payload, Mapping):
         raise ComfyUiClientError(f"{action}_invalid_json")
     return payload
+
+
+def _run_adapter_invoke(adapter: Any, capability_id: str, args: Mapping[str, Any]) -> Any:
+    return asyncio.run(adapter.invoke(capability_id, args, ctx=None))
 
 
 def _raise_for_status(response: Any, action: str) -> None:

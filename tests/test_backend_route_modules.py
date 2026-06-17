@@ -1464,6 +1464,8 @@ class BackendRouteModuleTests(unittest.TestCase):
                     {
                         "name": "read_page",
                         "description": "Read the current browser page without controlling it.",
+                        "risk": "low",
+                        "confirm": "never",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -1510,6 +1512,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "args": ["--profile", "akane"],
                     "cwd": r"C:\Users\ExampleUser\mcp",
                     "env": {"MCP_MODE": "local"},
+                    "lowRiskAllowlist": ["read_page"],
                 },
             )
             self.assertEqual(saved.status_code, 200)
@@ -1571,6 +1574,8 @@ class BackendRouteModuleTests(unittest.TestCase):
                     {
                         "name": "search",
                         "description": "Execute a public web search.",
+                        "risk": "low",
+                        "confirm": "never",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -1619,6 +1624,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                         "--header",
                         "Authorization: Bearer ${ANYSEARCH_API_KEY}",
                     ],
+                    "lowRiskAllowlist": ["search"],
                 },
             )
             self.assertEqual(saved.status_code, 200)

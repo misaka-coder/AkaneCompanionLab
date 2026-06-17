@@ -1,0 +1,8 @@
+schema: capability_adapter/v1
+provider:
+  id: remote_comfyui
+  type: comfyui
+  endpoint:
+    url: http://example.com:8188
+    loopback_only: true
+capabilities: []

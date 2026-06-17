@@ -9,11 +9,13 @@ from pathlib import Path
 from typing import Any, Generator
 
 import config
+from akane_paths import get_akane_data_paths
 
 from .artifact_system import ArtifactContainerService
 from .attachment_inbox import AttachmentInboxService
 from .attachment_ingest import AttachmentIngestService
 from .background_tasks import BackgroundTaskRunner
+from .capability_adapters import CapabilityAdapterRegistry, McpStdioCapabilityAdapter
 from .capability_registry import CapabilityRegistry, CapabilitySelection, CapabilitySnapshot, is_document_attachment, is_document_generated_file, is_media_attachment, is_media_generated_file
 from . import desktop_pet_engine
 from .embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
@@ -38,6 +40,7 @@ from .persona_system import PersonaCardService
 from .prompt_builder import PromptBuilder
 from .prompt_profiles import PromptModule, PromptProfileRegistry
 from . import final_output_engine
+from .local_capability_config import load_capability_config
 from . import reminder_engine
 from .retrieval_service import RetrievalService
 from .retrieval_types import RetrievalPipelineResult
@@ -49,7 +52,7 @@ from . import task_workspace_engine
 from .task_worker import TaskWorkerService
 from .task_worker_tool import DelegateTaskToolHandler
 from . import tool_orchestration_engine
-from .tool_runtime import ApplyStyleToExistingFileToolHandler, BaseToolHandler, BrowserPageToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, FocusWorkspaceToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ListWorkspaceToolHandler, LoadCharacterContextToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, OpenBrowserToolHandler, OpenMusicSearchToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, ReadMemoryTimelineToolHandler, ReadWorkspaceToolHandler, RegisterWorkspaceItemsToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler, WebSearchToolHandler
+from .tool_runtime import AdapterCapabilityToolHandler, ApplyStyleToExistingFileToolHandler, BaseToolHandler, BrowserPageToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, FocusWorkspaceToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ListWorkspaceToolHandler, LoadCharacterContextToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, OpenBrowserToolHandler, OpenMusicSearchToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, ReadMemoryTimelineToolHandler, ReadWorkspaceToolHandler, RegisterWorkspaceItemsToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler, WebSearchToolHandler
 from . import visual_context_engine
 from .vision_service import VisionObservationService
 from .store import MemoryStore
@@ -259,7 +262,18 @@ class AkaneMemoryEngine:
             "error": "",
             "collection_name": str(self.vector_store.collection_name),
         }
+        self.capability_adapter_registry = CapabilityAdapterRegistry(
+            builtin_dir=Path(__file__).parent / "builtin_capability_manifests",
+            profile_dir_provider=self._resolve_profile_capability_manifests_dir,
+        )
+        self.capability_adapter_registry.scan()
         self._maybe_start_embedding_reindex()
+
+    def _resolve_profile_capability_manifests_dir(self) -> Path:
+        profile_user_id = str(getattr(self, "profile_user_id", "") or "").strip()
+        if not profile_user_id:
+            return get_akane_data_paths().users_data / ".no_active_profile" / "capability_manifests"
+        return get_akane_data_paths().users_data / profile_user_id / "capability_manifests"
 
     def reset(self) -> None:
         self._get_compaction_service().reset()
@@ -882,6 +896,38 @@ class AkaneMemoryEngine:
         )
         self.desktop_music_timeline_service = service
         return service
+
+    def _get_music_context_assembler(self):
+        assembler = getattr(self, "music_context_assembler", None)
+        if assembler is not None:
+            return assembler
+        store = getattr(self, "store", None)
+        if store is None:
+            return None
+        from .music_context import MusicContextAssembler, MusicControl
+        from . import music_control_store
+
+        def _controls_provider(profile_user_id: str) -> frozenset:
+            _default = frozenset({
+                MusicControl.PAUSE, MusicControl.NEXT,
+                MusicControl.PREV, MusicControl.RECOMMEND,
+            })
+            if not profile_user_id:
+                return _default
+            try:
+                with store._connect() as conn:
+                    music_control_store.ensure_schema(conn)
+                    names = music_control_store.get_enabled_controls(
+                        conn, profile_user_id=profile_user_id
+                    )
+            except Exception:
+                return _default
+            valid = {c.value for c in MusicControl}
+            return frozenset(MusicControl(n) for n in names if n in valid)
+
+        assembler = MusicContextAssembler(store=store, controls_provider=_controls_provider)
+        self.music_context_assembler = assembler
+        return assembler
 
     def _get_retrieval_service(self) -> RetrievalService:
         retrieval_service = getattr(self, "retrieval_service", None)
@@ -3328,8 +3374,12 @@ class AkaneMemoryEngine:
         session_id: str = "",
     ) -> dict[str, BaseToolHandler]:
         handlers = getattr(self, "tool_handlers", {}) or {}
+        dynamic_handlers = self._build_mcp_adapter_tool_handlers(
+            profile_user_id=profile_user_id,
+            client_context=client_context,
+        )
         if client_context is None:
-            return dict(handlers)
+            return {**dict(handlers), **dynamic_handlers}
 
         selected_names = list(
             self._resolve_capability_selection(
@@ -3339,9 +3389,9 @@ class AkaneMemoryEngine:
             ).tool_names
         )
         return {
-            tool_name: handlers[tool_name]
+            tool_name: ({**handlers, **dynamic_handlers})[tool_name]
             for tool_name in selected_names
-            if tool_name in handlers
+            if tool_name in {**handlers, **dynamic_handlers}
         }
 
     def _resolve_capability_selection(
@@ -3370,7 +3420,71 @@ class AkaneMemoryEngine:
             session_id=session_id,
         )
         registry = getattr(self, "capability_registry", None) or CapabilityRegistry()
-        return registry.select(snapshot)
+        selection = registry.select(snapshot)
+        dynamic_handlers = self._build_mcp_adapter_tool_handlers(
+            profile_user_id=profile_user_id,
+            client_context=client_context,
+        )
+        if not dynamic_handlers:
+            return selection
+        dynamic_tool_names = tuple(name for name in dynamic_handlers.keys() if name not in selection.tool_names)
+        if not dynamic_tool_names:
+            return selection
+        return CapabilitySelection(
+            light_hints=(
+                *selection.light_hints,
+                "当前 profile 有已显式暴露给 prompt 的本地 MCP 工具；调用失败时不要假装完成，涉及高风险动作会先请求确认。",
+            ),
+            tool_names=(*selection.tool_names, *dynamic_tool_names),
+            module_names=(*selection.module_names, "mcp_adapter_tools"),
+            layer_names=(*selection.layer_names, "mcp"),
+        )
+
+    def _build_mcp_adapter_tool_handlers(
+        self,
+        *,
+        profile_user_id: str = "",
+        client_context: ClientProtocolContext | None = None,
+    ) -> dict[str, BaseToolHandler]:
+        if not str(profile_user_id or "").strip():
+            return {}
+        try:
+            config_payload = load_capability_config(
+                base_dir=Path(getattr(config, "DATA_DIR", "users_data") or "users_data"),
+                profile_user_id=profile_user_id,
+            )
+        except Exception:
+            return {}
+        servers = config_payload.get("mcpServers") if isinstance(config_payload.get("mcpServers"), dict) else {}
+        handlers: dict[str, BaseToolHandler] = {}
+        for server_id, server_config in sorted(servers.items(), key=lambda item: str(item[0])):
+            if not isinstance(server_config, dict) or not bool(server_config.get("enabled")):
+                continue
+            if not str(server_config.get("command") or "").strip():
+                continue
+            tools = [tool for tool in server_config.get("tools") or [] if isinstance(tool, dict)]
+            prompt_tools = [
+                tool
+                for tool in tools
+                if bool(tool.get("promptExposed") or tool.get("prompt_exposed"))
+            ]
+            if not prompt_tools:
+                continue
+            adapter = McpStdioCapabilityAdapter(
+                provider_id=f"provider.mcp.{server_id}",
+                server_id=str(server_id),
+                server_config={**server_config, "serverId": str(server_id)},
+                tool_configs=tuple(prompt_tools),
+            )
+            for tool in prompt_tools:
+                descriptor = adapter._descriptor_for_tool(tool)
+                if descriptor.id and descriptor.prompt_exposed:
+                    handlers[descriptor.id] = AdapterCapabilityToolHandler(
+                        capability_id=descriptor.id,
+                        adapter=adapter,
+                        descriptor=descriptor,
+                    )
+        return handlers
 
     def _legacy_mode_tool_names(self, client_context: ClientProtocolContext) -> list[str]:
         registry = getattr(self, "capability_registry", None) or CapabilityRegistry()

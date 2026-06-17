@@ -147,6 +147,11 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('class="glass-card lyric-panel"', control_center_source)
         self.assertIn('class="glass-card queue-panel"', control_center_source)
         self.assertIn("musicPage.playlist.map", control_center_source)
+        self.assertIn("function syncMusicProgressAnimation()", control_center_source)
+        self.assertIn("function updateMusicProgressAnimation(nowMs)", control_center_source)
+        self.assertIn("data-music-elapsed", control_center_source)
+        self.assertIn("data-music-progress-fill", control_center_source)
+        self.assertIn("requestAnimationFrame(updateMusicProgressAnimation)", control_center_source)
         self.assertIn('id="workspace-music"', workspace_html)
         self.assertIn("renderMusicPanel", workspace_source)
         self.assertIn("buildMusicLyricText", workspace_source)
@@ -203,7 +208,10 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('if (!rendered && bubbleKind === "thinking")', main_source)
         self.assertIn("queueStreamedTtsSegment(text, turnToken, event?.index)", main_source)
         self.assertIn("queueLiveReplyPayloadItems(segments, { speaking })", main_source)
-        self.assertIn("queueTtsItems([normalized], `stream:${turnToken}:${segmentKey}`, { append: true })", main_source)
+        self.assertIn(
+            "queueTtsItems([normalized], `stream:${turnToken}:${segmentKey}`, { append: true, preserveSegments: true })",
+            main_source,
+        )
         self.assertIn("queueLiveTtsPayloadItems(segments, signature)", main_source)
         self.assertIn("const TTS_PREWARM_TEXT = \"嗯。\"", main_source)
         self.assertIn("function scheduleTtsPrewarm({ force = false, delayMs = TTS_PREWARM_DELAY_MS } = {})", main_source)
@@ -225,7 +233,13 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("const TTS_CHUNK_SOFT_LIMIT = 24", main_source)
         self.assertIn("function splitTtsTextForLatency(text)", main_source)
         self.assertIn("hardWrapText(cleanPhrase, TTS_CHUNK_SOFT_LIMIT)", main_source)
-        self.assertIn("function queueTtsItems(items, signature = \"\", { append = false } = {})", main_source)
+        self.assertIn(
+            "function queueTtsItems(items, signature = \"\", { append = false, preserveSegments = false } = {})",
+            main_source,
+        )
+        self.assertIn("function buildTtsQueueItems(items, { preserveSegments = false } = {})", main_source)
+        self.assertIn("if (preserveSegments) return source;", main_source)
+        self.assertIn("queueTtsItems(normalized, signature, { preserveSegments: true })", main_source)
         self.assertIn("ttsQueue.push(...nextItems)", main_source)
         self.assertIn('setRuntimeStatus("语音生成中..."', main_source)
         self.assertIn('logTtsTiming("prepared"', main_source)
@@ -881,6 +895,59 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("GlobalSystemMediaTransportControlsSessionManager::RequestAsync", tauri_source)
         self.assertIn("get_current_system_media", tauri_source)
         self.assertIn('"Media_Control"', cargo_toml)
+
+
+class PetReachGestureT5ContractTests(unittest.TestCase):
+    """T5: Verify "伸手" gesture wiring in main.js and styles.css."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        base = Path(__file__).parent.parent / "desktop_pet_next" / "src"
+        cls.main_src = (base / "main.js").read_text(encoding="utf-8")
+        cls.styles_src = (base / "styles.css").read_text(encoding="utf-8")
+
+    def test_trigger_pet_reach_gesture_function_exists(self) -> None:
+        self.assertIn("function triggerPetReachGesture()", self.main_src)
+
+    def test_control_system_media_awaits_reach_gesture_before_tauri_call(self) -> None:
+        self.assertIn("await triggerPetReachGesture()", self.main_src)
+        reach_pos = self.main_src.index("await triggerPetReachGesture()")
+        tauri_pos = self.main_src.index(
+            'tauriCall("control_system_media"', reach_pos
+        )
+        self.assertLess(reach_pos, tauri_pos)
+
+    def test_is_reaching_class_in_styles(self) -> None:
+        self.assertIn("is-reaching", self.styles_src)
+
+    def test_pet_reach_keyframe_in_styles(self) -> None:
+        self.assertIn("pet-reach", self.styles_src)
+
+    def test_smtc_action_case_in_handle_settings_command(self) -> None:
+        self.assertIn('"smtcAction"', self.main_src)
+
+    def test_notifyMusicUnavailable_before_reach_gesture(self) -> None:
+        unavailable_pos = self.main_src.index("notifyMusicActivityUnavailable")
+        reach_pos = self.main_src.index("await triggerPetReachGesture()")
+        self.assertLess(unavailable_pos, reach_pos)
+
+
+class ListeningTogetherT6FrontendContractTests(unittest.TestCase):
+    """T6A: Verify mood phrase display wiring in control-center-lab.js."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        base = Path(__file__).parent.parent / "desktop_pet_next" / "src"
+        cls.cc_src = (base / "control-center-lab.js").read_text(encoding="utf-8")
+
+    def test_mood_phrase_from_emotion_function_exists(self) -> None:
+        self.assertIn("function moodPhraseFromEmotion(", self.cc_src)
+
+    def test_mood_line_class_in_render_template(self) -> None:
+        self.assertIn('class="mood-line"', self.cc_src)
+
+    def test_current_expression_referenced_in_render(self) -> None:
+        self.assertIn("currentExpression", self.cc_src)
 
 
 if __name__ == "__main__":

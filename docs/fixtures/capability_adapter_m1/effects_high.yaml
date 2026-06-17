@@ -1,0 +1,11 @@
+schema: capability_adapter/v1
+provider:
+  id: local_shell
+  type: python_plugin
+capabilities:
+  - id: run_task
+    display_name: Run Task
+    visible_in: [desktop]
+    risk: low
+    confirm: never
+    effects: [command_exec]

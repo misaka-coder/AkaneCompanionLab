@@ -54,6 +54,7 @@ PRIVATE_VOICE_PROFILE_FIELDS = {
     "mediaType",
     "refAudioPath",
     "promptText",
+    "emotionVoiceMap",
     "streamingMode",
     "parallelInfer",
     "splitBucket",
@@ -72,6 +73,7 @@ PRIVATE_MCP_SERVER_FIELDS = {
     "cwd",
     "env",
     "tools",
+    "lowRiskAllowlist",
     "lastDiscovery",
     "updatedAt",
 }
@@ -96,6 +98,7 @@ MCP_TOOL_NAME_MAX_LENGTH = 80
 MCP_TOOL_DESCRIPTION_MAX_LENGTH = 240
 MCP_TOOL_MAX_COUNT = 64
 MCP_SCHEMA_PROPERTY_MAX_COUNT = 24
+MCP_TOOL_CONFIRM_POLICIES = {"never", "first_time", "always"}
 MCP_ENV_PLACEHOLDER_RE = re.compile(r"\$\{[A-Z_][A-Z0-9_]{0,79}\}")
 MCP_SECRET_MARKERS = ("api_key", "password", "secret", "token")
 WORKFLOW_SLOT_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
@@ -260,6 +263,14 @@ CONFIGURABLE_PROVIDER_SPECS: tuple[ProviderConfigSpec, ...] = (
         type="tts_provider",
         adapter="gpt_sovits",
         default_endpoint="http://127.0.0.1:9880",
+        used_by=("voice", "desktop_pet"),
+    ),
+    ProviderConfigSpec(
+        id="provider.asr.openai_compat.local",
+        name="本地 OpenAI 兼容 ASR",
+        type="asr_provider",
+        adapter="openai_compat_asr",
+        default_endpoint="http://127.0.0.1:8000",
         used_by=("voice", "desktop_pet"),
     ),
 )
@@ -615,6 +626,9 @@ def save_voice_profile_config(
         normalized["refAudioPath"] = str(existing_profile.get("refAudioPath") or "")
     if not prompt_text_submitted and not normalized["promptText"]:
         normalized["promptText"] = str(existing_profile.get("promptText") or "")
+    emotion_map_submitted = "emotionVoiceMap" in payload or "emotion_voice_map" in payload
+    if not emotion_map_submitted and not normalized["emotionVoiceMap"]:
+        normalized["emotionVoiceMap"] = dict(existing_profile.get("emotionVoiceMap") or {})
     optional_voice_fields = {
         "streamingMode": ("streamingMode", "streaming_mode"),
         "parallelInfer": ("parallelInfer", "parallel_infer"),
@@ -636,6 +650,7 @@ def save_voice_profile_config(
         "mediaType": normalized["mediaType"],
         "refAudioPath": normalized["refAudioPath"],
         "promptText": normalized["promptText"],
+        "emotionVoiceMap": normalized["emotionVoiceMap"],
         "streamingMode": normalized["streamingMode"],
         "parallelInfer": normalized["parallelInfer"],
         "splitBucket": normalized["splitBucket"],
@@ -687,6 +702,9 @@ def get_voice_profile_runtime_config(
         "refAudioPath": str(profile.get("refAudioPath") or ""),
         "promptText": str(profile.get("promptText") or ""),
     }
+    emotion_voice_map = profile.get("emotionVoiceMap") if isinstance(profile.get("emotionVoiceMap"), Mapping) else {}
+    if emotion_voice_map:
+        result["emotionVoiceMap"] = dict(emotion_voice_map)
     for key in ("streamingMode", "parallelInfer", "splitBucket", "batchSize", "speedFactor", "fragmentInterval"):
         value = profile.get(key)
         if value is not None:
@@ -810,6 +828,8 @@ def get_mcp_server_runtime_config(
         "args": list(server.get("args") or []) if isinstance(server.get("args"), list) else [],
         "cwd": str(server.get("cwd") or ""),
         "env": dict(server.get("env") or {}) if isinstance(server.get("env"), Mapping) else {},
+        "tools": list(server.get("tools") or []) if isinstance(server.get("tools"), list) else [],
+        "lowRiskAllowlist": list(server.get("lowRiskAllowlist") or []) if isinstance(server.get("lowRiskAllowlist"), list) else [],
     }
 
 
@@ -1534,6 +1554,12 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
     enabled = bool(config.get("enabled"))
     ref_audio_path = str(config.get("refAudioPath") or "").strip()
     prompt_text = str(config.get("promptText") or "").strip()
+    emotion_voice_map = config.get("emotionVoiceMap") if isinstance(config.get("emotionVoiceMap"), Mapping) else {}
+    emotion_voice_ids = sorted(
+        emotion_id
+        for emotion_id in (_safe_voice_profile_id(key) for key in emotion_voice_map.keys())
+        if emotion_id
+    )
     configured = bool(ref_audio_path and prompt_text)
     status = "ready" if enabled and configured else "missing_config" if enabled else "disabled"
     return with_capability_approval_metadata({
@@ -1563,6 +1589,8 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
         "hasReferenceAudio": bool(ref_audio_path),
         "referenceAudioName": _safe_path_basename(ref_audio_path),
         "promptTextLength": len(prompt_text),
+        "emotionVoiceIds": emotion_voice_ids,
+        "emotionVoiceCount": len(emotion_voice_map),
         "updatedAt": str(config.get("updatedAt") or "")[:80],
         "risk": "medium",
         "requiresConfirmation": False,
@@ -1631,7 +1659,14 @@ def build_mcp_tool_config_entry(server_id: str, tool: Mapping[str, Any] | None) 
     safe_server_id = _safe_mcp_server_id(server_id)
     tool_name = _safe_mcp_tool_name(tool.get("name"))
     public_id = f"mcp.{safe_server_id}.{tool_name}" if safe_server_id and tool_name else ""
-    risk = _infer_mcp_tool_risk(tool_name, str(tool.get("description") or ""))
+    risk = str(tool.get("risk") or _infer_mcp_tool_risk(tool_name, str(tool.get("description") or ""))).strip().lower()
+    if risk not in {"low", "medium", "high"}:
+        risk = "medium"
+    confirm = str(tool.get("confirm") or "first_time").strip().lower()
+    if confirm not in MCP_TOOL_CONFIRM_POLICIES:
+        confirm = "first_time"
+    if risk == "high":
+        confirm = "always"
     return with_capability_approval_metadata({
         "id": public_id,
         "serverId": safe_server_id,
@@ -1648,11 +1683,12 @@ def build_mcp_tool_config_entry(server_id: str, tool: Mapping[str, Any] | None) 
         "status": "available",
         "reason": "",
         "risk": risk,
-        "requiresConfirmation": risk == "high",
+        "confirm": confirm,
+        "requiresConfirmation": risk == "high" or confirm in {"first_time", "always"},
         "usedBy": ["agent_prompt"],
         "providerId": f"provider.mcp.{safe_server_id}",
         "inputSchema": _normalize_mcp_input_schema(tool.get("inputSchema") or tool.get("input_schema")),
-        "exposedToPrompt": False,
+        "exposedToPrompt": bool(tool.get("promptExposed") or tool.get("prompt_exposed")),
     })
 
 
@@ -1715,6 +1751,7 @@ def normalize_voice_profile_config_payload(profile_id: str, payload: Mapping[str
         "mediaType": _safe_short_token(payload.get("mediaType") or payload.get("media_type") or "wav", default="wav"),
         "refAudioPath": ref_audio_path,
         "promptText": prompt_text,
+        "emotionVoiceMap": _safe_emotion_voice_map(payload.get("emotionVoiceMap") or payload.get("emotion_voice_map")),
         "streamingMode": _safe_optional_bool(
             payload.get("streamingMode") if "streamingMode" in payload else payload.get("streaming_mode"),
         ),
@@ -2289,6 +2326,7 @@ def _sanitize_voice_profile_configs(raw_profiles: Any) -> tuple[dict[str, dict[s
             "mediaType": normalized["mediaType"],
             "refAudioPath": normalized["refAudioPath"],
             "promptText": normalized["promptText"],
+            "emotionVoiceMap": normalized["emotionVoiceMap"],
             "streamingMode": normalized["streamingMode"],
             "parallelInfer": normalized["parallelInfer"],
             "splitBucket": normalized["splitBucket"],
@@ -2335,13 +2373,22 @@ def _sanitize_mcp_server_configs(raw_servers: Any) -> tuple[dict[str, dict[str, 
             "cwd": normalized["cwd"],
             "env": normalized["env"],
         }
+        low_risk_allowlist = _safe_mcp_tool_name_list(
+            (raw_config or {}).get("lowRiskAllowlist")
+            or (raw_config or {}).get("low_risk_allowlist")
+        )
+        if low_risk_allowlist:
+            server["lowRiskAllowlist"] = low_risk_allowlist
         updated_at = _safe_short_text((raw_config or {}).get("updatedAt")) if isinstance(raw_config, Mapping) else ""
         if updated_at:
             server["updatedAt"] = updated_at
         raw_tools = (raw_config or {}).get("tools") if isinstance(raw_config, Mapping) else None
         normalized_tools = normalize_mcp_tool_discovery_payload(server_id, {"tools": raw_tools or []})
         if normalized_tools.get("ok") and normalized_tools.get("tools"):
-            server["tools"] = normalized_tools["tools"]
+            server["tools"] = [
+                _apply_mcp_low_risk_allowlist(tool, low_risk_allowlist)
+                for tool in normalized_tools["tools"]
+            ]
         last_discovery = _sanitize_mcp_last_discovery((raw_config or {}).get("lastDiscovery") if isinstance(raw_config, Mapping) else None)
         if last_discovery:
             server["lastDiscovery"] = last_discovery
@@ -2504,7 +2551,7 @@ def _config_for_write(config: Mapping[str, Any]) -> dict[str, Any]:
         write_voice_profiles[profile_id] = {
             key: value
             for key, value in profile_config.items()
-            if key in PRIVATE_VOICE_PROFILE_FIELDS and value not in (None, "")
+            if key in PRIVATE_VOICE_PROFILE_FIELDS and value not in (None, "", [], {})
         }
     raw_mcp_servers = config.get("mcpServers") if isinstance(config.get("mcpServers"), Mapping) else {}
     mcp_servers, _mcp_server_warnings = _sanitize_mcp_server_configs(raw_mcp_servers)
@@ -2557,12 +2604,50 @@ def _normalize_mcp_tool_config(server_id: str, raw_tool: Any) -> dict[str, Any]:
     if not tool_name:
         return {}
     description = _safe_public_mcp_text(raw_tool.get("description"), limit=MCP_TOOL_DESCRIPTION_MAX_LENGTH)
+    inferred_risk = _infer_mcp_tool_risk(tool_name, description)
+    raw_risk = str(raw_tool.get("risk") or "").strip().lower()
+    risk = raw_risk if raw_risk in {"low", "medium", "high"} else inferred_risk
+    raw_confirm = str(raw_tool.get("confirm") or "").strip().lower()
+    confirm = raw_confirm if raw_confirm in MCP_TOOL_CONFIRM_POLICIES else "first_time"
+    prompt_exposed = _safe_optional_bool(
+        raw_tool.get("promptExposed")
+        if "promptExposed" in raw_tool
+        else raw_tool.get("prompt_exposed"),
+        default=False,
+    )
+    if risk == "high":
+        confirm = "always"
     return {
         "name": tool_name,
         "description": description,
         "inputSchema": _normalize_mcp_input_schema(raw_tool.get("inputSchema") or raw_tool.get("input_schema")),
-        "risk": _infer_mcp_tool_risk(tool_name, description),
+        "risk": risk,
+        "confirm": confirm,
+        "promptExposed": bool(prompt_exposed),
     }
+
+
+def _apply_mcp_low_risk_allowlist(tool: Mapping[str, Any], allowlist: list[str]) -> dict[str, Any]:
+    normalized = dict(tool)
+    if str(normalized.get("risk") or "").strip().lower() == "low":
+        tool_name = str(normalized.get("name") or "").strip()
+        if tool_name not in set(allowlist):
+            normalized["risk"] = "medium"
+    return normalized
+
+
+def _safe_mcp_tool_name_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value[:MCP_TOOL_MAX_COUNT]:
+        tool_name = _safe_mcp_tool_name(item)
+        if not tool_name or tool_name in seen:
+            continue
+        seen.add(tool_name)
+        result.append(tool_name)
+    return result
 
 
 def _normalize_mcp_input_schema(raw_schema: Any) -> dict[str, Any]:
@@ -2919,6 +3004,45 @@ def _safe_private_local_path(value: Any) -> str:
     if "://" in text or any(marker in lowered for marker in ("api_key", "password", "secret", "token")):
         return ""
     return text[:VOICE_PROFILE_PATH_MAX_LENGTH]
+
+
+def _safe_emotion_voice_map(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for raw_emotion_id, raw_entry in list(value.items())[:32]:
+        emotion_id = _safe_voice_profile_id(raw_emotion_id)
+        if not emotion_id:
+            continue
+        entry: dict[str, Any] = {}
+        if isinstance(raw_entry, str):
+            ref_audio_path = _safe_private_local_path(raw_entry)
+            if ref_audio_path:
+                entry["refAudioPath"] = ref_audio_path
+        elif isinstance(raw_entry, Mapping):
+            ref_audio_path = _safe_private_local_path(
+                raw_entry.get("refAudioPath")
+                or raw_entry.get("ref_audio_path")
+                or raw_entry.get("referenceAudioPath")
+                or raw_entry.get("reference_audio_path")
+            )
+            if ref_audio_path:
+                entry["refAudioPath"] = ref_audio_path
+            prompt_text = _safe_private_prompt_text(raw_entry.get("promptText") or raw_entry.get("prompt_text"))
+            if prompt_text:
+                entry["promptText"] = prompt_text
+            text_lang = _safe_short_token(raw_entry.get("textLang") or raw_entry.get("text_lang"), default="")
+            if text_lang:
+                entry["textLang"] = text_lang
+            prompt_lang = _safe_short_token(raw_entry.get("promptLang") or raw_entry.get("prompt_lang"), default="")
+            if prompt_lang:
+                entry["promptLang"] = prompt_lang
+            media_type = _safe_short_token(raw_entry.get("mediaType") or raw_entry.get("media_type"), default="")
+            if media_type:
+                entry["mediaType"] = media_type
+        if entry:
+            result[emotion_id] = entry
+    return result
 
 
 def _safe_path_basename(value: Any) -> str:

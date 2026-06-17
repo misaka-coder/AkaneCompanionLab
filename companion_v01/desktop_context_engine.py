@@ -288,7 +288,54 @@ def build_desktop_activity_prompt(
         profile_user_id=profile_user_id,
         session_id=session_id,
     )
-    return merge_extra_user_context(activity_prompt, timeline_prompt)
+    co_listen_prompt = build_co_listen_memory_block(
+        engine,
+        activity,
+        profile_user_id=profile_user_id,
+    )
+    return merge_extra_user_context(activity_prompt, timeline_prompt, co_listen_prompt)
+
+
+def build_co_listen_memory_block(
+    engine: Any,
+    activity: dict[str, Any],
+    *,
+    profile_user_id: str = "",
+) -> str:
+    """Render the cross-source "我们的共听记忆" block.
+
+    Implements `docs/listening_together_demo_v1.md` §3 (history fields) and §4
+    (track-change trigger) on top of the existing activity prompt path. Stays
+    silent for first listens and missing identities so it can be safely
+    appended unconditionally.
+    """
+    if not profile_user_id:
+        return ""
+    if not isinstance(activity, dict):
+        return ""
+    if str(activity.get("type") or "").strip().lower() != "audio_playback":
+        return ""
+
+    getter = getattr(engine, "_get_music_context_assembler", None)
+    if getter is None:
+        return ""
+    try:
+        assembler = getter()
+    except Exception:
+        return ""
+    if assembler is None:
+        return ""
+
+    try:
+        from .music_context import build_co_listen_memory_prompt
+
+        context = assembler.assemble(
+            activity=activity,
+            profile_user_id=profile_user_id,
+        )
+        return build_co_listen_memory_prompt(context)
+    except Exception:
+        return ""
 
 
 def build_desktop_music_timeline_prompt(

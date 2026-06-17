@@ -883,3 +883,16 @@ textarea {
     text-align: left;
   }
 }
+
+/* T5 — "伸手"动画，source-order 覆盖 [data-motion] 规则，无需 !important */
+@keyframes pet-reach {
+  0%   { transform: translate(0px, 0px)   scale(1.00); filter: brightness(1.00); }
+  45%  { transform: translate(9px, -5px)  scale(1.05); filter: brightness(1.10); }
+  55%  { transform: translate(10px, -6px) scale(1.06); filter: brightness(1.12); }
+  100% { transform: translate(0px, 0px)   scale(1.00); filter: brightness(1.00); }
+}
+
+.stage.is-reaching .pet-hitbox img {
+  animation: pet-reach 1200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  pointer-events: none;
+}

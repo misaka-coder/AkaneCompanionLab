@@ -215,7 +215,8 @@ function buildBackendCharacterContext() {
     user_id: state.sessionId || "desktop_pet_next",
     session_id: state.sessionId || "desktop_pet_next",
     real_user_id: getProfileUserId(),
-    character_pack_id: getCurrentCharacterPackId()
+    character_pack_id: getCurrentCharacterPackId(),
+    emotion: state.currentEmotion || getProfileDefaultEmotion()
   };
 }
 
@@ -1168,6 +1169,11 @@ async function handleSettingsCommand(payload) {
       break;
     case "setMusicVolumeNormalization":
       setMusicVolumeNormalization(payload.value);
+      break;
+    case "smtcAction":
+      if (payload.action) {
+        void controlSystemMediaPlayback(payload.action);
+      }
       break;
     default:
       setRuntimeStatus(`未知设置命令：${command}`);
@@ -4577,6 +4583,28 @@ function systemMediaControlMessage(action, result) {
   return "已请求系统播放器执行操作。";
 }
 
+/**
+ * 播"伸手"CSS 动画并在峰值（600ms）时 resolve。
+ * 1200ms 后 class 自动移除。
+ * Live2D 接入时：用 Live2D motion API 替换 classList 操作，保持 Promise 接口不变。
+ */
+function triggerPetReachGesture() {
+  const PEAK_MS = 600;
+  const TOTAL_MS = 1200;
+  return new Promise((resolve) => {
+    const stage = els.stage;
+    if (!stage) {
+      resolve();
+      return;
+    }
+    stage.classList.remove("is-reaching");
+    void stage.offsetWidth;
+    stage.classList.add("is-reaching");
+    window.setTimeout(resolve, PEAK_MS);
+    window.setTimeout(() => stage.classList.remove("is-reaching"), TOTAL_MS);
+  });
+}
+
 async function controlSystemMediaPlayback(action) {
   if (!isTauriRuntime) {
     notifyMusicActivityUnavailable("系统媒体控制只在桌面端可用。");
@@ -4584,6 +4612,9 @@ async function controlSystemMediaPlayback(action) {
   }
   const normalized = normalizeSystemMediaControlAction(action);
   if (!["play", "pause", "stop", "next", "previous"].includes(normalized)) return false;
+
+  await triggerPetReachGesture();
+
   const result = await tauriCall("control_system_media", { action: normalized }, { quiet: true });
   if (result?.ok) {
     const message = systemMediaControlMessage(normalized, result);
@@ -6812,7 +6843,7 @@ function queueStreamedTtsSegment(text, turnToken, segmentIndex = null) {
 
   streamingTtsSegmentKeys.add(segmentKey);
   streamingTtsText = normalizeTtsText(streamingTtsText ? `${streamingTtsText}${normalized}` : normalized);
-  queueTtsItems([normalized], `stream:${turnToken}:${segmentKey}`, { append: true });
+  queueTtsItems([normalized], `stream:${turnToken}:${segmentKey}`, { append: true, preserveSegments: true });
 }
 
 function queueLiveTtsPayloadItems(items, signature = "") {
@@ -6824,12 +6855,16 @@ function queueLiveTtsPayloadItems(items, signature = "") {
   if (streamingTtsText) {
     const tail = removeStreamingTtsPrefix(normalized.join(""));
     if (tail) {
-      queueTtsItems([tail], signature ? `${signature}:tail` : "stream-tail", { append: true });
+      const tailSegments = splitSpeechText(tail);
+      queueTtsItems(tailSegments.length ? tailSegments : [tail], signature ? `${signature}:tail` : "stream-tail", {
+        append: true,
+        preserveSegments: true
+      });
     }
     return;
   }
 
-  queueTtsItems(normalized, signature);
+  queueTtsItems(normalized, signature, { preserveSegments: true });
 }
 
 function removeStreamingTtsPrefix(text) {
@@ -6941,7 +6976,7 @@ async function runTtsPrewarm({ force = false } = {}) {
   }
 }
 
-function queueTtsItems(items, signature = "", { append = false } = {}) {
+function queueTtsItems(items, signature = "", { append = false, preserveSegments = false } = {}) {
   const normalized = (Array.isArray(items) ? items : [items])
     .map((item) => normalizeTtsText(item))
     .filter(Boolean);
@@ -6950,7 +6985,7 @@ function queueTtsItems(items, signature = "", { append = false } = {}) {
     setRuntimeStatus("后端语音暂未开启", { mode: "error" });
     return;
   }
-  const nextItems = buildTtsQueueItems(normalized);
+  const nextItems = buildTtsQueueItems(normalized, { preserveSegments });
   if (!nextItems.length) return;
   cancelTtsPrewarm();
 
@@ -7223,11 +7258,12 @@ function normalizeTtsText(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
 }
 
-function buildTtsQueueItems(items) {
+function buildTtsQueueItems(items, { preserveSegments = false } = {}) {
   const source = (Array.isArray(items) ? items : [items])
     .map((item) => normalizeTtsText(item))
     .filter(Boolean);
   if (!source.length) return [];
+  if (preserveSegments) return source;
 
   const chunks = [];
   let current = "";

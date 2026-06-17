@@ -457,12 +457,23 @@ def _build_voice_provider_resolutions(
         extra_reason=_voice_request_blocker(requested_tts, voice_profile_id),
         voice_profile_id=voice_profile_id,
     )
+    configured_asr_id = "provider.asr.openai_compat.local"
+    configured_asr_entry = by_id.get(configured_asr_id)
+    configured_asr_status = str((configured_asr_entry or {}).get("status") or "").strip()
+    requested_asr = (
+        configured_asr_id
+        if isinstance(configured_asr_entry, Mapping)
+        and configured_asr_entry.get("enabled") is not False
+        and configured_asr_status in {"configured", "ready", "available", "ok"}
+        else "provider.asr.faster_whisper"
+    )
     asr_resolution = _resolve_first_ready_provider(
         capability_id="voice.input.asr",
-        requested_provider_id="provider.asr.faster_whisper",
-        candidates=["provider.asr.faster_whisper", "provider.asr.text_input"],
+        requested_provider_id=requested_asr,
+        candidates=[requested_asr, "provider.asr.faster_whisper", "provider.asr.text_input"],
         entries_by_id=by_id,
         request_source="default",
+        accepted_statuses={"configured", "ready", "available", "ok"},
     )
     return {
         "voice.tts.character": tts_resolution,
@@ -479,6 +490,7 @@ def _resolve_first_ready_provider(
     request_source: str,
     extra_reason: str = "",
     voice_profile_id: str = "",
+    accepted_statuses: set[str] | None = None,
 ) -> dict[str, Any]:
     unique_candidates = []
     for candidate in candidates:
@@ -490,12 +502,12 @@ def _resolve_first_ready_provider(
     if not extra_reason:
         for candidate_id in unique_candidates:
             entry = entries_by_id.get(candidate_id)
-            if _is_provider_ready(entry):
+            if _is_provider_ready(entry, accepted_statuses=accepted_statuses):
                 active_provider_id = candidate_id
                 break
     if not active_provider_id:
         for fallback_id in unique_candidates:
-            if _is_provider_ready(entries_by_id.get(fallback_id)):
+            if _is_provider_ready(entries_by_id.get(fallback_id), accepted_statuses=accepted_statuses):
                 active_provider_id = fallback_id
                 break
 
@@ -561,11 +573,12 @@ def _voice_request_blocker(requested_provider_id: str, voice_profile_id: str) ->
     return ""
 
 
-def _is_provider_ready(entry: Mapping[str, Any] | None) -> bool:
+def _is_provider_ready(entry: Mapping[str, Any] | None, *, accepted_statuses: set[str] | None = None) -> bool:
     if not isinstance(entry, Mapping):
         return False
     status = str(entry.get("status") or "").strip()
-    return entry.get("enabled") is not False and status in {"ready", "available", "ok"}
+    statuses = accepted_statuses or {"ready", "available", "ok"}
+    return entry.get("enabled") is not False and status in statuses
 
 
 def _resolution_reason(
