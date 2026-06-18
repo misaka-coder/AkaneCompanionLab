@@ -376,6 +376,78 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(next_context.character_pack_id, "reimu")
         self.assertEqual(next_context.to_turn_payload()["character_pack_id"], "reimu")
 
+    def test_character_command_persists_current_qq_session_pack(self) -> None:
+        service = FakeCharacterResourceService()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "qq_gateway_state.json"
+            gateway = NapCatQQGateway(state_path=state_path)
+            switch_context = gateway.build_message_context(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "switch-character-persist-1",
+                    "raw_message": "切换角色 reimu",
+                }
+            )
+
+            result = gateway.handle_character_command(
+                switch_context,
+                character_resource_service=service,
+            )
+
+            self.assertIsNotNone(result)
+            self.assertTrue(result["ok"])
+            self.assertTrue(state_path.is_file())
+
+            restored_gateway = NapCatQQGateway(state_path=state_path)
+            restored_context = restored_gateway.build_message_context(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "switch-character-persist-2",
+                    "raw_message": "在吗",
+                }
+            )
+
+            self.assertEqual(
+                restored_gateway.resolve_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}"),
+                "reimu",
+            )
+            self.assertEqual(restored_context.character_pack_id, "reimu")
+            self.assertEqual(restored_context.to_turn_payload()["character_pack_id"], "reimu")
+
+    @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "mika_sample")
+    def test_builtin_character_override_persists_across_restart(self) -> None:
+        service = FakeCharacterResourceService()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "qq_gateway_state.json"
+            gateway = NapCatQQGateway(state_path=state_path)
+            gateway.set_session_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}", "reimu")
+            context = gateway.build_message_context(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "character-builtin-persist-1",
+                    "raw_message": "切回Akane",
+                }
+            )
+
+            result = gateway.handle_character_command(context, character_resource_service=service)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["status"], "builtin")
+            restored_gateway = NapCatQQGateway(state_path=state_path)
+            self.assertEqual(
+                restored_gateway.resolve_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}"),
+                "",
+            )
+
     def test_character_command_lists_current_and_resets_to_default(self) -> None:
         gateway = NapCatQQGateway()
         service = FakeCharacterResourceService()

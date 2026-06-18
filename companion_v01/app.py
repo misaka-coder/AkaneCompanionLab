@@ -126,7 +126,9 @@ public_guard = PublicThinkGuard(
     ),
 )
 if getattr(config, "QQ_BRIDGE_ENABLED", False):
-    qq_gateway: NapCatQQGateway | None = NapCatQQGateway()
+    qq_gateway: NapCatQQGateway | None = NapCatQQGateway(
+        state_path=Path(config.STATE_DIR) / "qq_gateway_state.json",
+    )
 else:
     qq_gateway = None
 

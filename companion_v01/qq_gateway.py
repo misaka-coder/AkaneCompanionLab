@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -122,6 +124,7 @@ QQ_REPLY_MODE_SWITCH_COMMANDS = {
     "自动模式": "auto",
     "自动回复模式": "auto",
 }
+QQ_GATEWAY_STATE_SCHEMA_VERSION = "akane.qq_gateway_state.v1"
 
 
 @dataclass(frozen=True)
@@ -186,15 +189,78 @@ class QQMessageContext:
 
 
 class NapCatQQGateway:
-    def __init__(self) -> None:
+    def __init__(self, *, state_path: str | Path | None = None) -> None:
         self.group_follow_state: dict[str, dict[str, Any]] = {}
         self.recent_event_fingerprints: dict[str, float] = {}
         self.attachment_debounce_state: dict[str, dict[str, Any]] = {}
         self._attachment_debounce_lock = threading.RLock()
+        self._state_path = Path(state_path) if state_path is not None else None
         self.character_pack_overrides: dict[str, str] = {}
         self._character_pack_lock = threading.RLock()
         self.reply_mode_overrides: dict[str, str] = {}
         self._reply_mode_lock = threading.RLock()
+        self._state_error = ""
+        self._load_persisted_state()
+
+    def _load_persisted_state(self) -> None:
+        if self._state_path is None or not self._state_path.is_file():
+            return
+        try:
+            payload = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            self._state_error = exc.__class__.__name__
+            return
+        if not isinstance(payload, dict):
+            self._state_error = "invalid_state_payload"
+            return
+        raw_overrides = payload.get("character_pack_overrides")
+        if not isinstance(raw_overrides, dict):
+            return
+        overrides: dict[str, str] = {}
+        for raw_key, raw_value in raw_overrides.items():
+            key = _safe_qq_session_key(raw_key)
+            if not key:
+                continue
+            pack_id = _safe_character_pack_id(raw_value)
+            if str(raw_value or "").strip() and not pack_id:
+                continue
+            overrides[key] = pack_id
+        with self._character_pack_lock:
+            self.character_pack_overrides = overrides
+
+    def _persist_character_pack_overrides(self) -> bool:
+        if self._state_path is None:
+            self._state_error = ""
+            return True
+        try:
+            with self._character_pack_lock:
+                overrides = dict(self.character_pack_overrides)
+            payload = {
+                "schema_version": QQ_GATEWAY_STATE_SCHEMA_VERSION,
+                "character_pack_overrides": overrides,
+                "updated_at": int(time.time()),
+            }
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._state_path.with_name(
+                f"{self._state_path.name}.{uuid.uuid4().hex}.tmp"
+            )
+            try:
+                tmp_path.write_text(
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+                    encoding="utf-8",
+                )
+                tmp_path.replace(self._state_path)
+            finally:
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except OSError:
+                    pass
+        except OSError as exc:
+            self._state_error = exc.__class__.__name__
+            return False
+        self._state_error = ""
+        return True
 
     def status(self) -> dict[str, Any]:
         return {
@@ -209,6 +275,9 @@ class NapCatQQGateway:
             "character_pack_id": self.character_pack_id,
             "default_character_pack_id": self.default_character_pack_id,
             "active_character_override_count": len(self.character_pack_overrides),
+            "state_persistence_enabled": self._state_path is not None,
+            "state_status": "error" if self._state_error else ("enabled" if self._state_path is not None else "disabled"),
+            "state_error": self._state_error,
             "reply_mode": self.default_reply_mode,
             "default_reply_mode": self.default_reply_mode,
             "active_reply_mode_override_count": len(self.reply_mode_overrides),
@@ -453,7 +522,7 @@ class NapCatQQGateway:
         )
 
     def resolve_character_pack_id(self, session_id: str) -> str:
-        key = str(session_id or "").strip()
+        key = _safe_qq_session_key(session_id)
         if not key:
             return self.default_character_pack_id
         with self._character_pack_lock:
@@ -509,27 +578,33 @@ class NapCatQQGateway:
             }
 
         if action == "default":
-            self.clear_session_character_override(context.session_id)
+            state_persisted = self.clear_session_character_override(context.session_id)
             active_pack_id = self.resolve_character_pack_id(context.session_id)
+            reply = self._build_default_character_reply(
+                active_pack_id,
+                character_resource_service=character_resource_service,
+            )
             return {
                 "handled": True,
                 "ok": True,
                 "status": "default",
-                "reply": self._build_default_character_reply(
-                    active_pack_id,
-                    character_resource_service=character_resource_service,
-                ),
+                "reply": self._append_state_persistence_warning(reply, state_persisted),
                 "character_pack_id": active_pack_id,
+                "state_persisted": state_persisted,
             }
 
         if action == "builtin":
-            self.set_session_character_pack_id(context.session_id, "")
+            state_persisted = self.set_session_character_pack_id(context.session_id, "")
             return {
                 "handled": True,
                 "ok": True,
                 "status": "builtin",
-                "reply": "已切回内置 Akane 人设。之后这个 QQ 会话会使用未绑定角色包的默认聊天记忆。",
+                "reply": self._append_state_persistence_warning(
+                    "已切回内置 Akane 人设。之后这个 QQ 会话会使用未绑定角色包的默认聊天记忆。",
+                    state_persisted,
+                ),
                 "character_pack_id": "",
+                "state_persisted": state_persisted,
             }
 
         if action == "switch":
@@ -543,13 +618,17 @@ class NapCatQQGateway:
                     "character_pack_id": self.resolve_character_pack_id(context.session_id),
                 }
             if requested_pack_id.lower() in QQ_CHARACTER_BUILTIN_IDS:
-                self.set_session_character_pack_id(context.session_id, "")
+                state_persisted = self.set_session_character_pack_id(context.session_id, "")
                 return {
                     "handled": True,
                     "ok": True,
                     "status": "builtin",
-                    "reply": "已切回内置 Akane 人设。之后这个 QQ 会话会使用未绑定角色包的默认聊天记忆。",
+                    "reply": self._append_state_persistence_warning(
+                        "已切回内置 Akane 人设。之后这个 QQ 会话会使用未绑定角色包的默认聊天记忆。",
+                        state_persisted,
+                    ),
                     "character_pack_id": "",
+                    "state_persisted": state_persisted,
                 }
             identity = self._resolve_pack_identity(
                 requested_pack_id,
@@ -567,15 +646,17 @@ class NapCatQQGateway:
                     "character_pack_id": self.resolve_character_pack_id(context.session_id),
                     "requested_pack_id": requested_pack_id,
                 }
-            self.set_session_character_pack_id(context.session_id, requested_pack_id)
+            state_persisted = self.set_session_character_pack_id(context.session_id, requested_pack_id)
             label = self._format_identity_label(identity)
+            reply = f"已切换本 QQ 会话角色为 {label}（{requested_pack_id}）。之后的聊天和记忆会按这个角色包隔离。"
             return {
                 "handled": True,
                 "ok": True,
                 "status": "switched",
-                "reply": f"已切换本 QQ 会话角色为 {label}（{requested_pack_id}）。之后的聊天和记忆会按这个角色包隔离。",
+                "reply": self._append_state_persistence_warning(reply, state_persisted),
                 "character_pack_id": requested_pack_id,
                 "requested_pack_id": requested_pack_id,
+                "state_persisted": state_persisted,
             }
 
         return None
@@ -602,19 +683,21 @@ class NapCatQQGateway:
             return {"action": "switch", "pack_id": pack_id}
         return None
 
-    def set_session_character_pack_id(self, session_id: str, character_pack_id: str) -> None:
-        key = str(session_id or "").strip()
+    def set_session_character_pack_id(self, session_id: str, character_pack_id: str) -> bool:
+        key = _safe_qq_session_key(session_id)
         if not key:
-            return
+            return False
         with self._character_pack_lock:
             self.character_pack_overrides[key] = _safe_character_pack_id(character_pack_id)
+        return self._persist_character_pack_overrides()
 
-    def clear_session_character_override(self, session_id: str) -> None:
-        key = str(session_id or "").strip()
+    def clear_session_character_override(self, session_id: str) -> bool:
+        key = _safe_qq_session_key(session_id)
         if not key:
-            return
+            return False
         with self._character_pack_lock:
             self.character_pack_overrides.pop(key, None)
+        return self._persist_character_pack_overrides()
 
     def resolve_reply_mode(self, session_id: str) -> str:
         key = str(session_id or "").strip()
@@ -790,6 +873,11 @@ class NapCatQQGateway:
         app_name = str(identity.get("app_name") or "").strip()
         label = " / ".join(part for part in (app_name, assistant_name) if part)
         return label or str(identity.get("pack_id") or "角色包").strip() or "角色包"
+
+    def _append_state_persistence_warning(self, reply: str, state_persisted: bool) -> str:
+        if state_persisted:
+            return reply
+        return f"{reply} 但状态文件保存失败，本次运行内会生效，重启后可能恢复默认角色。"
 
     def _build_current_character_reply(
         self,
@@ -1572,6 +1660,17 @@ def _safe_character_pack_id(value: Any) -> str:
     if not pack_id or not QQ_CHARACTER_PACK_ID_RE.fullmatch(pack_id):
         return ""
     return pack_id
+
+
+def _safe_qq_session_key(value: Any) -> str:
+    key = str(value or "").strip()
+    if key == "master":
+        return key
+    if re.fullmatch(r"qq_pri_\d+", key):
+        return key
+    if re.fullmatch(r"qq_group_shared_\d+", key):
+        return key
+    return ""
 
 
 def _clean_character_pack_argument(value: Any) -> str:

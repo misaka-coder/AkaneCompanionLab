@@ -579,6 +579,7 @@ def build_qq_router(
                     command_status=str(character_command_result.get("status") or ""),
                     command_ok=bool(character_command_result.get("ok")),
                     character_pack_id=str(character_command_result.get("character_pack_id") or ""),
+                    state_persisted=character_command_result.get("state_persisted"),
                     sent=bool(send_result.get("ok")),
                     duration_ms=round(duration_ms, 1),
                 )
@@ -591,6 +592,7 @@ def build_qq_router(
                         "session_id": context.session_id,
                         "profile_user_id": context.profile_user_id,
                         "character_pack_id": str(character_command_result.get("character_pack_id") or ""),
+                        "state_persisted": character_command_result.get("state_persisted"),
                         "send_result": send_result,
                     }
                 )
