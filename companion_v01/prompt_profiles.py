@@ -116,15 +116,15 @@ class PromptProfileRegistry:
                 system_prompt_override=build_desktop_pet_system_prompt(),
                 fast_mode_prompt=(
                     "\n当前模式：desktop_pet，debug_enabled=false。\n"
-                    "字段固定为 emotion, speech, speech_segments, tool_call, status, choices, character, scene, persona, activity, memory_metadata，禁止输出 thought。\n"
+                    "字段固定为 emotion, speech, speech_segments, tool_call, status, choices, persona, activity, memory_metadata，禁止输出 thought、character、scene。\n"
                     "输出格式示例如下：\n"
-                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"activity":null,"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
+                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"persona":{"active":""},"activity":null,"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
                 ),
                 debug_mode_prompt=(
                     "\n当前模式：desktop_pet，debug_enabled=true。\n"
-                    "字段固定为 thought, emotion, speech, speech_segments, tool_call, status, choices, character, scene, persona, activity, memory_metadata，且必须把 tool_call 放在 speech_segments 后面。\n"
+                    "字段固定为 thought, emotion, speech, speech_segments, tool_call, status, choices, persona, activity, memory_metadata，且必须把 tool_call 放在 speech_segments 后面；禁止输出 character、scene。\n"
                     "输出格式示例如下：\n"
-                    '{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"activity":null,"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
+                    '{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"persona":{"active":""},"activity":null,"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
                 ),
             ),
             ClientMode.QQ_TEXT: PromptProfile(

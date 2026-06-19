@@ -154,10 +154,9 @@ class PromptBlockRegistry:
             "desktop_pet_visual": PromptBlock(
                 id="desktop_pet_visual",
                 text=(
-                    "当前是 desktop_pet 桌宠模式。桌宠只实际渲染 character.outfit 与 emotion。\n"
-                    "emotion 只用于同一套服装下切换表情；character.outfit 表示服装大类。\n"
-                    "只能从本轮给你的角色包资源清单里选择服装和表情，不要编造不存在的 outfit 或 emotion。\n"
-                    "scene 字段仅为兼容后端统一 JSON 结构，桌宠端不会渲染场景、背景或 BGM；不要为了桌宠表现主动设计场景。"
+                    "当前是 desktop_pet 桌宠模式。桌宠只实际渲染 emotion；服装由系统托盘控制，character 和 scene 字段不需要输出。\n"
+                    "emotion 只用于同一套服装下切换表情；只能从本轮给你的角色包资源清单里选择，不要编造不存在的 emotion。\n"
+                    "不要输出 character 或 scene，也不要为桌宠主动设计场景、背景或 BGM。"
                 ),
             ),
             "desktop_pet_activity": PromptBlock(
