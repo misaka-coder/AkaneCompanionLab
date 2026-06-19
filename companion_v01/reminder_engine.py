@@ -78,7 +78,6 @@ def build_reminder_notification_payload(
         "speech": speech,
         "memory_tags": "",
         "status": "final",
-        "score": 0.0,
         "tool_call": None,
         "choices": [],
         "character": dict(visual.get("character") or {}),

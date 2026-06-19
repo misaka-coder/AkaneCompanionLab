@@ -131,7 +131,6 @@ class PromptBuilder:
             "tool_call": None,
             "code_snippet": "",
             "status": "final",
-            "score": 0.0,
             "choices": [],
             "character": {
                 "outfit": visual_defaults["outfit"],

@@ -116,15 +116,15 @@ class PromptProfileRegistry:
                 system_prompt_override=build_desktop_pet_system_prompt(),
                 fast_mode_prompt=(
                     "\n当前模式：desktop_pet，debug_enabled=false。\n"
-                    "字段固定为 emotion, speech, speech_segments, tool_call, code_snippet, status, score, choices, character, scene, persona, activity, memory_metadata，禁止输出 thought。\n"
+                    "字段固定为 emotion, speech, speech_segments, tool_call, status, choices, character, scene, persona, activity, memory_metadata，禁止输出 thought。\n"
                     "输出格式示例如下：\n"
-                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","score":0.0,"choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"activity":null,"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
+                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"activity":null,"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
                 ),
                 debug_mode_prompt=(
                     "\n当前模式：desktop_pet，debug_enabled=true。\n"
-                    "字段固定为 thought, emotion, speech, speech_segments, tool_call, code_snippet, status, score, choices, character, scene, persona, activity, memory_metadata，且必须把 tool_call 放在 speech_segments 后面。\n"
+                    "字段固定为 thought, emotion, speech, speech_segments, tool_call, status, choices, character, scene, persona, activity, memory_metadata，且必须把 tool_call 放在 speech_segments 后面。\n"
                     "输出格式示例如下：\n"
-                    '{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","score":0.0,"choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"activity":null,"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
+                    '{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"activity":null,"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
                 ),
             ),
             ClientMode.QQ_TEXT: PromptProfile(
@@ -142,19 +142,19 @@ class PromptProfileRegistry:
                 system_prompt_override=build_qq_text_system_prompt(),
                 fast_mode_prompt=(
                     "\n当前模式：qq_text，debug_enabled=false。\n"
-                    "字段固定为 emotion, reply_medium, speech, speech_segments, tool_call, code_snippet, status, score, choices, persona, memory_metadata。\n"
+                    "字段固定为 emotion, reply_medium, speech, speech_segments, tool_call, status, choices, persona, memory_metadata。\n"
                     'reply_medium 只用于 QQ 自动回复模式的投递偏好，只能是 "text"、"voice" 或 "both"；代码、长解释、列表和文件说明优先 text，短句、亲密私聊或用户发来语音时可用 voice。\n'
                     "必须先输出 emotion，再输出 reply_medium，然后才输出 speech 和 speech_segments，便于 QQ 端尽早决定是否合成语音。\n"
                     "输出格式示例如下：\n"
-                    '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","score":0.0,"choices":[],"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
+                    '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
                 ),
                 debug_mode_prompt=(
                     "\n当前模式：qq_text，debug_enabled=true。\n"
-                    "字段固定为 emotion, reply_medium, speech, speech_segments, tool_call, code_snippet, status, score, choices, persona, memory_metadata。\n"
+                    "字段固定为 emotion, reply_medium, speech, speech_segments, tool_call, status, choices, persona, memory_metadata。\n"
                     'reply_medium 只用于 QQ 自动回复模式的投递偏好，只能是 "text"、"voice" 或 "both"；代码、长解释、列表和文件说明优先 text，短句、亲密私聊或用户发来语音时可用 voice。\n'
                     "必须先输出 emotion，再输出 reply_medium，然后才输出 speech 和 speech_segments，便于 QQ 端尽早决定是否合成语音。\n"
                     "输出格式示例如下：\n"
-                    '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","score":0.0,"choices":[],"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
+                    '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0}}\n'
                 ),
             ),
         }

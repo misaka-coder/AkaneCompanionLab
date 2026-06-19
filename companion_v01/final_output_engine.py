@@ -185,7 +185,6 @@ def normalize_final_output(
         normalized.pop("thought", None)
     normalized.setdefault("status", "final")
     normalized.setdefault("emotion", visual_defaults["emotion"])
-    normalized.setdefault("score", 0.0)
     normalized["tool_call"] = (
         engine._normalize_tool_call(
             normalized.get("tool_call"),
@@ -220,11 +219,13 @@ def normalize_final_output(
             delivery=normalized.get("delivery"),
             default="text",
         )
-        normalized["delivery"] = {"medium": normalized["reply_medium"]}
     else:
         normalized.pop("reply_medium", None)
-        normalized.pop("delivery", None)
-    normalized["code_snippet"] = normalize_code_snippet(normalized.get("code_snippet"))
+    normalized.pop("delivery", None)
+    if client_context.effective_mode in (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D):
+        normalized["code_snippet"] = normalize_code_snippet(normalized.get("code_snippet"))
+    else:
+        normalized.pop("code_snippet", None)
     memory_metadata = normalize_memory_metadata(
         engine,
         normalized.get("memory_metadata"),

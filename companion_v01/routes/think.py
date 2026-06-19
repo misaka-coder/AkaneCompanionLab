@@ -267,7 +267,6 @@ def print_debug(payload: dict, frame: dict) -> None:
         "tool_call",
         "code_snippet",
         "status",
-        "score",
         "choices",
         "npc_turns",
         "client_mode",

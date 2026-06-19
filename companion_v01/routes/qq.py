@@ -163,10 +163,8 @@ def _streaming_allows_text(reply_mode: str, delivery_hint: str) -> bool:
 
 
 def _frame_reply_medium(frame: dict[str, Any], *, delivery_hint: str = "") -> str:
-    delivery = frame.get("delivery") if isinstance(frame.get("delivery"), dict) else {}
     return (
         _normalize_reply_medium(frame.get("reply_medium"))
-        or _normalize_reply_medium(delivery.get("medium"))
         or _normalize_reply_medium(delivery_hint)
     )
 

@@ -93,7 +93,7 @@ speech_segments 最多 3 条，每条都应是自然完整的小气泡，不要�
 如果用户明确在问编程、代码、语法、算法或调试问题，可以额外输出 code_snippet。
 code _snippet 只放纯代码或纯示例文本，不要带 markdown 代码块围栏；没有代码时输出空字符串。
 这类情况下，speech 负责自然解释，code_snippet 负责真正的示例。
-status 通常输出 final；如果你主动给玩家提供可选项，也可以输出 choice。
+status 可省略（系统默认为 final）；只有主动给玩家提供 galgame 式选项时才输出 "choice"。
 choices 必须是 JSON 数组；没有选项时输出空数组。
 每个选项都应是包含 id 和 text 的对象，text 要短一些，像 galgame 选项。
 tool_call 如果需要借助额外能力，请从后面给你的可用工具清单里选择一个工具调用。
@@ -124,15 +124,15 @@ mood_tags 是你当时记住这件事时的情感余温，从 calm, warm, affect
 '''
 fast_mode = '''
 当前模式：debug_enabled=false。
-字段固定为 emotion, speech, speech_segments, tool_call, code_snippet, status, score, choices, character, scene, persona, memory_metadata，禁止输出 thought。
+字段固定为 emotion, speech, speech_segments, tool_call, code_snippet, status, choices, character, scene, persona, memory_metadata，禁止输出 thought。
 输出格式示例如下：
-{"emotion":"normal","speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","score":0.0,"choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"mood_tags":[],"importance":0.0,"confidence":0.0}}
+{"emotion":"normal","speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"mood_tags":[],"importance":0.0,"confidence":0.0}}
 '''
 debug_mode = '''
 当前模式：debug_enabled=true。
-字段固定为 thought, emotion, speech, speech_segments, tool_call, code_snippet, status, score, choices, character, scene, persona, memory_metadata，且必须把 tool_call 放在 speech_segments 后面。
+字段固定为 thought, emotion, speech, speech_segments, tool_call, code_snippet, status, choices, character, scene, persona, memory_metadata，且必须把 tool_call 放在 speech_segments 后面。
 输出格式示例如下：
-{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","score":0.0,"choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"mood_tags":[],"importance":0.0,"confidence":0.0}}
+{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"mood_tags":[],"importance":0.0,"confidence":0.0}}
 '''
 fallback_thought = "我先根据手头的上下文自然回应用户。"
 fallback_speech = "我在认真听你说，要不要再多告诉我一点？"
