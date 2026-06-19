@@ -92,6 +92,36 @@ textarea {
   animation: pet-speaking-bob 0.82s ease-in-out infinite;
 }
 
+.stage[data-motion="dragging"] .pet-hitbox {
+  cursor: grabbing;
+}
+
+.stage[data-motion="dragging"] .pet-hitbox img {
+  animation: none;
+  filter: brightness(1.03);
+}
+
+.stage[data-motion="drag-release"] .pet-hitbox img {
+  animation: pet-release-blink 0.26s ease-out both;
+}
+
+.stage[data-motion="thrown"] .pet-hitbox img {
+  animation: none;
+  filter: brightness(1.04) saturate(1.04);
+}
+
+.stage[data-motion="land"] .pet-hitbox img {
+  animation: pet-land-bounce 0.3s cubic-bezier(0.2, 1.1, 0.25, 1) both;
+}
+
+.stage[data-motion="hit-wall"] .pet-hitbox img {
+  animation: pet-wall-hit 0.22s cubic-bezier(0.18, 1.22, 0.36, 1) both;
+}
+
+.stage[data-motion="jump"] .pet-hitbox {
+  animation: pet-idle-jump 0.86s cubic-bezier(0.2, 1.18, 0.28, 1) both;
+}
+
 .stage[data-motion="click"] .pet-hitbox {
   animation: pet-click-pop 0.62s cubic-bezier(0.2, 1.2, 0.25, 1) 1;
 }
@@ -144,6 +174,71 @@ textarea {
 
   62% {
     transform: translateX(-50%) translateY(1px) scale(0.994);
+  }
+
+  100% {
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes pet-release-blink {
+  0% {
+    transform: translateY(0) scale(1.08);
+    filter: brightness(1);
+  }
+
+  100% {
+    transform: translateY(0) scale(1.08);
+    filter: brightness(1.08) saturate(1.05);
+  }
+}
+
+@keyframes pet-land-bounce {
+  0% {
+    transform: translateY(0) scale(1.08);
+  }
+
+  45% {
+    transform: translateY(3px) scale(1.072);
+  }
+
+  100% {
+    transform: translateY(0) scale(1.08);
+  }
+}
+
+@keyframes pet-wall-hit {
+  0% {
+    transform: translateY(0) scale(1.08);
+    filter: brightness(1);
+  }
+
+  45% {
+    transform: translateY(0) scale(1.095);
+    filter: brightness(1.14) saturate(1.08);
+  }
+
+  100% {
+    transform: translateY(0) scale(1.08);
+    filter: brightness(1);
+  }
+}
+
+@keyframes pet-idle-jump {
+  0% {
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+
+  28% {
+    transform: translateX(-50%) translateY(-18px) scale(1.018);
+  }
+
+  48% {
+    transform: translateX(-50%) translateY(-22px) scale(1.024);
+  }
+
+  76% {
+    transform: translateX(-50%) translateY(4px) scale(0.996);
   }
 
   100% {

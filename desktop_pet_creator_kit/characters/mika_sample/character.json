@@ -27,6 +27,12 @@
       { "text": "如果累了，就先喝口水。", "emotion": "sleepy" }
     ]
   },
+  "play_feedback": {
+    "throw_fast": { "emotion": "confused", "bubble": { "text": "哇，飞起来了。", "duration_ms": 1500 } },
+    "throw_light": { "emotion": "confused", "bubble": { "text": "", "duration_ms": 0 } },
+    "wall_hit": { "emotion": "confused", "bubble": { "text": "撞到了。", "duration_ms": 1200 } },
+    "land": { "emotion": "", "bubble": { "text": "", "duration_ms": 0 } }
+  },
   "emotion_aliases": {
     "normal": ["normal"],
     "idle": ["normal"],

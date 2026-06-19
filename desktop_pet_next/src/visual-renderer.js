@@ -1,7 +1,18 @@
 const STATIC_RENDERER_MODE = "static_portrait";
 const LIVE2D_PENDING_MODE = "live2d_pending";
 const DEFAULT_MOTION = "idle";
-const VALID_MOTIONS = new Set(["idle", "thinking", "speaking", "click"]);
+const VALID_MOTIONS = new Set([
+  "idle",
+  "thinking",
+  "speaking",
+  "click",
+  "dragging",
+  "drag-release",
+  "thrown",
+  "land",
+  "hit-wall",
+  "jump"
+]);
 const DEFAULT_BUBBLE_STYLE = "soft";
 const VALID_BUBBLE_STYLES = new Set([DEFAULT_BUBBLE_STYLE, "paper", "clear", "dark"]);
 

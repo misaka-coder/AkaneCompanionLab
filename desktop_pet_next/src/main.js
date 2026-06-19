@@ -1,7 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentMonitor, getCurrentWindow, primaryMonitor } from "@tauri-apps/api/window";
 
 import {
   APP_DISPLAY_NAME,
@@ -107,6 +107,20 @@ const CLIENT_SEGMENT_MAX = 5;
 const LOCAL_CLICK_DELAY_MS = 240;
 const INPUT_HISTORY_LIMIT = 24;
 const CHAT_INPUT_IDLE_HIDE_MS = 5000;
+const PET_PHYSICS_FRAME_MS = 20;
+const PET_PHYSICS_GRAVITY = 0.8;
+const PET_PHYSICS_GROUND_FRICTION = 0.94;
+const PET_PHYSICS_AIR_FRICTION = 0.99;
+const PET_PHYSICS_BOUNCE = 0.4;
+const PET_DRAG_THRESHOLD_PX = 5;
+const PET_DRAG_VELOCITY_FACTOR = 0.4;
+const PET_THROW_THRESHOLD = 8;
+const PET_WALL_PAIN_THRESHOLD = 7;
+const PET_MOTION_RESTORE_MS = 1800;
+const PET_IDLE_JUMP_AFTER_MS = 90000;
+const PET_IDLE_JUMP_COOLDOWN_MS = 150000;
+const PET_PHYSICS_MIN_SPEED = 0.2;
+const PET_PHYSICS_FLOOR_CLEARANCE = 18;
 const PROACTIVE_WAKE_STYLE_GUARD = [
   "本轮是主动搭话，不是用户提问。",
   "可以参考桌面线索，但不要把窗口标题或软件名当成必须回应的主题；只有标题时最多当背景。",
@@ -204,6 +218,15 @@ const resourceState = {
 };
 
 const state = { ...DEFAULT_STATE, characters: {} };
+const playState = {
+  mode: "idle",
+  vx: 0,
+  vy: 0,
+  heldEmotion: "",
+  lastWallHitAt: 0,
+  lastLandAt: 0,
+  lastIdleJumpAt: 0
+};
 
 function getProfileUserId() {
   return state.profileUserId || PROFILE_USER_ID;
@@ -330,6 +353,13 @@ let previewEmotionTimer = 0;
 let previewEmotionRestore = "";
 let previewEmotionToken = 0;
 let dragState = null;
+let physicsTimer = 0;
+let physicsTickInFlight = false;
+let monitorBoundsCache = null;
+let monitorBoundsCacheAt = 0;
+let lastWindowGeometry = null;
+let idleJumpTimer = 0;
+let lastUserPetInteractionAt = Date.now();
 let clickTimer = 0;
 let inputHistory = [];
 let inputHistoryIndex = -1;
@@ -497,6 +527,7 @@ async function boot() {
   applyCharacterChrome();
   applyVisualState();
   updateConnectionStatus();
+  scheduleIdleJump();
 
   if (!isTauriRuntime) {
     state.sessionId = generateSessionId();
@@ -878,12 +909,19 @@ function bindUi() {
 
 function beginManualDrag(event) {
   if (!isTauriRuntime) return;
+  markPetInteraction();
+  stopPetPhysics({ restore: false, reschedule: false });
+  cancelLocalClick();
+  setPetMotion("dragging");
   dragState = {
     pointerId: event.pointerId,
     startClientX: event.clientX,
     startClientY: event.clientY,
     lastScreenX: event.screenX,
     lastScreenY: event.screenY,
+    lastMoveAt: Date.now(),
+    vx: 0,
+    vy: 0,
     moved: false
   };
 
@@ -899,13 +937,20 @@ async function continueManualDrag(event) {
 
   const totalDx = event.clientX - dragState.startClientX;
   const totalDy = event.clientY - dragState.startClientY;
-  if (!dragState.moved && Math.hypot(totalDx, totalDy) < 5) return;
+  if (!dragState.moved && Math.hypot(totalDx, totalDy) < PET_DRAG_THRESHOLD_PX) return;
 
   dragState.moved = true;
   cancelLocalClick();
   hideBubble();
+  setPetMotion("dragging");
   const dx = Math.round(event.screenX - dragState.lastScreenX);
   const dy = Math.round(event.screenY - dragState.lastScreenY);
+  const now = Date.now();
+  if (now - dragState.lastMoveAt > 5) {
+    dragState.vx = dx * PET_DRAG_VELOCITY_FACTOR;
+    dragState.vy = dy * PET_DRAG_VELOCITY_FACTOR;
+    dragState.lastMoveAt = now;
+  }
   if (!dx && !dy) return;
 
   dragState.lastScreenX = event.screenX;
@@ -920,16 +965,19 @@ async function continueManualDrag(event) {
 }
 
 function handlePetPointerUp(event) {
-  const moved = endManualDrag(event);
+  const result = endManualDrag(event);
+  const moved = Boolean(result?.moved);
   if (moved) {
     suppressClickUntil = Date.now() + 350;
+    startPetThrow(result);
   }
 }
 
 function endManualDrag(event) {
-  if (!dragState) return false;
-  const pointerId = dragState.pointerId;
-  const moved = Boolean(dragState.moved);
+  if (!dragState) return { moved: false, vx: 0, vy: 0 };
+  const ended = dragState;
+  const pointerId = ended.pointerId;
+  const moved = Boolean(ended.moved);
   dragState = null;
   try {
     if (event?.currentTarget?.hasPointerCapture?.(pointerId)) {
@@ -938,7 +986,286 @@ function endManualDrag(event) {
   } catch {
     // Nothing to release.
   }
-  return moved;
+  if (!moved) {
+    setPetMotion("idle");
+    releasePetPlayEmotion({ delayMs: 0 });
+  }
+  return {
+    moved,
+    vx: Number(ended.vx) || 0,
+    vy: Number(ended.vy) || 0
+  };
+}
+
+function markPetInteraction() {
+  lastUserPetInteractionAt = Date.now();
+  scheduleIdleJump();
+}
+
+function startPetThrow({ vx = 0, vy = 0 } = {}) {
+  markPetInteraction();
+  playState.vx = Number(vx) || 0;
+  playState.vy = Number(vy) || 0;
+
+  if (Math.hypot(playState.vx, playState.vy) <= 1) {
+    setPetMotion("idle");
+    releasePetPlayEmotion({ delayMs: 0 });
+    return;
+  }
+
+  playState.mode = "physics";
+  const isFastThrow = Math.abs(playState.vx) > PET_THROW_THRESHOLD || Math.abs(playState.vy) > PET_THROW_THRESHOLD;
+  const feedback = getProfilePlayFeedback(isFastThrow ? "throwFast" : "throwLight");
+  setPetMotion(isFastThrow ? "thrown" : "drag-release", { durationMs: isFastThrow ? 0 : 420 });
+  holdPetPlayEmotion(feedback.emotion);
+  showPetPlayBubble(feedback.bubble.text, { durationMs: feedback.bubble.durationMs });
+
+  startPetPhysicsLoop();
+}
+
+function startPetPhysicsLoop() {
+  if (physicsTimer || !isTauriRuntime) return;
+  physicsTimer = window.setInterval(() => {
+    void tickPetPhysics();
+  }, PET_PHYSICS_FRAME_MS);
+}
+
+function stopPetPhysics({ restore = true, reschedule = true } = {}) {
+  window.clearInterval(physicsTimer);
+  physicsTimer = 0;
+  playState.mode = "idle";
+  playState.vx = 0;
+  playState.vy = 0;
+  if (restore && !sending && !ttsActive) {
+    setPetMotion("idle");
+    releasePetPlayEmotion({ delayMs: 0 });
+  }
+  if (reschedule) {
+    scheduleSave(250);
+    scheduleIdleJump();
+  }
+}
+
+async function tickPetPhysics() {
+  if (!physicsTimer || dragState || !isTauriRuntime) return;
+  if (physicsTickInFlight) return;
+  physicsTickInFlight = true;
+  try {
+    const geometry = await getCachedWindowGeometry();
+    if (!geometry) {
+      stopPetPhysics({ restore: true });
+      return;
+    }
+
+    const bounds = await getCurrentWorkAreaBounds(geometry);
+    const floorY = Math.max(bounds.top, bounds.bottom - geometry.height - PET_PHYSICS_FLOOR_CLEARANCE);
+    let x = geometry.x;
+    let y = geometry.y;
+    let vx = playState.vx;
+    let vy = playState.vy;
+
+    if (y < floorY) {
+      vy += PET_PHYSICS_GRAVITY;
+    }
+
+    if (y + vy >= floorY) {
+      y = floorY;
+      if (Math.abs(vy) > 2) {
+        vy = -vy * PET_PHYSICS_BOUNCE;
+        setPetMotion("land", { durationMs: 420 });
+        handlePetLand();
+      } else {
+        vy = 0;
+      }
+      vx *= PET_PHYSICS_GROUND_FRICTION;
+    } else {
+      vx *= PET_PHYSICS_AIR_FRICTION;
+      vy *= PET_PHYSICS_AIR_FRICTION;
+    }
+
+    let nextX = x + vx;
+    let nextY = y + vy;
+    let hitWall = false;
+    let wallImpactSpeed = 0;
+    const maxX = Math.max(bounds.left, bounds.right - geometry.width);
+
+    if (nextX <= bounds.left) {
+      nextX = bounds.left;
+      wallImpactSpeed = Math.abs(vx);
+      vx = -vx * PET_PHYSICS_BOUNCE;
+      hitWall = true;
+    } else if (nextX >= maxX) {
+      nextX = maxX;
+      wallImpactSpeed = Math.abs(vx);
+      vx = -vx * PET_PHYSICS_BOUNCE;
+      hitWall = true;
+    }
+
+    const dx = Math.round(nextX - x);
+    const dy = Math.round(nextY - geometry.y);
+    if (dx || dy) {
+      const moved = await tauriCall("move_window_by", { dx, dy }, { quiet: true });
+      if (moved) {
+        applyWindowGeometryToState(moved);
+      } else {
+        stopPetPhysics({ restore: true });
+        return;
+      }
+    } else {
+      lastWindowGeometry = { ...geometry, x: Math.round(nextX), y: Math.round(nextY) };
+    }
+
+    playState.vx = vx;
+    playState.vy = vy;
+
+    if (hitWall) {
+      handlePetWallHit(wallImpactSpeed);
+    }
+
+    const settledOnFloor = Math.abs(vx) < PET_PHYSICS_MIN_SPEED && Math.abs(vy) < PET_PHYSICS_MIN_SPEED &&
+      Math.abs((lastWindowGeometry?.y ?? nextY) - floorY) <= 1;
+    if (settledOnFloor) {
+      stopPetPhysics({ restore: true });
+    }
+  } finally {
+    physicsTickInFlight = false;
+  }
+}
+
+async function getCachedWindowGeometry() {
+  if (!isTauriRuntime) return null;
+  if (lastWindowGeometry?.width && lastWindowGeometry?.height) return lastWindowGeometry;
+  const geometry = await tauriCall("get_window_geometry", {}, { quiet: true });
+  if (geometry) applyWindowGeometryToState(geometry);
+  return lastWindowGeometry;
+}
+
+async function getCurrentWorkAreaBounds(geometry = lastWindowGeometry) {
+  const now = Date.now();
+  if (monitorBoundsCache && now - monitorBoundsCacheAt < 3000) return monitorBoundsCache;
+
+  const monitor = await currentMonitor().catch(() => null) || await primaryMonitor().catch(() => null);
+  const workArea = monitor?.workArea;
+  const position = workArea?.position || monitor?.position || {};
+  const size = workArea?.size || monitor?.size || {};
+  const left = Number(position.x);
+  const top = Number(position.y);
+  const width = Number(size.width);
+  const height = Number(size.height);
+
+  if (Number.isFinite(left) && Number.isFinite(top) && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+    monitorBoundsCache = {
+      left,
+      top,
+      right: left + width,
+      bottom: top + height
+    };
+  } else {
+    const x = Number(geometry?.x) || 0;
+    const y = Number(geometry?.y) || 0;
+    const fallbackWidth = Number(window.screen?.availWidth || window.innerWidth || 1280);
+    const fallbackHeight = Number(window.screen?.availHeight || window.innerHeight || 720);
+    monitorBoundsCache = {
+      left: Math.min(0, x),
+      top: Math.min(0, y),
+      right: Math.max(fallbackWidth, x + (geometry?.width || 0)),
+      bottom: Math.max(fallbackHeight, y + (geometry?.height || 0))
+    };
+  }
+  monitorBoundsCacheAt = now;
+  return monitorBoundsCache;
+}
+
+function handlePetWallHit(impactSpeed) {
+  const now = Date.now();
+  if (now - playState.lastWallHitAt < 300) return;
+  playState.lastWallHitAt = now;
+  markPetInteraction();
+  setPetMotion("hit-wall", { durationMs: 520 });
+
+  if (Math.abs(impactSpeed) > PET_WALL_PAIN_THRESHOLD) {
+    const feedback = getProfilePlayFeedback("wallHit");
+    holdPetPlayEmotion(feedback.emotion);
+    showPetPlayBubble(feedback.bubble.text, { durationMs: feedback.bubble.durationMs });
+  }
+}
+
+function handlePetLand() {
+  const now = Date.now();
+  if (now - playState.lastLandAt < 400) return;
+  playState.lastLandAt = now;
+  const feedback = getProfilePlayFeedback("land");
+  holdPetPlayEmotion(feedback.emotion);
+  showPetPlayBubble(feedback.bubble.text, { durationMs: feedback.bubble.durationMs });
+}
+
+function showPetPlayBubble(text, { durationMs = 1800 } = {}) {
+  if (!String(text || "").trim() || durationMs <= 0) return;
+  showBubbleText(text, { transient: true, durationMs, local: true, kind: "play" });
+}
+
+function holdPetPlayEmotion(emotion) {
+  const value = String(emotion || "").trim();
+  if (!value) return;
+  playState.heldEmotion = value;
+  clearTransientEmotionRestore();
+  setPetEmotion(value, { persist: false });
+}
+
+function getProfilePlayFeedback(kind) {
+  const feedback = getActiveCharacterProfile()?.playFeedback || {};
+  const entry = feedback[kind] && typeof feedback[kind] === "object" ? feedback[kind] : {};
+  const bubble = entry.bubble && typeof entry.bubble === "object" ? entry.bubble : {};
+  return {
+    emotion: String(entry.emotion || "").trim(),
+    bubble: {
+      text: String(bubble.text || "").trim(),
+      durationMs: Math.max(0, Number(bubble.durationMs) || 0)
+    }
+  };
+}
+
+function releasePetPlayEmotion({ delayMs = PET_MOTION_RESTORE_MS } = {}) {
+  const held = playState.heldEmotion;
+  if (!held) return;
+  window.setTimeout(() => {
+    if (playState.heldEmotion !== held) return;
+    if (sending || ttsActive || voiceInputState === "recording" || dragState || physicsTimer) return;
+    playState.heldEmotion = "";
+    setPetEmotion(musicPlaying ? getProfileMusicEmotion() : getProfileDefaultEmotion(), { persist: false });
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
+function restorePetEmotionAfterPlay(durationMs = PET_MOTION_RESTORE_MS) {
+  if (playState.heldEmotion) return;
+  if (sending || ttsActive || voiceInputState === "recording") return;
+  window.setTimeout(() => {
+    if (sending || ttsActive || voiceInputState === "recording" || dragState || physicsTimer) return;
+    setPetEmotion(musicPlaying ? getProfileMusicEmotion() : getProfileDefaultEmotion(), { persist: false });
+  }, durationMs);
+}
+
+function scheduleIdleJump() {
+  window.clearTimeout(idleJumpTimer);
+  if (!isTauriRuntime) return;
+  idleJumpTimer = window.setTimeout(() => {
+    if (Date.now() - lastUserPetInteractionAt < PET_IDLE_JUMP_AFTER_MS) {
+      scheduleIdleJump();
+      return;
+    }
+    maybePlayIdleJump();
+    scheduleIdleJump();
+  }, PET_IDLE_JUMP_AFTER_MS);
+}
+
+function maybePlayIdleJump() {
+  const now = Date.now();
+  if (now - playState.lastIdleJumpAt < PET_IDLE_JUMP_COOLDOWN_MS) return;
+  if (sending || ttsActive || ttsQueue.length > 0 || replyDisplayActive || !els.chatForm.hidden || !els.menu.hidden) return;
+  if (dragState || physicsTimer) return;
+
+  playState.lastIdleJumpAt = now;
+  setPetMotion("jump", { durationMs: 920 });
 }
 
 async function registerWindowListeners() {
@@ -963,6 +1290,8 @@ async function registerWindowListeners() {
     window.clearTimeout(desktopContextPollTimer);
     window.clearTimeout(systemMediaPollTimer);
     window.clearTimeout(proactiveWakeTimer);
+    window.clearTimeout(idleJumpTimer);
+    stopPetPhysics({ restore: false, reschedule: false });
     stopScreenVisionCapture({ clearRemote: false });
     window.clearTimeout(backendRetryTimer);
     window.clearTimeout(workspaceTaskPollTimer);
@@ -2688,6 +3017,12 @@ async function saveNow() {
 
 function applyWindowGeometryToState(geometry) {
   if (!geometry || typeof geometry !== "object") return;
+  lastWindowGeometry = {
+    x: normalizeNullableInteger(geometry.x) ?? 0,
+    y: normalizeNullableInteger(geometry.y) ?? 0,
+    width: normalizePositiveInteger(geometry.width) ?? lastWindowGeometry?.width ?? Math.round(window.outerWidth || window.innerWidth || 340),
+    height: normalizePositiveInteger(geometry.height) ?? lastWindowGeometry?.height ?? Math.round(window.outerHeight || window.innerHeight || 560)
+  };
   state.x = normalizeNullableInteger(geometry.x);
   state.y = normalizeNullableInteger(geometry.y);
   state.width = null;
@@ -5472,7 +5807,7 @@ function hideBubble(token = null) {
   els.bubble.classList.remove("visible");
   setBubbleContent("");
   scheduleNativeHitTestSync({ force: true });
-  setPetMotion(ttsActive ? "speaking" : "idle");
+  restoreMotionAfterBubble();
   updateActivityControls();
 }
 
@@ -5497,9 +5832,22 @@ function setPetMotion(motion, { durationMs = 0 } = {}) {
   visualRenderer.setMotion(next, { restart: next === "click" });
   if (durationMs > 0) {
     motionTimer = window.setTimeout(() => {
-      if (!sending) visualRenderer.setMotion("idle");
+      if (sending) return;
+      visualRenderer.setMotion(physicsTimer ? "thrown" : "idle");
     }, durationMs);
   }
+}
+
+function restoreMotionAfterBubble() {
+  if (dragState) {
+    visualRenderer.setMotion("dragging");
+    return;
+  }
+  if (physicsTimer) {
+    visualRenderer.setMotion("thrown");
+    return;
+  }
+  visualRenderer.setMotion(ttsActive ? "speaking" : "idle");
 }
 
 function showFileDropHint() {

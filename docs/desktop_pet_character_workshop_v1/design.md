@@ -404,6 +404,12 @@ The current `akane.character.v0.1` can migrate gradually. V0.2 should be backwar
       {"text": "嗯？有事就说。", "emotion": "normal"}
     ]
   },
+  "play_feedback": {
+    "throw_fast": {"emotion": "shock", "bubble": {"text": "啊啊啊飞起来啦！", "duration_ms": 1500}},
+    "throw_light": {"emotion": "confused", "bubble": {"text": "", "duration_ms": 0}},
+    "wall_hit": {"emotion": "confused", "bubble": {"text": "撞到了。", "duration_ms": 1200}},
+    "land": {"emotion": "", "bubble": {"text": "", "duration_ms": 0}}
+  },
   "emotion_aliases": {
     "normal": ["normal", "正常"],
     "thinking": ["thinking", "思考中", "困惑"],

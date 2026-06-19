@@ -43,11 +43,19 @@ const FALLBACK_PROFILE = {
       "主人暂时没有说话。你像坐在旁边陪他一样，轻轻搭一句自然的话。桌面线索只当背景，不要刻意围绕窗口标题发挥。",
     local_click_lines: [{ text: "嗯？我在哦。", emotion: "正常" }]
   },
+  play_feedback: {
+    throw_fast: { emotion: "shock", bubble: { text: "啊啊啊飞起来啦！", duration_ms: 1500 } },
+    throw_light: { emotion: "confused", bubble: { text: "", duration_ms: 0 } },
+    wall_hit: { emotion: "confused", bubble: { text: "撞到了。", duration_ms: 1200 } },
+    land: { emotion: "", bubble: { text: "", duration_ms: 0 } }
+  },
   emotion_aliases: {
     normal: ["正常", "normal"],
     thinking: ["思考中", "困惑", "正常"],
     happy: ["开心", "正常"],
     confused: ["困惑", "正常"],
+    shock: ["困惑", "气鼓鼓", "正常"],
+    pat: ["被摸头", "开心", "脸红", "正常"],
     music: ["听歌中", "开心", "正常"]
   },
   assets: {
@@ -278,6 +286,7 @@ function normalizeCharacterProfile(value) {
   const identity = source.identity && typeof source.identity === "object" ? source.identity : {};
   const appearance = source.appearance && typeof source.appearance === "object" ? source.appearance : {};
   const dialogue = source.dialogue && typeof source.dialogue === "object" ? source.dialogue : {};
+  const playFeedback = source.play_feedback && typeof source.play_feedback === "object" ? source.play_feedback : {};
   const personaForm = source.persona_form && typeof source.persona_form === "object" ? source.persona_form : {};
   const assets = source.assets && typeof source.assets === "object" ? source.assets : {};
 
@@ -325,6 +334,7 @@ function normalizeCharacterProfile(value) {
       ),
       localClickLines: cleanLocalClickLines(dialogue.local_click_lines, fallback.dialogue.local_click_lines)
     },
+    playFeedback: normalizePlayFeedback(playFeedback, fallback.play_feedback),
     emotionAliases: normalizeEmotionAliases(source.emotion_aliases || fallback.emotion_aliases, defaultEmotion),
     assets: {
       runtimeSource: cleanText(assets.runtime_source, fallback.assets.runtime_source),
@@ -383,6 +393,35 @@ function cleanLocalClickLines(value, fallback = []) {
   return lines.length ? lines : [{ text: "我在哦。", emotion: "" }];
 }
 
+function normalizePlayFeedback(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    throwFast: normalizePlayFeedbackEntry(source.throw_fast, fallback.throw_fast),
+    throwLight: normalizePlayFeedbackEntry(source.throw_light, fallback.throw_light),
+    wallHit: normalizePlayFeedbackEntry(source.wall_hit, fallback.wall_hit),
+    land: normalizePlayFeedbackEntry(source.land, fallback.land)
+  };
+}
+
+function normalizePlayFeedbackEntry(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const fallbackBubble = fallback.bubble && typeof fallback.bubble === "object" ? fallback.bubble : {};
+  const bubble = source.bubble && typeof source.bubble === "object" ? source.bubble : {};
+  const text = Object.prototype.hasOwnProperty.call(bubble, "text")
+    ? String(bubble.text ?? "").trim()
+    : cleanText(fallbackBubble.text, "");
+  const durationMs = Number(bubble.duration_ms ?? fallbackBubble.duration_ms ?? 0);
+  return {
+    emotion: Object.prototype.hasOwnProperty.call(source, "emotion")
+      ? String(source.emotion ?? "").trim()
+      : cleanText(fallback.emotion, ""),
+    bubble: {
+      text,
+      durationMs: Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0
+    }
+  };
+}
+
 function normalizeEmotionAliases(value, defaultEmotion) {
   const source = value && typeof value === "object" ? value : {};
   const entries = Object.entries(source)
@@ -395,6 +434,8 @@ function normalizeEmotionAliases(value, defaultEmotion) {
   if (!aliases.normal) aliases.normal = [defaultEmotion, "normal"].filter(Boolean);
   if (!aliases.thinking) aliases.thinking = ["思考中", defaultEmotion].filter(Boolean);
   if (!aliases.confused) aliases.confused = ["困惑", defaultEmotion].filter(Boolean);
+  if (!aliases.shock) aliases.shock = ["困惑", "气鼓鼓", defaultEmotion].filter(Boolean);
+  if (!aliases.pat) aliases.pat = ["被摸头", "开心", "脸红", defaultEmotion].filter(Boolean);
   if (!aliases.music) aliases.music = [defaultEmotion];
   return aliases;
 }

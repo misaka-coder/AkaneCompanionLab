@@ -154,6 +154,36 @@
     "session_display_title": "Akane 桌宠对话",
     "tts_test_text": "Akane Next：语音播放测试。"
   },
+  "play_feedback": {
+    "throw_fast": {
+      "emotion": "shock",
+      "bubble": {
+        "text": "啊啊啊飞起来啦！",
+        "duration_ms": 1500
+      }
+    },
+    "throw_light": {
+      "emotion": "confused",
+      "bubble": {
+        "text": "",
+        "duration_ms": 0
+      }
+    },
+    "wall_hit": {
+      "emotion": "confused",
+      "bubble": {
+        "text": "撞到了。",
+        "duration_ms": 1200
+      }
+    },
+    "land": {
+      "emotion": "",
+      "bubble": {
+        "text": "",
+        "duration_ms": 0
+      }
+    }
+  },
   "emotion_aliases": {
     "affectionate": [
       "卖萌",
@@ -324,7 +354,8 @@
       "正常"
     ],
     "shock": [
-      "无语",
+      "困惑",
+      "气鼓鼓",
       "正常"
     ],
     "shy": [
