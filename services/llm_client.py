@@ -107,6 +107,7 @@ class _AnthropicStream:
     def __init__(self, *, response: requests.Response, model: str):
         self._response = response
         self._model = model
+        self.usage = None
 
     def __iter__(self):
         event_name = ""
@@ -120,6 +121,8 @@ class _AnthropicStream:
                 else:
                     line = str(raw_line).strip()
                 if not line:
+                    if event_name == "message_start" and data_lines:
+                        self._capture_stream_usage(data_lines)
                     chunk = _chunk_from_sse_event(event_name, data_lines, self._model)
                     if chunk is not None:
                         yield chunk
@@ -139,6 +142,17 @@ class _AnthropicStream:
         finally:
             self._response.close()
 
+    def _capture_stream_usage(self, data_lines: list) -> None:
+        try:
+            payload = json.loads("\n".join(data_lines).strip())
+            raw = (payload.get("message") or {}).get("usage") or {}
+            self.usage = SimpleNamespace(
+                cache_read_input_tokens=int(raw.get("cache_read_input_tokens", 0) or 0),
+                cache_creation_input_tokens=int(raw.get("cache_creation_input_tokens", 0) or 0),
+            )
+        except Exception:
+            pass
+
 
 def _anthropic_messages_endpoint(base_url: str) -> str:
     clean = str(base_url or "").strip().rstrip("/")
@@ -152,13 +166,26 @@ def _anthropic_messages_endpoint(base_url: str) -> str:
 def _build_anthropic_payload(kwargs: dict) -> dict:
     raw_messages = kwargs.get("messages") or []
     system_text, messages = _convert_messages(raw_messages)
+    system_extra_blocks = [
+        str(b or "").strip()
+        for b in (kwargs.get("system_extra_blocks") or [])
+        if str(b or "").strip()
+    ]
     payload = {
         "model": kwargs.get("model", ""),
         "messages": messages,
         "max_tokens": int(kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or 1024),
     }
+    max_system_cache_blocks = 4
+    system_blocks = []
     if system_text:
-        payload["system"] = system_text
+        system_blocks.append(_build_system_text_block(system_text, cache_enabled=max_system_cache_blocks > 0))
+        max_system_cache_blocks -= 1
+    for extra in system_extra_blocks:
+        system_blocks.append(_build_system_text_block(extra, cache_enabled=max_system_cache_blocks > 0))
+        max_system_cache_blocks -= 1
+    if system_blocks:
+        payload["system"] = system_blocks
 
     if "temperature" in kwargs and kwargs.get("temperature") is not None:
         payload["temperature"] = max(0.0, min(1.0, float(kwargs["temperature"])))
@@ -183,6 +210,13 @@ def _build_anthropic_payload(kwargs: dict) -> dict:
                 payload[key] = value
 
     return payload
+
+
+def _build_system_text_block(text: str, *, cache_enabled: bool) -> dict:
+    block = {"type": "text", "text": text}
+    if cache_enabled:
+        block["cache_control"] = {"type": "ephemeral"}
+    return block
 
 
 def _convert_messages(messages: list) -> tuple[str, list]:
@@ -317,6 +351,8 @@ def _build_openai_style_response(payload: dict, model: str):
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=prompt_tokens + completion_tokens,
+            cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
+            cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
         ),
     )
 

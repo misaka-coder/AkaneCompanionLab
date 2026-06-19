@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from services.llm_client import build_llm_client, normalize_api_protocol, normalize_base_url
+from services.llm_client import _build_anthropic_payload, build_llm_client, normalize_api_protocol, normalize_base_url
 from companion_v01.llm_runtime import LLMRuntime
 
 
@@ -231,6 +231,41 @@ class LLMClientConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertEqual(payload["stream_options"], {"include_usage": True})
+
+    def test_anthropic_system_extra_blocks_are_preserved_beyond_cache_limit(self) -> None:
+        payload = _build_anthropic_payload(
+            {
+                "model": "claude-test",
+                "messages": [
+                    {"role": "system", "content": "base system"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "system_extra_blocks": ["extra-1", "extra-2", "extra-3", "extra-4", "extra-5"],
+            }
+        )
+
+        system_blocks = payload["system"]
+        self.assertEqual([block["text"] for block in system_blocks], ["base system", "extra-1", "extra-2", "extra-3", "extra-4", "extra-5"])
+        self.assertEqual(sum(1 for block in system_blocks if "cache_control" in block), 4)
+        self.assertNotIn("cache_control", system_blocks[-1])
+
+    def test_llm_runtime_records_deepseek_cache_usage_fields(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        recorded: list[tuple[str, int]] = []
+        runtime._record_metric = lambda key, amount=1: recorded.append((key, amount))
+
+        runtime._record_cache_metrics(
+            SimpleNamespace(
+                usage=SimpleNamespace(
+                    prompt_cache_hit_tokens=12,
+                    prompt_cache_miss_tokens=34,
+                )
+            )
+        )
+
+        self.assertIn(("cache_read_tokens", 12), recorded)
+        self.assertIn(("cache_creation_tokens", 34), recorded)
 
     def test_llm_runtime_does_not_send_deepseek_thinking_control_to_other_hosts(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
@@ -249,6 +284,7 @@ class LLMClientConfigTests(unittest.TestCase):
         )
 
         self.assertNotIn("extra_body", payload)
+        self.assertNotIn("stream_options", payload)
 
     def test_llm_runtime_retries_without_prompt_cache_hints_when_client_rejects_them(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

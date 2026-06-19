@@ -346,6 +346,8 @@ class LLMRuntime:
             "aux_ndjson_calls": 0,
             "chat_stream_calls": 0,
             "errors": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
         }
 
     def reload_from_config(self) -> dict[str, str]:
@@ -410,6 +412,7 @@ class LLMRuntime:
         user_images: list[dict[str, Any]] | None = None,
         native_tools: list[dict[str, Any]] | None = None,
         native_tool_choice: Any = "",
+        system_extra_blocks: list[str] | None = None,
     ) -> dict[str, Any]:
         self._record_metric("chat_json_calls")
         return self._call_json(
@@ -422,6 +425,7 @@ class LLMRuntime:
             user_images=user_images,
             native_tools=native_tools,
             native_tool_choice=native_tool_choice,
+            system_extra_blocks=system_extra_blocks,
         )
 
     def call_aux_ndjson(
@@ -453,6 +457,7 @@ class LLMRuntime:
         early_tool_call_validator: Callable[[dict[str, Any]], bool] | None = None,
         prompt_cache_key: str = "",
         user_images: list[dict[str, Any]] | None = None,
+        system_extra_blocks: list[str] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         self._record_metric("chat_stream_calls")
         return self._stream_chat_json(
@@ -464,6 +469,7 @@ class LLMRuntime:
             early_tool_call_validator=early_tool_call_validator,
             prompt_cache_key=prompt_cache_key,
             user_images=user_images,
+            system_extra_blocks=system_extra_blocks,
         )
 
     def _call_json(
@@ -478,6 +484,7 @@ class LLMRuntime:
         user_images: list[dict[str, Any]] | None = None,
         native_tools: list[dict[str, Any]] | None = None,
         native_tool_choice: Any = "",
+        system_extra_blocks: list[str] | None = None,
     ) -> dict[str, Any]:
         try:
             response = self._create_completion(
@@ -492,8 +499,10 @@ class LLMRuntime:
                     user_images=user_images,
                     native_tools=native_tools,
                     native_tool_choice=native_tool_choice,
+                    system_extra_blocks=system_extra_blocks,
                 ),
             )
+            self._record_cache_metrics(response)
             native_tool_call = self._extract_native_tool_call(response)
             if native_tool_call is not None:
                 return {"tool_call": native_tool_call}
@@ -542,6 +551,7 @@ class LLMRuntime:
                 ),
             )
             for chunk in response:
+                self._record_cache_metrics(chunk)
                 text = self._extract_stream_text(chunk)
                 if not text:
                     continue
@@ -606,6 +616,7 @@ class LLMRuntime:
         early_tool_call_validator: Callable[[dict[str, Any]], bool] | None,
         prompt_cache_key: str,
         user_images: list[dict[str, Any]] | None = None,
+        system_extra_blocks: list[str] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         import time
 
@@ -629,9 +640,11 @@ class LLMRuntime:
                     json_mode=True,
                     prompt_cache_key=prompt_cache_key,
                     user_images=user_images,
+                    system_extra_blocks=system_extra_blocks,
                 ),
             )
             for chunk in response:
+                self._record_cache_metrics(chunk)
                 text = self._extract_stream_text(chunk)
                 if not text:
                     continue
@@ -654,6 +667,7 @@ class LLMRuntime:
             error = str(exc or "").strip()
             self._record_metric("errors")
         finally:
+            self._record_cache_metrics(response)
             self._close_stream(response)
 
         raw_text = "".join(raw_parts)
@@ -803,6 +817,7 @@ class LLMRuntime:
         user_images: list[dict[str, Any]] | None = None,
         native_tools: list[dict[str, Any]] | None = None,
         native_tool_choice: Any = "",
+        system_extra_blocks: list[str] | None = None,
     ) -> dict[str, Any]:
         user_content: str | list[dict[str, Any]]
         image_items = self._normalize_user_image_items(user_images)
@@ -820,6 +835,8 @@ class LLMRuntime:
         }
         if stream:
             payload["stream"] = True
+            if self._supports_stream_usage(bundle):
+                payload["stream_options"] = {"include_usage": True}
         if json_mode and self._should_use_response_json_mode(bundle):
             payload["response_format"] = {"type": "json_object"}
         normalized_tools = self._normalize_native_tools(native_tools)
@@ -835,7 +852,47 @@ class LLMRuntime:
                 prompt_cache_key=prompt_cache_key,
             )
         )
+        if system_extra_blocks and self._is_anthropic_protocol(bundle):
+            filtered = [str(b or "").strip() for b in system_extra_blocks if str(b or "").strip()]
+            if filtered:
+                payload["system_extra_blocks"] = filtered
         return payload
+
+    def _is_anthropic_protocol(self, bundle: ModelBundle) -> bool:
+        protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        return protocol == "anthropic"
+
+    def _supports_stream_usage(self, bundle: ModelBundle) -> bool:
+        return self._supports_deepseek_thinking_control(bundle)
+
+    def _record_cache_metrics(self, response: Any) -> None:
+        try:
+            usage = getattr(response, "usage", None)
+            if usage is None and isinstance(response, dict):
+                usage = response.get("usage")
+            if usage is None:
+                return
+            # Anthropic: cache_read_input_tokens / cache_creation_input_tokens
+            read = self._usage_int(usage, "cache_read_input_tokens")
+            creation = self._usage_int(usage, "cache_creation_input_tokens")
+            # DeepSeek: prompt_cache_hit_tokens / prompt_cache_miss_tokens
+            if not read:
+                read = self._usage_int(usage, "prompt_cache_hit_tokens")
+            if not creation:
+                creation = self._usage_int(usage, "prompt_cache_miss_tokens")
+            if read:
+                self._record_metric("cache_read_tokens", read)
+            if creation:
+                self._record_metric("cache_creation_tokens", creation)
+        except Exception:
+            pass
+
+    def _usage_int(self, usage: Any, key: str) -> int:
+        value = usage.get(key) if isinstance(usage, dict) else getattr(usage, key, 0)
+        try:
+            return int(value or 0)
+        except Exception:
+            return 0
 
     def _should_send_native_tools(self, bundle: ModelBundle) -> bool:
         protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
