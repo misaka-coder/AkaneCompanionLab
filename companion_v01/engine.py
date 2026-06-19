@@ -2440,6 +2440,7 @@ class AkaneMemoryEngine:
             temperature=0.7,
             prompt_cache_key="chat:final",
             user_images=user_images,
+            system_extra_blocks=generation_context.get("system_extra_blocks"),
         )
         return self._normalize_final_output(
             result=result,
@@ -2504,6 +2505,7 @@ class AkaneMemoryEngine:
             temperature=0.7,
             prompt_cache_key="chat:final",
             user_images=user_images,
+            system_extra_blocks=generation_context.get("system_extra_blocks"),
             early_tool_call_validator=(
                 lambda call: self._normalize_tool_call(
                     call,

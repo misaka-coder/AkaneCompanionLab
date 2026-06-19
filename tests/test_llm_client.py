@@ -94,6 +94,44 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(content[1], {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}})
         self.assertEqual(len(content), 2)
 
+    def test_llm_runtime_preserves_system_extra_blocks_for_openai_compatible_payloads(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-flash",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            system_extra_blocks=["resource block", "semantic block"],
+        )
+
+        self.assertIn("system", payload["messages"][0]["content"])
+        self.assertIn("resource block", payload["messages"][0]["content"])
+        self.assertIn("semantic block", payload["messages"][0]["content"])
+        self.assertNotIn("system_extra_blocks", payload)
+
+    def test_llm_runtime_keeps_system_extra_blocks_separate_for_anthropic(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="anthropic"),
+            model="claude-test",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            system_extra_blocks=["resource block", "semantic block"],
+        )
+
+        self.assertEqual(payload["messages"][0]["content"], "system")
+        self.assertEqual(payload["system_extra_blocks"], ["resource block", "semantic block"])
+
     def test_llm_runtime_adds_prompt_cache_hints_for_official_openai(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(

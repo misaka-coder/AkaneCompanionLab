@@ -248,7 +248,17 @@ system = "semantic reinforcement system"
             self.assertIn("persona state", result["system_prompt"])
             self.assertLess(result["system_prompt"].index("debug mode"), result["system_prompt"].index("persona state"))
             self.assertLess(result["system_prompt"].index("- fake tool"), result["system_prompt"].index("persona state"))
-            self.assertIn("较长期的语义记忆", result["user_prompt"])
+            self.assertEqual(
+                result["system_extra_blocks"],
+                [
+                    "可用视觉资源：\nresource",
+                    "较长期的语义记忆（最多3条）：\nsemantic",
+                    "最近可见的阶段摘要（5~10条弹性窗口）：\nepisode",
+                ],
+            )
+            self.assertNotIn("较长期的语义记忆", result["user_prompt"])
+            self.assertNotIn("最近可见的阶段摘要", result["user_prompt"])
+            self.assertNotIn("可用视觉资源", result["user_prompt"])
             self.assertIn("记忆情绪", result["user_prompt"])
             self.assertIn("情感余温", result["user_prompt"])
             self.assertIn("不要把它当作用户事实", result["user_prompt"])
@@ -304,7 +314,7 @@ system = "semantic reinforcement system"
         prompt = build_desktop_pet_system_prompt()
 
         self.assertIn("desktop_pet 桌宠模式", prompt)
-        self.assertIn("只能从本轮给你的角色包资源清单里选择服装和表情", prompt)
+        self.assertIn("只能从本轮给你的角色包资源清单里选择，不要编造不存在的 emotion", prompt)
         self.assertIn("当用户明确要求你生成、转换、发送或处理文件", prompt)
         self.assertIn("activity 是给桌宠执行的请求", prompt)
         self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", prompt)

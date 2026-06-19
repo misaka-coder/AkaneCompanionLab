@@ -177,16 +177,24 @@ class PromptBuilder:
         if persona_system:
             system_prompt += f"\n{persona_system}"
 
+        system_extra_blocks: list[str] = []
+        resource_context_text = str(resource_context or "").strip()
+        if resource_context_text:
+            system_extra_blocks.append(f"可用视觉资源：\n{resource_context_text}")
+        semantic_text = str(semantic_summary_text or "").strip()
+        if semantic_text:
+            system_extra_blocks.append(f"较长期的语义记忆（最多3条）：\n{semantic_text}")
+        episodic_text = str(episodic_summary_text or "").strip()
+        if episodic_text:
+            system_extra_blocks.append(f"最近可见的阶段摘要（5~10条弹性窗口）：\n{episodic_text}")
+
         user_prompt = (
             f"debug_enabled={str(debug_enabled).lower()}\n"
             f"{self.persona.final_user_prompt_suffix}\n\n"
-            f"可用视觉资源：\n{resource_context}\n\n"
             f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
             f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
-            "如果下面的记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
+            "如果记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
             "回应时自然带着这份余温即可，不要把它当作用户事实，也不要生硬复述标签。\n\n"
-            f"较长期的语义记忆（最多3条）：\n{semantic_summary_text or '(无)'}\n\n"
-            f"最近可见的阶段摘要（5~10条弹性窗口）：\n{episodic_summary_text or '(无)'}\n\n"
             f"当前会话中所有未总结的原始消息：\n{raw_text or '(无)'}\n\n"
             f"可用回忆片段：\n{memory_text}\n\n"
             f"{extra_context}\n\n"
@@ -198,6 +206,7 @@ class PromptBuilder:
             "visual_defaults": visual_defaults,
             "fallback": fallback,
             "system_prompt": system_prompt,
+            "system_extra_blocks": system_extra_blocks,
             "user_prompt": user_prompt,
         }
 

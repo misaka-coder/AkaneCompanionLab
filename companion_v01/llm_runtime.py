@@ -825,11 +825,17 @@ class LLMRuntime:
             user_content = [{"type": "text", "text": user_prompt}, *image_items]
         else:
             user_content = user_prompt
+        filtered_system_extra_blocks = self._normalize_system_extra_blocks(system_extra_blocks)
+        effective_system_prompt = str(system_prompt or "")
+        if filtered_system_extra_blocks and not self._is_anthropic_protocol(bundle):
+            effective_system_prompt = "\n\n".join(
+                part for part in [effective_system_prompt.strip(), *filtered_system_extra_blocks] if part
+            )
         payload: dict[str, Any] = {
             "model": bundle.model,
             "temperature": temperature,
             "messages": [
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": effective_system_prompt},
                 {"role": "user", "content": user_content},
             ],
         }
@@ -852,11 +858,14 @@ class LLMRuntime:
                 prompt_cache_key=prompt_cache_key,
             )
         )
-        if system_extra_blocks and self._is_anthropic_protocol(bundle):
-            filtered = [str(b or "").strip() for b in system_extra_blocks if str(b or "").strip()]
-            if filtered:
-                payload["system_extra_blocks"] = filtered
+        if filtered_system_extra_blocks and self._is_anthropic_protocol(bundle):
+            payload["system_extra_blocks"] = filtered_system_extra_blocks
         return payload
+
+    def _normalize_system_extra_blocks(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item or "").strip() for item in value if str(item or "").strip()]
 
     def _is_anthropic_protocol(self, bundle: ModelBundle) -> bool:
         protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
