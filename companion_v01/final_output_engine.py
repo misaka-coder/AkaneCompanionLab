@@ -233,6 +233,7 @@ def normalize_final_output(
     )
     normalized["memory_metadata"] = memory_metadata
     normalized.pop("memory_tags", None)
+    normalized["state_request"] = normalize_state_request(normalized.get("state_request"))
     normalized["choices"] = engine._normalize_choices(normalized.get("choices"))
     persona_service = engine._get_persona_card_service()
     current_persona_id = (
@@ -495,6 +496,19 @@ def apply_persona_state_to_final_output(
         "active": str(state.get("active_id") or ""),
     }
     return normalized
+
+
+def normalize_state_request(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, Any] = {}
+    affinity = value.get("affinity")
+    if affinity is not None:
+        try:
+            result["affinity"] = max(-5, min(5, int(affinity)))
+        except (TypeError, ValueError):
+            pass
+    return result or None
 
 
 def normalize_code_snippet(value: Any) -> str:

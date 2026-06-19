@@ -18,6 +18,7 @@ COMMON_RESPONSE_BLOCKS = (
     "time_awareness",
     "persona_state",
     "memory_metadata",
+    "state_request",
 )
 
 SCENE_STATIC_SYSTEM_BLOCKS = (
@@ -139,6 +140,14 @@ class PromptBlockRegistry:
                 text=(
                     "persona.active 表示当前表达侧面 id；保持当前值表示延续，写其它已有 id 表示切换，写空字符串或 default 表示回到默认表达。\n"
                     "manage_persona 只用于创建、微调、查看、归档或删除表达侧面卡片本身。"
+                ),
+            ),
+            "state_request": PromptBlock(
+                id="state_request",
+                text=(
+                    "state_request 用于表达本轮互动对角色状态的影响，大多数对话省略（null）。\n"
+                    "affinity 是好感度变化量，整数 -5 到 5；根据当前角色的性格判断方向——角色设定决定什么让她开心、什么让她受伤，方向可以和直觉相反。\n"
+                    "普通闲聊、工具调用、日常问答输出 null；只有互动对感情有明显推进或伤害时才填写非零值。"
                 ),
             ),
             "scene_visual_resources": PromptBlock(

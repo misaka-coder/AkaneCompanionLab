@@ -152,6 +152,7 @@ class PromptBuilder:
                 "importance": 0.0,
                 "confidence": 0.0,
             },
+            "state_request": None,
         }
         if debug_enabled:
             fallback["thought"] = self.persona.final_fallback_thought
