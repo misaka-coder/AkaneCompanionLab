@@ -2441,6 +2441,7 @@ class AkaneMemoryEngine:
             prompt_cache_key="chat:final",
             user_images=user_images,
             system_extra_blocks=generation_context.get("system_extra_blocks"),
+            history_turns=generation_context.get("history_turns"),
         )
         return self._normalize_final_output(
             result=result,
@@ -2506,6 +2507,7 @@ class AkaneMemoryEngine:
             prompt_cache_key="chat:final",
             user_images=user_images,
             system_extra_blocks=generation_context.get("system_extra_blocks"),
+            history_turns=generation_context.get("history_turns"),
             early_tool_call_validator=(
                 lambda call: self._normalize_tool_call(
                     call,
@@ -2580,13 +2582,15 @@ class AkaneMemoryEngine:
         user_character_outfits = list(runtime_projection.get("extra_character_outfits") or [])
         desktop_pet_character_only = client_context.effective_mode == ClientMode.DESKTOP_PET
         character_pack_persona_enabled = client_context.effective_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}
-        raw_text = render_chat_timeline(recent_raw)
+        history_records = recent_raw[:-1] if len(recent_raw) > 1 else []
+        current_record = recent_raw[-1] if recent_raw else {
+            "role": "user",
+            "content": user_message,
+            "timestamp": now_ts,
+        }
+        history_turns = self._build_history_turns(history_records)
         current_message_text = self._render_current_message_line(
-            current_user_record=recent_raw[-1] if recent_raw else {
-                "role": "user",
-                "content": user_message,
-                "timestamp": now_ts,
-            },
+            current_user_record=current_record,
         )
         episodic_summary_text = render_summary_timeline(
             recent_episodic_summaries,
@@ -2873,7 +2877,7 @@ class AkaneMemoryEngine:
             )
         generation_context = self._get_prompt_builder().build_final_generation_context(
             now_ts=now_ts,
-            raw_text=raw_text,
+            history_turns=history_turns,
             current_message_text=current_message_text,
             episodic_summary_text=episodic_summary_text,
             semantic_summary_text=semantic_summary_text,
@@ -3908,6 +3912,23 @@ class AkaneMemoryEngine:
 
     def _coerce_visual_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         return visual_context_engine.coerce_visual_payload(payload)
+
+    @staticmethod
+    def _build_history_turns(records: list[dict[str, Any]]) -> list[dict[str, str]]:
+        turns: list[dict[str, str]] = []
+        for rec in records:
+            role = str(rec.get("role", "") or "").strip().lower()
+            content = str(rec.get("content", "") or "").strip()
+            if not content:
+                continue
+            if role == "assistant":
+                turns.append({"role": "assistant", "content": content})
+            elif role.startswith("npc:"):
+                # npc: downgrade to user to avoid unsupported role in API
+                turns.append({"role": "user", "content": content})
+            else:
+                turns.append({"role": "user", "content": content})
+        return turns
 
     def _render_current_message_line(
         self,

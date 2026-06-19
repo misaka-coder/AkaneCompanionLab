@@ -413,6 +413,7 @@ class LLMRuntime:
         native_tools: list[dict[str, Any]] | None = None,
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
+        history_turns: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         self._record_metric("chat_json_calls")
         return self._call_json(
@@ -426,6 +427,7 @@ class LLMRuntime:
             native_tools=native_tools,
             native_tool_choice=native_tool_choice,
             system_extra_blocks=system_extra_blocks,
+            history_turns=history_turns,
         )
 
     def call_aux_ndjson(
@@ -458,6 +460,7 @@ class LLMRuntime:
         prompt_cache_key: str = "",
         user_images: list[dict[str, Any]] | None = None,
         system_extra_blocks: list[str] | None = None,
+        history_turns: list[dict[str, str]] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         self._record_metric("chat_stream_calls")
         return self._stream_chat_json(
@@ -470,6 +473,7 @@ class LLMRuntime:
             prompt_cache_key=prompt_cache_key,
             user_images=user_images,
             system_extra_blocks=system_extra_blocks,
+            history_turns=history_turns,
         )
 
     def _call_json(
@@ -485,6 +489,7 @@ class LLMRuntime:
         native_tools: list[dict[str, Any]] | None = None,
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
+        history_turns: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         try:
             response = self._create_completion(
@@ -500,6 +505,7 @@ class LLMRuntime:
                     native_tools=native_tools,
                     native_tool_choice=native_tool_choice,
                     system_extra_blocks=system_extra_blocks,
+                    history_turns=history_turns,
                 ),
             )
             self._record_cache_metrics(response)
@@ -617,6 +623,7 @@ class LLMRuntime:
         prompt_cache_key: str,
         user_images: list[dict[str, Any]] | None = None,
         system_extra_blocks: list[str] | None = None,
+        history_turns: list[dict[str, str]] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         import time
 
@@ -641,6 +648,7 @@ class LLMRuntime:
                     prompt_cache_key=prompt_cache_key,
                     user_images=user_images,
                     system_extra_blocks=system_extra_blocks,
+                    history_turns=history_turns,
                 ),
             )
             for chunk in response:
@@ -818,6 +826,7 @@ class LLMRuntime:
         native_tools: list[dict[str, Any]] | None = None,
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
+        history_turns: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         user_content: str | list[dict[str, Any]]
         image_items = self._normalize_user_image_items(user_images)
@@ -831,13 +840,17 @@ class LLMRuntime:
             effective_system_prompt = "\n\n".join(
                 part for part in [effective_system_prompt.strip(), *filtered_system_extra_blocks] if part
             )
+        messages: list[dict[str, Any]] = [{"role": "system", "content": effective_system_prompt}]
+        for turn in history_turns or []:
+            role = str(turn.get("role", "") or "").strip().lower()
+            content = str(turn.get("content", "") or "").strip()
+            if content and role in {"user", "assistant"}:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_content})
         payload: dict[str, Any] = {
             "model": bundle.model,
             "temperature": temperature,
-            "messages": [
-                {"role": "system", "content": effective_system_prompt},
-                {"role": "user", "content": user_content},
-            ],
+            "messages": messages,
         }
         if stream:
             payload["stream"] = True
