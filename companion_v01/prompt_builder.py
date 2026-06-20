@@ -196,6 +196,7 @@ class PromptBuilder:
             f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
             "如果记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
             "回应时自然带着这份余温即可，不要把它当作用户事实，也不要生硬复述标签。\n\n"
+            f"当前会话中所有未总结的原始消息：\n{raw_text or '(无)'}\n\n"
             f"可用回忆片段：\n{memory_text}\n\n"
             f"{extra_context}\n\n"
             f"用户原始消息：\n{current_message_text}\n\n"

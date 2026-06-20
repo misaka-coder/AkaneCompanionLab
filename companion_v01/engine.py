@@ -2582,13 +2582,12 @@ class AkaneMemoryEngine:
         user_character_outfits = list(runtime_projection.get("extra_character_outfits") or [])
         desktop_pet_character_only = client_context.effective_mode == ClientMode.DESKTOP_PET
         character_pack_persona_enabled = client_context.effective_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}
-        history_records = recent_raw[:-1] if len(recent_raw) > 1 else []
-        current_record = recent_raw[-1] if recent_raw else {
-            "role": "user",
-            "content": user_message,
-            "timestamp": now_ts,
-        }
-        history_turns = self._build_history_turns(history_records)
+        raw_text = render_chat_timeline(recent_raw)
+        _history_records, current_record = self._split_history_records(
+            recent_raw=recent_raw,
+            user_message=user_message,
+            now_ts=now_ts,
+        )
         current_message_text = self._render_current_message_line(
             current_user_record=current_record,
         )
@@ -2877,7 +2876,7 @@ class AkaneMemoryEngine:
             )
         generation_context = self._get_prompt_builder().build_final_generation_context(
             now_ts=now_ts,
-            history_turns=history_turns,
+            raw_text=raw_text,
             current_message_text=current_message_text,
             episodic_summary_text=episodic_summary_text,
             semantic_summary_text=semantic_summary_text,
@@ -3914,20 +3913,50 @@ class AkaneMemoryEngine:
         return visual_context_engine.coerce_visual_payload(payload)
 
     @staticmethod
+    def _split_history_records(
+        *,
+        recent_raw: list[dict[str, Any]],
+        user_message: str,
+        now_ts: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        records = list(recent_raw or [])
+        current_record: dict[str, Any] = {
+            "role": "user",
+            "content": user_message,
+            "timestamp": now_ts,
+        }
+        if not records:
+            return [], current_record
+
+        last_record = records[-1]
+        last_role = str(last_record.get("role", "") or "").strip().lower()
+        last_content = normalize_text(str(last_record.get("content", "") or ""))
+        current_content = normalize_text(user_message)
+        if last_role == "user" and last_content == current_content:
+            return records[:-1], last_record
+        return records, current_record
+
+    @staticmethod
     def _build_history_turns(records: list[dict[str, Any]]) -> list[dict[str, str]]:
         turns: list[dict[str, str]] = []
         for rec in records:
-            role = str(rec.get("role", "") or "").strip().lower()
+            raw_role = str(rec.get("role", "") or "").strip()
+            role = raw_role.lower()
             content = str(rec.get("content", "") or "").strip()
             if not content:
                 continue
+            rendered_content = render_chat_line(
+                role=raw_role,
+                content=content,
+                timestamp=rec.get("timestamp"),
+            )
             if role == "assistant":
-                turns.append({"role": "assistant", "content": content})
+                turns.append({"role": "assistant", "content": rendered_content})
             elif role.startswith("npc:"):
                 # npc: downgrade to user to avoid unsupported role in API
-                turns.append({"role": "user", "content": content})
+                turns.append({"role": "user", "content": rendered_content})
             else:
-                turns.append({"role": "user", "content": content})
+                turns.append({"role": "user", "content": rendered_content})
         return turns
 
     def _render_current_message_line(
