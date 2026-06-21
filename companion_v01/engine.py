@@ -1006,7 +1006,22 @@ class AkaneMemoryEngine:
         desktop_care = payload.get("desktop_care")
         try:
             if isinstance(desktop_care, dict):
-                care_runtime.sync_from_client(
+                is_desktop = (
+                    client_context is not None
+                    and client_context.effective_mode == ClientMode.DESKTOP_PET
+                )
+                if is_desktop:
+                    # Record turn before sync so the snapshot already includes this turn's count
+                    try:
+                        care_runtime.record_turn(
+                            profile_user_id=profile_user_id,
+                            character_pack_id=character_pack_id,
+                            relation_user_id=profile_user_id,
+                            now_ms=now_ms,
+                        )
+                    except Exception as exc:
+                        logger.warning("desktop care record_turn failed: %s", exc)
+                sync_result = care_runtime.sync_from_client(
                     profile_user_id=profile_user_id,
                     character_pack_id=character_pack_id,
                     client_mode=client_mode,
@@ -1014,6 +1029,16 @@ class AkaneMemoryEngine:
                     relation_user_id=relation_user_id,
                     now_ms=now_ms,
                 )
+                if is_desktop:
+                    # Enrich desktop_care with tier event and anchors from sync
+                    merged_care = dict(desktop_care)
+                    if sync_result.get("pending_tier_event"):
+                        merged_care["pending_tier_event"] = sync_result["pending_tier_event"]
+                    if sync_result.get("anchors"):
+                        merged_care["anchors"] = sync_result["anchors"]
+                    enriched_payload = dict(payload)
+                    enriched_payload["desktop_care"] = merged_care
+                    return enriched_payload
             if client_context is not None and client_context.effective_mode == ClientMode.QQ_TEXT:
                 enriched_payload = dict(payload)
                 enriched_payload["desktop_care"] = care_runtime.snapshot_for_client(
@@ -1074,12 +1099,21 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 character_pack_id=character_pack_id,
                 relation_user_id=relation_user_id,
-                energy_cost=4,
+                energy_cost=1,
                 coin_reward=1,
                 now_ms=int(max(1, now_ts) * 1000),
             )
         except Exception as exc:
             logger.warning("care runtime energy cost failed: %s", exc)
+        try:
+            care_runtime.record_turn(
+                profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                relation_user_id=relation_user_id,
+                now_ms=int(max(1, now_ts) * 1000),
+            )
+        except Exception as exc:
+            logger.warning("care runtime record_turn failed: %s", exc)
         # Affinity update: only when LLM signals a non-zero delta
         state_request = final_output.get("state_request")
         if not isinstance(state_request, dict):

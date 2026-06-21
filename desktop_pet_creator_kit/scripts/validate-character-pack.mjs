@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const CURRENT_SCHEMA_VERSION = "akane.character.v0.2";
 const SUPPORTED_SCHEMA_VERSIONS = new Set(["akane.character.v0.1", CURRENT_SCHEMA_VERSION]);
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
-const VALID_ITEM_CATEGORIES = new Set(["food", "drink", "gift", "offering", "charm"]);
+const VALID_ITEM_CATEGORIES = new Set(["food", "drink", "gift", "offering", "charm", "trick", "potion"]);
 const VALID_USABLE_IN = new Set(["desktop_pet", "qq"]);
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -499,9 +499,20 @@ function validateCare(character, availableEmotions, aliasMap) {
       if (!isObject(effects)) {
         addError(`${label}.effects must be an object when provided.`);
       } else {
+        // Additive effects
         validateNumber(effects.hunger, `${label}.effects.hunger`, { min: -100, max: 100 });
         validateNumber(effects.energy, `${label}.effects.energy`, { min: -100, max: 100 });
         validateNumber(effects.affection, `${label}.effects.affection`, { min: -10, max: 10 });
+        // Direct-set effects (trick/potion items)
+        validateNumber(effects.hunger_set, `${label}.effects.hunger_set`, { min: 0, max: 100 });
+        validateNumber(effects.energy_set, `${label}.effects.energy_set`, { min: 0, max: 100 });
+        validateNumber(effects.affection_set, `${label}.effects.affection_set`, { min: 0, max: 100 });
+        // Boolean-flag effects
+        for (const flag of ["hunger_energy_swap", "random_vitals", "random_affection"]) {
+          if (effects[flag] !== undefined && effects[flag] !== true) {
+            addError(`${label}.effects.${flag} must be true when provided.`);
+          }
+        }
       }
     }
 

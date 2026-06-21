@@ -222,6 +222,276 @@ class OfferingItemTests(unittest.TestCase):
             self.assertEqual(snap["affection"], 10)
 
 
+class QQShopMergeTests(unittest.TestCase):
+    """QQ shop should include default gameplay items plus character-pack items."""
+
+    def test_character_shop_items_do_not_hide_default_trick_items(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = _store(tmp)
+            gateway = NapCatQQGateway(state_path=Path(tmp) / "qq_gateway_state.json")
+            context = QQMessageContext(
+                should_respond=True,
+                reason="direct_command",
+                is_group=True,
+                target_id=10001,
+                user_id=111,
+                group_id=10001,
+                session_id=PROFILE,
+                profile_user_id=PROFILE,
+                clean_message="商店",
+                character_pack_id=CHAR_ID,
+            )
+            result = gateway.handle_economy_command(
+                context,
+                care_runtime=store,
+                shop_items=[
+                    {
+                        "id": "custom_cookie",
+                        "name": "角色曲奇",
+                        "price": 5,
+                        "category": "food",
+                        "usable_in": ["qq"],
+                        "effects": {"hunger": 8},
+                    }
+                ],
+                now_ms=2000,
+            )
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["status"], "ok")
+            self.assertIn("角色曲奇", result["reply"])
+            self.assertIn("歪门邪道", result["reply"])
+            self.assertIn("饥饿置零卡", result["reply"])
+
+
+class QQStatusDisplayTests(unittest.TestCase):
+    """QQ status display should spell out vital semantics."""
+
+    def test_natural_status_question_returns_deterministic_values(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = _store(tmp)
+            gateway = NapCatQQGateway(state_path=Path(tmp) / "qq_gateway_state.json")
+            store.sync_from_client(
+                profile_user_id=PROFILE,
+                character_pack_id=CHAR_ID,
+                client_mode="desktop_pet",
+                care_payload={"enabled": True, "hunger": 0, "energy": 88, "coins": 20, "affection": 10},
+                now_ms=1000,
+            )
+            context = QQMessageContext(
+                should_respond=True,
+                reason="direct_command",
+                is_group=True,
+                target_id=10001,
+                user_id=111,
+                group_id=10001,
+                session_id=PROFILE,
+                profile_user_id=PROFILE,
+                clean_message="饥饿度现在多少",
+                character_pack_id=CHAR_ID,
+            )
+            result = gateway.handle_economy_command(
+                context,
+                care_runtime=store,
+                shop_items=[],
+                now_ms=2000,
+            )
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["status"], "ok")
+            self.assertNotIn("_llm_passthrough", result)
+            self.assertIn("饥饿 0/100（越低越饿）", result["reply"])
+            self.assertIn("精力 88/100（越高越精神）", result["reply"])
+
+    def test_status_reply_explains_hunger_and_energy_direction(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = _store(tmp)
+            gateway = NapCatQQGateway(state_path=Path(tmp) / "qq_gateway_state.json")
+            store.sync_from_client(
+                profile_user_id=PROFILE,
+                character_pack_id=CHAR_ID,
+                client_mode="desktop_pet",
+                care_payload={"enabled": True, "hunger": 9, "energy": 88, "coins": 20, "affection": 10},
+                now_ms=1000,
+            )
+            context = QQMessageContext(
+                should_respond=True,
+                reason="direct_command",
+                is_group=True,
+                target_id=10001,
+                user_id=111,
+                group_id=10001,
+                session_id=PROFILE,
+                profile_user_id=PROFILE,
+                clean_message="养成状态",
+                character_pack_id=CHAR_ID,
+            )
+            result = gateway.handle_economy_command(
+                context,
+                care_runtime=store,
+                shop_items=[],
+                now_ms=2000,
+            )
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["status"], "ok")
+            self.assertIn("饥饿 9/100（越低越饿）", result["reply"])
+            self.assertIn("精力 88/100（越高越精神）", result["reply"])
+
+
+class QQFeedItemPromptTests(unittest.TestCase):
+    """Special item effects should be explained clearly to the LLM."""
+
+    def test_reversal_card_note_prevents_state_swap_confusion(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = _store(tmp)
+            gateway = NapCatQQGateway(state_path=Path(tmp) / "qq_gateway_state.json")
+            relation = "qq:111"
+            store.sync_from_client(
+                profile_user_id=PROFILE,
+                character_pack_id=CHAR_ID,
+                client_mode="desktop_pet",
+                care_payload={"enabled": True, "hunger": 9, "energy": 88, "coins": 20, "affection": 10},
+                now_ms=1000,
+            )
+            _checkin(store, relation, coins=20)
+            buy_context = QQMessageContext(
+                should_respond=True,
+                reason="direct_command",
+                is_group=True,
+                target_id=10001,
+                user_id=111,
+                group_id=10001,
+                session_id=PROFILE,
+                profile_user_id=PROFILE,
+                clean_message="购买 逆转卡",
+                character_pack_id=CHAR_ID,
+            )
+            buy_result = gateway.handle_economy_command(buy_context, care_runtime=store, shop_items=[], now_ms=2000)
+            self.assertIsInstance(buy_result, dict)
+            self.assertEqual(buy_result["status"], "ok")
+
+            feed_context = QQMessageContext(
+                should_respond=True,
+                reason="direct_command",
+                is_group=True,
+                target_id=10001,
+                user_id=111,
+                group_id=10001,
+                session_id=PROFILE,
+                profile_user_id=PROFILE,
+                clean_message="投喂 逆转卡",
+                character_pack_id=CHAR_ID,
+            )
+            feed_result = gateway.handle_economy_command(feed_context, care_runtime=store, shop_items=[], now_ms=3000)
+            self.assertIsInstance(feed_result, dict)
+            self.assertTrue(feed_result["_llm_passthrough"])
+            self.assertIn("逆转卡", feed_result["qq_action_note"])
+            self.assertIn("把饥饿值和精力值交换了", feed_result["qq_action_note"])
+            self.assertIn("不要理解成用户说反了", feed_result["qq_action_note"])
+            self.assertIn("饥饿 88/100，精力 9/100", feed_result["qq_action_note"])
+
+    def test_energy_full_charm_note_requires_visible_recovery(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = _store(tmp)
+            gateway = NapCatQQGateway(state_path=Path(tmp) / "qq_gateway_state.json")
+            relation = "qq:111"
+            store.sync_from_client(
+                profile_user_id=PROFILE,
+                character_pack_id=CHAR_ID,
+                client_mode="desktop_pet",
+                care_payload={"enabled": True, "hunger": 45, "energy": 8, "coins": 20, "affection": 10},
+                now_ms=1000,
+            )
+            _checkin(store, relation, coins=30)
+            buy_context = QQMessageContext(
+                should_respond=True,
+                reason="direct_command",
+                is_group=True,
+                target_id=10001,
+                user_id=111,
+                group_id=10001,
+                session_id=PROFILE,
+                profile_user_id=PROFILE,
+                clean_message="购买 精力满格符",
+                character_pack_id=CHAR_ID,
+            )
+            buy_result = gateway.handle_economy_command(buy_context, care_runtime=store, shop_items=[], now_ms=2000)
+            self.assertIsInstance(buy_result, dict)
+            self.assertEqual(buy_result["status"], "ok")
+
+            feed_context = QQMessageContext(
+                should_respond=True,
+                reason="direct_command",
+                is_group=True,
+                target_id=10001,
+                user_id=111,
+                group_id=10001,
+                session_id=PROFILE,
+                profile_user_id=PROFILE,
+                clean_message="投喂 精力满格符",
+                character_pack_id=CHAR_ID,
+            )
+            feed_result = gateway.handle_economy_command(feed_context, care_runtime=store, shop_items=[], now_ms=3000)
+            self.assertIsInstance(feed_result, dict)
+            self.assertTrue(feed_result["_llm_passthrough"])
+            note = feed_result["qq_action_note"]
+            self.assertIn("精力满格符", note)
+            self.assertIn("精力恢复到 100/100", note)
+            self.assertIn("必须明显表现出困意被驱散", note)
+            self.assertIn("不能只有吐槽", note)
+            self.assertIn("饥饿 45/100，精力 100/100", note)
+
+    def test_hunger_zero_card_note_prevents_not_hungry_wording(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = _store(tmp)
+            gateway = NapCatQQGateway(state_path=Path(tmp) / "qq_gateway_state.json")
+            relation = "qq:111"
+            store.sync_from_client(
+                profile_user_id=PROFILE,
+                character_pack_id=CHAR_ID,
+                client_mode="desktop_pet",
+                care_payload={"enabled": True, "hunger": 45, "energy": 70, "coins": 20, "affection": 10},
+                now_ms=1000,
+            )
+            _checkin(store, relation, coins=20)
+            buy_context = QQMessageContext(
+                should_respond=True,
+                reason="direct_command",
+                is_group=True,
+                target_id=10001,
+                user_id=111,
+                group_id=10001,
+                session_id=PROFILE,
+                profile_user_id=PROFILE,
+                clean_message="购买 饥饿置零卡",
+                character_pack_id=CHAR_ID,
+            )
+            buy_result = gateway.handle_economy_command(buy_context, care_runtime=store, shop_items=[], now_ms=2000)
+            self.assertIsInstance(buy_result, dict)
+            self.assertEqual(buy_result["status"], "ok")
+
+            feed_context = QQMessageContext(
+                should_respond=True,
+                reason="direct_command",
+                is_group=True,
+                target_id=10001,
+                user_id=111,
+                group_id=10001,
+                session_id=PROFILE,
+                profile_user_id=PROFILE,
+                clean_message="投喂 饥饿置零卡",
+                character_pack_id=CHAR_ID,
+            )
+            feed_result = gateway.handle_economy_command(feed_context, care_runtime=store, shop_items=[], now_ms=3000)
+            self.assertIsInstance(feed_result, dict)
+            self.assertTrue(feed_result["_llm_passthrough"])
+            note = feed_result["qq_action_note"]
+            self.assertIn("饥饿置零卡", note)
+            self.assertIn("0/100 不是不饿", note)
+            self.assertIn("饿到极限", note)
+            self.assertIn("禁止说", note)
+            self.assertIn("胃不叫了", note)
+            self.assertIn("饥饿 0/100，精力 70/100", note)
+
+
 class OfferingIsolationTests(unittest.TestCase):
     """Shared vitals vs per-user state boundaries."""
 

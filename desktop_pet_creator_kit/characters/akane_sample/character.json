@@ -372,6 +372,76 @@
           "emotion": "happy",
           "bubble": { "text": "护符……我会好好收着的。", "duration_ms": 2000 }
         }
+      },
+      {
+        "id": "satiation_talisman",
+        "name": "饱腹符",
+        "description": "神社秘制灵符，贴上去饥饿感瞬间消失，原理不明，效果真实。",
+        "price": 20,
+        "category": "trick",
+        "preference_tags": ["shrine", "charm"],
+        "usable_in": ["qq"],
+        "effects": { "hunger_set": 100 },
+        "feedback": {
+          "emotion": "normal",
+          "bubble": { "text": "……灵符用掉了。", "duration_ms": 1400 }
+        }
+      },
+      {
+        "id": "full_revival_potion",
+        "name": "全恢复水",
+        "description": "博丽神社秘藏，喝一口饥饿和精力全部满载，成分神秘，不要多问。",
+        "price": 38,
+        "category": "potion",
+        "preference_tags": ["shrine"],
+        "usable_in": ["qq"],
+        "effects": { "hunger_set": 100, "energy_set": 100 },
+        "feedback": {
+          "emotion": "happy",
+          "bubble": { "text": "哇，一下子精神了。", "duration_ms": 1800 }
+        }
+      },
+      {
+        "id": "fate_wheel_talisman",
+        "name": "命运轮盘符",
+        "description": "据说能改变命运走向，但神社不保证方向。体征和好感同时随机波动，赌不赌由你。",
+        "price": 10,
+        "category": "charm",
+        "preference_tags": ["shrine", "charm"],
+        "usable_in": ["qq"],
+        "effects": { "random_vitals": true, "random_affection": true },
+        "feedback": {
+          "emotion": "normal",
+          "bubble": { "text": "……轮盘已经转了。", "duration_ms": 1600 }
+        }
+      },
+      {
+        "id": "swap_talisman",
+        "name": "体征互换符",
+        "description": "神社某位巫女研发的怪异灵符，使用后饥饿与精力数值互相交换。到底有什么用，自己体会。",
+        "price": 12,
+        "category": "trick",
+        "preference_tags": ["shrine"],
+        "usable_in": ["qq"],
+        "effects": { "hunger_energy_swap": true },
+        "feedback": {
+          "emotion": "confused",
+          "bubble": { "text": "……你确定你知道你在做什么吗。", "duration_ms": 2000 }
+        }
+      },
+      {
+        "id": "hunger_zero_talisman",
+        "name": "清空符",
+        "description": "博丽神社不对外宣传的实验品。据说能瞬间抹除饥饱感，原理是「让你饿到感觉不到饿」。不建议使用，但有人偏要买。",
+        "price": 6,
+        "category": "trick",
+        "preference_tags": ["shrine"],
+        "usable_in": ["qq"],
+        "effects": { "hunger_set": 0 },
+        "feedback": {
+          "emotion": "speechless",
+          "bubble": { "text": "……你用这个做什么。", "duration_ms": 2000 }
+        }
       }
     ],
     "care_preferences": {

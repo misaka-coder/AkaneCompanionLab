@@ -641,35 +641,41 @@ def build_qq_router(
                 shop_items=_shop_items,
                 now_ms=int(time.time() * 1000),
             )
+            _qq_action_note = ""
             if isinstance(economy_command_result, dict):
-                reply = str(economy_command_result.get("reply") or "").strip()
-                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
-                duration_ms = (time.perf_counter() - started_at) * 1000
-                runtime_metrics.observe_request(
-                    "qq_napcat_event",
-                    duration_ms=duration_ms,
-                    ok=bool(send_result.get("ok")),
-                )
-                log_event(
-                    "qq_economy_command",
-                    session_id=context.session_id,
-                    profile_user_id=context.profile_user_id,
-                    command_status=str(economy_command_result.get("status") or ""),
-                    command_ok=bool(economy_command_result.get("ok")),
-                    sent=bool(send_result.get("ok")),
-                    duration_ms=round(duration_ms, 1),
-                )
-                return JSONResponse(
-                    {
-                        "status": "ok" if send_result.get("ok") else "send_failed",
-                        "reason": "qq_economy_command",
-                        "command_status": str(economy_command_result.get("status") or ""),
-                        "command_ok": bool(economy_command_result.get("ok")),
-                        "session_id": context.session_id,
-                        "profile_user_id": context.profile_user_id,
-                        "send_result": send_result,
-                    }
-                )
+                if economy_command_result.get("_llm_passthrough"):
+                    # Economy action processed; hand off to LLM for the actual reply
+                    _qq_action_note = str(economy_command_result.get("qq_action_note") or "").strip()
+                    # fall through to LLM pipeline below
+                else:
+                    reply = str(economy_command_result.get("reply") or "").strip()
+                    send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                    duration_ms = (time.perf_counter() - started_at) * 1000
+                    runtime_metrics.observe_request(
+                        "qq_napcat_event",
+                        duration_ms=duration_ms,
+                        ok=bool(send_result.get("ok")),
+                    )
+                    log_event(
+                        "qq_economy_command",
+                        session_id=context.session_id,
+                        profile_user_id=context.profile_user_id,
+                        command_status=str(economy_command_result.get("status") or ""),
+                        command_ok=bool(economy_command_result.get("ok")),
+                        sent=bool(send_result.get("ok")),
+                        duration_ms=round(duration_ms, 1),
+                    )
+                    return JSONResponse(
+                        {
+                            "status": "ok" if send_result.get("ok") else "send_failed",
+                            "reason": "qq_economy_command",
+                            "command_status": str(economy_command_result.get("status") or ""),
+                            "command_ok": bool(economy_command_result.get("ok")),
+                            "session_id": context.session_id,
+                            "profile_user_id": context.profile_user_id,
+                            "send_result": send_result,
+                        }
+                    )
 
             attachments_registered = []
             if context.attachments:
@@ -726,6 +732,8 @@ def build_qq_router(
                     )
 
             turn_payload = context.to_turn_payload()
+            if _qq_action_note:
+                turn_payload["qq_action_note"] = _qq_action_note
             remote_prefetch_result = await asyncio.to_thread(
                 engine.prefetch_remote_media_links_for_message,
                 profile_user_id=context.profile_user_id,

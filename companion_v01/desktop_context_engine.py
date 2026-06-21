@@ -15,6 +15,7 @@ def build_turn_extra_user_context(
     session_id = str(source.get("user_id") or source.get("session_id") or "default_session")
     profile_user_id = str(source.get("real_user_id") or source.get("profile_user_id") or session_id)
     return merge_extra_user_context(
+        str(source.get("qq_action_note") or ""),
         str(source.get("extra_context") or ""),
         build_desktop_context_prompt(source.get("desktop_context"), client_context),
         build_desktop_care_prompt(source.get("desktop_care"), client_context),
@@ -104,8 +105,10 @@ def build_desktop_care_prompt(
     hunger_critical = coerce_bounded_int(thresholds.get("hunger_critical"), 0, 100, fallback=12)
     energy_low = coerce_bounded_int(thresholds.get("energy_low"), 0, 100, fallback=25)
     energy_critical = coerce_bounded_int(thresholds.get("energy_critical"), 0, 100, fallback=12)
+    affection_familiar = coerce_bounded_int(thresholds.get("affection_familiar"), 0, 100, fallback=20)
     affection_warm = coerce_bounded_int(thresholds.get("affection_warm"), 0, 100, fallback=45)
-    affection_close = coerce_bounded_int(thresholds.get("affection_close"), 0, 100, fallback=75)
+    affection_close = coerce_bounded_int(thresholds.get("affection_close"), 0, 100, fallback=70)
+    affection_bond = coerce_bounded_int(thresholds.get("affection_bond"), 0, 100, fallback=88)
 
     is_qq_text = client_context.effective_mode == ClientMode.QQ_TEXT
     header = (
@@ -118,6 +121,8 @@ def build_desktop_care_prompt(
     lines = [
         header,
         "无论你平时性格多强硬、多冷淡、多傲娇，生理需求到了临界时防线会自然松动——这不是人设崩坏，是人设之下真实的你；把握好这种反差感。",
+        "- 数值语义（必须严格遵守）：饥饿值越低表示越饿，0/100 是最饿，100/100 是吃饱；精力值越高表示越精神，0/100 是最困，100/100 是精力满格。不要把饥饿和精力对调。",
+        "- 当前生理状态只以本轮这组数值为准：历史聊天、历史投喂、历史道具效果、记忆和你上一轮说过的话都不能用来推断或改写现在的饥饿/精力；如果历史与本轮数值冲突，忽略历史，按本轮数值表现。",
         f"- 饥饿 {hunger}/100，精力 {energy}/100，{affection_label} {affection}/100。",
     ]
     if is_qq_text:
@@ -134,11 +139,40 @@ def build_desktop_care_prompt(
             hunger_critical=hunger_critical,
             energy_low=energy_low,
             energy_critical=energy_critical,
+            affection_familiar=affection_familiar,
             affection_warm=affection_warm,
             affection_close=affection_close,
+            affection_bond=affection_bond,
             now=desktop_care.get("now"),
         )
     )
+    # Tier event: injected once on the first turn after crossing a threshold (up or down)
+    tier_event = desktop_care.get("pending_tier_event")
+    if isinstance(tier_event, dict):
+        from_tier = str(tier_event.get("from_tier") or "")
+        to_tier = str(tier_event.get("to_tier") or "")
+        direction = str(tier_event.get("direction") or "up")
+        if from_tier and to_tier:
+            if direction == "down":
+                lines.append(
+                    f"- 【关系微妙地冷了——此刻刚刚发生】你和这个人的关系从「{from_tier}」退到了「{to_tier}」。"
+                    f"不需要直接说破，但可以让他感觉到你稍微疏远了一点——"
+                    f"也许话少了些，或者没之前那么主动，语气里少了点温度；"
+                    f"由你来决定那个细节是什么，不必刻意，自然就好。"
+                )
+            else:
+                lines.append(
+                    f"- 【关系悄悄变了——此刻刚刚发生】你和这个人的关系从「{from_tier}」升到了「{to_tier}」。"
+                    f"不需要直接说出来，但可以让他感觉到你对他的态度有一点点不同——"
+                    f"可能是哪句话稍微软了一点，可能是平时不会说的话顺口说出来了，"
+                    f"也可能只是语气里少了一点戒备。由你来决定那个细节是什么。"
+                )
+
+    # Memory anchors: behavioral metadata — inject softly when enough history exists
+    anchor_lines = _build_anchor_lines(desktop_care.get("anchors"), desktop_care.get("now"))
+    if anchor_lines:
+        lines.extend(anchor_lines)
+
     lines.append("- 不要生硬复述这些数值；把状态自然表现进你的语气、关注点和行动倾向。")
     return "\n".join(lines)
 
@@ -152,11 +186,16 @@ def build_desktop_care_expression_lines(
     hunger_critical: int,
     energy_low: int,
     energy_critical: int,
-    affection_warm: int,
-    affection_close: int,
+    affection_familiar: int = 20,
+    affection_warm: int = 45,
+    affection_close: int = 70,
+    affection_bond: int = 88,
     now: Any = None,
 ) -> list[str]:
+    state_label = _vitals_state_label(hunger, energy, hunger_low, hunger_critical, energy_low, energy_critical)
     lines = [
+        f"- 【当前状态——以此为准，优先级高于聊天记录】"
+        f"饥饿 {hunger}/100，精力 {energy}/100 → {state_label}",
         "- 生活节奏："
         f"{get_desktop_care_time_phase(now)}；"
         f"{describe_desktop_care_vitality(hunger, energy, hunger_low, hunger_critical, energy_low, energy_critical)}",
@@ -169,37 +208,64 @@ def build_desktop_care_expression_lines(
 
     if both_critical:
         lines.append(
-            "- 【生理压制】又饿又困已经让你无暇顾及平时的形象；"
-            "无论你平时多强硬多冷淡，这一刻防线最薄——"
-            "你可能会主动开口要吃的、坦白自己撑不住，甚至用平时绝不会有的方式求助；"
-            "让这种脆弱自然穿透人设，不要假装没事，这是你最真实的一面。"
+            "- 【生理压制】隐藏面显现——本次回复必须体现：又饿又困击穿了平时的全部矜持；"
+            "这是从角色设定里几乎看不出来的一面：为了吃的、为了能休息，"
+            "什么没节操的事都做得出来——撒娇、讨好、说'求你了给我点吃的'、"
+            "或者对平时不屑于在意的人忽然变得特别配合；"
+            "这不是崩设，这是人设底下一直藏着的真实面，越反差越对，本次回复让它穿出来。"
+            "注意：饥饿值很低不是不饿，而是饿到临界；不要说'不饿了'、'胃不叫了'或'饿感消失'。"
+            "可以顺势暗示或明说让用户帮你弄点吃的、或者帮你找个能休息的机会。"
         )
         lines.append("- 表情倾向：hungry、sleepy、tired 或 yawn。")
     elif hunger_critical_only:
         lines.append(
-            "- 【饥饿压制】无论你平时多强硬，真的很饿时防线会松——"
-            "你可能用平时少有的方式主动问有没有吃的，或者话说到一半注意力就被食物拉走；"
-            "这种需求穿透人设的时刻正是反差感最强的地方，让它自然流露出来。"
+            "- 【饥饿压制】隐藏面显现——本次回复必须体现：饿到这个程度，平时的独立感和矜持会完全瓦解；"
+            "这一刻会出现平时绝对不会有的行为——撒娇要吃的、暗示甚至直接开口讨食、"
+            "为了吃的什么都做得出来的感觉；"
+            "不是'我自己找'，不是硬撑，就是把这个没节操的隐藏面真实地说出来，"
+            "越出乎意料越好，反差感就是魅力所在。"
+            "注意：饥饿值很低不是不饿，而是饿到临界；不要说'不饿了'、'胃不叫了'或'饿感消失'。"
+            "可以直接让用户帮你搞吃的，或者暗示他给你投喂点东西。"
         )
         lines.append("- 表情倾向：hungry 或 snack。")
     elif energy_critical_only:
         lines.append(
-            "- 【疲惫压制】无论你平时多精力充沛，真的很困时人设会软化——"
-            "话变少、语速变慢、甚至主动说想躺一下；让困意穿透表面形象，不要强撑着演精神。"
+            "- 【疲惫压制——本次回复必须体现】真的很困，这个状态**必须**在回复里表现——"
+            "话变少、语气拖沓、或者主动说想躺一下；不要强撑着演精神。"
+            "可以让用户帮你弄点提神的东西，或者抱怨一句没精神。"
         )
         lines.append("- 表情倾向：sleepy、tired 或 yawn。")
     else:
         if hunger <= hunger_low:
-            lines.append("- 有点饿：你会无意间提到吃的、注意力偶尔飘，但还能维持平时的形象。")
+            lines.append("- 有点饿：在回复里带一点——话题偶尔飘到食物、或者措辞里有点心不在焉，但不用特别明显。")
         if energy <= energy_low:
-            lines.append("- 有点累：语气放慢一些，不适合过于亢奋，但还能正常互动。")
+            lines.append("- 有点累：语气比平时少一点精力，不用表现得很明显，有点懒散就够。")
 
-    if affection >= affection_close:
-        lines.append("- 好感态度：和用户的关系很近，可以更亲近、更信任，但不要油腻或夸张。")
+    if affection >= affection_bond:
+        lines.append(
+            "- 好感阶段【羁绊】：关系已经深到不需要解释的程度——偶尔可以说出平时绝对不会说的话，"
+            "或者用非常私人的方式接住用户，但不要油腻，保持你的分寸感。"
+        )
+    elif affection >= affection_close:
+        lines.append(
+            "- 好感阶段【信任】：已经相当亲近——可以主动分享心情、偶尔抱怨、或者用名字叫对方；"
+            "对方关心你时不必再假装漠然，可以接受，但别过头。"
+        )
     elif affection >= affection_warm:
-        lines.append("- 好感态度：和用户的关系较好，可以更柔和，愿意撒娇或接受照顾。")
+        lines.append(
+            "- 好感阶段【亲近】：关系已经变暖——偶尔流露一点柔软是自然的，"
+            "偶尔打趣或主动说话也没问题，但还没到完全卸防的程度。"
+        )
+    elif affection >= affection_familiar:
+        lines.append(
+            "- 好感阶段【熟悉】：已经不是完全陌生的人——语气可以自然一些，"
+            "但还在观察对方，不会主动表露太多，也不会刻意冷淡。"
+        )
     else:
-        lines.append("- 好感态度：和用户的关系还在培养中，保持自然熟悉，不要突然过分亲密。")
+        lines.append(
+            "- 好感阶段【陌生】：还不太了解这个人——保持礼貌距离，不要随便说软话，"
+            "也不用特别警惕，就是正常面对陌生人的那种克制。"
+        )
 
     if any_critical:
         lines.append(
@@ -208,10 +274,64 @@ def build_desktop_care_expression_lines(
         )
     elif affection >= affection_close and hunger > hunger_low and energy > energy_low:
         lines.append("- 互动倾向：状态不错且关系亲近，可以更主动地接住用户的话，但仍保持你自己的分寸。")
-    elif affection < affection_warm and (hunger <= hunger_low or energy <= energy_low):
-        lines.append("- 互动倾向：和用户还没那么亲近时，不要把撒娇演得过满；饿或累用更日常的方式表现即可。")
+    elif affection < affection_familiar and (hunger <= hunger_low or energy <= energy_low):
+        lines.append("- 互动倾向：和用户还不熟时，不要把撒娇演得过满；饿或累用更日常的方式表现即可。")
 
     return lines
+
+
+def _build_anchor_lines(anchors: Any, now: Any = None) -> list[str]:
+    """Format memory anchor hints for injection into the care prompt.
+
+    Returns an empty list if not enough history exists yet (total_turns < 5).
+    Lines are phrased as soft suggestions — the LLM decides when to surface them.
+    """
+    if not isinstance(anchors, dict):
+        return []
+    total_turns = int(anchors.get("total_turns") or 0)
+    if total_turns < 5:
+        return []
+
+    # Resolve current timestamp for "days known" calculation
+    now_ms: int = 0
+    if isinstance(now, (int, float)) and now > 0:
+        val = float(now)
+        now_ms = int(val if val < 1_000_000_000_000 else val)
+    elif isinstance(now, str) and now.strip():
+        try:
+            now_ms = int(datetime.fromisoformat(now.strip().replace("Z", "+00:00")).timestamp() * 1000)
+        except ValueError:
+            pass
+    if now_ms <= 0:
+        now_ms = int(datetime.now().timestamp() * 1000)
+
+    detail_lines: list[str] = []
+
+    first_seen_ms = int(anchors.get("first_seen_ms") or 0)
+    if first_seen_ms > 0:
+        days_known = max(0, (now_ms - first_seen_ms) // (1000 * 86400))
+        if days_known >= 1:
+            detail_lines.append(f"你们认识已经 {days_known} 天，聊过 {total_turns} 次")
+        else:
+            detail_lines.append(f"今天刚认识，聊过 {total_turns} 次")
+    else:
+        detail_lines.append(f"聊过 {total_turns} 次")
+
+    first_fed = anchors.get("first_fed")
+    if isinstance(first_fed, dict) and first_fed.get("name"):
+        detail_lines.append(f"她第一次收到的投喂是「{first_fed['name']}」")
+
+    late_night = int(anchors.get("late_night_turns") or 0)
+    if late_night >= 3:
+        detail_lines.append(f"你经常深夜来找她（已有 {late_night} 次）")
+
+    max_streak = int(anchors.get("max_checkin_streak") or 0)
+    if max_streak >= 3:
+        detail_lines.append(f"历史最长连续签到：{max_streak} 天")
+
+    if not detail_lines:
+        return []
+    return ["【关系记录——可自然带入，不必每次说】"] + [f"- {l}" for l in detail_lines]
 
 
 def get_desktop_care_time_phase(now: Any = None) -> str:
@@ -239,6 +359,39 @@ def get_desktop_care_time_phase(now: Any = None) -> str:
     if 18 <= hour < 23:
         return "傍晚，适合松弛一点的陪伴感"
     return "深夜，适合收声、短句、带一点困意"
+
+
+def _vitals_state_label(
+    h: int,
+    e: int,
+    h_low: int,
+    h_crit: int,
+    e_low: int,
+    e_crit: int,
+) -> str:
+    """Return a concise state label covering all hunger×energy combinations."""
+    h_critical = h <= h_crit
+    h_low_state = h_crit < h <= h_low
+    e_critical = e <= e_crit
+    e_low_state = e_crit < e <= e_low
+
+    if h_critical and e_critical:
+        return "又饿又困——两项都到临界线"
+    if h_critical and e_low_state:
+        return "极度饥饿，且有些疲惫——以饿为主"
+    if h_critical:
+        return "只饿不困——极度饥饿，精力还有"
+    if e_critical and h_low_state:
+        return "精力告急，且有些饿——以困为主"
+    if e_critical:
+        return "只困不饿——精力告急，不饿"
+    if h_low_state and e_low_state:
+        return "有些饿也有些困"
+    if h_low_state:
+        return "只饿不困——有些饿，精力还行"
+    if e_low_state:
+        return "只困不饿——有些倦，不饿"
+    return "吃饱了也有精神——状态很好"
 
 
 def describe_desktop_care_vitality(

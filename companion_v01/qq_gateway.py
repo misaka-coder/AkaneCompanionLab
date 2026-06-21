@@ -13,7 +13,7 @@ from typing import Any
 import requests
 
 import config
-from .care_runtime import DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECKIN_COINS
+from .care_runtime import DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECKIN_COINS, get_seasonal_shop_items
 
 
 QQ_TEXT_CAPABILITIES = (
@@ -131,11 +131,47 @@ QQ_GATEWAY_STATE_SCHEMA_VERSION = "akane.qq_gateway_state.v1"
 QQ_ECONOMY_CHECKIN_COMMANDS: frozenset[str] = frozenset({"签到", "每日签到", "领签到", "签到领奖"})
 QQ_ECONOMY_STATUS_COMMANDS: frozenset[str] = frozenset({"我的状态", "养成状态", "查状态", "当前状态", "状态查询"})
 QQ_ECONOMY_SHOP_COMMANDS: frozenset[str] = frozenset({"商店", "商店列表", "查看商店", "查商店"})
-QQ_ECONOMY_BUY_PREFIXES: tuple[str, ...] = ("购买 ", "喂 ", "投喂 ", "购买:", "购买：")
+QQ_ECONOMY_BUY_PREFIXES: tuple[str, ...] = ("购买 ", "购买:", "购买：")
+QQ_ECONOMY_FEED_PREFIXES: tuple[str, ...] = ("投喂 ",)
+QQ_ECONOMY_FEED_COMMANDS: frozenset[str] = frozenset({"投喂"})
+
+_QTY_RE = re.compile(r"^(.+?)\s*[Xx×*×](\d+)$")
+QQ_ECONOMY_BACKPACK_COMMANDS: frozenset[str] = frozenset({"背包", "我的背包", "查看背包"})
 QQ_ECONOMY_OFFERING_COMMANDS: frozenset[str] = frozenset({"供奉", "今日供奉"})
+QQ_ECONOMY_LOTTERY_COMMANDS: frozenset[str] = frozenset({"抽签", "御神签", "求签", "抽御神签"})
 QQ_ECONOMY_OFFERING_STATUS_COMMANDS: frozenset[str] = frozenset({"查看供奉", "供奉状态"})
 QQ_ECONOMY_OFFERING_PREFIXES: tuple[str, ...] = ("供奉 ",)
 VALID_USABLE_IN: frozenset[str] = frozenset({"desktop_pet", "qq"})
+
+QQ_ECONOMY_STATUS_QUERY_FIELDS: tuple[str, ...] = (
+    "饥饿",
+    "饥饿度",
+    "饥饿值",
+    "饿",
+    "精力",
+    "精力值",
+    "体力",
+    "好感",
+    "好感度",
+    "金币",
+    "钱",
+)
+QQ_ECONOMY_STATUS_QUERY_WORDS: tuple[str, ...] = ("多少", "几", "状态", "现在", "当前")
+
+
+def _is_economy_status_query(text: str) -> bool:
+    """Recognize natural QQ questions that ask for current care values."""
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    compact = re.sub(r"\s+", "", normalized)
+    if compact in QQ_ECONOMY_STATUS_COMMANDS:
+        return True
+    has_field = any(field in compact for field in QQ_ECONOMY_STATUS_QUERY_FIELDS)
+    has_query_word = any(word in compact for word in QQ_ECONOMY_STATUS_QUERY_WORDS)
+    if has_field and has_query_word:
+        return True
+    return bool(re.fullmatch(r"(饿|困|累|精神)(不|吗|了没|没|嘛|么)?[？?]?", compact))
 
 
 @dataclass(frozen=True)
@@ -1344,15 +1380,28 @@ class NapCatQQGateway:
             return None
         if text in QQ_ECONOMY_CHECKIN_COMMANDS:
             return {"action": "checkin"}
-        if text in QQ_ECONOMY_STATUS_COMMANDS:
+        if text in QQ_ECONOMY_STATUS_COMMANDS or _is_economy_status_query(text):
             return {"action": "status"}
         if text in QQ_ECONOMY_SHOP_COMMANDS:
             return {"action": "shop_list"}
+        if text in QQ_ECONOMY_BACKPACK_COMMANDS:
+            return {"action": "backpack"}
         for prefix in QQ_ECONOMY_BUY_PREFIXES:
             if text.startswith(prefix):
-                item_name = text[len(prefix):].strip()
-                if item_name:
-                    return {"action": "buy", "item_name": item_name}
+                item_text = text[len(prefix):].strip()
+                if item_text:
+                    item_name, qty = _parse_item_and_quantity(item_text)
+                    return {"action": "buy", "item_name": item_name, "quantity": qty}
+        if text in QQ_ECONOMY_FEED_COMMANDS:
+            return {"action": "feed"}
+        for prefix in QQ_ECONOMY_FEED_PREFIXES:
+            if text.startswith(prefix):
+                item_text = text[len(prefix):].strip()
+                if item_text:
+                    item_name, qty = _parse_item_and_quantity(item_text)
+                    return {"action": "feed", "item_name": item_name, "quantity": qty}
+        if text in QQ_ECONOMY_LOTTERY_COMMANDS:
+            return {"action": "lottery"}
         if text in QQ_ECONOMY_OFFERING_COMMANDS:
             return {"action": "offering"}
         if text in QQ_ECONOMY_OFFERING_STATUS_COMMANDS:
@@ -1381,7 +1430,8 @@ class NapCatQQGateway:
         if care_runtime is None:
             return {"ok": False, "reply": "养成系统未启用。", "status": "not_configured"}
 
-        items = shop_items if shop_items else DEFAULT_CARE_SHOP_ITEMS
+        items = _merge_shop_items(DEFAULT_CARE_SHOP_ITEMS, shop_items or [])
+        items = _merge_shop_items(items, get_seasonal_shop_items())
         profile_user_id = context.profile_user_id
         character_pack_id = context.character_pack_id or ""
         relation_user_id = f"qq:{context.user_id}" if context.user_id else f"qq:{profile_user_id}"
@@ -1399,12 +1449,44 @@ class NapCatQQGateway:
                     coins=checkin_coins,
                     now_ms=ts_ms,
                 )
-                coins = result["snapshot"]["coins"]
-                if result["status"] == "ok":
-                    reply = f"签到成功！+{result['coins_granted']} 金币（当前：{coins} 金币）"
-                else:
-                    reply = f"今天已经签到了，明天再来吧。（当前：{coins} 金币）"
-                return {"ok": True, "reply": reply, "status": result["status"]}
+                snap = result["snapshot"]
+                coins_now = snap["coins"]
+                streak = int(result.get("streak") or 1)
+
+                if result["status"] == "already":
+                    note = (
+                        f"【签到通知】用户今天已经签到过了，又来说了一句签到"
+                        f"（当前金币 {coins_now}，连续签到 {streak} 天）。自然回应即可，不必强调规则。"
+                    )
+                    return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": "already"}
+
+                coins_granted = result["coins_granted"]
+                streak_broken = bool(result.get("streak_broken"))
+                days_absent = int(result.get("days_absent") or 0)
+                is_milestone = bool(result.get("streak_milestone"))
+
+                if streak_broken and days_absent >= 1:
+                    # Comeback after breaking a streak — LLM reacts to absence
+                    note = (
+                        f"【签到通知】用户消失了 {days_absent} 天后回来签到了（之前有连续签到纪录）。"
+                        f"本次签到 +{coins_granted} 金币，当前 {coins_now} 金币，连续签到重置为第 1 天。"
+                        f"可以用你自己的方式表达一下——不一定要抱怨，但可以让他感受到这几天有什么不同。"
+                    )
+                    return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": "ok"}
+
+                if is_milestone:
+                    # Streak milestone — LLM celebrates (or reacts in character)
+                    note = (
+                        f"【签到里程碑】用户已连续签到 {streak} 天！"
+                        f"本次签到 +{coins_granted} 金币（连击奖励），当前 {coins_now} 金币。"
+                        f"用你自己的方式回应这个里程碑——不用过分热情，但要让他感觉到这件事有意义。"
+                    )
+                    return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": "ok"}
+
+                # Normal checkin — local reply
+                streak_str = f"（连续 {streak} 天）" if streak >= 2 else ""
+                reply = f"✓ 签到成功！+{coins_granted} 金币{streak_str}（当前：{coins_now} 金币）"
+                return {"ok": True, "reply": reply, "status": "ok"}
 
             if action == "status":
                 snapshot = care_runtime.snapshot_for_client(
@@ -1420,7 +1502,7 @@ class NapCatQQGateway:
                 c = snapshot["coins"]
                 reply = (
                     "养成状态\n"
-                    f"饥饿 {h}/100  精力 {e}/100\n"
+                    f"饥饿 {h}/100（越低越饿）  精力 {e}/100（越高越精神）\n"
                     f"QQ好感 {a}/100  金币 {c}"
                 )
                 return {"ok": True, "reply": reply, "status": "ok"}
@@ -1429,33 +1511,54 @@ class NapCatQQGateway:
                 qq_items = [item for item in items if _item_usable_in_qq(item)]
                 if not qq_items:
                     return {"ok": True, "reply": "商店暂时没有商品。", "status": "empty"}
-                food_items = [i for i in qq_items if i.get("category") not in ("offering", "charm", "gift")]
-                offer_items = [i for i in qq_items if i.get("category") in ("offering", "charm", "gift")]
+                seasonal_items = [i for i in qq_items if i.get("seasonal")]
+                regular_items = [i for i in qq_items if not i.get("seasonal")]
+                food_items = [i for i in regular_items if i.get("category") not in ("offering", "charm", "gift", "trick", "potion")]
+                trick_items = [i for i in regular_items if i.get("category") in ("charm", "trick", "potion")]
+                offer_items = [i for i in regular_items if i.get("category") in ("offering", "gift")]
                 lines = ["\U0001f6d2 商店", "─" * 18]
+
+                def _item_line(item: dict) -> str:
+                    eff = _format_effects_summary(item.get("effects") or {})
+                    line = f"  {item['name']}  {item.get('price', 0)} 金币"
+                    if eff:
+                        line += f"  ({eff})"
+                    return line
+
+                if seasonal_items:
+                    # Group by label for display
+                    by_label: dict[str, list] = {}
+                    for i in seasonal_items:
+                        lbl = f"{i.get('seasonal_emoji', '🌸')} {i.get('seasonal_label', '限定')}"
+                        by_label.setdefault(lbl, []).append(i)
+                    for lbl, grp in by_label.items():
+                        lines.append(f"{lbl}（限时）")
+                        for item in grp:
+                            lines.append(_item_line(item))
+                    lines.append("")
                 if food_items:
                     lines.append("\U0001f35a 食物 / 饮品")
                     for item in food_items:
-                        eff = _format_effects_summary(item.get("effects") or {})
-                        line = f"  {item['name']}  {item.get('price', 0)} 金币"
-                        if eff:
-                            line += f"  ({eff})"
-                        lines.append(line)
-                if offer_items:
+                        lines.append(_item_line(item))
+                if trick_items:
                     if food_items:
+                        lines.append("")
+                    lines.append("🔮 歪门邪道")
+                    for item in trick_items:
+                        lines.append(_item_line(item))
+                if offer_items:
+                    if food_items or trick_items:
                         lines.append("")
                     lines.append("⛩ 供奉 / 礼物")
                     for item in offer_items:
-                        eff = _format_effects_summary(item.get("effects") or {})
-                        line = f"  {item['name']}  {item.get('price', 0)} 金币"
-                        if eff:
-                            line += f"  ({eff})"
-                        lines.append(line)
+                        lines.append(_item_line(item))
                 lines.append("─" * 18)
-                lines.append("购买 商品名  /  供奉 商品名  /  供奉")
+                lines.append("购买 商品名  /  供奉 商品名  /  供奉  /  抽签（5金币）")
                 return {"ok": True, "reply": "\n".join(lines), "status": "ok"}
 
             if action == "buy":
                 item_name = str(parsed.get("item_name") or "").strip()
+                qty = max(1, int(parsed.get("quantity") or 1))
                 matched = _find_shop_item(items, item_name)
                 if matched is None:
                     return {
@@ -1469,15 +1572,17 @@ class NapCatQQGateway:
                         "reply": f"「{matched['name']}」只能在桌宠端使用，QQ 不支持。",
                         "status": "not_usable_in_qq",
                     }
-                price = int(matched.get("price") or 0)
-                effects = matched.get("effects") or {}
-                result = care_runtime.purchase_item(
+                price_each = int(matched.get("price") or 0)
+                result = care_runtime.buy_to_inventory(
                     profile_user_id=profile_user_id,
                     character_pack_id=character_pack_id,
                     relation_user_id=relation_user_id,
-                    price=price,
-                    effects=effects,
-                    client_mode="qq_text",
+                    item_id=str(matched.get("id") or ""),
+                    item_name=str(matched["name"]),
+                    price=price_each,
+                    count=qty,
+                    item_effects=dict(matched.get("effects") or {}),
+                    item_category=str(matched.get("category") or ""),
                     now_ms=ts_ms,
                 )
                 if result["status"] == "insufficient_coins":
@@ -1488,12 +1593,208 @@ class NapCatQQGateway:
                         "reply": f"金币不够，需要 {needed} 金币，当前只有 {have} 金币。",
                         "status": "insufficient_coins",
                     }
-                coins_after = result["snapshot"]["coins"]
-                eff = _format_effects_summary(effects)
-                reply = f"✓ 投喂了「{matched['name']}」！（-{price} 金币，剩余 {coins_after}）"
-                if eff:
-                    reply += f"\n{eff}"
+                coins_after = result["coins_after"]
+                total_count = result["item_count"]
+                qty_str = f" x{qty}" if qty > 1 else ""
+                reply = (
+                    f"✓ 购买成功！「{matched['name']}」{qty_str} 已放入背包"
+                    f"（-{price_each * qty} 金币，剩余 {coins_after} 金币，背包共 x{total_count}）"
+                    f"\n发送「投喂 {matched['name']}」来使用。"
+                )
                 return {"ok": True, "reply": reply, "status": "ok"}
+
+            if action == "backpack":
+                snapshot = care_runtime.snapshot_for_client(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    client_mode="qq_text",
+                    relation_user_id=relation_user_id,
+                    now_ms=ts_ms,
+                )
+                inventory = snapshot.get("inventory") or {}
+                if not inventory:
+                    return {
+                        "ok": True,
+                        "reply": "\U0001f392 背包是空的，发送「商店」查看可购买的商品。",
+                        "status": "empty",
+                    }
+                lines = ["\U0001f392 背包", "─" * 16]
+                for item_data in inventory.values():
+                    name = str(item_data.get("name") or "")
+                    count = int(item_data.get("count") or 0)
+                    eff_str = _format_effects_summary(item_data.get("effects") or {})
+                    line = f"  {name}  x{count}"
+                    if eff_str:
+                        line += f"  [{eff_str}]"
+                    lines.append(line)
+                lines.append("─" * 16)
+                lines.append("投喂 商品名  / 供奉 商品名")
+                return {"ok": True, "reply": "\n".join(lines), "status": "ok"}
+
+            if action == "feed":
+                item_name = str(parsed.get("item_name") or "").strip()
+                qty = max(1, int(parsed.get("quantity") or 1))
+                if not item_name:
+                    return {
+                        "ok": False,
+                        "reply": "请指定要投喂的物品，发送「背包」查看持有。",
+                        "status": "no_item_specified",
+                    }
+                matched = _find_shop_item(items, item_name)
+                # Resolve item_id and effects: prefer live shop, fall back to inventory snapshot
+                if matched is not None:
+                    item_id = str(matched.get("id") or "")
+                    item_name_display = str(matched["name"])
+                    effects_for_feed: dict[str, Any] = dict(matched.get("effects") or {})
+                else:
+                    # Item may be seasonal / expired — look it up in the user's inventory
+                    inv_snap = care_runtime.snapshot_for_client(
+                        profile_user_id=profile_user_id,
+                        character_pack_id=character_pack_id,
+                        client_mode="qq_text",
+                        relation_user_id=relation_user_id,
+                        now_ms=ts_ms,
+                    )
+                    inv = inv_snap.get("inventory") or {}
+                    item_id = ""
+                    item_name_display = item_name
+                    effects_for_feed = {}
+                    for inv_id, inv_entry in inv.items():
+                        if str(inv_entry.get("name") or "").lower() == item_name.lower():
+                            item_id = inv_id
+                            effects_for_feed = dict(inv_entry.get("effects") or {})
+                            item_name_display = str(inv_entry.get("name") or item_name)
+                            break
+                    if not item_id:
+                        return {
+                            "ok": False,
+                            "reply": f"没有找到「{item_name}」，发送「背包」查看持有物品。",
+                            "status": "item_not_found",
+                        }
+                result = care_runtime.use_from_inventory(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    relation_user_id=relation_user_id,
+                    item_id=item_id,
+                    item_effects=effects_for_feed,
+                    count=qty,
+                    now_ms=ts_ms,
+                )
+                if result["status"] == "not_in_inventory":
+                    return {
+                        "ok": False,
+                        "reply": (
+                            f"背包里没有「{item_name_display}」，"
+                            f"先发送「购买 {item_name_display}」入手。"
+                        ),
+                        "status": "not_in_inventory",
+                    }
+                if result["status"] == "insufficient_count":
+                    have = result.get("available", 0)
+                    return {
+                        "ok": False,
+                        "reply": (
+                            f"背包里「{item_name_display}」只剩 x{have}，"
+                            f"发送「投喂 {item_name_display} x{have}」或先补货。"
+                        ),
+                        "status": "insufficient_count",
+                    }
+                snap = result["snapshot"]
+                h = int(snap.get("hunger") or 0)
+                e = int(snap.get("energy") or 0)
+                eff_str = _format_applied_effects_note(result["effects_applied"], qty)
+                eff_note = f"（{eff_str}）" if eff_str else ""
+                if h < 15:
+                    hunger_desc = "极度饥饿"
+                elif h < 30:
+                    hunger_desc = "很饿"
+                elif h < 50:
+                    hunger_desc = "有些饿"
+                else:
+                    hunger_desc = ""
+                if e < 15:
+                    energy_desc = "精疲力竭"
+                elif e < 30:
+                    energy_desc = "很疲倦"
+                elif e < 50:
+                    energy_desc = "有些累"
+                else:
+                    energy_desc = ""
+                state_parts = [s for s in (hunger_desc, energy_desc) if s]
+                state_desc = "、".join(state_parts) if state_parts else "状态还行"
+                qty_str = f" x{qty}" if qty > 1 else ""
+                effect_context = _build_item_effect_reaction_hint(
+                    item_name=item_name_display,
+                    effects_applied=result["effects_applied"],
+                    hunger=h,
+                    energy=e,
+                )
+                if result["effects_applied"].get("hunger_energy_swap"):
+                    effect_context += (
+                        f"特别说明：这是「{item_name_display}」刚刚生效，把饥饿值和精力值交换了；"
+                        "不要理解成用户说反了，也不要说“你把饥饿和精力对调了”。"
+                    )
+                note = (
+                    f"【最新投喂】用户此刻给了你「{item_name_display}」{qty_str}{eff_note}。"
+                    f"{effect_context}"
+                    f"投喂后你的状态：饥饿 {h}/100，精力 {e}/100（{state_desc}）。"
+                    f"请用符合你当前状态和性格的方式回应——把真实感受说出来，"
+                    f"不只是念出食物名字，也不要假装特别感动。"
+                    f"这是此刻刚发生的投喂，与历史对话无关。"
+                )
+                return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": "ok"}
+
+            if action == "lottery":
+                SLIP_COST = 5
+                result = care_runtime.draw_fortune_slip(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    relation_user_id=relation_user_id,
+                    slip_cost=SLIP_COST,
+                    now_ms=ts_ms,
+                )
+                if result["status"] == "insufficient_coins":
+                    have = result["coins_before"]
+                    return {
+                        "ok": False,
+                        "reply": f"金币不足，抽一签需要 {SLIP_COST} 金币，当前只有 {have} 金币。",
+                        "status": "insufficient_coins",
+                    }
+                fortune = result["fortune"]
+                net = result["net_coins"]
+                coins_after = result["coins_after"]
+                aff_delta = result["affection_delta"]
+
+                # Build LLM note based on fortune
+                if fortune == "大吉":
+                    reaction_hint = (
+                        "你可以显得很自信甚至有点得意——'神社的神力当然灵验'，但保持傲娇，不要过分热情。"
+                        f"用户好感也因此上升了（+{aff_delta}）。"
+                    )
+                elif fortune == "中吉":
+                    reaction_hint = "平静地告知结果就好，可以说'中吉也挺不错的'或者淡淡地点头表示满意。"
+                elif fortune == "小吉":
+                    reaction_hint = "小吉而已，可以说几乎回本了，语气平淡，不至于失落，也不必假装很好。"
+                elif fortune == "末吉":
+                    reaction_hint = (
+                        "末吉，什么都没得到。可以安慰两句'末吉不是坏签'，"
+                        "也可以直接说'运气就这样，下次再来'，不必太尴尬。"
+                    )
+                else:  # 凶
+                    reaction_hint = (
+                        "用户抽到了凶签，还额外损失了3金币。"
+                        "你可以用你的方式解释——'凶签是在提醒你注意些什么'，"
+                        "或者有点幸灾乐祸，或者尴尬地为神社辩护，"
+                        "但不要太过份，给个台阶下。"
+                    )
+
+                coin_desc = f"+{net} 金币" if net > 0 else (f"{net} 金币" if net < 0 else "金币不变")
+                note = (
+                    f"【御神签结果】用户花了 {SLIP_COST} 金币抽了一签，结果是【{fortune}】"
+                    f"（{coin_desc}，当前 {coins_after} 金币）。{reaction_hint}"
+                    f"用你的语气宣布签运结果，把这件事说得有点仪式感，但别假装是大事。"
+                )
+                return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": "ok"}
 
             if action == "offering_status":
                 snapshot = care_runtime.snapshot_for_client(
@@ -1514,10 +1815,6 @@ class NapCatQQGateway:
             if action == "offering":
                 item_name = str(parsed.get("item_name") or "").strip()
                 date_key = datetime.now().strftime("%Y-%m-%d")
-                item_price = 0
-                item_effects: dict[str, Any] = {}
-                item_label = ""
-                affection_bonus = 3
 
                 if item_name:
                     matched = _find_shop_item(items, item_name)
@@ -1536,63 +1833,84 @@ class NapCatQQGateway:
                     if not _item_usable_as_offering(matched):
                         return {
                             "ok": False,
-                            "reply": f"「{matched['name']}」不是供奉/礼物类商品；普通食物请用「购买 {matched['name']}」。",
+                            "reply": (
+                                f"「{matched['name']}」不是供奉/礼物类商品；"
+                                f"普通食物请先购买再投喂。"
+                            ),
                             "status": "not_offering_item",
                         }
-                    item_price = int(matched.get("price") or 0)
-                    item_effects = matched.get("effects") or {}
-                    item_label = matched["name"]
-                    affection_bonus = 0
+                    item_id = str(matched.get("id") or "")
+                    effects = matched.get("effects") or {}
+                    body_effects = {k: v for k, v in effects.items() if k in ("hunger", "energy")}
+                    affection_effect = int(effects.get("affection") or 0)
+                    use_result = care_runtime.use_from_inventory(
+                        profile_user_id=profile_user_id,
+                        character_pack_id=character_pack_id,
+                        relation_user_id=relation_user_id,
+                        item_id=item_id,
+                        item_effects=body_effects,
+                        now_ms=ts_ms,
+                    )
+                    if use_result["status"] == "not_in_inventory":
+                        return {
+                            "ok": False,
+                            "reply": (
+                                f"背包里没有「{matched['name']}」，"
+                                f"先发送「购买 {matched['name']}」入手再供奉。"
+                            ),
+                            "status": "not_in_inventory",
+                        }
+                    result = care_runtime.claim_daily_offering(
+                        profile_user_id=profile_user_id,
+                        character_pack_id=character_pack_id,
+                        relation_user_id=relation_user_id,
+                        date_key=date_key,
+                        affection_bonus=0,
+                        item_price=0,
+                        item_effects={"affection": affection_effect},
+                        now_ms=ts_ms,
+                    )
+                    eff_parts = []
+                    for k, label in (("hunger", "饥饿"), ("energy", "精力"), ("affection", "好感")):
+                        v = int(effects.get(k) or 0)
+                        if v:
+                            eff_parts.append(f"{label}+{v}")
+                    eff_note = "（" + "、".join(eff_parts) + "）" if eff_parts else ""
+                    if result.get("daily_bonus"):
+                        note = (
+                            f"【最新供奉】用户此刻向博丽神社供奉了「{matched['name']}」{eff_note}，"
+                            f"这是今天的第一次供奉，请自然地回应。"
+                        )
+                    else:
+                        note = (
+                            f"【供奉通知】用户再次供奉「{matched['name']}」{eff_note}，"
+                            f"今日好感奖励已领取，但诚意依旧在。"
+                        )
+                    return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": result["status"]}
 
+                # Free offering (no item)
                 result = care_runtime.claim_daily_offering(
                     profile_user_id=profile_user_id,
                     character_pack_id=character_pack_id,
                     relation_user_id=relation_user_id,
                     date_key=date_key,
-                    affection_bonus=affection_bonus,
-                    item_price=item_price,
-                    item_effects=item_effects,
+                    affection_bonus=3,
+                    item_price=0,
+                    item_effects={},
                     now_ms=ts_ms,
                 )
-
-                if result["status"] == "insufficient_coins":
-                    needed = result["coins_needed"]
-                    have = result["coins_before"]
-                    label_part = f"「{item_label}」" if item_label else "供品"
-                    return {
-                        "ok": False,
-                        "reply": f"金币不够，供奉{label_part}需要 {needed} 金币，当前只有 {have} 金币。",
-                        "status": "insufficient_coins",
-                    }
-
-                affection_granted = result.get("affection_granted", 0)
-                is_first = result.get("daily_bonus", False)
                 aff_now = result["snapshot"]["affection"]
-
-                if not is_first:
-                    if item_label:
-                        body_eff = _format_effects_summary(
-                            {k: v for k, v in item_effects.items() if k in ("hunger", "energy")}
-                        )
-                        reply = f"供奉了「{item_label}」"
-                        if body_eff:
-                            reply += f"\n{body_eff}"
-                        reply += "\n（今日好感奖励已领取）"
-                    else:
-                        reply = "今天已经供奉过了，明天见。"
-                    return {"ok": True, "reply": reply, "status": "already"}
-
-                if item_label:
-                    eff = _format_effects_summary(item_effects)
-                    reply = f"⛩ 供奉「{item_label}」！"
-                    if eff:
-                        reply += f"\n{eff}"
-                    if affection_granted:
-                        reply += f"  好感+{affection_granted}"
-                    reply += f"\n（QQ好感：{aff_now}/100）"
+                if result.get("daily_bonus"):
+                    note = (
+                        f"【最新供奉】用户此刻虔诚地向博丽神社供奉（好感+3，当前 {aff_now}/100），"
+                        f"这是今天的第一次供奉，请自然地回应。"
+                    )
                 else:
-                    reply = f"⛩ 供奉成功！好感+{affection_granted}（{aff_now}/100）。"
-                return {"ok": True, "reply": reply, "status": "ok"}
+                    note = (
+                        f"【供奉通知】用户今日再次来供奉，今日好感奖励已领取，"
+                        f"但依然来了（当前好感 {aff_now}/100）。"
+                    )
+                return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": result["status"]}
 
         except Exception as exc:
             return {"ok": False, "reply": "养成系统暂时出错，请稍后再试。", "status": "error", "error": str(exc)}
@@ -2011,6 +2329,37 @@ def _item_usable_as_offering(item: dict[str, Any]) -> bool:
     return category in {"offering", "charm", "gift"}
 
 
+def _merge_shop_items(
+    base_items: list[dict[str, Any]],
+    override_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge shop item lists by id; later lists replace earlier items with the same id."""
+    merged: list[dict[str, Any]] = []
+    positions: dict[str, int] = {}
+    for raw_item in [*(base_items or []), *(override_items or [])]:
+        if not isinstance(raw_item, dict):
+            continue
+        item_id = str(raw_item.get("id") or "").strip()
+        if not item_id:
+            continue
+        item = dict(raw_item)
+        if item_id in positions:
+            merged[positions[item_id]] = item
+        else:
+            positions[item_id] = len(merged)
+            merged.append(item)
+    return merged
+
+
+def _parse_item_and_quantity(text: str) -> "tuple[str, int]":
+    """Parse 'item_nameX5' or 'item_name x5' → ('item_name', 5). Returns (text, 1) if no qty suffix."""
+    m = _QTY_RE.match(text.strip())
+    if m:
+        qty = max(1, min(99, int(m.group(2))))
+        return m.group(1).strip(), qty
+    return text.strip(), 1
+
+
 def _find_shop_item(items: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
     """Find a shop item by id or name (case-insensitive)."""
     query_clean = str(query or "").strip().lower()
@@ -2027,7 +2376,7 @@ def _find_shop_item(items: list[dict[str, Any]], query: str) -> dict[str, Any] |
 
 
 def _format_effects_summary(effects: dict[str, Any]) -> str:
-    """Format item effects as a short human-readable summary."""
+    """Format item effects as a short human-readable summary (for shop/backpack listing)."""
     parts: list[str] = []
     hunger = int(effects.get("hunger") or 0)
     energy = int(effects.get("energy") or 0)
@@ -2038,4 +2387,98 @@ def _format_effects_summary(effects: dict[str, Any]) -> str:
         parts.append(f"精力{'+' if energy > 0 else ''}{energy}")
     if affection:
         parts.append(f"好感{'+' if affection > 0 else ''}{affection}")
+    if "hunger_set" in effects:
+        parts.append(f"饥饿→{int(effects['hunger_set'])}")
+    if "energy_set" in effects:
+        parts.append(f"精力→{int(effects['energy_set'])}")
+    if "affection_set" in effects:
+        parts.append(f"好感→{int(effects['affection_set'])}")
+    if effects.get("hunger_energy_swap"):
+        parts.append("饥饿⇄精力")
+    if effects.get("random_vitals"):
+        parts.append("体征随机±")
+    if effects.get("random_affection"):
+        parts.append("好感随机±")
     return "  ".join(parts)
+
+
+def _format_applied_effects_note(effects_applied: dict[str, Any], count: int) -> str:
+    """Format what actually happened after item use, including resolved random values."""
+    parts: list[str] = []
+    hunger = int(effects_applied.get("hunger") or 0) * count
+    energy = int(effects_applied.get("energy") or 0) * count
+    affection = int(effects_applied.get("affection") or 0) * count
+    if hunger:
+        parts.append(f"饥饿{'+' if hunger > 0 else ''}{hunger}")
+    if energy:
+        parts.append(f"精力{'+' if energy > 0 else ''}{energy}")
+    if affection:
+        parts.append(f"好感{'+' if affection > 0 else ''}{affection}")
+    if "hunger_set" in effects_applied:
+        parts.append(f"饥饿→{int(effects_applied['hunger_set'])}")
+    if "energy_set" in effects_applied:
+        parts.append(f"精力→{int(effects_applied['energy_set'])}")
+    if "affection_set" in effects_applied:
+        parts.append(f"好感→{int(effects_applied['affection_set'])}")
+    if effects_applied.get("hunger_energy_swap"):
+        parts.append("饥饿⇄精力已互换")
+    h_delta = effects_applied.get("_resolved_h_delta")
+    e_delta = effects_applied.get("_resolved_e_delta")
+    aff_delta = effects_applied.get("_resolved_aff_delta")
+    if h_delta is not None:
+        parts.append(f"饥饿{'+' if int(h_delta) > 0 else ''}{int(h_delta)}（随机）")
+    if e_delta is not None:
+        parts.append(f"精力{'+' if int(e_delta) > 0 else ''}{int(e_delta)}（随机）")
+    if aff_delta is not None:
+        parts.append(f"好感{'+' if int(aff_delta) > 0 else ''}{int(aff_delta)}（随机）")
+    return "、".join(parts)
+
+
+def _build_item_effect_reaction_hint(
+    *,
+    item_name: str,
+    effects_applied: dict[str, Any],
+    hunger: int,
+    energy: int,
+) -> str:
+    """Build an explicit LLM-facing reaction hint for special item effects."""
+    hints: list[str] = []
+    if "energy_set" in effects_applied:
+        target = int(effects_applied.get("energy_set", energy))
+        if target >= 80:
+            hints.append(
+                f"特别说明：「{item_name}」刚刚让精力恢复到 {target}/100；"
+                "这不是普通闲聊，回复里必须明显表现出困意被驱散、眼神清醒或精神突然回来的身体反应。"
+            )
+        elif target <= 20:
+            hints.append(
+                f"特别说明：「{item_name}」刚刚让精力降到 {target}/100；"
+                "回复里必须表现出明显犯困、反应变慢或想休息。"
+            )
+    if "hunger_set" in effects_applied:
+        target = int(effects_applied.get("hunger_set", hunger))
+        if target <= 20:
+            hints.append(
+                f"特别说明：「{item_name}」刚刚让饥饿降到 {target}/100；"
+                "0/100 不是不饿，而是饿到极限、胃里空得发慌；"
+                "回复里必须表现出突然非常饿、注意力被吃的占住，可以直接要吃的。"
+                "禁止说“不饿了”“胃不叫了”“饿感消失”或“空但不饿”。"
+            )
+        elif target >= 80:
+            hints.append(
+                f"特别说明：「{item_name}」刚刚让饥饿恢复到 {target}/100；"
+                "回复里必须表现出胃里踏实、被喂饱或状态回稳。"
+            )
+    if effects_applied.get("random_vitals"):
+        hints.append(
+            f"特别说明：「{item_name}」刚刚触发随机体征变化；"
+            "回复里要承认身体状态发生了不可预测的变化，并按当前饥饿/精力结果反应。"
+        )
+    if effects_applied.get("random_affection"):
+        hints.append(
+            f"特别说明：「{item_name}」刚刚触发随机好感变化；"
+            "回复里可以表现出对这个道具效果的意外，但不要忽略当前状态变化。"
+        )
+    if hints:
+        hints.append("可以吐槽道具来路或用户乱来，但不能只有吐槽；必须把道具造成的身体变化演出来。")
+    return "".join(hints)
