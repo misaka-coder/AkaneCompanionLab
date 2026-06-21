@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 const CURRENT_SCHEMA_VERSION = "akane.character.v0.2";
 const SUPPORTED_SCHEMA_VERSIONS = new Set(["akane.character.v0.1", CURRENT_SCHEMA_VERSION]);
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
+const VALID_ITEM_CATEGORIES = new Set(["food", "drink", "gift", "offering", "charm"]);
+const VALID_USABLE_IN = new Set(["desktop_pet", "qq"]);
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const kitRoot = path.resolve(scriptDir, "..");
@@ -309,7 +311,34 @@ function validateAliases(character) {
   }
 }
 
-function validateClickLines(dialogue, availableEmotions) {
+function normalizeEmotionKey(value) {
+  return String(value || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
+}
+
+function buildEmotionAliasMap(character) {
+  const aliases = character.emotion_aliases;
+  if (!isObject(aliases)) return new Map();
+  return new Map(
+    Object.entries(aliases)
+      .map(([key, values]) => [
+        normalizeEmotionKey(key),
+        Array.isArray(values)
+          ? values.map((item) => String(item || "").trim()).filter(Boolean)
+          : []
+      ])
+      .filter(([key, values]) => key && values.length)
+  );
+}
+
+function hasEmotionReference(emotion, availableEmotions, aliasMap) {
+  const raw = String(emotion || "").trim();
+  if (!raw || !availableEmotions.size) return true;
+  if (availableEmotions.has(raw)) return true;
+  const candidates = aliasMap.get(normalizeEmotionKey(raw)) || [];
+  return candidates.some((candidate) => availableEmotions.has(candidate));
+}
+
+function validateClickLines(dialogue, availableEmotions, aliasMap) {
   const lines = dialogue.local_click_lines;
   if (!Array.isArray(lines) || !lines.length) {
     addError("dialogue.local_click_lines must contain at least one line.");
@@ -326,12 +355,285 @@ function validateClickLines(dialogue, availableEmotions) {
     if (text.length > 80) {
       addWarning(`dialogue.local_click_lines[${index}].text is longer than 80 characters.`);
     }
-    if (availableEmotions.size && emotion && !availableEmotions.has(emotion)) {
+    if (!hasEmotionReference(emotion, availableEmotions, aliasMap)) {
       addWarning(
-        `dialogue.local_click_lines[${index}].emotion "${emotion}" has no matching image in this pack.`
+        `dialogue.local_click_lines[${index}].emotion "${emotion}" has no matching image or emotion_aliases entry in this pack.`
       );
     }
   });
+}
+
+function validatePlayFeedback(character, availableEmotions, aliasMap) {
+  const feedback = character.play_feedback;
+  if (feedback === undefined) return;
+  if (!isObject(feedback)) {
+    addError("play_feedback must be an object when provided.");
+    return;
+  }
+
+  const allowedKeys = new Set(["throw_fast", "throw_light", "wall_hit", "land"]);
+  for (const key of Object.keys(feedback)) {
+    if (!allowedKeys.has(key)) {
+      addWarning(`play_feedback.${key} is not used by desktop_pet_next yet.`);
+    }
+  }
+
+  for (const key of allowedKeys) {
+    const entry = feedback[key];
+    if (entry === undefined) continue;
+    if (!isObject(entry)) {
+      addError(`play_feedback.${key} must be an object.`);
+      continue;
+    }
+
+    const emotion = getOptionalString(entry, "emotion", `play_feedback.${key}.emotion`);
+    if (!hasEmotionReference(emotion, availableEmotions, aliasMap)) {
+      addWarning(
+        `play_feedback.${key}.emotion "${emotion}" has no matching image or emotion_aliases entry in this pack.`
+      );
+    }
+
+    const bubble = entry.bubble;
+    if (bubble === undefined) continue;
+    if (!isObject(bubble)) {
+      addError(`play_feedback.${key}.bubble must be an object when provided.`);
+      continue;
+    }
+    getOptionalString(bubble, "text", `play_feedback.${key}.bubble.text`);
+    const durationMs = bubble.duration_ms;
+    if (
+      durationMs !== undefined &&
+      (!Number.isFinite(Number(durationMs)) || Number(durationMs) < 0)
+    ) {
+      addError(`play_feedback.${key}.bubble.duration_ms must be a non-negative number.`);
+    }
+  }
+}
+
+function validateCare(character, availableEmotions, aliasMap) {
+  const care = character.care;
+  if (care === undefined) return;
+  if (!isObject(care)) {
+    addError("care must be an object when provided.");
+    return;
+  }
+
+  if (care.enabled !== undefined && typeof care.enabled !== "boolean") {
+    addError("care.enabled must be a boolean when provided.");
+  }
+  validateNumber(care.initial_coins, "care.initial_coins", { min: 0 });
+  validateNumber(care.initial_hunger, "care.initial_hunger", { min: 0, max: 100 });
+  validateNumber(care.initial_energy, "care.initial_energy", { min: 0, max: 100 });
+  validateNumber(care.initial_affection, "care.initial_affection", { min: 0, max: 100 });
+  validateCareDecay(care.decay);
+  validateCareWork(care.work, availableEmotions, aliasMap);
+  validateCareAllowance(care.allowance, availableEmotions, aliasMap);
+  validateCarePreferences(care.care_preferences);
+
+  const items = care.shop_items;
+  if (items === undefined) return;
+  if (!Array.isArray(items)) {
+    addError("care.shop_items must be an array when provided.");
+    return;
+  }
+
+  const seenIds = new Set();
+  items.forEach((item, index) => {
+    const label = `care.shop_items[${index}]`;
+    if (!isObject(item)) {
+      addError(`${label} must be an object.`);
+      return;
+    }
+
+    const id = getRequiredString(item, "id", `${label}.id`);
+    getRequiredString(item, "name", `${label}.name`);
+    getOptionalString(item, "description", `${label}.description`);
+    validateNumber(item.price, `${label}.price`, { min: 0 });
+    if (id) {
+      if (seenIds.has(id)) {
+        addError(`${label}.id "${id}" is duplicated.`);
+      }
+      seenIds.add(id);
+    }
+
+    const category = item.category;
+    if (category !== undefined) {
+      if (typeof category !== "string" || !VALID_ITEM_CATEGORIES.has(category)) {
+        addError(`${label}.category must be one of: ${[...VALID_ITEM_CATEGORIES].join(", ")}.`);
+      }
+    }
+
+    const preferenceTagsRaw = item.preference_tags;
+    if (preferenceTagsRaw !== undefined) {
+      if (!Array.isArray(preferenceTagsRaw)) {
+        addError(`${label}.preference_tags must be an array when provided.`);
+      } else {
+        preferenceTagsRaw.forEach((tag, ti) => {
+          if (typeof tag !== "string" || !tag.trim()) {
+            addError(`${label}.preference_tags[${ti}] must be a non-empty string.`);
+          }
+        });
+      }
+    }
+
+    const usableIn = item.usable_in;
+    if (usableIn !== undefined) {
+      if (!Array.isArray(usableIn) || !usableIn.length) {
+        addError(`${label}.usable_in must be a non-empty array when provided.`);
+      } else {
+        usableIn.forEach((entry, ui) => {
+          if (!VALID_USABLE_IN.has(String(entry || "").toLowerCase())) {
+            addError(`${label}.usable_in[${ui}] must be one of: ${[...VALID_USABLE_IN].join(", ")}.`);
+          }
+        });
+      }
+    }
+
+    const feedbackTone = item.feedback_tone;
+    if (feedbackTone !== undefined && typeof feedbackTone !== "string") {
+      addError(`${label}.feedback_tone must be a string when provided.`);
+    }
+
+    const effects = item.effects;
+    if (effects !== undefined) {
+      if (!isObject(effects)) {
+        addError(`${label}.effects must be an object when provided.`);
+      } else {
+        validateNumber(effects.hunger, `${label}.effects.hunger`, { min: -100, max: 100 });
+        validateNumber(effects.energy, `${label}.effects.energy`, { min: -100, max: 100 });
+        validateNumber(effects.affection, `${label}.effects.affection`, { min: -10, max: 10 });
+      }
+    }
+
+    const feedback = item.feedback;
+    if (feedback === undefined) return;
+    if (!isObject(feedback)) {
+      addError(`${label}.feedback must be an object when provided.`);
+      return;
+    }
+
+    const emotion = getOptionalString(feedback, "emotion", `${label}.feedback.emotion`);
+    if (!hasEmotionReference(emotion, availableEmotions, aliasMap)) {
+      addWarning(
+        `${label}.feedback.emotion "${emotion}" has no matching image or emotion_aliases entry in this pack.`
+      );
+    }
+
+    const bubble = feedback.bubble;
+    if (bubble === undefined) return;
+    if (!isObject(bubble)) {
+      addError(`${label}.feedback.bubble must be an object when provided.`);
+      return;
+    }
+    getOptionalString(bubble, "text", `${label}.feedback.bubble.text`);
+    validateNumber(bubble.duration_ms, `${label}.feedback.bubble.duration_ms`, { min: 0 });
+  });
+}
+
+function validateCarePreferences(prefs) {
+  if (prefs === undefined) return;
+  if (!isObject(prefs)) {
+    addError("care.care_preferences must be an object when provided.");
+    return;
+  }
+  for (const key of ["favorite_tags", "disliked_tags", "offering_tags", "default_affection_bonus_tags"]) {
+    const val = prefs[key];
+    if (val === undefined) continue;
+    if (!Array.isArray(val)) {
+      addError(`care.care_preferences.${key} must be an array when provided.`);
+      continue;
+    }
+    val.forEach((tag, ti) => {
+      if (typeof tag !== "string" || !tag.trim()) {
+        addError(`care.care_preferences.${key}[${ti}] must be a non-empty string.`);
+      }
+    });
+  }
+}
+
+function validateCareDecay(decay) {
+  if (decay === undefined) return;
+  if (!isObject(decay)) {
+    addError("care.decay must be an object when provided.");
+    return;
+  }
+  validateNumber(decay.hunger_per_hour, "care.decay.hunger_per_hour", { min: 0, max: 100 });
+  validateNumber(decay.energy_per_reply, "care.decay.energy_per_reply", { min: 0, max: 20 });
+  validateNumber(decay.energy_per_proactive, "care.decay.energy_per_proactive", { min: 0, max: 20 });
+}
+
+function validateCareWork(work, availableEmotions, aliasMap) {
+  if (work === undefined) return;
+  if (!isObject(work)) {
+    addError("care.work must be an object when provided.");
+    return;
+  }
+  if (work.enabled !== undefined && typeof work.enabled !== "boolean") {
+    addError("care.work.enabled must be a boolean when provided.");
+  }
+  validateNumber(work.duration_seconds, "care.work.duration_seconds", { min: 1, max: 3600 });
+  validateNumber(work.reward_coins_min, "care.work.reward_coins_min", { min: 0 });
+  validateNumber(work.reward_coins_max, "care.work.reward_coins_max", { min: 0 });
+  validateNumber(work.min_hunger, "care.work.min_hunger", { min: 0, max: 100 });
+  validateNumber(work.min_energy, "care.work.min_energy", { min: 0, max: 100 });
+  validateNumber(work.hunger_cost, "care.work.hunger_cost", { min: 0, max: 100 });
+  validateNumber(work.energy_cost, "care.work.energy_cost", { min: 0, max: 100 });
+  if (
+    Number.isFinite(Number(work.reward_coins_min)) &&
+    Number.isFinite(Number(work.reward_coins_max)) &&
+    Number(work.reward_coins_min) > Number(work.reward_coins_max)
+  ) {
+    addError("care.work.reward_coins_min must be less than or equal to reward_coins_max.");
+  }
+  validateCareFeedback(work.start_feedback, "care.work.start_feedback", availableEmotions, aliasMap);
+  validateCareFeedback(work.complete_feedback, "care.work.complete_feedback", availableEmotions, aliasMap);
+}
+
+function validateCareAllowance(allowance, availableEmotions, aliasMap) {
+  if (allowance === undefined) return;
+  if (!isObject(allowance)) {
+    addError("care.allowance must be an object when provided.");
+    return;
+  }
+  if (allowance.enabled !== undefined && typeof allowance.enabled !== "boolean") {
+    addError("care.allowance.enabled must be a boolean when provided.");
+  }
+  validateNumber(allowance.coins, "care.allowance.coins", { min: 1 });
+  validateNumber(allowance.cooldown_seconds, "care.allowance.cooldown_seconds", { min: 0, max: 86400 });
+  validateNumber(allowance.max_coins, "care.allowance.max_coins", { min: 1 });
+  validateCareFeedback(allowance.feedback, "care.allowance.feedback", availableEmotions, aliasMap);
+}
+
+function validateCareFeedback(feedback, label, availableEmotions, aliasMap) {
+  if (feedback === undefined) return;
+  if (!isObject(feedback)) {
+    addError(`${label} must be an object when provided.`);
+    return;
+  }
+  const emotion = getOptionalString(feedback, "emotion", `${label}.emotion`);
+  if (!hasEmotionReference(emotion, availableEmotions, aliasMap)) {
+    addWarning(`${label}.emotion "${emotion}" has no matching image or emotion_aliases entry in this pack.`);
+  }
+  const bubble = feedback.bubble;
+  if (bubble === undefined) return;
+  if (!isObject(bubble)) {
+    addError(`${label}.bubble must be an object when provided.`);
+    return;
+  }
+  getOptionalString(bubble, "text", `${label}.bubble.text`);
+  validateNumber(bubble.duration_ms, `${label}.bubble.duration_ms`, { min: 0 });
+}
+
+function validateNumber(value, label, { min = -Infinity, max = Infinity } = {}) {
+  if (value === undefined) return;
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    addError(`${label} must be a finite number.`);
+    return;
+  }
+  if (number < min || number > max) {
+    addError(`${label} must be between ${min} and ${max}.`);
+  }
 }
 
 async function validatePack() {
@@ -411,6 +713,7 @@ async function validatePack() {
   const charactersDir = path.join(packDir, assetRoot, "characters");
   const outfits = await scanCharacterAssets(charactersDir);
   const availableEmotions = new Set(outfits.flatMap((outfit) => outfit.emotions));
+  const aliasMap = buildEmotionAliasMap(character);
 
   if (!outfits.length) {
     addWarning(
@@ -433,7 +736,9 @@ async function validatePack() {
     }
   }
 
-  validateClickLines(dialogue, availableEmotions);
+  validateClickLines(dialogue, availableEmotions, aliasMap);
+  validatePlayFeedback(character, availableEmotions, aliasMap);
+  validateCare(character, availableEmotions, aliasMap);
 
   return {
     id,

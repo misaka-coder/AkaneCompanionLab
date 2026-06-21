@@ -124,6 +124,7 @@ class PromptBuilder:
         persona_active_id: str = "",
         system_prompt_override: str = "",
         mode_prompt_override: str = "",
+        extra_context_audit_sections: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         fallback = {
             "emotion": visual_defaults["emotion"],
@@ -179,28 +180,65 @@ class PromptBuilder:
             system_prompt += f"\n{persona_system}"
 
         system_extra_blocks: list[str] = []
+        prompt_audit_sections: list[dict[str, str]] = [
+            {"name": "system.full", "text": system_prompt},
+            {"name": "system.format_addendum", "text": format_addendum},
+            {"name": "system.persona_state", "text": persona_system},
+        ]
         resource_context_text = str(resource_context or "").strip()
         if resource_context_text:
-            system_extra_blocks.append(f"可用视觉资源：\n{resource_context_text}")
+            resource_block = f"可用视觉资源：\n{resource_context_text}"
+            system_extra_blocks.append(resource_block)
+            prompt_audit_sections.append({"name": "system_extra.resource_context", "text": resource_block})
         semantic_text = str(semantic_summary_text or "").strip()
         if semantic_text:
-            system_extra_blocks.append(f"较长期的语义记忆（最多3条）：\n{semantic_text}")
+            semantic_block = f"较长期的语义记忆（最多3条）：\n{semantic_text}"
+            system_extra_blocks.append(semantic_block)
+            prompt_audit_sections.append({"name": "system_extra.semantic_memory", "text": semantic_block})
         episodic_text = str(episodic_summary_text or "").strip()
         if episodic_text:
-            system_extra_blocks.append(f"最近可见的阶段摘要（5~10条弹性窗口）：\n{episodic_text}")
+            episodic_block = f"最近可见的阶段摘要（5~10条弹性窗口）：\n{episodic_text}"
+            system_extra_blocks.append(episodic_block)
+            prompt_audit_sections.append({"name": "system_extra.episodic_summary", "text": episodic_block})
 
+        current_time_text = datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M')
         user_prompt = (
             f"debug_enabled={str(debug_enabled).lower()}\n"
             f"{self.persona.final_user_prompt_suffix}\n\n"
             f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
+            f"{extra_context}\n\n"
             f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
             "如果记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
             "回应时自然带着这份余温即可，不要把它当作用户事实，也不要生硬复述标签。\n\n"
             f"当前会话中所有未总结的原始消息：\n{raw_text or '(无)'}\n\n"
             f"可用回忆片段：\n{memory_text}\n\n"
-            f"{extra_context}\n\n"
             f"用户原始消息：\n{current_message_text}\n\n"
-            f"当前时间：{datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M')}\n"
+            f"当前时间：{current_time_text}\n"
+        )
+        extra_context_subsections: list[dict[str, str]] = []
+        for section in extra_context_audit_sections or []:
+            if not isinstance(section, dict):
+                continue
+            name = str(section.get("name") or "").strip()
+            text = str(section.get("text") or "").strip()
+            if not name or not text:
+                continue
+            if not name.startswith("user.extra_context."):
+                name = f"user.extra_context.{name}"
+            extra_context_subsections.append({"name": name, "text": text})
+        prompt_audit_sections.extend(
+            [
+                {"name": "user.full", "text": user_prompt},
+                {"name": "user.instruction_suffix", "text": self.persona.final_user_prompt_suffix},
+                {"name": "user.persona_reference_context", "text": persona_reference_context or "(无额外表达侧面参考)"},
+                {"name": "user.extra_context", "text": extra_context},
+                *extra_context_subsections,
+                {"name": "user.current_visual_context", "text": current_visual_context},
+                {"name": "user.raw_recent_timeline", "text": raw_text or "(无)"},
+                {"name": "user.retrieval_snippets", "text": memory_text},
+                {"name": "user.current_message", "text": current_message_text},
+                {"name": "user.current_time", "text": current_time_text},
+            ]
         )
         return {
             "debug_enabled": debug_enabled,
@@ -210,6 +248,7 @@ class PromptBuilder:
             "system_extra_blocks": system_extra_blocks,
             "history_turns": list(history_turns) if history_turns else [],
             "user_prompt": user_prompt,
+            "prompt_audit_sections": prompt_audit_sections,
         }
 
     def build_summary_prompts(

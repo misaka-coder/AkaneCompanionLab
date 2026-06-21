@@ -6,6 +6,26 @@ from companion_v01.engine import AkaneMemoryEngine
 
 
 class EngineVisibleContextExclusionTests(unittest.TestCase):
+    def test_build_extra_context_audit_sections_keeps_order_and_drops_empty(self) -> None:
+        sections = AkaneMemoryEngine._build_extra_context_audit_sections(
+            [
+                ("client_mode", " stable "),
+                ("", "ignored"),
+                ("empty", ""),
+                ("number", 123),
+                ("turn_extra_context", "dynamic"),
+            ]
+        )
+
+        self.assertEqual(
+            sections,
+            [
+                {"name": "client_mode", "text": "stable"},
+                {"name": "number", "text": "123"},
+                {"name": "turn_extra_context", "text": "dynamic"},
+            ],
+        )
+
     def test_split_history_records_only_peels_matching_current_user_message(self) -> None:
         history, current = AkaneMemoryEngine._split_history_records(
             recent_raw=[

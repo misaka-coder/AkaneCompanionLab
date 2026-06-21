@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -151,6 +154,74 @@ class LLMClientConfigTests(unittest.TestCase):
 
         self.assertEqual(payload["prompt_cache_key"], "akane:chat:final")
         self.assertEqual(payload["prompt_cache_retention"], "24h")
+
+    def test_llm_runtime_writes_prompt_audit_without_prompt_text(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-flash",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch("config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False):
+                with patch("config.LOG_DIR", temp_dir):
+                    runtime._build_completion_kwargs(
+                        bundle=bundle,
+                        system_prompt="system private prompt",
+                        user_prompt="user private prompt",
+                        temperature=0.1,
+                        stream=True,
+                        json_mode=True,
+                        prompt_cache_key="chat:final",
+                        system_extra_blocks=["semantic private block"],
+                        history_turns=[
+                            {"role": "user", "content": "history private turn"},
+                            {"role": "assistant", "content": "assistant private turn"},
+                        ],
+                        prompt_audit_sections=[
+                            {"name": "user.current_message", "text": "current private message"},
+                            {"name": "user.raw_recent_timeline", "text": "raw private timeline"},
+                        ],
+                    )
+
+            files = list((Path(temp_dir) / "llm_prompt_audit").glob("*.jsonl"))
+            self.assertEqual(len(files), 1)
+            record = json.loads(files[0].read_text(encoding="utf-8").strip())
+
+        self.assertEqual(record["prompt_cache_key"], "chat:final")
+        self.assertEqual(record["model"], "deepseek-v4-flash")
+        self.assertTrue(record["stream"])
+        self.assertEqual(record["history_turn_count"], 2)
+        source_by_name = {section["name"]: section for section in record["source_sections"]}
+        self.assertEqual(source_by_name["user.current_message"]["chars"], len("current private message"))
+        self.assertIn("sha256_16", source_by_name["user.raw_recent_timeline"])
+        serialized = json.dumps(record, ensure_ascii=False)
+        self.assertNotIn("current private message", serialized)
+        self.assertNotIn("raw private timeline", serialized)
+        self.assertNotIn("history private turn", serialized)
+        self.assertNotIn("semantic private block", serialized)
+        self.assertNotIn("system private prompt", serialized)
+        self.assertGreater(record["payload_totals"]["estimated_tokens"], 0)
+
+    def test_llm_runtime_prompt_audit_defaults_to_chat_final_only(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-flash",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch("config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False):
+                with patch("config.LOG_DIR", temp_dir):
+                    runtime._build_completion_kwargs(
+                        bundle=bundle,
+                        system_prompt="system",
+                        user_prompt="user",
+                        temperature=0.1,
+                        prompt_cache_key="aux:summary",
+                    )
+
+            self.assertFalse((Path(temp_dir) / "llm_prompt_audit").exists())
 
     def test_llm_runtime_adds_native_tools_only_when_explicit_for_openai(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

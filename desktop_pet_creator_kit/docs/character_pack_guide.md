@@ -171,6 +171,62 @@ contents or local absolute paths.
     "local_click_lines": [
       { "text": "我在哦。", "emotion": "normal" }
     ]
+  },
+  "play_feedback": {
+    "throw_fast": {
+      "emotion": "shock",
+      "bubble": { "text": "啊啊啊飞起来啦！", "duration_ms": 1500 }
+    },
+    "throw_light": {
+      "emotion": "confused",
+      "bubble": { "text": "", "duration_ms": 0 }
+    },
+    "wall_hit": {
+      "emotion": "confused",
+      "bubble": { "text": "撞到了。", "duration_ms": 1200 }
+    },
+    "land": {
+      "emotion": "",
+      "bubble": { "text": "", "duration_ms": 0 }
+    }
+  },
+  "care": {
+    "enabled": true,
+    "initial_coins": 20,
+    "initial_hunger": 55,
+    "initial_energy": 70,
+    "initial_affection": 10,
+    "work": {
+      "enabled": true,
+      "duration_seconds": 20,
+      "reward_coins_min": 6,
+      "reward_coins_max": 12,
+      "min_hunger": 20,
+      "min_energy": 25,
+      "hunger_cost": 12,
+      "energy_cost": 25,
+      "start_feedback": {
+        "emotion": "normal",
+        "bubble": { "text": "我出去转一圈，很快回来。", "duration_ms": 1800 }
+      },
+      "complete_feedback": {
+        "emotion": "happy",
+        "bubble": { "text": "我回来啦，带回 {reward} 枚金币。", "duration_ms": 2200 }
+      }
+    },
+    "shop_items": [
+      {
+        "id": "strawberry_cake",
+        "name": "草莓蛋糕",
+        "description": "小小一块，适合当作投喂测试。",
+        "price": 8,
+        "effects": { "hunger": 18, "energy": 8, "affection": 4 },
+        "feedback": {
+          "emotion": "happy",
+          "bubble": { "text": "甜的！", "duration_ms": 1800 }
+        }
+      }
+    ]
   }
 }
 ```
@@ -182,6 +238,43 @@ that emotion is `正常`.
 
 Recommended emotion aliases let the backend use English intent labels like
 `thinking`, `happy`, or `music` while the asset names stay creator-friendly.
+
+`appearance.music_emotion` is used by the desktop pet when local music or system
+media, such as QQ Music, is actively playing. Temporary reply, TTS, drag, and
+physics expressions still take priority; when they end, the pet returns to this
+music expression if playback is still active.
+
+`play_feedback` controls lightweight desktop-pet play reactions:
+
+- `throw_fast`: released with enough speed to fly under physics.
+- `throw_light`: dragged and released gently.
+- `wall_hit`: bounces into the side of the work area.
+- `land`: bounces on the floor.
+
+Each entry can set an `emotion` and an optional local `bubble`. The emotion may
+be a real image id or an abstract alias such as `shock`; add that alias under
+`emotion_aliases` so every character pack can map it to its own art. Empty
+emotion or empty bubble text means "do not override that part".
+
+`care` controls the optional shop, feeding, and short work/outgoing loop in
+`desktop_pet_next`.
+Set `care.enabled` to `true` and add `shop_items` for characters that should
+have a visible shop. Each item has an `id`, `name`, `price`, optional
+`description`, numeric `effects.hunger` / `effects.energy` /
+`effects.affection`, and optional local `feedback` with an emotion plus bubble.
+Recent feeding events are also sent as desktop-pet context on the next LLM turn,
+so the character can naturally know what the user just fed her.
+
+`care.work` is optional. When enabled, the shop UI shows an outgoing/work
+button. `duration_seconds` controls how long the local task lasts, and
+`reward_coins_min` / `reward_coins_max` define the random coin reward when the
+character returns. `min_hunger` / `min_energy` gate whether she can go out, and
+`hunger_cost` / `energy_cost` are consumed when the task starts. `start_feedback`
+and `complete_feedback` use the same local emotion/bubble shape as shop items;
+`{reward}` inside the complete bubble is replaced by the actual coin reward.
+While she is out, the pet view hides and the Tauri window becomes click-through
+so it does not block the desktop. Packs without `care` simply do not show a
+playable shop, so minimal character packs still work.
 
 ## Asset Layout
 

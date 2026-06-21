@@ -40,11 +40,120 @@
       { "text": "有什么新计划吗？", "emotion": "thinking" }
     ]
   },
+  "play_feedback": {
+    "throw_fast": {
+      "emotion": "shock",
+      "bubble": { "text": "啊啊啊飞起来啦！", "duration_ms": 1500 }
+    },
+    "throw_light": {
+      "emotion": "confused",
+      "bubble": { "text": "", "duration_ms": 0 }
+    },
+    "wall_hit": {
+      "emotion": "confused",
+      "bubble": { "text": "撞到了。", "duration_ms": 1200 }
+    },
+    "land": {
+      "emotion": "",
+      "bubble": { "text": "", "duration_ms": 0 }
+    }
+  },
+  "care": {
+    "enabled": true,
+    "initial_coins": 20,
+    "initial_hunger": 55,
+    "initial_energy": 70,
+    "initial_affection": 10,
+    "decay": {
+      "hunger_per_hour": 4,
+      "energy_per_reply": 1,
+      "energy_per_proactive": 0
+    },
+    "work": {
+      "enabled": true,
+      "duration_seconds": 20,
+      "reward_coins_min": 6,
+      "reward_coins_max": 12,
+      "min_hunger": 20,
+      "min_energy": 25,
+      "hunger_cost": 12,
+      "energy_cost": 25,
+      "start_feedback": {
+        "emotion": "normal",
+        "bubble": { "text": "我出去转一圈，很快回来。", "duration_ms": 1800 }
+      },
+      "complete_feedback": {
+        "emotion": "happy",
+        "bubble": { "text": "我回来啦，带回 {reward} 枚金币。", "duration_ms": 2200 }
+      }
+    },
+    "allowance": {
+      "enabled": true,
+      "coins": 4,
+      "cooldown_seconds": 300,
+      "max_coins": 6,
+      "feedback": {
+        "emotion": "normal",
+        "bubble": { "text": "先拿去应急吧。", "duration_ms": 1600 }
+      }
+    },
+    "shop_items": [
+      {
+        "id": "example_food",
+        "name": "小点心",
+        "description": "适合投喂的小吃，按角色喜好替换名称和描述。",
+        "price": 8,
+        "category": "food",
+        "preference_tags": ["sweet"],
+        "usable_in": ["desktop_pet", "qq"],
+        "effects": { "hunger": 18, "energy": 4, "affection": 3 },
+        "feedback": {
+          "emotion": "happy",
+          "bubble": { "text": "好吃！", "duration_ms": 1800 }
+        }
+      },
+      {
+        "id": "example_drink",
+        "name": "暖饮",
+        "description": "暖暖的一杯，适合休息时递过去。",
+        "price": 5,
+        "category": "drink",
+        "preference_tags": ["tea"],
+        "usable_in": ["desktop_pet", "qq"],
+        "effects": { "hunger": 4, "energy": 14, "affection": 2 },
+        "feedback": {
+          "emotion": "happy",
+          "bubble": { "text": "嗯，舒服多了。", "duration_ms": 1800 }
+        }
+      },
+      {
+        "id": "example_offering",
+        "name": "供品",
+        "description": "供奉用物品，QQ 群可用，按角色主题替换。",
+        "price": 10,
+        "category": "offering",
+        "preference_tags": ["offering"],
+        "usable_in": ["qq"],
+        "effects": { "affection": 5 },
+        "feedback": {
+          "emotion": "happy",
+          "bubble": { "text": "收到了。", "duration_ms": 1600 }
+        }
+      }
+    ],
+    "care_preferences": {
+      "favorite_tags": [],
+      "disliked_tags": [],
+      "offering_tags": ["offering"],
+      "default_affection_bonus_tags": []
+    }
+  },
   "emotion_aliases": {
     "normal": ["normal"],
     "thinking": ["thinking", "normal"],
     "happy": ["happy", "normal"],
     "confused": ["confused", "normal"],
+    "shock": ["confused", "normal"],
     "music": ["listening", "happy", "normal"]
   },
   "layout": {

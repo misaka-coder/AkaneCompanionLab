@@ -74,6 +74,7 @@ struct CharacterRuntimeState {
     height: Option<u32>,
     scale: f64,
     opacity: f64,
+    care: serde_json::Value,
     updated_at: u64,
 }
 
@@ -91,6 +92,7 @@ impl Default for CharacterRuntimeState {
             height: None,
             scale: 1.0,
             opacity: 1.0,
+            care: serde_json::Value::Null,
             updated_at: 0,
         }
     }
@@ -3415,6 +3417,29 @@ async fn open_workspace_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_shop_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("shop") {
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let builder = WebviewWindowBuilder::new(&app, "shop", WebviewUrl::App("shop.html".into()))
+        .title("Akane Next 小卖部")
+        .inner_size(660.0, 560.0)
+        .min_inner_size(480.0, 420.0)
+        .resizable(true)
+        .decorations(true)
+        .always_on_top(false)
+        .skip_taskbar(false)
+        .center()
+        .visible(true);
+
+    let window = builder.build().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn open_workshop_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("workshop") {
         window.show().map_err(|error| error.to_string())?;
@@ -4386,6 +4411,7 @@ fn main() {
             open_settings_window,
             open_panel_window,
             open_workspace_window,
+            open_shop_window,
             open_workshop_window,
             get_window_geometry,
             save_character_pack,

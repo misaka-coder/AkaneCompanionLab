@@ -29,6 +29,7 @@ from .memory_compaction_service import MemoryCompactionService
 from .memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from .memory_timeline import MemoryTimelineService
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
+from .care_runtime import CareRuntimeStore
 from .desktop_music_timeline import DesktopMusicTimelineService
 from .desktop_screen_vision import DesktopScreenVisionWorkspace
 from . import desktop_context_engine
@@ -109,6 +110,7 @@ class AkaneMemoryEngine:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.resource_manifest = resource_manifest
         self.desktop_pet_character_resources = desktop_pet_character_resources
+        self.care_runtime = CareRuntimeStore(self.base_dir / "care_runtime.json")
         self.store = MemoryStore(self.base_dir)
         self.embedding_provider = self._build_embedding_provider()
         self.vector_store = VectorStore(
@@ -980,6 +982,129 @@ class AkaneMemoryEngine:
                 return False
         return None
 
+    def _prepare_care_context_for_turn(
+        self,
+        payload: dict[str, Any],
+        client_context: ClientProtocolContext,
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+        now_ts: int,
+    ) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return payload
+        care_runtime = getattr(self, "care_runtime", None)
+        if care_runtime is None:
+            return payload
+        client_mode = client_context.effective_mode.value if client_context is not None else ""
+        relation_user_id = self._resolve_care_relation_user_id(
+            payload,
+            client_context,
+            profile_user_id=profile_user_id,
+        )
+        now_ms = int(max(1, now_ts) * 1000)
+        desktop_care = payload.get("desktop_care")
+        try:
+            if isinstance(desktop_care, dict):
+                care_runtime.sync_from_client(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    client_mode=client_mode,
+                    care_payload=desktop_care,
+                    relation_user_id=relation_user_id,
+                    now_ms=now_ms,
+                )
+            if client_context is not None and client_context.effective_mode == ClientMode.QQ_TEXT:
+                enriched_payload = dict(payload)
+                enriched_payload["desktop_care"] = care_runtime.snapshot_for_client(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    client_mode=ClientMode.QQ_TEXT.value,
+                    relation_user_id=relation_user_id,
+                    now_ms=now_ms,
+                )
+                return enriched_payload
+        except Exception as exc:
+            logger.warning("care runtime context failed: %s", exc)
+        return payload
+
+    def _resolve_care_relation_user_id(
+        self,
+        payload: dict[str, Any],
+        client_context: ClientProtocolContext | None,
+        *,
+        profile_user_id: str,
+    ) -> str:
+        if client_context is not None and client_context.effective_mode == ClientMode.QQ_TEXT:
+            delivery = payload.get("qq_delivery_context") if isinstance(payload, dict) else {}
+            if isinstance(delivery, dict):
+                qq_user_id = str(delivery.get("user_id") or "").strip()
+                if qq_user_id and qq_user_id != "0":
+                    return f"qq:{qq_user_id}"
+            return f"qq:{profile_user_id}"
+        return str(profile_user_id or "master")
+
+    def _apply_care_state_request(
+        self,
+        final_output: dict[str, Any],
+        client_context: ClientProtocolContext,
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+        payload: dict[str, Any] | None = None,
+        now_ts: int,
+    ) -> None:
+        if client_context is None or client_context.effective_mode != ClientMode.QQ_TEXT:
+            return
+        care_runtime = getattr(self, "care_runtime", None)
+        if care_runtime is None or not isinstance(final_output, dict):
+            return
+        try:
+            relation_user_id = self._resolve_care_relation_user_id(
+                payload or {},
+                client_context,
+                profile_user_id=profile_user_id,
+            )
+        except Exception as exc:
+            logger.warning("care runtime relation_user_id resolve failed: %s", exc)
+            relation_user_id = ""
+        # Per-reply effect: always fire for every QQ response
+        try:
+            care_runtime.apply_energy_cost(
+                profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                relation_user_id=relation_user_id,
+                energy_cost=4,
+                coin_reward=1,
+                now_ms=int(max(1, now_ts) * 1000),
+            )
+        except Exception as exc:
+            logger.warning("care runtime energy cost failed: %s", exc)
+        # Affinity update: only when LLM signals a non-zero delta
+        state_request = final_output.get("state_request")
+        if not isinstance(state_request, dict):
+            return
+        affinity_delta = state_request.get("affinity")
+        try:
+            delta = max(-5, min(5, int(affinity_delta)))
+        except (TypeError, ValueError):
+            return
+        if delta == 0:
+            return
+        try:
+            snapshot = care_runtime.apply_affinity_delta(
+                profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                client_mode=ClientMode.QQ_TEXT.value,
+                relation_user_id=relation_user_id,
+                delta=delta,
+                now_ms=int(max(1, now_ts) * 1000),
+            )
+        except Exception as exc:
+            logger.warning("care runtime affinity update failed: %s", exc)
+            return
+        final_output["care_state"] = snapshot
+
     def _resolve_pre_retrieval_enabled(self, *, payload: dict[str, Any]) -> bool:
         return retrieval_engine.resolve_pre_retrieval_enabled(self, payload=payload)
 
@@ -1477,6 +1602,13 @@ class AkaneMemoryEngine:
         profile_user_id = str(payload.get("real_user_id") or session_id)
         user_message = str(payload.get("message") or "").strip()
         now_ts = int(payload.get("timestamp") or time.time())
+        payload = self._prepare_care_context_for_turn(
+            payload,
+            client_context,
+            profile_user_id=profile_user_id,
+            character_pack_id=turn_character_pack_id,
+            now_ts=now_ts,
+        )
         date_label = timestamp_to_date_label(now_ts)
         time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
         turn_extra_user_context = self._build_turn_extra_user_context(payload, client_context)
@@ -1784,6 +1916,14 @@ class AkaneMemoryEngine:
                 client_context, turn_character_pack_id,
             )["assistant_name"],
         )
+        self._apply_care_state_request(
+            final_output,
+            client_context,
+            profile_user_id=profile_user_id,
+            character_pack_id=turn_character_pack_id,
+            payload=payload,
+            now_ts=now_ts,
+        )
         memory_tags = final_output_engine.extract_memory_keywords(self, final_output)
         memory_metadata = final_output.get("memory_metadata")
         if not isinstance(memory_metadata, dict):
@@ -1874,6 +2014,13 @@ class AkaneMemoryEngine:
         profile_user_id = str(payload.get("real_user_id") or session_id)
         user_message = str(payload.get("message") or "").strip()
         now_ts = int(payload.get("timestamp") or time.time())
+        payload = self._prepare_care_context_for_turn(
+            payload,
+            client_context,
+            profile_user_id=profile_user_id,
+            character_pack_id=turn_character_pack_id,
+            now_ts=now_ts,
+        )
         date_label = timestamp_to_date_label(now_ts)
         time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
         turn_extra_user_context = self._build_turn_extra_user_context(payload, client_context)
@@ -2188,6 +2335,14 @@ class AkaneMemoryEngine:
                 client_context, turn_character_pack_id,
             )["assistant_name"],
         )
+        self._apply_care_state_request(
+            final_output,
+            client_context,
+            profile_user_id=profile_user_id,
+            character_pack_id=turn_character_pack_id,
+            payload=payload,
+            now_ts=now_ts,
+        )
         memory_tags = final_output_engine.extract_memory_keywords(self, final_output)
         memory_metadata = final_output.get("memory_metadata")
         if not isinstance(memory_metadata, dict):
@@ -2442,6 +2597,7 @@ class AkaneMemoryEngine:
             user_images=user_images,
             system_extra_blocks=generation_context.get("system_extra_blocks"),
             history_turns=generation_context.get("history_turns"),
+            prompt_audit_sections=generation_context.get("prompt_audit_sections"),
         )
         return self._normalize_final_output(
             result=result,
@@ -2508,6 +2664,7 @@ class AkaneMemoryEngine:
             user_images=user_images,
             system_extra_blocks=generation_context.get("system_extra_blocks"),
             history_turns=generation_context.get("history_turns"),
+            prompt_audit_sections=generation_context.get("prompt_audit_sections"),
             early_tool_call_validator=(
                 lambda call: self._normalize_tool_call(
                     call,
@@ -2763,27 +2920,34 @@ class AkaneMemoryEngine:
             ]
             if text
         ]
-        extra_context_sections = [
-            text
-            for text in [
+        extra_context_candidates = [
+            (
+                "client_mode",
+                self._build_client_mode_prompt_context(client_context)
+                if prompt_profile.includes(PromptModule.CLIENT_MODE)
+                else "",
+            ),
+            (
+                "relationship",
                 self._build_memory_relationship_context(
                     profile_user_id=profile_user_id,
                     character_pack_id=character_pack_id,
                     now_ts=now_ts,
                 ),
-                self._build_client_mode_prompt_context(client_context)
-                if prompt_profile.includes(PromptModule.CLIENT_MODE)
-                else "",
+            ),
+            ("task_workspace", task_workspace_context),
+            ("workspace_files", workspace_file_context),
+            ("attachment_focus", attachment_focus_context),
+            ("generated_files", generated_file_context),
+            ("pending_gifts", pending_gift_context),
+            ("gift_observation", gift_observation_context),
+            (
+                "turn_extra_context",
                 extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",
-                task_workspace_context,
-                workspace_file_context,
-                attachment_focus_context,
-                generated_file_context,
-                pending_gift_context,
-                gift_observation_context,
-            ]
-            if text
+            ),
         ]
+        extra_context_audit_sections = self._build_extra_context_audit_sections(extra_context_candidates)
+        extra_context_sections = [section["text"] for section in extra_context_audit_sections]
         merged_extra_context = "\n\n".join(extra_context_sections) if extra_context_sections else "(无额外上下文)"
         visual_defaults = (
             resource_manifest.build_runtime_manifest(
@@ -2884,6 +3048,7 @@ class AkaneMemoryEngine:
             current_visual_context=current_visual_context,
             resource_context=resource_context,
             extra_context=merged_extra_context,
+            extra_context_audit_sections=extra_context_audit_sections,
             persona_system_context=str(persona_context.get("system_context") or ""),
             persona_reference_context=str(persona_context.get("reference_context") or ""),
             persona_active_id=str(persona_context.get("active_id") or ""),
@@ -3911,6 +4076,16 @@ class AkaneMemoryEngine:
 
     def _coerce_visual_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         return visual_context_engine.coerce_visual_payload(payload)
+
+    @staticmethod
+    def _build_extra_context_audit_sections(candidates: list[tuple[str, Any]]) -> list[dict[str, str]]:
+        sections: list[dict[str, str]] = []
+        for name, text in candidates:
+            rendered_name = str(name or "").strip()
+            rendered_text = str(text or "").strip()
+            if rendered_name and rendered_text:
+                sections.append({"name": rendered_name, "text": rendered_text})
+        return sections
 
     @staticmethod
     def _split_history_records(

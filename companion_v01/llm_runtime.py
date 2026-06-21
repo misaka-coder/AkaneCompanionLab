@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Generator
 from urllib.parse import urlparse
 
@@ -12,6 +15,7 @@ from services.llm_client import build_llm_client
 
 
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
+PROMPT_AUDIT_LOCK = threading.RLock()
 JSON_ESCAPE_MAP = {
     '"': '"',
     "\\": "\\",
@@ -414,6 +418,7 @@ class LLMRuntime:
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, str]] | None = None,
+        prompt_audit_sections: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self._record_metric("chat_json_calls")
         return self._call_json(
@@ -428,6 +433,7 @@ class LLMRuntime:
             native_tool_choice=native_tool_choice,
             system_extra_blocks=system_extra_blocks,
             history_turns=history_turns,
+            prompt_audit_sections=prompt_audit_sections,
         )
 
     def call_aux_ndjson(
@@ -461,6 +467,7 @@ class LLMRuntime:
         user_images: list[dict[str, Any]] | None = None,
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, str]] | None = None,
+        prompt_audit_sections: list[dict[str, Any]] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         self._record_metric("chat_stream_calls")
         return self._stream_chat_json(
@@ -474,6 +481,7 @@ class LLMRuntime:
             user_images=user_images,
             system_extra_blocks=system_extra_blocks,
             history_turns=history_turns,
+            prompt_audit_sections=prompt_audit_sections,
         )
 
     def _call_json(
@@ -490,6 +498,7 @@ class LLMRuntime:
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, str]] | None = None,
+        prompt_audit_sections: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         try:
             response = self._create_completion(
@@ -506,6 +515,7 @@ class LLMRuntime:
                     native_tool_choice=native_tool_choice,
                     system_extra_blocks=system_extra_blocks,
                     history_turns=history_turns,
+                    prompt_audit_sections=prompt_audit_sections,
                 ),
             )
             self._record_cache_metrics(response)
@@ -624,6 +634,7 @@ class LLMRuntime:
         user_images: list[dict[str, Any]] | None = None,
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, str]] | None = None,
+        prompt_audit_sections: list[dict[str, Any]] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         import time
 
@@ -649,6 +660,7 @@ class LLMRuntime:
                     user_images=user_images,
                     system_extra_blocks=system_extra_blocks,
                     history_turns=history_turns,
+                    prompt_audit_sections=prompt_audit_sections,
                 ),
             )
             for chunk in response:
@@ -827,6 +839,7 @@ class LLMRuntime:
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, str]] | None = None,
+        prompt_audit_sections: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         user_content: str | list[dict[str, Any]]
         image_items = self._normalize_user_image_items(user_images)
@@ -873,6 +886,19 @@ class LLMRuntime:
         )
         if filtered_system_extra_blocks and self._is_anthropic_protocol(bundle):
             payload["system_extra_blocks"] = filtered_system_extra_blocks
+        self._record_prompt_audit_if_enabled(
+            bundle=bundle,
+            prompt_cache_key=prompt_cache_key,
+            messages=messages,
+            system_extra_blocks=filtered_system_extra_blocks if self._is_anthropic_protocol(bundle) else [],
+            history_turns=history_turns,
+            user_prompt=user_prompt,
+            user_image_count=len(image_items),
+            prompt_audit_sections=prompt_audit_sections,
+            stream=stream,
+            json_mode=json_mode,
+            native_tool_count=len(normalized_tools),
+        )
         return payload
 
     def _normalize_system_extra_blocks(self, value: Any) -> list[str]:
@@ -886,6 +912,131 @@ class LLMRuntime:
 
     def _supports_stream_usage(self, bundle: ModelBundle) -> bool:
         return self._supports_deepseek_thinking_control(bundle)
+
+    def _record_prompt_audit_if_enabled(
+        self,
+        *,
+        bundle: ModelBundle,
+        prompt_cache_key: str,
+        messages: list[dict[str, Any]],
+        system_extra_blocks: list[str],
+        history_turns: list[dict[str, str]] | None,
+        user_prompt: str,
+        user_image_count: int,
+        prompt_audit_sections: list[dict[str, Any]] | None,
+        stream: bool,
+        json_mode: bool,
+        native_tool_count: int,
+    ) -> None:
+        if not self._should_record_prompt_audit(prompt_cache_key):
+            return
+        try:
+            payload_sections = self._build_payload_audit_sections(
+                messages=messages,
+                system_extra_blocks=system_extra_blocks,
+                history_turns=history_turns,
+                user_prompt=user_prompt,
+            )
+            record = {
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "prompt_cache_key": str(prompt_cache_key or ""),
+                "model": str(getattr(bundle, "model", "") or ""),
+                "protocol": str(
+                    getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", ""))
+                    or ""
+                ),
+                "stream": bool(stream),
+                "json_mode": bool(json_mode),
+                "message_count": len(messages),
+                "history_turn_count": len(history_turns or []),
+                "user_image_count": max(0, int(user_image_count or 0)),
+                "native_tool_count": max(0, int(native_tool_count or 0)),
+                "payload_totals": self._sum_audit_sections(payload_sections),
+                "payload_sections": payload_sections,
+                "source_sections": self._normalize_prompt_audit_sections(prompt_audit_sections),
+            }
+            self._append_prompt_audit_record(record)
+        except Exception:
+            pass
+
+    def _should_record_prompt_audit(self, prompt_cache_key: str) -> bool:
+        if not bool(getattr(config, "LLM_PROMPT_AUDIT_ENABLED", False)):
+            return False
+        key = str(prompt_cache_key or "").strip()
+        if key == "chat:final":
+            return True
+        return bool(getattr(config, "LLM_PROMPT_AUDIT_INCLUDE_AUX", False))
+
+    def _build_payload_audit_sections(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        system_extra_blocks: list[str],
+        history_turns: list[dict[str, str]] | None,
+        user_prompt: str,
+    ) -> list[dict[str, Any]]:
+        sections: list[dict[str, Any]] = []
+        if messages:
+            sections.append(self._audit_text_section("payload.system_message", self._flatten_message_content(messages[0].get("content"))))
+        history_text = "\n".join(
+            f"{str(turn.get('role') or '').strip().lower()}:{str(turn.get('content') or '').strip()}"
+            for turn in history_turns or []
+            if str(turn.get("content") or "").strip()
+        )
+        sections.append(self._audit_text_section("payload.history_turns", history_text))
+        sections.append(self._audit_text_section("payload.user_prompt", user_prompt))
+        if system_extra_blocks:
+            sections.append(self._audit_text_section("payload.system_extra_blocks", "\n\n".join(system_extra_blocks)))
+        return sections
+
+    def _normalize_prompt_audit_sections(self, sections: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        if not isinstance(sections, list):
+            return normalized
+        for idx, item in enumerate(sections):
+            if isinstance(item, dict):
+                name = str(item.get("name") or f"section_{idx}").strip() or f"section_{idx}"
+                text = item.get("text", "")
+            else:
+                name = f"section_{idx}"
+                text = item
+            normalized.append(self._audit_text_section(name, self._flatten_message_content(text)))
+        return normalized
+
+    def _audit_text_section(self, name: str, text: str) -> dict[str, Any]:
+        raw = str(text or "")
+        digest = hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:16] if raw else ""
+        return {
+            "name": str(name or "section"),
+            "chars": len(raw),
+            "estimated_tokens": self._estimate_prompt_tokens(raw),
+            "sha256_16": digest,
+            "empty": not bool(raw),
+        }
+
+    def _estimate_prompt_tokens(self, text: str) -> int:
+        raw = str(text or "")
+        if not raw:
+            return 0
+        cjk_chars = sum(1 for char in raw if "\u4e00" <= char <= "\u9fff")
+        non_cjk_chars = max(0, len(raw) - cjk_chars)
+        return int(cjk_chars + ((non_cjk_chars + 3) // 4))
+
+    def _sum_audit_sections(self, sections: list[dict[str, Any]]) -> dict[str, int]:
+        return {
+            "chars": sum(int(section.get("chars") or 0) for section in sections),
+            "estimated_tokens": sum(int(section.get("estimated_tokens") or 0) for section in sections),
+        }
+
+    def _append_prompt_audit_record(self, record: dict[str, Any]) -> None:
+        log_root = Path(str(getattr(config, "LOG_DIR", "") or "logs"))
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        path = log_root / "llm_prompt_audit" / f"{day}.jsonl"
+        line = json.dumps(record, ensure_ascii=False, sort_keys=True)
+        with PROMPT_AUDIT_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
 
     def _record_cache_metrics(self, response: Any) -> None:
         try:

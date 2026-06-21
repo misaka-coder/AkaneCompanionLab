@@ -60,6 +60,15 @@ textarea {
   filter: drop-shadow(0 10px 18px rgb(30 24 36 / 0.08));
 }
 
+.stage.is-away .pet-hitbox,
+.stage.is-away .bubble,
+.stage.is-away .voice-record-button,
+.stage.is-away .chat-form {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .pet-hitbox:active {
   cursor: grabbing;
 }

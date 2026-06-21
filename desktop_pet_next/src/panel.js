@@ -78,6 +78,7 @@ const els = {
   progressTime:  document.getElementById("progress-time"),
   btnNewSession: document.getElementById("btn-new-session"),
   btnWorkspace:  document.getElementById("btn-workspace"),
+  btnShop:       document.getElementById("btn-shop"),
   btnStop:       document.getElementById("btn-stop"),
   btnMute:       document.getElementById("btn-mute"),
   muteLabel:     document.getElementById("mute-label"),
@@ -365,6 +366,10 @@ function wireButtons() {
 
   els.btnWorkspace.addEventListener("click", async () => {
     await openPanelOwnedWindow("open_workspace_window", "open-workspace");
+  });
+
+  els.btnShop.addEventListener("click", async () => {
+    await openPanelOwnedWindow("open_shop_window", "open-shop");
   });
 
   els.btnMute.addEventListener("click", async () => {

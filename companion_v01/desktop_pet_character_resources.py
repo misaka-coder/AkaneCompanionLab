@@ -278,6 +278,26 @@ class DesktopPetCharacterResourceService:
             "active_id": identity_id,
         }
 
+    def load_care_shop_items(self, character_pack_id: str) -> list[dict]:
+        """Load care.shop_items from character.json. Returns [] if unavailable."""
+        pack_id = sanitize_character_pack_id(character_pack_id)
+        if not pack_id:
+            return []
+        pack_dir = self._resolve_pack_dir(pack_id)
+        if pack_dir is None:
+            return []
+        try:
+            data = _load_json(pack_dir / "character.json")
+            items = data.get("care", {}).get("shop_items")
+            if not isinstance(items, list):
+                return []
+            return [
+                item for item in items
+                if isinstance(item, dict) and item.get("id") and item.get("name")
+            ]
+        except Exception:
+            return []
+
     def _resolve_pack_dir(self, pack_id: str) -> Path | None:
         base = self.characters_dir.resolve()
         target = (base / pack_id).resolve()

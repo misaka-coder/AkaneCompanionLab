@@ -17,6 +17,7 @@ export default defineConfig({
         panel: resolve(__dirname, "panel.html"),
         controlCenterLab: resolve(__dirname, "control-center-lab.html"),
         settingsCompatibilityRedirect: resolve(__dirname, "settings.html"),
+        shop: resolve(__dirname, "shop.html"),
         workshop: resolve(__dirname, "workshop.html"),
         workspace: resolve(__dirname, "workspace.html")
       }

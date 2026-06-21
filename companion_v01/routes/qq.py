@@ -628,6 +628,49 @@ def build_qq_router(
                     }
                 )
 
+            _care_runtime = getattr(engine, "care_runtime", None)
+            _char_resources = getattr(engine, "desktop_pet_character_resources", None)
+            _shop_items = (
+                _char_resources.load_care_shop_items(context.character_pack_id)
+                if _char_resources and context.character_pack_id
+                else None
+            )
+            economy_command_result = qq_gateway.handle_economy_command(
+                context,
+                care_runtime=_care_runtime,
+                shop_items=_shop_items,
+                now_ms=int(time.time() * 1000),
+            )
+            if isinstance(economy_command_result, dict):
+                reply = str(economy_command_result.get("reply") or "").strip()
+                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                duration_ms = (time.perf_counter() - started_at) * 1000
+                runtime_metrics.observe_request(
+                    "qq_napcat_event",
+                    duration_ms=duration_ms,
+                    ok=bool(send_result.get("ok")),
+                )
+                log_event(
+                    "qq_economy_command",
+                    session_id=context.session_id,
+                    profile_user_id=context.profile_user_id,
+                    command_status=str(economy_command_result.get("status") or ""),
+                    command_ok=bool(economy_command_result.get("ok")),
+                    sent=bool(send_result.get("ok")),
+                    duration_ms=round(duration_ms, 1),
+                )
+                return JSONResponse(
+                    {
+                        "status": "ok" if send_result.get("ok") else "send_failed",
+                        "reason": "qq_economy_command",
+                        "command_status": str(economy_command_result.get("status") or ""),
+                        "command_ok": bool(economy_command_result.get("ok")),
+                        "session_id": context.session_id,
+                        "profile_user_id": context.profile_user_id,
+                        "send_result": send_result,
+                    }
+                )
+
             attachments_registered = []
             if context.attachments:
                 attachments_registered = await asyncio.to_thread(

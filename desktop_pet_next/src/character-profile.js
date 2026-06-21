@@ -43,6 +43,88 @@ const FALLBACK_PROFILE = {
       "主人暂时没有说话。你像坐在旁边陪他一样，轻轻搭一句自然的话。桌面线索只当背景，不要刻意围绕窗口标题发挥。",
     local_click_lines: [{ text: "嗯？我在哦。", emotion: "正常" }]
   },
+  care: {
+    enabled: true,
+    initial_coins: 20,
+    initial_hunger: 55,
+    initial_energy: 70,
+    initial_affection: 10,
+    decay: {
+      hunger_per_hour: 4,
+      energy_per_reply: 1,
+      energy_per_proactive: 0
+    },
+    work: {
+      enabled: true,
+      duration_seconds: 20,
+      reward_coins_min: 6,
+      reward_coins_max: 12,
+      min_hunger: 20,
+      min_energy: 25,
+      hunger_cost: 12,
+      energy_cost: 25,
+      start_feedback: {
+        emotion: "normal",
+        bubble: { text: "我出去转一圈，很快回来。", duration_ms: 1800 }
+      },
+      complete_feedback: {
+        emotion: "happy",
+        bubble: { text: "我回来啦，带了点金币。", duration_ms: 2200 }
+      }
+    },
+    allowance: {
+      enabled: true,
+      coins: 4,
+      cooldown_seconds: 300,
+      max_coins: 6,
+      feedback: {
+        emotion: "normal",
+        bubble: { text: "先拿去应急吧。", duration_ms: 1600 }
+      }
+    },
+    shop_items: [
+      {
+        id: "strawberry_cake",
+        name: "草莓蛋糕",
+        description: "小小一块，适合当作投喂测试。",
+        price: 8,
+        effects: { hunger: 18, energy: 8, affection: 4 },
+        feedback: { emotion: "happy", bubble: { text: "甜的！", duration_ms: 1800 } }
+      },
+      {
+        id: "warm_tea",
+        name: "热茶",
+        description: "暖暖的一杯，适合累的时候递过去。",
+        price: 5,
+        effects: { hunger: 6, energy: 12, affection: 2 },
+        feedback: { emotion: "happy", bubble: { text: "嗯，舒服多了。", duration_ms: 1800 } }
+      },
+      {
+        id: "rice_ball",
+        name: "饭团",
+        description: "朴素但顶饱，饿的时候最可靠。",
+        price: 10,
+        effects: { hunger: 28, energy: 4, affection: 1 },
+        feedback: { emotion: "normal", bubble: { text: "这个很安心。", duration_ms: 1800 } }
+      },
+      {
+        id: "red_bean_daifuku",
+        name: "红豆大福",
+        description: "甜甜糯糯，适合当作灵梦也会喜欢的小点心。",
+        price: 12,
+        effects: { hunger: 22, energy: 6, affection: 3 },
+        feedback: { emotion: "happy", bubble: { text: "这个味道不错。", duration_ms: 1800 } }
+      },
+      {
+        id: "wake_soda",
+        name: "清醒汽水",
+        description: "不太顶饱，但很适合困到打哈欠的时候。",
+        price: 9,
+        effects: { hunger: 2, energy: 26, affection: 1 },
+        feedback: { emotion: "happy", bubble: { text: "好，清醒一点了。", duration_ms: 1800 } }
+      }
+    ]
+  },
   play_feedback: {
     throw_fast: { emotion: "shock", bubble: { text: "啊啊啊飞起来啦！", duration_ms: 1500 } },
     throw_light: { emotion: "confused", bubble: { text: "", duration_ms: 0 } },
@@ -192,6 +274,17 @@ export function buildCharacterSnapshot() {
     portraitGlob: profile.assets.portraitGlob,
     bundledOutfit: profile.assets.bundledOutfit,
     personaForm: { ...profile.personaForm },
+    care: {
+      enabled: Boolean(profile.care?.enabled),
+      initialCoins: Number(profile.care?.initialCoins || 0),
+      initialHunger: Number(profile.care?.initialHunger || 0),
+      initialEnergy: Number(profile.care?.initialEnergy || 0),
+      initialAffection: Number(profile.care?.initialAffection || 0),
+      decay: profile.care?.decay ? { ...profile.care.decay } : null,
+      work: profile.care?.work ? { ...profile.care.work } : null,
+      allowance: profile.care?.allowance ? { ...profile.care.allowance } : null,
+      shopItems: Array.isArray(profile.care?.shopItems) ? profile.care.shopItems.map((item) => ({ ...item })) : []
+    },
     layout: profile.layout,
     voice: { ...profile.voice }
   };
@@ -286,6 +379,7 @@ function normalizeCharacterProfile(value) {
   const identity = source.identity && typeof source.identity === "object" ? source.identity : {};
   const appearance = source.appearance && typeof source.appearance === "object" ? source.appearance : {};
   const dialogue = source.dialogue && typeof source.dialogue === "object" ? source.dialogue : {};
+  const care = source.care && typeof source.care === "object" ? source.care : {};
   const playFeedback = source.play_feedback && typeof source.play_feedback === "object" ? source.play_feedback : {};
   const personaForm = source.persona_form && typeof source.persona_form === "object" ? source.persona_form : {};
   const assets = source.assets && typeof source.assets === "object" ? source.assets : {};
@@ -334,6 +428,7 @@ function normalizeCharacterProfile(value) {
       ),
       localClickLines: cleanLocalClickLines(dialogue.local_click_lines, fallback.dialogue.local_click_lines)
     },
+    care: normalizeCare(care, fallback.care),
     playFeedback: normalizePlayFeedback(playFeedback, fallback.play_feedback),
     emotionAliases: normalizeEmotionAliases(source.emotion_aliases || fallback.emotion_aliases, defaultEmotion),
     assets: {
@@ -393,6 +488,135 @@ function cleanLocalClickLines(value, fallback = []) {
   return lines.length ? lines : [{ text: "我在哦。", emotion: "" }];
 }
 
+function normalizeCare(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    enabled: source.enabled !== undefined ? Boolean(source.enabled) : Boolean(fallback.enabled),
+    initialCoins: cleanNonNegativeInteger(source.initial_coins, fallback.initial_coins ?? 0),
+    initialHunger: cleanBoundedInteger(source.initial_hunger, fallback.initial_hunger ?? 50, 0, 100),
+    initialEnergy: cleanBoundedInteger(source.initial_energy, fallback.initial_energy ?? 50, 0, 100),
+    initialAffection: cleanBoundedInteger(source.initial_affection, fallback.initial_affection ?? 0, 0, 100),
+    decay: normalizeCareDecay(source.decay, fallback.decay),
+    work: normalizeCareWork(source.work, fallback.work),
+    allowance: normalizeCareAllowance(source.allowance, fallback.allowance),
+    shopItems: cleanShopItems(source.shop_items, fallback.shop_items || []).filter(isShopItemUsableInDesktop),
+    carePreferences: normalizeCarePreferences(source.care_preferences, fallback.care_preferences)
+  };
+}
+
+function normalizeCareDecay(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    hungerPerHour: cleanBoundedInteger(source.hunger_per_hour, fallback.hunger_per_hour ?? 4, 0, 100),
+    energyPerReply: cleanBoundedInteger(source.energy_per_reply, fallback.energy_per_reply ?? 1, 0, 20),
+    energyPerProactive: cleanBoundedInteger(source.energy_per_proactive, fallback.energy_per_proactive ?? 0, 0, 20)
+  };
+}
+
+function normalizeCareWork(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const startFeedback = source.start_feedback && typeof source.start_feedback === "object" ? source.start_feedback : {};
+  const completeFeedback = source.complete_feedback && typeof source.complete_feedback === "object" ? source.complete_feedback : {};
+  return {
+    enabled: source.enabled !== undefined ? Boolean(source.enabled) : Boolean(fallback.enabled),
+    durationSeconds: cleanBoundedInteger(source.duration_seconds, fallback.duration_seconds ?? 20, 1, 3600),
+    rewardCoinsMin: cleanNonNegativeInteger(source.reward_coins_min, fallback.reward_coins_min ?? 5),
+    rewardCoinsMax: cleanNonNegativeInteger(source.reward_coins_max, fallback.reward_coins_max ?? 10),
+    minHunger: cleanBoundedInteger(source.min_hunger, fallback.min_hunger ?? 20, 0, 100),
+    minEnergy: cleanBoundedInteger(source.min_energy, fallback.min_energy ?? 25, 0, 100),
+    hungerCost: cleanBoundedInteger(source.hunger_cost, fallback.hunger_cost ?? 12, 0, 100),
+    energyCost: cleanBoundedInteger(source.energy_cost, fallback.energy_cost ?? 25, 0, 100),
+    startFeedback: normalizeCareFeedback(startFeedback, fallback.start_feedback),
+    completeFeedback: normalizeCareFeedback(completeFeedback, fallback.complete_feedback)
+  };
+}
+
+function normalizeCareAllowance(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    enabled: source.enabled !== undefined ? Boolean(source.enabled) : Boolean(fallback.enabled),
+    coins: cleanBoundedInteger(source.coins, fallback.coins ?? 4, 1, 999999),
+    cooldownSeconds: cleanBoundedInteger(
+      source.cooldown_seconds ?? source.cooldownSeconds,
+      fallback.cooldown_seconds ?? fallback.cooldownSeconds ?? 300,
+      0,
+      86400
+    ),
+    maxCoins: cleanBoundedInteger(
+      source.max_coins ?? source.maxCoins,
+      fallback.max_coins ?? fallback.maxCoins ?? 6,
+      1,
+      999999
+    ),
+    feedback: normalizeCareFeedback(source.feedback, fallback.feedback)
+  };
+}
+
+function normalizeCareFeedback(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const fallbackBubble = fallback?.bubble && typeof fallback.bubble === "object" ? fallback.bubble : {};
+  const bubble = source.bubble && typeof source.bubble === "object" ? source.bubble : {};
+  return {
+    emotion: cleanText(source.emotion, fallback?.emotion || ""),
+    bubble: {
+      text: cleanText(bubble.text, fallbackBubble.text || ""),
+      durationMs: cleanNonNegativeInteger(bubble.duration_ms, fallbackBubble.duration_ms ?? 0)
+    }
+  };
+}
+
+function cleanShopItems(value, fallback = []) {
+  const items = Array.isArray(value) ? value : fallback;
+  return items
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const effects = item.effects && typeof item.effects === "object" ? item.effects : {};
+      const feedback = item.feedback && typeof item.feedback === "object" ? item.feedback : {};
+      const bubble = feedback.bubble && typeof feedback.bubble === "object" ? feedback.bubble : {};
+      return {
+        id: cleanText(item.id),
+        name: cleanText(item.name),
+        description: cleanText(item.description),
+        price: cleanNonNegativeInteger(item.price, 0),
+        category: cleanText(item.category),
+        preferenceTags: cleanStringArray(item.preference_tags || item.preferenceTags),
+        usableIn: cleanStringArray(item.usable_in || item.usableIn),
+        feedbackTone: cleanText(item.feedback_tone || item.feedbackTone),
+        effects: {
+          hunger: cleanSignedInteger(effects.hunger, 0),
+          affection: cleanSignedInteger(effects.affection, 0),
+          energy: cleanSignedInteger(effects.energy, 0)
+        },
+        feedback: {
+          emotion: cleanText(feedback.emotion),
+          bubble: {
+            text: cleanText(bubble.text),
+            durationMs: cleanNonNegativeInteger(bubble.duration_ms, 0)
+          }
+        }
+      };
+    })
+    .filter((item) => item.id && item.name);
+}
+
+function isShopItemUsableInDesktop(item) {
+  return !item.usableIn.length || item.usableIn.includes("desktop_pet");
+}
+
+function normalizeCarePreferences(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const fallbackSource = fallback && typeof fallback === "object" ? fallback : {};
+  return {
+    favoriteTags: cleanStringArray(source.favorite_tags || source.favoriteTags, fallbackSource.favorite_tags || fallbackSource.favoriteTags),
+    dislikedTags: cleanStringArray(source.disliked_tags || source.dislikedTags, fallbackSource.disliked_tags || fallbackSource.dislikedTags),
+    offeringTags: cleanStringArray(source.offering_tags || source.offeringTags, fallbackSource.offering_tags || fallbackSource.offeringTags),
+    defaultAffectionBonusTags: cleanStringArray(
+      source.default_affection_bonus_tags || source.defaultAffectionBonusTags,
+      fallbackSource.default_affection_bonus_tags || fallbackSource.defaultAffectionBonusTags
+    )
+  };
+}
+
 function normalizePlayFeedback(value, fallback = {}) {
   const source = value && typeof value === "object" ? value : {};
   return {
@@ -401,6 +625,21 @@ function normalizePlayFeedback(value, fallback = {}) {
     wallHit: normalizePlayFeedbackEntry(source.wall_hit, fallback.wall_hit),
     land: normalizePlayFeedbackEntry(source.land, fallback.land)
   };
+}
+
+function cleanSignedInteger(value, fallback = 0) {
+  const number = Math.round(Number(value));
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function cleanNonNegativeInteger(value, fallback = 0) {
+  const number = Math.round(Number(value));
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
+function cleanBoundedInteger(value, fallback, min, max) {
+  const number = cleanSignedInteger(value, fallback);
+  return Math.min(max, Math.max(min, number));
 }
 
 function normalizePlayFeedbackEntry(value, fallback = {}) {

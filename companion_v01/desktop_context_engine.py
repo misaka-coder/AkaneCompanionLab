@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
@@ -16,6 +17,7 @@ def build_turn_extra_user_context(
     return merge_extra_user_context(
         str(source.get("extra_context") or ""),
         build_desktop_context_prompt(source.get("desktop_context"), client_context),
+        build_desktop_care_prompt(source.get("desktop_care"), client_context),
         build_desktop_screen_vision_prompt(
             engine,
             client_context,
@@ -85,6 +87,181 @@ def build_desktop_context_prompt(
     return "\n".join(lines)
 
 
+def build_desktop_care_prompt(
+    desktop_care: Any,
+    client_context: ClientProtocolContext | None,
+) -> str:
+    if client_context is None or client_context.effective_mode not in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}:
+        return ""
+    if not isinstance(desktop_care, dict) or desktop_care.get("enabled") is False:
+        return ""
+
+    hunger = coerce_bounded_int(desktop_care.get("hunger"), 0, 100)
+    energy = coerce_bounded_int(desktop_care.get("energy"), 0, 100)
+    affection = coerce_bounded_int(desktop_care.get("affection"), 0, 100)
+    thresholds = desktop_care.get("thresholds") if isinstance(desktop_care.get("thresholds"), dict) else {}
+    hunger_low = coerce_bounded_int(thresholds.get("hunger_low"), 0, 100, fallback=25)
+    hunger_critical = coerce_bounded_int(thresholds.get("hunger_critical"), 0, 100, fallback=12)
+    energy_low = coerce_bounded_int(thresholds.get("energy_low"), 0, 100, fallback=25)
+    energy_critical = coerce_bounded_int(thresholds.get("energy_critical"), 0, 100, fallback=12)
+    affection_warm = coerce_bounded_int(thresholds.get("affection_warm"), 0, 100, fallback=45)
+    affection_close = coerce_bounded_int(thresholds.get("affection_close"), 0, 100, fallback=75)
+
+    is_qq_text = client_context.effective_mode == ClientMode.QQ_TEXT
+    header = (
+        "【当前养成状态（QQ 临时上下文；本轮不写入长期记忆）】"
+        if is_qq_text
+        else "【当前养成状态（本轮临时状态，不写入长期记忆）】"
+    )
+    affection_label = "QQ好感" if is_qq_text else "好感"
+
+    lines = [
+        header,
+        "无论你平时性格多强硬、多冷淡、多傲娇，生理需求到了临界时防线会自然松动——这不是人设崩坏，是人设之下真实的你；把握好这种反差感。",
+        f"- 饥饿 {hunger}/100，精力 {energy}/100，{affection_label} {affection}/100。",
+    ]
+    if is_qq_text:
+        lines.append("- 饥饿和精力与桌宠共享；QQ好感只代表 QQ 互动关系，和桌宠好感分开计算。")
+    if not is_qq_text and desktop_care.get("work_task_active") is True:
+        lines.append("- 你当前正在外出/打工；如果需要回应，要承认自己暂时不在桌面旁边。")
+
+    lines.extend(
+        build_desktop_care_expression_lines(
+            hunger=hunger,
+            energy=energy,
+            affection=affection,
+            hunger_low=hunger_low,
+            hunger_critical=hunger_critical,
+            energy_low=energy_low,
+            energy_critical=energy_critical,
+            affection_warm=affection_warm,
+            affection_close=affection_close,
+            now=desktop_care.get("now"),
+        )
+    )
+    lines.append("- 不要生硬复述这些数值；把状态自然表现进你的语气、关注点和行动倾向。")
+    return "\n".join(lines)
+
+
+def build_desktop_care_expression_lines(
+    *,
+    hunger: int,
+    energy: int,
+    affection: int,
+    hunger_low: int,
+    hunger_critical: int,
+    energy_low: int,
+    energy_critical: int,
+    affection_warm: int,
+    affection_close: int,
+    now: Any = None,
+) -> list[str]:
+    lines = [
+        "- 生活节奏："
+        f"{get_desktop_care_time_phase(now)}；"
+        f"{describe_desktop_care_vitality(hunger, energy, hunger_low, hunger_critical, energy_low, energy_critical)}",
+    ]
+
+    both_critical = hunger <= hunger_critical and energy <= energy_critical
+    hunger_critical_only = hunger <= hunger_critical and not both_critical
+    energy_critical_only = energy <= energy_critical and not both_critical
+    any_critical = both_critical or hunger_critical_only or energy_critical_only
+
+    if both_critical:
+        lines.append(
+            "- 【生理压制】又饿又困已经让你无暇顾及平时的形象；"
+            "无论你平时多强硬多冷淡，这一刻防线最薄——"
+            "你可能会主动开口要吃的、坦白自己撑不住，甚至用平时绝不会有的方式求助；"
+            "让这种脆弱自然穿透人设，不要假装没事，这是你最真实的一面。"
+        )
+        lines.append("- 表情倾向：hungry、sleepy、tired 或 yawn。")
+    elif hunger_critical_only:
+        lines.append(
+            "- 【饥饿压制】无论你平时多强硬，真的很饿时防线会松——"
+            "你可能用平时少有的方式主动问有没有吃的，或者话说到一半注意力就被食物拉走；"
+            "这种需求穿透人设的时刻正是反差感最强的地方，让它自然流露出来。"
+        )
+        lines.append("- 表情倾向：hungry 或 snack。")
+    elif energy_critical_only:
+        lines.append(
+            "- 【疲惫压制】无论你平时多精力充沛，真的很困时人设会软化——"
+            "话变少、语速变慢、甚至主动说想躺一下；让困意穿透表面形象，不要强撑着演精神。"
+        )
+        lines.append("- 表情倾向：sleepy、tired 或 yawn。")
+    else:
+        if hunger <= hunger_low:
+            lines.append("- 有点饿：你会无意间提到吃的、注意力偶尔飘，但还能维持平时的形象。")
+        if energy <= energy_low:
+            lines.append("- 有点累：语气放慢一些，不适合过于亢奋，但还能正常互动。")
+
+    if affection >= affection_close:
+        lines.append("- 好感态度：和用户的关系很近，可以更亲近、更信任，但不要油腻或夸张。")
+    elif affection >= affection_warm:
+        lines.append("- 好感态度：和用户的关系较好，可以更柔和，愿意撒娇或接受照顾。")
+    else:
+        lines.append("- 好感态度：和用户的关系还在培养中，保持自然熟悉，不要突然过分亲密。")
+
+    if any_critical:
+        lines.append(
+            "- 如果用户在这种时候关心你、给你吃的或让你好好休息，"
+            "这是好感显著上升的时刻（state_request.affinity 可给较高正值）。"
+        )
+    elif affection >= affection_close and hunger > hunger_low and energy > energy_low:
+        lines.append("- 互动倾向：状态不错且关系亲近，可以更主动地接住用户的话，但仍保持你自己的分寸。")
+    elif affection < affection_warm and (hunger <= hunger_low or energy <= energy_low):
+        lines.append("- 互动倾向：和用户还没那么亲近时，不要把撒娇演得过满；饿或累用更日常的方式表现即可。")
+
+    return lines
+
+
+def get_desktop_care_time_phase(now: Any = None) -> str:
+    hour = None
+    if isinstance(now, (int, float)) and now > 0:
+        try:
+            value = float(now)
+            if value > 1_000_000_000_000:
+                value = value / 1000
+            hour = datetime.fromtimestamp(value).hour
+        except (OverflowError, OSError, ValueError):
+            hour = None
+    elif isinstance(now, str) and now.strip():
+        try:
+            hour = datetime.fromisoformat(now.strip().replace("Z", "+00:00")).hour
+        except ValueError:
+            hour = None
+    if hour is None:
+        hour = datetime.now().hour
+
+    if 5 <= hour < 9:
+        return "清晨，适合轻一点、慢慢醒来的语气"
+    if 9 <= hour < 18:
+        return "白天，适合清醒但不过度兴奋的日常陪伴"
+    if 18 <= hour < 23:
+        return "傍晚，适合松弛一点的陪伴感"
+    return "深夜，适合收声、短句、带一点困意"
+
+
+def describe_desktop_care_vitality(
+    hunger: int,
+    energy: int,
+    hunger_low: int = 25,
+    hunger_critical: int = 12,
+    energy_low: int = 25,
+    energy_critical: int = 12,
+) -> str:
+    if hunger <= hunger_critical and energy <= energy_critical:
+        return "身体状态很差，像是又饿又困"
+    if hunger <= hunger_low and energy <= energy_low:
+        return "身体状态偏低，容易没精神也惦记吃的"
+    if energy >= 70 and hunger >= 50:
+        return "身体状态不错，可以自然接话"
+    if energy <= energy_low:
+        return "精力不足，回应会更轻、更短"
+    if hunger <= hunger_low:
+        return "饥饿感明显，注意力会偏向吃的"
+    return "身体状态平稳，按当前对话自然回应"
+
+
 def build_desktop_screen_vision_prompt(
     engine: Any,
     client_context: ClientProtocolContext | None,
@@ -114,6 +291,14 @@ def sanitize_desktop_context_text(value: Any, limit: int) -> str:
     if limit > 0 and len(text) > limit:
         return text[:limit]
     return text
+
+
+def coerce_bounded_int(value: Any, minimum: int, maximum: int, *, fallback: int = 0) -> int:
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        number = fallback
+    return min(maximum, max(minimum, number))
 
 
 def coerce_activity_int(value: Any) -> int:

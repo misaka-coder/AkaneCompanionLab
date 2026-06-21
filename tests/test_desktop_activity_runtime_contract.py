@@ -34,6 +34,16 @@ def _desktop_context(*, with_audio: bool = True) -> ClientProtocolContext:
     )
 
 
+def _qq_context() -> ClientProtocolContext:
+    return ClientProtocolContext(
+        requested_mode=ClientMode.QQ_TEXT,
+        effective_mode=ClientMode.QQ_TEXT,
+        capabilities=(ClientCapability.SPEECH_SEGMENTS.value,),
+        output_profile=ClientMode.QQ_TEXT.value,
+        renderer_profile=ClientMode.QQ_TEXT.value,
+    )
+
+
 class DesktopActivityRuntimeContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -41,6 +51,131 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
     def assert_no_music_backend_terms(self, prompt: str) -> None:
         for term in FORBIDDEN_MUSIC_PROMPT_TERMS:
             self.assertNotIn(term, prompt)
+
+    def test_care_feed_turn_is_not_transient_user_message(self) -> None:
+        self.assertFalse(
+            self.engine._is_transient_user_turn(
+                {
+                    "turn_kind": "desktop_pet_care_feed",
+                    "transient_user_message": False,
+                }
+            )
+        )
+        self.assertFalse(
+            self.engine._is_transient_user_turn(
+                {
+                    "client_turn_kind": "desktop_pet_care_feed",
+                }
+            )
+        )
+
+    def test_proactive_turn_is_transient_user_message(self) -> None:
+        self.assertTrue(self.engine._is_transient_user_turn({"turn_kind": "desktop_pet_proactive"}))
+        self.assertTrue(self.engine._is_transient_user_turn({"client_turn_kind": "proactive"}))
+
+    def test_desktop_care_prompt_renders_as_temporary_context(self) -> None:
+        prompt = self.engine._build_turn_extra_user_context(
+            {
+                "desktop_care": {
+                    "enabled": True,
+                    "now": 1716192000000,
+                    "hunger": 9,
+                    "energy": 18,
+                    "affection": 62,
+                    "thresholds": {
+                        "hunger_low": 25,
+                        "hunger_critical": 12,
+                        "energy_low": 25,
+                        "energy_critical": 12,
+                    },
+                }
+            },
+            _desktop_context(),
+        )
+
+        self.assertIn("【当前养成状态（本轮临时状态，不写入长期记忆）】", prompt)
+        self.assertIn("饥饿 9/100，精力 18/100，好感 62/100", prompt)
+        self.assertIn("生活节奏", prompt)
+        self.assertIn("身体状态偏低，容易没精神也惦记吃的", prompt)
+        self.assertIn("【饥饿压制】", prompt)
+        self.assertIn("真的很饿时防线会松", prompt)
+        self.assertIn("表情倾向：hungry 或 snack", prompt)
+        self.assertIn("好感态度", prompt)
+        self.assertIn("关系较好", prompt)
+        self.assertIn("state_request.affinity 可给较高正值", prompt)
+        self.assertIn("不要生硬复述这些数值", prompt)
+
+    def test_desktop_care_prompt_combines_hungry_and_sleepy_state(self) -> None:
+        prompt = self.engine._build_turn_extra_user_context(
+            {
+                "desktop_care": {
+                    "enabled": True,
+                    "now": "2026-06-21T02:30:00",
+                    "hunger": 5,
+                    "energy": 4,
+                    "affection": 8,
+                }
+            },
+            _desktop_context(),
+        )
+
+        self.assertIn("深夜", prompt)
+        self.assertIn("又饿又困", prompt)
+        self.assertIn("【生理压制】", prompt)
+        self.assertIn("让这种脆弱自然穿透人设", prompt)
+        self.assertIn("hungry、sleepy、tired 或 yawn", prompt)
+        self.assertNotIn("饥饿已经很低", prompt)
+        self.assertNotIn("精力已经很低", prompt)
+        self.assertIn("好感态度", prompt)
+        self.assertIn("关系还在培养中", prompt)
+
+    def test_desktop_pet_frontend_consumes_state_request_affinity(self) -> None:
+        source = Path("desktop_pet_next/src/main.js").read_text(encoding="utf-8")
+
+        self.assertIn("function applyPayloadStateRequest", source)
+        self.assertIn("payload?.state_request", source)
+        self.assertIn("care.affection + affinityDelta", source)
+        self.assertIn("persistCareRuntimeChange()", source)
+
+    def test_desktop_pet_shop_has_allowance_safety_valve(self) -> None:
+        main_source = Path("desktop_pet_next/src/main.js").read_text(encoding="utf-8")
+        shop_source = Path("desktop_pet_next/src/shop.js").read_text(encoding="utf-8")
+        shop_html = Path("desktop_pet_next/shop.html").read_text(encoding="utf-8")
+        template = Path("desktop_pet_creator_kit/templates/character_pack/character.json").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("function claimCareAllowance", main_source)
+        self.assertIn('case "claimCareAllowance"', main_source)
+        self.assertIn("care.lastAllowanceAt = now", main_source)
+        self.assertIn("persistCareRuntimeChange()", main_source)
+        self.assertIn("claimCareAllowance", shop_source)
+        self.assertIn("renderAllowance", shop_source)
+        self.assertIn('id="allowance-panel"', shop_html)
+        self.assertIn('"allowance"', template)
+        self.assertIn('"max_coins"', template)
+
+    def test_qq_care_prompt_shares_vitals_but_separates_affection_scope(self) -> None:
+        prompt = self.engine._build_turn_extra_user_context(
+            {
+                "desktop_care": {
+                    "enabled": True,
+                    "source": "care_runtime",
+                    "shared_vitals": True,
+                    "affection_scope": "qq_text",
+                    "hunger": 18,
+                    "energy": 23,
+                    "affection": 14,
+                }
+            },
+            _qq_context(),
+        )
+
+        self.assertIn("【当前养成状态（QQ 临时上下文；本轮不写入长期记忆）】", prompt)
+        self.assertIn("饥饿 18/100，精力 23/100，QQ好感 14/100", prompt)
+        self.assertIn("饥饿和精力与桌宠共享", prompt)
+        self.assertIn("QQ好感只代表 QQ 互动关系", prompt)
+        self.assertIn("和桌宠好感分开计算", prompt)
 
     def test_audio_playback_prompt_does_not_imply_interruption(self) -> None:
         prompt = self.engine._build_desktop_activity_prompt(

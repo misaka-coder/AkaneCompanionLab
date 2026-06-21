@@ -153,6 +153,10 @@ For the first MVP, the safest fields to edit are:
 - `dialogue.local_click_lines`
 - `persona.md`
 - `emotion_aliases`
+- `appearance.music_emotion`
+- `play_feedback`
+- `care.shop_items`
+- `care.work`
 - `appearance.default_outfit`
 - `appearance.default_emotion`
 

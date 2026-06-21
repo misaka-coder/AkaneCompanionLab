@@ -6,12 +6,14 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import requests
 
 import config
+from .care_runtime import DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECKIN_COINS
 
 
 QQ_TEXT_CAPABILITIES = (
@@ -125,6 +127,15 @@ QQ_REPLY_MODE_SWITCH_COMMANDS = {
     "自动回复模式": "auto",
 }
 QQ_GATEWAY_STATE_SCHEMA_VERSION = "akane.qq_gateway_state.v1"
+
+QQ_ECONOMY_CHECKIN_COMMANDS: frozenset[str] = frozenset({"签到", "每日签到", "领签到", "签到领奖"})
+QQ_ECONOMY_STATUS_COMMANDS: frozenset[str] = frozenset({"我的状态", "养成状态", "查状态", "当前状态", "状态查询"})
+QQ_ECONOMY_SHOP_COMMANDS: frozenset[str] = frozenset({"商店", "商店列表", "查看商店", "查商店"})
+QQ_ECONOMY_BUY_PREFIXES: tuple[str, ...] = ("购买 ", "喂 ", "投喂 ", "购买:", "购买：")
+QQ_ECONOMY_OFFERING_COMMANDS: frozenset[str] = frozenset({"供奉", "今日供奉"})
+QQ_ECONOMY_OFFERING_STATUS_COMMANDS: frozenset[str] = frozenset({"查看供奉", "供奉状态"})
+QQ_ECONOMY_OFFERING_PREFIXES: tuple[str, ...] = ("供奉 ",)
+VALID_USABLE_IN: frozenset[str] = frozenset({"desktop_pet", "qq"})
 
 
 @dataclass(frozen=True)
@@ -1319,6 +1330,275 @@ class NapCatQQGateway:
             "results": results,
         }
 
+    def parse_economy_command(self, message: str) -> dict[str, Any] | None:
+        """Parse economy commands. Returns None if not an economy command.
+
+        Returns one of:
+          {"action": "checkin"}
+          {"action": "status"}
+          {"action": "shop_list"}
+          {"action": "buy", "item_name": str}
+        """
+        text = str(message or "").strip()
+        if not text:
+            return None
+        if text in QQ_ECONOMY_CHECKIN_COMMANDS:
+            return {"action": "checkin"}
+        if text in QQ_ECONOMY_STATUS_COMMANDS:
+            return {"action": "status"}
+        if text in QQ_ECONOMY_SHOP_COMMANDS:
+            return {"action": "shop_list"}
+        for prefix in QQ_ECONOMY_BUY_PREFIXES:
+            if text.startswith(prefix):
+                item_name = text[len(prefix):].strip()
+                if item_name:
+                    return {"action": "buy", "item_name": item_name}
+        if text in QQ_ECONOMY_OFFERING_COMMANDS:
+            return {"action": "offering"}
+        if text in QQ_ECONOMY_OFFERING_STATUS_COMMANDS:
+            return {"action": "offering_status"}
+        for prefix in QQ_ECONOMY_OFFERING_PREFIXES:
+            if text.startswith(prefix):
+                item_name = text[len(prefix):].strip()
+                if item_name:
+                    return {"action": "offering", "item_name": item_name}
+        return None
+
+    def handle_economy_command(
+        self,
+        context: "QQMessageContext",
+        *,
+        care_runtime: Any = None,
+        shop_items: list[dict[str, Any]] | None = None,
+        checkin_coins: int = DEFAULT_CHECKIN_COINS,
+        now_ms: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Handle economy commands (签到/状态/商店/购买/供奉). Returns None if not applicable."""
+        parsed = self.parse_economy_command(context.clean_message)
+        if parsed is None:
+            return None
+
+        if care_runtime is None:
+            return {"ok": False, "reply": "养成系统未启用。", "status": "not_configured"}
+
+        items = shop_items if shop_items else DEFAULT_CARE_SHOP_ITEMS
+        profile_user_id = context.profile_user_id
+        character_pack_id = context.character_pack_id or ""
+        relation_user_id = f"qq:{context.user_id}" if context.user_id else f"qq:{profile_user_id}"
+        ts_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        action = parsed["action"]
+
+        try:
+            if action == "checkin":
+                date_key = datetime.now().strftime("%Y-%m-%d")
+                result = care_runtime.claim_daily_checkin(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    relation_user_id=relation_user_id,
+                    date_key=date_key,
+                    coins=checkin_coins,
+                    now_ms=ts_ms,
+                )
+                coins = result["snapshot"]["coins"]
+                if result["status"] == "ok":
+                    reply = f"签到成功！+{result['coins_granted']} 金币（当前：{coins} 金币）"
+                else:
+                    reply = f"今天已经签到了，明天再来吧。（当前：{coins} 金币）"
+                return {"ok": True, "reply": reply, "status": result["status"]}
+
+            if action == "status":
+                snapshot = care_runtime.snapshot_for_client(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    client_mode="qq_text",
+                    relation_user_id=relation_user_id,
+                    now_ms=ts_ms,
+                )
+                h = snapshot["hunger"]
+                e = snapshot["energy"]
+                a = snapshot["affection"]
+                c = snapshot["coins"]
+                reply = (
+                    "养成状态\n"
+                    f"饥饿 {h}/100  精力 {e}/100\n"
+                    f"QQ好感 {a}/100  金币 {c}"
+                )
+                return {"ok": True, "reply": reply, "status": "ok"}
+
+            if action == "shop_list":
+                qq_items = [item for item in items if _item_usable_in_qq(item)]
+                if not qq_items:
+                    return {"ok": True, "reply": "商店暂时没有商品。", "status": "empty"}
+                food_items = [i for i in qq_items if i.get("category") not in ("offering", "charm", "gift")]
+                offer_items = [i for i in qq_items if i.get("category") in ("offering", "charm", "gift")]
+                lines = ["\U0001f6d2 商店", "─" * 18]
+                if food_items:
+                    lines.append("\U0001f35a 食物 / 饮品")
+                    for item in food_items:
+                        eff = _format_effects_summary(item.get("effects") or {})
+                        line = f"  {item['name']}  {item.get('price', 0)} 金币"
+                        if eff:
+                            line += f"  ({eff})"
+                        lines.append(line)
+                if offer_items:
+                    if food_items:
+                        lines.append("")
+                    lines.append("⛩ 供奉 / 礼物")
+                    for item in offer_items:
+                        eff = _format_effects_summary(item.get("effects") or {})
+                        line = f"  {item['name']}  {item.get('price', 0)} 金币"
+                        if eff:
+                            line += f"  ({eff})"
+                        lines.append(line)
+                lines.append("─" * 18)
+                lines.append("购买 商品名  /  供奉 商品名  /  供奉")
+                return {"ok": True, "reply": "\n".join(lines), "status": "ok"}
+
+            if action == "buy":
+                item_name = str(parsed.get("item_name") or "").strip()
+                matched = _find_shop_item(items, item_name)
+                if matched is None:
+                    return {
+                        "ok": False,
+                        "reply": f"没有找到「{item_name}」，发送「商店」查看可用商品。",
+                        "status": "item_not_found",
+                    }
+                if not _item_usable_in_qq(matched):
+                    return {
+                        "ok": False,
+                        "reply": f"「{matched['name']}」只能在桌宠端使用，QQ 不支持。",
+                        "status": "not_usable_in_qq",
+                    }
+                price = int(matched.get("price") or 0)
+                effects = matched.get("effects") or {}
+                result = care_runtime.purchase_item(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    relation_user_id=relation_user_id,
+                    price=price,
+                    effects=effects,
+                    client_mode="qq_text",
+                    now_ms=ts_ms,
+                )
+                if result["status"] == "insufficient_coins":
+                    needed = result["coins_needed"]
+                    have = result["coins_before"]
+                    return {
+                        "ok": False,
+                        "reply": f"金币不够，需要 {needed} 金币，当前只有 {have} 金币。",
+                        "status": "insufficient_coins",
+                    }
+                coins_after = result["snapshot"]["coins"]
+                eff = _format_effects_summary(effects)
+                reply = f"✓ 投喂了「{matched['name']}」！（-{price} 金币，剩余 {coins_after}）"
+                if eff:
+                    reply += f"\n{eff}"
+                return {"ok": True, "reply": reply, "status": "ok"}
+
+            if action == "offering_status":
+                snapshot = care_runtime.snapshot_for_client(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    client_mode="qq_text",
+                    relation_user_id=relation_user_id,
+                    now_ms=ts_ms,
+                )
+                today = datetime.now().strftime("%Y-%m-%d")
+                offered_today = str(snapshot.get("last_offering_date") or "") == today
+                mark = "✓ 今日已供奉" if offered_today else "· 今日未供奉"
+                a = snapshot["affection"]
+                c = snapshot["coins"]
+                reply = f"⛩ 供奉状态\n{mark}\nQQ好感 {a}/100  金币 {c}"
+                return {"ok": True, "reply": reply, "status": "ok"}
+
+            if action == "offering":
+                item_name = str(parsed.get("item_name") or "").strip()
+                date_key = datetime.now().strftime("%Y-%m-%d")
+                item_price = 0
+                item_effects: dict[str, Any] = {}
+                item_label = ""
+                affection_bonus = 3
+
+                if item_name:
+                    matched = _find_shop_item(items, item_name)
+                    if matched is None:
+                        return {
+                            "ok": False,
+                            "reply": f"没有找到「{item_name}」，发送「商店」查看可用商品。",
+                            "status": "item_not_found",
+                        }
+                    if not _item_usable_in_qq(matched):
+                        return {
+                            "ok": False,
+                            "reply": f"「{matched['name']}」只能在桌宠端使用，QQ 不支持。",
+                            "status": "not_usable_in_qq",
+                        }
+                    if not _item_usable_as_offering(matched):
+                        return {
+                            "ok": False,
+                            "reply": f"「{matched['name']}」不是供奉/礼物类商品；普通食物请用「购买 {matched['name']}」。",
+                            "status": "not_offering_item",
+                        }
+                    item_price = int(matched.get("price") or 0)
+                    item_effects = matched.get("effects") or {}
+                    item_label = matched["name"]
+                    affection_bonus = 0
+
+                result = care_runtime.claim_daily_offering(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    relation_user_id=relation_user_id,
+                    date_key=date_key,
+                    affection_bonus=affection_bonus,
+                    item_price=item_price,
+                    item_effects=item_effects,
+                    now_ms=ts_ms,
+                )
+
+                if result["status"] == "insufficient_coins":
+                    needed = result["coins_needed"]
+                    have = result["coins_before"]
+                    label_part = f"「{item_label}」" if item_label else "供品"
+                    return {
+                        "ok": False,
+                        "reply": f"金币不够，供奉{label_part}需要 {needed} 金币，当前只有 {have} 金币。",
+                        "status": "insufficient_coins",
+                    }
+
+                affection_granted = result.get("affection_granted", 0)
+                is_first = result.get("daily_bonus", False)
+                aff_now = result["snapshot"]["affection"]
+
+                if not is_first:
+                    if item_label:
+                        body_eff = _format_effects_summary(
+                            {k: v for k, v in item_effects.items() if k in ("hunger", "energy")}
+                        )
+                        reply = f"供奉了「{item_label}」"
+                        if body_eff:
+                            reply += f"\n{body_eff}"
+                        reply += "\n（今日好感奖励已领取）"
+                    else:
+                        reply = "今天已经供奉过了，明天见。"
+                    return {"ok": True, "reply": reply, "status": "already"}
+
+                if item_label:
+                    eff = _format_effects_summary(item_effects)
+                    reply = f"⛩ 供奉「{item_label}」！"
+                    if eff:
+                        reply += f"\n{eff}"
+                    if affection_granted:
+                        reply += f"  好感+{affection_granted}"
+                    reply += f"\n（QQ好感：{aff_now}/100）"
+                else:
+                    reply = f"⛩ 供奉成功！好感+{affection_granted}（{aff_now}/100）。"
+                return {"ok": True, "reply": reply, "status": "ok"}
+
+        except Exception as exc:
+            return {"ok": False, "reply": "养成系统暂时出错，请稍后再试。", "status": "error", "error": str(exc)}
+
+        return None
+
     def send_reply(self, context: QQMessageContext, message: str) -> dict[str, Any]:
         clean_message = str(message or "").strip()
         if not context.target_id or not clean_message:
@@ -1675,7 +1955,7 @@ def _safe_qq_session_key(value: Any) -> str:
 
 def _clean_character_pack_argument(value: Any) -> str:
     text = str(value or "").strip()
-    text = text.strip("`'\"“”‘’")
+    text = text.strip('`\'"""‘’')
     text = text.rstrip("。.!！?？,，;；")
     return text.strip()
 
@@ -1710,6 +1990,52 @@ def _safe_reply_mode(value: Any, *, default: str = "auto") -> str:
 
 def _clean_reply_mode_argument(value: Any) -> str:
     text = str(value or "").strip()
-    text = text.strip("`'\"“”‘’")
+    text = text.strip('`\'"""‘’')
     text = text.rstrip("。.!！?？,，;；")
     return text.strip()
+
+
+
+
+def _item_usable_in_qq(item: dict[str, Any]) -> bool:
+    """Return True if item has no usable_in restriction or explicitly includes 'qq'."""
+    usable_in = item.get("usable_in")
+    if not usable_in:
+        return True
+    return "qq" in [str(u).lower() for u in usable_in]
+
+
+def _item_usable_as_offering(item: dict[str, Any]) -> bool:
+    """Return True for QQ offering item categories."""
+    category = str(item.get("category") or "").strip().lower()
+    return category in {"offering", "charm", "gift"}
+
+
+def _find_shop_item(items: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
+    """Find a shop item by id or name (case-insensitive)."""
+    query_clean = str(query or "").strip().lower()
+    if not query_clean:
+        return None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id") or "").strip().lower() == query_clean:
+            return item
+        if str(item.get("name") or "").strip().lower() == query_clean:
+            return item
+    return None
+
+
+def _format_effects_summary(effects: dict[str, Any]) -> str:
+    """Format item effects as a short human-readable summary."""
+    parts: list[str] = []
+    hunger = int(effects.get("hunger") or 0)
+    energy = int(effects.get("energy") or 0)
+    affection = int(effects.get("affection") or 0)
+    if hunger:
+        parts.append(f"饥饿{'+' if hunger > 0 else ''}{hunger}")
+    if energy:
+        parts.append(f"精力{'+' if energy > 0 else ''}{energy}")
+    if affection:
+        parts.append(f"好感{'+' if affection > 0 else ''}{affection}")
+    return "  ".join(parts)

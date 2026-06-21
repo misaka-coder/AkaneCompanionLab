@@ -49,7 +49,9 @@ function Get-NewestInputWriteTime {
     (Join-Path $DesktopDir "package-lock.json"),
     (Join-Path $DesktopDir "vite.config.js"),
     (Join-Path $DesktopDir "index.html"),
+    (Join-Path $DesktopDir "panel.html"),
     (Join-Path $DesktopDir "settings.html"),
+    (Join-Path $DesktopDir "shop.html"),
     (Join-Path $DesktopDir "workspace.html"),
     (Join-Path $DesktopDir "workshop.html"),
     (Join-Path $DesktopDir "control-center-lab.html")

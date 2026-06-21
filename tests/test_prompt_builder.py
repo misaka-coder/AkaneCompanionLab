@@ -234,6 +234,12 @@ system = "semantic reinforcement system"
                 persona_system_context="persona state",
                 persona_reference_context="persona refs",
                 persona_active_id="current_card",
+                extra_context_audit_sections=[
+                    {"name": "relationship", "text": "extra"},
+                    {"name": "user.extra_context.turn_extra_context", "text": "turn"},
+                    {"name": "", "text": "ignored"},
+                    {"name": "empty", "text": ""},
+                ],
             )
 
             self.assertTrue(result["debug_enabled"])
@@ -265,6 +271,20 @@ system = "semantic reinforcement system"
             self.assertIn("回应时自然带着这份余温即可", result["user_prompt"])
             self.assertIn("extra", result["user_prompt"])
             self.assertIn("persona refs", result["user_prompt"])
+            self.assertLess(result["user_prompt"].index("extra"), result["user_prompt"].index("当前演出状态"))
+            self.assertLess(result["user_prompt"].index("extra"), result["user_prompt"].index("当前会话中所有未总结的原始消息"))
+            audit_names = [section["name"] for section in result["prompt_audit_sections"]]
+            self.assertIn("system.full", audit_names)
+            self.assertIn("system_extra.resource_context", audit_names)
+            self.assertIn("system_extra.semantic_memory", audit_names)
+            self.assertIn("system_extra.episodic_summary", audit_names)
+            self.assertIn("user.raw_recent_timeline", audit_names)
+            self.assertIn("user.retrieval_snippets", audit_names)
+            self.assertIn("user.current_visual_context", audit_names)
+            self.assertIn("user.current_message", audit_names)
+            self.assertIn("user.extra_context.relationship", audit_names)
+            self.assertIn("user.extra_context.turn_extra_context", audit_names)
+            self.assertNotIn("user.extra_context.empty", audit_names)
 
     def test_final_output_schema_places_tool_call_after_speech_segments(self) -> None:
         persona = load_persona_config()
@@ -317,6 +337,8 @@ system = "semantic reinforcement system"
         self.assertIn("只能从本轮给你的角色包资源清单里选择，不要编造不存在的 emotion", prompt)
         self.assertIn("当用户明确要求你生成、转换、发送或处理文件", prompt)
         self.assertIn("activity 是给桌宠执行的请求", prompt)
+        self.assertIn("affinity 是本轮好感度变化量", prompt)
+        self.assertIn("不是当前总值", prompt)
         self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", prompt)
         self.assertNotIn("scene.major 表示场景大类", prompt)
         self.assertNotIn("像 galgame 选项", prompt)
