@@ -156,6 +156,17 @@
     "shock": ["confused", "normal"],
     "music": ["listening", "happy", "normal"]
   },
+  "qq_delivery": {
+    "emotion_images": {
+      "enabled": true,
+      "min_interval_seconds": 20
+    },
+    "emotion_mfaces": {
+      "enabled": false,
+      "min_interval_seconds": 20,
+      "map": {}
+    }
+  },
   "layout": {
     "outfits": {
       "default": {

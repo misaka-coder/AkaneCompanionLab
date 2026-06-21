@@ -106,6 +106,43 @@ QQ 入口会把消息转成：
 
 如果配置了 `QQ_CHARACTER_PACK_ID`，后端只注入该角色包的身份、称呼、说话风格、边界和 persona 参考；不会把桌宠服装、立绘、场景或 BGM 渲染规则带到 QQ prompt。
 
+### QQ 表情包投递
+
+QQ 侧的表情反馈由模型输出的 `emotion` 驱动，不走图片工具调用。默认会从当前 QQ 会话的角色包里找到对应 emotion 图片，并通过 NapCat / OneBot `image` 消息段发出去；这保证表情图片来自当前 `character_pack_id`，不会跨角色包共用。
+
+如果需要 QQ 原生 / 商城表情包，可额外配置 NapCat / OneBot 的 `mface` 消息段。`mface` 不能直接由本地 PNG 生成，必须使用 QQ 已知表情包的 `emoji_package_id / emoji_id / key / summary`。当 `mface` 命中时优先发 `mface`；没有命中时回退到当前角色包的本地 emotion 图片。
+
+角色包配置示例：
+
+```json
+{
+  "qq_delivery": {
+    "emotion_images": {
+      "enabled": true,
+      "min_interval_seconds": 20
+    },
+    "emotion_mfaces": {
+      "enabled": true,
+      "min_interval_seconds": 20,
+      "map": {
+        "happy": {
+          "emoji_package_id": 123,
+          "emoji_id": "abc",
+          "key": "napcat-market-face-key",
+          "summary": "开心"
+        }
+      }
+    }
+  }
+}
+```
+
+`emoji_package_id`、`emoji_id`、`key`、`summary` 可从 NapCat 收到的商城表情 / 表情包事件中抓取。NapCat 有时会把收到的商城表情映射成 `image` 段，但只要 `data` 中带有这些字段，就可以复制到角色包配置里。缺少映射、配置关闭、或同一会话在 `min_interval_seconds` 内重复发送同一个表情时，后端会结构化跳过，不会假装发送成功。
+
+`map` 会按同一个角色包的 `emotion_aliases` 双向展开。例如 `emotion_aliases` 里有 `"happy": ["开心", "卖萌"]` 时，`map.happy` 可以同时匹配模型输出的 `happy`、`开心` 和 `卖萌`；反过来只配置 `map.开心` 也可以匹配 `happy`。
+
+主人可以在 QQ 里发送 `表情包配置 happy` 并同时带上要抓取的表情包。Akane 会从该消息里的 NapCat `mface` 段，或带有 `emoji_package_id / emoji_id / key / summary` 的 `image` 段中提取字段，并回复一段可粘进当前角色包 `character.json` 的 `qq_delivery` 配置片段。该命令只允许 `MASTER_QQ` 使用。
+
 ### QQ 角色切换指令
 
 QQ 支持会话级角色切换；私聊和每个群聊各自保存当前角色包，重启后回到 `.env` 中的 `QQ_CHARACTER_PACK_ID` 默认值。

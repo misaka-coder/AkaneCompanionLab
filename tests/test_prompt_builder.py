@@ -349,6 +349,8 @@ system = "semantic reinforcement system"
 
         self.assertIn("当前是 QQ 文字聊天模式", prompt)
         self.assertIn("当用户明确要求你生成、转换、发送或处理文件", prompt)
+        self.assertIn("不要总拿上一轮或更早的事开头", prompt)
+        self.assertIn("先回用户眼前这句话", prompt)
         self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", prompt)
         self.assertNotIn("desktop_pet 桌宠模式", prompt)
         self.assertNotIn("scene.major 表示场景大类", prompt)

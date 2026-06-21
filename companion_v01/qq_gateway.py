@@ -157,6 +157,10 @@ QQ_ECONOMY_STATUS_QUERY_FIELDS: tuple[str, ...] = (
     "钱",
 )
 QQ_ECONOMY_STATUS_QUERY_WORDS: tuple[str, ...] = ("多少", "几", "状态", "现在", "当前")
+QQ_MFACE_CONFIG_COMMAND_RE = re.compile(
+    r"^(?:表情包配置|抓表情包|提取表情包|mface配置|mface config)(?:[:：\s]+(.+?))?$",
+    re.IGNORECASE,
+)
 
 
 def _is_economy_status_query(text: str) -> bool:
@@ -246,6 +250,10 @@ class NapCatQQGateway:
         self._character_pack_lock = threading.RLock()
         self.reply_mode_overrides: dict[str, str] = {}
         self._reply_mode_lock = threading.RLock()
+        self.emotion_mface_state: dict[str, dict[str, Any]] = {}
+        self._emotion_mface_lock = threading.RLock()
+        self.emotion_image_state: dict[str, dict[str, Any]] = {}
+        self._emotion_image_lock = threading.RLock()
         self._state_error = ""
         self._load_persisted_state()
 
@@ -328,6 +336,8 @@ class NapCatQQGateway:
             "reply_mode": self.default_reply_mode,
             "default_reply_mode": self.default_reply_mode,
             "active_reply_mode_override_count": len(self.reply_mode_overrides),
+            "active_emotion_mface_session_count": len(self.emotion_mface_state),
+            "active_emotion_image_session_count": len(self.emotion_image_state),
             "active_group_attachment_buffer_count": len(self.group_follow_state),
             "active_attachment_debounce_count": len(self.attachment_debounce_state),
         }
@@ -829,6 +839,102 @@ class NapCatQQGateway:
             return
         with self._reply_mode_lock:
             self.reply_mode_overrides.pop(key, None)
+
+    def handle_mface_config_command(
+        self,
+        context: QQMessageContext,
+        event: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        emotion_key = self.parse_mface_config_command(context.clean_message)
+        if emotion_key is None:
+            return None
+
+        master_qq = self._safe_int(getattr(config, "MASTER_QQ", 0))
+        if master_qq and int(context.user_id or 0) != master_qq:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "forbidden",
+                "reply": "这个命令只允许主人使用。",
+                "character_pack_id": context.character_pack_id,
+            }
+
+        mfaces = self.extract_mface_payloads(event)
+        if not mfaces:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "missing_mface",
+                "reply": "这条消息里没抓到 NapCat mface 字段。请把“表情包配置 happy”和要抓的 QQ 表情包一起发，或转发一条包含表情包的消息。",
+                "character_pack_id": context.character_pack_id,
+            }
+
+        emotion = emotion_key or "happy"
+        mface = mfaces[0]
+        snippet = {
+            "qq_delivery": {
+                "emotion_mfaces": {
+                    "enabled": True,
+                    "min_interval_seconds": 20,
+                    "map": {
+                        emotion: mface,
+                    },
+                },
+            },
+        }
+        snippet_text = json.dumps(snippet, ensure_ascii=False, indent=2)
+        pack_id = context.character_pack_id or "(内置 Akane，无角色包)"
+        return {
+            "handled": True,
+            "ok": True,
+            "status": "captured",
+            "reply": (
+                f"已抓到当前 QQ 会话角色包 {pack_id} 的表情包配置片段，"
+                f"emotion={emotion}：\n{snippet_text}"
+            ),
+            "character_pack_id": context.character_pack_id,
+            "emotion": emotion,
+            "mface": mface,
+            "snippet": snippet,
+        }
+
+    def parse_mface_config_command(self, message: str) -> str | None:
+        text = self._normalize_character_command_text(message)
+        text = re.sub(r"\[(?:图片|表情|文件|语音)\]", "", text).strip()
+        if not text:
+            return None
+        match = QQ_MFACE_CONFIG_COMMAND_RE.fullmatch(text)
+        if not match:
+            return None
+        emotion = str(match.group(1) or "").strip()
+        emotion = re.sub(r"\s+", "_", emotion)
+        return emotion[:80] or "happy"
+
+    def extract_mface_payloads(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        segments = event.get("message") if isinstance(event, dict) else None
+        if isinstance(segments, list):
+            for item in segments:
+                if not isinstance(item, dict):
+                    continue
+                seg_type = str(item.get("type") or "").strip().lower()
+                seg_data = item.get("data") if isinstance(item.get("data"), dict) else {}
+                if seg_type in {"mface", "market_face", "marketface"} or (
+                    seg_type == "image" and _normalize_mface_payload(seg_data)
+                ):
+                    mface = _normalize_mface_payload(seg_data)
+                    if mface:
+                        payloads.append(mface)
+            if payloads:
+                return payloads
+
+        raw_message = self.extract_message_text(event)
+        for match in re.finditer(r"\[CQ:(mface|image)(?:,([^\]]*))?\]", raw_message, flags=re.IGNORECASE):
+            data = self._parse_cq_params(match.group(2) or "")
+            mface = _normalize_mface_payload(data)
+            if mface:
+                payloads.append(mface)
+        return payloads
 
     def _build_current_reply_mode_reply(self, active_mode: str, *, session_id: str = "") -> str:
         key = str(session_id or "").strip()
@@ -1936,6 +2042,137 @@ class NapCatQQGateway:
         except Exception as exc:
             return {"ok": False, "action": action, "reason": str(exc)}
 
+    def send_mface(self, context: QQMessageContext, *, mface: dict[str, Any]) -> dict[str, Any]:
+        """Send a NapCat / OneBot marketplace emoji message segment."""
+        data = _normalize_mface_payload(mface)
+        if not context.target_id:
+            return {"ok": False, "reason": "empty_target"}
+        if not data:
+            return {"ok": False, "reason": "invalid_mface_payload"}
+
+        action = "send_group_msg" if context.is_group else "send_private_msg"
+        payload = (
+            {
+                "group_id": context.target_id,
+                "message": [{"type": "mface", "data": data}],
+            }
+            if context.is_group
+            else {
+                "user_id": context.target_id,
+                "message": [{"type": "mface", "data": data}],
+            }
+        )
+        try:
+            response = requests.post(f"{self.onebot_http_url}/{action}", json=payload, timeout=8)
+            response.raise_for_status()
+            return {"ok": True, "action": action, "data": response.json(), "mface": data}
+        except Exception as exc:
+            return {"ok": False, "action": action, "reason": str(exc), "mface": data}
+
+    def send_emotion_mface(
+        self,
+        context: QQMessageContext,
+        frame: dict[str, Any],
+        *,
+        qq_delivery_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Send a configured QQ mface based on final_output.emotion."""
+        emotion = str((frame or {}).get("emotion") or "").strip()
+        if not emotion:
+            return {"ok": True, "status": "skipped", "reason": "empty_emotion"}
+
+        config_payload = _normalize_emotion_mface_config(qq_delivery_config)
+        if not config_payload.get("enabled"):
+            return {"ok": True, "status": "skipped", "reason": "disabled", "emotion": emotion}
+
+        mface = _resolve_emotion_mface(emotion, config_payload.get("map"))
+        if not mface:
+            return {"ok": True, "status": "skipped", "reason": "no_mface_mapping", "emotion": emotion}
+
+        min_interval = max(0, min(3600, int(config_payload.get("min_interval_seconds") or 0)))
+        fingerprint = _mface_fingerprint(mface)
+        session_key = _safe_qq_session_key(context.session_id) or f"{context.target_id}:{'group' if context.is_group else 'private'}"
+        now = time.time()
+        with self._emotion_mface_lock:
+            previous = self.emotion_mface_state.get(session_key) or {}
+            if (
+                min_interval > 0
+                and previous.get("fingerprint") == fingerprint
+                and now - float(previous.get("sent_at") or 0.0) < min_interval
+            ):
+                return {
+                    "ok": True,
+                    "status": "skipped",
+                    "reason": "dedupe_interval",
+                    "emotion": emotion,
+                    "min_interval_seconds": min_interval,
+                }
+
+        result = self.send_mface(context, mface=mface)
+        result["status"] = "sent" if result.get("ok") else "send_failed"
+        result["emotion"] = emotion
+        if result.get("ok"):
+            with self._emotion_mface_lock:
+                self.emotion_mface_state[session_key] = {
+                    "emotion": emotion,
+                    "fingerprint": fingerprint,
+                    "sent_at": now,
+                }
+        return result
+
+    def send_emotion_image(
+        self,
+        context: QQMessageContext,
+        frame: dict[str, Any],
+        *,
+        image: dict[str, Any] | None = None,
+        min_interval_seconds: int = 20,
+    ) -> dict[str, Any]:
+        """Send the current character pack emotion image as a QQ image fallback."""
+        emotion = str((frame or {}).get("emotion") or "").strip()
+        if not emotion:
+            return {"ok": True, "status": "skipped", "reason": "empty_emotion"}
+        image = image if isinstance(image, dict) else {}
+        image_path = str(image.get("path") or "").strip()
+        if not image_path:
+            return {"ok": True, "status": "skipped", "reason": "missing_emotion_image", "emotion": emotion}
+
+        min_interval = max(0, min(3600, int(min_interval_seconds or 0)))
+        fingerprint = f"image|{image_path}"
+        session_key = _safe_qq_session_key(context.session_id) or f"{context.target_id}:{'group' if context.is_group else 'private'}"
+        now = time.time()
+        with self._emotion_image_lock:
+            previous = self.emotion_image_state.get(session_key) or {}
+            if (
+                min_interval > 0
+                and previous.get("fingerprint") == fingerprint
+                and now - float(previous.get("sent_at") or 0.0) < min_interval
+            ):
+                return {
+                    "ok": True,
+                    "status": "skipped",
+                    "reason": "dedupe_interval",
+                    "emotion": emotion,
+                    "min_interval_seconds": min_interval,
+                }
+
+        result = self.send_image(
+            context,
+            image_path=image_path,
+            name=str(image.get("name") or image.get("emotion") or emotion),
+        )
+        result["status"] = "sent" if result.get("ok") else "send_failed"
+        result["emotion"] = emotion
+        result["image_emotion"] = str(image.get("emotion") or "")
+        if result.get("ok"):
+            with self._emotion_image_lock:
+                self.emotion_image_state[session_key] = {
+                    "emotion": emotion,
+                    "fingerprint": fingerprint,
+                    "sent_at": now,
+                }
+        return result
+
     def send_image(self, context: QQMessageContext, *, image_path: str, name: str = "") -> dict[str, Any]:
         clean_path = str(image_path or "").strip()
         if not context.target_id or not clean_path:
@@ -2321,6 +2558,93 @@ def _item_usable_in_qq(item: dict[str, Any]) -> bool:
     if not usable_in:
         return True
     return "qq" in [str(u).lower() for u in usable_in]
+
+
+def _normalize_mface_payload(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    package_raw = value.get("emoji_package_id", value.get("emojiPackageId"))
+    emoji_id = str(value.get("emoji_id", value.get("emojiId", "")) or "").strip()
+    key = str(value.get("key") or "").strip()
+    summary = str(value.get("summary") or value.get("faceName") or value.get("name") or "[商城表情]").strip()
+    try:
+        emoji_package_id = int(package_raw)
+    except (TypeError, ValueError):
+        return {}
+    if emoji_package_id < 0 or not emoji_id or not key:
+        return {}
+    return {
+        "emoji_package_id": emoji_package_id,
+        "emoji_id": emoji_id[:128],
+        "key": key[:512],
+        "summary": (summary or "[商城表情]")[:80],
+    }
+
+
+def _normalize_emotion_mface_config(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    config = raw.get("emotion_mfaces") if isinstance(raw.get("emotion_mfaces"), dict) else raw
+    if not isinstance(config, dict):
+        return {"enabled": False, "map": {}, "min_interval_seconds": 0}
+    raw_map = config.get("map") if isinstance(config.get("map"), dict) else {}
+    if not raw_map and any(isinstance(item, dict) for item in config.values()):
+        raw_map = {
+            key: item
+            for key, item in config.items()
+            if key not in {"enabled", "min_interval_seconds", "cooldown_seconds", "send_timing", "dedupe_same_emotion"}
+            and isinstance(item, dict)
+        }
+    normalized_map: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_mface in raw_map.items():
+        key = str(raw_key or "").strip()
+        mface = _normalize_mface_payload(raw_mface)
+        if key and mface:
+            normalized_map[key] = mface
+    try:
+        min_interval = int(config.get("min_interval_seconds") or config.get("cooldown_seconds") or 0)
+    except (TypeError, ValueError):
+        min_interval = 0
+    return {
+        "enabled": bool(config.get("enabled")) and bool(normalized_map),
+        "map": normalized_map,
+        "min_interval_seconds": max(0, min(3600, min_interval)),
+    }
+
+
+def _resolve_emotion_mface(emotion: str, mapping: Any) -> dict[str, Any]:
+    if not isinstance(mapping, dict):
+        return {}
+    clean_emotion = str(emotion or "").strip()
+    if not clean_emotion:
+        return {}
+    candidates = [
+        clean_emotion,
+        clean_emotion.lower(),
+        clean_emotion.replace(" ", "_"),
+        clean_emotion.replace("_", " "),
+    ]
+    normalized_mapping = {str(key).strip(): value for key, value in mapping.items() if str(key).strip()}
+    lower_mapping = {key.lower(): value for key, value in normalized_mapping.items()}
+    for candidate in candidates:
+        if candidate in normalized_mapping:
+            return dict(normalized_mapping[candidate])
+        lower = candidate.lower()
+        if lower in lower_mapping:
+            return dict(lower_mapping[lower])
+    return {}
+
+
+def _mface_fingerprint(mface: dict[str, Any]) -> str:
+    normalized = _normalize_mface_payload(mface)
+    if not normalized:
+        return ""
+    return "|".join(
+        [
+            str(normalized.get("emoji_package_id") or ""),
+            str(normalized.get("emoji_id") or ""),
+            str(normalized.get("key") or ""),
+        ]
+    )
 
 
 def _item_usable_as_offering(item: dict[str, Any]) -> bool:

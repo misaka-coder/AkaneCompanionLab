@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -298,6 +299,71 @@ class DesktopPetCharacterResourceService:
         except Exception:
             return []
 
+    def load_qq_delivery_config(self, character_pack_id: str) -> dict:
+        """Load qq_delivery from character.json. Returns {} if unavailable."""
+        pack_id = sanitize_character_pack_id(character_pack_id)
+        if not pack_id:
+            return {}
+        pack_dir = self._resolve_pack_dir(pack_id)
+        if pack_dir is None:
+            return {}
+        try:
+            data = _load_json(pack_dir / "character.json")
+            qq_delivery = data.get("qq_delivery")
+            if not isinstance(qq_delivery, dict):
+                return {}
+            return _expand_qq_delivery_emotion_mface_aliases(
+                qq_delivery,
+                _coerce_alias_map(data.get("emotion_aliases")),
+            )
+        except Exception:
+            return {}
+
+    def resolve_emotion_image_file(self, character_pack_id: str, emotion: str) -> dict[str, str]:
+        """Resolve a character pack emotion image to a local file for QQ image delivery."""
+        manifest = self.get_manifest(character_pack_id)
+        if manifest is None:
+            return {}
+        try:
+            runtime_manifest = manifest.build_runtime_manifest()
+            emotion_id = manifest.normalize_emotion_id(emotion)
+        except Exception:
+            return {}
+        outfits = _as_dict(runtime_manifest.get("characters")).get("outfits")
+        if not isinstance(outfits, list):
+            return {}
+        fallback: dict[str, Any] | None = None
+        for outfit in outfits:
+            if not isinstance(outfit, dict):
+                continue
+            for entry in outfit.get("emotions") or []:
+                if not isinstance(entry, dict):
+                    continue
+                if fallback is None:
+                    fallback = entry
+                entry_id = _clean_text(entry.get("id"))
+                entry_name = _clean_text(entry.get("name"))
+                if emotion_id and entry_id != emotion_id and entry_name != emotion_id:
+                    continue
+                resolved = _resolve_manifest_asset_file(manifest, entry)
+                if resolved:
+                    return {
+                        "path": str(resolved),
+                        "emotion": entry_id or emotion_id,
+                        "name": entry_name or entry_id or emotion_id,
+                    }
+        if fallback is not None:
+            resolved = _resolve_manifest_asset_file(manifest, fallback)
+            if resolved:
+                fallback_id = _clean_text(fallback.get("id"))
+                fallback_name = _clean_text(fallback.get("name"))
+                return {
+                    "path": str(resolved),
+                    "emotion": fallback_id,
+                    "name": fallback_name or fallback_id,
+                }
+        return {}
+
     def _resolve_pack_dir(self, pack_id: str) -> Path | None:
         base = self.characters_dir.resolve()
         target = (base / pack_id).resolve()
@@ -386,6 +452,69 @@ def _coerce_alias_map(value: Any) -> dict[str, list[str]]:
         if values:
             aliases[alias_key] = list(dict.fromkeys(values))
     return aliases
+
+
+def _expand_qq_delivery_emotion_mface_aliases(
+    qq_delivery: dict[str, Any],
+    emotion_aliases: dict[str, list[str]],
+) -> dict[str, Any]:
+    if not isinstance(qq_delivery, dict):
+        return {}
+    delivery = copy.deepcopy(qq_delivery)
+    emotion_mfaces = delivery.get("emotion_mfaces")
+    if not isinstance(emotion_mfaces, dict):
+        return delivery
+    mapping = emotion_mfaces.get("map")
+    if not isinstance(mapping, dict) or not mapping:
+        return delivery
+
+    expanded = dict(mapping)
+    for raw_key, mface in mapping.items():
+        for candidate in _emotion_alias_candidates(raw_key, emotion_aliases):
+            expanded.setdefault(candidate, mface)
+    emotion_mfaces["map"] = expanded
+    return delivery
+
+
+def _emotion_alias_candidates(value: Any, emotion_aliases: dict[str, list[str]]) -> list[str]:
+    raw = _clean_text(value)
+    if not raw:
+        return []
+    candidates: list[str] = [raw]
+    raw_key = _emotion_lookup_key(raw)
+    for alias_key, alias_values in (emotion_aliases or {}).items():
+        group = [_clean_text(alias_key), *[_clean_text(item) for item in alias_values]]
+        group = [item for item in group if item]
+        if not group:
+            continue
+        if raw_key in {_emotion_lookup_key(item) for item in group}:
+            candidates.extend(group)
+    return list(dict.fromkeys(candidates))
+
+
+def _emotion_lookup_key(value: Any) -> str:
+    return re.sub(r"[-\s]+", "_", _clean_text(value).lower())
+
+
+def _resolve_manifest_asset_file(manifest: ResourceManifest, entry: dict[str, Any]) -> Path | None:
+    public_path = _clean_text(entry.get("path"))
+    public_prefix = _clean_text(getattr(manifest, "public_prefix", ""))
+    if not public_path or not public_prefix:
+        return None
+    prefix = public_prefix.rstrip("/") + "/"
+    if not public_path.startswith(prefix):
+        return None
+    relative = public_path[len(prefix):].lstrip("/")
+    try:
+        candidate = (manifest.assets_dir / relative).resolve()
+        assets_root = manifest.assets_dir.resolve()
+    except OSError:
+        return None
+    if candidate == assets_root or assets_root not in candidate.parents:
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
 
 
 def _collect_available_emotions(resource_manifest: ResourceManifest | None) -> set[str]:

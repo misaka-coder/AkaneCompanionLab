@@ -541,6 +541,84 @@ function validateCare(character, availableEmotions, aliasMap) {
   });
 }
 
+function validateQQDelivery(character, availableEmotions, aliasMap) {
+  const delivery = character.qq_delivery;
+  if (delivery === undefined) return;
+  if (!isObject(delivery)) {
+    addError("qq_delivery must be an object when provided.");
+    return;
+  }
+
+  const emotionImages = delivery.emotion_images;
+  if (emotionImages !== undefined) {
+    if (!isObject(emotionImages)) {
+      addError("qq_delivery.emotion_images must be an object when provided.");
+    } else {
+      if (emotionImages.enabled !== undefined && typeof emotionImages.enabled !== "boolean") {
+        addError("qq_delivery.emotion_images.enabled must be a boolean when provided.");
+      }
+      validateNumber(
+        emotionImages.min_interval_seconds,
+        "qq_delivery.emotion_images.min_interval_seconds",
+        { min: 0, max: 3600 }
+      );
+    }
+  }
+
+  const emotionMfaces = delivery.emotion_mfaces;
+  if (emotionMfaces === undefined) return;
+  if (!isObject(emotionMfaces)) {
+    addError("qq_delivery.emotion_mfaces must be an object when provided.");
+    return;
+  }
+
+  if (emotionMfaces.enabled !== undefined && typeof emotionMfaces.enabled !== "boolean") {
+    addError("qq_delivery.emotion_mfaces.enabled must be a boolean when provided.");
+  }
+  validateNumber(
+    emotionMfaces.min_interval_seconds,
+    "qq_delivery.emotion_mfaces.min_interval_seconds",
+    { min: 0, max: 3600 }
+  );
+
+  const mapping = emotionMfaces.map;
+  if (mapping === undefined) {
+    if (emotionMfaces.enabled === true) {
+      addWarning("qq_delivery.emotion_mfaces is enabled but map is missing.");
+    }
+    return;
+  }
+  if (!isObject(mapping)) {
+    addError("qq_delivery.emotion_mfaces.map must be an object when provided.");
+    return;
+  }
+  if (emotionMfaces.enabled === true && !Object.keys(mapping).length) {
+    addWarning("qq_delivery.emotion_mfaces is enabled but map is empty.");
+  }
+
+  for (const [emotion, mface] of Object.entries(mapping)) {
+    const label = `qq_delivery.emotion_mfaces.map.${emotion || "(empty)"}`;
+    if (!emotion.trim()) {
+      addError("qq_delivery.emotion_mfaces.map contains an empty emotion key.");
+    }
+    if (!hasEmotionReference(emotion, availableEmotions, aliasMap)) {
+      addWarning(`${label} has no matching image or emotion_aliases entry in this pack.`);
+    }
+    if (!isObject(mface)) {
+      addError(`${label} must be an object.`);
+      continue;
+    }
+
+    const packageNumber = Number(mface.emoji_package_id);
+    if (!Number.isInteger(packageNumber) || packageNumber < 0) {
+      addError(`${label}.emoji_package_id must be a non-negative integer.`);
+    }
+    getRequiredString(mface, "emoji_id", `${label}.emoji_id`);
+    getRequiredString(mface, "key", `${label}.key`);
+    getRequiredString(mface, "summary", `${label}.summary`);
+  }
+}
+
 function validateCarePreferences(prefs) {
   if (prefs === undefined) return;
   if (!isObject(prefs)) {
@@ -750,6 +828,7 @@ async function validatePack() {
   validateClickLines(dialogue, availableEmotions, aliasMap);
   validatePlayFeedback(character, availableEmotions, aliasMap);
   validateCare(character, availableEmotions, aliasMap);
+  validateQQDelivery(character, availableEmotions, aliasMap);
 
   return {
     id,

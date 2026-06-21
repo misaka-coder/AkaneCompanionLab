@@ -722,6 +722,17 @@
       "正常"
     ]
   },
+  "qq_delivery": {
+    "emotion_images": {
+      "enabled": true,
+      "min_interval_seconds": 20
+    },
+    "emotion_mfaces": {
+      "enabled": false,
+      "min_interval_seconds": 20,
+      "map": {}
+    }
+  },
   "identity": {
     "app_name": "Akane Next",
     "id": "akane_sample",

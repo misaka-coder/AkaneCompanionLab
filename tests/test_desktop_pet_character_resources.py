@@ -200,6 +200,100 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         self.assertNotIn("character.outfit", context["system_context"])
         self.assertNotIn("默认服装", context["system_context"])
 
+    def test_qq_delivery_mface_map_expands_only_current_pack_emotion_aliases(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        characters_dir = Path(temp_dir.name) / "characters"
+        reimu_dir = characters_dir / "reimu_pack"
+        akane_dir = characters_dir / "akane_pack"
+
+        write_json(
+            reimu_dir / "character.json",
+            {
+                "identity": {"id": "reimu_pack", "name": "Reimu"},
+                "emotion_aliases": {"happy": ["开心", "卖萌"]},
+                "qq_delivery": {
+                    "emotion_mfaces": {
+                        "enabled": True,
+                        "map": {
+                            "happy": {
+                                "emoji_package_id": 1,
+                                "emoji_id": "reimu-happy",
+                                "key": "reimu-key",
+                                "summary": "灵梦开心",
+                            }
+                        },
+                    }
+                },
+            },
+        )
+        write_json(
+            akane_dir / "character.json",
+            {
+                "identity": {"id": "akane_pack", "name": "Akane"},
+                "emotion_aliases": {"happy": ["开心"]},
+                "qq_delivery": {
+                    "emotion_mfaces": {
+                        "enabled": True,
+                        "map": {
+                            "happy": {
+                                "emoji_package_id": 2,
+                                "emoji_id": "akane-happy",
+                                "key": "akane-key",
+                                "summary": "Akane 开心",
+                            }
+                        },
+                    }
+                },
+            },
+        )
+
+        service = DesktopPetCharacterResourceService(characters_dir=characters_dir)
+        reimu_config = service.load_qq_delivery_config("reimu_pack")
+        akane_config = service.load_qq_delivery_config("akane_pack")
+
+        reimu_map = reimu_config["emotion_mfaces"]["map"]
+        akane_map = akane_config["emotion_mfaces"]["map"]
+        self.assertEqual(reimu_map["开心"]["emoji_id"], "reimu-happy")
+        self.assertEqual(reimu_map["卖萌"]["emoji_id"], "reimu-happy")
+        self.assertEqual(reimu_map["happy"]["emoji_id"], "reimu-happy")
+        self.assertEqual(akane_map["开心"]["emoji_id"], "akane-happy")
+        self.assertNotEqual(reimu_map["开心"]["emoji_id"], akane_map["开心"]["emoji_id"])
+
+    def test_resolve_emotion_image_file_uses_current_character_pack_asset(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        characters_dir = Path(temp_dir.name) / "characters"
+        reimu_dir = characters_dir / "reimu_pack"
+        akane_dir = characters_dir / "akane_pack"
+
+        write_bytes(reimu_dir / "assets" / "characters" / "default" / "开心.png", b"reimu")
+        write_bytes(akane_dir / "assets" / "characters" / "default" / "开心.png", b"akane")
+        write_json(
+            reimu_dir / "character.json",
+            {
+                "identity": {"id": "reimu_pack", "name": "Reimu"},
+                "appearance": {"default_outfit": "default", "default_emotion": "开心"},
+                "emotion_aliases": {"happy": ["开心"]},
+            },
+        )
+        write_json(
+            akane_dir / "character.json",
+            {
+                "identity": {"id": "akane_pack", "name": "Akane"},
+                "appearance": {"default_outfit": "default", "default_emotion": "开心"},
+                "emotion_aliases": {"happy": ["开心"]},
+            },
+        )
+
+        service = DesktopPetCharacterResourceService(characters_dir=characters_dir)
+        reimu_image = service.resolve_emotion_image_file("reimu_pack", "happy")
+        akane_image = service.resolve_emotion_image_file("akane_pack", "happy")
+
+        self.assertTrue(reimu_image["path"].endswith("reimu_pack\\assets\\characters\\default\\开心.png"))
+        self.assertTrue(akane_image["path"].endswith("akane_pack\\assets\\characters\\default\\开心.png"))
+        self.assertNotEqual(reimu_image["path"], akane_image["path"])
+
     def test_qq_examples_and_output_collapse_to_only_existing_emotion_image(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)

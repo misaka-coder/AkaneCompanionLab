@@ -393,6 +393,62 @@ def _send_qq_delivery(
     }
 
 
+def _load_qq_delivery_config(engine: Any, context: Any) -> dict[str, Any]:
+    character_pack_id = str(getattr(context, "character_pack_id", "") or "").strip()
+    if not character_pack_id:
+        return {}
+    service = getattr(engine, "desktop_pet_character_resources", None)
+    loader = getattr(service, "load_qq_delivery_config", None)
+    if not callable(loader):
+        return {}
+    try:
+        value = loader(character_pack_id)
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _send_qq_emotion_image_fallback(
+    *,
+    engine: Any,
+    qq_gateway: NapCatQQGateway,
+    context: Any,
+    frame: dict[str, Any],
+    qq_delivery_config: dict[str, Any],
+) -> dict[str, Any]:
+    character_pack_id = str(getattr(context, "character_pack_id", "") or "").strip()
+    if not character_pack_id:
+        return {"ok": True, "status": "skipped", "reason": "empty_character_pack_id"}
+    image_config = (
+        qq_delivery_config.get("emotion_images")
+        if isinstance(qq_delivery_config.get("emotion_images"), dict)
+        else {}
+    )
+    if image_config.get("enabled") is False:
+        return {"ok": True, "status": "skipped", "reason": "disabled"}
+    service = getattr(engine, "desktop_pet_character_resources", None)
+    resolver = getattr(service, "resolve_emotion_image_file", None)
+    if not callable(resolver):
+        return {"ok": True, "status": "skipped", "reason": "missing_character_resource_service"}
+    emotion = str((frame or {}).get("emotion") or "").strip()
+    try:
+        image = resolver(character_pack_id, emotion)
+    except Exception:
+        image = {}
+    if not isinstance(image, dict) or not image.get("path"):
+        return {"ok": True, "status": "skipped", "reason": "missing_emotion_image", "emotion": emotion}
+    try:
+        min_interval = int(image_config.get("min_interval_seconds") or image_config.get("cooldown_seconds") or 20)
+    except (TypeError, ValueError):
+        min_interval = 20
+    return qq_gateway.send_emotion_image(
+        context,
+        frame,
+        image=image,
+        min_interval_seconds=min_interval,
+    )
+
+
 def _process_qq_turn_streaming(
     *,
     engine: Any,
@@ -493,6 +549,29 @@ def _process_qq_turn_streaming(
             "voice_result": send_result.get("voice_result"),
         }
 
+    emotion_image_result = {"ok": True, "status": "skipped", "reason": "not_attempted"}
+    if send_result.get("ok"):
+        qq_delivery_config = _load_qq_delivery_config(engine, context)
+        emotion_mface_result = qq_gateway.send_emotion_mface(
+            context,
+            frame,
+            qq_delivery_config=qq_delivery_config,
+        )
+        if emotion_mface_result.get("status") != "sent":
+            emotion_image_result = _send_qq_emotion_image_fallback(
+                engine=engine,
+                qq_gateway=qq_gateway,
+                context=context,
+                frame=frame,
+                qq_delivery_config=qq_delivery_config,
+            )
+    else:
+        emotion_mface_result = {
+            "ok": True,
+            "status": "skipped",
+            "reason": "main_delivery_failed",
+        }
+
     file_send_result = qq_gateway.send_generated_files(
         context,
         list(frame.get("tool_events") or []),
@@ -505,6 +584,8 @@ def _process_qq_turn_streaming(
         "frame": frame,
         "reply_messages": [*streamed_messages, *unsent_reply_messages],
         "send_result": send_result,
+        "emotion_mface_result": emotion_mface_result,
+        "emotion_image_result": emotion_image_result,
         "file_send_result": file_send_result,
         "sticker_send_result": sticker_send_result,
     }
@@ -556,6 +637,42 @@ def build_qq_router(
                     ok=True,
                 )
                 return JSONResponse({"status": "ignored", "reason": context.reason})
+
+            mface_config_result = qq_gateway.handle_mface_config_command(context, event)
+            if isinstance(mface_config_result, dict):
+                reply = str(mface_config_result.get("reply") or "").strip()
+                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                duration_ms = (time.perf_counter() - started_at) * 1000
+                runtime_metrics.observe_request(
+                    "qq_napcat_event",
+                    duration_ms=duration_ms,
+                    ok=bool(send_result.get("ok")),
+                )
+                log_event(
+                    "qq_mface_config_command",
+                    session_id=context.session_id,
+                    profile_user_id=context.profile_user_id,
+                    command_status=str(mface_config_result.get("status") or ""),
+                    command_ok=bool(mface_config_result.get("ok")),
+                    character_pack_id=str(mface_config_result.get("character_pack_id") or ""),
+                    emotion=str(mface_config_result.get("emotion") or ""),
+                    sent=bool(send_result.get("ok")),
+                    duration_ms=round(duration_ms, 1),
+                )
+                return JSONResponse(
+                    {
+                        "status": "ok" if send_result.get("ok") else "send_failed",
+                        "reason": "qq_mface_config_command",
+                        "command_status": str(mface_config_result.get("status") or ""),
+                        "command_ok": bool(mface_config_result.get("ok")),
+                        "session_id": context.session_id,
+                        "profile_user_id": context.profile_user_id,
+                        "character_pack_id": str(mface_config_result.get("character_pack_id") or ""),
+                        "emotion": str(mface_config_result.get("emotion") or ""),
+                        "mface": mface_config_result.get("mface"),
+                        "send_result": send_result,
+                    }
+                )
 
             character_command_result = qq_gateway.handle_character_command(
                 context,
@@ -765,6 +882,8 @@ def build_qq_router(
             frame = dict(turn_result.get("frame") or {})
             reply_messages = list(turn_result.get("reply_messages") or [])
             send_result = dict(turn_result.get("send_result") or {"ok": False, "reason": "missing_send_result", "results": []})
+            emotion_mface_result = dict(turn_result.get("emotion_mface_result") or {"ok": True, "status": "skipped", "reason": "missing_result"})
+            emotion_image_result = dict(turn_result.get("emotion_image_result") or {"ok": True, "status": "skipped", "reason": "missing_result"})
             file_send_result = dict(turn_result.get("file_send_result") or {"ok": True, "count": 0, "results": []})
             for item in list(file_send_result.get("results") or []):
                 generated_id = str(item.get("generated_id") or "").strip()
@@ -826,6 +945,8 @@ def build_qq_router(
                 "attachment_count": len(context.attachments or []),
                 "attachments_registered": len(attachments_registered),
                 "send_result": send_result,
+                "emotion_mface_result": emotion_mface_result,
+                "emotion_image_result": emotion_image_result,
                 "file_send_result": file_send_result,
             }
         )

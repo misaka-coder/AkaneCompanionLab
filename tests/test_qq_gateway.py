@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 
 
 QQ_BOT_FIXTURE_ID = 10001
@@ -448,6 +448,7 @@ class QQGatewayTests(unittest.TestCase):
                 "",
             )
 
+    @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "")
     def test_character_command_lists_current_and_resets_to_default(self) -> None:
         gateway = NapCatQQGateway()
         service = FakeCharacterResourceService()
@@ -626,6 +627,266 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["user_id"], QQ_USER_FIXTURE_ID)
         self.assertEqual(payload["message"][0]["type"], "record")
         self.assertIn("file", payload["message"][0]["data"])
+
+    def test_send_mface_uses_onebot_market_face_segment(self) -> None:
+        gateway = NapCatQQGateway()
+        context = QQMessageContext(
+            should_respond=True,
+            reason="test",
+            is_group=True,
+            target_id=QQ_GROUP_FIXTURE_ID,
+            group_id=QQ_GROUP_FIXTURE_ID,
+            session_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+            profile_user_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+        )
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            result = gateway.send_mface(
+                context,
+                mface={
+                    "emoji_package_id": "123",
+                    "emoji_id": "happy-001",
+                    "key": "napcat-key",
+                    "summary": "开心",
+                },
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "send_group_msg")
+        payload = mocked_post.call_args.kwargs["json"]
+        self.assertEqual(payload["group_id"], QQ_GROUP_FIXTURE_ID)
+        self.assertEqual(payload["message"][0]["type"], "mface")
+        self.assertEqual(
+            payload["message"][0]["data"],
+            {
+                "emoji_package_id": 123,
+                "emoji_id": "happy-001",
+                "key": "napcat-key",
+                "summary": "开心",
+            },
+        )
+
+    def test_send_emotion_mface_maps_final_emotion_and_dedupes(self) -> None:
+        gateway = NapCatQQGateway()
+        context = QQMessageContext(
+            should_respond=True,
+            reason="test",
+            is_group=True,
+            target_id=QQ_GROUP_FIXTURE_ID,
+            group_id=QQ_GROUP_FIXTURE_ID,
+            session_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+            profile_user_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+        )
+        config = {
+            "emotion_mfaces": {
+                "enabled": True,
+                "min_interval_seconds": 60,
+                "map": {
+                    "happy": {
+                        "emoji_package_id": 123,
+                        "emoji_id": "happy-001",
+                        "key": "napcat-key",
+                        "summary": "开心",
+                    }
+                },
+            }
+        }
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            first = gateway.send_emotion_mface(
+                context,
+                {"speech": "好。", "emotion": "happy"},
+                qq_delivery_config=config,
+            )
+            second = gateway.send_emotion_mface(
+                context,
+                {"speech": "嗯。", "emotion": "happy"},
+                qq_delivery_config=config,
+            )
+
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["status"], "sent")
+        self.assertEqual(first["emotion"], "happy")
+        self.assertEqual(second["status"], "skipped")
+        self.assertEqual(second["reason"], "dedupe_interval")
+        self.assertEqual(mocked_post.call_count, 1)
+
+    def test_send_emotion_mface_skips_without_configured_mapping(self) -> None:
+        gateway = NapCatQQGateway()
+        context = QQMessageContext(
+            should_respond=True,
+            reason="test",
+            is_group=False,
+            target_id=QQ_USER_FIXTURE_ID,
+            user_id=QQ_USER_FIXTURE_ID,
+            session_id=f"qq_pri_{QQ_USER_FIXTURE_ID}",
+            profile_user_id=f"qq_{QQ_USER_FIXTURE_ID}",
+        )
+
+        with patch("companion_v01.qq_gateway.requests.post") as mocked_post:
+            result = gateway.send_emotion_mface(
+                context,
+                {"speech": "好。", "emotion": "happy"},
+                qq_delivery_config={"emotion_mfaces": {"enabled": True, "map": {}}},
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "disabled")
+        mocked_post.assert_not_called()
+
+    def test_send_emotion_image_uses_onebot_image_segment_and_dedupes(self) -> None:
+        gateway = NapCatQQGateway()
+        context = QQMessageContext(
+            should_respond=True,
+            reason="test",
+            is_group=True,
+            target_id=QQ_GROUP_FIXTURE_ID,
+            group_id=QQ_GROUP_FIXTURE_ID,
+            session_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+            profile_user_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+        )
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "happy.png"
+            image_path.write_bytes(b"png")
+            with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+                first = gateway.send_emotion_image(
+                    context,
+                    {"speech": "好。", "emotion": "happy"},
+                    image={"path": str(image_path), "emotion": "happy", "name": "开心"},
+                    min_interval_seconds=60,
+                )
+                second = gateway.send_emotion_image(
+                    context,
+                    {"speech": "嗯。", "emotion": "happy"},
+                    image={"path": str(image_path), "emotion": "happy", "name": "开心"},
+                    min_interval_seconds=60,
+                )
+
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["status"], "sent")
+        self.assertEqual(second["status"], "skipped")
+        self.assertEqual(second["reason"], "dedupe_interval")
+        self.assertEqual(mocked_post.call_count, 1)
+        payload = mocked_post.call_args.kwargs["json"]
+        self.assertEqual(payload["group_id"], QQ_GROUP_FIXTURE_ID)
+        self.assertEqual(payload["message"][0]["type"], "image")
+
+    def test_mface_config_command_extracts_market_face_segment(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
+            "message_id": "mface-config-1",
+            "message": [
+                {"type": "text", "data": {"text": "表情包配置 happy"}},
+                {
+                    "type": "mface",
+                    "data": {
+                        "emoji_package_id": 123,
+                        "emoji_id": "happy-001",
+                        "key": "napcat-key",
+                        "summary": "开心",
+                    },
+                },
+            ],
+        }
+        context = gateway.build_message_context(event)
+
+        result = gateway.handle_mface_config_command(context, event)
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "captured")
+        self.assertEqual(result["emotion"], "happy")
+        self.assertEqual(result["mface"]["emoji_id"], "happy-001")
+        self.assertIn('"qq_delivery"', result["reply"])
+
+    def test_mface_config_command_extracts_market_face_fields_from_image_segment(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
+            "message_id": "mface-config-image-1",
+            "message": [
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                {"type": "text", "data": {"text": " 表情包配置 开心"}},
+                {
+                    "type": "image",
+                    "data": {
+                        "file": "market-face.png",
+                        "emoji_package_id": "456",
+                        "emoji_id": "happy-zh",
+                        "key": "image-key",
+                        "summary": "开心",
+                    },
+                },
+            ],
+        }
+        context = gateway.build_message_context(event)
+
+        result = gateway.handle_mface_config_command(context, event)
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["emotion"], "开心")
+        self.assertEqual(result["mface"]["emoji_package_id"], 456)
+        self.assertEqual(result["mface"]["key"], "image-key")
+
+    def test_mface_config_command_rejects_non_master(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_OTHER_USER_FIXTURE_ID,
+            "message_id": "mface-config-forbidden-1",
+            "message": [
+                {"type": "text", "data": {"text": "表情包配置 happy"}},
+                {
+                    "type": "mface",
+                    "data": {
+                        "emoji_package_id": 123,
+                        "emoji_id": "happy-001",
+                        "key": "napcat-key",
+                        "summary": "开心",
+                    },
+                },
+            ],
+        }
+        context = gateway.build_message_context(event)
+
+        result = gateway.handle_mface_config_command(context, event)
+
+        self.assertIsNotNone(result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "forbidden")
 
     def test_extracts_image_and_file_attachments_from_segments(self) -> None:
         gateway = NapCatQQGateway()
