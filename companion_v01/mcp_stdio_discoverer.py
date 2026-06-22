@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -45,19 +46,29 @@ class McpStdioToolDiscoverer:
         _hydrate_env_placeholders(env, args=args, cwd=cwd)
         args = _expand_env_placeholders(args, env)
 
+        exe, prefix_args = _resolve_stdio_command(command)
         process = await asyncio.create_subprocess_exec(
-            _resolve_stdio_command(command),
+            exe,
+            *prefix_args,
             *args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
         )
         try:
             return await asyncio.wait_for(self._discover(process), timeout=self.timeout_seconds)
         except asyncio.TimeoutError as exc:
-            raise McpStdioDiscoveryError("mcp_discovery_timeout") from exc
+            stderr_text = await _read_stderr(process)
+            raise McpStdioDiscoveryError(
+                f"mcp_discovery_timeout{': ' + stderr_text if stderr_text else ''}"
+            ) from exc
+        except McpStdioDiscoveryError as exc:
+            stderr_text = await _read_stderr(process)
+            if stderr_text and not str(exc).endswith(stderr_text):
+                raise McpStdioDiscoveryError(f"{exc}: {stderr_text}") from exc
+            raise
         finally:
             await self._stop_process(process)
 
@@ -188,12 +199,14 @@ class McpStdioToolCaller:
         _hydrate_env_placeholders(env, args=args, cwd=cwd)
         args = _expand_env_placeholders(args, env)
 
+        exe, prefix_args = _resolve_stdio_command(command)
         process = await asyncio.create_subprocess_exec(
-            _resolve_stdio_command(command),
+            exe,
+            *prefix_args,
             *args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
         )
@@ -330,12 +343,32 @@ def _expand_env_placeholders(args: list[str], env: Mapping[str, str]) -> list[st
     return [_ENV_PLACEHOLDER_RE.sub(replace, str(arg or "")) for arg in args]
 
 
-def _resolve_stdio_command(command: str) -> str:
+def _resolve_stdio_command(command: str) -> tuple[str, list[str]]:
+    """Return (executable, prefix_args) for the given command.
+
+    On Windows, .cmd/.bat files cannot be executed directly via
+    asyncio.create_subprocess_exec — they must be routed through cmd.exe.
+    This function detects that case and prepends ["cmd.exe", "/c"] so callers
+    don't need to know about the platform quirk.
+    """
     text = str(command or "").strip()
     if not text:
-        return text
-    resolved = shutil.which(text)
-    return resolved or text
+        return text, []
+    resolved = shutil.which(text) or text
+    if sys.platform == "win32" and resolved.lower().endswith((".cmd", ".bat")):
+        return "cmd.exe", ["/c", resolved]
+    return resolved, []
+
+
+async def _read_stderr(process: asyncio.subprocess.Process, *, max_bytes: int = 2048) -> str:
+    """Read whatever stderr the process has already written, non-blocking."""
+    if process.stderr is None:
+        return ""
+    try:
+        raw = await asyncio.wait_for(process.stderr.read(max_bytes), timeout=0.5)
+        return raw.decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
 
 
 def _candidate_env_files(cwd: str | None) -> list[Path]:

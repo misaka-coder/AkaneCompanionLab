@@ -243,6 +243,7 @@ class NapCatQQGateway:
     def __init__(self, *, state_path: str | Path | None = None) -> None:
         self.group_follow_state: dict[str, dict[str, Any]] = {}
         self.recent_event_fingerprints: dict[str, float] = {}
+        self.sender_label_cache: dict[str, str] = {}
         self.attachment_debounce_state: dict[str, dict[str, Any]] = {}
         self._attachment_debounce_lock = threading.RLock()
         self._state_path = Path(state_path) if state_path is not None else None
@@ -475,7 +476,7 @@ class NapCatQQGateway:
 
     def build_message_context(self, event: dict[str, Any]) -> QQMessageContext:
         if str(event.get("post_type") or "").strip().lower() != "message":
-            return QQMessageContext(False, "not_message_event")
+            return self.build_notice_context(event)
 
         message_type = str(event.get("message_type") or "").strip().lower()
         is_private = message_type == "private"
@@ -553,6 +554,61 @@ class NapCatQQGateway:
                 sender_label=sender_label,
                 reply_mode=reply_mode,
             ),
+        )
+
+    def build_notice_context(self, event: dict[str, Any]) -> QQMessageContext:
+        if not self._is_poke_notice(event):
+            return QQMessageContext(False, "not_message_event")
+
+        target_id = self._safe_int(event.get("target_id"))
+        bot_ids = {self._safe_int(item) for item in self._bot_target_ids(event)}
+        if not target_id or target_id not in bot_ids:
+            return QQMessageContext(False, "poke_not_for_bot")
+
+        user_id = self._resolve_poke_user_id(event, target_id=target_id)
+        group_id = self._safe_int(event.get("group_id"))
+        self_id = self._safe_int(event.get("self_id"))
+        if user_id and user_id in {self._safe_int(self.bot_qq), self_id}:
+            return QQMessageContext(False, "self_message")
+
+        if self._is_stale_event(event):
+            return QQMessageContext(False, "stale_event")
+
+        if self._is_duplicate_event(event):
+            return QQMessageContext(False, "duplicate_event")
+
+        is_group = bool(group_id)
+        session_id, profile_user_id = self.resolve_identity(user_id=user_id, group_id=group_id)
+        sender_label = self.resolve_sender_label(event=event, user_id=user_id)
+        character_pack_id = self.resolve_character_pack_id(session_id)
+        reply_mode = self.resolve_reply_mode(session_id)
+        actor_label = sender_label or (f"QQ {user_id}" if user_id else "这位 QQ 用户")
+        clean_message = f"刚才发生的互动：{actor_label}在 QQ 里戳了戳你的头像。"
+        return QQMessageContext(
+            should_respond=True,
+            reason="qq_poke",
+            is_group=is_group,
+            target_id=group_id if is_group else user_id,
+            user_id=user_id,
+            group_id=group_id,
+            session_id=session_id,
+            profile_user_id=profile_user_id,
+            clean_message=clean_message,
+            raw_message="[QQ戳一戳]",
+            sender_label=sender_label,
+            character_pack_id=character_pack_id,
+            reply_mode=reply_mode,
+            attachments=[],
+            extra_context=self.build_extra_context(
+                event=event,
+                is_group=is_group,
+                user_id=user_id,
+                group_id=group_id,
+                sender_label=sender_label,
+                reply_mode=reply_mode,
+            )
+            + f"\n本轮 QQ 事件：{actor_label}双击头像戳了戳你；{actor_label}就是本轮戳一戳的发送者，请把它当作一次真实互动回应。"
+            + "\n若历史记忆、旧聊天记录或用户转述里出现“有人戳了戳你”这类模糊说法，请优先依据本轮 QQ 事件里的发送者标识来回应。",
         )
 
     def context_from_delivery_context(self, value: dict[str, Any]) -> QQMessageContext | None:
@@ -1229,6 +1285,30 @@ class NapCatQQGateway:
                     return True
         return False
 
+    def _is_poke_notice(self, event: dict[str, Any]) -> bool:
+        post_type = str(event.get("post_type") or "").strip().lower()
+        notice_type = str(event.get("notice_type") or "").strip().lower()
+        sub_type = str(event.get("sub_type") or event.get("notice_sub_type") or "").strip().lower()
+        if post_type not in {"notice", "notify"}:
+            return False
+        if notice_type == "poke":
+            return True
+        return notice_type == "notify" and sub_type == "poke"
+
+    def _resolve_poke_user_id(self, event: dict[str, Any], *, target_id: int) -> int:
+        candidates = [
+            self._safe_int(event.get("operator_id")),
+            self._safe_int(event.get("sender_id")),
+            self._safe_int(event.get("user_id")),
+        ]
+        for candidate in candidates:
+            if candidate and candidate != target_id:
+                return candidate
+        for candidate in candidates:
+            if candidate:
+                return candidate
+        return 0
+
     def resolve_identity(self, *, user_id: int, group_id: int = 0) -> tuple[str, str]:
         user_text = str(user_id or "")
         if group_id:
@@ -1242,8 +1322,47 @@ class NapCatQQGateway:
         sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
         nickname = str(sender.get("card") or sender.get("nickname") or "").strip()
         if nickname:
+            group_id = self._safe_int(event.get("group_id"))
+            cache_key = self._sender_label_cache_key(group_id=group_id, user_id=user_id)
+            if cache_key:
+                self.sender_label_cache[cache_key] = nickname
             return nickname
+        group_id = self._safe_int(event.get("group_id"))
+        cache_key = self._sender_label_cache_key(group_id=group_id, user_id=user_id)
+        if cache_key:
+            cached = str(self.sender_label_cache.get(cache_key) or "").strip()
+            if cached:
+                return cached
+        if group_id and user_id:
+            remote_label = self.lookup_group_member_label(group_id=group_id, user_id=user_id)
+            if remote_label:
+                if cache_key:
+                    self.sender_label_cache[cache_key] = remote_label
+                return remote_label
         return f"QQ {user_id}" if user_id else "群成员"
+
+    def _sender_label_cache_key(self, *, group_id: int, user_id: int) -> str:
+        if not user_id:
+            return ""
+        return f"{group_id or 0}:{user_id}"
+
+    def lookup_group_member_label(self, *, group_id: int, user_id: int) -> str:
+        if not group_id or not user_id:
+            return ""
+        payload = {"group_id": group_id, "user_id": user_id, "no_cache": False}
+        try:
+            response = requests.post(f"{self.onebot_http_url}/get_group_member_info", json=payload, timeout=3)
+            response.raise_for_status()
+            data = response.json()
+        except Exception:
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        if data.get("retcode", data.get("status")) not in (0, "ok"):
+            return ""
+        member = data.get("data") if isinstance(data.get("data"), dict) else {}
+        label = str(member.get("card") or member.get("nickname") or "").strip()
+        return label
 
     def build_extra_context(
         self,
@@ -2455,10 +2574,14 @@ class NapCatQQGateway:
 
     def _event_fingerprints(self, event: dict[str, Any]) -> list[str]:
         fingerprints: list[str] = []
+        post_type = str(event.get("post_type") or "").strip()
+        notice_type = str(event.get("notice_type") or "").strip()
+        sub_type = str(event.get("sub_type") or event.get("notice_sub_type") or "").strip()
         message_type = str(event.get("message_type") or "").strip()
-        user_id = str(event.get("user_id") or "").strip()
+        user_id = str(event.get("user_id") or event.get("sender_id") or event.get("operator_id") or "").strip()
         group_id = str(event.get("group_id") or "").strip()
         self_id = str(event.get("self_id") or "").strip()
+        target_id = str(event.get("target_id") or "").strip()
 
         message_id = str(event.get("message_id") or "").strip()
         if message_id:
@@ -2471,8 +2594,11 @@ class NapCatQQGateway:
 
         timestamp = str(event.get("time") or "").strip()
         raw_message = self.extract_message_text(event)[:200]
-        if user_id or group_id or raw_message:
-            fingerprints.append(f"fallback:{self_id}|{message_type}|{user_id}|{group_id}|{timestamp}|{raw_message}")
+        if user_id or group_id or target_id or raw_message:
+            fingerprints.append(
+                f"fallback:{self_id}|{post_type}|{notice_type}|{sub_type}|"
+                f"{message_type}|{user_id}|{group_id}|{target_id}|{timestamp}|{raw_message}"
+            )
 
         seen: set[str] = set()
         unique: list[str] = []

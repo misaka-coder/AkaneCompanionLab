@@ -851,6 +851,22 @@ def build_qq_router(
             turn_payload = context.to_turn_payload()
             if _qq_action_note:
                 turn_payload["qq_action_note"] = _qq_action_note
+            if context.reason == "qq_poke":
+                log_event(
+                    "qq_poke_context",
+                    session_id=context.session_id,
+                    profile_user_id=context.profile_user_id,
+                    is_group=bool(context.is_group),
+                    group_id=int(getattr(context, "group_id", 0) or 0),
+                    event_user_id=str(event.get("user_id") or ""),
+                    event_sender_id=str(event.get("sender_id") or ""),
+                    event_operator_id=str(event.get("operator_id") or ""),
+                    event_target_id=str(event.get("target_id") or ""),
+                    event_self_id=str(event.get("self_id") or ""),
+                    resolved_user_id=int(getattr(context, "user_id", 0) or 0),
+                    sender_label=str(getattr(context, "sender_label", "") or ""),
+                    turn_message=str(turn_payload.get("message") or "")[:240],
+                )
             remote_prefetch_result = await asyncio.to_thread(
                 engine.prefetch_remote_media_links_for_message,
                 profile_user_id=context.profile_user_id,

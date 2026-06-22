@@ -3510,7 +3510,7 @@ function buildAnySearchDraftMcpServer() {
       title: label,
       detail: "预设能力，保存并发现后以 MCP 返回的工具目录为准。",
       riskLabel: "低风险",
-      promptLabel: "默认不进提示词"
+      promptLabel: "发现后默认开放"
     })),
     highRiskCount: 0,
     promptExposedCount: 0,

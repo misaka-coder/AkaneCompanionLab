@@ -159,6 +159,56 @@ def normalize_tool_call(
     return handler.normalize_call(value)
 
 
+def classify_tool_call_rejection(
+    engine: Any,
+    value: Any,
+    *,
+    client_context: ClientProtocolContext | None = None,
+    profile_user_id: str = "",
+    session_id: str = "",
+) -> str:
+    """Explain why an attempted tool call could not be dispatched.
+
+    Returns "" when there was no genuine attempt (the model emitted null / no
+    type). Returns a model-readable reason when the model DID try to call a
+    tool that is unknown this turn or whose arguments failed validation, so the
+    caller can feed that reason back instead of dropping the attempt silently.
+    """
+    if not isinstance(value, dict):
+        return ""
+    tool_type = str(value.get("type") or "").strip()
+    if not tool_type:
+        return ""
+
+    handlers = engine._resolve_tool_handlers(
+        client_context=client_context,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+    )
+    # A call that gets delegated to the QQ background worker is not a rejection.
+    if _maybe_delegate_qq_media_tool(
+        value, tool_type=tool_type, handlers=handlers, client_context=client_context,
+    ) is not None:
+        return ""
+
+    handler = handlers.get(tool_type)
+    if handler is None:
+        available = sorted(str(name) for name in handlers.keys())
+        available_text = "、".join(available) if available else "（本轮没有可用工具）"
+        return (
+            f"你刚才请求的工具「{tool_type}」在本轮不可用，已被系统忽略。"
+            f"本轮真正可用的工具是：{available_text}。"
+            "请改用其中一个工具，或把 tool_call 设为 null 并直接回复主人，不要再调用不存在的工具。"
+        )
+    if handler.normalize_call(value) is None:
+        return (
+            f"你对工具「{tool_type}」的调用参数不完整或格式不对，系统无法执行，已被忽略"
+            f"（你提交的是：{describe_tool_call_for_prompt(value)}）。"
+            "请对照该工具所需字段修正后重试，或把 tool_call 设为 null 并直接回复主人。"
+        )
+    return ""
+
+
 def _maybe_delegate_qq_media_tool(
     value: dict[str, Any],
     *,

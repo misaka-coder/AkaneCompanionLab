@@ -101,6 +101,48 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
             self.assertIn("mcp.demo.echo", alice)
             self.assertNotIn("mcp.demo.echo", bob)
 
+    def test_yaml_profile_config_loads_prompt_exposed_mcp_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
+            path = Path(temp_dir) / "alice" / "capabilities" / "capabilities.yaml"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                """
+schemaVersion: 1
+mcpServers:
+  demo:
+    enabled: true
+    displayName: Demo MCP
+    transport: stdio
+    command: python
+    lowRiskAllowlist:
+      - echo
+    lastDiscovery:
+      status: ready
+      toolCount: 1
+    tools:
+      - name: echo
+        description: Echo text
+        risk: low
+        confirm: never
+        promptExposed: true
+        inputSchema:
+          type: object
+          properties:
+            text:
+              type: string
+              description: Text
+          required:
+            - text
+""".lstrip(),
+                encoding="utf-8",
+            )
+            handlers = build_engine()._resolve_tool_handlers(
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+            self.assertIn("mcp.demo.echo", handlers)
+
     def test_high_risk_mcp_tool_requires_approval_without_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
             write_profile_config(Path(temp_dir), "alice", prompt_exposed=True, risk="high")

@@ -1768,20 +1768,49 @@ class AkaneMemoryEngine:
             if str(hit.get("source_id") or "").strip()
         ]
         while tool_round_index < max_tool_rounds:
-            final_output = self._promote_narrated_tool_call(
-                final_output,
+            final_output, tool_call, rejection = self._prepare_tool_round_decision(
+                final_output=final_output,
                 user_message=user_message,
                 client_context=client_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
             )
-            tool_call = self._normalize_tool_call(
-                final_output.get("tool_call"),
-                client_context=client_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            )
             if not tool_call:
+                if not rejection:
+                    break
+                allow_retry = self._record_tool_call_rejection(
+                    final_output=final_output,
+                    rejection=rejection,
+                    tool_followups=tool_followups,
+                    session_id=session_id,
+                    tool_round_index=tool_round_index,
+                    max_tool_rounds=max_tool_rounds,
+                )
+                final_output = self._build_final_response(
+                    session_id=session_id,
+                    profile_user_id=profile_user_id,
+                    user_message=user_message,
+                    recent_raw=recent_raw_for_turn,
+                    recent_episodic_summaries=recent_episodic_summaries,
+                    recent_semantic_summaries=recent_semantic_summaries,
+                    confirmed_snippets=confirmed_snippets,
+                    now_ts=now_ts,
+                    current_visual_payload=payload.get("current_visual"),
+                    extra_user_context=self._build_tool_round_extra_context(
+                        turn_extra_user_context=turn_extra_user_context,
+                        tool_followups=tool_followups,
+                        allow_more=allow_retry,
+                    ),
+                    client_context=client_context,
+                    resource_manifest=turn_resource_manifest,
+                    character_pack_id=turn_character_pack_id,
+                    user_images=desktop_screen_images,
+                    allow_tool_call=allow_retry,
+                    final_debug_enabled=final_debug_enabled,
+                )
+                tool_round_index += 1
+                if allow_retry:
+                    continue
                 break
             max_tool_rounds = self._resolve_tool_round_budget(
                 current_budget=max_tool_rounds,
@@ -1807,9 +1836,10 @@ class AkaneMemoryEngine:
                     confirmed_snippets=confirmed_snippets,
                     now_ts=now_ts,
                     current_visual_payload=payload.get("current_visual"),
-                    extra_user_context=self._merge_extra_user_context(
-                        turn_extra_user_context,
-                        self._build_multi_tool_followup_context(tool_followups, allow_more=False),
+                    extra_user_context=self._build_tool_round_extra_context(
+                        turn_extra_user_context=turn_extra_user_context,
+                        tool_followups=tool_followups,
+                        allow_more=False,
                     ),
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
@@ -1821,87 +1851,35 @@ class AkaneMemoryEngine:
                 break
             seen_tool_calls.add(tool_signature)
 
-            internal_read_tool = str(tool_call.get("type") or "") in {
-                "retrieve_memory",
-                "read_memory_timeline",
-                "load_character_context",
-            }
-            preface_turn = None if internal_read_tool else self._build_assistant_dialogue_turn(final_output.get("speech"))
-            if preface_turn:
-                preface_turns.append(preface_turn)
-                preface_record = self.store.add_message(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    character_pack_id=turn_character_pack_id,
-                    role="assistant",
-                    content=preface_turn["speech"],
-                    timestamp=now_ts,
-                    date_label=date_label,
-                    time_of_day=time_of_day,
-                    semantic_tags=extract_semantic_tags(preface_turn["speech"]),
-                    memory_metadata=self._build_assistant_timeline_metadata(final_output),
-                )
-                self._upsert_raw_record(preface_record)
-                self._schedule_summary_cycle(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    character_pack_id=turn_character_pack_id,
-                )
-                recent_raw_for_turn.append(preface_record)
-
-            tool_result = self._execute_tool_call(
+            self._record_assistant_preface_for_tool_call(
+                tool_call=tool_call,
+                final_output=final_output,
+                preface_turns=preface_turns,
+                recent_raw_for_turn=recent_raw_for_turn,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
+                now_ts=now_ts,
+                date_label=date_label,
+                time_of_day=time_of_day,
+            )
+            tool_result, _current_events = self._execute_and_record_tool_round(
                 tool_call=tool_call,
-                visual_payload=final_output,
+                final_output=final_output,
+                tool_results=tool_results,
+                tool_events=tool_events,
+                tool_followups=tool_followups,
+                tool_turns=tool_turns,
+                recent_raw_for_turn=recent_raw_for_turn,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
                 now_ts=now_ts,
                 current_user_source_id=str(user_record.get("source_id") or ""),
                 client_context=client_context,
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
             )
-            if tool_result:
-                tool_results.append(tool_result)
-                current_events = list(tool_result.stream_events)
-                workspace_events, workspace_followup = self._record_tool_result_artifacts_in_task_workspace(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    tool_result=tool_result,
-                    now_ts=now_ts,
-                )
-                current_events.extend(workspace_events)
-                tool_events.extend(current_events)
-                if str(tool_result.followup_context or "").strip():
-                    tool_followups.append(
-                        f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n"
-                        f"{str(tool_result.followup_context).strip()}"
-                    )
-                if workspace_followup:
-                    tool_followups.append(workspace_followup)
-                current_tool_turns = list(tool_result.raw_turns)
-                tool_turns.extend(current_tool_turns)
-                for tool_turn in current_tool_turns:
-                    speaker = str(tool_turn.get("speaker") or "NPC").strip() or "NPC"
-                    speech = str(tool_turn.get("speech") or "").strip()
-                    if not speech:
-                        continue
-                    tool_record = self.store.add_message(
-                        profile_user_id=profile_user_id,
-                        session_id=session_id,
-                        character_pack_id=turn_character_pack_id,
-                        role=f"npc:{speaker}",
-                        content=speech,
-                        timestamp=max(now_ts, int(time.time())),
-                        semantic_tags=extract_semantic_tags(speech),
-                    )
-                    self._upsert_raw_record(tool_record)
-                    self._schedule_summary_cycle(
-                        profile_user_id=profile_user_id,
-                        session_id=session_id,
-                        character_pack_id=turn_character_pack_id,
-                    )
-                    recent_raw_for_turn.append(tool_record)
 
             allow_more_tools = tool_round_index < max_tool_rounds - 1
             final_output = self._build_final_response(
@@ -1914,13 +1892,11 @@ class AkaneMemoryEngine:
                 confirmed_snippets=confirmed_snippets,
                 now_ts=now_ts,
                 current_visual_payload=payload.get("current_visual"),
-                extra_user_context=self._merge_extra_user_context(
-                    turn_extra_user_context,
-                    self._build_multi_tool_followup_context(
-                        tool_followups,
-                        allow_more=allow_more_tools,
-                        stop_reason="tool_budget_exhausted" if not allow_more_tools else "",
-                    ),
+                extra_user_context=self._build_tool_round_extra_context(
+                    turn_extra_user_context=turn_extra_user_context,
+                    tool_followups=tool_followups,
+                    allow_more=allow_more_tools,
+                    stop_reason="tool_budget_exhausted" if not allow_more_tools else "",
                 ),
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
@@ -2180,15 +2156,9 @@ class AkaneMemoryEngine:
             if str(hit.get("source_id") or "").strip()
         ]
         while tool_round_index < max_tool_rounds:
-            final_output = self._promote_narrated_tool_call(
-                final_output,
+            final_output, tool_call, rejection = self._prepare_tool_round_decision(
+                final_output=final_output,
                 user_message=user_message,
-                client_context=client_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            )
-            tool_call = self._normalize_tool_call(
-                final_output.get("tool_call"),
                 client_context=client_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -2197,8 +2167,44 @@ class AkaneMemoryEngine:
                 "type": "assistant_stage_decision",
                 "has_tool_call": bool(tool_call),
                 "tool_type": str((tool_call or {}).get("type") or ""),
+                "rejected_tool_call": bool(rejection),
             }
             if not tool_call:
+                if not rejection:
+                    break
+                allow_retry = self._record_tool_call_rejection(
+                    final_output=final_output,
+                    rejection=rejection,
+                    tool_followups=tool_followups,
+                    session_id=session_id,
+                    tool_round_index=tool_round_index,
+                    max_tool_rounds=max_tool_rounds,
+                )
+                final_output = yield from self._stream_final_response(
+                    session_id=session_id,
+                    profile_user_id=profile_user_id,
+                    user_message=user_message,
+                    recent_raw=recent_raw_for_turn,
+                    recent_episodic_summaries=recent_episodic_summaries,
+                    recent_semantic_summaries=recent_semantic_summaries,
+                    confirmed_snippets=confirmed_snippets,
+                    now_ts=now_ts,
+                    current_visual_payload=payload.get("current_visual"),
+                    extra_user_context=self._build_tool_round_extra_context(
+                        turn_extra_user_context=turn_extra_user_context,
+                        tool_followups=tool_followups,
+                        allow_more=allow_retry,
+                    ),
+                    client_context=client_context,
+                    resource_manifest=turn_resource_manifest,
+                    character_pack_id=turn_character_pack_id,
+                    user_images=desktop_screen_images,
+                    allow_tool_call=allow_retry,
+                    final_debug_enabled=final_debug_enabled,
+                )
+                tool_round_index += 1
+                if allow_retry:
+                    continue
                 break
             max_tool_rounds = self._resolve_tool_round_budget(
                 current_budget=max_tool_rounds,
@@ -2224,9 +2230,10 @@ class AkaneMemoryEngine:
                     confirmed_snippets=confirmed_snippets,
                     now_ts=now_ts,
                     current_visual_payload=payload.get("current_visual"),
-                    extra_user_context=self._merge_extra_user_context(
-                        turn_extra_user_context,
-                        self._build_multi_tool_followup_context(tool_followups, allow_more=False),
+                    extra_user_context=self._build_tool_round_extra_context(
+                        turn_extra_user_context=turn_extra_user_context,
+                        tool_followups=tool_followups,
+                        allow_more=False,
                     ),
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
@@ -2238,89 +2245,37 @@ class AkaneMemoryEngine:
                 break
             seen_tool_calls.add(tool_signature)
 
-            internal_read_tool = str(tool_call.get("type") or "") in {
-                "retrieve_memory",
-                "read_memory_timeline",
-                "load_character_context",
-            }
-            preface_turn = None if internal_read_tool else self._build_assistant_dialogue_turn(final_output.get("speech"))
-            if preface_turn:
-                preface_turns.append(preface_turn)
-                preface_record = self.store.add_message(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    character_pack_id=turn_character_pack_id,
-                    role="assistant",
-                    content=preface_turn["speech"],
-                    timestamp=now_ts,
-                    date_label=date_label,
-                    time_of_day=time_of_day,
-                    semantic_tags=extract_semantic_tags(preface_turn["speech"]),
-                    memory_metadata=self._build_assistant_timeline_metadata(final_output),
-                )
-                self._upsert_raw_record(preface_record)
-                self._schedule_summary_cycle(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    character_pack_id=turn_character_pack_id,
-                )
-                recent_raw_for_turn.append(preface_record)
-
-            tool_result = self._execute_tool_call(
+            self._record_assistant_preface_for_tool_call(
+                tool_call=tool_call,
+                final_output=final_output,
+                preface_turns=preface_turns,
+                recent_raw_for_turn=recent_raw_for_turn,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
+                now_ts=now_ts,
+                date_label=date_label,
+                time_of_day=time_of_day,
+            )
+            tool_result, current_events = self._execute_and_record_tool_round(
                 tool_call=tool_call,
-                visual_payload=final_output,
+                final_output=final_output,
+                tool_results=tool_results,
+                tool_events=tool_events,
+                tool_followups=tool_followups,
+                tool_turns=tool_turns,
+                recent_raw_for_turn=recent_raw_for_turn,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
                 now_ts=now_ts,
                 current_user_source_id=str(user_record.get("source_id") or ""),
                 client_context=client_context,
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
             )
-            if tool_result:
-                tool_results.append(tool_result)
-                current_events = list(tool_result.stream_events)
-                workspace_events, workspace_followup = self._record_tool_result_artifacts_in_task_workspace(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    tool_result=tool_result,
-                    now_ts=now_ts,
-                )
-                current_events.extend(workspace_events)
-                tool_events.extend(current_events)
-                for stream_event in current_events:
-                    yield stream_event
-                if str(tool_result.followup_context or "").strip():
-                    tool_followups.append(
-                        f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n"
-                        f"{str(tool_result.followup_context).strip()}"
-                    )
-                if workspace_followup:
-                    tool_followups.append(workspace_followup)
-                current_tool_turns = list(tool_result.raw_turns)
-                tool_turns.extend(current_tool_turns)
-                for tool_turn in current_tool_turns:
-                    speaker = str(tool_turn.get("speaker") or "NPC").strip() or "NPC"
-                    speech = str(tool_turn.get("speech") or "").strip()
-                    if not speech:
-                        continue
-                    tool_record = self.store.add_message(
-                        profile_user_id=profile_user_id,
-                        session_id=session_id,
-                        character_pack_id=turn_character_pack_id,
-                        role=f"npc:{speaker}",
-                        content=speech,
-                        timestamp=max(now_ts, int(time.time())),
-                        semantic_tags=extract_semantic_tags(speech),
-                    )
-                    self._upsert_raw_record(tool_record)
-                    self._schedule_summary_cycle(
-                        profile_user_id=profile_user_id,
-                        session_id=session_id,
-                        character_pack_id=turn_character_pack_id,
-                    )
-                    recent_raw_for_turn.append(tool_record)
+            for stream_event in current_events:
+                yield stream_event
 
             allow_more_tools = tool_round_index < max_tool_rounds - 1
             final_output = yield from self._stream_final_response(
@@ -2333,13 +2288,11 @@ class AkaneMemoryEngine:
                 confirmed_snippets=confirmed_snippets,
                 now_ts=now_ts,
                 current_visual_payload=payload.get("current_visual"),
-                extra_user_context=self._merge_extra_user_context(
-                    turn_extra_user_context,
-                    self._build_multi_tool_followup_context(
-                        tool_followups,
-                        allow_more=allow_more_tools,
-                        stop_reason="tool_budget_exhausted" if not allow_more_tools else "",
-                    ),
+                extra_user_context=self._build_tool_round_extra_context(
+                    turn_extra_user_context=turn_extra_user_context,
+                    tool_followups=tool_followups,
+                    allow_more=allow_more_tools,
+                    stop_reason="tool_budget_exhausted" if not allow_more_tools else "",
                 ),
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
@@ -3227,6 +3180,194 @@ class AkaneMemoryEngine:
     def _describe_tool_call_for_prompt(self, tool_call: dict[str, Any]) -> str:
         return tool_orchestration_engine.describe_tool_call_for_prompt(tool_call)
 
+    def _prepare_tool_round_decision(
+        self,
+        *,
+        final_output: dict[str, Any],
+        user_message: str,
+        client_context: ClientProtocolContext,
+        profile_user_id: str,
+        session_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, str]:
+        final_output = self._promote_narrated_tool_call(
+            final_output,
+            user_message=user_message,
+            client_context=client_context,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+        )
+        tool_call = self._normalize_tool_call(
+            final_output.get("tool_call"),
+            client_context=client_context,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+        )
+        rejection = (
+            self._describe_tool_call_rejection(
+                final_output.get("tool_call"),
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
+            if not tool_call
+            else ""
+        )
+        return final_output, tool_call, rejection
+
+    def _record_tool_call_rejection(
+        self,
+        *,
+        final_output: dict[str, Any],
+        rejection: str,
+        tool_followups: list[str],
+        session_id: str,
+        tool_round_index: int,
+        max_tool_rounds: int,
+    ) -> bool:
+        logger.warning(
+            "tool_call_rejected session=%s reason_tool=%s",
+            session_id,
+            str((final_output.get("tool_call") or {}).get("type") or ""),
+        )
+        tool_followups.append(rejection)
+        return tool_round_index < max_tool_rounds - 1
+
+    def _build_tool_round_extra_context(
+        self,
+        *,
+        turn_extra_user_context: str,
+        tool_followups: list[str],
+        allow_more: bool,
+        stop_reason: str = "",
+    ) -> str:
+        return self._merge_extra_user_context(
+            turn_extra_user_context,
+            self._build_multi_tool_followup_context(
+                tool_followups,
+                allow_more=allow_more,
+                stop_reason=stop_reason,
+            ),
+        )
+
+    def _record_assistant_preface_for_tool_call(
+        self,
+        *,
+        tool_call: dict[str, Any],
+        final_output: dict[str, Any],
+        preface_turns: list[dict[str, str]],
+        recent_raw_for_turn: list[dict[str, Any]],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        now_ts: int,
+        date_label: str,
+        time_of_day: str,
+    ) -> None:
+        internal_read_tool = str(tool_call.get("type") or "") in {
+            "retrieve_memory",
+            "read_memory_timeline",
+            "load_character_context",
+        }
+        preface_turn = None if internal_read_tool else self._build_assistant_dialogue_turn(final_output.get("speech"))
+        if not preface_turn:
+            return
+        preface_turns.append(preface_turn)
+        preface_record = self.store.add_message(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            role="assistant",
+            content=preface_turn["speech"],
+            timestamp=now_ts,
+            date_label=date_label,
+            time_of_day=time_of_day,
+            semantic_tags=extract_semantic_tags(preface_turn["speech"]),
+            memory_metadata=self._build_assistant_timeline_metadata(final_output),
+        )
+        self._upsert_raw_record(preface_record)
+        self._schedule_summary_cycle(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        recent_raw_for_turn.append(preface_record)
+
+    def _execute_and_record_tool_round(
+        self,
+        *,
+        tool_call: dict[str, Any],
+        final_output: dict[str, Any],
+        tool_results: list[ToolExecutionResult],
+        tool_events: list[dict[str, Any]],
+        tool_followups: list[str],
+        tool_turns: list[dict[str, Any]],
+        recent_raw_for_turn: list[dict[str, Any]],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        now_ts: int,
+        current_user_source_id: str,
+        client_context: ClientProtocolContext,
+        memory_exclude_source_ids: list[str],
+        request_context: dict[str, Any],
+    ) -> tuple[ToolExecutionResult | None, list[dict[str, Any]]]:
+        tool_result = self._execute_tool_call(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            tool_call=tool_call,
+            visual_payload=final_output,
+            now_ts=now_ts,
+            current_user_source_id=current_user_source_id,
+            client_context=client_context,
+            memory_exclude_source_ids=memory_exclude_source_ids,
+            request_context=request_context,
+        )
+        if not tool_result:
+            return None, []
+
+        tool_results.append(tool_result)
+        current_events = list(tool_result.stream_events)
+        workspace_events, workspace_followup = self._record_tool_result_artifacts_in_task_workspace(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            tool_result=tool_result,
+            now_ts=now_ts,
+        )
+        current_events.extend(workspace_events)
+        tool_events.extend(current_events)
+        if str(tool_result.followup_context or "").strip():
+            tool_followups.append(
+                f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n"
+                f"{str(tool_result.followup_context).strip()}"
+            )
+        if workspace_followup:
+            tool_followups.append(workspace_followup)
+        current_tool_turns = list(tool_result.raw_turns)
+        tool_turns.extend(current_tool_turns)
+        for tool_turn in current_tool_turns:
+            speaker = str(tool_turn.get("speaker") or "NPC").strip() or "NPC"
+            speech = str(tool_turn.get("speech") or "").strip()
+            if not speech:
+                continue
+            tool_record = self.store.add_message(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                role=f"npc:{speaker}",
+                content=speech,
+                timestamp=max(now_ts, int(time.time())),
+                semantic_tags=extract_semantic_tags(speech),
+            )
+            self._upsert_raw_record(tool_record)
+            self._schedule_summary_cycle(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+            recent_raw_for_turn.append(tool_record)
+        return tool_result, current_events
+
     def _record_tool_result_artifacts_in_task_workspace(
         self,
         *,
@@ -3885,6 +4026,22 @@ class AkaneMemoryEngine:
         session_id: str = "",
     ) -> dict[str, Any] | None:
         return tool_orchestration_engine.normalize_tool_call(
+            self,
+            value,
+            client_context=client_context,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+        )
+
+    def _describe_tool_call_rejection(
+        self,
+        value: Any,
+        *,
+        client_context: ClientProtocolContext | None = None,
+        profile_user_id: str = "",
+        session_id: str = "",
+    ) -> str:
+        return tool_orchestration_engine.classify_tool_call_rejection(
             self,
             value,
             client_context=client_context,

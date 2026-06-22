@@ -295,6 +295,184 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["message"], "【休比】你好")
         self.assertIn("【昵称】", payload["extra_context"])
 
+    def test_private_poke_notice_to_bot_becomes_normal_turn_payload(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "notice",
+            "notice_type": "notify",
+            "sub_type": "poke",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "sender_id": QQ_USER_FIXTURE_ID,
+            "target_id": QQ_BOT_FIXTURE_ID,
+            "time": int(time.time()),
+        }
+
+        context = gateway.build_message_context(event)
+        payload = context.to_turn_payload()
+
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.reason, "qq_poke")
+        self.assertFalse(context.is_group)
+        self.assertEqual(context.target_id, QQ_USER_FIXTURE_ID)
+        self.assertEqual(payload["message"], f"刚才发生的互动：QQ {QQ_USER_FIXTURE_ID}在 QQ 里戳了戳你的头像。")
+        self.assertNotIn("transient_user_message", payload)
+        self.assertEqual(payload["client_mode"], "qq_text")
+        self.assertIn(f"QQ {QQ_USER_FIXTURE_ID}", payload["extra_context"])
+        self.assertIn("戳了戳你", payload["extra_context"])
+
+    def test_group_poke_notice_to_bot_uses_group_memory_and_sender_label(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "notice",
+            "notice_type": "notify",
+            "sub_type": "poke",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "sender_id": QQ_USER_FIXTURE_ID,
+            "target_id": QQ_BOT_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
+            "sender": {"card": "休比", "nickname": "fallback"},
+            "time": int(time.time()),
+        }
+
+        context = gateway.build_message_context(event)
+        payload = context.to_turn_payload()
+
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.reason, "qq_poke")
+        self.assertTrue(context.is_group)
+        self.assertEqual(context.target_id, QQ_GROUP_FIXTURE_ID)
+        self.assertEqual(context.session_id, f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
+        self.assertEqual(payload["message"], "【休比】刚才发生的互动：休比在 QQ 里戳了戳你的头像。")
+        self.assertIn("休比双击头像戳了戳你", payload["extra_context"])
+
+    def test_group_poke_notice_can_reuse_sender_label_from_recent_message(self) -> None:
+        gateway = NapCatQQGateway()
+        message_event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
+            "message_id": "group-speaker-before-poke",
+            "sender": {"card": "休比", "nickname": "fallback"},
+            "message": [
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                {"type": "text", "data": {"text": " 先打个招呼"}},
+            ],
+        }
+        poke_event = {
+            "post_type": "notice",
+            "notice_type": "notify",
+            "sub_type": "poke",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "sender_id": QQ_USER_FIXTURE_ID,
+            "target_id": QQ_BOT_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
+            "time": int(time.time()),
+        }
+
+        message_context = gateway.build_message_context(message_event)
+        poke_context = gateway.build_message_context(poke_event)
+        payload = poke_context.to_turn_payload()
+
+        self.assertTrue(message_context.should_respond)
+        self.assertTrue(poke_context.should_respond)
+        self.assertEqual(poke_context.sender_label, "休比")
+        self.assertEqual(payload["message"], "【休比】刚才发生的互动：休比在 QQ 里戳了戳你的头像。")
+
+    def test_group_poke_notice_fetches_sender_label_from_onebot_when_notice_has_no_sender(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "notice",
+            "notice_type": "notify",
+            "sub_type": "poke",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "target_id": QQ_BOT_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
+            "time": int(time.time()),
+        }
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"retcode": 0, "data": {"card": "休比", "nickname": "fallback"}}
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            context = gateway.build_message_context(event)
+
+        payload = context.to_turn_payload()
+
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.sender_label, "休比")
+        self.assertEqual(payload["message"], "【休比】刚才发生的互动：休比在 QQ 里戳了戳你的头像。")
+        mocked_post.assert_called_once()
+        self.assertTrue(mocked_post.call_args.args[0].endswith("/get_group_member_info"))
+        self.assertEqual(mocked_post.call_args.kwargs["json"]["group_id"], QQ_GROUP_FIXTURE_ID)
+        self.assertEqual(mocked_post.call_args.kwargs["json"]["user_id"], QQ_USER_FIXTURE_ID)
+
+    def test_poke_notice_uses_operator_id_when_user_id_is_target(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "notice",
+            "notice_type": "notify",
+            "sub_type": "poke",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "operator_id": QQ_USER_FIXTURE_ID,
+            "user_id": QQ_BOT_FIXTURE_ID,
+            "target_id": QQ_BOT_FIXTURE_ID,
+            "time": int(time.time()),
+        }
+
+        context = gateway.build_message_context(event)
+        payload = context.to_turn_payload()
+
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.user_id, QQ_USER_FIXTURE_ID)
+        self.assertEqual(context.target_id, QQ_USER_FIXTURE_ID)
+        self.assertEqual(payload["message"], f"刚才发生的互动：QQ {QQ_USER_FIXTURE_ID}在 QQ 里戳了戳你的头像。")
+
+    def test_poke_notice_not_targeting_bot_is_ignored(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "notice",
+            "notice_type": "notify",
+            "sub_type": "poke",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "target_id": QQ_OTHER_USER_FIXTURE_ID,
+            "time": int(time.time()),
+        }
+
+        context = gateway.build_message_context(event)
+
+        self.assertFalse(context.should_respond)
+        self.assertEqual(context.reason, "poke_not_for_bot")
+
+    def test_duplicate_poke_notice_is_ignored(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "notice",
+            "notice_type": "notify",
+            "sub_type": "poke",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "sender_id": QQ_USER_FIXTURE_ID,
+            "target_id": QQ_BOT_FIXTURE_ID,
+            "time": int(time.time()),
+        }
+
+        first = gateway.build_message_context(event)
+        second = gateway.build_message_context(dict(event))
+
+        self.assertTrue(first.should_respond)
+        self.assertFalse(second.should_respond)
+        self.assertEqual(second.reason, "duplicate_event")
+
     @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "reimu_demo")
     def test_turn_payload_includes_configured_character_pack_id(self) -> None:
         gateway = NapCatQQGateway()

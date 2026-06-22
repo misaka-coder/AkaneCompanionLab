@@ -10,6 +10,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse, urlunparse
 
+import yaml
+
 
 CONFIG_SCHEMA_VERSION = 1
 PROFILE_CONFIG_PATH_TEMPLATE = "users_data/<profile_user_id>/capabilities/capabilities.yaml"
@@ -2081,7 +2083,7 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
         }
     try:
         raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw) if raw.strip() else {}
+        data = _parse_capability_config_payload(raw)
     except Exception:
         return {
             "schemaVersion": CONFIG_SCHEMA_VERSION,
@@ -2132,7 +2134,7 @@ def write_capability_config(*, base_dir: Path | str | None, profile_user_id: str
     writable_config = dict(config)
     if "approvalPolicy" not in writable_config and path.exists():
         try:
-            raw_existing = json.loads(path.read_text(encoding="utf-8") or "{}")
+            raw_existing = _parse_capability_config_payload(path.read_text(encoding="utf-8"))
         except Exception:
             raw_existing = {}
         if isinstance(raw_existing, Mapping):
@@ -2143,6 +2145,16 @@ def write_capability_config(*, base_dir: Path | str | None, profile_user_id: str
         handle.write(payload)
         handle.write("\n")
     tmp_path.replace(path)
+
+
+def _parse_capability_config_payload(raw: str) -> Any:
+    text = str(raw or "")
+    if not text.strip():
+        return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        return yaml.safe_load(text)
 
 
 def _profile_config_path(base_dir: Path | str | None, profile_user_id: str) -> Path | None:

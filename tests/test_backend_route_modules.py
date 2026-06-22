@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -600,6 +601,77 @@ class BackendRouteModuleTests(unittest.TestCase):
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
         self.assertIn("已切换本 QQ 会话角色为", sent_payload["message"])
+
+    def test_qq_router_poke_notice_runs_llm_as_normal_user_message(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeEngine:
+            care_runtime = None
+            desktop_pet_character_resources = None
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "别戳了。"}}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "notice",
+                    "notice_type": "notify",
+                    "sub_type": "poke",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "sender_id": QQ_USER_FIXTURE_ID,
+                    "target_id": QQ_BOT_FIXTURE_ID,
+                    "time": int(time.time()),
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_poke")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(len(process_calls), 1)
+        turn_payload = process_calls[0]
+        self.assertEqual(turn_payload["message"], f"刚才发生的互动：QQ {QQ_USER_FIXTURE_ID}在 QQ 里戳了戳你的头像。")
+        self.assertEqual(turn_payload["client_mode"], "qq_text")
+        self.assertNotIn("transient_user_message", turn_payload)
+        self.assertIn(f"QQ {QQ_USER_FIXTURE_ID}", turn_payload["extra_context"])
+        self.assertIn("戳了戳你", turn_payload["extra_context"])
+        self.assertIn("请优先依据本轮 QQ 事件里的发送者标识来回应", turn_payload["extra_context"])
+        poke_logs = [payload for event_name, payload in log_calls if event_name == "qq_poke_context"]
+        self.assertEqual(len(poke_logs), 1)
+        self.assertEqual(poke_logs[0]["event_sender_id"], str(QQ_USER_FIXTURE_ID))
+        self.assertEqual(poke_logs[0]["resolved_user_id"], QQ_USER_FIXTURE_ID)
+        self.assertIn(f"QQ {QQ_USER_FIXTURE_ID}", poke_logs[0]["turn_message"])
+        mocked_post.assert_called_once()
+        sent_payload = mocked_post.call_args.kwargs["json"]
+        self.assertEqual(sent_payload["message"], "别戳了。")
 
     # ---------- control center action contract ----------
 

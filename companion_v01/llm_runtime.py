@@ -1369,10 +1369,20 @@ class LLMRuntime:
             return parsed
         match = JSON_RE.search(raw)
         if not match:
-            return None
+            repaired = self._repair_json(raw)
+            return repaired
         try:
             payload = json.loads(match.group(0))
             return payload if isinstance(payload, dict) else None
+        except Exception:
+            repaired = self._repair_json(match.group(0))
+            return repaired
+
+    def _repair_json(self, text: str) -> dict[str, Any] | None:
+        try:
+            import json_repair
+            repaired = json_repair.repair_json(text, return_objects=True)
+            return repaired if isinstance(repaired, dict) else None
         except Exception:
             return None
 

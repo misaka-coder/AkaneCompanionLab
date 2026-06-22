@@ -20,3 +20,4 @@ reportlab
 tzdata
 yt-dlp
 syncedlyrics
+json-repair
