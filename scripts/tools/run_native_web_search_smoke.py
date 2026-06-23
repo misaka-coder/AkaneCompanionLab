@@ -15,10 +15,30 @@ if str(PROJECT_ROOT) not in sys.path:
 import config  # noqa: E402
 from companion_v01.capability_registry import CapabilitySelection  # noqa: E402
 from companion_v01.engine import AkaneMemoryEngine  # noqa: E402
-from companion_v01.tool_runtime import ToolExecutionContext, ToolExecutionResult, WebSearchToolHandler  # noqa: E402
+from companion_v01.tool_runtime import (  # noqa: E402
+    ReadMemoryTimelineToolHandler,
+    RetrieveMemoryToolHandler,
+    ToolExecutionContext,
+    ToolExecutionResult,
+    WebSearchToolHandler,
+)
 
 
 DEFAULT_MESSAGE = "查一下今天上海天气。"
+DEFAULT_MEMORY_MESSAGE = "你还记得我之前跟你说过我最喜欢喝什么咖啡吗？"
+
+
+def toolset_allowlist(toolset: str) -> str:
+    normalized = str(toolset or "web_search").strip().lower()
+    if normalized == "memory":
+        return "retrieve_memory,read_memory_timeline"
+    if normalized == "all":
+        return "web_search,retrieve_memory,read_memory_timeline"
+    return "web_search"
+
+
+def default_message_for_toolset(toolset: str) -> str:
+    return DEFAULT_MEMORY_MESSAGE if str(toolset or "").strip().lower() == "memory" else DEFAULT_MESSAGE
 
 
 class SmokeWebSearchToolHandler(WebSearchToolHandler):
@@ -65,6 +85,125 @@ class SmokeWebSearchToolHandler(WebSearchToolHandler):
         )
 
 
+class _SmokeTimelineService:
+    """Minimal timeline service: only normalize_time_periods is used (the smoke
+    handler overrides execute), so no DB / real reads are touched."""
+
+    _PERIODS = ("morning", "afternoon", "night", "midnight")
+
+    def normalize_time_periods(self, values: Any) -> list[str]:
+        normalized: list[str] = []
+        for value in values or []:
+            period = str(value or "").strip().lower()
+            if period in self._PERIODS and period not in normalized:
+                normalized.append(period)
+        return normalized
+
+
+class SmokeRetrieveMemoryHandler(RetrieveMemoryToolHandler):
+    """Deterministic retrieve_memory executor: canned recall, no real store."""
+
+    def __init__(self) -> None:
+        super().__init__(retrieve_fn=self._fixture_retrieve)
+        self.executed_calls: list[dict[str, Any]] = []
+
+    def _fixture_retrieve(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        self.executed_calls.append(
+            {str(key): value for key, value in dict(call or {}).items() if not str(key).startswith("_tool_")}
+        )
+        query = str(call.get("query") or "").strip()
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "retrieve_memory_completed",
+                    "provider": "smoke_fixture",
+                    "status": "ok",
+                    "query": query,
+                }
+            ],
+            followup_context=(
+                "【smoke retrieve_memory 结果】\n"
+                f"查询：{query}\n"
+                "命中：主人最喜欢的是冰美式。这是 smoke 固定记忆，用来验证 native 记忆工具轮"
+                "是否能把工具结果交给最终回复。"
+            ),
+            state_updates={"retrieve_memory_status": "ok", "retrieve_memory_smoke": True},
+        )
+
+
+class SmokeReadMemoryTimelineHandler(ReadMemoryTimelineToolHandler):
+    """Deterministic read_memory_timeline executor: canned transcript, no DB."""
+
+    def __init__(self) -> None:
+        super().__init__(timeline_service=_SmokeTimelineService())
+        self.executed_calls: list[dict[str, Any]] = []
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        self.executed_calls.append(
+            {str(key): value for key, value in dict(call or {}).items() if not str(key).startswith("_tool_")}
+        )
+        date_from = str(call.get("date_from") or "")
+        date_to = str(call.get("date_to") or "")
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "read_memory_timeline_completed",
+                    "provider": "smoke_fixture",
+                    "status": "ok",
+                    "date_from": date_from,
+                    "date_to": date_to,
+                }
+            ],
+            followup_context=(
+                "【smoke read_memory_timeline 结果】\n"
+                f"范围：{date_from} ~ {date_to}\n"
+                "原文：（smoke 固定逐句记录，用来验证 native 时间线工具轮能把结果交给最终回复）。"
+            ),
+            state_updates={"memory_timeline_status": "ok", "memory_timeline_smoke": True},
+        )
+
+
+def _build_smoke_tools(
+    engine: AkaneMemoryEngine,
+    *,
+    toolset: str,
+    real_web_search: bool,
+    base_dir: Path,
+) -> tuple[dict[str, Any], CapabilitySelection]:
+    normalized = str(toolset or "web_search").strip().lower()
+    if normalized == "memory":
+        handlers: dict[str, Any] = {
+            "retrieve_memory": SmokeRetrieveMemoryHandler(),
+            "read_memory_timeline": SmokeReadMemoryTimelineHandler(),
+        }
+        selection = CapabilitySelection(
+            light_hints=("本轮 smoke 只暴露 retrieve_memory / read_memory_timeline，用于验证 native 记忆工具轮。",),
+            tool_names=("retrieve_memory", "read_memory_timeline"),
+            module_names=("native_memory_smoke",),
+            layer_names=("memory",),
+        )
+        return handlers, selection
+
+    web_search_handler = (
+        engine.tool_handlers.get("web_search")
+        if real_web_search
+        else SmokeWebSearchToolHandler(config_base_dir=base_dir)
+    )
+    if real_web_search and hasattr(web_search_handler, "config_base_dir"):
+        web_search_handler.config_base_dir = getattr(config, "DATA_DIR", "users_data")
+    if web_search_handler is None:
+        web_search_handler = SmokeWebSearchToolHandler(config_base_dir=base_dir)
+    selection = CapabilitySelection(
+        light_hints=("本轮 smoke 只暴露 web_search，用于验证 native 工具轮。",),
+        tool_names=("web_search",),
+        module_names=("native_web_search_smoke",),
+        layer_names=("web",),
+    )
+    return {"web_search": web_search_handler}, selection
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -72,8 +211,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "The LLM is real; web_search execution is a deterministic local fixture."
         )
     )
-    parser.add_argument("--message", default=DEFAULT_MESSAGE)
-    parser.add_argument("--user-id", default="native_web_search_smoke")
+    parser.add_argument(
+        "--toolset",
+        choices=["web_search", "memory"],
+        default="web_search",
+        help="Which native tool family to smoke. Default web_search keeps existing behavior.",
+    )
+    parser.add_argument(
+        "--message",
+        default="",
+        help="Smoke prompt. Defaults to a toolset-appropriate message when omitted.",
+    )
+    parser.add_argument("--user-id", default="native_tool_smoke")
     parser.add_argument(
         "--base-dir",
         default="",
@@ -99,19 +248,22 @@ def main() -> int:
     original_pre_retrieval = getattr(config, "PRE_RETRIEVAL_DEFAULT_ENABLED", True)
     original_semantic_memory = getattr(config, "ENABLE_SEMANTIC_MEMORY", True)
     original_vision = getattr(config, "VISION_ENABLED", True)
+    toolset = str(args.toolset or "web_search")
+    message = str(args.message or "").strip() or default_message_for_toolset(toolset)
     try:
         config.ENABLE_NATIVE_TOOL_DECISION = True
-        config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search"
+        config.NATIVE_TOOL_DECISION_ALLOWLIST = toolset_allowlist(toolset)
         config.PRE_RETRIEVAL_DEFAULT_ENABLED = False
         config.ENABLE_SEMANTIC_MEMORY = False
         config.VISION_ENABLED = False
         if str(args.base_dir or "").strip():
             summary = run_smoke(
                 base_dir=Path(args.base_dir),
-                message=str(args.message),
+                message=message,
                 user_id=str(args.user_id),
                 stream=bool(args.stream),
                 real_web_search=bool(args.real_web_search),
+                toolset=toolset,
             )
         else:
             run_dir = (
@@ -122,10 +274,11 @@ def main() -> int:
             )
             summary = run_smoke(
                 base_dir=run_dir,
-                message=str(args.message),
+                message=message,
                 user_id=str(args.user_id),
                 stream=bool(args.stream),
                 real_web_search=bool(args.real_web_search),
+                toolset=toolset,
             )
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if smoke_passed(summary, stream=bool(args.stream)) else 1
@@ -137,24 +290,25 @@ def main() -> int:
         config.VISION_ENABLED = original_vision
 
 
-def run_smoke(*, base_dir: Path, message: str, user_id: str, stream: bool, real_web_search: bool) -> dict[str, Any]:
+def run_smoke(
+    *,
+    base_dir: Path,
+    message: str,
+    user_id: str,
+    stream: bool,
+    real_web_search: bool,
+    toolset: str = "web_search",
+) -> dict[str, Any]:
+    normalized_toolset = str(toolset or "web_search").strip().lower() or "web_search"
     engine = AkaneMemoryEngine(base_dir)
-    web_search_handler = (
-        engine.tool_handlers.get("web_search")
-        if real_web_search
-        else SmokeWebSearchToolHandler(config_base_dir=base_dir)
+    handlers, selection = _build_smoke_tools(
+        engine,
+        toolset=normalized_toolset,
+        real_web_search=real_web_search,
+        base_dir=base_dir,
     )
-    if real_web_search and hasattr(web_search_handler, "config_base_dir"):
-        web_search_handler.config_base_dir = getattr(config, "DATA_DIR", "users_data")
-    if web_search_handler is None:
-        web_search_handler = SmokeWebSearchToolHandler(config_base_dir=base_dir)
-    engine.tool_handlers = {"web_search": web_search_handler}
-    engine._resolve_capability_selection = lambda **_kwargs: CapabilitySelection(
-        light_hints=("本轮 smoke 只暴露 web_search，用于验证 native 工具轮。",),
-        tool_names=("web_search",),
-        module_names=("native_web_search_smoke",),
-        layer_names=("web",),
-    )
+    engine.tool_handlers = handlers
+    engine._resolve_capability_selection = lambda **_kwargs: selection
     engine._schedule_visual_observations_for_payload = lambda **_kwargs: None
     before = engine.llm.snapshot_metrics()
     payload = {
@@ -181,12 +335,15 @@ def run_smoke(*, base_dir: Path, message: str, user_id: str, stream: bool, real_
         event for event in tool_events
         if isinstance(event, dict) and str(event.get("status") or "").strip().lower() not in {"", "ok", "success"}
     ]
-    executed_tool_calls = list(getattr(web_search_handler, "executed_calls", []) or [])
+    executed_tool_calls: list[dict[str, Any]] = []
+    for handler in handlers.values():
+        executed_tool_calls.extend(list(getattr(handler, "executed_calls", []) or []))
     return {
         "status": "ok",
         "base_dir": str(base_dir),
+        "toolset": normalized_toolset,
         "stream": bool(stream),
-        "real_web_search": bool(real_web_search),
+        "real_web_search": bool(real_web_search) and normalized_toolset == "web_search",
         "message": message,
         "speech": str(final_output.get("speech") or ""),
         "emotion": str(final_output.get("emotion") or ""),

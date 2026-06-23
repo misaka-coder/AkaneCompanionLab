@@ -17,18 +17,24 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import config  # noqa: E402
 from companion_v01.tool_decision_eval import (  # noqa: E402
+    DEFAULT_MEMORY_EVAL_CASES,
     DEFAULT_WEB_SEARCH_EVAL_CASES,
-    LiveLLMWebSearchResponseProvider,
+    LiveLLMToolDecisionResponseProvider,
+    build_dry_run_memory_eval_engine,
     build_dry_run_web_search_eval_engine,
     run_tool_decision_eval,
-    scripted_web_search_response_provider,
+    scripted_tool_decision_response_provider,
     summarize_tool_decision_eval_results,
 )
 
-from run_native_web_search_smoke import run_smoke, smoke_passed  # noqa: E402
+from run_native_web_search_smoke import (  # noqa: E402
+    default_message_for_toolset,
+    run_smoke,
+    smoke_passed,
+    toolset_allowlist,
+)
 
 
-DEFAULT_MESSAGE = "查一下今天上海天气。"
 DEFAULT_USER_ID = "master"
 
 
@@ -40,6 +46,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "exercise the real configured model and engine loop."
         )
     )
+    parser.add_argument(
+        "--toolset",
+        choices=["web_search", "memory"],
+        default="web_search",
+        help="Which native tool family to gate. Default web_search keeps existing behavior.",
+    )
     parser.add_argument("--live-llm", action="store_true", help="Run the real LLM tool-decision eval.")
     parser.add_argument("--smoke", action="store_true", help="Run real AkaneMemoryEngine smoke checks.")
     parser.add_argument(
@@ -48,7 +60,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Use configured AnySearch MCP during smoke instead of the deterministic fixture.",
     )
     parser.add_argument("--limit", type=int, default=5, help="Case limit for --live-llm eval.")
-    parser.add_argument("--message", default=DEFAULT_MESSAGE, help="Smoke prompt.")
+    parser.add_argument(
+        "--message",
+        default="",
+        help="Smoke prompt. Defaults to a toolset-appropriate message when omitted.",
+    )
     parser.add_argument("--user-id", default=DEFAULT_USER_ID, help="Smoke user/profile id.")
     parser.add_argument(
         "--summary-path",
@@ -60,13 +76,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_arg_parser().parse_args()
+    toolset = str(args.toolset or "web_search")
     summary = run_acceptance(
         live_llm=bool(args.live_llm),
         smoke=bool(args.smoke),
         real_web_search=bool(args.real_web_search),
         limit=int(args.limit or 0),
-        message=str(args.message),
+        message=str(args.message or "").strip() or default_message_for_toolset(toolset),
         user_id=str(args.user_id),
+        toolset=toolset,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     if str(args.summary_path or "").strip():
@@ -87,11 +105,12 @@ def run_acceptance(
     limit: int,
     message: str,
     user_id: str,
+    toolset: str = "web_search",
 ) -> dict[str, Any]:
     checks: dict[str, Any] = {}
     failures: list[str] = []
 
-    dry_summary = run_eval_summary(live_llm=False, limit=0)
+    dry_summary = run_eval_summary(live_llm=False, limit=0, toolset=toolset)
     checks["dry_run_eval"] = {
         "summary": dry_summary,
         "gate": gate_eval_summary(dry_summary),
@@ -99,7 +118,7 @@ def run_acceptance(
     failures.extend(prefix_failures("dry_run_eval", checks["dry_run_eval"]["gate"]))
 
     if live_llm:
-        live_summary = run_eval_summary(live_llm=True, limit=limit)
+        live_summary = run_eval_summary(live_llm=True, limit=limit, toolset=toolset)
         checks["live_llm_eval"] = {
             "summary": live_summary,
             "gate": gate_eval_summary(live_summary),
@@ -117,7 +136,7 @@ def run_acceptance(
         original_vision = getattr(config, "VISION_ENABLED", True)
         try:
             config.ENABLE_NATIVE_TOOL_DECISION = True
-            config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search"
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = toolset_allowlist(toolset)
             config.PRE_RETRIEVAL_DEFAULT_ENABLED = False
             config.ENABLE_SEMANTIC_MEMORY = False
             config.VISION_ENABLED = False
@@ -127,6 +146,7 @@ def run_acceptance(
                 user_id=user_id,
                 stream=False,
                 real_web_search=real_web_search,
+                toolset=toolset,
             )
             stream = run_smoke(
                 base_dir=smoke_dir / "stream",
@@ -134,6 +154,7 @@ def run_acceptance(
                 user_id=user_id,
                 stream=True,
                 real_web_search=real_web_search,
+                toolset=toolset,
             )
         finally:
             config.ENABLE_NATIVE_TOOL_DECISION = original_native_enabled
@@ -162,14 +183,24 @@ def run_acceptance(
     }
 
 
-def run_eval_summary(*, live_llm: bool, limit: int) -> dict[str, Any]:
-    cases = list(DEFAULT_WEB_SEARCH_EVAL_CASES)
+def run_eval_summary(*, live_llm: bool, limit: int, toolset: str = "web_search") -> dict[str, Any]:
+    normalized = str(toolset or "web_search").strip().lower() or "web_search"
+    if normalized == "memory":
+        cases = list(DEFAULT_MEMORY_EVAL_CASES)
+        engine = build_dry_run_memory_eval_engine()
+    else:
+        cases = list(DEFAULT_WEB_SEARCH_EVAL_CASES)
+        engine = build_dry_run_web_search_eval_engine()
     if live_llm and int(limit or 0) > 0:
         cases = cases[: max(0, int(limit))]
-    provider = LiveLLMWebSearchResponseProvider() if live_llm else scripted_web_search_response_provider
+    provider = (
+        LiveLLMToolDecisionResponseProvider(toolset=normalized)
+        if live_llm
+        else scripted_tool_decision_response_provider
+    )
     results = run_tool_decision_eval(
         cases=cases,
-        engine=build_dry_run_web_search_eval_engine(),
+        engine=engine,
         response_provider=provider,
         modes=("legacy", "native"),
         execute_tools=(not live_llm),

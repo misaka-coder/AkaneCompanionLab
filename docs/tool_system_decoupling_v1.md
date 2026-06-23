@@ -162,6 +162,8 @@ INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多�
 
 - **5c 已完成**：`tool_decision_eval` 的 live provider 已从 `web_search` 专用泛化为 `web_search` / `memory` / `all` 三种 toolset。`scripts/tools/run_tool_decision_eval.py --live-llm --toolset memory|all` 现在会发送对应 native schemas 和最小路由提示；评测逻辑同时识别公开 `tool_call` 与内部 `_native_tool_call` 载体，避免 4a 后 native 结果被误判成 no-call。最近一次实测：`--live-llm --toolset memory --mode both --limit 5` 为 native/legacy 双 1.0；`--live-llm --toolset all --mode native --limit 10` 为 1.0、fallback=0、native_degraded=0。生产默认 allowlist 仍未扩大。
 
+- **5d 已完成**：真实 engine smoke / acceptance gate 从 `web_search` 泛化到 `memory`，验证全链路（native 决策 → `_native_tool_call` → `ToolInvocation(source=native)` → execute → 最终表现回复）。`run_native_web_search_smoke.py --toolset memory` 用确定性 fixture handler（`SmokeRetrieveMemoryHandler` / `SmokeReadMemoryTimelineHandler`，罐头记忆、不读真实记忆库、不写盘）跑真实 `AkaneMemoryEngine` 一个回合；`run_native_web_search_acceptance.py --toolset memory` 复用同一 gate（`native_tool_call_extracted>0`、`tool_event>0`、流式有 `assistant_working`、fallback=0、最终回复非空 speech）。`web_search` 默认行为不变。新增 `tests/test_native_tool_smoke.py` 覆盖 toolset 映射 / fixture 执行的确定性部分；live `--smoke` 需真实模型，由人触发。
+
 ### 8.1 Provider / Model 能力档案（3a 修正）
 
 3c live eval 暴露了一个关键事实：`protocol="openai"` 不是足够细的能力判断。DeepSeek flash/pro 同属 `api.deepseek.com`、同走 OpenAI-compatible API，但 native tools 与强制 JSON 的组合行为不同：
