@@ -965,6 +965,7 @@ class LLMRuntime:
                 self._record_metric("native_tool_forced_json_suppressed")
         if should_use_response_json:
             payload["response_format"] = {"type": "json_object"}
+            self._ensure_json_keyword(messages)
         if normalized_tools and should_send_native_tools:
             payload["tools"] = normalized_tools
             self._record_metric("native_tool_decision_sent")
@@ -1350,8 +1351,31 @@ class LLMRuntime:
         return items
 
     def _should_use_response_json_mode(self, bundle: ModelBundle) -> bool:
+        # Force response_format=json_object for OpenAI-compatible providers so the
+        # structured persona JSON is actually enforced (not just prompt-requested).
+        # Historically this was ollama-only, which left DeepSeek/OpenAI chat replies
+        # unconstrained and prone to malformed JSON -> fallback. Anthropic uses a
+        # different API and must NOT receive response_format.
         protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
-        return protocol == "ollama"
+        return protocol in {"ollama", "openai"}
+
+    def _ensure_json_keyword(self, messages: list[dict[str, Any]]) -> None:
+        # OpenAI/DeepSeek reject response_format=json_object unless the messages
+        # contain the literal word "json". Akane's persona prompt is Chinese and may
+        # not include it, so append a short note when it's missing.
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, str) and "json" in content.lower():
+                return
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and "json" in str(part.get("text") or "").lower():
+                        return
+        if messages and str(messages[0].get("role") or "") == "system":
+            messages[0]["content"] = (
+                str(messages[0].get("content") or "").rstrip()
+                + "\n（本轮只输出一个合法的 JSON object，不要输出多余文字。）"
+            )
 
     def _build_prompt_cache_kwargs(
         self,
