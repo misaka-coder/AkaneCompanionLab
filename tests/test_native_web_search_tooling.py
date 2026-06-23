@@ -212,6 +212,55 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
             config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
 
+    def test_native_schema_building_respects_capability_tool_subset(self) -> None:
+        original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
+        original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        try:
+            config.ENABLE_NATIVE_TOOL_DECISION = True
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search,retrieve_memory,read_memory_timeline"
+
+            schemas = tool_orchestration_engine.build_native_tool_schemas(
+                {
+                    "web_search": object(),
+                    "retrieve_memory": FakeNativeHandler("retrieve_memory"),
+                    "read_memory_timeline": FakeNativeHandler("read_memory_timeline"),
+                },
+                allow_tool_call=True,
+                allowed_tool_names=("retrieve_memory", "send_file"),
+            )
+
+            self.assertEqual([schema["function"]["name"] for schema in schemas], ["retrieve_memory"])
+            self.assertEqual(
+                tool_orchestration_engine.native_legacy_prompt_exclusions(schemas),
+                {"retrieve_memory"},
+            )
+        finally:
+            config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
+
+    def test_native_tool_decision_plan_disables_when_allowlist_outside_capability_subset(self) -> None:
+        original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
+        original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        try:
+            config.ENABLE_NATIVE_TOOL_DECISION = True
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search"
+
+            plan = tool_orchestration_engine.build_native_tool_decision_plan(
+                {"web_search": object(), "send_file": object()},
+                allow_tool_call=True,
+                provider_supports_native_tools=True,
+                allowed_tool_names=("send_file",),
+            )
+
+            self.assertFalse(plan.enabled)
+            self.assertEqual(plan.status, "disabled")
+            self.assertEqual(plan.reason, "native_tool_not_in_capability_selection")
+            self.assertEqual(plan.tools, [])
+            self.assertEqual(plan.legacy_prompt_exclusions, set())
+        finally:
+            config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
+
     def test_native_tool_decision_plan_keeps_legacy_when_provider_unverified(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")

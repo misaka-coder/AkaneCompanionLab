@@ -3047,6 +3047,11 @@ class AkaneMemoryEngine:
         native_tools: list[dict[str, Any]] = []
         native_legacy_exclusions: set[str] = set()
         if enable_native_tools:
+            native_capability_selection = self._resolve_capability_selection(
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
             native_plan = tool_orchestration_engine.build_native_tool_decision_plan(
                 self._resolve_tool_handlers(
                     client_context=client_context,
@@ -3055,6 +3060,7 @@ class AkaneMemoryEngine:
                 ),
                 allow_tool_call=effective_allow_tool_call,
                 provider_supports_native_tools=self.llm.chat_supports_native_tools(),
+                allowed_tool_names=native_capability_selection.tool_names,
             )
             if native_plan.enabled:
                 native_tools = native_plan.tools

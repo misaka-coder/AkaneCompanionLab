@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import config
 
@@ -363,13 +363,15 @@ def build_native_tool_schemas(
     handlers: Mapping[str, Any],
     *,
     allow_tool_call: bool,
+    allowed_tool_names: Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
     if not allow_tool_call or not bool(getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)):
         return []
     if not isinstance(handlers, Mapping):
         return []
+    candidate_names = _native_tool_candidate_names(allowed_tool_names=allowed_tool_names)
     schemas: list[dict[str, Any]] = []
-    for tool_name in _native_tool_decision_allowlist_items():
+    for tool_name in candidate_names:
         handler = handlers.get(tool_name)
         if handler is None:
             continue
@@ -384,6 +386,7 @@ def build_native_tool_decision_plan(
     *,
     allow_tool_call: bool,
     provider_supports_native_tools: bool,
+    allowed_tool_names: Iterable[str] | None = None,
 ) -> NativeToolDecisionPlan:
     if not allow_tool_call:
         return NativeToolDecisionPlan(
@@ -399,8 +402,15 @@ def build_native_tool_decision_plan(
             tools=[],
             legacy_prompt_exclusions=set(),
         )
-    allowed_tool_names = _native_tool_decision_allowlist_items()
-    if not isinstance(handlers, Mapping) or not any(name in handlers for name in allowed_tool_names):
+    candidate_names = _native_tool_candidate_names(allowed_tool_names=allowed_tool_names)
+    if allowed_tool_names is not None and not candidate_names:
+        return NativeToolDecisionPlan(
+            status="disabled",
+            reason="native_tool_not_in_capability_selection",
+            tools=[],
+            legacy_prompt_exclusions=set(),
+        )
+    if not isinstance(handlers, Mapping) or not any(name in handlers for name in candidate_names):
         return NativeToolDecisionPlan(
             status="disabled",
             reason="native_tool_handlers_missing",
@@ -414,7 +424,11 @@ def build_native_tool_decision_plan(
             tools=[],
             legacy_prompt_exclusions=set(),
         )
-    tools = build_native_tool_schemas(handlers, allow_tool_call=allow_tool_call)
+    tools = build_native_tool_schemas(
+        handlers,
+        allow_tool_call=allow_tool_call,
+        allowed_tool_names=candidate_names,
+    )
     if not tools:
         return NativeToolDecisionPlan(
             status="disabled",
@@ -429,6 +443,14 @@ def build_native_tool_decision_plan(
         legacy_prompt_exclusions=native_legacy_prompt_exclusions(tools),
         tool_choice="auto",
     )
+
+
+def _native_tool_candidate_names(*, allowed_tool_names: Iterable[str] | None = None) -> list[str]:
+    allowlist = _native_tool_decision_allowlist_items()
+    if allowed_tool_names is None:
+        return allowlist
+    allowed = {str(item or "").strip() for item in allowed_tool_names if str(item or "").strip()}
+    return [name for name in allowlist if name in allowed]
 
 
 def _native_tool_schema_for_handler(tool_name: str, handler: Any) -> dict[str, Any] | None:
