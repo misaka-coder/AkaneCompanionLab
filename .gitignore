@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# Tool/eval run artifacts (run_tool_decision_eval, acceptance smoke output)
+reports/
+
 # Python virtual environments and caches
 .venv/
 venv/
