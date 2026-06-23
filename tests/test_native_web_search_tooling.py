@@ -623,13 +623,14 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         self.assertEqual(first, second)
 
-    def test_stream_final_response_passes_native_tools_to_runtime(self) -> None:
+    def test_stream_final_response_runs_native_decision_before_expression(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         schema = tool_orchestration_engine.native_web_search_tool_schema()
-        captured: dict[str, object] = {}
+        stream_captured: dict[str, object] = {}
+        decision_captured: dict[str, object] = {}
 
         def fake_stream_chat_json(**kwargs):
-            captured.update(kwargs)
+            stream_captured.update(kwargs)
             if False:
                 yield {}
             return SimpleNamespace(
@@ -640,20 +641,32 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 latest_reply_medium="",
             )
 
-        engine.llm = SimpleNamespace(stream_chat_json=fake_stream_chat_json)
-        engine._prepare_final_response_context = lambda **_kwargs: {
-            "system_prompt": "system",
-            "user_prompt": "user",
-            "fallback": {"speech": "", "tool_call": None},
-            "visual_defaults": {},
-            "debug_enabled": False,
-            "allow_tool_call": True,
-            "native_tools": [schema],
-            "native_tool_choice": "auto",
-            "system_extra_blocks": [],
-            "history_turns": [],
-            "prompt_audit_sections": [],
-        }
+        def fake_call_chat_tool_decision(**kwargs):
+            decision_captured.update(kwargs)
+            return {"speech": "", "tool_call": None}
+
+        engine.llm = SimpleNamespace(
+            call_chat_tool_decision=fake_call_chat_tool_decision,
+            stream_chat_json=fake_stream_chat_json,
+        )
+
+        def fake_prepare_final_response_context(**kwargs):
+            native_enabled = bool(kwargs.get("enable_native_tools"))
+            return {
+                "system_prompt": "system",
+                "user_prompt": "user",
+                "fallback": {"speech": "", "tool_call": None},
+                "visual_defaults": {},
+                "debug_enabled": False,
+                "allow_tool_call": bool(kwargs.get("allow_tool_call", True)),
+                "native_tools": [schema] if native_enabled else [],
+                "native_tool_choice": "auto" if native_enabled else "",
+                "system_extra_blocks": [],
+                "history_turns": [],
+                "prompt_audit_sections": [],
+            }
+
+        engine._prepare_final_response_context = fake_prepare_final_response_context
         engine._resolve_turn_speaker_identity = lambda *_args, **_kwargs: {"assistant_name": "Akane"}
         engine._normalize_final_output = lambda **kwargs: kwargs["result"]
 
@@ -672,8 +685,62 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         self.assertEqual(events, [{"type": "turn_start", "speaker": "Akane"}])
         self.assertEqual(result, {"speech": "ok", "tool_call": None})
-        self.assertEqual(captured["native_tools"], [schema])
-        self.assertEqual(captured["native_tool_choice"], "auto")
+        self.assertEqual(decision_captured["native_tools"], [schema])
+        self.assertEqual(decision_captured["native_tool_choice"], "auto")
+        self.assertEqual(stream_captured["native_tools"], [])
+        self.assertEqual(stream_captured["native_tool_choice"], "")
+
+    def test_final_response_returns_native_decision_tool_call_without_expression_round(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        schema = tool_orchestration_engine.native_web_search_tool_schema()
+        expression_called = False
+
+        def fake_call_chat_json(**_kwargs):
+            nonlocal expression_called
+            expression_called = True
+            return {"speech": "should not run", "tool_call": None}
+
+        engine.llm = SimpleNamespace(
+            call_chat_tool_decision=lambda **_kwargs: {
+                "speech": "我查一下。",
+                "tool_call": None,
+                NATIVE_TOOL_CALL_FIELD: {
+                    "type": "web_search",
+                    "query": "上海天气",
+                    TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                },
+            },
+            call_chat_json=fake_call_chat_json,
+        )
+        engine._prepare_final_response_context = lambda **_kwargs: {
+            "system_prompt": "system",
+            "user_prompt": "user",
+            "fallback": {"speech": "", "tool_call": None},
+            "visual_defaults": {},
+            "debug_enabled": False,
+            "allow_tool_call": True,
+            "native_tools": [schema],
+            "native_tool_choice": "auto",
+            "system_extra_blocks": [],
+            "history_turns": [],
+            "prompt_audit_sections": [],
+        }
+        engine._normalize_final_output = lambda **kwargs: kwargs["result"]
+
+        result = engine._build_final_response(
+            session_id="s",
+            profile_user_id="u",
+            user_message="查一下天气",
+            recent_raw=[],
+            recent_episodic_summaries=[],
+            recent_semantic_summaries=[],
+            confirmed_snippets=[],
+            now_ts=0,
+        )
+
+        self.assertFalse(expression_called)
+        self.assertEqual(result["speech"], "我查一下。")
+        self.assertEqual(result[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
 
     def test_tool_working_stream_event_is_in_progress_only(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)

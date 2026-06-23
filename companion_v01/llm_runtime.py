@@ -489,6 +489,37 @@ class LLMRuntime:
             prompt_audit_sections=prompt_audit_sections,
         )
 
+    def call_chat_tool_decision(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        fallback: dict[str, Any],
+        temperature: float = 0.2,
+        prompt_cache_key: str = "",
+        user_images: list[dict[str, Any]] | None = None,
+        native_tools: list[dict[str, Any]] | None = None,
+        native_tool_choice: Any = "",
+        system_extra_blocks: list[str] | None = None,
+        history_turns: list[dict[str, str]] | None = None,
+        prompt_audit_sections: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        self._record_metric("chat_tool_decision_calls")
+        return self._call_tool_decision(
+            bundle=self.chat,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            fallback=fallback,
+            temperature=temperature,
+            prompt_cache_key=prompt_cache_key,
+            user_images=user_images,
+            native_tools=native_tools,
+            native_tool_choice=native_tool_choice,
+            system_extra_blocks=system_extra_blocks,
+            history_turns=history_turns,
+            prompt_audit_sections=prompt_audit_sections,
+        )
+
     def chat_supports_native_tools(self) -> bool:
         with self._bundle_lock:
             bundle = self.chat
@@ -601,6 +632,61 @@ class LLMRuntime:
         except Exception as exc:
             self._record_metric("errors")
             self._record_error_detail(exc, phase="call_json")
+        self._record_metric("chat_json_fallbacks")
+        return dict(fallback)
+
+    def _call_tool_decision(
+        self,
+        *,
+        bundle: ModelBundle,
+        system_prompt: str,
+        user_prompt: str,
+        fallback: dict[str, Any],
+        temperature: float,
+        prompt_cache_key: str,
+        user_images: list[dict[str, Any]] | None = None,
+        native_tools: list[dict[str, Any]] | None = None,
+        native_tool_choice: Any = "",
+        system_extra_blocks: list[str] | None = None,
+        history_turns: list[dict[str, str]] | None = None,
+        prompt_audit_sections: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        native_requested = bool(self._normalize_native_tools(native_tools))
+        try:
+            response = self._create_completion(
+                bundle=bundle,
+                payload=self._build_completion_kwargs(
+                    bundle=bundle,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=temperature,
+                    json_mode=False,
+                    prompt_cache_key=prompt_cache_key,
+                    user_images=user_images,
+                    native_tools=native_tools,
+                    native_tool_choice=native_tool_choice,
+                    system_extra_blocks=system_extra_blocks,
+                    history_turns=history_turns,
+                    prompt_audit_sections=prompt_audit_sections,
+                ),
+            )
+            self._record_cache_metrics(response)
+            native_tool_call = self._extract_native_tool_call(response)
+            content = self._extract_text(response)
+            if native_tool_call is not None:
+                self._record_metric("native_tool_call_extracted")
+                result = {NATIVE_TOOL_CALL_FIELD: native_tool_call, "tool_call": None}
+                if content:
+                    result["speech"] = content
+                return result
+            if native_requested:
+                self._record_metric("native_tool_no_call")
+            parsed = self._extract_json(content)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception as exc:
+            self._record_metric("errors")
+            self._record_error_detail(exc, phase="call_tool_decision")
         self._record_metric("chat_json_fallbacks")
         return dict(fallback)
 

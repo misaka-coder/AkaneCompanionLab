@@ -441,6 +441,56 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(result[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
         self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
 
+    def test_tool_decision_call_uses_native_tools_without_forced_json_and_keeps_preface(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        captured: dict[str, object] = {}
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="我查一下。",
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_native_1",
+                                function=SimpleNamespace(
+                                    name="web_search",
+                                    arguments='{"query":"Akane"}',
+                                ),
+                            )
+                        ],
+                    )
+                )
+            ]
+        )
+
+        def fake_build_completion_kwargs(**kwargs):
+            captured.update(kwargs)
+            return {"messages": []}
+
+        runtime._build_completion_kwargs = fake_build_completion_kwargs
+        runtime._create_completion = lambda **_kwargs: response
+        runtime._record_cache_metrics = lambda _response: None
+
+        result = runtime._call_tool_decision(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "", "tool_call": None},
+            temperature=0.0,
+            prompt_cache_key="test:native_tool_decision",
+            native_tools=[{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}],
+            native_tool_choice="auto",
+        )
+
+        self.assertFalse(captured["json_mode"])
+        self.assertEqual(result["speech"], "我查一下。")
+        self.assertIsNone(result["tool_call"])
+        self.assertEqual(result[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
+        self.assertEqual(result[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
+
     def test_llm_runtime_stream_returns_native_tool_call_on_internal_carrier(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime._metrics_lock = threading.RLock()

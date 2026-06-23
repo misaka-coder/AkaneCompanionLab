@@ -2588,6 +2588,41 @@ class AkaneMemoryEngine:
             final_debug_enabled=final_debug_enabled,
             enable_native_tools=True,
         )
+        native_decision_output = self._run_native_tool_decision_round(
+            generation_context=generation_context,
+            user_images=user_images,
+        )
+        if native_decision_output is not None:
+            return self._normalize_final_output(
+                result=native_decision_output,
+                visual_defaults=dict(generation_context["visual_defaults"]),
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
+                debug_enabled=bool(generation_context["debug_enabled"]),
+                user_message=user_message,
+            )
+        if self._native_tool_decision_was_noop(generation_context):
+            generation_context = self._prepare_final_response_context(
+                session_id=session_id,
+                user_message=user_message,
+                recent_raw=recent_raw,
+                recent_episodic_summaries=recent_episodic_summaries,
+                recent_semantic_summaries=recent_semantic_summaries,
+                confirmed_snippets=confirmed_snippets,
+                now_ts=now_ts,
+                current_visual_payload=current_visual_payload,
+                profile_user_id=profile_user_id,
+                extra_user_context=extra_user_context,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                character_pack_id=character_pack_id,
+                allow_tool_call=False,
+                final_debug_enabled=final_debug_enabled,
+                enable_native_tools=False,
+            )
         result = self.llm.call_chat_json(
             system_prompt=str(generation_context["system_prompt"]),
             user_prompt=str(generation_context["user_prompt"]),
@@ -2658,6 +2693,41 @@ class AkaneMemoryEngine:
             "type": "turn_start",
             "speaker": speaker_identity["assistant_name"],
         }
+        native_decision_output = self._run_native_tool_decision_round(
+            generation_context=generation_context,
+            user_images=user_images,
+        )
+        if native_decision_output is not None:
+            return self._normalize_final_output(
+                result=native_decision_output,
+                visual_defaults=dict(generation_context["visual_defaults"]),
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                user_message=user_message,
+                allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
+                debug_enabled=bool(generation_context["debug_enabled"]),
+            )
+        if self._native_tool_decision_was_noop(generation_context):
+            generation_context = self._prepare_final_response_context(
+                session_id=session_id,
+                user_message=user_message,
+                recent_raw=recent_raw,
+                recent_episodic_summaries=recent_episodic_summaries,
+                recent_semantic_summaries=recent_semantic_summaries,
+                confirmed_snippets=confirmed_snippets,
+                now_ts=now_ts,
+                current_visual_payload=current_visual_payload,
+                profile_user_id=profile_user_id,
+                extra_user_context=extra_user_context,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                character_pack_id=character_pack_id,
+                allow_tool_call=False,
+                final_debug_enabled=final_debug_enabled,
+                enable_native_tools=False,
+            )
         stream_result = yield from self.llm.stream_chat_json(
             system_prompt=str(generation_context["system_prompt"]),
             user_prompt=str(generation_context["user_prompt"]),
@@ -2701,6 +2771,44 @@ class AkaneMemoryEngine:
             user_message=user_message,
             allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
             debug_enabled=bool(generation_context["debug_enabled"]),
+        )
+
+    def _run_native_tool_decision_round(
+        self,
+        *,
+        generation_context: dict[str, Any],
+        user_images: list[dict[str, Any]] | None,
+    ) -> dict[str, Any] | None:
+        native_tools = generation_context.get("native_tools")
+        if not native_tools or not bool(generation_context.get("allow_tool_call", True)):
+            generation_context["_native_tool_decision_attempted"] = False
+            return None
+        generation_context["_native_tool_decision_attempted"] = True
+        result = self.llm.call_chat_tool_decision(
+            system_prompt=self._build_native_tool_decision_system_prompt(native_tools),
+            user_prompt=str(generation_context["user_prompt"]),
+            fallback={"speech": "", "tool_call": None},
+            temperature=0.2,
+            prompt_cache_key="chat:tool_decision",
+            user_images=user_images,
+            native_tools=native_tools,
+            native_tool_choice=generation_context.get("native_tool_choice", ""),
+            system_extra_blocks=generation_context.get("system_extra_blocks"),
+            history_turns=generation_context.get("history_turns"),
+            prompt_audit_sections=generation_context.get("prompt_audit_sections"),
+        )
+        if not isinstance(result, dict):
+            generation_context["_native_tool_decision_noop"] = True
+            return None
+        has_native_tool = isinstance(result.get(NATIVE_TOOL_CALL_FIELD), dict) and bool(result.get(NATIVE_TOOL_CALL_FIELD))
+        has_legacy_tool = isinstance(result.get("tool_call"), dict) and bool(result.get("tool_call"))
+        generation_context["_native_tool_decision_noop"] = not bool(has_native_tool or has_legacy_tool)
+        return result if has_native_tool or has_legacy_tool else None
+
+    def _native_tool_decision_was_noop(self, generation_context: dict[str, Any]) -> bool:
+        return bool(
+            generation_context.get("_native_tool_decision_attempted")
+            and generation_context.get("_native_tool_decision_noop")
         )
 
     def _prepare_final_response_context(
@@ -4037,6 +4145,25 @@ class AkaneMemoryEngine:
             "只有仍在可用工具清单中、且没有通过 native schema 提供的 legacy 工具，才可以继续写入 JSON tool_call。\n"
             "如果不需要任何 legacy 工具，最终表现 JSON 的 tool_call 字段必须为 null。\n"
             "不要在 speech 里声称工具已调用、已完成或已失败；真实状态以系统工具结果为准。"
+        )
+
+    def _build_native_tool_decision_system_prompt(self, native_tools: list[dict[str, Any]] | None) -> str:
+        native_tool_names = sorted(
+            {
+                str(((tool.get("function") or {}).get("name") if isinstance(tool, dict) else "") or "").strip()
+                for tool in native_tools or []
+                if str(((tool.get("function") or {}).get("name") if isinstance(tool, dict) else "") or "").strip()
+            }
+        )
+        name_text = "、".join(native_tool_names) if native_tool_names else "已提供的 native 工具"
+        return (
+            "你是 Akane 的工具决策轮，只判断当前用户请求是否需要工具。\n"
+            f"本轮已通过 provider native tools 提供：{name_text}。\n"
+            "如果需要上述 native 工具，必须直接通过 provider tool_calls 调用；不要输出最终表现 JSON。\n"
+            "工具调用同一条 assistant message 的 content 可以带一句很短的自然前置话，例如“我查一下。”或“我翻一下记录。”。\n"
+            "这句前置话只能表示即将处理，不要声称工具已经调用、已经完成、已经失败，真实状态以系统工具结果为准。\n"
+            "如果不需要任何工具，返回一个 JSON object：{\"speech\":\"\", \"tool_call\":null}。\n"
+            "如果确实需要未通过 native schema 提供的 legacy 工具，返回 JSON object，字段为 speech 和 tool_call；一次只调用一个工具。"
         )
 
     def _build_turn_extra_user_context(
