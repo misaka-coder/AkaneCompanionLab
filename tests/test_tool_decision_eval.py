@@ -315,7 +315,6 @@ class ToolDecisionEvalTests(unittest.TestCase):
 
         self.assertTrue(response.native_sent)
         self.assertTrue(response.native_extracted)
-        self.assertEqual(runtime.call_modes, ["tool_decision"])
         self.assertEqual(
             [item["function"]["name"] for item in runtime.calls[0]["native_tools"]],
             ["retrieve_memory", "read_memory_timeline"],
@@ -337,7 +336,6 @@ class ToolDecisionEvalTests(unittest.TestCase):
         response = provider(DEFAULT_WEB_SEARCH_EVAL_CASES[0], "legacy")
 
         self.assertTrue(response.fallback_hit)
-        self.assertEqual(runtime.call_modes, ["json"])
         self.assertEqual(response.error_detail["type"], "BadRequestError")
 
 
@@ -347,7 +345,7 @@ class ToolDecisionEvalTests(unittest.TestCase):
 
         provider(DEFAULT_WEB_SEARCH_EVAL_CASES[0], "legacy")
 
-        self.assertIsNone(runtime.calls[0].get("native_tools"))
+        self.assertIsNone(runtime.calls[0]["native_tools"])
         self.assertIn("搜索格式为", runtime.calls[0]["system_prompt"])
 
     def test_live_provider_memory_legacy_prompt_keeps_memory_instructions(self) -> None:
@@ -356,7 +354,7 @@ class ToolDecisionEvalTests(unittest.TestCase):
 
         provider(DEFAULT_MEMORY_EVAL_CASES[0], "legacy")
 
-        self.assertIsNone(runtime.calls[0].get("native_tools"))
+        self.assertIsNone(runtime.calls[0]["native_tools"])
         self.assertIn("retrieve_memory", runtime.calls[0]["system_prompt"])
         self.assertIn("read_memory_timeline", runtime.calls[0]["system_prompt"])
         self.assertIn("格式为", runtime.calls[0]["system_prompt"])
@@ -433,7 +431,6 @@ class FakeRuntime:
         self.metric_delta = dict(metric_delta or {})
         self.error_detail = dict(error_detail or {})
         self.calls: list[dict] = []
-        self.call_modes: list[str] = []
         self._metrics: dict[str, int] = {}
         self._snapshot_count = 0
 
@@ -445,12 +442,6 @@ class FakeRuntime:
 
     def call_chat_json(self, **kwargs):
         self.calls.append(dict(kwargs))
-        self.call_modes.append("json")
-        return dict(self.result)
-
-    def call_chat_tool_decision(self, **kwargs):
-        self.calls.append(dict(kwargs))
-        self.call_modes.append("tool_decision")
         return dict(self.result)
 
     def snapshot_last_error(self) -> dict[str, str]:

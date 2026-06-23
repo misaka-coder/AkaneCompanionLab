@@ -399,21 +399,15 @@ class LiveLLMToolDecisionResponseProvider:
         normalized_mode = str(mode or "").strip().lower() or "legacy"
         native_tools = _build_live_native_tool_specs(self._handlers) if normalized_mode == "native" else None
         before = self.runtime.snapshot_metrics()
-        call_kwargs = {
-            "system_prompt": self._build_system_prompt(mode=normalized_mode),
-            "user_prompt": self._build_user_prompt(case),
-            "fallback": {"speech": "", "tool_call": None},
-            "temperature": self.temperature,
-            "prompt_cache_key": self.prompt_cache_key,
-        }
-        if native_tools:
-            final_output = self.runtime.call_chat_tool_decision(
-                **call_kwargs,
-                native_tools=native_tools,
-                native_tool_choice="auto",
-            )
-        else:
-            final_output = self.runtime.call_chat_json(**call_kwargs)
+        final_output = self.runtime.call_chat_json(
+            system_prompt=self._build_system_prompt(mode=normalized_mode),
+            user_prompt=self._build_user_prompt(case),
+            fallback={"speech": "", "tool_call": None},
+            temperature=self.temperature,
+            prompt_cache_key=self.prompt_cache_key,
+            native_tools=native_tools,
+            native_tool_choice="auto" if native_tools else "",
+        )
         after = self.runtime.snapshot_metrics()
         diff = _metric_diff(before, after)
         error_detail: dict[str, Any] = {}
