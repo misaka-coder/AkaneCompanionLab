@@ -12,9 +12,18 @@ from urllib.parse import urlparse
 
 import config
 from services.llm_client import build_llm_client
+from .tool_invocation import NATIVE_OPENAI
+from .tool_invocation import NATIVE_TOOL_CALL_FIELD
+from .tool_invocation import TOOL_INVOCATION_ID_FIELD
+from .tool_invocation import TOOL_SOURCE_FIELD
 
 
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
+SECRET_PATTERNS = (
+    re.compile(r"(?i)(bearer\s+)([A-Za-z0-9._~+/=-]{8,})"),
+    re.compile(r"(?i)((?:api[_-]?key|authorization|x-api-key)\s*[:=]\s*)([^\s,;]+)"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
+)
 PROMPT_AUDIT_LOCK = threading.RLock()
 JSON_ESCAPE_MAP = {
     '"': '"',
@@ -54,6 +63,41 @@ def normalize_reply_medium(value: Any) -> str:
 class ModelBundle:
     client: Any
     model: str
+
+
+@dataclass(frozen=True)
+class ProviderToolProfile:
+    supports_native_tools: bool = False
+    native_tools_coexist_with_forced_json: bool = False
+    native_call_shape: str = "openai_tool_calls"
+    verified: bool = False
+    notes: str = ""
+
+
+DEFAULT_PROVIDER_TOOL_PROFILE = ProviderToolProfile()
+PROVIDER_TOOL_PROFILES: dict[tuple[str, str], ProviderToolProfile] = {
+    (
+        "api.deepseek.com",
+        "deepseek-v4-flash",
+    ): ProviderToolProfile(
+        supports_native_tools=True,
+        native_tools_coexist_with_forced_json=False,
+        verified=True,
+        notes=(
+            "Project probes showed inconsistent forced-JSON coexistence for this model; "
+            "keep prompt-only native tool rounds until repeated live eval proves forced JSON stable."
+        ),
+    ),
+    (
+        "api.deepseek.com",
+        "deepseek-v4-pro",
+    ): ProviderToolProfile(
+        supports_native_tools=True,
+        native_tools_coexist_with_forced_json=True,
+        verified=True,
+        notes="Project probe: tools and response_format=json_object can coexist.",
+    ),
+}
 
 
 @dataclass
@@ -352,7 +396,16 @@ class LLMRuntime:
             "errors": 0,
             "cache_read_tokens": 0,
             "cache_creation_tokens": 0,
+            "chat_json_fallbacks": 0,
+            "native_tool_decision_sent": 0,
+            "native_tool_provider_unsupported": 0,
+            "native_tool_call_extracted": 0,
+            "native_tool_calls_extra": 0,
+            "native_tool_no_call": 0,
+            "native_tool_forced_json_suppressed": 0,
         }
+        self._last_error_lock = threading.RLock()
+        self._last_error: dict[str, str] = {}
 
     def reload_from_config(self) -> dict[str, str]:
         aux = self._build_aux_bundle()
@@ -436,6 +489,14 @@ class LLMRuntime:
             prompt_audit_sections=prompt_audit_sections,
         )
 
+    def chat_supports_native_tools(self) -> bool:
+        with self._bundle_lock:
+            bundle = self.chat
+        return self._should_send_native_tools(bundle)
+
+    def record_metric(self, key: str, amount: int = 1) -> None:
+        self._record_metric(key, amount)
+
     def call_aux_ndjson(
         self,
         *,
@@ -465,6 +526,8 @@ class LLMRuntime:
         early_tool_call_validator: Callable[[dict[str, Any]], bool] | None = None,
         prompt_cache_key: str = "",
         user_images: list[dict[str, Any]] | None = None,
+        native_tools: list[dict[str, Any]] | None = None,
+        native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, str]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
@@ -479,6 +542,8 @@ class LLMRuntime:
             early_tool_call_validator=early_tool_call_validator,
             prompt_cache_key=prompt_cache_key,
             user_images=user_images,
+            native_tools=native_tools,
+            native_tool_choice=native_tool_choice,
             system_extra_blocks=system_extra_blocks,
             history_turns=history_turns,
             prompt_audit_sections=prompt_audit_sections,
@@ -500,6 +565,7 @@ class LLMRuntime:
         history_turns: list[dict[str, str]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        native_requested = bool(self._normalize_native_tools(native_tools))
         try:
             response = self._create_completion(
                 bundle=bundle,
@@ -521,7 +587,10 @@ class LLMRuntime:
             self._record_cache_metrics(response)
             native_tool_call = self._extract_native_tool_call(response)
             if native_tool_call is not None:
-                return {"tool_call": native_tool_call}
+                self._record_metric("native_tool_call_extracted")
+                return {NATIVE_TOOL_CALL_FIELD: native_tool_call, "tool_call": None}
+            if native_requested:
+                self._record_metric("native_tool_no_call")
             content = self._extract_text(response)
             parsed = self._extract_json(content)
             if isinstance(parsed, dict):
@@ -529,9 +598,10 @@ class LLMRuntime:
             recovered = self._recover_partial_chat_json(content, fallback=fallback)
             if isinstance(recovered, dict):
                 return recovered
-        except Exception:
+        except Exception as exc:
             self._record_metric("errors")
-            pass
+            self._record_error_detail(exc, phase="call_json")
+        self._record_metric("chat_json_fallbacks")
         return dict(fallback)
 
     def _call_ndjson(
@@ -632,15 +702,19 @@ class LLMRuntime:
         early_tool_call_validator: Callable[[dict[str, Any]], bool] | None,
         prompt_cache_key: str,
         user_images: list[dict[str, Any]] | None = None,
+        native_tools: list[dict[str, Any]] | None = None,
+        native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, str]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         import time
 
+        native_requested = bool(self._normalize_native_tools(native_tools))
         response: Any = None
         error = ""
         raw_parts: list[str] = []
+        native_tool_parts: dict[int, dict[str, Any]] = {}
         tap = _TopLevelJSONStreamTap()
         start_at = time.perf_counter()
         stopped_early = False
@@ -658,6 +732,8 @@ class LLMRuntime:
                     json_mode=True,
                     prompt_cache_key=prompt_cache_key,
                     user_images=user_images,
+                    native_tools=native_tools,
+                    native_tool_choice=native_tool_choice,
                     system_extra_blocks=system_extra_blocks,
                     history_turns=history_turns,
                     prompt_audit_sections=prompt_audit_sections,
@@ -665,6 +741,7 @@ class LLMRuntime:
             )
             for chunk in response:
                 self._record_cache_metrics(chunk)
+                self._collect_stream_native_tool_call_parts(chunk, native_tool_parts)
                 text = self._extract_stream_text(chunk)
                 if not text:
                     continue
@@ -691,7 +768,14 @@ class LLMRuntime:
             self._close_stream(response)
 
         raw_text = "".join(raw_parts)
-        if early_tool_call is not None:
+        native_tool_call = self._stream_native_tool_call_from_parts(native_tool_parts)
+        if native_tool_call is not None:
+            self._record_metric("native_tool_call_extracted")
+            parsed = {NATIVE_TOOL_CALL_FIELD: native_tool_call, "tool_call": None}
+        elif native_requested:
+            self._record_metric("native_tool_no_call")
+            parsed = self._extract_json(raw_text)
+        elif early_tool_call is not None:
             parsed = {"tool_call": early_tool_call}
         else:
             parsed = self._extract_json(raw_text)
@@ -869,14 +953,26 @@ class LLMRuntime:
             payload["stream"] = True
             if self._supports_stream_usage(bundle):
                 payload["stream_options"] = {"include_usage": True}
-        if json_mode and self._should_use_response_json_mode(bundle):
-            payload["response_format"] = {"type": "json_object"}
         normalized_tools = self._normalize_native_tools(native_tools)
-        if normalized_tools and self._should_send_native_tools(bundle):
+        native_tool_profile = self._native_tool_profile(bundle)
+        should_send_native_tools = bool(normalized_tools and native_tool_profile.supports_native_tools)
+        should_use_response_json = bool(json_mode and self._should_use_response_json_mode(bundle))
+        if json_mode and should_send_native_tools:
+            if native_tool_profile.native_tools_coexist_with_forced_json:
+                should_use_response_json = True
+            else:
+                should_use_response_json = False
+                self._record_metric("native_tool_forced_json_suppressed")
+        if should_use_response_json:
+            payload["response_format"] = {"type": "json_object"}
+        if normalized_tools and should_send_native_tools:
             payload["tools"] = normalized_tools
+            self._record_metric("native_tool_decision_sent")
             tool_choice = self._normalize_native_tool_choice(native_tool_choice)
             if tool_choice:
                 payload["tool_choice"] = tool_choice
+        elif normalized_tools:
+            self._record_metric("native_tool_provider_unsupported")
         payload.update(self._build_reasoning_control_kwargs(bundle=bundle))
         payload.update(
             self._build_prompt_cache_kwargs(
@@ -1068,8 +1164,26 @@ class LLMRuntime:
             return 0
 
     def _should_send_native_tools(self, bundle: ModelBundle) -> bool:
-        protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
-        return protocol == "openai"
+        return bool(self._native_tool_profile(bundle).supports_native_tools)
+
+    def _native_tool_profile(self, bundle: ModelBundle) -> ProviderToolProfile:
+        protocol = str(
+            getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or ""
+        ).strip().lower()
+        if protocol != "openai":
+            return DEFAULT_PROVIDER_TOOL_PROFILE
+        host = self._bundle_base_host(bundle)
+        model = str(getattr(bundle, "model", "") or "").strip().lower()
+        return PROVIDER_TOOL_PROFILES.get((host, model), DEFAULT_PROVIDER_TOOL_PROFILE)
+
+    def _bundle_base_host(self, bundle: ModelBundle) -> str:
+        raw = str(getattr(bundle.client, "base_url", "") or "").strip()
+        if raw and "://" not in raw:
+            raw = f"https://{raw}"
+        try:
+            return str(urlparse(raw).hostname or "").strip().lower()
+        except Exception:
+            return ""
 
     def _normalize_native_tools(self, value: Any) -> list[dict[str, Any]]:
         if not isinstance(value, list):
@@ -1118,6 +1232,8 @@ class LLMRuntime:
         tool_calls = self._get_attr_or_key(message, "tool_calls")
         if not isinstance(tool_calls, list) or not tool_calls:
             return None
+        if len(tool_calls) > 1:
+            self._record_metric("native_tool_calls_extra", len(tool_calls) - 1)
         first = tool_calls[0]
         function = self._get_attr_or_key(first, "function")
         if not isinstance(function, dict):
@@ -1129,7 +1245,55 @@ class LLMRuntime:
         if not name or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
             return None
         arguments = self._decode_native_tool_arguments(function.get("arguments"))
-        return {**arguments, "type": name}
+        call_id = str(self._get_attr_or_key(first, "id") or "").strip()
+        result = {**arguments, "type": name, TOOL_SOURCE_FIELD: NATIVE_OPENAI}
+        if call_id:
+            result[TOOL_INVOCATION_ID_FIELD] = call_id
+        return result
+
+    def _collect_stream_native_tool_call_parts(self, chunk: Any, parts: dict[int, dict[str, Any]]) -> None:
+        try:
+            choice = chunk.choices[0]
+        except Exception:
+            return
+        delta = self._get_attr_or_key(choice, "delta")
+        tool_calls = self._get_attr_or_key(delta, "tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            return
+        for offset, raw_call in enumerate(tool_calls):
+            index_value = self._get_attr_or_key(raw_call, "index")
+            try:
+                index = int(index_value)
+            except Exception:
+                index = offset
+            slot = parts.setdefault(index, {"arguments_parts": []})
+            call_id = str(self._get_attr_or_key(raw_call, "id") or "").strip()
+            if call_id:
+                slot["id"] = call_id
+            function = self._get_attr_or_key(raw_call, "function")
+            name = str(self._get_attr_or_key(function, "name") or "").strip()
+            if name:
+                slot["name"] = name
+            arguments_part = self._get_attr_or_key(function, "arguments")
+            if arguments_part not in (None, ""):
+                slot.setdefault("arguments_parts", []).append(str(arguments_part))
+
+    def _stream_native_tool_call_from_parts(self, parts: dict[int, dict[str, Any]]) -> dict[str, Any] | None:
+        if not parts:
+            return None
+        ordered_indexes = sorted(parts.keys())
+        if len(ordered_indexes) > 1:
+            self._record_metric("native_tool_calls_extra", len(ordered_indexes) - 1)
+        first = parts.get(ordered_indexes[0]) or {}
+        name = str(first.get("name") or "").strip()
+        if not name or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+            return None
+        arguments = self._decode_native_tool_arguments("".join(list(first.get("arguments_parts") or [])))
+        call_id = str(first.get("id") or "").strip()
+        result = {**arguments, "type": name, TOOL_SOURCE_FIELD: NATIVE_OPENAI}
+        if call_id:
+            result[TOOL_INVOCATION_ID_FIELD] = call_id
+        return result
 
     def _decode_native_tool_arguments(self, value: Any) -> dict[str, Any]:
         if isinstance(value, dict):
@@ -1348,12 +1512,47 @@ class LLMRuntime:
                 pass
 
     def _record_metric(self, key: str, amount: int = 1) -> None:
-        with self._metrics_lock:
-            self._metrics[key] = int(self._metrics.get(key, 0)) + int(amount)
+        lock = getattr(self, "_metrics_lock", None)
+        metrics = getattr(self, "_metrics", None)
+        if lock is None or not isinstance(metrics, dict):
+            return
+        with lock:
+            metrics[key] = int(metrics.get(key, 0)) + int(amount)
 
     def snapshot_metrics(self) -> dict[str, int]:
         with self._metrics_lock:
             return {key: int(value) for key, value in self._metrics.items()}
+
+    def snapshot_last_error(self) -> dict[str, str]:
+        lock = getattr(self, "_last_error_lock", None)
+        last_error = getattr(self, "_last_error", None)
+        if lock is None or not isinstance(last_error, dict):
+            return {}
+        with lock:
+            return {str(key): str(value) for key, value in last_error.items()}
+
+    def _record_error_detail(self, exc: Exception, *, phase: str = "") -> None:
+        lock = getattr(self, "_last_error_lock", None)
+        if lock is None:
+            return
+        detail = {
+            "phase": str(phase or ""),
+            "type": exc.__class__.__name__,
+            "message": self._sanitize_error_message(str(exc or "")),
+        }
+        with lock:
+            self._last_error = detail
+
+    def _sanitize_error_message(self, message: str, *, max_chars: int = 1000) -> str:
+        text = str(message or "")
+        for pattern in SECRET_PATTERNS:
+            if pattern.groups >= 2:
+                text = pattern.sub(lambda match: f"{match.group(1)}[redacted]", text)
+            else:
+                text = pattern.sub("[redacted]", text)
+        if len(text) > max_chars:
+            text = text[: max_chars - 3].rstrip() + "..."
+        return text
 
     def _extract_json(self, text: str) -> dict[str, Any] | None:
         raw = str(text or "").strip()

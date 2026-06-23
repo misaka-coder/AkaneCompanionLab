@@ -71,6 +71,7 @@
 
 ## Agent 护栏
 
+- **改后端核心链路（对话回合、工具调用、提示词、输出归一化、能力门控、workspace）前，先读 `docs/engineering_invariants_v1.md`**——里面是"碰哪些地方会塌"的承重约束。其中最关键的一条：**最终表现层必须保持结构化 JSON；工具当前仍在 `tool_call` 字段里，但这是过渡态，后续允许迁到独立工具通道，前提是不丢表达层**（详见 `docs/tool_system_decoupling_v1.md`）。违反承重约束的改动多半会悄悄毁掉表情/音乐/人设等表现层。
 - 接手桌宠角色自定义、提示词配置、记忆隔离、立绘校准相关任务时，先读 `docs/desktop_pet_character_workshop_v1/`。
 - 每轮只做一个可验证切片；不要同时推进 UI、数据库迁移、资产导入和提示词链路。
 - Rust 写入角色包文件时使用临时文件再 rename；所有从角色包读取出的相对路径必须走 `safe_child_path`。

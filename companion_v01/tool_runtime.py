@@ -54,6 +54,13 @@ class ToolMetadata:
     risk: str = "medium"
     default_round_budget: int = 3
     background: bool = False
+    aliases: tuple[str, ...] = ()
+    input_schema: Mapping[str, Any] | None = None
+    requires_confirmation: bool = False
+
+    @property
+    def is_read_only(self) -> bool:
+        return str(self.operation or "").strip().lower() == "read"
 
 
 TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
@@ -81,10 +88,10 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     "manage_task_workspace": ToolMetadata(family="task_workspace", operation="control", risk="medium", default_round_budget=3),
     "delegate_task": ToolMetadata(family="background_task", operation="background", risk="medium", default_round_budget=3, background=True),
     "web_search": ToolMetadata(family="web_research", operation="read", risk="low", default_round_budget=8),
-    "open_browser": ToolMetadata(family="browser_control", operation="control", risk="medium", default_round_budget=6),
-    "browser_page": ToolMetadata(family="browser_control", operation="mixed", risk="medium", default_round_budget=10),
-    "open_music_search": ToolMetadata(family="music_request", operation="control", risk="medium", default_round_budget=4),
-    "fetch_media_from_url": ToolMetadata(family="media_fetch", operation="control", risk="medium", default_round_budget=4),
+    "open_browser": ToolMetadata(family="browser_control", operation="control", risk="medium", default_round_budget=6, requires_confirmation=True),
+    "browser_page": ToolMetadata(family="browser_control", operation="mixed", risk="medium", default_round_budget=10, requires_confirmation=True),
+    "open_music_search": ToolMetadata(family="music_request", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
+    "fetch_media_from_url": ToolMetadata(family="media_fetch", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
     "sync_attachment_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
     "inspect_attachment": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
     "retry_attachment": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=3),
@@ -94,20 +101,20 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     "read_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=4),
     "focus_workspace": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=4),
     "register_workspace_items": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=4),
-    "compose_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4),
-    "revise_generated_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4),
-    "apply_style_to_existing_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4),
+    "compose_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
+    "revise_generated_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
+    "apply_style_to_existing_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
     "inspect_generated_file": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
-    "manage_generated_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=3),
-    "send_file": ToolMetadata(family="file_handoff", operation="control", risk="medium", default_round_budget=3),
-    "send_generated_file": ToolMetadata(family="file_handoff", operation="control", risk="medium", default_round_budget=3),
+    "manage_generated_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True),
+    "send_file": ToolMetadata(family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True),
+    "send_generated_file": ToolMetadata(family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True),
     "send_sticker": ToolMetadata(family="social_delivery", operation="control", risk="low", default_round_budget=3),
     "inspect_media_info": ToolMetadata(family="media_workbench", operation="read", risk="low", default_round_budget=3),
-    "separate_audio_stems": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True),
-    "clean_voice_track": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True),
-    "transcribe_media": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True),
-    "prepare_voice_dataset": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True),
-    "convert_media_file": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True),
+    "separate_audio_stems": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
+    "clean_voice_track": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
+    "transcribe_media": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
+    "prepare_voice_dataset": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
+    "convert_media_file": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
 }
 
 

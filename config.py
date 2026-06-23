@@ -185,6 +185,10 @@ class Settings(BaseSettings):
     # === 工具调用 & 后台任务 ===
     # 同轮对话最大工具调用轮次（防止循环）
     MAX_TOOL_ROUNDS: int = 3
+    # 试验性 native tool 通道。默认关闭；当前只允许 web_search 走 provider schema。
+    ENABLE_NATIVE_TOOL_DECISION: bool = False
+    # native tool 允许列表，逗号分隔；3a 原型仅实现 web_search。
+    NATIVE_TOOL_DECISION_ALLOWLIST: str = "web_search"
     # 联网搜索/网页提取类工具的同轮扩展预算
     MAX_WEB_RESEARCH_TOOL_ROUNDS: int = 8
     # 托管浏览器打开、滚动、点击、输入类工具的同轮扩展预算
@@ -363,7 +367,8 @@ def _apply_settings(s: Settings) -> None:
     global GPT_SOVITS_BATCH_SIZE, GPT_SOVITS_SPEED_FACTOR, GPT_SOVITS_FRAGMENT_INTERVAL, GPT_SOVITS_TEXT_SPLIT_METHOD
     global MUSIC_ONLINE_LYRICS_ENABLED, MUSIC_ONLINE_LYRICS_PROVIDERS
     global PUBLIC_GUARD_ENABLED, MAX_CONCURRENT_THINKS, DAILY_THINK_LIMIT
-    global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, MAX_TOOL_ROUNDS, MAX_WEB_RESEARCH_TOOL_ROUNDS
+    global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, MAX_TOOL_ROUNDS, ENABLE_NATIVE_TOOL_DECISION
+    global NATIVE_TOOL_DECISION_ALLOWLIST, MAX_WEB_RESEARCH_TOOL_ROUNDS
     global MAX_BROWSER_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
     global AKANE_WORKSPACE_ROOT, AKANE_WORKSPACE_MAX_READ_BYTES
     global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ, QQ_CHARACTER_PACK_ID
@@ -450,6 +455,8 @@ def _apply_settings(s: Settings) -> None:
         or "今日体验名额已满，明天再来看看 Akane 吧。"
     )
     MAX_TOOL_ROUNDS = max(1, min(5, int(s.MAX_TOOL_ROUNDS)))
+    ENABLE_NATIVE_TOOL_DECISION = bool(s.ENABLE_NATIVE_TOOL_DECISION)
+    NATIVE_TOOL_DECISION_ALLOWLIST = str(s.NATIVE_TOOL_DECISION_ALLOWLIST or "web_search").strip()
     MAX_WEB_RESEARCH_TOOL_ROUNDS = max(MAX_TOOL_ROUNDS, min(12, int(s.MAX_WEB_RESEARCH_TOOL_ROUNDS)))
     MAX_BROWSER_TOOL_ROUNDS = max(MAX_TOOL_ROUNDS, min(12, int(s.MAX_BROWSER_TOOL_ROUNDS)))
     MAX_TASK_WORKER_ROUNDS = max(1, min(5, int(s.MAX_TASK_WORKER_ROUNDS)))

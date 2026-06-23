@@ -346,17 +346,17 @@ def _expand_env_placeholders(args: list[str], env: Mapping[str, str]) -> list[st
 def _resolve_stdio_command(command: str) -> tuple[str, list[str]]:
     """Return (executable, prefix_args) for the given command.
 
-    On Windows, .cmd/.bat files cannot be executed directly via
-    asyncio.create_subprocess_exec — they must be routed through cmd.exe.
-    This function detects that case and prepends ["cmd.exe", "/c"] so callers
-    don't need to know about the platform quirk.
+    Windows .cmd/.bat files must be passed directly to
+    create_subprocess_exec. Wrapping them in cmd.exe /c breaks argument
+    quoting when the script path and later arguments both contain spaces, which
+    is common for npx plus Authorization headers.
     """
     text = str(command or "").strip()
     if not text:
         return text, []
     resolved = shutil.which(text) or text
     if sys.platform == "win32" and resolved.lower().endswith((".cmd", ".bat")):
-        return "cmd.exe", ["/c", resolved]
+        return resolved, []
     return resolved, []
 
 

@@ -53,6 +53,7 @@ from . import task_workspace_engine
 from .task_worker import TaskWorkerService
 from .task_worker_tool import DelegateTaskToolHandler
 from . import tool_orchestration_engine
+from .tool_invocation import NATIVE_TOOL_CALL_FIELD
 from .tool_runtime import AdapterCapabilityToolHandler, ApplyStyleToExistingFileToolHandler, BaseToolHandler, BrowserPageToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, FocusWorkspaceToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ListWorkspaceToolHandler, LoadCharacterContextToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, OpenBrowserToolHandler, OpenMusicSearchToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, ReadMemoryTimelineToolHandler, ReadWorkspaceToolHandler, RegisterWorkspaceItemsToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler, WebSearchToolHandler
 from . import visual_context_engine
 from .vision_service import VisionObservationService
@@ -1881,7 +1882,8 @@ class AkaneMemoryEngine:
                 request_context=payload,
             )
 
-            allow_more_tools = tool_round_index < max_tool_rounds - 1
+            stop_after_tool = self._should_stop_after_tool_events(_current_events)
+            allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = self._build_final_response(
                 session_id=session_id,
                 profile_user_id=profile_user_id,
@@ -1896,7 +1898,11 @@ class AkaneMemoryEngine:
                     turn_extra_user_context=turn_extra_user_context,
                     tool_followups=tool_followups,
                     allow_more=allow_more_tools,
-                    stop_reason="tool_budget_exhausted" if not allow_more_tools else "",
+                    stop_reason=(
+                        "tool_unavailable"
+                        if stop_after_tool
+                        else "tool_budget_exhausted" if not allow_more_tools else ""
+                    ),
                 ),
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
@@ -2257,6 +2263,7 @@ class AkaneMemoryEngine:
                 date_label=date_label,
                 time_of_day=time_of_day,
             )
+            yield self._build_tool_working_stream_event(tool_call)
             tool_result, current_events = self._execute_and_record_tool_round(
                 tool_call=tool_call,
                 final_output=final_output,
@@ -2277,7 +2284,8 @@ class AkaneMemoryEngine:
             for stream_event in current_events:
                 yield stream_event
 
-            allow_more_tools = tool_round_index < max_tool_rounds - 1
+            stop_after_tool = self._should_stop_after_tool_events(current_events)
+            allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = yield from self._stream_final_response(
                 session_id=session_id,
                 profile_user_id=profile_user_id,
@@ -2292,7 +2300,11 @@ class AkaneMemoryEngine:
                     turn_extra_user_context=turn_extra_user_context,
                     tool_followups=tool_followups,
                     allow_more=allow_more_tools,
-                    stop_reason="tool_budget_exhausted" if not allow_more_tools else "",
+                    stop_reason=(
+                        "tool_unavailable"
+                        if stop_after_tool
+                        else "tool_budget_exhausted" if not allow_more_tools else ""
+                    ),
                 ),
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
@@ -2574,6 +2586,7 @@ class AkaneMemoryEngine:
             character_pack_id=character_pack_id,
             allow_tool_call=allow_tool_call,
             final_debug_enabled=final_debug_enabled,
+            enable_native_tools=True,
         )
         result = self.llm.call_chat_json(
             system_prompt=str(generation_context["system_prompt"]),
@@ -2585,6 +2598,8 @@ class AkaneMemoryEngine:
             system_extra_blocks=generation_context.get("system_extra_blocks"),
             history_turns=generation_context.get("history_turns"),
             prompt_audit_sections=generation_context.get("prompt_audit_sections"),
+            native_tools=generation_context.get("native_tools"),
+            native_tool_choice=generation_context.get("native_tool_choice", ""),
         )
         return self._normalize_final_output(
             result=result,
@@ -2634,6 +2649,7 @@ class AkaneMemoryEngine:
             character_pack_id=character_pack_id,
             allow_tool_call=allow_tool_call,
             final_debug_enabled=final_debug_enabled,
+            enable_native_tools=True,
         )
         speaker_identity = self._resolve_turn_speaker_identity(
             client_context, character_pack_id,
@@ -2649,6 +2665,8 @@ class AkaneMemoryEngine:
             temperature=0.7,
             prompt_cache_key="chat:final",
             user_images=user_images,
+            native_tools=generation_context.get("native_tools"),
+            native_tool_choice=generation_context.get("native_tool_choice", ""),
             system_extra_blocks=generation_context.get("system_extra_blocks"),
             history_turns=generation_context.get("history_turns"),
             prompt_audit_sections=generation_context.get("prompt_audit_sections"),
@@ -2703,6 +2721,7 @@ class AkaneMemoryEngine:
         character_pack_id: str = "",
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
+        enable_native_tools: bool = False,
     ) -> dict[str, Any]:
         client_context = client_context or self._resolve_client_protocol_context({})
         prompt_profile = self._get_prompt_profile_registry().resolve(client_context)
@@ -3025,6 +3044,23 @@ class AkaneMemoryEngine:
                 '"emotion":"normal"',
                 f'"emotion":{default_emotion_json}',
             )
+        native_tools: list[dict[str, Any]] = []
+        native_legacy_exclusions: set[str] = set()
+        if enable_native_tools:
+            native_plan = tool_orchestration_engine.build_native_tool_decision_plan(
+                self._resolve_tool_handlers(
+                    client_context=client_context,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                ),
+                allow_tool_call=effective_allow_tool_call,
+                provider_supports_native_tools=self.llm.chat_supports_native_tools(),
+            )
+            if native_plan.enabled:
+                native_tools = native_plan.tools
+                native_legacy_exclusions = native_plan.legacy_prompt_exclusions
+            elif native_plan.status == "unsupported":
+                self.llm.record_metric("native_tool_provider_unsupported")
         generation_context = self._get_prompt_builder().build_final_generation_context(
             now_ts=now_ts,
             raw_text=raw_text,
@@ -3046,6 +3082,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                exclude_tool_types=native_legacy_exclusions,
             ),
             debug_enabled=debug_enabled,
             system_prompt_override=prompt_profile.system_prompt_override,
@@ -3055,7 +3092,19 @@ class AkaneMemoryEngine:
             fallback_payload = generation_context.get("fallback")
             if isinstance(fallback_payload, dict):
                 fallback_payload["activity"] = None
+        if native_tools:
+            native_tool_round_instruction = self._build_native_tool_round_instruction(native_tools)
+            generation_context["system_prompt"] = "\n\n".join(
+                part
+                for part in [
+                    str(generation_context.get("system_prompt") or "").strip(),
+                    native_tool_round_instruction,
+                ]
+                if part
+            )
         generation_context["allow_tool_call"] = effective_allow_tool_call
+        generation_context["native_tools"] = native_tools
+        generation_context["native_tool_choice"] = "auto" if native_tools else ""
         generation_context["prompt_profile"] = prompt_profile.to_public_dict()
         if client_context.effective_mode == ClientMode.QQ_TEXT:
             fallback_payload = generation_context.get("fallback")
@@ -3180,6 +3229,26 @@ class AkaneMemoryEngine:
     def _describe_tool_call_for_prompt(self, tool_call: dict[str, Any]) -> str:
         return tool_orchestration_engine.describe_tool_call_for_prompt(tool_call)
 
+    def _build_tool_working_stream_event(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+        tool_type = str((tool_call or {}).get("type") or "unknown").strip() or "unknown"
+        return {
+            "type": "assistant_working",
+            "status": "running",
+            "phase": "tool_call",
+            "tool_type": tool_type,
+            "message": "我查一下。",
+        }
+
+    def _should_stop_after_tool_events(self, events: list[dict[str, Any]]) -> bool:
+        blocking_statuses = {"unavailable", "error", "failed", "failure"}
+        for event in events or []:
+            if not isinstance(event, dict):
+                continue
+            status = str(event.get("status") or "").strip().lower()
+            if status in blocking_statuses:
+                return True
+        return False
+
     def _prepare_tool_round_decision(
         self,
         *,
@@ -3189,27 +3258,33 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, str]:
-        final_output = self._promote_narrated_tool_call(
-            final_output,
-            user_message=user_message,
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        )
+        native_tool_call = final_output.pop(NATIVE_TOOL_CALL_FIELD, None)
+        raw_tool_call = native_tool_call if isinstance(native_tool_call, dict) and native_tool_call else None
+        if raw_tool_call is None:
+            final_output = self._promote_narrated_tool_call(
+                final_output,
+                user_message=user_message,
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
+            raw_tool_call = final_output.get("tool_call")
+        else:
+            final_output["tool_call"] = None
         tool_call = self._normalize_tool_call(
-            final_output.get("tool_call"),
+            raw_tool_call,
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
         )
         rejection = (
             self._describe_tool_call_rejection(
-                final_output.get("tool_call"),
+                raw_tool_call,
                 client_context=client_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
             )
-            if not tool_call
+            if raw_tool_call and not tool_call
             else ""
         )
         return final_output, tool_call, rejection
@@ -3872,6 +3947,7 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext | None = None,
         profile_user_id: str = "",
         session_id: str = "",
+        exclude_tool_types: set[str] | None = None,
     ) -> str:
         if not allow_tool_call:
             return "本轮不要调用任何工具，tool_call 固定为 null。"
@@ -3886,6 +3962,13 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
         )
+        excluded = {str(item).strip() for item in (exclude_tool_types or set()) if str(item).strip()}
+        if excluded:
+            handlers = {
+                tool_type: handler
+                for tool_type, handler in handlers.items()
+                if str(tool_type) not in excluded
+            }
         media_routing: list[str] = []
         if "media_workbench" in selection.module_names:
             media_routing = [*MEDIA_PRESET_ROUTING, ""]
@@ -3931,6 +4014,25 @@ class AkaneMemoryEngine:
         )
         lines.append("如果不需要工具，tool_call 输出 null。一次只调用一个工具。")
         return "\n".join(lines)
+
+    def _build_native_tool_round_instruction(self, native_tools: list[dict[str, Any]] | None) -> str:
+        native_tool_names = sorted(
+            {
+                str(((tool.get("function") or {}).get("name") if isinstance(tool, dict) else "") or "").strip()
+                for tool in native_tools or []
+                if str(((tool.get("function") or {}).get("name") if isinstance(tool, dict) else "") or "").strip()
+            }
+        )
+        name_text = "、".join(native_tool_names) if native_tool_names else "已提供的 native 工具"
+        return (
+            "【native 工具轮优先规则】\n"
+            f"本轮已通过 provider native tools 提供：{name_text}。\n"
+            f"若当前请求需要上述 native 工具，必须直接通过 provider tool_calls 调用；"
+            "不要输出最终表现 JSON 正文，也不要在 JSON 的 tool_call 字段里手写这些 native 工具。\n"
+            "只有仍在可用工具清单中、且没有通过 native schema 提供的 legacy 工具，才可以继续写入 JSON tool_call。\n"
+            "如果不需要任何 legacy 工具，最终表现 JSON 的 tool_call 字段必须为 null。\n"
+            "不要在 speech 里声称工具已调用、已完成或已失败；真实状态以系统工具结果为准。"
+        )
 
     def _build_turn_extra_user_context(
         self,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 from services.llm_client import _build_anthropic_payload, build_llm_client, normalize_api_protocol, normalize_base_url
 from companion_v01.llm_runtime import LLMRuntime
+from companion_v01.tool_invocation import NATIVE_OPENAI, NATIVE_TOOL_CALL_FIELD, TOOL_INVOCATION_ID_FIELD, TOOL_SOURCE_FIELD
 
 
 class LLMClientConfigTests(unittest.TestCase):
@@ -53,6 +55,23 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(calls[0]["api_key"], "chat-key")
         self.assertEqual(calls[0]["base_url"], "http://chat.example/v1")
         self.assertEqual(calls[0]["protocol"], "openai")
+
+    def test_llm_runtime_error_detail_redacts_secrets(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._last_error_lock = threading.RLock()
+        runtime._last_error = {}
+
+        runtime._record_error_detail(
+            RuntimeError("Authorization: Bearer sk-testsecret123456 api_key=sk-othersecret123456"),
+            phase="call_json",
+        )
+        detail = runtime.snapshot_last_error()
+
+        self.assertEqual(detail["phase"], "call_json")
+        self.assertEqual(detail["type"], "RuntimeError")
+        self.assertNotIn("sk-testsecret", detail["message"])
+        self.assertNotIn("sk-othersecret", detail["message"])
+        self.assertIn("[redacted]", detail["message"])
 
     def test_llm_runtime_uses_json_mode_for_ollama_json_calls(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
@@ -223,7 +242,96 @@ class LLMClientConfigTests(unittest.TestCase):
 
             self.assertFalse((Path(temp_dir) / "llm_prompt_audit").exists())
 
-    def test_llm_runtime_adds_native_tools_only_when_explicit_for_openai(self) -> None:
+    def test_llm_runtime_adds_native_tools_for_verified_profile(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-pro",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertEqual(payload["tool_choice"], "auto")
+
+    def test_llm_runtime_suppresses_forced_json_when_verified_profile_cannot_coexist(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-flash",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            json_mode=True,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertNotIn("response_format", payload)
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_forced_json_suppressed"], 1)
+
+    def test_llm_runtime_keeps_forced_json_when_verified_profile_can_coexist(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-pro",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            json_mode=True,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+
+    def test_llm_runtime_skips_native_tools_for_unverified_openai_compatible_model(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
             client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.openai.com/v1"),
@@ -248,8 +356,8 @@ class LLMClientConfigTests(unittest.TestCase):
             native_tool_choice="auto",
         )
 
-        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
-        self.assertEqual(payload["tool_choice"], "auto")
+        self.assertNotIn("tools", payload)
+        self.assertNotIn("tool_choice", payload)
 
     def test_llm_runtime_skips_native_tools_for_non_openai_protocol(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
@@ -300,7 +408,138 @@ class LLMClientConfigTests(unittest.TestCase):
 
         self.assertEqual(
             runtime._extract_native_tool_call(response),
-            {"type": "web_search", "query": "Akane", "max_results": 3},
+            {"type": "web_search", "query": "Akane", "max_results": 3, TOOL_SOURCE_FIELD: NATIVE_OPENAI},
+        )
+
+    def test_llm_runtime_returns_native_tool_call_on_internal_carrier(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._create_completion = lambda **_kwargs: object()
+        runtime._record_cache_metrics = lambda _response: None
+        runtime._extract_native_tool_call = lambda _response: {
+            "type": "web_search",
+            "query": "Akane",
+            TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+            TOOL_INVOCATION_ID_FIELD: "call_native_1",
+        }
+
+        result = runtime._call_json(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "", "tool_call": None},
+            temperature=0.0,
+            prompt_cache_key="test:native_tool",
+            native_tools=[{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}],
+            native_tool_choice="auto",
+        )
+
+        self.assertIsNone(result["tool_call"])
+        self.assertEqual(result[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
+        self.assertEqual(result[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
+
+    def test_llm_runtime_stream_returns_native_tool_call_on_internal_carrier(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._record_cache_metrics = lambda _response: None
+        runtime._close_stream = lambda _response: None
+        runtime._extract_stream_text = lambda _chunk: ""
+        runtime._create_completion = lambda **_kwargs: [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    id="call_stream_1",
+                                    function=SimpleNamespace(
+                                        name="web_search",
+                                        arguments='{"query":"Akane"}',
+                                    ),
+                                )
+                            ]
+                        )
+                    )
+                ]
+            )
+        ]
+
+        generator = runtime._stream_chat_json(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "", "tool_call": None},
+            temperature=0.0,
+            early_tool_call_validator=None,
+            prompt_cache_key="test:native_tool_stream",
+            native_tools=[{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}],
+            native_tool_choice="auto",
+        )
+
+        while True:
+            try:
+                next(generator)
+            except StopIteration as exc:
+                result = exc.value
+                break
+
+        self.assertIsNone(result.parsed["tool_call"])
+        self.assertEqual(result.parsed[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
+        self.assertEqual(result.parsed[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
+
+    def test_llm_runtime_collects_stream_native_tool_call_to_akane_shape(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        parts: dict[int, dict[str, object]] = {}
+        first_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_stream_1",
+                                function=SimpleNamespace(name="web_search", arguments='{"query":"A'),
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+        second_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id=None,
+                                function=SimpleNamespace(name="", arguments='kane","max_results":3}'),
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+
+        runtime._collect_stream_native_tool_call_parts(first_chunk, parts)
+        runtime._collect_stream_native_tool_call_parts(second_chunk, parts)
+
+        self.assertEqual(
+            runtime._stream_native_tool_call_from_parts(parts),
+            {
+                "type": "web_search",
+                "query": "Akane",
+                "max_results": 3,
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_stream_1",
+            },
         )
 
     def test_llm_runtime_skips_prompt_cache_hints_for_non_openai_base_url_by_default(self) -> None:

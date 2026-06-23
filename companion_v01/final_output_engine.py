@@ -5,6 +5,7 @@ from typing import Any
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
 from .persona_config import PERSONA
 from .text_utils import normalize_text, parse_joined_tags
+from .tool_invocation import NATIVE_TOOL_CALL_FIELD
 
 _MUSIC_FALLBACK_ACTIONS = (
     (["暂停", "停一下", "先停", "停一停"], "pause"),
@@ -99,6 +100,16 @@ _REPLY_MEDIUM_ALIASES = {
     "双发": "both",
 }
 
+
+def _strip_internal_tool_metadata(tool_call: Any) -> dict[str, Any] | None:
+    if not isinstance(tool_call, dict):
+        return None
+    return {
+        str(key): value
+        for key, value in tool_call.items()
+        if not str(key).startswith("_tool_")
+    }
+
 _MEMORY_MOOD_TAG_ALIASES = {
     "calm": "calm",
     "平静": "calm",
@@ -171,6 +182,11 @@ def normalize_final_output(
     )
     raw_result = result if isinstance(result, dict) else {}
     normalized = dict(raw_result or {})
+    native_tool_call = raw_result.get(NATIVE_TOOL_CALL_FIELD)
+    if isinstance(native_tool_call, dict) and native_tool_call:
+        normalized[NATIVE_TOOL_CALL_FIELD] = dict(native_tool_call)
+    else:
+        normalized.pop(NATIVE_TOOL_CALL_FIELD, None)
     persona_request_present = "persona" in raw_result
     persona_request_active = ""
     raw_persona = raw_result.get("persona")
@@ -185,7 +201,7 @@ def normalize_final_output(
         normalized.pop("thought", None)
     normalized.setdefault("status", "final")
     normalized.setdefault("emotion", visual_defaults["emotion"])
-    normalized["tool_call"] = (
+    normalized_tool_call = (
         engine._normalize_tool_call(
             normalized.get("tool_call"),
             client_context=client_context,
@@ -195,6 +211,7 @@ def normalize_final_output(
         if allow_tool_call
         else None
     )
+    normalized["tool_call"] = _strip_internal_tool_metadata(normalized_tool_call)
     if client_context.effective_mode == ClientMode.DESKTOP_PET and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
         normalized["activity"] = normalize_activity_action(normalized.get("activity"))
     else:
@@ -209,7 +226,7 @@ def normalize_final_output(
     speech, speech_segments = normalize_speech_payload(
         speech=normalized.get("speech"),
         speech_segments=normalized.get("speech_segments"),
-        fallback_to_default=not bool(normalized.get("tool_call")),
+        fallback_to_default=not bool(normalized.get("tool_call") or normalized.get(NATIVE_TOOL_CALL_FIELD)),
     )
     normalized["speech"] = speech
     normalized["speech_segments"] = speech_segments
