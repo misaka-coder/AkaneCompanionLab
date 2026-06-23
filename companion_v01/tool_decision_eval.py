@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable, Sequence
 
-from .tool_invocation import LEGACY_JSON, NATIVE_OPENAI, TOOL_INVOCATION_ID_FIELD, TOOL_SOURCE_FIELD
+from .native_tool_schema import build_openai_native_tool_specs
+from .tool_invocation import LEGACY_JSON, NATIVE_OPENAI, NATIVE_TOOL_CALL_FIELD, TOOL_INVOCATION_ID_FIELD, TOOL_SOURCE_FIELD
 from .tool_invocation import invocation_to_legacy_tool_call
 from .tool_orchestration_engine import native_web_search_tool_schema
 from .tool_orchestration_engine import execute_tool_invocation, normalize_tool_invocation
@@ -225,6 +226,10 @@ def evaluate_tool_decision_case(
 ) -> ToolDecisionEvalCaseResult:
     final_output = response.final_output if isinstance(response.final_output, dict) else {}
     raw_tool_call = final_output.get("tool_call")
+    if not isinstance(raw_tool_call, dict) or not raw_tool_call:
+        native_tool_call = final_output.get(NATIVE_TOOL_CALL_FIELD)
+        if isinstance(native_tool_call, dict) and native_tool_call:
+            raw_tool_call = native_tool_call
     raw_tool_call_present = isinstance(raw_tool_call, dict) and bool(raw_tool_call)
     called_tool = raw_tool_call_present and bool(str(raw_tool_call.get("type") or "").strip())
     invocation = normalize_tool_invocation(engine, raw_tool_call) if called_tool else None
@@ -318,12 +323,13 @@ def summarize_tool_decision_eval_results(results: Sequence[ToolDecisionEvalCaseR
     }
 
 
-class LiveLLMWebSearchResponseProvider:
-    """Real-LLM response provider for the web_search tool-decision eval."""
+class LiveLLMToolDecisionResponseProvider:
+    """Real-LLM response provider for the tool-decision eval."""
 
     def __init__(
         self,
         *,
+        toolset: str = "web_search",
         runtime: LLMRuntime | None = None,
         temperature: float = 0.0,
         prompt_cache_key: str = "eval:tool_decision",
@@ -331,11 +337,12 @@ class LiveLLMWebSearchResponseProvider:
         self.runtime = runtime or LLMRuntime()
         self.temperature = float(temperature)
         self.prompt_cache_key = str(prompt_cache_key or "eval:tool_decision").strip() or "eval:tool_decision"
-        self._web_search_handler = WebSearchToolHandler()
+        self.toolset = str(toolset or "web_search").strip() or "web_search"
+        self._handlers = _build_live_tool_decision_handlers(self.toolset)
 
     def __call__(self, case: ToolDecisionEvalCase, mode: str) -> ToolDecisionModelResponse:
         normalized_mode = str(mode or "").strip().lower() or "legacy"
-        native_tools = [native_web_search_tool_schema()] if normalized_mode == "native" else None
+        native_tools = _build_live_native_tool_specs(self._handlers) if normalized_mode == "native" else None
         before = self.runtime.snapshot_metrics()
         final_output = self.runtime.call_chat_json(
             system_prompt=self._build_system_prompt(mode=normalized_mode),
@@ -356,6 +363,10 @@ class LiveLLMWebSearchResponseProvider:
                 if isinstance(captured, dict):
                     error_detail = dict(captured)
         raw_tool_call = final_output.get("tool_call") if isinstance(final_output, dict) else None
+        if (not isinstance(raw_tool_call, dict) or not raw_tool_call) and isinstance(final_output, dict):
+            native_tool_call = final_output.get(NATIVE_TOOL_CALL_FIELD)
+            if isinstance(native_tool_call, dict) and native_tool_call:
+                raw_tool_call = native_tool_call
         raw_source = str(raw_tool_call.get(TOOL_SOURCE_FIELD) or "").strip() if isinstance(raw_tool_call, dict) else ""
         native_extracted = bool(diff.get("native_tool_call_extracted", 0) > 0 or raw_source == NATIVE_OPENAI)
         return ToolDecisionModelResponse(
@@ -369,17 +380,19 @@ class LiveLLMWebSearchResponseProvider:
         )
 
     def _build_system_prompt(self, *, mode: str) -> str:
+        tool_names = sorted(str(name) for name in self._handlers.keys())
+        tool_name_text = "、".join(tool_names)
         base = [
-            "你是 Akane 工具决策评测器。只判断这一轮是否需要 web_search，不执行搜索。",
-            "web_search 只用于公开网页搜索、最新信息核对、公开 URL 内容提取。",
-            "不要用 web_search 访问 localhost、内网地址、file 路径、登录页、付费页或私密链接。",
+            "你是 Akane 工具决策评测器。只判断这一轮是否需要工具，不执行工具本身。",
+            f"本轮可用工具：{tool_name_text}。",
+            *_build_live_tool_policy_lines(tool_names),
         ]
         if mode == "native":
             base.extend(
                 [
-                    "如果需要 web_search，请直接使用 provider native tool 通道；调用工具时不要输出 JSON 正文。",
+                    "如果需要任一可用工具，请直接使用 provider native tool_calls 通道；调用工具时不要输出 JSON 正文。",
                     "只有不需要工具时，才返回一个 JSON object：{\"speech\":\"\", \"tool_call\":null}。",
-                    "不要在 JSON 的 tool_call 字段里手写 web_search；native 工具调用必须走 provider tool_calls。",
+                    f"不要在 JSON 的 tool_call 字段里手写这些 native 工具：{tool_name_text}。",
                 ]
             )
         else:
@@ -387,8 +400,8 @@ class LiveLLMWebSearchResponseProvider:
                 [
                     "必须返回一个 JSON object，字段固定为 speech 和 tool_call；不要输出 Markdown。",
                     "如果不需要工具，tool_call 必须是 null。",
-                    "本轮没有 native tool 通道；如果需要 web_search，必须在 JSON 的 tool_call 字段里写工具调用。",
-                    self._web_search_handler.build_prompt_instruction(),
+                    "本轮没有 native tool 通道；如果需要工具，必须在 JSON 的 tool_call 字段里写工具调用。",
+                    _build_legacy_tool_instructions(self._handlers),
                 ]
             )
         return "\n".join(part for part in base if str(part).strip())
@@ -400,6 +413,24 @@ class LiveLLMWebSearchResponseProvider:
             f"category: {case.category}\n"
             f"用户消息: {case.user_prompt}\n"
             "请只做工具决策。"
+        )
+
+
+class LiveLLMWebSearchResponseProvider(LiveLLMToolDecisionResponseProvider):
+    """Compatibility alias for the historical web_search-only live provider."""
+
+    def __init__(
+        self,
+        *,
+        runtime: LLMRuntime | None = None,
+        temperature: float = 0.0,
+        prompt_cache_key: str = "eval:tool_decision",
+    ) -> None:
+        super().__init__(
+            toolset="web_search",
+            runtime=runtime,
+            temperature=temperature,
+            prompt_cache_key=prompt_cache_key,
         )
 
 
@@ -489,6 +520,73 @@ def build_dry_run_eval_engine() -> Any:
     handlers: dict[str, Any] = {"web_search": _DryRunWebSearchHandler()}
     handlers.update(_build_dry_run_memory_handlers())
     return _DryRunToolDecisionEngine(handlers)
+
+
+def _build_live_tool_decision_handlers(toolset: str) -> dict[str, Any]:
+    normalized = str(toolset or "web_search").strip().lower() or "web_search"
+    handlers: dict[str, Any] = {}
+    if normalized in {"web_search", "all"}:
+        handlers["web_search"] = WebSearchToolHandler()
+    if normalized in {"memory", "all"}:
+        handlers.update(_build_dry_run_memory_handlers())
+    if not handlers:
+        handlers["web_search"] = WebSearchToolHandler()
+    return handlers
+
+
+def _build_live_native_tool_specs(handlers: dict[str, Any]) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    for tool_name, handler in handlers.items():
+        if tool_name == "web_search":
+            specs.append(native_web_search_tool_schema())
+            continue
+        generated = build_openai_native_tool_specs({tool_name: handler}, allowed_tool_names={tool_name})
+        if generated:
+            specs.append(generated[0])
+    return specs
+
+
+def _build_legacy_tool_instructions(handlers: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for handler in handlers.values():
+        build_prompt_instruction = getattr(handler, "build_prompt_instruction", None)
+        if not callable(build_prompt_instruction):
+            continue
+        try:
+            instruction = str(build_prompt_instruction() or "").strip()
+        except Exception:
+            instruction = ""
+        if instruction:
+            lines.append(instruction)
+    return "\n".join(lines)
+
+
+def _build_live_tool_policy_lines(tool_names: Sequence[str]) -> list[str]:
+    names = {str(name or "").strip() for name in tool_names}
+    lines: list[str] = []
+    if "web_search" in names:
+        lines.extend(
+            [
+                "web_search 只用于公开网页搜索、最新信息核对、公开 URL 内容提取。",
+                "用户问今天/现在/最新/最近/天气/版本/API 变更等当前公开信息时，应调用 web_search。",
+                "用户要求比较多个公开项目或多个独立搜索目标的最近信息时，优先用 web_search 的 batch_search。",
+                "不要用 web_search 访问 localhost、内网地址、file 路径、登录页、付费页或私密链接。",
+            ]
+        )
+    if "retrieve_memory" in names:
+        lines.extend(
+            [
+                "retrieve_memory 只用于当前上下文不足时回想用户的旧事实、偏好、称呼、约定、项目或过往事件。",
+                "当用户问“之前/以前/上次/来着/还记得”这类旧共同经历、旧项目、旧偏好或旧约定，且本轮提示没有直接给出答案时，应调用 retrieve_memory。",
+            ]
+        )
+    if "read_memory_timeline" in names:
+        lines.append(
+            "read_memory_timeline 只用于用户明确要求查看某一天、日期范围或上午/下午/夜晚/凌晨的原始逐句对话。"
+        )
+    if {"retrieve_memory", "read_memory_timeline"} & names:
+        lines.append("不要为了普通闲聊、稳定常识、或当前上下文已经足够的问题调用记忆工具。")
+    return lines
 
 
 def _case_expectation_met(

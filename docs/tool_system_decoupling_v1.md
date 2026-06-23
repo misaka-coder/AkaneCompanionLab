@@ -160,6 +160,8 @@ INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多�
 
 - **5b 已完成**：`retrieve_memory` 与 `read_memory_timeline` 补齐 `input_schema`，`native_tool_schema` 优先使用 metadata schema，`NativeToolDecisionPlan` 从 hardcoded `web_search` 扩展为 allowlist ∩ handler 的通用 native schema 计划。默认 `NATIVE_TOOL_DECISION_ALLOWLIST` 仍为 `web_search`，所以默认线上行为不变；显式配置 `web_search,retrieve_memory,read_memory_timeline` 时，这两个只读记忆工具可进入 native schema，并会从 legacy prompt 同名工具说明中排除。
 
+- **5c 已完成**：`tool_decision_eval` 的 live provider 已从 `web_search` 专用泛化为 `web_search` / `memory` / `all` 三种 toolset。`scripts/tools/run_tool_decision_eval.py --live-llm --toolset memory|all` 现在会发送对应 native schemas 和最小路由提示；评测逻辑同时识别公开 `tool_call` 与内部 `_native_tool_call` 载体，避免 4a 后 native 结果被误判成 no-call。最近一次实测：`--live-llm --toolset memory --mode both --limit 5` 为 native/legacy 双 1.0；`--live-llm --toolset all --mode native --limit 10` 为 1.0、fallback=0、native_degraded=0。生产默认 allowlist 仍未扩大。
+
 ### 8.1 Provider / Model 能力档案（3a 修正）
 
 3c live eval 暴露了一个关键事实：`protocol="openai"` 不是足够细的能力判断。DeepSeek flash/pro 同属 `api.deepseek.com`、同走 OpenAI-compatible API，但 native tools 与强制 JSON 的组合行为不同：

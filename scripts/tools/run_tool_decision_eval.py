@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from companion_v01.tool_decision_eval import (  # noqa: E402
     DEFAULT_MEMORY_EVAL_CASES,
     DEFAULT_WEB_SEARCH_EVAL_CASES,
-    LiveLLMWebSearchResponseProvider,
+    LiveLLMToolDecisionResponseProvider,
     build_dry_run_eval_engine,
     build_dry_run_memory_eval_engine,
     build_dry_run_web_search_eval_engine,
@@ -85,18 +85,6 @@ def main() -> int:
     modes = ("legacy", "native") if args.mode == "both" else (args.mode,)
 
     toolset = str(args.toolset or "web_search")
-    if bool(args.live_llm) and toolset != "web_search":
-        # The live provider only attaches the web_search native schema today.
-        # Fail closed rather than silently evaluating memory tools against a
-        # web_search-only live prompt (which would produce misleading results).
-        print(
-            "error: --live-llm currently supports only --toolset web_search; "
-            "memory live eval needs a generalized live provider (next slice). "
-            "Use the dry-run (omit --live-llm) for memory/all.",
-            file=sys.stderr,
-        )
-        return 2
-
     if toolset == "memory":
         engine = build_dry_run_memory_eval_engine()
         cases = list(DEFAULT_MEMORY_EVAL_CASES)
@@ -110,7 +98,7 @@ def main() -> int:
     if int(args.limit or 0) > 0:
         cases = cases[: max(0, int(args.limit))]
     response_provider = (
-        LiveLLMWebSearchResponseProvider(temperature=float(args.temperature))
+        LiveLLMToolDecisionResponseProvider(toolset=toolset, temperature=float(args.temperature))
         if bool(args.live_llm)
         else scripted_tool_decision_response_provider
     )

@@ -5,6 +5,7 @@ import unittest
 from companion_v01.tool_decision_eval import (
     DEFAULT_MEMORY_EVAL_CASES,
     DEFAULT_WEB_SEARCH_EVAL_CASES,
+    LiveLLMToolDecisionResponseProvider,
     LiveLLMWebSearchResponseProvider,
     ToolDecisionEvalCase,
     ToolDecisionModelResponse,
@@ -16,7 +17,7 @@ from companion_v01.tool_decision_eval import (
     summarize_tool_decision_eval_results,
     tool_decision_results_as_dicts,
 )
-from companion_v01.tool_invocation import NATIVE_OPENAI, TOOL_SOURCE_FIELD
+from companion_v01.tool_invocation import NATIVE_OPENAI, NATIVE_TOOL_CALL_FIELD, TOOL_SOURCE_FIELD
 
 
 class ToolDecisionEvalTests(unittest.TestCase):
@@ -208,6 +209,38 @@ class ToolDecisionEvalTests(unittest.TestCase):
         self.assertEqual(rows[0]["tool_source"], NATIVE_OPENAI)
         self.assertEqual(rows[0]["normalized_tool_call"]["type"], "web_search")
 
+    def test_native_internal_carrier_is_evaluated_as_tool_call(self) -> None:
+        engine = build_dry_run_memory_eval_engine()
+        cases = [DEFAULT_MEMORY_EVAL_CASES[0]]
+
+        def provider(_case: ToolDecisionEvalCase, _mode: str) -> ToolDecisionModelResponse:
+            return ToolDecisionModelResponse(
+                final_output={
+                    NATIVE_TOOL_CALL_FIELD: {
+                        "type": "retrieve_memory",
+                        "query": "我最喜欢的咖啡",
+                        TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                    },
+                    "tool_call": None,
+                },
+                native_sent=True,
+                native_extracted=True,
+            )
+
+        results = run_tool_decision_eval(
+            cases=cases,
+            engine=engine,
+            response_provider=provider,
+            modes=("native",),
+            execute_tools=True,
+        )
+
+        self.assertTrue(results[0].called_tool)
+        self.assertEqual(results[0].tool_name, "retrieve_memory")
+        self.assertEqual(results[0].tool_source, NATIVE_OPENAI)
+        self.assertTrue(results[0].validation_ok)
+        self.assertEqual(results[0].execution_status, "ok")
+
     def test_live_provider_uses_native_schema_and_metric_diff(self) -> None:
         runtime = FakeRuntime(
             result={
@@ -229,6 +262,34 @@ class ToolDecisionEvalTests(unittest.TestCase):
         self.assertFalse(response.fallback_hit)
         self.assertEqual(runtime.calls[0]["native_tools"][0]["function"]["name"], "web_search")
         self.assertNotIn("搜索格式为", runtime.calls[0]["system_prompt"])
+
+    def test_live_provider_can_send_memory_native_schemas(self) -> None:
+        runtime = FakeRuntime(
+            result={
+                NATIVE_TOOL_CALL_FIELD: {
+                    "type": "retrieve_memory",
+                    "query": "我最喜欢的咖啡",
+                    TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                },
+                "tool_call": None,
+            },
+            metric_delta={"native_tool_decision_sent": 1, "native_tool_call_extracted": 1},
+        )
+        provider = LiveLLMToolDecisionResponseProvider(runtime=runtime, toolset="memory")
+
+        response = provider(DEFAULT_MEMORY_EVAL_CASES[0], "native")
+
+        self.assertTrue(response.native_sent)
+        self.assertTrue(response.native_extracted)
+        self.assertEqual(
+            [item["function"]["name"] for item in runtime.calls[0]["native_tools"]],
+            ["retrieve_memory", "read_memory_timeline"],
+        )
+        self.assertIn("retrieve_memory", runtime.calls[0]["system_prompt"])
+        self.assertIn("provider native tool_calls", runtime.calls[0]["system_prompt"])
+        self.assertNotIn("web_search 只用于", runtime.calls[0]["system_prompt"])
+        self.assertNotIn("格式为", runtime.calls[0]["system_prompt"])
+        self.assertEqual(response.final_output[NATIVE_TOOL_CALL_FIELD]["type"], "retrieve_memory")
 
     def test_live_provider_captures_last_error_detail_when_runtime_errors(self) -> None:
         runtime = FakeRuntime(
@@ -252,6 +313,17 @@ class ToolDecisionEvalTests(unittest.TestCase):
 
         self.assertIsNone(runtime.calls[0]["native_tools"])
         self.assertIn("搜索格式为", runtime.calls[0]["system_prompt"])
+
+    def test_live_provider_memory_legacy_prompt_keeps_memory_instructions(self) -> None:
+        runtime = FakeRuntime(result={"speech": "", "tool_call": None})
+        provider = LiveLLMToolDecisionResponseProvider(runtime=runtime, toolset="memory")
+
+        provider(DEFAULT_MEMORY_EVAL_CASES[0], "legacy")
+
+        self.assertIsNone(runtime.calls[0]["native_tools"])
+        self.assertIn("retrieve_memory", runtime.calls[0]["system_prompt"])
+        self.assertIn("read_memory_timeline", runtime.calls[0]["system_prompt"])
+        self.assertIn("格式为", runtime.calls[0]["system_prompt"])
 
     def test_native_degraded_case_is_excluded_from_comparison(self) -> None:
         engine = build_dry_run_web_search_eval_engine()
