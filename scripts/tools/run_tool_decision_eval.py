@@ -10,11 +10,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from companion_v01.tool_decision_eval import (  # noqa: E402
+    DEFAULT_MEMORY_EVAL_CASES,
     DEFAULT_WEB_SEARCH_EVAL_CASES,
     LiveLLMWebSearchResponseProvider,
+    build_dry_run_eval_engine,
+    build_dry_run_memory_eval_engine,
     build_dry_run_web_search_eval_engine,
     run_tool_decision_eval,
-    scripted_web_search_response_provider,
+    scripted_tool_decision_response_provider,
     summarize_tool_decision_eval_results,
     tool_decision_results_as_dicts,
 )
@@ -32,6 +35,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["legacy", "native", "both"],
         default="both",
         help="Which tool-call channel fixture to evaluate.",
+    )
+    parser.add_argument(
+        "--toolset",
+        choices=["web_search", "memory", "all"],
+        default="web_search",
+        help=(
+            "Which tool family to evaluate. Default web_search keeps existing "
+            "behavior. memory/all cover the read-only memory tools (dry-run only)."
+        ),
     )
     parser.add_argument(
         "--summary-path",
@@ -71,14 +83,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_arg_parser().parse_args()
     modes = ("legacy", "native") if args.mode == "both" else (args.mode,)
-    engine = build_dry_run_web_search_eval_engine()
-    cases = list(DEFAULT_WEB_SEARCH_EVAL_CASES)
+
+    toolset = str(args.toolset or "web_search")
+    if bool(args.live_llm) and toolset != "web_search":
+        # The live provider only attaches the web_search native schema today.
+        # Fail closed rather than silently evaluating memory tools against a
+        # web_search-only live prompt (which would produce misleading results).
+        print(
+            "error: --live-llm currently supports only --toolset web_search; "
+            "memory live eval needs a generalized live provider (next slice). "
+            "Use the dry-run (omit --live-llm) for memory/all.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if toolset == "memory":
+        engine = build_dry_run_memory_eval_engine()
+        cases = list(DEFAULT_MEMORY_EVAL_CASES)
+    elif toolset == "all":
+        engine = build_dry_run_eval_engine()
+        cases = list(DEFAULT_WEB_SEARCH_EVAL_CASES) + list(DEFAULT_MEMORY_EVAL_CASES)
+    else:
+        engine = build_dry_run_web_search_eval_engine()
+        cases = list(DEFAULT_WEB_SEARCH_EVAL_CASES)
+
     if int(args.limit or 0) > 0:
         cases = cases[: max(0, int(args.limit))]
     response_provider = (
         LiveLLMWebSearchResponseProvider(temperature=float(args.temperature))
         if bool(args.live_llm)
-        else scripted_web_search_response_provider
+        else scripted_tool_decision_response_provider
     )
     results = run_tool_decision_eval(
         cases=cases,

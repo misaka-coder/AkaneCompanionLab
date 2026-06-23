@@ -9,7 +9,14 @@ from .tool_orchestration_engine import native_web_search_tool_schema
 from .tool_orchestration_engine import execute_tool_invocation, normalize_tool_invocation
 from .tool_orchestration_engine import validate_legacy_tool_call, validate_tool_invocation
 from .llm_runtime import LLMRuntime
-from .tool_runtime import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, WebSearchToolHandler
+from .tool_runtime import (
+    BaseToolHandler,
+    ReadMemoryTimelineToolHandler,
+    RetrieveMemoryToolHandler,
+    ToolExecutionContext,
+    ToolExecutionResult,
+    WebSearchToolHandler,
+)
 
 
 ModeName = str
@@ -133,6 +140,52 @@ DEFAULT_WEB_SEARCH_EVAL_CASES: tuple[ToolDecisionEvalCase, ...] = (
         user_prompt="看看 F:\\Akane\\secret.txt 里写了什么。",
         expect_tool=False,
         category="local_path",
+    ),
+)
+
+
+DEFAULT_MEMORY_EVAL_CASES: tuple[ToolDecisionEvalCase, ...] = (
+    ToolDecisionEvalCase(
+        eval_id="recall_coffee_preference",
+        user_prompt="你还记得我之前跟你说过我最喜欢喝什么咖啡吗？",
+        expect_tool=True,
+        expected_tool_name="retrieve_memory",
+        expected_arguments={"query": "我最喜欢的咖啡"},
+        category="memory_recall",
+    ),
+    ToolDecisionEvalCase(
+        eval_id="recall_shared_project",
+        user_prompt="我们之前一起弄的那个项目叫什么名字来着？",
+        expect_tool=True,
+        expected_tool_name="retrieve_memory",
+        expected_arguments={"query": "一起做的项目名称"},
+        category="memory_recall",
+    ),
+    ToolDecisionEvalCase(
+        eval_id="read_specific_morning",
+        user_prompt="把 2026-06-01 上午我们聊的原话翻出来给我看看。",
+        expect_tool=True,
+        expected_tool_name="read_memory_timeline",
+        expected_arguments={
+            "date_from": "2026-06-01",
+            "date_to": "2026-06-01",
+            "time_periods": ["morning"],
+        },
+        category="timeline_read",
+    ),
+    ToolDecisionEvalCase(
+        eval_id="casual_no_memory",
+        user_prompt="今天有点闷，陪我说说话吧。",
+        expect_tool=False,
+        expected_tool_name="retrieve_memory",
+        category="casual",
+    ),
+    ToolDecisionEvalCase(
+        eval_id="stable_fact_no_memory",
+        user_prompt="一公里等于多少米？",
+        expect_tool=False,
+        expected_tool_name="retrieve_memory",
+        category="stable_fact",
     ),
 )
 
@@ -373,8 +426,69 @@ def scripted_web_search_response_provider(
     )
 
 
+# The scripted provider is already tool-agnostic (it keys off
+# case.expected_tool_name / expected_arguments). Expose a neutral name for
+# memory / future toolsets while keeping the historical web_search alias.
+scripted_tool_decision_response_provider = scripted_web_search_response_provider
+
+
 def build_dry_run_web_search_eval_engine() -> Any:
     return _DryRunToolDecisionEngine({"web_search": _DryRunWebSearchHandler()})
+
+
+def _dry_run_retrieve_memory(*, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+    query = str((call or {}).get("query") or "").strip()
+    return ToolExecutionResult(
+        tool_type="retrieve_memory",
+        followup_context=f"[dry_run] retrieve_memory query={query}",
+        state_updates={"retrieve_memory_status": "dry_run"},
+    )
+
+
+class _StubTimelineService:
+    """Minimal timeline service for dry-run eval: no DB, no real reads."""
+
+    _ALLOWED_PERIODS = ("morning", "afternoon", "night", "midnight")
+
+    def normalize_time_periods(self, values: Any) -> list[str]:
+        normalized: list[str] = []
+        for value in values or []:
+            period = str(value or "").strip().lower()
+            if period in self._ALLOWED_PERIODS and period not in normalized:
+                normalized.append(period)
+        return normalized
+
+    def read(self, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "reason": "",
+            "date_from": str(kwargs.get("date_from") or ""),
+            "date_to": str(kwargs.get("date_to") or ""),
+            "time_periods": list(kwargs.get("time_periods") or []),
+            "active_dates": [],
+            "message_count": 0,
+        }
+
+    def render_tool_context(self, result: dict[str, Any]) -> str:
+        return f"[dry_run] read_memory_timeline status={str((result or {}).get('status') or '')}"
+
+
+def _build_dry_run_memory_handlers() -> dict[str, Any]:
+    return {
+        "retrieve_memory": RetrieveMemoryToolHandler(retrieve_fn=_dry_run_retrieve_memory),
+        "read_memory_timeline": ReadMemoryTimelineToolHandler(timeline_service=_StubTimelineService()),
+    }
+
+
+def build_dry_run_memory_eval_engine() -> Any:
+    return _DryRunToolDecisionEngine(_build_dry_run_memory_handlers())
+
+
+def build_dry_run_eval_engine() -> Any:
+    """Combined dry-run engine: web_search + read-only memory tools."""
+    handlers: dict[str, Any] = {"web_search": _DryRunWebSearchHandler()}
+    handlers.update(_build_dry_run_memory_handlers())
+    return _DryRunToolDecisionEngine(handlers)
 
 
 def _case_expectation_met(

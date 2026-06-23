@@ -3,12 +3,15 @@ from __future__ import annotations
 import unittest
 
 from companion_v01.tool_decision_eval import (
+    DEFAULT_MEMORY_EVAL_CASES,
     DEFAULT_WEB_SEARCH_EVAL_CASES,
     LiveLLMWebSearchResponseProvider,
     ToolDecisionEvalCase,
     ToolDecisionModelResponse,
+    build_dry_run_memory_eval_engine,
     build_dry_run_web_search_eval_engine,
     run_tool_decision_eval,
+    scripted_tool_decision_response_provider,
     scripted_web_search_response_provider,
     summarize_tool_decision_eval_results,
     tool_decision_results_as_dicts,
@@ -35,6 +38,37 @@ class ToolDecisionEvalTests(unittest.TestCase):
         self.assertEqual(summary["modes"]["legacy"]["legacy_source_call_count"], 4)
         self.assertEqual(summary["modes"]["native"]["execution_success_rate"], 1.0)
         self.assertEqual(summary["comparison"]["native_vs_legacy_fallback_hit_delta"], 0)
+
+    def test_memory_suite_runs_native_and_legacy_through_real_handlers(self) -> None:
+        engine = build_dry_run_memory_eval_engine()
+
+        results = run_tool_decision_eval(
+            cases=DEFAULT_MEMORY_EVAL_CASES,
+            engine=engine,
+            response_provider=scripted_tool_decision_response_provider,
+            execute_tools=True,
+        )
+        summary = summarize_tool_decision_eval_results(results)
+
+        self.assertEqual(len(results), len(DEFAULT_MEMORY_EVAL_CASES) * 2)
+        # Both memory tools normalize/validate/execute cleanly in both channels.
+        self.assertEqual(summary["modes"]["legacy"]["expectation_match_rate"], 1.0)
+        self.assertEqual(summary["modes"]["native"]["expectation_match_rate"], 1.0)
+        self.assertEqual(summary["modes"]["native"]["execution_success_rate"], 1.0)
+        self.assertEqual(summary["modes"]["legacy"]["validation_success_rate"], 1.0)
+        self.assertEqual(summary["comparison"]["native_vs_legacy_fallback_hit_delta"], 0)
+        # Three expected-tool cases (retrieve x2, timeline x1) carry the source tag.
+        self.assertEqual(summary["modes"]["native"]["native_source_call_count"], 3)
+        self.assertEqual(summary["modes"]["legacy"]["legacy_source_call_count"], 3)
+        # No web_search calls leaked into the memory suite.
+        self.assertEqual(summary["modes"]["native"]["web_search_call_count"], 0)
+
+        native_names = {
+            result.tool_name
+            for result in results
+            if result.mode == "native" and result.called_tool
+        }
+        self.assertEqual(native_names, {"retrieve_memory", "read_memory_timeline"})
 
     def test_bad_tool_arguments_are_counted_as_validation_failure(self) -> None:
         engine = build_dry_run_web_search_eval_engine()
