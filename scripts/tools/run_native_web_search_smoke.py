@@ -16,6 +16,9 @@ import config  # noqa: E402
 from companion_v01.capability_registry import CapabilitySelection  # noqa: E402
 from companion_v01.engine import AkaneMemoryEngine  # noqa: E402
 from companion_v01.tool_runtime import (  # noqa: E402
+    CheckInventoryToolHandler,
+    InspectMediaInfoToolHandler,
+    ListRemindersToolHandler,
     ReadMemoryTimelineToolHandler,
     RetrieveMemoryToolHandler,
     ToolExecutionContext,
@@ -33,7 +36,9 @@ def toolset_allowlist(toolset: str) -> str:
     if normalized == "memory":
         return "retrieve_memory,read_memory_timeline"
     if normalized == "all":
-        return "web_search,retrieve_memory,read_memory_timeline"
+        # Mirror the shipped default native allowlist (the full set that fires
+        # under native-first), so `all` is a real full-toolset smoke.
+        return "web_search,retrieve_memory,read_memory_timeline,list_reminders,check_inventory,inspect_media_info"
     return "web_search"
 
 
@@ -165,6 +170,84 @@ class SmokeReadMemoryTimelineHandler(ReadMemoryTimelineToolHandler):
         )
 
 
+class SmokeListRemindersHandler(ListRemindersToolHandler):
+    """Deterministic list_reminders executor: canned reminders, no store."""
+
+    def __init__(self) -> None:
+        super().__init__(store=None)
+        self.executed_calls: list[dict[str, Any]] = []
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        self.executed_calls.append(
+            {str(key): value for key, value in dict(call or {}).items() if not str(key).startswith("_tool_")}
+        )
+        status = str(call.get("status") or "pending")
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[{"type": "reminder_list", "status": status, "items": []}],
+            followup_context=(
+                "【smoke list_reminders 结果】\n"
+                f"状态：{status}\n"
+                "1. [今晚 20:00] 给妈妈打电话（smoke 固定提醒，用来验证 native 提醒工具轮能把结果交给最终回复）。"
+            ),
+            state_updates={"reminder_list_status": "ok", "reminder_list_smoke": True},
+        )
+
+
+class SmokeCheckInventoryHandler(CheckInventoryToolHandler):
+    """Deterministic check_inventory executor: canned inventory, no gift service."""
+
+    def __init__(self) -> None:
+        super().__init__(gift_service=None)
+        self.executed_calls: list[dict[str, Any]] = []
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        self.executed_calls.append(
+            {str(key): value for key, value in dict(call or {}).items() if not str(key).startswith("_tool_")}
+        )
+        scope = str(call.get("scope") or "pending_recent")
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[{"type": "inventory_snapshot", "scope": scope, "items": [], "total_count": 1, "overflow_count": 0}],
+            followup_context=(
+                "【smoke check_inventory 结果】\n"
+                f"范围：{scope}\n"
+                "1. 一束向日葵（smoke 固定库存，用来验证 native 库存工具轮能把结果交给最终回复）。"
+            ),
+            state_updates={"inventory_status": "ok", "inventory_smoke": True},
+        )
+
+
+class SmokeInspectMediaInfoHandler(InspectMediaInfoToolHandler):
+    """Deterministic inspect_media_info executor: canned specs, no disk."""
+
+    def __init__(self) -> None:
+        super().__init__(generated_file_service=None)
+        self.executed_calls: list[dict[str, Any]] = []
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        self.executed_calls.append(
+            {str(key): value for key, value in dict(call or {}).items() if not str(key).startswith("_tool_")}
+        )
+        source_id = str(call.get("source_id") or "")
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "media_info_inspected",
+                    "source_id": source_id,
+                    "media_info": {"duration_seconds": 183, "codec": "aac", "sample_rate": 44100, "channels": 2},
+                }
+            ],
+            followup_context=(
+                "【smoke inspect_media_info 结果】\n"
+                f"目标：{source_id}\n"
+                "规格：时长 3 分 3 秒、编码 aac、采样率 44100Hz、双声道（smoke 固定规格，用来验证 native 媒体工具轮能把结果交给最终回复）。"
+            ),
+            state_updates={"media_info_status": "ok", "media_info_smoke": True},
+        )
+
+
 def _build_smoke_tools(
     engine: AkaneMemoryEngine,
     *,
@@ -185,6 +268,30 @@ def _build_smoke_tools(
             layer_names=("memory",),
         )
         return handlers, selection
+
+    if normalized == "all":
+        all_web_search = (
+            engine.tool_handlers.get("web_search")
+            if real_web_search
+            else SmokeWebSearchToolHandler(config_base_dir=base_dir)
+        )
+        if all_web_search is None:
+            all_web_search = SmokeWebSearchToolHandler(config_base_dir=base_dir)
+        all_handlers: dict[str, Any] = {
+            "web_search": all_web_search,
+            "retrieve_memory": SmokeRetrieveMemoryHandler(),
+            "read_memory_timeline": SmokeReadMemoryTimelineHandler(),
+            "list_reminders": SmokeListRemindersHandler(),
+            "check_inventory": SmokeCheckInventoryHandler(),
+            "inspect_media_info": SmokeInspectMediaInfoHandler(),
+        }
+        all_selection = CapabilitySelection(
+            light_hints=("本轮 smoke 暴露默认 native allowlist 全集，用于验证 native 工具轮在全工具下的闭环。",),
+            tool_names=tuple(all_handlers.keys()),
+            module_names=("native_all_smoke",),
+            layer_names=("all",),
+        )
+        return all_handlers, all_selection
 
     web_search_handler = (
         engine.tool_handlers.get("web_search")
@@ -213,9 +320,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--toolset",
-        choices=["web_search", "memory"],
+        choices=["web_search", "memory", "all"],
         default="web_search",
-        help="Which native tool family to smoke. Default web_search keeps existing behavior.",
+        help=(
+            "Which native tool family to smoke. Default web_search keeps existing behavior. "
+            "all exposes the full default native allowlist."
+        ),
     )
     parser.add_argument(
         "--message",

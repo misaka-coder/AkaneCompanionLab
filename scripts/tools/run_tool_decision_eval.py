@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from companion_v01.tool_decision_eval import (  # noqa: E402
     DEFAULT_MEMORY_EVAL_CASES,
+    DEFAULT_READ_TIER_EVAL_CASES,
     DEFAULT_WEB_SEARCH_EVAL_CASES,
     LiveLLMToolDecisionResponseProvider,
     build_dry_run_eval_engine,
@@ -90,7 +91,11 @@ def main() -> int:
         cases = list(DEFAULT_MEMORY_EVAL_CASES)
     elif toolset == "all":
         engine = build_dry_run_eval_engine()
-        cases = list(DEFAULT_WEB_SEARCH_EVAL_CASES) + list(DEFAULT_MEMORY_EVAL_CASES)
+        cases = (
+            list(DEFAULT_WEB_SEARCH_EVAL_CASES)
+            + list(DEFAULT_MEMORY_EVAL_CASES)
+            + list(DEFAULT_READ_TIER_EVAL_CASES)
+        )
     else:
         engine = build_dry_run_web_search_eval_engine()
         cases = list(DEFAULT_WEB_SEARCH_EVAL_CASES)

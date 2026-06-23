@@ -18,8 +18,10 @@ if str(SCRIPT_DIR) not in sys.path:
 import config  # noqa: E402
 from companion_v01.tool_decision_eval import (  # noqa: E402
     DEFAULT_MEMORY_EVAL_CASES,
+    DEFAULT_READ_TIER_EVAL_CASES,
     DEFAULT_WEB_SEARCH_EVAL_CASES,
     LiveLLMToolDecisionResponseProvider,
+    build_dry_run_eval_engine,
     build_dry_run_memory_eval_engine,
     build_dry_run_web_search_eval_engine,
     run_tool_decision_eval,
@@ -48,9 +50,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--toolset",
-        choices=["web_search", "memory"],
+        choices=["web_search", "memory", "all"],
         default="web_search",
-        help="Which native tool family to gate. Default web_search keeps existing behavior.",
+        help=(
+            "Which native tool family to gate. Default web_search keeps existing behavior. "
+            "all gates the full default native allowlist."
+        ),
     )
     parser.add_argument("--live-llm", action="store_true", help="Run the real LLM tool-decision eval.")
     parser.add_argument("--smoke", action="store_true", help="Run real AkaneMemoryEngine smoke checks.")
@@ -188,6 +193,13 @@ def run_eval_summary(*, live_llm: bool, limit: int, toolset: str = "web_search")
     if normalized == "memory":
         cases = list(DEFAULT_MEMORY_EVAL_CASES)
         engine = build_dry_run_memory_eval_engine()
+    elif normalized == "all":
+        cases = (
+            list(DEFAULT_WEB_SEARCH_EVAL_CASES)
+            + list(DEFAULT_MEMORY_EVAL_CASES)
+            + list(DEFAULT_READ_TIER_EVAL_CASES)
+        )
+        engine = build_dry_run_eval_engine()
     else:
         cases = list(DEFAULT_WEB_SEARCH_EVAL_CASES)
         engine = build_dry_run_web_search_eval_engine()

@@ -12,6 +12,9 @@ from .tool_orchestration_engine import validate_legacy_tool_call, validate_tool_
 from .llm_runtime import LLMRuntime
 from .tool_runtime import (
     BaseToolHandler,
+    CheckInventoryToolHandler,
+    InspectMediaInfoToolHandler,
+    ListRemindersToolHandler,
     ReadMemoryTimelineToolHandler,
     RetrieveMemoryToolHandler,
     ToolExecutionContext,
@@ -186,6 +189,58 @@ DEFAULT_MEMORY_EVAL_CASES: tuple[ToolDecisionEvalCase, ...] = (
         user_prompt="一公里等于多少米？",
         expect_tool=False,
         expected_tool_name="retrieve_memory",
+        category="stable_fact",
+    ),
+)
+
+
+# 6b put list_reminders / check_inventory / inspect_media_info into the default
+# native allowlist but never gave them eval coverage. These cases close that gap
+# so the `all` toolset validates the full set of tools that fire under native-first.
+DEFAULT_READ_TIER_EVAL_CASES: tuple[ToolDecisionEvalCase, ...] = (
+    ToolDecisionEvalCase(
+        eval_id="list_pending_reminders",
+        user_prompt="看看我现在有哪些提醒？",
+        expect_tool=True,
+        expected_tool_name="list_reminders",
+        expected_arguments={"status": "pending"},
+        category="reminder_list",
+    ),
+    ToolDecisionEvalCase(
+        eval_id="casual_no_list_reminders",
+        user_prompt="今天天气真不错，心情也好。",
+        expect_tool=False,
+        expected_tool_name="list_reminders",
+        category="casual",
+    ),
+    ToolDecisionEvalCase(
+        eval_id="check_pending_gifts",
+        user_prompt="我手边还有哪些没拆的礼物？",
+        expect_tool=True,
+        expected_tool_name="check_inventory",
+        expected_arguments={"scope": "pending_recent"},
+        category="inventory_check",
+    ),
+    ToolDecisionEvalCase(
+        eval_id="thanks_no_check_inventory",
+        user_prompt="谢谢你一直陪着我。",
+        expect_tool=False,
+        expected_tool_name="check_inventory",
+        category="casual",
+    ),
+    ToolDecisionEvalCase(
+        eval_id="inspect_audio_specs",
+        user_prompt="看看 audio_001 这段音频多长、码率多少。",
+        expect_tool=True,
+        expected_tool_name="inspect_media_info",
+        expected_arguments={"source_id": "audio_001"},
+        category="media_inspect",
+    ),
+    ToolDecisionEvalCase(
+        eval_id="stable_fact_no_inspect_media",
+        user_prompt="一般一首歌大概几分钟？",
+        expect_tool=False,
+        expected_tool_name="inspect_media_info",
         category="stable_fact",
     ),
 )
@@ -515,10 +570,52 @@ def build_dry_run_memory_eval_engine() -> Any:
     return _DryRunToolDecisionEngine(_build_dry_run_memory_handlers())
 
 
+class _StubReminderStore:
+    """Minimal reminder store for dry-run eval: canned list, no DB."""
+
+    def list_reminders(self, *, profile_user_id: str, session_id: str, status: str, limit: int) -> list[dict[str, Any]]:
+        reminders = [
+            {"reminder_id": "rem_dry_1", "content": "晚上八点给妈妈打电话", "due_ts": 0, "raw_time_text": "晚上八点"},
+        ]
+        return reminders[: max(1, int(limit or 5))]
+
+
+class _StubGiftInventoryService:
+    """Minimal gift service for dry-run eval: canned inventory, no store."""
+
+    def list_inventory(self, *, profile_user_id: str, session_id: str, scope: str, limit: int) -> dict[str, Any]:
+        return {
+            "scope": str(scope or "pending_recent"),
+            "items": [{"summary": "一束向日葵"}],
+            "total_count": 1,
+            "overflow_count": 0,
+        }
+
+
+class _StubMediaInfoService:
+    """Minimal generated-file service for dry-run eval: canned specs, no disk."""
+
+    def inspect_media_info(self, *, profile_user_id: str, session_id: str, source_target: str, timestamp: int) -> dict[str, Any]:
+        return {
+            "media_info": {"duration_seconds": 183, "codec": "aac", "sample_rate": 44100, "channels": 2},
+            "followup_context": f"[dry_run] inspect_media_info source={source_target} duration=183s",
+        }
+
+
+def _build_dry_run_read_tier_handlers() -> dict[str, Any]:
+    return {
+        "list_reminders": ListRemindersToolHandler(store=_StubReminderStore()),
+        "check_inventory": CheckInventoryToolHandler(gift_service=_StubGiftInventoryService()),
+        "inspect_media_info": InspectMediaInfoToolHandler(generated_file_service=_StubMediaInfoService()),
+    }
+
+
 def build_dry_run_eval_engine() -> Any:
-    """Combined dry-run engine: web_search + read-only memory tools."""
+    """Combined dry-run engine: the full default native allowlist (web_search +
+    read-only memory tools + reminder/inventory/media read tools)."""
     handlers: dict[str, Any] = {"web_search": _DryRunWebSearchHandler()}
     handlers.update(_build_dry_run_memory_handlers())
+    handlers.update(_build_dry_run_read_tier_handlers())
     return _DryRunToolDecisionEngine(handlers)
 
 
@@ -529,6 +626,8 @@ def _build_live_tool_decision_handlers(toolset: str) -> dict[str, Any]:
         handlers["web_search"] = WebSearchToolHandler()
     if normalized in {"memory", "all"}:
         handlers.update(_build_dry_run_memory_handlers())
+    if normalized in {"read_tier", "all"}:
+        handlers.update(_build_dry_run_read_tier_handlers())
     if not handlers:
         handlers["web_search"] = WebSearchToolHandler()
     return handlers
@@ -586,6 +685,18 @@ def _build_live_tool_policy_lines(tool_names: Sequence[str]) -> list[str]:
         )
     if {"retrieve_memory", "read_memory_timeline"} & names:
         lines.append("不要为了普通闲聊、稳定常识、或当前上下文已经足够的问题调用记忆工具。")
+    if "list_reminders" in names:
+        lines.append(
+            "list_reminders 只用于用户想查看自己当前有哪些提醒；普通闲聊或设置新提醒时不要调用。"
+        )
+    if "check_inventory" in names:
+        lines.append(
+            "check_inventory 只用于用户问手边或礼物箱里有哪些礼物；与礼物无关的闲聊不要调用。"
+        )
+    if "inspect_media_info" in names:
+        lines.append(
+            "inspect_media_info 只用于用户问某个已有音视频/文件的时长、编码、采样率、码率、分辨率、帧率等真实规格；泛泛的常识问题不要调用。"
+        )
     return lines
 
 
