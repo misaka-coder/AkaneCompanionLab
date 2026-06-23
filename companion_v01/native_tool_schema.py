@@ -7,6 +7,30 @@ from typing import Any, Mapping
 NATIVE_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 NATIVE_TOOL_DESCRIPTION_MAX_CHARS = 900
 
+# Legacy prompt instructions teach the model to hand-build the old tool_call
+# JSON envelope (e.g. 格式为 {"type":"...", ...}). On the native channel the
+# provider owns the call envelope, so those clauses are noise — and actively
+# misleading. We strip them when a handler description falls back to the legacy
+# prompt text. build_prompt_instruction itself is left untouched so the legacy
+# prompt path keeps emitting the exact same instructions.
+_LEGACY_ENVELOPE_MARKERS = ("格式为", "调用格式", "tool_call", '{"type"')
+
+
+def _strip_legacy_envelope_clauses(text: str) -> str:
+    if not text:
+        return text
+    # Clauses are delimited by the full-width period; keep the delimiter with
+    # its clause so reassembly is lossless.
+    segments = re.split(r"(?<=。)", text)
+    kept = [
+        segment
+        for segment in segments
+        if not any(marker in segment for marker in _LEGACY_ENVELOPE_MARKERS)
+    ]
+    cleaned = "".join(kept).strip()
+    # Never let sanitizing empty out a description; fall back to the original.
+    return cleaned or text
+
 
 def build_openai_native_tool_specs(
     handlers: Mapping[str, Any] | None,
@@ -66,6 +90,7 @@ def _handler_description(handler: Any, *, tool_name: str) -> str:
     if not description:
         description = f"Call Akane tool {tool_name}."
     description = " ".join(description.split())
+    description = _strip_legacy_envelope_clauses(description)
     return description[:NATIVE_TOOL_DESCRIPTION_MAX_CHARS]
 
 

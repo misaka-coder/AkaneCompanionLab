@@ -564,6 +564,59 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertIn("本轮不要再调用工具", context)
 
 
+class NativeDescriptionSanitizationTests(unittest.TestCase):
+    """N1a: legacy tool_call envelope teaching is stripped from native descriptions."""
+
+    def test_strip_removes_envelope_clauses_keeps_semantics(self) -> None:
+        from companion_v01.native_tool_schema import _strip_legacy_envelope_clauses
+
+        text = (
+            "- demo：当用户要做某事时使用。"
+            "格式为 {\"type\":\"demo\",\"q\":\"x\"}。"
+            "q 要写具体内容，不要写空泛句。"
+        )
+        cleaned = _strip_legacy_envelope_clauses(text)
+        self.assertNotIn("格式为", cleaned)
+        self.assertNotIn('{"type"', cleaned)
+        # Real semantics (what/when to use) survive.
+        self.assertIn("当用户要做某事时使用", cleaned)
+        self.assertIn("q 要写具体内容", cleaned)
+
+    def test_strip_never_returns_empty(self) -> None:
+        from companion_v01.native_tool_schema import _strip_legacy_envelope_clauses
+
+        # If a description is *only* an envelope clause, fall back to the original
+        # rather than emit an empty tool description.
+        only_envelope = "格式为 {\"type\":\"x\"}。"
+        self.assertEqual(_strip_legacy_envelope_clauses(only_envelope), only_envelope)
+
+    def test_fallback_handler_descriptions_have_no_legacy_envelope(self) -> None:
+        # Tools without a precise input_schema fall back to build_prompt_instruction
+        # (written for the legacy prompt). The native spec must not carry the
+        # tool_call envelope teaching out of that fallback text.
+        from companion_v01.native_tool_schema import build_openai_native_tool_specs
+        from companion_v01.tool_runtime import CallNPCToolHandler, ComposeFileToolHandler
+
+        handlers = {
+            "compose_file": ComposeFileToolHandler(generated_file_service=None),
+            "call_npc": CallNPCToolHandler(
+                npc_runtime=None,
+                describe_scene=lambda _ctx: "",
+                build_followup_context=lambda _ctx: "",
+            ),
+        }
+        specs = build_openai_native_tool_specs(handlers)
+        self.assertEqual(len(specs), 2)
+        for spec in specs:
+            desc = spec["function"]["description"]
+            self.assertTrue(desc.strip(), spec["function"]["name"])
+            self.assertNotIn("格式为", desc)
+            self.assertNotIn("tool_call", desc)
+            self.assertNotIn('{"type"', desc)
+            # Generic fallback parameters stay permissive (no precise schema yet).
+            self.assertEqual(spec["function"]["parameters"]["additionalProperties"], True)
+
+
 class FakePromptHandler:
     def __init__(self, name: str) -> None:
         self.name = name
