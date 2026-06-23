@@ -749,7 +749,7 @@ class LLMRuntime:
                 for event in tap.feed(text):
                     yield event
                 if not tool_probe_disabled:
-                    probe_state, probe_call = self._try_extract_leading_tool_call("".join(raw_parts))
+                    probe_state, probe_call = self._try_extract_stream_tool_call("".join(raw_parts))
                     if probe_state == "object" and isinstance(probe_call, dict):
                         if early_tool_call_validator is None or early_tool_call_validator(probe_call):
                             early_tool_call = dict(probe_call)
@@ -804,7 +804,7 @@ class LLMRuntime:
             early_tool_call=early_tool_call,
         )
 
-    def _try_extract_leading_tool_call(self, text: str) -> tuple[str, dict[str, Any] | None]:
+    def _try_extract_stream_tool_call(self, text: str) -> tuple[str, dict[str, Any] | None]:
         raw = str(text or "")
         length = len(raw)
         idx = self._skip_json_ws(raw, 0)
@@ -812,40 +812,51 @@ class LLMRuntime:
             return "pending", None
         if raw[idx] != "{":
             return "none", None
-        idx = self._skip_json_ws(raw, idx + 1)
-        if idx >= length:
-            return "pending", None
-        if raw[idx] != '"':
-            return "pending", None
         decoder = json.JSONDecoder()
-        try:
-            key, key_end = decoder.raw_decode(raw, idx)
-        except json.JSONDecodeError:
+        idx += 1
+
+        while True:
+            idx = self._skip_json_ws(raw, idx)
+            if idx >= length:
+                return "pending", None
+            if raw[idx] == "}":
+                return "none", None
+            if raw[idx] != '"':
+                return "pending", None
+            try:
+                key, key_end = decoder.raw_decode(raw, idx)
+            except json.JSONDecodeError:
+                return "pending", None
+            if not isinstance(key, str):
+                return "none", None
+            idx = self._skip_json_ws(raw, key_end)
+            if idx >= length:
+                return "pending", None
+            if raw[idx] != ":":
+                return "pending", None
+            idx = self._skip_json_ws(raw, idx + 1)
+            if idx >= length:
+                return "pending", None
+            try:
+                value, value_end = decoder.raw_decode(raw, idx)
+            except json.JSONDecodeError:
+                return "pending", None
+            if key == "tool_call":
+                if value is None:
+                    return "null", None
+                return ("object", value) if isinstance(value, dict) else ("none", None)
+            idx = self._skip_json_ws(raw, value_end)
+            if idx >= length:
+                return "pending", None
+            if raw[idx] == ",":
+                idx += 1
+                continue
+            if raw[idx] == "}":
+                return "none", None
             return "pending", None
-        if key != "tool_call":
-            return "none", None
-        idx = self._skip_json_ws(raw, key_end)
-        if idx >= length:
-            return "pending", None
-        if raw[idx] != ":":
-            return "pending", None
-        idx = self._skip_json_ws(raw, idx + 1)
-        if idx >= length:
-            return "pending", None
-        if raw.startswith("null", idx):
-            return "null", None
-        if "null".startswith(raw[idx: min(length, idx + 4)]):
-            return "pending", None
-        if raw[idx] != "{":
-            return "none", None
-        value_end = self._find_json_value_end(raw, idx)
-        if value_end is None:
-            return "pending", None
-        try:
-            value = json.loads(raw[idx:value_end])
-        except Exception:
-            return "none", None
-        return ("object", value) if isinstance(value, dict) else ("none", None)
+
+    def _try_extract_leading_tool_call(self, text: str) -> tuple[str, dict[str, Any] | None]:
+        return self._try_extract_stream_tool_call(text)
 
     def _skip_json_ws(self, text: str, start: int) -> int:
         idx = int(start)

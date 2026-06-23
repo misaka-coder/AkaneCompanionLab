@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from companion_v01.llm_runtime import LLMRuntime, _TopLevelJSONStreamTap
 
@@ -86,6 +87,65 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
         self.assertEqual(call["type"], "retrieve_memory")
         self.assertEqual(call["query"], "扬州城")
         self.assertEqual(call["keywords"], ["二十四桥"])
+
+    def test_stream_tool_call_probe_extracts_object_after_speech_segments(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        state, call = runtime._try_extract_stream_tool_call(
+            '{"emotion":"normal","speech":"我查一下。","speech_segments":[],"tool_call":{"type":"retrieve_memory","query":"扬州城","keywords":["二十四桥"]}'
+        )
+
+        self.assertEqual(state, "object")
+        self.assertEqual(call["type"], "retrieve_memory")
+        self.assertEqual(call["query"], "扬州城")
+        self.assertEqual(call["keywords"], ["二十四桥"])
+
+    def test_stream_tool_call_probe_waits_for_prior_value_to_close(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        state, call = runtime._try_extract_stream_tool_call(
+            '{"emotion":"normal","speech":"我还没说完'
+        )
+
+        self.assertEqual(state, "pending")
+        self.assertIsNone(call)
+
+    def test_stream_chat_json_stops_on_tool_call_after_speech_segments(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._record_cache_metrics = lambda _response: None
+        runtime._close_stream = lambda _response: None
+
+        def chunk(text: str) -> SimpleNamespace:
+            return SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))])
+
+        runtime._create_completion = lambda **_kwargs: [
+            chunk('{"emotion":"normal","speech":"我查一下。","speech_segments":[],'),
+            chunk('"tool_call":{"type":"retrieve_memory","query":"扬州城"}}'),
+            chunk(',"status":"final"}'),
+        ]
+
+        generator = runtime._stream_chat_json(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"emotion": "normal", "speech": "", "speech_segments": [], "tool_call": None},
+            temperature=0.0,
+            early_tool_call_validator=None,
+            prompt_cache_key="test:stream_tool_call_after_speech",
+        )
+
+        while True:
+            try:
+                next(generator)
+            except StopIteration as exc:
+                result = exc.value
+                break
+
+        self.assertTrue(result.stopped_early)
+        self.assertEqual(result.parsed["tool_call"]["type"], "retrieve_memory")
+        self.assertEqual(result.parsed["tool_call"]["query"], "扬州城")
+        self.assertNotIn('"status"', result.raw_text)
 
     def test_extract_text_flattens_content_blocks(self) -> None:
         runtime = object.__new__(LLMRuntime)
