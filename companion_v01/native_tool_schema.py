@@ -32,17 +32,23 @@ def build_openai_native_tool_specs(
             continue
         if not NATIVE_TOOL_NAME_RE.fullmatch(tool_name):
             continue
+        description = _metadata_schema_description(handler)
+        parameters = _metadata_schema_parameters(handler)
+        if not description:
+            description = _handler_description(handler, tool_name=tool_name)
+        if parameters is None:
+            parameters = {
+                "type": "object",
+                "additionalProperties": True,
+            }
         seen.add(tool_name)
         specs.append(
             {
                 "type": "function",
                 "function": {
                     "name": tool_name,
-                    "description": _handler_description(handler, tool_name=tool_name),
-                    "parameters": {
-                        "type": "object",
-                        "additionalProperties": True,
-                    },
+                    "description": description,
+                    "parameters": parameters,
                 },
             }
         )
@@ -61,3 +67,39 @@ def _handler_description(handler: Any, *, tool_name: str) -> str:
         description = f"Call Akane tool {tool_name}."
     description = " ".join(description.split())
     return description[:NATIVE_TOOL_DESCRIPTION_MAX_CHARS]
+
+
+def _metadata_schema_description(handler: Any) -> str:
+    schema = _handler_input_schema(handler)
+    if not isinstance(schema, Mapping):
+        return ""
+    description = str(schema.get("description") or schema.get("x_description") or "").strip()
+    if not description:
+        return ""
+    return " ".join(description.split())[:NATIVE_TOOL_DESCRIPTION_MAX_CHARS]
+
+
+def _metadata_schema_parameters(handler: Any) -> dict[str, Any] | None:
+    schema = _handler_input_schema(handler)
+    if not isinstance(schema, Mapping):
+        return None
+    parameters = {
+        str(key): value
+        for key, value in dict(schema).items()
+        if str(key) not in {"description", "x_description"}
+    }
+    if str(parameters.get("type") or "").strip() != "object":
+        parameters["type"] = "object"
+    return parameters
+
+
+def _handler_input_schema(handler: Any) -> Mapping[str, Any] | None:
+    tool_metadata = getattr(handler, "tool_metadata", None)
+    if not callable(tool_metadata):
+        return None
+    try:
+        metadata = tool_metadata()
+    except Exception:
+        return None
+    schema = getattr(metadata, "input_schema", None)
+    return schema if isinstance(schema, Mapping) else None

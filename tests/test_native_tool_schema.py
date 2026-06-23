@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
+from companion_v01.tool_runtime import TOOL_METADATA_BY_TYPE
 
 
 class NativeToolSchemaTests(unittest.TestCase):
@@ -44,6 +45,27 @@ class NativeToolSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual([item["function"]["name"] for item in specs], ["web_search"])
+
+    def test_build_openai_native_tool_specs_prefers_metadata_input_schema(self) -> None:
+        class MemoryHandler:
+            tool_type = "retrieve_memory"
+
+            def tool_metadata(self):
+                return TOOL_METADATA_BY_TYPE["retrieve_memory"]
+
+            def build_prompt_instruction(self) -> str:
+                return "legacy prompt mentions tool_call and should not be used"
+
+        specs = build_openai_native_tool_specs({"retrieve_memory": MemoryHandler()})
+
+        self.assertEqual(len(specs), 1)
+        function = specs[0]["function"]
+        self.assertEqual(function["name"], "retrieve_memory")
+        self.assertNotIn("tool_call", function["description"])
+        self.assertIn("long-term memory", function["description"])
+        self.assertEqual(function["parameters"]["additionalProperties"], False)
+        self.assertIn("query", function["parameters"]["required"])
+        self.assertNotIn("description", function["parameters"])
 
 
 if __name__ == "__main__":

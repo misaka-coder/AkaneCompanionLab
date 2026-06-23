@@ -158,6 +158,8 @@ INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多�
 
 - **5a 已完成**：`tool_runtime.ToolMetadata` 原本已经集中记录 `family/operation/risk/default_round_budget/background`；本阶段只补齐契约占位字段 `aliases/input_schema/requires_confirmation` 与派生只读属性 `is_read_only`。高风险内置工具只打 `requires_confirmation=True` 描述标签，**当前不接入 validate / permission / execute**，避免和现有 MCP approval 或 legacy 行为发生双门控。`tool_orchestration_engine.tool_metadata_dict()` 暂不暴露这些新字段，作为行为不变的保护线。
 
+- **5b 已完成**：`retrieve_memory` 与 `read_memory_timeline` 补齐 `input_schema`，`native_tool_schema` 优先使用 metadata schema，`NativeToolDecisionPlan` 从 hardcoded `web_search` 扩展为 allowlist ∩ handler 的通用 native schema 计划。默认 `NATIVE_TOOL_DECISION_ALLOWLIST` 仍为 `web_search`，所以默认线上行为不变；显式配置 `web_search,retrieve_memory,read_memory_timeline` 时，这两个只读记忆工具可进入 native schema，并会从 legacy prompt 同名工具说明中排除。
+
 ### 8.1 Provider / Model 能力档案（3a 修正）
 
 3c live eval 暴露了一个关键事实：`protocol="openai"` 不是足够细的能力判断。DeepSeek flash/pro 同属 `api.deepseek.com`、同走 OpenAI-compatible API，但 native tools 与强制 JSON 的组合行为不同：

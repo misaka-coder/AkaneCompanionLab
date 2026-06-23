@@ -17,6 +17,7 @@ from .tool_invocation import ToolResultEnvelope
 from .tool_invocation import ValidationResult
 from .tool_invocation import invocation_to_legacy_tool_call
 from .tool_invocation import legacy_tool_call_to_invocation
+from .native_tool_schema import build_openai_native_tool_specs
 from .tool_runtime import ToolExecutionContext
 
 
@@ -231,13 +232,20 @@ def _normalize_invocation_source(value: Any) -> str:
 
 
 def native_tool_decision_allowlist() -> set[str]:
+    return set(_native_tool_decision_allowlist_items())
+
+
+def _native_tool_decision_allowlist_items() -> list[str]:
     raw = str(getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search") or "").strip()
-    allowed = {
-        item.strip()
-        for item in raw.split(",")
-        if item.strip()
-    }
-    return allowed or {"web_search"}
+    allowed: list[str] = []
+    seen: set[str] = set()
+    for raw_item in raw.split(","):
+        item = raw_item.strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        allowed.append(item)
+    return allowed or ["web_search"]
 
 
 def native_web_search_tool_schema() -> dict[str, Any]:
@@ -313,11 +321,17 @@ def build_native_tool_schemas(
 ) -> list[dict[str, Any]]:
     if not allow_tool_call or not bool(getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)):
         return []
-    if "web_search" not in native_tool_decision_allowlist():
+    if not isinstance(handlers, Mapping):
         return []
-    if not isinstance(handlers, Mapping) or "web_search" not in handlers:
-        return []
-    return [native_web_search_tool_schema()]
+    schemas: list[dict[str, Any]] = []
+    for tool_name in _native_tool_decision_allowlist_items():
+        handler = handlers.get(tool_name)
+        if handler is None:
+            continue
+        schema = _native_tool_schema_for_handler(tool_name, handler)
+        if schema is not None:
+            schemas.append(schema)
+    return schemas
 
 
 def build_native_tool_decision_plan(
@@ -340,17 +354,11 @@ def build_native_tool_decision_plan(
             tools=[],
             legacy_prompt_exclusions=set(),
         )
-    if "web_search" not in native_tool_decision_allowlist():
+    allowed_tool_names = _native_tool_decision_allowlist_items()
+    if not isinstance(handlers, Mapping) or not any(name in handlers for name in allowed_tool_names):
         return NativeToolDecisionPlan(
             status="disabled",
-            reason="web_search_not_allowlisted",
-            tools=[],
-            legacy_prompt_exclusions=set(),
-        )
-    if not isinstance(handlers, Mapping) or "web_search" not in handlers:
-        return NativeToolDecisionPlan(
-            status="disabled",
-            reason="web_search_handler_missing",
+            reason="native_tool_handlers_missing",
             tools=[],
             legacy_prompt_exclusions=set(),
         )
@@ -361,14 +369,31 @@ def build_native_tool_decision_plan(
             tools=[],
             legacy_prompt_exclusions=set(),
         )
-    tools = [native_web_search_tool_schema()]
+    tools = build_native_tool_schemas(handlers, allow_tool_call=allow_tool_call)
+    if not tools:
+        return NativeToolDecisionPlan(
+            status="disabled",
+            reason="native_tool_schemas_empty",
+            tools=[],
+            legacy_prompt_exclusions=set(),
+        )
     return NativeToolDecisionPlan(
         status="enabled",
-        reason="verified_native_web_search",
+        reason="verified_native_tools",
         tools=tools,
         legacy_prompt_exclusions=native_legacy_prompt_exclusions(tools),
         tool_choice="auto",
     )
+
+
+def _native_tool_schema_for_handler(tool_name: str, handler: Any) -> dict[str, Any] | None:
+    normalized_name = str(tool_name or "").strip()
+    if normalized_name == "web_search":
+        return native_web_search_tool_schema()
+    specs = build_openai_native_tool_specs({normalized_name: handler}, allowed_tool_names={normalized_name})
+    if not specs:
+        return None
+    return specs[0]
 
 
 def native_legacy_prompt_exclusions(native_tools: list[dict[str, Any]] | None) -> set[str]:

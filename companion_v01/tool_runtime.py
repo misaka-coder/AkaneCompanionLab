@@ -63,13 +63,131 @@ class ToolMetadata:
         return str(self.operation or "").strip().lower() == "read"
 
 
+RETRIEVE_MEMORY_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Search Akane's long-term memory when the visible context is not enough "
+        "to answer a user's personal old fact, preference, agreement, project, or past event."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Concrete memory search phrase with names, topics, places, events, or preferences.",
+            "minLength": 1,
+            "maxLength": 200,
+        },
+        "keywords": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 8,
+            "description": "Optional short keywords that should help recall matching memories.",
+        },
+        "time_hint": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "date_label": {"type": "string", "description": "Optional YYYY-MM-DD date hint."},
+                "time_of_day": {
+                    "type": "string",
+                    "enum": ["morning", "afternoon", "night", "midnight"],
+                    "description": "Optional coarse time-of-day hint.",
+                },
+                "relative_time": {"type": "string", "description": "Optional natural-language relative time hint."},
+                "start_ts": {"type": "integer", "description": "Optional inclusive Unix timestamp lower bound."},
+                "end_ts": {"type": "integer", "description": "Optional inclusive Unix timestamp upper bound."},
+            },
+        },
+        "source_layers": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["raw", "summary", "semantic_summary"]},
+            "maxItems": 3,
+            "description": "Optional memory layers to search. Omit when unsure.",
+        },
+        "subject_scopes": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["user", "assistant", "other"]},
+            "maxItems": 3,
+            "description": "Optional subject scopes. Multiple values are OR matches.",
+        },
+        "categories": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "casual",
+                    "preference",
+                    "personal_profile",
+                    "plan_goal",
+                    "project_work",
+                    "relationship",
+                    "emotion_state",
+                    "life_event",
+                    "memory_query",
+                    "system_meta",
+                ],
+            },
+            "maxItems": 4,
+            "description": "Optional memory categories. Multiple values are OR matches.",
+        },
+        "importance_min": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Optional minimum importance score.",
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 12,
+            "description": "Optional maximum number of memory snippets.",
+        },
+    },
+    "required": ["query"],
+}
+
+
+READ_MEMORY_TIMELINE_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Read raw conversation records for an explicit date, date range, or time period. "
+        "Use this only when the user asks to inspect or recall the original timeline."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "date_from": {
+            "type": "string",
+            "description": "Start date in YYYY-MM-DD format. For a single day, use the same value as date_to.",
+        },
+        "date_to": {
+            "type": "string",
+            "description": "End date in YYYY-MM-DD format. For a single day, use the same value as date_from.",
+        },
+        "time_periods": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["morning", "afternoon", "night", "midnight"]},
+            "maxItems": 4,
+            "description": "Optional coarse periods within the selected dates. Omit for full-day reads.",
+        },
+    },
+    "required": ["date_from", "date_to"],
+}
+
+
 TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
-    "retrieve_memory": ToolMetadata(family="memory", operation="read", risk="low", default_round_budget=3),
+    "retrieve_memory": ToolMetadata(
+        family="memory",
+        operation="read",
+        risk="low",
+        default_round_budget=3,
+        input_schema=RETRIEVE_MEMORY_INPUT_SCHEMA,
+    ),
     "read_memory_timeline": ToolMetadata(
         family="memory",
         operation="read",
         risk="low",
         default_round_budget=3,
+        input_schema=READ_MEMORY_TIMELINE_INPUT_SCHEMA,
     ),
     "load_character_context": ToolMetadata(
         family="character_context",
@@ -399,7 +517,6 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
             "当用户问生日、重要日期、偏好、称呼、旧约定、跨端聊过的人/事/项目等个人旧事实，而当前可见记忆没有明确答案时，可以自然在这里翻一下。"
             "如果用户明确要求查看某一天、某段日期或某个时段的原始逐句对话，不要用本工具，改用 read_memory_timeline。"
             "当前可见记忆已经足够时无需调用；只要你觉得更早的记忆可能有帮助，就可以调用。"
-            "如果不需要检索，tool_call 输出 null。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:

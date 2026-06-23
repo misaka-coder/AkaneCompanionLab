@@ -10,7 +10,7 @@ from companion_v01.final_output_engine import normalize_final_output
 from companion_v01.llm_runtime import LLMRuntime, ModelBundle
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.tool_invocation import NATIVE_OPENAI, NATIVE_TOOL_CALL_FIELD, TOOL_INVOCATION_ID_FIELD, TOOL_SOURCE_FIELD
-from companion_v01.tool_runtime import ToolExecutionResult
+from companion_v01.tool_runtime import TOOL_METADATA_BY_TYPE, ToolExecutionResult
 
 
 class NativeWebSearchToolingTests(unittest.TestCase):
@@ -60,6 +60,37 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
             config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
 
+    def test_native_schema_allowlist_can_include_read_only_memory_tools(self) -> None:
+        original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
+        original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        try:
+            config.ENABLE_NATIVE_TOOL_DECISION = True
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search,retrieve_memory,read_memory_timeline"
+
+            schemas = tool_orchestration_engine.build_native_tool_schemas(
+                {
+                    "web_search": object(),
+                    "retrieve_memory": FakeNativeHandler("retrieve_memory"),
+                    "read_memory_timeline": FakeNativeHandler("read_memory_timeline"),
+                    "compose_file": FakeNativeHandler("compose_file"),
+                },
+                allow_tool_call=True,
+            )
+
+            names = [schema["function"]["name"] for schema in schemas]
+            self.assertEqual(names, ["web_search", "retrieve_memory", "read_memory_timeline"])
+            retrieve_schema = schemas[1]["function"]
+            self.assertNotIn("tool_call", retrieve_schema["description"])
+            self.assertEqual(retrieve_schema["parameters"]["additionalProperties"], False)
+            self.assertIn("query", retrieve_schema["parameters"]["required"])
+            self.assertEqual(
+                tool_orchestration_engine.native_legacy_prompt_exclusions(schemas),
+                {"web_search", "retrieve_memory", "read_memory_timeline"},
+            )
+        finally:
+            config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
+
     def test_native_tool_decision_plan_enables_single_prompt_channel(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
@@ -75,7 +106,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
             self.assertTrue(plan.enabled)
             self.assertEqual(plan.status, "enabled")
-            self.assertEqual(plan.reason, "verified_native_web_search")
+            self.assertEqual(plan.reason, "verified_native_tools")
             self.assertEqual(plan.tool_choice, "auto")
             self.assertEqual(plan.tools[0]["function"]["name"], "web_search")
             self.assertEqual(plan.legacy_prompt_exclusions, {"web_search"})
@@ -469,6 +500,15 @@ class FakePromptHandler:
 
     def build_prompt_instruction(self) -> str:
         return f"- {self.name}: available"
+
+
+class FakeNativeHandler(FakePromptHandler):
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+        self.tool_type = name
+
+    def tool_metadata(self):
+        return TOOL_METADATA_BY_TYPE.get(self.tool_type)
 
 
 class FakeExecutableWebSearchHandler(FakePromptHandler):
