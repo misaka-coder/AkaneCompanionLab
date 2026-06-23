@@ -279,6 +279,43 @@ class ToolInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.data["code"], "unknown_tool")
 
 
+class ShapeToolFollowupTests(unittest.TestCase):
+    def test_empty_result_becomes_stable_placeholder(self) -> None:
+        # Claude Code's empty-tool-result guard: a successful-but-silent tool
+        # must still feed the model something, never an empty result.
+        for empty in ["", "   ", "\n\t", None]:
+            shaped = tool_orchestration_engine.shape_tool_followup(empty, tool_type="list_reminders")
+            self.assertIn("list_reminders", shaped)
+            self.assertIn("没有返回可展示的内容", shaped)
+
+    def test_normal_result_passes_through_unchanged(self) -> None:
+        text = "当前待处理提醒如下：\n1. 明天买牛奶"
+        self.assertEqual(
+            tool_orchestration_engine.shape_tool_followup(text, tool_type="list_reminders"),
+            text,
+        )
+
+    def test_oversize_result_is_truncated_with_marker(self) -> None:
+        big = "\n".join(f"line {i} " + "x" * 50 for i in range(2000))
+        shaped = tool_orchestration_engine.shape_tool_followup(
+            big, tool_type="web_search", max_chars=1000
+        )
+        self.assertLess(len(shaped), len(big))
+        self.assertIn("已截断", shaped)
+        self.assertIn("web_search", shaped)
+        # Truncation prefers a newline boundary, so no line is cut mid-way.
+        body = shaped.split("\n…（")[0]
+        self.assertTrue(big.startswith(body))
+
+    def test_floor_protects_against_tiny_limits(self) -> None:
+        big = "y" * 5000
+        shaped = tool_orchestration_engine.shape_tool_followup(
+            big, tool_type="t", max_chars=10
+        )
+        # limit is floored at 500, so we keep a usable preview, not 10 chars.
+        self.assertGreater(len(shaped), 400)
+
+
 class RecordingHandler:
     def __init__(self) -> None:
         self.normalized_inputs: list[dict] = []

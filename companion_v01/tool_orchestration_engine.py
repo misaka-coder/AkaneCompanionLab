@@ -134,6 +134,51 @@ def describe_tool_call_for_prompt(tool_call: dict[str, Any]) -> str:
         return f"{tool_type} {details!r}"[:500]
 
 
+DEFAULT_MAX_TOOL_FOLLOWUP_CHARS = 8000
+
+
+def shape_tool_followup(
+    followup_context: Any,
+    *,
+    tool_type: str,
+    max_chars: int | None = None,
+) -> str:
+    """Discipline the tool result text fed back to the model (Claude Code-aligned).
+
+    Two rules, applied at the single point where a tool result becomes
+    model-facing feedback:
+    - empty-but-successful -> stable placeholder, never an empty tool result
+      (mirrors Claude Code's empty tool_result guard; an empty result tail can
+      make some models end the turn with no output).
+    - over-size -> truncate at a newline boundary with an honest marker, so a
+      huge result can't blow up the next round's context.
+
+    Only the tool's own text is bounded here; no paths are introduced. True
+    persist-to-workspace offloading (instead of truncation) is a later step and
+    must use a workspace-relative handle, never an absolute path (CLAUDE.md §3).
+    """
+    tool_name = str(tool_type or "tool").strip() or "tool"
+    text = str(followup_context or "").strip()
+    if not text:
+        return f"（{tool_name} 执行成功，但没有返回可展示的内容。）"
+    limit = int(max_chars) if max_chars else int(
+        getattr(config, "MAX_TOOL_FOLLOWUP_CHARS", DEFAULT_MAX_TOOL_FOLLOWUP_CHARS)
+        or DEFAULT_MAX_TOOL_FOLLOWUP_CHARS
+    )
+    limit = max(500, limit)
+    if len(text) <= limit:
+        return text
+    truncated = text[:limit]
+    cut = truncated.rfind("\n")
+    if cut > limit * 0.6:
+        truncated = truncated[:cut]
+    truncated = truncated.rstrip()
+    return (
+        f"{truncated}\n…（{tool_name} 结果过长，已截断，仅展示前约 {len(truncated)} 字；"
+        "如需更多请缩小范围或分页再调用。）"
+    )
+
+
 def build_multi_tool_followup_context(
     tool_followups: list[str],
     *,

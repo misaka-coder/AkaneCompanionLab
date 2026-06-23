@@ -3411,11 +3411,10 @@ class AkaneMemoryEngine:
         )
         current_events.extend(workspace_events)
         tool_events.extend(current_events)
-        if str(tool_result.followup_context or "").strip():
-            tool_followups.append(
-                f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n"
-                f"{str(tool_result.followup_context).strip()}"
-            )
+        tool_followups.append(
+            f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n"
+            f"{tool_orchestration_engine.shape_tool_followup(tool_result.followup_context, tool_type=tool_result.tool_type)}"
+        )
         if workspace_followup:
             tool_followups.append(workspace_followup)
         current_tool_turns = list(tool_result.raw_turns)
