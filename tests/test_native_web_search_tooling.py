@@ -302,6 +302,80 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertNotIn("web_search", prompt)
         self.assertIn("send_file", prompt)
 
+    def test_final_response_context_scopes_native_tools_to_capability_selection(self) -> None:
+        original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
+        original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        try:
+            config.ENABLE_NATIVE_TOOL_DECISION = True
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search,retrieve_memory,read_memory_timeline"
+            engine = build_native_context_engine(
+                selected_tool_names=("retrieve_memory", "send_file"),
+            )
+
+            context = engine._prepare_final_response_context(
+                session_id="s",
+                profile_user_id="u",
+                user_message="查一下记忆",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=0,
+                client_context=ClientProtocolContext(
+                    requested_mode=ClientMode.DESKTOP_PET,
+                    effective_mode=ClientMode.DESKTOP_PET,
+                ),
+                enable_native_tools=True,
+            )
+
+            native_names = [tool["function"]["name"] for tool in context["native_tools"]]
+            self.assertEqual(native_names, ["retrieve_memory"])
+            self.assertEqual(context["native_tool_choice"], "auto")
+            self.assertIn("retrieve_memory", context["system_prompt"])
+            self.assertNotIn("web_search", context["system_prompt"])
+            self.assertNotIn("retrieve_memory", context["tool_prompt_context"])
+            self.assertIn("send_file", context["tool_prompt_context"])
+            self.assertNotIn("web_search", context["tool_prompt_context"])
+        finally:
+            config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
+
+    def test_final_response_context_keeps_legacy_when_native_candidates_not_selected(self) -> None:
+        original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
+        original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        try:
+            config.ENABLE_NATIVE_TOOL_DECISION = True
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search,retrieve_memory"
+            engine = build_native_context_engine(
+                selected_tool_names=("send_file",),
+            )
+
+            context = engine._prepare_final_response_context(
+                session_id="s",
+                profile_user_id="u",
+                user_message="把文件发我",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=0,
+                client_context=ClientProtocolContext(
+                    requested_mode=ClientMode.DESKTOP_PET,
+                    effective_mode=ClientMode.DESKTOP_PET,
+                ),
+                enable_native_tools=True,
+            )
+
+            self.assertEqual(context["native_tools"], [])
+            self.assertEqual(context["native_tool_choice"], "")
+            self.assertNotIn("native 工具轮优先规则", context["system_prompt"])
+            self.assertIn("send_file", context["tool_prompt_context"])
+            self.assertNotIn("web_search", context["tool_prompt_context"])
+            self.assertNotIn("retrieve_memory", context["tool_prompt_context"])
+        finally:
+            config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
+
     def test_native_tool_round_instruction_keeps_native_out_of_json_tool_call(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         instruction = engine._build_native_tool_round_instruction(
@@ -721,6 +795,101 @@ class FakeExecutableWebSearchHandler(FakePromptHandler):
         if not isinstance(value, dict) or value.get("type") != "web_search":
             return None
         return dict(value)
+
+
+class FakePromptProfile:
+    supports_thought_debug = False
+    system_prompt_override = ""
+
+    def includes(self, module) -> bool:
+        from companion_v01.prompt_profiles import PromptModule
+
+        return module in {
+            PromptModule.TOOLS,
+            PromptModule.CLIENT_MODE,
+        }
+
+    def mode_prompt_override(self, *, debug_enabled: bool = False) -> str:
+        return ""
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {"name": "fake"}
+
+
+class FakePromptBuilder:
+    def build_final_generation_context(self, **kwargs):
+        return {
+            "system_prompt": "system",
+            "user_prompt": "user",
+            "fallback": {"speech": "", "tool_call": None},
+            "visual_defaults": dict(kwargs.get("visual_defaults") or {}),
+            "debug_enabled": bool(kwargs.get("debug_enabled")),
+            "tool_prompt_context": str(kwargs.get("tool_prompt_context") or ""),
+        }
+
+
+def build_native_context_engine(*, selected_tool_names: tuple[str, ...]) -> AkaneMemoryEngine:
+    engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+    handlers = {
+        "web_search": FakeNativeHandler("web_search"),
+        "retrieve_memory": FakeNativeHandler("retrieve_memory"),
+        "read_memory_timeline": FakeNativeHandler("read_memory_timeline"),
+        "send_file": FakeNativeHandler("send_file"),
+    }
+    selection = SimpleNamespace(
+        module_names=(),
+        light_hints=(),
+        tool_names=selected_tool_names,
+        layer_names=(),
+    )
+    engine.resource_manifest = None
+    engine.store = SimpleNamespace()
+    engine.vision_service = None
+    engine.gift_service = SimpleNamespace(
+        build_pending_prompt_context=lambda **_kwargs: "",
+        resolve_focus_asset=lambda **_kwargs: None,
+    )
+    engine.llm = SimpleNamespace(
+        chat_supports_native_tools=lambda: True,
+        record_metric=lambda _name: None,
+    )
+    engine._get_prompt_profile_registry = lambda: SimpleNamespace(
+        resolve=lambda _client_context: FakePromptProfile()
+    )
+    engine._get_prompt_builder = lambda: FakePromptBuilder()
+    engine._get_user_runtime_projection = lambda _profile_user_id: {
+        "extra_bgm_tracks": [],
+        "extra_scene_groups": [],
+        "extra_character_outfits": [],
+    }
+    engine._split_history_records = lambda **_kwargs: ([], {})
+    engine._render_current_message_line = lambda **_kwargs: "user: message"
+    engine._get_attachment_inbox_service = lambda: None
+    engine._get_generated_file_service = lambda: None
+    engine._get_workspace_file_service = lambda: None
+    engine._get_task_workspace_service = lambda: None
+    engine._get_persona_card_service = lambda: None
+    engine._build_desktop_pet_character_pack_prompt_context = lambda **_kwargs: {
+        "system_context": "",
+        "reference_context": "",
+        "active_id": "",
+    }
+    engine._merge_prompt_persona_contexts = lambda _character_pack, _profile: {
+        "system_context": "",
+        "reference_context": "",
+        "active_id": "",
+    }
+    engine._resolve_current_visual_payload = lambda **_kwargs: None
+    engine._build_client_mode_prompt_context = lambda _client_context: ""
+    engine._build_memory_relationship_context = lambda **_kwargs: ""
+    engine._build_extra_context_audit_sections = lambda _candidates: []
+    engine._resolve_capability_selection = lambda **_kwargs: selection
+    engine._resolve_tool_handlers = lambda **_kwargs: {
+        name: handlers[name]
+        for name in selected_tool_names
+        if name in handlers
+    }
+    return engine
 
 
 class FakeClient:
