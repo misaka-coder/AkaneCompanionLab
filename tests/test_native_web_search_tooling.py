@@ -115,15 +115,41 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
 
     def test_default_allowlist_includes_validated_read_only_tools(self) -> None:
-        # 5e: the shipped default allowlist now contains the live-gated read-only
+        # 5e/6b: the shipped default allowlist contains the low-risk read-only
         # tools. Read the class field default (immune to .env / other tests).
         from config import Settings
 
         default = str(Settings.model_fields["NATIVE_TOOL_DECISION_ALLOWLIST"].default or "")
         self.assertEqual(
             {item.strip() for item in default.split(",") if item.strip()},
-            {"web_search", "retrieve_memory", "read_memory_timeline"},
+            {
+                "web_search",
+                "retrieve_memory",
+                "read_memory_timeline",
+                "list_reminders",
+                "check_inventory",
+                "inspect_media_info",
+            },
         )
+
+    def test_read_tier_handlers_emit_precise_native_schemas(self) -> None:
+        # 6b: each migrated read tool carries a precise input_schema (enum/limit
+        # constraints, additionalProperties:False), not the loose generic spec.
+        from companion_v01.native_tool_schema import build_openai_native_tool_specs
+
+        for name, required_props in (
+            ("list_reminders", ()),
+            ("check_inventory", ()),
+            ("inspect_media_info", ("source_id",)),
+        ):
+            specs = build_openai_native_tool_specs({name: FakeNativeHandler(name)})
+            self.assertEqual(len(specs), 1, name)
+            fn = specs[0]["function"]
+            self.assertEqual(fn["name"], name)
+            self.assertNotIn("tool_call", fn["description"])
+            self.assertIs(fn["parameters"]["additionalProperties"], False)
+            self.assertEqual(set(fn["parameters"].get("required", [])), set(required_props))
+            self.assertNotIn("description", fn["parameters"])
 
     def test_default_allowlist_plan_sends_three_schemas_and_excludes_legacy(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)

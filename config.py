@@ -189,10 +189,15 @@ class Settings(BaseSettings):
     # 所有工具仍走 legacy JSON tool_call。开启（通常经 env）后，allowlist 内、
     # 且 (host, model) 能力档案已验证的工具才走 provider native schema。
     ENABLE_NATIVE_TOOL_DECISION: bool = False
-    # native tool 允许列表，逗号分隔。已通过 live acceptance gate 的低风险只读工具：
-    # web_search（3d）、retrieve_memory / read_memory_timeline（5d）。写/控制类工具
-    # 不在此列。注意：这只是"允许"，是否真的走 native 仍取决于上面的总开关。
-    NATIVE_TOOL_DECISION_ALLOWLIST: str = "web_search,retrieve_memory,read_memory_timeline"
+    # native tool 允许列表，逗号分隔。低风险只读工具（静态 schema、无写、参数无绝对路径）：
+    # web_search（3d live gate）、retrieve_memory / read_memory_timeline（5d live gate）、
+    # list_reminders / check_inventory / inspect_media_info（6b：确定性 dry-run 量尺，
+    # native 链路已由 memory 5d 证明，未单独跑 live smoke）。写/控制/路径类工具不在此列。
+    # 注意：这只是"允许"，是否真的走 native 仍取决于上面的总开关。
+    NATIVE_TOOL_DECISION_ALLOWLIST: str = (
+        "web_search,retrieve_memory,read_memory_timeline,"
+        "list_reminders,check_inventory,inspect_media_info"
+    )
     # 联网搜索/网页提取类工具的同轮扩展预算
     MAX_WEB_RESEARCH_TOOL_ROUNDS: int = 8
     # 托管浏览器打开、滚动、点击、输入类工具的同轮扩展预算

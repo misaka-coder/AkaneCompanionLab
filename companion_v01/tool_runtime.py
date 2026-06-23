@@ -174,6 +174,73 @@ READ_MEMORY_TIMELINE_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+LIST_REMINDERS_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "List the user's reminders. Use it when the user asks what reminders "
+        "they currently have."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["pending", "done", "all"],
+            "description": "Which reminders to list. Default pending.",
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "description": "Maximum reminders to return. Default 5.",
+        },
+    },
+    "required": [],
+}
+
+
+CHECK_INVENTORY_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Check gift inventory. Use it when the user asks about gifts on hand or "
+        "in the gift box."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "scope": {
+            "type": "string",
+            "enum": ["pending_recent", "pending_all", "kept", "internalized"],
+            "description": "Inventory scope. Prefer pending_recent for what's on hand.",
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Maximum items. Default 3 for pending_recent, else 5.",
+        },
+    },
+    "required": [],
+}
+
+
+INSPECT_MEDIA_INFO_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Read media specs (duration, codec, sample rate, channels, bitrate, "
+        "resolution, fps) of an existing file/audio/generated item. Read-only; "
+        "does not create files."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "source_id": {
+            "type": "string",
+            "maxLength": 120,
+            "description": "Handle of an existing media item, e.g. file_001 / audio_001 / gen_001.",
+        },
+    },
+    "required": ["source_id"],
+}
+
+
 TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     "retrieve_memory": ToolMetadata(
         family="memory",
@@ -196,10 +263,10 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         default_round_budget=3,
     ),
     "set_reminder": ToolMetadata(family="reminder", operation="control", risk="low", default_round_budget=3),
-    "list_reminders": ToolMetadata(family="reminder", operation="read", risk="low", default_round_budget=3),
+    "list_reminders": ToolMetadata(family="reminder", operation="read", risk="low", default_round_budget=3, input_schema=LIST_REMINDERS_INPUT_SCHEMA),
     "cancel_reminder": ToolMetadata(family="reminder", operation="control", risk="low", default_round_budget=3),
     "call_npc": ToolMetadata(family="web_scene", operation="mixed", risk="low", default_round_budget=3),
-    "check_inventory": ToolMetadata(family="web_scene", operation="read", risk="low", default_round_budget=3),
+    "check_inventory": ToolMetadata(family="web_scene", operation="read", risk="low", default_round_budget=3, input_schema=CHECK_INVENTORY_INPUT_SCHEMA),
     "manage_gift": ToolMetadata(family="web_scene", operation="control", risk="low", default_round_budget=3),
     "manage_artifact": ToolMetadata(family="web_scene", operation="control", risk="low", default_round_budget=3),
     "manage_persona": ToolMetadata(family="persona", operation="control", risk="medium", default_round_budget=3),
@@ -227,7 +294,7 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     "send_file": ToolMetadata(family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True),
     "send_generated_file": ToolMetadata(family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True),
     "send_sticker": ToolMetadata(family="social_delivery", operation="control", risk="low", default_round_budget=3),
-    "inspect_media_info": ToolMetadata(family="media_workbench", operation="read", risk="low", default_round_budget=3),
+    "inspect_media_info": ToolMetadata(family="media_workbench", operation="read", risk="low", default_round_budget=3, input_schema=INSPECT_MEDIA_INFO_INPUT_SCHEMA),
     "separate_audio_stems": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
     "clean_voice_track": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
     "transcribe_media": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
