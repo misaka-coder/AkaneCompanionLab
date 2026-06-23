@@ -114,6 +114,50 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
             config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
 
+    def test_default_allowlist_includes_validated_read_only_tools(self) -> None:
+        # 5e: the shipped default allowlist now contains the live-gated read-only
+        # tools. Read the class field default (immune to .env / other tests).
+        from config import Settings
+
+        default = str(Settings.model_fields["NATIVE_TOOL_DECISION_ALLOWLIST"].default or "")
+        self.assertEqual(
+            {item.strip() for item in default.split(",") if item.strip()},
+            {"web_search", "retrieve_memory", "read_memory_timeline"},
+        )
+
+    def test_default_allowlist_plan_sends_three_schemas_and_excludes_legacy(self) -> None:
+        original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
+        original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        try:
+            config.ENABLE_NATIVE_TOOL_DECISION = True
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search,retrieve_memory,read_memory_timeline"
+
+            plan = tool_orchestration_engine.build_native_tool_decision_plan(
+                {
+                    "web_search": object(),
+                    "retrieve_memory": FakeNativeHandler("retrieve_memory"),
+                    "read_memory_timeline": FakeNativeHandler("read_memory_timeline"),
+                    "compose_file": FakeNativeHandler("compose_file"),
+                },
+                allow_tool_call=True,
+                provider_supports_native_tools=True,
+            )
+
+            self.assertTrue(plan.enabled)
+            names = [tool["function"]["name"] for tool in plan.tools]
+            self.assertEqual(
+                set(names), {"web_search", "retrieve_memory", "read_memory_timeline"}
+            )
+            # Native-provided tools are excluded from the legacy prompt; the
+            # write tool (compose_file) is not in the allowlist, so it stays legacy.
+            self.assertEqual(
+                plan.legacy_prompt_exclusions,
+                {"web_search", "retrieve_memory", "read_memory_timeline"},
+            )
+        finally:
+            config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
+
     def test_native_tool_decision_plan_keeps_legacy_when_provider_unverified(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")

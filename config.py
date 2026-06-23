@@ -185,10 +185,14 @@ class Settings(BaseSettings):
     # === 工具调用 & 后台任务 ===
     # 同轮对话最大工具调用轮次（防止循环）
     MAX_TOOL_ROUNDS: int = 3
-    # 试验性 native tool 通道。默认关闭；当前只允许 web_search 走 provider schema。
+    # 试验性 native tool 通道总开关。默认关闭：关闭时下面的 allowlist 不生效，
+    # 所有工具仍走 legacy JSON tool_call。开启（通常经 env）后，allowlist 内、
+    # 且 (host, model) 能力档案已验证的工具才走 provider native schema。
     ENABLE_NATIVE_TOOL_DECISION: bool = False
-    # native tool 允许列表，逗号分隔；3a 原型仅实现 web_search。
-    NATIVE_TOOL_DECISION_ALLOWLIST: str = "web_search"
+    # native tool 允许列表，逗号分隔。已通过 live acceptance gate 的低风险只读工具：
+    # web_search（3d）、retrieve_memory / read_memory_timeline（5d）。写/控制类工具
+    # 不在此列。注意：这只是"允许"，是否真的走 native 仍取决于上面的总开关。
+    NATIVE_TOOL_DECISION_ALLOWLIST: str = "web_search,retrieve_memory,read_memory_timeline"
     # 联网搜索/网页提取类工具的同轮扩展预算
     MAX_WEB_RESEARCH_TOOL_ROUNDS: int = 8
     # 托管浏览器打开、滚动、点击、输入类工具的同轮扩展预算
