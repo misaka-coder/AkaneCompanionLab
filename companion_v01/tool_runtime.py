@@ -241,6 +241,199 @@ INSPECT_MEDIA_INFO_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+LOAD_CHARACTER_CONTEXT_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Load specific entries from the active character pack's context libraries "
+        "by their target names. The available target names are listed in the prompt. "
+        "Read-only; does not modify anything."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "targets": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 20,
+            "description": "Target names to load, taken from the character pack's listed libraries/entries.",
+        },
+    },
+    "required": ["targets"],
+}
+
+
+INSPECT_ATTACHMENT_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Open and inspect a single image or file in the current attachment workspace "
+        "(temporary context, not gifts/character resources/long-term memory). "
+        "To compare multiple materials, prefer sync_attachment_workspace."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "target": {
+            "type": "string",
+            "maxLength": 120,
+            "description": "Attachment id / title / filename, or 'latest'. Defaults to latest.",
+        },
+        "kind": {
+            "type": "string",
+            "enum": ["any", "image", "file", "document", "audio"],
+            "description": "Optional kind filter. Default any.",
+        },
+    },
+    "required": [],
+}
+
+
+READ_ATTACHMENT_SECTION_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Expand a specific page / line range / table / sheet of a long attachment in "
+        "the workspace. Only reveals already-parsed text; the system reports when a "
+        "file has no text layer. Not for image gifts or long-term memory."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "target": {
+            "type": "string",
+            "maxLength": 120,
+            "description": "file id / title / filename / 'latest'.",
+        },
+        "section": {
+            "type": "string",
+            "maxLength": 120,
+            "description": "e.g. '第2页' / '第10-30行' / '第1个表' / 'Sheet1'.",
+        },
+        "kind": {
+            "type": "string",
+            "enum": ["any", "file", "document"],
+            "description": "Optional. Default document.",
+        },
+    },
+    "required": [],
+}
+
+
+SYNC_ATTACHMENT_WORKSPACE_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Reorganize the attachment workspace in one shot: keep the final set of "
+        "materials to focus on (multiple images/files may be kept for comparison) and "
+        "collapse the rest. Submit the final list once; do not toggle items one by one."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "focus_targets": {
+            "type": "array",
+            "items": {"type": "string", "maxLength": 120},
+            "maxItems": 30,
+            "description": "Final workspace list after reorg: ids / '第2张图' / descriptive names.",
+        },
+        "kind": {
+            "type": "string",
+            "enum": ["any", "image", "file", "document", "audio"],
+            "description": "Optional kind filter. Default any.",
+        },
+        "reason": {
+            "type": "string",
+            "maxLength": 160,
+            "description": "Why these materials are needed.",
+        },
+    },
+    "required": [],
+}
+
+
+LIST_WORKSPACE_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "List one or more directories in Akane's accessible workspace folder. Use it "
+        "first to see what materials exist. Only workspace:/ relative paths — never "
+        "local absolute paths."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "paths": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 50,
+            "description": "workspace:/ relative directories, e.g. ['workspace:/Inbox']. Omit to list the workspace root.",
+        },
+        "depth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8,
+            "description": "1 lists direct children; larger expands subdirectories. Default 1.",
+        },
+        "max_entries": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50000,
+            "description": "Maximum entries to return. Default 10000.",
+        },
+    },
+    "required": [],
+}
+
+
+READ_WORKSPACE_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Read one or more files from the workspace by their workspace:/ relative paths "
+        "(from list_workspace). Supports text/Word/Excel/PDF and ZIP listings; binary "
+        "media returns a status pointing to a dedicated tool. Never guess local absolute paths."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "targets": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 200,
+            "description": "workspace:/ relative file paths from list_workspace.",
+        },
+        "max_chars": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 4000000,
+            "description": "Maximum characters to read. Default 1000000.",
+        },
+    },
+    "required": ["targets"],
+}
+
+
+INSPECT_GENERATED_FILE_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Re-read a file you generated (e.g. gen_001): its body, head/tail, zip file "
+        "list, or manifest. Read-only — does not send, modify, or delete. To resend a "
+        "file use send_file; to edit it use revise_generated_file."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "target": {
+            "type": "string",
+            "maxLength": 120,
+            "description": "Generated id / 'latest' / file title. Default latest.",
+        },
+        "section": {
+            "type": "string",
+            "maxLength": 260,
+            "description": "content | head | tail | summary | file_list | manifest | file:<name>. Default content.",
+        },
+        "max_chars": {
+            "type": "integer",
+            "minimum": 500,
+            "maximum": 40000,
+            "description": "Maximum characters. Default 12000.",
+        },
+    },
+    "required": [],
+}
+
+
 TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     "retrieve_memory": ToolMetadata(
         family="memory",
@@ -261,6 +454,7 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         operation="read",
         risk="low",
         default_round_budget=3,
+        input_schema=LOAD_CHARACTER_CONTEXT_INPUT_SCHEMA,
     ),
     "set_reminder": ToolMetadata(family="reminder", operation="control", risk="low", default_round_budget=3),
     "list_reminders": ToolMetadata(family="reminder", operation="read", risk="low", default_round_budget=3, input_schema=LIST_REMINDERS_INPUT_SCHEMA),
@@ -277,19 +471,19 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     "browser_page": ToolMetadata(family="browser_control", operation="mixed", risk="medium", default_round_budget=10, requires_confirmation=True),
     "open_music_search": ToolMetadata(family="music_request", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
     "fetch_media_from_url": ToolMetadata(family="media_fetch", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
-    "sync_attachment_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
-    "inspect_attachment": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
+    "sync_attachment_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3, input_schema=SYNC_ATTACHMENT_WORKSPACE_INPUT_SCHEMA),
+    "inspect_attachment": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3, input_schema=INSPECT_ATTACHMENT_INPUT_SCHEMA),
     "retry_attachment": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=3),
     "clear_attachment_focus": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=3),
-    "read_attachment_section": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
-    "list_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=4),
-    "read_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=4),
+    "read_attachment_section": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3, input_schema=READ_ATTACHMENT_SECTION_INPUT_SCHEMA),
+    "list_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=4, input_schema=LIST_WORKSPACE_INPUT_SCHEMA),
+    "read_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=4, input_schema=READ_WORKSPACE_INPUT_SCHEMA),
     "focus_workspace": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=4),
     "register_workspace_items": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=4),
     "compose_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
     "revise_generated_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
     "apply_style_to_existing_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
-    "inspect_generated_file": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3),
+    "inspect_generated_file": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3, input_schema=INSPECT_GENERATED_FILE_INPUT_SCHEMA),
     "manage_generated_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True),
     "send_file": ToolMetadata(family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True),
     "send_generated_file": ToolMetadata(family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True),

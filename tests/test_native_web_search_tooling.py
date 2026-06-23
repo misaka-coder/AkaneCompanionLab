@@ -151,6 +151,34 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             self.assertEqual(set(fn["parameters"].get("required", [])), set(required_props))
             self.assertNotIn("description", fn["parameters"])
 
+    def test_n1b_read_tools_emit_precise_native_schemas(self) -> None:
+        # N1b: the remaining read-only tools carry a precise input_schema whose
+        # required set matches normalize_call (only targets-bearing tools require
+        # input), with a clean envelope-free description.
+        from companion_v01.native_tool_schema import build_openai_native_tool_specs
+
+        expected_required = {
+            "load_character_context": {"targets"},
+            "inspect_attachment": set(),
+            "read_attachment_section": set(),
+            "sync_attachment_workspace": set(),
+            "list_workspace": set(),
+            "read_workspace": {"targets"},
+            "inspect_generated_file": set(),
+        }
+        for name, required in expected_required.items():
+            specs = build_openai_native_tool_specs({name: FakeNativeHandler(name)})
+            self.assertEqual(len(specs), 1, name)
+            fn = specs[0]["function"]
+            self.assertEqual(fn["name"], name)
+            self.assertTrue(fn["description"].strip(), name)
+            self.assertNotIn("格式为", fn["description"], name)
+            self.assertNotIn("tool_call", fn["description"], name)
+            self.assertNotIn('{"type"', fn["description"], name)
+            self.assertIs(fn["parameters"]["additionalProperties"], False, name)
+            self.assertNotIn("description", fn["parameters"], name)
+            self.assertEqual(set(fn["parameters"].get("required", [])), required, name)
+
     def test_default_allowlist_plan_sends_three_schemas_and_excludes_legacy(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
