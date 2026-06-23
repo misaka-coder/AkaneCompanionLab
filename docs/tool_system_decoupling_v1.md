@@ -2,6 +2,8 @@
 
 > 状态：**分阶段落地中**。本篇定方向、契约、管线与迁移路线，并记录每阶段实现状态。配套修订见 `engineering_invariants_v1.md` 的 INV-1 / INV-2。
 >
+> **⚠️ 当前权威方向见 §12「转向 native-first」（2026-06-23 定调）**——第 8 节的"逐个迁 + 默认关"是此前的保守路线，已被 §12 覆盖。
+>
 > 一句话目标：**工具拿出去，表达留下。** 让工具调用走独立、受 schema 校验的统一管线，最终角色表现 JSON 留在工具结果回来后的回复轮产出。
 
 ---
@@ -304,6 +306,27 @@ python scripts/tools/run_native_web_search_acceptance.py --live-llm --smoke --re
 - 工具编排：`companion_v01/tool_orchestration_engine.py`（`normalize_tool_call` / `classify_tool_call_rejection`）
 - 回合循环：`companion_v01/engine.py`（`process_turn` / `process_turn_stream` + 共享回合辅助）
 - 不变量：`docs/engineering_invariants_v1.md`（INV-1 表达层不可丢 / INV-2 工具管线 / INV-3 结构化失败）
+
+---
+
+## 12. 方向定调（当前权威方向）：转向 native-first，tool_call 降为回退
+
+> 决策时间：2026-06-23。此前（2a–6b）是"legacy 为主、native 为辅、逐个迁、开关默认关"的保守路线。经与作者确认 + 对照行业（Claude/OpenAI/Anthropic 全是原生）与 Sakura（native-first 桌宠，工具走原生、表达单独一轮），**正式转向 native-first**。本节是当前的迁移路线，覆盖第 8 节里"逐个迁 + 默认关"的旧节奏。
+
+**目标终点**：工具决策走 provider 原生通道（行业标准）；人设表达**单独一轮**产出（守 INV-1，不与工具焊接）；`tool_call` 字段**降级为兼容回退**（未验证 provider / 工具未覆盖 native 时才用），最终可选删除。
+
+**为什么更快**：不再维护"哪些工具迁了、哪些没迁"的双轨进度；不再每个工具走一遍完整 live 仪式。装上门 → 翻转 → 收尾，三段式。
+
+**关键复用（吃旧架构）**：`capability_registry.CapabilitySelection.tool_names_for_mode(mode)`（`capability_registry.py:223`）已经做"按客户端/场景只给需要的工具"。native 直接把**这个子集**喂进 native tools 列表——这正是避免"工具太多 native 路由稀释"的解法（对标 Sakura 的 `active_groups`）。**不是重写，是接上。**
+
+**安全顺序（不能反，反了工具会断）**：
+
+- **N1 — 全工具装 native 门（确定性，零额度）**：给每个 handler 产出 native schema（通用生成器已支持，精度处补 `input_schema`；描述已扫过基本无 tool_call 污染，仅 `compose_file` 一句待清）。纯新增，开关仍默认关 → 零行为变化。验收：每个工具都能产出合法 native spec + 单测。
+- **N2 — 接 per-client 分发（确定性，零额度）**：native tools 列表由 `CapabilitySelection` 决定，每个客户端/场景只发其工具子集。验收：native 子集 == legacy capability 子集，按 mode 对齐。
+- **N3 — 翻转优先级：native 为主（需 live，烧额度的一步）**：总开关默认开、allowlist 放开到全部、native 按 capability 子集下发；`tool_call` 字段保留但降为回退。验收：跑 acceptance gate 全工具集——INV-1 表达层完好、fallback 率低、按客户端补路由提示（仿 5c）让选工具质量达标。**这是"commit"那一刻,行为真正改变,要真机验证。**
+- **N4 — 收尾（最后,且只在 N3 稳定后）**：二选一——①保留一层薄 `tool_call` 当**文档化回退**（换模型也稳，行业常见）；②彻底从表达 JSON 删除 `tool_call`（Sakura 式纯原生，锁定需支持 native 的 provider）。作者倾向最终走 ②"不维护 tool_call"，但**必须是最后一步**，N1–N3 全绿后再动。
+
+**不变的边界**：写/控制/媒体工具的**执行与权限确认逻辑完全不变**——native 只改"模型怎么表达调用"，不改 execute、不绕过确认。表达层（emotion/persona/scene/segments…）是 Akane 自己的产品域，**没有行业标准、也不需要**，继续按角色需要演化；唯一被行业标准约束的只有"工具调用"这一件，N1–N4 就是把它掰回标准。
 
 ---
 
