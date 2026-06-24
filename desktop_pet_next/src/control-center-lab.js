@@ -124,6 +124,10 @@ const root = document.querySelector("#app");
 let dataSource = createControlCenterDataSource(createControlCenterDataSourceOptions());
 let snapshot = createControlCenterSnapshot(dataSource.readInitialState());
 let actionRouter = createRuntimeActionRouter(dataSource);
+// Settings Catalog (read-only) is fetched directly from the backend, not carried
+// in the mock snapshot — so it never inherits the mock-baseline patching.
+let settingsCatalog = null;
+let settingsCatalogStatus = "";
 let { labMeta, navItems, backgroundAsset } = snapshot.shell;
 let {
   abilities: abilitiesPage,
@@ -236,6 +240,7 @@ async function hydrateControlCenterSnapshot() {
     if (!raw) return;
     applyControlCenterSnapshot(createControlCenterSnapshot(raw), { renderShell: false });
     await hydrateModelService();
+    await hydrateSettingsCatalog();
   } catch (error) {
     console.info("[control-center] keep mock snapshot:", formatError(error));
   }
@@ -258,6 +263,26 @@ async function hydrateModelService() {
     }
   } catch (error) {
     state.modelActionStatus = `读取配置失败：${formatError(error)}`;
+  }
+}
+
+async function hydrateSettingsCatalog() {
+  if (typeof dataSource?.readSettingsCatalog !== "function") return;
+  try {
+    const payload = await dataSource.readSettingsCatalog();
+    if (payload && typeof payload === "object" && Array.isArray(payload.categories)) {
+      settingsCatalog = payload;
+      settingsCatalogStatus = "";
+    } else {
+      settingsCatalog = null;
+      settingsCatalogStatus = "未能读取设置目录（请确认已连接后端）";
+    }
+  } catch (error) {
+    settingsCatalog = null;
+    settingsCatalogStatus = `读取设置目录失败：${formatError(error)}`;
+  }
+  if (state.activePage === "settings") {
+    renderActivePage();
   }
 }
 
@@ -1534,6 +1559,61 @@ function workflowActionStatusLabel(result) {
   return result.ok ? "已完成" : "操作失败";
 }
 
+function formatSettingValue(value) {
+  if (value === null || value === undefined || value === "") return "（空）";
+  if (typeof value === "boolean") return value ? "开" : "关";
+  if (Array.isArray(value)) return value.join(", ") || "（空）";
+  return String(value);
+}
+
+function renderSettingRow(entry) {
+  const legend = (settingsCatalog && settingsCatalog.scopeLegend) || {};
+  const scopeText = legend[entry.scope] || entry.scope || "";
+  const value = entry.sensitive
+    ? (entry.isSet ? "已配置 · 已隐藏" : "未配置")
+    : formatSettingValue(entry.current);
+  const sensitiveTag = entry.sensitive ? `<span class="settings-tag settings-tag--secret">敏感</span>` : "";
+  const managed = entry.managedIn
+    ? `<span class="settings-tag">在「${escapeHtml(entry.managedIn)}」管理</span>`
+    : "";
+  return `
+    <div class="settings-row">
+      <div class="settings-row__info">
+        <code class="settings-key">${escapeHtml(entry.key || "")}</code>
+        <span class="settings-desc">${escapeHtml(entry.description || "")}</span>
+      </div>
+      <div class="settings-row__meta">
+        <span class="settings-value">${escapeHtml(value)}</span>
+        <span class="settings-scope" data-scope="${escapeHtml(entry.scope || "")}">${escapeHtml(scopeText)}</span>
+        ${sensitiveTag}
+        ${managed}
+      </div>
+    </div>`;
+}
+
+function renderSettingsPage() {
+  const head = `
+    <header class="settings-head">
+      <h1>${icon("sparkle")} 设置目录</h1>
+      <p>后端开关一览（只读）。每项标注作用域：改完是否需要重启才生效。</p>
+    </header>`;
+  if (!settingsCatalog || !Array.isArray(settingsCatalog.categories) || !settingsCatalog.categories.length) {
+    const msg = settingsCatalogStatus || "正在读取设置目录…";
+    return `<section class="settings-page">${head}<article class="glass-card"><p class="settings-empty">${escapeHtml(msg)}</p></article></section>`;
+  }
+  const groups = settingsCatalog.categories
+    .map((group) => {
+      const rows = Array.isArray(group.settings) ? group.settings.map(renderSettingRow).join("") : "";
+      return `
+      <article class="glass-card settings-group">
+        <h2>${escapeHtml(group.category || "")}</h2>
+        <div class="settings-row-list">${rows}</div>
+      </article>`;
+    })
+    .join("");
+  return `<section class="settings-page">${head}${groups}</section>`;
+}
+
 function resolveInitialPage() {
   const params = new URLSearchParams(window.location.search);
   const candidate = params.get("page") || window.location.hash.replace(/^#/, "");
@@ -1562,7 +1642,8 @@ function renderActivePage() {
     music: renderMusicPage,
     context: renderPerceptionPage,
     abilities: renderAbilitiesPage,
-    advanced: renderAdvancedPage
+    advanced: renderAdvancedPage,
+    settings: renderSettingsPage
   };
   content.innerHTML = (renderers[state.activePage] || renderOverviewPage)();
   applyActionAvailability(content);

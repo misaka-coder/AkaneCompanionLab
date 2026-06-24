@@ -8,7 +8,8 @@ export const CONTROL_CENTER_PAGE_IDS = Object.freeze([
   "music",
   "context",
   "abilities",
-  "advanced"
+  "advanced",
+  "settings"
 ]);
 
 export const CONTROL_CENTER_DATA_LAYERS = Object.freeze({

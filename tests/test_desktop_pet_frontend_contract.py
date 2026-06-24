@@ -46,6 +46,25 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         # the handler only takes the bubble when nothing has been shown yet.
         self.assertIn("hasShownReply", source)
 
+    def test_settings_catalog_page_is_wired_end_to_end(self) -> None:
+        # Read-only Settings Catalog page (1b): backend catalog -> control center.
+        schema = _read("desktop_pet_next/src/control-center/snapshot-schema.js")
+        self.assertIn('"settings"', schema)
+
+        sources = _read("desktop_pet_next/src/control-center/data-sources.js")
+        self.assertIn("readSettingsCatalog", sources)
+        self.assertIn("/control-center/settings-catalog", sources)
+
+        adapter = _read("desktop_pet_next/src/control-center/data-adapter.js")
+        self.assertIn('id: "settings"', adapter)
+
+        lab = _read("desktop_pet_next/src/control-center-lab.js")
+        self.assertIn("hydrateSettingsCatalog", lab)
+        self.assertIn("settings: renderSettingsPage", lab)
+        # The page renders fetched catalog data, and secrets show redacted —
+        # never a value (mirrors the backend catalog's isSet contract).
+        self.assertIn("已配置 · 已隐藏", lab)
+
     def test_workspace_panel_opens_local_location_instead_of_browser_download(self) -> None:
         source = _read("desktop_pet/renderer/ui/WorkspacePanel.js")
 

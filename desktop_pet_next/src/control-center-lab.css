@@ -7566,3 +7566,91 @@ button:disabled {
     min-width: 58px;
   }
 }
+
+/* === Settings Catalog (read-only) page — additive, no existing rules touched === */
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.settings-head h1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+}
+.settings-head p {
+  margin: 0;
+  opacity: 0.75;
+  font-size: 13px;
+}
+.settings-group h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+.settings-empty {
+  margin: 0;
+  opacity: 0.75;
+}
+.settings-row-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.settings-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 0.5);
+}
+.settings-row__info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.settings-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.settings-desc {
+  font-size: 12.5px;
+  opacity: 0.7;
+}
+.settings-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.settings-value {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.settings-scope {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgb(120 120 140 / 0.16);
+  white-space: nowrap;
+}
+.settings-scope[data-scope="restart"],
+.settings-scope[data-scope="restart_client"] {
+  background: rgb(220 150 40 / 0.2);
+}
+.settings-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgb(90 140 220 / 0.16);
+  white-space: nowrap;
+}
+.settings-tag--secret {
+  background: rgb(220 80 80 / 0.18);
+}

@@ -154,6 +154,9 @@ export function createMockControlCenterSource(data = mockData) {
     async readModelService() {
       return data.modelPage || null;
     },
+    async readSettingsCatalog() {
+      return null;
+    },
     async runModelServiceAction(actionId, payload = {}) {
       return {
         ok: true,
@@ -200,6 +203,9 @@ export function createTauriControlCenterSource(options = {}) {
       return result;
     },
     async readModelService() {
+      return null;
+    },
+    async readSettingsCatalog() {
       return null;
     },
     async runModelServiceAction(actionId) {
@@ -358,6 +364,14 @@ export function createBackendControlCenterSource(options = {}) {
       const result = await fetchJson(
         fetchImpl,
         buildBackendUrl(baseUrl, "/control-center/model-service", { t: String(Date.now()) })
+      );
+      return result.ok && result.data && typeof result.data === "object" ? result.data : null;
+    },
+    async readSettingsCatalog() {
+      if (typeof fetchImpl !== "function") return null;
+      const result = await fetchJson(
+        fetchImpl,
+        buildBackendUrl(baseUrl, "/control-center/settings-catalog", { t: String(Date.now()) })
       );
       return result.ok && result.data && typeof result.data === "object" ? result.data : null;
     },

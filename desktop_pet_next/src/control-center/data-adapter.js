@@ -432,6 +432,11 @@ function withAdvancedOperationActionIds(advanced) {
 
 function createShellSnapshot(raw) {
   const navItems = normalizeNavItems(raw.navItems);
+  // The read-only Settings Catalog page is always available (its data is fetched
+  // directly from the backend by the renderer, not carried in the mock snapshot).
+  if (!navItems.some((item) => item.id === "settings")) {
+    navItems.push({ id: "settings", label: "设置", icon: "sparkle", enabled: true });
+  }
   const defaultPage = isKnownControlCenterPage(raw.labMeta?.defaultPage) ? raw.labMeta.defaultPage : "overview";
   const runtimeShell = raw.overviewRuntime?.shell || raw.runtime?.overview?.shell || {};
 
