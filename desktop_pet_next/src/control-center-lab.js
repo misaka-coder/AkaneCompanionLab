@@ -1562,8 +1562,10 @@ function workflowActionStatusLabel(result) {
 function formatSettingValue(value) {
   if (value === null || value === undefined || value === "") return "（空）";
   if (typeof value === "boolean") return value ? "开" : "关";
-  if (Array.isArray(value)) return value.join(", ") || "（空）";
-  return String(value);
+  let text = Array.isArray(value) ? value.join(", ") : String(value);
+  if (!text) return "（空）";
+  if (text.length > 48) text = `${text.slice(0, 46)}…`;
+  return text;
 }
 
 function renderSettingRow(entry) {
