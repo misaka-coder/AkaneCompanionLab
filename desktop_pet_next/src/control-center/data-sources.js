@@ -282,6 +282,13 @@ export function createBackendControlCenterSource(options = {}) {
         return null;
       }
       setFallbackReason(null);
+      // KNOWN PROTOTYPE STATE (control-center-LAB): the live/backend snapshot
+      // still starts from mockData and patches real values over it by row label
+      // (data-adapter.js::patchRowsByLabel). Rows the backend doesn't supply stay
+      // mock even though sourceKind=backend / fallbackReason=null. Intentional
+      // scaffolding while panels are wired up one by one — do NOT "fix" it by
+      // dropping ...mockData (panels expect the skeleton). Real resolution =
+      // finish per-panel live wiring, or mark still-mock rows in the UI.
       return {
         ...mockData,
         sourceKind: CONTROL_CENTER_SOURCE_KIND.backend,

@@ -90,6 +90,7 @@
 1. **`engine.py` 是上帝类**（数千行，什么都管）。方向是逐步把"回合编排"等抽出去。流式/非流式两条循环的回合体已抽成共享辅助（第一步已做）。
 2. **大 JSON 把表达层全焊在一起**（INV-1）。是有代价的设计，但在找到"表情/动作能与工具调用共存"的方案前，不要拆。
 3. **静默漏斗**：工具拒绝已结构化，其他地方待逐个排查（INV-3）。
+4. **control-center-lab 是 mock 骨架 + 真实数据逐行打补丁的原型**。`control-center/data-sources.js` 的 backend 快照仍以 `...mockData` 为基底，`data-adapter.js::patchRowsByLabel` 按行标签把真实值覆盖上去；**后端没提供的行会保留 mock**，即便 `sourceKind=backend / fallbackReason=null`。这是渐进接入中的有意脚手架，别当 bug 修（别直接删 `...mockData`，面板依赖这套骨架结构）。真正收口 = 逐面板接真数据，或在 UI 标出仍是 mock 的行。
 
 ---
 
