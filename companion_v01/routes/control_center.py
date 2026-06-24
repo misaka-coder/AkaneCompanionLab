@@ -33,6 +33,8 @@ def build_control_center_router(
     log_event: Callable[..., Any] | None = None,
     resolve_identity_from_query: Callable[[Request], tuple[str, str]] | None = None,
     snapshot_runtime_providers: Mapping[str, Callable[..., Any]] | None = None,
+    settings_override_store: Any = None,
+    config_module: Any = None,
 ) -> APIRouter:
     router = APIRouter()
     runtime_providers = dict(snapshot_runtime_providers or {})
@@ -145,6 +147,52 @@ def build_control_center_router(
                 "scopeLegend": catalog.get("scopeLegend", {}),
                 "categories": catalog.get("categories", []),
             },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @router.post("/control-center/settings-catalog/{key}")
+    async def update_setting(key: str, request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        if not _is_local_request(request):
+            _observe_request(runtime_metrics, "control_center.settings_update", started_at, False)
+            return JSONResponse(
+                {"ok": False, "status": "forbidden", "reason": "local_request_required"},
+                status_code=403,
+                headers={"Cache-Control": "no-store"},
+            )
+        if settings_override_store is None or config_module is None:
+            return JSONResponse(
+                {"ok": False, "status": "not-available", "key": key},
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        raw_value = payload.get("value") if isinstance(payload, dict) else None
+        from ..settings_overrides import SettingOverrideError, set_override
+
+        try:
+            applied = set_override(config_module, settings_override_store, key=key, raw_value=raw_value)
+        except SettingOverrideError as exc:
+            _observe_request(runtime_metrics, "control_center.settings_update", started_at, False)
+            return JSONResponse(
+                {"ok": False, "status": exc.reason, "key": key},
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+        except Exception:
+            _observe_request(runtime_metrics, "control_center.settings_update", started_at, False)
+            return JSONResponse(
+                {"ok": False, "status": "error", "key": key},
+                status_code=500,
+                headers={"Cache-Control": "no-store"},
+            )
+        _observe_request(runtime_metrics, "control_center.settings_update", started_at, True)
+        _log_best_effort(log_event, "control_center_settings_update", key=key)
+        return JSONResponse(
+            {"ok": True, "status": "applied", "key": key, "value": applied},
             headers={"Cache-Control": "no-store"},
         )
 

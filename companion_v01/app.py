@@ -24,6 +24,7 @@ from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
 from .model_service_config import ModelServiceConfigStore, load_and_apply_saved_model_service
+from .settings_overrides import SettingsOverrideStore, load_and_apply_saved_overrides
 from .public_guard import PublicThinkGuard
 from .qq_gateway import NapCatQQGateway
 from .resource_manifest import ResourceManifest
@@ -102,6 +103,14 @@ load_and_apply_saved_model_service(
     store=model_service_config_store,
     config_module=config,
     on_error=lambda exc: logger.warning("Model service config ignored: %s", exc),
+)
+settings_override_store = SettingsOverrideStore(
+    Path(config.DATA_DIR) / "_local" / "settings_overrides.json"
+)
+load_and_apply_saved_overrides(
+    config,
+    settings_override_store,
+    on_error=lambda exc: logger.warning("Settings override ignored: %s", exc),
 )
 engine = AkaneMemoryEngine(
     Path(config.DATA_DIR) / "akane_memory_v01",
@@ -399,6 +408,8 @@ app.include_router(
             runtime_metrics=runtime_metrics,
             public_guard=public_guard,
         ),
+        settings_override_store=settings_override_store,
+        config_module=config,
     )
 )
 app.include_router(

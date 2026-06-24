@@ -222,6 +222,21 @@ def declared_keys() -> set[str]:
     return {spec.key for spec in _SPECS}
 
 
+_SPEC_BY_KEY = {spec.key: spec for spec in _SPECS}
+
+
+def get_spec(key: str) -> SettingSpec | None:
+    return _SPEC_BY_KEY.get(key)
+
+
+def is_runtime_editable(key: str) -> bool:
+    """Whether a switch may be edited from the UI. Only runtime-scope,
+    non-sensitive switches qualify; restart / restart_client switches and
+    secrets are never UI-editable (the editing slice depends on this gate)."""
+    spec = _SPEC_BY_KEY.get(key)
+    return bool(spec is not None and spec.scope == SCOPE_RUNTIME and not spec.sensitive)
+
+
 def _type_label(field: Any) -> str:
     annotation = getattr(field, "annotation", None)
     simple = {bool: "bool", int: "int", float: "float", str: "str"}
@@ -252,6 +267,7 @@ def build_settings_catalog(config_module: Any = config) -> dict[str, Any]:
             "managedIn": spec.managed_in,
             "description": spec.description,
             "type": _type_label(field) if field is not None else type(current).__name__,
+            "editable": is_runtime_editable(spec.key),
         }
         if spec.sensitive:
             # Never expose the value or default of a secret — only whether it is set.
