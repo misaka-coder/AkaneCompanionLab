@@ -185,9 +185,10 @@ class Settings(BaseSettings):
     # === 工具调用 & 后台任务 ===
     # 同轮对话最大工具调用轮次（防止循环）
     MAX_TOOL_ROUNDS: int = 3
-    # 试验性 native tool 通道总开关。默认关闭：关闭时下面的 allowlist 不生效，
-    # 所有工具仍走 legacy JSON tool_call。开启（通常经 env）后，allowlist 内、
-    # 且 (host, model) 能力档案已验证的工具才走 provider native schema。
+    # native tool 通道总开关。已在已验证的 provider/model 上跑通（见
+    # docs/tool_system_decoupling_v1.md），但默认仍关闭、fail-closed：关闭时下面
+    # 的 allowlist 不生效，所有工具仍走 legacy JSON tool_call。开启（通常经 env）
+    # 后，allowlist 内、且 (host, model) 能力档案已验证的工具才走 provider native schema。
     ENABLE_NATIVE_TOOL_DECISION: bool = False
     # native tool 允许列表，逗号分隔。低风险只读工具（静态 schema、无写、参数无绝对路径）：
     # web_search（3d live gate）、retrieve_memory / read_memory_timeline（5d live gate）、
