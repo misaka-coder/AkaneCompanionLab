@@ -728,5 +728,46 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertNotIn("prompt_cache_retention", calls[1])
 
 
+class ResponseTruncationDetectionTests(unittest.TestCase):
+    """D1: the non-stream payload sends no max_tokens, so a provider cap (the
+    Anthropic shim defaults to 1024) can silently cut a reply mid-JSON. These
+    lock in that finish_reason=length is surfaced (metric + last_error) instead
+    of passing as a normal short answer."""
+
+    def _runtime(self) -> LLMRuntime:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics = {}
+        runtime._metrics_lock = threading.Lock()
+        runtime._last_error = {}
+        runtime._last_error_lock = threading.Lock()
+        return runtime
+
+    @staticmethod
+    def _response(finish_reason: str, content: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            choices=[SimpleNamespace(finish_reason=finish_reason, message=SimpleNamespace(content=content))]
+        )
+
+    def test_length_finish_reason_is_surfaced(self) -> None:
+        runtime = self._runtime()
+        runtime._note_truncation(self._response("length", '{"speech":"长长的回答被切'), phase="call_json")
+        self.assertEqual(runtime.snapshot_metrics().get("response_truncated"), 1)
+        error = runtime.snapshot_last_error()
+        self.assertEqual(error.get("type"), "ResponseTruncated")
+        self.assertIn("finish_reason=length", error.get("message", ""))
+        self.assertEqual(error.get("phase"), "call_json")
+
+    def test_normal_finish_reason_is_ignored(self) -> None:
+        runtime = self._runtime()
+        runtime._note_truncation(self._response("stop", '{"speech":"ok"}'), phase="call_json")
+        self.assertIsNone(runtime.snapshot_metrics().get("response_truncated"))
+        self.assertEqual(runtime.snapshot_last_error(), {})
+
+    def test_malformed_response_does_not_raise(self) -> None:
+        runtime = self._runtime()
+        runtime._note_truncation(SimpleNamespace(choices=[]), phase="call_json")
+        self.assertIsNone(runtime.snapshot_metrics().get("response_truncated"))
+
+
 if __name__ == "__main__":
     unittest.main()

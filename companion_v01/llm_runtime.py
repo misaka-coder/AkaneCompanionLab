@@ -600,6 +600,7 @@ class LLMRuntime:
                 return {NATIVE_TOOL_CALL_FIELD: native_tool_call, "tool_call": None}
             if native_requested:
                 self._record_metric("native_tool_no_call")
+            self._note_truncation(response, phase="call_json")
             content = self._extract_text(response)
             parsed = self._extract_json(content)
             if isinstance(parsed, dict):
@@ -1652,6 +1653,42 @@ class LLMRuntime:
             "phase": str(phase or ""),
             "type": exc.__class__.__name__,
             "message": self._sanitize_error_message(str(exc or "")),
+        }
+        with lock:
+            self._last_error = detail
+
+    def _note_truncation(self, response: Any, *, phase: str) -> None:
+        """Surface silent length-truncation through the metric + last-error
+        channels (this file's structured-failure pattern; INV-3).
+
+        The non-stream payload sends no max_tokens, so a provider cap (the
+        Anthropic shim defaults to 1024) can cut the response mid-JSON, which
+        then parses or recovers as if it were complete. The Anthropic stop
+        reason maps to finish_reason="length"; without this, a truncated reply
+        is indistinguishable from a normal short answer or a fallback.
+        """
+        try:
+            choice = response.choices[0]
+            finish_reason = (
+                str(choice.get("finish_reason") or "")
+                if isinstance(choice, dict)
+                else str(getattr(choice, "finish_reason", "") or "")
+            )
+        except Exception:
+            return
+        if finish_reason.strip().lower() != "length":
+            return
+        sample = self._extract_text(response)
+        self._record_metric("response_truncated")
+        lock = getattr(self, "_last_error_lock", None)
+        if lock is None:
+            return
+        detail = {
+            "phase": str(phase or ""),
+            "type": "ResponseTruncated",
+            "message": self._sanitize_error_message(
+                f"finish_reason=length, output cut off (chars={len(sample)}); tail={sample[-200:]!r}"
+            ),
         }
         with lock:
             self._last_error = detail
