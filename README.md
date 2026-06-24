@@ -6,8 +6,40 @@
 > 首次准备与单入口启动；桌宠安装包、Linux/macOS 桌面端仍未作为正式
 > 发行物提供。
 
-AkaneCompanionLab 是一个实验性的陪伴角色系统，包含 FastAPI 后端、静态
-Web 客户端、Windows-first Tauri 桌宠、角色工坊和可选的本地能力集成。
+AkaneCompanionLab 是一个桌面陪伴角色系统：FastAPI 后端、静态 Web 客户端、
+Windows-first 的 Tauri 桌宠，以及一个能让你做自己角色的角色工坊。
+
+它想做的不是"更聪明的问答 AI"，而是让你和一个角色一起把相处过成日常。下面
+几点是它和"套壳 chatbot"不一样的地方——每一条都能在代码里对上号，没做完的
+不写进来。
+
+## 它不太一样的地方
+
+**分层记忆，而且记得"什么时候"。** 对话分三层沉淀：最近的原话、压缩后的阶段
+摘要、再到长期语义记忆（你是谁、你反复提到的人和事、还没了结的约定）。长期
+记忆不是一张扁平的事实表，它保留时间范围，反复出现的事会被"加固"。这三层都会
+进入回复前的提示词，让她记得的旧事是带着"什么时候"的。
+
+**角色能表达什么，由你给的资源决定。** 表情、服装、场景、BGM 都来自运行时的
+资源清单。模型每轮只在"当前有哪些可选"里挑，输出后还会被归一化到真实存在的
+资源，不会凭空写一个不存在的表情。删掉一个表情，她就真的露不出那个情绪；加
+一首歌，你们就多一段能一起听的。
+
+**一次回复是一份"表现"，不只是一段文字。** 同一轮结构化输出里同时带着：说
+什么、分段气泡、什么表情、要不要播某段语音或音乐、关系状态怎么变，一起驱动
+桌宠的脸、气泡、TTS 和音乐。
+
+**角色是你的。** 角色工坊能创建或导入角色：配人设、上传立绘并校准、随时切换。
+角色包会同时进入身份提示词、表情资源，和按角色隔离的记忆——换角色换的是一
+整套记忆和她能感知的世界，不只是换张头像。Akane 是项目自带的默认演示角色。
+
+**工具调用会校验、执行、把结果喂回来。** 模型想用工具时先校验，参数错或工具
+不存在会把可读原因喂回去让它重试；执行成功后把结果带进下一轮。一轮一个工具，
+多步靠多轮，高风险动作会要求确认——不是"说一句我做了"就算数。
+
+**一套后端，多个端。** Web、桌宠、QQ 共用同一个回合引擎，但每个端按自己的模式
+裁剪表现和可用工具（比如 QQ 端只发文字、语音和表情图片，不渲染立绘、场景和
+BGM）。
 
 ## 当前状态
 
@@ -266,7 +298,7 @@ git diff --check
 
 ## 使用 AI 协助部署
 
-可以让 AI 编程助手先阅读 `README.md`、`AGENTS.md` 和
+可以让 AI 编程助手先阅读 `README.md` 和
 `desktop_pet_next/README.md`，再根据本机环境执行安装与诊断。请始终：
 
 - 自己确认命令作用后再授权执行
@@ -285,72 +317,39 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\export_public_alpha.ps1
 ```
 
-导出结果不包含原 Git 历史、用户数据、音乐、Live2D 样例和授权不明媒体，
-并使用中性占位图维持学习和构建路径。详见：
+导出结果不包含原 Git 历史、用户数据、音乐、Live2D 样例和授权不明媒体。
+默认角色 Akane（`akane_v1`）的立绘作为可分发的演示素材随包发布；其余需要
+图片的位置用中性占位图维持学习和构建路径。详见：
 
 - `ASSETS_LICENSE.md`
 - `THIRD_PARTY_NOTICES.md`
 - `PUBLIC_RELEASE.md`
 - `docs/productization_release_gate_v1.md`
 
-## 说明
+## 角色与自定义
 
-- 当前主界面已经切到通用 gal 壳，前端不再绑定某个固定人物。
-- `web/assets/` 保持项目自有资源，不与其它仓库互相覆盖。
-- 这个目录后续用于网页前端版本，不再和旧 `AkaneBrain` 主工程混改。
+- 项目自带 Akane（`akane_v1`）作为默认演示角色，克隆后开箱即用。
+- 角色不是写死的。你可以在角色工坊里创建或导入自己的角色：配置人设、
+  上传并校准立绘、快速切换；每个角色的记忆默认隔离。Akane 只是示范。
+- `web/assets/` 是项目自有资源，不与其它仓库互相覆盖。
 
 ## 可选：音频分离环境
 
-如果你希望 Akane 使用 `separate_audio_stems` 做人声 / 伴奏分离，或使用 `clean_voice_track` 做 AI 人声净化，需要额外准备本地音频模型环境。
-
-当前项目默认只依赖：
-
-- `ffmpeg`
-- `torch`
-- `demucs`
-- `deepfilternet`
-
-但要真正吃到 NVIDIA GPU，需要确保：
-
-1. 你的机器能正常看到显卡
-   - `nvidia-smi`
-2. 当前 Python 环境安装的是 **CUDA 版 PyTorch**，而不是 CPU 版
-3. `demucs` 命令或 `python -m demucs.separate` 可以执行
-
-### Windows / NVIDIA 推荐流程
-
-先卸掉当前环境里的 CPU 版 PyTorch：
+`separate_audio_stems`（人声/伴奏分离）和 `clean_voice_track`（AI 人声净化）是
+可选工具，需要本地音频模型环境（`ffmpeg` + `torch` + `demucs` + `deepfilternet`），
+默认不开。要用 NVIDIA GPU，关键是装 **CUDA 版 PyTorch**（不是 CPU 版）：
 
 ```powershell
+# 先卸掉 CPU 版，再按 PyTorch 官方矩阵装 CUDA 版（下面是 CUDA 12.8 示例）
 python -m pip uninstall -y torch torchvision torchaudio
-```
-
-然后按 PyTorch 官方安装矩阵选择 **Windows + Pip + Python + CUDA** 对应命令安装。
-
-官方入口：
-
-- PyTorch Start Locally: https://pytorch.org/get-started/locally/
-
-对于支持 CUDA 12.8 的 Windows / NVIDIA 机器，一般会是类似下面这种形式：
-
-```powershell
 python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-```
-
-再安装 Demucs：
-
-```powershell
 python -m pip install -U demucs
 ```
 
-### 验证
+PyTorch 官方安装入口：<https://pytorch.org/get-started/locally/>
 
-```powershell
-python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.device_count())"
-python -m demucs.separate --help
-```
-
-只要 `torch.cuda.is_available()` 返回 `True`，并且 `demucs` 能正常显示帮助信息，Akane 的音频分离工具环境就算准备好了。
+验证：`torch.cuda.is_available()` 返回 `True`、且 `python -m demucs.separate --help`
+能正常跑，环境即就绪。
 
 ## 许可证
 

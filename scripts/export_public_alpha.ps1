@@ -41,6 +41,8 @@ function Test-PublicFileExcluded {
 
     $exactExclusions = @(
         ".env",
+        "claude.md",
+        "agents.md",
         "docs/mechanical_section_view_guide.md"
     )
     if ($exactExclusions -contains $lower) {
@@ -86,11 +88,37 @@ function Test-PublicFileExcluded {
         "docs/magnetic_chaos_pendulum_video/",
         "docs/productization_work_session_",
         "docs/video_01_assets/",
+        "docs/research_learning_agent_prompts/",
         "documents/projects/retrieval_eval_"
     )
     foreach ($prefix in $prefixExclusions) {
         if ($lower.StartsWith($prefix.ToLowerInvariant())) {
             return $true
+        }
+    }
+
+    # Internal AI-process / handoff docs (milestone tickets, handoff prompts,
+    # backlogs, agent prompts, personal learning notes, multi-agent collaboration
+    # scaffolding, IP-source research) carry no open-source value and read as
+    # machine-generated project process noise. Keep the design/architecture docs;
+    # drop the process exhaust.
+    $internalDocPatterns = @(
+        "_ticket\.md$",
+        "handoff",
+        "_backlog\.md$",
+        "recon_brief",
+        "agent_prompt",
+        "_notes\.md$",
+        "collaboration_protocol",
+        "multi_agent",
+        "reimu_source_research",
+        "claude_code_tool_system_research"
+    )
+    if ($lower.StartsWith("docs/")) {
+        foreach ($docPattern in $internalDocPatterns) {
+            if ($lower -match $docPattern) {
+                return $true
+            }
         }
     }
 

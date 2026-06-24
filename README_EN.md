@@ -2,9 +2,54 @@
 
 > **v0.1.0-alpha.1 / Learning and research preview**
 
-AkaneCompanionLab is an experimental companion-character system containing a
-FastAPI backend, static Web client, Windows-first Tauri desktop pet, character
-workshop, and optional local integrations.
+AkaneCompanionLab is a desktop companion-character system: a FastAPI backend, a
+static Web client, a Windows-first Tauri desktop pet, and a character workshop
+for building your own character.
+
+It isn't trying to be a "smarter Q&A AI" — it's trying to let you and a character
+turn time together into something everyday. The points below are where it differs
+from a wrapper chatbot; each one is backed by actual code, and anything not yet
+built is left out.
+
+## What makes it different
+
+**Layered memory that remembers "when."** Conversations settle into three layers:
+recent raw messages, compressed episodic summaries, and long-term semantic memory
+(who you are, the people and topics you keep bringing up, unresolved commitments).
+Long-term memory isn't a flat fact table — it keeps the time range, and recurring
+things get "reinforced." All three layers feed into the prompt before each reply,
+so the older things she remembers still carry a "when."
+
+**What the character can express is bounded by the resources you give it.**
+Expressions, outfits, scenes, and BGM all come from a runtime resource manifest.
+Each turn the model only picks from what is currently available, and its output is
+normalized back to resources that actually exist — it can't invent an expression
+that isn't there. Delete an expression and she genuinely can't show that mood; add
+a song and you have one more thing to listen to together.
+
+**A reply is a "performance," not just text.** A single structured output carries
+it all at once: what to say, segmented speech bubbles, which expression, whether to
+play a voice clip or music, how the relationship state shifts — together driving
+the pet's face, bubble, TTS, and music.
+
+**The character is yours.** The workshop lets you create or import characters:
+configure the persona, upload and calibrate portraits, switch anytime. A character
+pack feeds into the identity prompt, the expression resources, and memory isolated
+per character — switching characters swaps a whole set of memory and the world she
+can perceive, not just an avatar. Akane is the bundled default demo character.
+
+**Tool calls are validated, executed, and fed back.** When the model wants a tool,
+it is validated first; bad arguments or an unknown tool get a readable reason fed
+back so it can retry; on success the result is carried into the next turn. One tool
+per round, multi-step over multiple rounds, high-risk actions ask for confirmation
+— not "I said I did it, so it's done."
+
+**One backend, multiple front-ends.** Web, desktop pet, and QQ share the same turn
+engine, but each trims its presentation and available tools to its own mode (for
+example, QQ only sends text, voice, and sticker images — no portrait, scene, or BGM
+rendering).
+
+## Status note
 
 This release is not recommended for production. Windows now has a repeatable
 bootstrap and single launch entry, while packaged desktop installers and
@@ -13,8 +58,9 @@ Linux/macOS desktop support are still pending.
 ## Status
 
 - Backend: usable for local learning and experiments
-- Web client: usable; public exports contain placeholder media
+- Web client: usable; the public export ships the default Akane character art and uses placeholders for other media
 - Tauri desktop pet: Alpha, primarily tested on Windows/WebView2
+- Character workshop: Alpha — create or import your own characters
 - QQ/NapCat: optional and disabled by default
 - TTS, ASR, vision, retrieval, and local tools: optional
 - Installer: not provided as a supported release artifact yet
@@ -133,8 +179,10 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 ```
 
 The export excludes private data, copyrighted audio, Live2D sample data, and
-media without documented redistribution rights. Neutral placeholder images
-keep the learning and build paths intact.
+media without documented redistribution rights. The default Akane (`akane_v1`)
+character art ships as documented, redistributable demo assets; every other
+image slot uses a neutral placeholder to keep the learning and build paths
+intact.
 
 Sanitization is not the same as product completeness. Before public promotion,
 review `docs/productization_release_gate_v1.md`; GPT-SoVITS, MCP, music,
