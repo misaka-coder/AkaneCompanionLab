@@ -30,6 +30,20 @@ class SettingsCatalogDriftTests(unittest.TestCase):
             for entry in group["settings"]:
                 self.assertIn(entry["scope"], sc.VALID_SCOPES, entry["key"])
 
+    def test_categories_carry_valid_tier_with_both_present(self) -> None:
+        catalog = sc.build_settings_catalog()
+        tiers = {group["tier"] for group in catalog["categories"]}
+        self.assertTrue(tiers.issubset(sc.VALID_TIERS), tiers)
+        self.assertIn(sc.TIER_COMMON, tiers)
+        self.assertIn(sc.TIER_ADVANCED, tiers)
+        # 1b feedback: the experimental multi-access group folds into advanced,
+        # while QQ (the user relies on it) stays common.
+        by_cat = {group["category"]: group["tier"] for group in catalog["categories"]}
+        pub = next(name for name in by_cat if "公开访问" in name)
+        self.assertEqual(by_cat[pub], sc.TIER_ADVANCED)
+        qq = next(name for name in by_cat if name.startswith("QQ"))
+        self.assertEqual(by_cat[qq], sc.TIER_COMMON)
+
     def test_sensitive_entries_never_expose_value_or_default(self) -> None:
         catalog = sc.build_settings_catalog()
         sensitive = [e for g in catalog["categories"] for e in g["settings"] if e["sensitive"]]

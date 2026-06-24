@@ -69,6 +69,16 @@ _RM = "远程媒体 (yt-dlp)"
 _WEB = "Web 身份模式"
 _SRV = "服务监听"
 
+# Display tiers. Everything stays catalogued (the drift guard still covers all
+# 119 fields); tier only sets the UI's default expand/collapse so the common
+# groups are seen first and the rarely-touched ones (multi-access/tuning/infra,
+# 1b feedback) fold away to cut comprehension cost.
+TIER_COMMON = "common"
+TIER_ADVANCED = "advanced"
+VALID_TIERS = frozenset({TIER_COMMON, TIER_ADVANCED})
+
+_ADVANCED_CATEGORIES = frozenset({_LLM, _EMB, _RET, _DBG, _MEM, _PUB, _BG, _RM, _WEB, _SRV})
+
 _SPECS: tuple[SettingSpec, ...] = (
     # 运行模式 & 人设
     _s("RUN_MODE", _RUN, SCOPE_RESTART, "运行模式"),
@@ -260,5 +270,12 @@ def build_settings_catalog(config_module: Any = config) -> dict[str, Any]:
             SCOPE_RESTART: "需重启后端生效",
             SCOPE_RESTART_CLIENT: "需重建对应子系统/重启生效",
         },
-        "categories": [{"category": name, "settings": groups[name]} for name in order],
+        "categories": [
+            {
+                "category": name,
+                "tier": TIER_ADVANCED if name in _ADVANCED_CATEGORIES else TIER_COMMON,
+                "settings": groups[name],
+            }
+            for name in order
+        ],
     }

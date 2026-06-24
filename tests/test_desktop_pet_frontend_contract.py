@@ -64,6 +64,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         # The page renders fetched catalog data, and secrets show redacted —
         # never a value (mirrors the backend catalog's isSet contract).
         self.assertIn("已配置 · 已隐藏", lab)
+        # Advanced/experimental groups fold into a collapsed section (1b feedback).
+        self.assertIn("settings-advanced", lab)
+        self.assertIn('group.tier === "advanced"', lab)
 
     def test_workspace_panel_opens_local_location_instead_of_browser_download(self) -> None:
         source = _read("desktop_pet/renderer/ui/WorkspacePanel.js")

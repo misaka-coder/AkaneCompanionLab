@@ -1593,6 +1593,15 @@ function renderSettingRow(entry) {
     </div>`;
 }
 
+function renderSettingsGroup(group) {
+  const rows = Array.isArray(group.settings) ? group.settings.map(renderSettingRow).join("") : "";
+  return `
+      <article class="glass-card settings-group">
+        <h2>${escapeHtml(group.category || "")}</h2>
+        <div class="settings-row-list">${rows}</div>
+      </article>`;
+}
+
 function renderSettingsPage() {
   const head = `
     <header class="settings-head">
@@ -1603,17 +1612,20 @@ function renderSettingsPage() {
     const msg = settingsCatalogStatus || "正在读取设置目录…";
     return `<section class="settings-page">${head}<article class="glass-card"><p class="settings-empty">${escapeHtml(msg)}</p></article></section>`;
   }
-  const groups = settingsCatalog.categories
-    .map((group) => {
-      const rows = Array.isArray(group.settings) ? group.settings.map(renderSettingRow).join("") : "";
-      return `
-      <article class="glass-card settings-group">
-        <h2>${escapeHtml(group.category || "")}</h2>
-        <div class="settings-row-list">${rows}</div>
-      </article>`;
-    })
-    .join("");
-  return `<section class="settings-page">${head}${groups}</section>`;
+  const categories = settingsCatalog.categories;
+  const commonHtml = categories.filter((group) => group.tier !== "advanced").map(renderSettingsGroup).join("");
+  const advanced = categories.filter((group) => group.tier === "advanced");
+  const advancedCount = advanced.reduce(
+    (total, group) => total + (Array.isArray(group.settings) ? group.settings.length : 0),
+    0
+  );
+  const advancedHtml = advanced.length
+    ? `<details class="settings-advanced">
+        <summary>${icon("sparkle")} 高级 · 实验性设置（${advancedCount} 项，默认折叠）</summary>
+        <div class="settings-advanced-body">${advanced.map(renderSettingsGroup).join("")}</div>
+      </details>`
+    : "";
+  return `<section class="settings-page">${head}${commonHtml}${advancedHtml}</section>`;
 }
 
 function resolveInitialPage() {

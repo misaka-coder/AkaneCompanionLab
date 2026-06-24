@@ -7660,3 +7660,28 @@ button:disabled {
 .settings-tag--secret {
   background: rgb(220 80 80 / 0.18);
 }
+.settings-advanced {
+  border-radius: 12px;
+  background: rgb(255 255 255 / 0.35);
+  padding: 4px 14px;
+}
+.settings-advanced > summary {
+  cursor: pointer;
+  padding: 12px 2px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+}
+.settings-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+.settings-advanced[open] > summary {
+  margin-bottom: 12px;
+}
+.settings-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
