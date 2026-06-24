@@ -150,8 +150,10 @@ def shape_tool_followup(
     - empty-but-successful -> stable placeholder, never an empty tool result
       (mirrors Claude Code's empty tool_result guard; an empty result tail can
       make some models end the turn with no output).
-    - over-size -> truncate at a newline boundary with an honest marker, so a
-      huge result can't blow up the next round's context.
+    - over-size -> truncate at a newline boundary with an honest marker that
+      reports the full size and how much was omitted, so a huge result can't
+      blow up the next round's context AND the model can gauge how far to narrow
+      its next call (showing chars-only, without the total, left it guessing).
 
     Only the tool's own text is bounded here; no paths are introduced. True
     persist-to-workspace offloading (instead of truncation) is a later step and
@@ -168,14 +170,17 @@ def shape_tool_followup(
     limit = max(500, limit)
     if len(text) <= limit:
         return text
+    total = len(text)
     truncated = text[:limit]
     cut = truncated.rfind("\n")
     if cut > limit * 0.6:
         truncated = truncated[:cut]
     truncated = truncated.rstrip()
+    shown = len(truncated)
+    omitted = max(0, total - shown)
     return (
-        f"{truncated}\n…（{tool_name} 结果过长，已截断，仅展示前约 {len(truncated)} 字；"
-        "如需更多请缩小范围或分页再调用。）"
+        f"{truncated}\n…（{tool_name} 结果共约 {total} 字，已截断，仅展示前 {shown} 字"
+        f"（省略约 {omitted} 字）；如需被省略的部分，请缩小范围、加过滤条件或分页再调用。）"
     )
 
 

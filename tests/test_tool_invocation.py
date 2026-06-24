@@ -303,6 +303,10 @@ class ShapeToolFollowupTests(unittest.TestCase):
         self.assertLess(len(shaped), len(big))
         self.assertIn("已截断", shaped)
         self.assertIn("web_search", shaped)
+        # The marker is honest about magnitude: it reports the full size so the
+        # model can gauge how far to narrow its next call, not just what was shown.
+        self.assertIn(f"共约 {len(big)} 字", shaped)
+        self.assertIn("省略约", shaped)
         # Truncation prefers a newline boundary, so no line is cut mid-way.
         body = shaped.split("\n…（")[0]
         self.assertTrue(big.startswith(body))
