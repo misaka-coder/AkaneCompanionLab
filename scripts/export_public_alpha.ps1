@@ -47,6 +47,18 @@ function Test-PublicFileExcluded {
         return $true
     }
 
+    # The akane_v1 demo character pack ships with real, ASSETS_LICENSE-documented
+    # portraits. Allow its files (including .png) through the binary-exclusion gate,
+    # but never its per-character private _local/ memory data.
+    $allowedPrefixes = @(
+        "desktop_pet_creator_kit/characters/akane_v1/"
+    )
+    foreach ($allowed in $allowedPrefixes) {
+        if ($lower.StartsWith($allowed.ToLowerInvariant()) -and $lower -notmatch "/_local/") {
+            return $false
+        }
+    }
+
     $prefixExclusions = @(
         ".git/",
         ".venv/",
@@ -223,8 +235,7 @@ function Add-PublicPlaceholderAssets {
     )
     $characterRoots = @(
         "web/assets/characters/猫娘",
-        "desktop_pet_next/src/assets/characters/猫娘",
-        "desktop_pet_creator_kit/characters/akane_sample/assets/characters/猫娘"
+        "desktop_pet_next/src/assets/characters/猫娘"
     )
 
     $destinations = [System.Collections.Generic.List[string]]::new()

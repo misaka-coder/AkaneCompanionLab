@@ -173,8 +173,12 @@ $allowedPngPrefixes = @(
     "web/assets/stickers/",
     "desktop_pet_next/src/assets/characters/",
     "desktop_pet_next/src/assets/control-center-lab/",
-    "desktop_pet_creator_kit/characters/akane_sample/assets/characters/"
+    "desktop_pet_creator_kit/characters/akane_v1/assets/"
 )
+
+# The akane_v1 demo character pack ships real, ASSETS_LICENSE-documented portraits.
+# Every other png in the release must still be the single neutral placeholder.
+$realArtPngPrefix = "desktop_pet_creator_kit/characters/akane_v1/"
 
 $files = @(
     Get-ChildItem -LiteralPath $root -File -Recurse -Force |
@@ -217,12 +221,18 @@ foreach ($file in $files) {
 }
 
 $pngFiles = @($files | Where-Object { $_.Extension.ToLowerInvariant() -eq ".png" })
+$placeholderPngFiles = @(
+    $pngFiles | Where-Object {
+        $rel = $_.FullName.Substring($root.Length).TrimStart("\", "/").Replace("\", "/")
+        -not $rel.StartsWith($realArtPngPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+)
 $pngHashes = @(
-    $pngFiles |
+    $placeholderPngFiles |
         ForEach-Object { (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash } |
         Sort-Object -Unique
 )
-if ($pngFiles.Count -eq 0) {
+if ($placeholderPngFiles.Count -eq 0) {
     $errors.Add("placeholder_pngs_missing")
 } elseif ($pngHashes.Count -ne 1) {
     $errors.Add("non_placeholder_png_detected")

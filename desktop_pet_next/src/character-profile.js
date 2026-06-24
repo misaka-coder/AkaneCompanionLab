@@ -7,12 +7,12 @@ const characterProfileModules = import.meta.glob(
 );
 
 const CHARACTER_PACK_STORAGE_KEY = "akane-next-character-pack-id";
-const DEFAULT_CHARACTER_PACK_ID = "akane_sample";
+const DEFAULT_CHARACTER_PACK_ID = "akane_v1";
 
 const FALLBACK_PROFILE = {
   schema_version: "akane.character.v0.1",
   identity: {
-    id: "akane_sample",
+    id: "akane_v1",
     name: "Akane",
     app_name: "Akane Next",
     self_reference: "我",
@@ -29,11 +29,11 @@ const FALLBACK_PROFILE = {
     extra_setting: ""
   },
   appearance: {
-    default_outfit: "猫娘",
-    default_emotion: "正常",
-    music_emotion: "听歌中",
-    required_emotions: ["正常"],
-    recommended_emotions: ["思考中", "侧耳听", "听歌中", "困惑", "开心", "得意"]
+    default_outfit: "default",
+    default_emotion: "normal",
+    music_emotion: "listening",
+    required_emotions: ["normal"],
+    recommended_emotions: ["thinking", "happy", "confused", "listening"]
   },
   dialogue: {
     input_placeholder: "和 Akane 说点什么……",
@@ -41,7 +41,7 @@ const FALLBACK_PROFILE = {
     tts_test_text: "Akane Next：语音播放测试。",
     proactive_wake_prompt:
       "主人暂时没有说话。你像坐在旁边陪他一样，轻轻搭一句自然的话。桌面线索只当背景，不要刻意围绕窗口标题发挥。",
-    local_click_lines: [{ text: "嗯？我在哦。", emotion: "正常" }]
+    local_click_lines: [{ text: "嗯？我在哦。", emotion: "normal" }]
   },
   care: {
     enabled: true,

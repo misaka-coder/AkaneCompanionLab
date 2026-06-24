@@ -863,7 +863,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("function canRenderCurrentLocalResources()", main_source)
         self.assertIn("function canUseBundledEmotionFallback()", main_source)
         self.assertIn("entry && !entry.url && canUseBundledEmotionFallback()", main_source)
-        self.assertIn('packId === "akane_sample"', main_source)
+        self.assertIn('packId === "akane_v1"', main_source)
         self.assertIn('emitTo("settings", SETTINGS_SNAPSHOT_EVENT, payload)', main_source)
         self.assertIn('emitTo("workshop", SETTINGS_SNAPSHOT_EVENT, payload)', main_source)
         self.assertIn('emitTo("workspace", SETTINGS_SNAPSHOT_EVENT, payload)', main_source)

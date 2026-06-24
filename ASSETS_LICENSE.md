@@ -21,12 +21,18 @@ requires an image in order to build or demonstrate the resource protocol.
 Those generated placeholder files are licensed under Apache-2.0 as part of the
 export tooling.
 
+The one documented exception is the bundled `akane_v1` demo character pack: its
+portrait images ship as real artwork (not placeholders) so the desktop pet has
+a working default character out of the box. Their terms are recorded in
+"Bundled Demo Character: akane_v1" below. Every other image in the public
+release remains a neutral placeholder.
+
 ## Excluded From the Public Alpha
 
 Unless a later revision of this file explicitly says otherwise, the public
 Alpha export excludes:
 
-- Akane and other character portraits
+- character portraits other than the bundled `akane_v1` demo pack documented below
 - scene and background illustrations
 - stickers and decorative control-center illustrations
 - music and other audio
@@ -56,6 +62,30 @@ Character packs created or imported by users remain the responsibility of
 their authors. Contributors must only submit packs and assets they created or
 have permission to redistribute. A pack is not relicensed merely because it is
 loaded by AkaneCompanionLab.
+
+## Bundled Demo Character: akane_v1
+
+The desktop pet ships one default character pack, `akane_v1`, so a fresh install
+has a working face and persona without any extra download. Its portrait images
+are original, AI-generated artwork created for this project; they do not depict
+any pre-existing franchise character.
+
+| Field | Value |
+| --- | --- |
+| Path | `desktop_pet_creator_kit/characters/akane_v1/assets/characters/default/*.png` |
+| Title | Akane (akane_v1 demo character) |
+| Author | Akane Companion Lab contributors |
+| Source | Original AI-generated artwork created for AkaneCompanionLab |
+| License | Bundled-use only — see grant below |
+| Changes | Generated and curated for this project |
+| Redistribution | Allowed only as part of AkaneCompanionLab |
+
+**Bundled-use grant.** These portrait images are made available **only** for use
+together with AkaneCompanionLab: you may run, fork, and redistribute the
+application with these images included. You may **not** extract them for use in
+other projects, sublicense them, sell them, or redistribute them separately from
+this application. All other rights are reserved by the authors. This grant is
+independent of the Apache-2.0 license that covers the source code.
 
 ## Adding Assets
 

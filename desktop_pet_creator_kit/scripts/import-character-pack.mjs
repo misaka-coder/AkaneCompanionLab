@@ -112,8 +112,8 @@ function parseArgs(args) {
 
 function printUsage() {
   console.log("Usage:");
-  console.log("  npm run import -- ./dist/akane_sample.zip");
-  console.log("  npm run import -- ./dist/akane_sample.zip --as my_character --force");
+  console.log("  npm run import -- ./dist/akane_v1.zip");
+  console.log("  npm run import -- ./dist/akane_v1.zip --as my_character --force");
 }
 
 function readZipEntries(buffer) {

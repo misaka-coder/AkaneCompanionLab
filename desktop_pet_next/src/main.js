@@ -3778,7 +3778,7 @@ function canRenderCurrentLocalResources() {
 function canUseBundledEmotionFallback() {
   const packId = normalizeEntryKey(getCurrentCharacterPackId());
   const identityId = normalizeEntryKey(getActiveCharacterProfile()?.identity?.id);
-  return packId === "akane_sample" || identityId === "akane_sample";
+  return packId === "akane_v1" || identityId === "akane_v1";
 }
 
 async function ensureBackendSession({ restoreLatest = false } = {}) {

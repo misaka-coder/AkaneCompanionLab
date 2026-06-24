@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const kitRoot = path.resolve(scriptDir, "..");
 const validatorPath = path.join(scriptDir, "validate-character-pack.mjs");
-const DEFAULT_PACK = path.join(kitRoot, "characters", "akane_sample");
+const DEFAULT_PACK = path.join(kitRoot, "characters", "akane_v1");
 const EXPORT_FORMAT = "akane.character_pack_export.v0.1";
 const ZIP_UTF8_FLAG = 0x0800;
 const IGNORED_FILE_NAMES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);

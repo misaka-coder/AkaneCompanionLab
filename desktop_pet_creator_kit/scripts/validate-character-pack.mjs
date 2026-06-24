@@ -16,7 +16,7 @@ const kitRoot = path.resolve(scriptDir, "..");
 const packArg = process.argv[2];
 const packDir = packArg
   ? path.resolve(process.cwd(), packArg)
-  : path.join(kitRoot, "characters", "akane_sample");
+  : path.join(kitRoot, "characters", "akane_v1");
 
 const errors = [];
 const warnings = [];
