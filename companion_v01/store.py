@@ -1153,9 +1153,8 @@ class MemoryStore:
                 """
                 SELECT session_id FROM chat_sessions
                 WHERE profile_user_id = ?
-                  AND (? IS NULL OR character_pack_id = ?)
                 """,
-                (str(profile_user_id), normalized_character_pack_id, normalized_character_pack_id),
+                (str(profile_user_id),),
             ).fetchall()
         }
         legacy_rows = conn.execute(

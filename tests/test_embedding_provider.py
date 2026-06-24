@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import types
 import unittest
 import warnings
@@ -149,6 +150,37 @@ class EmbeddingProviderTests(unittest.TestCase):
                 "cache_folder": "models/cache",
             },
         )
+
+    def test_huggingface_provider_sets_endpoint_only_during_model_load(self) -> None:
+        captured_env: dict[str, str | None] = {}
+
+        class StubSentenceTransformer:
+            def __init__(self, model_name: str, device=None, local_files_only: bool = False) -> None:
+                captured_env["HF_ENDPOINT"] = os.environ.get("HF_ENDPOINT")
+                captured_env["HF_HUB_OFFLINE"] = os.environ.get("HF_HUB_OFFLINE")
+
+            def get_sentence_embedding_dimension(self) -> int:
+                return 3
+
+            def encode(self, texts, **kwargs):
+                return [[1.0, 0.0, 0.0] for _ in texts]
+
+        fake_module = types.SimpleNamespace(SentenceTransformer=StubSentenceTransformer)
+        with patch.dict("sys.modules", {"sentence_transformers": fake_module}), patch.dict(
+            "os.environ",
+            {},
+            clear=True,
+        ):
+            provider = HuggingFaceEmbeddingProvider(
+                model_name="BAAI/bge-m3",
+                local_files_only=False,
+                hf_endpoint="https://hf-mirror.com/",
+            )
+            self.assertIsNone(os.environ.get("HF_ENDPOINT"))
+
+        self.assertEqual(provider.dimension, 3)
+        self.assertEqual(captured_env["HF_ENDPOINT"], "https://hf-mirror.com")
+        self.assertIsNone(captured_env["HF_HUB_OFFLINE"])
 
 
 if __name__ == "__main__":

@@ -86,8 +86,25 @@ function Test-PythonImports {
         [string[]]$PrefixArgs = @()
     )
 
-    & $PythonPath @PrefixArgs -c "import fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
-    return $LASTEXITCODE -eq 0
+    $previousNativeErrorPreference = $null
+    $hasNativeErrorPreference = [bool](Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Local -ErrorAction SilentlyContinue)
+    if ($hasNativeErrorPreference) {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+    }
+
+    try {
+        if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        & $PythonPath @PrefixArgs -c "import fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" *> $null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    } finally {
+        if ($hasNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
 }
 
 function Get-FileSha256 {
@@ -102,6 +119,32 @@ function Get-FileSha256 {
         $stream.Dispose()
         $sha256.Dispose()
     }
+}
+
+function Get-PipIndexArgs {
+    $indexUrl = [string]$env:AKANE_PIP_INDEX_URL
+    if ([string]::IsNullOrWhiteSpace($indexUrl)) {
+        $indexUrl = [string]$env:PIP_INDEX_URL
+    }
+    if ([string]::IsNullOrWhiteSpace($indexUrl)) {
+        return @()
+    }
+    return @("--index-url", $indexUrl.Trim())
+}
+
+function Format-PipNetworkHint {
+    return (
+        "If pip is slow or blocked by your network, set a PyPI mirror before launching, " +
+        "for example: `$env:AKANE_PIP_INDEX_URL='https://pypi.tuna.tsinghua.edu.cn/simple'; .\启动_Akane.bat"
+    )
+}
+
+function Format-HuggingFaceModelHint {
+    return (
+        "HuggingFace embedding downloads can be slow on some networks. " +
+        "Keep EMBEDDING_LOCAL_FILES_ONLY=true for no startup download, or set " +
+        "HF_ENDPOINT=https://hf-mirror.com in .env before enabling online model downloads."
+    )
 }
 
 function Ensure-PythonEnvironment {
@@ -155,13 +198,17 @@ function Ensure-PythonEnvironment {
 
     if ($requiresInstall) {
         Write-AkaneStep "INFO" "Installing Python dependencies. The first run can take several minutes..."
-        & $venvPython -m pip install --disable-pip-version-check --upgrade pip
-        if ($LASTEXITCODE -ne 0) {
-            throw "pip_upgrade_failed"
+        $pipIndexArgs = @(Get-PipIndexArgs)
+        if ($pipIndexArgs.Count -gt 0) {
+            Write-AkaneStep "INFO" "Using configured Python package index from AKANE_PIP_INDEX_URL/PIP_INDEX_URL."
         }
-        & $venvPython -m pip install --disable-pip-version-check -r $requirementsPath
+        & $venvPython -m pip install --disable-pip-version-check --retries 5 --timeout 60 @pipIndexArgs --upgrade pip
         if ($LASTEXITCODE -ne 0) {
-            throw "python_dependency_install_failed"
+            throw ("pip_upgrade_failed. {0}" -f (Format-PipNetworkHint))
+        }
+        & $venvPython -m pip install --disable-pip-version-check --retries 5 --timeout 60 @pipIndexArgs -r $requirementsPath
+        if ($LASTEXITCODE -ne 0) {
+            throw ("python_dependency_install_failed. {0}" -f (Format-PipNetworkHint))
         }
         [System.IO.File]::WriteAllText($stampPath, $requirementsHash)
         Write-AkaneStep "OK" "Python dependencies are ready."
@@ -238,6 +285,21 @@ function Ensure-EnvironmentFile {
     $chatProtocol = (Get-EnvValue -Path $envPath -Name "CHAT_API_PROTOCOL").ToLowerInvariant()
     $textBaseUrl = (Get-EnvValue -Path $envPath -Name "TEXT_BASE_URL").ToLowerInvariant()
     $chatBaseUrl = (Get-EnvValue -Path $envPath -Name "CHAT_BASE_URL").ToLowerInvariant()
+    $embeddingProvider = (Get-EnvValue -Path $envPath -Name "EMBEDDING_PROVIDER").ToLowerInvariant()
+    $embeddingLocalFilesOnly = (Get-EnvValue -Path $envPath -Name "EMBEDDING_LOCAL_FILES_ONLY").ToLowerInvariant()
+    $hfEndpoint = Get-EnvValue -Path $envPath -Name "HF_ENDPOINT"
+    if (-not $embeddingProvider) {
+        $embeddingProvider = "auto"
+    }
+    $downloadsHuggingFaceModel = (
+        $embeddingProvider -in @("auto", "huggingface", "hf", "sentence-transformer", "sentence-transformers") -and
+        $embeddingLocalFilesOnly -in @("false", "0", "no", "off") -and
+        -not $hfEndpoint -and
+        -not $env:HF_ENDPOINT
+    )
+    if ($downloadsHuggingFaceModel) {
+        Write-AkaneStep "WARN" (Format-HuggingFaceModelHint)
+    }
     $ollamaConfigured = (
         $textProtocol -eq "ollama" -or
         $chatProtocol -eq "ollama" -or
@@ -271,6 +333,22 @@ function Test-DesktopToolchain {
     }
 }
 
+function Format-DesktopToolchainHint {
+    param([string[]]$Missing)
+
+    $missingText = if ($Missing -and $Missing.Count -gt 0) {
+        $Missing -join ", "
+    } else {
+        "unknown desktop build tools"
+    }
+    return (
+        "Missing: {0}. To use Desktop mode, install Node.js LTS from https://nodejs.org/ " +
+        "(includes npm) and Rust from https://rustup.rs/. Windows winget alternative: " +
+        "winget install OpenJS.NodeJS.LTS Rustlang.Rustup. After installing, reopen PowerShell " +
+        "or VS Code so PATH refreshes, then run 启动_Akane.bat again."
+    ) -f $missingText
+}
+
 function Resolve-LaunchMode {
     param(
         [string]$RequestedMode,
@@ -288,7 +366,7 @@ function Resolve-LaunchMode {
     if ($toolchain.Ready) {
         return "Desktop"
     }
-    Write-AkaneStep "WARN" ("Desktop build tools are incomplete ({0}); using the Web client for this launch." -f ($toolchain.Missing -join ", "))
+    Write-AkaneStep "WARN" ("Desktop build tools are incomplete; using the Web client for this launch. {0}" -f (Format-DesktopToolchainHint -Missing $toolchain.Missing))
     return "Web"
 }
 
@@ -343,7 +421,7 @@ function Start-DesktopMode {
     $toolchain = Test-DesktopToolchain
     $releaseExe = Join-Path $Root "desktop_pet_next\src-tauri\target\release\akane_desktop_pet_next.exe"
     if (-not (Test-Path -LiteralPath $releaseExe -PathType Leaf) -and -not $toolchain.Ready) {
-        throw ("Desktop mode needs a prebuilt release or Node.js + Rust. Missing: {0}" -f ($toolchain.Missing -join ", "))
+        throw ("Desktop mode needs a prebuilt release or Node.js + Rust. {0}" -f (Format-DesktopToolchainHint -Missing $toolchain.Missing))
     }
     & (Join-Path $Root "start_akane_next.ps1") -BackendPort $Port -OpenSettings:$OpenModelSettings
     Write-AkaneStep "OK" "Desktop pet launch requested."
@@ -381,7 +459,7 @@ try {
             if ($toolchain.Ready -or (Test-Path -LiteralPath $releaseExe -PathType Leaf)) {
                 Write-AkaneStep "OK" "Desktop runtime is buildable or already built."
             } else {
-                throw ("Desktop runtime is not ready. Missing: {0}" -f ($toolchain.Missing -join ", "))
+                throw ("Desktop runtime is not ready. {0}" -f (Format-DesktopToolchainHint -Missing $toolchain.Missing))
             }
         }
         Write-AkaneStep "OK" "Bootstrap check completed without changing local files."

@@ -21,12 +21,14 @@ class HuggingFaceEmbeddingProvider(BaseEmbeddingProvider):
         device: str | None = None,
         local_files_only: bool = False,
         cache_folder: str | None = None,
+        hf_endpoint: str | None = None,
         normalize_embeddings: bool = True,
     ):
         self.model_name = str(model_name or DEFAULT_HUGGINGFACE_EMBEDDING_MODEL).strip() or DEFAULT_HUGGINGFACE_EMBEDDING_MODEL
         self.device = str(device or "").strip() or None
         self.local_files_only = bool(local_files_only)
         self.cache_folder = str(cache_folder or "").strip() or None
+        self.hf_endpoint = str(hf_endpoint or "").strip().rstrip("/") or None
         self.normalize_embeddings = bool(normalize_embeddings)
         self._model = self._load_model()
 
@@ -52,22 +54,22 @@ class HuggingFaceEmbeddingProvider(BaseEmbeddingProvider):
                 message=r"The pynvml package is deprecated\..*",
                 category=FutureWarning,
             )
-            try:
-                from sentence_transformers import SentenceTransformer
-            except ImportError as exc:
-                raise RuntimeError(
-                    "sentence-transformers is not installed; install requirements-ml.txt to enable HuggingFace embeddings."
-                ) from exc
-            kwargs: dict[str, object] = {"device": self.device}
-            if self.cache_folder:
-                kwargs["cache_folder"] = self.cache_folder
-            try:
-                signature = inspect.signature(SentenceTransformer)
-            except (TypeError, ValueError):
-                signature = None
-            if signature is None or "local_files_only" in signature.parameters:
-                kwargs["local_files_only"] = self.local_files_only
-            with _temporary_hf_offline_env(self.local_files_only):
+            with _temporary_hf_load_env(local_files_only=self.local_files_only, hf_endpoint=self.hf_endpoint):
+                try:
+                    from sentence_transformers import SentenceTransformer
+                except ImportError as exc:
+                    raise RuntimeError(
+                        "sentence-transformers is not installed; install requirements-ml.txt to enable HuggingFace embeddings."
+                    ) from exc
+                kwargs: dict[str, object] = {"device": self.device}
+                if self.cache_folder:
+                    kwargs["cache_folder"] = self.cache_folder
+                try:
+                    signature = inspect.signature(SentenceTransformer)
+                except (TypeError, ValueError):
+                    signature = None
+                if signature is None or "local_files_only" in signature.parameters:
+                    kwargs["local_files_only"] = self.local_files_only
                 return SentenceTransformer(self.model_name, **kwargs)
 
     def embed_text(self, text: str) -> list[float]:
@@ -87,16 +89,24 @@ class HuggingFaceEmbeddingProvider(BaseEmbeddingProvider):
 
 
 @contextmanager
-def _temporary_hf_offline_env(enabled: bool):
-    if not enabled:
+def _temporary_hf_load_env(*, local_files_only: bool, hf_endpoint: str | None):
+    updates: dict[str, str] = {}
+    if local_files_only:
+        updates["HF_HUB_OFFLINE"] = "1"
+    endpoint = str(hf_endpoint or "").strip().rstrip("/")
+    if endpoint:
+        updates["HF_ENDPOINT"] = endpoint
+
+    if not updates:
         yield
         return
-    previous_value = os.environ.get("HF_HUB_OFFLINE")
-    os.environ["HF_HUB_OFFLINE"] = "1"
+    previous_values = {key: os.environ.get(key) for key in updates}
+    os.environ.update(updates)
     try:
         yield
     finally:
-        if previous_value is None:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-        else:
-            os.environ["HF_HUB_OFFLINE"] = previous_value
+        for key, previous_value in previous_values.items():
+            if previous_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous_value

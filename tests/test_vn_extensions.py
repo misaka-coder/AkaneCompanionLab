@@ -150,6 +150,8 @@ class EngineExtensionTests(unittest.TestCase):
             config, "EMBEDDING_DEVICE", ""
         ), patch.object(config, "EMBEDDING_LOCAL_FILES_ONLY", True), patch.object(
             config, "EMBEDDING_CACHE_FOLDER", "models/cache"
+        ), patch.object(
+            config, "HF_ENDPOINT", "https://hf-mirror.com"
         ), patch("companion_v01.engine.HuggingFaceEmbeddingProvider", return_value=stub_provider) as provider_cls:
             provider = self.engine._build_embedding_provider()
 
@@ -160,6 +162,7 @@ class EngineExtensionTests(unittest.TestCase):
             device=None,
             local_files_only=True,
             cache_folder="models/cache",
+            hf_endpoint="https://hf-mirror.com",
         )
 
     def test_run_embedding_reindex_batches_raw_summary_and_semantic_records(self) -> None:

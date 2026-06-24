@@ -371,6 +371,50 @@ class MemoryStoreEvalTurnTests(unittest.TestCase):
             self.assertEqual([item["character_pack_id"] for item in akane_episodic], ["akane"])
             self.assertEqual([item["semantic_summary"] for item in kaju_semantic], ["Kaju has a lunchbox memory."])
 
+    def test_session_backfill_skips_existing_session_id_across_character_packs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            with store._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO chat_sessions (
+                        session_id, profile_user_id, character_pack_id, display_title, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    ("shared_session", "master", "akane", "Akane chat", 100, 100),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO chat_messages (
+                        source_id, profile_user_id, session_id, character_pack_id, seq_no, role, content,
+                        timestamp, date_label, time_of_day, semantic_tags_json,
+                        memory_metadata_json, index_in_vector, is_summarized, summary_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "legacy_kaju_msg",
+                        "master",
+                        "shared_session",
+                        "kaju",
+                        1,
+                        "user",
+                        "kaju hello",
+                        102,
+                        "2026-06-24",
+                        "night",
+                        "[]",
+                        "{}",
+                        1,
+                        0,
+                        "",
+                    ),
+                )
+
+            sessions = store.list_sessions("master", character_pack_id="kaju")
+
+            self.assertEqual(sessions, [])
+            self.assertEqual(store.get_session("master", "shared_session")["character_pack_id"], "akane")
+
     def test_context_slice_can_scope_same_session_character_pack_sequences(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))

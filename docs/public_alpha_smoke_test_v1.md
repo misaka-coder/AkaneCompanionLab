@@ -176,9 +176,21 @@ Get-ChildItem .env.example, .env -ErrorAction SilentlyContinue
 - 处理：
   - 看 `%LOCALAPPDATA%\Akane\logs\akane_backend.log` 是否有
     `ConnectionError` / `SSLError` → 网络问题
+  - 国内网络可在当前 PowerShell 临时指定镜像后重跑：
+    `$env:AKANE_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"`
   - 看是否撞上 `requirements.txt` 里某个版本 wheel 在当前 Python
     没编译产物 → 把详细输出贴回 bug
   - 不要在公开包里手动 `pip install --force-reinstall`，那样会污染测试
+
+### HuggingFace 语义模型下载慢
+
+- 默认配置 `EMBEDDING_LOCAL_FILES_ONLY=true` 不会在启动时下载模型；
+  如果本地没有缓存，会回退到 hashed embedding，启动不应被阻塞。
+- 如果测试真实语义模型，把 `.env` 改成
+  `EMBEDDING_LOCAL_FILES_ONLY=false` 后，国内网络可同时设置
+  `HF_ENDPOINT=https://hf-mirror.com`。
+- 如果下载失败但后端仍能启动，并且日志说明回退到 hashed embedding，
+  公开包可以继续测试基础聊天；把模型下载问题记录为网络/镜像配置问题。
 
 ### WebView2 缺失
 

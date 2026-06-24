@@ -35,6 +35,17 @@ class WindowsBootstrapContractTests(unittest.TestCase):
         self.assertNotIn("TEXT_API_KEY=", source)
         self.assertNotIn("Get-FileHash", source)
         self.assertIn("[System.Security.Cryptography.SHA256]::Create()", source)
+        self.assertIn("PSNativeCommandUseErrorActionPreference", source)
+        self.assertIn("Format-DesktopToolchainHint", source)
+        self.assertIn("https://nodejs.org/", source)
+        self.assertIn("https://rustup.rs/", source)
+        self.assertIn("winget install OpenJS.NodeJS.LTS Rustlang.Rustup", source)
+        self.assertIn("--retries 5 --timeout 60 @pipIndexArgs --upgrade pip", source)
+        self.assertIn("--retries 5 --timeout 60 @pipIndexArgs -r $requirementsPath", source)
+        self.assertIn("Format-HuggingFaceModelHint", source)
+        self.assertIn("EMBEDDING_LOCAL_FILES_ONLY", source)
+        self.assertIn("HF_ENDPOINT", source)
+        self.assertIn("https://hf-mirror.com", source)
 
     def test_shared_data_root_script_is_copy_only(self) -> None:
         source = (ROOT / "scripts" / "akane_data_root.ps1").read_text(encoding="utf-8")

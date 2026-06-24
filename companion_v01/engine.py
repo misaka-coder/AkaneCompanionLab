@@ -444,6 +444,7 @@ class AkaneMemoryEngine:
                     device=str(getattr(config, "EMBEDDING_DEVICE", "") or "").strip() or None,
                     local_files_only=bool(getattr(config, "EMBEDDING_LOCAL_FILES_ONLY", True)),
                     cache_folder=str(getattr(config, "EMBEDDING_CACHE_FOLDER", "") or "").strip() or None,
+                    hf_endpoint=str(getattr(config, "HF_ENDPOINT", "") or "").strip() or None,
                 )
             except Exception:
                 base_provider = HashedEmbeddingProvider()

@@ -431,6 +431,7 @@ def _build_embedding_provider(
     requested_device = str(device or getattr(config, "EMBEDDING_DEVICE", "") or "").strip() or None
     local_files_only = bool(getattr(config, "EMBEDDING_LOCAL_FILES_ONLY", True))
     cache_folder = str(getattr(config, "EMBEDDING_CACHE_FOLDER", "") or "").strip() or None
+    hf_endpoint = str(getattr(config, "HF_ENDPOINT", "") or "").strip() or None
     resolved_cache_size = int(getattr(config, "EMBEDDING_CACHE_SIZE", 0) if cache_size is None else cache_size)
 
     base_provider: BaseEmbeddingProvider = HashedEmbeddingProvider()
@@ -442,6 +443,7 @@ def _build_embedding_provider(
                 device=requested_device,
                 local_files_only=local_files_only,
                 cache_folder=cache_folder,
+                hf_endpoint=hf_endpoint,
             )
         except Exception as exc:
             base_provider = HashedEmbeddingProvider()

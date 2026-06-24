@@ -137,6 +137,28 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 首次依赖安装可能需要数分钟。启动失败会给出缺少的 Python、Node、Rust
 或配置项，不会把未启动的能力显示成成功。
 
+国内网络如果 pip 长时间停在下载/解析依赖，或最后出现
+`python_dependency_install_failed`，通常是 PyPI 访问不稳定。启动器会读取
+`AKANE_PIP_INDEX_URL` 或 `PIP_INDEX_URL`，可以在当前 PowerShell 里临时指定
+镜像后再启动：
+
+```powershell
+$env:AKANE_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+.\启动_Akane.bat
+```
+
+语义记忆的默认配置不会在启动时联网下载 HuggingFace 模型：
+`EMBEDDING_LOCAL_FILES_ONLY=true` 会先尝试本地缓存，失败就回退到纯本地
+hashed embedding。想启用 `BAAI/bge-m3` 这类真实语义模型时，可以先编辑 `.env`：
+
+```dotenv
+EMBEDDING_PROVIDER=auto
+EMBEDDING_LOCAL_FILES_ONLY=false
+HF_ENDPOINT=https://hf-mirror.com
+```
+
+如果你已有代理或能稳定访问 HuggingFace，`HF_ENDPOINT` 可以留空使用官方源。
+
 ### 第一次启动会发生什么
 
 第一次双击 `启动_Akane.bat` 会经历以下几步。每一步都会在终端打印
