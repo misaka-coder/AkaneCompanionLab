@@ -769,5 +769,35 @@ class ResponseTruncationDetectionTests(unittest.TestCase):
         self.assertIsNone(runtime.snapshot_metrics().get("response_truncated"))
 
 
+class ChatJSONFallbackSampleTests(unittest.TestCase):
+    """D3: a reply that doesn't parse as JSON falls back. The fallback is
+    counted (chat_json_fallbacks) but without a sample it can't be reproduced;
+    _note_parse_fallback records a sanitized head sample into last_error."""
+
+    def _runtime(self) -> LLMRuntime:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics = {}
+        runtime._metrics_lock = threading.Lock()
+        runtime._last_error = {}
+        runtime._last_error_lock = threading.Lock()
+        return runtime
+
+    def test_fallback_sample_is_recorded_and_redacted(self) -> None:
+        runtime = self._runtime()
+        runtime._note_parse_fallback(
+            "sorry I cannot, sk-secret123456789 not json", phase="stream_chat_json"
+        )
+        error = runtime.snapshot_last_error()
+        self.assertEqual(error.get("type"), "ChatJSONFallback")
+        self.assertEqual(error.get("phase"), "stream_chat_json")
+        self.assertIn("not valid JSON", error.get("message", ""))
+        # Secret in the sampled content must be redacted (reuses SECRET_PATTERNS).
+        self.assertNotIn("sk-secret123456789", error.get("message", ""))
+
+    def test_missing_lock_is_safe(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._note_parse_fallback("x", phase="call_json")  # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()

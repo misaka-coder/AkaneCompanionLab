@@ -608,6 +608,7 @@ class LLMRuntime:
             recovered = self._recover_partial_chat_json(content, fallback=fallback)
             if isinstance(recovered, dict):
                 return recovered
+            self._note_parse_fallback(content, phase="call_json")
         except Exception as exc:
             self._record_metric("errors")
             self._record_error_detail(exc, phase="call_json")
@@ -790,6 +791,8 @@ class LLMRuntime:
         else:
             parsed = self._extract_json(raw_text)
         if not isinstance(parsed, dict):
+            self._record_metric("chat_json_fallbacks")
+            self._note_parse_fallback(raw_text, phase="stream_chat_json")
             parsed = dict(fallback)
         else:
             parsed = dict(parsed)
@@ -1688,6 +1691,28 @@ class LLMRuntime:
             "type": "ResponseTruncated",
             "message": self._sanitize_error_message(
                 f"finish_reason=length, output cut off (chars={len(sample)}); tail={sample[-200:]!r}"
+            ),
+        }
+        with lock:
+            self._last_error = detail
+
+    def _note_parse_fallback(self, raw_text: Any, *, phase: str) -> None:
+        """Record a sanitized sample when a response can't be parsed as JSON and
+        we fall back (INV-3). The fallback is counted via chat_json_fallbacks;
+        without a sample a malformed reply silently becomes a fallback with
+        nothing to reproduce it from. Secret-redacted + capped via
+        _sanitize_error_message; head (not tail) is the diagnostic part here —
+        it shows e.g. prose-instead-of-JSON or a wrong-shaped object.
+        """
+        lock = getattr(self, "_last_error_lock", None)
+        if lock is None:
+            return
+        sample = str(raw_text or "")
+        detail = {
+            "phase": str(phase or ""),
+            "type": "ChatJSONFallback",
+            "message": self._sanitize_error_message(
+                f"response not valid JSON, used fallback (chars={len(sample)}); head={sample[:200]!r}"
             ),
         }
         with lock:
