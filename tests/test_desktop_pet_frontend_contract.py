@@ -54,6 +54,8 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         sources = _read("desktop_pet_next/src/control-center/data-sources.js")
         self.assertIn("readSettingsCatalog", sources)
         self.assertIn("/control-center/settings-catalog", sources)
+        # B2: editable runtime switches save via a write method.
+        self.assertIn("updateSetting", sources)
 
         adapter = _read("desktop_pet_next/src/control-center/data-adapter.js")
         self.assertIn('id: "settings"', adapter)
@@ -67,6 +69,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         # Advanced/experimental groups fold into a collapsed section (1b feedback).
         self.assertIn("settings-advanced", lab)
         self.assertIn('group.tier === "advanced"', lab)
+        # B2: editable rows render a control bound by data-setting-key and save.
+        self.assertIn("data-setting-key", lab)
+        self.assertIn("saveSetting", lab)
 
     def test_workspace_panel_opens_local_location_instead_of_browser_download(self) -> None:
         source = _read("desktop_pet/renderer/ui/WorkspacePanel.js")

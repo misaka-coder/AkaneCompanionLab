@@ -128,6 +128,7 @@ let actionRouter = createRuntimeActionRouter(dataSource);
 // in the mock snapshot — so it never inherits the mock-baseline patching.
 let settingsCatalog = null;
 let settingsCatalogStatus = "";
+let settingsSaveNote = "";
 let { labMeta, navItems, backgroundAsset } = snapshot.shell;
 let {
   abilities: abilitiesPage,
@@ -284,6 +285,30 @@ async function hydrateSettingsCatalog() {
   if (state.activePage === "settings") {
     renderActivePage();
   }
+}
+
+async function saveSetting(key, rawValue) {
+  if (typeof dataSource?.updateSetting !== "function") {
+    settingsSaveNote = "当前来源不支持修改（需连接后端）";
+    if (state.activePage === "settings") renderActivePage();
+    return;
+  }
+  try {
+    const result = await dataSource.updateSetting(key, rawValue);
+    if (result && result.ok) {
+      for (const group of settingsCatalog?.categories || []) {
+        for (const entry of group.settings || []) {
+          if (entry.key === key) entry.current = result.value;
+        }
+      }
+      settingsSaveNote = `已更新 ${key}`;
+    } else {
+      settingsSaveNote = `修改失败（${key}）：${(result && result.status) || "未知"}`;
+    }
+  } catch (error) {
+    settingsSaveNote = `修改失败（${key}）：${formatError(error)}`;
+  }
+  if (state.activePage === "settings") renderActivePage();
 }
 
 async function createRuntimeDataSourceOptions() {
@@ -1045,6 +1070,14 @@ function bindEvents() {
   });
 
   root.addEventListener("change", (event) => {
+    const settingInput = event.target.closest("[data-setting-key]");
+    if (settingInput) {
+      const key = settingInput.dataset.settingKey;
+      const value = settingInput.type === "checkbox" ? settingInput.checked : settingInput.value;
+      void saveSetting(key, value);
+      return;
+    }
+
     const modelProviderSelect = event.target.closest("[data-model-provider]");
     if (modelProviderSelect) {
       const draft = readModelServiceForm();
@@ -1568,12 +1601,24 @@ function formatSettingValue(value) {
   return text;
 }
 
-function renderSettingRow(entry) {
-  const legend = (settingsCatalog && settingsCatalog.scopeLegend) || {};
-  const scopeText = legend[entry.scope] || entry.scope || "";
+function renderSettingControl(entry) {
+  if (entry.editable && entry.type === "bool") {
+    const checked = entry.current === true ? " checked" : "";
+    return `<input type="checkbox" class="settings-edit-toggle" data-setting-key="${escapeAttr(entry.key)}"${checked} />`;
+  }
+  if (entry.editable) {
+    const raw = entry.current === null || entry.current === undefined ? "" : String(entry.current);
+    return `<input type="text" class="settings-edit-input" data-setting-key="${escapeAttr(entry.key)}" value="${escapeAttr(raw)}" />`;
+  }
   const value = entry.sensitive
     ? (entry.isSet ? "已配置 · 已隐藏" : "未配置")
     : formatSettingValue(entry.current);
+  return `<span class="settings-value">${escapeHtml(value)}</span>`;
+}
+
+function renderSettingRow(entry) {
+  const legend = (settingsCatalog && settingsCatalog.scopeLegend) || {};
+  const scopeText = legend[entry.scope] || entry.scope || "";
   const sensitiveTag = entry.sensitive ? `<span class="settings-tag settings-tag--secret">敏感</span>` : "";
   const managed = entry.managedIn
     ? `<span class="settings-tag">在「${escapeHtml(entry.managedIn)}」管理</span>`
@@ -1585,7 +1630,7 @@ function renderSettingRow(entry) {
         <span class="settings-desc">${escapeHtml(entry.description || "")}</span>
       </div>
       <div class="settings-row__meta">
-        <span class="settings-value">${escapeHtml(value)}</span>
+        ${renderSettingControl(entry)}
         <span class="settings-scope" data-scope="${escapeHtml(entry.scope || "")}">${escapeHtml(scopeText)}</span>
         ${sensitiveTag}
         ${managed}
@@ -1603,10 +1648,12 @@ function renderSettingsGroup(group) {
 }
 
 function renderSettingsPage() {
+  const note = settingsSaveNote ? `<p class="settings-note">${escapeHtml(settingsSaveNote)}</p>` : "";
   const head = `
     <header class="settings-head">
       <h1>${icon("sparkle")} 设置目录</h1>
-      <p>后端开关一览（只读）。每项标注作用域：改完是否需要重启才生效。</p>
+      <p>「运行时」项可直接改、即时生效；标「需重启」的与密钥为只读。</p>
+      ${note}
     </header>`;
   if (!settingsCatalog || !Array.isArray(settingsCatalog.categories) || !settingsCatalog.categories.length) {
     const msg = settingsCatalogStatus || "正在读取设置目录…";

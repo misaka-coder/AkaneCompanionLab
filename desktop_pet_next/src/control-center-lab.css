@@ -7685,3 +7685,22 @@ button:disabled {
   flex-direction: column;
   gap: 16px;
 }
+.settings-note {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: rgb(60 140 80);
+}
+.settings-edit-input {
+  width: 160px;
+  max-width: 100%;
+  font-size: 12.5px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid rgb(120 120 140 / 0.3);
+  background: rgb(255 255 255 / 0.9);
+}
+.settings-edit-toggle {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}

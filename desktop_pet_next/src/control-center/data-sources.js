@@ -157,6 +157,9 @@ export function createMockControlCenterSource(data = mockData) {
     async readSettingsCatalog() {
       return null;
     },
+    async updateSetting() {
+      return { ok: false, status: "not-available" };
+    },
     async runModelServiceAction(actionId, payload = {}) {
       return {
         ok: true,
@@ -207,6 +210,9 @@ export function createTauriControlCenterSource(options = {}) {
     },
     async readSettingsCatalog() {
       return null;
+    },
+    async updateSetting() {
+      return { ok: false, status: "not-available" };
     },
     async runModelServiceAction(actionId) {
       return { ok: false, status: "not-available", actionId };
@@ -374,6 +380,24 @@ export function createBackendControlCenterSource(options = {}) {
         buildBackendUrl(baseUrl, "/control-center/settings-catalog", { t: String(Date.now()) })
       );
       return result.ok && result.data && typeof result.data === "object" ? result.data : null;
+    },
+    async updateSetting(key, value) {
+      if (typeof fetchImpl !== "function") return { ok: false, status: "not-available" };
+      try {
+        const response = await fetchImpl(
+          buildBackendUrl(baseUrl, `/control-center/settings-catalog/${encodeURIComponent(key)}`),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ value }),
+            cache: "no-store"
+          }
+        );
+        const data = await response.json();
+        return data && typeof data === "object" ? data : { ok: false, status: "bad-response" };
+      } catch (error) {
+        return { ok: false, status: "request-failed" };
+      }
     },
     async runModelServiceAction(actionId, payload = {}) {
       if (typeof fetchImpl !== "function") {
