@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Akane Desktop Pet Next</title>
+  </head>
+  <body>
+    <div id="app">
+      <main class="stage" aria-label="Akane desktop pet">
+        <canvas id="webgl-probe" class="webgl-probe" aria-hidden="true"></canvas>
+        <audio id="voice-player" preload="auto"></audio>
+        <audio id="music-player" preload="metadata"></audio>
+        <div id="hitbox-overlay" class="hitbox-overlay" aria-hidden="true"></div>
+
+        <button id="debug-toggle" class="icon-button debug-toggle" title="菜单" type="button">
+          ✦
+        </button>
+        <button id="close-window" class="icon-button close-button" title="关闭 Akane Next" type="button">
+          ×
+        </button>
+
+        <div id="bubble" class="bubble" aria-live="polite">
+          <span id="bubble-text" class="bubble-text"></span>
+        </div>
+
+        <form id="chat-form" class="chat-form" hidden>
+          <textarea
+            id="chat-input"
+            rows="1"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="和 Akane 说点什么……"
+          ></textarea>
+          <button
+            id="voice-record-button"
+            class="voice-record-button"
+            type="button"
+            aria-label="语音输入"
+            title="语音输入 Ctrl+Shift+Space"
+          >
+            麦
+          </button>
+        </form>
+
+        <section id="pet-hitbox" class="pet-hitbox" data-tauri-drag-region aria-label="Akane">
+          <img id="pet-image" alt="Akane" draggable="false" />
+        </section>
+
+        <!-- Secondary pet quick menu. The primary visible control panel is panel.html. -->
+        <menu id="debug-menu" class="debug-menu quick-menu" hidden>
+          <li class="menu-head">
+            <span class="menu-head-icon">✦</span>
+            <div>
+              <strong>Akane Next</strong>
+              <small id="menu-summary">猫娘 · Tauri</small>
+            </div>
+          </li>
+
+          <li class="menu-section visual-section">外观</li>
+          <li class="menu-row visual-control-row">
+            <label for="scale-range">大小</label>
+            <input id="scale-range" type="range" min="0.75" max="1.45" step="0.05" value="1" />
+            <output id="scale-output" for="scale-range">100%</output>
+          </li>
+          <li class="menu-row visual-control-row">
+            <label for="opacity-range">透明</label>
+            <input id="opacity-range" type="range" min="0.55" max="1" step="0.05" value="1" />
+            <output id="opacity-output" for="opacity-range">100%</output>
+          </li>
+
+          <li class="menu-actions quick-menu-actions">
+            <button id="quick-input" type="button">输入</button>
+            <button id="open-settings" type="button">设置</button>
+            <button id="open-workshop" type="button">工坊</button>
+            <button id="open-workspace" type="button">手边</button>
+            <button id="stop-reply" type="button" disabled>停止</button>
+            <button id="new-session" type="button">新对话</button>
+            <button id="reload-resources" type="button">重载资源</button>
+            <button id="previous-music" type="button" disabled>上一首</button>
+            <button id="next-music" type="button" disabled>下一首</button>
+            <button id="toggle-music" type="button" disabled>音乐</button>
+            <button id="stop-music" type="button" disabled>停歌</button>
+            <button id="clear-music-queue" type="button" disabled>清空歌单</button>
+            <button id="close-window-menu" class="danger-button" type="button">退出</button>
+          </li>
+          <li id="connection-status" class="connection-status">Backend: Unknown</li>
+          <li id="runtime-status" class="runtime-status">Ready</li>
+
+          <li class="embedded-settings" hidden>
+            <input id="backend-url-input" type="text" spellcheck="false" />
+            <button id="backend-url-save" type="button">保存</button>
+            <input id="outfit-input" type="text" spellcheck="false" />
+            <button id="outfit-save" type="button">保存</button>
+            <span id="scale-presets"></span>
+            <span id="opacity-presets"></span>
+            <button id="always-on-top-toggle" type="button">置顶</button>
+            <button id="taskbar-toggle" type="button">任务栏</button>
+            <button id="hit-test-toggle" type="button">Hit-Test</button>
+            <button id="hitbox-overlay-toggle" type="button">Hitbox</button>
+            <button id="webgl-toggle" type="button">WebGL</button>
+            <button id="passthrough-probe" type="button">穿透 5s</button>
+            <button id="reset-window" type="button">重置位置</button>
+            <span id="resource-details">Resources: Unknown</span>
+            <span id="emotion-grid" aria-label="表情预览"></span>
+          </li>
+        </menu>
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

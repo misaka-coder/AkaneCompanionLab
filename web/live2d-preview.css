@@ -1,0 +1,142 @@
+:root {
+  --panel-bg: rgba(14, 17, 24, 0.76);
+  --panel-border: rgba(255, 255, 255, 0.16);
+  --text-main: #f7f8fb;
+  --text-muted: rgba(247, 248, 251, 0.68);
+  --accent: #7bd7c4;
+  --button-bg: rgba(255, 255, 255, 0.08);
+  --button-bg-hover: rgba(123, 215, 196, 0.18);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #0b0d12;
+  color: var(--text-main);
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.live2d-preview {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 44%),
+    radial-gradient(circle at 68% 28%, rgba(123, 215, 196, 0.16), transparent 28%),
+    linear-gradient(135deg, #121722, #090b10 58%, #141017);
+}
+
+#live2d-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.control-panel {
+  position: absolute;
+  left: 24px;
+  bottom: 24px;
+  width: min(420px, calc(100vw - 48px));
+  padding: 20px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  box-shadow: 0 22px 64px rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.status-line {
+  min-height: 24px;
+  margin: 10px 0 18px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+button {
+  min-height: 44px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: var(--button-bg);
+  color: var(--text-main);
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+}
+
+button:hover {
+  border-color: rgba(123, 215, 196, 0.42);
+  background: var(--button-bg-hover);
+  transform: translateY(-1px);
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+  transform: none;
+}
+
+.range-control {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .control-panel {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
+    padding: 16px;
+  }
+
+  h1 {
+    font-size: 20px;
+  }
+}

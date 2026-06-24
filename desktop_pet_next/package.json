@@ -1,0 +1,29 @@
+{
+  "name": "akane-desktop-pet-next",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "Tauri/WebView2 prototype shell for Akane desktop pet.",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "doctor": "node ./scripts/doctor.mjs",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 1421",
+    "start:release": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-next.ps1",
+    "smoke:control-center-actions": "node ./scripts/control-center-action-bridge-smoke.mjs",
+    "probe:control-center-runtime": "node ./scripts/control-center-runtime-probe.mjs",
+    "smoke:control-center-ux": "node ./scripts/control-center-ux-smoke.mjs",
+    "verify:control-center": "node ./scripts/control-center-verify.mjs",
+    "dev:control-center": "npm run tauri -- dev",
+    "tauri": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/tauri-with-cargo-path.ps1"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-http": "^2.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "vite": "^6.0.0"
+  }
+}

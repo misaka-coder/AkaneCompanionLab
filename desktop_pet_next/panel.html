@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Akane</title>
+  </head>
+  <body>
+    <div id="app">
+      <div class="panel" id="panel">
+
+        <header class="panel-header" data-tauri-drag-region>
+          <div class="header-left" data-tauri-drag-region>
+            <div class="avatar-wrap">
+              <img class="avatar-img" id="avatar-img" src="" alt="" draggable="false" />
+              <span class="online-dot" id="online-dot"></span>
+            </div>
+            <div class="header-meta" data-tauri-drag-region>
+              <span class="character-name" id="character-name">Akane</span>
+              <span class="character-status" id="character-status">连接中…</span>
+            </div>
+          </div>
+          <button class="theme-btn" id="theme-toggle-btn" type="button" title="切换主题">
+            <svg id="theme-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 12.5A5.5 5.5 0 1 1 8 2.5a5.5 5.5 0 0 1 0 11z"/>
+            </svg>
+          </button>
+          <button class="close-btn" id="close-btn" type="button" title="关闭">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+              <line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </header>
+
+        <div class="panel-body">
+
+          <section class="music-section" id="music-section" hidden>
+            <div class="music-top-row">
+              <span>正在播放</span>
+              <button id="music-controller-badge" class="controller-badge" type="button" title="点击切换音乐控制权">
+                Akane 控制
+              </button>
+            </div>
+            <div class="waveform-wrap" id="waveform-wrap">
+              <div class="waveform" id="waveform" aria-hidden="true"></div>
+            </div>
+            <div class="music-info-row">
+              <div class="music-meta">
+                <span class="music-title" id="music-title">—</span>
+                <span class="music-artist" id="music-artist"></span>
+              </div>
+              <div class="music-controls">
+                <button class="mc-btn" id="mc-prev" type="button" title="上一首">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                    <rect x="2" y="2" width="2.5" height="12" rx="1"/>
+                    <path d="M13.5 2.5 5.5 8l8 5.5V2.5z"/>
+                  </svg>
+                </button>
+                <button class="mc-btn mc-play" id="mc-play" type="button" title="暂停/播放">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" id="mc-play-icon" aria-hidden="true">
+                    <rect x="3" y="2" width="3.5" height="12" rx="1.2"/>
+                    <rect x="9.5" y="2" width="3.5" height="12" rx="1.2"/>
+                  </svg>
+                </button>
+                <button class="mc-btn" id="mc-next" type="button" title="下一首">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                    <rect x="11.5" y="2" width="2.5" height="12" rx="1"/>
+                    <path d="M2.5 2.5 10.5 8l-8 5.5V2.5z"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="progress-wrap">
+              <div class="progress-track" id="progress-track">
+                <div class="progress-fill" id="progress-fill"></div>
+              </div>
+              <span class="progress-time" id="progress-time"></span>
+            </div>
+          </section>
+
+          <!-- Primary visible control panel action surface. Keep core pet actions here. -->
+          <section class="actions-section">
+            <button class="action-btn" id="btn-new-session" type="button">
+              <svg class="action-icon" width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 5a2 2 0 012-2h10a2 2 0 012 2v7a2 2 0 01-2 2H8l-4 3V5z"/>
+              </svg>
+              <span>新对话</span>
+            </button>
+            <button class="action-btn" id="btn-workspace" type="button">
+              <svg class="action-icon" width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="4" width="14" height="13" rx="2"/>
+                <path d="M3 8h14M7 4V3m6 1V3"/>
+              </svg>
+              <span>手边</span>
+            </button>
+            <button class="action-btn" id="btn-shop" type="button">
+              <svg class="action-icon" width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M5 7h10l-1 10H6L5 7z"/>
+                <path d="M7 7a3 3 0 0 1 6 0"/>
+              </svg>
+              <span>商店</span>
+            </button>
+            <button class="action-btn action-btn-stop" id="btn-stop" type="button">
+              <svg class="action-icon" width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="4" y="4" width="12" height="12" rx="2"/>
+              </svg>
+              <span>停止</span>
+            </button>
+            <button class="action-btn" id="btn-mute" type="button">
+              <svg class="action-icon" id="sound-icon" width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M11 3.5 6 7.5H3v5h3l5 4V3.5z"/>
+                <path d="M14.5 7a4.2 4.2 0 010 6M17 4.5a8 8 0 010 11"/>
+              </svg>
+              <span id="mute-label">声音</span>
+            </button>
+          </section>
+
+          <section class="sliders-section">
+            <div class="slider-row">
+              <label class="slider-label" for="scale-slider">大小</label>
+              <input class="slider" id="scale-slider" type="range" min="0.75" max="1.45" step="0.05" value="1" />
+              <output class="slider-output" id="scale-output" for="scale-slider">100%</output>
+            </div>
+            <div class="slider-row">
+              <label class="slider-label" for="opacity-slider">透明</label>
+              <input class="slider" id="opacity-slider" type="range" min="0.55" max="1" step="0.05" value="1" />
+              <output class="slider-output" id="opacity-output" for="opacity-slider">100%</output>
+            </div>
+          </section>
+
+          <section class="recent-section">
+            <div class="section-label">最近</div>
+            <ul class="recent-list" id="recent-list">
+              <li class="recent-empty">暂无记录</li>
+            </ul>
+          </section>
+
+        </div>
+
+        <footer class="panel-footer">
+          <button class="footer-btn" id="btn-settings" type="button">
+            <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+              <circle cx="10" cy="10" r="3"/>
+              <path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.9 4.9l1.4 1.4M13.7 13.7l1.4 1.4M4.9 15.1l1.4-1.4M13.7 6.3l1.4-1.4"/>
+            </svg>
+            完整设置
+          </button>
+          <button class="footer-btn" id="btn-workshop" type="button">
+            <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+              <circle cx="10" cy="7.5" r="3.5"/>
+              <path d="M3 18c0-3.3 3.1-6 7-6s7 2.7 7 6"/>
+            </svg>
+            角色工坊
+          </button>
+          <button class="footer-btn footer-btn-quit" id="btn-quit" type="button" title="退出 Akane">
+            <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+              <path d="M10 3v7M6 5.3A7 7 0 1 0 14 5.3"/>
+            </svg>
+          </button>
+        </footer>
+
+      </div>
+    </div>
+    <script type="module" src="/src/panel.js"></script>
+  </body>
+</html>

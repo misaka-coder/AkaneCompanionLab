@@ -1,0 +1,23 @@
+fastapi
+python-multipart
+uvicorn
+chromadb
+# chromadb pulls in `build` transitively. build 1.3+ raises its packaging
+# floor to >=24.0, which clashes with DeepFilterNet's metadata in
+# requirements-ml.txt. Pin to the last 1.2.x line — still inside chromadb's
+# accepted range — so opting into ML extras does not produce a noisy
+# pip dependency conflict warning on every bootstrap.
+build>=1.0.3,<1.3
+openai
+requests
+PyYAML
+pydantic-settings
+edge-tts
+python-docx
+openpyxl
+pypdf
+reportlab
+tzdata
+yt-dlp
+syncedlyrics
+json-repair

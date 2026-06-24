@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Akane Next 手边物品</title>
+  </head>
+  <body>
+    <main class="workspace-shell">
+      <header class="workspace-header">
+        <div>
+          <h1>手边物品</h1>
+          <p id="workspace-summary">正在整理</p>
+        </div>
+        <div class="header-actions">
+          <button id="clear-workspace-files" type="button" title="移除手边所有文件和生成物（不会影响已保存的聊天记录）">清理文件</button>
+          <button id="refresh-workspace" class="primary-button" type="button">刷新</button>
+          <button id="close-workspace" type="button">关闭</button>
+        </div>
+      </header>
+
+      <section id="workspace-alert" class="workspace-alert" hidden></section>
+
+      <section class="metric-grid" aria-label="手边物品统计">
+        <article class="metric">
+          <span>文件</span>
+          <strong id="file-count">0</strong>
+        </article>
+        <article class="metric">
+          <span>成果</span>
+          <strong id="output-count">0</strong>
+        </article>
+        <article class="metric">
+          <span>任务</span>
+          <strong id="task-count">0</strong>
+        </article>
+      </section>
+
+      <section id="workspace-music" class="workspace-music" aria-label="手边音乐"></section>
+
+      <section id="workspace-content" class="workspace-content">
+        <div class="empty-state">我在翻翻手边的小托盘……</div>
+      </section>
+
+      <footer class="workspace-footer">
+        <span id="workspace-session">Session: -</span>
+        <span id="workspace-updated">Last refresh: -</span>
+        <span id="workspace-status">Ready</span>
+      </footer>
+    </main>
+    <script type="module" src="/src/workspace.js"></script>
+  </body>
+</html>

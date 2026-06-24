@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Akane Live2D Preview</title>
+    <link rel="stylesheet" href="/live2d-preview.css?v=2" />
+  </head>
+  <body>
+    <main class="live2d-preview">
+      <canvas id="live2d-canvas" aria-label="Live2D preview canvas"></canvas>
+
+      <section class="control-panel" aria-label="Live2D controls">
+        <div>
+          <p class="eyebrow">Akane Live2D Preview</p>
+          <h1>Hiyori Runtime Test</h1>
+          <p id="status-line" class="status-line">正在加载 Live2D runtime...</p>
+        </div>
+
+        <div class="control-grid">
+          <button id="motion-idle" type="button">Idle</button>
+          <button id="motion-tap" type="button">Tap</button>
+          <button id="motion-body" type="button">Tap Body</button>
+          <button id="motion-flick" type="button">Flick</button>
+        </div>
+
+        <label class="range-control">
+          <span>Mouth Open</span>
+          <input id="mouth-range" type="range" min="0" max="1" step="0.01" value="0" />
+        </label>
+
+        <div class="control-grid">
+          <button id="talk-demo" type="button">Test Talk</button>
+          <button id="reset-mouth" type="button">Reset Mouth</button>
+        </div>
+      </section>
+    </main>
+
+    <script src="/live2d-preview.js?v=3"></script>
+  </body>
+</html>

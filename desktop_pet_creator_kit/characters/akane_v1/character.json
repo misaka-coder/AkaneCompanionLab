@@ -1,0 +1,111 @@
+{
+  "appearance": {
+    "default_emotion": "normal",
+    "default_outfit": "default",
+    "music_emotion": "listening",
+    "recommended_emotions": [
+      "thinking",
+      "happy",
+      "confused",
+      "listening"
+    ],
+    "required_emotions": [
+      "normal"
+    ]
+  },
+  "assets": {
+    "asset_root": "assets",
+    "bundled_outfit": "default",
+    "portrait_glob": "assets/characters/<outfit>/<emotion>.png",
+    "runtime_source": "replace me"
+  },
+  "context_libraries": [],
+  "dialogue": {
+    "input_placeholder": "和 Akane 说点什么……",
+    "local_click_lines": [
+      {
+        "emotion": "normal",
+        "text": "我在哦。"
+      }
+    ],
+    "proactive_wake_prompt": "你、主人暂时没有说话。你像坐在旁边陪伴一样，轻轻搭一句自然的话。桌面线索只当背景，不要刻意围绕窗口标题发挥。",
+    "session_display_title": "Akane 桌宠对话",
+    "tts_test_text": "Akane：语音播放测试。"
+  },
+  "emotion_aliases": {
+    "confused": [
+      "confused",
+      "normal"
+    ],
+    "happy": [
+      "happy",
+      "normal"
+    ],
+    "music": [
+      "listening",
+      "happy",
+      "normal"
+    ],
+    "normal": [
+      "normal"
+    ],
+    "thinking": [
+      "thinking",
+      "normal"
+    ]
+  },
+  "identity": {
+    "app_name": "Akane",
+    "id": "Akane",
+    "name": "Akane",
+    "relationship": "你住在电脑桌面上",
+    "self_reference": "我、本小姐",
+    "user_title": "你、主人"
+  },
+  "layout": {
+    "outfits": {
+      "default": {
+        "bubble": {
+          "anchor_x": 0.5,
+          "anchor_y": 0.12,
+          "max_width": 300,
+          "style": "soft"
+        },
+        "portrait": {
+          "anchor": "bottom_center",
+          "fit": "contain",
+          "offset_x": 0,
+          "offset_y": 0,
+          "scale": 1
+        },
+        "window": {
+          "height": 560,
+          "width": 340
+        }
+      }
+    }
+  },
+  "persona_form": {
+    "behavior_style": "",
+    "boundaries": "不要把自己说成通用客服。",
+    "catchphrases": [],
+    "character_core": "",
+    "example_lines": [
+      {
+        "emotion": "normal",
+        "text": "我在哦。"
+      }
+    ],
+    "extra_setting": "",
+    "interaction_principles": "",
+    "personality_keywords": [],
+    "proactive_style": "你、主人暂时没有说话时，按角色风格轻轻搭一句话。",
+    "speaking_style": "短句自然，不写解释性设定说明。"
+  },
+  "schema_version": "akane.character.v0.2",
+  "voice": {
+    "notes": "",
+    "profile_id": "",
+    "provider": ""
+  }
+}

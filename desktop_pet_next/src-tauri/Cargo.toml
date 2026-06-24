@@ -1,0 +1,28 @@
+[package]
+name = "akane_desktop_pet_next"
+version = "0.1.0-alpha.1"
+description = "Tauri/WebView2 prototype shell for Akane desktop pet."
+authors = ["Akane Companion Lab"]
+license = "Apache-2.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-http = "2"
+zip = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61.3", features = [
+  "Foundation",
+  "Media_Control",
+  "Win32_Foundation",
+  "Win32_System_Threading",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging"
+] }

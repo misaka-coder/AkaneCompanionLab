@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Akane Desktop Pet Next",
+  "version": "0.1.0-alpha.1",
+  "identifier": "lab.akane.desktop-pet-next",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Akane Desktop Pet Next",
+        "width": 340,
+        "height": 560,
+        "minWidth": 255,
+        "minHeight": 420,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "center": true,
+        "dragDropEnabled": true,
+        "backgroundColor": "#00000000"
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPCACHE/audio/**", "$LOCALDATA/Akane/characters/**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all"
+  }
+}

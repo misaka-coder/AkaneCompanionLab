@@ -1,0 +1,41 @@
+schema: capability_adapter/v1
+provider:
+  id: comfyui
+  type: comfyui
+  display_name: ComfyUI
+  endpoint:
+    url: http://127.0.0.1:8188
+    loopback_only: true
+  health:
+    method: GET
+    path: /system_stats
+    timeout_seconds: 3
+    expect_status: [200]
+  tiers:
+    - id: cpu
+      label: CPU
+      preset:
+        queue_size: 1
+  secrets:
+    - akane_comfyui_key
+capabilities:
+  - id: portrait_cutout
+    display_name: Transparent Cutout
+    short_hint: Remove an image background.
+    visible_in: [desktop, web]
+    prompt_exposed: true
+    risk: low
+    confirm: never
+    effects: [media_generation]
+    trigger:
+      kind: workspace_has_image
+    workflow_template: workflows/portrait_cutout.json
+    inputs:
+      - name: image
+        kind: image_bytes
+        required: true
+        max_bytes: 8_388_608
+    outputs:
+      - name: cutout
+        kind: image_bytes
+        delivery: generated_file

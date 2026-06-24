@@ -1,0 +1,73 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Tool/eval run artifacts (run_tool_decision_eval, acceptance smoke output)
+reports/
+
+# Python virtual environments and caches
+.venv/
+venv/
+env/
+!/deploy/env/
+!/deploy/env/.env.vps.example
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data, memories, generated files, and local user assets
+users_data/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+
+# Private research corpora and derived notes kept out of open-source releases
+local_research/
+*.epub
+epub_output/
+epub_v2/
+*_evidence.jsonl
+*_scenes_raw.json
+*_all.txt
+makeine_characters.json
+败犬女主太多了！/
+
+# Logs and temporary outputs
+*.log
+runtime_logs/
+test-results/
+.tmp_*/
+.tmp_*
+tmp_*/
+tmp_*.log
+tmp_*.wav
+
+# Local model / tool scratch space
+.cache/
+.codex/
+.claude/settings.local.json
+models/
+downloads/
+
+# User-provided media assets (keep local, do not track in repo)
+web/assets/bgm/
+
+# Local reference copies not part of the Akane app
+claude_code_annotated/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/

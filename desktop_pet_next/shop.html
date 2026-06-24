@@ -1,0 +1,86 @@
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Akane Next 小卖部</title>
+  </head>
+  <body>
+    <main class="shop-shell">
+      <header class="shop-header">
+        <div>
+          <h1>小卖部</h1>
+          <p id="shop-summary">正在整理货架</p>
+        </div>
+        <div class="header-actions">
+          <button id="refresh-shop" class="primary-button" type="button">刷新</button>
+          <button id="close-shop" type="button">关闭</button>
+        </div>
+      </header>
+
+      <section id="shop-alert" class="shop-alert" hidden></section>
+
+      <section class="metric-grid" aria-label="养成状态">
+        <article class="metric">
+          <span>金币</span>
+          <strong id="care-coins">0</strong>
+        </article>
+        <article class="metric">
+          <span>饥饿</span>
+          <strong id="care-hunger">0</strong>
+        </article>
+        <article class="metric">
+          <span>精力</span>
+          <strong id="care-energy">0</strong>
+        </article>
+        <article class="metric">
+          <span>好感</span>
+          <strong id="care-affection">0</strong>
+        </article>
+      </section>
+
+      <section id="work-panel" class="work-panel" aria-label="外出">
+        <div>
+          <h2>外出</h2>
+          <p id="work-summary">可以让她出去转一圈，回来带些金币。</p>
+        </div>
+        <button id="start-work" class="primary-button" type="button">出门</button>
+      </section>
+
+      <section id="allowance-panel" class="allowance-panel" aria-label="补给">
+        <div>
+          <h2>补给</h2>
+          <p id="allowance-summary">金币太少时，可以领取一点应急补给。</p>
+        </div>
+        <button id="claim-allowance" type="button">领取</button>
+      </section>
+
+      <section class="shop-content">
+        <section class="shop-section" aria-label="商品">
+          <div class="section-header">
+            <h2>货架</h2>
+            <p id="shop-count">0 件商品</p>
+          </div>
+          <div id="shop-items" class="item-grid">
+            <div class="empty-state">这个角色还没有配置商店。</div>
+          </div>
+        </section>
+
+        <section class="shop-section" aria-label="背包">
+          <div class="section-header">
+            <h2>背包</h2>
+            <p id="inventory-count">0 件物品</p>
+          </div>
+          <div id="inventory-items" class="item-grid">
+            <div class="empty-state">背包是空的。</div>
+          </div>
+        </section>
+      </section>
+
+      <footer class="shop-footer">
+        <span id="shop-character">Character: -</span>
+        <span id="shop-status">Ready</span>
+      </footer>
+    </main>
+    <script type="module" src="/src/shop.js"></script>
+  </body>
+</html>

@@ -1,0 +1,50 @@
+schema_version = "akane.character.v0.1"
+
+[identity]
+id = "akane"
+name = "Akane"
+app_name = "Akane Next"
+user_title = "主人"
+
+[appearance]
+default_outfit = "default"
+default_emotion = "normal"
+music_emotion = "listen"
+required_emotions = ["normal"]
+recommended_emotions = [
+  "smug",
+  "shy",
+  "love",
+  "angry",
+  "cry",
+  "dizzy",
+  "shock",
+  "listen",
+  "pat_head",
+  "poke",
+  "eat",
+  "drink",
+  "sleep",
+  "bored",
+  "read",
+  "no",
+  "coding",
+  "game",
+  "gift",
+  "sing",
+  "watch",
+  "rain",
+  "snow",
+]
+
+[dialogue]
+input_placeholder = "和 Akane 说点什么……"
+session_display_title = "Akane"
+tts_test_text = "我在哦，主人。"
+proactive_wake_prompt = "主人暂时没有说话。你像坐在旁边陪他一样，轻轻搭一句自然的话。桌面线索只当背景，不要刻意围绕窗口标题发挥。"
+
+[assets]
+runtime_source = "character pack assets"
+asset_root = "assets"
+bundled_outfit = "default"
+portrait_glob = "assets/characters/<outfit>/<emotion>.png"

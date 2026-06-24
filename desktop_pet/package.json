@@ -1,0 +1,15 @@
+{
+  "name": "akane-desktop-pet",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Akane Desktop Pet - Static Sprite V0",
+  "main": "main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

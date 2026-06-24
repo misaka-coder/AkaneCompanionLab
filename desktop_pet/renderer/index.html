@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Akane</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <audio id="voice-player" preload="none"></audio>
+    <audio id="activity-audio-player" preload="auto"></audio>
+
+    <div id="sprite-container"></div>
+
+    <div id="overlay-root">
+      <div id="speech-bubble"></div>
+      <div id="sticker-overlay" aria-hidden="true"></div>
+
+      <div id="chat-input-wrap">
+        <div id="chat-input-container">
+          <textarea id="chat-input" rows="1" placeholder="和 Akane 说点什么……"></textarea>
+        </div>
+        <button id="voice-record-button" type="button" aria-label="语音输入" title="语音输入 Ctrl+Shift+Space">麦</button>
+      </div>
+    </div>
+
+    <div id="settings-prompt" aria-hidden="true">
+      <div id="settings-prompt-panel" role="dialog" aria-modal="true">
+        <label id="settings-prompt-title" for="settings-prompt-input">设置</label>
+        <input id="settings-prompt-input" type="text" />
+        <div id="settings-prompt-actions">
+          <button id="settings-prompt-cancel" type="button">取消</button>
+          <button id="settings-prompt-save" type="button">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="workspace-panel-root" aria-hidden="true"></div>
+
+    <div id="context-menu-root" aria-hidden="true"></div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

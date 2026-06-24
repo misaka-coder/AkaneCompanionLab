@@ -1,0 +1,5 @@
+schema: capability_adapter/v1
+provider:
+  id: bad_provider
+  type: not_allowed
+capabilities: []

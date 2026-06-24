@@ -1,0 +1,62 @@
+{
+  "pack_id": "akane_v1",
+  "display_name": "Akane 表情包 V1",
+  "stickers": [
+    {
+      "id": "biexiao",
+      "display_name": "憋笑",
+      "filename": "憋笑.png",
+      "aliases": ["憋笑", "憨笑", "偷笑", "忍笑", "笑"],
+      "tags": ["happy", "playful", "tease"]
+    },
+    {
+      "id": "haoxingfu",
+      "display_name": "好幸福",
+      "filename": "好幸福.png",
+      "aliases": ["好幸福", "幸福", "开心", "满足"],
+      "tags": ["happy", "warm", "love"]
+    },
+    {
+      "id": "tanshou",
+      "display_name": "摊手",
+      "filename": "摊手.png",
+      "aliases": ["摊手", "无奈", "没办法", "耸肩"],
+      "tags": ["shrug", "helpless", "casual"]
+    },
+    {
+      "id": "turan_chuxian",
+      "display_name": "突然出现",
+      "filename": "突然出现.png",
+      "aliases": ["突然出现", "出现", "冒泡", "探头"],
+      "tags": ["surprise", "greeting", "peek"]
+    },
+    {
+      "id": "wainao",
+      "display_name": "歪脑",
+      "filename": "歪脑.png",
+      "aliases": ["歪脑", "歪头", "疑惑", "想想"],
+      "tags": ["thinking", "confused", "curious"]
+    },
+    {
+      "id": "zaoba",
+      "display_name": "我上早八",
+      "filename": "我上早八.png",
+      "aliases": ["我上早八", "早八", "困", "上课", "打工"],
+      "tags": ["tired", "sleepy", "school"]
+    },
+    {
+      "id": "zhuangsha",
+      "display_name": "装傻",
+      "filename": "装傻.png",
+      "aliases": ["装傻", "糊弄", "不知道", "无语"],
+      "tags": ["silly", "awkward", "blank"]
+    },
+    {
+      "id": "zhuangsi",
+      "display_name": "装死",
+      "filename": "装死.png",
+      "aliases": ["装死", "倒下", "不活了", "累死"],
+      "tags": ["dramatic", "tired", "dead"]
+    }
+  ]
+}
