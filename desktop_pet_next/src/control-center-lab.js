@@ -236,11 +236,16 @@ async function hydrateControlCenterSnapshot() {
       dataSource = createControlCenterDataSource(runtimeOptions);
       actionRouter = createRuntimeActionRouter(dataSource);
     }
-    if (!dataSource?.readSnapshot) return;
-    const raw = await dataSource.readSnapshot();
-    if (!raw) return;
-    applyControlCenterSnapshot(createControlCenterSnapshot(raw), { renderShell: false });
-    await hydrateModelService();
+    if (dataSource?.readSnapshot) {
+      const raw = await dataSource.readSnapshot();
+      if (raw) {
+        applyControlCenterSnapshot(createControlCenterSnapshot(raw), { renderShell: false });
+        await hydrateModelService();
+      }
+    }
+    // Independent of the snapshot read (it has its own backend endpoint) — must
+    // run even if the snapshot is unavailable, or the settings page stays on
+    // its "loading" placeholder forever.
     await hydrateSettingsCatalog();
   } catch (error) {
     console.info("[control-center] keep mock snapshot:", formatError(error));
@@ -268,7 +273,11 @@ async function hydrateModelService() {
 }
 
 async function hydrateSettingsCatalog() {
-  if (typeof dataSource?.readSettingsCatalog !== "function") return;
+  if (typeof dataSource?.readSettingsCatalog !== "function") {
+    settingsCatalogStatus = "未能读取设置目录（请确认已连接后端）";
+    if (state.activePage === "settings") renderActivePage();
+    return;
+  }
   try {
     const payload = await dataSource.readSettingsCatalog();
     if (payload && typeof payload === "object" && Array.isArray(payload.categories)) {
@@ -928,6 +937,11 @@ function bindEvents() {
       url.searchParams.set("page", state.activePage);
       window.history.replaceState({}, "", url);
       renderActivePage();
+      // Lazy-load / retry the settings catalog when its page is opened, so a
+      // backend that wasn't ready at startup still fills in on first view.
+      if (state.activePage === "settings" && !settingsCatalog) {
+        void hydrateSettingsCatalog();
+      }
       return;
     }
 
