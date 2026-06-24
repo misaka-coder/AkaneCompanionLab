@@ -198,6 +198,11 @@ class Settings(BaseSettings):
         "web_search,retrieve_memory,read_memory_timeline,"
         "list_reminders,check_inventory,inspect_media_info"
     )
+    # 额外允许的 OpenAI-compatible native tools provider/model，逗号分隔。
+    # 格式：host:model 或 host:*；默认空，未知中转仍 fail-closed。
+    # 可选第三段 json 表示允许 native tools 与 response_format=json_object 共存；
+    # 省略时按保守 prompt-only JSON 处理。
+    NATIVE_TOOL_PROVIDER_ALLOWLIST: str = ""
     # 联网搜索/网页提取类工具的同轮扩展预算
     MAX_WEB_RESEARCH_TOOL_ROUNDS: int = 8
     # 托管浏览器打开、滚动、点击、输入类工具的同轮扩展预算
@@ -377,7 +382,7 @@ def _apply_settings(s: Settings) -> None:
     global MUSIC_ONLINE_LYRICS_ENABLED, MUSIC_ONLINE_LYRICS_PROVIDERS
     global PUBLIC_GUARD_ENABLED, MAX_CONCURRENT_THINKS, DAILY_THINK_LIMIT
     global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, MAX_TOOL_ROUNDS, ENABLE_NATIVE_TOOL_DECISION
-    global NATIVE_TOOL_DECISION_ALLOWLIST, MAX_WEB_RESEARCH_TOOL_ROUNDS
+    global NATIVE_TOOL_DECISION_ALLOWLIST, NATIVE_TOOL_PROVIDER_ALLOWLIST, MAX_WEB_RESEARCH_TOOL_ROUNDS
     global MAX_BROWSER_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
     global AKANE_WORKSPACE_ROOT, AKANE_WORKSPACE_MAX_READ_BYTES
     global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ, QQ_CHARACTER_PACK_ID
@@ -466,6 +471,7 @@ def _apply_settings(s: Settings) -> None:
     MAX_TOOL_ROUNDS = max(1, min(5, int(s.MAX_TOOL_ROUNDS)))
     ENABLE_NATIVE_TOOL_DECISION = bool(s.ENABLE_NATIVE_TOOL_DECISION)
     NATIVE_TOOL_DECISION_ALLOWLIST = str(s.NATIVE_TOOL_DECISION_ALLOWLIST or "web_search").strip()
+    NATIVE_TOOL_PROVIDER_ALLOWLIST = str(s.NATIVE_TOOL_PROVIDER_ALLOWLIST or "").strip()
     MAX_WEB_RESEARCH_TOOL_ROUNDS = max(MAX_TOOL_ROUNDS, min(12, int(s.MAX_WEB_RESEARCH_TOOL_ROUNDS)))
     MAX_BROWSER_TOOL_ROUNDS = max(MAX_TOOL_ROUNDS, min(12, int(s.MAX_BROWSER_TOOL_ROUNDS)))
     MAX_TASK_WORKER_ROUNDS = max(1, min(5, int(s.MAX_TASK_WORKER_ROUNDS)))

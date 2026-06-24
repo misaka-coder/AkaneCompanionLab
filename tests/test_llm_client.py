@@ -338,26 +338,88 @@ class LLMClientConfigTests(unittest.TestCase):
             model="gpt-5",
         )
 
-        payload = runtime._build_completion_kwargs(
-            bundle=bundle,
-            system_prompt="system",
-            user_prompt="user",
-            temperature=0.1,
-            native_tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "description": "Search the public web.",
-                        "parameters": {"type": "object"},
-                    },
-                }
-            ],
-            native_tool_choice="auto",
-        )
+        with patch("config.NATIVE_TOOL_PROVIDER_ALLOWLIST", ""):
+            payload = runtime._build_completion_kwargs(
+                bundle=bundle,
+                system_prompt="system",
+                user_prompt="user",
+                temperature=0.1,
+                native_tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search the public web.",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                native_tool_choice="auto",
+            )
 
         self.assertNotIn("tools", payload)
         self.assertNotIn("tool_choice", payload)
+
+    def test_llm_runtime_can_allow_configured_openai_compatible_native_profile(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://opencode.ai/zen/go/v1"),
+            model="deepseek-v4-pro",
+        )
+
+        with patch("config.NATIVE_TOOL_PROVIDER_ALLOWLIST", "opencode.ai:deepseek-v4-pro"):
+            payload = runtime._build_completion_kwargs(
+                bundle=bundle,
+                system_prompt="system",
+                user_prompt="user",
+                temperature=0.1,
+                json_mode=True,
+                native_tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search the public web.",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                native_tool_choice="auto",
+            )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertEqual(payload["tool_choice"], "auto")
+        self.assertNotIn("response_format", payload)
+
+    def test_llm_runtime_configured_native_profile_supports_wildcard_and_json_mode(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://opencode.ai/zen/go/v1"),
+            model="deepseek-v4-pro",
+        )
+
+        with patch("config.NATIVE_TOOL_PROVIDER_ALLOWLIST", "opencode.ai:*:json"):
+            payload = runtime._build_completion_kwargs(
+                bundle=bundle,
+                system_prompt="system",
+                user_prompt="user",
+                temperature=0.1,
+                json_mode=True,
+                native_tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search the public web.",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                native_tool_choice="auto",
+            )
+
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
 
     def test_llm_runtime_skips_native_tools_for_non_openai_protocol(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

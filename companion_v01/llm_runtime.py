@@ -75,6 +75,15 @@ class ProviderToolProfile:
 
 
 DEFAULT_PROVIDER_TOOL_PROFILE = ProviderToolProfile()
+CONFIG_ALLOWLISTED_PROVIDER_TOOL_PROFILE = ProviderToolProfile(
+    supports_native_tools=True,
+    native_tools_coexist_with_forced_json=False,
+    verified=False,
+    notes=(
+        "Enabled by NATIVE_TOOL_PROVIDER_ALLOWLIST. Treat as OpenAI-compatible "
+        "prompt-only JSON until a live probe verifies response_format coexistence."
+    ),
+)
 PROVIDER_TOOL_PROFILES: dict[tuple[str, str], ProviderToolProfile] = {
     (
         "api.deepseek.com",
@@ -1186,7 +1195,76 @@ class LLMRuntime:
             return DEFAULT_PROVIDER_TOOL_PROFILE
         host = self._bundle_base_host(bundle)
         model = str(getattr(bundle, "model", "") or "").strip().lower()
-        return PROVIDER_TOOL_PROFILES.get((host, model), DEFAULT_PROVIDER_TOOL_PROFILE)
+        profile = PROVIDER_TOOL_PROFILES.get((host, model))
+        if profile is not None:
+            return profile
+        return self._configured_native_tool_profile(host=host, model=model)
+
+    def _configured_native_tool_profile(self, *, host: str, model: str) -> ProviderToolProfile:
+        clean_host = str(host or "").strip().lower()
+        clean_model = str(model or "").strip().lower()
+        if not clean_host or not clean_model:
+            return DEFAULT_PROVIDER_TOOL_PROFILE
+        raw_allowlist = str(getattr(config, "NATIVE_TOOL_PROVIDER_ALLOWLIST", "") or "").strip()
+        if not raw_allowlist:
+            return DEFAULT_PROVIDER_TOOL_PROFILE
+        for raw_item in raw_allowlist.split(","):
+            item = str(raw_item or "").strip()
+            if not item:
+                continue
+            parsed = self._parse_native_tool_provider_allowlist_item(item)
+            if parsed is None:
+                continue
+            allowed_host, allowed_model, coexist_json = parsed
+            if allowed_host not in {"*", clean_host}:
+                continue
+            if allowed_model not in {"*", clean_model}:
+                continue
+            if coexist_json:
+                return ProviderToolProfile(
+                    supports_native_tools=True,
+                    native_tools_coexist_with_forced_json=True,
+                    verified=False,
+                    notes=(
+                        "Enabled by NATIVE_TOOL_PROVIDER_ALLOWLIST with json coexistence. "
+                        "Use only after probing the gateway/model."
+                    ),
+                )
+            return CONFIG_ALLOWLISTED_PROVIDER_TOOL_PROFILE
+        return DEFAULT_PROVIDER_TOOL_PROFILE
+
+    def _parse_native_tool_provider_allowlist_item(self, item: str) -> tuple[str, str, bool] | None:
+        text = str(item or "").strip().lower()
+        if not text:
+            return None
+        if "://" in text:
+            parsed_url = urlparse(text)
+            text = parsed_url.netloc or parsed_url.path
+            if parsed_url.path and parsed_url.netloc and ":" in parsed_url.path.strip("/"):
+                text = f"{parsed_url.netloc}:{parsed_url.path.strip('/')}"
+        parts = [part.strip() for part in text.split(":") if part.strip()]
+        if not parts:
+            return None
+        host = self._normalize_native_tool_allowlist_host(parts[0])
+        model = parts[1] if len(parts) >= 2 else "*"
+        mode = parts[2] if len(parts) >= 3 else ""
+        if not host or not model:
+            return None
+        return host, model, mode in {"json", "response_json", "forced_json"}
+
+    def _normalize_native_tool_allowlist_host(self, value: str) -> str:
+        raw = str(value or "").strip().lower()
+        if raw == "*":
+            return raw
+        if "://" in raw:
+            raw = urlparse(raw).netloc
+        if "/" in raw:
+            raw = raw.split("/", 1)[0]
+        if "@" in raw:
+            raw = raw.rsplit("@", 1)[-1]
+        if ":" in raw:
+            raw = raw.split(":", 1)[0]
+        return raw.strip()
 
     def _bundle_base_host(self, bundle: ModelBundle) -> str:
         raw = str(getattr(bundle.client, "base_url", "") or "").strip()
