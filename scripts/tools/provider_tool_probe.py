@@ -6,6 +6,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -80,8 +81,53 @@ def main() -> int:
         )
         for model in models
     ]
-    print(json.dumps({"status": "ok", "reports": reports}, ensure_ascii=False, indent=2, sort_keys=True))
+    allowlist = ",".join(
+        entry
+        for entry in (str(report.get("suggested_allowlist_entry") or "").strip() for report in reports)
+        if entry
+    )
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                # Ready to paste into NATIVE_TOOL_PROVIDER_ALLOWLIST. Empty means
+                # no probed model supports native tools -> keep fail-closed.
+                "suggested_native_tool_provider_allowlist": allowlist,
+                "reports": reports,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
+
+
+def suggested_allowlist_entry(*, base_url: str, model: str, suggested: dict[str, Any]) -> str:
+    """Render the ready-to-paste NATIVE_TOOL_PROVIDER_ALLOWLIST entry, or "" when
+    the probe says native tools are unsupported.
+
+    Empty is the fail-closed signal: no entry means the runtime keeps prompt-only
+    JSON for this provider/model (it never auto-enables). The format mirrors the
+    runtime parser (host:model[:json]); host is the base_url hostname so it
+    matches how the runtime derives it from the live client.
+    """
+    if not bool(suggested.get("supports_native_tools")):
+        return ""
+    raw = str(base_url or "").strip()
+    if raw and "://" not in raw:
+        raw = f"https://{raw}"
+    try:
+        host = str(urlparse(raw).hostname or "").strip().lower()
+    except Exception:
+        host = ""
+    clean_model = str(model or "").strip().lower()
+    if not host or not clean_model:
+        return ""
+    entry = f"{host}:{clean_model}"
+    if bool(suggested.get("native_tools_coexist_with_forced_json")):
+        entry = f"{entry}:json"
+    return entry
 
 
 def probe_model(*, client: Any, base_url: str, protocol: str, model: str, temperature: float) -> dict[str, Any]:
@@ -140,6 +186,9 @@ def probe_model(*, client: Any, base_url: str, protocol: str, model: str, temper
         "model": model,
         "cases": results,
         "suggested_profile": suggested,
+        "suggested_allowlist_entry": suggested_allowlist_entry(
+            base_url=base_url, model=model, suggested=suggested
+        ),
     }
 
 
