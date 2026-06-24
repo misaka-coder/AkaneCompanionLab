@@ -22,6 +22,11 @@ from ..desktop_pet_contract import (
 from .desktop_pet import decorate_desktop_workspace_urls
 
 
+def _is_local_request(request: Request) -> bool:
+    host = str(getattr(getattr(request, "client", None), "host", "") or "").strip().lower()
+    return host in {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
 def build_control_center_router(
     *,
     runtime_metrics: Any = None,
@@ -105,6 +110,40 @@ def build_control_center_router(
                 "sourceKind": "backend",
                 "generatedAt": _now_iso(),
                 "runtime": runtime,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @router.get("/control-center/settings-catalog")
+    async def read_settings_catalog(request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        # Reveals current (non-secret) config values, so gate to local requests
+        # like the model-service route — never expose deployment config publicly.
+        if not _is_local_request(request):
+            _observe_request(runtime_metrics, "control_center.settings_catalog", started_at, False)
+            return JSONResponse(
+                {"ok": False, "status": "forbidden", "reason": "local_request_required"},
+                status_code=403,
+                headers={"Cache-Control": "no-store"},
+            )
+        from ..settings_catalog import build_settings_catalog
+
+        catalog = build_settings_catalog()
+        _observe_request(runtime_metrics, "control_center.settings_catalog", started_at, True)
+        _log_best_effort(
+            log_event,
+            "control_center_settings_catalog",
+            categories=len(catalog.get("categories", [])),
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "status": "available",
+                "schemaVersion": catalog.get("schemaVersion", 1),
+                "sourceKind": "backend",
+                "generatedAt": _now_iso(),
+                "scopeLegend": catalog.get("scopeLegend", {}),
+                "categories": catalog.get("categories", []),
             },
             headers={"Cache-Control": "no-store"},
         )
