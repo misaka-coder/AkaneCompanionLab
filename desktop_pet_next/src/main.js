@@ -5178,6 +5178,9 @@ async function processThinkStream(stream, turnToken) {
       void handleDesktopFileDeliveryEvent(event);
     } else if (type === "browser_open_requested") {
       void handleBrowserOpenEvent(event);
+    } else if (type === "assistant_working") {
+      const hasShownReply = rendered || Boolean(streamingReplyText) || firstSpeechSegmentShown;
+      showToolWorking(event, { hasShownReply });
     } else if (type === "final" || type === "final_ui") {
       const payload = event?.payload || event;
       if (renderPayload(payload)) {
@@ -5815,6 +5818,26 @@ function showThinking() {
   setPetMotion("thinking");
   setRuntimeStatus("思考中", { mode: "thinking" });
   showBubbleText("……", { transient: false, kind: "thinking" });
+}
+
+function showToolWorking(event, { hasShownReply = false } = {}) {
+  // Backend emits assistant_working ("我查一下。") right before a tool runs, so
+  // the pet can show it's actively working instead of looking frozen on
+  // "thinking" through a multi-second tool call (web search, memory, …).
+  const message = String(event?.message || "").trim() || "我查一下。";
+  setPetMotion("thinking");
+  setRuntimeStatus("查一下…", { mode: "thinking" });
+  if (hasShownReply) {
+    // The model already spoke a pre-tool line; don't clobber that expressive
+    // bubble (INV-1) — the motion + status above are enough of a working hint.
+    return;
+  }
+  // Nothing shown yet (e.g. native tool with empty pre-speech): surface the
+  // working line as a thinking-kind bubble. It is replaced by the real reply
+  // and, if the turn ends with nothing rendered, cleared by the stream_end
+  // leftover-thinking guard.
+  setPetEmotion("thinking");
+  showBubbleText(message, { transient: false, kind: "thinking" });
 }
 
 function showError(message) {

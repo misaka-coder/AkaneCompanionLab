@@ -32,6 +32,20 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("this._audioEl.muted = false", source)
         self.assertIn("this._audioEl.volume = 1", source)
 
+    def test_desktop_pet_renders_assistant_working_tool_event(self) -> None:
+        # Backend emits assistant_working before each tool runs; the streaming
+        # frontend must surface it so the pet isn't frozen on "thinking" through
+        # a multi-second tool call (CLAUDE.md §9: backend ability != felt UX).
+        backend = _read("companion_v01/engine.py")
+        self.assertIn('"type": "assistant_working"', backend)
+
+        source = _read("desktop_pet_next/src/main.js")
+        self.assertIn('type === "assistant_working"', source)
+        self.assertIn("showToolWorking", source)
+        # INV-1: a pre-tool line the model already spoke must not be clobbered;
+        # the handler only takes the bubble when nothing has been shown yet.
+        self.assertIn("hasShownReply", source)
+
     def test_workspace_panel_opens_local_location_instead_of_browser_download(self) -> None:
         source = _read("desktop_pet/renderer/ui/WorkspacePanel.js")
 
