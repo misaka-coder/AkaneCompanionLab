@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet("Auto", "Desktop", "Web")]
     [string]$Mode = "Auto",

@@ -1,6 +1,4 @@
-Set-StrictMode -Version Latest
-
-function Resolve-AkaneDataRoot {
+﻿function Resolve-AkaneDataRoot {
     $explicit = [string]$env:AKANE_DATA_ROOT
     if ($explicit.Trim()) {
         return [System.IO.Path]::GetFullPath($explicit.Trim())

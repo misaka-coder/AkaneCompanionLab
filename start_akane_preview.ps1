@@ -1,4 +1,4 @@
-param(
+﻿param(
     [int]$Port = 9998,
     [string]$BindHost = "0.0.0.0",
     [string]$LocalHostAddr = "127.0.0.1"
