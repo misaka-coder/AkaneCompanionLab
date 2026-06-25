@@ -373,7 +373,7 @@ function Resolve-LaunchMode {
 function Wait-BackendReady {
     param(
         [int]$Port,
-        [int]$TimeoutSeconds = 60
+        [int]$TimeoutSeconds = 120
     )
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -400,7 +400,17 @@ function Start-WebMode {
 
     & (Join-Path $Root "start_akane_next.ps1") -BackendPort $Port -SkipDesktop
     if (-not (Wait-BackendReady -Port $Port)) {
-        throw "Backend did not become healthy within 60 seconds. Check the Akane user-data logs folder."
+        $dataRoot = if ($env:AKANE_DATA_ROOT) { $env:AKANE_DATA_ROOT } else { Join-Path $env:LOCALAPPDATA "Akane" }
+        $errLog = Join-Path $dataRoot "logs\akane_backend.err.log"
+        Write-Host ""
+        Write-Host "[FAIL] Backend did not become healthy within 120 seconds." -ForegroundColor Red
+        if (Test-Path -LiteralPath $errLog) {
+            Write-Host "[INFO] Last lines of akane_backend.err.log:" -ForegroundColor Yellow
+            Get-Content -LiteralPath $errLog -Tail 30 | ForEach-Object { Write-Host "       $_" }
+        } else {
+            Write-Host "[INFO] No backend error log found at: $errLog"
+        }
+        throw "Backend did not become healthy. See error output above or check: $errLog"
     }
     $url = if ($OpenModelSettings) {
         "http://127.0.0.1:{0}/?configure=model" -f $Port
