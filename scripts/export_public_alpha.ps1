@@ -61,6 +61,15 @@ function Test-PublicFileExcluded {
         }
     }
 
+    # UI assets that ship as real images (not placeholders) in the public release.
+    $allowedBinaryAssets = @(
+        "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sakura-wide.png",
+        "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sky-wide.png"
+    )
+    if ($allowedBinaryAssets -contains $lower) {
+        return $false
+    }
+
     $prefixExclusions = @(
         ".git/",
         ".venv/",
@@ -291,9 +300,7 @@ function Add-PublicPlaceholderAssets {
         "desktop_pet_next/src/assets/control-center-lab/covers/akane-sky-paper-plane.png",
         "desktop_pet_next/src/assets/control-center-lab/covers/cloud-letter.png",
         "desktop_pet_next/src/assets/control-center-lab/covers/moon-balcony.png",
-        "desktop_pet_next/src/assets/control-center-lab/covers/starry-cloud-cat.png",
-        "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sakura-wide.png",
-        "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sky-wide.png"
+        "desktop_pet_next/src/assets/control-center-lab/covers/starry-cloud-cat.png"
     )) {
         $destinations.Add($assetPath)
     }
