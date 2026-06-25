@@ -89,35 +89,58 @@ flowchart LR
 
 ## Windows 一键启动
 
-普通使用者从这里开始：
+### 需要安装什么
 
-1. 安装 Python 3.11 或更高版本，并在安装器中启用 `Add Python to PATH`。
-2. 双击 `启动_Akane.bat`。
-3. 第一次运行会自动创建 `.venv`、安装 Python 依赖并生成高级配置用的
-   `.env`。
-4. 如果尚未配置模型，桌面端会自动打开控制中心的“模型”页；Web 回退模式
-   会自动展开模型设置。选择服务商、检测模型、测试 API，再保存即可。
+有两种模式，按需选择：
+
+**Web 模式（推荐新用户）**：只需要 Python，用浏览器访问。
+
+| 软件 | 版本 | 下载地址 |
+| --- | --- | --- |
+| Python | 3.11 或更高 | [python.org/downloads](https://www.python.org/downloads/) |
+
+安装时勾选 **”Add Python to PATH”**，否则脚本找不到 Python。
+
+**Desktop 模式**：在 Web 模式基础上再安装 Node.js 和 Rust，才能构建和运行桌宠窗口。
+
+| 软件 | 版本 | 下载地址 |
+| --- | --- | --- |
+| Python | 3.11 或更高 | [python.org/downloads](https://www.python.org/downloads/) |
+| Node.js | LTS 版（≥18） | [nodejs.org](https://nodejs.org/) |
+| Rust | 最新稳定版 | [rustup.rs](https://rustup.rs/)（按提示安装 rustup） |
+
+Node.js 建议选 **”为所有用户安装”选项**，否则 npm 可能遇到权限问题。
+
+---
+
+### 启动步骤
+
+1. 安装好上方所需软件后，双击 **`启动_Akane.bat`**。
+2. 第一次运行会自动创建 `.venv`、安装 Python 依赖并生成 `.env`（大约 3–10 分钟）。
+3. 如果安装了 Node.js + Rust，会自动构建桌宠（首次约 10–20 分钟）；否则自动回落 Web 模式在浏览器打开。
+4. 弹出设置页后选择 LLM 服务商、填入 API Key，保存即可使用。
 
 之后日常使用只需要双击同一个文件。
 
 可视配置支持 OpenAI、DeepSeek、Google Gemini、Anthropic、Ollama 和其他
 OpenAI 兼容服务。保存后的密钥位于被 Git 忽略的
 `%LOCALAPPDATA%\Akane\users_data\_local\model_service.json`，读取接口只返回 `hasApiKey`，不会把
-密钥回传到前端。`.env` 继续作为服务器部署和 CHAT/AUX/TEXT/VISION 高级分工
-的入口。
+密钥回传到前端。
 
-角色包、记忆、桌宠状态和运行日志也统一保存在
-`%LOCALAPPDATA%\Akane\`。首次通过启动器运行时，旧源码目录中的本地数据只会
-复制到新目录中缺失的位置；不会删除旧文件，也不会覆盖新目录中已有的内容。
+角色包、记忆、桌宠状态和运行日志统一保存在 `%LOCALAPPDATA%\Akane\`。
 高级部署可用 `AKANE_DATA_ROOT` 指定其他绝对目录。
 
-启动器默认使用 `Auto` 模式：
+---
 
-- 当前源码目录已有本机构建产物时，直接启动桌宠和后端。
-- 源码环境具备 Node.js 与 Rust 时，自动构建并启动 Tauri 桌宠。
-- 桌宠工具链不完整时，自动启动后端并在浏览器打开 Web 客户端。
+### 启动模式说明
 
-也可以明确选择客户端：
+`启动_Akane.bat` 默认使用 `Auto` 模式：
+
+- 源码目录已有本机构建产物时，直接启动桌宠和后端。
+- 环境具备 Node.js 与 Rust 时，自动构建并启动 Tauri 桌宠。
+- 工具链不完整时，自动启动后端并在浏览器打开 Web 客户端。
+
+也可以明确选择：
 
 ```powershell
 .\start_akane.bat -Mode Web
@@ -134,22 +157,57 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\bootstrap_akane_windows.ps1 -CheckOnly -Mode Web
 ```
 
-首次依赖安装可能需要数分钟。启动失败会给出缺少的 Python、Node、Rust
-或配置项，不会把未启动的能力显示成成功。
+---
 
-国内网络如果 pip 长时间停在下载/解析依赖，或最后出现
-`python_dependency_install_failed`，通常是 PyPI 访问不稳定。启动器会读取
-`AKANE_PIP_INDEX_URL` 或 `PIP_INDEX_URL`，可以在当前 PowerShell 里临时指定
-镜像后再启动：
+### 第一次启动耗时说明
+
+终端会打印 `[INFO] / [OK] / [WARN] / [FAIL]` 状态行。看到 `Compiling …`、
+`Downloading …`、`Resolving …` 是正常的下载和编译过程，不是报错。
+
+| 阶段 | 说明 | 首次耗时 |
+| --- | --- | --- |
+| Python 依赖安装 | `Installing Python dependencies…` | 3–10 分钟（取决于网速） |
+| npm install（Desktop 模式） | `Running npm install…` | 1–5 分钟 |
+| Tauri 桌宠构建（Desktop 模式） | cargo 编译，输出大量 `Compiling …` | 10–20 分钟（首次） |
+| 后端启动 | `Starting backend with: …` | 10–60 秒（首次初始化数据库） |
+| 启动完成 | 弹出浏览器或桌宠窗口 | — |
+
+---
+
+### 常见问题
+
+**pip 下载卡住或失败（国内网络）**
+
+启动器读取 `AKANE_PIP_INDEX_URL` 或 `PIP_INDEX_URL`，可在 PowerShell 里临时
+指定镜像：
 
 ```powershell
-$env:AKANE_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+$env:AKANE_PIP_INDEX_URL = “https://pypi.tuna.tsinghua.edu.cn/simple”
 .\启动_Akane.bat
 ```
 
-语义记忆的默认配置不会在启动时联网下载 HuggingFace 模型：
-`EMBEDDING_LOCAL_FILES_ONLY=true` 会先尝试本地缓存，失败就回退到纯本地
-hashed embedding。想启用 `BAAI/bge-m3` 这类真实语义模型时，可以先编辑 `.env`：
+**npm install 报权限错误（EPERM/-4048）**
+
+通常发生在 Node.js 以”为所有用户安装”方式安装后以普通用户运行。启动器已内置
+绕过方案，会将 npm 全局前缀重定向到用户目录。如果仍然报错，可以尝试以管理员
+身份运行 `启动_Akane.bat`。
+
+**桌宠模式报 Tauri CLI not found**
+
+这是因为上一次 `npm install` 中断，留下了不完整的 `node_modules`。启动器会自动
+检测并重新安装；如果手动删除 `desktop_pet_next/node_modules/` 后重新启动也能解决。
+
+**后端启动失败（Backend did not become healthy）**
+
+后端崩溃时，错误信息会直接打印在终端里（最后 30 行）。也可以查看完整日志：
+
+- `%LOCALAPPDATA%\Akane\logs\akane_backend.log`（启动输出）
+- `%LOCALAPPDATA%\Akane\logs\akane_backend.err.log`（错误详情）
+
+**语义记忆 / HuggingFace 模型**
+
+默认不会在启动时联网下载 HuggingFace 模型，失败时自动回退到本地 hashed
+embedding。想启用 `BAAI/bge-m3` 语义模型时编辑 `.env`：
 
 ```dotenv
 EMBEDDING_PROVIDER=auto
@@ -157,39 +215,15 @@ EMBEDDING_LOCAL_FILES_ONLY=false
 HF_ENDPOINT=https://hf-mirror.com
 ```
 
-如果你已有代理或能稳定访问 HuggingFace，`HF_ENDPOINT` 可以留空使用官方源。
+---
 
-### 第一次启动会发生什么
+### 其他说明
 
-第一次双击 `启动_Akane.bat` 会经历以下几步。每一步都会在终端打印
-`[INFO] / [OK] / [WARN] / [FAIL]` 之一的状态行；看到 `Compiling …`、
-`Downloading …`、`Resolving …` 这类输出不是出错，是 pip / cargo / npm 在
-正常下载和编译依赖。
-
-| 阶段 | 你会看到什么 | 预估耗时 |
-| --- | --- | --- |
-| 准备 Python 环境 | `Creating .venv with Python …` 然后 `Installing Python dependencies…` | 首次 3–8 分钟，看网速 |
-| 准备桌宠依赖 | `desktop_pet_next/node_modules not found. Running npm install...` | 首次 1–3 分钟 |
-| 构建 Tauri 桌宠 | 进入 `[首次构建提示]` 块后开始 cargo `Compiling akane_desktop_pet_next…` 等条目；这是源码构建，不是错误 | 首次 5–15 分钟，CPU 越快越快 |
-| 启动后端 | `Starting backend with: …` / `Backend log: …` | 几秒到几十秒；如果还在 warming up，会提示桌宠会先开，后端就绪后自动连接 |
-| 启动桌宠 | `Starting Akane Next desktop app...` / `Akane Next PID: …` | 几秒，跟着会弹出桌宠窗口 |
-| 配置模型 | 控制中心的"模型"页自动打开 | 取决于你填什么；保存后立即生效 |
-
-其它需要知道的：
-
-- 默认后端监听 `http://127.0.0.1:9999`。如果端口上已经是 Akane 后端，
-  启动器会为 fresh code 自动重启它；如果是未知进程占用，则会保留原服务并
-  提示你手动让出端口或加 `-SkipBackend`。
-- 用户数据、角色包、记忆、聊天数据库统一写入
-  `%LOCALAPPDATA%\Akane\`。卸载或迁移时只需要处理这一个目录。
-  高级部署可以用环境变量 `AKANE_DATA_ROOT` 指向其他绝对路径。
+- 默认后端监听 `http://127.0.0.1:9999`。端口已被 Akane 占用时会自动重启；被
+  未知进程占用时会提示手动释放或加 `-SkipBackend`。
 - 模型 API Key 保存在
-  `%LOCALAPPDATA%\Akane\users_data\_local\model_service.json`（Git 忽略）。
-  仓库根目录的 `.env` 是本地高级配置，已经写在 `.gitignore` 里，不会进入公开
-  导出；公开仓只发 `.env.example`。
-- 如果启动失败，先看终端最后一行 `[FAIL]` 消息，再看下面两个文件：
-  - `%LOCALAPPDATA%\Akane\logs\akane_backend.log`
-  - `%LOCALAPPDATA%\Akane\logs\akane_backend.err.log`
+  `%LOCALAPPDATA%\Akane\users_data\_local\model_service.json`（Git 忽略，不会
+  进入公开导出）。
 
 ## 平台与客户端边界
 
