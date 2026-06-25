@@ -53,7 +53,8 @@ function Test-PublicFileExcluded {
     # portraits. Allow its files (including .png) through the binary-exclusion gate,
     # but never its per-character private _local/ memory data.
     $allowedPrefixes = @(
-        "desktop_pet_creator_kit/characters/akane_v1/"
+        "desktop_pet_creator_kit/characters/akane_v1/",
+        "web/assets/stickers/akane_v1/"
     )
     foreach ($allowed in $allowedPrefixes) {
         if ($lower.StartsWith($allowed.ToLowerInvariant()) -and $lower -notmatch "/_local/") {
@@ -284,13 +285,6 @@ function Add-PublicPlaceholderAssets {
 
     foreach ($backgroundName in @("morning", "afternoon", "evening", "night")) {
         $destinations.Add("web/assets/backgrounds/default/$backgroundName.png")
-    }
-
-    foreach ($stickerName in @(
-        "好幸福", "憋笑", "我上早八", "摊手",
-        "歪脑", "突然出现", "装傻", "装死"
-    )) {
-        $destinations.Add("web/assets/stickers/akane_v1/$stickerName.png")
     }
 
     foreach ($assetPath in @(
