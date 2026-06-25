@@ -64,7 +64,8 @@ function Test-PublicFileExcluded {
     # UI assets that ship as real images (not placeholders) in the public release.
     $allowedBinaryAssets = @(
         "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sakura-wide.png",
-        "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sky-wide.png"
+        "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sky-wide.png",
+        "web/assets/scenes/家/白天客厅.png"
     )
     if ($allowedBinaryAssets -contains $lower) {
         return $false

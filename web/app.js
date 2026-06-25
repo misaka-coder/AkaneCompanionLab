@@ -109,8 +109,8 @@ const GIFT_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"];
 const GIFT_METADATA_REFRESH_DELAY_MS = 1200;
 const GIFT_METADATA_REFRESH_MAX_ATTEMPTS = 8;
 const ARTIFACT_CONTAINER_ORDER = ["music_box", "album"];
-const FALLBACK_BACKGROUND_PATH = "/assets/scenes/街道/黄昏街道.png";
-const FALLBACK_SPRITE_PATH = "/assets/characters/猫娘/正常.png";
+const FALLBACK_BACKGROUND_PATH = "/assets/scenes/家/白天客厅.png";
+const FALLBACK_SPRITE_PATH = "/desktop-pet-character-packs/akane_v1/assets/characters/default/normal.png";
 
 const STATUS_LABELS = {
   idle: "状态 待机",
