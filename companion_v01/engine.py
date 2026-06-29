@@ -16,7 +16,15 @@ from .attachment_inbox import AttachmentInboxService
 from .attachment_ingest import AttachmentIngestService
 from .background_tasks import BackgroundTaskRunner
 from .capability_adapters import CapabilityAdapterRegistry, McpStdioCapabilityAdapter
-from .capability_registry import CapabilityRegistry, CapabilitySelection, CapabilitySnapshot, is_document_attachment, is_document_generated_file, is_media_attachment, is_media_generated_file
+from .capability_registry import (
+    CapabilityRegistry,
+    CapabilitySelection,
+    CapabilitySnapshot,
+    is_document_attachment,
+    is_document_generated_file,
+    is_media_attachment,
+    is_media_generated_file,
+)
 from . import desktop_pet_engine
 from .embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
 from .generated_files import GeneratedFileService
@@ -54,7 +62,52 @@ from .task_worker import TaskWorkerService
 from .task_worker_tool import DelegateTaskToolHandler
 from . import tool_orchestration_engine
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD
-from .tool_runtime import AdapterCapabilityToolHandler, ApplyStyleToExistingFileToolHandler, BaseToolHandler, BrowserPageToolHandler, CallNPCToolHandler, CancelReminderToolHandler, CheckInventoryToolHandler, CleanVoiceTrackToolHandler, ClearAttachmentFocusToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, FetchMediaFromUrlToolHandler, FocusWorkspaceToolHandler, InspectAttachmentToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ListRemindersToolHandler, ListWorkspaceToolHandler, LoadCharacterContextToolHandler, ManageArtifactToolHandler, ManageGeneratedFileToolHandler, ManageGiftToolHandler, ManagePersonaToolHandler, ManageTaskWorkspaceToolHandler, OpenBrowserToolHandler, OpenMusicSearchToolHandler, PrepareVoiceDatasetToolHandler, ReadAttachmentSectionToolHandler, ReadMemoryTimelineToolHandler, ReadWorkspaceToolHandler, RegisterWorkspaceItemsToolHandler, RetrieveMemoryToolHandler, ReviseGeneratedFileToolHandler, RetryAttachmentToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SendStickerToolHandler, SeparateAudioStemsToolHandler, SetReminderToolHandler, SyncAttachmentWorkspaceToolHandler, ToolExecutionContext, ToolExecutionResult, TranscribeMediaToolHandler, WebSearchToolHandler
+from .tool_runtime import (
+    AdapterCapabilityToolHandler,
+    ApplyStyleToExistingFileToolHandler,
+    BaseToolHandler,
+    BrowserPageToolHandler,
+    CallNPCToolHandler,
+    CancelReminderToolHandler,
+    CheckInventoryToolHandler,
+    CleanVoiceTrackToolHandler,
+    ClearAttachmentFocusToolHandler,
+    ComposeFileToolHandler,
+    ConvertMediaFileToolHandler,
+    FetchMediaFromUrlToolHandler,
+    FocusWorkspaceToolHandler,
+    InspectAttachmentToolHandler,
+    InspectGeneratedFileToolHandler,
+    InspectMediaInfoToolHandler,
+    ListRemindersToolHandler,
+    ListWorkspaceToolHandler,
+    LoadCharacterContextToolHandler,
+    ManageArtifactToolHandler,
+    ManageGeneratedFileToolHandler,
+    ManageGiftToolHandler,
+    ManagePersonaToolHandler,
+    ManageTaskWorkspaceToolHandler,
+    OpenBrowserToolHandler,
+    OpenMusicSearchToolHandler,
+    PrepareVoiceDatasetToolHandler,
+    ReadAttachmentSectionToolHandler,
+    ReadMemoryTimelineToolHandler,
+    ReadWorkspaceToolHandler,
+    RegisterWorkspaceItemsToolHandler,
+    RetrieveMemoryToolHandler,
+    ReviseGeneratedFileToolHandler,
+    RetryAttachmentToolHandler,
+    SendFileToolHandler,
+    SendGeneratedFileToolHandler,
+    SendStickerToolHandler,
+    SeparateAudioStemsToolHandler,
+    SetReminderToolHandler,
+    SyncAttachmentWorkspaceToolHandler,
+    ToolExecutionContext,
+    ToolExecutionResult,
+    TranscribeMediaToolHandler,
+    WebSearchToolHandler,
+)
 from . import visual_context_engine
 from .vision_service import VisionObservationService
 from .store import MemoryStore
@@ -141,16 +194,13 @@ class AkaneMemoryEngine:
             ),
             background_tasks=self.background_tasks,
         )
-        self.store.set_message_write_callback(
-            self.memory_timeline_service.handle_message_write
-        )
+        self.store.set_message_write_callback(self.memory_timeline_service.handle_message_write)
         self.memory_timeline_service.schedule_existing_backfill()
         self.workspace_file_service = WorkspaceFileService(
             root_dir=getattr(config, "AKANE_WORKSPACE_ROOT", ""),
             store=self.store,
             max_read_bytes=int(
-                getattr(config, "AKANE_WORKSPACE_MAX_READ_BYTES", 64 * 1024 * 1024)
-                or (64 * 1024 * 1024)
+                getattr(config, "AKANE_WORKSPACE_MAX_READ_BYTES", 64 * 1024 * 1024) or (64 * 1024 * 1024)
             ),
         )
         attachment_workspace_dir = self.workspace_file_service.layer_dir("Inbox")
@@ -203,9 +253,7 @@ class AkaneMemoryEngine:
                 resource_manifest=self.resource_manifest,
                 gift_assets_dir=self.base_dir / "user_assets",
                 on_observation_ready=(
-                    self.vision_observation_router.handle
-                    if self.vision_observation_router is not None
-                    else None
+                    self.vision_observation_router.handle if self.vision_observation_router is not None else None
                 ),
             )
             self.desktop_screen_vision: DesktopScreenVisionWorkspace | None = DesktopScreenVisionWorkspace(
@@ -316,7 +364,9 @@ class AkaneMemoryEngine:
             resource_manifest=resource_manifest,
         )
 
-    def list_gift_assets(self, *, profile_user_id: str, media_kind: str = "all", limit: int = 50) -> list[dict[str, Any]]:
+    def list_gift_assets(
+        self, *, profile_user_id: str, media_kind: str = "all", limit: int = 50
+    ) -> list[dict[str, Any]]:
         return gift_engine.list_gift_assets(
             self,
             profile_user_id=profile_user_id,
@@ -505,7 +555,10 @@ class AkaneMemoryEngine:
             batch_iterators = (
                 (self.store.iter_messages_for_vector_reindex(batch_size), build_raw_vector_entry),
                 (self.store.iter_summaries_for_vector_reindex(batch_size), build_summary_vector_entry),
-                (self.store.iter_semantic_summaries_for_vector_reindex(batch_size), build_semantic_summary_vector_entry),
+                (
+                    self.store.iter_semantic_summaries_for_vector_reindex(batch_size),
+                    build_semantic_summary_vector_entry,
+                ),
             )
             for batches, entry_builder in batch_iterators:
                 for record_batch in batches:
@@ -612,23 +665,9 @@ class AkaneMemoryEngine:
 
     @staticmethod
     def _resolve_payload_character_pack_id(payload: dict[str, Any]) -> str:
-        for key in ("character_pack_id", "characterPackId", "character_pack"):
-            value = str((payload or {}).get(key) or "").strip()
-            if value:
-                return value
-        current_visual = (payload or {}).get("current_visual")
-        if isinstance(current_visual, dict):
-            for key in ("character_pack_id", "characterPackId", "character_pack"):
-                value = str(current_visual.get(key) or "").strip()
-                if value:
-                    return value
-            character = current_visual.get("character")
-            if isinstance(character, dict):
-                for key in ("character_pack_id", "characterPackId", "character_pack", "pack_id"):
-                    value = str(character.get(key) or "").strip()
-                    if value:
-                        return value
-        return ""
+        from .engine_services.turn_context import resolve_payload_character_pack_id as _fn
+
+        return _fn(payload)
 
     def _resolve_turn_speaker_identity(
         self,
@@ -640,10 +679,7 @@ class AkaneMemoryEngine:
         DesktopPet / QQ text modes with a valid character pack  →  character pack identity.
         Other modes  →  persona_profiles.toml defaults (PERSONA).
         """
-        if (
-            client_context is not None
-            and client_context.effective_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}
-        ):
+        if client_context is not None and client_context.effective_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}:
             service = getattr(self, "desktop_pet_character_resources", None)
             if service is not None and character_pack_id:
                 identity_builder = getattr(service, "build_character_identity", None)
@@ -691,7 +727,9 @@ class AkaneMemoryEngine:
         except Exception as exc:
             logger.warning("desktop pet character pack prompt context failed: %s", exc)
             return {"system_context": "", "reference_context": "", "active_id": ""}
-        return context if isinstance(context, dict) else {"system_context": "", "reference_context": "", "active_id": ""}
+        return (
+            context if isinstance(context, dict) else {"system_context": "", "reference_context": "", "active_id": ""}
+        )
 
     @staticmethod
     def _merge_prompt_persona_contexts(*contexts: dict[str, Any]) -> dict[str, str]:
@@ -850,8 +888,7 @@ class AkaneMemoryEngine:
             root_dir=getattr(config, "AKANE_WORKSPACE_ROOT", ""),
             store=store,
             max_read_bytes=int(
-                getattr(config, "AKANE_WORKSPACE_MAX_READ_BYTES", 64 * 1024 * 1024)
-                or (64 * 1024 * 1024)
+                getattr(config, "AKANE_WORKSPACE_MAX_READ_BYTES", 64 * 1024 * 1024) or (64 * 1024 * 1024)
             ),
         )
         self.workspace_file_service = service
@@ -911,18 +948,20 @@ class AkaneMemoryEngine:
         from . import music_control_store
 
         def _controls_provider(profile_user_id: str) -> frozenset:
-            _default = frozenset({
-                MusicControl.PAUSE, MusicControl.NEXT,
-                MusicControl.PREV, MusicControl.RECOMMEND,
-            })
+            _default = frozenset(
+                {
+                    MusicControl.PAUSE,
+                    MusicControl.NEXT,
+                    MusicControl.PREV,
+                    MusicControl.RECOMMEND,
+                }
+            )
             if not profile_user_id:
                 return _default
             try:
                 with store._connect() as conn:
                     music_control_store.ensure_schema(conn)
-                    names = music_control_store.get_enabled_controls(
-                        conn, profile_user_id=profile_user_id
-                    )
+                    names = music_control_store.get_enabled_controls(conn, profile_user_id=profile_user_id)
             except Exception:
                 return _default
             valid = {c.value for c in MusicControl}
@@ -933,16 +972,16 @@ class AkaneMemoryEngine:
         return assembler
 
     def _get_retrieval_service(self) -> RetrievalService:
-        retrieval_service = getattr(self, "retrieval_service", None)
-        if retrieval_service is None:
-            retrieval_service = RetrievalService(
-                store=self.store,
-                vector_store=self.vector_store,
-                llm=self.llm,
-                prompt_builder=self._get_prompt_builder(),
-            )
-            self.retrieval_service = retrieval_service
-        return retrieval_service
+        cached = getattr(self, "retrieval_service", None)
+        if cached is not None:
+            return cached
+        from .engine_services.memory_facade import get_retrieval_service as _fn
+
+        svc = _fn(
+            store=self.store, vector_store=self.vector_store, llm=self.llm, prompt_builder=self._get_prompt_builder()
+        )
+        self.retrieval_service = svc
+        return svc
 
     @staticmethod
     def _collect_visible_context_source_ids(
@@ -952,7 +991,9 @@ class AkaneMemoryEngine:
         recent_semantic_summaries: list[dict[str, Any]],
         extra_source_ids: list[str] | None = None,
     ) -> list[str]:
-        return retrieval_engine.collect_visible_context_source_ids(
+        from .engine_services.memory_facade import collect_visible_context_source_ids as _fn
+
+        return _fn(
             recent_raw=recent_raw,
             recent_episodic_summaries=recent_episodic_summaries,
             recent_semantic_summaries=recent_semantic_summaries,
@@ -960,28 +1001,25 @@ class AkaneMemoryEngine:
         )
 
     def _get_compaction_service(self) -> MemoryCompactionService:
-        compaction_service = getattr(self, "compaction_service", None)
-        if compaction_service is None:
-            compaction_service = MemoryCompactionService(
-                store=self.store,
-                vector_store=self.vector_store,
-                llm=self.llm,
-                prompt_builder=self._get_prompt_builder(),
-                persona_context_provider=self._build_memory_compaction_persona_context,
-            )
-            self.compaction_service = compaction_service
-        return compaction_service
+        cached = getattr(self, "compaction_service", None)
+        if cached is not None:
+            return cached
+        from .engine_services.memory_facade import get_compaction_service as _fn
+
+        svc = _fn(
+            store=self.store,
+            vector_store=self.vector_store,
+            llm=self.llm,
+            prompt_builder=self._get_prompt_builder(),
+            persona_context_provider=self._build_memory_compaction_persona_context,
+        )
+        self.compaction_service = svc
+        return svc
 
     def _coerce_bool(self, value: Any) -> bool | None:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered in {"true", "1", "yes", "on"}:
-                return True
-            if lowered in {"false", "0", "no", "off"}:
-                return False
-        return None
+        from .engine_services.turn_context import coerce_bool as _fn
+
+        return _fn(value)
 
     def _prepare_care_context_for_turn(
         self,
@@ -1007,10 +1045,7 @@ class AkaneMemoryEngine:
         desktop_care = payload.get("desktop_care")
         try:
             if isinstance(desktop_care, dict):
-                is_desktop = (
-                    client_context is not None
-                    and client_context.effective_mode == ClientMode.DESKTOP_PET
-                )
+                is_desktop = client_context is not None and client_context.effective_mode == ClientMode.DESKTOP_PET
                 if is_desktop:
                     # Record turn before sync so the snapshot already includes this turn's count
                     try:
@@ -1207,10 +1242,13 @@ class AkaneMemoryEngine:
         session_id: str,
         character_pack_id: str = "",
     ) -> None:
-        self._get_compaction_service().schedule_summary_cycle(
+        from .engine_services.memory_facade import schedule_summary_cycle as _fn
+
+        _fn(
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
+            compaction_service=self._get_compaction_service(),
         )
 
     def _run_summary_cycle(
@@ -1220,10 +1258,13 @@ class AkaneMemoryEngine:
         session_id: str,
         character_pack_id: str = "",
     ) -> None:
-        self._get_compaction_service().run_summary_cycle(
+        from .engine_services.memory_facade import run_summary_cycle as _fn
+
+        _fn(
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
+            compaction_service=self._get_compaction_service(),
         )
 
     def ingest_qq_attachments(
@@ -1493,11 +1534,9 @@ class AkaneMemoryEngine:
         )
 
     def _is_transient_user_turn(self, payload: dict[str, Any]) -> bool:
-        turn_kind = str(payload.get("turn_kind") or payload.get("client_turn_kind") or "").strip().lower()
-        return bool(payload.get("transient_user_message")) or turn_kind in {
-            "desktop_pet_proactive",
-            "proactive",
-        }
+        from .engine_services.turn_context import is_transient_user_turn as _fn
+
+        return _fn(payload)
 
     def _build_transient_user_record(
         self,
@@ -1507,53 +1546,19 @@ class AkaneMemoryEngine:
         date_label: str,
         time_of_day: str,
     ) -> dict[str, Any]:
-        return {
-            "source_id": "",
-            "role": "user",
-            "content": user_message,
-            "timestamp": now_ts,
-            "date_label": date_label,
-            "time_of_day": time_of_day,
-            "semantic_tags": [],
-        }
+        from .engine_services.turn_context import build_transient_user_record as _fn
+
+        return _fn(user_message=user_message, now_ts=now_ts, date_label=date_label, time_of_day=time_of_day)
 
     def _extract_desktop_screen_frame_images(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        frames = payload.get("desktop_screen_frames") if isinstance(payload, dict) else None
-        if not isinstance(frames, list):
-            return []
-        images: list[dict[str, Any]] = []
-        for item in frames[-5:]:
-            if not isinstance(item, dict):
-                continue
-            data_url = str(item.get("data_url") or item.get("dataUrl") or "").strip()
-            if not data_url.startswith("data:image/") or len(data_url) > 2_000_000:
-                continue
-            images.append(
-                {
-                    "data_url": data_url,
-                    "captured_at": int(item.get("captured_at") or item.get("capturedAt") or 0),
-                    "width": int(float(item.get("width") or 0)),
-                    "height": int(float(item.get("height") or 0)),
-                }
-            )
-        return images
+        from .engine_services.turn_context import extract_desktop_screen_frame_images as _fn
+
+        return _fn(payload)
 
     def _build_desktop_screen_frame_prompt_context(self, frames: list[dict[str, Any]]) -> str:
-        usable = [frame for frame in frames if str(frame.get("data_url") or "").startswith("data:image/")]
-        if not usable:
-            return ""
-        first_ts = int(usable[0].get("captured_at") or 0)
-        last_ts = int(usable[-1].get("captured_at") or 0)
-        duration = max(0, last_ts - first_ts)
-        duration_text = f"，大约是最近 {duration} 秒里的变化" if duration > 0 else ""
-        return "\n".join(
-            [
-                "【刚才一起看到的情况】",
-                f"你刚才在主人旁边看了几眼{duration_text}。",
-                "请优先贴着能看清的具体内容回应，像一起看视频、打游戏或做事时顺着眼前的小事接话。",
-                "不要只泛泛地说主人看得认真或还在看同一个东西；看不清的地方就轻轻带过，别把拿不准的内容说死，也不要解释自己是怎么看到的。",
-            ]
-        )
+        from .engine_services.turn_context import build_desktop_screen_frame_prompt_context as _fn
+
+        return _fn(frames)
 
     def prefetch_remote_media_links_for_message(
         self,
@@ -1693,7 +1698,9 @@ class AkaneMemoryEngine:
         )
         if transient_user_turn:
             recent_raw = [*recent_raw, user_record]
-        episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
+        episodic_limit = max(
+            1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5)))
+        )
         semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
         recent_episodic_summaries = self.store.get_visible_episodic_summaries(
             profile_user_id,
@@ -1901,7 +1908,9 @@ class AkaneMemoryEngine:
                     stop_reason=(
                         "tool_unavailable"
                         if stop_after_tool
-                        else "tool_budget_exhausted" if not allow_more_tools else ""
+                        else "tool_budget_exhausted"
+                        if not allow_more_tools
+                        else ""
                     ),
                 ),
                 client_context=client_context,
@@ -1929,7 +1938,8 @@ class AkaneMemoryEngine:
             final_speech=final_output.get("speech"),
             final_speech_segments=final_output.get("speech_segments"),
             speaker_name=self._resolve_turn_speaker_identity(
-                client_context, turn_character_pack_id,
+                client_context,
+                turn_character_pack_id,
             )["assistant_name"],
         )
         self._apply_care_state_request(
@@ -2086,7 +2096,9 @@ class AkaneMemoryEngine:
         )
         if transient_user_turn:
             recent_raw = [*recent_raw, user_record]
-        episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
+        episodic_limit = max(
+            1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5)))
+        )
         semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
         recent_episodic_summaries = self.store.get_visible_episodic_summaries(
             profile_user_id,
@@ -2303,7 +2315,9 @@ class AkaneMemoryEngine:
                     stop_reason=(
                         "tool_unavailable"
                         if stop_after_tool
-                        else "tool_budget_exhausted" if not allow_more_tools else ""
+                        else "tool_budget_exhausted"
+                        if not allow_more_tools
+                        else ""
                     ),
                 ),
                 client_context=client_context,
@@ -2331,7 +2345,8 @@ class AkaneMemoryEngine:
             final_speech=final_output.get("speech"),
             final_speech_segments=final_output.get("speech_segments"),
             speaker_name=self._resolve_turn_speaker_identity(
-                client_context, turn_character_pack_id,
+                client_context,
+                turn_character_pack_id,
             )["assistant_name"],
         )
         self._apply_care_state_request(
@@ -2454,11 +2469,7 @@ class AkaneMemoryEngine:
             matches = [
                 {
                     "target": str(item.get("target") or ""),
-                    "matched_terms": [
-                        str(term)
-                        for term in item.get("matched_terms") or []
-                        if str(term).strip()
-                    ],
+                    "matched_terms": [str(term) for term in item.get("matched_terms") or [] if str(term).strip()],
                 }
                 for item in result.get("matches") or []
                 if isinstance(item, dict) and str(item.get("target") or "").strip()
@@ -2652,7 +2663,8 @@ class AkaneMemoryEngine:
             enable_native_tools=True,
         )
         speaker_identity = self._resolve_turn_speaker_identity(
-            client_context, character_pack_id,
+            client_context,
+            character_pack_id,
         )
         yield {
             "type": "turn_start",
@@ -2671,13 +2683,15 @@ class AkaneMemoryEngine:
             history_turns=generation_context.get("history_turns"),
             prompt_audit_sections=generation_context.get("prompt_audit_sections"),
             early_tool_call_validator=(
-                lambda call: self._normalize_tool_call(
-                    call,
-                    client_context=client_context,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
+                lambda call: (
+                    self._normalize_tool_call(
+                        call,
+                        client_context=client_context,
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                    )
+                    is not None
                 )
-                is not None
             )
             if bool(generation_context.get("allow_tool_call", allow_tool_call))
             else None,
@@ -2723,404 +2737,27 @@ class AkaneMemoryEngine:
         final_debug_enabled: bool | None = None,
         enable_native_tools: bool = False,
     ) -> dict[str, Any]:
-        client_context = client_context or self._resolve_client_protocol_context({})
-        prompt_profile = self._get_prompt_profile_registry().resolve(client_context)
-        effective_allow_tool_call = bool(
-            allow_tool_call
-            and prompt_profile.includes(PromptModule.TOOLS)
-            and client_context.has_capability(ClientCapability.TOOL_ACTIONS)
-        )
-        requested_debug_enabled = bool(
-            getattr(config, "FINAL_DEBUG", False)
-            if final_debug_enabled is None
-            else final_debug_enabled
-        )
-        debug_enabled = bool(requested_debug_enabled and prompt_profile.supports_thought_debug)
-        if client_context.effective_mode != ClientMode.QQ_TEXT:
-            resource_manifest = resource_manifest or self.resource_manifest
-        manifest = resource_manifest.refresh() if resource_manifest else None
-        runtime_projection = self._get_user_runtime_projection(profile_user_id)
-        user_bgm_tracks = list(runtime_projection.get("extra_bgm_tracks") or [])
-        user_scene_groups = list(runtime_projection.get("extra_scene_groups") or [])
-        user_character_outfits = list(runtime_projection.get("extra_character_outfits") or [])
-        desktop_pet_character_only = client_context.effective_mode == ClientMode.DESKTOP_PET
-        character_pack_persona_enabled = client_context.effective_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}
-        raw_text = render_chat_timeline(recent_raw)
-        _history_records, current_record = self._split_history_records(
-            recent_raw=recent_raw,
-            user_message=user_message,
-            now_ts=now_ts,
-        )
-        current_message_text = self._render_current_message_line(
-            current_user_record=current_record,
-        )
-        episodic_summary_text = render_summary_timeline(
-            recent_episodic_summaries,
-            store=self.store,
-        )
-        semantic_summary_text = render_semantic_summary_timeline(
-            recent_semantic_summaries,
-            store=self.store,
-        )
-        memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
-        extra_context = str(extra_user_context or "").strip()
-        attachment_service = self._get_attachment_inbox_service()
-        attachment_focus_context = (
-            attachment_service.build_prompt_context(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            )
-            if (
-                attachment_service is not None
-                and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
-                and client_context.effective_mode in {ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET}
-            )
-            else ""
-        )
-        generated_file_service = self._get_generated_file_service()
-        generated_file_context = (
-            generated_file_service.build_prompt_context(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                limit=8,
-            )
-            if (
-                generated_file_service is not None
-                and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
-                and client_context.effective_mode in {ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET}
-            )
-            else ""
-        )
-        workspace_file_service = self._get_workspace_file_service()
-        workspace_file_context = (
-            workspace_file_service.build_prompt_context(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            )
-            if (
-                workspace_file_service is not None
-                and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
-                and client_context.effective_mode == ClientMode.DESKTOP_PET
-            )
-            else ""
-        )
-        task_workspace_service = self._get_task_workspace_service()
-        task_workspace_context = (
-            task_workspace_service.build_prompt_context(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            )
-            if (
-                task_workspace_service is not None
-                and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
-            )
-            else ""
-        )
-        pending_gift_context = (
-            self.gift_service.build_pending_prompt_context(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                limit=3,
-            )
-            if prompt_profile.includes(PromptModule.PENDING_GIFTS)
-            else ""
-        )
-        current_visual_context_payload = self._resolve_current_visual_payload(
+        from .engine_services.response_builder import prepare_context as _fn
+
+        return _fn(
+            self,
             session_id=session_id,
-            current_visual_payload=current_visual_payload,
-        )
-        scene_observation_context = (
-            self.vision_service.build_scene_prompt_context(
-                visual_payload=current_visual_context_payload,
-                extra_bgm_tracks=user_bgm_tracks,
-                extra_scene_groups=user_scene_groups,
-                extra_character_outfits=user_character_outfits,
-            )
-            if self.vision_service is not None and prompt_profile.includes(PromptModule.SCENE_OBSERVATION) and not desktop_pet_character_only
-            else ""
-        )
-        outfit_observation_context = (
-            self.vision_service.build_outfit_prompt_context(
-                visual_payload=current_visual_context_payload,
-                extra_bgm_tracks=user_bgm_tracks,
-                extra_scene_groups=user_scene_groups,
-                extra_character_outfits=user_character_outfits,
-            )
-            if self.vision_service is not None and prompt_profile.includes(PromptModule.OUTFIT_OBSERVATION) and not desktop_pet_character_only
-            else ""
-        )
-        focused_gift = (
-            self.gift_service.resolve_focus_asset(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                asset_id="",
-            )
-            if prompt_profile.includes(PromptModule.FOCUSED_GIFT_OBSERVATION)
-            else None
-        )
-        gift_observation_context = (
-            self.vision_service.build_gift_prompt_context(asset=focused_gift)
-            if self.vision_service is not None and focused_gift is not None
-            else ""
-        )
-        persona_service = self._get_persona_card_service()
-        profile_persona_enabled = not (character_pack_persona_enabled and bool(character_pack_id))
-        persona_context = (
-            persona_service.build_prompt_context(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                visible_limit=5,
-            )
-            if (
-                profile_persona_enabled
-                and persona_service is not None
-                and prompt_profile.includes(PromptModule.PERSONA)
-            )
-            else {"system_context": "", "reference_context": "", "active_id": ""}
-        )
-        character_pack_persona_context = (
-            self._build_desktop_pet_character_pack_prompt_context(
-                character_pack_id=character_pack_id,
-                resource_manifest=resource_manifest,
-                client_mode=client_context.effective_mode.value,
-            )
-            if character_pack_persona_enabled and prompt_profile.includes(PromptModule.PERSONA)
-            else {"system_context": "", "reference_context": "", "active_id": ""}
-        )
-        if character_pack_persona_enabled and character_pack_id:
-            context_library_service = getattr(
-                getattr(self, "desktop_pet_character_resources", None),
-                "context_libraries",
-                None,
-            )
-            automatic_context_builder = getattr(
-                context_library_service,
-                "build_automatic_context",
-                None,
-            )
-            if automatic_context_builder is not None:
-                try:
-                    automatic_context = str(
-                        automatic_context_builder(character_pack_id, user_message) or ""
-                    ).strip()
-                except Exception as exc:
-                    logger.warning("automatic character context loading failed: %s", exc)
-                    automatic_context = ""
-                if automatic_context:
-                    character_pack_persona_context = dict(character_pack_persona_context)
-                    existing_reference = str(
-                        character_pack_persona_context.get("reference_context") or ""
-                    ).strip()
-                    character_pack_persona_context["reference_context"] = "\n\n".join(
-                        part for part in [existing_reference, automatic_context] if part
-                    )
-        persona_context = self._merge_prompt_persona_contexts(
-            character_pack_persona_context,
-            persona_context,
-        )
-        visual_observation_sections = [
-            text
-            for text in [
-                scene_observation_context,
-                outfit_observation_context,
-            ]
-            if text
-        ]
-        extra_context_candidates = [
-            (
-                "client_mode",
-                self._build_client_mode_prompt_context(client_context)
-                if prompt_profile.includes(PromptModule.CLIENT_MODE)
-                else "",
-            ),
-            (
-                "relationship",
-                self._build_memory_relationship_context(
-                    profile_user_id=profile_user_id,
-                    character_pack_id=character_pack_id,
-                    now_ts=now_ts,
-                ),
-            ),
-            ("task_workspace", task_workspace_context),
-            ("workspace_files", workspace_file_context),
-            ("attachment_focus", attachment_focus_context),
-            ("generated_files", generated_file_context),
-            ("pending_gifts", pending_gift_context),
-            ("gift_observation", gift_observation_context),
-            (
-                "turn_extra_context",
-                extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",
-            ),
-        ]
-        extra_context_audit_sections = self._build_extra_context_audit_sections(extra_context_candidates)
-        extra_context_sections = [section["text"] for section in extra_context_audit_sections]
-        merged_extra_context = "\n\n".join(extra_context_sections) if extra_context_sections else "(无额外上下文)"
-        visual_defaults = (
-            resource_manifest.build_runtime_manifest(
-                extra_bgm_tracks=user_bgm_tracks,
-                extra_scene_groups=user_scene_groups,
-                extra_character_outfits=user_character_outfits,
-            )["defaults"]
-            if manifest
-            else {
-                "major": "default",
-                "minor": "default",
-                "background": "evening_classroom",
-                "bgm": "",
-                "outfit": "default",
-                "emotion": "normal",
-            }
-        )
-        if resource_manifest and current_visual_context_payload:
-            try:
-                current_visual_defaults = resource_manifest.normalize_visual_output(
-                    json.loads(json.dumps(current_visual_context_payload)),
-                    extra_bgm_tracks=user_bgm_tracks,
-                    extra_scene_groups=user_scene_groups,
-                    extra_character_outfits=user_character_outfits,
-                )
-                visual_defaults = dict(visual_defaults)
-                if desktop_pet_character_only:
-                    visual_defaults["outfit"] = str(
-                        current_visual_defaults.get("character", {}).get("outfit") or visual_defaults["outfit"]
-                    )
-                    visual_defaults["emotion"] = str(current_visual_defaults.get("emotion") or visual_defaults["emotion"])
-                else:
-                    current_scene = current_visual_defaults.get("scene") if isinstance(current_visual_defaults, dict) else {}
-                    current_character = current_visual_defaults.get("character") if isinstance(current_visual_defaults, dict) else {}
-                    if isinstance(current_scene, dict):
-                        visual_defaults["major"] = str(current_scene.get("major") or visual_defaults["major"])
-                        visual_defaults["minor"] = str(current_scene.get("minor") or visual_defaults["minor"])
-                        visual_defaults["background"] = str(current_scene.get("background") or visual_defaults["background"])
-                        visual_defaults["bgm"] = str(current_scene.get("bgm") or visual_defaults["bgm"])
-                    if isinstance(current_character, dict):
-                        visual_defaults["outfit"] = str(current_character.get("outfit") or visual_defaults["outfit"])
-                    visual_defaults["emotion"] = str(current_visual_defaults.get("emotion") or visual_defaults["emotion"])
-            except Exception as exc:
-                logger.warning("current visual defaults failed: %s", exc)
-        if client_context.effective_mode == ClientMode.QQ_TEXT:
-            resource_context = (
-                "QQ 端不渲染立绘；emotion 的可选值已由当前角色包表情图片清单约束。"
-                if resource_manifest
-                else "QQ 端不渲染立绘，当前角色包没有可用的表情图片清单。"
-            )
-        else:
-            resource_context = (
-                resource_manifest.build_character_prompt_context(
-                    extra_character_outfits=user_character_outfits,
-                )
-                if desktop_pet_character_only
-                else resource_manifest.build_prompt_context(
-                    extra_bgm_tracks=user_bgm_tracks,
-                    extra_scene_groups=user_scene_groups,
-                    extra_character_outfits=user_character_outfits,
-                )
-            ) if resource_manifest and prompt_profile.includes(PromptModule.RESOURCE_MANIFEST) else "当前没有额外的视觉资源。"
-        current_visual_context = (
-            self._build_current_visual_context(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                current_visual_payload=current_visual_payload,
-                visual_payload=current_visual_context_payload,
-                runtime_projection=runtime_projection,
-                character_only=desktop_pet_character_only,
-                resource_manifest=resource_manifest,
-            )
-            if prompt_profile.includes(PromptModule.CURRENT_VISUAL_STATE)
-            else "(当前客户端模式不需要完整演出状态。)"
-        )
-        if visual_observation_sections:
-            current_visual_context = "\n\n".join([current_visual_context, *visual_observation_sections])
-        mode_prompt_override = prompt_profile.mode_prompt_override(debug_enabled=debug_enabled)
-        if resource_manifest and client_context.effective_mode in {
-            ClientMode.DESKTOP_PET,
-            ClientMode.QQ_TEXT,
-        }:
-            default_emotion_json = json.dumps(
-                str(visual_defaults.get("emotion") or "normal"),
-                ensure_ascii=False,
-            )
-            mode_prompt_override = mode_prompt_override.replace(
-                '"emotion":"normal"',
-                f'"emotion":{default_emotion_json}',
-            )
-        native_tools: list[dict[str, Any]] = []
-        native_legacy_exclusions: set[str] = set()
-        if enable_native_tools:
-            native_capability_selection = self._resolve_capability_selection(
-                client_context=client_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            )
-            native_plan = tool_orchestration_engine.build_native_tool_decision_plan(
-                self._resolve_tool_handlers(
-                    client_context=client_context,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                ),
-                allow_tool_call=effective_allow_tool_call,
-                provider_supports_native_tools=self.llm.chat_supports_native_tools(),
-                allowed_tool_names=native_capability_selection.tool_names,
-            )
-            if native_plan.enabled:
-                native_tools = native_plan.tools
-                native_legacy_exclusions = native_plan.legacy_prompt_exclusions
-            elif native_plan.status == "unsupported":
-                self.llm.record_metric("native_tool_provider_unsupported")
-        generation_context = self._get_prompt_builder().build_final_generation_context(
+            user_message=user_message,
+            recent_raw=recent_raw,
+            recent_episodic_summaries=recent_episodic_summaries,
+            recent_semantic_summaries=recent_semantic_summaries,
+            confirmed_snippets=confirmed_snippets,
             now_ts=now_ts,
-            raw_text=raw_text,
-            current_message_text=current_message_text,
-            episodic_summary_text=episodic_summary_text,
-            semantic_summary_text=semantic_summary_text,
-            memory_text=memory_text,
-            current_visual_context=current_visual_context,
-            resource_context=resource_context,
-            extra_context=merged_extra_context,
-            extra_context_audit_sections=extra_context_audit_sections,
-            persona_system_context=str(persona_context.get("system_context") or ""),
-            persona_reference_context=str(persona_context.get("reference_context") or ""),
-            persona_active_id=str(persona_context.get("active_id") or ""),
-            visual_defaults=visual_defaults,
-            allow_tool_call=effective_allow_tool_call,
-            tool_prompt_context=self._build_tool_prompt_context(
-                allow_tool_call=effective_allow_tool_call,
-                client_context=client_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                exclude_tool_types=native_legacy_exclusions,
-            ),
-            debug_enabled=debug_enabled,
-            system_prompt_override=prompt_profile.system_prompt_override,
-            mode_prompt_override=mode_prompt_override,
+            profile_user_id=profile_user_id,
+            current_visual_payload=current_visual_payload,
+            extra_user_context=extra_user_context,
+            client_context=client_context,
+            resource_manifest=resource_manifest,
+            character_pack_id=character_pack_id,
+            allow_tool_call=allow_tool_call,
+            final_debug_enabled=final_debug_enabled,
+            enable_native_tools=enable_native_tools,
         )
-        if desktop_pet_character_only and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
-            fallback_payload = generation_context.get("fallback")
-            if isinstance(fallback_payload, dict):
-                fallback_payload["activity"] = None
-        if native_tools:
-            native_tool_round_instruction = self._build_native_tool_round_instruction(native_tools)
-            generation_context["system_prompt"] = "\n\n".join(
-                part
-                for part in [
-                    str(generation_context.get("system_prompt") or "").strip(),
-                    native_tool_round_instruction,
-                ]
-                if part
-            )
-        generation_context["allow_tool_call"] = effective_allow_tool_call
-        generation_context["native_tools"] = native_tools
-        generation_context["native_tool_choice"] = "auto" if native_tools else ""
-        generation_context["prompt_profile"] = prompt_profile.to_public_dict()
-        if client_context.effective_mode == ClientMode.QQ_TEXT:
-            fallback_payload = generation_context.get("fallback")
-            if isinstance(fallback_payload, dict):
-                fallback_payload.pop("character", None)
-                fallback_payload.pop("scene", None)
-                fallback_payload.pop("live2d", None)
-                fallback_payload.pop("pet", None)
-                fallback_payload.pop("activity", None)
-        return generation_context
 
     def _normalize_final_output(
         self,
@@ -3535,12 +3172,7 @@ class AkaneMemoryEngine:
             raw_items = [str(item).strip() for item in value if str(item).strip()]
         elif isinstance(value, str):
             normalized = (
-                str(value)
-                .replace("，", ",")
-                .replace("、", ",")
-                .replace("；", ",")
-                .replace(";", ",")
-                .replace("|", ",")
+                str(value).replace("，", ",").replace("、", ",").replace("；", ",").replace(";", ",").replace("|", ",")
             )
             raw_items = parse_joined_tags(normalized)
 
@@ -3600,17 +3232,9 @@ class AkaneMemoryEngine:
     ) -> dict[str, Any]:
         output = final_output if isinstance(final_output, dict) else {}
         memory_metadata = output.get("memory_metadata")
-        mood_tags = (
-            list(memory_metadata.get("mood_tags") or [])
-            if isinstance(memory_metadata, dict)
-            else []
-        )
+        mood_tags = list(memory_metadata.get("mood_tags") or []) if isinstance(memory_metadata, dict) else []
         character = output.get("character")
-        outfit = (
-            str(character.get("outfit") or "").strip()
-            if isinstance(character, dict)
-            else ""
-        )
+        outfit = str(character.get("outfit") or "").strip() if isinstance(character, dict) else ""
         return {
             "response_emotion": str(output.get("emotion") or "").strip(),
             "response_outfit": outfit,
@@ -3694,9 +3318,7 @@ class AkaneMemoryEngine:
             "list_reminders": ListRemindersToolHandler(store=self.store),
             "cancel_reminder": CancelReminderToolHandler(store=self.store),
             "check_inventory": CheckInventoryToolHandler(gift_service=self.gift_service),
-            "inspect_attachment": InspectAttachmentToolHandler(
-                attachment_service=self._get_attachment_inbox_service()
-            ),
+            "inspect_attachment": InspectAttachmentToolHandler(attachment_service=self._get_attachment_inbox_service()),
             "read_attachment_section": ReadAttachmentSectionToolHandler(
                 attachment_service=self._get_attachment_inbox_service()
             ),
@@ -3706,15 +3328,9 @@ class AkaneMemoryEngine:
             "clear_attachment_focus": ClearAttachmentFocusToolHandler(
                 attachment_service=self._get_attachment_inbox_service()
             ),
-            "list_workspace": ListWorkspaceToolHandler(
-                workspace_service=self._get_workspace_file_service()
-            ),
-            "read_workspace": ReadWorkspaceToolHandler(
-                workspace_service=self._get_workspace_file_service()
-            ),
-            "focus_workspace": FocusWorkspaceToolHandler(
-                workspace_service=self._get_workspace_file_service()
-            ),
+            "list_workspace": ListWorkspaceToolHandler(workspace_service=self._get_workspace_file_service()),
+            "read_workspace": ReadWorkspaceToolHandler(workspace_service=self._get_workspace_file_service()),
+            "focus_workspace": FocusWorkspaceToolHandler(workspace_service=self._get_workspace_file_service()),
             "register_workspace_items": RegisterWorkspaceItemsToolHandler(
                 workspace_service=self._get_workspace_file_service(),
                 attachment_ingest_service=self._get_attachment_ingest_service(),
@@ -3725,9 +3341,7 @@ class AkaneMemoryEngine:
             "fetch_media_from_url": FetchMediaFromUrlToolHandler(
                 attachment_ingest_service=self._get_attachment_ingest_service()
             ),
-            "compose_file": ComposeFileToolHandler(
-                generated_file_service=self._get_generated_file_service()
-            ),
+            "compose_file": ComposeFileToolHandler(generated_file_service=self._get_generated_file_service()),
             "revise_generated_file": ReviseGeneratedFileToolHandler(
                 generated_file_service=self._get_generated_file_service()
             ),
@@ -3740,21 +3354,15 @@ class AkaneMemoryEngine:
             "separate_audio_stems": SeparateAudioStemsToolHandler(
                 generated_file_service=self._get_generated_file_service()
             ),
-            "clean_voice_track": CleanVoiceTrackToolHandler(
-                generated_file_service=self._get_generated_file_service()
-            ),
-            "transcribe_media": TranscribeMediaToolHandler(
-                generated_file_service=self._get_generated_file_service()
-            ),
+            "clean_voice_track": CleanVoiceTrackToolHandler(generated_file_service=self._get_generated_file_service()),
+            "transcribe_media": TranscribeMediaToolHandler(generated_file_service=self._get_generated_file_service()),
             "prepare_voice_dataset": PrepareVoiceDatasetToolHandler(
                 generated_file_service=self._get_generated_file_service()
             ),
             "inspect_generated_file": InspectGeneratedFileToolHandler(
                 generated_file_service=self._get_generated_file_service()
             ),
-            "send_file": SendFileToolHandler(
-                generated_file_service=self._get_generated_file_service()
-            ),
+            "send_file": SendFileToolHandler(generated_file_service=self._get_generated_file_service()),
             "convert_media_file": ConvertMediaFileToolHandler(
                 generated_file_service=self._get_generated_file_service()
             ),
@@ -3888,11 +3496,7 @@ class AkaneMemoryEngine:
             if not str(server_config.get("command") or "").strip():
                 continue
             tools = [tool for tool in server_config.get("tools") or [] if isinstance(tool, dict)]
-            prompt_tools = [
-                tool
-                for tool in tools
-                if bool(tool.get("promptExposed") or tool.get("prompt_exposed"))
-            ]
+            prompt_tools = [tool for tool in tools if bool(tool.get("promptExposed") or tool.get("prompt_exposed"))]
             if not prompt_tools:
                 continue
             adapter = McpStdioCapabilityAdapter(
@@ -3969,11 +3573,7 @@ class AkaneMemoryEngine:
         )
         excluded = {str(item).strip() for item in (exclude_tool_types or set()) if str(item).strip()}
         if excluded:
-            handlers = {
-                tool_type: handler
-                for tool_type, handler in handlers.items()
-                if str(tool_type) not in excluded
-            }
+            handlers = {tool_type: handler for tool_type, handler in handlers.items() if str(tool_type) not in excluded}
         media_routing: list[str] = []
         if "media_workbench" in selection.module_names:
             media_routing = [*MEDIA_PRESET_ROUTING, ""]
@@ -3997,7 +3597,11 @@ class AkaneMemoryEngine:
             for hint in selection.light_hints:
                 lines.append(f"- {hint}")
             lines.append("")
-        if client_context and client_context.effective_mode == ClientMode.DESKTOP_PET and "send_file" in selection.tool_names:
+        if (
+            client_context
+            and client_context.effective_mode == ClientMode.DESKTOP_PET
+            and "send_file" in selection.tool_names
+        ):
             lines.extend(
                 [
                     "【桌宠文件交付】",
@@ -4249,11 +3853,7 @@ class AkaneMemoryEngine:
         speech = str(npc_turn.get("speech") or "").strip()
         if not speech:
             return ""
-        return (
-            f"场景里刚刚有一位 NPC 说了话：\n"
-            f"{speaker}: {speech}\n\n"
-            f"请你在知道这句 NPC 台词的前提下继续自然回应。"
-        )
+        return f"场景里刚刚有一位 NPC 说了话：\n{speaker}: {speech}\n\n请你在知道这句 NPC 台词的前提下继续自然回应。"
 
     def consume_due_reminders(
         self,
