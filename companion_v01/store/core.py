@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
-from .text_utils import timestamp_to_date_label, infer_time_of_day
+from ..text_utils import timestamp_to_date_label, infer_time_of_day
 
 CHARACTER_PACK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 logger = logging.getLogger("akane.store")
@@ -958,11 +958,13 @@ class MemoryStore:
                         normalized_profile_user_id,
                     ),
                 )
-                return self._row_to_session({
-                    **dict(existing),
-                    "character_pack_id": normalized_character_pack_id,
-                    "updated_at": effective_ts,
-                })
+                return self._row_to_session(
+                    {
+                        **dict(existing),
+                        "character_pack_id": normalized_character_pack_id,
+                        "updated_at": effective_ts,
+                    }
+                )
 
             resolved_title = requested_title or self._build_default_session_title(
                 conn,
@@ -1143,9 +1145,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> None:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         existing_ids = {
             str(row["session_id"])
@@ -1202,9 +1202,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> list[dict[str, Any]]:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         with self._connect() as conn:
             self._backfill_profile_sessions(
@@ -1238,9 +1236,7 @@ class MemoryStore:
         limit: int = 120,
     ) -> list[dict[str, Any]]:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         with self._connect() as conn:
             rows = conn.execute(
@@ -1365,9 +1361,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> int:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         clauses = ["session_id = ?"]
         params: list[Any] = [str(session_id)]
@@ -1511,9 +1505,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> list[dict[str, Any]]:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         with self._connect() as conn:
             rows = conn.execute(
@@ -1534,9 +1526,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> int:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         with self._connect() as conn:
             row = conn.execute(
@@ -1558,9 +1548,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> list[dict[str, Any]]:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         with self._connect() as conn:
             rows = conn.execute(
@@ -1674,9 +1662,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> list[dict[str, Any]]:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         with self._connect() as conn:
             rows = conn.execute(
@@ -1699,9 +1685,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> list[dict[str, Any]]:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         with self._connect() as conn:
             rows = conn.execute(
@@ -1723,9 +1707,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> int:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         with self._connect() as conn:
             row = conn.execute(
@@ -1747,9 +1729,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> list[dict[str, Any]]:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         with self._connect() as conn:
             rows = conn.execute(
@@ -1940,9 +1920,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> list[dict[str, Any]]:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         with self._connect() as conn:
             rows = conn.execute(
@@ -1959,7 +1937,9 @@ class MemoryStore:
 
     def count_vectorizable_records(self) -> int:
         with self._connect() as conn:
-            chat_count = int(conn.execute("SELECT COUNT(*) FROM chat_messages WHERE index_in_vector = 1").fetchone()[0] or 0)
+            chat_count = int(
+                conn.execute("SELECT COUNT(*) FROM chat_messages WHERE index_in_vector = 1").fetchone()[0] or 0
+            )
             summary_count = int(conn.execute("SELECT COUNT(*) FROM memory_summaries").fetchone()[0] or 0)
             semantic_count = int(conn.execute("SELECT COUNT(*) FROM memory_semantic_summaries").fetchone()[0] or 0)
         return chat_count + summary_count + semantic_count
@@ -2015,7 +1995,7 @@ class MemoryStore:
             row = conn.execute(
                 f"""
                 SELECT * FROM chat_messages
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 LIMIT 1
                 """,
                 params,
@@ -2069,7 +2049,7 @@ class MemoryStore:
             rows = conn.execute(
                 f"""
                 SELECT * FROM chat_messages
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY seq_no ASC
                 """,
                 params,
@@ -2323,7 +2303,9 @@ class MemoryStore:
                                 kind=payload["kind"],
                             )
                         payload["sequence_no"] = next_sequence_no
-                        payload["attachment_handle"] = f"{self._attachment_handle_prefix(payload['kind'])}_{next_sequence_no:03d}"
+                        payload["attachment_handle"] = (
+                            f"{self._attachment_handle_prefix(payload['kind'])}_{next_sequence_no:03d}"
+                        )
                     else:
                         payload["sequence_no"] = self._sequence_no_from_attachment_handle(payload["attachment_handle"])
                     try:
@@ -2701,11 +2683,7 @@ class MemoryStore:
         if not matches:
             return None
         best_rank = int(matches[0].get("_match_rank") or 99)
-        top_matches = [
-            item
-            for item in matches
-            if int(item.get("_match_rank") or 99) == best_rank
-        ]
+        top_matches = [item for item in matches if int(item.get("_match_rank") or 99) == best_rank]
         if len(top_matches) > 1 and best_rank >= 2:
             return None
         return {key: value for key, value in matches[0].items() if key != "_match_rank"}
@@ -3315,11 +3293,7 @@ class MemoryStore:
         best_rank = int(matches[0].get("_match_rank") or 99)
         if best_rank <= 2:
             return {key: value for key, value in matches[0].items() if key != "_match_rank"}
-        top_matches = [
-            item
-            for item in matches
-            if int(item.get("_match_rank") or 99) == best_rank
-        ]
+        top_matches = [item for item in matches if int(item.get("_match_rank") or 99) == best_rank]
         if len(top_matches) > 1:
             return None
         return {key: value for key, value in matches[0].items() if key != "_match_rank"}
@@ -3359,16 +3333,18 @@ class MemoryStore:
             )
             """
         )
-        params.extend([
-            normalized_query,
-            lowered_query,
-            normalized_query,
-            lowered_query,
-            lowered_query,
-            like_query,
-            like_query,
-            normalized_query,
-        ])
+        params.extend(
+            [
+                normalized_query,
+                lowered_query,
+                normalized_query,
+                lowered_query,
+                lowered_query,
+                like_query,
+                like_query,
+                normalized_query,
+            ]
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
@@ -3797,7 +3773,9 @@ class MemoryStore:
             params.append(json.dumps(list(artifacts or []), ensure_ascii=False))
         if pending_question is not None:
             fields.append("pending_question_json = ?")
-            params.append(json.dumps(pending_question if isinstance(pending_question, dict) else {}, ensure_ascii=False))
+            params.append(
+                json.dumps(pending_question if isinstance(pending_question, dict) else {}, ensure_ascii=False)
+            )
         if metadata is not None:
             fields.append("metadata_json = ?")
             params.append(json.dumps(metadata if isinstance(metadata, dict) else {}, ensure_ascii=False))
@@ -4868,7 +4846,9 @@ class MemoryStore:
             if row is None:
                 return None
             current = self._row_to_user_media_asset(dict(row))
-            next_display_name = str(display_name).strip() if display_name is not None else str(current.get("display_name") or "")
+            next_display_name = (
+                str(display_name).strip() if display_name is not None else str(current.get("display_name") or "")
+            )
             next_status = self._normalize_gift_status(status) if status else current["status"]
             merged_source_ids = list(current["source_ids"])
             for source_id in self._normalize_string_list(source_ids):
@@ -4877,15 +4857,9 @@ class MemoryStore:
             next_source_ids = merged_source_ids
             next_payload = payload if isinstance(payload, dict) else dict(current["payload"])
             next_last_decision_at = (
-                int(last_decision_at)
-                if last_decision_at is not None
-                else int(current.get("last_decision_at") or 0)
+                int(last_decision_at) if last_decision_at is not None else int(current.get("last_decision_at") or 0)
             )
-            next_last_touched_at = (
-                int(last_touched_at)
-                if last_touched_at is not None
-                else effective_ts
-            )
+            next_last_touched_at = int(last_touched_at) if last_touched_at is not None else effective_ts
             next_container = self._derive_container_fields(
                 asset_type=current["asset_type"],
                 status=next_status,
@@ -4943,7 +4917,7 @@ class MemoryStore:
         asset_id: str,
         status: str,
         timestamp: int | None = None,
-        ) -> dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         return self.update_gift_asset(
             profile_user_id=profile_user_id,
             asset_id=asset_id,
@@ -5106,9 +5080,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> dict[str, Any] | None:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         with self._connect() as conn:
             row = conn.execute(
@@ -5131,9 +5103,7 @@ class MemoryStore:
         character_pack_id: str | None = None,
     ) -> dict[str, Any] | None:
         normalized_character_pack_id = (
-            normalize_character_pack_id(character_pack_id)
-            if character_pack_id is not None
-            else None
+            normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
         )
         with self._connect() as conn:
             row = conn.execute(
@@ -5320,9 +5290,7 @@ class MemoryStore:
             "unsuitable_contexts": str(row.get("unsuitable_contexts") or ""),
             "created_reason": str(row.get("created_reason") or ""),
             "updated_reason": str(row.get("updated_reason") or ""),
-            "source_ids": self._normalize_string_list(
-                self._safe_json_loads(row.get("source_ids_json"), fallback=[])
-            ),
+            "source_ids": self._normalize_string_list(self._safe_json_loads(row.get("source_ids_json"), fallback=[])),
             "created_at": int(row.get("created_at", 0) or 0),
             "updated_at": int(row.get("updated_at", row.get("created_at", 0)) or 0),
             "archived_at": int(row.get("archived_at", 0) or 0),
@@ -5358,9 +5326,7 @@ class MemoryStore:
         )
         status = self._normalize_gift_status(row.get("status"))
         origin_source_id = str(row.get("origin_source_id") or "").strip()
-        source_ids = self._normalize_string_list(
-            self._safe_json_loads(row.get("source_ids_json"), fallback=[])
-        )
+        source_ids = self._normalize_string_list(self._safe_json_loads(row.get("source_ids_json"), fallback=[]))
         if origin_source_id and origin_source_id not in source_ids:
             source_ids.insert(0, origin_source_id)
         artifact_flags = self._safe_json_loads(row.get("artifact_flags_json"), fallback={})
@@ -5396,9 +5362,7 @@ class MemoryStore:
             "created_at": int(row.get("created_at", 0) or 0),
             "updated_at": int(row.get("updated_at", row.get("created_at", 0)) or 0),
             "last_decision_at": int(row.get("last_decision_at", 0) or 0),
-            "last_touched_at": int(
-                row.get("last_touched_at", row.get("updated_at", row.get("created_at", 0))) or 0
-            ),
+            "last_touched_at": int(row.get("last_touched_at", row.get("updated_at", row.get("created_at", 0))) or 0),
             "container_type": container["container_type"],
             "container_key": container["container_key"],
             "container_name": container["container_name"],
@@ -5671,7 +5635,26 @@ class MemoryStore:
             "excel": "xlsx",
         }
         normalized = aliases.get(normalized, normalized)
-        if normalized in {"txt", "md", "docx", "xlsx", "pdf", "json", "csv", "html", "srt", "vtt", "zip", "mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"}:
+        if normalized in {
+            "txt",
+            "md",
+            "docx",
+            "xlsx",
+            "pdf",
+            "json",
+            "csv",
+            "html",
+            "srt",
+            "vtt",
+            "zip",
+            "mp3",
+            "wav",
+            "flac",
+            "m4a",
+            "aac",
+            "ogg",
+            "opus",
+        }:
             return normalized
         return "md"
 
