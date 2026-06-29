@@ -110,8 +110,6 @@ def resolve_tool_handlers(
     profile_user_id: str = "",
     session_id: str = "",
 ) -> dict[str, Any]:
-    from . import capability_registry as _cr
-
     handlers = getattr(engine, "tool_handlers", {}) or {}
     dynamic_handlers = build_mcp_adapter_tool_handlers(
         engine,
@@ -235,7 +233,8 @@ def build_mcp_adapter_tool_handlers(
     import config as _cfg
     from pathlib import Path
 
-    from ..capability_adapters import AdapterCapabilityToolHandler, McpStdioCapabilityAdapter
+    from ..capability_adapters import McpStdioCapabilityAdapter
+    from ..tool_runtime import AdapterCapabilityToolHandler
 
     if not str(profile_user_id or "").strip():
         return {}
