@@ -25,13 +25,9 @@ def normalize_character_pack_id(value: Any) -> str:
 
 
 def _loads_json_object(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    try:
-        payload = json.loads(str(value or "{}"))
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    from .json_utils import loads_json_object as _fn
+
+    return _fn(value)
 
 
 class MemoryStore:
@@ -1039,16 +1035,9 @@ class MemoryStore:
         return self._row_to_session({**dict(row), "display_title": normalized_title, "updated_at": effective_ts})
 
     def get_session(self, profile_user_id: str, session_id: str) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT * FROM chat_sessions
-                WHERE profile_user_id = ? AND session_id = ?
-                LIMIT 1
-                """,
-                (str(profile_user_id), str(session_id)),
-            ).fetchone()
-        return self._row_to_session(dict(row)) if row else None
+        from .sessions import get_session as _fn
+
+        return _fn(self, profile_user_id=profile_user_id, session_id=session_id)
 
     def get_character_session(
         self,
@@ -5882,11 +5871,6 @@ class MemoryStore:
         }
 
     def _safe_json_loads(self, raw: Any, *, fallback: Any) -> Any:
-        if raw in (None, ""):
-            return fallback
-        if isinstance(raw, (dict, list)):
-            return raw
-        try:
-            return json.loads(str(raw))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return fallback
+        from .json_utils import safe_json_loads as _fn
+
+        return _fn(raw, fallback=fallback)
