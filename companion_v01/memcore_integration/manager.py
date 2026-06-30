@@ -18,6 +18,7 @@ from typing import Any
 import config
 
 from .adapters import build_akane_embedding_provider, build_akane_llm_client
+from .diagnostics import snippet_hashes
 
 
 SUPPORTED_MEMORY_BACKENDS = frozenset({"legacy", "dual", "memcore"})
@@ -219,6 +220,68 @@ class MemcoreManager:
             reason = str(exc) or exc.__class__.__name__
             logger.warning("memcore background compaction scheduling failed: %s", reason)
             return self._status("compact_due_background", False, "failed", reason=reason)
+
+    def shadow_retrieve_memory(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        current_user_record: dict[str, Any] | None = None,
+        query: str,
+        keywords: list[str] | None = None,
+        time_hint: dict[str, Any] | None = None,
+        source_layers: list[str] | None = None,
+        subject_scopes: list[str] | None = None,
+        categories: list[str] | None = None,
+        importance_min: float | int | str | None = None,
+        exclude_source_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        shadow_enabled = bool(getattr(config, "MEMCORE_SHADOW_COMPARE", self.shadow_compare))
+        if not shadow_enabled:
+            return self._status("shadow_retrieve_memory", True, "disabled", reason="shadow_compare_disabled")
+        system = self._get_system_or_none(
+            operation="shadow_retrieve_memory",
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status("shadow_retrieve_memory", False, "unavailable", reason=self._reason)
+
+        start = time.perf_counter()
+        current = dict(current_user_record or {})
+        if not str(current.get("source_id") or "").strip() and exclude_source_ids:
+            current["source_id"] = str(exclude_source_ids[0] or "").strip()
+        if not int(current.get("timestamp") or 0):
+            current["timestamp"] = int(time.time())
+        try:
+            snippets = system.retrieve_for_turn(
+                current=current,
+                query=str(query or ""),
+                keywords=[str(item).strip() for item in (keywords or []) if str(item).strip()],
+                time_hint=time_hint if isinstance(time_hint, dict) else None,
+                source_layers=[str(item).strip() for item in (source_layers or []) if str(item).strip()],
+                subject_scopes=[str(item).strip() for item in (subject_scopes or []) if str(item).strip()],
+                categories=[str(item).strip() for item in (categories or []) if str(item).strip()],
+                importance_min=self._coerce_optional_unit_float(importance_min),
+                exclude_source_ids=[str(item).strip() for item in (exclude_source_ids or []) if str(item).strip()],
+            )
+            return {
+                **self._status("shadow_retrieve_memory", True, "ok"),
+                "snippet_count": len(snippets),
+                "snippet_hashes": snippet_hashes(snippets),
+                "latency_ms": max(0, int((time.perf_counter() - start) * 1000)),
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore shadow retrieve failed: %s", reason)
+            return {
+                **self._status("shadow_retrieve_memory", False, "failed", reason=reason),
+                "snippet_count": 0,
+                "snippet_hashes": [],
+                "latency_ms": max(0, int((time.perf_counter() - start) * 1000)),
+            }
 
     def _bootstrap(self) -> None:
         try:
@@ -445,6 +508,16 @@ class MemcoreManager:
             "index_status": str(index_status or ""),
             "reason": str(reason or ""),
         }
+
+    @staticmethod
+    def _coerce_optional_unit_float(value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, min(1.0, number))
 
     @staticmethod
     def _log_compaction_result(future: Any) -> None:

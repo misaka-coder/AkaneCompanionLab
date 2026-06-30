@@ -12,6 +12,7 @@
 - `requirements.txt` 已加入 `-e ../memcore`。`MemcoreManager` 也有 sibling path fallback，方便本地未安装 editable 时仍可在 `MEMORY_BACKEND=dual|memcore` 下加载。
 - Slice 0 已完成:配置项、settings catalog、可选 manager bootstrap、空工具/诊断模块、基础测试。
 - Slice 1 已完成:同步/流式 turn 生命周期会在非 transient turn 下把 user raw、final assistant raw、user memory_metadata 双写进 memcore；旧 Akane 仍是读侧和用户可见行为来源。
+- Slice 2 已完成:`MEMCORE_SHADOW_COMPARE=true` 时，legacy `retrieve_memory` 工具返回后会额外跑 memcore 影子检索，只把结构化对比写入 debug/state，不改变 followup_context 或用户可见回复。
 - Akane 当前记忆主链路仍是旧系统:
   - `companion_v01/engine.py` 构造 `MemoryStore`、`VectorStore`、`RetrievalService`、`MemoryCompactionService`。
   - `process_turn()` / `process_turn_stream()` 先 `store.add_message(role="user")`，再取 recent raw / episodic / semantic，跑旧 pre-retrieval；旧 user vector policy 落定后，非 transient 且 `index_in_vector=True` 的 user raw 同步调用 `memcore_manager.record_user_turn()`。
@@ -19,6 +20,7 @@
   - `index_in_vector=false` 的 user raw 会在 memcore 双写里结构化跳过，避免“记忆查询本身”污染后续 memcore 检索；metadata 回写也只对已双写 user raw 执行。
   - assistant 最终回复、工具 preface、部分工具结果也会写 raw，并调 `_schedule_summary_cycle()`；Slice 1 只双写 final assistant raw，不双写工具 preface/tool raw。
   - `retrieve_memory` 工具在 `retrieval_engine.execute_retrieve_memory_tool()` 内重新收集可见三层 source_id，合并 `_memory_retrieval_exclude_source_ids`，再走 `RetrievalService.run_explicit()`。
+  - `MEMCORE_SHADOW_COMPARE=true` 时，`execute_retrieve_memory_tool()` 会调用 `memcore_manager.shadow_retrieve_memory()`，并在 `state_updates["memory_retrieval"]["memcore_shadow"]` 写入 ok/status/reason、legacy/memcore snippet count、短 hash 和 overlap 计数；不写 memcore 片段全文。
   - `read_memory_timeline` 当前走 `MemoryTimelineService.read()`，读旧 `MemoryStore` raw 并返回结构化时间线。
 - memcore 已经具备目标能力:
   - `MemorySystem.record_user_turn()` / `record_assistant_turn()` / `update_turn_metadata()`。
@@ -186,10 +188,12 @@ MEMCORE_SHADOW_COMPARE=false
 
 目标: 不改变用户可见结果，但能比较 legacy 和 memcore 检索。
 
+状态:已完成。
+
 改动:
 
 - `MEMCORE_SHADOW_COMPARE=true` 时，在 `retrieve_memory` legacy 工具执行后，额外调用 memcore `retrieve_for_turn()`。
-- 只记录统计: query、filters、legacy snippet count、memcore snippet count、top source_id/摘要 hash。不要把全文日志打出去。
+- 只记录统计: query/filters 仍沿用现有 `memory_retrieval.tool_call`，shadow payload 只记录 legacy snippet count、memcore snippet count、短 snippet hash、overlap hash count、latency/status/reason。不要把 memcore 全文日志打出去。
 - 影子失败不影响工具结果。
 
 验证:

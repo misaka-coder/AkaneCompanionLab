@@ -7,6 +7,7 @@ import config
 from .retrieval_types import RetrievalPipelineResult
 from .text_utils import detect_time_of_day_from_text, normalize_text
 from .tool_runtime import ToolExecutionResult
+from .memcore_integration.diagnostics import build_shadow_payload
 
 
 def collect_visible_context_source_ids(
@@ -247,27 +248,114 @@ def execute_retrieve_memory_tool(
             "你刚刚主动检索了长期记忆，但这次没有找到足以回答主人问题的相关记忆。"
             "请自然说明自己没有想起可靠线索，不要编造。"
         )
+    memory_retrieval_state = {
+        "tool_call": {
+            "query": query,
+            "keywords": keywords,
+            "time_hint": time_hint or {},
+            "source_layers": source_layers,
+            "subject_scopes": subject_scopes,
+            "categories": categories,
+            "importance_min": importance_min,
+            "limit": limit,
+        },
+        "retrieval_result": pipeline.retrieval_result,
+        "verifier_output": pipeline.verifier_output,
+        "verifier_timing": pipeline.verifier_timing,
+        "confirmed_snippets": snippets,
+    }
+    shadow_payload = execute_memcore_shadow_retrieve(
+        engine,
+        call=call,
+        context=context,
+        current_user_record=current_user_record,
+        query=query,
+        keywords=keywords,
+        time_hint=time_hint,
+        source_layers=source_layers,
+        subject_scopes=subject_scopes,
+        categories=categories,
+        importance_min=importance_min,
+        exclude_source_ids=exclude_source_ids,
+        legacy_snippets=snippets,
+    )
+    if shadow_payload is not None:
+        memory_retrieval_state["memcore_shadow"] = shadow_payload
     return ToolExecutionResult(
         tool_type="retrieve_memory",
         raw_turns=[],
         stream_events=[],
         followup_context=followup_context,
-        state_updates={
-            "memory_retrieval": {
-                "tool_call": {
-                    "query": query,
-                    "keywords": keywords,
-                    "time_hint": time_hint or {},
-                    "source_layers": source_layers,
-                    "subject_scopes": subject_scopes,
-                    "categories": categories,
-                    "importance_min": importance_min,
-                    "limit": limit,
-                },
-                "retrieval_result": pipeline.retrieval_result,
-                "verifier_output": pipeline.verifier_output,
-                "verifier_timing": pipeline.verifier_timing,
-                "confirmed_snippets": snippets,
-            }
-        },
+        state_updates={"memory_retrieval": memory_retrieval_state},
     )
+
+
+def execute_memcore_shadow_retrieve(
+    engine: Any,
+    *,
+    call: dict[str, Any],
+    context: Any,
+    current_user_record: dict[str, Any] | None,
+    query: str,
+    keywords: list[str],
+    time_hint: dict[str, Any] | None,
+    source_layers: list[str],
+    subject_scopes: list[str],
+    categories: list[str],
+    importance_min: Any,
+    exclude_source_ids: list[str],
+    legacy_snippets: list[str],
+) -> dict[str, Any] | None:
+    if not bool(getattr(config, "MEMCORE_SHADOW_COMPARE", False)):
+        return None
+    manager = getattr(engine, "memcore_manager", None)
+    if manager is None or not getattr(manager, "enabled", False):
+        return build_shadow_payload(
+            legacy_snippets=legacy_snippets,
+            memcore_result={
+                "operation": "shadow_retrieve_memory",
+                "ok": False,
+                "status": "unavailable",
+                "reason": "memcore_manager_not_enabled",
+                "snippet_count": 0,
+                "snippet_hashes": [],
+            },
+        )
+    if not getattr(manager, "available", False):
+        status = manager.status() if hasattr(manager, "status") else {}
+        return build_shadow_payload(
+            legacy_snippets=legacy_snippets,
+            memcore_result={
+                "operation": "shadow_retrieve_memory",
+                "ok": False,
+                "status": "unavailable",
+                "reason": str((status or {}).get("reason") or "memcore_unavailable"),
+                "snippet_count": 0,
+                "snippet_hashes": [],
+            },
+        )
+    try:
+        result = manager.shadow_retrieve_memory(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            character_pack_id=str(getattr(context, "character_pack_id", "") or "").strip(),
+            current_user_record=current_user_record,
+            query=query or str(call.get("query") or ""),
+            keywords=keywords,
+            time_hint=time_hint,
+            source_layers=source_layers,
+            subject_scopes=subject_scopes,
+            categories=categories,
+            importance_min=importance_min,
+            exclude_source_ids=exclude_source_ids,
+        )
+    except Exception as exc:
+        result = {
+            "operation": "shadow_retrieve_memory",
+            "ok": False,
+            "status": "failed",
+            "reason": str(exc) or exc.__class__.__name__,
+            "snippet_count": 0,
+            "snippet_hashes": [],
+        }
+    return build_shadow_payload(legacy_snippets=legacy_snippets, memcore_result=result)

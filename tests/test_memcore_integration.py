@@ -6,7 +6,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import config
 from companion_v01.memcore_integration.manager import MemcoreManager, normalize_memory_backend
+from companion_v01.retrieval_types import RetrievalPipelineResult
+from companion_v01 import retrieval_engine
+from companion_v01.tool_runtime import ToolExecutionContext
 
 
 class _FakeLLM:
@@ -243,6 +247,134 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(result["reason"], "legacy_index_disabled")
             self.assertIsNone(manager._store.get_record_by_source_id("memory-query-turn"))
             manager.close()
+
+    def test_shadow_retrieve_returns_structural_hash_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="dual",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            manager.record_user_turn(
+                {
+                    "source_id": "old-like",
+                    "content": "我以前说过我喜欢冰可乐。",
+                    "timestamp": 1_777_700_000,
+                    "memory_metadata": {"keywords": ["可乐"], "categories": ["preference"], "importance": 0.9},
+                },
+                profile_user_id="u1",
+                session_id="older-session",
+                character_pack_id="char",
+            )
+            current = {
+                "source_id": "current-query",
+                "content": "我以前说过喜欢什么饮料？",
+                "timestamp": 1_777_800_000,
+                "memory_metadata": {},
+            }
+            manager.record_user_turn(
+                current,
+                profile_user_id="u1",
+                session_id="current-session",
+                character_pack_id="char",
+            )
+
+            with patch.object(config, "MEMCORE_SHADOW_COMPARE", True):
+                result = manager.shadow_retrieve_memory(
+                    profile_user_id="u1",
+                    session_id="current-session",
+                    character_pack_id="char",
+                    current_user_record=current,
+                    query="可乐",
+                    keywords=["可乐"],
+                    categories=["preference"],
+                    importance_min=0.5,
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "ok")
+            self.assertGreaterEqual(result["snippet_count"], 1)
+            self.assertTrue(result["snippet_hashes"])
+            self.assertNotIn("冰可乐", repr(result))
+            manager.close()
+
+    def test_retrieve_memory_tool_attaches_shadow_without_changing_followup(self) -> None:
+        class _FakeStore:
+            def get_message_by_source_id(self, source_id: str) -> dict[str, object]:
+                return {
+                    "source_id": str(source_id),
+                    "content": "用户问旧饮料偏好",
+                    "timestamp": 100,
+                }
+
+            def get_unsummarized_messages(self, session_id: str, *, character_pack_id: str = "") -> list[dict]:
+                return []
+
+            def get_visible_episodic_summaries(self, profile_user_id: str, *, limit: int, character_pack_id: str = "") -> list[dict]:
+                return []
+
+            def get_recent_semantic_summaries(self, profile_user_id: str, *, limit: int, character_pack_id: str = "") -> list[dict]:
+                return []
+
+        class _FakeRetrievalService:
+            def run_explicit(self, **kwargs) -> RetrievalPipelineResult:
+                return RetrievalPipelineResult(
+                    used_retrieval=True,
+                    confirmed_snippets=["legacy snippet about cola"],
+                    router_output={},
+                    router_timing={},
+                    retrieval_result={"fused_hits": [{"source_id": "legacy-1"}]},
+                    verifier_output={"match_result": "match"},
+                    verifier_timing={},
+                )
+
+        class _FakeShadowManager:
+            enabled = True
+            available = True
+
+            def shadow_retrieve_memory(self, **kwargs) -> dict[str, object]:
+                return {
+                    "operation": "shadow_retrieve_memory",
+                    "ok": True,
+                    "status": "ok",
+                    "snippet_count": 2,
+                    "snippet_hashes": ["abc123"],
+                    "latency_ms": 1,
+                }
+
+        class _FakeEngine:
+            store = _FakeStore()
+            memcore_manager = _FakeShadowManager()
+
+            def _get_retrieval_service(self) -> _FakeRetrievalService:
+                return _FakeRetrievalService()
+
+        context = ToolExecutionContext(
+            profile_user_id="u1",
+            session_id="s1",
+            now_ts=100,
+            visual_payload={},
+            character_pack_id="char",
+            current_user_source_id="current",
+        )
+        with patch.object(config, "MEMCORE_SHADOW_COMPARE", True):
+            result = retrieval_engine.execute_retrieve_memory_tool(
+                _FakeEngine(),
+                call={"query": "可乐", "keywords": ["可乐"]},
+                context=context,
+            )
+
+        self.assertIn("legacy snippet about cola", result.followup_context)
+        self.assertNotIn("abc123", result.followup_context)
+        shadow = result.state_updates["memory_retrieval"]["memcore_shadow"]
+        self.assertEqual(shadow["status"], "ok")
+        self.assertEqual(shadow["snippet_count"], 2)
+        self.assertEqual(shadow["legacy_snippet_count"], 1)
+        self.assertEqual(shadow["snippet_hashes"], ["abc123"])
 
 
 if __name__ == "__main__":
