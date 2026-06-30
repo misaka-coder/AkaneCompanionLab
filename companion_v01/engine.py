@@ -291,6 +291,7 @@ class AkaneMemoryEngine:
             prompt_builder=self.prompt_builder,
             persona_context_provider=self._build_memory_compaction_persona_context,
         )
+        self.memcore_manager = self._build_memcore_manager()
         self.task_worker_service = TaskWorkerService(
             llm=self.llm,
             task_workspace_service=self.task_workspace_service,
@@ -476,9 +477,119 @@ class AkaneMemoryEngine:
 
     def close(self) -> None:
         self._get_compaction_service().close()
+        memcore_manager = getattr(self, "memcore_manager", None)
+        if memcore_manager is not None:
+            memcore_manager.close()
         background_tasks = getattr(self, "background_tasks", None)
         if background_tasks is not None:
             background_tasks.close()
+
+    def _build_memcore_manager(self):
+        try:
+            from .memcore_integration import MemcoreManager
+
+            manager = MemcoreManager.from_engine(self)
+            status = manager.status()
+            if status.get("enabled") and not status.get("available"):
+                logger.warning("memcore backend requested but unavailable: %s", status.get("reason") or "unknown")
+            return manager
+        except Exception as exc:
+            logger.warning("memcore manager disabled during setup: %s", exc)
+            return None
+
+    def _memcore_manager_if_enabled(self):
+        manager = getattr(self, "memcore_manager", None)
+        if manager is None or not getattr(manager, "enabled", False):
+            return None
+        return manager
+
+    def _record_memcore_user_turn(
+        self,
+        *,
+        user_record: dict[str, Any],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {}
+        try:
+            return manager.record_user_turn(
+                user_record,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+        except Exception as exc:
+            logger.warning("memcore user dual-write failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
+    def _record_memcore_assistant_turn(
+        self,
+        *,
+        assistant_record: dict[str, Any],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {}
+        try:
+            return manager.record_assistant_turn(
+                assistant_record,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+        except Exception as exc:
+            logger.warning("memcore assistant dual-write failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
+    def _update_memcore_turn_metadata(
+        self,
+        *,
+        source_id: str,
+        memory_metadata: dict[str, Any],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {}
+        try:
+            return manager.update_turn_metadata(
+                source_id,
+                memory_metadata,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+        except Exception as exc:
+            logger.warning("memcore metadata dual-write failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
+    def _schedule_memcore_compaction(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {}
+        try:
+            return manager.compact_due_background(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+        except Exception as exc:
+            logger.warning("memcore compaction scheduling failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
 
     def snapshot_embedding_reindex_status(self) -> dict[str, Any]:
         with self._embedding_reindex_lock:
@@ -1742,6 +1853,12 @@ class AkaneMemoryEngine:
                 router_output=router_output,
             )
             self._upsert_raw_record(user_record)
+            self._record_memcore_user_turn(
+                user_record=user_record,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
 
         final_output = self._build_final_response(
             session_id=session_id,
@@ -1964,6 +2081,14 @@ class AkaneMemoryEngine:
                 user_record=user_record,
                 memory_metadata=memory_metadata,
             )
+            if bool(user_record.get("index_in_vector", True)):
+                self._update_memcore_turn_metadata(
+                    source_id=str(user_record.get("source_id") or ""),
+                    memory_metadata=memory_metadata,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                )
         if memory_tags and not transient_user_turn:
             user_record = self._apply_memory_tags_to_user_record(
                 user_record=user_record,
@@ -1987,6 +2112,18 @@ class AkaneMemoryEngine:
             memory_metadata=self._build_assistant_timeline_metadata(final_output),
         )
         self._upsert_raw_record(assistant_record)
+        if not transient_user_turn:
+            self._record_memcore_assistant_turn(
+                assistant_record=assistant_record,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
+            self._schedule_memcore_compaction(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
         self._schedule_summary_cycle(
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -2140,6 +2277,12 @@ class AkaneMemoryEngine:
                 router_output=router_output,
             )
             self._upsert_raw_record(user_record)
+            self._record_memcore_user_turn(
+                user_record=user_record,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
 
         final_output = yield from self._stream_final_response(
             session_id=session_id,
@@ -2371,6 +2514,14 @@ class AkaneMemoryEngine:
                 user_record=user_record,
                 memory_metadata=memory_metadata,
             )
+            if bool(user_record.get("index_in_vector", True)):
+                self._update_memcore_turn_metadata(
+                    source_id=str(user_record.get("source_id") or ""),
+                    memory_metadata=memory_metadata,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                )
         if memory_tags and not transient_user_turn:
             user_record = self._apply_memory_tags_to_user_record(
                 user_record=user_record,
@@ -2396,6 +2547,18 @@ class AkaneMemoryEngine:
             memory_metadata=self._build_assistant_timeline_metadata(final_output),
         )
         self._upsert_raw_record(assistant_record)
+        if not transient_user_turn:
+            self._record_memcore_assistant_turn(
+                assistant_record=assistant_record,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
+            self._schedule_memcore_compaction(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
         self._schedule_summary_cycle(
             profile_user_id=profile_user_id,
             session_id=session_id,

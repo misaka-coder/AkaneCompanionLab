@@ -6,6 +6,9 @@ fastapi
 #     capcore/
 # Future packaged releases can replace this with a normal versioned dependency.
 -e ../capcore
+# Akane can optionally mirror / migrate dialogue memory through the extracted
+# memcore sibling package. Default runtime still uses the legacy backend.
+-e ../memcore
 python-multipart
 uvicorn
 chromadb

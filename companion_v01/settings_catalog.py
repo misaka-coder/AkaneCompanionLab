@@ -117,6 +117,11 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("SEMANTIC_VISIBLE_LIMIT", _MEM, SCOPE_RUNTIME, "可见语义记忆最大条数（过多=prompt 太长）"),
     _s("SEMANTIC_REINFORCEMENT_LOOKBACK", _MEM, SCOPE_RUNTIME, "语义强化回溯窗口（跨会话）"),
     _s("SEMANTIC_REINFORCEMENT_MIN_OVERLAP", _MEM, SCOPE_RUNTIME, "语义强化最小重叠次数"),
+    _s("MEMORY_BACKEND", _MEM, SCOPE_RESTART_CLIENT, "记忆后端：legacy/dual/memcore"),
+    _s("MEMCORE_STORAGE_PATH", _MEM, SCOPE_RESTART_CLIENT, "memcore SQLite 路径（留空=默认）"),
+    _s("MEMCORE_VISIBLE_SCOPE", _MEM, SCOPE_RESTART_CLIENT, "memcore 可见长期记忆作用域：conversation/user"),
+    _s("MEMCORE_ENABLE_FLAVOR", _MEM, SCOPE_RESTART_CLIENT, "memcore 情绪/口吻温度层"),
+    _s("MEMCORE_SHADOW_COMPARE", _MEM, SCOPE_RUNTIME, "memcore 影子检索对比（不改变回复）"),
     # LLM 密钥 & 接入（密钥/接入由模型服务页管理）
     _s("TEXT_API_KEY", _LLM, SCOPE_RESTART_CLIENT, "TEXT（辅助任务）API Key", sensitive=True, managed_in=MANAGED_MODEL_SERVICE),
     _s("TEXT_BASE_URL", _LLM, SCOPE_RESTART_CLIENT, "TEXT base_url", managed_in=MANAGED_MODEL_SERVICE),

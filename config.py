@@ -89,6 +89,16 @@ class Settings(BaseSettings):
     SEMANTIC_REINFORCEMENT_LOOKBACK: int = 8
     # 语义强化最小重叠次数（低于此数不强化）
     SEMANTIC_REINFORCEMENT_MIN_OVERLAP: int = 2
+    # 记忆后端：legacy=旧系统  dual=旧系统读侧+memcore双写  memcore=完整切换（后续切片）
+    MEMORY_BACKEND: str = "legacy"
+    # memcore SQLite 路径；留空时使用 base_dir / memcore_v01.db
+    MEMCORE_STORAGE_PATH: str = ""
+    # memcore 可见长期记忆作用域：conversation/user
+    MEMCORE_VISIBLE_SCOPE: str = "user"
+    # memcore mood/flavor 温度层；桌宠陪伴默认开启
+    MEMCORE_ENABLE_FLAVOR: bool = True
+    # 影子检索对比开关；只记录结构化统计，不改变用户可见回复
+    MEMCORE_SHADOW_COMPARE: bool = False
 
     # === LLM 密钥 & 接入 ===
     # 键位角色：
@@ -408,6 +418,7 @@ def _apply_settings(s: Settings) -> None:
     global DRIFT_PROBABILITY, SUMMARY_TRIGGER_COUNT, SUMMARY_BATCH_SIZE, RECENT_SUMMARY_LIMIT
     global EPISODIC_COMPACT_TRIGGER_COUNT, EPISODIC_COMPACT_BATCH_SIZE, EPISODIC_VISIBLE_MAX, SEMANTIC_VISIBLE_LIMIT
     global SEMANTIC_REINFORCEMENT_LOOKBACK, SEMANTIC_REINFORCEMENT_MIN_OVERLAP
+    global MEMORY_BACKEND, MEMCORE_STORAGE_PATH, MEMCORE_VISIBLE_SCOPE, MEMCORE_ENABLE_FLAVOR, MEMCORE_SHADOW_COMPARE
     global WHISPER_CACHE_DIR
     global MASTER_QQ, PORT, HOST
 
@@ -582,6 +593,13 @@ def _apply_settings(s: Settings) -> None:
     SEMANTIC_VISIBLE_LIMIT = max(1, int(s.SEMANTIC_VISIBLE_LIMIT))
     SEMANTIC_REINFORCEMENT_LOOKBACK = max(1, int(s.SEMANTIC_REINFORCEMENT_LOOKBACK))
     SEMANTIC_REINFORCEMENT_MIN_OVERLAP = max(1, int(s.SEMANTIC_REINFORCEMENT_MIN_OVERLAP))
+    raw_memory_backend = str(s.MEMORY_BACKEND or "legacy").strip().lower()
+    MEMORY_BACKEND = raw_memory_backend if raw_memory_backend in {"legacy", "dual", "memcore"} else "legacy"
+    MEMCORE_STORAGE_PATH = str(s.MEMCORE_STORAGE_PATH or "").strip()
+    raw_memcore_visible_scope = str(s.MEMCORE_VISIBLE_SCOPE or "user").strip().lower()
+    MEMCORE_VISIBLE_SCOPE = raw_memcore_visible_scope if raw_memcore_visible_scope in {"conversation", "user"} else "user"
+    MEMCORE_ENABLE_FLAVOR = bool(s.MEMCORE_ENABLE_FLAVOR)
+    MEMCORE_SHADOW_COMPARE = bool(s.MEMCORE_SHADOW_COMPARE)
 
     WHISPER_CACHE_DIR = str(s.WHISPER_CACHE_DIR or "").strip()
 
