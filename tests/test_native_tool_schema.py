@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import unittest
 
+from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
-from companion_v01.tool_runtime import TOOL_METADATA_BY_TYPE
+from companion_v01.tool_runtime import AdapterCapabilityToolHandler, TOOL_METADATA_BY_TYPE
 
 
 class NativeToolSchemaTests(unittest.TestCase):
@@ -66,6 +67,54 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertEqual(function["parameters"]["additionalProperties"], False)
         self.assertIn("query", function["parameters"]["required"])
         self.assertNotIn("description", function["parameters"])
+
+    def test_adapter_capability_native_schema_uses_capcore_projection(self) -> None:
+        descriptor = CapabilityDescriptor(
+            id="mcp_demo_echo",
+            display_name="echo",
+            short_hint="Echo text",
+            visible_in=("desktop",),
+            prompt_exposed=True,
+            risk="low",
+            confirm="never",
+            effects=(),
+            trigger=None,
+            inputs=(
+                CapabilityIOSlot(
+                    name="text",
+                    kind="string",
+                    required=True,
+                    raw={"description": "Text to echo"},
+                ),
+            ),
+            outputs=(),
+            raw={
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"wrong": {"type": "string"}},
+                    "required": ["wrong"],
+                }
+            },
+        )
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp_demo_echo",
+            adapter=object(),
+            descriptor=descriptor,
+            config_base_dir="unused",
+        )
+
+        specs = build_openai_native_tool_specs({"mcp_demo_echo": handler}, allowed_tool_names={"mcp_demo_echo"})
+
+        self.assertEqual(len(specs), 1)
+        function = specs[0]["function"]
+        self.assertEqual(function["name"], "mcp_demo_echo")
+        self.assertNotIn("tool_call", function["description"])
+        self.assertNotIn("wrong", function["description"])
+        self.assertEqual(function["parameters"]["additionalProperties"], False)
+        self.assertEqual(function["parameters"]["required"], ["text"])
+        self.assertEqual(function["parameters"]["properties"]["text"]["type"], "string")
+        self.assertEqual(function["parameters"]["properties"]["text"]["description"], "Text to echo")
+        self.assertNotIn("wrong", function["parameters"]["properties"])
 
 
 if __name__ == "__main__":
