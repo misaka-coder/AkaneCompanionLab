@@ -238,9 +238,10 @@ def build_mcp_adapter_tool_handlers(
 
     if not str(profile_user_id or "").strip():
         return {}
+    config_base_dir = Path(getattr(_cfg, "DATA_DIR", "users_data") or "users_data")
     try:
         config_payload = load_capability_config(
-            base_dir=Path(getattr(_cfg, "DATA_DIR", "users_data") or "users_data"),
+            base_dir=config_base_dir,
             profile_user_id=profile_user_id,
         )
     except Exception:
@@ -269,5 +270,6 @@ def build_mcp_adapter_tool_handlers(
                     capability_id=descriptor.id,
                     adapter=adapter,
                     descriptor=descriptor,
+                    config_base_dir=config_base_dir,
                 )
     return handlers

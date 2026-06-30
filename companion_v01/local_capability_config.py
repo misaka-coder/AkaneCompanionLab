@@ -11,6 +11,9 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlparse, urlunparse
 
 import yaml
+from capcore import ApprovalPolicy as CapcoreApprovalPolicy
+from capcore import PermissionRequest as CapcorePermissionRequest
+from capcore import resolve_permission as capcore_resolve_permission
 
 
 CONFIG_SCHEMA_VERSION = 1
@@ -123,10 +126,23 @@ def capability_approval_mode(
     requires_confirmation: bool = False,
 ) -> str:
     normalized_status = str(status or "").strip().lower()
-    normalized_risk = str(risk or "").strip().lower()
     if not enabled or normalized_status in APPROVAL_DISABLED_STATUSES:
+        request = _capcore_permission_request_from_entry(
+            {"id": "capability", "name": "Capability", "risk": risk, "requiresConfirmation": requires_confirmation}
+        )
+        decision = capcore_resolve_permission(request, CapcoreApprovalPolicy(default_mode=APPROVAL_MODE_DISABLED))
+        return _approval_mode_from_capcore_decision(decision)
+    request = _capcore_permission_request_from_entry(
+        {"id": "capability", "name": "Capability", "risk": risk, "requiresConfirmation": requires_confirmation}
+    )
+    decision = capcore_resolve_permission(request, CapcoreApprovalPolicy(default_mode=APPROVAL_MODE_ASK_EACH_TIME))
+    return _approval_mode_from_capcore_decision(decision)
+
+
+def _approval_mode_from_capcore_decision(decision: Any) -> str:
+    if not decision.allowed and not decision.requires_user_decision:
         return APPROVAL_MODE_DISABLED
-    if requires_confirmation or normalized_risk == "high":
+    if decision.requires_user_decision:
         return APPROVAL_MODE_ASK_EACH_TIME
     return APPROVAL_MODE_TRUSTED_AUTO_ALLOW
 
@@ -153,18 +169,52 @@ def with_capability_approval_metadata(entry: Mapping[str, Any]) -> dict[str, Any
 def apply_approval_policy_to_entry(entry: Mapping[str, Any], approval_policy: Mapping[str, Any] | None) -> dict[str, Any]:
     public_entry = with_capability_approval_metadata(entry)
     policy = normalize_approval_policy_config(approval_policy)
-    if policy["defaultMode"] != APPROVAL_MODE_TRUSTED_AUTO_ALLOW:
-        return public_entry
     if public_entry.get("approvalMode") == APPROVAL_MODE_DISABLED:
         return public_entry
-    if str(public_entry.get("risk") or "").strip().lower() != "high" and not public_entry.get("requiresConfirmation"):
+    request = _capcore_permission_request_from_entry(public_entry)
+    decision = capcore_resolve_permission(request, CapcoreApprovalPolicy(default_mode=policy["defaultMode"]))
+    next_mode = _approval_mode_from_capcore_decision(decision)
+    if next_mode != APPROVAL_MODE_TRUSTED_AUTO_ALLOW or not request.required:
         return public_entry
     return {
         **public_entry,
         "approvalMode": APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
-        "approvalReason": "user_policy_trusted_auto_allow",
+        "approvalReason": str(decision.reason or "user_policy_trusted_auto_allow"),
         "requiresConfirmation": False,
     }
+
+
+def _capcore_permission_request_from_entry(entry: Mapping[str, Any]) -> CapcorePermissionRequest:
+    risk = _capcore_risk(entry.get("risk"))
+    confirm = _capcore_confirm(
+        entry.get("confirm"),
+        risk=risk,
+        requires_confirmation=bool(entry.get("requiresConfirmation")),
+    )
+    required = risk == "high" or confirm in {"first_time", "always"} or bool(entry.get("requiresConfirmation"))
+    return CapcorePermissionRequest(
+        required=required,
+        capability_id=str(entry.get("capabilityId") or entry.get("id") or "").strip()[:120],
+        display_name=str(entry.get("name") or entry.get("title") or entry.get("id") or "Capability").strip()[:120],
+        risk=risk,
+        confirm=confirm,
+        effects=(),
+        reason="requires_confirmation" if required else "",
+    )
+
+
+def _capcore_risk(value: Any) -> str:
+    risk = str(value or "").strip().lower()
+    return risk if risk in {"low", "medium", "high"} else "medium"
+
+
+def _capcore_confirm(value: Any, *, risk: str, requires_confirmation: bool) -> str:
+    confirm = str(value or "").strip().lower()
+    if confirm in {"never", "first_time", "always"}:
+        return "always" if risk == "high" else confirm
+    if risk == "high":
+        return "always"
+    return "first_time" if requires_confirmation else "never"
 
 
 def normalize_approval_policy_config(raw_policy: Any) -> dict[str, Any]:

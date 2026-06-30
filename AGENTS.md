@@ -58,10 +58,11 @@
 
 ## 提交策略
 
-- 只有用户明确要求提交才 commit。
-- commit 前先确认工作区内容。
+- 完成一个边界清晰、已验证的工作切片后，可以主动做聚焦 commit；不必等用户再次明确要求。
+- commit 前必须确认工作区内容，先看 `git status --short`、`git diff --stat`、`git diff --cached --name-only`。
+- 只 stage 本轮任务相关文件；工作区有无关改动时，不要夹带进 commit。
 - 不提交：`.env`、`runtime_logs`、`users_data`、`*.db`、`node_modules`、`dist`/`target` 缓存。
-- 如果工作区已有大量改动，先做 checkpoint，再进行基础设施类改造。
+- 如果工作区已有大量改动，优先为本轮任务做最小聚焦 commit；需要整理历史或做大范围 checkpoint 时先和用户确认。
 
 ## 当前重点任务入口
 

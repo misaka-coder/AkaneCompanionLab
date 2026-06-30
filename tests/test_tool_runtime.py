@@ -7,9 +7,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult
 from companion_v01.local_capability_config import save_approval_policy_config, save_mcp_server_config
 from companion_v01.browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner
 from companion_v01.tool_runtime import (
+    AdapterCapabilityToolHandler,
     BrowserPageToolHandler,
     OpenBrowserToolHandler,
     OpenMusicSearchToolHandler,
@@ -54,6 +56,147 @@ class RetrieveMemoryToolHandlerTests(unittest.TestCase):
         self.assertEqual(call["categories"], ["preference", "project_work"])
         self.assertEqual(call["importance_min"], 0.0)
         self.assertEqual(call["limit"], 12)
+
+
+class AdapterCapabilityToolHandlerTests(unittest.TestCase):
+    def _context(self) -> ToolExecutionContext:
+        return ToolExecutionContext(
+            profile_user_id="master",
+            session_id="desktop",
+            now_ts=1712400000,
+            visual_payload={},
+            client_mode="desktop_pet",
+        )
+
+    def _descriptor(
+        self,
+        *,
+        risk: str = "low",
+        confirm: str = "never",
+        inputs: tuple[CapabilityIOSlot, ...] | None = None,
+    ) -> CapabilityDescriptor:
+        return CapabilityDescriptor(
+            id="mcp.demo.echo",
+            display_name="echo",
+            short_hint="Echo text",
+            visible_in=("desktop",),
+            prompt_exposed=True,
+            risk=risk,
+            confirm=confirm,
+            effects=(),
+            trigger=None,
+            inputs=inputs or (CapabilityIOSlot(name="text", kind="string", required=True),),
+            outputs=(),
+            raw={
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                }
+            },
+        )
+
+    def test_adapter_capability_validates_args_before_permission_or_invoke(self) -> None:
+        class FakeAdapter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                self.calls.append({"capability_id": capability_id, "args": dict(args), "ctx": ctx})
+                return CapabilityResult(is_error=False, content={"content": []}, status="ok")
+
+        adapter = FakeAdapter()
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp.demo.echo",
+            adapter=adapter,
+            descriptor=self._descriptor(risk="high", confirm="always"),
+            config_base_dir="unused",
+        )
+
+        result = handler.execute(
+            call={"type": "mcp.demo.echo", "arguments": {}},
+            context=self._context(),
+        )
+
+        self.assertEqual(adapter.calls, [])
+        self.assertEqual(result.stream_events[0]["type"], "adapter_capability_failed")
+        self.assertEqual(result.stream_events[0]["status"], "validation_error")
+        self.assertEqual(result.stream_events[0]["reason"], "missing_required")
+
+    def test_adapter_capability_requires_approval_with_capcore_preview(self) -> None:
+        class FakeAdapter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                self.calls.append({"capability_id": capability_id, "args": dict(args), "ctx": ctx})
+                return CapabilityResult(is_error=False, content={"content": []}, status="ok")
+
+        adapter = FakeAdapter()
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp.demo.echo",
+            adapter=adapter,
+            descriptor=self._descriptor(
+                risk="high",
+                confirm="always",
+                inputs=(
+                    CapabilityIOSlot(name="text", kind="string", required=True),
+                    CapabilityIOSlot(name="api_key", kind="string", required=True),
+                ),
+            ),
+            config_base_dir="unused",
+        )
+
+        result = handler.execute(
+            call={"type": "mcp.demo.echo", "arguments": {"text": "hello", "api_key": "plain-secret-value"}},
+            context=self._context(),
+        )
+
+        event = result.stream_events[0]
+        self.assertEqual(adapter.calls, [])
+        self.assertEqual(event["type"], "capability_approval_required")
+        self.assertEqual(event["risk"], "high")
+        self.assertEqual(event["approvalMode"], "ask_each_time")
+        self.assertEqual(event["payloadPreview"]["api_key"], "[redacted]")
+
+    def test_adapter_capability_trusted_auto_allow_executes_required_tool(self) -> None:
+        class FakeAdapter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                self.calls.append({"capability_id": capability_id, "args": dict(args), "ctx": ctx})
+                return CapabilityResult(
+                    is_error=False,
+                    content={"content": [{"type": "text", "text": "done"}]},
+                    status="ok",
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            saved = save_approval_policy_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                payload={"defaultMode": "trusted_auto_allow"},
+            )
+            self.assertTrue(saved["ok"])
+            adapter = FakeAdapter()
+            handler = AdapterCapabilityToolHandler(
+                capability_id="mcp.demo.echo",
+                adapter=adapter,
+                descriptor=self._descriptor(risk="high", confirm="always"),
+                config_base_dir=temp_dir,
+            )
+
+            result = handler.execute(
+                call={"type": "mcp.demo.echo", "arguments": {"text": "hello"}},
+                context=self._context(),
+            )
+
+        self.assertEqual(adapter.calls[0]["capability_id"], "mcp.demo.echo")
+        self.assertEqual(adapter.calls[0]["args"], {"text": "hello"})
+        self.assertEqual(result.stream_events[0]["type"], "adapter_capability_completed")
+        self.assertEqual(result.stream_events[0]["status"], "ok")
+        self.assertIn("done", result.followup_context)
 
 
 class WebSearchToolHandlerTests(unittest.TestCase):

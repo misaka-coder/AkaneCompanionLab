@@ -14,6 +14,12 @@ from typing import Any, Callable, Mapping
 from urllib.parse import quote_plus, urlparse
 
 import config
+from capcore import ApprovalPolicy as CapcoreApprovalPolicy
+from capcore import InvocationContext as CapcoreInvocationContext
+from capcore import PermissionRequest as CapcorePermissionRequest
+from capcore import build_permission_request as capcore_build_permission_request
+from capcore import resolve_permission as capcore_resolve_permission
+from capcore import validate_invocation_args as capcore_validate_invocation_args
 
 from .browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner
 from .capability_adapters import CapabilityProtocolError, InvocationContext
@@ -525,10 +531,12 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         capability_id: str,
         adapter: Any,
         descriptor: Any,
+        config_base_dir: Path | str | None = None,
     ) -> None:
         self.tool_type = str(capability_id or "").strip()
         self.adapter = adapter
         self.descriptor = descriptor
+        self.config_base_dir = config_base_dir
 
     def tool_metadata(self) -> ToolMetadata:
         risk = str(getattr(self.descriptor, "risk", "") or "medium").strip() or "medium"
@@ -566,15 +574,30 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         return {"type": self.tool_type, "arguments": args}
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        risk = str(getattr(self.descriptor, "risk", "") or "medium").strip().lower() or "medium"
-        confirm = str(getattr(self.descriptor, "confirm", "") or "first_time").strip().lower() or "first_time"
-        if risk == "high" or confirm in {"first_time", "always"}:
-            return self._approval_required(call=call, context=context, risk=risk)
+        raw_args = call.get("arguments") if isinstance(call.get("arguments"), Mapping) else {}
+        validation = capcore_validate_invocation_args(self.descriptor, raw_args)
+        if not validation.ok:
+            return self._validation_failed(validation)
+        normalized_args = dict(validation.normalized_args)
+        request = capcore_build_permission_request(
+            self.descriptor,
+            normalized_args,
+            CapcoreInvocationContext(
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                client_mode=context.client_mode,
+            ),
+        )
+        decision = capcore_resolve_permission(request, self._profile_approval_policy(context))
+        if not decision.allowed:
+            if decision.requires_user_decision:
+                return self._approval_required(decision=decision, context=context)
+            return self._blocked_by_policy(decision.reason)
         try:
             result = self._run_coro_blocking(
                 self.adapter.invoke(
                     self.tool_type,
-                    dict(call.get("arguments") or {}),
+                    normalized_args,
                     InvocationContext(
                         profile_user_id=context.profile_user_id,
                         session_id=context.session_id,
@@ -604,8 +627,24 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             },
         )
 
-    def _approval_required(self, *, call: Mapping[str, Any], context: ToolExecutionContext, risk: str) -> ToolExecutionResult:
-        preview = self._safe_payload_preview(call.get("arguments"))
+    def _profile_approval_policy(self, context: ToolExecutionContext) -> CapcoreApprovalPolicy:
+        try:
+            payload = get_approval_policy_config(
+                base_dir=self.config_base_dir or getattr(config, "DATA_DIR", "users_data"),
+                profile_user_id=context.profile_user_id,
+            )
+        except Exception:
+            return CapcoreApprovalPolicy(default_mode="ask_each_time")
+        policy = payload.get("approvalPolicy") if isinstance(payload, Mapping) else {}
+        mode = str((policy or {}).get("defaultMode") or "").strip()
+        if mode not in {"ask_each_time", "trusted_auto_allow", "disabled"}:
+            mode = "ask_each_time"
+        return CapcoreApprovalPolicy(default_mode=mode)
+
+    def _approval_required(self, *, decision: Any, context: ToolExecutionContext) -> ToolExecutionResult:
+        request = decision.request
+        risk = str(getattr(request, "risk", "") or "medium").strip().lower()
+        preview = dict(getattr(request, "args_preview", None) or {})
         event = {
             "type": "capability_approval_required",
             "capabilityId": self.tool_type,
@@ -613,8 +652,8 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             "title": "MCP 工具需要确认",
             "summary": "Akane 想执行一个本地 MCP 工具。",
             "risk": "high" if risk == "high" else "medium",
-            "approvalMode": "ask_each_time",
-            "approvalReason": "requires_confirmation",
+            "approvalMode": str(getattr(decision, "mode", "") or "ask_each_time"),
+            "approvalReason": str(getattr(decision, "reason", "") or "requires_confirmation"),
             "payloadPreview": preview,
             "client_mode": context.client_mode,
         }
@@ -625,6 +664,48 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             state_updates={
                 "adapter_capability_status": "approval_required",
                 "adapter_capability_id": self.tool_type,
+            },
+        )
+
+    def _validation_failed(self, validation: Any) -> ToolExecutionResult:
+        first = validation.errors[0] if validation.errors else None
+        reason = self._safe_public_text(getattr(first, "code", "") or "validation_error", limit=80)
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "adapter_capability_failed",
+                    "capabilityId": self.tool_type,
+                    "status": "validation_error",
+                    "reason": reason,
+                    "errors": [error.as_dict() for error in validation.errors[:8]],
+                }
+            ],
+            followup_context="MCP 工具参数没有通过校验；请根据工具 schema 修正后再调用，不要声称已经完成。",
+            state_updates={
+                "adapter_capability_status": "validation_error",
+                "adapter_capability_id": self.tool_type,
+                "adapter_capability_reason": reason,
+            },
+        )
+
+    def _blocked_by_policy(self, reason: str) -> ToolExecutionResult:
+        safe_reason = self._safe_public_text(reason, limit=120) or "capability_blocked_by_policy"
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "adapter_capability_failed",
+                    "capabilityId": self.tool_type,
+                    "status": "blocked",
+                    "reason": safe_reason,
+                }
+            ],
+            followup_context="这个 MCP 工具已被当前能力策略阻止；请自然说明无法执行，不要假装已经完成。",
+            state_updates={
+                "adapter_capability_status": "blocked",
+                "adapter_capability_id": self.tool_type,
+                "adapter_capability_reason": safe_reason,
             },
         )
 
@@ -3090,19 +3171,45 @@ class BrowserPageToolHandler(BaseToolHandler):
         context: ToolExecutionContext,
     ) -> dict[str, Any]:
         action_id = f"{self.CONTROL_ACTION_ID_PREFIX}.{action}"
+        request = self._browser_control_permission_request(action=action, call=call, context=context)
         if self._approval_checker_allows(action_id=action_id, call=call, context=context):
             return {"ok": True, "mode": "approval_grant"}
-        if self._profile_policy_allows(context):
-            return {"ok": True, "mode": "trusted_auto_allow"}
+        decision = capcore_resolve_permission(request, self._profile_approval_policy(context))
+        if decision.allowed:
+            return {"ok": True, "mode": decision.mode, "reason": decision.reason}
         return {
             "ok": False,
             "status": "approval_required",
-            "approvalMode": "ask_each_time",
+            "approvalMode": decision.mode,
             "capabilityId": "tool.browser_page",
             "actionId": action_id,
             "risk": "high",
-            "reason": "browser_control_requires_approval",
+            "reason": str(decision.reason or "browser_control_requires_approval"),
         }
+
+    def _browser_control_permission_request(
+        self,
+        *,
+        action: str,
+        call: Mapping[str, Any],
+        context: ToolExecutionContext,
+    ) -> CapcorePermissionRequest:
+        return CapcorePermissionRequest(
+            required=True,
+            capability_id="tool.browser_page",
+            display_name="Browser Page",
+            risk="high",
+            confirm="always",
+            effects=("browser_action",),
+            reason="browser_control_requires_approval",
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            client_mode=context.client_mode,
+            args_preview={
+                "action": str(action or ""),
+                **self._safe_control_preview(call),
+            },
+        )
 
     def _approval_checker_allows(self, *, action_id: str, call: Mapping[str, Any], context: ToolExecutionContext) -> bool:
         if not callable(self.approval_checker):
@@ -3121,16 +3228,36 @@ class BrowserPageToolHandler(BaseToolHandler):
         except Exception:
             return False
 
-    def _profile_policy_allows(self, context: ToolExecutionContext) -> bool:
+    def _profile_approval_policy(self, context: ToolExecutionContext) -> CapcoreApprovalPolicy:
         try:
             payload = get_approval_policy_config(
                 base_dir=self.config_base_dir,
                 profile_user_id=context.profile_user_id,
             )
         except Exception:
-            return False
+            return CapcoreApprovalPolicy(default_mode="ask_each_time")
         policy = payload.get("approvalPolicy") if isinstance(payload, Mapping) else {}
-        return str((policy or {}).get("defaultMode") or "").strip() == "trusted_auto_allow"
+        mode = str((policy or {}).get("defaultMode") or "").strip()
+        if mode not in {"ask_each_time", "trusted_auto_allow", "disabled"}:
+            mode = "ask_each_time"
+        return CapcoreApprovalPolicy(default_mode=mode)
+
+    def _safe_control_preview(self, call: Mapping[str, Any]) -> dict[str, Any]:
+        preview: dict[str, Any] = {}
+        selector = self._clip(self._sanitize_output(str(call.get("selector") or "")), 120)
+        ref = self._clip(self._sanitize_output(str(call.get("ref") or "")), 40)
+        candidate_index = self._coerce_int(call.get("candidate_index"), minimum=0, maximum=30, default=0)
+        if selector:
+            preview["selector"] = selector
+        if ref:
+            preview["ref"] = ref
+        if candidate_index > 0:
+            preview["candidateIndex"] = candidate_index
+        if call.get("key"):
+            preview["key"] = str(call.get("key") or "")
+        if call.get("text"):
+            preview["textLength"] = len(str(call.get("text") or ""))
+        return preview
 
     def _approval_required(
         self,
@@ -3140,20 +3267,10 @@ class BrowserPageToolHandler(BaseToolHandler):
         context: ToolExecutionContext,
         authorization: Mapping[str, Any],
     ) -> ToolExecutionResult:
-        selector = self._clip(self._sanitize_output(str(call.get("selector") or "")), 120)
-        ref = self._clip(self._sanitize_output(str(call.get("ref") or "")), 40)
-        candidate_index = self._coerce_int(call.get("candidate_index"), minimum=0, maximum=30, default=0)
-        preview: dict[str, Any] = {"action": action}
-        if selector:
-            preview["selector"] = selector
-        if ref:
-            preview["ref"] = ref
-        if candidate_index > 0:
-            preview["candidateIndex"] = candidate_index
-        if action == "press" and call.get("key"):
-            preview["key"] = str(call.get("key") or "")
-        if action == "fill":
-            preview["textLength"] = len(str(call.get("text") or ""))
+        preview = {
+            "action": action,
+            **self._safe_control_preview(call),
+        }
         event = {
             "type": "capability_approval_required",
             "capabilityId": "tool.browser_page",
