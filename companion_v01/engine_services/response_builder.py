@@ -469,7 +469,8 @@ def _build_memcore_prompt_context(
         return None
     manager = getattr(engine, "memcore_manager", None)
     if manager is None or not getattr(manager, "enabled", False) or not getattr(manager, "available", False):
-        return None
+        logger.warning("memcore final prompt context unavailable: manager_not_available")
+        return _empty_memcore_prompt_context("manager_not_available")
     try:
         payload = manager.build_prompt_context(
             profile_user_id=profile_user_id,
@@ -480,9 +481,25 @@ def _build_memcore_prompt_context(
         )
     except Exception as exc:
         logger.warning("memcore final prompt context failed: %s", str(exc) or exc.__class__.__name__)
-        return None
+        return _empty_memcore_prompt_context(str(exc) or exc.__class__.__name__)
     if not isinstance(payload, dict) or not payload.get("ok"):
         reason = str((payload or {}).get("reason") or (payload or {}).get("status") or "unknown")
         logger.warning("memcore final prompt context unavailable: %s", reason)
-        return None
+        return _empty_memcore_prompt_context(reason)
     return payload
+
+
+def _empty_memcore_prompt_context(reason: str) -> dict[str, Any]:
+    return {
+        "operation": "build_prompt_context",
+        "ok": False,
+        "status": "unavailable",
+        "reason": str(reason or "unknown"),
+        "raw": [],
+        "episodic": [],
+        "semantic": [],
+        "raw_text": "",
+        "episodic_text": "",
+        "semantic_text": "",
+        "rendered_text": "",
+    }

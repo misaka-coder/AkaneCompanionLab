@@ -917,6 +917,14 @@ class MemoryStore:
                 (normalized_session_id, normalized_profile_user_id),
             ).fetchone()
             if existing is not None:
+                existing_character_pack_id = normalize_character_pack_id(existing["character_pack_id"])
+                effective_character_pack_id = (
+                    existing_character_pack_id
+                    if normalized_character_pack_id
+                    and existing_character_pack_id
+                    and existing_character_pack_id != normalized_character_pack_id
+                    else (normalized_character_pack_id or existing_character_pack_id)
+                )
                 if requested_title:
                     conn.execute(
                         """
@@ -926,7 +934,7 @@ class MemoryStore:
                         """,
                         (
                             requested_title,
-                            normalized_character_pack_id,
+                            effective_character_pack_id,
                             effective_ts,
                             normalized_session_id,
                             normalized_profile_user_id,
@@ -936,7 +944,7 @@ class MemoryStore:
                         {
                             **dict(existing),
                             "display_title": requested_title,
-                            "character_pack_id": normalized_character_pack_id,
+                            "character_pack_id": effective_character_pack_id,
                             "updated_at": effective_ts,
                         }
                     )
@@ -948,7 +956,7 @@ class MemoryStore:
                     WHERE session_id = ? AND profile_user_id = ?
                     """,
                     (
-                        normalized_character_pack_id,
+                        effective_character_pack_id,
                         effective_ts,
                         normalized_session_id,
                         normalized_profile_user_id,
@@ -957,7 +965,7 @@ class MemoryStore:
                 return self._row_to_session(
                     {
                         **dict(existing),
-                        "character_pack_id": normalized_character_pack_id,
+                        "character_pack_id": effective_character_pack_id,
                         "updated_at": effective_ts,
                     }
                 )
@@ -1147,6 +1155,9 @@ class MemoryStore:
                 (str(profile_user_id), normalized_character_pack_id, normalized_character_pack_id),
             ).fetchall()
         }
+        claimed_ids = {
+            str(row["session_id"]) for row in conn.execute("SELECT session_id FROM chat_sessions").fetchall()
+        }
         legacy_rows = conn.execute(
             """
             SELECT session_id, character_pack_id, MIN(timestamp) AS created_at, MAX(timestamp) AS updated_at
@@ -1161,7 +1172,7 @@ class MemoryStore:
 
         for row in legacy_rows:
             session_id = str(row["session_id"] or "").strip()
-            if not session_id or session_id in existing_ids:
+            if not session_id or session_id in existing_ids or session_id in claimed_ids:
                 continue
             row_character_pack_id = normalize_character_pack_id(row["character_pack_id"])
             created_at = int(row["created_at"] or time.time())
@@ -1183,6 +1194,7 @@ class MemoryStore:
                 ),
             )
             existing_ids.add(session_id)
+            claimed_ids.add(session_id)
 
     def list_sessions(
         self,

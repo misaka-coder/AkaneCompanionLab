@@ -48,8 +48,8 @@ class MemcoreTimelineToolService:
         exclude_source_ids: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         manager = self.memcore_manager
-        if _memory_backend() == "memcore" and manager is not None and getattr(manager, "enabled", False):
-            if getattr(manager, "available", False):
+        if _memory_backend() == "memcore":
+            if manager is not None and getattr(manager, "enabled", False) and getattr(manager, "available", False):
                 try:
                     result = manager.read_memory_timeline(
                         profile_user_id=profile_user_id,
@@ -74,6 +74,19 @@ class MemcoreTimelineToolService:
                     )
             else:
                 logger.warning("memcore timeline adapter unavailable: manager_not_available")
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "memcore_timeline_unavailable",
+                "date_from": str(date_from or ""),
+                "date_to": str(date_to or ""),
+                "time_periods": list(time_periods or []),
+                "active_dates": [],
+                "message_count": 0,
+                "messages": [],
+                "text": "",
+                "backend": "memcore",
+            }
         return self.legacy_service.read(
             profile_user_id=profile_user_id,
             character_pack_id=character_pack_id,
@@ -93,10 +106,7 @@ class MemcoreTimelineToolService:
         range_label = date_from if date_from == date_to else f"{date_from} 至 {date_to}"
         period_label = "、".join(TIME_PERIOD_LABELS.get(str(item), str(item)) for item in periods) or "全天"
         if status == "invalid_range":
-            return (
-                "原始对话时间线读取失败：日期范围无效。"
-                "日期必须使用 YYYY-MM-DD，且 date_from 不能晚于 date_to。"
-            )
+            return "原始对话时间线读取失败：日期范围无效。日期必须使用 YYYY-MM-DD，且 date_from 不能晚于 date_to。"
         if status == "empty":
             return f"原始对话时间线：{range_label}（{period_label}）没有留下对话记录。"
         text = str(result.get("text") or "").strip()

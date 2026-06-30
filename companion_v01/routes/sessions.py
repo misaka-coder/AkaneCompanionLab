@@ -50,11 +50,22 @@ def build_sessions_router(
         ensure: bool,
         display_title: str | None = None,
     ) -> dict[str, object]:
+        normalized_character_pack_id = character_pack_id or ""
+        if ensure and normalized_character_pack_id:
+            existing_session = engine.store.get_session(profile_user_id, session_id)
+            existing_character_pack_id = str((existing_session or {}).get("character_pack_id") or "").strip()
+            if existing_character_pack_id and existing_character_pack_id != normalized_character_pack_id:
+                raise ValueError(
+                    "session_character_mismatch:"
+                    f" session_id={session_id}"
+                    f" existing={existing_character_pack_id}"
+                    f" requested={normalized_character_pack_id}"
+                )
         session = (
             engine.store.ensure_session(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
-                character_pack_id=character_pack_id or "",
+                character_pack_id=normalized_character_pack_id,
                 display_title=display_title,
             )
             if ensure
@@ -175,6 +186,20 @@ def build_sessions_router(
             duration_ms = (time.perf_counter() - started_at) * 1000
             runtime_metrics.observe_request("sessions_ensure", duration_ms=duration_ms, ok=False)
             log_event("sessions_ensure_error", session_id=session_id, profile_user_id=profile_user_id, message=str(exc))
+            if str(exc).startswith("session_character_mismatch:"):
+                return JSONResponse(
+                    build_desktop_pet_error_payload(
+                        error="session_character_mismatch",
+                        message="当前会话属于另一个角色，请为当前角色创建新会话。",
+                        retryable=True,
+                        details={
+                            "session_id": session_id,
+                            "character_pack_id": character_pack_id or "",
+                        },
+                    ),
+                    status_code=409,
+                    headers={"Cache-Control": "no-store"},
+                )
             raise
 
         duration_ms = (time.perf_counter() - started_at) * 1000

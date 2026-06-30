@@ -125,6 +125,15 @@ class FakeStore:
         display_title: str | None = None,
     ) -> dict[str, Any]:
         self.last_character_pack_id = character_pack_id
+        existing = self.sessions.get((profile_user_id, session_id))
+        if existing is not None:
+            existing_character = str(existing.get("character_pack_id") or "")
+            requested_character = str(character_pack_id or "")
+            if existing_character and requested_character and existing_character != requested_character:
+                raise ValueError(
+                    "session_character_mismatch:"
+                    f" session_id={session_id} existing={existing_character} requested={requested_character}"
+                )
         session = {
             "profile_user_id": profile_user_id,
             "session_id": session_id,
@@ -189,7 +198,9 @@ class FakeStore:
 
 def resolve_query(request: Request) -> tuple[str, str]:
     session_id = str(request.query_params.get("user_id") or request.query_params.get("session_id") or "session")
-    profile_user_id = str(request.query_params.get("real_user_id") or request.query_params.get("profileUserId") or session_id)
+    profile_user_id = str(
+        request.query_params.get("real_user_id") or request.query_params.get("profileUserId") or session_id
+    )
     return session_id, profile_user_id
 
 
@@ -234,9 +245,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                 "defaults": {"outfit": "cat", "emotion": "normal"},
             }
 
-        engine = SimpleNamespace(
-            build_resource_manifest=build_resource_manifest
-        )
+        engine = SimpleNamespace(build_resource_manifest=build_resource_manifest)
         app = FastAPI()
         app.include_router(
             build_core_router(
@@ -247,8 +256,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         response = TestClient(app).get(
-            "/resource-manifest?profileUserId=master&user_id=desktop"
-            "&client=desktop_pet&character_pack_id=mika_pack"
+            "/resource-manifest?profileUserId=master&user_id=desktop&client=desktop_pet&character_pack_id=mika_pack"
         )
 
         self.assertEqual(response.status_code, 200)
@@ -290,6 +298,43 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(payload["latest_final_json"], {"emotion": "normal"})
         self.assertEqual(engine.store.last_character_pack_id, "kaju")
         self.assertIn(("sessions_ensure", True), runtime.observed)
+
+    def test_sessions_router_rejects_cross_character_session_reuse(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        store = FakeStore()
+        store.sessions[("master", "desktop")] = {
+            "profile_user_id": "master",
+            "session_id": "desktop",
+            "character_pack_id": "reimu",
+            "display_title": "Reimu",
+        }
+        engine = SimpleNamespace(store=store)
+        app = FastAPI()
+        app.include_router(
+            build_sessions_router(
+                engine=engine,
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+                resolve_identity_from_query=resolve_query,
+                resolve_identity_from_payload=resolve_payload,
+            )
+        )
+
+        response = TestClient(app).post(
+            "/sessions/ensure",
+            json={
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "display_title": "Akane",
+                "character_pack_id": "akane_v1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        payload = response.json()
+        self.assertEqual(payload["error"], "session_character_mismatch")
+        self.assertEqual(store.sessions[("master", "desktop")]["character_pack_id"], "reimu")
+        self.assertIn(("sessions_ensure", False), runtime.observed)
 
     def test_desktop_pet_router_adds_workspace_file_urls(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -749,7 +794,9 @@ class BackendRouteModuleTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(build_control_center_router())
 
-        response = TestClient(app).post("/control-center/actions/music.next", content=b"", headers={"Content-Type": "application/json"})
+        response = TestClient(app).post(
+            "/control-center/actions/music.next", content=b"", headers={"Content-Type": "application/json"}
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "not-implemented")
@@ -757,9 +804,7 @@ class BackendRouteModuleTests(unittest.TestCase):
     def test_control_center_runtime_metrics_does_not_block_response(self) -> None:
         runtime = FakeRuntimeMetrics()
         app = FastAPI()
-        app.include_router(
-            build_control_center_router(runtime_metrics=runtime)
-        )
+        app.include_router(build_control_center_router(runtime_metrics=runtime))
 
         response = TestClient(app).post("/control-center/actions/music.next", json={})
 
@@ -930,7 +975,9 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(runtime["health"]["status"], "ok")
         self.assertEqual(runtime["diagnostics"]["status"], "ok")
         self.assertEqual(runtime["workspace"]["counts"]["files"], 2)
-        self.assertIn("/desktop-pet/workspace/attachments/att-1/content", runtime["workspace"]["sections"]["files"][0]["url"])
+        self.assertIn(
+            "/desktop-pet/workspace/attachments/att-1/content", runtime["workspace"]["sections"]["files"][0]["url"]
+        )
         self.assertEqual(runtime["resourceManifest"]["clients"]["desktop_pet"]["profile_user_id"], "master")
         self.assertIn("akane_vector_entries 42", runtime["metrics"])
         self.assertIn("akane_custom_total 2.0", runtime["metrics"])
@@ -969,9 +1016,20 @@ class BackendRouteModuleTests(unittest.TestCase):
                 runtime_metrics=runtime_metrics,
                 snapshot_runtime_providers={
                     "health": lambda: {"status": "ok"},
-                    "diagnostics": lambda context: {"status": "ok", "capabilities": {"tool_names": [], "declared": [], "effective_modules": [], "tool_layers": []}, "runtime": {"metrics": {}}, "resources": {}, "workspace": {}, "safety": {}},
+                    "diagnostics": lambda context: {
+                        "status": "ok",
+                        "capabilities": {"tool_names": [], "declared": [], "effective_modules": [], "tool_layers": []},
+                        "runtime": {"metrics": {}},
+                        "resources": {},
+                        "workspace": {},
+                        "safety": {},
+                    },
                     "workspace": fail_workspace,
-                    "resourceManifest": lambda: {"schema_version": 1, "clients": {"desktop_pet": {}}, "characters": {"outfits": []}},
+                    "resourceManifest": lambda: {
+                        "schema_version": 1,
+                        "clients": {"desktop_pet": {}},
+                        "characters": {"outfits": []},
+                    },
                     "metrics": lambda: "cpu_percent 12",
                 },
             )
@@ -1031,7 +1089,10 @@ class BackendRouteModuleTests(unittest.TestCase):
 
         engine = SimpleNamespace(
             build_resource_manifest=build_resource_manifest,
-            build_desktop_pet_workspace_panel=lambda **_kwargs: {"ok": True, "counts": {"files": 0, "outputs": 0, "tasks": 0}},
+            build_desktop_pet_workspace_panel=lambda **_kwargs: {
+                "ok": True,
+                "counts": {"files": 0, "outputs": 0, "tasks": 0},
+            },
             llm=SimpleNamespace(snapshot_metrics=lambda: {"requests_total": 3}),
             vector_store=SimpleNamespace(count_entries=lambda: 42),
             snapshot_embedding_reindex_status=lambda: {"total": 0, "processed": 0, "state": "idle"},
@@ -1103,7 +1164,10 @@ class BackendRouteModuleTests(unittest.TestCase):
 
         engine = SimpleNamespace(
             build_resource_manifest=build_resource_manifest,
-            build_desktop_pet_workspace_panel=lambda **_kwargs: {"ok": True, "counts": {"files": 0, "outputs": 0, "tasks": 0}},
+            build_desktop_pet_workspace_panel=lambda **_kwargs: {
+                "ok": True,
+                "counts": {"files": 0, "outputs": 0, "tasks": 0},
+            },
             llm=SimpleNamespace(snapshot_metrics=lambda: {"requests_total": 0}),
             vector_store=SimpleNamespace(count_entries=lambda: 0),
             snapshot_embedding_reindex_status=lambda: {"total": 0, "processed": 0, "state": "idle"},
@@ -1146,7 +1210,6 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(manifest["clients"]["desktop_pet"]["default_outfit"], "sailor")
         self.assertEqual(manifest["clients"]["desktop_pet"]["default_emotion"], "happy")
 
-
     def test_control_center_snapshot_providers_are_reality_not_placeholder(self) -> None:
         """Verify ALL 5 snapshot providers return real data, not _unavailable placeholders."""
         runtime_metrics = FakeRuntimeMetrics()
@@ -1155,10 +1218,15 @@ class BackendRouteModuleTests(unittest.TestCase):
         engine = SimpleNamespace(
             build_resource_manifest=lambda **kwargs: {
                 "schema_version": 2,
-                "characters": {"outfits": [{"id": "cat", "name": "Cat", "emotions": [{"id": "normal", "name": "Normal"}]}]},
+                "characters": {
+                    "outfits": [{"id": "cat", "name": "Cat", "emotions": [{"id": "normal", "name": "Normal"}]}]
+                },
                 "defaults": {"outfit": "cat", "emotion": "normal"},
             },
-            build_desktop_pet_workspace_panel=lambda **_kwargs: {"ok": True, "counts": {"files": 1, "outputs": 0, "tasks": 0}},
+            build_desktop_pet_workspace_panel=lambda **_kwargs: {
+                "ok": True,
+                "counts": {"files": 1, "outputs": 0, "tasks": 0},
+            },
             llm=SimpleNamespace(snapshot_metrics=lambda: {"requests_total": 1}),
             vector_store=SimpleNamespace(count_entries=lambda: 10),
             snapshot_embedding_reindex_status=lambda: {"total": 0, "processed": 0, "state": "idle"},
@@ -1193,9 +1261,9 @@ class BackendRouteModuleTests(unittest.TestCase):
             value = runtime[field]
             if isinstance(value, dict):
                 self.assertNotEqual(
-                    value.get("ok"), False,
-                    f"snapshot runtime.{field} should NOT be unavailable/placeholder; "
-                    f"got error={value.get('error')}"
+                    value.get("ok"),
+                    False,
+                    f"snapshot runtime.{field} should NOT be unavailable/placeholder; got error={value.get('error')}",
                 )
 
         # health: real status/pid/python/contracts from config_module
@@ -1448,12 +1516,20 @@ class BackendRouteModuleTests(unittest.TestCase):
                     {
                         "name": "read_page",
                         "description": "Read a public browser page.",
-                        "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"url": {"type": "string"}},
+                            "required": ["url"],
+                        },
                     },
                     {
                         "name": "browser_click",
                         "description": "Click a browser element on behalf of the user.",
-                        "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]},
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"selector": {"type": "string"}},
+                            "required": ["selector"],
+                        },
                     },
                 ]
             }
@@ -2096,9 +2172,7 @@ for line in sys.stdin:
             )
             client = TestClient(app)
 
-            degraded = client.get(
-                "/capabilities?user_id=desktop&real_user_id=master&character_pack_id=reimu"
-            ).json()
+            degraded = client.get("/capabilities?user_id=desktop&real_user_id=master&character_pack_id=reimu").json()
             by_id = {item["id"]: item for item in degraded["capabilities"]}
             self.assertIn("provider.voice.text_only", by_id)
             self.assertIn("provider.asr.text_input", by_id)
@@ -2121,9 +2195,7 @@ for line in sys.stdin:
                 json={},
             ).json()
             self.assertTrue(health["ok"])
-            ready = client.get(
-                "/capabilities?user_id=desktop&real_user_id=master&character_pack_id=reimu"
-            ).json()
+            ready = client.get("/capabilities?user_id=desktop&real_user_id=master&character_pack_id=reimu").json()
             ready_resolution = ready["resolutions"]["voice.tts.character"]
             self.assertEqual(ready_resolution["status"], "ready")
             self.assertEqual(ready_resolution["requestedProviderId"], "provider.tts.gpt_sovits.local")
@@ -2594,17 +2666,21 @@ for line in sys.stdin:
                     lyrics_searcher=fake_search,
                 )
             )
-            result = TestClient(app).post(
-                "/capabilities/music/lyrics",
-                json={
-                    "user_id": "desktop",
-                    "real_user_id": "master",
-                    "trackKey": "qqmusic::淘汰::陈奕迅",
-                    "title": "淘汰 - 陈奕迅",
-                    "artist": "",
-                    "source": "system_media",
-                },
-            ).json()
+            result = (
+                TestClient(app)
+                .post(
+                    "/capabilities/music/lyrics",
+                    json={
+                        "user_id": "desktop",
+                        "real_user_id": "master",
+                        "trackKey": "qqmusic::淘汰::陈奕迅",
+                        "title": "淘汰 - 陈奕迅",
+                        "artist": "",
+                        "source": "system_media",
+                    },
+                )
+                .json()
+            )
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["status"], "ready")
@@ -2657,17 +2733,24 @@ for line in sys.stdin:
                 resolve_identity_from_query=resolve_query,
             )
         )
-        disabled = TestClient(disabled_app).post(
-            "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
-            json={"title": "晴天", "artist": "周杰伦"},
-        ).json()
+        disabled = (
+            TestClient(disabled_app)
+            .post(
+                "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
+                json={"title": "晴天", "artist": "周杰伦"},
+            )
+            .json()
+        )
         self.assertFalse(disabled["ok"])
         self.assertEqual(disabled["status"], "disabled")
         self.assertEqual(disabled["reason"], "network_lyrics_disabled")
 
-        with tempfile.TemporaryDirectory() as temp_dir, patch(
-            "companion_v01.music_lyrics.syncedlyrics_available",
-            return_value=False,
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch(
+                "companion_v01.music_lyrics.syncedlyrics_available",
+                return_value=False,
+            ),
         ):
             missing_dep_app = FastAPI()
             missing_dep_app.include_router(
@@ -2677,10 +2760,14 @@ for line in sys.stdin:
                     resolve_identity_from_query=resolve_query,
                 )
             )
-            missing_dep = TestClient(missing_dep_app).post(
-                "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
-                json={"title": "晴天", "artist": "周杰伦"},
-            ).json()
+            missing_dep = (
+                TestClient(missing_dep_app)
+                .post(
+                    "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
+                    json={"title": "晴天", "artist": "周杰伦"},
+                )
+                .json()
+            )
             self.assertFalse(missing_dep["ok"])
             self.assertEqual(missing_dep["status"], "unavailable")
             self.assertEqual(missing_dep["reason"], "syncedlyrics_missing")
@@ -2745,9 +2832,7 @@ for line in sys.stdin:
             missing_payload = missing.json()
             self.assertTrue(missing_payload["ok"])
             self.assertEqual(missing_payload["execution"], "read-only")
-            workflow = {item["id"]: item for item in missing_payload["workflows"]}[
-                "workflow.workshop.portrait.cutout"
-            ]
+            workflow = {item["id"]: item for item in missing_payload["workflows"]}["workflow.workshop.portrait.cutout"]
             self.assertEqual(workflow["kind"], "workflow")
             self.assertEqual(workflow["capabilityId"], "workshop.portrait.cutout")
             self.assertEqual(workflow["workflowId"], "workflow.comfyui.portrait_cutout")
@@ -2882,7 +2967,9 @@ for line in sys.stdin:
             self.assertTrue(imported_workflow_file["ok"])
             self.assertEqual(imported_workflow_file["status"], "workflow_file_saved")
             self.assertEqual(imported_workflow_file["workflowPath"], "workflows/comfyui/portrait_cutout.json")
-            imported_file_path = Path(temp_dir) / "master" / "capabilities" / "workflows" / "comfyui" / "portrait_cutout.json"
+            imported_file_path = (
+                Path(temp_dir) / "master" / "capabilities" / "workflows" / "comfyui" / "portrait_cutout.json"
+            )
             self.assertTrue(imported_file_path.is_file())
             imported_text = imported_file_path.read_text(encoding="utf-8").lower()
             self.assertNotIn(str(Path(temp_dir)).lower(), imported_text)
@@ -3123,9 +3210,7 @@ for line in sys.stdin:
             job_id = inert_payload["jobId"]
             self.assertTrue(job_id.startswith("workflowjob_"))
 
-            status_response = client.get(
-                f"/capabilities/workflow-jobs/{job_id}?user_id=desktop&real_user_id=master"
-            )
+            status_response = client.get(f"/capabilities/workflow-jobs/{job_id}?user_id=desktop&real_user_id=master")
             self.assertEqual(status_response.status_code, 200)
             status_payload = status_response.json()
             self.assertTrue(status_payload["ok"])
@@ -3144,9 +3229,7 @@ for line in sys.stdin:
             self.assertEqual(wrong_profile.status_code, 404)
             self.assertEqual(wrong_profile.json()["status"], "unknown_workflow_job")
 
-            unknown_job = client.get(
-                "/capabilities/workflow-jobs/token_secret?user_id=desktop&real_user_id=master"
-            )
+            unknown_job = client.get("/capabilities/workflow-jobs/token_secret?user_id=desktop&real_user_id=master")
             self.assertEqual(unknown_job.status_code, 404)
             self.assertEqual(unknown_job.json()["status"], "unknown_workflow_job")
 
@@ -3665,9 +3748,7 @@ for line in sys.stdin:
             self.assertNotIn("token", response_text)
             self.assertNotIn("secret", response_text)
 
-            profiles_payload = client.get(
-                "/capabilities/voice-profiles?user_id=desktop&real_user_id=master"
-            ).json()
+            profiles_payload = client.get("/capabilities/voice-profiles?user_id=desktop&real_user_id=master").json()
             profiles_text = json.dumps(profiles_payload, ensure_ascii=False).lower()
             self.assertTrue(profiles_payload["ok"])
             self.assertEqual(profiles_payload["summary"]["total"], 1)
@@ -3767,9 +3848,7 @@ for line in sys.stdin:
 
             config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
             self.assertFalse(config_path.exists(), "inspect-folder must not persist a voice profile")
-            profiles_payload = client.get(
-                "/capabilities/voice-profiles?user_id=desktop&real_user_id=master"
-            ).json()
+            profiles_payload = client.get("/capabilities/voice-profiles?user_id=desktop&real_user_id=master").json()
             profiles_text = json.dumps(profiles_payload, ensure_ascii=False).lower()
             self.assertEqual(profiles_payload["summary"]["total"], 0)
             self.assertNotIn(str(model_dir).lower(), profiles_text)

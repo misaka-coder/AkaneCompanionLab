@@ -104,25 +104,16 @@ class MemoryStoreEvalTurnTests(unittest.TestCase):
                     "eval_turns",
                     "chat_sessions",
                 ):
-                    columns = {
-                        row[1]
-                        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-                    }
+                    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
                     self.assertIn("character_pack_id", columns)
                     if table_name in {"chat_messages", "memory_summaries", "memory_semantic_summaries"}:
                         self.assertIn("memory_metadata_json", columns)
 
-                summary_columns = {
-                    row[1]
-                    for row in conn.execute("PRAGMA table_info(memory_summaries)").fetchall()
-                }
+                summary_columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_summaries)").fetchall()}
                 self.assertIn("is_semanticized", summary_columns)
 
                 indexes = {
-                    row[0]
-                    for row in conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type = 'index'"
-                    ).fetchall()
+                    row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
                 }
                 self.assertIn("idx_chat_profile_character_time", indexes)
                 self.assertIn("idx_summary_profile_character_time", indexes)
@@ -267,7 +258,9 @@ class MemoryStoreEvalTurnTests(unittest.TestCase):
 
             self.assertEqual(store.get_message_by_source_id(raw["source_id"])["memory_metadata"], raw_metadata)
             self.assertEqual(store.get_summary_by_id(summary["summary_id"])["memory_metadata"], summary_metadata)
-            self.assertEqual(store.get_semantic_summary_by_id(semantic["semantic_id"])["memory_metadata"], semantic_metadata)
+            self.assertEqual(
+                store.get_semantic_summary_by_id(semantic["semantic_id"])["memory_metadata"], semantic_metadata
+            )
 
     def test_character_pack_id_scopes_raw_and_visible_memory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -450,7 +443,12 @@ class MemoryStoreEvalTurnTests(unittest.TestCase):
                 final_json={
                     "emotion": "battle_focus",
                     "character": {"outfit": "armor"},
-                    "scene": {"major": "battlefield", "minor": "frontline", "background": "siege_fire", "bgm": "war_drums"},
+                    "scene": {
+                        "major": "battlefield",
+                        "minor": "frontline",
+                        "background": "siege_fire",
+                        "bgm": "war_drums",
+                    },
                 },
             )
 
@@ -789,6 +787,28 @@ class MemoryStoreEvalTurnTests(unittest.TestCase):
             self.assertEqual(focused["current_gift_focus_updated_at"], 110)
             self.assertIsNotNone(cleared)
             self.assertEqual(cleared["current_gift_focus_asset_id"], "")
+
+    def test_session_character_mismatch_does_not_overwrite_existing_session_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            created = store.ensure_session(
+                profile_user_id="user_a",
+                session_id="session_a",
+                character_pack_id="reimu",
+                timestamp=100,
+            )
+
+            reused = store.ensure_session(
+                profile_user_id="user_a",
+                session_id="session_a",
+                character_pack_id="akane_v1",
+                timestamp=110,
+            )
+
+            fetched = store.get_session("user_a", "session_a")
+            self.assertEqual(created["character_pack_id"], "reimu")
+            self.assertEqual(reused["character_pack_id"], "reimu")
+            self.assertEqual(fetched["character_pack_id"], "reimu")
 
     def test_vision_observation_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

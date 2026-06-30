@@ -122,6 +122,13 @@ def run_pre_retrieval_pipeline(
     current_user_source_id: str,
     verifier_debug_enabled: bool | None,
 ) -> RetrievalPipelineResult:
+    if _memory_backend() == "memcore":
+        return build_skipped_pre_retrieval_pipeline(
+            engine,
+            user_message=user_message,
+            now_ts=now_ts,
+            reason="memcore 模式下不再运行旧前置检索；由模型按需调用 memcore 记忆工具。",
+        )
     if not resolve_pre_retrieval_enabled(engine, payload=payload):
         return build_skipped_pre_retrieval_pipeline(
             engine,
@@ -261,6 +268,30 @@ def execute_retrieve_memory_tool(
                 retrieval_backend="memcore",
                 memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
             )
+        return _build_retrieve_memory_tool_result(
+            query=query,
+            keywords=keywords,
+            time_hint=time_hint,
+            source_layers=source_layers,
+            subject_scopes=subject_scopes,
+            categories=categories,
+            importance_min=importance_min,
+            limit=limit,
+            snippets=[],
+            retrieval_result=_build_memcore_retrieval_result(
+                snippets=[],
+                time_hint=time_hint,
+                source_layers=source_layers,
+                subject_scopes=subject_scopes,
+                categories=categories,
+                importance_min=importance_min,
+                memcore_payload=memcore_read_payload,
+            ),
+            verifier_output=_build_memcore_verifier_output([]),
+            verifier_timing={"mode": "memcore", "attempts": [], "selected_attempt": None},
+            retrieval_backend="memcore",
+            memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
+        )
     pipeline = engine._get_retrieval_service().run_explicit(
         profile_user_id=context.profile_user_id,
         character_pack_id=character_pack_id,

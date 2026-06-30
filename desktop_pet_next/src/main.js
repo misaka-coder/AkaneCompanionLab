@@ -3781,7 +3781,7 @@ function canUseBundledEmotionFallback() {
   return packId === "akane_v1" || identityId === "akane_v1";
 }
 
-async function ensureBackendSession({ restoreLatest = false } = {}) {
+async function ensureBackendSession({ restoreLatest = false, retriedCharacterMismatch = false } = {}) {
   if (resourceState.health !== "online") return null;
   try {
     const response = await backendFetch(buildBackendEndpointUrl("session_ensure", "/sessions/ensure", { t: Date.now() }), {
@@ -3798,7 +3798,20 @@ async function ensureBackendSession({ restoreLatest = false } = {}) {
       })
     });
 
-    if (!response.ok) throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
+    if (!response.ok) {
+      const errorPayload = await readOptionalJsonResponse(response);
+      if (response.status === 409 && !retriedCharacterMismatch && isSessionCharacterMismatch(errorPayload)) {
+        state.sessionId = generateSessionId();
+        persistCurrentCharacterRuntimeState();
+        lastTurnSignature = "";
+        lastTurnTextKey = "";
+        lastActivityActionSignature = "";
+        scheduleSave(0);
+        setRuntimeStatus("已为当前角色切换到独立会话", { mode: "idle" });
+        return ensureBackendSession({ restoreLatest: false, retriedCharacterMismatch: true });
+      }
+      throw new Error(formatBackendErrorPayload(errorPayload) || await readBackendErrorMessage(response, `HTTP ${response.status}`));
+    }
     const bundle = await response.json();
     if (restoreLatest && restoreLatestReply(bundle)) {
       setRuntimeStatus("已恢复上一轮回复", { mode: "idle" });
@@ -3815,6 +3828,23 @@ async function ensureBackendSession({ restoreLatest = false } = {}) {
     setRuntimeStatus(`本地待机中：${friendlyErrorMessage(formatError(error))}`, { mode: "offline" });
     return null;
   }
+}
+
+async function readOptionalJsonResponse(response) {
+  try {
+    return await response.clone().json();
+  } catch (_error) {
+    return null;
+  }
+}
+
+function isSessionCharacterMismatch(payload) {
+  return String(payload?.error || "").trim() === "session_character_mismatch";
+}
+
+function formatBackendErrorPayload(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  return String(payload.message || payload.error || payload.status || "").trim();
 }
 
 function restoreLatestReply(bundle) {

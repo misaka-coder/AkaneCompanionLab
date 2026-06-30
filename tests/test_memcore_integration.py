@@ -910,10 +910,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
             def get_unsummarized_messages(self, session_id: str, *, character_pack_id: str = "") -> list[dict]:
                 return []
 
-            def get_visible_episodic_summaries(self, profile_user_id: str, *, limit: int, character_pack_id: str = "") -> list[dict]:
+            def get_visible_episodic_summaries(
+                self, profile_user_id: str, *, limit: int, character_pack_id: str = ""
+            ) -> list[dict]:
                 return []
 
-            def get_recent_semantic_summaries(self, profile_user_id: str, *, limit: int, character_pack_id: str = "") -> list[dict]:
+            def get_recent_semantic_summaries(
+                self, profile_user_id: str, *, limit: int, character_pack_id: str = ""
+            ) -> list[dict]:
                 return []
 
         class _FakeRetrievalService:
@@ -1040,7 +1044,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(state["confirmed_snippets"], [])
         self.assertEqual(state["verifier_output"]["match_result"], "no_match")
 
-    def test_retrieve_memory_tool_falls_back_to_legacy_when_memcore_fails(self) -> None:
+    def test_retrieve_memory_tool_does_not_fallback_to_legacy_when_memcore_fails(self) -> None:
         memcore_manager = _ToolFakeMemcoreManager(
             {
                 "operation": "retrieve_memory",
@@ -1063,11 +1067,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 context=_tool_context(),
             )
 
-        self.assertIn("legacy fallback snippet", result.followup_context)
-        self.assertEqual(len(retrieval_service.calls), 1)
+        self.assertIn("没有找到足以回答主人问题", result.followup_context)
+        self.assertEqual(retrieval_service.calls, [])
         state = result.state_updates["memory_retrieval"]
-        self.assertEqual(state["retrieval_backend"], "legacy")
-        self.assertEqual(state["confirmed_snippets"], ["legacy fallback snippet"])
+        self.assertEqual(state["retrieval_backend"], "memcore")
+        self.assertEqual(state["confirmed_snippets"], [])
         self.assertEqual(state["memcore_read"]["status"], "failed")
         self.assertEqual(state["memcore_read"]["reason"], "boom")
         self.assertNotIn("snippets", state["memcore_read"])
@@ -1112,6 +1116,37 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(memcore_manager.calls[0]["character_pack_id"], "char")
         self.assertEqual(memcore_manager.calls[0]["current_user_record"]["source_id"], "current")
 
+    def test_final_prompt_context_does_not_fallback_to_legacy_when_memcore_fails(self) -> None:
+        memcore_manager = _PromptContextMemcoreManager(
+            {
+                "operation": "build_prompt_context",
+                "ok": False,
+                "status": "failed",
+                "reason": "boom",
+            }
+        )
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="现在的问题",
+                recent_raw=[{"role": "user", "content": "LEGACY RAW", "timestamp": 1712400000}],
+                recent_episodic_summaries=[{"diary_summary": "LEGACY EPISODIC", "timestamp": 1712400000}],
+                recent_semantic_summaries=[{"semantic_summary": "LEGACY SEMANTIC", "timestamp": 1712400000}],
+                confirmed_snippets=[],
+                now_ts=1712400000,
+                character_pack_id="char",
+            )
+
+        captured = engine.prompt_builder.kwargs
+        self.assertEqual(captured["raw_text"], "")
+        self.assertEqual(captured["episodic_summary_text"], "")
+        self.assertEqual(captured["semantic_summary_text"], "")
+        self.assertNotIn("LEGACY", repr(captured))
+
     def test_read_memory_timeline_tool_uses_memcore_adapter_in_memcore_mode(self) -> None:
         legacy = _TimelineLegacyService()
         memcore_manager = _TimelineMemcoreManager()
@@ -1151,6 +1186,34 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertTrue(memcore_manager.calls[0]["cross_conversation"])
         self.assertEqual(result.state_updates["memory_timeline"]["status"], "ok")
         self.assertEqual(result.state_updates["memory_timeline"]["message_count"], 1)
+
+    def test_read_memory_timeline_tool_does_not_fallback_to_legacy_when_memcore_unavailable(self) -> None:
+        legacy = _TimelineLegacyService()
+        memcore_manager = _TimelineMemcoreManager()
+        memcore_manager.available = False
+        service = MemcoreTimelineToolService(legacy_service=legacy, memcore_manager=memcore_manager)
+        handler = ReadMemoryTimelineToolHandler(timeline_service=service)
+        call = handler.normalize_call({"type": "read_memory_timeline", "date": "2026-06-13"})
+        self.assertIsNotNone(call)
+        assert call is not None
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = handler.execute(
+                call=call,
+                context=ToolExecutionContext(
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                    now_ts=_ts(2026, 6, 13, 12, 0),
+                    visual_payload={},
+                    current_user_source_id="current-query",
+                ),
+            )
+
+        self.assertEqual(legacy.read_calls, [])
+        self.assertNotIn("LEGACY TIMELINE", result.followup_context)
+        self.assertEqual(result.state_updates["memory_timeline"]["backend"], "memcore")
+        self.assertEqual(result.state_updates["memory_timeline"]["status"], "unavailable")
 
 
 if __name__ == "__main__":

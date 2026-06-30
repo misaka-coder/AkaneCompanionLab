@@ -184,10 +184,7 @@ READ_MEMORY_TIMELINE_INPUT_SCHEMA: dict[str, Any] = {
 
 
 LIST_REMINDERS_INPUT_SCHEMA: dict[str, Any] = {
-    "description": (
-        "List the user's reminders. Use it when the user asks what reminders "
-        "they currently have."
-    ),
+    "description": ("List the user's reminders. Use it when the user asks what reminders they currently have."),
     "type": "object",
     "additionalProperties": False,
     "properties": {
@@ -208,10 +205,7 @@ LIST_REMINDERS_INPUT_SCHEMA: dict[str, Any] = {
 
 
 CHECK_INVENTORY_INPUT_SCHEMA: dict[str, Any] = {
-    "description": (
-        "Check gift inventory. Use it when the user asks about gifts on hand or "
-        "in the gift box."
-    ),
+    "description": ("Check gift inventory. Use it when the user asks about gifts on hand or in the gift box."),
     "type": "object",
     "additionalProperties": False,
     "properties": {
@@ -466,43 +460,160 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         input_schema=LOAD_CHARACTER_CONTEXT_INPUT_SCHEMA,
     ),
     "set_reminder": ToolMetadata(family="reminder", operation="control", risk="low", default_round_budget=3),
-    "list_reminders": ToolMetadata(family="reminder", operation="read", risk="low", default_round_budget=3, input_schema=LIST_REMINDERS_INPUT_SCHEMA),
+    "list_reminders": ToolMetadata(
+        family="reminder",
+        operation="read",
+        risk="low",
+        default_round_budget=3,
+        input_schema=LIST_REMINDERS_INPUT_SCHEMA,
+    ),
     "cancel_reminder": ToolMetadata(family="reminder", operation="control", risk="low", default_round_budget=3),
     "call_npc": ToolMetadata(family="web_scene", operation="mixed", risk="low", default_round_budget=3),
-    "check_inventory": ToolMetadata(family="web_scene", operation="read", risk="low", default_round_budget=3, input_schema=CHECK_INVENTORY_INPUT_SCHEMA),
+    "check_inventory": ToolMetadata(
+        family="web_scene",
+        operation="read",
+        risk="low",
+        default_round_budget=3,
+        input_schema=CHECK_INVENTORY_INPUT_SCHEMA,
+    ),
     "manage_gift": ToolMetadata(family="web_scene", operation="control", risk="low", default_round_budget=3),
     "manage_artifact": ToolMetadata(family="web_scene", operation="control", risk="low", default_round_budget=3),
     "manage_persona": ToolMetadata(family="persona", operation="control", risk="medium", default_round_budget=3),
-    "manage_task_workspace": ToolMetadata(family="task_workspace", operation="control", risk="medium", default_round_budget=3),
-    "delegate_task": ToolMetadata(family="background_task", operation="background", risk="medium", default_round_budget=3, background=True),
+    "manage_task_workspace": ToolMetadata(
+        family="task_workspace", operation="control", risk="medium", default_round_budget=3
+    ),
+    "delegate_task": ToolMetadata(
+        family="background_task", operation="background", risk="medium", default_round_budget=3, background=True
+    ),
     "web_search": ToolMetadata(family="web_research", operation="read", risk="low", default_round_budget=8),
-    "open_browser": ToolMetadata(family="browser_control", operation="control", risk="medium", default_round_budget=6, requires_confirmation=True),
-    "browser_page": ToolMetadata(family="browser_control", operation="mixed", risk="medium", default_round_budget=10, requires_confirmation=True),
-    "open_music_search": ToolMetadata(family="music_request", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
-    "fetch_media_from_url": ToolMetadata(family="media_fetch", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
-    "sync_attachment_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3, input_schema=SYNC_ATTACHMENT_WORKSPACE_INPUT_SCHEMA),
-    "inspect_attachment": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3, input_schema=INSPECT_ATTACHMENT_INPUT_SCHEMA),
+    "open_browser": ToolMetadata(
+        family="browser_control", operation="control", risk="medium", default_round_budget=6, requires_confirmation=True
+    ),
+    "browser_page": ToolMetadata(
+        family="browser_control", operation="mixed", risk="medium", default_round_budget=10, requires_confirmation=True
+    ),
+    "open_music_search": ToolMetadata(
+        family="music_request", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True
+    ),
+    "fetch_media_from_url": ToolMetadata(
+        family="media_fetch", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True
+    ),
+    "sync_attachment_workspace": ToolMetadata(
+        family="file_workspace",
+        operation="read",
+        risk="low",
+        default_round_budget=3,
+        input_schema=SYNC_ATTACHMENT_WORKSPACE_INPUT_SCHEMA,
+    ),
+    "inspect_attachment": ToolMetadata(
+        family="file_workspace",
+        operation="read",
+        risk="low",
+        default_round_budget=3,
+        input_schema=INSPECT_ATTACHMENT_INPUT_SCHEMA,
+    ),
     "retry_attachment": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=3),
-    "clear_attachment_focus": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=3),
-    "read_attachment_section": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3, input_schema=READ_ATTACHMENT_SECTION_INPUT_SCHEMA),
-    "list_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=4, input_schema=LIST_WORKSPACE_INPUT_SCHEMA),
-    "read_workspace": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=4, input_schema=READ_WORKSPACE_INPUT_SCHEMA),
+    "clear_attachment_focus": ToolMetadata(
+        family="file_workspace", operation="control", risk="low", default_round_budget=3
+    ),
+    "read_attachment_section": ToolMetadata(
+        family="file_workspace",
+        operation="read",
+        risk="low",
+        default_round_budget=3,
+        input_schema=READ_ATTACHMENT_SECTION_INPUT_SCHEMA,
+    ),
+    "list_workspace": ToolMetadata(
+        family="file_workspace",
+        operation="read",
+        risk="low",
+        default_round_budget=4,
+        input_schema=LIST_WORKSPACE_INPUT_SCHEMA,
+    ),
+    "read_workspace": ToolMetadata(
+        family="file_workspace",
+        operation="read",
+        risk="low",
+        default_round_budget=4,
+        input_schema=READ_WORKSPACE_INPUT_SCHEMA,
+    ),
     "focus_workspace": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=4),
-    "register_workspace_items": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=4),
-    "compose_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
-    "revise_generated_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
-    "apply_style_to_existing_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True),
-    "inspect_generated_file": ToolMetadata(family="file_workspace", operation="read", risk="low", default_round_budget=3, input_schema=INSPECT_GENERATED_FILE_INPUT_SCHEMA),
-    "manage_generated_file": ToolMetadata(family="file_workspace", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True),
-    "send_file": ToolMetadata(family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True),
-    "send_generated_file": ToolMetadata(family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True),
+    "register_workspace_items": ToolMetadata(
+        family="file_workspace", operation="control", risk="low", default_round_budget=4
+    ),
+    "compose_file": ToolMetadata(
+        family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True
+    ),
+    "revise_generated_file": ToolMetadata(
+        family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True
+    ),
+    "apply_style_to_existing_file": ToolMetadata(
+        family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True
+    ),
+    "inspect_generated_file": ToolMetadata(
+        family="file_workspace",
+        operation="read",
+        risk="low",
+        default_round_budget=3,
+        input_schema=INSPECT_GENERATED_FILE_INPUT_SCHEMA,
+    ),
+    "manage_generated_file": ToolMetadata(
+        family="file_workspace", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True
+    ),
+    "send_file": ToolMetadata(
+        family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True
+    ),
+    "send_generated_file": ToolMetadata(
+        family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True
+    ),
     "send_sticker": ToolMetadata(family="social_delivery", operation="control", risk="low", default_round_budget=3),
-    "inspect_media_info": ToolMetadata(family="media_workbench", operation="read", risk="low", default_round_budget=3, input_schema=INSPECT_MEDIA_INFO_INPUT_SCHEMA),
-    "separate_audio_stems": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
-    "clean_voice_track": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
-    "transcribe_media": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
-    "prepare_voice_dataset": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
-    "convert_media_file": ToolMetadata(family="media_workbench", operation="background", risk="medium", default_round_budget=4, background=True, requires_confirmation=True),
+    "inspect_media_info": ToolMetadata(
+        family="media_workbench",
+        operation="read",
+        risk="low",
+        default_round_budget=3,
+        input_schema=INSPECT_MEDIA_INFO_INPUT_SCHEMA,
+    ),
+    "separate_audio_stems": ToolMetadata(
+        family="media_workbench",
+        operation="background",
+        risk="medium",
+        default_round_budget=4,
+        background=True,
+        requires_confirmation=True,
+    ),
+    "clean_voice_track": ToolMetadata(
+        family="media_workbench",
+        operation="background",
+        risk="medium",
+        default_round_budget=4,
+        background=True,
+        requires_confirmation=True,
+    ),
+    "transcribe_media": ToolMetadata(
+        family="media_workbench",
+        operation="background",
+        risk="medium",
+        default_round_budget=4,
+        background=True,
+        requires_confirmation=True,
+    ),
+    "prepare_voice_dataset": ToolMetadata(
+        family="media_workbench",
+        operation="background",
+        risk="medium",
+        default_round_budget=4,
+        background=True,
+        requires_confirmation=True,
+    ),
+    "convert_media_file": ToolMetadata(
+        family="media_workbench",
+        operation="background",
+        risk="medium",
+        default_round_budget=4,
+        background=True,
+        requires_confirmation=True,
+    ),
 }
 
 
@@ -556,7 +667,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         schema_text = self._schema_prompt_text()
         parts = [
             f"- {self.tool_type}：{description or '调用本地 MCP 工具。'}",
-            f"调用格式为 {{\"type\":\"{self.tool_type}\", ...参数...}}。",
+            f'调用格式为 {{"type":"{self.tool_type}", ...参数...}}。',
         ]
         if schema_text:
             parts.append(f"参数 schema: {schema_text}。")
@@ -734,8 +845,8 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         if not body:
             body = "(MCP 工具没有返回可读内容。)"
         if bool(getattr(result, "is_error", False)):
-            return f"MCP 工具返回业务错误：\n{body[:self.MAX_FOLLOWUP_CHARS]}"
-        return f"MCP 工具返回：\n{body[:self.MAX_FOLLOWUP_CHARS]}"
+            return f"MCP 工具返回业务错误：\n{body[: self.MAX_FOLLOWUP_CHARS]}"
+        return f"MCP 工具返回：\n{body[: self.MAX_FOLLOWUP_CHARS]}"
 
     def _schema_prompt_text(self) -> str:
         schema = self._input_schema()
@@ -788,7 +899,11 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
 
     def _safe_public_text(self, value: Any, *, limit: int) -> str:
         text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-        text = re.sub(r"(?i)\b(api[_-]?key|authorization|bearer|cookie|password|secret|token)\s*[:=]\s*[^\s,;]+", r"\1=[redacted]", text)
+        text = re.sub(
+            r"(?i)\b(api[_-]?key|authorization|bearer|cookie|password|secret|token)\s*[:=]\s*[^\s,;]+",
+            r"\1=[redacted]",
+            text,
+        )
         text = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text)
         text = re.sub(r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s]+", "[local_path]", text)
         return re.sub(r"\s+", " ", text).strip()[:limit]
@@ -832,10 +947,10 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
             "- retrieve_memory：当你看完当前原始上下文、阶段摘要、长期语义记忆和可用回忆片段后，"
             "仍然觉得需要主动回想更早内容时使用。"
             "它在系统里叫工具，但对你来说就是自己的深层记忆空间；这是你在心里翻回忆，不是对用户说出口的话。"
-            "格式为 {\"type\":\"retrieve_memory\",\"query\":\"简短搜索短句\",\"keywords\":[\"关键词\"],"
-            "\"time_hint\":{\"date_label\":\"YYYY-MM-DD\",\"time_of_day\":\"morning|afternoon|night|midnight\"},"
-            "\"source_layers\":[\"raw\",\"summary\",\"semantic_summary\"],\"subject_scopes\":[\"user\",\"assistant\",\"other\"],"
-            "\"categories\":[\"preference\",\"plan_goal\",\"project_work\"],\"importance_min\":0.0,\"limit\":4}。"
+            '格式为 {"type":"retrieve_memory","query":"简短搜索短句","keywords":["关键词"],'
+            '"time_hint":{"date_label":"YYYY-MM-DD","time_of_day":"morning|afternoon|night|midnight"},'
+            '"source_layers":["raw","summary","semantic_summary"],"subject_scopes":["user","assistant","other"],'
+            '"categories":["preference","plan_goal","project_work"],"importance_min":0.0,"limit":4}。'
             "query 要写具体实体、地点、人物、事件或偏好，不要写“帮我回忆一下”这类空泛句。"
             "source_layers、subject_scopes、categories、importance_min 只在你有把握时填写；subject_scopes/categories 多选是 OR 命中，不要求全中。"
             "当用户问生日、重要日期、偏好、称呼、旧约定、跨端聊过的人/事/项目等个人旧事实，而当前可见记忆没有明确答案时，可以自然在这里翻一下。"
@@ -1024,8 +1139,8 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
             "- read_memory_timeline：只在用户明确提到某一天、连续日期范围或上午/下午/夜晚/凌晨，"
             "并希望查看、核对或回想当时的原始逐句对话时使用。"
             "它按数据库时间精确读取原始聊天，不做向量搜索，也不读取阶段摘要或长期记忆。"
-            "格式为 {\"type\":\"read_memory_timeline\",\"date_from\":\"YYYY-MM-DD\","
-            "\"date_to\":\"YYYY-MM-DD\",\"time_periods\":[\"morning|afternoon|night|midnight\"]}。"
+            '格式为 {"type":"read_memory_timeline","date_from":"YYYY-MM-DD",'
+            '"date_to":"YYYY-MM-DD","time_periods":["morning|afternoon|night|midnight"]}。'
             "查单日时 date_from 与 date_to 填同一天；全天可省略 time_periods。"
             "普通的“你记得某人/某件事吗”“我们聊过什么”仍使用 retrieve_memory，"
             "不要为了找语义事实先大范围翻时间线。"
@@ -1048,9 +1163,7 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
         if raw_periods is None:
             raw_periods = value.get("periods") or value.get("time_of_day")
         if isinstance(raw_periods, str):
-            period_values = [
-                item for item in re.split(r"[,，;；|、\s]+", raw_periods) if item
-            ]
+            period_values = [item for item in re.split(r"[,，;；|、\s]+", raw_periods) if item]
         elif isinstance(raw_periods, list):
             period_values = [str(item or "") for item in raw_periods]
         else:
@@ -1070,15 +1183,14 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
             date_from=str(call.get("date_from") or ""),
             date_to=str(call.get("date_to") or ""),
             time_periods=list(call.get("time_periods") or []),
-            exclude_source_ids=[context.current_user_source_id]
-            if context.current_user_source_id
-            else [],
+            exclude_source_ids=[context.current_user_source_id] if context.current_user_source_id else [],
         )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             followup_context=self.timeline_service.render_tool_context(result),
             state_updates={
                 "memory_timeline": {
+                    "backend": str(result.get("backend") or ""),
                     "status": str(result.get("status") or ""),
                     "reason": str(result.get("reason") or ""),
                     "date_from": str(result.get("date_from") or ""),
@@ -1118,11 +1230,7 @@ class LoadCharacterContextToolHandler(BaseToolHandler):
         if raw_targets is None:
             raw_targets = value.get("files")
         if isinstance(raw_targets, str):
-            candidates = [
-                part.strip()
-                for part in re.split(r"[,，;；、\n]+", raw_targets)
-                if part.strip()
-            ]
+            candidates = [part.strip() for part in re.split(r"[,，;；、\n]+", raw_targets) if part.strip()]
         elif isinstance(raw_targets, (list, tuple, set)):
             candidates = [str(item or "").strip() for item in raw_targets]
         else:
@@ -1207,7 +1315,7 @@ class CallNPCToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- call_npc：当场景里需要路人、店员、摊主之类的临时 NPC 先回答一句时使用。"
-            "格式为 {\"type\":\"call_npc\",\"npc_name\":\"名字\",\"npc_role\":\"身份\",\"query\":\"要问的话\"}。"
+            '格式为 {"type":"call_npc","npc_name":"名字","npc_role":"身份","query":"要问的话"}。'
             "如果你输出 call_npc，speech 应该是你在 NPC 回答前先说出的那句台词。"
             "这句可以先回应用户、再顺势问 NPC，也可以直接转头问 NPC，不必固定写成“我帮你问问”。"
         )
@@ -1266,7 +1374,7 @@ class SetReminderToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- set_reminder：当用户明确要求你稍后提醒、明天提醒、今晚提醒某件事时使用。"
-            "格式为 {\"type\":\"set_reminder\",\"content\":\"提醒内容\",\"time_text\":\"原始时间说法\",\"offset_minutes\":5,\"date_label\":\"YYYY-MM-DD\",\"time_of_day\":\"morning|afternoon|night|midnight\",\"hour\":20,\"minute\":0}。"
+            '格式为 {"type":"set_reminder","content":"提醒内容","time_text":"原始时间说法","offset_minutes":5,"date_label":"YYYY-MM-DD","time_of_day":"morning|afternoon|night|midnight","hour":20,"minute":0}。'
             "其中 content 要写真正要提醒的事，time_text 保留用户原本的时间说法。"
             "如果是“5分钟后”“半小时后”“2小时后”这种相对时间，优先填写 offset_minutes。"
             "如果时间还太模糊，先直接追问，不要调用这个工具。"
@@ -1281,11 +1389,7 @@ class SetReminderToolHandler(BaseToolHandler):
             return None
 
         content = str(
-            value.get("content")
-            or value.get("task")
-            or value.get("reminder")
-            or value.get("text")
-            or ""
+            value.get("content") or value.get("task") or value.get("reminder") or value.get("text") or ""
         ).strip()
         if not content:
             return None
@@ -1299,9 +1403,7 @@ class SetReminderToolHandler(BaseToolHandler):
             "hour": self._coerce_int(value.get("hour")),
             "minute": self._coerce_int(value.get("minute")),
             "offset_minutes": self._coerce_int(
-                value.get("offset_minutes")
-                or value.get("delay_minutes")
-                or value.get("minutes_later")
+                value.get("offset_minutes") or value.get("delay_minutes") or value.get("minutes_later")
             ),
         }
         return normalized
@@ -1373,7 +1475,7 @@ class ListRemindersToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- list_reminders：当用户想查看自己现在有哪些提醒时使用。"
-            "格式为 {\"type\":\"list_reminders\",\"status\":\"pending\",\"limit\":5}。"
+            '格式为 {"type":"list_reminders","status":"pending","limit":5}。'
             "通常查看待提醒事项时，status 固定填 pending。"
         )
 
@@ -1447,7 +1549,7 @@ class CancelReminderToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- cancel_reminder：当用户明确要取消某条已经存在的提醒时使用。"
-            "格式为 {\"type\":\"cancel_reminder\",\"reminder_id\":\"...\",\"target_text\":\"提醒线索\",\"target_index\":2}。"
+            '格式为 {"type":"cancel_reminder","reminder_id":"...","target_text":"提醒线索","target_index":2}。'
             "如果你知道具体是哪一条，优先填 reminder_id；否则可以填 target_text 或 target_index。"
             "如果用户说得还不够明确，不要盲目取消，先追问或先调用 list_reminders。"
         )
@@ -1460,11 +1562,7 @@ class CancelReminderToolHandler(BaseToolHandler):
 
         reminder_id = str(value.get("reminder_id") or "").strip()
         target_text = str(
-            value.get("target_text")
-            or value.get("content")
-            or value.get("query")
-            or value.get("reminder")
-            or ""
+            value.get("target_text") or value.get("content") or value.get("query") or value.get("reminder") or ""
         ).strip()
         target_index = self._coerce_int(value.get("target_index") or value.get("index"))
         if not reminder_id and not target_text and target_index is None:
@@ -1613,7 +1711,7 @@ class CheckInventoryToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- check_inventory：当你需要查看手边礼物或自己的礼物库存时使用。"
-            "格式为 {\"type\":\"check_inventory\",\"scope\":\"pending_recent|pending_all|kept|internalized\",\"limit\":5}。"
+            '格式为 {"type":"check_inventory","scope":"pending_recent|pending_all|kept|internalized","limit":5}。'
             "正常只看手边时优先用 pending_recent；只有确实需要翻完整礼物箱时才用 pending_all。"
         )
 
@@ -1694,7 +1792,7 @@ class InspectAttachmentToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- inspect_attachment：当你需要展开查看当前材料工作台里的图片或文件时使用。"
-            "格式为 {\"type\":\"inspect_attachment\",\"target\":\"可选：附件id/标题/文件名/最近\",\"kind\":\"any|image|file|document|audio\"}。"
+            '格式为 {"type":"inspect_attachment","target":"可选：附件id/标题/文件名/最近","kind":"any|image|file|document|audio"}。'
             "工作台材料只是临时上下文，不是礼物、角色资源或长期记忆；单独查看某个材料时使用。"
             "如果要同时对比多份材料，优先使用 sync_attachment_workspace。"
         )
@@ -1706,7 +1804,9 @@ class InspectAttachmentToolHandler(BaseToolHandler):
             return None
         return {
             "type": self.tool_type,
-            "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "latest").strip()[:120],
+            "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "latest").strip()[
+                :120
+            ],
             "kind": self._normalize_kind(value.get("kind") or value.get("asset_type") or "any"),
         }
 
@@ -1755,8 +1855,8 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- read_attachment_section：当工作台材料较长、你需要展开某一页/某几行/某个表/某个 sheet 的内容时使用。"
-            "格式为 {\"type\":\"read_attachment_section\",\"target\":\"file_001|标题|文件名|latest\","
-            "\"section\":\"第2页|第10-30行|第1个表|Sheet1\",\"kind\":\"any|file|document\"}。"
+            '格式为 {"type":"read_attachment_section","target":"file_001|标题|文件名|latest",'
+            '"section":"第2页|第10-30行|第1个表|Sheet1","kind":"any|file|document"}。'
             "它只展开当前已解析出的可用文本片段；如果文件本身没有文本层或还没解析好，系统会告诉你。"
             "不要用它处理图片礼物或长期记忆。"
         )
@@ -1768,8 +1868,12 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
             return None
         return {
             "type": self.tool_type,
-            "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "latest").strip()[:120],
-            "section": str(value.get("section") or value.get("range") or value.get("page") or "当前可用片段").strip()[:120],
+            "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "latest").strip()[
+                :120
+            ],
+            "section": str(value.get("section") or value.get("range") or value.get("page") or "当前可用片段").strip()[
+                :120
+            ],
             "kind": self._normalize_kind(value.get("kind") or "document"),
         }
 
@@ -1817,7 +1921,7 @@ class SyncAttachmentWorkspaceToolHandler(BaseToolHandler):
         return (
             "- sync_attachment_workspace：当你需要整理当前材料工作台时使用。新发来的图片/文件通常会自动进入工作台；"
             "这个工具主要用于收起暂时不分析的材料、重新指定重点材料，或切换要对比的对象。"
-            "格式为 {\"type\":\"sync_attachment_workspace\",\"focus_targets\":[\"img_001\",\"第2张图\",\"菜单照片\"],\"kind\":\"any|image|file|document|audio\",\"reason\":\"为什么需要这些材料\"}。"
+            '格式为 {"type":"sync_attachment_workspace","focus_targets":["img_001","第2张图","菜单照片"],"kind":"any|image|file|document|audio","reason":"为什么需要这些材料"}。'
             "focus_targets 是整理后的最终工作台清单；可以一次保留多张图片或多个文件进行对比。"
             "未列入的其它材料会留在旁边材料清单，只给识别信息。"
             "系统会按上下文预算尽量展开你选中的材料；如果某些大文件放不下，会提示你用 read_attachment_section 指定页、行或 sheet。"
@@ -1902,7 +2006,7 @@ class ClearAttachmentFocusToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- clear_attachment_focus：当工作台图片/文件已经聊完、用户说发错了、或你判断不需要继续挂在上下文时使用。"
-            "格式为 {\"type\":\"clear_attachment_focus\",\"target\":\"current|latest|all|附件id/标题/文件名\",\"targets\":[\"img_001\",\"第2张图\"],\"kind\":\"any|image|file|document|audio\",\"reason\":\"可选原因\"}。"
+            '格式为 {"type":"clear_attachment_focus","target":"current|latest|all|附件id/标题/文件名","targets":["img_001","第2张图"],"kind":"any|image|file|document|audio","reason":"可选原因"}。'
             "清理多个指定材料时用 targets 数组；清理全部图片或文件时用 target=all 并配合 kind。"
             "它只清理当前材料工作台，不删除聊天记忆，也不处理礼物系统。"
         )
@@ -1917,7 +2021,9 @@ class ClearAttachmentFocusToolHandler(BaseToolHandler):
             targets = value.get("attachment_ids")
         return {
             "type": self.tool_type,
-            "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "current").strip()[:120],
+            "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "current").strip()[
+                :120
+            ],
             "targets": self._normalize_targets(targets),
             "kind": self._normalize_kind(value.get("kind") or "any"),
             "reason": str(value.get("reason") or "").strip()[:160],
@@ -2005,8 +2111,8 @@ class ListWorkspaceToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- list_workspace：列出 Akane 可访问文件夹中的一个或多个目录，适合先确认有哪些材料。"
-            "格式为 {\"type\":\"list_workspace\",\"paths\":[\"workspace:/Inbox\",\"workspace:/项目A\"],"
-            "\"depth\":1,\"max_entries\":10000}。"
+            '格式为 {"type":"list_workspace","paths":["workspace:/Inbox","workspace:/项目A"],'
+            '"depth":1,"max_entries":10000}。'
             "paths 支持批量；省略时列工作区根目录。只使用 workspace:/ 相对路径，不要填写本机绝对路径。"
             "用户只说“刚放进去”“工作区里的那个文件”但没给相对路径时，先列 workspace:/，不要反问本机位置。"
             "depth=1 列直接子项，更大值可展开子目录。隐藏仅表示未进入当前上下文，文件仍会出现在目录列表中。"
@@ -2086,8 +2192,8 @@ class ReadWorkspaceToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- read_workspace：批量读取工作区里的一个或多个文件。"
-            "格式为 {\"type\":\"read_workspace\",\"targets\":[\"workspace:/Inbox/a.md\","
-            "\"workspace:/项目A/记录.docx\"],\"max_chars\":1000000}。"
+            '格式为 {"type":"read_workspace","targets":["workspace:/Inbox/a.md",'
+            '"workspace:/项目A/记录.docx"],"max_chars":1000000}。'
             "支持文本、Word、Excel、PDF 和 ZIP 文件清单；音视频等二进制材料会返回需要专用工具处理的状态。"
             "只使用 list_workspace 返回的 workspace:/ 相对路径，不要填写或猜测本机绝对路径。"
         )
@@ -2150,8 +2256,8 @@ class FocusWorkspaceToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- focus_workspace：批量把工作区文件加载进持续上下文，或把它们从上下文隐藏；不会移动或删除物理文件。"
-            "格式为 {\"type\":\"focus_workspace\",\"action\":\"add|set|remove\","
-            "\"targets\":[\"workspace:/Inbox/a.md\",\"workspace:/项目A\"],\"recursive\":true}。"
+            '格式为 {"type":"focus_workspace","action":"add|set|remove",'
+            '"targets":["workspace:/Inbox/a.md","workspace:/项目A"],"recursive":true}。'
             "add 追加重点文件；set 用给定目标替换当前重点清单，targets=[] 可清空；remove 只隐藏给定目标。"
             "目录目标可递归展开为其中的文件。隐藏后的文件仍可被 list_workspace 找到并再次加载。"
         )
@@ -2239,9 +2345,9 @@ class RegisterWorkspaceItemsToolHandler(BaseToolHandler):
         return (
             "- register_workspace_items：把工作区中已有的一个或多个文件原地登记为附件 handle，"
             "之后可交给 inspect_media_info、transcribe_media、convert_media_file、send_file 等现有工具。"
-            "格式为 {\"type\":\"register_workspace_items\","
-            "\"targets\":[\"workspace:/Inbox/录音.wav\",\"workspace:/项目A\"],"
-            "\"recursive\":true,\"max_files\":500}。"
+            '格式为 {"type":"register_workspace_items",'
+            '"targets":["workspace:/Inbox/录音.wav","workspace:/项目A"],'
+            '"recursive":true,"max_files":500}。'
             "文件不会被复制、移动或删除；目录支持批量递归登记。"
             "只能使用 list_workspace 返回的 workspace:/ 路径，不要填写或猜测本机绝对路径。"
         )
@@ -2316,10 +2422,7 @@ class RegisterWorkspaceItemsToolHandler(BaseToolHandler):
         for item in registered:
             handle = item["handle"] or "(无)"
             item_status = item["item_status"] or item["status"]
-            lines.append(
-                f"- {item['uri']} -> {handle} "
-                f"(registration={item['status']}, attachment={item_status})"
-            )
+            lines.append(f"- {item['uri']} -> {handle} (registration={item['status']}, attachment={item_status})")
             if item["reason"]:
                 lines.append(f"  reason: {item['reason']}")
         for target in target_results:
@@ -2332,9 +2435,7 @@ class RegisterWorkspaceItemsToolHandler(BaseToolHandler):
         if truncated:
             lines.append("- 文件数量达到本次技术上限，其余文件尚未登记。")
         if any(item.get("handle") for item in registered):
-            lines.append(
-                "- 后续工具请使用上面的 handle；音视频可继续检查、转写、转码或交付。"
-            )
+            lines.append("- 后续工具请使用上面的 handle；音视频可继续检查、转写、转码或交付。")
         elif not registered:
             lines.append("- 没有解析到可登记的普通文件。")
 
@@ -2360,7 +2461,7 @@ class RetryAttachmentToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- retry_attachment：当工作台图片/文件处理失败，且用户让你再试一次，或你需要重新读取失败材料时使用。"
-            "格式为 {\"type\":\"retry_attachment\",\"target\":\"latest|附件id|img_001|标题|文件名\",\"kind\":\"any|image|file|document|audio\",\"reason\":\"可选原因\"}。"
+            '格式为 {"type":"retry_attachment","target":"latest|附件id|img_001|标题|文件名","kind":"any|image|file|document|audio","reason":"可选原因"}。'
             "这个工具只会重新处理工作台材料，不会把它变成礼物、角色资源或长期记忆；成功后材料会回到当前材料工作台。"
         )
 
@@ -2371,7 +2472,9 @@ class RetryAttachmentToolHandler(BaseToolHandler):
             return None
         return {
             "type": self.tool_type,
-            "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "latest").strip()[:120],
+            "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "latest").strip()[
+                :120
+            ],
             "kind": self._normalize_kind(value.get("kind") or "any"),
             "reason": str(value.get("reason") or "").strip()[:160],
         }
@@ -2422,8 +2525,8 @@ class FetchMediaFromUrlToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- fetch_media_from_url：当用户直接给你公开视频/音频链接，想让你先把素材下载到当前工作台时使用。"
-            "格式为 {\"type\":\"fetch_media_from_url\",\"url\":\"https://...\",\"preferred_title\":\"可选标题\"}，"
-            "批量时可用 {\"type\":\"fetch_media_from_url\",\"urls\":[\"https://...\",\"https://...\"]}。"
+            '格式为 {"type":"fetch_media_from_url","url":"https://...","preferred_title":"可选标题"}，'
+            '批量时可用 {"type":"fetch_media_from_url","urls":["https://...","https://..."]}。'
             "在 QQ/桌宠模式里，如果用户只发来一个公开视频或音频链接，或说“下载/拉进来/转写/总结这个链接”，"
             "应优先调用这个工具实际获取素材；不要只凭猜测说链接打不开、需要登录或平台不稳定。"
             "如果用户说“再试一次/重新下载/继续试”，且最近对话里有明确链接，也应带上那个链接重新调用。"
@@ -2503,7 +2606,7 @@ class OpenBrowserToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- open_browser：仅当用户明确要求你打开一个公开网页 URL 时使用。"
-            "格式为 {\"type\":\"open_browser\",\"url\":\"https://...\",\"reason\":\"为什么打开\"}。"
+            '格式为 {"type":"open_browser","url":"https://...","reason":"为什么打开"}。'
             "它只会向桌宠前端请求打开系统浏览器，不读取网页、不点击、不下载、不填写表单。"
             "当用户说“打开给我看”“用浏览器打开”“打开这个链接/页面”时，优先使用 open_browser；"
             "如果还要你自己读取、滚动或操作页面，则用 browser_page 打开 Akane 托管浏览器窗口。"
@@ -2616,7 +2719,7 @@ class OpenMusicSearchToolHandler(BaseToolHandler):
         return (
             "- open_music_search：桌宠模式下，当用户明确要“点歌/放一首歌/搜一首歌给我听”时使用。"
             "它只会把歌名歌手变成公开音乐平台搜索页并请求桌宠打开浏览器，不会自动点击播放、登录、下载或控制播放器。"
-            "格式为 {\"type\":\"open_music_search\",\"title\":\"歌名\",\"artist\":\"歌手\",\"platform\":\"qq_music\"}。"
+            '格式为 {"type":"open_music_search","title":"歌名","artist":"歌手","platform":"qq_music"}。'
             "platform 可选 qq_music、netease_music、bilibili、youtube；用户没指定平台时默认 qq_music。"
             "如果用户要你继续在页面里点击或输入，应在打开后按 browser_page 的授权边界继续操作；"
             "不要声称歌曲已经开始播放，除非后续页面状态明确显示已播放。"
@@ -2628,11 +2731,7 @@ class OpenMusicSearchToolHandler(BaseToolHandler):
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
         title = self._normalize_query_part(
-            value.get("title")
-            or value.get("song")
-            or value.get("name")
-            or value.get("query")
-            or value.get("keyword")
+            value.get("title") or value.get("song") or value.get("name") or value.get("query") or value.get("keyword")
         )
         artist = self._normalize_query_part(value.get("artist") or value.get("singer") or value.get("author"))
         if not title:
@@ -2732,7 +2831,13 @@ class BrowserPageToolHandler(BaseToolHandler):
     MAX_SELECTOR_CHARS = 220
     MAX_FILL_TEXT_CHARS = 500
 
-    def __init__(self, *, browser_runner: Any = None, config_base_dir: Path | str | None = None, approval_checker: Callable[..., bool] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        browser_runner: Any = None,
+        config_base_dir: Path | str | None = None,
+        approval_checker: Callable[..., bool] | None = None,
+    ) -> None:
         self.browser_runner = browser_runner or ManagedBrowserPageRunner()
         self.config_base_dir = config_base_dir if config_base_dir is not None else getattr(config, "DATA_DIR", None)
         self.approval_checker = approval_checker
@@ -2742,24 +2847,24 @@ class BrowserPageToolHandler(BaseToolHandler):
             "- browser_page：仅在桌宠模式下，当用户明确要你打开并读取、滚动或操作一个公开网页，"
             "或继续处理 Akane 托管浏览器窗口的当前页面时使用。"
             "它会操作 Akane 自己启动的可见托管浏览器窗口，不会接管用户手动打开的 Edge/Chrome 标签页。"
-            "打开并读取托管窗口格式为 {\"type\":\"browser_page\",\"action\":\"navigate\",\"url\":\"https://...\",\"max_chars\":3000}；"
-            "一般不需要 open_for_user；只有用户还要求额外用系统浏览器打开同一链接给人看时，才加 \"open_for_user\":true；"
-            "读取当前页格式为 {\"type\":\"browser_page\",\"action\":\"read_text\",\"max_chars\":3000}；"
-            "观察当前页面状态格式为 {\"type\":\"browser_page\",\"action\":\"snapshot\",\"max_chars\":3000}，"
+            '打开并读取托管窗口格式为 {"type":"browser_page","action":"navigate","url":"https://...","max_chars":3000}；'
+            '一般不需要 open_for_user；只有用户还要求额外用系统浏览器打开同一链接给人看时，才加 "open_for_user":true；'
+            '读取当前页格式为 {"type":"browser_page","action":"read_text","max_chars":3000}；'
+            '观察当前页面状态格式为 {"type":"browser_page","action":"snapshot","max_chars":3000}，'
             "返回 accessibility snapshot 和元素 ref；"
-            "滚动当前页格式为 {\"type\":\"browser_page\",\"action\":\"scroll\",\"scroll_delta\":800,\"max_chars\":3000}；"
-            "查看当前页可见链接/按钮/输入框摘要格式为 {\"type\":\"browser_page\",\"action\":\"elements\",\"element_limit\":20}；"
+            '滚动当前页格式为 {"type":"browser_page","action":"scroll","scroll_delta":800,"max_chars":3000}；'
+            '查看当前页可见链接/按钮/输入框摘要格式为 {"type":"browser_page","action":"elements","element_limit":20}；'
             "如果用户已经明确给出多步浏览目标，例如“打开某站、滚动、点第一个视频/链接、告诉我当前页”，"
             "不要每完成一步就询问用户；在工具轮次预算和授权边界内继续调用下一步 browser_page，"
             "直到任务完成、候选不存在、页面不可用、需要登录/支付/上传/下载等真实阻塞，或控制动作缺少批准。"
             "高风险控制动作只有在用户已批准或能力策略为完全访问时才会执行："
             "snapshot 返回的 Visible link/video candidates 可直接按序号点击，"
-            "例如 {\"type\":\"browser_page\",\"action\":\"click\",\"candidate_index\":1}；"
-            "优先先 snapshot，再用 ref 点击/输入，例如 {\"type\":\"browser_page\",\"action\":\"click\",\"ref\":\"e3\"}；"
-            "CSS selector 仅作兼容，点击格式为 {\"type\":\"browser_page\",\"action\":\"click\",\"selector\":\"button:has-text('搜索')\"}；"
-            "输入格式为 {\"type\":\"browser_page\",\"action\":\"fill\",\"ref\":\"e4\",\"text\":\"搜索词\"}；"
-            "按键格式为 {\"type\":\"browser_page\",\"action\":\"press\",\"ref\":\"e4\",\"key\":\"Enter\"}。"
-            "查看当前页状态格式为 {\"type\":\"browser_page\",\"action\":\"current\"}。"
+            '例如 {"type":"browser_page","action":"click","candidate_index":1}；'
+            '优先先 snapshot，再用 ref 点击/输入，例如 {"type":"browser_page","action":"click","ref":"e3"}；'
+            'CSS selector 仅作兼容，点击格式为 {"type":"browser_page","action":"click","selector":"button:has-text(\'搜索\')"}；'
+            '输入格式为 {"type":"browser_page","action":"fill","ref":"e4","text":"搜索词"}；'
+            '按键格式为 {"type":"browser_page","action":"press","ref":"e4","key":"Enter"}。'
+            '查看当前页状态格式为 {"type":"browser_page","action":"current"}。'
             "如果用户只要求“打开给我看/在普通浏览器打开”且不需要你读取或操作，使用 open_browser；"
             "只有用户要你自己读取、总结、核对页面正文时才使用 browser_page。"
             "navigate/read_text/current/snapshot/scroll 会返回当前页面状态，不等于整站完整阅读；"
@@ -2802,10 +2907,7 @@ class BrowserPageToolHandler(BaseToolHandler):
         selector = self._normalize_selector(value.get("selector") or raw_target)
         ref = self._normalize_ref(value.get("ref") or value.get("element_ref") or value.get("target_ref") or raw_target)
         candidate_index = self._normalize_candidate_index(
-            value.get("candidate_index")
-            or value.get("candidateIndex")
-            or value.get("candidate")
-            or value.get("index")
+            value.get("candidate_index") or value.get("candidateIndex") or value.get("candidate") or value.get("index")
         )
         if action != "click":
             candidate_index = 0
@@ -2821,10 +2923,16 @@ class BrowserPageToolHandler(BaseToolHandler):
             "type": self.tool_type,
             "action": action,
             "url": url,
-            "max_chars": self._coerce_int(value.get("max_chars"), minimum=500, maximum=self.MAX_TEXT_CHARS, default=3000),
+            "max_chars": self._coerce_int(
+                value.get("max_chars"), minimum=500, maximum=self.MAX_TEXT_CHARS, default=3000
+            ),
             "open_for_user": self._coerce_bool(value.get("open_for_user") or value.get("openForUser")),
-            "scroll_delta": self._coerce_int(value.get("scroll_delta") or value.get("delta"), minimum=-2400, maximum=2400, default=800),
-            "element_limit": self._coerce_int(value.get("element_limit") or value.get("limit"), minimum=1, maximum=self.MAX_ELEMENT_LIMIT, default=20),
+            "scroll_delta": self._coerce_int(
+                value.get("scroll_delta") or value.get("delta"), minimum=-2400, maximum=2400, default=800
+            ),
+            "element_limit": self._coerce_int(
+                value.get("element_limit") or value.get("limit"), minimum=1, maximum=self.MAX_ELEMENT_LIMIT, default=20
+            ),
             "selector": selector,
             "ref": ref,
             "text": text,
@@ -2838,7 +2946,9 @@ class BrowserPageToolHandler(BaseToolHandler):
         open_for_user = bool(call.get("open_for_user"))
         max_chars = self._coerce_int(call.get("max_chars"), minimum=500, maximum=self.MAX_TEXT_CHARS, default=3000)
         scroll_delta = self._coerce_int(call.get("scroll_delta"), minimum=-2400, maximum=2400, default=800)
-        element_limit = self._coerce_int(call.get("element_limit"), minimum=1, maximum=self.MAX_ELEMENT_LIMIT, default=20)
+        element_limit = self._coerce_int(
+            call.get("element_limit"), minimum=1, maximum=self.MAX_ELEMENT_LIMIT, default=20
+        )
         selector = str(call.get("selector") or "").strip()
         ref = str(call.get("ref") or "").strip()
         text = str(call.get("text") or "").strip()
@@ -2871,7 +2981,11 @@ class BrowserPageToolHandler(BaseToolHandler):
             )
         normalized = self._normalize_result(result, fallback_action=action)
         open_event_url = url or str(normalized.url or "").strip()
-        open_event = self._build_open_event(open_event_url, normalized.title, client_mode=context.client_mode) if open_for_user else None
+        open_event = (
+            self._build_open_event(open_event_url, normalized.title, client_mode=context.client_mode)
+            if open_for_user
+            else None
+        )
         if not normalized.ok:
             return self._failure(normalized, open_event=open_event)
 
@@ -2927,7 +3041,9 @@ class BrowserPageToolHandler(BaseToolHandler):
                 "browser_page_url": safe_url,
                 "browser_page_title": safe_title,
                 "browser_open_requested": bool(open_event),
-                "browser_page_element_count": self._count_element_summary_lines(safe_text) if normalized.action == "elements" else 0,
+                "browser_page_element_count": self._count_element_summary_lines(safe_text)
+                if normalized.action == "elements"
+                else 0,
                 "browser_page_next_hint": next_hint,
                 "browser_control_status": normalized.status if normalized.action in self.CONTROL_ACTIONS else "",
             },
@@ -3093,7 +3209,9 @@ class BrowserPageToolHandler(BaseToolHandler):
         lowered = selector.lower()
         if any(marker in lowered for marker in self.SECRET_MARKERS):
             return ""
-        if re.search(r"(?i)(login|signin|sign-in|checkout|payment|delete|remove|publish|post|upload|download|logout)", selector):
+        if re.search(
+            r"(?i)(login|signin|sign-in|checkout|payment|delete|remove|publish|post|upload|download|logout)", selector
+        ):
             return ""
         return selector
 
@@ -3121,7 +3239,9 @@ class BrowserPageToolHandler(BaseToolHandler):
         if not text or len(text) > self.MAX_FILL_TEXT_CHARS:
             return ""
         lowered = text.lower()
-        if any(marker in lowered for marker in ("authorization:", "bearer ", "password=", "api_key=", "token=", "secret=")):
+        if any(
+            marker in lowered for marker in ("authorization:", "bearer ", "password=", "api_key=", "token=", "secret=")
+        ):
             return ""
         return text
 
@@ -3195,7 +3315,9 @@ class BrowserPageToolHandler(BaseToolHandler):
             },
         )
 
-    def _approval_checker_allows(self, *, action_id: str, call: Mapping[str, Any], context: ToolExecutionContext) -> bool:
+    def _approval_checker_allows(
+        self, *, action_id: str, call: Mapping[str, Any], context: ToolExecutionContext
+    ) -> bool:
         if not callable(self.approval_checker):
             return False
         try:
@@ -3320,8 +3442,8 @@ class WebSearchToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- web_search：当用户明确要你联网搜索、查最新资料、核对网页内容，或给出一个公开网页 URL 要你提取内容时使用。"
-            "搜索格式为 {\"type\":\"web_search\",\"action\":\"search\",\"query\":\"搜索词\",\"max_results\":5}；"
-            "网页提取格式为 {\"type\":\"web_search\",\"action\":\"extract\",\"url\":\"https://...\",\"max_chars\":3000}。"
+            '搜索格式为 {"type":"web_search","action":"search","query":"搜索词","max_results":5}；'
+            '网页提取格式为 {"type":"web_search","action":"extract","url":"https://...","max_chars":3000}。'
             "只搜索或提取公开网页；不要用它访问 localhost、内网地址、file 路径、登录页、付费页或用户私密链接。"
             "web_search 不会打开浏览器窗口、滚动网页或点击链接；如果用户要看页面或需要你继续操作某条结果，"
             "再调用 browser_page.navigate 或 open_browser。"
@@ -3342,7 +3464,9 @@ class WebSearchToolHandler(BaseToolHandler):
                 "type": self.tool_type,
                 "action": "extract",
                 "url": url,
-                "max_chars": self._coerce_int(value.get("max_chars"), minimum=500, maximum=self.MAX_EXTRACT_CHARS, default=3000),
+                "max_chars": self._coerce_int(
+                    value.get("max_chars"), minimum=500, maximum=self.MAX_EXTRACT_CHARS, default=3000
+                ),
             }
         if action == "batch_search":
             queries = self._normalize_queries(value.get("queries") or value.get("query"))
@@ -3398,9 +3522,7 @@ class WebSearchToolHandler(BaseToolHandler):
         arguments = self._build_mcp_arguments(call)
         redaction_terms = self._redaction_terms_for_server(server)
         try:
-            result = self._run_coro_blocking(
-                self._call_mcp(server=server, tool_name=action, arguments=arguments)
-            )
+            result = self._run_coro_blocking(self._call_mcp(server=server, tool_name=action, arguments=arguments))
         except McpStdioDiscoveryError as exc:
             return self._failure(str(exc) or "mcp_call_failed", "AnySearch MCP 调用失败或超时。")
         except Exception:
@@ -3516,10 +3638,20 @@ class WebSearchToolHandler(BaseToolHandler):
                 lines.append("没有拿到可用搜索结果。")
         else:
             for index, item in enumerate(results[: self.MAX_RESULTS], start=1):
-                title = self._sanitize_output(str(item.get("title") or item.get("name") or "无标题"), redaction_terms=redaction_terms)[:160]
-                url = self._sanitize_output(str(item.get("url") or item.get("link") or ""), redaction_terms=redaction_terms)[:500]
+                title = self._sanitize_output(
+                    str(item.get("title") or item.get("name") or "无标题"), redaction_terms=redaction_terms
+                )[:160]
+                url = self._sanitize_output(
+                    str(item.get("url") or item.get("link") or ""), redaction_terms=redaction_terms
+                )[:500]
                 snippet = self._sanitize_output(
-                    str(item.get("snippet") or item.get("summary") or item.get("description") or item.get("content") or ""),
+                    str(
+                        item.get("snippet")
+                        or item.get("summary")
+                        or item.get("description")
+                        or item.get("content")
+                        or ""
+                    ),
                     redaction_terms=redaction_terms,
                 )
                 lines.append(f"{index}. {title}")
@@ -3622,7 +3754,9 @@ class WebSearchToolHandler(BaseToolHandler):
         if isinstance(payload, str):
             return self._sanitize_output(payload, redaction_terms=redaction_terms)
         try:
-            return self._sanitize_output(json.dumps(payload, ensure_ascii=False, default=str), redaction_terms=redaction_terms)
+            return self._sanitize_output(
+                json.dumps(payload, ensure_ascii=False, default=str), redaction_terms=redaction_terms
+            )
         except Exception:
             return self._sanitize_output(str(payload), redaction_terms=redaction_terms)
 
@@ -3639,7 +3773,9 @@ class WebSearchToolHandler(BaseToolHandler):
         reason = str(status or "unavailable").strip()[:120]
         return ToolExecutionResult(
             tool_type=self.tool_type,
-            stream_events=[{"type": "web_search_completed", "provider": "anysearch", "status": "unavailable", "reason": reason}],
+            stream_events=[
+                {"type": "web_search_completed", "provider": "anysearch", "status": "unavailable", "reason": reason}
+            ],
             followup_context=f"AnySearch 联网能力暂时不可用：{message} 状态：{reason}。请自然告知用户，并不要编造搜索结果。",
             state_updates={"web_search_status": "unavailable", "web_search_reason": reason},
         )
@@ -3748,11 +3884,7 @@ class WebSearchToolHandler(BaseToolHandler):
     def _redaction_terms_for_server(self, server: Mapping[str, Any]) -> list[str]:
         terms: list[str] = []
         args = [str(item or "") for item in server.get("args") or []]
-        wanted = {
-            match.group(1)
-            for arg in args
-            for match in re.finditer(r"\$\{([A-Z_][A-Z0-9_]{0,79})\}", arg)
-        }
+        wanted = {match.group(1) for arg in args for match in re.finditer(r"\$\{([A-Z_][A-Z0-9_]{0,79})\}", arg)}
         raw_env = server.get("env") if isinstance(server.get("env"), Mapping) else {}
         for key in wanted:
             env_value = os.environ.get(key)
@@ -3843,13 +3975,13 @@ class ComposeFileToolHandler(BaseToolHandler):
             "- compose_file：当用户要你把工作台材料、已生成文件或当前对话内容整理成一个新文件时使用。"
             "如果用户明确要求生成/导出文件，或在已有任务后说“开始/继续/直接做”，不要只口头答应，"
             "应立刻在 tool_call 调用 compose_file。"
-            "格式为 {\"type\":\"compose_file\",\"source_ids\":[\"file_001\",\"gen_001\"],"
-            "\"task\":\"要整理/改写/导出的目标\",\"output_format\":\"md|txt|docx|xlsx|pdf|json|csv|html\","
-            "\"output_title\":\"文件标题\",\"structure\":\"summary|table|report|notes|custom\","
-            "\"style\":\"clean|formal|casual\",\"content_markdown\":\"你整理好的正文或 Markdown\","
-            "\"table_rows\":[[\"列1\",\"列2\"],[\"内容1\",\"内容2\"]],"
-            "\"formatting\":{\"header\":{\"bold\":true},\"columns\":[{\"match_header\":\"姓名\",\"font_color\":\"red\"}],"
-            "\"highlights\":[{\"text\":\"重点\",\"fill_color\":\"yellow\"}]},\"send_to_user\":true}。"
+            '格式为 {"type":"compose_file","source_ids":["file_001","gen_001"],'
+            '"task":"要整理/改写/导出的目标","output_format":"md|txt|docx|xlsx|pdf|json|csv|html",'
+            '"output_title":"文件标题","structure":"summary|table|report|notes|custom",'
+            '"style":"clean|formal|casual","content_markdown":"你整理好的正文或 Markdown",'
+            '"table_rows":[["列1","列2"],["内容1","内容2"]],'
+            '"formatting":{"header":{"bold":true},"columns":[{"match_header":"姓名","font_color":"red"}],'
+            '"highlights":[{"text":"重点","fill_color":"yellow"}]},"send_to_user":true}。'
             "这个工具只负责把你已经整理好的内容渲染成文件；如果需要提取重点、改写或排版，"
             "请把最终内容写进 content_markdown 或 table_rows，不要只写一句任务就指望工具替你思考。"
             "但如果用户只是要求忠实转换/导出原始附件（例如 TXT 转 PDF/Word、原文导出），"
@@ -3881,7 +4013,9 @@ class ComposeFileToolHandler(BaseToolHandler):
             "source_ids": self._normalize_sources(sources),
             "task": str(value.get("task") or value.get("instruction") or value.get("goal") or "").strip()[:500],
             "output_format": output_format,
-            "output_title": str(value.get("output_title") or value.get("title") or value.get("name") or "").strip()[:80],
+            "output_title": str(value.get("output_title") or value.get("title") or value.get("name") or "").strip()[
+                :80
+            ],
             "structure": str(value.get("structure") or value.get("layout") or "").strip()[:80],
             "style": str(value.get("style") or "").strip()[:80],
             "fidelity": str(value.get("fidelity") or "").strip()[:80],
@@ -3893,7 +4027,9 @@ class ComposeFileToolHandler(BaseToolHandler):
                 or ""
             ).strip()[:80000],
             "table_rows": table_rows,
-            "formatting": self._normalize_formatting(value.get("formatting") or value.get("styles") or value.get("style_rules")),
+            "formatting": self._normalize_formatting(
+                value.get("formatting") or value.get("styles") or value.get("style_rules")
+            ),
             "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
         }
 
@@ -4038,11 +4174,11 @@ class ConvertMediaFileToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- convert_media_file：当用户要把普通音频转成常见格式，或从普通视频文件里提取音频时使用。"
-            "格式为 {\"type\":\"convert_media_file\",\"source_id\":\"file_001|audio_001|gen_001\","
-            "\"output_format\":\"mp3|wav|flac|m4a|aac|ogg|opus\",\"output_title\":\"输出文件名\","
-            "\"start_time\":\"00:00:35\",\"end_time\":\"00:01:20\",\"normalize_volume\":true,"
-            "\"volume_gain_db\":6,\"trim_silence\":true,\"fade_in_seconds\":2,\"fade_out_seconds\":3,\"speed_ratio\":1.25,"
-            "\"bitrate\":\"192k\",\"sample_rate\":44100,\"channels\":2,\"send_to_user\":true}。"
+            '格式为 {"type":"convert_media_file","source_id":"file_001|audio_001|gen_001",'
+            '"output_format":"mp3|wav|flac|m4a|aac|ogg|opus","output_title":"输出文件名",'
+            '"start_time":"00:00:35","end_time":"00:01:20","normalize_volume":true,'
+            '"volume_gain_db":6,"trim_silence":true,"fade_in_seconds":2,"fade_out_seconds":3,"speed_ratio":1.25,'
+            '"bitrate":"192k","sample_rate":44100,"channels":2,"send_to_user":true}。'
             "它适合普通非加密音频转码、压缩体积、截取片段、音量标准化、整体音量增减、自动去掉头尾静音、淡入淡出、调速、从 mp4/mov/mkv/webm 等视频提取音轨；不要用于 kgm/ncm/qmc 等平台加密或专有缓存格式的解密。"
             "start_time、end_time、normalize_volume、volume_gain_db、trim_silence、fade_in_seconds、fade_out_seconds、speed_ratio、bitrate、sample_rate、channels 都是可选项：用户没指定时不要硬填。"
             "如果只是转 mp3，通常只填 source_id、output_format、output_title 即可；如果是语音识别/统一语音规格，可考虑 wav、sample_rate=16000、channels=1；音乐文件通常保留原采样率和声道更自然。"
@@ -4057,11 +4193,7 @@ class ConvertMediaFileToolHandler(BaseToolHandler):
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
         source_id = str(
-            value.get("source_id")
-            or value.get("source")
-            or value.get("target")
-            or value.get("attachment_id")
-            or ""
+            value.get("source_id") or value.get("source") or value.get("target") or value.get("attachment_id") or ""
         ).strip()
         if not source_id:
             return None
@@ -4079,7 +4211,9 @@ class ConvertMediaFileToolHandler(BaseToolHandler):
                 value.get("normalize_volume") or value.get("loudnorm") or value.get("normalize_audio"),
                 default=False,
             ),
-            "volume_gain_db": self._coerce_float(value.get("volume_gain_db") or value.get("gain_db") or value.get("volume_db") or 0),
+            "volume_gain_db": self._coerce_float(
+                value.get("volume_gain_db") or value.get("gain_db") or value.get("volume_db") or 0
+            ),
             "trim_silence": self._coerce_bool(
                 value.get("trim_silence")
                 or value.get("remove_silence")
@@ -4089,7 +4223,9 @@ class ConvertMediaFileToolHandler(BaseToolHandler):
             ),
             "fade_in_seconds": value.get("fade_in_seconds") or value.get("fade_in") or 0,
             "fade_out_seconds": value.get("fade_out_seconds") or value.get("fade_out") or 0,
-            "speed_ratio": self._coerce_float(value.get("speed_ratio") or value.get("speed") or value.get("atempo") or 0),
+            "speed_ratio": self._coerce_float(
+                value.get("speed_ratio") or value.get("speed") or value.get("atempo") or 0
+            ),
             "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
         }
 
@@ -4152,13 +4288,7 @@ class ConvertMediaFileToolHandler(BaseToolHandler):
             text = str(value or "").strip().lower()
             if not text:
                 return 0.0
-            text = (
-                text.replace("倍速", "")
-                .replace("倍", "")
-                .replace("分贝", "db")
-                .replace("x", "")
-                .strip()
-            )
+            text = text.replace("倍速", "").replace("倍", "").replace("分贝", "db").replace("x", "").strip()
             if text.endswith("db"):
                 text = text[:-2].strip()
             if text.endswith("%"):
@@ -4189,9 +4319,9 @@ class SeparateAudioStemsToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- separate_audio_stems：当用户想把一首歌、录音或带音轨视频拆成人声和伴奏两轨时使用。"
-            "格式为 {\"type\":\"separate_audio_stems\",\"source_id\":\"file_001|audio_001|gen_001\","
-            "\"mode\":\"vocals_instrumental\",\"output_format\":\"wav|flac|mp3\","
-            "\"output_title\":\"输出标题\",\"send_to_user\":true}。"
+            '格式为 {"type":"separate_audio_stems","source_id":"file_001|audio_001|gen_001",'
+            '"mode":"vocals_instrumental","output_format":"wav|flac|mp3",'
+            '"output_title":"输出标题","send_to_user":true}。'
             "当前只支持 vocals_instrumental，也就是分离出人声（vocals）和伴奏（instrumental）两份结果。"
             "这个工具负责拆轨，不负责后续精修；如果还要转码、裁剪、统一采样率、去头尾静音或调音量，请对分离后的结果再调用 convert_media_file。"
             "如果来源是普通视频文件，系统会先尝试抽取音轨再分离。不要用于 kgm/ncm/qmc 等平台加密或专有缓存格式的解密。"
@@ -4203,11 +4333,7 @@ class SeparateAudioStemsToolHandler(BaseToolHandler):
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
         source_id = str(
-            value.get("source_id")
-            or value.get("source")
-            or value.get("target")
-            or value.get("attachment_id")
-            or ""
+            value.get("source_id") or value.get("source") or value.get("target") or value.get("attachment_id") or ""
         ).strip()
         if not source_id:
             return None
@@ -4294,9 +4420,9 @@ class CleanVoiceTrackToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- clean_voice_track：当用户想把语音/人声再净化一下时使用，比如降噪、去混响、去回声、让说话更干净。"
-            "格式为 {\"type\":\"clean_voice_track\",\"source_id\":\"file_001|audio_001|gen_001\","
-            "\"mode\":\"denoise|dereverb|deecho|voice_focus\",\"quality\":\"auto|ai|basic\","
-            "\"output_format\":\"wav|flac|mp3\",\"output_title\":\"输出标题\",\"post_filter\":false,\"send_to_user\":true}。"
+            '格式为 {"type":"clean_voice_track","source_id":"file_001|audio_001|gen_001",'
+            '"mode":"denoise|dereverb|deecho|voice_focus","quality":"auto|ai|basic",'
+            '"output_format":"wav|flac|mp3","output_title":"输出标题","post_filter":false,"send_to_user":true}。'
             "它适合说话录音、直播片段、播客人声、分离后的人声轨；如果只是普通转码、裁剪、统一采样率、去头尾静音或调音量，请继续用 convert_media_file。"
             "quality=auto 会优先尝试本地 AI 语音净化模型（当前设计对接 DeepFilterNet），没装环境时再退回基础净化；quality=basic 表示直接走 ffmpeg 轻净化；quality=ai 表示只接受 AI 净化。"
             "mode 主要是意图提示：denoise 更偏降噪，dereverb/deecho 更偏混响与回声整理，voice_focus 更偏让人声主体更靠前。"
@@ -4309,11 +4435,7 @@ class CleanVoiceTrackToolHandler(BaseToolHandler):
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
         source_id = str(
-            value.get("source_id")
-            or value.get("source")
-            or value.get("target")
-            or value.get("attachment_id")
-            or ""
+            value.get("source_id") or value.get("source") or value.get("target") or value.get("attachment_id") or ""
         ).strip()
         if not source_id:
             return None
@@ -4424,10 +4546,10 @@ class TranscribeMediaToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- transcribe_media：当用户要给音频/视频配文字稿、生成字幕、把录音转文字，或想总结视频/音频内容前先拿到转写稿时使用。"
-            "格式为 {\"type\":\"transcribe_media\",\"source_ids\":[\"audio_001\",\"file_002\",\"gen_003\"],"
-            "\"output_format\":\"md|txt|srt|vtt|json\",\"output_title\":\"转写稿标题\",\"language\":\"zh|en|auto\","
-            "\"with_timestamps\":true,\"merge_outputs\":true,\"model_size\":\"small|medium|large-v3\","
-            "\"vad_filter\":true,\"send_to_user\":true}。"
+            '格式为 {"type":"transcribe_media","source_ids":["audio_001","file_002","gen_003"],'
+            '"output_format":"md|txt|srt|vtt|json","output_title":"转写稿标题","language":"zh|en|auto",'
+            '"with_timestamps":true,"merge_outputs":true,"model_size":"small|medium|large-v3",'
+            '"vad_filter":true,"send_to_user":true}。'
             "V1 支持批量来源：merge_outputs=true 会生成一份合并转写稿；merge_outputs=false 会每个来源各生成一份。"
             "如果用户要字幕文件，优先用 srt 或 vtt；如果要后续总结、会议纪要、内容梳理，优先用 md 并保留时间戳。"
             "音频较吵、歌曲伴奏很重或人声不清时，可先调用 separate_audio_stems / clean_voice_track，再对生成的人声结果调用 transcribe_media。"
@@ -4596,11 +4718,11 @@ class PrepareVoiceDatasetToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- prepare_voice_dataset：当用户要把一段或多段人声/语音整理成 GPT-SoVITS、RVC 等训练素材时使用。"
-            "格式为 {\"type\":\"prepare_voice_dataset\",\"source_ids\":[\"gen_001\",\"audio_001\"],"
-            "\"profile\":\"gpt_sovits|rvc|archive\",\"output_title\":\"训练集名称\","
-            "\"target_sr\":44100,\"min_clip_seconds\":3,\"max_clip_seconds\":12,"
-            "\"silence_threshold_db\":-40,\"min_silence_ms\":300,\"max_silence_kept_ms\":300,"
-            "\"clean_first\":false,\"normalize_volume\":false,\"send_to_user\":true}。"
+            '格式为 {"type":"prepare_voice_dataset","source_ids":["gen_001","audio_001"],'
+            '"profile":"gpt_sovits|rvc|archive","output_title":"训练集名称",'
+            '"target_sr":44100,"min_clip_seconds":3,"max_clip_seconds":12,'
+            '"silence_threshold_db":-40,"min_silence_ms":300,"max_silence_kept_ms":300,'
+            '"clean_first":false,"normalize_volume":false,"send_to_user":true}。'
             "这个工具会把多个来源统一成训练用 wav、按停顿切片、生成 manifest.json 和 zip 批次；摘要会列出过短、过长、音量偏低、可能爆音等片段文件名，方便后续和用户一起筛。"
             "它适合处理已经分离/净化后的人声轨，也可以直接处理普通语音音频或带音轨视频；如果用户还没做人声分离/净化，且需要更干净素材，可先调用 separate_audio_stems 或 clean_voice_track。"
             "训练素材任务可以分多步组合：必要时先 convert_media_file 提音频，再 separate_audio_stems 拿人声，再 clean_voice_track 降噪，最后 prepare_voice_dataset 切片打包；不要把这些步骤用于只要原文件的请求。"
@@ -4632,11 +4754,17 @@ class PrepareVoiceDatasetToolHandler(BaseToolHandler):
             "mono": self._coerce_bool(value.get("mono"), default=True),
             "min_clip_seconds": self._coerce_float(value.get("min_clip_seconds") or value.get("min_seconds") or 0),
             "max_clip_seconds": self._coerce_float(value.get("max_clip_seconds") or value.get("max_seconds") or 0),
-            "silence_threshold_db": self._coerce_float_or_none(value.get("silence_threshold_db") or value.get("threshold_db")),
+            "silence_threshold_db": self._coerce_float_or_none(
+                value.get("silence_threshold_db") or value.get("threshold_db")
+            ),
             "min_silence_ms": self._coerce_int(value.get("min_silence_ms") or value.get("min_interval_ms") or 0),
-            "max_silence_kept_ms": self._coerce_int(value.get("max_silence_kept_ms") or value.get("max_sil_kept_ms") or 0),
+            "max_silence_kept_ms": self._coerce_int(
+                value.get("max_silence_kept_ms") or value.get("max_sil_kept_ms") or 0
+            ),
             "clean_first": self._coerce_bool(value.get("clean_first") or value.get("light_clean"), default=False),
-            "normalize_volume": self._coerce_bool(value.get("normalize_volume") or value.get("loudnorm"), default=False),
+            "normalize_volume": self._coerce_bool(
+                value.get("normalize_volume") or value.get("loudnorm"), default=False
+            ),
             "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
         }
 
@@ -4748,7 +4876,7 @@ class InspectMediaInfoToolHandler(BaseToolHandler):
         return (
             "- inspect_media_info：当用户问音频/视频的时长、编码、采样率、声道、码率、分辨率、帧率、是否有音轨，"
             "或你在转换/压缩/截取前需要先看媒体规格时使用。"
-            "格式为 {\"type\":\"inspect_media_info\",\"source_id\":\"file_001|audio_001|gen_001\"}。"
+            '格式为 {"type":"inspect_media_info","source_id":"file_001|audio_001|gen_001"}。'
             "这个工具只读取媒体信息，不生成新文件；读取结果会告诉你真实规格，之后如果要处理文件再调用 convert_media_file。"
         )
 
@@ -4758,11 +4886,7 @@ class InspectMediaInfoToolHandler(BaseToolHandler):
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
         source_id = str(
-            value.get("source_id")
-            or value.get("source")
-            or value.get("target")
-            or value.get("attachment_id")
-            or ""
+            value.get("source_id") or value.get("source") or value.get("target") or value.get("attachment_id") or ""
         ).strip()
         if not source_id:
             return None
@@ -4804,11 +4928,11 @@ class ReviseGeneratedFileToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- revise_generated_file：当用户要修改你刚生成的 gen_001/gen_002 文件时使用，默认生成新版本，不覆盖旧文件。"
-            "格式为 {\"type\":\"revise_generated_file\",\"target\":\"gen_001\","
-            "\"instruction\":\"用户要求怎么改\",\"output_format\":\"md|txt|docx|xlsx|pdf|json|csv|html\","
-            "\"output_title\":\"修改版标题\",\"content_markdown\":\"修改后的完整正文或 Markdown\","
-            "\"table_rows\":[[\"列1\",\"列2\"],[\"内容1\",\"内容2\"]],"
-            "\"formatting\":{\"rows\":[{\"index\":2,\"fill_color\":\"yellow\"}]},\"send_to_user\":true}。"
+            '格式为 {"type":"revise_generated_file","target":"gen_001",'
+            '"instruction":"用户要求怎么改","output_format":"md|txt|docx|xlsx|pdf|json|csv|html",'
+            '"output_title":"修改版标题","content_markdown":"修改后的完整正文或 Markdown",'
+            '"table_rows":[["列1","列2"],["内容1","内容2"]],'
+            '"formatting":{"rows":[{"index":2,"fill_color":"yellow"}]},"send_to_user":true}。'
             "这个工具不会替你理解“删第二段、加总结”；你需要根据生成文件工作台里的预览先整理出修改后的最终内容，"
             "再把最终内容写进 content_markdown 或 table_rows。"
             "如果只是调整颜色、加粗或高亮，把明确样式规则写进 formatting。"
@@ -4823,10 +4947,16 @@ class ReviseGeneratedFileToolHandler(BaseToolHandler):
         table_rows = self._normalize_table_rows(value.get("table_rows") or value.get("rows") or value.get("table"))
         return {
             "type": self.tool_type,
-            "target": str(value.get("target") or value.get("generated_id") or value.get("file_id") or "latest").strip()[:120],
-            "instruction": str(value.get("instruction") or value.get("task") or value.get("request") or "").strip()[:500],
+            "target": str(value.get("target") or value.get("generated_id") or value.get("file_id") or "latest").strip()[
+                :120
+            ],
+            "instruction": str(value.get("instruction") or value.get("task") or value.get("request") or "").strip()[
+                :500
+            ],
             "output_format": self._normalize_output_format(value.get("output_format") or value.get("format") or ""),
-            "output_title": str(value.get("output_title") or value.get("title") or value.get("name") or "").strip()[:80],
+            "output_title": str(value.get("output_title") or value.get("title") or value.get("name") or "").strip()[
+                :80
+            ],
             "content_markdown": str(
                 value.get("content_markdown")
                 or value.get("markdown")
@@ -4835,7 +4965,9 @@ class ReviseGeneratedFileToolHandler(BaseToolHandler):
                 or ""
             ).strip()[:80000],
             "table_rows": table_rows,
-            "formatting": ComposeFileToolHandler._normalize_formatting(self, value.get("formatting") or value.get("styles") or value.get("style_rules")),
+            "formatting": ComposeFileToolHandler._normalize_formatting(
+                self, value.get("formatting") or value.get("styles") or value.get("style_rules")
+            ),
             "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
         }
 
@@ -4914,13 +5046,13 @@ class ApplyStyleToExistingFileToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- apply_style_to_existing_file：当用户只要求给已有 docx/xlsx 文件套样式，而不是重写全文时使用。"
-            "格式为 {\"type\":\"apply_style_to_existing_file\",\"target\":\"file_001|gen_001|最近\","
-            "\"target_type\":\"attachment|generated\",\"instruction\":\"用户的样式要求\","
-            "\"output_title\":\"样式版标题\","
-            "\"formatting\":{\"header\":{\"bold\":true},\"columns\":[{\"match_header\":\"姓名\",\"font_color\":\"red\"}],"
-            "\"rows\":[{\"index\":2,\"fill_color\":\"yellow\"}],"
-            "\"row_rules\":[{\"where\":{\"column\":\"分数\",\"lt\":60},\"font_color\":\"red\"}],"
-            "\"highlights\":[{\"text\":\"重点\",\"fill_color\":\"yellow\"}]},\"send_to_user\":true}。"
+            '格式为 {"type":"apply_style_to_existing_file","target":"file_001|gen_001|最近",'
+            '"target_type":"attachment|generated","instruction":"用户的样式要求",'
+            '"output_title":"样式版标题",'
+            '"formatting":{"header":{"bold":true},"columns":[{"match_header":"姓名","font_color":"red"}],'
+            '"rows":[{"index":2,"fill_color":"yellow"}],'
+            '"row_rules":[{"where":{"column":"分数","lt":60},"font_color":"red"}],'
+            '"highlights":[{"text":"重点","fill_color":"yellow"}]},"send_to_user":true}。'
             "适合“把姓名列标红”“低于60分整行标红”“重点高亮”这类操作；"
             "它会复制原文件并套样式，不需要你把大表格或整篇 Word 重新输出。"
             "如果用户要增删改正文内容，用 revise_generated_file；如果要从附件整理成新文件，用 compose_file。"
@@ -4933,11 +5065,19 @@ class ApplyStyleToExistingFileToolHandler(BaseToolHandler):
             return None
         return {
             "type": self.tool_type,
-            "target": str(value.get("target") or value.get("source_id") or value.get("file_id") or "latest").strip()[:120],
+            "target": str(value.get("target") or value.get("source_id") or value.get("file_id") or "latest").strip()[
+                :120
+            ],
             "target_type": self._normalize_target_type(value.get("target_type") or value.get("source_type")),
-            "instruction": str(value.get("instruction") or value.get("task") or value.get("request") or "").strip()[:500],
-            "output_title": str(value.get("output_title") or value.get("title") or value.get("name") or "").strip()[:80],
-            "formatting": ComposeFileToolHandler._normalize_formatting(self, value.get("formatting") or value.get("styles") or value.get("style_rules")),
+            "instruction": str(value.get("instruction") or value.get("task") or value.get("request") or "").strip()[
+                :500
+            ],
+            "output_title": str(value.get("output_title") or value.get("title") or value.get("name") or "").strip()[
+                :80
+            ],
+            "formatting": ComposeFileToolHandler._normalize_formatting(
+                self, value.get("formatting") or value.get("styles") or value.get("style_rules")
+            ),
             "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
         }
 
@@ -5000,7 +5140,7 @@ class SendFileToolHandler(BaseToolHandler):
         return (
             "- send_file：当用户要你发送已有文件时使用，可发送工作台材料 file_001/img_001/audio_001，"
             "也可发送生成物 gen_001/gen_002。"
-            "格式为 {\"type\":\"send_file\",\"targets\":[\"file_001\",\"gen_001\"]}，单个文件也可以用 target。"
+            '格式为 {"type":"send_file","targets":["file_001","gen_001"]}，单个文件也可以用 target。'
             "适合“把刚才那个视频发我”“把原视频和转写稿都发我”“再发一次 gen_002”。"
             "它只发送已有文件，不修改、不转码、不重新生成；如果用户要求修改内容、换格式或重新整理，应使用对应生成/转换工具。"
         )
@@ -5062,9 +5202,7 @@ class SendFileToolHandler(BaseToolHandler):
                         "name": str(file_ref.get("name") or file_ref.get("title") or ""),
                         "handle": str(file_ref.get("handle") or ""),
                     }
-                events.append(
-                    event
-                )
+                events.append(event)
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=events,
@@ -5093,7 +5231,7 @@ class SendGeneratedFileToolHandler(SendFileToolHandler):
         return (
             "- send_generated_file：兼容旧格式；当用户要重新发送已生成的 gen_001 文件时可用。"
             "优先使用 send_file；只有需要兼容旧调用时才使用本工具。"
-            "格式为 {\"type\":\"send_generated_file\",\"targets\":[\"gen_001\",\"gen_002\"]}。"
+            '格式为 {"type":"send_generated_file","targets":["gen_001","gen_002"]}。'
         )
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -5126,9 +5264,7 @@ class SendGeneratedFileToolHandler(SendFileToolHandler):
                         "name": str(generated.get("output_title") or generated.get("generated_handle") or ""),
                         "handle": str(generated.get("generated_handle") or ""),
                     }
-                events.append(
-                    event
-                )
+                events.append(event)
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=events,
@@ -5147,7 +5283,7 @@ class SendStickerToolHandler(BaseToolHandler):
         return (
             "- send_sticker：当你想给用户发送当前可用表情包图片时使用。"
             f"可用表情：{sticker_list or '（当前没有可用表情）'}。"
-            "格式为 {\"type\":\"send_sticker\",\"sticker\":\"biexiao|haoxingfu|tanshou|turan_chuxian|wainao|zaoba|zhuangsha|zhuangsi\"}。"
+            '格式为 {"type":"send_sticker","sticker":"biexiao|haoxingfu|tanshou|turan_chuxian|wainao|zaoba|zhuangsha|zhuangsi"}。'
             "它只负责发表情包，不生成文件、不修改附件；适合开心、吐槽、装傻、装死、突然冒泡等轻量情绪回应。"
         )
 
@@ -5179,9 +5315,7 @@ class SendStickerToolHandler(BaseToolHandler):
         if not resolution.ok or not isinstance(resolution.sticker, dict):
             candidates = list(resolution.candidates or [])
             if candidates:
-                candidate_text = "、".join(
-                    f"{item.get('id')}({item.get('display_name')})" for item in candidates[:8]
-                )
+                candidate_text = "、".join(f"{item.get('id')}({item.get('display_name')})" for item in candidates[:8])
                 return ToolExecutionResult(
                     tool_type=self.tool_type,
                     followup_context=(
@@ -5238,8 +5372,8 @@ class InspectGeneratedFileToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- inspect_generated_file：当你需要回头查看自己生成过的 gen_001 文件正文、结尾、zip 清单或 manifest 时使用。"
-            "格式为 {\"type\":\"inspect_generated_file\",\"target\":\"gen_001|最近|文件标题\","
-            "\"section\":\"content|head|tail|summary|file_list|manifest|file:manifest.json\",\"max_chars\":12000}。"
+            '格式为 {"type":"inspect_generated_file","target":"gen_001|最近|文件标题",'
+            '"section":"content|head|tail|summary|file_list|manifest|file:manifest.json","max_chars":12000}。'
             "它只读取生成物，不会发送、修改或删除文件；适合继续修改前先确认内容、查看转写稿、检查训练集 zip 的 manifest/README。"
             "如果只是要把文件再发给用户，用 send_file；如果要修改内容，用 revise_generated_file。"
         )
@@ -5307,8 +5441,8 @@ class ManageGeneratedFileToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- manage_generated_file：当用户要清理、隐藏或删除你生成过的文件时使用，只管理 gen_001 这类生成物。"
-            "格式为 {\"type\":\"manage_generated_file\",\"action\":\"archive|delete|purge\","
-            "\"targets\":[\"gen_001\",\"gen_002\"],\"reason\":\"清理原因\"}。"
+            '格式为 {"type":"manage_generated_file","action":"archive|delete|purge",'
+            '"targets":["gen_001","gen_002"],"reason":"清理原因"}。'
             "archive 只从生成文件工作台隐藏；delete 会同时删除本地生成文件；purge 会删除本地文件并清空生成物内容卡片。"
             "不要用它清理用户发来的 file_001/img_001，工作台材料应使用 clear_attachment_focus。"
         )
@@ -5397,11 +5531,11 @@ class ManageTaskWorkspaceToolHandler(BaseToolHandler):
             "不要为一句话能完成的小事创建任务；创建/更新任务工作区不等于执行任务，"
             "如果下一步已经明确，应继续调用真正的处理工具（如 compose_file、convert_media_file、transcribe_media），不要只向用户汇报计划。"
             "当用户问“好了没/现在到哪了/还在跑吗”时，可以 inspect 最近任务并基于任务工作区简短说明进度；不要新建任务。"
-            "格式为 {\"type\":\"manage_task_workspace\",\"action\":\"create|update_steps|add_artifact|ask_user|complete|cleanup|inspect\","
-            "\"task_id\":\"可选；省略时默认处理最近的未完成任务\",\"goal\":\"任务目标\","
-            "\"steps\":[{\"id\":\"step_1\",\"title\":\"步骤\",\"status\":\"queued|running|done|failed|waiting_user\"}],"
-            "\"artifacts\":[{\"id\":\"gen_001\",\"kind\":\"md\",\"title\":\"产物名\"}],"
-            "\"question\":\"需要问用户的问题\",\"reason\":\"原因\"}。"
+            '格式为 {"type":"manage_task_workspace","action":"create|update_steps|add_artifact|ask_user|complete|cleanup|inspect",'
+            '"task_id":"可选；省略时默认处理最近的未完成任务","goal":"任务目标",'
+            '"steps":[{"id":"step_1","title":"步骤","status":"queued|running|done|failed|waiting_user"}],'
+            '"artifacts":[{"id":"gen_001","kind":"md","title":"产物名"}],'
+            '"question":"需要问用户的问题","reason":"原因"}。'
             "create 用于建立任务白板；update_steps 更新步骤；add_artifact 记录生成物或素材；"
             "ask_user 表示任务卡住需要主人决定；complete 标记完成；cleanup 清理这次任务的工作记忆。"
         )
@@ -5416,25 +5550,12 @@ class ManageTaskWorkspaceToolHandler(BaseToolHandler):
             return None
 
         goal = str(
-            value.get("goal")
-            or value.get("normalized_goal")
-            or value.get("task")
-            or value.get("title")
-            or ""
+            value.get("goal") or value.get("normalized_goal") or value.get("task") or value.get("title") or ""
         ).strip()
         raw_request = str(
-            value.get("raw_request")
-            or value.get("user_request")
-            or value.get("request")
-            or goal
-            or ""
+            value.get("raw_request") or value.get("user_request") or value.get("request") or goal or ""
         ).strip()
-        question = str(
-            value.get("question")
-            or value.get("pending_question")
-            or value.get("ask")
-            or ""
-        ).strip()
+        question = str(value.get("question") or value.get("pending_question") or value.get("ask") or "").strip()
         return {
             "type": self.tool_type,
             "action": action,
@@ -5939,7 +6060,7 @@ class ManageGiftToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- manage_gift：当用户已经明确表示要怎么处理某份礼物时使用。"
-            "格式为 {\"type\":\"manage_gift\",\"action\":\"observe|keep|internalize|defer|reject|remove|purge\",\"asset_id\":\"可选\"}。"
+            '格式为 {"type":"manage_gift","action":"observe|keep|internalize|defer|reject|remove|purge","asset_id":"可选"}。'
             "如果当前讨论对象已经很明确，可以省略 asset_id；如果礼物对象不明确，就不要调用这个工具，直接追问。"
         )
 
@@ -6041,7 +6162,9 @@ class ManageGiftToolHandler(BaseToolHandler):
                 ),
             )
 
-        display_name = str(updated.get("display_name") or updated.get("origin_name") or "这份礼物").strip() or "这份礼物"
+        display_name = (
+            str(updated.get("display_name") or updated.get("origin_name") or "这份礼物").strip() or "这份礼物"
+        )
         action_label = {
             "keep": "留下",
             "internalize": "吃掉",
@@ -6087,9 +6210,9 @@ class ManageArtifactToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- manage_artifact：当你和用户已经商量好某个图片/资产在你世界里的正式名字、集合或用途时使用。"
-            "格式为 {\"type\":\"manage_artifact\",\"action\":\"claim|rename|move|delete\",\"asset_id\":\"可选\","
-            "\"display_name\":\"正式名字\",\"collection_key\":\"稳定英文id\",\"collection_name\":\"中文集合名\","
-            "\"asset_role\":\"scene|outfit|expression|portrait|album_photo\",\"placement_hint\":\"可选位置提示\"}。"
+            '格式为 {"type":"manage_artifact","action":"claim|rename|move|delete","asset_id":"可选",'
+            '"display_name":"正式名字","collection_key":"稳定英文id","collection_name":"中文集合名",'
+            '"asset_role":"scene|outfit|expression|portrait|album_photo","placement_hint":"可选位置提示"}。'
             "如果当前讨论对象已经很明确，可以省略 asset_id。"
             "scene/album_photo 的集合表示相册或场景分组；outfit/expression/portrait 的集合表示服装或形象分组，"
             "不要把服装或表情放进看起来像纯场景的集合。"
@@ -6117,7 +6240,9 @@ class ManageArtifactToolHandler(BaseToolHandler):
             "type": self.tool_type,
             "action": action,
             "asset_id": str(value.get("asset_id") or "").strip(),
-            "display_name": str(value.get("display_name") or value.get("name") or value.get("title") or "").strip()[:80],
+            "display_name": str(value.get("display_name") or value.get("name") or value.get("title") or "").strip()[
+                :80
+            ],
             "collection_key": str(value.get("collection_key") or value.get("container_key") or "").strip()[:64],
             "collection_name": str(value.get("collection_name") or value.get("container_name") or "").strip()[:32],
             "asset_role": str(value.get("asset_role") or value.get("role") or "").strip().lower()[:32],
@@ -6160,7 +6285,9 @@ class ManageArtifactToolHandler(BaseToolHandler):
 
         payload = updated.get("payload") if isinstance(updated.get("payload"), dict) else {}
         flags = updated.get("artifact_flags") if isinstance(updated.get("artifact_flags"), dict) else {}
-        display_name = str(updated.get("display_name") or updated.get("origin_name") or "这份资产").strip() or "这份资产"
+        display_name = (
+            str(updated.get("display_name") or updated.get("origin_name") or "这份资产").strip() or "这份资产"
+        )
         collection_name = str(payload.get("collection_name") or updated.get("container_name") or "").strip()
         asset_role = str(payload.get("asset_role") or flags.get("asset_role") or "").strip()
         action_label = {
@@ -6175,17 +6302,16 @@ class ManageArtifactToolHandler(BaseToolHandler):
         if asset_role:
             followup_context += f" 它现在的世界资产类型是 {asset_role}。"
         if action == "delete":
-            followup_context += " 它已经不再显示在你的收藏或资源里；如果用户要彻底删除文件，应该再明确确认后使用 manage_gift 的 purge。"
+            followup_context += (
+                " 它已经不再显示在你的收藏或资源里；如果用户要彻底删除文件，应该再明确确认后使用 manage_gift 的 purge。"
+            )
         else:
             followup_context += " 请基于这个既成事实自然回应，不要重复调用 manage_artifact。"
 
-        projection_changed = (
-            str(updated.get("asset_type") or "").strip().lower() == "image"
-            and (
-                str(payload.get("projection_role") or "").strip().lower() == "scene"
-                or action in {"claim", "rename", "move", "delete"}
-                or str(updated.get("status") or "").strip().lower() == "internalized"
-            )
+        projection_changed = str(updated.get("asset_type") or "").strip().lower() == "image" and (
+            str(payload.get("projection_role") or "").strip().lower() == "scene"
+            or action in {"claim", "rename", "move", "delete"}
+            or str(updated.get("status") or "").strip().lower() == "internalized"
         )
 
         return ToolExecutionResult(
@@ -6211,11 +6337,11 @@ class ManagePersonaToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- manage_persona：用于保存或调整当前前台角色的表达侧面卡片。"
-            "格式为 {\"type\":\"manage_persona\",\"action\":\"create|update|inspect|archive|delete\","
-            "\"card_id\":\"可选\",\"name\":\"名字\",\"summary\":\"核心摘要\","
-            "\"speech_style\":\"说话方式\",\"interaction_bias\":\"互动倾向\","
-            "\"resource_preference\":\"场景/BGM/服装偏好\",\"switch_hint\":\"适合进入的氛围\","
-            "\"unsuitable_contexts\":\"不擅长应对的情景\",\"reason\":\"为什么这样做\"}。"
+            '格式为 {"type":"manage_persona","action":"create|update|inspect|archive|delete",'
+            '"card_id":"可选","name":"名字","summary":"核心摘要",'
+            '"speech_style":"说话方式","interaction_bias":"互动倾向",'
+            '"resource_preference":"场景/BGM/服装偏好","switch_hint":"适合进入的氛围",'
+            '"unsuitable_contexts":"不擅长应对的情景","reason":"为什么这样做"}。'
             "已有卡的本轮选择由 persona.active 表达；manage_persona 只处理卡片本身。"
             "当新的表达侧面变得清晰、值得留下时可以 create；当前卡大方向正确但不够自然时可以 update 当前卡。"
             "archive/delete 用于收起不再需要的卡片。"
@@ -6254,10 +6380,7 @@ class ManagePersonaToolHandler(BaseToolHandler):
             "resource_preference": str(value.get("resource_preference") or value.get("preference") or "").strip()[:180],
             "switch_hint": str(value.get("switch_hint") or value.get("when_to_use") or "").strip()[:160],
             "unsuitable_contexts": str(
-                value.get("unsuitable_contexts")
-                or value.get("weakness")
-                or value.get("not_good_at")
-                or ""
+                value.get("unsuitable_contexts") or value.get("weakness") or value.get("not_good_at") or ""
             ).strip()[:180],
             "reason": str(value.get("reason") or "").strip()[:240],
         }
@@ -6284,8 +6407,7 @@ class ManagePersonaToolHandler(BaseToolHandler):
                     action=action,
                     card=card,
                     followup=(
-                        f"新的表达侧面「{card['name']}」(id:{card['card_id']}) 已形成。"
-                        "接下来让回应自然贴合这张卡。"
+                        f"新的表达侧面「{card['name']}」(id:{card['card_id']}) 已形成。接下来让回应自然贴合这张卡。"
                     ),
                     state_changed=True,
                 )
@@ -6383,8 +6505,7 @@ class ManagePersonaToolHandler(BaseToolHandler):
             return ToolExecutionResult(
                 tool_type=self.tool_type,
                 followup_context=(
-                    f"你刚刚想管理人设卡，但信息还不够完整：{exc}。"
-                    "请自然继续对话，不要重复调用 manage_persona。"
+                    f"你刚刚想管理人设卡，但信息还不够完整：{exc}。请自然继续对话，不要重复调用 manage_persona。"
                 ),
             )
 
@@ -6415,7 +6536,9 @@ class ManagePersonaToolHandler(BaseToolHandler):
             state_updates={
                 "persona_state_changed": bool(state_changed),
                 "persona_action": action,
-                "active_persona_id": str(card.get("card_id") or "") if str(card.get("status") or "") == "active" else "",
+                "active_persona_id": str(card.get("card_id") or "")
+                if str(card.get("status") or "") == "active"
+                else "",
             },
         )
 
