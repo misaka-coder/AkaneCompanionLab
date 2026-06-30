@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, Mapping
 
 from capcore import (
     ApprovalPolicy,
-    ConfirmPolicy,
     InvocationContext,
     PermissionDecision,
     PermissionRequest,
-    RiskLevel,
+    permission_request_from_mapping,
     sanitize_permission_preview,
 )
 from capcore import resolve_permission as capcore_resolve_permission
@@ -72,18 +72,25 @@ def manual_permission_request(
     args_preview: Mapping[str, Any] | None = None,
 ) -> PermissionRequest:
     invocation_context = invocation_context_from_execution(context)
-    return PermissionRequest(
-        required=required,
-        capability_id=str(capability_id or ""),
-        display_name=str(display_name or ""),
-        risk=cast(RiskLevel, risk),
-        confirm=cast(ConfirmPolicy, confirm),
-        effects=tuple(str(effect or "") for effect in effects),
-        reason=str(reason or ""),
-        profile_user_id=invocation_context.profile_user_id,
-        session_id=invocation_context.session_id,
-        client_mode=invocation_context.client_mode,
-        args_preview=sanitize_permission_preview(args_preview),
+    request = permission_request_from_mapping(
+        {
+            "id": str(capability_id or ""),
+            "name": str(display_name or ""),
+            "risk": str(risk or "medium"),
+            "confirm": str(confirm or "first_time"),
+            "effects": [str(effect or "") for effect in effects],
+        },
+        args_preview or {},
+        invocation_context,
+        default_risk="medium",
+        default_confirm="first_time",
+        default_visible_in=("base",),
+        default_prompt_exposed=False,
+    )
+    return replace(
+        request,
+        required=bool(required),
+        reason=str(reason or request.reason or ""),
     )
 
 

@@ -22,9 +22,9 @@ class CapcoreRuntimeTests(unittest.TestCase):
             required=True,
             capability_id="tool.browser_page",
             display_name="Browser Page",
-            risk="high",
-            confirm="always",
-            effects=("browser_action",),
+            risk="low",
+            confirm="never",
+            effects=("browserAction",),
             reason="browser_control_requires_approval",
             args_preview={"action": "click"},
         )
@@ -34,6 +34,10 @@ class CapcoreRuntimeTests(unittest.TestCase):
         self.assertEqual(request.profile_user_id, "alice")
         self.assertEqual(request.session_id, "s1")
         self.assertEqual(request.client_mode, "desktop_pet")
+        self.assertEqual(request.risk, "high")
+        self.assertEqual(request.confirm, "always")
+        self.assertEqual(request.effects, ("browser_action",))
+        self.assertEqual(request.reason, "browser_control_requires_approval")
         self.assertEqual(request.args_preview, {"action": "click"})
 
     def test_permission_preview_redacts_secret_fields_and_local_paths(self) -> None:
