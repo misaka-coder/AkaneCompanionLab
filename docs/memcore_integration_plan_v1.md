@@ -249,18 +249,28 @@ MEMCORE_SHADOW_COMPARE=false
 
 目标: 用 memcore 的 `build_prompt_context()` / `render_prompt_context()` 替代 legacy recent raw/summary/semantic 渲染。
 
+状态:5a 已完成。为了先让 Akane 体验 memcore 记忆，本切片早于 Slice 4 落地；timeline 工具仍留到 Slice 4 单独切。
+
 建议做法:
 
 - 不要在第一步改 `PromptBuilder` 大结构。
-- 先在 `response_builder.prepare_context()` 增加一个可选 `memcore_prompt_context_text` extra block。
+- 先在 `response_builder.prepare_context()` 做分流，尽量复用现有 raw/episodic/semantic prompt 插槽。
 - `MEMORY_BACKEND=memcore` 时 legacy `recent_*` 可以逐步置空或只保留 raw 兼容，避免重复给模型两套记忆。
 - 确认 prompt cache: 固定系统说明仍放前面，memcore 动态记忆放后面。
+
+5a 实际改动:
+
+- `MemcoreManager.build_prompt_context()` 调 memcore `MemorySystem.build_prompt_context()`，并用 memcore renderer 分层输出 `raw_text / episodic_text / semantic_text`。
+- `response_builder.prepare_context()` 在 `MEMORY_BACKEND=memcore` 且 memcore 可用时，用 memcore 三层文本替换 legacy raw/episodic/semantic 渲染。
+- memcore context 失败或不可用时保留 legacy fallback，避免聊天主流程因为 memcore 临时不可用而中断。
+- 本切片不删除 legacy store、router、timeline、compaction，也不迁旧数据。
 
 验证:
 
 - prompt audit 中能看到 memcore 可见三层，但没有重复 legacy 三层。
 - raw 渲染带日期/星期，跨天分组正常。
 - 已可见三层不会被后续 retrieve 重复检索。
+- 单测确认 final prompt 构建在 memcore 模式下使用 memcore 三层，不夹带 legacy 三层文本。
 
 ### Slice 6: 切压缩链路
 

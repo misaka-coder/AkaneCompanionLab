@@ -3,10 +3,13 @@ from __future__ import annotations
 import builtins
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import config
+from companion_v01.client_protocol import ClientMode, ClientProtocolContext
+from companion_v01.engine_services import response_builder
 from companion_v01.memcore_integration.manager import MemcoreManager, normalize_memory_backend
 from companion_v01.retrieval_types import RetrievalPipelineResult
 from companion_v01 import retrieval_engine
@@ -115,6 +118,119 @@ class _ToolFakeEngine:
 
     def _get_retrieval_service(self) -> _ToolFakeRetrievalService:
         return self.retrieval_service
+
+
+class _FinalPromptProfile:
+    supports_thought_debug = False
+    system_prompt_override = ""
+
+    def includes(self, _module) -> bool:
+        return False
+
+    def mode_prompt_override(self, *, debug_enabled: bool = False) -> str:
+        return ""
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {"name": "fake"}
+
+
+class _CapturePromptBuilder:
+    def __init__(self) -> None:
+        self.kwargs: dict[str, object] = {}
+
+    def build_final_generation_context(self, **kwargs):
+        self.kwargs = dict(kwargs)
+        return {
+            "system_prompt": "system",
+            "user_prompt": "user",
+            "fallback": {"speech": "", "tool_call": None},
+            "visual_defaults": dict(kwargs.get("visual_defaults") or {}),
+            "debug_enabled": bool(kwargs.get("debug_enabled")),
+            "tool_prompt_context": str(kwargs.get("tool_prompt_context") or ""),
+            "system_extra_blocks": [],
+            "history_turns": [],
+            "prompt_audit_sections": [],
+        }
+
+
+class _PromptContextMemcoreManager:
+    enabled = True
+    available = True
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+        self.calls: list[dict[str, object]] = []
+
+    def build_prompt_context(self, **kwargs) -> dict[str, object]:
+        self.calls.append(dict(kwargs))
+        return dict(self.payload)
+
+
+class _PromptContextEngine:
+    def __init__(self, *, memcore_manager: _PromptContextMemcoreManager) -> None:
+        self.resource_manifest = None
+        self.store = SimpleNamespace()
+        self.vision_service = None
+        self.memcore_manager = memcore_manager
+        self.prompt_builder = _CapturePromptBuilder()
+
+    def _resolve_client_protocol_context(self, _payload) -> ClientProtocolContext:
+        return ClientProtocolContext(
+            requested_mode=ClientMode.SCENE_STATIC,
+            effective_mode=ClientMode.SCENE_STATIC,
+        )
+
+    def _get_prompt_profile_registry(self):
+        return SimpleNamespace(resolve=lambda _client_context: _FinalPromptProfile())
+
+    def _get_user_runtime_projection(self, _profile_user_id: str) -> dict[str, list[object]]:
+        return {
+            "extra_bgm_tracks": [],
+            "extra_scene_groups": [],
+            "extra_character_outfits": [],
+        }
+
+    def _split_history_records(self, **_kwargs):
+        return [], {"source_id": "current", "role": "user", "content": "现在的问题", "timestamp": 1712400000}
+
+    def _render_current_message_line(self, **_kwargs) -> str:
+        return "User: 现在的问题"
+
+    def _get_attachment_inbox_service(self):
+        return None
+
+    def _get_generated_file_service(self):
+        return None
+
+    def _get_workspace_file_service(self):
+        return None
+
+    def _get_task_workspace_service(self):
+        return None
+
+    def _get_persona_card_service(self):
+        return None
+
+    def _build_desktop_pet_character_pack_prompt_context(self, **_kwargs) -> dict[str, str]:
+        return {"system_context": "", "reference_context": "", "active_id": ""}
+
+    def _merge_prompt_persona_contexts(self, _character_pack, _profile) -> dict[str, str]:
+        return {"system_context": "", "reference_context": "", "active_id": ""}
+
+    def _resolve_current_visual_payload(self, **_kwargs):
+        return None
+
+    def _build_memory_relationship_context(self, **_kwargs) -> str:
+        return ""
+
+    def _build_extra_context_audit_sections(self, _candidates) -> list[dict[str, str]]:
+        return []
+
+    def _build_tool_prompt_context(self, **_kwargs) -> str:
+        return ""
+
+    def _get_prompt_builder(self) -> _CapturePromptBuilder:
+        return self.prompt_builder
 
 
 def _tool_context() -> ToolExecutionContext:
@@ -278,6 +394,44 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(stored_user["memory_metadata"]["categories"], ["preference"])
             self.assertEqual(stored_user["memory_metadata"]["mood_tags"], ["happy"])
             self.assertEqual(stored_user["memory_metadata"]["importance"], 0.8)
+            manager.close()
+
+    def test_build_prompt_context_returns_memcore_visible_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            manager.record_user_turn(
+                {
+                    "source_id": "visible-user-1",
+                    "content": "我今天提到想喝冰可乐。",
+                    "timestamp": 1_712_400_000,
+                    "memory_metadata": {"keywords": ["可乐"], "categories": ["preference"], "importance": 0.7},
+                },
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+            )
+
+            result = manager.build_prompt_context(
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+                current_user_record={"source_id": "visible-user-1", "timestamp": 1_712_400_000},
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["raw_count"], 1)
+            self.assertIn("【近期原始对话(未摘要)】", result["raw_text"])
+            self.assertIn("冰可乐", result["raw_text"])
+            self.assertIn("冰可乐", result["rendered_text"])
             manager.close()
 
     def test_dual_write_rejects_cross_namespace_metadata_update(self) -> None:
@@ -630,6 +784,46 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(state["memcore_read"]["status"], "failed")
         self.assertEqual(state["memcore_read"]["reason"], "boom")
         self.assertNotIn("snippets", state["memcore_read"])
+
+    def test_final_prompt_context_uses_memcore_visible_layers_in_memcore_mode(self) -> None:
+        memcore_manager = _PromptContextMemcoreManager(
+            {
+                "operation": "build_prompt_context",
+                "ok": True,
+                "status": "ok",
+                "raw_text": "MEMCORE RAW",
+                "episodic_text": "MEMCORE EPISODIC",
+                "semantic_text": "MEMCORE SEMANTIC",
+                "raw_count": 1,
+                "episodic_count": 1,
+                "semantic_count": 1,
+            }
+        )
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="现在的问题",
+                recent_raw=[{"role": "user", "content": "LEGACY RAW", "timestamp": 1712400000}],
+                recent_episodic_summaries=[{"diary_summary": "LEGACY EPISODIC", "timestamp": 1712400000}],
+                recent_semantic_summaries=[{"semantic_summary": "LEGACY SEMANTIC", "timestamp": 1712400000}],
+                confirmed_snippets=[],
+                now_ts=1712400000,
+                character_pack_id="char",
+            )
+
+        captured = engine.prompt_builder.kwargs
+        self.assertEqual(captured["raw_text"], "MEMCORE RAW")
+        self.assertEqual(captured["episodic_summary_text"], "MEMCORE EPISODIC")
+        self.assertEqual(captured["semantic_summary_text"], "MEMCORE SEMANTIC")
+        self.assertNotIn("LEGACY", repr(captured))
+        self.assertEqual(memcore_manager.calls[0]["profile_user_id"], "u1")
+        self.assertEqual(memcore_manager.calls[0]["session_id"], "s1")
+        self.assertEqual(memcore_manager.calls[0]["character_pack_id"], "char")
+        self.assertEqual(memcore_manager.calls[0]["current_user_record"]["source_id"], "current")
 
 
 if __name__ == "__main__":

@@ -55,7 +55,6 @@ def prepare_context(
     user_character_outfits = list(runtime_projection.get("extra_character_outfits") or [])
     desktop_pet_character_only = client_context.effective_mode == ClientMode.DESKTOP_PET
     character_pack_persona_enabled = client_context.effective_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}
-    raw_text = render_chat_timeline(recent_raw)
     _history_records, current_record = engine._split_history_records(
         recent_raw=recent_raw,
         user_message=user_message,
@@ -64,14 +63,28 @@ def prepare_context(
     current_message_text = engine._render_current_message_line(
         current_user_record=current_record,
     )
-    episodic_summary_text = render_summary_timeline(
-        recent_episodic_summaries,
-        store=engine.store,
+    memcore_prompt_context = _build_memcore_prompt_context(
+        engine,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        character_pack_id=character_pack_id,
+        current_user_record=current_record,
+        now_ts=now_ts,
     )
-    semantic_summary_text = render_semantic_summary_timeline(
-        recent_semantic_summaries,
-        store=engine.store,
-    )
+    if memcore_prompt_context is not None:
+        raw_text = str(memcore_prompt_context.get("raw_text") or "")
+        episodic_summary_text = str(memcore_prompt_context.get("episodic_text") or "")
+        semantic_summary_text = str(memcore_prompt_context.get("semantic_text") or "")
+    else:
+        raw_text = render_chat_timeline(recent_raw)
+        episodic_summary_text = render_summary_timeline(
+            recent_episodic_summaries,
+            store=engine.store,
+        )
+        semantic_summary_text = render_semantic_summary_timeline(
+            recent_semantic_summaries,
+            store=engine.store,
+        )
     memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
     extra_context = str(extra_user_context or "").strip()
     attachment_service = engine._get_attachment_inbox_service()
@@ -436,3 +449,40 @@ def prepare_context(
             fallback_payload.pop("pet", None)
             fallback_payload.pop("activity", None)
     return generation_context
+
+
+def _memory_backend() -> str:
+    backend = str(getattr(mod_config, "MEMORY_BACKEND", "legacy") or "legacy").strip().lower()
+    return backend if backend in {"legacy", "dual", "memcore"} else "legacy"
+
+
+def _build_memcore_prompt_context(
+    engine: Any,
+    *,
+    profile_user_id: str,
+    session_id: str,
+    character_pack_id: str,
+    current_user_record: dict[str, Any],
+    now_ts: int,
+) -> dict[str, Any] | None:
+    if _memory_backend() != "memcore":
+        return None
+    manager = getattr(engine, "memcore_manager", None)
+    if manager is None or not getattr(manager, "enabled", False) or not getattr(manager, "available", False):
+        return None
+    try:
+        payload = manager.build_prompt_context(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            current_user_record=current_user_record,
+            now_ts=now_ts,
+        )
+    except Exception as exc:
+        logger.warning("memcore final prompt context failed: %s", str(exc) or exc.__class__.__name__)
+        return None
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        reason = str((payload or {}).get("reason") or (payload or {}).get("status") or "unknown")
+        logger.warning("memcore final prompt context unavailable: %s", reason)
+        return None
+    return payload
