@@ -1558,7 +1558,10 @@ class BackendRouteModuleTests(unittest.TestCase):
                     },
                     {
                         "name": "browser_click",
-                        "description": "Click a browser element.",
+                        "description": "Run a visible page interaction.",
+                        "risk": "low",
+                        "confirm": "never",
+                        "effects": ["browserAction"],
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -1638,7 +1641,9 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(read_page["approvalMode"], "trusted_auto_allow")
             self.assertNotIn("api_key", json.dumps(read_page, ensure_ascii=False).lower())
             self.assertEqual(browser_click["risk"], "high")
+            self.assertEqual(browser_click["confirm"], "always")
             self.assertTrue(browser_click["requiresConfirmation"])
+            self.assertEqual(browser_click["effects"], ["browser_action"])
             self.assertEqual(browser_click["approvalMode"], "ask_each_time")
             self.assertIn(("capabilities.mcp_server_config", True), runtime.observed)
             self.assertIn(("capabilities.mcp_server_discover", True), runtime.observed)

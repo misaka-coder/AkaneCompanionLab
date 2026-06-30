@@ -7,12 +7,15 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, cast
 from urllib.parse import urlparse, urlunparse
 
 import yaml
 from capcore import ApprovalPolicy as CapcoreApprovalPolicy
+from capcore import ConfirmPolicy as CapcoreConfirmPolicy
 from capcore import PermissionDecision as CapcorePermissionDecision
+from capcore import RiskLevel as CapcoreRiskLevel
+from capcore import descriptor_from_mapping as capcore_descriptor_from_mapping
 from capcore import permission_request_from_mapping as capcore_permission_request_from_mapping
 from capcore import resolve_permission as capcore_resolve_permission
 
@@ -104,7 +107,6 @@ MCP_TOOL_NAME_MAX_LENGTH = 80
 MCP_TOOL_DESCRIPTION_MAX_LENGTH = 240
 MCP_TOOL_MAX_COUNT = 64
 MCP_SCHEMA_PROPERTY_MAX_COUNT = 24
-MCP_TOOL_CONFIRM_POLICIES = {"never", "first_time", "always"}
 MCP_ENV_PLACEHOLDER_RE = re.compile(r"\$\{[A-Z_][A-Z0-9_]{0,79}\}")
 MCP_SECRET_MARKERS = ("api_key", "password", "secret", "token")
 WORKFLOW_SLOT_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
@@ -113,6 +115,7 @@ WORKFLOW_ASSET_HANDLE_MAX_LENGTH = 120
 WORKFLOW_ASSET_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 MCP_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
 MCP_SAFE_TYPE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
+MCP_TOOL_EFFECT_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 WORKFLOW_CONFIG_FILE_MAX_BYTES = 4 * 1024 * 1024
 
 
@@ -155,6 +158,29 @@ def _approval_mode_from_capcore_decision(decision: CapcorePermissionDecision) ->
     if decision.requires_user_decision:
         return APPROVAL_MODE_ASK_EACH_TIME
     return APPROVAL_MODE_TRUSTED_AUTO_ALLOW
+
+
+def project_capcore_catalog_fields(
+    entry: Mapping[str, Any],
+    *,
+    default_risk: str = "medium",
+    default_confirm: str = "never",
+) -> dict[str, Any]:
+    public_entry = dict(entry)
+    descriptor = capcore_descriptor_from_mapping(
+        public_entry,
+        default_id=str(public_entry.get("id") or "capability"),
+        default_display_name=str(public_entry.get("name") or public_entry.get("displayName") or "Capability"),
+        default_risk=cast(CapcoreRiskLevel, default_risk),
+        default_confirm=cast(CapcoreConfirmPolicy, default_confirm),
+    )
+    public_entry["risk"] = descriptor.risk
+    public_entry["confirm"] = descriptor.confirm
+    public_entry["requiresConfirmation"] = descriptor.confirm != "never"
+    if "effects" in public_entry or "effect" in public_entry or descriptor.effects:
+        public_entry.pop("effect", None)
+        public_entry["effects"] = list(descriptor.effects)
+    return public_entry
 
 
 def with_capability_approval_metadata(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -1689,15 +1715,9 @@ def build_mcp_tool_config_entry(server_id: str, tool: Mapping[str, Any] | None) 
     safe_server_id = _safe_mcp_server_id(server_id)
     tool_name = _safe_mcp_tool_name(tool.get("name"))
     public_id = f"mcp.{safe_server_id}.{tool_name}" if safe_server_id and tool_name else ""
-    risk = str(tool.get("risk") or _infer_mcp_tool_risk(tool_name, str(tool.get("description") or ""))).strip().lower()
-    if risk not in {"low", "medium", "high"}:
-        risk = "medium"
-    confirm = str(tool.get("confirm") or "first_time").strip().lower()
-    if confirm not in MCP_TOOL_CONFIRM_POLICIES:
-        confirm = "first_time"
-    if risk == "high":
-        confirm = "always"
-    return with_capability_approval_metadata({
+    description = _safe_public_mcp_text(tool.get("description"), limit=MCP_TOOL_DESCRIPTION_MAX_LENGTH)
+    inferred_risk = _infer_mcp_tool_risk(tool_name, description)
+    entry = {
         "id": public_id,
         "serverId": safe_server_id,
         "kind": "mcp_tool",
@@ -1707,19 +1727,27 @@ def build_mcp_tool_config_entry(server_id: str, tool: Mapping[str, Any] | None) 
         "executionMode": "external",
         "toolType": tool_name,
         "name": tool_name,
-        "description": _safe_public_mcp_text(tool.get("description"), limit=MCP_TOOL_DESCRIPTION_MAX_LENGTH),
+        "description": description,
         "group": "mcp",
         "enabled": True,
         "status": "available",
         "reason": "",
-        "risk": risk,
-        "confirm": confirm,
-        "requiresConfirmation": risk == "high" or confirm in {"first_time", "always"},
+        "risk": tool.get("risk"),
+        "confirm": tool.get("confirm"),
         "usedBy": ["agent_prompt"],
         "providerId": f"provider.mcp.{safe_server_id}",
         "inputSchema": _normalize_mcp_input_schema(tool.get("inputSchema") or tool.get("input_schema")),
         "exposedToPrompt": bool(tool.get("promptExposed") or tool.get("prompt_exposed")),
-    })
+    }
+    effects = _safe_mcp_tool_effects(tool.get("effects", tool.get("effect")))
+    if effects:
+        entry["effects"] = effects
+    projected = project_capcore_catalog_fields(
+        entry,
+        default_risk=inferred_risk,
+        default_confirm="first_time",
+    )
+    return with_capability_approval_metadata(projected)
 
 
 def normalize_provider_config_payload(spec: ProviderConfigSpec, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -2645,26 +2673,35 @@ def _normalize_mcp_tool_config(server_id: str, raw_tool: Any) -> dict[str, Any]:
         return {}
     description = _safe_public_mcp_text(raw_tool.get("description"), limit=MCP_TOOL_DESCRIPTION_MAX_LENGTH)
     inferred_risk = _infer_mcp_tool_risk(tool_name, description)
-    raw_risk = str(raw_tool.get("risk") or "").strip().lower()
-    risk = raw_risk if raw_risk in {"low", "medium", "high"} else inferred_risk
-    raw_confirm = str(raw_tool.get("confirm") or "").strip().lower()
-    confirm = raw_confirm if raw_confirm in MCP_TOOL_CONFIRM_POLICIES else "first_time"
     prompt_exposed = _safe_optional_bool(
         raw_tool.get("promptExposed")
         if "promptExposed" in raw_tool
         else raw_tool.get("prompt_exposed"),
         default=False,
     )
-    if risk == "high":
-        confirm = "always"
-    return {
+    normalized = project_capcore_catalog_fields(
+        {
+            "id": f"mcp.{_safe_mcp_server_id(server_id)}.{tool_name}",
+            "name": tool_name,
+            "description": description,
+            "risk": raw_tool.get("risk"),
+            "confirm": raw_tool.get("confirm"),
+            "effects": _safe_mcp_tool_effects(raw_tool.get("effects", raw_tool.get("effect"))),
+        },
+        default_risk=inferred_risk,
+        default_confirm="first_time",
+    )
+    result = {
         "name": tool_name,
         "description": description,
         "inputSchema": _normalize_mcp_input_schema(raw_tool.get("inputSchema") or raw_tool.get("input_schema")),
-        "risk": risk,
-        "confirm": confirm,
+        "risk": normalized["risk"],
+        "confirm": normalized["confirm"],
         "promptExposed": bool(prompt_exposed),
     }
+    if normalized.get("effects"):
+        result["effects"] = list(normalized["effects"])
+    return result
 
 
 def _apply_mcp_low_risk_allowlist(tool: Mapping[str, Any], allowlist: list[str]) -> dict[str, Any]:
@@ -2687,6 +2724,24 @@ def _safe_mcp_tool_name_list(value: Any) -> list[str]:
             continue
         seen.add(tool_name)
         result.append(tool_name)
+    return result
+
+
+def _safe_mcp_tool_effects(value: Any) -> list[str]:
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, (list, tuple, set)):
+        candidates = list(value)
+    else:
+        candidates = []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in candidates[:16]:
+        effect = str(item or "").strip()
+        if not effect or effect in seen or not MCP_TOOL_EFFECT_RE.fullmatch(effect):
+            continue
+        seen.add(effect)
+        result.append(effect)
     return result
 
 
