@@ -290,6 +290,66 @@ class MemcoreManager:
                 "rendered_text": "",
             }
 
+    def read_memory_timeline(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        date_from: str,
+        date_to: str = "",
+        time_periods: list[str] | None = None,
+        exclude_source_ids: list[str] | None = None,
+        cross_conversation: bool = True,
+    ) -> dict[str, Any]:
+        system = self._get_system_or_none(
+            operation="read_memory_timeline",
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return {
+                **self._status("read_memory_timeline", False, "unavailable", reason=self._reason),
+                "date_from": str(date_from or ""),
+                "date_to": str(date_to or ""),
+                "time_periods": [],
+                "active_dates": [],
+                "message_count": 0,
+                "messages": [],
+                "text": "",
+                "backend": "memcore",
+            }
+
+        try:
+            result = system.read_timeline(
+                date_from=str(date_from or ""),
+                date_to=str(date_to or ""),
+                time_periods=list(time_periods or []),
+                cross_conversation=bool(cross_conversation),
+            )
+            return self._project_timeline_result(
+                system=system,
+                result=result,
+                date_from=date_from,
+                date_to=date_to,
+                exclude_source_ids=exclude_source_ids,
+            )
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore timeline read failed: %s", reason)
+            return {
+                **self._status("read_memory_timeline", False, "failed", reason=reason),
+                "date_from": str(date_from or ""),
+                "date_to": str(date_to or ""),
+                "time_periods": [],
+                "active_dates": [],
+                "message_count": 0,
+                "messages": [],
+                "text": "",
+                "backend": "memcore",
+            }
+
     def shadow_retrieve_memory(
         self,
         *,
@@ -713,6 +773,47 @@ class MemcoreManager:
             if text
         )
         return raw_text, episodic_text, semantic_text
+
+    @staticmethod
+    def _project_timeline_result(
+        *,
+        system: Any,
+        result: dict[str, Any],
+        date_from: str,
+        date_to: str,
+        exclude_source_ids: list[str] | None,
+    ) -> dict[str, Any]:
+        from memcore.rendering import render_timeline
+
+        payload = dict(result if isinstance(result, dict) else {})
+        raw_status = str(payload.get("status") or "")
+        status = "invalid_range" if raw_status == "invalid_filter" else raw_status
+        reason = str(payload.get("reason") or "")
+        if raw_status == "invalid_filter" and not reason:
+            reason = "invalid_filter"
+        messages = list(payload.get("messages") or [])
+        excluded = {str(item or "").strip() for item in (exclude_source_ids or []) if str(item or "").strip()}
+        if excluded:
+            messages = [item for item in messages if str(item.get("source_id") or "").strip() not in excluded]
+        if status in {"ok", "empty"}:
+            status = "ok" if messages else "empty"
+            reason = "" if messages else "no_activity"
+        active_dates = sorted({str(item.get("date_label") or "") for item in messages if str(item.get("date_label") or "")})
+        text = render_timeline(messages, tz=str(getattr(system, "timezone", "") or "Asia/Shanghai")) if messages else ""
+        return {
+            "operation": "read_memory_timeline",
+            "ok": status not in {"failed", "unavailable"},
+            "status": status,
+            "reason": reason,
+            "date_from": str(payload.get("date_from") or date_from or ""),
+            "date_to": str(payload.get("date_to") or date_to or date_from or ""),
+            "time_periods": list(payload.get("time_periods") or []),
+            "active_dates": active_dates,
+            "message_count": len(messages),
+            "messages": messages,
+            "text": text,
+            "backend": "memcore",
+        }
 
     @staticmethod
     def _log_compaction_result(future: Any) -> None:

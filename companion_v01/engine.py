@@ -3454,13 +3454,25 @@ class AkaneMemoryEngine:
                 break
         return normalized
 
+    def _build_memory_timeline_tool_service(self) -> Any:
+        try:
+            from .memcore_integration.timeline import MemcoreTimelineToolService
+
+            return MemcoreTimelineToolService(
+                legacy_service=self.memory_timeline_service,
+                memcore_manager=getattr(self, "memcore_manager", None),
+            )
+        except Exception as exc:
+            logger.warning("memcore timeline tool adapter disabled: %s", exc)
+            return self.memory_timeline_service
+
     def _build_tool_handlers(self) -> dict[str, BaseToolHandler]:
         return {
             "retrieve_memory": RetrieveMemoryToolHandler(
                 retrieve_fn=self._execute_retrieve_memory_tool,
             ),
             "read_memory_timeline": ReadMemoryTimelineToolHandler(
-                timeline_service=self.memory_timeline_service,
+                timeline_service=self._build_memory_timeline_tool_service(),
             ),
             "load_character_context": LoadCharacterContextToolHandler(
                 context_library_service=getattr(

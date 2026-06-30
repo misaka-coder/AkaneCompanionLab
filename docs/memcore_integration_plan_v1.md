@@ -234,16 +234,22 @@ MEMCORE_SHADOW_COMPARE=false
 
 目标: 时间线精确读由 memcore 提供，但工具名、输入、结构化状态保持。
 
+状态:已完成。
+
 改动:
 
-- 新增 `MemcoreReadMemoryTimelineToolHandler` 或在现 handler 里分流。
+- 新增 `MemcoreTimelineToolService` 作为旧 `ReadMemoryTimelineToolHandler` 可直接使用的 timeline facade。
 - 调 `MemorySystem.read_timeline(date_from, date_to, time_periods)`。
 - 返回仍要匹配 Akane 当前工具 followup 习惯。
+- `MEMORY_BACKEND=memcore` 且 memcore 可用时，工具读侧走 memcore；memcore 不可用/失败时 fallback 到 legacy `MemoryTimelineService`。
+- 为匹配 Akane legacy 行为，timeline 工具在 memcore 侧按 profile + character 跨 conversation 精确读 raw，并排除本轮 current source_id。
+- 旧 timeline mirror、backfill、认识第 N 天提示仍暂时由 legacy `MemoryTimelineService` 提供，本切片不删除旧服务。
 
 验证:
 
 - 非法日期返回 structured invalid，不静默整天读取。
 - 单日、多日、time_periods 均有测试。
+- 单测确认 `ReadMemoryTimelineToolHandler` 在 memcore 模式下使用 memcore adapter，不调用 legacy read。
 
 ### Slice 5: 切最终 prompt 的可见三层
 

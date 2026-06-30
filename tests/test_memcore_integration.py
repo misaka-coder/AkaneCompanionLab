@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import builtins
+from datetime import datetime
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import config
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.engine_services import response_builder
 from companion_v01.memcore_integration.manager import MemcoreManager, normalize_memory_backend
+from companion_v01.memcore_integration.timeline import MemcoreTimelineToolService
 from companion_v01.retrieval_types import RetrievalPipelineResult
 from companion_v01 import retrieval_engine
-from companion_v01.tool_runtime import ToolExecutionContext
+from companion_v01.tool_runtime import ReadMemoryTimelineToolHandler, ToolExecutionContext
 
 
 class _FakeLLM:
@@ -36,6 +39,10 @@ def _blocking_import(name, globals=None, locals=None, fromlist=(), level=0):
 
 
 _REAL_IMPORT = builtins.__import__
+
+
+def _ts(year: int, month: int, day: int, hour: int, minute: int = 0) -> int:
+    return int(datetime(year, month, day, hour, minute, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp())
 
 
 class _ToolFakeStore:
@@ -231,6 +238,59 @@ class _PromptContextEngine:
 
     def _get_prompt_builder(self) -> _CapturePromptBuilder:
         return self.prompt_builder
+
+
+class _TimelineLegacyService:
+    def __init__(self) -> None:
+        self.read_calls: list[dict[str, object]] = []
+
+    def normalize_time_periods(self, values) -> list[str]:
+        mapping = {"上午": "morning", "morning": "morning"}
+        return [mapping[str(item)] for item in values or [] if str(item) in mapping]
+
+    def read(self, **kwargs) -> dict[str, object]:
+        self.read_calls.append(dict(kwargs))
+        return {
+            "status": "ok",
+            "reason": "",
+            "date_from": str(kwargs.get("date_from") or ""),
+            "date_to": str(kwargs.get("date_to") or ""),
+            "time_periods": list(kwargs.get("time_periods") or []),
+            "active_dates": ["2026-06-13"],
+            "message_count": 1,
+            "messages": [{"content": "LEGACY TIMELINE"}],
+        }
+
+    def render_tool_context(self, _result: dict[str, object]) -> str:
+        return "LEGACY TIMELINE"
+
+    def build_acquaintance_prompt(self, **_kwargs) -> str:
+        return ""
+
+
+class _TimelineMemcoreManager:
+    enabled = True
+    available = True
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def read_memory_timeline(self, **kwargs) -> dict[str, object]:
+        self.calls.append(dict(kwargs))
+        return {
+            "operation": "read_memory_timeline",
+            "ok": True,
+            "status": "ok",
+            "reason": "",
+            "date_from": str(kwargs.get("date_from") or ""),
+            "date_to": str(kwargs.get("date_to") or ""),
+            "time_periods": list(kwargs.get("time_periods") or []),
+            "active_dates": ["2026-06-13"],
+            "message_count": 1,
+            "messages": [{"source_id": "m1", "content": "MEMCORE TIMELINE"}],
+            "text": "MEMCORE TIMELINE",
+            "backend": "memcore",
+        }
 
 
 def _tool_context() -> ToolExecutionContext:
@@ -432,6 +492,58 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertIn("【近期原始对话(未摘要)】", result["raw_text"])
             self.assertIn("冰可乐", result["raw_text"])
             self.assertIn("冰可乐", result["rendered_text"])
+            manager.close()
+
+    def test_read_memory_timeline_returns_memcore_raw_and_excludes_current_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            manager.record_user_turn(
+                {
+                    "source_id": "old-morning",
+                    "content": "上午讨论了角色提示词。",
+                    "timestamp": _ts(2026, 6, 13, 9, 0),
+                    "memory_metadata": {"keywords": ["提示词"], "categories": ["project_work"], "importance": 0.8},
+                },
+                profile_user_id="u1",
+                session_id="old-session",
+                character_pack_id="char",
+            )
+            manager.record_user_turn(
+                {
+                    "source_id": "current-query",
+                    "content": "请读取今天上午的原始对话。",
+                    "timestamp": _ts(2026, 6, 13, 10, 0),
+                    "memory_metadata": {},
+                },
+                profile_user_id="u1",
+                session_id="current-session",
+                character_pack_id="char",
+            )
+
+            result = manager.read_memory_timeline(
+                profile_user_id="u1",
+                session_id="current-session",
+                character_pack_id="char",
+                date_from="2026-06-13",
+                date_to="2026-06-13",
+                time_periods=["morning"],
+                exclude_source_ids=["current-query"],
+                cross_conversation=True,
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["message_count"], 1)
+            self.assertIn("上午讨论了角色提示词", result["text"])
+            self.assertNotIn("请读取今天上午", result["text"])
             manager.close()
 
     def test_dual_write_rejects_cross_namespace_metadata_update(self) -> None:
@@ -824,6 +936,46 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(memcore_manager.calls[0]["session_id"], "s1")
         self.assertEqual(memcore_manager.calls[0]["character_pack_id"], "char")
         self.assertEqual(memcore_manager.calls[0]["current_user_record"]["source_id"], "current")
+
+    def test_read_memory_timeline_tool_uses_memcore_adapter_in_memcore_mode(self) -> None:
+        legacy = _TimelineLegacyService()
+        memcore_manager = _TimelineMemcoreManager()
+        service = MemcoreTimelineToolService(legacy_service=legacy, memcore_manager=memcore_manager)
+        handler = ReadMemoryTimelineToolHandler(timeline_service=service)
+        call = handler.normalize_call(
+            {
+                "type": "read_memory_timeline",
+                "date": "2026-06-13",
+                "time_periods": ["上午"],
+            }
+        )
+        self.assertIsNotNone(call)
+        assert call is not None
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = handler.execute(
+                call=call,
+                context=ToolExecutionContext(
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                    now_ts=_ts(2026, 6, 13, 12, 0),
+                    visual_payload={},
+                    current_user_source_id="current-query",
+                ),
+            )
+
+        self.assertIn("MEMCORE TIMELINE", result.followup_context)
+        self.assertIn("memcore", result.followup_context)
+        self.assertEqual(legacy.read_calls, [])
+        self.assertEqual(memcore_manager.calls[0]["profile_user_id"], "u1")
+        self.assertEqual(memcore_manager.calls[0]["session_id"], "u1")
+        self.assertEqual(memcore_manager.calls[0]["character_pack_id"], "char")
+        self.assertEqual(memcore_manager.calls[0]["time_periods"], ["morning"])
+        self.assertEqual(memcore_manager.calls[0]["exclude_source_ids"], ["current-query"])
+        self.assertTrue(memcore_manager.calls[0]["cross_conversation"])
+        self.assertEqual(result.state_updates["memory_timeline"]["status"], "ok")
+        self.assertEqual(result.state_updates["memory_timeline"]["message_count"], 1)
 
 
 if __name__ == "__main__":
