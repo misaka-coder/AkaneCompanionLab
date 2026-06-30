@@ -54,8 +54,7 @@ class CapcoreRuntimeTests(unittest.TestCase):
         self.assertEqual(preview["api_key"], "[redacted]")
         self.assertEqual(preview["localPath"], "[local_path]")
         self.assertEqual(preview["url"], "https://example.com/callback?token=[redacted]")
-        self.assertEqual(preview["nested"]["token"], "[redacted]")
-        self.assertEqual(preview["nested"]["label"], "公开标签")
+        self.assertEqual(preview["nested"], {"type": "object", "keys": ["token", "label"]})
 
     def test_resolve_and_event_shape_match_akane_approval_contract(self) -> None:
         context = SimpleNamespace(profile_user_id="alice", session_id="s1", client_mode="desktop_pet")

@@ -1,30 +1,23 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 from typing import Any, Mapping, cast
 
-from capcore import ApprovalPolicy, ConfirmPolicy, InvocationContext, PermissionDecision, PermissionRequest, RiskLevel
+from capcore import (
+    ApprovalPolicy,
+    ConfirmPolicy,
+    InvocationContext,
+    PermissionDecision,
+    PermissionRequest,
+    RiskLevel,
+    sanitize_permission_preview,
+)
 from capcore import resolve_permission as capcore_resolve_permission
 
 from .local_capability_config import get_approval_policy_config
 
 
 APPROVAL_POLICY_MODES = {"ask_each_time", "trusted_auto_allow", "disabled"}
-PREVIEW_SECRET_MARKERS = (
-    "api_key",
-    "apikey",
-    "authorization",
-    "bearer",
-    "cookie",
-    "password",
-    "secret",
-    "token",
-)
-PREVIEW_SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
-LOCAL_PATH_RE = re.compile(
-    r"(?i)((?<![A-Z])[A-Z]:[\\/][^\s,;]+|\\\\[^\s,;]+|/(?:users|home|root|var|tmp|mnt|Volumes)/[^\s,;]+)"
-)
 
 
 def invocation_context_from_execution(context: Any) -> InvocationContext:
@@ -64,21 +57,6 @@ def resolve_permission_for_profile(
         request,
         approval_policy_for_profile(base_dir=base_dir, profile_user_id=profile_user_id),
     )
-
-
-def sanitize_permission_preview(value: Any) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        return {}
-    preview: dict[str, Any] = {}
-    for raw_key, raw_value in list(value.items())[:12]:
-        key = _safe_preview_key(raw_key)
-        if not key:
-            continue
-        safe_value = _safe_preview_value(raw_value, key=key)
-        if safe_value in ("", {}, []):
-            continue
-        preview[key] = safe_value
-    return preview
 
 
 def manual_permission_request(
@@ -141,41 +119,3 @@ def approval_required_event(
         "payloadPreview": sanitize_permission_preview(preview),
         "client_mode": str(client_mode or ""),
     }
-
-
-def _safe_preview_key(value: Any) -> str:
-    text = str(value or "").strip()
-    return text if PREVIEW_SAFE_KEY_RE.fullmatch(text) else ""
-
-
-def _safe_preview_value(value: Any, *, key: str = "") -> Any:
-    if _key_looks_sensitive(key):
-        return "[redacted]"
-    if isinstance(value, bool) or isinstance(value, (int, float)) or value is None:
-        return value
-    if isinstance(value, str):
-        return _safe_preview_text(value)
-    if isinstance(value, (list, tuple)):
-        items = [_safe_preview_value(item, key=key) for item in value[:8]]
-        return [item for item in items if item not in ("", {}, [])]
-    if isinstance(value, Mapping):
-        return sanitize_permission_preview(value)
-    return _safe_preview_text(str(value))
-
-
-def _safe_preview_text(value: Any) -> str:
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"\s+", " ", text).strip()
-    if not text:
-        return ""
-    text = re.sub(r"(?i)authorization:\s*bearer\s+[^\s,;]+", "Authorization: Bearer [redacted]", text)
-    text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [redacted]", text)
-    text = re.sub(r"(?i)\b(api[_-]?key|password|secret|token)\s*[:=]\s*[^\s,;&]+", r"\1=[redacted]", text)
-    text = re.sub(r"(?i)([?&](?:api[_-]?key|password|secret|token)=)[^&#\s]+", r"\1[redacted]", text)
-    text = LOCAL_PATH_RE.sub("[local_path]", text)
-    return text[:160]
-
-
-def _key_looks_sensitive(value: Any) -> bool:
-    normalized = str(value or "").strip().lower().replace("-", "_")
-    return any(marker in normalized for marker in PREVIEW_SECRET_MARKERS)
