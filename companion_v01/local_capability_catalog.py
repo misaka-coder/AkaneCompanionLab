@@ -6,9 +6,8 @@ import socket
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping, cast
+from typing import Any, Mapping
 
-from capcore import RiskLevel as CapcoreRiskLevel
 from capcore import descriptor_from_mapping as capcore_descriptor_from_mapping
 
 from .capability_registry import CapabilityRegistry
@@ -82,46 +81,6 @@ TOOL_USED_BY: dict[str, list[str]] = {
     "browser_page": ["agent", "desktop_pet"],
     "open_music_search": ["agent", "desktop_pet"],
 }
-
-LOW_RISK_TOOLS = {
-    "retrieve_memory",
-    "read_memory_timeline",
-    "load_character_context",
-    "list_reminders",
-    "check_inventory",
-    "inspect_attachment",
-    "read_attachment_section",
-    "inspect_media_info",
-    "inspect_generated_file",
-    "web_search",
-}
-
-MEDIUM_RISK_TOOLS = {
-    "fetch_media_from_url",
-    "sync_attachment_workspace",
-    "retry_attachment",
-    "clear_attachment_focus",
-    "compose_file",
-    "revise_generated_file",
-    "apply_style_to_existing_file",
-    "separate_audio_stems",
-    "clean_voice_track",
-    "transcribe_media",
-    "prepare_voice_dataset",
-    "convert_media_file",
-    "send_file",
-    "send_generated_file",
-    "manage_generated_file",
-    "manage_task_workspace",
-    "delegate_task",
-    "manage_persona",
-    "open_browser",
-    "browser_page",
-    "open_music_search",
-    "manage_gift",
-    "manage_artifact",
-}
-
 
 @dataclass(frozen=True)
 class LocalServiceProbe:
@@ -766,16 +725,8 @@ def _summarize_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _tool_risk(tool_name: str) -> str:
-    if tool_name in LOW_RISK_TOOLS:
-        return "low"
-    if tool_name in MEDIUM_RISK_TOOLS:
-        return "medium"
-    return "low"
-
-
 def _tool_capcore_catalog_projection(tool_name: str, handler: Any) -> dict[str, Any]:
-    raw_risk = _handler_tool_risk(tool_name, handler)
+    raw_risk = _handler_tool_risk(handler)
     capability_id = f"tool.{tool_name}"
     descriptor = capcore_descriptor_from_mapping(
         {
@@ -788,7 +739,7 @@ def _tool_capcore_catalog_projection(tool_name: str, handler: Any) -> dict[str, 
             "requiresConfirmation": raw_risk == "high",
         },
         default_id=capability_id,
-        default_risk=cast(CapcoreRiskLevel, _tool_risk(tool_name)),
+        default_risk="low",
         default_confirm="never",
     )
     return {
@@ -797,7 +748,7 @@ def _tool_capcore_catalog_projection(tool_name: str, handler: Any) -> dict[str, 
     }
 
 
-def _handler_tool_risk(tool_name: str, handler: Any) -> str:
+def _handler_tool_risk(handler: Any) -> str:
     metadata_fn = getattr(handler, "tool_metadata", None)
     if callable(metadata_fn):
         try:
@@ -807,7 +758,7 @@ def _handler_tool_risk(tool_name: str, handler: Any) -> str:
         risk = str(getattr(metadata, "risk", "") or "").strip().lower()
         if risk in {"low", "medium", "high"}:
             return risk
-    return _tool_risk(tool_name)
+    return "low"
 
 
 def _tool_description(tool_name: str, group: str) -> str:

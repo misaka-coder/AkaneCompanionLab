@@ -35,6 +35,7 @@ from companion_v01.routes.qq import build_qq_router
 from companion_v01.routes.sessions import build_sessions_router
 from companion_v01.routes.think import build_think_router
 from companion_v01.routes.voice import build_voice_router
+from companion_v01.tool_runtime import ToolMetadata
 from companion_v01.qq_gateway import NapCatQQGateway
 
 
@@ -55,6 +56,14 @@ class FakeRuntimeMetrics:
 
     def snapshot(self) -> dict[str, float]:
         return dict(self.counters)
+
+
+class CatalogMetadataHandler:
+    def __init__(self, *, risk: str) -> None:
+        self._metadata = ToolMetadata(risk=risk)
+
+    def tool_metadata(self) -> ToolMetadata:
+        return self._metadata
 
 
 class FakeWorkflowRunner:
@@ -1237,13 +1246,13 @@ class BackendRouteModuleTests(unittest.TestCase):
         runtime = FakeRuntimeMetrics()
         engine = SimpleNamespace(
             tool_handlers={
-                "retrieve_memory": object(),
-                "compose_file": object(),
-                "transcribe_media": object(),
-                "web_search": object(),
-                "open_browser": object(),
-                "browser_page": object(),
-                "open_music_search": object(),
+                "retrieve_memory": CatalogMetadataHandler(risk="low"),
+                "compose_file": CatalogMetadataHandler(risk="medium"),
+                "transcribe_media": CatalogMetadataHandler(risk="medium"),
+                "web_search": CatalogMetadataHandler(risk="low"),
+                "open_browser": CatalogMetadataHandler(risk="medium"),
+                "browser_page": CatalogMetadataHandler(risk="medium"),
+                "open_music_search": CatalogMetadataHandler(risk="medium"),
             }
         )
         app = FastAPI()
