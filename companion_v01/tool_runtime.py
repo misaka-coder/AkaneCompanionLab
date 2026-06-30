@@ -15,6 +15,7 @@ from urllib.parse import quote_plus, urlparse
 
 import config
 from capcore import build_permission_request as capcore_build_permission_request
+from capcore import build_tool_spec as capcore_build_tool_spec
 from capcore import validate_invocation_args as capcore_validate_invocation_args
 
 from .browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner
@@ -542,7 +543,13 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
 
     def tool_metadata(self) -> ToolMetadata:
         risk = str(getattr(self.descriptor, "risk", "") or "medium").strip() or "medium"
-        return ToolMetadata(family="adapter_capability", operation="external", risk=risk, default_round_budget=3)
+        return ToolMetadata(
+            family="adapter_capability",
+            operation="external",
+            risk=risk,
+            default_round_budget=3,
+            input_schema=self._input_schema(),
+        )
 
     def build_prompt_instruction(self) -> str:
         description = self._safe_public_text(str(getattr(self.descriptor, "short_hint", "") or ""), limit=240)
@@ -561,18 +568,13 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             return None
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
-        allowed = self._allowed_arg_names()
         args: dict[str, Any] = {}
         source = value.get("arguments") if isinstance(value.get("arguments"), Mapping) else value
         for key, item in dict(source or {}).items():
             clean_key = str(key or "").strip()
             if clean_key == "type":
                 continue
-            if allowed and clean_key not in allowed:
-                continue
             args[clean_key] = self._safe_arg_value(item)
-            if len(args) >= 24:
-                break
         return {"type": self.tool_type, "arguments": args}
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -736,8 +738,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         return f"MCP 工具返回：\n{body[:self.MAX_FOLLOWUP_CHARS]}"
 
     def _schema_prompt_text(self) -> str:
-        raw = getattr(self.descriptor, "raw", {}) if self.descriptor is not None else {}
-        schema = raw.get("inputSchema") if isinstance(raw, Mapping) and isinstance(raw.get("inputSchema"), Mapping) else {}
+        schema = self._input_schema()
         properties = schema.get("properties") if isinstance(schema.get("properties"), Mapping) else {}
         required = set(schema.get("required") or []) if isinstance(schema.get("required"), list) else set()
         parts: list[str] = []
@@ -752,11 +753,11 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             parts.append(f"{clean_name}:{prop_type}{mark}{(' - ' + desc) if desc else ''}")
         return "; ".join(parts)
 
-    def _allowed_arg_names(self) -> set[str]:
-        raw = getattr(self.descriptor, "raw", {}) if self.descriptor is not None else {}
-        schema = raw.get("inputSchema") if isinstance(raw, Mapping) and isinstance(raw.get("inputSchema"), Mapping) else {}
-        properties = schema.get("properties") if isinstance(schema.get("properties"), Mapping) else {}
-        return {str(name) for name in properties.keys() if str(name or "").strip()}
+    def _input_schema(self) -> Mapping[str, Any]:
+        try:
+            return capcore_build_tool_spec(self.descriptor).input_schema
+        except Exception:
+            return {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
 
     def _safe_payload_preview(self, value: Any) -> dict[str, Any]:
         if not isinstance(value, Mapping):

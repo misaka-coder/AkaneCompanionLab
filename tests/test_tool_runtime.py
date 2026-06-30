@@ -123,6 +123,88 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "validation_error")
         self.assertEqual(result.stream_events[0]["reason"], "missing_required")
 
+    def test_adapter_capability_keeps_unknown_args_for_capcore_validation(self) -> None:
+        class FakeAdapter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                self.calls.append({"capability_id": capability_id, "args": dict(args), "ctx": ctx})
+                return CapabilityResult(is_error=False, content={"content": []}, status="ok")
+
+        adapter = FakeAdapter()
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp.demo.echo",
+            adapter=adapter,
+            descriptor=self._descriptor(),
+            config_base_dir="unused",
+        )
+
+        call = handler.normalize_call(
+            {
+                "type": "mcp.demo.echo",
+                "text": "hello",
+                "extra": "should fail in capcore",
+            }
+        )
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual(call["arguments"]["extra"], "should fail in capcore")
+
+        result = handler.execute(call=call, context=self._context())
+
+        self.assertEqual(adapter.calls, [])
+        self.assertEqual(result.stream_events[0]["type"], "adapter_capability_failed")
+        self.assertEqual(result.stream_events[0]["status"], "validation_error")
+        self.assertEqual(result.stream_events[0]["reason"], "unknown_argument")
+
+    def test_adapter_capability_prompt_schema_uses_capcore_projection(self) -> None:
+        descriptor = self._descriptor(
+            inputs=(
+                CapabilityIOSlot(
+                    name="text",
+                    kind="string",
+                    required=True,
+                    raw={"description": "Text to echo"},
+                ),
+            )
+        )
+        descriptor = CapabilityDescriptor(
+            id=descriptor.id,
+            display_name=descriptor.display_name,
+            short_hint=descriptor.short_hint,
+            visible_in=descriptor.visible_in,
+            prompt_exposed=descriptor.prompt_exposed,
+            risk=descriptor.risk,
+            confirm=descriptor.confirm,
+            effects=descriptor.effects,
+            trigger=descriptor.trigger,
+            inputs=descriptor.inputs,
+            outputs=descriptor.outputs,
+            raw={
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"wrong": {"type": "string"}},
+                    "required": ["wrong"],
+                }
+            },
+        )
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp.demo.echo",
+            adapter=object(),
+            descriptor=descriptor,
+            config_base_dir="unused",
+        )
+
+        instruction = handler.build_prompt_instruction()
+        metadata = handler.tool_metadata()
+
+        self.assertIn("text:string required - Text to echo", instruction)
+        self.assertNotIn("wrong", instruction)
+        assert metadata.input_schema is not None
+        self.assertIn("text", metadata.input_schema["properties"])
+        self.assertNotIn("wrong", metadata.input_schema["properties"])
+
     def test_adapter_capability_requires_approval_with_capcore_preview(self) -> None:
         class FakeAdapter:
             def __init__(self) -> None:
