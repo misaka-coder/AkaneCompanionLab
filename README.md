@@ -206,10 +206,10 @@ Akane/
   capcore/
 ```
 
-`requirements.txt` 会以 editable 形式安装 `../capcore`。如果你只 clone
-了 AkaneCompanionLab，依赖安装会失败；先 clone `capcore` 到同级目录。
-`memcore` 也是同一路线的可复用 core，但当前 Akane 后端还没有把它作为
-运行时依赖强制安装。
+`requirements.txt` 会以 editable 形式安装 `../capcore` 和 `../memcore`。
+如果你只 clone 了 AkaneCompanionLab，依赖安装会失败；先 clone 这两个
+core 包到同级目录。`memcore` 是当前对话记忆主后端，旧 Akane 记忆链路仅
+保留为显式兼容/迁移模式。
 
 ### Windows PowerShell
 

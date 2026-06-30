@@ -1,8 +1,7 @@
 """Adapters from Akane runtime objects to memcore interfaces.
 
-No top-level memcore imports live here. The bridge is optional and default-off,
-so a legacy Akane boot must not fail merely because the sibling package has not
-been installed yet.
+No top-level memcore imports live here. Explicit legacy-mode tests and tools can
+still boot without loading the sibling package.
 """
 
 from __future__ import annotations

@@ -504,7 +504,7 @@ class AkaneMemoryEngine:
         return manager
 
     def _memcore_owns_compaction(self) -> bool:
-        backend = str(getattr(config, "MEMORY_BACKEND", "legacy") or "legacy").strip().lower()
+        backend = str(getattr(config, "MEMORY_BACKEND", "memcore") or "memcore").strip().lower()
         if backend != "memcore":
             return False
         manager = self._memcore_manager_if_enabled()

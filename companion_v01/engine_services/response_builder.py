@@ -452,8 +452,8 @@ def prepare_context(
 
 
 def _memory_backend() -> str:
-    backend = str(getattr(mod_config, "MEMORY_BACKEND", "legacy") or "legacy").strip().lower()
-    return backend if backend in {"legacy", "dual", "memcore"} else "legacy"
+    backend = str(getattr(mod_config, "MEMORY_BACKEND", "memcore") or "memcore").strip().lower()
+    return backend if backend in {"legacy", "dual", "memcore"} else "memcore"
 
 
 def _build_memcore_prompt_context(

@@ -1,8 +1,8 @@
 """Memcore runtime manager for Akane.
 
-The bridge is optional and default-off. In dual-write mode the legacy Akane
-memory stack remains source of truth, while this manager mirrors raw turns into
-memcore with the same source_id.
+memcore is the primary dialogue memory backend. ``legacy`` and ``dual`` modes
+remain as explicit compatibility / migration tools while old Akane memory code
+is being retired.
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ logger = logging.getLogger("akane.memcore")
 
 
 def normalize_memory_backend(value: Any) -> str:
-    text = str(value or "legacy").strip().lower()
-    return text if text in SUPPORTED_MEMORY_BACKENDS else "legacy"
+    text = str(value or "memcore").strip().lower()
+    return text if text in SUPPORTED_MEMORY_BACKENDS else "memcore"
 
 
 def normalize_visible_scope(value: Any) -> str:
@@ -89,7 +89,7 @@ class MemcoreManager:
         raw_path = str(getattr(config, "MEMCORE_STORAGE_PATH", "") or "").strip()
         storage_path = Path(raw_path) if raw_path else Path(engine.base_dir) / "memcore_v01.db"
         return cls(
-            backend=getattr(config, "MEMORY_BACKEND", "legacy"),
+            backend=getattr(config, "MEMORY_BACKEND", "memcore"),
             storage_path=storage_path,
             visible_scope=getattr(config, "MEMCORE_VISIBLE_SCOPE", "user"),
             enable_flavor=bool(getattr(config, "MEMCORE_ENABLE_FLAVOR", True)),

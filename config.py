@@ -89,8 +89,8 @@ class Settings(BaseSettings):
     SEMANTIC_REINFORCEMENT_LOOKBACK: int = 8
     # 语义强化最小重叠次数（低于此数不强化）
     SEMANTIC_REINFORCEMENT_MIN_OVERLAP: int = 2
-    # 记忆后端：legacy=旧系统  dual=旧系统读侧+memcore双写  memcore=完整切换（后续切片）
-    MEMORY_BACKEND: str = "legacy"
+    # 记忆后端：memcore=主记忆系统  legacy=旧系统兼容  dual=迁移/对比用双写
+    MEMORY_BACKEND: str = "memcore"
     # memcore SQLite 路径；留空时使用 base_dir / memcore_v01.db
     MEMCORE_STORAGE_PATH: str = ""
     # memcore 可见长期记忆作用域：conversation/user
@@ -593,8 +593,8 @@ def _apply_settings(s: Settings) -> None:
     SEMANTIC_VISIBLE_LIMIT = max(1, int(s.SEMANTIC_VISIBLE_LIMIT))
     SEMANTIC_REINFORCEMENT_LOOKBACK = max(1, int(s.SEMANTIC_REINFORCEMENT_LOOKBACK))
     SEMANTIC_REINFORCEMENT_MIN_OVERLAP = max(1, int(s.SEMANTIC_REINFORCEMENT_MIN_OVERLAP))
-    raw_memory_backend = str(s.MEMORY_BACKEND or "legacy").strip().lower()
-    MEMORY_BACKEND = raw_memory_backend if raw_memory_backend in {"legacy", "dual", "memcore"} else "legacy"
+    raw_memory_backend = str(s.MEMORY_BACKEND or "memcore").strip().lower()
+    MEMORY_BACKEND = raw_memory_backend if raw_memory_backend in {"legacy", "dual", "memcore"} else "memcore"
     MEMCORE_STORAGE_PATH = str(s.MEMCORE_STORAGE_PATH or "").strip()
     raw_memcore_visible_scope = str(s.MEMCORE_VISIBLE_SCOPE or "user").strip().lower()
     MEMCORE_VISIBLE_SCOPE = raw_memcore_visible_scope if raw_memcore_visible_scope in {"conversation", "user"} else "user"

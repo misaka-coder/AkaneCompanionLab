@@ -345,7 +345,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(normalize_memory_backend("legacy"), "legacy")
         self.assertEqual(normalize_memory_backend("dual"), "dual")
         self.assertEqual(normalize_memory_backend("memcore"), "memcore")
-        self.assertEqual(normalize_memory_backend("surprise"), "legacy")
+        self.assertEqual(normalize_memory_backend("surprise"), "memcore")
+        self.assertEqual(normalize_memory_backend(""), "memcore")
 
     def test_legacy_manager_does_not_import_memcore(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -961,7 +962,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             character_pack_id="char",
             current_user_source_id="current",
         )
-        with patch.object(config, "MEMCORE_SHADOW_COMPARE", True):
+        with patch.object(config, "MEMORY_BACKEND", "dual"), patch.object(config, "MEMCORE_SHADOW_COMPARE", True):
             result = retrieval_engine.execute_retrieve_memory_tool(
                 _FakeEngine(),
                 call={"query": "可乐", "keywords": ["可乐"]},

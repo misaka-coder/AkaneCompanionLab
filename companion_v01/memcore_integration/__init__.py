@@ -1,8 +1,8 @@
-"""Optional Akane -> memcore bridge.
+"""Akane -> memcore bridge.
 
-The legacy Akane memory stack remains the default. This package is intentionally
-lazy: importing it must not require the sibling memcore package unless a
-non-legacy backend is explicitly enabled.
+memcore is Akane's primary dialogue memory backend. The bridge stays lazy so
+tests and explicit ``MEMORY_BACKEND=legacy`` runs can still boot without loading
+the sibling package.
 """
 
 from __future__ import annotations

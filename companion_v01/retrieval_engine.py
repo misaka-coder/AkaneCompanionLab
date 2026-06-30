@@ -405,8 +405,8 @@ def _build_retrieve_memory_tool_result(
 
 
 def _memory_backend() -> str:
-    backend = str(getattr(config, "MEMORY_BACKEND", "legacy") or "legacy").strip().lower()
-    return backend if backend in {"legacy", "dual", "memcore"} else "legacy"
+    backend = str(getattr(config, "MEMORY_BACKEND", "memcore") or "memcore").strip().lower()
+    return backend if backend in {"legacy", "dual", "memcore"} else "memcore"
 
 
 def execute_memcore_retrieve_memory(

@@ -4,24 +4,25 @@
 
 这篇文档用于在上下文压缩或换模型后继续接上 Akane → memcore 的迁移工作。它记录当前 Akane 记忆链路、memcore 对应能力、推荐切片顺序、要改的文件和验证口径。
 
-结论先写前面:先不要继续拆 `companion_v01/store/core.py` 里的 messages / summaries / semantic 记忆区块。下一步应该以适配层方式接入 sibling repo `../memcore`，先双写和影子验证，再逐步切读侧、可见三层、压缩链路。
+结论先写前面:Akane 的对话记忆主路已经切到 sibling repo `../memcore`。后续不要再把旧 retrieval/router/compaction 当成主线扩展；旧链路只保留为显式 `MEMORY_BACKEND=legacy|dual` 的兼容、迁移和对比工具，后续按切片清理。
 
 ## 当前状态
 
 - Akane 工作区仍有一处 capcore handoff 文档改动: `docs/capability_adapter_v1_m1_handoff_prompt.md`。memcore 接入不要混入这条线。
 - `requirements.txt` 已加入 `-e ../memcore`。`MemcoreManager` 也有 sibling path fallback，方便本地未安装 editable 时仍可在 `MEMORY_BACKEND=dual|memcore` 下加载。
 - Slice 0 已完成:配置项、settings catalog、可选 manager bootstrap、空工具/诊断模块、基础测试。
-- Slice 1 已完成:同步/流式 turn 生命周期会在非 transient turn 下把 user raw、final assistant raw、user memory_metadata 双写进 memcore；旧 Akane 仍是读侧和用户可见行为来源。
+- Slice 1 已完成:同步/流式 turn 生命周期会在非 transient turn 下把 user raw、final assistant raw、user memory_metadata 写进 memcore；旧 Akane store 仍保留业务表和迁移来源。
 - Slice 2 已完成:`MEMCORE_SHADOW_COMPARE=true` 时，legacy `retrieve_memory` 工具返回后会额外跑 memcore 影子检索，只把结构化对比写入 debug/state，不改变 followup_context 或用户可见回复。
-- Akane 当前记忆主链路仍是旧系统:
+- Akane 当前对话记忆主链路是 memcore:
   - `companion_v01/engine.py` 构造 `MemoryStore`、`VectorStore`、`RetrievalService`、`MemoryCompactionService`。
-  - `process_turn()` / `process_turn_stream()` 先 `store.add_message(role="user")`，再取 recent raw / episodic / semantic，跑旧 pre-retrieval；旧 user vector policy 落定后，非 transient 且 `index_in_vector=True` 的 user raw 同步调用 `memcore_manager.record_user_turn()`。
+  - `MemoryStore` 仍承载附件、礼物、workspace、persona、旧数据回填等业务表；不要把它等同于“旧记忆主路”。
+  - `process_turn()` / `process_turn_stream()` 仍先 `store.add_message(role="user")` 保持现有业务链路；非 transient 且 `index_in_vector=True` 的 user raw 会调用 `memcore_manager.record_user_turn()` 进入 memcore。
   - 最终回复后把 `final_output["memory_metadata"]` 回写到 user raw: `_apply_memory_metadata_to_user_record()` → `store.update_message_memory_metadata()` → `_upsert_raw_record()`；随后对 `index_in_vector=True` 的 user raw 同步调用 `memcore_manager.update_turn_metadata()`。
   - `index_in_vector=false` 的 user raw 会在 memcore 双写里结构化跳过，避免“记忆查询本身”污染后续 memcore 检索；metadata 回写也只对已双写 user raw 执行。
-  - assistant 最终回复、工具 preface、部分工具结果也会写 raw，并调 `_schedule_summary_cycle()`；Slice 1 只双写 final assistant raw，不双写工具 preface/tool raw。
-  - `retrieve_memory` 工具在 `retrieval_engine.execute_retrieve_memory_tool()` 内重新收集可见三层 source_id，合并 `_memory_retrieval_exclude_source_ids`，再走 `RetrievalService.run_explicit()`。
+  - assistant 最终回复写 raw 后调 `_schedule_summary_cycle()`；`MEMORY_BACKEND=memcore` 下压缩由 memcore 接管。
+  - `retrieve_memory` 工具在 `MEMORY_BACKEND=memcore` 下走 memcore read side，不再 fallback legacy retrieval。
   - `MEMCORE_SHADOW_COMPARE=true` 时，`execute_retrieve_memory_tool()` 会调用 `memcore_manager.shadow_retrieve_memory()`，并在 `state_updates["memory_retrieval"]["memcore_shadow"]` 写入 ok/status/reason、legacy/memcore snippet count、短 hash 和 overlap 计数；不写 memcore 片段全文。
-  - `read_memory_timeline` 当前走 `MemoryTimelineService.read()`，读旧 `MemoryStore` raw 并返回结构化时间线。
+  - `read_memory_timeline` 在 `MEMORY_BACKEND=memcore` 下走 memcore timeline，不再 fallback legacy timeline。
 - memcore 已经具备目标能力:
   - `MemorySystem.record_user_turn()` / `record_assistant_turn()` / `update_turn_metadata()`。
   - `build_prompt_context()` / `render_prompt_context()`。
@@ -124,7 +125,7 @@ base_dir / "memcore_v01.db"
 先加最小配置，不要一次铺太多:
 
 ```text
-MEMORY_BACKEND=legacy       # legacy | dual | memcore
+MEMORY_BACKEND=memcore      # memcore | legacy | dual
 MEMCORE_STORAGE_PATH=       # 空则 base_dir / memcore_v01.db
 MEMCORE_VISIBLE_SCOPE=user  # conversation | user
 MEMCORE_ENABLE_FLAVOR=true
@@ -133,9 +134,9 @@ MEMCORE_SHADOW_COMPARE=false
 
 含义:
 
-- `legacy`: 完全旧系统。
-- `dual`: 旧系统仍作为读侧和用户可见结果，memcore 同步写入、压缩、可选影子检索。
-- `memcore`: 读写都走 memcore。不要第一切片直接默认它。
+- `memcore`: 主运行模式。读写、可见三层、检索工具、时间线和压缩都走 memcore。
+- `legacy`: 显式旧系统兼容模式，用于排查或临时回退。
+- `dual`: 迁移/对比模式。旧系统作为读侧，memcore 同步写入、压缩、可选影子检索。
 
 `settings_catalog.py` 也要补这些字段，否则 drift guard 会红。
 
@@ -143,7 +144,7 @@ MEMCORE_SHADOW_COMPARE=false
 
 ### Slice 0: 依赖与空接线
 
-目标: Akane 能稳定 import memcore，但不改变行为。
+目标: Akane 能稳定 import memcore。
 
 状态:已完成。
 
@@ -152,7 +153,7 @@ MEMCORE_SHADOW_COMPARE=false
 - `requirements.txt` 加 `-e ../memcore`，注释说明和 capcore 一样是 sibling package。
 - 新增 `companion_v01/memcore_integration/` 空模块和 adapter 骨架。
 - 新增配置项与 settings catalog。
-- `engine.__init__` 在 `MEMORY_BACKEND != "legacy"` 时构造 `self.memcore_manager`，失败要结构化记录并回退 legacy，不能让聊天主流程启动失败。
+- `engine.__init__` 在 `MEMORY_BACKEND != "legacy"` 时构造 `self.memcore_manager`，失败要结构化记录；`memcore` 主路不能静默切回旧记忆 prompt/tools。
 
 验证:
 
@@ -216,7 +217,7 @@ MEMCORE_SHADOW_COMPARE=false
 - followup 文案保持 Akane 当前文案，减少模型行为变化。
 - state_updates 仍输出 `memory_retrieval`，字段名尽量兼容前端/debug。
 - `MEMORY_BACKEND=memcore` 且 memcore read 成功时，`retrieve_memory` 的 followup 使用 memcore snippets，`retrieval_backend="memcore"`，不再调用 legacy retrieval。
-- memcore read 失败/不可用时结构化记录 `memcore_read`，不写 snippets 全文，然后 fallback 到 legacy retrieval。
+- memcore read 失败/不可用时结构化记录 `memcore_read`，不写 snippets 全文，不 fallback 到 legacy retrieval。
 - memcore read 成功但没有命中时保持现有 no-hit followup，不 fallback 到 legacy，避免 memcore 模式下读侧语义不清。
 - `MEMORY_BACKEND=legacy|dual` 下仍以 legacy 为读侧；`MEMCORE_SHADOW_COMPARE=true` 时继续只记录 hash/stat shadow payload。
 - 本切片不切 `read_memory_timeline`、最终 prompt 可见三层、压缩链路，也不删除旧 router/旧 retrieval 代码。
@@ -227,7 +228,7 @@ MEMCORE_SHADOW_COMPARE=false
 - 可见三层和本轮 source_id 不重复返回。
 - metadata filters 能前置缩候选: 用两类 categories 构造数据，传 category 只命中对应记忆。
 - memcore read 成功时 legacy retrieval service 未被调用。
-- memcore read 失败时 fallback legacy，且 `memcore_read` 不含 snippets。
+- memcore read 失败时不调用 legacy retrieval，且 `memcore_read` 不含 snippets。
 - memcore no-hit 时使用既有 no-hit 文案。
 
 ### Slice 4: 切 `read_memory_timeline` 工具读侧
@@ -241,7 +242,7 @@ MEMCORE_SHADOW_COMPARE=false
 - 新增 `MemcoreTimelineToolService` 作为旧 `ReadMemoryTimelineToolHandler` 可直接使用的 timeline facade。
 - 调 `MemorySystem.read_timeline(date_from, date_to, time_periods)`。
 - 返回仍要匹配 Akane 当前工具 followup 习惯。
-- `MEMORY_BACKEND=memcore` 且 memcore 可用时，工具读侧走 memcore；memcore 不可用/失败时 fallback 到 legacy `MemoryTimelineService`。
+- `MEMORY_BACKEND=memcore` 时工具读侧走 memcore；memcore 不可用/失败时返回结构化空结果，不 fallback 到 legacy `MemoryTimelineService`。
 - 为匹配 Akane legacy 行为，timeline 工具在 memcore 侧按 profile + character 跨 conversation 精确读 raw，并排除本轮 current source_id。
 - 旧 timeline mirror、backfill、认识第 N 天提示仍暂时由 legacy `MemoryTimelineService` 提供，本切片不删除旧服务。
 
@@ -267,8 +268,8 @@ MEMCORE_SHADOW_COMPARE=false
 5a 实际改动:
 
 - `MemcoreManager.build_prompt_context()` 调 memcore `MemorySystem.build_prompt_context()`，并用 memcore renderer 分层输出 `raw_text / episodic_text / semantic_text`。
-- `response_builder.prepare_context()` 在 `MEMORY_BACKEND=memcore` 且 memcore 可用时，用 memcore 三层文本替换 legacy raw/episodic/semantic 渲染。
-- memcore context 失败或不可用时保留 legacy fallback，避免聊天主流程因为 memcore 临时不可用而中断。
+- `response_builder.prepare_context()` 在 `MEMORY_BACKEND=memcore` 时用 memcore 三层文本替换 legacy raw/episodic/semantic 渲染。
+- memcore context 失败或不可用时返回空 memcore context，不 fallback 到 legacy prompt 记忆，避免两条记忆链路同时进入模型。
 - 本切片不删除 legacy store、router、timeline、compaction，也不迁旧数据。
 
 验证:
@@ -289,7 +290,7 @@ MEMCORE_SHADOW_COMPARE=false
 - `MemoryCompactionService` 在 `MEMORY_BACKEND=memcore` 时不再调旧 compaction，或变成兼容空壳。
 - 保留 legacy store 的非记忆业务表。不要删除 `MemoryStore`，附件、礼物、文件、persona、任务仍大量依赖它。
 - 后台关闭时 `engine.close()` 调 `memcore_manager.close()`。
-- 如果 `MEMORY_BACKEND=memcore` 但 memcore manager 不可用，旧 compaction 暂时保留 fallback，避免聊天在降级 legacy prompt 时彻底失去摘要退路。
+- 如果 `MEMORY_BACKEND=memcore` 但 memcore manager 不可用，旧 compaction 不应作为静默主路 fallback；返回结构化状态，避免恢复双链路。
 
 验证:
 
@@ -320,7 +321,7 @@ MEMCORE_SHADOW_COMPARE=false
 
 ## 不要做的事
 
-- 不要直接删除 `RetrievalService` / `MemoryCompactionService` / `VectorStore`。先分流，等 memcore 模式稳定后再清理。
+- 不要直接一次性删除 `RetrievalService` / `MemoryCompactionService` / `VectorStore`。memcore 主路稳定后按切片清理，避免误删附件、workspace、评测等仍依赖的非记忆能力。
 - 不要继续大拆 `store/core.py` 的记忆表方法。它们可能会被 memcore 替换，继续拆会制造无效工作。
 - 不要把附件、礼物、生成文件、workspace、persona 这些业务表迁到 memcore。memcore 只接长期对话记忆。
 - 不要让 memcore JSON 输出契约替换 Akane 当前 final output JSON。Akane 已有更大的桌宠输出 schema，只需要把 `memory_metadata` 对齐即可。
@@ -329,7 +330,7 @@ MEMCORE_SHADOW_COMPARE=false
 ## 风险点
 
 - Akane 当前 embedding 在 HuggingFace 加载失败时会退 hashed；memcore 原则是不静默退化。适配期要显式上报 degraded，后续再决定是否 fail closed。
-- Akane 旧 pre-retrieval router 还在。memcore 设计是不内置 router。切 memcore 读侧时应优先关闭/绕过 pre-retrieval，只保留聊天模型主动工具调用。
+- Akane 旧 pre-retrieval router 在 `MEMORY_BACKEND=memcore` 下已绕过。memcore 设计是不内置 router，后续不要把旧 router 当成新主路扩展。
 - `MemorySystem(storage_dir)` 是 SQLite db path，不是目录。
 - memcore `LLMClient` 要返回结构化失败，不能让 LLMRuntime 异常穿透到聊天主流程。
 - 角色包隔离必须映射到 `domain_id`，否则不同角色可能共享同一用户长期记忆。
@@ -339,9 +340,10 @@ MEMCORE_SHADOW_COMPARE=false
 
 第一阶段完成后，至少满足:
 
-- `MEMORY_BACKEND=legacy` 时所有现有测试行为不变。
+- 默认 `MEMORY_BACKEND=memcore` 时，模型 prompt、retrieve_memory、read_memory_timeline、压缩都不走旧记忆主链路。
+- `MEMORY_BACKEND=legacy` 时旧兼容模式仍可显式运行。
 - `MEMORY_BACKEND=dual` 时一轮对话会在 legacy 和 memcore 中写入相同 source_id 的 user / assistant raw。
 - final output 的 `memory_metadata` 能回写到 memcore user raw，并更新索引状态或 pending 状态。
 - `retrieve_memory` 和 `read_memory_timeline` 外部 schema 不变。
-- memcore 失败只降级 legacy，不影响用户看到回复。
+- memcore 失败返回结构化空/失败状态，不把旧记忆静默塞回 prompt/tools。
 - `git diff --check` 通过。
