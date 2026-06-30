@@ -142,13 +142,21 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
                 inputs=(
                     CapabilityIOSlot(name="text", kind="string", required=True),
                     CapabilityIOSlot(name="api_key", kind="string", required=True),
+                    CapabilityIOSlot(name="local_path", kind="string", required=True),
                 ),
             ),
             config_base_dir="unused",
         )
 
         result = handler.execute(
-            call={"type": "mcp.demo.echo", "arguments": {"text": "hello", "api_key": "plain-secret-value"}},
+            call={
+                "type": "mcp.demo.echo",
+                "arguments": {
+                    "text": "hello",
+                    "api_key": "plain-secret-value",
+                    "local_path": r"C:\Users\ExampleUser\secret.txt",
+                },
+            },
             context=self._context(),
         )
 
@@ -158,6 +166,7 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
         self.assertEqual(event["risk"], "high")
         self.assertEqual(event["approvalMode"], "ask_each_time")
         self.assertEqual(event["payloadPreview"]["api_key"], "[redacted]")
+        self.assertEqual(event["payloadPreview"]["local_path"], "[local_path]")
 
     def test_adapter_capability_trusted_auto_allow_executes_required_tool(self) -> None:
         class FakeAdapter:
@@ -396,9 +405,12 @@ class WebSearchToolHandlerTests(unittest.TestCase):
                 client_mode="qq_text",
             )
 
-            with patch("companion_v01.tool_runtime.config.QQ_WEB_SEARCH_PROFILE_USER_ID", ""), patch(
-                "companion_v01.tool_runtime.config.WEB_OWNER_PROFILE_USER_ID",
-                "master",
+            with (
+                patch("companion_v01.tool_runtime.config.QQ_WEB_SEARCH_PROFILE_USER_ID", ""),
+                patch(
+                    "companion_v01.tool_runtime.config.WEB_OWNER_PROFILE_USER_ID",
+                    "master",
+                ),
             ):
                 result = handler.execute(call=call, context=context)
 
@@ -615,19 +627,25 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
         self.assertEqual(scroll["action"], "scroll")
         self.assertEqual(scroll["scroll_delta"], -2400)
 
-        click = handler.normalize_call({"type": "browser_page", "action": "click", "selector": "button:has-text('搜索')"})
+        click = handler.normalize_call(
+            {"type": "browser_page", "action": "click", "selector": "button:has-text('搜索')"}
+        )
         self.assertIsNotNone(click)
         assert click is not None
         self.assertEqual(click["action"], "click")
         self.assertEqual(click["selector"], "button:has-text('搜索')")
 
-        fill = handler.normalize_call({"type": "browser_page", "action": "fill", "selector": "input[name='q']", "text": "Akane"})
+        fill = handler.normalize_call(
+            {"type": "browser_page", "action": "fill", "selector": "input[name='q']", "text": "Akane"}
+        )
         self.assertIsNotNone(fill)
         assert fill is not None
         self.assertEqual(fill["action"], "fill")
         self.assertEqual(fill["text"], "Akane")
 
-        press = handler.normalize_call({"type": "browser_page", "action": "press", "selector": "input[name='q']", "key": "return"})
+        press = handler.normalize_call(
+            {"type": "browser_page", "action": "press", "selector": "input[name='q']", "key": "return"}
+        )
         self.assertIsNotNone(press)
         assert press is not None
         self.assertEqual(press["key"], "Enter")
@@ -650,7 +668,11 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
         self.assertEqual(candidate_click["ref"], "")
 
         self.assertIsNone(handler.normalize_call({"type": "browser_page", "action": "click", "selector": "#password"}))
-        self.assertIsNone(handler.normalize_call({"type": "browser_page", "action": "fill", "selector": "input[name='q']", "text": "token=secret"}))
+        self.assertIsNone(
+            handler.normalize_call(
+                {"type": "browser_page", "action": "fill", "selector": "input[name='q']", "text": "token=secret"}
+            )
+        )
         self.assertIsNone(handler.normalize_call({"type": "browser_page", "action": "press", "key": "Control+L"}))
         self.assertIsNone(handler.normalize_call({"type": "browser_page", "action": "click", "ref": "bad-ref"}))
 
@@ -695,7 +717,9 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
 
         result = handler.execute(call=call, context=self._context())
 
-        self.assertEqual(runner.calls[0], {"action": "navigate", "url": "https://example.com/article", "max_chars": 1000})
+        self.assertEqual(
+            runner.calls[0], {"action": "navigate", "url": "https://example.com/article", "max_chars": 1000}
+        )
         self.assertEqual(result.tool_type, "browser_page")
         self.assertEqual(result.stream_events[0]["type"], "browser_page_read")
         self.assertEqual(result.stream_events[0]["url"], "https://example.com/article?password=[redacted]")
@@ -820,7 +844,9 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
         runner = FakeRunner()
         with tempfile.TemporaryDirectory() as temp_dir:
             handler = BrowserPageToolHandler(browser_runner=runner, config_base_dir=temp_dir)
-            call = handler.normalize_call({"type": "browser_page", "action": "click", "selector": "button:has-text('搜索')"})
+            call = handler.normalize_call(
+                {"type": "browser_page", "action": "click", "selector": "button:has-text('搜索')"}
+            )
             self.assertIsNotNone(call)
             assert call is not None
 
@@ -926,7 +952,9 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
 
         runner = FakeRunner()
         handler = BrowserPageToolHandler(browser_runner=runner, approval_checker=checker)
-        call = handler.normalize_call({"type": "browser_page", "action": "press", "selector": "input[name='q']", "key": "Enter"})
+        call = handler.normalize_call(
+            {"type": "browser_page", "action": "press", "selector": "input[name='q']", "key": "Enter"}
+        )
         self.assertIsNotNone(call)
         assert call is not None
 

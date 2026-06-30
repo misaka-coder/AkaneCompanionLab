@@ -9,6 +9,7 @@ from companion_v01.capcore_runtime import (
     invocation_context_from_execution,
     manual_permission_request,
     resolve_permission_for_profile,
+    sanitize_permission_preview,
 )
 
 
@@ -35,6 +36,27 @@ class CapcoreRuntimeTests(unittest.TestCase):
         self.assertEqual(request.client_mode, "desktop_pet")
         self.assertEqual(request.args_preview, {"action": "click"})
 
+    def test_permission_preview_redacts_secret_fields_and_local_paths(self) -> None:
+        preview = sanitize_permission_preview(
+            {
+                "action": "upload",
+                "api_key": "plain-secret-value",
+                "localPath": r"C:\Users\ExampleUser\secret.txt",
+                "url": "https://example.com/callback?token=secret-value",
+                "nested": {
+                    "token": "nested-secret",
+                    "label": "公开标签",
+                },
+            }
+        )
+
+        self.assertEqual(preview["action"], "upload")
+        self.assertEqual(preview["api_key"], "[redacted]")
+        self.assertEqual(preview["localPath"], "[local_path]")
+        self.assertEqual(preview["url"], "https://example.com/callback?token=[redacted]")
+        self.assertEqual(preview["nested"]["token"], "[redacted]")
+        self.assertEqual(preview["nested"]["label"], "公开标签")
+
     def test_resolve_and_event_shape_match_akane_approval_contract(self) -> None:
         context = SimpleNamespace(profile_user_id="alice", session_id="s1", client_mode="desktop_pet")
         request = manual_permission_request(
@@ -46,7 +68,7 @@ class CapcoreRuntimeTests(unittest.TestCase):
             confirm="always",
             effects=("browser_action",),
             reason="browser_control_requires_approval",
-            args_preview={"action": "click"},
+            args_preview={"action": "click", "localPath": r"C:\Users\ExampleUser\secret.txt"},
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -67,7 +89,7 @@ class CapcoreRuntimeTests(unittest.TestCase):
         self.assertEqual(event["risk"], "high")
         self.assertEqual(event["approvalMode"], "ask_each_time")
         self.assertEqual(event["approvalReason"], "browser_control_requires_approval")
-        self.assertEqual(event["payloadPreview"], {"action": "click"})
+        self.assertEqual(event["payloadPreview"], {"action": "click", "localPath": "[local_path]"})
 
 
 if __name__ == "__main__":
