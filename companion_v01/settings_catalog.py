@@ -148,6 +148,7 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("TTS_RATE", _TTS, SCOPE_RESTART_CLIENT, "Edge TTS 语速"),
     _s("TTS_VOLUME", _TTS, SCOPE_RESTART_CLIENT, "Edge TTS 音量"),
     _s("TTS_PITCH", _TTS, SCOPE_RESTART_CLIENT, "Edge TTS 音调"),
+    _s("WHISPER_CACHE_DIR", _TTS, SCOPE_RESTART_CLIENT, "Whisper / faster-whisper 模型缓存目录（留空=默认）"),
     _s("STREAMING_TTS_ENABLED", _TTS, SCOPE_RUNTIME, "流式 TTS（边生成边播放）", managed_in=MANAGED_CAPABILITIES),
     _s("GPT_SOVITS_TTS_TIMEOUT_SECONDS", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 请求超时（秒）", managed_in=MANAGED_CAPABILITIES),
     _s("GPT_SOVITS_TEXT_LANG", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 文本语言", managed_in=MANAGED_CAPABILITIES),
@@ -230,11 +231,18 @@ def get_spec(key: str) -> SettingSpec | None:
 
 
 def is_runtime_editable(key: str) -> bool:
-    """Whether a switch may be edited from the UI. Only runtime-scope,
-    non-sensitive switches qualify; restart / restart_client switches and
-    secrets are never UI-editable (the editing slice depends on this gate)."""
+    """Whether a switch may be edited from the settings catalog UI. Qualifies
+    only if it is runtime-scope, non-sensitive, AND not owned by another
+    surface (managed_in == ""). Fields managed by the model-service or
+    capabilities page stay read-only here so the same value never has two
+    competing edit surfaces — the catalog links to that page instead."""
     spec = _SPEC_BY_KEY.get(key)
-    return bool(spec is not None and spec.scope == SCOPE_RUNTIME and not spec.sensitive)
+    return bool(
+        spec is not None
+        and spec.scope == SCOPE_RUNTIME
+        and not spec.sensitive
+        and not spec.managed_in
+    )
 
 
 def _type_label(field: Any) -> str:

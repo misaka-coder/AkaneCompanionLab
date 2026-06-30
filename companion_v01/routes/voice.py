@@ -835,10 +835,12 @@ def run_asr_transcription(
         normalized_language = service._normalize_transcript_language(
             language or getattr(config_module, "ASR_LANGUAGE", "zh")
         )
+        whisper_cache_dir = getattr(config_module, "WHISPER_CACHE_DIR", None) or None
         model = service._load_faster_whisper_model(
             model_size=model_size,
             device=device,
             compute_type=compute_type,
+            download_root=whisper_cache_dir,
         )
         transcript = service._transcribe_prepared_audio(
             model=model,

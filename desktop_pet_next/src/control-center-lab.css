@@ -7704,3 +7704,16 @@ button:disabled {
   height: 18px;
   cursor: pointer;
 }
+.settings-note--error {
+  color: rgb(200 70 70);
+}
+.settings-jump {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgb(90 140 220 / 0.4);
+  background: rgb(90 140 220 / 0.12);
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}

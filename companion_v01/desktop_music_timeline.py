@@ -364,10 +364,12 @@ class DesktopMusicTimelineService:
         language = self.generated_file_service._normalize_transcript_language(
             getattr(config, "DESKTOP_TIMELINE_LANGUAGE", getattr(config, "ASR_LANGUAGE", "zh"))
         )
+        whisper_cache_dir = getattr(config, "WHISPER_CACHE_DIR", None) or None
         model = self.generated_file_service._load_faster_whisper_model(
             model_size=model_size,
             device=device,
             compute_type=compute_type,
+            download_root=whisper_cache_dir,
         )
         transcript = self.generated_file_service._transcribe_prepared_audio(
             model=model,

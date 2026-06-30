@@ -1751,12 +1751,13 @@ class GeneratedFileService:
     def _normalize_whisper_compute_type(self, value: Any) -> str:
         return generated_files_media.normalize_whisper_compute_type(value)
 
-    def _load_faster_whisper_model(self, *, model_size: str, device: str, compute_type: str) -> Any:
+    def _load_faster_whisper_model(self, *, model_size: str, device: str, compute_type: str, download_root: str | None = None) -> Any:
         return generated_files_media.load_faster_whisper_model(
             self,
             model_size=model_size,
             device=device,
             compute_type=compute_type,
+            download_root=download_root,
         )
 
     def _prepare_transcription_input(

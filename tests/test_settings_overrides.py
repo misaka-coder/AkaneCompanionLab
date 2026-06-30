@@ -38,9 +38,12 @@ class SettingsOverrideStoreTests(unittest.TestCase):
         finally:
             config.MAX_TOOL_ROUNDS = original
 
-    def test_secret_and_restart_keys_rejected(self) -> None:
+    def test_non_editable_keys_rejected(self) -> None:
         store = _temp_store()
-        for key in ("TEXT_API_KEY", "HOST", "PUBLIC_GUARD_ENABLED"):
+        # secret, restart-scope, restart_client-scope, and managed-elsewhere
+        # (STREAMING_TTS_ENABLED is runtime but owned by the capabilities page)
+        # all stay read-only.
+        for key in ("TEXT_API_KEY", "HOST", "PUBLIC_GUARD_ENABLED", "STREAMING_TTS_ENABLED"):
             with self.assertRaises(so.SettingOverrideError) as ctx:
                 so.set_override(config, store, key=key, raw_value="x")
             self.assertEqual(ctx.exception.reason, "not_editable")

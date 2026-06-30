@@ -46,8 +46,12 @@ def build_llm_client(
             max_retries=max_retries,
         )
     normalized_base_url = normalize_base_url(protocol=resolved, base_url=base_url)
+    # OpenAI SDK raises on empty api_key at construction time, which would crash
+    # the backend before the user has a chance to configure credentials via the
+    # control center. Use a placeholder so the client can be built; actual API
+    # calls will still fail with an auth error if no real key is provided.
     client = OpenAI(
-        api_key=str(api_key or "").strip() or ("ollama" if resolved == "ollama" else ""),
+        api_key=str(api_key or "").strip() or ("ollama" if resolved == "ollama" else "not-configured"),
         base_url=normalized_base_url,
         timeout=timeout,
         max_retries=max_retries,

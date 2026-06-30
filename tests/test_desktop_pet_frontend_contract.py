@@ -37,7 +37,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         # frontend must surface it so the pet isn't frozen on "thinking" through
         # a multi-second tool call (CLAUDE.md §9: backend ability != felt UX).
         backend = _read("companion_v01/engine.py")
-        self.assertIn('"type": "assistant_working"', backend)
+        tool_rounds = _read("companion_v01/engine_services/tool_rounds.py")
+        self.assertIn("build_tool_working_stream_event", backend)
+        self.assertIn('"type": "assistant_working"', tool_rounds)
 
         source = _read("desktop_pet_next/src/main.js")
         self.assertIn('type === "assistant_working"', source)
@@ -72,6 +74,13 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         # B2: editable rows render a control bound by data-setting-key and save.
         self.assertIn("data-setting-key", lab)
         self.assertIn("saveSetting", lab)
+        # Managed-elsewhere rows remain read-only and jump to the owning page,
+        # rather than exposing a second editor for the same backend value.
+        self.assertIn("settingsManagedTarget", lab)
+        self.assertIn('managedIn === "model-service"', lab)
+        self.assertIn('managedIn === "capabilities"', lab)
+        self.assertIn("settings-jump", lab)
+        self.assertIn("settings-note--error", lab)
 
     def test_workspace_panel_opens_local_location_instead_of_browser_download(self) -> None:
         source = _read("desktop_pet/renderer/ui/WorkspacePanel.js")

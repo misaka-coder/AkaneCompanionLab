@@ -277,6 +277,10 @@ class Settings(BaseSettings):
     # Referer 头
     REMOTE_MEDIA_YTDLP_REFERER: str = "https://www.bilibili.com/"
 
+    # === ASR / Whisper 模型缓存目录 ===
+    # 留空时使用 faster-whisper 默认缓存目录
+    WHISPER_CACHE_DIR: str = ""
+
     # === Web 身份模式 ===
     # owner  : 本地主创模式，所有浏览器共享同一主人 profile
     # browser: 每个浏览器分配独立匿名 profile，适合公开试玩
@@ -404,6 +408,7 @@ def _apply_settings(s: Settings) -> None:
     global DRIFT_PROBABILITY, SUMMARY_TRIGGER_COUNT, SUMMARY_BATCH_SIZE, RECENT_SUMMARY_LIMIT
     global EPISODIC_COMPACT_TRIGGER_COUNT, EPISODIC_COMPACT_BATCH_SIZE, EPISODIC_VISIBLE_MAX, SEMANTIC_VISIBLE_LIMIT
     global SEMANTIC_REINFORCEMENT_LOOKBACK, SEMANTIC_REINFORCEMENT_MIN_OVERLAP
+    global WHISPER_CACHE_DIR
     global MASTER_QQ, PORT, HOST
 
     # === LLM / API keys ===
@@ -577,6 +582,8 @@ def _apply_settings(s: Settings) -> None:
     SEMANTIC_VISIBLE_LIMIT = max(1, int(s.SEMANTIC_VISIBLE_LIMIT))
     SEMANTIC_REINFORCEMENT_LOOKBACK = max(1, int(s.SEMANTIC_REINFORCEMENT_LOOKBACK))
     SEMANTIC_REINFORCEMENT_MIN_OVERLAP = max(1, int(s.SEMANTIC_REINFORCEMENT_MIN_OVERLAP))
+
+    WHISPER_CACHE_DIR = str(s.WHISPER_CACHE_DIR or "").strip()
 
     # === host / port / qq ===
     raw_master_qq = str(s.MASTER_QQ or "").strip()

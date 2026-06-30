@@ -146,13 +146,16 @@ def normalize_whisper_compute_type(value: Any) -> str:
     return text if text in allowed else "auto"
 
 
-def load_faster_whisper_model(service: Any, *, model_size: str, device: str, compute_type: str) -> Any:
-    cache_key = (model_size, device, compute_type)
+def load_faster_whisper_model(service: Any, *, model_size: str, device: str, compute_type: str, download_root: str | None = None) -> Any:
+    cache_key = (model_size, device, compute_type, str(download_root or ""))
     if cache_key in service._whisper_model_cache:
         return service._whisper_model_cache[cache_key]
     from faster_whisper import WhisperModel  # type: ignore
 
-    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+    kwargs = dict(device=device, compute_type=compute_type)
+    if download_root:
+        kwargs["download_root"] = download_root
+    model = WhisperModel(model_size, **kwargs)
     service._whisper_model_cache[cache_key] = model
     return model
 

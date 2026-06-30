@@ -129,6 +129,7 @@ let actionRouter = createRuntimeActionRouter(dataSource);
 let settingsCatalog = null;
 let settingsCatalogStatus = "";
 let settingsSaveNote = "";
+let settingsSaveOk = true;
 let { labMeta, navItems, backgroundAsset } = snapshot.shell;
 let {
   abilities: abilitiesPage,
@@ -298,6 +299,7 @@ async function hydrateSettingsCatalog() {
 
 async function saveSetting(key, rawValue) {
   if (typeof dataSource?.updateSetting !== "function") {
+    settingsSaveOk = false;
     settingsSaveNote = "当前来源不支持修改（需连接后端）";
     if (state.activePage === "settings") renderActivePage();
     return;
@@ -310,11 +312,14 @@ async function saveSetting(key, rawValue) {
           if (entry.key === key) entry.current = result.value;
         }
       }
+      settingsSaveOk = true;
       settingsSaveNote = `已更新 ${key}`;
     } else {
+      settingsSaveOk = false;
       settingsSaveNote = `修改失败（${key}）：${(result && result.status) || "未知"}`;
     }
   } catch (error) {
+    settingsSaveOk = false;
     settingsSaveNote = `修改失败（${key}）：${formatError(error)}`;
   }
   if (state.activePage === "settings") renderActivePage();
@@ -1630,13 +1635,22 @@ function renderSettingControl(entry) {
   return `<span class="settings-value">${escapeHtml(value)}</span>`;
 }
 
+function settingsManagedTarget(managedIn) {
+  if (managedIn === "model-service") return { page: "model", label: "在模型页管理" };
+  if (managedIn === "capabilities") return { page: "abilities", label: "在能力页管理" };
+  return null;
+}
+
 function renderSettingRow(entry) {
   const legend = (settingsCatalog && settingsCatalog.scopeLegend) || {};
   const scopeText = legend[entry.scope] || entry.scope || "";
   const sensitiveTag = entry.sensitive ? `<span class="settings-tag settings-tag--secret">敏感</span>` : "";
-  const managed = entry.managedIn
-    ? `<span class="settings-tag">在「${escapeHtml(entry.managedIn)}」管理</span>`
-    : "";
+  const target = entry.managedIn ? settingsManagedTarget(entry.managedIn) : null;
+  const managed = target
+    ? `<button type="button" class="settings-jump" data-page="${escapeAttr(target.page)}">${escapeHtml(target.label)} →</button>`
+    : entry.managedIn
+      ? `<span class="settings-tag">在「${escapeHtml(entry.managedIn)}」管理</span>`
+      : "";
   return `
     <div class="settings-row">
       <div class="settings-row__info">
@@ -1662,7 +1676,9 @@ function renderSettingsGroup(group) {
 }
 
 function renderSettingsPage() {
-  const note = settingsSaveNote ? `<p class="settings-note">${escapeHtml(settingsSaveNote)}</p>` : "";
+  const note = settingsSaveNote
+    ? `<p class="settings-note${settingsSaveOk ? "" : " settings-note--error"}">${escapeHtml(settingsSaveNote)}</p>`
+    : "";
   const head = `
     <header class="settings-head">
       <h1>${icon("sparkle")} 设置目录</h1>

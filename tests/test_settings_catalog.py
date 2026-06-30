@@ -53,6 +53,18 @@ class SettingsCatalogDriftTests(unittest.TestCase):
             self.assertNotIn("default", entry)
             self.assertIn("isSet", entry)
 
+    def test_managed_entries_are_read_only_and_named(self) -> None:
+        catalog = sc.build_settings_catalog()
+        entries = {
+            e["key"]: e
+            for group in catalog["categories"]
+            for e in group["settings"]
+        }
+        self.assertEqual(entries["STREAMING_TTS_ENABLED"]["managedIn"], sc.MANAGED_CAPABILITIES)
+        self.assertFalse(entries["STREAMING_TTS_ENABLED"]["editable"])
+        self.assertEqual(entries["VISION_BASE_URL"]["managedIn"], sc.MANAGED_MODEL_SERVICE)
+        self.assertFalse(entries["VISION_BASE_URL"]["editable"])
+
 
 class SettingsCatalogEndpointTests(unittest.TestCase):
     def _client(self) -> TestClient:
@@ -72,10 +84,10 @@ class SettingsCatalogEndpointTests(unittest.TestCase):
     def test_endpoint_does_not_leak_secret_values(self) -> None:
         original = config.TEXT_API_KEY
         try:
-            config.TEXT_API_KEY = "sk-leaktest-DEADBEEF-must-not-appear"
+            config.TEXT_API_KEY = "fake-key-leaktest-DEADBEEF-must-not-appear"
             resp = self._client().get("/control-center/settings-catalog")
             self.assertEqual(resp.status_code, 200)
-            self.assertNotIn("sk-leaktest-DEADBEEF-must-not-appear", resp.text)
+            self.assertNotIn("fake-key-leaktest-DEADBEEF-must-not-appear", resp.text)
         finally:
             config.TEXT_API_KEY = original
 

@@ -8,13 +8,14 @@ setting the attribute on the config module (runtime-scope switches are read
 per-use via getattr/config.X, so the change takes effect immediately).
 
 Hard gates (mirrors settings_catalog.is_runtime_editable):
-- only scope=runtime, non-sensitive keys may be set — restart / restart_client
-  switches and secrets are rejected;
+- only scope=runtime, non-sensitive keys owned by the settings catalog may be
+  set — restart / restart_client switches, secrets, and fields managed by
+  another surface are rejected;
 - values are coerced to the field's declared type, invalid input is rejected
   with a structured reason rather than written.
 
-Editing is intentionally NOT for secrets or restart-scoped settings; those stay
-read-only in the catalog (API keys are managed by the model-service route).
+Editing is intentionally NOT for secrets, restart-scoped settings, or fields
+managed elsewhere; those stay read-only in the catalog with a link to the owner.
 """
 from __future__ import annotations
 
