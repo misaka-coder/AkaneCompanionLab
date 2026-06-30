@@ -221,6 +221,32 @@ class MemcoreManager:
             logger.warning("memcore background compaction scheduling failed: %s", reason)
             return self._status("compact_due_background", False, "failed", reason=reason)
 
+    def compact_due_sync(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
+        system = self._get_system_or_none(
+            operation="compact_due_sync",
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status("compact_due_sync", False, "unavailable", reason=self._reason)
+        try:
+            stats = dict(system.compact_due_sync())
+            return {
+                **self._status("compact_due_sync", True, "completed"),
+                "stats": stats,
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore sync compaction failed: %s", reason)
+            return self._status("compact_due_sync", False, "failed", reason=reason)
+
     def build_prompt_context(
         self,
         *,

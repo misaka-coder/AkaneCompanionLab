@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import config
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
+from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.engine_services import response_builder
 from companion_v01.memcore_integration.manager import MemcoreManager, normalize_memory_backend
 from companion_v01.memcore_integration.timeline import MemcoreTimelineToolService
@@ -293,6 +294,30 @@ class _TimelineMemcoreManager:
         }
 
 
+class _LegacyCompactionRecorder:
+    def __init__(self) -> None:
+        self.scheduled: list[dict[str, object]] = []
+        self.ran: list[dict[str, object]] = []
+
+    def schedule_summary_cycle(self, **kwargs) -> None:
+        self.scheduled.append(dict(kwargs))
+
+    def run_summary_cycle(self, **kwargs) -> None:
+        self.ran.append(dict(kwargs))
+
+
+class _CompactionMemcoreManager:
+    enabled = True
+
+    def __init__(self, *, available: bool) -> None:
+        self.available = available
+        self.sync_calls: list[dict[str, object]] = []
+
+    def compact_due_sync(self, **kwargs) -> dict[str, object]:
+        self.sync_calls.append(dict(kwargs))
+        return {"ok": True, "status": "completed", "stats": {}}
+
+
 def _tool_context() -> ToolExecutionContext:
     return ToolExecutionContext(
         profile_user_id="u1",
@@ -369,6 +394,56 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "unavailable")
+
+    def test_engine_memcore_mode_lets_memcore_own_compaction_when_available(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        legacy_compaction = _LegacyCompactionRecorder()
+        memcore_manager = _CompactionMemcoreManager(available=True)
+        engine.compaction_service = legacy_compaction
+        engine.memcore_manager = memcore_manager
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            engine._schedule_summary_cycle(
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+            )
+            engine._run_summary_cycle(
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+            )
+
+        self.assertEqual(legacy_compaction.scheduled, [])
+        self.assertEqual(legacy_compaction.ran, [])
+        self.assertEqual(
+            memcore_manager.sync_calls,
+            [{"profile_user_id": "u1", "session_id": "s1", "character_pack_id": "char"}],
+        )
+
+    def test_engine_memcore_mode_keeps_legacy_compaction_fallback_when_unavailable(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        legacy_compaction = _LegacyCompactionRecorder()
+        memcore_manager = _CompactionMemcoreManager(available=False)
+        engine.compaction_service = legacy_compaction
+        engine.memcore_manager = memcore_manager
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            engine._schedule_summary_cycle(
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+            )
+            engine._run_summary_cycle(
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+            )
+
+        expected = {"profile_user_id": "u1", "session_id": "s1", "character_pack_id": "char"}
+        self.assertEqual(legacy_compaction.scheduled, [expected])
+        self.assertEqual(legacy_compaction.ran, [expected])
+        self.assertEqual(memcore_manager.sync_calls, [])
 
     def test_dual_write_records_raw_and_updates_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

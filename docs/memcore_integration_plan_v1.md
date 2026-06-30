@@ -282,17 +282,21 @@ MEMCORE_SHADOW_COMPARE=false
 
 目标: memcore 接管 raw → summary → semantic。
 
+状态:6a 已完成。memcore 可用且 `MEMORY_BACKEND=memcore` 时，旧 `MemoryCompactionService` 不再接收 summary queue 调度；完整一轮 assistant 写入后仍由 `_schedule_memcore_compaction()` 触发 memcore 后台压缩。同步 `_run_summary_cycle()` 在 memcore 模式下转调 `compact_due_sync()`，方便测试/维护入口继续可用。
+
 改动:
 
 - `MemoryCompactionService` 在 `MEMORY_BACKEND=memcore` 时不再调旧 compaction，或变成兼容空壳。
 - 保留 legacy store 的非记忆业务表。不要删除 `MemoryStore`，附件、礼物、文件、persona、任务仍大量依赖它。
 - 后台关闭时 `engine.close()` 调 `memcore_manager.close()`。
+- 如果 `MEMORY_BACKEND=memcore` 但 memcore manager 不可用，旧 compaction 暂时保留 fallback，避免聊天在降级 legacy prompt 时彻底失去摘要退路。
 
 验证:
 
 - raw 到达阈值后 memcore 创建 summary，且 raw 可见窗口缩小。
 - summary 到达阈值后创建/强化 semantic。
 - LLM 失败不提交空摘要。
+- 单测确认 memcore 可用时 `_schedule_summary_cycle()` 不再排旧队列，`_run_summary_cycle()` 转调 memcore sync compaction。
 
 ### Slice 7: 旧数据迁移/回填
 

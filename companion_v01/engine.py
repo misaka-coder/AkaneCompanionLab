@@ -503,6 +503,13 @@ class AkaneMemoryEngine:
             return None
         return manager
 
+    def _memcore_owns_compaction(self) -> bool:
+        backend = str(getattr(config, "MEMORY_BACKEND", "legacy") or "legacy").strip().lower()
+        if backend != "memcore":
+            return False
+        manager = self._memcore_manager_if_enabled()
+        return manager is not None and bool(getattr(manager, "available", False))
+
     def _record_memcore_user_turn(
         self,
         *,
@@ -1353,6 +1360,8 @@ class AkaneMemoryEngine:
         session_id: str,
         character_pack_id: str = "",
     ) -> None:
+        if self._memcore_owns_compaction():
+            return
         from .engine_services.memory_facade import schedule_summary_cycle as _fn
 
         _fn(
@@ -1369,6 +1378,15 @@ class AkaneMemoryEngine:
         session_id: str,
         character_pack_id: str = "",
     ) -> None:
+        if self._memcore_owns_compaction():
+            manager = self._memcore_manager_if_enabled()
+            if manager is not None:
+                manager.compact_due_sync(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=character_pack_id,
+                )
+            return
         from .engine_services.memory_facade import run_summary_cycle as _fn
 
         _fn(
