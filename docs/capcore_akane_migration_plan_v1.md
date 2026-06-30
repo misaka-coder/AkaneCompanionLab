@@ -1,6 +1,6 @@
 # capcore / Akane migration plan v1
 
-Status: active plan
+Status: phases 1-5 mostly completed
 Date: 2026-06-30
 Repos:
 
@@ -25,12 +25,12 @@ Akane has already validated several capcore pieces in real host code. The next s
 Akane already uses capcore in these places:
 
 - `companion_v01/local_capability_config.py`
-  - `project_capcore_catalog_fields()` wraps `capcore.descriptor_from_mapping()`.
+  - `project_capcore_catalog_fields()` is a thin wrapper over `capcore.project_mapping_fields()`.
   - `with_capability_approval_metadata()` and `apply_approval_policy_to_entry()` use `capcore.permission_request_from_mapping()` and `capcore.resolve_permission()`.
   - provider / workflow / voice profile / MCP server / MCP tool public catalog fields now pass through capcore projection.
 
 - `companion_v01/local_capability_catalog.py`
-  - backend tool entries project risk / confirm through capcore.
+  - backend tool entries project risk / confirm through `capcore.project_mapping_fields()`.
   - static provider entries, prompt modules, and local service probes now receive capcore-projected `confirm` and `requiresConfirmation`.
 
 - `companion_v01/tool_runtime.py`
@@ -44,15 +44,30 @@ Akane already uses capcore in these places:
 
 - `companion_v01/capcore_runtime.py`
   - Akane host glue for profile approval policy.
-  - Temporary `sanitize_permission_preview()` implementation for approval previews.
-  - Temporary `approval_required_event()` event shaping for Akane stream events.
+  - Uses `capcore.sanitize_permission_preview()` for approval previews.
+  - Keeps `approval_required_event()` event shaping for Akane stream events.
+
+- `companion_v01/capability_approval.py`
+  - Approval request routes reuse `capcore.sanitize_permission_preview()`.
+  - Akane keeps route-level sensitive key filtering, request TTL, grant lifecycle, and status code behavior.
 
 The latest completed Akane commits on this line are:
 
+- `7680114 Reuse capcore sanitizer for approval previews`
+- `72cc651 Use capcore projection for tool catalog fields`
+- `3de18e2 Use capcore mapping field projection`
+- `15f8372 Use capcore permission preview sanitizer`
+- `cdbe627 Document capcore Akane migration plan`
 - `59ce1c7 Harden capcore execution approval previews`
 - `c46e8ac Project Akane catalog entries through capcore`
 - `ec49dcd Project MCP tool catalog fields through capcore`
 - `31236f9 Extract Akane capcore runtime helpers`
+
+The latest completed capcore commits on this line are:
+
+- `4000543 Bound permission preview keys`
+- `e3721b6 Add mapping field projection helper`
+- `169abc5 Add permission preview sanitizer`
 
 ## Boundary Decision
 
@@ -80,6 +95,8 @@ Important: `companion_v01/capability_approval.py` is mostly host logic. It shoul
 ## Implementation Plan
 
 ### Phase 1: Move Preview Sanitizer Into capcore
+
+Status: completed in capcore `169abc5` and hardened in `4000543`.
 
 Target repo: `F:\Akane\capcore`
 
@@ -149,6 +166,8 @@ Add permission preview sanitizer
 
 ### Phase 2: Switch Akane To capcore Preview API
 
+Status: completed in Akane `15f8372`.
+
 Target repo: `F:\Akane\AkaneCompanionLab`
 
 Files to inspect first:
@@ -193,6 +212,8 @@ Use capcore permission preview sanitizer
 
 ### Phase 3: Decide Whether To Move Catalog Projection Helper
 
+Status: moved into capcore as `project_mapping_fields()` in `e3721b6`; Akane wrappers now use it.
+
 Current Akane helper:
 
 - `companion_v01/local_capability_config.py::project_capcore_catalog_fields()`
@@ -230,13 +251,15 @@ If moved:
 
 ### Phase 4: Remove Akane Duplicates Carefully
 
+Status: mostly completed for preview sanitizing and catalog projection wrappers.
+
 Only start this after Phase 1 and Phase 2 are committed.
 
 Candidates:
 
-- local preview sanitizer functions in `capcore_runtime.py`;
-- duplicate preview sanitizing in `capability_approval.py`, if capcore API can match route behavior;
-- small repeated catalog projection wrappers in `local_capability_catalog.py`, if capcore gets `project_mapping_fields()`;
+- local preview sanitizer functions in `capcore_runtime.py` — done;
+- duplicate preview sanitizing in `capability_approval.py` — done with a thin Akane route-level key filter;
+- small repeated catalog projection wrappers in `local_capability_catalog.py` — done;
 - any remaining hand-written risk/confirm normalization that duplicates capcore mapping.
 
 Do not remove:
@@ -248,6 +271,8 @@ Do not remove:
 - browser control action-specific preview generation, because it intentionally exposes `selector/ref/candidateIndex/key/textLength` rather than raw input text.
 
 ### Phase 5: Documentation Cleanup
+
+Status: in progress; `docs/capcore_akane_integration_v0.md` and this migration plan now reflect M1.2.
 
 Update or cross-link:
 

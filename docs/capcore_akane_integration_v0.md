@@ -1,6 +1,6 @@
 # capcore Akane integration v0
 
-Status: M1/M1.1 回接试点
+Status: M1/M1.2 回接试点
 Date: 2026-06-30
 
 ## 当前接入形态
@@ -18,10 +18,16 @@ Akane 已把 capability adapter 的内核边界切到 `capcore`。
 
 调用 / 权限闸门：
 
-- `companion_v01/local_capability_config.py` 用 `capcore.resolve_permission()` 推导公开 catalog 的 approval metadata。
+- `companion_v01/local_capability_config.py` 用 `capcore.project_mapping_fields()` /
+  `capcore.permission_request_from_mapping()` / `capcore.resolve_permission()` 推导公开 catalog 的
+  `risk / confirm / requiresConfirmation / approvalMode`。
+- `companion_v01/local_capability_catalog.py` 用 `capcore.project_mapping_fields()` 投影后端工具 catalog 字段。
 - `companion_v01/tool_runtime.py` 的 `AdapterCapabilityToolHandler` 现在按
   `validate_invocation_args -> build_permission_request -> resolve_permission -> adapter.invoke` 执行。
 - `BrowserPageToolHandler` 的高风险浏览器控制动作也通过 `capcore.PermissionRequest` 决策。
+- `companion_v01/capcore_runtime.py` 用 `capcore.sanitize_permission_preview()` 生成 approval stream event 的安全预览。
+- `companion_v01/capability_approval.py` 的审批请求路由复用 `capcore.sanitize_permission_preview()`，
+  Akane 只额外做公开 route 的敏感 key 名过滤和 approval request/grant 生命周期。
 
 宿主队列、UI 事件、profile 配置和真实 adapter 执行仍留在 Akane。
 
@@ -34,6 +40,9 @@ Akane 已把 capability adapter 的内核边界切到 `capcore`。
 - `openai_compat_tts.py`
 - `openai_compat_asr.py`
 - capability routes / approval / orchestration / control center UI
+
+其中 approval store / request TTL / grant lifecycle / route status code 仍是 Akane 产品层职责；
+`capcore` 只提供 permission request/decision 和 preview sanitizing helper。
 
 这些模块可以继续使用：
 
@@ -81,6 +90,12 @@ Windows bootstrap 会在安装依赖前检查 `../capcore/pyproject.toml`，缺�
 - malformed `inputs` / `outputs` slot 会 invalid。
 
 这意味着：用户 profile 明确覆盖某个 provider 但配置写坏时，Akane 不会继续暴露旧 builtin 能力。
+
+M1.2 后，Akane 公开能力 catalog 和 approval preview 的通用清洗逻辑也回流到 `capcore`：
+
+- legacy catalog entry 通过 `project_mapping_fields()` 统一得到 canonical `risk / confirm / effects`。
+- approval preview 会统一脱敏本地绝对路径、Bearer、secret-like literal 和 URL query secret。
+- Akane route 层仍可在 `capcore` 输出之上做产品侧过滤，例如不把 `api_key` 这类敏感 key 名暴露给控制中心。
 
 ## 验证命令
 

@@ -1,6 +1,6 @@
 # capcore 设计稿 v0
 
-状态：draft
+状态：M1/M1.2 implementation notes
 来源项目：AkaneCompanionLab
 目标：从 Akane 当前的 Capability Adapter v1 中抽出一个可复用的“能力接入内核”，后续再作为依赖反哺 Akane。
 
@@ -34,6 +34,22 @@ memcore = 她怎么记得
 capcore = 她能安全接入哪些能力
 charcore = 她是谁，以及她的角色包/资源如何定义
 AkaneCompanionLab = 产品壳、具体适配器、角色体验、客户端表现
+```
+
+## 1.1 当前实现补记
+
+截至 2026-06-30，`capcore` 已从设计稿进入 M1/M1.2 回接状态：
+
+- `capcore` 提供 manifest/registry/risk policy、tool projection、invocation validation、permission request/decision。
+- `capcore.sanitize_permission_preview()` 统一处理 approval preview 的 secret、URL query secret 和本地路径脱敏。
+- `capcore.project_mapping_fields()` 给 Akane 旧 catalog entry 投影 canonical `risk / confirm / requiresConfirmation / effects`。
+- Akane 已用这些 helper 替换了 `capcore_runtime.py`、`capability_approval.py`、`local_capability_config.py`、`local_capability_catalog.py` 里的多处通用逻辑。
+
+边界仍保持不变：
+
+```text
+capcore = reusable gates and projection helpers
+Akane = persisted profile policy, approval queue, concrete adapters, routes, UI, and product statuses
 ```
 
 ## 2. 为什么值得抽
