@@ -314,6 +314,7 @@ def _safe_public_text(value: Any, *, default: str = "", limit: int = 160) -> str
 def _safe_payload_preview(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
+    sanitized = capcore_sanitize_permission_preview(value)
     preview: dict[str, Any] = {}
     for raw_key, raw_value in value.items():
         key = _safe_public_key(raw_key)
@@ -322,7 +323,7 @@ def _safe_payload_preview(value: Any) -> dict[str, Any]:
         if _is_capcore_preview_summary(raw_value):
             safe_value = _safe_capcore_preview_value(raw_value)
         else:
-            safe_value = _safe_capcore_preview_value(capcore_sanitize_permission_preview({key: raw_value}).get(key))
+            safe_value = _safe_capcore_preview_value(sanitized.get(key))
         if safe_value in (None, "", {}, []):
             continue
         preview[key] = safe_value
