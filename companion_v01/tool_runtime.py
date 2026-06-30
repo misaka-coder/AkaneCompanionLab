@@ -14,16 +14,18 @@ from typing import Any, Callable, Mapping
 from urllib.parse import quote_plus, urlparse
 
 import config
-from capcore import ApprovalPolicy as CapcoreApprovalPolicy
-from capcore import InvocationContext as CapcoreInvocationContext
-from capcore import PermissionRequest as CapcorePermissionRequest
 from capcore import build_permission_request as capcore_build_permission_request
-from capcore import resolve_permission as capcore_resolve_permission
 from capcore import validate_invocation_args as capcore_validate_invocation_args
 
 from .browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner
+from .capcore_runtime import (
+    approval_required_event as capcore_approval_required_event,
+    invocation_context_from_execution as capcore_invocation_context_from_execution,
+    manual_permission_request as capcore_manual_permission_request,
+    resolve_permission_for_profile as capcore_resolve_permission_for_profile,
+)
 from .capability_adapters import CapabilityProtocolError, InvocationContext
-from .local_capability_config import get_approval_policy_config, get_mcp_server_runtime_config
+from .local_capability_config import get_mcp_server_runtime_config
 from .mcp_stdio_discoverer import McpStdioDiscoveryError, McpStdioToolCaller
 from .npc_runtime import GenericNPCRuntime
 from .store import MemoryStore
@@ -582,13 +584,13 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         request = capcore_build_permission_request(
             self.descriptor,
             normalized_args,
-            CapcoreInvocationContext(
-                profile_user_id=context.profile_user_id,
-                session_id=context.session_id,
-                client_mode=context.client_mode,
-            ),
+            capcore_invocation_context_from_execution(context),
         )
-        decision = capcore_resolve_permission(request, self._profile_approval_policy(context))
+        decision = capcore_resolve_permission_for_profile(
+            request,
+            base_dir=self.config_base_dir or getattr(config, "DATA_DIR", "users_data"),
+            profile_user_id=context.profile_user_id,
+        )
         if not decision.allowed:
             if decision.requires_user_decision:
                 return self._approval_required(decision=decision, context=context)
@@ -627,36 +629,15 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             },
         )
 
-    def _profile_approval_policy(self, context: ToolExecutionContext) -> CapcoreApprovalPolicy:
-        try:
-            payload = get_approval_policy_config(
-                base_dir=self.config_base_dir or getattr(config, "DATA_DIR", "users_data"),
-                profile_user_id=context.profile_user_id,
-            )
-        except Exception:
-            return CapcoreApprovalPolicy(default_mode="ask_each_time")
-        policy = payload.get("approvalPolicy") if isinstance(payload, Mapping) else {}
-        mode = str((policy or {}).get("defaultMode") or "").strip()
-        if mode not in {"ask_each_time", "trusted_auto_allow", "disabled"}:
-            mode = "ask_each_time"
-        return CapcoreApprovalPolicy(default_mode=mode)
-
     def _approval_required(self, *, decision: Any, context: ToolExecutionContext) -> ToolExecutionResult:
-        request = decision.request
-        risk = str(getattr(request, "risk", "") or "medium").strip().lower()
-        preview = dict(getattr(request, "args_preview", None) or {})
-        event = {
-            "type": "capability_approval_required",
-            "capabilityId": self.tool_type,
-            "actionId": self.tool_type,
-            "title": "MCP 工具需要确认",
-            "summary": "Akane 想执行一个本地 MCP 工具。",
-            "risk": "high" if risk == "high" else "medium",
-            "approvalMode": str(getattr(decision, "mode", "") or "ask_each_time"),
-            "approvalReason": str(getattr(decision, "reason", "") or "requires_confirmation"),
-            "payloadPreview": preview,
-            "client_mode": context.client_mode,
-        }
+        event = capcore_approval_required_event(
+            decision=decision,
+            capability_id=self.tool_type,
+            action_id=self.tool_type,
+            title="MCP 工具需要确认",
+            summary="Akane 想执行一个本地 MCP 工具。",
+            client_mode=context.client_mode,
+        )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=[event],
@@ -3174,7 +3155,11 @@ class BrowserPageToolHandler(BaseToolHandler):
         request = self._browser_control_permission_request(action=action, call=call, context=context)
         if self._approval_checker_allows(action_id=action_id, call=call, context=context):
             return {"ok": True, "mode": "approval_grant"}
-        decision = capcore_resolve_permission(request, self._profile_approval_policy(context))
+        decision = capcore_resolve_permission_for_profile(
+            request,
+            base_dir=self.config_base_dir,
+            profile_user_id=context.profile_user_id,
+        )
         if decision.allowed:
             return {"ok": True, "mode": decision.mode, "reason": decision.reason}
         return {
@@ -3193,8 +3178,9 @@ class BrowserPageToolHandler(BaseToolHandler):
         action: str,
         call: Mapping[str, Any],
         context: ToolExecutionContext,
-    ) -> CapcorePermissionRequest:
-        return CapcorePermissionRequest(
+    ) -> Any:
+        return capcore_manual_permission_request(
+            context=context,
             required=True,
             capability_id="tool.browser_page",
             display_name="Browser Page",
@@ -3202,9 +3188,6 @@ class BrowserPageToolHandler(BaseToolHandler):
             confirm="always",
             effects=("browser_action",),
             reason="browser_control_requires_approval",
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            client_mode=context.client_mode,
             args_preview={
                 "action": str(action or ""),
                 **self._safe_control_preview(call),
@@ -3227,20 +3210,6 @@ class BrowserPageToolHandler(BaseToolHandler):
             )
         except Exception:
             return False
-
-    def _profile_approval_policy(self, context: ToolExecutionContext) -> CapcoreApprovalPolicy:
-        try:
-            payload = get_approval_policy_config(
-                base_dir=self.config_base_dir,
-                profile_user_id=context.profile_user_id,
-            )
-        except Exception:
-            return CapcoreApprovalPolicy(default_mode="ask_each_time")
-        policy = payload.get("approvalPolicy") if isinstance(payload, Mapping) else {}
-        mode = str((policy or {}).get("defaultMode") or "").strip()
-        if mode not in {"ask_each_time", "trusted_auto_allow", "disabled"}:
-            mode = "ask_each_time"
-        return CapcoreApprovalPolicy(default_mode=mode)
 
     def _safe_control_preview(self, call: Mapping[str, Any]) -> dict[str, Any]:
         preview: dict[str, Any] = {}
@@ -3271,18 +3240,17 @@ class BrowserPageToolHandler(BaseToolHandler):
             "action": action,
             **self._safe_control_preview(call),
         }
-        event = {
-            "type": "capability_approval_required",
-            "capabilityId": "tool.browser_page",
-            "actionId": str(authorization.get("actionId") or f"browser_page.{action}"),
-            "title": "浏览器控制需要确认",
-            "summary": "Akane 想对托管网页执行点击、输入或按键动作。",
-            "risk": "high",
-            "approvalMode": "ask_each_time",
-            "approvalReason": str(authorization.get("reason") or "browser_control_requires_approval"),
-            "payloadPreview": preview,
-            "client_mode": context.client_mode,
-        }
+        event = capcore_approval_required_event(
+            capability_id="tool.browser_page",
+            action_id=str(authorization.get("actionId") or f"browser_page.{action}"),
+            title="浏览器控制需要确认",
+            summary="Akane 想对托管网页执行点击、输入或按键动作。",
+            risk="high",
+            approval_mode="ask_each_time",
+            approval_reason=str(authorization.get("reason") or "browser_control_requires_approval"),
+            payload_preview=preview,
+            client_mode=context.client_mode,
+        )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=[event],
