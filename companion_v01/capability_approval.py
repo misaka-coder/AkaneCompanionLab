@@ -6,6 +6,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
+from capcore import sanitize_permission_preview as capcore_sanitize_permission_preview
+
 
 APPROVAL_REQUEST_ID_RE = re.compile(r"^approvalreq_[a-f0-9]{32}$")
 APPROVAL_GRANT_ID_RE = re.compile(r"^approvalgrant_[a-f0-9]{32}$")
@@ -23,9 +25,7 @@ APPROVAL_SECRET_MARKERS = (
     "token",
 )
 APPROVAL_SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
-LOCAL_PATH_RE = re.compile(
-    r"(?i)([A-Z]:[\\/][^\s,;]+|\\\\[^\s,;]+|/(?:users|home|root|var|tmp|mnt|Volumes)/[^\s,;]+)"
-)
+LOCAL_PATH_RE = re.compile(r"(?i)([A-Z]:[\\/][^\s,;]+|\\\\[^\s,;]+|/(?:users|home|root|var|tmp|mnt|Volumes)/[^\s,;]+)")
 
 
 class CapabilityApprovalStore:
@@ -161,7 +161,9 @@ class CapabilityApprovalStore:
             entry["updatedAt"] = _iso(now)
             entry["decidedAt"] = _iso(now)
             if decision == "approved":
-                grant_expires_at = min(_parse_iso(entry.get("expiresAt")) or now, now + timedelta(seconds=APPROVAL_GRANT_TTL_SECONDS))
+                grant_expires_at = min(
+                    _parse_iso(entry.get("expiresAt")) or now, now + timedelta(seconds=APPROVAL_GRANT_TTL_SECONDS)
+                )
                 entry["grantId"] = f"approvalgrant_{uuid.uuid4().hex}"
                 entry["grantExpiresAt"] = _iso(grant_expires_at)
             public_entry = _public_request(entry)
@@ -172,7 +174,9 @@ class CapabilityApprovalStore:
             "request": public_entry,
             "requestId": safe_request_id,
             "refresh": True,
-            "followupContext": "用户已批准该能力请求。" if decision == "approved" else "用户拒绝了该能力请求，请不要执行该动作。",
+            "followupContext": "用户已批准该能力请求。"
+            if decision == "approved"
+            else "用户拒绝了该能力请求，请不要执行该动作。",
         }
         if decision == "approved":
             result["approvalGrant"] = {
@@ -219,7 +223,9 @@ def normalize_approval_request_payload(payload: Mapping[str, Any]) -> dict[str, 
     if not capability_id and not action_id:
         return {"ok": False, "status": "invalid_request", "reason": "approval_capability_missing"}
     title = _safe_public_text(payload.get("title") or payload.get("name"), default="能力请求", limit=80)
-    summary = _safe_public_text(payload.get("summary") or payload.get("description"), default="Akane 想执行一个需要确认的能力动作。", limit=180)
+    summary = _safe_public_text(
+        payload.get("summary") or payload.get("description"), default="Akane 想执行一个需要确认的能力动作。", limit=180
+    )
     requested_by = _safe_public_token(payload.get("requestedBy") or payload.get("requested_by")) or "akane"
     ttl = _safe_ttl(payload.get("expiresInSec") or payload.get("expires_in_sec"))
     return {
@@ -229,7 +235,8 @@ def normalize_approval_request_payload(payload: Mapping[str, Any]) -> dict[str, 
         "title": title,
         "summary": summary,
         "risk": risk,
-        "approvalReason": _safe_public_token(payload.get("approvalReason") or payload.get("approval_reason")) or "requires_confirmation",
+        "approvalReason": _safe_public_token(payload.get("approvalReason") or payload.get("approval_reason"))
+        or "requires_confirmation",
         "requestedBy": requested_by,
         "payloadPreview": _safe_payload_preview(payload.get("payloadPreview") or payload.get("payload_preview")),
         "expiresInSec": ttl,
@@ -308,30 +315,50 @@ def _safe_payload_preview(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
     preview: dict[str, Any] = {}
-    for raw_key, raw_value in list(value.items())[:12]:
+    for raw_key, raw_value in value.items():
         key = _safe_public_key(raw_key)
         if not key:
             continue
-        safe_value = _safe_preview_value(raw_value)
+        if _is_capcore_preview_summary(raw_value):
+            safe_value = _safe_capcore_preview_value(raw_value)
+        else:
+            safe_value = _safe_capcore_preview_value(capcore_sanitize_permission_preview({key: raw_value}).get(key))
         if safe_value in (None, "", {}, []):
             continue
         preview[key] = safe_value
+        if len(preview) >= 12:
+            break
     return preview
 
 
-def _safe_preview_value(value: Any) -> Any:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value
-    if isinstance(value, str):
-        return _safe_public_text(value, limit=160)
-    if isinstance(value, list):
-        items = [_safe_preview_value(item) for item in value[:8]]
-        return [item for item in items if item not in (None, "", {}, [])]
+def _safe_capcore_preview_value(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return _safe_payload_preview(value)
-    return _safe_public_text(value, limit=120)
+        return _safe_capcore_preview_summary(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(type(value).__name__)[:40]
+
+
+def _is_capcore_preview_summary(value: Any) -> bool:
+    return isinstance(value, Mapping) and isinstance(value.get("type"), str)
+
+
+def _safe_capcore_preview_summary(value: Mapping[str, Any]) -> dict[str, Any]:
+    summary_type = _safe_public_token(value.get("type"))
+    if not summary_type:
+        return {}
+    summary: dict[str, Any] = {"type": summary_type}
+    if isinstance(value.get("keys"), list):
+        keys = [_safe_public_key(item) for item in value.get("keys", [])]
+        keys = [item for item in keys if item]
+        if not keys and summary_type == "object":
+            return {}
+        summary["keys"] = keys[:12]
+    if isinstance(value.get("size"), int):
+        summary["size"] = max(0, int(value["size"]))
+    if isinstance(value.get("length"), int):
+        summary["length"] = max(0, int(value["length"]))
+    return summary
 
 
 def _safe_ttl(value: Any) -> int:
