@@ -6,7 +6,7 @@
 
 ## 执行前必读
 
-- 工程根目录：`F:\Akane\AkaneCompanionLab\`
+- 工程根目录：当前 AkaneCompanionLab 仓库
 - 桌宠前端：`desktop_pet_next/`（Tauri v2 + Vite + WebView2）
 - 面板 JS：`desktop_pet_next/src/panel.js`
 - 面板 CSS：`desktop_pet_next/src/panel.css`

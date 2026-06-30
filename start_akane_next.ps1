@@ -192,8 +192,11 @@ function Write-AkaneFirstBuildHints {
 function Ensure-NpmInstall {
     param([string]$DesktopDir)
 
-    $nodeModules = Join-Path $DesktopDir "node_modules"
-    if (Test-Path -LiteralPath $nodeModules) {
+    # Check for the actual Tauri CLI binary, not just the node_modules directory.
+    # A previous failed/interrupted npm install can leave a partial node_modules that
+    # passes the directory check but is missing key binaries like tauri.cmd.
+    $tauriCmd = Join-Path $DesktopDir "node_modules\.bin\tauri.cmd"
+    if (Test-Path -LiteralPath $tauriCmd) {
         return
     }
 
@@ -202,12 +205,22 @@ function Ensure-NpmInstall {
         throw "npm was not found. Install Node.js before building Akane Next."
     }
 
-    Write-Host "[INFO] desktop_pet_next/node_modules not found. Running npm install..."
+    Write-Host "[INFO] desktop_pet_next/node_modules not found or incomplete. Running npm install..."
     Push-Location -LiteralPath $DesktopDir
     try {
-        & npm install
-        if ($LASTEXITCODE -ne 0) {
-            throw "npm install failed with exit code $LASTEXITCODE"
+        # Redirect the global npm prefix to a user-writable directory so npm install
+        # does not attempt to write to C:\Program Files\nodejs\ (EPERM on non-admin).
+        $savedPrefix = $env:npm_config_prefix
+        if (-not $env:npm_config_prefix) {
+            $env:npm_config_prefix = Join-Path $env:APPDATA "npm"
+        }
+        try {
+            & npm install
+            if ($LASTEXITCODE -ne 0) {
+                throw "npm install failed with exit code $LASTEXITCODE"
+            }
+        } finally {
+            $env:npm_config_prefix = $savedPrefix
         }
     } finally {
         Pop-Location

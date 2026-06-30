@@ -10,9 +10,9 @@ Akane 工具系统已确认：native 通过 `opencode.ai` 中转 + `NATIVE_TOOL_
 
 ## 参考设计（必读，照着对比 Akane 现状）
 
-- **Claude Code 标注源码** `F:\Akane\galgame\AkaneBrain\claude_code_annotated`：`src/tools/ToolSearchTool`（延迟工具/按需取 schema）、`src/utils/toolResultStorage.ts`（大结果落盘给句柄）、`src/query.ts`（agent loop）、`src/tools/MCPTool|SkillTool`。
+- **Claude Code 标注源码** `<local-reference>/claude_code_annotated`：`src/tools/ToolSearchTool`（延迟工具/按需取 schema）、`src/utils/toolResultStorage.ts`（大结果落盘给句柄）、`src/query.ts`（agent loop）、`src/tools/MCPTool|SkillTool`。
 - **本项目调研** `docs/claude_code_tool_system_research_v1.md`（附录 A 深挖落盘/SkillTool/MCP/延迟工具）。
-- **Sakura** `F:\Temp\sakura-reference/app/agent/runtime.py`（原生工具循环、`structured_response=not bool(tool_defs)`）、`app/agent/tool_registry.py`。
+- **Sakura** `<local-reference>/sakura-reference/app/agent/runtime.py`（原生工具循环、`structured_response=not bool(tool_defs)`）、`app/agent/tool_registry.py`。
 - **承重不变量** `docs/engineering_invariants_v1.md`；**工具设计** `docs/tool_system_decoupling_v1.md`。
 
 ## 输出格式（每条都这样，别下结论）

@@ -53,12 +53,23 @@ function Test-PublicFileExcluded {
     # portraits. Allow its files (including .png) through the binary-exclusion gate,
     # but never its per-character private _local/ memory data.
     $allowedPrefixes = @(
-        "desktop_pet_creator_kit/characters/akane_v1/"
+        "desktop_pet_creator_kit/characters/akane_v1/",
+        "web/assets/stickers/akane_v1/"
     )
     foreach ($allowed in $allowedPrefixes) {
         if ($lower.StartsWith($allowed.ToLowerInvariant()) -and $lower -notmatch "/_local/") {
             return $false
         }
+    }
+
+    # UI assets that ship as real images (not placeholders) in the public release.
+    $allowedBinaryAssets = @(
+        "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sakura-wide.png",
+        "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sky-wide.png",
+        "web/assets/scenes/家/白天客厅.png"
+    )
+    if ($allowedBinaryAssets -contains $lower) {
+        return $false
     }
 
     $prefixExclusions = @(
@@ -277,13 +288,6 @@ function Add-PublicPlaceholderAssets {
         $destinations.Add("web/assets/backgrounds/default/$backgroundName.png")
     }
 
-    foreach ($stickerName in @(
-        "好幸福", "憋笑", "我上早八", "摊手",
-        "歪脑", "突然出现", "装傻", "装死"
-    )) {
-        $destinations.Add("web/assets/stickers/akane_v1/$stickerName.png")
-    }
-
     foreach ($assetPath in @(
         "desktop_pet_next/src/assets/control-center-lab/backgrounds/sky-city-balcony.png",
         "desktop_pet_next/src/assets/control-center-lab/covers/akane-night-window.png",
@@ -291,9 +295,7 @@ function Add-PublicPlaceholderAssets {
         "desktop_pet_next/src/assets/control-center-lab/covers/akane-sky-paper-plane.png",
         "desktop_pet_next/src/assets/control-center-lab/covers/cloud-letter.png",
         "desktop_pet_next/src/assets/control-center-lab/covers/moon-balcony.png",
-        "desktop_pet_next/src/assets/control-center-lab/covers/starry-cloud-cat.png",
-        "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sakura-wide.png",
-        "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sky-wide.png"
+        "desktop_pet_next/src/assets/control-center-lab/covers/starry-cloud-cat.png"
     )) {
         $destinations.Add($assetPath)
     }
