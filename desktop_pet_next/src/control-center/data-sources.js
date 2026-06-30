@@ -2017,7 +2017,6 @@ function normalizeCapabilityCatalogEntries(catalog) {
       exposedToPrompt: Boolean(entry.exposedToPrompt),
       workflowPath: stringValue(entry.workflowPath),
       defaultWorkflowPath: stringValue(entry.defaultWorkflowPath),
-      autoEnabled: Boolean(entry.autoEnabled),
       usedBy: normalizeStringList(entry.usedBy),
       toolTypes: normalizeStringList(entry.toolTypes),
       target: stringValue(entry.target),
@@ -2324,7 +2323,6 @@ function normalizeVoiceProfileEntries(catalog) {
         textLang: stringValue(entry.textLang || "zh"),
         promptLang: stringValue(entry.promptLang || "zh"),
         mediaType: stringValue(entry.mediaType || "wav"),
-        hasReferenceAudio: Boolean(entry.hasReferenceAudio),
         referenceAudioName: stringValue(entry.referenceAudioName),
         promptTextLength: positiveNumber(entry.promptTextLength),
         updatedAt: stringValue(entry.updatedAt)

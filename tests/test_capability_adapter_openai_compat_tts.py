@@ -137,11 +137,11 @@ class OpenAICompatTTSRouteTests(unittest.TestCase):
             )
 
         self.assertTrue(saved["ok"])
-        self.assertEqual(saved["voiceProfile"]["emotionVoiceIds"], ["joy"])
         self.assertEqual(runtime["emotionVoiceMap"]["joy"]["refAudioPath"], r"C:\voices\joy.wav")
         public_text = json.dumps(saved["voiceProfile"], ensure_ascii=False).lower()
         self.assertNotIn(r"c:\voices", public_text)
         self.assertNotIn("token", public_text)
+        self.assertNotIn("emotionVoiceMap", saved["voiceProfile"])
 
     def test_tts_route_applies_emotion_voice_map_before_gpt_sovits_call(self) -> None:
         class FakeGptSovitsClient:

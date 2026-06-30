@@ -707,7 +707,6 @@ def _probe_local_service(target: LocalServiceProbe, *, timeout_seconds: float) -
         "endpoint": target.endpoint,
         "discovered": status == "ready",
         "bindable": status == "ready",
-        "autoEnabled": False,
     }
     return _project_catalog_entry(entry)
 

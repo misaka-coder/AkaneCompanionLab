@@ -3391,7 +3391,6 @@ for line in sys.stdin:
                         "endpoint": "http://127.0.0.1:8188",
                         "discovered": True,
                         "bindable": True,
-                        "autoEnabled": False,
                     }
                 ],
                 "summary": {"total": 1},
@@ -3415,7 +3414,6 @@ for line in sys.stdin:
         self.assertEqual(payload["services"][0]["adapter"], "comfyui")
         self.assertEqual(payload["services"][0]["source"], "external_executor")
         self.assertFalse(payload["services"][0]["enabled"])
-        self.assertFalse(payload["services"][0]["autoEnabled"])
         self.assertIn(("capabilities.local_environment_check", True), runtime.observed)
 
     def test_capabilities_provider_config_skeleton_persists_profile_scoped_local_endpoint(self) -> None:

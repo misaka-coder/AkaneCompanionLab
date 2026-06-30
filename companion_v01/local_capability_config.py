@@ -1534,7 +1534,6 @@ def build_provider_config_entry(spec: ProviderConfigSpec, config: Mapping[str, A
         "usedBy": list(spec.used_by),
         "endpoint": endpoint,
         "defaultEndpoint": spec.default_endpoint,
-        "autoEnabled": False,
         "configurable": True,
     }
     projected = project_capcore_catalog_fields(entry, default_risk=spec.risk, default_confirm="never")
@@ -1610,10 +1609,6 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
     enabled = bool(config.get("enabled"))
     ref_audio_path = str(config.get("refAudioPath") or "").strip()
     prompt_text = str(config.get("promptText") or "").strip()
-    emotion_voice_map = config.get("emotionVoiceMap") if isinstance(config.get("emotionVoiceMap"), Mapping) else {}
-    emotion_voice_ids = sorted(
-        emotion_id for emotion_id in (_safe_voice_profile_id(key) for key in emotion_voice_map.keys()) if emotion_id
-    )
     configured = bool(ref_audio_path and prompt_text)
     status = "ready" if enabled and configured else "missing_config" if enabled else "disabled"
     entry = {
@@ -1644,11 +1639,8 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
         if isinstance(config.get("fragmentInterval"), (int, float))
         else None,
         "textSplitMethod": str(config.get("textSplitMethod") or "")[:40],
-        "hasReferenceAudio": bool(ref_audio_path),
         "referenceAudioName": _safe_path_basename(ref_audio_path),
         "promptTextLength": len(prompt_text),
-        "emotionVoiceIds": emotion_voice_ids,
-        "emotionVoiceCount": len(emotion_voice_map),
         "updatedAt": str(config.get("updatedAt") or "")[:80],
         "risk": "medium",
         "requiresConfirmation": False,

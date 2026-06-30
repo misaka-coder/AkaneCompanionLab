@@ -38,7 +38,7 @@ M4 不做：
 - `companion_v01/local_capability_config.py`
   - voice profile 私有字段新增 `emotionVoiceMap`
   - 运行时 profile 返回 emotion map
-  - 公开 entry 只返回 `emotionVoiceIds` / `emotionVoiceCount`
+  - 公开 entry 不回显 emotion map 或派生摘要，避免保留未消费字段
   - MCP 动态工具 low risk allowlist 在 catalog 侧与 adapter 侧对齐
 - `desktop_pet_next/src/main.js`
   - `buildBackendCharacterContext()` 带上当前 emotion
