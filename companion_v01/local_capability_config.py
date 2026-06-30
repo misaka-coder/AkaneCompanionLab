@@ -115,7 +115,6 @@ WORKFLOW_ASSET_HANDLE_MAX_LENGTH = 120
 WORKFLOW_ASSET_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 MCP_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
 MCP_SAFE_TYPE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
-MCP_TOOL_EFFECT_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 WORKFLOW_CONFIG_FILE_MAX_BYTES = 4 * 1024 * 1024
 
 
@@ -1748,8 +1747,8 @@ def build_mcp_tool_config_entry(server_id: str, tool: Mapping[str, Any] | None) 
         "inputSchema": _normalize_mcp_input_schema(tool.get("inputSchema") or tool.get("input_schema")),
         "exposedToPrompt": bool(tool.get("promptExposed") or tool.get("prompt_exposed")),
     }
-    effects = _safe_mcp_tool_effects(tool.get("effects", tool.get("effect")))
-    if effects:
+    effects = _raw_mcp_tool_effects(tool)
+    if effects is not None:
         entry["effects"] = effects
     projected = project_capcore_catalog_fields(
         entry,
@@ -2693,15 +2692,18 @@ def _normalize_mcp_tool_config(server_id: str, raw_tool: Any) -> dict[str, Any]:
         raw_tool.get("promptExposed") if "promptExposed" in raw_tool else raw_tool.get("prompt_exposed"),
         default=False,
     )
+    projection_entry = {
+        "id": f"mcp.{_safe_mcp_server_id(server_id)}.{tool_name}",
+        "name": tool_name,
+        "description": description,
+        "risk": raw_tool.get("risk"),
+        "confirm": raw_tool.get("confirm"),
+    }
+    effects = _raw_mcp_tool_effects(raw_tool)
+    if effects is not None:
+        projection_entry["effects"] = effects
     normalized = project_capcore_catalog_fields(
-        {
-            "id": f"mcp.{_safe_mcp_server_id(server_id)}.{tool_name}",
-            "name": tool_name,
-            "description": description,
-            "risk": raw_tool.get("risk"),
-            "confirm": raw_tool.get("confirm"),
-            "effects": _safe_mcp_tool_effects(raw_tool.get("effects", raw_tool.get("effect"))),
-        },
+        projection_entry,
         default_risk=inferred_risk,
         default_confirm="first_time",
     )
@@ -2741,22 +2743,13 @@ def _safe_mcp_tool_name_list(value: Any) -> list[str]:
     return result
 
 
-def _safe_mcp_tool_effects(value: Any) -> list[str]:
+def _raw_mcp_tool_effects(tool: Mapping[str, Any]) -> Any | None:
+    value = tool.get("effects") if "effects" in tool else tool.get("effect")
     if isinstance(value, str):
-        candidates = [value]
-    elif isinstance(value, (list, tuple, set)):
-        candidates = list(value)
-    else:
-        candidates = []
-    result: list[str] = []
-    seen: set[str] = set()
-    for item in candidates[:16]:
-        effect = str(item or "").strip()
-        if not effect or effect in seen or not MCP_TOOL_EFFECT_RE.fullmatch(effect):
-            continue
-        seen.add(effect)
-        result.append(effect)
-    return result
+        return value if value.strip() else None
+    if isinstance(value, (list, tuple, set)):
+        return value if value else None
+    return None
 
 
 def _normalize_mcp_input_schema(raw_schema: Any) -> dict[str, Any]:

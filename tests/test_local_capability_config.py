@@ -13,6 +13,7 @@ from companion_v01.local_capability_config import (
     build_provider_config_entry,
     build_workflow_config_entry,
     capability_approval_mode,
+    normalize_mcp_tool_discovery_payload,
     project_capcore_catalog_fields,
     with_capability_approval_metadata,
 )
@@ -76,6 +77,24 @@ class LocalCapabilityApprovalTests(unittest.TestCase):
         self.assertEqual(entry["approvalMode"], APPROVAL_MODE_ASK_EACH_TIME)
         self.assertEqual(entry["effects"], ["browser_action"])
 
+    def test_mcp_tool_entry_projects_singular_hyphen_effect_through_capcore(self) -> None:
+        entry = build_mcp_tool_config_entry(
+            "shell",
+            {
+                "name": "run_script",
+                "description": "Run a script through the local command adapter.",
+                "risk": "low",
+                "confirm": "never",
+                "effect": "command-execution",
+            },
+        )
+
+        self.assertEqual(entry["risk"], "high")
+        self.assertEqual(entry["confirm"], "always")
+        self.assertTrue(entry["requiresConfirmation"])
+        self.assertEqual(entry["approvalMode"], APPROVAL_MODE_ASK_EACH_TIME)
+        self.assertEqual(entry["effects"], ["command_exec"])
+
     def test_mcp_tool_entry_unknown_effect_does_not_auto_allow_never_confirm(self) -> None:
         entry = build_mcp_tool_config_entry(
             "custom",
@@ -93,6 +112,27 @@ class LocalCapabilityApprovalTests(unittest.TestCase):
         self.assertTrue(entry["requiresConfirmation"])
         self.assertEqual(entry["approvalMode"], APPROVAL_MODE_ASK_EACH_TIME)
         self.assertEqual(entry["effects"], ["custom_effect"])
+
+    def test_mcp_tool_discovery_drops_invalid_effect_tokens_via_capcore(self) -> None:
+        payload = normalize_mcp_tool_discovery_payload(
+            "custom",
+            {
+                "tools": [
+                    {
+                        "name": "custom_action",
+                        "description": "Custom local action.",
+                        "risk": "low",
+                        "confirm": "never",
+                        "effects": ["../bad effect"],
+                    }
+                ]
+            },
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["tools"][0]["risk"], "low")
+        self.assertEqual(payload["tools"][0]["confirm"], "never")
+        self.assertNotIn("effects", payload["tools"][0])
 
     def test_provider_and_workflow_entries_project_capcore_fields(self) -> None:
         provider = build_provider_config_entry(
