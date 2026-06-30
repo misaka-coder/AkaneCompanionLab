@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from capcore import descriptor_from_mapping as capcore_descriptor_from_mapping
+from capcore import project_mapping_fields as capcore_project_mapping_fields
 
 from .capability_registry import CapabilityRegistry
 from .local_capability_config import (
@@ -747,7 +747,7 @@ def _summarize_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
 def _tool_capcore_catalog_projection(tool_name: str, handler: Any) -> dict[str, Any]:
     raw_risk = _handler_tool_risk(handler)
     capability_id = f"tool.{tool_name}"
-    descriptor = capcore_descriptor_from_mapping(
+    projected = capcore_project_mapping_fields(
         {
             "id": capability_id,
             "name": _humanize_tool_name(tool_name),
@@ -762,8 +762,8 @@ def _tool_capcore_catalog_projection(tool_name: str, handler: Any) -> dict[str, 
         default_confirm="never",
     )
     return {
-        "risk": descriptor.risk,
-        "requiresConfirmation": descriptor.confirm != "never",
+        "risk": projected["risk"],
+        "requiresConfirmation": bool(projected["requiresConfirmation"]),
     }
 
 
