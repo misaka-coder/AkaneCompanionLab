@@ -26,6 +26,14 @@ provider:
 capabilities: []
 """
 
+INVALID_PROFILE_SAME_PROVIDER = """\
+schema: capability_adapter/v1
+provider:
+  id: comfyui
+  type: not_allowed
+capabilities: []
+"""
+
 
 class CapabilityAdapterRegistryTests(unittest.TestCase):
     def test_empty_directories_scan_without_error(self) -> None:
@@ -105,6 +113,27 @@ class CapabilityAdapterRegistryTests(unittest.TestCase):
             self.assertEqual(len(registry.list_manifests()), 1)
             self.assertEqual(len(registry.list_invalid()), 1)
             self.assertEqual(registry.list_invalid()[0].reason, "missing_provider_id")
+
+    def test_invalid_profile_manifest_masks_builtin_same_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            builtin = root / "builtin"
+            profile = root / "profile"
+            builtin.mkdir()
+            profile.mkdir()
+            (builtin / "comfyui.yaml").write_text(
+                VALID_MANIFEST.format(provider_id="comfyui", display_name="Builtin ComfyUI"),
+                encoding="utf-8",
+            )
+            (profile / "comfyui.yaml").write_text(INVALID_PROFILE_SAME_PROVIDER, encoding="utf-8")
+            registry = CapabilityAdapterRegistry(
+                builtin_dir=builtin,
+                profile_dir_provider=lambda: profile,
+            )
+            registry.scan()
+            self.assertEqual(registry.list_manifests(), ())
+            self.assertEqual(len(registry.list_invalid()), 1)
+            self.assertEqual(registry.list_invalid()[0].provider_id, "comfyui")
 
     def test_get_missing_provider_returns_none(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
