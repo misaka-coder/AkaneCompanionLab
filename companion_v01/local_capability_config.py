@@ -12,7 +12,10 @@ from urllib.parse import urlparse, urlunparse
 
 import yaml
 from capcore import ApprovalPolicy as CapcoreApprovalPolicy
+from capcore import CapabilityDescriptor as CapcoreCapabilityDescriptor
+from capcore import PermissionDecision as CapcorePermissionDecision
 from capcore import PermissionRequest as CapcorePermissionRequest
+from capcore import build_permission_request as capcore_build_permission_request
 from capcore import resolve_permission as capcore_resolve_permission
 
 
@@ -126,20 +129,29 @@ def capability_approval_mode(
     requires_confirmation: bool = False,
 ) -> str:
     normalized_status = str(status or "").strip().lower()
-    if not enabled or normalized_status in APPROVAL_DISABLED_STATUSES:
-        request = _capcore_permission_request_from_entry(
-            {"id": "capability", "name": "Capability", "risk": risk, "requiresConfirmation": requires_confirmation}
-        )
-        decision = capcore_resolve_permission(request, CapcoreApprovalPolicy(default_mode=APPROVAL_MODE_DISABLED))
-        return _approval_mode_from_capcore_decision(decision)
-    request = _capcore_permission_request_from_entry(
-        {"id": "capability", "name": "Capability", "risk": risk, "requiresConfirmation": requires_confirmation}
+    entry = {
+        "id": "capability",
+        "name": "Capability",
+        "risk": risk,
+        "requiresConfirmation": requires_confirmation,
+    }
+    policy_mode = (
+        APPROVAL_MODE_DISABLED
+        if not enabled or normalized_status in APPROVAL_DISABLED_STATUSES
+        else APPROVAL_MODE_ASK_EACH_TIME
     )
-    decision = capcore_resolve_permission(request, CapcoreApprovalPolicy(default_mode=APPROVAL_MODE_ASK_EACH_TIME))
+    decision = _capcore_permission_decision_from_entry(entry, policy_mode=policy_mode)
     return _approval_mode_from_capcore_decision(decision)
 
 
-def _approval_mode_from_capcore_decision(decision: Any) -> str:
+def _capcore_permission_decision_from_entry(
+    entry: Mapping[str, Any], *, policy_mode: str
+) -> CapcorePermissionDecision:
+    request = _capcore_permission_request_from_entry(entry)
+    return capcore_resolve_permission(request, CapcoreApprovalPolicy(default_mode=policy_mode))
+
+
+def _approval_mode_from_capcore_decision(decision: CapcorePermissionDecision) -> str:
     if not decision.allowed and not decision.requires_user_decision:
         return APPROVAL_MODE_DISABLED
     if decision.requires_user_decision:
@@ -147,59 +159,30 @@ def _approval_mode_from_capcore_decision(decision: Any) -> str:
     return APPROVAL_MODE_TRUSTED_AUTO_ALLOW
 
 
-def with_capability_approval_metadata(entry: Mapping[str, Any]) -> dict[str, Any]:
-    public_entry = dict(entry)
-    raw_mode = str(public_entry.get("approvalMode") or "").strip()
-    mode = (
-        raw_mode
-        if raw_mode in APPROVAL_MODES
-        else capability_approval_mode(
-            enabled=public_entry.get("enabled") is not False,
-            status=str(public_entry.get("status") or ""),
-            risk=str(public_entry.get("risk") or ""),
-            requires_confirmation=bool(public_entry.get("requiresConfirmation")),
-        )
-    )
-    public_entry["approvalMode"] = mode
-    if not str(public_entry.get("approvalReason") or "").strip():
-        public_entry["approvalReason"] = _approval_reason(public_entry, mode)
-    return public_entry
-
-
-def apply_approval_policy_to_entry(entry: Mapping[str, Any], approval_policy: Mapping[str, Any] | None) -> dict[str, Any]:
-    public_entry = with_capability_approval_metadata(entry)
-    policy = normalize_approval_policy_config(approval_policy)
-    if public_entry.get("approvalMode") == APPROVAL_MODE_DISABLED:
-        return public_entry
-    request = _capcore_permission_request_from_entry(public_entry)
-    decision = capcore_resolve_permission(request, CapcoreApprovalPolicy(default_mode=policy["defaultMode"]))
-    next_mode = _approval_mode_from_capcore_decision(decision)
-    if next_mode != APPROVAL_MODE_TRUSTED_AUTO_ALLOW or not request.required:
-        return public_entry
-    return {
-        **public_entry,
-        "approvalMode": APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
-        "approvalReason": str(decision.reason or "user_policy_trusted_auto_allow"),
-        "requiresConfirmation": False,
-    }
-
-
 def _capcore_permission_request_from_entry(entry: Mapping[str, Any]) -> CapcorePermissionRequest:
+    descriptor = _capcore_descriptor_from_entry(entry)
+    return capcore_build_permission_request(descriptor, {})
+
+
+def _capcore_descriptor_from_entry(entry: Mapping[str, Any]) -> CapcoreCapabilityDescriptor:
     risk = _capcore_risk(entry.get("risk"))
-    confirm = _capcore_confirm(
-        entry.get("confirm"),
-        risk=risk,
-        requires_confirmation=bool(entry.get("requiresConfirmation")),
-    )
-    required = risk == "high" or confirm in {"first_time", "always"} or bool(entry.get("requiresConfirmation"))
-    return CapcorePermissionRequest(
-        required=required,
-        capability_id=str(entry.get("capabilityId") or entry.get("id") or "").strip()[:120],
+    return CapcoreCapabilityDescriptor(
+        id=str(entry.get("capabilityId") or entry.get("id") or "capability").strip()[:120],
         display_name=str(entry.get("name") or entry.get("title") or entry.get("id") or "Capability").strip()[:120],
+        short_hint=str(entry.get("description") or entry.get("summary") or "").strip()[:240],
+        visible_in=("base",),
+        prompt_exposed=False,
         risk=risk,
-        confirm=confirm,
-        effects=(),
-        reason="requires_confirmation" if required else "",
+        confirm=_capcore_confirm(
+            entry.get("confirm"),
+            risk=risk,
+            requires_confirmation=bool(entry.get("requiresConfirmation")),
+        ),
+        effects=_capcore_effects(entry.get("effects")),
+        trigger=None,
+        inputs=(),
+        outputs=(),
+        raw=dict(entry),
     )
 
 
@@ -215,6 +198,61 @@ def _capcore_confirm(value: Any, *, risk: str, requires_confirmation: bool) -> s
     if risk == "high":
         return "always"
     return "first_time" if requires_confirmation else "never"
+
+
+def _capcore_effects(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, (list, tuple, set)):
+        candidates = list(value)
+    else:
+        candidates = []
+    effects: list[str] = []
+    for item in candidates:
+        effect = str(item or "").strip()
+        if re.fullmatch(r"^[A-Za-z0-9_.-]{1,80}$", effect):
+            effects.append(effect)
+        if len(effects) >= 16:
+            break
+    return tuple(effects)
+
+
+def with_capability_approval_metadata(entry: Mapping[str, Any]) -> dict[str, Any]:
+    public_entry = dict(entry)
+    raw_mode = str(public_entry.get("approvalMode") or "").strip()
+    if raw_mode in APPROVAL_MODES:
+        mode = raw_mode
+    else:
+        status = str(public_entry.get("status") or "").strip().lower()
+        policy_mode = (
+            APPROVAL_MODE_DISABLED
+            if public_entry.get("enabled") is False or status in APPROVAL_DISABLED_STATUSES
+            else APPROVAL_MODE_ASK_EACH_TIME
+        )
+        decision = _capcore_permission_decision_from_entry(public_entry, policy_mode=policy_mode)
+        mode = _approval_mode_from_capcore_decision(decision)
+    public_entry["approvalMode"] = mode
+    if not str(public_entry.get("approvalReason") or "").strip():
+        public_entry["approvalReason"] = _approval_reason(public_entry, mode)
+    return public_entry
+
+
+def apply_approval_policy_to_entry(entry: Mapping[str, Any], approval_policy: Mapping[str, Any] | None) -> dict[str, Any]:
+    public_entry = with_capability_approval_metadata(entry)
+    policy = normalize_approval_policy_config(approval_policy)
+    if public_entry.get("approvalMode") == APPROVAL_MODE_DISABLED:
+        return public_entry
+    decision = _capcore_permission_decision_from_entry(public_entry, policy_mode=policy["defaultMode"])
+    request = decision.request
+    next_mode = _approval_mode_from_capcore_decision(decision)
+    if request is None or next_mode != APPROVAL_MODE_TRUSTED_AUTO_ALLOW or not request.required:
+        return public_entry
+    return {
+        **public_entry,
+        "approvalMode": APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+        "approvalReason": str(decision.reason or "user_policy_trusted_auto_allow"),
+        "requiresConfirmation": False,
+    }
 
 
 def normalize_approval_policy_config(raw_policy: Any) -> dict[str, Any]:
