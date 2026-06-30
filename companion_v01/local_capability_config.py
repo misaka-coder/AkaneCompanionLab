@@ -15,8 +15,8 @@ from capcore import ApprovalPolicy as CapcoreApprovalPolicy
 from capcore import ConfirmPolicy as CapcoreConfirmPolicy
 from capcore import PermissionDecision as CapcorePermissionDecision
 from capcore import RiskLevel as CapcoreRiskLevel
-from capcore import descriptor_from_mapping as capcore_descriptor_from_mapping
 from capcore import permission_request_from_mapping as capcore_permission_request_from_mapping
+from capcore import project_mapping_fields as capcore_project_mapping_fields
 from capcore import resolve_permission as capcore_resolve_permission
 
 
@@ -165,20 +165,13 @@ def project_capcore_catalog_fields(
     default_confirm: str = "never",
 ) -> dict[str, Any]:
     public_entry = dict(entry)
-    descriptor = capcore_descriptor_from_mapping(
+    return capcore_project_mapping_fields(
         public_entry,
         default_id=str(public_entry.get("id") or "capability"),
         default_display_name=str(public_entry.get("name") or public_entry.get("displayName") or "Capability"),
         default_risk=cast(CapcoreRiskLevel, default_risk),
         default_confirm=cast(CapcoreConfirmPolicy, default_confirm),
     )
-    public_entry["risk"] = descriptor.risk
-    public_entry["confirm"] = descriptor.confirm
-    public_entry["requiresConfirmation"] = descriptor.confirm != "never"
-    if "effects" in public_entry or "effect" in public_entry or descriptor.effects:
-        public_entry.pop("effect", None)
-        public_entry["effects"] = list(descriptor.effects)
-    return public_entry
 
 
 def with_capability_approval_metadata(entry: Mapping[str, Any]) -> dict[str, Any]:
