@@ -12,10 +12,8 @@ from urllib.parse import urlparse, urlunparse
 
 import yaml
 from capcore import ApprovalPolicy as CapcoreApprovalPolicy
-from capcore import CapabilityDescriptor as CapcoreCapabilityDescriptor
 from capcore import PermissionDecision as CapcorePermissionDecision
-from capcore import PermissionRequest as CapcorePermissionRequest
-from capcore import build_permission_request as capcore_build_permission_request
+from capcore import permission_request_from_mapping as capcore_permission_request_from_mapping
 from capcore import resolve_permission as capcore_resolve_permission
 
 
@@ -147,7 +145,7 @@ def capability_approval_mode(
 def _capcore_permission_decision_from_entry(
     entry: Mapping[str, Any], *, policy_mode: str
 ) -> CapcorePermissionDecision:
-    request = _capcore_permission_request_from_entry(entry)
+    request = capcore_permission_request_from_mapping(entry)
     return capcore_resolve_permission(request, CapcoreApprovalPolicy(default_mode=policy_mode))
 
 
@@ -157,64 +155,6 @@ def _approval_mode_from_capcore_decision(decision: CapcorePermissionDecision) ->
     if decision.requires_user_decision:
         return APPROVAL_MODE_ASK_EACH_TIME
     return APPROVAL_MODE_TRUSTED_AUTO_ALLOW
-
-
-def _capcore_permission_request_from_entry(entry: Mapping[str, Any]) -> CapcorePermissionRequest:
-    descriptor = _capcore_descriptor_from_entry(entry)
-    return capcore_build_permission_request(descriptor, {})
-
-
-def _capcore_descriptor_from_entry(entry: Mapping[str, Any]) -> CapcoreCapabilityDescriptor:
-    risk = _capcore_risk(entry.get("risk"))
-    return CapcoreCapabilityDescriptor(
-        id=str(entry.get("capabilityId") or entry.get("id") or "capability").strip()[:120],
-        display_name=str(entry.get("name") or entry.get("title") or entry.get("id") or "Capability").strip()[:120],
-        short_hint=str(entry.get("description") or entry.get("summary") or "").strip()[:240],
-        visible_in=("base",),
-        prompt_exposed=False,
-        risk=risk,
-        confirm=_capcore_confirm(
-            entry.get("confirm"),
-            risk=risk,
-            requires_confirmation=bool(entry.get("requiresConfirmation")),
-        ),
-        effects=_capcore_effects(entry.get("effects")),
-        trigger=None,
-        inputs=(),
-        outputs=(),
-        raw=dict(entry),
-    )
-
-
-def _capcore_risk(value: Any) -> str:
-    risk = str(value or "").strip().lower()
-    return risk if risk in {"low", "medium", "high"} else "medium"
-
-
-def _capcore_confirm(value: Any, *, risk: str, requires_confirmation: bool) -> str:
-    confirm = str(value or "").strip().lower()
-    if confirm in {"never", "first_time", "always"}:
-        return "always" if risk == "high" else confirm
-    if risk == "high":
-        return "always"
-    return "first_time" if requires_confirmation else "never"
-
-
-def _capcore_effects(value: Any) -> tuple[str, ...]:
-    if isinstance(value, str):
-        candidates = [value]
-    elif isinstance(value, (list, tuple, set)):
-        candidates = list(value)
-    else:
-        candidates = []
-    effects: list[str] = []
-    for item in candidates:
-        effect = str(item or "").strip()
-        if re.fullmatch(r"^[A-Za-z0-9_.-]{1,80}$", effect):
-            effects.append(effect)
-        if len(effects) >= 16:
-            break
-    return tuple(effects)
 
 
 def with_capability_approval_metadata(entry: Mapping[str, Any]) -> dict[str, Any]:
