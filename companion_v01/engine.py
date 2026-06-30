@@ -598,6 +598,29 @@ class AkaneMemoryEngine:
             logger.warning("memcore compaction scheduling failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
+    def backfill_memcore_from_legacy_raw(
+        self,
+        *,
+        profile_user_id: str = "",
+        character_pack_id: str | None = None,
+        batch_size: int = 64,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {"ok": False, "status": "disabled", "reason": "memcore_manager_not_enabled"}
+        try:
+            return manager.import_legacy_raw_messages(
+                legacy_store=self.store,
+                profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                batch_size=batch_size,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.warning("memcore legacy raw backfill failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
     def snapshot_embedding_reindex_status(self) -> dict[str, Any]:
         with self._embedding_reindex_lock:
             return dict(self._embedding_reindex_status)

@@ -318,6 +318,17 @@ class _CompactionMemcoreManager:
         return {"ok": True, "status": "completed", "stats": {}}
 
 
+class _LegacyRawStore:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+        self.batch_sizes: list[int] = []
+
+    def iter_messages_for_vector_reindex(self, batch_size: int = 64):
+        self.batch_sizes.append(int(batch_size))
+        for start in range(0, len(self.rows), max(1, int(batch_size))):
+            yield self.rows[start : start + max(1, int(batch_size))]
+
+
 def _tool_context() -> ToolExecutionContext:
     return ToolExecutionContext(
         profile_user_id="u1",
@@ -444,6 +455,95 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(legacy_compaction.scheduled, [expected])
         self.assertEqual(legacy_compaction.ran, [expected])
         self.assertEqual(memcore_manager.sync_calls, [])
+
+    def test_import_legacy_raw_messages_is_idempotent_and_filtered(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            legacy_store = _LegacyRawStore(
+                [
+                    {
+                        "source_id": "old-user",
+                        "profile_user_id": "u1",
+                        "session_id": "old-session",
+                        "character_pack_id": "char",
+                        "role": "user",
+                        "content": "以前聊过冰可乐。",
+                        "timestamp": _ts(2026, 6, 1, 9, 0),
+                        "memory_metadata": {"keywords": ["可乐"], "categories": ["preference"], "importance": 0.8},
+                    },
+                    {
+                        "source_id": "old-assistant",
+                        "profile_user_id": "u1",
+                        "session_id": "old-session",
+                        "character_pack_id": "char",
+                        "role": "assistant",
+                        "content": "我会记住你喜欢冰可乐。",
+                        "timestamp": _ts(2026, 6, 1, 9, 1),
+                        "memory_metadata": {},
+                    },
+                    {
+                        "source_id": "other-profile",
+                        "profile_user_id": "u2",
+                        "session_id": "old-session",
+                        "character_pack_id": "char",
+                        "role": "user",
+                        "content": "别人的记忆不能导入 u1。",
+                        "timestamp": _ts(2026, 6, 1, 9, 2),
+                    },
+                    {
+                        "source_id": "tool-turn",
+                        "profile_user_id": "u1",
+                        "session_id": "old-session",
+                        "character_pack_id": "char",
+                        "role": "npc:旁白",
+                        "content": "工具或 NPC 原始行先不回填。",
+                        "timestamp": _ts(2026, 6, 1, 9, 3),
+                    },
+                ]
+            )
+
+            first = manager.import_legacy_raw_messages(
+                legacy_store=legacy_store,
+                profile_user_id="u1",
+                character_pack_id="char",
+                batch_size=2,
+            )
+            second = manager.import_legacy_raw_messages(
+                legacy_store=legacy_store,
+                profile_user_id="u1",
+                character_pack_id="char",
+                batch_size=2,
+            )
+
+            self.assertTrue(first["ok"], first)
+            self.assertEqual(first["scanned"], 4)
+            self.assertEqual(first["upserted"], 2)
+            self.assertEqual(first["filtered"], 1)
+            self.assertEqual(first["skipped"], 1)
+            self.assertEqual(first["failed"], 0)
+            self.assertTrue(second["ok"], second)
+            self.assertEqual(second["upserted"], 2)
+
+            system = manager._get_system(
+                profile_user_id="u1",
+                session_id="old-session",
+                character_pack_id="char",
+            )
+            records = manager._store.list_index_records(namespace=system.namespace, with_conversation=True)
+            source_ids = [record["source_id"] for record in records]
+            self.assertEqual(source_ids.count("old-user"), 1)
+            self.assertEqual(source_ids.count("old-assistant"), 1)
+            self.assertNotIn("other-profile", source_ids)
+            self.assertNotIn("tool-turn", source_ids)
+            manager.close()
 
     def test_dual_write_records_raw_and_updates_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

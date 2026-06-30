@@ -302,12 +302,21 @@ MEMCORE_SHADOW_COMPARE=false
 
 目标: 把 legacy SQLite 里的现有 raw / summaries / semantic_summaries 导入 memcore。
 
+状态:7a 已完成 raw-only 手动回填入口。
+
 这一步不要提前做。等新写入稳定后再做一次性 migration:
 
 - 遍历 legacy messages，按 `profile_user_id/session_id/character_pack_id/source_id/timestamp/memory_metadata` 写入 memcore。
 - 遍历 legacy summaries / semantic_summaries 写入 memcore store，或先只迁 raw 让 memcore 后台重新压缩。
 - 迁移必须幂等，同 source_id 重复运行不能复制多条。
 - 迁移后 `reindex_all()`。
+
+7a 实际改动:
+
+- `MemcoreManager.import_legacy_raw_messages(...)` 从 legacy `iter_messages_for_vector_reindex()` 批量读取旧 raw，只导入 `role=user|assistant` 且符合 profile/character 过滤的记录。
+- `AkaneMemoryEngine.backfill_memcore_from_legacy_raw(...)` 提供手动维护入口，不在启动或聊天链路自动执行。
+- 回填复用旧 `source_id`，依赖 memcore store 的同 namespace 幂等写入；重复执行不会复制同一条记忆。
+- 暂不搬旧 `memory_summaries` / `memory_semantic_summaries`。需要旧历史长期记忆时，先 raw 回填，再由 memcore 压缩链路重新生成摘要和语义层。
 
 ## 不要做的事
 

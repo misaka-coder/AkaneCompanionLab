@@ -247,6 +247,96 @@ class MemcoreManager:
             logger.warning("memcore sync compaction failed: %s", reason)
             return self._status("compact_due_sync", False, "failed", reason=reason)
 
+    def import_legacy_raw_messages(
+        self,
+        *,
+        legacy_store: Any,
+        profile_user_id: str = "",
+        character_pack_id: str | None = None,
+        batch_size: int = 64,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        operation = "import_legacy_raw_messages"
+        if not self.enabled:
+            return {
+                **self._status(operation, False, "disabled", reason="memory_backend_legacy"),
+                "scanned": 0,
+                "upserted": 0,
+                "filtered": 0,
+                "skipped": 0,
+                "failed": 0,
+            }
+        if not self.available:
+            return {
+                **self._status(operation, False, "unavailable", reason=self._reason),
+                "scanned": 0,
+                "upserted": 0,
+                "filtered": 0,
+                "skipped": 0,
+                "failed": 0,
+            }
+        iterator = getattr(legacy_store, "iter_messages_for_vector_reindex", None)
+        if not callable(iterator):
+            return {
+                **self._status(operation, False, "invalid_store", reason="iter_messages_for_vector_reindex_required"),
+                "scanned": 0,
+                "upserted": 0,
+                "filtered": 0,
+                "skipped": 0,
+                "failed": 0,
+            }
+
+        profile_filter = str(profile_user_id or "").strip()
+        character_filter = None if character_pack_id is None else str(character_pack_id or "").strip()
+        max_records = self._coerce_positive_int_or_none(limit)
+        scanned = upserted = filtered = skipped = failed = 0
+        try:
+            batches = iterator(batch_size=max(1, int(batch_size or 64)))
+            for batch in batches:
+                for record in list(batch or []):
+                    if max_records is not None and scanned >= max_records:
+                        return self._import_result(operation, scanned, upserted, filtered, skipped, failed)
+                    if not isinstance(record, dict):
+                        skipped += 1
+                        continue
+                    scanned += 1
+                    record_profile = str(record.get("profile_user_id") or "").strip()
+                    record_character = str(record.get("character_pack_id") or "").strip()
+                    if profile_filter and record_profile != profile_filter:
+                        filtered += 1
+                        continue
+                    if character_filter is not None and record_character != character_filter:
+                        filtered += 1
+                        continue
+                    role = str(record.get("role") or "").strip().lower()
+                    if role not in {"user", "assistant"}:
+                        skipped += 1
+                        continue
+                    result = self._record_turn(
+                        operation=operation,
+                        role=role,
+                        record=record,
+                        profile_user_id=record_profile,
+                        session_id=str(record.get("session_id") or "").strip(),
+                        character_pack_id=record_character,
+                    )
+                    if bool(result.get("ok")):
+                        upserted += 1
+                    else:
+                        failed += 1
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore legacy raw import failed: %s", reason)
+            return {
+                **self._status(operation, False, "failed", reason=reason),
+                "scanned": scanned,
+                "upserted": upserted,
+                "filtered": filtered,
+                "skipped": skipped,
+                "failed": failed + 1,
+            }
+        return self._import_result(operation, scanned, upserted, filtered, skipped, failed)
+
     def build_prompt_context(
         self,
         *,
@@ -762,6 +852,16 @@ class MemcoreManager:
         return max(0.0, min(1.0, number))
 
     @staticmethod
+    def _coerce_positive_int_or_none(value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
+    @staticmethod
     def _apply_limit(snippets: list[str], limit: Any) -> list[str]:
         try:
             value = int(limit)
@@ -839,6 +939,26 @@ class MemcoreManager:
             "messages": messages,
             "text": text,
             "backend": "memcore",
+        }
+
+    @classmethod
+    def _import_result(
+        cls,
+        operation: str,
+        scanned: int,
+        upserted: int,
+        filtered: int,
+        skipped: int,
+        failed: int,
+    ) -> dict[str, Any]:
+        status = "completed" if failed == 0 else "partial"
+        return {
+            **cls._status(operation, failed == 0, status, reason="" if failed == 0 else "some_records_failed"),
+            "scanned": int(scanned),
+            "upserted": int(upserted),
+            "filtered": int(filtered),
+            "skipped": int(skipped),
+            "failed": int(failed),
         }
 
     @staticmethod
