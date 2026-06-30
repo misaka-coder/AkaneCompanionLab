@@ -6,8 +6,12 @@ from companion_v01.local_capability_config import (
     APPROVAL_MODE_ASK_EACH_TIME,
     APPROVAL_MODE_DISABLED,
     APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+    CONFIGURABLE_PROVIDER_BY_ID,
+    CONFIGURABLE_WORKFLOW_BY_ID,
     apply_approval_policy_to_entry,
     build_mcp_tool_config_entry,
+    build_provider_config_entry,
+    build_workflow_config_entry,
     capability_approval_mode,
     project_capcore_catalog_fields,
     with_capability_approval_metadata,
@@ -89,6 +93,37 @@ class LocalCapabilityApprovalTests(unittest.TestCase):
         self.assertTrue(entry["requiresConfirmation"])
         self.assertEqual(entry["approvalMode"], APPROVAL_MODE_ASK_EACH_TIME)
         self.assertEqual(entry["effects"], ["custom_effect"])
+
+    def test_provider_and_workflow_entries_project_capcore_fields(self) -> None:
+        provider = build_provider_config_entry(
+            CONFIGURABLE_PROVIDER_BY_ID["provider.comfyui.local"],
+            {
+                "enabled": True,
+                "endpoint": "http://127.0.0.1:8188",
+                "lastHealth": {"status": "ready"},
+            },
+        )
+        workflow = build_workflow_config_entry(
+            CONFIGURABLE_WORKFLOW_BY_ID["workflow.workshop.portrait.cutout"],
+            {
+                "enabled": True,
+                "workflowPath": "workflows/comfyui/portrait_cutout.json",
+                "slotMapping": {
+                    "input_image_handle": "input_image",
+                    "output_image_handle": "output_image",
+                },
+            },
+            provider,
+        )
+
+        self.assertEqual(provider["risk"], "medium")
+        self.assertEqual(provider["confirm"], "never")
+        self.assertFalse(provider["requiresConfirmation"])
+        self.assertEqual(provider["approvalMode"], APPROVAL_MODE_TRUSTED_AUTO_ALLOW)
+        self.assertEqual(workflow["risk"], "medium")
+        self.assertEqual(workflow["confirm"], "never")
+        self.assertFalse(workflow["requiresConfirmation"])
+        self.assertEqual(workflow["approvalMode"], APPROVAL_MODE_DISABLED)
 
     def test_trusted_policy_auto_allows_required_entry_without_enabling_disabled_entry(self) -> None:
         trusted = apply_approval_policy_to_entry(

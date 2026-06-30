@@ -145,9 +145,7 @@ def capability_approval_mode(
     return _approval_mode_from_capcore_decision(decision)
 
 
-def _capcore_permission_decision_from_entry(
-    entry: Mapping[str, Any], *, policy_mode: str
-) -> CapcorePermissionDecision:
+def _capcore_permission_decision_from_entry(entry: Mapping[str, Any], *, policy_mode: str) -> CapcorePermissionDecision:
     request = capcore_permission_request_from_mapping(entry, default_confirm="never")
     return capcore_resolve_permission(request, CapcoreApprovalPolicy(default_mode=policy_mode))
 
@@ -203,7 +201,9 @@ def with_capability_approval_metadata(entry: Mapping[str, Any]) -> dict[str, Any
     return public_entry
 
 
-def apply_approval_policy_to_entry(entry: Mapping[str, Any], approval_policy: Mapping[str, Any] | None) -> dict[str, Any]:
+def apply_approval_policy_to_entry(
+    entry: Mapping[str, Any], approval_policy: Mapping[str, Any] | None
+) -> dict[str, Any]:
     public_entry = with_capability_approval_metadata(entry)
     policy = normalize_approval_policy_config(approval_policy)
     if public_entry.get("approvalMode") == APPROVAL_MODE_DISABLED:
@@ -553,21 +553,25 @@ def inspect_gpt_sovits_voice_model_folder(
 
     folder_name = _safe_short_text(folder.name, limit=80) or "gpt_sovits_voice"
     profile_id = _safe_voice_profile_id(
-        _first_voice_model_yaml_value(yaml_values, "voice_profile_id", "profile_id", "id")
-        or folder_name
+        _first_voice_model_yaml_value(yaml_values, "voice_profile_id", "profile_id", "id") or folder_name
     )
-    display_name = _safe_short_text(
-        _first_voice_model_yaml_value(yaml_values, "display_name", "voice_name", "name")
-        or folder_name,
-        limit=80,
-    ) or profile_id or "GPT-SoVITS Voice"
+    display_name = (
+        _safe_short_text(
+            _first_voice_model_yaml_value(yaml_values, "display_name", "voice_name", "name") or folder_name,
+            limit=80,
+        )
+        or profile_id
+        or "GPT-SoVITS Voice"
+    )
 
     yaml_ref_audio = _resolve_voice_model_file_from_yaml(
         folder,
         _first_voice_model_yaml_value(yaml_values, "ref_audio_path", "reference_audio_path", "prompt_audio_path"),
         VOICE_MODEL_AUDIO_EXTENSIONS,
     )
-    ref_audio_path = yaml_ref_audio or _best_voice_model_file(files, VOICE_MODEL_AUDIO_EXTENSIONS, ("ref", "prompt", "sample", "output"))
+    ref_audio_path = yaml_ref_audio or _best_voice_model_file(
+        files, VOICE_MODEL_AUDIO_EXTENSIONS, ("ref", "prompt", "sample", "output")
+    )
     prompt_text = _safe_private_prompt_text(
         _first_voice_model_yaml_value(yaml_values, "prompt_text", "reference_text", "ref_text")
     )
@@ -885,7 +889,9 @@ def get_mcp_server_runtime_config(
         "cwd": str(server.get("cwd") or ""),
         "env": dict(server.get("env") or {}) if isinstance(server.get("env"), Mapping) else {},
         "tools": list(server.get("tools") or []) if isinstance(server.get("tools"), list) else [],
-        "lowRiskAllowlist": list(server.get("lowRiskAllowlist") or []) if isinstance(server.get("lowRiskAllowlist"), list) else [],
+        "lowRiskAllowlist": list(server.get("lowRiskAllowlist") or [])
+        if isinstance(server.get("lowRiskAllowlist"), list)
+        else [],
     }
 
 
@@ -952,10 +958,7 @@ def save_mcp_server_discovery(
         "serverId": safe_server_id,
         "toolCount": len(normalized["tools"]),
         "mcpServer": build_mcp_server_config_entry(safe_server_id, servers[safe_server_id]),
-        "tools": [
-            build_mcp_tool_config_entry(safe_server_id, tool)
-            for tool in normalized["tools"]
-        ],
+        "tools": [build_mcp_tool_config_entry(safe_server_id, tool) for tool in normalized["tools"]],
         "refresh": True,
     }
 
@@ -1027,10 +1030,7 @@ def save_provider_config(
         "endpoint": normalized["endpoint"],
         "updatedAt": _now_iso(),
     }
-    if (
-        existing.get("endpoint") == normalized["endpoint"]
-        and isinstance(existing.get("lastHealth"), Mapping)
-    ):
+    if existing.get("endpoint") == normalized["endpoint"] and isinstance(existing.get("lastHealth"), Mapping):
         next_provider["lastHealth"] = existing["lastHealth"]
     providers[spec.id] = next_provider
     config = {
@@ -1516,12 +1516,16 @@ def build_provider_config_entry(spec: ProviderConfigSpec, config: Mapping[str, A
     enabled = bool(config.get("enabled")) if config_status != "invalid_config" else False
     last_health = config.get("lastHealth") if isinstance(config.get("lastHealth"), Mapping) else {}
     configured = bool(endpoint)
-    status = "invalid_config" if config_status == "invalid_config" else _provider_status(
-        configured=configured,
-        enabled=enabled,
-        last_health=last_health,
+    status = (
+        "invalid_config"
+        if config_status == "invalid_config"
+        else _provider_status(
+            configured=configured,
+            enabled=enabled,
+            last_health=last_health,
+        )
     )
-    return with_capability_approval_metadata({
+    entry = {
         "id": spec.id,
         "kind": "provider",
         "type": spec.type,
@@ -1540,7 +1544,9 @@ def build_provider_config_entry(spec: ProviderConfigSpec, config: Mapping[str, A
         "defaultEndpoint": spec.default_endpoint,
         "autoEnabled": False,
         "configurable": True,
-    })
+    }
+    projected = project_capcore_catalog_fields(entry, default_risk=spec.risk, default_confirm="never")
+    return with_capability_approval_metadata(projected)
 
 
 def build_workflow_config_entry(
@@ -1564,7 +1570,7 @@ def build_workflow_config_entry(
         enabled=enabled,
         configured=configured,
     )
-    return with_capability_approval_metadata({
+    entry = {
         "id": spec.id,
         "kind": "workflow",
         "type": spec.type,
@@ -1600,7 +1606,9 @@ def build_workflow_config_entry(
             "outputImage": "asset_handle",
             "pathPolicy": "safe-handle-only",
         },
-    })
+    }
+    projected = project_capcore_catalog_fields(entry, default_risk=spec.risk, default_confirm="never")
+    return with_capability_approval_metadata(projected)
 
 
 def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1612,13 +1620,11 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
     prompt_text = str(config.get("promptText") or "").strip()
     emotion_voice_map = config.get("emotionVoiceMap") if isinstance(config.get("emotionVoiceMap"), Mapping) else {}
     emotion_voice_ids = sorted(
-        emotion_id
-        for emotion_id in (_safe_voice_profile_id(key) for key in emotion_voice_map.keys())
-        if emotion_id
+        emotion_id for emotion_id in (_safe_voice_profile_id(key) for key in emotion_voice_map.keys()) if emotion_id
     )
     configured = bool(ref_audio_path and prompt_text)
     status = "ready" if enabled and configured else "missing_config" if enabled else "disabled"
-    return with_capability_approval_metadata({
+    entry = {
         "id": safe_id,
         "voiceProfileId": safe_id,
         "kind": "voice_profile",
@@ -1631,7 +1637,9 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
         "enabled": enabled,
         "configured": configured,
         "status": status,
-        "reason": "" if status == "ready" else ("voice_profile_disabled" if not enabled else "voice_profile_reference_missing"),
+        "reason": ""
+        if status == "ready"
+        else ("voice_profile_disabled" if not enabled else "voice_profile_reference_missing"),
         "textLang": str(config.get("textLang") or "zh")[:20],
         "promptLang": str(config.get("promptLang") or "zh")[:20],
         "mediaType": str(config.get("mediaType") or "wav")[:20],
@@ -1640,7 +1648,9 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
         "splitBucket": config.get("splitBucket") if isinstance(config.get("splitBucket"), bool) else None,
         "batchSize": config.get("batchSize") if isinstance(config.get("batchSize"), int) else None,
         "speedFactor": config.get("speedFactor") if isinstance(config.get("speedFactor"), (int, float)) else None,
-        "fragmentInterval": config.get("fragmentInterval") if isinstance(config.get("fragmentInterval"), (int, float)) else None,
+        "fragmentInterval": config.get("fragmentInterval")
+        if isinstance(config.get("fragmentInterval"), (int, float))
+        else None,
         "textSplitMethod": str(config.get("textSplitMethod") or "")[:40],
         "hasReferenceAudio": bool(ref_audio_path),
         "referenceAudioName": _safe_path_basename(ref_audio_path),
@@ -1651,7 +1661,9 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
         "risk": "medium",
         "requiresConfirmation": False,
         "usedBy": ["voice", "desktop_pet"],
-    })
+    }
+    projected = project_capcore_catalog_fields(entry, default_risk="medium", default_confirm="never")
+    return with_capability_approval_metadata(projected)
 
 
 def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1680,7 +1692,7 @@ def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | No
         reason = "mcp_tools_not_discovered"
     elif status == "disabled":
         reason = "mcp_server_disabled"
-    return with_capability_approval_metadata({
+    entry = {
         "id": f"provider.mcp.{safe_id}",
         "serverId": safe_id,
         "kind": "provider",
@@ -1702,12 +1714,16 @@ def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | No
             "status": str(last_discovery.get("status") or "")[:80],
             "discoveredAt": str(last_discovery.get("discoveredAt") or "")[:80],
             "toolCount": int(last_discovery.get("toolCount") or 0),
-        } if last_discovery else {},
+        }
+        if last_discovery
+        else {},
         "risk": "medium",
         "requiresConfirmation": False,
         "usedBy": ["agent_prompt", "external_tools"],
         "configurable": True,
-    })
+    }
+    projected = project_capcore_catalog_fields(entry, default_risk="medium", default_confirm="never")
+    return with_capability_approval_metadata(projected)
 
 
 def build_mcp_tool_config_entry(server_id: str, tool: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1792,7 +1808,9 @@ def normalize_workflow_config_payload(spec: WorkflowConfigSpec, payload: Mapping
 
 def normalize_voice_profile_config_payload(profile_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     payload = payload if isinstance(payload, Mapping) else {}
-    provider_id = str(payload.get("providerId") or payload.get("provider_id") or "provider.tts.gpt_sovits.local").strip()
+    provider_id = str(
+        payload.get("providerId") or payload.get("provider_id") or "provider.tts.gpt_sovits.local"
+    ).strip()
     if provider_id != "provider.tts.gpt_sovits.local":
         return {"ok": False, "status": "unsupported_provider", "reason": "voice_profile_provider_not_supported"}
     ref_audio_path = _safe_private_local_path(payload.get("refAudioPath") or payload.get("ref_audio_path"))
@@ -1860,7 +1878,8 @@ def normalize_mcp_server_config_payload(server_id: str, payload: Mapping[str, An
         "ok": True,
         "status": "valid",
         "enabled": bool(payload.get("enabled", True)),
-        "displayName": _safe_short_text(payload.get("displayName") or payload.get("name") or server_id, limit=80) or server_id,
+        "displayName": _safe_short_text(payload.get("displayName") or payload.get("name") or server_id, limit=80)
+        or server_id,
         "transport": transport,
         "command": command,
         "args": args,
@@ -2375,7 +2394,9 @@ def _sanitize_voice_profile_configs(raw_profiles: Any) -> tuple[dict[str, dict[s
         if not profile_id:
             warnings.append({"status": "invalid_config", "reason": "voice_profile_id_invalid"})
             continue
-        normalized = normalize_voice_profile_config_payload(profile_id, raw_config if isinstance(raw_config, Mapping) else {})
+        normalized = normalize_voice_profile_config_payload(
+            profile_id, raw_config if isinstance(raw_config, Mapping) else {}
+        )
         if not normalized.get("ok"):
             warnings.append(
                 {
@@ -2422,7 +2443,9 @@ def _sanitize_mcp_server_configs(raw_servers: Any) -> tuple[dict[str, dict[str, 
         if not server_id:
             warnings.append({"status": "invalid_config", "reason": "mcp_server_id_invalid"})
             continue
-        normalized = normalize_mcp_server_config_payload(server_id, raw_config if isinstance(raw_config, Mapping) else {})
+        normalized = normalize_mcp_server_config_payload(
+            server_id, raw_config if isinstance(raw_config, Mapping) else {}
+        )
         if not normalized.get("ok"):
             warnings.append(
                 {
@@ -2442,8 +2465,7 @@ def _sanitize_mcp_server_configs(raw_servers: Any) -> tuple[dict[str, dict[str, 
             "env": normalized["env"],
         }
         low_risk_allowlist = _safe_mcp_tool_name_list(
-            (raw_config or {}).get("lowRiskAllowlist")
-            or (raw_config or {}).get("low_risk_allowlist")
+            (raw_config or {}).get("lowRiskAllowlist") or (raw_config or {}).get("low_risk_allowlist")
         )
         if low_risk_allowlist:
             server["lowRiskAllowlist"] = low_risk_allowlist
@@ -2454,10 +2476,11 @@ def _sanitize_mcp_server_configs(raw_servers: Any) -> tuple[dict[str, dict[str, 
         normalized_tools = normalize_mcp_tool_discovery_payload(server_id, {"tools": raw_tools or []})
         if normalized_tools.get("ok") and normalized_tools.get("tools"):
             server["tools"] = [
-                _apply_mcp_low_risk_allowlist(tool, low_risk_allowlist)
-                for tool in normalized_tools["tools"]
+                _apply_mcp_low_risk_allowlist(tool, low_risk_allowlist) for tool in normalized_tools["tools"]
             ]
-        last_discovery = _sanitize_mcp_last_discovery((raw_config or {}).get("lastDiscovery") if isinstance(raw_config, Mapping) else None)
+        last_discovery = _sanitize_mcp_last_discovery(
+            (raw_config or {}).get("lastDiscovery") if isinstance(raw_config, Mapping) else None
+        )
         if last_discovery:
             server["lastDiscovery"] = last_discovery
         servers[server_id] = server
@@ -2674,9 +2697,7 @@ def _normalize_mcp_tool_config(server_id: str, raw_tool: Any) -> dict[str, Any]:
     description = _safe_public_mcp_text(raw_tool.get("description"), limit=MCP_TOOL_DESCRIPTION_MAX_LENGTH)
     inferred_risk = _infer_mcp_tool_risk(tool_name, description)
     prompt_exposed = _safe_optional_bool(
-        raw_tool.get("promptExposed")
-        if "promptExposed" in raw_tool
-        else raw_tool.get("prompt_exposed"),
+        raw_tool.get("promptExposed") if "promptExposed" in raw_tool else raw_tool.get("prompt_exposed"),
         default=False,
     )
     normalized = project_capcore_catalog_fields(
@@ -2934,10 +2955,7 @@ def _find_voice_model_yaml(folder: Path, files: list[Path]) -> Path | None:
                 return candidate
         except OSError:
             continue
-    yaml_files = [
-        item for item in files
-        if item.suffix.lower() in {".yaml", ".yml"}
-    ]
+    yaml_files = [item for item in files if item.suffix.lower() in {".yaml", ".yml"}]
     for item in yaml_files:
         name = item.name.lower()
         if "tts" in name or "infer" in name or "sovits" in name:
@@ -3002,14 +3020,18 @@ def _resolve_voice_model_file_from_yaml(folder: Path, value: Any, allowed_suffix
         return None
 
 
-def _best_voice_model_file(files: list[Path], allowed_suffixes: set[str], preferred_markers: tuple[str, ...]) -> Path | None:
+def _best_voice_model_file(
+    files: list[Path], allowed_suffixes: set[str], preferred_markers: tuple[str, ...]
+) -> Path | None:
     candidates = [item for item in files if item.suffix.lower() in allowed_suffixes]
     if not candidates:
         return None
 
     def score(path: Path) -> tuple[int, int, int, str]:
         name = path.name.lower()
-        marker_index = next((index for index, marker in enumerate(preferred_markers) if marker in name), len(preferred_markers))
+        marker_index = next(
+            (index for index, marker in enumerate(preferred_markers) if marker in name), len(preferred_markers)
+        )
         try:
             size = path.stat().st_size
         except OSError:
@@ -3022,7 +3044,9 @@ def _best_voice_model_file(files: list[Path], allowed_suffixes: set[str], prefer
 
 def _infer_mcp_tool_risk(tool_name: str, description: str) -> str:
     text = f"{tool_name} {description}".lower()
-    if re.search(r"\b(delete|remove|write|edit|shell|terminal|exec|command|click|open_url|navigate|download|upload)\b", text):
+    if re.search(
+        r"\b(delete|remove|write|edit|shell|terminal|exec|command|click|open_url|navigate|download|upload)\b", text
+    ):
         return "high"
     if re.search(r"\b(file|read|http|fetch|search|web|workspace|local)\b", text):
         return "medium"

@@ -19,6 +19,7 @@ from .local_capability_config import (
     build_workflow_config_entry,
     CONFIGURABLE_PROVIDER_SPECS,
     CONFIGURABLE_WORKFLOW_SPECS,
+    project_capcore_catalog_fields,
 )
 from .music_lyrics import build_music_lyrics_provider_status
 
@@ -81,6 +82,7 @@ TOOL_USED_BY: dict[str, list[str]] = {
     "browser_page": ["agent", "desktop_pet"],
     "open_music_search": ["agent", "desktop_pet"],
 }
+
 
 @dataclass(frozen=True)
 class LocalServiceProbe:
@@ -230,7 +232,7 @@ def _build_backend_tool_entries(tool_handlers: Mapping[str, Any]) -> list[dict[s
         if reason:
             entry["reason"] = reason
         entries.append(entry)
-    return entries
+    return [_project_catalog_entry(entry) for entry in entries]
 
 
 def _build_provider_entries(*, config_module: Any = None, tts_client: Any = None) -> list[dict[str, Any]]:
@@ -398,7 +400,7 @@ def _build_provider_entries(*, config_module: Any = None, tts_client: Any = None
             "summary": "语音输入不可用时继续使用文本输入",
         },
     ]
-    return entries
+    return [_project_catalog_entry(entry) for entry in entries]
 
 
 def _build_voice_provider_resolutions(
@@ -477,7 +479,11 @@ def _resolve_first_ready_provider(
 
     requested_entry = entries_by_id.get(requested_provider_id)
     active_entry = entries_by_id.get(active_provider_id)
-    status = "ready" if active_provider_id and active_provider_id == requested_provider_id and not extra_reason else "degraded"
+    status = (
+        "ready"
+        if active_provider_id and active_provider_id == requested_provider_id and not extra_reason
+        else "degraded"
+    )
     if not active_provider_id:
         status = "unavailable"
     reason = extra_reason or _resolution_reason(
@@ -498,8 +504,7 @@ def _resolve_first_ready_provider(
         "fallbackProviderId": active_provider_id if active_provider_id != requested_provider_id else "",
         "voiceProfileId": voice_profile_id,
         "candidates": [
-            _candidate_summary(candidate_id, entries_by_id.get(candidate_id))
-            for candidate_id in unique_candidates
+            _candidate_summary(candidate_id, entries_by_id.get(candidate_id)) for candidate_id in unique_candidates
         ],
     }
 
@@ -611,10 +616,7 @@ def _safe_public_text(value: Any) -> str:
 
 def _build_configurable_provider_entries(provider_configs: Mapping[str, Any]) -> list[dict[str, Any]]:
     provider_map = provider_configs if isinstance(provider_configs, Mapping) else {}
-    return [
-        build_provider_config_entry(spec, provider_map.get(spec.id))
-        for spec in CONFIGURABLE_PROVIDER_SPECS
-    ]
+    return [build_provider_config_entry(spec, provider_map.get(spec.id)) for spec in CONFIGURABLE_PROVIDER_SPECS]
 
 
 def _build_workflow_entries(
@@ -653,24 +655,27 @@ def _build_prompt_module_entries() -> list[dict[str, Any]]:
     registry = CapabilityRegistry()
     for module in registry.modules:
         entries.append(
-            {
-                "id": f"prompt_module.{module.name}",
-                "kind": "prompt_module",
-                "type": "tool",
-                "source": "builtin",
-                "adapter": "prompt_capability_registry",
-                "executionMode": "internal",
-                "name": module.name,
-                "description": module.light_hint,
-                "group": module.layer,
-                "enabled": True,
-                "status": "ready",
-                "risk": "low",
-                "requiresConfirmation": False,
-                "usedBy": ["agent_prompt"],
-                "toolTypes": list(module.tools),
-                "clientModes": [mode.value for mode in module.modes],
-            }
+            _project_catalog_entry(
+                {
+                    "id": f"prompt_module.{module.name}",
+                    "kind": "prompt_module",
+                    "type": "tool",
+                    "source": "builtin",
+                    "adapter": "prompt_capability_registry",
+                    "executionMode": "internal",
+                    "name": module.name,
+                    "description": module.light_hint,
+                    "group": module.layer,
+                    "enabled": True,
+                    "status": "ready",
+                    "risk": "low",
+                    "requiresConfirmation": False,
+                    "usedBy": ["agent_prompt"],
+                    "toolTypes": list(module.tools),
+                    "clientModes": [mode.value for mode in module.modes],
+                },
+                default_risk="low",
+            )
         )
     return entries
 
@@ -685,7 +690,7 @@ def _probe_local_service(target: LocalServiceProbe, *, timeout_seconds: float) -
     except OSError as exc:
         reason = str(exc)[:120] or "connection_failed"
 
-    return {
+    entry = {
         "id": target.id,
         "kind": "provider",
         "type": target.type,
@@ -704,6 +709,20 @@ def _probe_local_service(target: LocalServiceProbe, *, timeout_seconds: float) -
         "bindable": status == "ready",
         "autoEnabled": False,
     }
+    return _project_catalog_entry(entry)
+
+
+def _project_catalog_entry(
+    entry: Mapping[str, Any],
+    *,
+    default_risk: str = "medium",
+    default_confirm: str = "never",
+) -> dict[str, Any]:
+    return project_capcore_catalog_fields(
+        entry,
+        default_risk=str(entry.get("risk") or default_risk),
+        default_confirm=default_confirm,
+    )
 
 
 def _summarize_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -779,7 +798,9 @@ def _tool_runtime_status(handler: Any) -> dict[str, Any]:
         if isinstance(status, Mapping):
             normalized_status = str(status.get("status") or "ready").strip() or "ready"
             return {
-                "enabled": bool(status.get("enabled", normalized_status not in {"disabled", "unavailable", "missing_executor"})),
+                "enabled": bool(
+                    status.get("enabled", normalized_status not in {"disabled", "unavailable", "missing_executor"})
+                ),
                 "status": normalized_status,
                 "reason": str(status.get("reason") or "").strip()[:160],
             }

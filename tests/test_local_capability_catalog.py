@@ -32,11 +32,27 @@ class LocalCapabilityCatalogTests(unittest.TestCase):
         medium = by_id["tool.custom_medium"]
 
         self.assertEqual(high["risk"], "high")
+        self.assertEqual(high["confirm"], "always")
         self.assertTrue(high["requiresConfirmation"])
         self.assertEqual(high["approvalMode"], "ask_each_time")
         self.assertEqual(medium["risk"], "medium")
+        self.assertEqual(medium["confirm"], "never")
         self.assertFalse(medium["requiresConfirmation"])
         self.assertEqual(medium["approvalMode"], "trusted_auto_allow")
+
+    def test_static_provider_catalog_projects_confirm_through_capcore(self) -> None:
+        catalog = build_local_capability_catalog(
+            engine=SimpleNamespace(tool_handlers={}),
+            config_module=SimpleNamespace(),
+        )
+
+        by_id = {item["id"]: item for item in catalog["capabilities"]}
+        text_only = by_id["provider.voice.text_only"]
+
+        self.assertEqual(text_only["risk"], "low")
+        self.assertEqual(text_only["confirm"], "never")
+        self.assertFalse(text_only["requiresConfirmation"])
+        self.assertEqual(text_only["approvalMode"], "trusted_auto_allow")
 
 
 if __name__ == "__main__":
