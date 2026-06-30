@@ -145,7 +145,7 @@ def capability_approval_mode(
 def _capcore_permission_decision_from_entry(
     entry: Mapping[str, Any], *, policy_mode: str
 ) -> CapcorePermissionDecision:
-    request = capcore_permission_request_from_mapping(entry)
+    request = capcore_permission_request_from_mapping(entry, default_confirm="never")
     return capcore_resolve_permission(request, CapcoreApprovalPolicy(default_mode=policy_mode))
 
 
