@@ -6,7 +6,10 @@ import socket
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
+
+from capcore import RiskLevel as CapcoreRiskLevel
+from capcore import descriptor_from_mapping as capcore_descriptor_from_mapping
 
 from .capability_registry import CapabilityRegistry
 from .local_capability_config import (
@@ -243,8 +246,10 @@ def _build_backend_tool_entries(tool_handlers: Mapping[str, Any]) -> list[dict[s
     for tool_name in sorted(str(name or "").strip() for name in tool_handlers.keys()):
         if not tool_name:
             continue
-        status = _tool_runtime_status(tool_handlers.get(tool_name))
+        handler = tool_handlers.get(tool_name)
+        status = _tool_runtime_status(handler)
         group = TOOL_GROUPS.get(tool_name, "backend")
+        capcore_projection = _tool_capcore_catalog_projection(tool_name, handler)
         entry = {
             "id": f"tool.{tool_name}",
             "kind": "tool",
@@ -258,8 +263,8 @@ def _build_backend_tool_entries(tool_handlers: Mapping[str, Any]) -> list[dict[s
             "group": group,
             "enabled": bool(status.get("enabled")),
             "status": str(status.get("status") or "ready"),
-            "risk": _tool_risk(tool_name),
-            "requiresConfirmation": False,
+            "risk": capcore_projection["risk"],
+            "requiresConfirmation": capcore_projection["requiresConfirmation"],
             "usedBy": TOOL_USED_BY.get(tool_name, ["agent"]),
         }
         reason = str(status.get("reason") or "").strip()
@@ -767,6 +772,42 @@ def _tool_risk(tool_name: str) -> str:
     if tool_name in MEDIUM_RISK_TOOLS:
         return "medium"
     return "low"
+
+
+def _tool_capcore_catalog_projection(tool_name: str, handler: Any) -> dict[str, Any]:
+    raw_risk = _handler_tool_risk(tool_name, handler)
+    capability_id = f"tool.{tool_name}"
+    descriptor = capcore_descriptor_from_mapping(
+        {
+            "id": capability_id,
+            "name": _humanize_tool_name(tool_name),
+            "risk": raw_risk,
+            # Static backend tool catalog approval stays capability-level.
+            # Fine-grained gates such as browser click/fill/press are enforced
+            # by their execution handlers with action-specific capcore requests.
+            "requiresConfirmation": raw_risk == "high",
+        },
+        default_id=capability_id,
+        default_risk=cast(CapcoreRiskLevel, _tool_risk(tool_name)),
+        default_confirm="never",
+    )
+    return {
+        "risk": descriptor.risk,
+        "requiresConfirmation": descriptor.confirm != "never",
+    }
+
+
+def _handler_tool_risk(tool_name: str, handler: Any) -> str:
+    metadata_fn = getattr(handler, "tool_metadata", None)
+    if callable(metadata_fn):
+        try:
+            metadata = metadata_fn()
+        except Exception:
+            metadata = None
+        risk = str(getattr(metadata, "risk", "") or "").strip().lower()
+        if risk in {"low", "medium", "high"}:
+            return risk
+    return _tool_risk(tool_name)
 
 
 def _tool_description(tool_name: str, group: str) -> str:
