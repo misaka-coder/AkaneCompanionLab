@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import unittest
 
 from companion_v01.capability_adapters import (
@@ -78,6 +79,67 @@ class McpStdioCapabilityAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.is_error)
         self.assertEqual(caller.calls[0]["tool_name"], "echo")
         self.assertEqual(caller.calls[0]["arguments"], {"text": "hello"})
+
+    async def test_slugged_tool_names_do_not_collide(self) -> None:
+        server_config = {
+            "serverId": "demo",
+            "enabled": True,
+            "transport": "stdio",
+            "command": "python",
+        }
+        adapter = McpStdioCapabilityAdapter(
+            provider_id="provider.mcp.demo",
+            server_id="demo",
+            server_config=server_config,
+            tool_configs=(
+                {"name": "read page", "description": "Read page"},
+                {"name": "read.page", "description": "Read page"},
+            ),
+            caller=FakeCaller(),
+        )
+
+        first, second = await adapter.list_capabilities()
+
+        self.assertNotEqual(first.id, second.id)
+        self.assertTrue(first.id.startswith("mcp.demo.read.page."))
+        self.assertEqual(second.id, "mcp.demo.read.page")
+
+    async def test_prepared_bytes_are_reencoded_to_base64_before_caller(self) -> None:
+        encoded = base64.b64encode(b"1234").decode("ascii")
+        caller = FakeCaller({"content": [{"type": "text", "text": "hello"}]})
+        server_config = {
+            "serverId": "demo",
+            "enabled": True,
+            "transport": "stdio",
+            "command": "python",
+            "lowRiskAllowlist": ["upload"],
+        }
+        adapter = McpStdioCapabilityAdapter(
+            provider_id="provider.mcp.demo",
+            server_id="demo",
+            server_config=server_config,
+            tool_configs=(
+                {
+                    "name": "upload",
+                    "description": "Upload image",
+                    "risk": "low",
+                    "confirm": "never",
+                    "promptExposed": True,
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"image": {"type": "string", "contentEncoding": "base64"}},
+                        "required": ["image"],
+                    },
+                },
+            ),
+            caller=caller,
+        )
+        capability = (await adapter.list_capabilities())[0]
+
+        result = await adapter.invoke(capability.id, {"image": b"1234"}, InvocationContext())
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(caller.calls[0]["arguments"]["image"], encoded)
 
     async def test_mcp_is_error_returns_business_error_result(self) -> None:
         adapter = build_adapter(caller=FakeCaller({"isError": True, "content": [{"type": "text", "text": "bad"}]}))

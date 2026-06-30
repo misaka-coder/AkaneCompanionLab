@@ -86,7 +86,7 @@ function Test-PythonImports {
         [string[]]$PrefixArgs = @()
     )
 
-    & $PythonPath @PrefixArgs -c "import capcore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
+    & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
     return $LASTEXITCODE -eq 0
 }
 
@@ -97,6 +97,12 @@ function Assert-CoreSourceDependencies {
     $capcorePyproject = Join-Path $capcorePath "pyproject.toml"
     if (-not (Test-Path -LiteralPath $capcorePyproject -PathType Leaf)) {
         throw "capcore source checkout was not found at '$capcorePath'. Clone capcore next to AkaneCompanionLab, or install a packaged capcore release and update requirements.txt."
+    }
+
+    $mcpAdapterPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore-adapter-mcp"))
+    $mcpAdapterPyproject = Join-Path $mcpAdapterPath "pyproject.toml"
+    if (-not (Test-Path -LiteralPath $mcpAdapterPyproject -PathType Leaf)) {
+        throw "capcore-adapter-mcp source checkout was not found at '$mcpAdapterPath'. Clone capcore-adapter-mcp next to AkaneCompanionLab, or install a packaged capcore-adapter-mcp release and update requirements.txt."
     }
 }
 

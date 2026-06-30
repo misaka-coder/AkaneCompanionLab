@@ -76,9 +76,9 @@ Do not ship an exe that silently depends on a source checkout.
 document processing, media download, and lyrics support. Some modules such as
 the vector store and Edge TTS are imported at startup.
 
-The source Alpha also depends on extracted sibling core packages. `capcore` is
-currently installed from `../capcore`; `memcore` follows the same reuse direction
-but is not yet a required Akane runtime dependency.
+The source Alpha also depends on extracted sibling core packages. `capcore`,
+`capcore-adapter-mcp`, and `memcore` are currently installed from sibling
+checkouts through editable requirements.
 
 Required result:
 

@@ -197,19 +197,20 @@ Embedding 模型。
 
 ### Core 源码依赖
 
-当前源码 Alpha 复用从 Akane 拆出的 core 包。`capcore` 是运行时依赖，
-需要和本仓库放在同一个父目录下：
+当前源码 Alpha 复用从 Akane 拆出的 core 包。`capcore`、`capcore-adapter-mcp`
+和 `memcore` 是运行时依赖，需要和本仓库放在同一个父目录下：
 
 ```text
 Akane/
   AkaneCompanionLab/
   capcore/
+  capcore-adapter-mcp/
+  memcore/
 ```
 
-`requirements.txt` 会以 editable 形式安装 `../capcore` 和 `../memcore`。
-如果你只 clone 了 AkaneCompanionLab，依赖安装会失败；先 clone 这两个
-core 包到同级目录。`memcore` 是当前对话记忆主后端，旧 Akane 记忆链路仅
-保留为显式兼容/迁移模式。
+`requirements.txt` 会以 editable 形式安装这些 sibling 包。如果你只 clone
+了 AkaneCompanionLab，依赖安装会失败；先 clone 这些 core 包到同级目录。
+`memcore` 是当前对话记忆主后端，旧 Akane 记忆链路仅保留为显式兼容/迁移模式。
 
 ### Windows PowerShell
 
