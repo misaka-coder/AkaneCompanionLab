@@ -235,19 +235,101 @@ class MemcoreManager:
         subject_scopes: list[str] | None = None,
         categories: list[str] | None = None,
         importance_min: float | int | str | None = None,
+        limit: int | None = None,
         exclude_source_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         shadow_enabled = bool(getattr(config, "MEMCORE_SHADOW_COMPARE", self.shadow_compare))
         if not shadow_enabled:
             return self._status("shadow_retrieve_memory", True, "disabled", reason="shadow_compare_disabled")
-        system = self._get_system_or_none(
+        result = self._retrieve_memory(
             operation="shadow_retrieve_memory",
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            current_user_record=current_user_record,
+            query=query,
+            keywords=keywords,
+            time_hint=time_hint,
+            source_layers=source_layers,
+            subject_scopes=subject_scopes,
+            categories=categories,
+            importance_min=importance_min,
+            limit=limit,
+            exclude_source_ids=exclude_source_ids,
+            include_snippets=False,
+        )
+        if "snippets" in result:
+            result = dict(result)
+            result.pop("snippets", None)
+        return result
+
+    def retrieve_memory(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        current_user_record: dict[str, Any] | None = None,
+        query: str,
+        keywords: list[str] | None = None,
+        time_hint: dict[str, Any] | None = None,
+        source_layers: list[str] | None = None,
+        subject_scopes: list[str] | None = None,
+        categories: list[str] | None = None,
+        importance_min: float | int | str | None = None,
+        limit: int | None = None,
+        exclude_source_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return self._retrieve_memory(
+            operation="retrieve_memory",
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            current_user_record=current_user_record,
+            query=query,
+            keywords=keywords,
+            time_hint=time_hint,
+            source_layers=source_layers,
+            subject_scopes=subject_scopes,
+            categories=categories,
+            importance_min=importance_min,
+            limit=limit,
+            exclude_source_ids=exclude_source_ids,
+            include_snippets=True,
+        )
+
+    def _retrieve_memory(
+        self,
+        *,
+        operation: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        current_user_record: dict[str, Any] | None,
+        query: str,
+        keywords: list[str] | None,
+        time_hint: dict[str, Any] | None,
+        source_layers: list[str] | None,
+        subject_scopes: list[str] | None,
+        categories: list[str] | None,
+        importance_min: float | int | str | None,
+        limit: int | None,
+        exclude_source_ids: list[str] | None,
+        include_snippets: bool,
+    ) -> dict[str, Any]:
+        system = self._get_system_or_none(
+            operation=operation,
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
         )
         if system is None:
-            return self._status("shadow_retrieve_memory", False, "unavailable", reason=self._reason)
+            return {
+                **self._status(operation, False, "unavailable", reason=self._reason),
+                "snippet_count": 0,
+                "snippet_hashes": [],
+                **({"snippets": []} if include_snippets else {}),
+            }
 
         start = time.perf_counter()
         current = dict(current_user_record or {})
@@ -267,20 +349,25 @@ class MemcoreManager:
                 importance_min=self._coerce_optional_unit_float(importance_min),
                 exclude_source_ids=[str(item).strip() for item in (exclude_source_ids or []) if str(item).strip()],
             )
-            return {
-                **self._status("shadow_retrieve_memory", True, "ok"),
+            snippets = self._apply_limit(snippets, limit)
+            payload = {
+                **self._status(operation, True, "ok"),
                 "snippet_count": len(snippets),
                 "snippet_hashes": snippet_hashes(snippets),
                 "latency_ms": max(0, int((time.perf_counter() - start) * 1000)),
             }
+            if include_snippets:
+                payload["snippets"] = snippets
+            return payload
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
-            logger.warning("memcore shadow retrieve failed: %s", reason)
+            logger.warning("memcore %s failed: %s", operation, reason)
             return {
-                **self._status("shadow_retrieve_memory", False, "failed", reason=reason),
+                **self._status(operation, False, "failed", reason=reason),
                 "snippet_count": 0,
                 "snippet_hashes": [],
                 "latency_ms": max(0, int((time.perf_counter() - start) * 1000)),
+                **({"snippets": []} if include_snippets else {}),
             }
 
     def _bootstrap(self) -> None:
@@ -518,6 +605,16 @@ class MemcoreManager:
         except (TypeError, ValueError):
             return None
         return max(0.0, min(1.0, number))
+
+    @staticmethod
+    def _apply_limit(snippets: list[str], limit: Any) -> list[str]:
+        try:
+            value = int(limit)
+        except (TypeError, ValueError):
+            return list(snippets)
+        if value <= 0:
+            return list(snippets)
+        return list(snippets)[:value]
 
     @staticmethod
     def _log_compaction_result(future: Any) -> None:

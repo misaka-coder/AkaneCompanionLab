@@ -219,6 +219,48 @@ def execute_retrieve_memory_tool(
         recent_semantic_summaries=recent_semantic_summaries,
         extra_source_ids=[context.current_user_source_id, *extra_excludes],
     )
+    memcore_read_payload: dict[str, Any] | None = None
+    if _memory_backend() == "memcore":
+        memcore_read_payload = execute_memcore_retrieve_memory(
+            engine,
+            context=context,
+            current_user_record=current_user_record,
+            query=query,
+            keywords=keywords,
+            time_hint=time_hint,
+            source_layers=source_layers,
+            subject_scopes=subject_scopes,
+            categories=categories,
+            importance_min=importance_min,
+            limit=limit,
+            exclude_source_ids=exclude_source_ids,
+        )
+        if memcore_read_payload.get("ok"):
+            snippets = [str(item).strip() for item in memcore_read_payload.get("snippets", []) if str(item).strip()]
+            return _build_retrieve_memory_tool_result(
+                query=query,
+                keywords=keywords,
+                time_hint=time_hint,
+                source_layers=source_layers,
+                subject_scopes=subject_scopes,
+                categories=categories,
+                importance_min=importance_min,
+                limit=limit,
+                snippets=snippets,
+                retrieval_result=_build_memcore_retrieval_result(
+                    snippets=snippets,
+                    time_hint=time_hint,
+                    source_layers=source_layers,
+                    subject_scopes=subject_scopes,
+                    categories=categories,
+                    importance_min=importance_min,
+                    memcore_payload=memcore_read_payload,
+                ),
+                verifier_output=_build_memcore_verifier_output(snippets),
+                verifier_timing={"mode": "memcore", "attempts": [], "selected_attempt": None},
+                retrieval_backend="memcore",
+                memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
+            )
     pipeline = engine._get_retrieval_service().run_explicit(
         profile_user_id=context.profile_user_id,
         character_pack_id=character_pack_id,
@@ -237,6 +279,61 @@ def execute_retrieve_memory_tool(
         route="post_retrieval",
     )
     snippets = [str(item).strip() for item in pipeline.confirmed_snippets if str(item).strip()]
+    result = _build_retrieve_memory_tool_result(
+        query=query,
+        keywords=keywords,
+        time_hint=time_hint,
+        source_layers=source_layers,
+        subject_scopes=subject_scopes,
+        categories=categories,
+        importance_min=importance_min,
+        limit=limit,
+        snippets=snippets,
+        retrieval_result=pipeline.retrieval_result,
+        verifier_output=pipeline.verifier_output,
+        verifier_timing=pipeline.verifier_timing,
+        retrieval_backend="legacy",
+        memcore_read=_sanitize_memcore_read_state(memcore_read_payload) if memcore_read_payload is not None else None,
+    )
+    memory_retrieval_state = result.state_updates["memory_retrieval"]
+    shadow_payload = execute_memcore_shadow_retrieve(
+        engine,
+        call=call,
+        context=context,
+        current_user_record=current_user_record,
+        query=query,
+        keywords=keywords,
+        time_hint=time_hint,
+        source_layers=source_layers,
+        subject_scopes=subject_scopes,
+        categories=categories,
+        importance_min=importance_min,
+        limit=limit,
+        exclude_source_ids=exclude_source_ids,
+        legacy_snippets=snippets,
+    )
+    if shadow_payload is not None:
+        memory_retrieval_state["memcore_shadow"] = shadow_payload
+    return result
+
+
+def _build_retrieve_memory_tool_result(
+    *,
+    query: str,
+    keywords: list[str],
+    time_hint: dict[str, Any] | None,
+    source_layers: list[str],
+    subject_scopes: list[str],
+    categories: list[str],
+    importance_min: Any,
+    limit: Any,
+    snippets: list[str],
+    retrieval_result: dict[str, Any],
+    verifier_output: dict[str, Any],
+    verifier_timing: dict[str, Any],
+    retrieval_backend: str,
+    memcore_read: dict[str, Any] | None = None,
+) -> ToolExecutionResult:
     if snippets:
         followup_context = (
             "你刚刚主动检索了长期记忆。下面是可能回答主人问题的参考记忆：\n"
@@ -259,28 +356,14 @@ def execute_retrieve_memory_tool(
             "importance_min": importance_min,
             "limit": limit,
         },
-        "retrieval_result": pipeline.retrieval_result,
-        "verifier_output": pipeline.verifier_output,
-        "verifier_timing": pipeline.verifier_timing,
+        "retrieval_result": retrieval_result,
+        "retrieval_backend": retrieval_backend,
+        "verifier_output": verifier_output,
+        "verifier_timing": verifier_timing,
         "confirmed_snippets": snippets,
     }
-    shadow_payload = execute_memcore_shadow_retrieve(
-        engine,
-        call=call,
-        context=context,
-        current_user_record=current_user_record,
-        query=query,
-        keywords=keywords,
-        time_hint=time_hint,
-        source_layers=source_layers,
-        subject_scopes=subject_scopes,
-        categories=categories,
-        importance_min=importance_min,
-        exclude_source_ids=exclude_source_ids,
-        legacy_snippets=snippets,
-    )
-    if shadow_payload is not None:
-        memory_retrieval_state["memcore_shadow"] = shadow_payload
+    if memcore_read is not None:
+        memory_retrieval_state["memcore_read"] = memcore_read
     return ToolExecutionResult(
         tool_type="retrieve_memory",
         raw_turns=[],
@@ -288,6 +371,128 @@ def execute_retrieve_memory_tool(
         followup_context=followup_context,
         state_updates={"memory_retrieval": memory_retrieval_state},
     )
+
+
+def _memory_backend() -> str:
+    backend = str(getattr(config, "MEMORY_BACKEND", "legacy") or "legacy").strip().lower()
+    return backend if backend in {"legacy", "dual", "memcore"} else "legacy"
+
+
+def execute_memcore_retrieve_memory(
+    engine: Any,
+    *,
+    context: Any,
+    current_user_record: dict[str, Any] | None,
+    query: str,
+    keywords: list[str],
+    time_hint: dict[str, Any] | None,
+    source_layers: list[str],
+    subject_scopes: list[str],
+    categories: list[str],
+    importance_min: Any,
+    limit: Any,
+    exclude_source_ids: list[str],
+) -> dict[str, Any]:
+    manager = getattr(engine, "memcore_manager", None)
+    if manager is None or not getattr(manager, "enabled", False):
+        return {
+            "operation": "retrieve_memory",
+            "ok": False,
+            "status": "unavailable",
+            "reason": "memcore_manager_not_enabled",
+            "snippet_count": 0,
+            "snippet_hashes": [],
+            "snippets": [],
+        }
+    if not getattr(manager, "available", False):
+        status = manager.status() if hasattr(manager, "status") else {}
+        return {
+            "operation": "retrieve_memory",
+            "ok": False,
+            "status": "unavailable",
+            "reason": str((status or {}).get("reason") or "memcore_unavailable"),
+            "snippet_count": 0,
+            "snippet_hashes": [],
+            "snippets": [],
+        }
+    try:
+        return manager.retrieve_memory(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            character_pack_id=str(getattr(context, "character_pack_id", "") or "").strip(),
+            current_user_record=current_user_record,
+            query=query,
+            keywords=keywords,
+            time_hint=time_hint,
+            source_layers=source_layers,
+            subject_scopes=subject_scopes,
+            categories=categories,
+            importance_min=importance_min,
+            limit=limit,
+            exclude_source_ids=exclude_source_ids,
+        )
+    except Exception as exc:
+        return {
+            "operation": "retrieve_memory",
+            "ok": False,
+            "status": "failed",
+            "reason": str(exc) or exc.__class__.__name__,
+            "snippet_count": 0,
+            "snippet_hashes": [],
+            "snippets": [],
+        }
+
+
+def _sanitize_memcore_read_state(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    out = dict(payload)
+    out.pop("snippets", None)
+    return out
+
+
+def _build_memcore_retrieval_result(
+    *,
+    snippets: list[str],
+    time_hint: dict[str, Any] | None,
+    source_layers: list[str],
+    subject_scopes: list[str],
+    categories: list[str],
+    importance_min: Any,
+    memcore_payload: dict[str, Any],
+) -> dict[str, Any]:
+    hint = time_hint if isinstance(time_hint, dict) else {}
+    return {
+        "backend": "memcore",
+        "filtered_candidate_count": int(memcore_payload.get("snippet_count") or len(snippets)),
+        "time_filter": {
+            "date_label": hint.get("date_label"),
+            "time_of_day": hint.get("time_of_day"),
+            "relative_time": hint.get("relative_time"),
+            "matched": bool(hint),
+        },
+        "precision_filters": {
+            "source_layers": list(source_layers),
+            "subject_scopes": list(subject_scopes),
+            "categories": list(categories),
+            "importance_min": importance_min,
+        },
+        "fused_hits": [],
+        "memory_snippets": list(snippets),
+    }
+
+
+def _build_memcore_verifier_output(snippets: list[str]) -> dict[str, Any]:
+    return {
+        "match_result": "match" if snippets else "no_match",
+        "match_score": 1.0 if snippets else 0.0,
+        "need_retry": False,
+        "selected_indexes": list(range(1, len(snippets) + 1)),
+        "retry_query": "",
+        "retry_keywords": [],
+        "retry_time_hint": None,
+        "reason": "memcore_retrieve_for_turn",
+    }
 
 
 def execute_memcore_shadow_retrieve(
@@ -303,6 +508,7 @@ def execute_memcore_shadow_retrieve(
     subject_scopes: list[str],
     categories: list[str],
     importance_min: Any,
+    limit: Any,
     exclude_source_ids: list[str],
     legacy_snippets: list[str],
 ) -> dict[str, Any] | None:
@@ -347,6 +553,7 @@ def execute_memcore_shadow_retrieve(
             subject_scopes=subject_scopes,
             categories=categories,
             importance_min=importance_min,
+            limit=limit,
             exclude_source_ids=exclude_source_ids,
         )
     except Exception as exc:

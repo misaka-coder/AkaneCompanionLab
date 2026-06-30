@@ -205,6 +205,8 @@ MEMCORE_SHADOW_COMPARE=false
 
 目标: 保留外部工具名和 schema，把底层改成 memcore。
 
+状态:已完成。
+
 改动:
 
 - 在 `retrieval_engine.execute_retrieve_memory_tool()` 或新 wrapper 中按 `MEMORY_BACKEND` 分流。
@@ -213,12 +215,20 @@ MEMCORE_SHADOW_COMPARE=false
   - `retrieve_for_turn(current=current_record, query=query, keywords=..., time_hint=..., source_layers=..., subject_scopes=..., categories=..., importance_min=..., limit=...)`
 - followup 文案保持 Akane 当前文案，减少模型行为变化。
 - state_updates 仍输出 `memory_retrieval`，字段名尽量兼容前端/debug。
+- `MEMORY_BACKEND=memcore` 且 memcore read 成功时，`retrieve_memory` 的 followup 使用 memcore snippets，`retrieval_backend="memcore"`，不再调用 legacy retrieval。
+- memcore read 失败/不可用时结构化记录 `memcore_read`，不写 snippets 全文，然后 fallback 到 legacy retrieval。
+- memcore read 成功但没有命中时保持现有 no-hit followup，不 fallback 到 legacy，避免 memcore 模式下读侧语义不清。
+- `MEMORY_BACKEND=legacy|dual` 下仍以 legacy 为读侧；`MEMCORE_SHADOW_COMPARE=true` 时继续只记录 hash/stat shadow payload。
+- 本切片不切 `read_memory_timeline`、最终 prompt 可见三层、压缩链路，也不删除旧 router/旧 retrieval 代码。
 
 验证:
 
 - `retrieve_memory` 工具 schema 不变。
 - 可见三层和本轮 source_id 不重复返回。
 - metadata filters 能前置缩候选: 用两类 categories 构造数据，传 category 只命中对应记忆。
+- memcore read 成功时 legacy retrieval service 未被调用。
+- memcore read 失败时 fallback legacy，且 `memcore_read` 不含 snippets。
+- memcore no-hit 时使用既有 no-hit 文案。
 
 ### Slice 4: 切 `read_memory_timeline` 工具读侧
 
