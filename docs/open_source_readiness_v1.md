@@ -76,11 +76,18 @@ Do not ship an exe that silently depends on a source checkout.
 document processing, media download, and lyrics support. Some modules such as
 the vector store and Edge TTS are imported at startup.
 
+The source Alpha also depends on extracted sibling core packages. `capcore` is
+currently installed from `../capcore`; `memcore` follows the same reuse direction
+but is not yet a required Akane runtime dependency.
+
 Required result:
 
 - make optional capabilities import-safe when their package is absent;
 - define a small core requirements file;
 - keep document/media/vector/local-ML extras explicit;
+- replace sibling editable core dependencies with versioned package dependencies
+  before a normal end-user release, or document a supported multi-repo source
+  checkout shape for source-only releases;
 - test core-only startup in CI.
 
 ## P1 After Installer Blockers

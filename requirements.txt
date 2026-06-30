@@ -1,4 +1,10 @@
 fastapi
+# Akane source-alpha uses capcore as an extracted sibling core package.
+# Clone capcore next to this repository:
+#   Akane/
+#     AkaneCompanionLab/
+#     capcore/
+# Future packaged releases can replace this with a normal versioned dependency.
 -e ../capcore
 python-multipart
 uvicorn

@@ -195,6 +195,22 @@ Ollama 等外部服务接入，速度和效果取决于用户选择的模型、�
 建议使用 Python 3.11。基础后端不要求 Rust、Node、QQ、CUDA 或本地
 Embedding 模型。
 
+### Core 源码依赖
+
+当前源码 Alpha 复用从 Akane 拆出的 core 包。`capcore` 是运行时依赖，
+需要和本仓库放在同一个父目录下：
+
+```text
+Akane/
+  AkaneCompanionLab/
+  capcore/
+```
+
+`requirements.txt` 会以 editable 形式安装 `../capcore`。如果你只 clone
+了 AkaneCompanionLab，依赖安装会失败；先 clone `capcore` 到同级目录。
+`memcore` 也是同一路线的可复用 core，但当前 Akane 后端还没有把它作为
+运行时依赖强制安装。
+
 ### Windows PowerShell
 
 ```powershell

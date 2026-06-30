@@ -1,11 +1,13 @@
 # capcore Akane integration v0
 
-Status: M0回接试点
+Status: M1/M1.1 回接试点
 Date: 2026-06-30
 
 ## 当前接入形态
 
-Akane 已把 capability adapter 的内核边界切到 `capcore`：
+Akane 已把 capability adapter 的内核边界切到 `capcore`。
+
+类型 / manifest / registry 转发层：
 
 - `companion_v01/capability_adapters/types.py`
 - `companion_v01/capability_adapters/protocol.py`
@@ -13,6 +15,15 @@ Akane 已把 capability adapter 的内核边界切到 `capcore`：
 - `companion_v01/capability_adapters/registry.py`
 
 这些文件现在是兼容转发层，保留旧 import 路径，真实类型、协议、manifest loader、registry 来自 `capcore`。
+
+调用 / 权限闸门：
+
+- `companion_v01/local_capability_config.py` 用 `capcore.resolve_permission()` 推导公开 catalog 的 approval metadata。
+- `companion_v01/tool_runtime.py` 的 `AdapterCapabilityToolHandler` 现在按
+  `validate_invocation_args -> build_permission_request -> resolve_permission -> adapter.invoke` 执行。
+- `BrowserPageToolHandler` 的高风险浏览器控制动作也通过 `capcore.PermissionRequest` 决策。
+
+宿主队列、UI 事件、profile 配置和真实 adapter 执行仍留在 Akane。
 
 ## 仍留在 Akane 的范围
 
@@ -32,19 +43,33 @@ from companion_v01.capability_adapters import CapabilityDescriptor
 
 但该类型实际由 `capcore` 提供。
 
-## 本地依赖
+## 源码 Alpha 依赖形态
 
-Akane 的 `requirements.txt` 增加：
+Akane 当前还没有依赖已发布的 `capcore` 包。源码 Alpha 默认使用 sibling checkout：
+
+```text
+Akane/
+  AkaneCompanionLab/
+  capcore/
+```
+
+Akane 的 `requirements.txt` 包含：
 
 ```text
 -e ../capcore
 ```
 
-开发环境需要安装本地 editable 包：
+开发环境可以直接执行：
 
 ```bash
-python -m pip install -e F:\Akane\capcore
+python -m pip install -r requirements.txt
 ```
+
+Windows bootstrap 会在安装依赖前检查 `../capcore/pyproject.toml`，缺失时给出结构化错误。
+未来公开包发布后，可把该行替换为普通版本依赖，例如 `capcore>=0.1,<0.2`。
+
+`memcore` 采用相同的“可复用 core”方向，但当前 Akane 后端还未把 `memcore`
+作为运行时依赖强制安装；接入时应优先复用 `memcore.MemorySystem` 公共 API，而不是复制内部实现。
 
 ## 行为变化
 

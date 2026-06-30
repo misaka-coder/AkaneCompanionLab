@@ -86,8 +86,18 @@ function Test-PythonImports {
         [string[]]$PrefixArgs = @()
     )
 
-    & $PythonPath @PrefixArgs -c "import fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
+    & $PythonPath @PrefixArgs -c "import capcore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
     return $LASTEXITCODE -eq 0
+}
+
+function Assert-CoreSourceDependencies {
+    param([string]$Root)
+
+    $capcorePath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore"))
+    $capcorePyproject = Join-Path $capcorePath "pyproject.toml"
+    if (-not (Test-Path -LiteralPath $capcorePyproject -PathType Leaf)) {
+        throw "capcore source checkout was not found at '$capcorePath'. Clone capcore next to AkaneCompanionLab, or install a packaged capcore release and update requirements.txt."
+    }
 }
 
 function Get-FileSha256 {
@@ -114,6 +124,7 @@ function Ensure-PythonEnvironment {
     $requirementsPath = Join-Path $Root "requirements.txt"
     $stampPath = Join-Path $Root ".venv\.akane-requirements.sha256"
     $requirementsHash = Get-FileSha256 -Path $requirementsPath
+    Assert-CoreSourceDependencies -Root $Root
 
     if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
         $systemPython = Get-SystemPython
