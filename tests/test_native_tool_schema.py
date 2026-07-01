@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot
-from companion_v01.native_tool_schema import build_openai_native_tool_specs
+from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_native_tool_specs
 from companion_v01.tool_runtime import AdapterCapabilityToolHandler, TOOL_METADATA_BY_TYPE
 
 
@@ -115,6 +115,44 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertEqual(function["parameters"]["properties"]["text"]["type"], "string")
         self.assertEqual(function["parameters"]["properties"]["text"]["description"], "Text to echo")
         self.assertNotIn("wrong", function["parameters"]["properties"])
+        self.assertEqual(specs[0][NATIVE_TOOL_CAPABILITY_ID_FIELD], "mcp_demo_echo")
+
+    def test_dotted_adapter_capability_native_schema_uses_provider_safe_name_mapping(self) -> None:
+        descriptor = CapabilityDescriptor(
+            id="mcp.demo.echo",
+            display_name="echo",
+            short_hint="Echo text",
+            visible_in=("desktop",),
+            prompt_exposed=True,
+            risk="low",
+            confirm="never",
+            effects=(),
+            trigger=None,
+            inputs=(
+                CapabilityIOSlot(
+                    name="text",
+                    kind="string",
+                    required=True,
+                    raw={"description": "Text to echo"},
+                ),
+            ),
+            outputs=(),
+            raw={},
+        )
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp.demo.echo",
+            adapter=object(),
+            descriptor=descriptor,
+            config_base_dir="unused",
+        )
+
+        specs = build_openai_native_tool_specs({"mcp.demo.echo": handler}, allowed_tool_names={"mcp.demo.echo"})
+
+        self.assertEqual(len(specs), 1)
+        function = specs[0]["function"]
+        self.assertRegex(function["name"], r"^mcp_demo_echo_[0-9a-f]{10}$")
+        self.assertEqual(specs[0][NATIVE_TOOL_CAPABILITY_ID_FIELD], "mcp.demo.echo")
+        self.assertEqual(function["parameters"]["required"], ["text"])
 
 
 if __name__ == "__main__":

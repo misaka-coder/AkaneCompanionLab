@@ -11,7 +11,13 @@ from typing import Any, Callable, Generator
 from urllib.parse import urlparse
 
 import config
+from capcore_provider_openai import (
+    collect_openai_chat_stream_tool_call_delta,
+    parse_openai_chat_stream_tool_calls,
+    parse_openai_chat_tool_calls,
+)
 from services.llm_client import build_llm_client
+from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
 from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
@@ -257,13 +263,13 @@ class _TopLevelJSONStreamTap:
                 self.latest_speech += delta_text
                 events.append({"type": "speech_chunk", "text": delta_text})
                 if self._speech_segment_count < self._max_speech_segments:
-                    remaining = self.latest_speech[self._last_segment_end:]
+                    remaining = self.latest_speech[self._last_segment_end :]
                     match = re.search(r"[。！？!?\n]", remaining)
                     if match:
                         end = self._last_segment_end + match.end()
                         self._emit_speech_segment(
                             events,
-                            self.latest_speech[self._last_segment_end:end],
+                            self.latest_speech[self._last_segment_end : end],
                         )
                         self._last_segment_end = end
         return events
@@ -364,11 +370,13 @@ class _TopLevelJSONStreamTap:
             return False
         self._emitted_speech_segment_keys.add(key)
         self._speech_segment_count += 1
-        events.append({
-            "type": "speech_segment",
-            "index": self._speech_segment_count - 1,
-            "text": segment_text,
-        })
+        events.append(
+            {
+                "type": "speech_segment",
+                "index": self._speech_segment_count - 1,
+                "text": segment_text,
+            }
+        )
         return True
 
     def _normalize_speech_segment_text(self, text: Any) -> str:
@@ -594,7 +602,7 @@ class LLMRuntime:
                 ),
             )
             self._record_cache_metrics(response)
-            native_tool_call = self._extract_native_tool_call(response)
+            native_tool_call = self._extract_native_tool_call(response, native_tools=native_tools)
             if native_tool_call is not None:
                 self._record_metric("native_tool_call_extracted")
                 return {NATIVE_TOOL_CALL_FIELD: native_tool_call, "tool_call": None}
@@ -725,7 +733,7 @@ class LLMRuntime:
         response: Any = None
         error = ""
         raw_parts: list[str] = []
-        native_tool_parts: dict[int, dict[str, Any]] = {}
+        native_tool_parts: dict[Any, dict[str, Any]] = {}
         tap = _TopLevelJSONStreamTap()
         start_at = time.perf_counter()
         stopped_early = False
@@ -779,7 +787,7 @@ class LLMRuntime:
             self._close_stream(response)
 
         raw_text = "".join(raw_parts)
-        native_tool_call = self._stream_native_tool_call_from_parts(native_tool_parts)
+        native_tool_call = self._stream_native_tool_call_from_parts(native_tool_parts, native_tools=native_tools)
         if native_tool_call is not None:
             self._record_metric("native_tool_call_extracted")
             parsed = {NATIVE_TOOL_CALL_FIELD: native_tool_call, "tool_call": None}
@@ -1028,7 +1036,9 @@ class LLMRuntime:
         return [str(item or "").strip() for item in value if str(item or "").strip()]
 
     def _is_anthropic_protocol(self, bundle: ModelBundle) -> bool:
-        protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        protocol = (
+            str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        )
         return protocol == "anthropic"
 
     def _supports_stream_usage(self, bundle: ModelBundle) -> bool:
@@ -1063,8 +1073,7 @@ class LLMRuntime:
                 "prompt_cache_key": str(prompt_cache_key or ""),
                 "model": str(getattr(bundle, "model", "") or ""),
                 "protocol": str(
-                    getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", ""))
-                    or ""
+                    getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or ""
                 ),
                 "stream": bool(stream),
                 "json_mode": bool(json_mode),
@@ -1098,7 +1107,11 @@ class LLMRuntime:
     ) -> list[dict[str, Any]]:
         sections: list[dict[str, Any]] = []
         if messages:
-            sections.append(self._audit_text_section("payload.system_message", self._flatten_message_content(messages[0].get("content"))))
+            sections.append(
+                self._audit_text_section(
+                    "payload.system_message", self._flatten_message_content(messages[0].get("content"))
+                )
+            )
         history_text = "\n".join(
             f"{str(turn.get('role') or '').strip().lower()}:{str(turn.get('content') or '').strip()}"
             for turn in history_turns or []
@@ -1192,9 +1205,9 @@ class LLMRuntime:
         return bool(self._native_tool_profile(bundle).supports_native_tools)
 
     def _native_tool_profile(self, bundle: ModelBundle) -> ProviderToolProfile:
-        protocol = str(
-            getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or ""
-        ).strip().lower()
+        protocol = (
+            str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        )
         if protocol != "openai":
             return DEFAULT_PROVIDER_TOOL_PROFILE
         host = self._bundle_base_host(bundle)
@@ -1299,16 +1312,17 @@ class LLMRuntime:
             if not isinstance(parameters, dict):
                 parameters = {"type": "object", "additionalProperties": True}
             description = " ".join(str(function.get("description") or "").split())[:900]
-            tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": description or f"Call Akane tool {name}.",
-                        "parameters": parameters,
-                    },
-                }
-            )
+            tool = {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": description or f"Call Akane tool {name}.",
+                    "parameters": parameters,
+                },
+            }
+            if bool(function.get("strict")):
+                tool["function"]["strict"] = True
+            tools.append(tool)
             seen.add(name)
         return tools
 
@@ -1318,76 +1332,81 @@ class LLMRuntime:
         raw = str(value or "").strip().lower()
         return raw if raw in {"auto", "none", "required"} else ""
 
-    def _extract_native_tool_call(self, response: Any) -> dict[str, Any] | None:
-        try:
-            message = response.choices[0].message
-        except Exception:
+    def _extract_native_tool_call(
+        self,
+        response: Any,
+        *,
+        native_tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        invocations = parse_openai_chat_tool_calls(response)
+        if not invocations:
             return None
-        tool_calls = self._get_attr_or_key(message, "tool_calls")
-        if not isinstance(tool_calls, list) or not tool_calls:
+        if len(invocations) > 1:
+            self._record_metric("native_tool_calls_extra", len(invocations) - 1)
+        return self._native_invocation_to_tool_call(invocations[0], native_tools=native_tools)
+
+    def _collect_stream_native_tool_call_parts(self, chunk: Any, parts: dict[Any, dict[str, Any]]) -> None:
+        collect_openai_chat_stream_tool_call_delta(chunk, parts)
+
+    def _stream_native_tool_call_from_parts(
+        self,
+        parts: dict[Any, dict[str, Any]],
+        *,
+        native_tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        invocations = parse_openai_chat_stream_tool_calls(parts)
+        if not invocations:
             return None
-        if len(tool_calls) > 1:
-            self._record_metric("native_tool_calls_extra", len(tool_calls) - 1)
-        first = tool_calls[0]
-        function = self._get_attr_or_key(first, "function")
-        if not isinstance(function, dict):
-            function = {
-                "name": self._get_attr_or_key(function, "name"),
-                "arguments": self._get_attr_or_key(function, "arguments"),
-            }
-        name = str(function.get("name") or "").strip()
-        if not name or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+        if len(invocations) > 1:
+            self._record_metric("native_tool_calls_extra", len(invocations) - 1)
+        return self._native_invocation_to_tool_call(invocations[0], native_tools=native_tools)
+
+    def _native_invocation_to_tool_call(
+        self,
+        invocation: Any,
+        *,
+        native_tools: list[dict[str, Any]] | None,
+    ) -> dict[str, Any] | None:
+        model_name = str(getattr(invocation, "model_name", "") or "").strip()
+        if not model_name or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", model_name):
             return None
-        arguments = self._decode_native_tool_arguments(function.get("arguments"))
-        call_id = str(self._get_attr_or_key(first, "id") or "").strip()
-        result = {**arguments, "type": name, TOOL_SOURCE_FIELD: NATIVE_OPENAI}
+        name_map = self._native_tool_model_name_map(native_tools)
+        capability_id = name_map.get(model_name, str(getattr(invocation, "capability_id", "") or model_name).strip())
+        if not capability_id:
+            return None
+        arguments = getattr(invocation, "arguments", {})
+        result = {
+            **(dict(arguments) if isinstance(arguments, dict) else {}),
+            "type": capability_id,
+            TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+        }
+        call_id = self._native_invocation_provider_id(invocation)
         if call_id:
             result[TOOL_INVOCATION_ID_FIELD] = call_id
         return result
 
-    def _collect_stream_native_tool_call_parts(self, chunk: Any, parts: dict[int, dict[str, Any]]) -> None:
-        try:
-            choice = chunk.choices[0]
-        except Exception:
-            return
-        delta = self._get_attr_or_key(choice, "delta")
-        tool_calls = self._get_attr_or_key(delta, "tool_calls")
-        if not isinstance(tool_calls, list) or not tool_calls:
-            return
-        for offset, raw_call in enumerate(tool_calls):
-            index_value = self._get_attr_or_key(raw_call, "index")
-            try:
-                index = int(index_value)
-            except Exception:
-                index = offset
-            slot = parts.setdefault(index, {"arguments_parts": []})
-            call_id = str(self._get_attr_or_key(raw_call, "id") or "").strip()
-            if call_id:
-                slot["id"] = call_id
-            function = self._get_attr_or_key(raw_call, "function")
-            name = str(self._get_attr_or_key(function, "name") or "").strip()
-            if name:
-                slot["name"] = name
-            arguments_part = self._get_attr_or_key(function, "arguments")
-            if arguments_part not in (None, ""):
-                slot.setdefault("arguments_parts", []).append(str(arguments_part))
+    def _native_invocation_provider_id(self, invocation: Any) -> str:
+        raw = getattr(invocation, "raw", None)
+        if isinstance(raw, dict) and "id" in raw:
+            return str(raw.get("id") or "").strip()
+        return ""
 
-    def _stream_native_tool_call_from_parts(self, parts: dict[int, dict[str, Any]]) -> dict[str, Any] | None:
-        if not parts:
-            return None
-        ordered_indexes = sorted(parts.keys())
-        if len(ordered_indexes) > 1:
-            self._record_metric("native_tool_calls_extra", len(ordered_indexes) - 1)
-        first = parts.get(ordered_indexes[0]) or {}
-        name = str(first.get("name") or "").strip()
-        if not name or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
-            return None
-        arguments = self._decode_native_tool_arguments("".join(list(first.get("arguments_parts") or [])))
-        call_id = str(first.get("id") or "").strip()
-        result = {**arguments, "type": name, TOOL_SOURCE_FIELD: NATIVE_OPENAI}
-        if call_id:
-            result[TOOL_INVOCATION_ID_FIELD] = call_id
-        return result
+    def _native_tool_model_name_map(self, native_tools: list[dict[str, Any]] | None) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        if not isinstance(native_tools, list):
+            return mapping
+        for raw in native_tools:
+            if not isinstance(raw, dict):
+                continue
+            function = raw.get("function")
+            if not isinstance(function, dict):
+                continue
+            model_name = str(function.get("name") or "").strip()
+            if not model_name:
+                continue
+            capability_id = str(raw.get(NATIVE_TOOL_CAPABILITY_ID_FIELD) or "").strip() or model_name
+            mapping[model_name] = capability_id
+        return mapping
 
     def _decode_native_tool_arguments(self, value: Any) -> dict[str, Any]:
         if isinstance(value, dict):
@@ -1417,7 +1436,9 @@ class LLMRuntime:
         return {"extra_body": {"thinking": {"type": mode}}}
 
     def _supports_deepseek_thinking_control(self, bundle: ModelBundle) -> bool:
-        protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        protocol = (
+            str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        )
         if protocol != "openai":
             return False
         model = str(getattr(bundle, "model", "") or "").strip().lower()
@@ -1449,7 +1470,9 @@ class LLMRuntime:
         # Historically this was ollama-only, which left DeepSeek/OpenAI chat replies
         # unconstrained and prone to malformed JSON -> fallback. Anthropic uses a
         # different API and must NOT receive response_format.
-        protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        protocol = (
+            str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        )
         return protocol in {"ollama", "openai"}
 
     def _ensure_json_keyword(self, messages: list[dict[str, Any]]) -> None:
@@ -1491,7 +1514,9 @@ class LLMRuntime:
     def _should_send_prompt_cache_hints(self, bundle: ModelBundle) -> bool:
         if not bool(getattr(config, "PROMPT_CACHE_HINTS_ENABLED", True)):
             return False
-        protocol = str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        protocol = (
+            str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
+        )
         if protocol != "openai":
             return False
         if bool(getattr(config, "PROMPT_CACHE_HINTS_FORCE", False)):
@@ -1755,6 +1780,7 @@ class LLMRuntime:
     def _repair_json(self, text: str) -> dict[str, Any] | None:
         try:
             import json_repair
+
             repaired = json_repair.repair_json(text, return_objects=True)
             return repaired if isinstance(repaired, dict) else None
         except Exception:

@@ -3,9 +3,13 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
+from capcore import CapabilityToolSpec
+from capcore_provider_openai import build_openai_chat_tool_set
+
 
 NATIVE_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 NATIVE_TOOL_DESCRIPTION_MAX_CHARS = 900
+NATIVE_TOOL_CAPABILITY_ID_FIELD = "_akane_capability_id"
 
 # Legacy prompt instructions teach the model to hand-build the old tool_call
 # JSON envelope (e.g. 格式为 {"type":"...", ...}). On the native channel the
@@ -22,11 +26,7 @@ def _strip_legacy_envelope_clauses(text: str) -> str:
     # Clauses are delimited by the full-width period; keep the delimiter with
     # its clause so reassembly is lossless.
     segments = re.split(r"(?<=。)", text)
-    kept = [
-        segment
-        for segment in segments
-        if not any(marker in segment for marker in _LEGACY_ENVELOPE_MARKERS)
-    ]
+    kept = [segment for segment in segments if not any(marker in segment for marker in _LEGACY_ENVELOPE_MARKERS)]
     cleaned = "".join(kept).strip()
     # Never let sanitizing empty out a description; fall back to the original.
     return cleaned or text
@@ -37,10 +37,11 @@ def build_openai_native_tool_specs(
     *,
     allowed_tool_names: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Build conservative OpenAI-style tool specs from registered handlers.
+    """Build OpenAI Chat Completions tool specs from registered handlers.
 
-    The returned specs are an adapter boundary only: Akane still normalizes and
-    executes tool calls through the existing ToolHandler layer.
+    The provider envelope is delegated to capcore-provider-openai. Akane keeps
+    an internal capability-id marker on each returned tool so provider-safe
+    model names can be mapped back before the existing ToolHandler layer runs.
     """
     if not isinstance(handlers, Mapping):
         return []
@@ -54,29 +55,43 @@ def build_openai_native_tool_specs(
             continue
         if allowed and tool_name not in allowed:
             continue
-        if not NATIVE_TOOL_NAME_RE.fullmatch(tool_name):
+        tool = _provider_tool_for_handler(tool_name, handler)
+        if tool is None:
             continue
-        description = _metadata_schema_description(handler)
-        parameters = _metadata_schema_parameters(handler)
-        if not description:
-            description = _handler_description(handler, tool_name=tool_name)
-        if parameters is None:
-            parameters = {
-                "type": "object",
-                "additionalProperties": True,
-            }
         seen.add(tool_name)
-        specs.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": tool_name,
-                    "description": description,
-                    "parameters": parameters,
-                },
-            }
-        )
+        specs.append(tool)
     return specs
+
+
+def _provider_tool_for_handler(tool_name: str, handler: Any) -> dict[str, Any] | None:
+    description = _metadata_schema_description(handler)
+    parameters = _metadata_schema_parameters(handler)
+    if not description:
+        description = _handler_description(handler, tool_name=tool_name)
+    if parameters is None:
+        parameters = {
+            "type": "object",
+            "additionalProperties": True,
+        }
+    spec = CapabilityToolSpec(
+        capability_id=tool_name,
+        display_name=tool_name,
+        description=description,
+        input_schema=parameters,
+        risk=_handler_risk(handler),
+        confirm="never",
+        effects=(),
+        visible_in=(),
+    )
+    try:
+        tool_set = build_openai_chat_tool_set(tool_specs=(spec,))
+    except Exception:
+        return None
+    if not tool_set.tools:
+        return None
+    tool = dict(tool_set.tools[0])
+    tool[NATIVE_TOOL_CAPABILITY_ID_FIELD] = tool_name
+    return tool
 
 
 def _handler_description(handler: Any, *, tool_name: str) -> str:
@@ -109,9 +124,7 @@ def _metadata_schema_parameters(handler: Any) -> dict[str, Any] | None:
     if not isinstance(schema, Mapping):
         return None
     parameters = {
-        str(key): value
-        for key, value in dict(schema).items()
-        if str(key) not in {"description", "x_description"}
+        str(key): value for key, value in dict(schema).items() if str(key) not in {"description", "x_description"}
     }
     if str(parameters.get("type") or "").strip() != "object":
         parameters["type"] = "object"
@@ -128,3 +141,15 @@ def _handler_input_schema(handler: Any) -> Mapping[str, Any] | None:
         return None
     schema = getattr(metadata, "input_schema", None)
     return schema if isinstance(schema, Mapping) else None
+
+
+def _handler_risk(handler: Any) -> str:
+    tool_metadata = getattr(handler, "tool_metadata", None)
+    if not callable(tool_metadata):
+        return "low"
+    try:
+        metadata = tool_metadata()
+    except Exception:
+        return "low"
+    risk = str(getattr(metadata, "risk", "") or "").strip().lower()
+    return risk if risk in {"low", "medium", "high"} else "low"

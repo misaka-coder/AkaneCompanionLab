@@ -168,6 +168,8 @@ INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多�
 
 - **5d 已完成**：真实 engine smoke / acceptance gate 从 `web_search` 泛化到 `memory`，验证全链路（native 决策 → `_native_tool_call` → `ToolInvocation(source=native)` → execute → 最终表现回复）。`run_native_web_search_smoke.py --toolset memory` 用确定性 fixture handler（`SmokeRetrieveMemoryHandler` / `SmokeReadMemoryTimelineHandler`，罐头记忆、不读真实记忆库、不写盘）跑真实 `AkaneMemoryEngine` 一个回合；`run_native_web_search_acceptance.py --toolset memory` 复用同一 gate（`native_tool_call_extracted>0`、`tool_event>0`、流式有 `assistant_working`、fallback=0、最终回复非空 speech）。`web_search` 默认行为不变。新增 `tests/test_native_tool_smoke.py` 覆盖 toolset 映射 / fixture 执行的确定性部分；live `--smoke` 需真实模型，由人触发。
 
+- **5f 已完成（接入 capcore-provider-openai）**：Akane 的 `native_tool_schema.py` 不再手写 OpenAI Chat Completions function-tool envelope，而是把 handler metadata/input_schema 投影为 `CapabilityToolSpec` 后交给 `capcore-provider-openai.build_openai_chat_tool_set()`。`llm_runtime.py` 的非流式与流式 `tool_calls` 解析改用 `capcore-provider-openai` parser，再映射回 Akane 的原始 tool/capability id。对于 `mcp.demo.echo` 这类 OpenAI 不允许的 dotted id，schema 内部携带 `_akane_capability_id`，provider payload 只发送 provider-safe name，回填时再还原成原始 capability id；该内部字段不得进入 provider payload 或公开最终 payload。
+
 ### 8.1 Provider / Model 能力档案（3a 修正）
 
 3c live eval 暴露了一个关键事实：`protocol="openai"` 不是足够细的能力判断。DeepSeek flash/pro 同属 `api.deepseek.com`、同走 OpenAI-compatible API，但 native tools 与强制 JSON 的组合行为不同：
@@ -261,6 +263,8 @@ python scripts/tools/run_native_web_search_acceptance.py --live-llm --smoke --re
 - `plan.enabled == true` 时，模型只看到该工具的 native schema；同名 legacy 工具说明必须从 prompt 移除。
 - `plan.status == "unsupported"` 时，不发送 native schema，不排除 legacy prompt；这是一条明确降级，不是静默失败。
 - 所有来源最终仍归一成 `ToolInvocation`，走 validate → permission/execute → envelope/followup；禁止任何 native/MCP/skill 旁路执行。
+- OpenAI native tool schema/name mapping/tool-call parsing 由 `capcore-provider-openai` 负责；Akane 只保留 handler metadata 投影、allowlist、provider profile、prompt/UX 和执行层。
+- `_akane_capability_id` 只允许作为 Akane 内部 schema 映射字段；`llm_runtime._normalize_native_tools()` 必须在发送 provider payload 前剥离它。
 
 4a 当前边界：
 
@@ -321,7 +325,7 @@ python scripts/tools/run_native_web_search_acceptance.py --live-llm --smoke --re
 
 **安全顺序（不能反，反了工具会断）**：
 
-- **N1 — 全工具装 native 门（确定性，零额度）**：给每个 handler 产出 native schema（通用生成器已支持，精度处补 `input_schema`；描述已扫过基本无 tool_call 污染，仅 `compose_file` 一句待清）。纯新增，开关仍默认关 → 零行为变化。验收：每个工具都能产出合法 native spec + 单测。
+- **N1 — 全工具装 native 门（确定性，零额度）**：给每个 handler 产出 native schema（通用生成器已支持，并已改由 `capcore-provider-openai` 负责 OpenAI envelope / name mapping / tool_call parsing；精度处补 `input_schema`；描述已扫过基本无 tool_call 污染，仅 `compose_file` 一句待清）。纯新增，开关仍默认关 → 零行为变化。验收：每个工具都能产出合法 native spec + 单测。
 - **N2 — 接 per-client 分发（确定性，零额度）**：native tools 列表由 `CapabilitySelection` 决定，每个客户端/场景只发其工具子集。验收：native 子集 == legacy capability 子集，按 mode 对齐。
 - **N3 — 翻转优先级：native 为主（需 live，烧额度的一步）**：总开关默认开、allowlist 放开到全部、native 按 capability 子集下发；`tool_call` 字段保留但降为回退。验收：跑 acceptance gate 全工具集——INV-1 表达层完好、fallback 率低、按客户端补路由提示（仿 5c）让选工具质量达标。**这是"commit"那一刻,行为真正改变,要真机验证。**
 - **N4 — 收尾（最后,且只在 N3 稳定后）**：二选一——①保留一层薄 `tool_call` 当**文档化回退**（换模型也稳，行业常见）；②彻底从表达 JSON 删除 `tool_call`（Sakura 式纯原生，锁定需支持 native 的 provider）。作者倾向最终走 ②"不维护 tool_call"，但**必须是最后一步**，N1–N3 全绿后再动。

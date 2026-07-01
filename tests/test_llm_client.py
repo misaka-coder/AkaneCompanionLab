@@ -10,7 +10,13 @@ from unittest.mock import patch
 
 from services.llm_client import _build_anthropic_payload, build_llm_client, normalize_api_protocol, normalize_base_url
 from companion_v01.llm_runtime import LLMRuntime
-from companion_v01.tool_invocation import NATIVE_OPENAI, NATIVE_TOOL_CALL_FIELD, TOOL_INVOCATION_ID_FIELD, TOOL_SOURCE_FIELD
+from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
+from companion_v01.tool_invocation import (
+    NATIVE_OPENAI,
+    NATIVE_TOOL_CALL_FIELD,
+    TOOL_INVOCATION_ID_FIELD,
+    TOOL_SOURCE_FIELD,
+)
 
 
 class LLMClientConfigTests(unittest.TestCase):
@@ -270,6 +276,35 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
         self.assertEqual(payload["tool_choice"], "auto")
 
+    def test_llm_runtime_strips_internal_native_tool_mapping_from_payload(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-pro",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            native_tools=[
+                {
+                    "type": "function",
+                    NATIVE_TOOL_CAPABILITY_ID_FIELD: "mcp.demo.echo",
+                    "function": {
+                        "name": "mcp_demo_echo_abcd123456",
+                        "description": "Echo.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "mcp_demo_echo_abcd123456")
+        self.assertNotIn(NATIVE_TOOL_CAPABILITY_ID_FIELD, payload["tools"][0])
+
     def test_llm_runtime_suppresses_forced_json_when_verified_profile_cannot_coexist(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime._metrics_lock = threading.RLock()
@@ -473,6 +508,46 @@ class LLMClientConfigTests(unittest.TestCase):
             {"type": "web_search", "query": "Akane", "max_results": 3, TOOL_SOURCE_FIELD: NATIVE_OPENAI},
         )
 
+    def test_llm_runtime_maps_provider_safe_native_tool_name_to_capability_id(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        native_tools = [
+            {
+                "type": "function",
+                NATIVE_TOOL_CAPABILITY_ID_FIELD: "mcp.demo.echo",
+                "function": {
+                    "name": "mcp_demo_echo_abcd123456",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_mapped_1",
+                                function=SimpleNamespace(
+                                    name="mcp_demo_echo_abcd123456",
+                                    arguments='{"text":"hi","type":"ignored"}',
+                                ),
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+
+        self.assertEqual(
+            runtime._extract_native_tool_call(response, native_tools=native_tools),
+            {
+                "type": "mcp.demo.echo",
+                "text": "hi",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_mapped_1",
+            },
+        )
+
     def test_llm_runtime_returns_native_tool_call_on_internal_carrier(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime._metrics_lock = threading.RLock()
@@ -480,7 +555,7 @@ class LLMClientConfigTests(unittest.TestCase):
         runtime._build_completion_kwargs = lambda **_kwargs: {}
         runtime._create_completion = lambda **_kwargs: object()
         runtime._record_cache_metrics = lambda _response: None
-        runtime._extract_native_tool_call = lambda _response: {
+        runtime._extract_native_tool_call = lambda _response, **_kwargs: {
             "type": "web_search",
             "query": "Akane",
             TOOL_SOURCE_FIELD: NATIVE_OPENAI,
@@ -558,7 +633,7 @@ class LLMClientConfigTests(unittest.TestCase):
 
     def test_llm_runtime_collects_stream_native_tool_call_to_akane_shape(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
-        parts: dict[int, dict[str, object]] = {}
+        parts: dict[object, dict[str, object]] = {}
         first_chunk = SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -601,6 +676,64 @@ class LLMClientConfigTests(unittest.TestCase):
                 "max_results": 3,
                 TOOL_SOURCE_FIELD: NATIVE_OPENAI,
                 TOOL_INVOCATION_ID_FIELD: "call_stream_1",
+            },
+        )
+
+    def test_llm_runtime_maps_stream_provider_safe_native_tool_name_to_capability_id(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        native_tools = [
+            {
+                "type": "function",
+                NATIVE_TOOL_CAPABILITY_ID_FIELD: "mcp.demo.echo",
+                "function": {
+                    "name": "mcp_demo_echo_abcd123456",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+        parts: dict[object, dict[str, object]] = {}
+        first_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    index=0,
+                    delta=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_stream_mapped",
+                                function=SimpleNamespace(name="mcp_demo_echo_abcd123456", arguments='{"text":"'),
+                            )
+                        ]
+                    ),
+                )
+            ]
+        )
+        second_chunk = {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"arguments": 'hi"}'},
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+
+        runtime._collect_stream_native_tool_call_parts(first_chunk, parts)
+        runtime._collect_stream_native_tool_call_parts(second_chunk, parts)
+
+        self.assertEqual(
+            runtime._stream_native_tool_call_from_parts(parts, native_tools=native_tools),
+            {
+                "type": "mcp.demo.echo",
+                "text": "hi",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_stream_mapped",
             },
         )
 
@@ -656,7 +789,10 @@ class LLMClientConfigTests(unittest.TestCase):
         )
 
         system_blocks = payload["system"]
-        self.assertEqual([block["text"] for block in system_blocks], ["base system", "extra-1", "extra-2", "extra-3", "extra-4", "extra-5"])
+        self.assertEqual(
+            [block["text"] for block in system_blocks],
+            ["base system", "extra-1", "extra-2", "extra-3", "extra-4", "extra-5"],
+        )
         self.assertEqual(sum(1 for block in system_blocks if "cache_control" in block), 4)
         self.assertNotIn("cache_control", system_blocks[-1])
 
@@ -784,9 +920,7 @@ class ChatJSONFallbackSampleTests(unittest.TestCase):
 
     def test_fallback_sample_is_recorded_and_redacted(self) -> None:
         runtime = self._runtime()
-        runtime._note_parse_fallback(
-            "sorry I cannot, sk-secret123456789 not json", phase="stream_chat_json"
-        )
+        runtime._note_parse_fallback("sorry I cannot, sk-secret123456789 not json", phase="stream_chat_json")
         error = runtime.snapshot_last_error()
         self.assertEqual(error.get("type"), "ChatJSONFallback")
         self.assertEqual(error.get("phase"), "stream_chat_json")
