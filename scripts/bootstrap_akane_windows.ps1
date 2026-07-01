@@ -86,8 +86,23 @@ function Test-PythonImports {
         [string[]]$PrefixArgs = @()
     )
 
-    & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
-    return $LASTEXITCODE -eq 0
+    $oldErrorActionPreference = $ErrorActionPreference
+    $oldNativeCommandPreference = $null
+    $hasNativeCommandPreference = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
+    try {
+        $ErrorActionPreference = "Continue"
+        if ($null -ne $hasNativeCommandPreference) {
+            $oldNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, memcore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
+        return $LASTEXITCODE -eq 0
+    } finally {
+        if ($null -ne $hasNativeCommandPreference) {
+            $PSNativeCommandUseErrorActionPreference = $oldNativeCommandPreference
+        }
+        $ErrorActionPreference = $oldErrorActionPreference
+    }
 }
 
 function Assert-CoreSourceDependencies {
@@ -103,6 +118,12 @@ function Assert-CoreSourceDependencies {
     $mcpAdapterPyproject = Join-Path $mcpAdapterPath "pyproject.toml"
     if (-not (Test-Path -LiteralPath $mcpAdapterPyproject -PathType Leaf)) {
         throw "capcore-adapter-mcp source checkout was not found at '$mcpAdapterPath'. Clone capcore-adapter-mcp next to AkaneCompanionLab, or install a packaged capcore-adapter-mcp release and update requirements.txt."
+    }
+
+    $memcorePath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\memcore"))
+    $memcorePyproject = Join-Path $memcorePath "pyproject.toml"
+    if (-not (Test-Path -LiteralPath $memcorePyproject -PathType Leaf)) {
+        throw "memcore source checkout was not found at '$memcorePath'. Clone memcore next to AkaneCompanionLab, or install a packaged memcore release and update requirements.txt."
     }
 }
 
