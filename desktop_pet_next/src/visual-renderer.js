@@ -16,10 +16,11 @@ const VALID_MOTIONS = new Set([
 const DEFAULT_BUBBLE_STYLE = "soft";
 const VALID_BUBBLE_STYLES = new Set([DEFAULT_BUBBLE_STYLE, "paper", "clear", "dark"]);
 
-export function createVisualRenderer({ stage, image } = {}) {
+export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
   let mode = STATIC_RENDERER_MODE;
   let characterLabel = "";
   let currentExpression = null;
+  let expressionLoadToken = 0;
   let currentMotion = DEFAULT_MOTION;
 
   bindImageState();
@@ -50,20 +51,45 @@ export function createVisualRenderer({ stage, image } = {}) {
     if (!next.url) return currentExpression;
     if (!force && currentExpression?.id === next.id && image?.src) return currentExpression;
 
-    currentExpression = next;
-    if (image) {
-      setImageState("loading");
-      image.src = next.url;
-      image.dataset.emotion = next.id;
-      image.alt = characterLabel || next.name || next.id;
-      if (image.complete && image.naturalWidth > 0) {
-        setImageState("ready");
+    const token = ++expressionLoadToken;
+    if (!image) {
+      currentExpression = next;
+      if (stage) {
+        stage.dataset.expression = next.id;
       }
+      return currentExpression;
     }
+    const hasVisibleImage = image.dataset.imageState === "ready" && image.naturalWidth > 0;
+
+    image.alt = characterLabel || next.name || next.id;
     if (stage) {
-      stage.dataset.expression = next.id;
+      stage.dataset.expressionPending = next.id;
     }
-    return currentExpression;
+    setImageState(hasVisibleImage ? "ready" : "loading");
+
+    preloadImage(next.url)
+      .then(() => {
+        if (token !== expressionLoadToken) return;
+        currentExpression = next;
+        image.src = next.url;
+        image.dataset.emotion = next.id;
+        image.alt = characterLabel || next.name || next.id;
+        if (stage) {
+          stage.dataset.expression = next.id;
+          delete stage.dataset.expressionPending;
+        }
+        setImageState("ready");
+      })
+      .catch((error) => {
+        if (token !== expressionLoadToken) return;
+        if (stage) {
+          delete stage.dataset.expressionPending;
+        }
+        setImageState(hasVisibleImage ? "ready" : "error");
+        notifyImageLoadError(next, error);
+      });
+
+    return next;
   }
 
   function setMotion(motion, { restart = false } = {}) {
@@ -97,6 +123,14 @@ export function createVisualRenderer({ stage, image } = {}) {
     if (stage) {
       stage.dataset.imageState = state;
     }
+  }
+
+  function notifyImageLoadError(expression, error) {
+    if (typeof onImageLoadError !== "function") return;
+    onImageLoadError({
+      expression: { ...expression },
+      error
+    });
   }
 
   function setLayout(layout) {
@@ -164,6 +198,49 @@ function normalizeExpressionEntry(entry) {
   const name = String(source.name || source.id || id).trim();
   const url = String(source.url || source.path || "").trim();
   return { id, name, url };
+}
+
+function preloadImage(url) {
+  return new Promise((resolve, reject) => {
+    const probe = new Image();
+    let settled = false;
+
+    const cleanup = () => {
+      probe.onload = null;
+      probe.onerror = null;
+    };
+    const finish = () => {
+      if (settled) return;
+      if (probe.naturalWidth > 0 && probe.naturalHeight > 0) {
+        settled = true;
+        cleanup();
+        resolve(probe);
+        return;
+      }
+      fail(new Error("image_decoded_with_empty_size"));
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error("image_load_failed"));
+    };
+    const decode = () => {
+      if (typeof probe.decode === "function") {
+        probe.decode().then(finish).catch(fail);
+        return;
+      }
+      finish();
+    };
+
+    probe.decoding = "async";
+    probe.onload = decode;
+    probe.onerror = () => fail(new Error("image_load_failed"));
+    probe.src = url;
+    if (probe.complete) {
+      window.queueMicrotask(decode);
+    }
+  });
 }
 
 function normalizeTransformOrigin(value) {
