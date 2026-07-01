@@ -534,7 +534,15 @@ const els = {
 
 const visualRenderer = createVisualRenderer({
   stage: els.stage,
-  image: els.petImage
+  image: els.petImage,
+  onImageLoadError: ({ expression, error }) => {
+    const label = String(expression?.name || expression?.id || "unknown").trim();
+    console.error("[pet-image] failed to preload:", expression?.url || "", error);
+    setRuntimeStatus(
+      `立绘加载失败：${label} · ${friendlyErrorMessage(formatError(error))}`,
+      { mode: "error" }
+    );
+  }
 });
 
 boot();
