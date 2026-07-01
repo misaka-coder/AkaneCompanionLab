@@ -665,13 +665,14 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         description = self._safe_public_text(str(getattr(self.descriptor, "short_hint", "") or ""), limit=240)
         schema_text = self._schema_prompt_text()
+        source_label = self._source_label()
         parts = [
-            f"- {self.tool_type}：{description or '调用本地 MCP 工具。'}",
+            f"- {self.tool_type}：{description or f'调用{source_label}。'}",
             f'调用格式为 {{"type":"{self.tool_type}", ...参数...}}。',
         ]
         if schema_text:
             parts.append(f"参数 schema: {schema_text}。")
-        parts.append("该能力来自本地 MCP server；失败时不要假装已经完成。")
+        parts.append(f"该能力来自{source_label}；失败时不要假装已经完成。")
         return "".join(parts)
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -747,14 +748,14 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             decision=decision,
             capability_id=self.tool_type,
             action_id=self.tool_type,
-            title="MCP 工具需要确认",
-            summary="Akane 想执行一个本地 MCP 工具。",
+            title=f"{self._source_label()}需要确认",
+            summary=f"Akane 想执行一个{self._source_label()}。",
             client_mode=context.client_mode,
         )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=[event],
-            followup_context="这个 MCP 工具需要用户确认；请自然说明需要在能力审批中允许后再执行，不要声称已经完成。",
+            followup_context=f"这个{self._source_label()}需要用户确认；请自然说明需要在能力审批中允许后再执行，不要声称已经完成。",
             state_updates={
                 "adapter_capability_status": "approval_required",
                 "adapter_capability_id": self.tool_type,
@@ -775,7 +776,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                     "errors": [error.as_dict() for error in validation.errors[:8]],
                 }
             ],
-            followup_context="MCP 工具参数没有通过校验；请根据工具 schema 修正后再调用，不要声称已经完成。",
+            followup_context=f"{self._source_label()}参数没有通过校验；请根据工具 schema 修正后再调用，不要声称已经完成。",
             state_updates={
                 "adapter_capability_status": "validation_error",
                 "adapter_capability_id": self.tool_type,
@@ -795,7 +796,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                     "reason": safe_reason,
                 }
             ],
-            followup_context="这个 MCP 工具已被当前能力策略阻止；请自然说明无法执行，不要假装已经完成。",
+            followup_context=f"这个{self._source_label()}已被当前能力策略阻止；请自然说明无法执行，不要假装已经完成。",
             state_updates={
                 "adapter_capability_status": "blocked",
                 "adapter_capability_id": self.tool_type,
@@ -815,7 +816,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                     "reason": safe_reason,
                 }
             ],
-            followup_context=f"MCP 工具调用失败：{safe_reason}。不要假装已经完成。",
+            followup_context=f"{self._source_label()}调用失败：{safe_reason}。不要假装已经完成。",
             state_updates={
                 "adapter_capability_status": "error",
                 "adapter_capability_reason": safe_reason,
@@ -843,10 +844,23 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         else:
             body = self._safe_public_text(str(content or ""), limit=4000)
         if not body:
-            body = "(MCP 工具没有返回可读内容。)"
+            body = f"({self._source_label()}没有返回可读内容。)"
         if bool(getattr(result, "is_error", False)):
-            return f"MCP 工具返回业务错误：\n{body[: self.MAX_FOLLOWUP_CHARS]}"
-        return f"MCP 工具返回：\n{body[: self.MAX_FOLLOWUP_CHARS]}"
+            return f"{self._source_label()}返回业务错误：\n{body[: self.MAX_FOLLOWUP_CHARS]}"
+        return f"{self._source_label()}返回：\n{body[: self.MAX_FOLLOWUP_CHARS]}"
+
+    def _source_label(self) -> str:
+        raw = getattr(self.descriptor, "raw", None)
+        adapter_name = ""
+        if isinstance(raw, Mapping):
+            adapter_name = str(raw.get("adapter") or "").strip().lower()
+        if not adapter_name:
+            adapter_name = str(getattr(self.adapter, "type", "") or "").strip().lower()
+        if adapter_name == "python":
+            return "本地 Python 能力"
+        if "mcp" in adapter_name:
+            return "本地 MCP 工具"
+        return "本地 adapter 能力"
 
     def _schema_prompt_text(self) -> str:
         schema = self._input_schema()

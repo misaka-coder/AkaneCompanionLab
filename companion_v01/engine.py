@@ -3658,6 +3658,20 @@ class AkaneMemoryEngine:
             client_context=client_context,
         )
 
+    def _build_python_adapter_tool_handlers(
+        self,
+        *,
+        profile_user_id: str = "",
+        client_context: ClientProtocolContext | None = None,
+    ) -> dict[str, BaseToolHandler]:
+        from .engine_services.tool_rounds import build_python_adapter_tool_handlers as _fn
+
+        return _fn(
+            self,
+            profile_user_id=profile_user_id,
+            client_context=client_context,
+        )
+
     def _legacy_mode_tool_names(self, client_context: ClientProtocolContext) -> list[str]:
         from .engine_services.tool_rounds import legacy_mode_tool_names as _fn
 

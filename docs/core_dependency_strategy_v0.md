@@ -6,6 +6,7 @@ Akane 正在把可复用内核从宿主项目里拆出来：
 
 - `capcore`: 能力接入、manifest 校验、tool schema 投影、调用参数校验、权限决策。
 - `capcore-adapter-mcp`: MCP stdio 能力适配器，负责 MCP tool 到 capcore descriptor/invoke 的转换。
+- `capcore-adapter-python`: 本地 Python callable 能力适配器，负责显式注册 callable 到 capcore descriptor/invoke 的转换。
 - `memcore`: 分层记忆、可见记忆、检索工具、时间线读取、压缩沉淀。
 
 ## 当前形态
@@ -17,6 +18,7 @@ Akane/
   AkaneCompanionLab/
   capcore/
   capcore-adapter-mcp/
+  capcore-adapter-python/
   memcore/
 ```
 
@@ -25,6 +27,7 @@ Akane/
 ```text
 -e ../capcore
 -e ../capcore-adapter-mcp
+-e ../capcore-adapter-python
 -e ../memcore
 ```
 

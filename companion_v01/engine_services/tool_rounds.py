@@ -111,7 +111,7 @@ def resolve_tool_handlers(
     session_id: str = "",
 ) -> dict[str, Any]:
     handlers = getattr(engine, "tool_handlers", {}) or {}
-    dynamic_handlers = build_mcp_adapter_tool_handlers(
+    dynamic_handlers = build_adapter_tool_handlers(
         engine,
         profile_user_id=profile_user_id,
         client_context=client_context,
@@ -164,7 +164,7 @@ def resolve_capability_selection(
     )
     registry = getattr(engine, "capability_registry", None) or CapabilityRegistry()
     selection = registry.select(snapshot)
-    dynamic_handlers = build_mcp_adapter_tool_handlers(
+    dynamic_handlers = build_adapter_tool_handlers(
         engine,
         profile_user_id=profile_user_id,
         client_context=client_context,
@@ -177,11 +177,11 @@ def resolve_capability_selection(
     return CapabilitySelection(
         light_hints=(
             *selection.light_hints,
-            "当前 profile 有已显式暴露给 prompt 的本地 MCP 工具；调用失败时不要假装完成，涉及高风险动作会先请求确认。",
+            "当前 profile 有已显式暴露给 prompt 的本地 adapter 能力；调用失败时不要假装完成，涉及高风险动作会先请求确认。",
         ),
         tool_names=(*selection.tool_names, *dynamic_tool_names),
-        module_names=(*selection.module_names, "mcp_adapter_tools"),
-        layer_names=(*selection.layer_names, "mcp"),
+        module_names=(*selection.module_names, "adapter_tools"),
+        layer_names=(*selection.layer_names, "adapter"),
     )
 
 
@@ -222,6 +222,30 @@ def legacy_mode_tool_names(engine: Any, client_context: ClientProtocolContext) -
 
     registry = getattr(engine, "capability_registry", None) or CapabilityRegistry()
     return list(registry.tool_names_for_mode(client_context.effective_mode))
+
+
+def build_adapter_tool_handlers(
+    engine: Any,
+    *,
+    profile_user_id: str = "",
+    client_context: ClientProtocolContext | None = None,
+) -> dict[str, Any]:
+    handlers: dict[str, Any] = {}
+    handlers.update(
+        build_mcp_adapter_tool_handlers(
+            engine,
+            profile_user_id=profile_user_id,
+            client_context=client_context,
+        )
+    )
+    handlers.update(
+        build_python_adapter_tool_handlers(
+            engine,
+            profile_user_id=profile_user_id,
+            client_context=client_context,
+        )
+    )
+    return handlers
 
 
 def build_mcp_adapter_tool_handlers(
@@ -272,4 +296,33 @@ def build_mcp_adapter_tool_handlers(
                     descriptor=descriptor,
                     config_base_dir=config_base_dir,
                 )
+    return handlers
+
+
+def build_python_adapter_tool_handlers(
+    engine: Any,
+    *,
+    profile_user_id: str = "",
+    client_context: ClientProtocolContext | None = None,
+) -> dict[str, Any]:
+    del engine, client_context
+    import config as _cfg
+    from pathlib import Path
+
+    from ..capability_adapters import AkanePythonCapabilityAdapter
+    from ..tool_runtime import AdapterCapabilityToolHandler
+
+    if not str(profile_user_id or "").strip():
+        return {}
+    config_base_dir = Path(getattr(_cfg, "DATA_DIR", "users_data") or "users_data")
+    adapter = AkanePythonCapabilityAdapter()
+    handlers: dict[str, Any] = {}
+    for descriptor in adapter.list_capabilities_sync():
+        if descriptor.id and descriptor.prompt_exposed:
+            handlers[descriptor.id] = AdapterCapabilityToolHandler(
+                capability_id=descriptor.id,
+                adapter=adapter,
+                descriptor=descriptor,
+                config_base_dir=config_base_dir,
+            )
     return handlers

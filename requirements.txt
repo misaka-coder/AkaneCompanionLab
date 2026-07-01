@@ -8,6 +8,8 @@ fastapi
 -e ../capcore
 # MCP stdio capability adapter extracted from Akane/capcore integration.
 -e ../capcore-adapter-mcp
+# Local Python callable capability adapter extracted from Akane/capcore integration.
+-e ../capcore-adapter-python
 # Akane uses memcore as the primary dialogue memory backend.
 # Clone memcore next to this repository as another extracted sibling package.
 -e ../memcore

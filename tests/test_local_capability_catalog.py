@@ -54,6 +54,23 @@ class LocalCapabilityCatalogTests(unittest.TestCase):
         self.assertFalse(text_only["requiresConfirmation"])
         self.assertEqual(text_only["approvalMode"], "trusted_auto_allow")
 
+    def test_python_adapter_capabilities_are_cataloged_as_internal_python_tools(self) -> None:
+        catalog = build_local_capability_catalog(
+            engine=SimpleNamespace(tool_handlers={}),
+            config_module=SimpleNamespace(),
+        )
+
+        by_id = {item["id"]: item for item in catalog["capabilities"]}
+        normalize = by_id["python.akane.normalize_text"]
+
+        self.assertEqual(normalize["kind"], "python_tool")
+        self.assertEqual(normalize["source"], "python_adapter")
+        self.assertEqual(normalize["adapter"], "python")
+        self.assertEqual(normalize["risk"], "low")
+        self.assertEqual(normalize["confirm"], "never")
+        self.assertFalse(normalize["requiresConfirmation"])
+        self.assertTrue(normalize["exposedToPrompt"])
+
 
 if __name__ == "__main__":
     unittest.main()

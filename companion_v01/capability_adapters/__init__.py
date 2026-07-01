@@ -6,6 +6,7 @@ from .mcp_stdio import McpStdioCapabilityAdapter
 from .openai_compat_asr import OpenAICompatASRAdapter
 from .openai_compat_tts import OpenAICompatTTSAdapter
 from .protocol import CapabilityAdapter
+from .python_local import AkanePythonCapabilityAdapter, build_akane_python_capability_specs
 from .registry import CapabilityAdapterRegistry
 from .types import (
     CapabilityDescriptor,
@@ -28,6 +29,7 @@ from .types import (
 
 __all__ = [
     "ALLOWED_ADAPTER_TYPES",
+    "AkanePythonCapabilityAdapter",
     "CapabilityAdapter",
     "CapabilityAdapterRegistry",
     "CapabilityDescriptor",
@@ -52,5 +54,6 @@ __all__ = [
     "TierConfig",
     "TriggerConfig",
     "build_comfyui_adapter_from_manifest",
+    "build_akane_python_capability_specs",
     "load_manifest",
 ]

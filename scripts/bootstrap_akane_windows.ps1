@@ -95,7 +95,7 @@ function Test-PythonImports {
             $oldNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
             $PSNativeCommandUseErrorActionPreference = $false
         }
-        & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, memcore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
+        & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, capcore_adapter_python, memcore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
         return $LASTEXITCODE -eq 0
     } finally {
         if ($null -ne $hasNativeCommandPreference) {
@@ -118,6 +118,12 @@ function Assert-CoreSourceDependencies {
     $mcpAdapterPyproject = Join-Path $mcpAdapterPath "pyproject.toml"
     if (-not (Test-Path -LiteralPath $mcpAdapterPyproject -PathType Leaf)) {
         throw "capcore-adapter-mcp source checkout was not found at '$mcpAdapterPath'. Clone capcore-adapter-mcp next to AkaneCompanionLab, or install a packaged capcore-adapter-mcp release and update requirements.txt."
+    }
+
+    $pythonAdapterPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore-adapter-python"))
+    $pythonAdapterPyproject = Join-Path $pythonAdapterPath "pyproject.toml"
+    if (-not (Test-Path -LiteralPath $pythonAdapterPyproject -PathType Leaf)) {
+        throw "capcore-adapter-python source checkout was not found at '$pythonAdapterPath'. Clone capcore-adapter-python next to AkaneCompanionLab, or install a packaged capcore-adapter-python release and update requirements.txt."
     }
 
     $memcorePath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\memcore"))

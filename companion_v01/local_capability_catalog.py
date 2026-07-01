@@ -22,6 +22,7 @@ from .local_capability_config import (
     project_capcore_catalog_fields,
 )
 from .music_lyrics import build_music_lyrics_provider_status
+from .capability_adapters import AkanePythonCapabilityAdapter
 
 
 SCHEMA_VERSION = 1
@@ -131,6 +132,7 @@ def build_local_capability_catalog(
 ) -> dict[str, Any]:
     entries = []
     entries.extend(_build_backend_tool_entries(getattr(engine, "tool_handlers", {}) or {}))
+    entries.extend(_build_python_adapter_entries())
     entries.extend(_build_provider_entries(config_module=config_module, tts_client=tts_client))
     configurable_provider_entries = _build_configurable_provider_entries(provider_configs or {})
     entries.extend(configurable_provider_entries)
@@ -231,6 +233,41 @@ def _build_backend_tool_entries(tool_handlers: Mapping[str, Any]) -> list[dict[s
         reason = str(status.get("reason") or "").strip()
         if reason:
             entry["reason"] = reason
+        entries.append(entry)
+    return [_project_catalog_entry(entry) for entry in entries]
+
+
+def _build_python_adapter_entries() -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    try:
+        descriptors = AkanePythonCapabilityAdapter().list_capabilities_sync()
+    except Exception:
+        return []
+    for descriptor in descriptors:
+        capability_id = str(getattr(descriptor, "id", "") or "").strip()
+        if not capability_id:
+            continue
+        confirm = str(getattr(descriptor, "confirm", "") or "first_time").strip()
+        entry = {
+            "id": capability_id,
+            "kind": "python_tool",
+            "type": "tool",
+            "source": "python_adapter",
+            "adapter": "python",
+            "executionMode": "internal",
+            "toolType": capability_id,
+            "name": str(getattr(descriptor, "display_name", "") or capability_id).strip(),
+            "description": str(getattr(descriptor, "short_hint", "") or "").strip()[:240],
+            "group": "python_local",
+            "enabled": True,
+            "status": "ready",
+            "risk": str(getattr(descriptor, "risk", "") or "medium").strip(),
+            "confirm": confirm,
+            "requiresConfirmation": confirm in {"first_time", "always"},
+            "effects": list(getattr(descriptor, "effects", ()) or ()),
+            "usedBy": ["agent"],
+            "exposedToPrompt": bool(getattr(descriptor, "prompt_exposed", False)),
+        }
         entries.append(entry)
     return [_project_catalog_entry(entry) for entry in entries]
 
