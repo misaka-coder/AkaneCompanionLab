@@ -8,6 +8,7 @@ Akane 正在把可复用内核从宿主项目里拆出来：
 - `capcore-adapter-mcp`: MCP stdio 能力适配器，负责 MCP tool 到 capcore descriptor/invoke 的转换。
 - `capcore-adapter-python`: 本地 Python callable 能力适配器，负责显式注册 callable 到 capcore descriptor/invoke 的转换。
 - `capcore-adapter-speech`: 语音 TTS/ASR 能力适配器，负责 GPT-SoVITS/Edge TTS/OpenAI-compatible ASR 到 capcore descriptor/invoke 的转换。
+- `capcore-adapter-comfyui`: ComfyUI workflow 能力适配器，负责 loopback client、workflow slot patch、输出图片回收和 capcore descriptor/invoke 的转换。
 - `memcore`: 分层记忆、可见记忆、检索工具、时间线读取、压缩沉淀。
 
 ## 当前形态
@@ -21,6 +22,7 @@ Akane/
   capcore-adapter-mcp/
   capcore-adapter-python/
   capcore-adapter-speech/
+  capcore-adapter-comfyui/
   memcore/
 ```
 
@@ -31,6 +33,7 @@ Akane/
 -e ../capcore-adapter-mcp
 -e ../capcore-adapter-python
 -e ../capcore-adapter-speech
+-e ../capcore-adapter-comfyui
 -e ../memcore
 ```
 
@@ -38,6 +41,8 @@ Akane/
 配置、approval UX、prompt 暴露策略和 AnySearch dotenv hydration 等宿主逻辑。
 `capcore-adapter-speech` 由 Akane 的旧 TTS/ASR 模块 re-export 接入；Akane 仍
 保留 voice route、profile 存储、公开配置脱敏、音频交付和 UI。
+`capcore-adapter-comfyui` 由 Akane 的旧 ComfyUI 模块 re-export 接入；Akane 仍
+保留 workflow route、profile 配置、job 状态、图片交付和 UI。
 `memcore` 通过 `MemorySystem` 公共 facade 使用，不复制 `memcore` 内部模块到 Akane。
 
 ## 为什么不 vendoring
@@ -60,7 +65,7 @@ Akane/
 
 中期公开包：
 
-- 为 `capcore` / `capcore-adapter-mcp` / `capcore-adapter-speech` / `memcore` 发布版本包。
+- 为 `capcore` / `capcore-adapter-mcp` / `capcore-adapter-speech` / `capcore-adapter-comfyui` / `memcore` 发布版本包。
 - Akane 把 editable path 替换为版本范围，例如 `capcore>=0.1,<0.2`。
 - 开发者仍可用 editable install 覆盖本地 core。
 
@@ -83,6 +88,7 @@ core 保留：
 - `capcore`: descriptor、manifest、projection、invocation validation、permission decision。
 - `capcore-adapter-mcp`: MCP stdio descriptor conversion 和 JSON-safe invoke bridge。
 - `capcore-adapter-speech`: TTS/ASR descriptor、loopback client、安全 profile 清洗和 invoke bridge。
+- `capcore-adapter-comfyui`: ComfyUI loopback client、workflow slot patch、输出图片抽取和 workflow execution 数据结构。
 - `memcore`: namespace、memory lifecycle、retrieval/timeline tools、prompt context rendering。
 
 当 Akane 需要补能力判断或记忆行为时，优先问：

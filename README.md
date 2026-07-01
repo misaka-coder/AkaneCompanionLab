@@ -198,7 +198,8 @@ Embedding 模型。
 ### Core 源码依赖
 
 当前源码 Alpha 复用从 Akane 拆出的 core 包。`capcore`、`capcore-adapter-mcp`、
-`capcore-adapter-python`、`capcore-adapter-speech` 和 `memcore` 是运行时依赖，
+`capcore-adapter-python`、`capcore-adapter-speech`、`capcore-adapter-comfyui`
+和 `memcore` 是运行时依赖，
 需要和本仓库放在同一个父目录下：
 
 ```text
@@ -208,6 +209,7 @@ Akane/
   capcore-adapter-mcp/
   capcore-adapter-python/
   capcore-adapter-speech/
+  capcore-adapter-comfyui/
   memcore/
 ```
 

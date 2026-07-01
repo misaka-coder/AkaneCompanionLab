@@ -12,6 +12,8 @@ fastapi
 -e ../capcore-adapter-python
 # Speech TTS/ASR capability adapter extracted from Akane voice integration.
 -e ../capcore-adapter-speech
+# ComfyUI workflow capability adapter extracted from Akane local workflow integration.
+-e ../capcore-adapter-comfyui
 # OpenAI native tool provider envelope extracted from Akane/capcore integration.
 -e ../capcore-provider-openai
 # Akane uses memcore as the primary dialogue memory backend.
