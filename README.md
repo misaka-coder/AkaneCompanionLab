@@ -230,6 +230,13 @@ Akane/
 .\.venv\Scripts\python.exe .\scripts\smoke_extracted_package_ecosystem.py
 ```
 
+发布态元数据审计可以再跑一条，确认 sibling 包的 README、AGENTS、docs、
+examples、tests、MANIFEST 和 0.1 版本号仍然齐整：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\audit_extracted_packages_release.py
+```
+
 ### Windows PowerShell
 
 ```powershell

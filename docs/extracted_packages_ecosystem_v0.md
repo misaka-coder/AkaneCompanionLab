@@ -192,6 +192,8 @@ Akane host integration should additionally keep:
 - sibling editable dependency list in `requirements.txt`;
 - Windows bootstrap source/import checks for every required sibling package;
 - a cross-package smoke command.
+- a release-state metadata audit command:
+  `.\.venv\Scripts\python.exe .\scripts\audit_extracted_packages_release.py`.
 
 ## Cross-Package Smoke
 
@@ -218,15 +220,38 @@ It verifies:
 The smoke intentionally does not call OpenAI, Anthropic, DeepSeek, MCP stdio,
 ComfyUI, TTS, ASR, or any remote/local service.
 
+## Release Audit
+
+Akane also keeps one lightweight release-state audit script:
+
+```bash
+.\.venv\Scripts\python.exe .\scripts\audit_extracted_packages_release.py
+```
+
+It verifies, without importing the packages or installing dependencies:
+
+- all 12 extracted sibling package directories exist;
+- each package is a git repository with a clean worktree;
+- each package has `README.md`, `AGENTS.md`, `LICENSE`, `MANIFEST.in`,
+  `docs/`, `examples/`, `tests/`, and `pyproject.toml`;
+- each package's `project.name` and `project.version` match the 0.1 package
+  map;
+- each `MANIFEST.in` includes AI/human integration docs, examples, and tests;
+- Akane's `requirements.txt` and Windows bootstrap source/import checks cover
+  the extracted packages Akane currently needs at runtime.
+
+Use `--allow-dirty` only while editing release metadata. A release-state pass
+should run without it.
+
 ## Current Next Steps
 
 Recommended next hardening tasks:
 
-1. Add `MANIFEST.in` to extracted packages whose sdist still omits
-   `AGENTS.md`, `docs/`, or `examples/`.
+1. Keep the release audit and cross-package smoke green whenever an extracted
+   package is added or a public package file moves.
 2. Keep the cross-package smoke green whenever package public APIs change.
-3. Add a lightweight release audit script only after the package set stabilizes;
-   avoid turning this into a large monorepo manager too early.
+3. Avoid turning release audit into a large monorepo manager; package behavior
+   still belongs to each package's own tests and smoke examples.
 4. For product work, choose packages by product boundary:
    - coding assistant: `memcore + capcore + host-utils + provider packages`;
    - character companion: add `charpack-core + promptpack-core + speech`;
