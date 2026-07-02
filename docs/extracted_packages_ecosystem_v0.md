@@ -277,3 +277,6 @@ Recommended next hardening tasks:
    - character companion: add `charpack-core + promptpack-core + speech`;
    - image workflow app: add `capcore-adapter-comfyui`;
    - MCP-heavy agent: add `capcore-adapter-mcp` and host approval UX.
+5. For reusable desktop-pet runtime work, follow
+   `docs/petdesk_runtime_architecture_v0.md`; do not copy Akane's current
+   broad frontend files as a framework.

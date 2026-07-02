@@ -237,6 +237,10 @@ Akane/
 .\.venv\Scripts\python.exe .\scripts\smoke_ai_product_host_turn.py
 ```
 
+如果要继续做可复用桌宠 runtime，技术路线和实现拆分见
+`docs/petdesk_runtime_architecture_v0.md`。新桌宠 runtime 计划使用
+TypeScript + Tauri v2，后端继续通过 Python/HTTP/SSE 组合现有 core 包。
+
 发布态元数据审计可以再跑一条，确认 sibling 包的 README、AGENTS、docs、
 examples、tests、MANIFEST 和 0.1 版本号仍然齐整：
 
