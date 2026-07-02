@@ -100,6 +100,10 @@ For a normal AI product turn:
 11. Parse/normalize final assistant output, update memcore metadata, record the
     assistant turn, and trigger background compaction.
 
+For a fuller host blueprint covering turn policy, tool concurrency,
+cache-friendly ordering, failure handling, observability, budgets, and when to
+extract a shared agent loop, read `docs/ai_product_host_blueprint_v0.md`.
+
 ## Cache-Friendly Prompt Rules
 
 The ecosystem is designed to work with explicit provider caches and
@@ -219,6 +223,22 @@ It verifies:
 
 The smoke intentionally does not call OpenAI, Anthropic, DeepSeek, MCP stdio,
 ComfyUI, TTS, ASR, or any remote/local service.
+
+Akane also keeps one no-network host-turn smoke script:
+
+```bash
+.\.venv\Scripts\python.exe .\scripts\smoke_ai_product_host_turn.py
+```
+
+It verifies the recommended product loop shape:
+
+- `memcore` user-turn record and final assistant writeback;
+- `promptpack-core` stable/dynamic prompt assembly and stable prefix hash;
+- `charpack-core` persona/resource context and visual normalization;
+- `capcore-adapter-python` capability registration;
+- `capcore-provider-openai` schema, tool-call parse, invocation, and
+  `role="tool"` feedback;
+- final memcore JSON parse and metadata update.
 
 ## Release Audit
 

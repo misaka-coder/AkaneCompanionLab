@@ -230,6 +230,13 @@ Akane/
 .\.venv\Scripts\python.exe .\scripts\smoke_extracted_package_ecosystem.py
 ```
 
+如果你要参考这些包开发新的 AI 产品宿主，先读
+`docs/ai_product_host_blueprint_v0.md`，再跑标准回合 smoke：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\smoke_ai_product_host_turn.py
+```
+
 发布态元数据审计可以再跑一条，确认 sibling 包的 README、AGENTS、docs、
 examples、tests、MANIFEST 和 0.1 版本号仍然齐整：
 
