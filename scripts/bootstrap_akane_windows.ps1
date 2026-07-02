@@ -95,7 +95,7 @@ function Test-PythonImports {
             $oldNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
             $PSNativeCommandUseErrorActionPreference = $false
         }
-        & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, charpack_core, memcore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
+        & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, charpack_core, promptpack_core, memcore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
         return $LASTEXITCODE -eq 0
     } finally {
         if ($null -ne $hasNativeCommandPreference) {
@@ -154,6 +154,12 @@ function Assert-CoreSourceDependencies {
     $charpackPyproject = Join-Path $charpackPath "pyproject.toml"
     if (-not (Test-Path -LiteralPath $charpackPyproject -PathType Leaf)) {
         throw "charpack-core source checkout was not found at '$charpackPath'. Clone charpack-core next to AkaneCompanionLab, or install a packaged charpack-core release and update requirements.txt."
+    }
+
+    $promptpackPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\promptpack-core"))
+    $promptpackPyproject = Join-Path $promptpackPath "pyproject.toml"
+    if (-not (Test-Path -LiteralPath $promptpackPyproject -PathType Leaf)) {
+        throw "promptpack-core source checkout was not found at '$promptpackPath'. Clone promptpack-core next to AkaneCompanionLab, or install a packaged promptpack-core release and update requirements.txt."
     }
 
     $memcorePath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\memcore"))

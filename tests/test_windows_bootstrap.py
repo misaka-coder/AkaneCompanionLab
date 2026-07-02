@@ -34,9 +34,10 @@ class WindowsBootstrapContractTests(unittest.TestCase):
         self.assertIn("capcore-provider-native-tools source checkout was not found", source)
         self.assertIn("capcore-provider-openai source checkout was not found", source)
         self.assertIn("charpack-core source checkout was not found", source)
+        self.assertIn("promptpack-core source checkout was not found", source)
         self.assertIn("import capcore", source)
         self.assertIn(
-            "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, charpack_core",
+            "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, charpack_core, promptpack_core",
             source,
         )
         self.assertIn("AKANE_OPEN_SETTINGS_ON_START", (ROOT / "start_akane_next.ps1").read_text(encoding="utf-8"))

@@ -16,6 +16,8 @@ fastapi
 -e ../capcore-adapter-comfyui
 # Character pack resource/runtime helpers extracted from Akane desktop pet integration.
 -e ../charpack-core
+# Prompt block/profile/assembly primitives extracted from Akane prompt work.
+-e ../promptpack-core
 # Shared native tool provider helpers used by OpenAI/Anthropic provider envelopes.
 -e ../capcore-provider-native-tools
 # OpenAI native tool provider envelope extracted from Akane/capcore integration.
