@@ -29,9 +29,9 @@
 - **延伸**：库里其他"出错没人知道"的地方应按同样范式改造。
 
 ### INV-4 缓存块只放**稳定内容**；易变状态进动态 user_prompt
-- **约束**：`prompt_builder.py` 里 `system_extra_blocks`（= 会被 prompt 缓存的块）只放稳定内容：视觉资源、语义记忆、阶段摘要。
-- **易变状态**（附件焦点、任务工作区、未总结原始消息、当前用户消息）一律进 **`user_prompt`（每轮重建，不缓存）**。
-- **为什么承重**：把易变状态放进缓存块，会出现"清理了/改了但 TTL 内还看得见"的幽灵 bug。已验证当前附件焦点走的是动态 user_prompt（`prompt_builder.py` 里以 `user.extra_context` 落在 user_prompt），清理下一轮即生效。
+- **约束**：`prompt_builder.py` 里 `system_extra_blocks`（= provider 可能作为 system/cache block 处理的块）只放稳定或半稳定内容；当前最终回复链路只放视觉资源清单。
+- **易变状态**（语义记忆、阶段摘要、附件焦点、任务工作区、未总结原始消息、检索片段、当前视觉状态、当前用户消息、当前时间）一律进 **`user_prompt`（每轮重建，位于动态尾部）**。
+- **为什么承重**：把易变状态放进 system/cache 前缀，会降低 DeepSeek-like 自动前缀缓存命中；也可能出现"清理了/改了但 TTL 内还看得见"的幽灵 bug。已验证当前附件焦点走的是动态 user_prompt（`prompt_builder.py` 里以 `user.extra_context` 落在 user_prompt），清理下一轮即生效。
 
 ### INV-5 能力门控**每轮**决定本轮可用工具
 - **约束**：本轮有哪些工具，由 `engine.py::_resolve_tool_handlers` → `CapabilityRegistry.select` 按 client 模式/profile/session 动态决定。一个"接上了"的工具，若本轮没被选进 handler 集合，**模型就调不到**。

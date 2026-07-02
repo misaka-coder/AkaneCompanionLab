@@ -253,31 +253,43 @@ system = "semantic reinforcement system"
             self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", result["system_prompt"])
             self.assertIn("persona state", result["system_prompt"])
             self.assertLess(result["system_prompt"].index("debug mode"), result["system_prompt"].index("persona state"))
-            self.assertLess(result["system_prompt"].index("- fake tool"), result["system_prompt"].index("persona state"))
+            self.assertLess(
+                result["system_prompt"].index("- fake tool"), result["system_prompt"].index("persona state")
+            )
             self.assertEqual(
                 result["system_extra_blocks"],
                 [
                     "可用视觉资源：\nresource",
-                    "较长期的语义记忆（最多3条）：\nsemantic",
-                    "最近可见的阶段摘要（5~10条弹性窗口）：\nepisode",
                 ],
             )
-            self.assertNotIn("较长期的语义记忆", result["user_prompt"])
-            self.assertNotIn("最近可见的阶段摘要", result["user_prompt"])
+            self.assertIn("较长期的语义记忆（最多3条）：\nsemantic", result["user_prompt"])
+            self.assertIn("最近可见的阶段摘要（5~10条弹性窗口）：\nepisode", result["user_prompt"])
             self.assertNotIn("可用视觉资源", result["user_prompt"])
             self.assertIn("记忆情绪", result["user_prompt"])
             self.assertIn("情感余温", result["user_prompt"])
             self.assertIn("不要把它当作用户事实", result["user_prompt"])
             self.assertIn("回应时自然带着这份余温即可", result["user_prompt"])
+            self.assertLess(
+                result["user_prompt"].index("较长期的语义记忆"),
+                result["user_prompt"].index("当前会话中所有未总结的原始消息"),
+            )
+            self.assertLess(
+                result["user_prompt"].index("最近可见的阶段摘要"),
+                result["user_prompt"].index("当前会话中所有未总结的原始消息"),
+            )
             self.assertIn("extra", result["user_prompt"])
             self.assertIn("persona refs", result["user_prompt"])
+            self.assertLess(result["user_prompt"].index("较长期的语义记忆"), result["user_prompt"].index("extra"))
+            self.assertLess(
+                result["user_prompt"].index("当前会话中所有未总结的原始消息"), result["user_prompt"].index("extra")
+            )
             self.assertLess(result["user_prompt"].index("extra"), result["user_prompt"].index("当前演出状态"))
-            self.assertLess(result["user_prompt"].index("extra"), result["user_prompt"].index("当前会话中所有未总结的原始消息"))
             audit_names = [section["name"] for section in result["prompt_audit_sections"]]
             self.assertIn("system.full", audit_names)
             self.assertIn("system_extra.resource_context", audit_names)
-            self.assertIn("system_extra.semantic_memory", audit_names)
-            self.assertIn("system_extra.episodic_summary", audit_names)
+            self.assertIn("user.semantic_memory", audit_names)
+            self.assertIn("user.episodic_summary", audit_names)
+            self.assertIn("user.memory_context", audit_names)
             self.assertIn("user.raw_recent_timeline", audit_names)
             self.assertIn("user.retrieval_snippets", audit_names)
             self.assertIn("user.current_visual_context", audit_names)
@@ -291,9 +303,15 @@ system = "semantic reinforcement system"
         builder = PromptBuilder(persona)
 
         self.assertIn("字段固定为 emotion, speech, speech_segments, tool_call", persona.final_fast_mode_prompt)
-        self.assertIn('"speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null', persona.final_fast_mode_prompt)
-        self.assertIn("字段固定为 thought, emotion, speech, speech_segments, tool_call", persona.final_debug_mode_prompt)
-        self.assertIn('"speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null', persona.final_debug_mode_prompt)
+        self.assertIn(
+            '"speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null', persona.final_fast_mode_prompt
+        )
+        self.assertIn(
+            "字段固定为 thought, emotion, speech, speech_segments, tool_call", persona.final_debug_mode_prompt
+        )
+        self.assertIn(
+            '"speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null', persona.final_debug_mode_prompt
+        )
         self.assertIn("tool_call 必须放在 speech_segments 字段之后", persona.final_system_prompt)
 
         result = builder.build_final_generation_context(

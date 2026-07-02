@@ -1,6 +1,6 @@
 # LLM Prompt Cache 优化备忘录
 
-更新时间：2026-06-20
+更新时间：2026-07-02
 
 用途：把这轮关于提示词缓存、N.E.K.O 参考项目、Akane 当前缓存结构的判断固定下来，避免后续上下文压缩后丢失。本文是设计备忘录，不代表要立刻重写提示词链路。
 
@@ -18,11 +18,12 @@ Akane 的缓存命中率还能优化，但后续收益大概率是小步、测�
 
 - `companion_v01/prompt_builder.py`
   - `build_final_generation_context()` 返回 `system_prompt`、`system_extra_blocks`、`history_turns`、`user_prompt`。
-  - 目前 `system_extra_blocks` 顺序是：视觉资源、较长期语义记忆、最近阶段摘要。
-  - `user_prompt` 仍包含高动态内容：当前视觉状态、当前未总结原始消息、可用回忆片段、额外上下文、当前用户消息、当前时间。
+  - 目前 `system_extra_blocks` 只保留视觉资源清单这类半稳定内容。
+  - 较长期语义记忆和最近阶段摘要已经移到 `user_prompt` 的动态尾部，位于未总结原始消息之前。
+  - `user_prompt` 仍包含高动态内容：较长期语义记忆、最近阶段摘要、当前未总结原始消息、可用回忆片段、额外上下文、当前视觉状态、当前用户消息、当前时间。
 - `companion_v01/llm_runtime.py`
   - Anthropic 协议会保留 `system_extra_blocks`，让 Anthropic client 拼成 content blocks。
-  - 非 Anthropic / OpenAI-compatible 路径会把 `system_prompt + system_extra_blocks` 合并成一个 system 字符串。
+  - 非 Anthropic / OpenAI-compatible 路径会把 `system_prompt + system_extra_blocks` 合并成一个 system 字符串；因此动态记忆不应放进 `system_extra_blocks`。
   - 最终回复可发送 `prompt_cache_key`；DeepSeek-like streaming 在支持时会发送 `stream_options={"include_usage": True}` 拿 usage。
   - 缓存指标同时兼容 Anthropic 风格的 `cache_read_input_tokens` / `cache_creation_input_tokens`，以及 DeepSeek 风格的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`。
 - `services/llm_client.py`
@@ -31,6 +32,8 @@ Akane 的缓存命中率还能优化，但后续收益大概率是小步、测�
 - `companion_v01/engine.py`
   - 主最终回复使用 `prompt_cache_key="chat:final"`。
   - raw timeline 对齐很关键：之前 structured-history 改法让命中率下降，恢复 raw timeline 后命中率回到原来的区间。
+
+2026-07-02 更新：DeepSeek-like 自动硬盘缓存更依赖稳定前缀完整匹配。Akane 已把语义记忆和阶段摘要从 `system_extra_blocks` 移到 `user_prompt`，避免这些每轮可能变化的记忆层污染 system prefix。视觉资源清单仍留在 `system_extra_blocks`，因为它比当前轮记忆、检索片段和时间锚点更稳定。
 
 本地已知缓存相关提交：
 

@@ -140,17 +140,17 @@ Important current ordering:
    - tool prompt context;
    - current assistant persona state inserted after the format rules.
 2. `system_extra_blocks`
-   - resource context;
-   - semantic memory;
-   - episodic summaries.
+   - resource context.
 3. `user_prompt`
    - debug flag;
    - final user prompt suffix;
    - persona reference context;
-   - extra context;
-   - current visual state;
+   - semantic memory;
+   - episodic summaries;
    - raw unsummarized timeline;
    - retrieval snippets;
+   - extra context;
+   - current visual state;
    - current user message;
    - current time.
 4. `prompt_audit_sections`

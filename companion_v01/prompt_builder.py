@@ -161,9 +161,8 @@ class PromptBuilder:
 
         persona_system = str(persona_system_context or "").strip()
         base_system_prompt = str(system_prompt_override or "").strip() or self.persona.final_system_prompt
-        mode_prompt = (
-            str(mode_prompt_override or "").strip()
-            or (self.persona.final_debug_mode_prompt if debug_enabled else self.persona.final_fast_mode_prompt)
+        mode_prompt = str(mode_prompt_override or "").strip() or (
+            self.persona.final_debug_mode_prompt if debug_enabled else self.persona.final_fast_mode_prompt
         )
         format_addendum = mode_prompt + tool_prompt_context
         if allow_tool_call:
@@ -191,27 +190,34 @@ class PromptBuilder:
             system_extra_blocks.append(resource_block)
             prompt_audit_sections.append({"name": "system_extra.resource_context", "text": resource_block})
         semantic_text = str(semantic_summary_text or "").strip()
+        semantic_block = ""
         if semantic_text:
             semantic_block = f"较长期的语义记忆（最多3条）：\n{semantic_text}"
-            system_extra_blocks.append(semantic_block)
-            prompt_audit_sections.append({"name": "system_extra.semantic_memory", "text": semantic_block})
+            prompt_audit_sections.append({"name": "user.semantic_memory", "text": semantic_block})
         episodic_text = str(episodic_summary_text or "").strip()
+        episodic_block = ""
         if episodic_text:
             episodic_block = f"最近可见的阶段摘要（5~10条弹性窗口）：\n{episodic_text}"
-            system_extra_blocks.append(episodic_block)
-            prompt_audit_sections.append({"name": "system_extra.episodic_summary", "text": episodic_block})
+            prompt_audit_sections.append({"name": "user.episodic_summary", "text": episodic_block})
+        # DeepSeek-style prefix caches are very sensitive to early dynamic text.
+        # Keep volatile memory layers out of the system prefix so stable persona/tool
+        # instructions can still be reused across turns.
+        memory_context_blocks = [block for block in [semantic_block, episodic_block] if block]
+        memory_context_text = "\n\n".join(memory_context_blocks)
+        memory_context_prompt = f"{memory_context_text}\n\n" if memory_context_text else ""
 
-        current_time_text = datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M')
+        current_time_text = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M")
         user_prompt = (
             f"debug_enabled={str(debug_enabled).lower()}\n"
             f"{self.persona.final_user_prompt_suffix}\n\n"
             f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
-            f"{extra_context}\n\n"
-            f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
             "如果记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
             "回应时自然带着这份余温即可，不要把它当作用户事实，也不要生硬复述标签。\n\n"
+            f"{memory_context_prompt}"
             f"当前会话中所有未总结的原始消息：\n{raw_text or '(无)'}\n\n"
             f"可用回忆片段：\n{memory_text}\n\n"
+            f"{extra_context}\n\n"
+            f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
             f"用户原始消息：\n{current_message_text}\n\n"
             f"当前时间：{current_time_text}\n"
         )
@@ -231,11 +237,12 @@ class PromptBuilder:
                 {"name": "user.full", "text": user_prompt},
                 {"name": "user.instruction_suffix", "text": self.persona.final_user_prompt_suffix},
                 {"name": "user.persona_reference_context", "text": persona_reference_context or "(无额外表达侧面参考)"},
+                {"name": "user.memory_context", "text": memory_context_text},
+                {"name": "user.raw_recent_timeline", "text": raw_text or "(无)"},
+                {"name": "user.retrieval_snippets", "text": memory_text},
                 {"name": "user.extra_context", "text": extra_context},
                 *extra_context_subsections,
                 {"name": "user.current_visual_context", "text": current_visual_context},
-                {"name": "user.raw_recent_timeline", "text": raw_text or "(无)"},
-                {"name": "user.retrieval_snippets", "text": memory_text},
                 {"name": "user.current_message", "text": current_message_text},
                 {"name": "user.current_time", "text": current_time_text},
             ]
