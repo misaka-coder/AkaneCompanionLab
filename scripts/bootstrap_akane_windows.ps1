@@ -95,7 +95,7 @@ function Test-PythonImports {
             $oldNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
             $PSNativeCommandUseErrorActionPreference = $false
         }
-        & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, memcore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
+        & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, charpack_core, memcore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
         return $LASTEXITCODE -eq 0
     } finally {
         if ($null -ne $hasNativeCommandPreference) {
@@ -136,6 +136,24 @@ function Assert-CoreSourceDependencies {
     $comfyuiAdapterPyproject = Join-Path $comfyuiAdapterPath "pyproject.toml"
     if (-not (Test-Path -LiteralPath $comfyuiAdapterPyproject -PathType Leaf)) {
         throw "capcore-adapter-comfyui source checkout was not found at '$comfyuiAdapterPath'. Clone capcore-adapter-comfyui next to AkaneCompanionLab, or install a packaged capcore-adapter-comfyui release and update requirements.txt."
+    }
+
+    $nativeToolsProviderPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore-provider-native-tools"))
+    $nativeToolsProviderPyproject = Join-Path $nativeToolsProviderPath "pyproject.toml"
+    if (-not (Test-Path -LiteralPath $nativeToolsProviderPyproject -PathType Leaf)) {
+        throw "capcore-provider-native-tools source checkout was not found at '$nativeToolsProviderPath'. Clone capcore-provider-native-tools next to AkaneCompanionLab, or install a packaged capcore-provider-native-tools release and update requirements.txt."
+    }
+
+    $openaiProviderPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore-provider-openai"))
+    $openaiProviderPyproject = Join-Path $openaiProviderPath "pyproject.toml"
+    if (-not (Test-Path -LiteralPath $openaiProviderPyproject -PathType Leaf)) {
+        throw "capcore-provider-openai source checkout was not found at '$openaiProviderPath'. Clone capcore-provider-openai next to AkaneCompanionLab, or install a packaged capcore-provider-openai release and update requirements.txt."
+    }
+
+    $charpackPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\charpack-core"))
+    $charpackPyproject = Join-Path $charpackPath "pyproject.toml"
+    if (-not (Test-Path -LiteralPath $charpackPyproject -PathType Leaf)) {
+        throw "charpack-core source checkout was not found at '$charpackPath'. Clone charpack-core next to AkaneCompanionLab, or install a packaged charpack-core release and update requirements.txt."
     }
 
     $memcorePath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\memcore"))
