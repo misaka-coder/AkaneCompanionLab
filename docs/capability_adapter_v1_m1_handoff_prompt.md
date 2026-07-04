@@ -7,7 +7,7 @@
 
 # 任务：执行 AkaneCompanionLab Capability Adapter v1 — M1（骨架）
 
-你将完成 `F:\Akane\AkaneCompanionLab` 项目里 Capability Adapter v1 的第一个里程碑（M1: 骨架）。这是一个有完整设计文档和实施清单的工程任务，不是开放性探索。
+你将完成当前 AkaneCompanionLab 仓库里 Capability Adapter v1 的第一个里程碑（M1: 骨架）。这是一个有完整设计文档和实施清单的工程任务，不是开放性探索。
 
 ## 0. 第一件事——按顺序读完三份文档再动手
 

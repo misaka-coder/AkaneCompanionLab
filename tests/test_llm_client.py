@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from services.llm_client import _build_anthropic_payload, build_llm_client, normalize_api_protocol, normalize_base_url
-from companion_v01.llm_runtime import LLMRuntime
+from companion_v01.llm_runtime import LLMRuntime, ModelBundle
 from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
 from companion_v01.tool_invocation import (
     NATIVE_OPENAI,
@@ -61,6 +61,21 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(calls[0]["api_key"], "chat-key")
         self.assertEqual(calls[0]["base_url"], "http://chat.example/v1")
         self.assertEqual(calls[0]["protocol"], "openai")
+
+    def test_chat_model_override_reuses_current_chat_client(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._bundle_lock = threading.RLock()
+        client = SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1")
+        runtime.chat = ModelBundle(client=client, model="deepseek-chat")
+
+        override_bundle = runtime._chat_bundle_for_override("deepseek-v4-flash")
+        default_bundle = runtime._chat_bundle_for_override("")
+        invalid_bundle = runtime._chat_bundle_for_override("坏模型")
+
+        self.assertIs(override_bundle.client, client)
+        self.assertEqual(override_bundle.model, "deepseek-v4-flash")
+        self.assertIs(default_bundle, runtime.chat)
+        self.assertIs(invalid_bundle, runtime.chat)
 
     def test_llm_runtime_error_detail_redacts_secrets(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

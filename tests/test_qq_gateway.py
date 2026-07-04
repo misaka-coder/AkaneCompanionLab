@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
 from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
+from companion_v01.qq_route_helpers import (
+    apply_qq_current_outfit_visual,
+    qq_attachment_ready_wait_seconds,
+    qq_current_outfit_id_from_turn_payload,
+    qq_pending_image_attachment_ids,
+)
 
 
 QQ_BOT_FIXTURE_ID = 10001
@@ -49,6 +56,30 @@ class FakeCharacterResourceService:
             "user_label": item["user_title"],
             "pack_id": character_pack_id,
         }
+
+
+def fake_outfit_manifest() -> dict:
+    return {
+        "schema_version": 2,
+        "characters": {
+            "outfits": [
+                {
+                    "id": "default",
+                    "name": "默认服装",
+                    "aliases": ["日常"],
+                    "emotions": [{"id": "normal", "name": "普通"}],
+                },
+                {
+                    "id": "sailor",
+                    "name": "水手服",
+                    "aliases": ["蓝白制服"],
+                    "emotions": [{"id": "happy", "name": "开心"}],
+                },
+            ],
+        },
+        "defaults": {"outfit": "default", "emotion": "happy"},
+        "clients": {"desktop_pet": {"default_outfit": "default"}},
+    }
 
 
 class QQGatewayTests(unittest.TestCase):
@@ -181,7 +212,40 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(mentioned.should_respond)
         self.assertEqual(mentioned.reason, "group_mention")
         self.assertFalse(follow.should_respond)
-        self.assertEqual(follow.reason, "group_message_without_mention")
+        self.assertTrue(follow.should_record)
+        self.assertEqual(follow.reason, "group_passive_observed")
+        self.assertEqual(follow.to_turn_payload()["message"], f"【QQ {QQ_MASTER_FIXTURE_ID}】我是在回复别人")
+
+    def test_group_wake_word_triggers_response_without_at(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "group-wake-word-1",
+                "message": [
+                    {"type": "text", "data": {"text": "Akane，在吗"}},
+                ],
+            }
+        )
+
+        self.assertTrue(context.should_respond)
+        self.assertFalse(context.should_record)
+        self.assertEqual(context.reason, "group_wake_word")
+
+    def test_wake_word_prefix_can_trigger_fixed_commands(self) -> None:
+        gateway = NapCatQQGateway()
+
+        buy = gateway.parse_economy_command("Akane 购买 三色团子")
+        shop = gateway.parse_economy_command("Akane，商店")
+        model = gateway.parse_chat_model_command("Akane 模型列表")
+
+        self.assertEqual(buy, {"action": "buy", "item_name": "三色团子", "quantity": 1})
+        self.assertEqual(shop, {"action": "shop_list"})
+        self.assertEqual(model, {"action": "list"})
 
     def test_group_mention_opens_attachment_only_buffer_for_same_sender(self) -> None:
         gateway = NapCatQQGateway()
@@ -237,9 +301,11 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(buffered_image.clean_message, "发来了一张图片。")
         self.assertEqual(len(buffered_image.attachments or []), 1)
         self.assertFalse(plain_text.should_respond)
-        self.assertEqual(plain_text.reason, "group_message_without_mention")
+        self.assertTrue(plain_text.should_record)
+        self.assertEqual(plain_text.reason, "group_passive_observed")
         self.assertFalse(other_user_image.should_respond)
-        self.assertEqual(other_user_image.reason, "group_message_without_mention")
+        self.assertTrue(other_user_image.should_record)
+        self.assertEqual(other_user_image.reason, "group_passive_observed")
 
     def test_group_members_share_group_scoped_memory(self) -> None:
         gateway = NapCatQQGateway()
@@ -644,6 +710,9 @@ class QQGatewayTests(unittest.TestCase):
 
         self.assertIsNotNone(list_result)
         self.assertEqual(list_result["status"], "listed")
+        self.assertIn("可用角色包\n", list_result["reply"])
+        self.assertIn("\n  reimu", list_result["reply"])
+        self.assertIn("\n  mika_sample", list_result["reply"])
         self.assertIn("reimu", list_result["reply"])
         self.assertIn("mika_sample", list_result["reply"])
 
@@ -733,9 +802,194 @@ class QQGatewayTests(unittest.TestCase):
         self.assertIsNotNone(unknown)
         self.assertFalse(unknown["ok"])
         self.assertEqual(unknown["status"], "unknown_character_pack")
+        self.assertIn("当前可用：\n", unknown["reply"])
+        self.assertIn("\n  reimu", unknown["reply"])
         self.assertIsNotNone(invalid)
         self.assertFalse(invalid["ok"])
         self.assertEqual(invalid["status"], "invalid_character_pack_id")
+
+    def test_outfit_command_switches_and_persists_current_qq_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "qq_gateway_state.json"
+            gateway = NapCatQQGateway(state_path=state_path)
+            gateway.set_session_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}", "reimu")
+            context = gateway.build_message_context(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "switch-outfit-1",
+                    "raw_message": "切换服装 水手服",
+                }
+            )
+
+            result = gateway.handle_outfit_command(
+                context,
+                resource_manifest_builder=lambda _pack_id: fake_outfit_manifest(),
+            )
+
+            self.assertIsNotNone(result)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "switched")
+            self.assertTrue(result["_llm_passthrough"])
+            self.assertIn("水手服", result["qq_action_note"])
+            self.assertIn("水手服", result["turn_message"])
+            self.assertEqual(result["character_pack_id"], "reimu")
+            self.assertEqual(result["outfit_id"], "sailor")
+            self.assertEqual(gateway.resolve_session_outfit_id(f"qq_pri_{QQ_USER_FIXTURE_ID}"), "sailor")
+
+            restored_gateway = NapCatQQGateway(state_path=state_path)
+            self.assertEqual(restored_gateway.resolve_session_outfit_id(f"qq_pri_{QQ_USER_FIXTURE_ID}"), "sailor")
+
+    def test_outfit_command_lists_current_and_resets_to_default(self) -> None:
+        gateway = NapCatQQGateway()
+        gateway.set_session_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}", "reimu")
+        gateway.set_session_outfit_id(f"qq_pri_{QQ_USER_FIXTURE_ID}", "sailor")
+
+        list_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "outfit-list-1",
+                "raw_message": "服装列表",
+            }
+        )
+        current_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "outfit-current-1",
+                "raw_message": "当前服装",
+            }
+        )
+        reset_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "outfit-reset-1",
+                "raw_message": "切回默认服装",
+            }
+        )
+        unknown_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "outfit-unknown-1",
+                "raw_message": "切换服装 不存在",
+            }
+        )
+
+        list_result = gateway.handle_outfit_command(
+            list_context, resource_manifest_builder=lambda _pack_id: fake_outfit_manifest()
+        )
+        current_result = gateway.handle_outfit_command(
+            current_context, resource_manifest_builder=lambda _pack_id: fake_outfit_manifest()
+        )
+        reset_result = gateway.handle_outfit_command(
+            reset_context, resource_manifest_builder=lambda _pack_id: fake_outfit_manifest()
+        )
+        unknown_result = gateway.handle_outfit_command(
+            unknown_context, resource_manifest_builder=lambda _pack_id: fake_outfit_manifest()
+        )
+
+        self.assertIsNotNone(list_result)
+        self.assertEqual(list_result["status"], "listed")
+        self.assertIn("可用服装\n", list_result["reply"])
+        self.assertIn("\n  default（默认服装）", list_result["reply"])
+        self.assertIn("\n  sailor（水手服）", list_result["reply"])
+        self.assertIn("sailor", list_result["reply"])
+        self.assertIsNotNone(current_result)
+        self.assertEqual(current_result["status"], "current")
+        self.assertIn("本会话临时切换", current_result["reply"])
+        self.assertIsNotNone(reset_result)
+        self.assertEqual(reset_result["status"], "default")
+        self.assertTrue(reset_result["_llm_passthrough"])
+        self.assertIn("默认服装", reset_result["turn_message"])
+        self.assertIsNotNone(unknown_result)
+        self.assertEqual(unknown_result["status"], "unknown_outfit")
+        self.assertIn("当前可用：\n", unknown_result["reply"])
+        self.assertIn("\n  sailor（水手服）", unknown_result["reply"])
+        self.assertEqual(gateway.resolve_session_outfit_id(f"qq_pri_{QQ_USER_FIXTURE_ID}"), "")
+
+    def test_switching_character_clears_session_outfit_override(self) -> None:
+        gateway = NapCatQQGateway()
+        service = FakeCharacterResourceService()
+        gateway.set_session_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}", "reimu")
+        gateway.set_session_outfit_id(f"qq_pri_{QQ_USER_FIXTURE_ID}", "sailor")
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "switch-character-clears-outfit-1",
+                "raw_message": "切换角色 mika_sample",
+            }
+        )
+
+        result = gateway.handle_character_command(context, character_resource_service=service)
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["character_pack_id"], "mika_sample")
+        self.assertEqual(gateway.resolve_session_outfit_id(f"qq_pri_{QQ_USER_FIXTURE_ID}"), "")
+
+    def test_qq_image_attachments_wait_for_vision_timeout_window(self) -> None:
+        config_module = SimpleNamespace(
+            QQ_ATTACHMENT_READY_WAIT_SECONDS=8.0,
+            VISION_REQUEST_TIMEOUT=60.0,
+        )
+        image_context = SimpleNamespace(attachments=[{"kind": "image"}])
+        document_context = SimpleNamespace(attachments=[{"kind": "document"}])
+
+        self.assertEqual(qq_attachment_ready_wait_seconds(image_context, config_module), 65.0)
+        self.assertEqual(qq_attachment_ready_wait_seconds(document_context, config_module), 8.0)
+
+    def test_pending_image_attachment_ids_only_selects_pending_images(self) -> None:
+        registered = [
+            {"attachment_id": "img_1", "kind": "image"},
+            {"attachment_id": "doc_1", "kind": "document"},
+            {"attachment_id": "img_2", "kind": "image"},
+        ]
+        wait_result = {"pending": ["img_1", "doc_1"], "ready": ["img_2"], "failed": []}
+
+        self.assertEqual(qq_pending_image_attachment_ids(registered, wait_result), ["img_1"])
+
+    def test_pending_image_attachment_ids_can_use_wait_result_kinds(self) -> None:
+        wait_result = {
+            "pending": ["img_1", "doc_1"],
+            "ready": [],
+            "failed": [],
+            "kinds_by_id": {"img_1": "image", "doc_1": "document"},
+        }
+
+        self.assertEqual(qq_pending_image_attachment_ids([], wait_result), ["img_1"])
+
+    def test_qq_turn_payload_includes_current_outfit_visual(self) -> None:
+        gateway = NapCatQQGateway()
+        gateway.set_session_outfit_id(f"qq_pri_{QQ_USER_FIXTURE_ID}", "sailor")
+        context = SimpleNamespace(
+            session_id=f"qq_pri_{QQ_USER_FIXTURE_ID}",
+            profile_user_id="qq_user",
+        )
+        engine = SimpleNamespace(
+            build_resource_manifest=lambda **_kwargs: fake_outfit_manifest(),
+        )
+        turn_payload = {"character_pack_id": "reimu"}
+
+        apply_qq_current_outfit_visual(turn_payload, qq_gateway=gateway, context=context, engine=engine)
+
+        self.assertEqual(turn_payload["current_visual"]["character"]["outfit"], "sailor")
+        self.assertEqual(turn_payload["current_visual"]["emotion"], "happy")
 
     @patch("companion_v01.qq_gateway.config.QQ_REPLY_MODE", "auto")
     def test_reply_mode_command_switches_current_qq_session(self) -> None:
@@ -773,6 +1027,156 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(next_context.to_turn_payload()["qq_reply_mode"], "voice")
         self.assertEqual(next_context.to_delivery_context()["reply_mode"], "voice")
         self.assertIn("当前 QQ 回复投递模式：语音模式", next_context.extra_context)
+
+    def test_chat_model_command_switches_current_qq_session_for_master(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "chat-model-switch-1",
+                "raw_message": "切换模型 deepseek-v4-flash",
+            }
+        )
+
+        command = gateway.parse_chat_model_command(context.clean_message)
+        result = gateway.handle_chat_model_command(
+            context,
+            command=command,
+            default_model="deepseek-chat",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "switched")
+        self.assertEqual(result["chat_model"], "deepseek-v4-flash")
+        self.assertIn("供应商、密钥和 base_url 仍使用当前全局配置", result["reply"])
+        self.assertEqual(gateway.resolve_chat_model_override(context.session_id), "deepseek-v4-flash")
+
+        next_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "chat-model-switch-2",
+                "raw_message": "在吗",
+            }
+        )
+        self.assertEqual(next_context.chat_model_override, "deepseek-v4-flash")
+        self.assertEqual(next_context.to_turn_payload()["chat_model_override"], "deepseek-v4-flash")
+        self.assertEqual(next_context.to_delivery_context()["chat_model_override"], "deepseek-v4-flash")
+        self.assertIn("当前 QQ 会话临时聊天模型：deepseek-v4-flash", next_context.extra_context)
+
+    def test_chat_model_command_lists_current_provider_models(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "chat-model-list-1",
+                "raw_message": "模型列表",
+            }
+        )
+
+        result = gateway.handle_chat_model_command(
+            context,
+            command=gateway.parse_chat_model_command(context.clean_message),
+            default_model="deepseek-chat",
+            available_models=["deepseek-v4-flash", "qwen/qwen3-coder"],
+        )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "listed")
+        self.assertIn("当前供应商可用模型", result["reply"])
+        self.assertIn("\n  deepseek-v4-flash\n", result["reply"])
+        self.assertIn("\n  qwen/qwen3-coder\n", result["reply"])
+        self.assertIn("切换模型 模型名", result["reply"])
+
+    def test_chat_model_command_rejects_non_master(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_OTHER_USER_FIXTURE_ID,
+                "message_id": "chat-model-forbidden-1",
+                "raw_message": "切换模型 deepseek-v4-flash",
+            }
+        )
+
+        result = gateway.handle_chat_model_command(
+            context,
+            command=gateway.parse_chat_model_command(context.clean_message),
+            default_model="deepseek-chat",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "forbidden")
+        self.assertEqual(gateway.resolve_chat_model_override(context.session_id), "")
+
+    def test_chat_model_command_state_persists_session_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "qq_gateway_state.json"
+            gateway = NapCatQQGateway(state_path=state_path)
+            context = gateway.build_message_context(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_MASTER_FIXTURE_ID,
+                    "message_id": "chat-model-persist-1",
+                    "raw_message": "model deepseek-v4-flash",
+                }
+            )
+
+            result = gateway.handle_chat_model_command(
+                context,
+                command=gateway.parse_chat_model_command(context.clean_message),
+                default_model="deepseek-chat",
+            )
+
+            self.assertIsNotNone(result)
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["state_persisted"])
+            self.assertTrue(state_path.is_file())
+
+            restored_gateway = NapCatQQGateway(state_path=state_path)
+            self.assertEqual(restored_gateway.resolve_chat_model_override(context.session_id), "deepseek-v4-flash")
+
+    def test_chat_model_default_command_clears_session_override(self) -> None:
+        gateway = NapCatQQGateway()
+        session_id = "master"
+        self.assertTrue(gateway.set_session_chat_model_override(session_id, "deepseek-v4-flash"))
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "chat-model-default-1",
+                "raw_message": "切回默认模型",
+            }
+        )
+
+        result = gateway.handle_chat_model_command(
+            context,
+            command=gateway.parse_chat_model_command(context.clean_message),
+            default_model="deepseek-chat",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "default")
+        self.assertEqual(result["chat_model"], "deepseek-chat")
+        self.assertEqual(gateway.resolve_chat_model_override(session_id), "")
 
     def test_send_voice_uses_onebot_record_segment(self) -> None:
         gateway = NapCatQQGateway()
@@ -970,6 +1374,20 @@ class QQGatewayTests(unittest.TestCase):
         payload = mocked_post.call_args.kwargs["json"]
         self.assertEqual(payload["group_id"], QQ_GROUP_FIXTURE_ID)
         self.assertEqual(payload["message"][0]["type"], "image")
+
+    def test_current_outfit_id_is_read_from_turn_payload_for_emotion_image_fallback(self) -> None:
+        self.assertEqual(
+            qq_current_outfit_id_from_turn_payload(
+                {
+                    "current_visual": {
+                        "emotion": "happy",
+                        "character": {"outfit": "sailor"},
+                    }
+                }
+            ),
+            "sailor",
+        )
+        self.assertEqual(qq_current_outfit_id_from_turn_payload({"current_visual": {}}), "")
 
     def test_mface_config_command_extracts_market_face_segment(self) -> None:
         gateway = NapCatQQGateway()
@@ -1434,9 +1852,11 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
     @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
     def test_self_check_returns_unreachable_on_connection_error(self) -> None:
         import requests as req_module
+
         gateway = NapCatQQGateway()
-        with patch("companion_v01.qq_gateway.requests.get",
-                   side_effect=req_module.exceptions.ConnectionError("refused")):
+        with patch(
+            "companion_v01.qq_gateway.requests.get", side_effect=req_module.exceptions.ConnectionError("refused")
+        ):
             result = gateway.self_check()
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "unreachable")
@@ -1446,9 +1866,9 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
     @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
     def test_self_check_returns_timeout_on_request_timeout(self) -> None:
         import requests as req_module
+
         gateway = NapCatQQGateway()
-        with patch("companion_v01.qq_gateway.requests.get",
-                   side_effect=req_module.exceptions.Timeout("timed out")):
+        with patch("companion_v01.qq_gateway.requests.get", side_effect=req_module.exceptions.Timeout("timed out")):
             result = gateway.self_check()
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "timeout")
@@ -1460,8 +1880,12 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
 
         class FakeResponse:
             status_code = 401
-            def raise_for_status(self): pass
-            def json(self): return {}
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {}
 
         with patch("companion_v01.qq_gateway.requests.get", return_value=FakeResponse()):
             result = gateway.self_check()
@@ -1476,7 +1900,10 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
 
         class FakeResponse:
             status_code = 200
-            def raise_for_status(self): pass
+
+            def raise_for_status(self):
+                pass
+
             def json(self):
                 return {
                     "retcode": 0,
@@ -1506,7 +1933,10 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
 
         class FakeResponse:
             status_code = 200
-            def raise_for_status(self): pass
+
+            def raise_for_status(self):
+                pass
+
             def json(self):
                 return {
                     "retcode": 0,

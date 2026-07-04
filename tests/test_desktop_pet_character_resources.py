@@ -45,9 +45,7 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         self.assertEqual(payload["defaults"]["outfit"], "猫娘")
         self.assertEqual({item["id"] for item in outfit["emotions"]}, {"开心", "害羞"})
         self.assertTrue(
-            outfit["emotions"][0]["path"].startswith(
-                "/desktop-pet-character-packs/mika_pack/assets/characters/猫娘/"
-            )
+            outfit["emotions"][0]["path"].startswith("/desktop-pet-character-packs/mika_pack/assets/characters/猫娘/")
         )
 
         prompt_context = manifest.build_character_prompt_context() if manifest is not None else ""
@@ -132,9 +130,7 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         service = DesktopPetCharacterResourceService(characters_dir=characters_dir)
         manifest = service.get_manifest("mika_pack")
         self.assertIsNotNone(manifest)
-        normalized = manifest.normalize_visual_output(
-            {"emotion": "cheerful", "character": {"outfit": "猫娘"}}
-        )
+        normalized = manifest.normalize_visual_output({"emotion": "cheerful", "character": {"outfit": "猫娘"}})
         self.assertEqual(normalized["emotion"], "开心")
 
         context = service.build_persona_prompt_context(
@@ -192,13 +188,57 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         self.assertIn("角色自称：我", context["system_context"])
         self.assertIn("会在 QQ 里陪店长聊天", context["system_context"])
         self.assertIn("图片文件名去掉扩展名", context["system_context"])
-        self.assertIn("- 猫娘: 开心", context["system_context"])
+        self.assertIn("当前角色包可用服装：", context["system_context"])
+        self.assertIn("- 猫娘", context["system_context"])
+        self.assertIn("当前服装 猫娘 可用 emotion：", context["system_context"])
+        self.assertIn("- 开心", context["system_context"])
         self.assertIn("cheerful -> 开心", context["system_context"])
         self.assertIn("说话风格: 温柔但简短。", context["reference_context"])
         self.assertIn("边界与禁忌: 不要把自己说成通用客服。", context["reference_context"])
         self.assertNotIn("desktop_pet only", context["system_context"])
         self.assertNotIn("character.outfit", context["system_context"])
         self.assertNotIn("默认服装", context["system_context"])
+
+    def test_qq_persona_context_limits_emotions_to_preferred_outfit(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        characters_dir = Path(temp_dir.name) / "characters"
+        pack_dir = characters_dir / "mika_pack"
+
+        write_bytes(pack_dir / "assets" / "characters" / "default" / "开心.png")
+        write_bytes(pack_dir / "assets" / "characters" / "sailor" / "害羞.png")
+        write_json(
+            pack_dir / "character.json",
+            {
+                "identity": {"id": "mika_pack", "name": "Mika"},
+                "appearance": {
+                    "default_outfit": "default",
+                    "default_emotion": "开心",
+                },
+                "emotion_aliases": {
+                    "happy": ["开心"],
+                    "shy": ["害羞"],
+                },
+            },
+        )
+
+        service = DesktopPetCharacterResourceService(characters_dir=characters_dir)
+        manifest = service.get_manifest("mika_pack")
+        self.assertIsNotNone(manifest)
+        context = service.build_persona_prompt_context(
+            "mika_pack",
+            resource_manifest=manifest,
+            client_mode="qq_text",
+            preferred_outfit="sailor",
+        )
+
+        self.assertIn("当前角色包可用服装：", context["system_context"])
+        self.assertIn("id:default", context["system_context"])
+        self.assertIn("- sailor", context["system_context"])
+        self.assertIn("当前服装 sailor 可用 emotion：", context["system_context"])
+        self.assertIn("- 害羞", context["system_context"])
+        self.assertIn("shy -> 害羞", context["system_context"])
+        self.assertNotIn("happy -> 开心", context["system_context"])
 
     def test_qq_delivery_mface_map_expands_only_current_pack_emotion_aliases(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
@@ -267,7 +307,9 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         reimu_dir = characters_dir / "reimu_pack"
         akane_dir = characters_dir / "akane_pack"
 
-        write_bytes(reimu_dir / "assets" / "characters" / "default" / "开心.png", b"reimu")
+        write_bytes(reimu_dir / "assets" / "characters" / "default" / "开心.png", b"reimu-default")
+        write_bytes(reimu_dir / "assets" / "characters" / "sailor" / "开心.png", b"reimu-sailor")
+        write_bytes(reimu_dir / "assets" / "characters" / "maid" / "害羞.png", b"reimu-maid")
         write_bytes(akane_dir / "assets" / "characters" / "default" / "开心.png", b"akane")
         write_json(
             reimu_dir / "character.json",
@@ -288,9 +330,13 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
 
         service = DesktopPetCharacterResourceService(characters_dir=characters_dir)
         reimu_image = service.resolve_emotion_image_file("reimu_pack", "happy")
+        reimu_sailor_image = service.resolve_emotion_image_file("reimu_pack", "happy", outfit_id="sailor")
+        reimu_maid_fallback = service.resolve_emotion_image_file("reimu_pack", "happy", outfit_id="maid")
         akane_image = service.resolve_emotion_image_file("akane_pack", "happy")
 
         self.assertTrue(reimu_image["path"].endswith("reimu_pack\\assets\\characters\\default\\开心.png"))
+        self.assertTrue(reimu_sailor_image["path"].endswith("reimu_pack\\assets\\characters\\sailor\\开心.png"))
+        self.assertTrue(reimu_maid_fallback["path"].endswith("reimu_pack\\assets\\characters\\maid\\害羞.png"))
         self.assertTrue(akane_image["path"].endswith("akane_pack\\assets\\characters\\default\\开心.png"))
         self.assertNotEqual(reimu_image["path"], akane_image["path"])
 
@@ -337,7 +383,9 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         )
 
         combined = "\n".join([context["system_context"], context["reference_context"]])
-        self.assertIn("- default: 害羞", combined)
+        self.assertIn("当前角色包可用服装：", combined)
+        self.assertIn("当前服装 默认 (id:default) 可用 emotion：", combined)
+        self.assertIn("- 害羞", combined)
         self.assertEqual(combined.count("emotion=害羞"), 3)
         self.assertNotIn("emotion=开心", combined)
         self.assertNotIn("emotion=生气", combined)

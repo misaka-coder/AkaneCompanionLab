@@ -134,8 +134,13 @@ class AttachmentInboxService:
         failed: list[str] = []
         pending_final: list[str] = []
         missing: list[str] = []
+        kinds_by_id: dict[str, str] = {}
         for item_id in normalized_ids:
-            status = str((latest.get(item_id) or {}).get("status") or "missing")
+            latest_item = latest.get(item_id) or {}
+            status = str(latest_item.get("status") or "missing")
+            kind = str(latest_item.get("kind") or "").strip().lower()
+            if kind:
+                kinds_by_id[item_id] = kind
             if status == "ready":
                 ready.append(item_id)
             elif status == "failed":
@@ -150,6 +155,7 @@ class AttachmentInboxService:
             "failed": failed,
             "pending": pending_final,
             "missing": missing,
+            "kinds_by_id": kinds_by_id,
         }
 
     def build_prompt_context(

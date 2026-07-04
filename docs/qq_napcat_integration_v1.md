@@ -43,11 +43,11 @@ QQ_REQUIRE_FILE_DELIVERY_INTENT=true
 - `QQ_BOT_QQ`：机器人 QQ，用于识别群聊里是否被 at。
 - `MASTER_QQ`：主创 QQ。该 QQ 的私聊会映射到 `master` 记忆身份。
 - `QQ_CHARACTER_PACK_ID`：QQ 文字聊天默认使用的 Creator Kit 角色包 id。留空时使用内置 Akane 人设；例如设为 `reimu` 后，QQ 每轮会把 `character_pack_id=reimu` 传给后端，角色包 persona 会进入 `qq_text` prompt，聊天记忆也会按该角色包隔离。
-- `QQ_GROUP_PLAINTEXT_ENABLED`：是否允许群聊不 at 也回复。默认关闭。
+- `QQ_GROUP_PLAINTEXT_ENABLED`：旧兼容项。当前群聊普通消息会静默入库但不触发 LLM；只有 at 机器人或包含 `Akane` 唤醒词时才回复。
 - `QQ_GROUP_FOLLOW_TTL_SECONDS`：旧配置名，仍可作为附件缓冲窗口的兜底 TTL。
 - `QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS`：群聊被 at 后，允许同一用户补发图片/文件的时间窗口。普通文字不受这个窗口影响。
 - `QQ_ATTACHMENT_DEBOUNCE_SECONDS`：QQ 连发图片/文件时的短防抖窗口。窗口内较早事件只入库不触发回复，最后一个事件统一唤醒 Akane，默认 `1.2` 秒。
-- `QQ_ATTACHMENT_READY_WAIT_SECONDS`：附件入库后，主回复最多等待视觉观察 / 文件解析完成的秒数，默认 `8` 秒。超时后仍会回复，但 Prompt 会显示仍有附件在处理中。
+- `QQ_ATTACHMENT_READY_WAIT_SECONDS`：附件入库后，主回复最多等待文件解析完成的秒数，默认 `8` 秒。QQ 图片会自动提升到 `VISION_REQUEST_TIMEOUT + 5` 的等待窗口，尽量保证首轮回复就能看到视觉摘要；超时后仍会回复，但 Prompt 会显示仍有附件在处理中。
 - `QQ_REPLY_SEGMENT_DELAY_SECONDS`：`speech_segments` 分多条发到 QQ 时，每条之间的象征性停顿秒数，默认 `0.8`，最大 `3.0`。
 - `QQ_EVENT_MAX_AGE_SECONDS`：忽略超过该秒数的旧 QQ 事件，避免 NapCat / OneBot 重连后把历史消息重新灌进当前对话。设为 `0` 可关闭时间拦截。
 - `QQ_ALLOW_STALE_EVENTS`：是否允许处理旧事件，默认 `false`。只建议临时排查回放事件时打开。
@@ -80,7 +80,8 @@ GET http://127.0.0.1:9999/api/qq/napcat/status
 
 群聊：
 
-- 默认只有 at 机器人时才回复。
+- 默认只有 at 机器人，或消息里包含 `Akane` 唤醒词时才回复。
+- 没有触发词的普通群消息也会写入当前群聊记忆，并参与后台记忆压缩；它们不会触发 LLM，也不会向群里发消息。
 - 不启用 follow 窗口；@ 之后的普通群消息仍然不会自动触发回复。
 - @ 之后会为同一个发送者打开一个短暂的“附件缓冲窗口”；在窗口内补发的图片/文件可以不再次 @，用于适配手机端不能边 @ 边发图的限制。
 - 附件缓冲窗口只接收图片/文件/音频等附件消息，不接收普通文字消息，也不接收其他群成员的附件。
@@ -154,6 +155,17 @@ QQ 支持会话级角色切换；私聊和每个群聊各自保存当前角色�
 - `切回Akane`：当前会话强制使用内置 Akane 人设，不绑定角色包。
 
 切换成功后，后续 QQ 消息会继续带对应 `character_pack_id`，聊天记忆也按该角色包隔离。
+
+### QQ 聊天模型切换指令
+
+QQ 支持主人在当前会话里临时切换聊天模型。该功能只改 `CHAT_MODEL_NAME` 对应的模型 id，不切换供应商、API Key 或 `base_url`；供应商仍由控制中心 / `.env` 的全局配置决定。该命令只允许 `MASTER_QQ` 使用。
+
+- `模型列表`：向当前配置的供应商查询可用模型，并按一行一个模型 id 返回。
+- `当前模型`：查看当前 QQ 会话正在使用的聊天模型。
+- `切换模型 deepseek-v4-flash` / `model deepseek-v4-flash`：把当前 QQ 会话临时切到指定模型。
+- `切回默认模型`：清除当前会话临时模型，恢复全局 `CHAT_MODEL_NAME`。
+
+切换后只影响当前 QQ 会话；私聊和每个群聊互不影响。若供应商的模型列表接口暂时不可用，仍可直接用已知模型 id 手动切换。
 
 ## 6. QQ 附件
 

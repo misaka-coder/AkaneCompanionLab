@@ -852,6 +852,7 @@ class AkaneMemoryEngine:
         character_pack_id: str,
         resource_manifest: ResourceManifest | None = None,
         client_mode: str = ClientMode.DESKTOP_PET.value,
+        preferred_outfit: str = "",
     ) -> dict[str, str]:
         service = getattr(self, "desktop_pet_character_resources", None)
         if service is None or not character_pack_id:
@@ -864,6 +865,7 @@ class AkaneMemoryEngine:
                 character_pack_id,
                 resource_manifest=resource_manifest,
                 client_mode=client_mode,
+                preferred_outfit=preferred_outfit,
             )
         except Exception as exc:
             logger.warning("desktop pet character pack prompt context failed: %s", exc)
@@ -1702,6 +1704,71 @@ class AkaneMemoryEngine:
 
         return _fn(user_message=user_message, now_ts=now_ts, date_label=date_label, time_of_day=time_of_day)
 
+    def record_passive_qq_message(self, payload: dict[str, Any]) -> dict[str, Any]:
+        turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
+        session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
+        profile_user_id = str(payload.get("real_user_id") or session_id)
+        user_message = str(payload.get("message") or "").strip()
+        if not user_message:
+            return {
+                "ok": False,
+                "status": "empty_message",
+                "session_id": session_id,
+                "profile_user_id": profile_user_id,
+                "character_pack_id": turn_character_pack_id,
+            }
+        now_ts = int(payload.get("timestamp") or time.time())
+        date_label = timestamp_to_date_label(now_ts)
+        time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
+        memory_metadata = {
+            "source": "qq_group_passive",
+            "client_mode": str(payload.get("client_mode") or "qq_text"),
+            "passive": True,
+        }
+        user_record = self.store.add_message(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=turn_character_pack_id,
+            role="user",
+            content=user_message,
+            timestamp=now_ts,
+            date_label=date_label,
+            time_of_day=time_of_day,
+            semantic_tags=extract_semantic_tags(user_message),
+            memory_metadata=memory_metadata,
+            index_in_vector=False,
+        )
+        self._schedule_summary_cycle(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=turn_character_pack_id,
+        )
+        memcore_result = self._record_memcore_user_turn(
+            user_record=user_record,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=turn_character_pack_id,
+        )
+        compaction_result = (
+            self._schedule_memcore_compaction(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
+            if self._memcore_owns_compaction()
+            else {}
+        )
+        return {
+            "ok": True,
+            "status": "recorded",
+            "source_id": str(user_record.get("source_id") or ""),
+            "session_id": session_id,
+            "profile_user_id": profile_user_id,
+            "character_pack_id": turn_character_pack_id,
+            "memcore": memcore_result,
+            "compaction": compaction_result,
+        }
+
     def _extract_desktop_screen_frame_images(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         from .engine_services.turn_context import extract_desktop_screen_frame_images as _fn
 
@@ -1789,6 +1856,7 @@ class AkaneMemoryEngine:
         client_context = self._resolve_client_protocol_context(payload)
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
+        chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
         session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
         profile_user_id = str(payload.get("real_user_id") or session_id)
@@ -1917,6 +1985,7 @@ class AkaneMemoryEngine:
             character_pack_id=turn_character_pack_id,
             user_images=desktop_screen_images,
             final_debug_enabled=final_debug_enabled,
+            chat_model_override=chat_model_override,
         )
         recent_raw_for_turn = list(recent_raw)
         tool_turns: list[dict[str, Any]] = []
@@ -1973,6 +2042,7 @@ class AkaneMemoryEngine:
                     user_images=desktop_screen_images,
                     allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
+                    chat_model_override=chat_model_override,
                 )
                 tool_round_index += 1
                 if allow_retry:
@@ -2013,6 +2083,7 @@ class AkaneMemoryEngine:
                     user_images=desktop_screen_images,
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
+                    chat_model_override=chat_model_override,
                 )
                 break
             seen_tool_calls.add(tool_signature)
@@ -2077,6 +2148,7 @@ class AkaneMemoryEngine:
                 user_images=desktop_screen_images,
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
+                chat_model_override=chat_model_override,
             )
             tool_round_index += 1
 
@@ -2213,6 +2285,7 @@ class AkaneMemoryEngine:
         client_context = self._resolve_client_protocol_context(payload)
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
+        chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
         session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
         profile_user_id = str(payload.get("real_user_id") or session_id)
@@ -2341,6 +2414,7 @@ class AkaneMemoryEngine:
             character_pack_id=turn_character_pack_id,
             user_images=desktop_screen_images,
             final_debug_enabled=final_debug_enabled,
+            chat_model_override=chat_model_override,
         )
         recent_raw_for_turn = list(recent_raw)
         tool_turns: list[dict[str, Any]] = []
@@ -2403,6 +2477,7 @@ class AkaneMemoryEngine:
                     user_images=desktop_screen_images,
                     allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
+                    chat_model_override=chat_model_override,
                 )
                 tool_round_index += 1
                 if allow_retry:
@@ -2443,6 +2518,7 @@ class AkaneMemoryEngine:
                     user_images=desktop_screen_images,
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
+                    chat_model_override=chat_model_override,
                 )
                 break
             seen_tool_calls.add(tool_signature)
@@ -2510,6 +2586,7 @@ class AkaneMemoryEngine:
                 user_images=desktop_screen_images,
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
+                chat_model_override=chat_model_override,
             )
             tool_round_index += 1
 
@@ -2784,6 +2861,7 @@ class AkaneMemoryEngine:
         user_images: list[dict[str, Any]] | None = None,
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
+        chat_model_override: str = "",
     ) -> dict[str, Any]:
         generation_context = self._prepare_final_response_context(
             session_id=session_id,
@@ -2802,6 +2880,7 @@ class AkaneMemoryEngine:
             allow_tool_call=allow_tool_call,
             final_debug_enabled=final_debug_enabled,
             enable_native_tools=True,
+            chat_model_override=chat_model_override,
         )
         result = self.llm.call_chat_json(
             system_prompt=str(generation_context["system_prompt"]),
@@ -2815,6 +2894,7 @@ class AkaneMemoryEngine:
             prompt_audit_sections=generation_context.get("prompt_audit_sections"),
             native_tools=generation_context.get("native_tools"),
             native_tool_choice=generation_context.get("native_tool_choice", ""),
+            chat_model_override=chat_model_override,
         )
         return self._normalize_final_output(
             result=result,
@@ -2847,6 +2927,7 @@ class AkaneMemoryEngine:
         user_images: list[dict[str, Any]] | None = None,
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
+        chat_model_override: str = "",
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
         generation_context = self._prepare_final_response_context(
             session_id=session_id,
@@ -2865,6 +2946,7 @@ class AkaneMemoryEngine:
             allow_tool_call=allow_tool_call,
             final_debug_enabled=final_debug_enabled,
             enable_native_tools=True,
+            chat_model_override=chat_model_override,
         )
         speaker_identity = self._resolve_turn_speaker_identity(
             client_context,
@@ -2886,6 +2968,7 @@ class AkaneMemoryEngine:
             system_extra_blocks=generation_context.get("system_extra_blocks"),
             history_turns=generation_context.get("history_turns"),
             prompt_audit_sections=generation_context.get("prompt_audit_sections"),
+            chat_model_override=chat_model_override,
             early_tool_call_validator=(
                 lambda call: (
                     self._normalize_tool_call(
@@ -2940,6 +3023,7 @@ class AkaneMemoryEngine:
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
         enable_native_tools: bool = False,
+        chat_model_override: str = "",
     ) -> dict[str, Any]:
         from .engine_services.response_builder import prepare_context as _fn
 
@@ -2961,6 +3045,7 @@ class AkaneMemoryEngine:
             allow_tool_call=allow_tool_call,
             final_debug_enabled=final_debug_enabled,
             enable_native_tools=enable_native_tools,
+            chat_model_override=chat_model_override,
         )
 
     def _normalize_final_output(

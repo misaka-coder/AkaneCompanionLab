@@ -5,16 +5,28 @@ import re
 import uuid
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..model_service_config import effective_settings_from_config, probe_model_ids, redact_provider_error
 from .voice import (
     GPT_SOVITS_PROVIDER_ID,
     _coerce_synthesized_audio,
     _resolve_tts_runtime_provider,
 )
+from ..qq_route_helpers import (
+    apply_qq_current_outfit_visual as _apply_qq_current_outfit_visual,
+    build_qq_resource_manifest_builder as _build_qq_resource_manifest_builder,
+    qq_attachment_ready_wait_seconds as _qq_attachment_ready_wait_seconds,
+    qq_current_outfit_id_from_turn_payload as _qq_current_outfit_id_from_turn_payload,
+    qq_pending_image_attachment_ids as _qq_pending_image_attachment_ids,
+)
+
+
+if TYPE_CHECKING:
+    from ..qq_gateway import NapCatQQGateway
 
 
 LogEvent = Callable[..., None]
@@ -163,10 +175,7 @@ def _streaming_allows_text(reply_mode: str, delivery_hint: str) -> bool:
 
 
 def _frame_reply_medium(frame: dict[str, Any], *, delivery_hint: str = "") -> str:
-    return (
-        _normalize_reply_medium(frame.get("reply_medium"))
-        or _normalize_reply_medium(delivery_hint)
-    )
+    return _normalize_reply_medium(frame.get("reply_medium")) or _normalize_reply_medium(delivery_hint)
 
 
 def _resolve_delivery_medium(
@@ -176,9 +185,11 @@ def _resolve_delivery_medium(
     frame: dict[str, Any],
     delivery_hint: str = "",
 ) -> dict[str, str]:
-    reply_mode = _normalize_reply_medium(getattr(context, "reply_mode", "")) or _normalize_reply_medium(
-        qq_gateway.resolve_reply_mode(getattr(context, "session_id", ""))
-    ) or "auto"
+    reply_mode = (
+        _normalize_reply_medium(getattr(context, "reply_mode", ""))
+        or _normalize_reply_medium(qq_gateway.resolve_reply_mode(getattr(context, "session_id", "")))
+        or "auto"
+    )
     model_medium = _frame_reply_medium(frame, delivery_hint=delivery_hint) or "text"
     medium = model_medium if reply_mode == "auto" else reply_mode
     if medium not in {"text", "voice", "both"}:
@@ -415,14 +426,13 @@ def _send_qq_emotion_image_fallback(
     context: Any,
     frame: dict[str, Any],
     qq_delivery_config: dict[str, Any],
+    current_outfit_id: str = "",
 ) -> dict[str, Any]:
     character_pack_id = str(getattr(context, "character_pack_id", "") or "").strip()
     if not character_pack_id:
         return {"ok": True, "status": "skipped", "reason": "empty_character_pack_id"}
     image_config = (
-        qq_delivery_config.get("emotion_images")
-        if isinstance(qq_delivery_config.get("emotion_images"), dict)
-        else {}
+        qq_delivery_config.get("emotion_images") if isinstance(qq_delivery_config.get("emotion_images"), dict) else {}
     )
     if image_config.get("enabled") is False:
         return {"ok": True, "status": "skipped", "reason": "disabled"}
@@ -432,7 +442,12 @@ def _send_qq_emotion_image_fallback(
         return {"ok": True, "status": "skipped", "reason": "missing_character_resource_service"}
     emotion = str((frame or {}).get("emotion") or "").strip()
     try:
-        image = resolver(character_pack_id, emotion)
+        image = resolver(character_pack_id, emotion, outfit_id=current_outfit_id)
+    except TypeError:
+        try:
+            image = resolver(character_pack_id, emotion)
+        except Exception:
+            image = {}
     except Exception:
         image = {}
     if not isinstance(image, dict) or not image.get("path"):
@@ -464,10 +479,21 @@ def _process_qq_turn_streaming(
     stream_send_results: list[dict[str, Any]] = []
     frame: dict[str, Any] = {}
     delivery_hint = ""
-    active_reply_mode = _normalize_reply_medium(getattr(context, "reply_mode", "")) or _normalize_reply_medium(
-        qq_gateway.resolve_reply_mode(getattr(context, "session_id", ""))
-    ) or "auto"
-    max_streamed = max(0, min(20, int(getattr(config_module, "QQ_STREAM_MAX_SEGMENTS", getattr(config_module, "QQ_REPLY_MAX_SEGMENTS", 8)) or 0)))
+    active_reply_mode = (
+        _normalize_reply_medium(getattr(context, "reply_mode", ""))
+        or _normalize_reply_medium(qq_gateway.resolve_reply_mode(getattr(context, "session_id", "")))
+        or "auto"
+    )
+    max_streamed = max(
+        0,
+        min(
+            20,
+            int(
+                getattr(config_module, "QQ_STREAM_MAX_SEGMENTS", getattr(config_module, "QQ_REPLY_MAX_SEGMENTS", 8))
+                or 0
+            ),
+        ),
+    )
     stream_enabled = bool(getattr(config_module, "QQ_STREAM_REPLIES_ENABLED", True)) and max_streamed > 0
 
     for stream_event in engine.process_turn_stream(turn_payload):
@@ -552,6 +578,7 @@ def _process_qq_turn_streaming(
     emotion_image_result = {"ok": True, "status": "skipped", "reason": "not_attempted"}
     if send_result.get("ok"):
         qq_delivery_config = _load_qq_delivery_config(engine, context)
+        current_outfit_id = _qq_current_outfit_id_from_turn_payload(turn_payload)
         emotion_mface_result = qq_gateway.send_emotion_mface(
             context,
             frame,
@@ -564,6 +591,7 @@ def _process_qq_turn_streaming(
                 context=context,
                 frame=frame,
                 qq_delivery_config=qq_delivery_config,
+                current_outfit_id=current_outfit_id,
             )
     else:
         emotion_mface_result = {
@@ -604,6 +632,169 @@ def build_qq_router(
 ) -> APIRouter:
     router = APIRouter()
 
+    def _prepare_qq_turn_payload(
+        *,
+        context: Any,
+        event: dict[str, Any],
+        message_override: str = "",
+        action_note: str = "",
+        extra_context_note: str = "",
+    ) -> dict[str, Any]:
+        turn_payload = context.to_turn_payload()
+        if message_override:
+            turn_payload["message"] = message_override
+        _apply_qq_current_outfit_visual(turn_payload, qq_gateway=qq_gateway, context=context, engine=engine)
+        if action_note:
+            turn_payload["qq_action_note"] = action_note
+        if extra_context_note:
+            original_extra_context = str(turn_payload.get("extra_context") or "").strip()
+            turn_payload["extra_context"] = "\n\n".join(
+                part
+                for part in (
+                    original_extra_context,
+                    extra_context_note,
+                )
+                if part
+            )
+        if context.reason == "qq_poke":
+            log_event(
+                "qq_poke_context",
+                session_id=context.session_id,
+                profile_user_id=context.profile_user_id,
+                is_group=bool(context.is_group),
+                group_id=int(getattr(context, "group_id", 0) or 0),
+                event_user_id=str(event.get("user_id") or ""),
+                event_sender_id=str(event.get("sender_id") or ""),
+                event_operator_id=str(event.get("operator_id") or ""),
+                event_target_id=str(event.get("target_id") or ""),
+                event_self_id=str(event.get("self_id") or ""),
+                resolved_user_id=int(getattr(context, "user_id", 0) or 0),
+                sender_label=str(getattr(context, "sender_label", "") or ""),
+                turn_message=str(turn_payload.get("message") or "")[:240],
+            )
+        return turn_payload
+
+    async def _run_qq_turn_delivery(
+        *,
+        context: Any,
+        event: dict[str, Any],
+        turn_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        remote_prefetch_result = await asyncio.to_thread(
+            engine.prefetch_remote_media_links_for_message,
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            message=context.clean_message or context.raw_message,
+            timestamp=int(event.get("time") or time.time()),
+        )
+        if isinstance(remote_prefetch_result, dict) and str(remote_prefetch_result.get("followup_context") or "").strip():
+            prefetch_context = str(remote_prefetch_result.get("followup_context") or "").strip()
+            original_extra_context = str(turn_payload.get("extra_context") or "").strip()
+            turn_payload["extra_context"] = "\n\n".join(
+                part
+                for part in (
+                    original_extra_context,
+                    "【链接素材预处理结果】\n" + prefetch_context,
+                )
+                if part
+            )
+        turn_result = await asyncio.to_thread(
+            _process_qq_turn_streaming,
+            engine=engine,
+            qq_gateway=qq_gateway,
+            context=context,
+            turn_payload=turn_payload,
+            config_module=config_module,
+            tts_client=tts_client,
+            gpt_sovits_client_factory=gpt_sovits_client_factory,
+        )
+        file_send_result = dict(turn_result.get("file_send_result") or {"ok": True, "count": 0, "results": []})
+        for item in list(file_send_result.get("results") or []):
+            generated_id = str(item.get("generated_id") or "").strip()
+            if not generated_id:
+                continue
+            await asyncio.to_thread(
+                engine.mark_generated_file_delivery,
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                generated_id=generated_id,
+                delivery_status="sent" if item.get("ok") else "failed",
+                timestamp=int(time.time()),
+            )
+        return turn_result
+
+    async def _run_qq_image_vision_followup(
+        *,
+        context: Any,
+        event: dict[str, Any],
+        attachment_ids: list[str],
+        attachments_registered: list[dict[str, Any]],
+        message_override: str = "",
+        action_note: str = "",
+    ) -> None:
+        started_at = time.perf_counter()
+        try:
+            wait_result = await asyncio.to_thread(
+                engine.wait_for_qq_attachments_settled,
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                attachment_ids=attachment_ids,
+                timeout_seconds=_qq_attachment_ready_wait_seconds(context, config_module),
+            )
+            pending_image_ids = _qq_pending_image_attachment_ids(attachments_registered, wait_result)
+            kinds_by_id = wait_result.get("kinds_by_id") if isinstance(wait_result.get("kinds_by_id"), dict) else {}
+            failed_image_ids = [
+                str(item or "").strip()
+                for item in list(wait_result.get("failed") or [])
+                if str(item or "").strip() and str(kinds_by_id.get(str(item or "").strip()) or "").lower() == "image"
+            ]
+            if pending_image_ids or failed_image_ids:
+                log_event(
+                    "qq_image_vision_followup_not_ready",
+                    session_id=context.session_id,
+                    profile_user_id=context.profile_user_id,
+                    pending_count=len(pending_image_ids),
+                    failed_count=len(failed_image_ids),
+                    attachment_count=len(getattr(context, "attachments", None) or []),
+                    attachments_registered=len(attachments_registered),
+                    duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
+                )
+                return
+
+            turn_payload = _prepare_qq_turn_payload(
+                context=context,
+                event=event,
+                message_override=message_override,
+                action_note=action_note,
+                extra_context_note=(
+                    "【本轮 QQ 图片内容】\n"
+                    "用户刚刚发送的图片视觉摘要已经生成；当前材料工作台里的最新图片就是本轮用户发来的图片内容。"
+                    "请直接基于视觉描述回应，不要说“让我看看”“我还没看到图片”。"
+                ),
+            )
+            turn_result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
+            send_result = dict(
+                turn_result.get("send_result") or {"ok": False, "reason": "missing_send_result", "results": []}
+            )
+            log_event(
+                "qq_image_vision_followup_sent",
+                session_id=context.session_id,
+                profile_user_id=context.profile_user_id,
+                sent=bool(send_result.get("ok")),
+                attachment_count=len(getattr(context, "attachments", None) or []),
+                attachments_registered=len(attachments_registered),
+                duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
+            )
+        except Exception as exc:
+            logger.exception("qq image vision followup failed")
+            log_event(
+                "qq_image_vision_followup_error",
+                session_id=getattr(context, "session_id", ""),
+                profile_user_id=getattr(context, "profile_user_id", ""),
+                reason=str(exc)[:500],
+                duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
+            )
+
     @router.get("/api/qq/napcat/status")
     async def qq_napcat_status() -> JSONResponse:
         return JSONResponse({"status": "ok", "data": qq_gateway.status()})
@@ -631,12 +822,52 @@ def build_qq_router(
 
             context = qq_gateway.build_message_context(event)
             if not context.should_respond:
+                if bool(getattr(context, "should_record", False)):
+                    recorder = getattr(engine, "record_passive_qq_message", None)
+                    turn_payload = context.to_turn_payload()
+                    turn_payload["timestamp"] = int(event.get("time") or time.time())
+                    record_result = (
+                        await asyncio.to_thread(recorder, turn_payload)
+                        if callable(recorder)
+                        else {"ok": False, "status": "recorder_unavailable"}
+                    )
+                    record_payload = record_result if isinstance(record_result, dict) else {}
+                    record_ok = bool(record_payload.get("ok"))
+                    duration_ms = (time.perf_counter() - started_at) * 1000
+                    runtime_metrics.observe_request(
+                        "qq_napcat_event",
+                        duration_ms=duration_ms,
+                        ok=record_ok,
+                    )
+                    log_event(
+                        "qq_passive_group_message_recorded",
+                        session_id=context.session_id,
+                        profile_user_id=context.profile_user_id,
+                        group_id=int(getattr(context, "group_id", 0) or 0),
+                        user_id=int(getattr(context, "user_id", 0) or 0),
+                        reason=context.reason,
+                        record_status=str(record_payload.get("status") or ""),
+                        duration_ms=round(duration_ms, 1),
+                    )
+                    return JSONResponse(
+                        {
+                            "status": "recorded" if record_ok else "record_failed",
+                            "reason": context.reason,
+                            "session_id": context.session_id,
+                            "profile_user_id": context.profile_user_id,
+                            "character_pack_id": str(getattr(context, "character_pack_id", "") or ""),
+                            "record_result": record_result,
+                        }
+                    )
                 runtime_metrics.observe_request(
                     "qq_napcat_event",
                     duration_ms=(time.perf_counter() - started_at) * 1000,
                     ok=True,
                 )
                 return JSONResponse({"status": "ignored", "reason": context.reason})
+
+            _qq_action_note = ""
+            _qq_turn_message_override = ""
 
             mface_config_result = qq_gateway.handle_mface_config_command(context, event)
             if isinstance(mface_config_result, dict):
@@ -712,6 +943,64 @@ def build_qq_router(
                     }
                 )
 
+            outfit_command_result = qq_gateway.handle_outfit_command(
+                context,
+                resource_manifest_builder=_build_qq_resource_manifest_builder(engine, context),
+            )
+            if isinstance(outfit_command_result, dict):
+                if outfit_command_result.get("_llm_passthrough"):
+                    _qq_action_note = str(outfit_command_result.get("qq_action_note") or "").strip()
+                    _qq_turn_message_override = str(outfit_command_result.get("turn_message") or "").strip()
+                    log_event(
+                        "qq_outfit_command",
+                        session_id=context.session_id,
+                        profile_user_id=context.profile_user_id,
+                        command_status=str(outfit_command_result.get("status") or ""),
+                        command_ok=bool(outfit_command_result.get("ok")),
+                        character_pack_id=str(outfit_command_result.get("character_pack_id") or ""),
+                        outfit_id=str(outfit_command_result.get("outfit_id") or ""),
+                        state_persisted=outfit_command_result.get("state_persisted"),
+                        llm_passthrough=True,
+                        sent=False,
+                    )
+                else:
+                    reply = str(outfit_command_result.get("reply") or "").strip()
+                    send_result = (
+                        qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                    )
+                    duration_ms = (time.perf_counter() - started_at) * 1000
+                    runtime_metrics.observe_request(
+                        "qq_napcat_event",
+                        duration_ms=duration_ms,
+                        ok=bool(send_result.get("ok")),
+                    )
+                    log_event(
+                        "qq_outfit_command",
+                        session_id=context.session_id,
+                        profile_user_id=context.profile_user_id,
+                        command_status=str(outfit_command_result.get("status") or ""),
+                        command_ok=bool(outfit_command_result.get("ok")),
+                        character_pack_id=str(outfit_command_result.get("character_pack_id") or ""),
+                        outfit_id=str(outfit_command_result.get("outfit_id") or ""),
+                        state_persisted=outfit_command_result.get("state_persisted"),
+                        sent=bool(send_result.get("ok")),
+                        duration_ms=round(duration_ms, 1),
+                    )
+                    return JSONResponse(
+                        {
+                            "status": "ok" if send_result.get("ok") else "send_failed",
+                            "reason": "qq_outfit_command",
+                            "command_status": str(outfit_command_result.get("status") or ""),
+                            "command_ok": bool(outfit_command_result.get("ok")),
+                            "session_id": context.session_id,
+                            "profile_user_id": context.profile_user_id,
+                            "character_pack_id": str(outfit_command_result.get("character_pack_id") or ""),
+                            "outfit_id": str(outfit_command_result.get("outfit_id") or ""),
+                            "state_persisted": outfit_command_result.get("state_persisted"),
+                            "send_result": send_result,
+                        }
+                    )
+
             reply_mode_command_result = qq_gateway.handle_reply_mode_command(context)
             if isinstance(reply_mode_command_result, dict):
                 reply = str(reply_mode_command_result.get("reply") or "").strip()
@@ -745,6 +1034,60 @@ def build_qq_router(
                     }
                 )
 
+            chat_model_command = qq_gateway.parse_chat_model_command(context.clean_message)
+            if isinstance(chat_model_command, dict):
+                available_models: list[str] | None = None
+                list_error = ""
+                if str(chat_model_command.get("action") or "") == "list":
+                    try:
+                        settings = effective_settings_from_config(config_module)
+                        available_models = await asyncio.to_thread(probe_model_ids, settings)
+                    except Exception as exc:
+                        list_error = redact_provider_error(exc)
+                        available_models = []
+                chat_model_command_result = qq_gateway.handle_chat_model_command(
+                    context,
+                    command=chat_model_command,
+                    default_model=str(getattr(config_module, "CHAT_MODEL_NAME", "") or ""),
+                    available_models=available_models,
+                    list_error=list_error,
+                )
+                if isinstance(chat_model_command_result, dict):
+                    reply = str(chat_model_command_result.get("reply") or "").strip()
+                    send_result = (
+                        qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                    )
+                    duration_ms = (time.perf_counter() - started_at) * 1000
+                    runtime_metrics.observe_request(
+                        "qq_napcat_event",
+                        duration_ms=duration_ms,
+                        ok=bool(send_result.get("ok")),
+                    )
+                    log_event(
+                        "qq_chat_model_command",
+                        session_id=context.session_id,
+                        profile_user_id=context.profile_user_id,
+                        command_status=str(chat_model_command_result.get("status") or ""),
+                        command_ok=bool(chat_model_command_result.get("ok")),
+                        chat_model=str(chat_model_command_result.get("chat_model") or ""),
+                        has_model_override=bool(chat_model_command_result.get("chat_model_override")),
+                        sent=bool(send_result.get("ok")),
+                        duration_ms=round(duration_ms, 1),
+                    )
+                    return JSONResponse(
+                        {
+                            "status": "ok" if send_result.get("ok") else "send_failed",
+                            "reason": "qq_chat_model_command",
+                            "command_status": str(chat_model_command_result.get("status") or ""),
+                            "command_ok": bool(chat_model_command_result.get("ok")),
+                            "session_id": context.session_id,
+                            "profile_user_id": context.profile_user_id,
+                            "chat_model": str(chat_model_command_result.get("chat_model") or ""),
+                            "has_model_override": bool(chat_model_command_result.get("chat_model_override")),
+                            "send_result": send_result,
+                        }
+                    )
+
             _care_runtime = getattr(engine, "care_runtime", None)
             _char_resources = getattr(engine, "desktop_pet_character_resources", None)
             _shop_items = (
@@ -758,15 +1101,17 @@ def build_qq_router(
                 shop_items=_shop_items,
                 now_ms=int(time.time() * 1000),
             )
-            _qq_action_note = ""
             if isinstance(economy_command_result, dict):
                 if economy_command_result.get("_llm_passthrough"):
                     # Economy action processed; hand off to LLM for the actual reply
-                    _qq_action_note = str(economy_command_result.get("qq_action_note") or "").strip()
+                    economy_note = str(economy_command_result.get("qq_action_note") or "").strip()
+                    _qq_action_note = "\n".join(part for part in [_qq_action_note, economy_note] if part)
                     # fall through to LLM pipeline below
                 else:
                     reply = str(economy_command_result.get("reply") or "").strip()
-                    send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                    send_result = (
+                        qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                    )
                     duration_ms = (time.perf_counter() - started_at) * 1000
                     runtime_metrics.observe_request(
                         "qq_napcat_event",
@@ -840,79 +1185,108 @@ def build_qq_router(
                         if str(item or "").strip()
                     ]
                 if attachment_ids:
-                    await asyncio.to_thread(
+                    has_image_attachment = any(
+                        isinstance(item, dict) and str(item.get("kind") or "").strip().lower() == "image"
+                        for item in list(context.attachments or [])
+                    )
+                    if has_image_attachment:
+                        asyncio.create_task(
+                            _run_qq_image_vision_followup(
+                                context=context,
+                                event=dict(event),
+                                attachment_ids=attachment_ids,
+                                attachments_registered=[
+                                    item for item in attachments_registered if isinstance(item, dict)
+                                ],
+                                message_override=_qq_turn_message_override,
+                                action_note=_qq_action_note,
+                            )
+                        )
+                        duration_ms = (time.perf_counter() - started_at) * 1000
+                        runtime_metrics.observe_request("qq_napcat_event", duration_ms=duration_ms, ok=True)
+                        log_event(
+                            "qq_image_vision_followup_scheduled",
+                            session_id=context.session_id,
+                            profile_user_id=context.profile_user_id,
+                            attachment_count=len(context.attachments or []),
+                            attachments_registered=len(attachments_registered),
+                            duration_ms=round(duration_ms, 1),
+                        )
+                        return JSONResponse(
+                            {
+                                "status": "buffered",
+                                "reason": "qq_image_vision_followup_scheduled",
+                                "session_id": context.session_id,
+                                "profile_user_id": context.profile_user_id,
+                                "character_pack_id": str(getattr(context, "character_pack_id", "") or ""),
+                                "attachment_count": len(context.attachments or []),
+                                "attachments_registered": len(attachments_registered),
+                            }
+                        )
+                    attachment_wait_result = await asyncio.to_thread(
                         engine.wait_for_qq_attachments_settled,
                         profile_user_id=context.profile_user_id,
                         session_id=context.session_id,
                         attachment_ids=attachment_ids,
-                        timeout_seconds=float(getattr(config_module, "QQ_ATTACHMENT_READY_WAIT_SECONDS", 8.0) or 0.0),
+                        timeout_seconds=_qq_attachment_ready_wait_seconds(context, config_module),
                     )
+                    pending_image_ids = _qq_pending_image_attachment_ids([], attachment_wait_result)
+                    if pending_image_ids:
+                        asyncio.create_task(
+                            _run_qq_image_vision_followup(
+                                context=context,
+                                event=dict(event),
+                                attachment_ids=attachment_ids,
+                                attachments_registered=[
+                                    item for item in attachments_registered if isinstance(item, dict)
+                                ],
+                                message_override=_qq_turn_message_override,
+                                action_note=_qq_action_note,
+                            )
+                        )
+                        duration_ms = (time.perf_counter() - started_at) * 1000
+                        runtime_metrics.observe_request("qq_napcat_event", duration_ms=duration_ms, ok=True)
+                        log_event(
+                            "qq_image_vision_followup_scheduled",
+                            session_id=context.session_id,
+                            profile_user_id=context.profile_user_id,
+                            attachment_count=len(context.attachments or []),
+                            attachments_registered=len(attachments_registered),
+                            pending_image_count=len(pending_image_ids),
+                            duration_ms=round(duration_ms, 1),
+                        )
+                        return JSONResponse(
+                            {
+                                "status": "buffered",
+                                "reason": "qq_image_vision_followup_scheduled",
+                                "session_id": context.session_id,
+                                "profile_user_id": context.profile_user_id,
+                                "character_pack_id": str(getattr(context, "character_pack_id", "") or ""),
+                                "attachment_count": len(context.attachments or []),
+                                "attachments_registered": len(attachments_registered),
+                                "pending_image_count": len(pending_image_ids),
+                            }
+                        )
 
-            turn_payload = context.to_turn_payload()
-            if _qq_action_note:
-                turn_payload["qq_action_note"] = _qq_action_note
-            if context.reason == "qq_poke":
-                log_event(
-                    "qq_poke_context",
-                    session_id=context.session_id,
-                    profile_user_id=context.profile_user_id,
-                    is_group=bool(context.is_group),
-                    group_id=int(getattr(context, "group_id", 0) or 0),
-                    event_user_id=str(event.get("user_id") or ""),
-                    event_sender_id=str(event.get("sender_id") or ""),
-                    event_operator_id=str(event.get("operator_id") or ""),
-                    event_target_id=str(event.get("target_id") or ""),
-                    event_self_id=str(event.get("self_id") or ""),
-                    resolved_user_id=int(getattr(context, "user_id", 0) or 0),
-                    sender_label=str(getattr(context, "sender_label", "") or ""),
-                    turn_message=str(turn_payload.get("message") or "")[:240],
-                )
-            remote_prefetch_result = await asyncio.to_thread(
-                engine.prefetch_remote_media_links_for_message,
-                profile_user_id=context.profile_user_id,
-                session_id=context.session_id,
-                message=context.clean_message or context.raw_message,
-                timestamp=int(event.get("time") or time.time()),
-            )
-            if isinstance(remote_prefetch_result, dict) and str(remote_prefetch_result.get("followup_context") or "").strip():
-                prefetch_context = str(remote_prefetch_result.get("followup_context") or "").strip()
-                original_extra_context = str(turn_payload.get("extra_context") or "").strip()
-                turn_payload["extra_context"] = "\n\n".join(
-                    part
-                    for part in (
-                        original_extra_context,
-                        "【链接素材预处理结果】\n" + prefetch_context,
-                    )
-                    if part
-                )
-            turn_result = await asyncio.to_thread(
-                _process_qq_turn_streaming,
-                engine=engine,
-                qq_gateway=qq_gateway,
+            turn_payload = _prepare_qq_turn_payload(
                 context=context,
-                turn_payload=turn_payload,
-                config_module=config_module,
-                tts_client=tts_client,
-                gpt_sovits_client_factory=gpt_sovits_client_factory,
+                event=event,
+                message_override=_qq_turn_message_override,
+                action_note=_qq_action_note,
             )
+            turn_result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
             frame = dict(turn_result.get("frame") or {})
             reply_messages = list(turn_result.get("reply_messages") or [])
-            send_result = dict(turn_result.get("send_result") or {"ok": False, "reason": "missing_send_result", "results": []})
-            emotion_mface_result = dict(turn_result.get("emotion_mface_result") or {"ok": True, "status": "skipped", "reason": "missing_result"})
-            emotion_image_result = dict(turn_result.get("emotion_image_result") or {"ok": True, "status": "skipped", "reason": "missing_result"})
+            send_result = dict(
+                turn_result.get("send_result") or {"ok": False, "reason": "missing_send_result", "results": []}
+            )
+            emotion_mface_result = dict(
+                turn_result.get("emotion_mface_result") or {"ok": True, "status": "skipped", "reason": "missing_result"}
+            )
+            emotion_image_result = dict(
+                turn_result.get("emotion_image_result") or {"ok": True, "status": "skipped", "reason": "missing_result"}
+            )
             file_send_result = dict(turn_result.get("file_send_result") or {"ok": True, "count": 0, "results": []})
-            for item in list(file_send_result.get("results") or []):
-                generated_id = str(item.get("generated_id") or "").strip()
-                if not generated_id:
-                    continue
-                await asyncio.to_thread(
-                    engine.mark_generated_file_delivery,
-                    profile_user_id=context.profile_user_id,
-                    session_id=context.session_id,
-                    generated_id=generated_id,
-                    delivery_status="sent" if item.get("ok") else "failed",
-                    timestamp=int(time.time()),
-                )
         except Exception as exc:
             duration_ms = (time.perf_counter() - started_at) * 1000
             runtime_metrics.observe_request("qq_napcat_event", duration_ms=duration_ms, ok=False)

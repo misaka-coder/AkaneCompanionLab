@@ -95,6 +95,36 @@ QQ_CHARACTER_SWITCH_PATTERNS = (
     re.compile(r"^(?:切换到|切到|换成)[:：\s]+([A-Za-z0-9_.-]+)$", re.IGNORECASE),
     re.compile(r"^character[:：\s]+(.+)$", re.IGNORECASE),
 )
+QQ_WAKE_WORD_RE = re.compile(r"(^|[^A-Za-z0-9])akane([^A-Za-z0-9]|$)", re.IGNORECASE)
+QQ_OUTFIT_LIST_COMMANDS = {
+    "服装列表",
+    "可用服装",
+    "可用服装列表",
+    "有哪些服装",
+    "查看服装列表",
+    "衣服列表",
+}
+QQ_OUTFIT_CURRENT_COMMANDS = {
+    "当前服装",
+    "现在服装",
+    "服装状态",
+    "qq当前服装",
+}
+QQ_OUTFIT_DEFAULT_COMMANDS = {
+    "切回默认服装",
+    "恢复默认服装",
+    "使用默认服装",
+    "清除服装切换",
+    "取消服装切换",
+    "重置服装",
+}
+QQ_OUTFIT_SWITCH_PATTERNS = (
+    re.compile(r"^(?:切换|更换|换)(?:到|成)?(?:QQ)?(?:服装|衣服|衣装)(?:为|到|成)?[:：\s]+(.+)$", re.IGNORECASE),
+    re.compile(r"^(?:使用|启用)(?:QQ)?(?:服装|衣服|衣装)[:：\s]+(.+)$", re.IGNORECASE),
+    re.compile(r"^(?:服装|衣服|衣装)(?:切换|切到|改为|换成)[:：\s]+(.+)$", re.IGNORECASE),
+    re.compile(r"^(?:服装|衣服|衣装)[:：\s]+(.+)$", re.IGNORECASE),
+    re.compile(r"^(?:穿上|换上)[:：\s]*(.+)$", re.IGNORECASE),
+)
 QQ_REPLY_MODES = {"text", "voice", "both", "auto"}
 QQ_REPLY_MODE_LABELS = {
     "text": "文字模式",
@@ -126,6 +156,33 @@ QQ_REPLY_MODE_SWITCH_COMMANDS = {
     "自动模式": "auto",
     "自动回复模式": "auto",
 }
+QQ_CHAT_MODEL_LIST_COMMANDS = {
+    "模型列表",
+    "可用模型",
+    "可用模型列表",
+    "查看模型列表",
+    "有哪些模型",
+}
+QQ_CHAT_MODEL_CURRENT_COMMANDS = {
+    "当前模型",
+    "现在模型",
+    "模型状态",
+    "qq当前模型",
+}
+QQ_CHAT_MODEL_DEFAULT_COMMANDS = {
+    "切回默认模型",
+    "恢复默认模型",
+    "使用默认模型",
+    "清除模型切换",
+    "取消模型切换",
+    "重置模型",
+}
+QQ_CHAT_MODEL_SWITCH_PATTERNS = (
+    re.compile(r"^(?:切换|更换|换)(?:到|成)?(?:QQ)?模型(?:为|到|成)?[:：\s]+(.+)$", re.IGNORECASE),
+    re.compile(r"^(?:使用|启用)(?:QQ)?模型[:：\s]+(.+)$", re.IGNORECASE),
+    re.compile(r"^模型(?:切换|切到|改为|换成)[:：\s]+(.+)$", re.IGNORECASE),
+    re.compile(r"^model[:：\s]+(.+)$", re.IGNORECASE),
+)
 QQ_GATEWAY_STATE_SCHEMA_VERSION = "akane.qq_gateway_state.v1"
 
 QQ_ECONOMY_CHECKIN_COMMANDS: frozenset[str] = frozenset({"签到", "每日签到", "领签到", "签到领奖"})
@@ -182,6 +239,7 @@ def _is_economy_status_query(text: str) -> bool:
 class QQMessageContext:
     should_respond: bool
     reason: str
+    should_record: bool = False
     is_group: bool = False
     target_id: int = 0
     user_id: int = 0
@@ -194,6 +252,7 @@ class QQMessageContext:
     sender_label: str = ""
     character_pack_id: str = ""
     reply_mode: str = ""
+    chat_model_override: str = ""
     attachments: list[dict[str, Any]] | None = None
 
     def to_turn_payload(self) -> dict[str, Any]:
@@ -216,6 +275,9 @@ class QQMessageContext:
         reply_mode = _safe_reply_mode(self.reply_mode, default="")
         if reply_mode:
             payload["qq_reply_mode"] = reply_mode
+        chat_model_override = _safe_chat_model_id(self.chat_model_override)
+        if chat_model_override:
+            payload["chat_model_override"] = chat_model_override
         return payload
 
     def to_delivery_context(self) -> dict[str, Any]:
@@ -236,6 +298,9 @@ class QQMessageContext:
         reply_mode = _safe_reply_mode(self.reply_mode, default="")
         if reply_mode:
             payload["reply_mode"] = reply_mode
+        chat_model_override = _safe_chat_model_id(self.chat_model_override)
+        if chat_model_override:
+            payload["chat_model_override"] = chat_model_override
         return payload
 
 
@@ -249,8 +314,12 @@ class NapCatQQGateway:
         self._state_path = Path(state_path) if state_path is not None else None
         self.character_pack_overrides: dict[str, str] = {}
         self._character_pack_lock = threading.RLock()
+        self.outfit_overrides: dict[str, str] = {}
+        self._outfit_lock = threading.RLock()
         self.reply_mode_overrides: dict[str, str] = {}
         self._reply_mode_lock = threading.RLock()
+        self.chat_model_overrides: dict[str, str] = {}
+        self._chat_model_lock = threading.RLock()
         self.emotion_mface_state: dict[str, dict[str, Any]] = {}
         self._emotion_mface_lock = threading.RLock()
         self.emotion_image_state: dict[str, dict[str, Any]] = {}
@@ -269,37 +338,62 @@ class NapCatQQGateway:
         if not isinstance(payload, dict):
             self._state_error = "invalid_state_payload"
             return
-        raw_overrides = payload.get("character_pack_overrides")
-        if not isinstance(raw_overrides, dict):
-            return
         overrides: dict[str, str] = {}
-        for raw_key, raw_value in raw_overrides.items():
-            key = _safe_qq_session_key(raw_key)
-            if not key:
-                continue
-            pack_id = _safe_character_pack_id(raw_value)
-            if str(raw_value or "").strip() and not pack_id:
-                continue
-            overrides[key] = pack_id
+        raw_overrides = payload.get("character_pack_overrides")
+        if isinstance(raw_overrides, dict):
+            for raw_key, raw_value in raw_overrides.items():
+                key = _safe_qq_session_key(raw_key)
+                if not key:
+                    continue
+                pack_id = _safe_character_pack_id(raw_value)
+                if str(raw_value or "").strip() and not pack_id:
+                    continue
+                overrides[key] = pack_id
         with self._character_pack_lock:
             self.character_pack_overrides = overrides
 
-    def _persist_character_pack_overrides(self) -> bool:
+        outfit_overrides: dict[str, str] = {}
+        raw_outfits = payload.get("outfit_overrides")
+        if isinstance(raw_outfits, dict):
+            for raw_key, raw_value in raw_outfits.items():
+                key = _safe_qq_session_key(raw_key)
+                outfit_id = _safe_outfit_id(raw_value)
+                if key and outfit_id:
+                    outfit_overrides[key] = outfit_id
+        with self._outfit_lock:
+            self.outfit_overrides = outfit_overrides
+
+        model_overrides: dict[str, str] = {}
+        raw_models = payload.get("chat_model_overrides")
+        if isinstance(raw_models, dict):
+            for raw_key, raw_value in raw_models.items():
+                key = _safe_qq_session_key(raw_key)
+                model = _safe_chat_model_id(raw_value)
+                if key and model:
+                    model_overrides[key] = model
+        with self._chat_model_lock:
+            self.chat_model_overrides = model_overrides
+
+    def _persist_gateway_state(self) -> bool:
         if self._state_path is None:
             self._state_error = ""
             return True
         try:
             with self._character_pack_lock:
-                overrides = dict(self.character_pack_overrides)
+                character_overrides = dict(self.character_pack_overrides)
+            with self._outfit_lock:
+                outfit_overrides = dict(self.outfit_overrides)
+            with self._chat_model_lock:
+                chat_model_overrides = dict(self.chat_model_overrides)
             payload = {
                 "schema_version": QQ_GATEWAY_STATE_SCHEMA_VERSION,
-                "character_pack_overrides": overrides,
+                "character_pack_overrides": character_overrides,
+                "outfit_overrides": outfit_overrides,
+                "chat_model_overrides": chat_model_overrides,
                 "updated_at": int(time.time()),
             }
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = self._state_path.with_name(
-                f"{self._state_path.name}.{uuid.uuid4().hex}.tmp"
-            )
+            tmp_path = self._state_path.with_name(f"{self._state_path.name}.{uuid.uuid4().hex}.tmp")
             try:
                 tmp_path.write_text(
                     json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
@@ -318,6 +412,15 @@ class NapCatQQGateway:
         self._state_error = ""
         return True
 
+    def _persist_character_pack_overrides(self) -> bool:
+        return self._persist_gateway_state()
+
+    def _persist_outfit_overrides(self) -> bool:
+        return self._persist_gateway_state()
+
+    def _persist_chat_model_overrides(self) -> bool:
+        return self._persist_gateway_state()
+
     def status(self) -> dict[str, Any]:
         return {
             "enabled": bool(getattr(config, "QQ_BRIDGE_ENABLED", False)),
@@ -331,8 +434,12 @@ class NapCatQQGateway:
             "character_pack_id": self.character_pack_id,
             "default_character_pack_id": self.default_character_pack_id,
             "active_character_override_count": len(self.character_pack_overrides),
+            "active_outfit_override_count": len(self.outfit_overrides),
+            "active_chat_model_override_count": len(self.chat_model_overrides),
             "state_persistence_enabled": self._state_path is not None,
-            "state_status": "error" if self._state_error else ("enabled" if self._state_path is not None else "disabled"),
+            "state_status": "error"
+            if self._state_error
+            else ("enabled" if self._state_path is not None else "disabled"),
             "state_error": self._state_error,
             "reply_mode": self.default_reply_mode,
             "default_reply_mode": self.default_reply_mode,
@@ -451,7 +558,10 @@ class NapCatQQGateway:
 
     @property
     def onebot_http_url(self) -> str:
-        return str(getattr(config, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001") or "").strip().rstrip("/") or "http://127.0.0.1:3001"
+        return (
+            str(getattr(config, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001") or "").strip().rstrip("/")
+            or "http://127.0.0.1:3001"
+        )
 
     @property
     def bot_qq(self) -> str:
@@ -505,35 +615,54 @@ class NapCatQQGateway:
         mentions_bot = self.message_mentions_bot(event, raw_message)
         session_id, profile_user_id = self.resolve_identity(user_id=user_id, group_id=group_id)
         sender_label = self.resolve_sender_label(event=event, user_id=user_id)
-        allow_group_plaintext = self._is_group_plaintext_allowed(
-            session_id=session_id,
-            user_id=user_id,
-        )
+        mentions_wake_word = self.message_mentions_wake_word(clean_message)
         allow_group_attachment_buffer = self._is_group_attachment_buffer_allowed(
             session_id=session_id,
             user_id=user_id,
             attachments=attachments,
         )
+        character_pack_id = self.resolve_character_pack_id(session_id)
+        reply_mode = self.resolve_reply_mode(session_id)
+        chat_model_override = self.resolve_chat_model_override(session_id)
 
         if is_group:
-            if mentions_bot:
+            if mentions_bot or mentions_wake_word:
                 self._arm_group_attachment_buffer(
                     session_id=session_id,
                     user_id=user_id,
-                    reason="group_mention",
+                    reason="group_mention" if mentions_bot else "group_wake_word",
                 )
             elif allow_group_attachment_buffer:
                 pass
-            elif not allow_group_plaintext:
-                return QQMessageContext(False, "group_message_without_mention")
+            else:
+                return QQMessageContext(
+                    should_respond=False,
+                    reason="group_passive_observed",
+                    should_record=True,
+                    is_group=True,
+                    target_id=group_id,
+                    user_id=user_id,
+                    group_id=group_id,
+                    session_id=session_id,
+                    profile_user_id=profile_user_id,
+                    clean_message=clean_message,
+                    raw_message=raw_message,
+                    sender_label=sender_label,
+                    character_pack_id=character_pack_id,
+                    reply_mode=reply_mode,
+                    chat_model_override=chat_model_override,
+                    attachments=attachments,
+                )
 
-        character_pack_id = self.resolve_character_pack_id(session_id)
-        reply_mode = self.resolve_reply_mode(session_id)
         return QQMessageContext(
             should_respond=True,
             reason="private"
             if is_private
-            else ("group_mention" if mentions_bot else ("group_attachment_buffer" if allow_group_attachment_buffer else "group_follow")),
+            else (
+                "group_mention"
+                if mentions_bot
+                else ("group_wake_word" if mentions_wake_word else "group_attachment_buffer")
+            ),
             is_group=is_group,
             target_id=group_id if is_group else user_id,
             user_id=user_id,
@@ -545,6 +674,7 @@ class NapCatQQGateway:
             sender_label=sender_label,
             character_pack_id=character_pack_id,
             reply_mode=reply_mode,
+            chat_model_override=chat_model_override,
             attachments=attachments,
             extra_context=self.build_extra_context(
                 event=event,
@@ -553,6 +683,7 @@ class NapCatQQGateway:
                 group_id=group_id,
                 sender_label=sender_label,
                 reply_mode=reply_mode,
+                chat_model_override=chat_model_override,
             ),
         )
 
@@ -582,6 +713,7 @@ class NapCatQQGateway:
         sender_label = self.resolve_sender_label(event=event, user_id=user_id)
         character_pack_id = self.resolve_character_pack_id(session_id)
         reply_mode = self.resolve_reply_mode(session_id)
+        chat_model_override = self.resolve_chat_model_override(session_id)
         actor_label = sender_label or (f"QQ {user_id}" if user_id else "这位 QQ 用户")
         clean_message = f"刚才发生的互动：{actor_label}在 QQ 里戳了戳你的头像。"
         return QQMessageContext(
@@ -598,6 +730,7 @@ class NapCatQQGateway:
             sender_label=sender_label,
             character_pack_id=character_pack_id,
             reply_mode=reply_mode,
+            chat_model_override=chat_model_override,
             attachments=[],
             extra_context=self.build_extra_context(
                 event=event,
@@ -606,6 +739,7 @@ class NapCatQQGateway:
                 group_id=group_id,
                 sender_label=sender_label,
                 reply_mode=reply_mode,
+                chat_model_override=chat_model_override,
             )
             + f"\n本轮 QQ 事件：{actor_label}双击头像戳了戳你；{actor_label}就是本轮戳一戳的发送者，请把它当作一次真实互动回应。"
             + "\n若历史记忆、旧聊天记录或用户转述里出现“有人戳了戳你”这类模糊说法，请优先依据本轮 QQ 事件里的发送者标识来回应。",
@@ -631,6 +765,7 @@ class NapCatQQGateway:
             sender_label=str(value.get("sender_label") or ""),
             character_pack_id=_safe_character_pack_id(value.get("character_pack_id") or value.get("characterPackId")),
             reply_mode=_safe_reply_mode(value.get("reply_mode") or value.get("replyMode"), default=""),
+            chat_model_override=_safe_chat_model_id(value.get("chat_model_override") or value.get("chatModelOverride")),
             attachments=[],
         )
 
@@ -642,6 +777,30 @@ class NapCatQQGateway:
             if key in self.character_pack_overrides:
                 return _safe_character_pack_id(self.character_pack_overrides.get(key))
         return self.default_character_pack_id
+
+    def resolve_session_outfit_id(self, session_id: str) -> str:
+        key = _safe_qq_session_key(session_id)
+        if not key:
+            return ""
+        with self._outfit_lock:
+            return _safe_outfit_id(self.outfit_overrides.get(key))
+
+    def set_session_outfit_id(self, session_id: str, outfit_id: str) -> bool:
+        key = _safe_qq_session_key(session_id)
+        outfit = _safe_outfit_id(outfit_id)
+        if not key or not outfit:
+            return False
+        with self._outfit_lock:
+            self.outfit_overrides[key] = outfit
+        return self._persist_outfit_overrides()
+
+    def clear_session_outfit_override(self, session_id: str) -> bool:
+        key = _safe_qq_session_key(session_id)
+        if not key:
+            return False
+        with self._outfit_lock:
+            self.outfit_overrides.pop(key, None)
+        return self._persist_outfit_overrides()
 
     def handle_character_command(
         self,
@@ -666,12 +825,17 @@ class NapCatQQGateway:
                     "available_packs": [],
                 }
             labels = [self._format_pack_label(item) for item in packs[:20]]
-            suffix = f"；还有 {len(packs) - len(labels)} 个未显示" if len(packs) > len(labels) else ""
+            overflow_count = max(0, len(packs) - len(labels))
             return {
                 "handled": True,
                 "ok": True,
                 "status": "listed",
-                "reply": "可用角色包：" + "、".join(labels) + suffix + "。发送“切换角色 角色包id”即可切换当前 QQ 会话。",
+                "reply": self._build_multiline_option_reply(
+                    "可用角色包",
+                    labels,
+                    instruction="发送“切换角色 角色包id”即可切换当前 QQ 会话。",
+                    overflow_count=overflow_count,
+                ),
                 "character_pack_id": self.resolve_character_pack_id(context.session_id),
                 "available_packs": [str(item.get("pack_id") or "") for item in packs if str(item.get("pack_id") or "")],
             }
@@ -749,13 +913,16 @@ class NapCatQQGateway:
             )
             if not identity:
                 packs = self._list_character_packs(character_resource_service)
-                available = "、".join(str(item.get("pack_id") or "") for item in packs[:12] if str(item.get("pack_id") or ""))
-                hint = f"当前可用：{available}。" if available else "可以先在角色工坊创建或导入角色包。"
+                available = [str(item.get("pack_id") or "") for item in packs[:12] if str(item.get("pack_id") or "")]
+                hint = self._build_multiline_available_hint(
+                    available,
+                    empty_message="可以先在角色工坊创建或导入角色包。",
+                )
                 return {
                     "handled": True,
                     "ok": False,
                     "status": "unknown_character_pack",
-                    "reply": f"没有找到角色包 {requested_pack_id}。{hint}",
+                    "reply": f"没有找到角色包 {requested_pack_id}。\n{hint}",
                     "character_pack_id": self.resolve_character_pack_id(context.session_id),
                     "requested_pack_id": requested_pack_id,
                 }
@@ -769,6 +936,162 @@ class NapCatQQGateway:
                 "reply": self._append_state_persistence_warning(reply, state_persisted),
                 "character_pack_id": requested_pack_id,
                 "requested_pack_id": requested_pack_id,
+                "state_persisted": state_persisted,
+            }
+
+        return None
+
+    def handle_outfit_command(
+        self,
+        context: QQMessageContext,
+        *,
+        resource_manifest_builder: Any = None,
+    ) -> dict[str, Any] | None:
+        command = self.parse_outfit_command(context.clean_message)
+        if command is None:
+            return None
+
+        active_pack_id = self.resolve_character_pack_id(context.session_id)
+        if not active_pack_id:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "missing_character_pack",
+                "reply": "当前 QQ 会话还没有绑定角色包。请先发送“角色列表”或“切换角色 角色包id”。",
+                "character_pack_id": "",
+                "outfit_id": "",
+            }
+
+        outfits = self._list_manifest_outfits(
+            active_pack_id,
+            resource_manifest_builder=resource_manifest_builder,
+        )
+        action = str(command.get("action") or "")
+        if action == "list":
+            if not outfits:
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "status": "no_outfits",
+                    "reply": f"角色包 {active_pack_id} 当前没有可用服装资源。",
+                    "character_pack_id": active_pack_id,
+                    "outfit_id": self.resolve_session_outfit_id(context.session_id),
+                }
+            labels = [self._format_outfit_label(item) for item in outfits[:20]]
+            overflow_count = max(0, len(outfits) - len(labels))
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "listed",
+                "reply": self._build_multiline_option_reply(
+                    "可用服装",
+                    labels,
+                    instruction="发送“切换服装 服装id”即可切换当前 QQ 会话的服装感知。",
+                    overflow_count=overflow_count,
+                ),
+                "character_pack_id": active_pack_id,
+                "outfit_id": self.resolve_session_outfit_id(context.session_id),
+                "available_outfits": [str(item.get("id") or "") for item in outfits if str(item.get("id") or "")],
+            }
+
+        if action == "current":
+            active_outfit = self.resolve_session_outfit_id(context.session_id)
+            default_outfit = self._manifest_default_outfit(
+                active_pack_id,
+                resource_manifest_builder=resource_manifest_builder,
+                outfits=outfits,
+            )
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "current",
+                "reply": self._build_current_outfit_reply(
+                    active_outfit or default_outfit,
+                    default_outfit=default_outfit,
+                    outfits=outfits,
+                    session_id=context.session_id,
+                ),
+                "character_pack_id": active_pack_id,
+                "outfit_id": active_outfit or default_outfit,
+            }
+
+        if action == "default":
+            state_persisted = self.clear_session_outfit_override(context.session_id)
+            default_outfit = self._manifest_default_outfit(
+                active_pack_id,
+                resource_manifest_builder=resource_manifest_builder,
+                outfits=outfits,
+            )
+            outfit_label = self._format_outfit_label(
+                self._find_outfit(outfits, default_outfit) or {"id": default_outfit}
+            )
+            note = (
+                f"【当前换装】用户刚把你在当前 QQ 会话中的服装恢复为角色包默认服装：{outfit_label}。"
+                "角色本身没有切换，只是同一个角色换回默认服装；请自然回应这次换装，不要像系统通知。"
+            )
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "default",
+                "_llm_passthrough": True,
+                "qq_action_note": note,
+                "turn_message": self._build_outfit_event_turn_message(
+                    context,
+                    f"把你的 QQ 当前会话服装恢复为默认服装：{outfit_label}。",
+                ),
+                "character_pack_id": active_pack_id,
+                "outfit_id": default_outfit,
+                "state_persisted": state_persisted,
+            }
+
+        if action == "switch":
+            requested_outfit = _safe_outfit_id(command.get("outfit_id"))
+            if not requested_outfit:
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "status": "invalid_outfit_id",
+                    "reply": "这个服装名不太对。请不要包含路径分隔符或过长文本，比如“切换服装 default”。",
+                    "character_pack_id": active_pack_id,
+                    "outfit_id": self.resolve_session_outfit_id(context.session_id),
+                }
+            outfit = self._find_outfit(outfits, requested_outfit)
+            if outfit is None:
+                available = [self._format_outfit_label(item) for item in outfits[:12]]
+                hint = self._build_multiline_available_hint(
+                    available,
+                    empty_message="这个角色包暂时没有可用服装资源。",
+                )
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "status": "unknown_outfit",
+                    "reply": f"没有找到服装 {requested_outfit}。\n{hint}",
+                    "character_pack_id": active_pack_id,
+                    "outfit_id": self.resolve_session_outfit_id(context.session_id),
+                    "requested_outfit_id": requested_outfit,
+                }
+            outfit_id = str(outfit.get("id") or requested_outfit).strip()
+            state_persisted = self.set_session_outfit_id(context.session_id, outfit_id)
+            outfit_label = self._format_outfit_label(outfit)
+            note = (
+                f"【当前换装】用户刚把你在当前 QQ 会话中的服装切换为：{outfit_label}。"
+                "角色本身没有切换，只是同一个角色换了这套衣服；请按当前服装自然回应，可以简短提到穿着感受，"
+                "不要复述系统字段。"
+            )
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "switched",
+                "_llm_passthrough": True,
+                "qq_action_note": note,
+                "turn_message": self._build_outfit_event_turn_message(
+                    context,
+                    f"把你的 QQ 当前会话服装切换为：{outfit_label}。",
+                ),
+                "character_pack_id": active_pack_id,
+                "outfit_id": outfit_id,
+                "requested_outfit_id": requested_outfit,
                 "state_persisted": state_persisted,
             }
 
@@ -796,12 +1119,49 @@ class NapCatQQGateway:
             return {"action": "switch", "pack_id": pack_id}
         return None
 
+    def parse_outfit_command(self, message: str) -> dict[str, str] | None:
+        text = self._normalize_character_command_text(message)
+        if not text:
+            return None
+        if text in QQ_OUTFIT_LIST_COMMANDS:
+            return {"action": "list"}
+        if text in QQ_OUTFIT_CURRENT_COMMANDS:
+            return {"action": "current"}
+        if text in QQ_OUTFIT_DEFAULT_COMMANDS:
+            return {"action": "default"}
+        for pattern in QQ_OUTFIT_SWITCH_PATTERNS:
+            match = pattern.fullmatch(text)
+            if not match:
+                continue
+            outfit_id = _safe_outfit_id(match.group(1))
+            return {"action": "switch", "outfit_id": outfit_id}
+        return None
+
+    def parse_chat_model_command(self, message: str) -> dict[str, str] | None:
+        text = self._normalize_character_command_text(message)
+        if not text:
+            return None
+        if text in QQ_CHAT_MODEL_LIST_COMMANDS:
+            return {"action": "list"}
+        if text in QQ_CHAT_MODEL_CURRENT_COMMANDS:
+            return {"action": "current"}
+        if text in QQ_CHAT_MODEL_DEFAULT_COMMANDS:
+            return {"action": "default"}
+        for pattern in QQ_CHAT_MODEL_SWITCH_PATTERNS:
+            match = pattern.fullmatch(text)
+            if not match:
+                continue
+            return {"action": "switch", "model": _safe_chat_model_id(match.group(1))}
+        return None
+
     def set_session_character_pack_id(self, session_id: str, character_pack_id: str) -> bool:
         key = _safe_qq_session_key(session_id)
         if not key:
             return False
         with self._character_pack_lock:
             self.character_pack_overrides[key] = _safe_character_pack_id(character_pack_id)
+        with self._outfit_lock:
+            self.outfit_overrides.pop(key, None)
         return self._persist_character_pack_overrides()
 
     def clear_session_character_override(self, session_id: str) -> bool:
@@ -810,7 +1170,149 @@ class NapCatQQGateway:
             return False
         with self._character_pack_lock:
             self.character_pack_overrides.pop(key, None)
+        with self._outfit_lock:
+            self.outfit_overrides.pop(key, None)
         return self._persist_character_pack_overrides()
+
+    def resolve_chat_model_override(self, session_id: str) -> str:
+        key = _safe_qq_session_key(session_id)
+        if not key:
+            return ""
+        with self._chat_model_lock:
+            return _safe_chat_model_id(self.chat_model_overrides.get(key))
+
+    def resolve_chat_model(self, session_id: str, *, default_model: str = "") -> str:
+        return self.resolve_chat_model_override(session_id) or _safe_chat_model_id(default_model)
+
+    def set_session_chat_model_override(self, session_id: str, model: str) -> bool:
+        key = _safe_qq_session_key(session_id)
+        model_id = _safe_chat_model_id(model)
+        if not key or not model_id:
+            return False
+        with self._chat_model_lock:
+            self.chat_model_overrides[key] = model_id
+        return self._persist_chat_model_overrides()
+
+    def clear_session_chat_model_override(self, session_id: str) -> bool:
+        key = _safe_qq_session_key(session_id)
+        if not key:
+            return False
+        with self._chat_model_lock:
+            self.chat_model_overrides.pop(key, None)
+        return self._persist_chat_model_overrides()
+
+    def handle_chat_model_command(
+        self,
+        context: QQMessageContext,
+        *,
+        command: dict[str, str] | None = None,
+        default_model: str = "",
+        available_models: list[str] | None = None,
+        list_error: str = "",
+    ) -> dict[str, Any] | None:
+        command = command or self.parse_chat_model_command(context.clean_message)
+        if command is None:
+            return None
+
+        master_qq = self._safe_int(getattr(config, "MASTER_QQ", 0))
+        if master_qq and int(context.user_id or 0) != master_qq:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "forbidden",
+                "reply": "这个命令只允许主人使用。",
+                "chat_model": self.resolve_chat_model(
+                    context.session_id,
+                    default_model=default_model,
+                ),
+                "chat_model_override": self.resolve_chat_model_override(context.session_id),
+            }
+
+        default_model_id = _safe_chat_model_id(default_model)
+        active_override = self.resolve_chat_model_override(context.session_id)
+        active_model = active_override or default_model_id
+        action = str(command.get("action") or "")
+        if action == "list":
+            labels = [_safe_chat_model_id(item) for item in list(available_models or [])]
+            labels = [item for item in labels if item]
+            if labels:
+                return {
+                    "handled": True,
+                    "ok": True,
+                    "status": "listed",
+                    "reply": self._build_multiline_option_reply(
+                        "当前供应商可用模型",
+                        labels[:40],
+                        instruction="发送“切换模型 模型名”即可切换当前 QQ 会话。",
+                        overflow_count=max(0, len(labels) - 40),
+                    ),
+                    "chat_model": active_model,
+                    "chat_model_override": active_override,
+                    "available_models": labels,
+                }
+            reason = str(list_error or "").strip()
+            reply = "当前供应商没有返回可用模型列表。"
+            if reason:
+                reply += f"\n原因：{reason}"
+            reply += "\n仍可直接发送“切换模型 模型名”手动切换。"
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "model_list_unavailable",
+                "reply": reply,
+                "chat_model": active_model,
+                "chat_model_override": active_override,
+                "available_models": [],
+            }
+        if action == "current":
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "current",
+                "reply": self._build_current_chat_model_reply(
+                    active_model,
+                    has_override=bool(active_override),
+                    default_model=default_model_id,
+                ),
+                "chat_model": active_model,
+                "chat_model_override": active_override,
+            }
+        if action == "default":
+            state_persisted = self.clear_session_chat_model_override(context.session_id)
+            active_model = _safe_chat_model_id(default_model)
+            reply = f"已恢复 QQ 默认聊天模型：{active_model or '未配置'}。"
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "default",
+                "reply": self._append_state_persistence_warning(reply, state_persisted),
+                "chat_model": active_model,
+                "chat_model_override": "",
+                "state_persisted": state_persisted,
+            }
+        if action == "switch":
+            model_id = _safe_chat_model_id(command.get("model"))
+            if not model_id:
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "status": "invalid_chat_model",
+                    "reply": "这个模型名不太对。请使用供应商返回的模型 id，比如 deepseek-v4-flash。",
+                    "chat_model": active_model,
+                    "chat_model_override": active_override,
+                }
+            state_persisted = self.set_session_chat_model_override(context.session_id, model_id)
+            reply = f"已把当前 QQ 会话聊天模型切换为：{model_id}。供应商、密钥和 base_url 仍使用当前全局配置。"
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "switched",
+                "reply": self._append_state_persistence_warning(reply, state_persisted),
+                "chat_model": model_id,
+                "chat_model_override": model_id,
+                "state_persisted": state_persisted,
+            }
+        return None
 
     def resolve_reply_mode(self, session_id: str) -> str:
         key = str(session_id or "").strip()
@@ -944,10 +1446,7 @@ class NapCatQQGateway:
             "handled": True,
             "ok": True,
             "status": "captured",
-            "reply": (
-                f"已抓到当前 QQ 会话角色包 {pack_id} 的表情包配置片段，"
-                f"emotion={emotion}：\n{snippet_text}"
-            ),
+            "reply": (f"已抓到当前 QQ 会话角色包 {pack_id} 的表情包配置片段，emotion={emotion}：\n{snippet_text}"),
             "character_pack_id": context.character_pack_id,
             "emotion": emotion,
             "mface": mface,
@@ -999,6 +1498,15 @@ class NapCatQQGateway:
         source = "本会话临时切换" if has_override else "QQ 默认配置"
         return f"当前 QQ 会话回复模式：{self._format_reply_mode_label(active_mode)}（来源：{source}）。"
 
+    def _build_current_chat_model_reply(self, active_model: str, *, has_override: bool, default_model: str = "") -> str:
+        source = "本会话临时切换" if has_override else "QQ 默认配置"
+        lines = ["当前 QQ 会话聊天模型", "─" * 18]
+        lines.append(f"  模型：{_safe_chat_model_id(active_model) or '未配置'}")
+        lines.append(f"  来源：{source}")
+        if has_override and _safe_chat_model_id(default_model):
+            lines.append(f"  默认：{_safe_chat_model_id(default_model)}")
+        return "\n".join(lines)
+
     def _format_reply_mode_label(self, reply_mode: str) -> str:
         return QQ_REPLY_MODE_LABELS.get(_safe_reply_mode(reply_mode), QQ_REPLY_MODE_LABELS["auto"])
 
@@ -1007,8 +1515,18 @@ class NapCatQQGateway:
         if not text:
             return ""
         text = re.sub(r"\s+", " ", text)
+        text = self._strip_wake_word_command_prefix(text)
         text = QQ_CHARACTER_COMMAND_PREFIX_RE.sub("", text, count=1).strip()
         return text.strip()
+
+    def _strip_wake_word_command_prefix(self, message: str) -> str:
+        text = str(message or "").strip()
+        if not text:
+            return ""
+        match = re.match(r"^akane(?:[\s,，:：;；、-]+|$)", text, flags=re.IGNORECASE)
+        if not match:
+            return text
+        return text[match.end() :].strip()
 
     def _list_character_packs(self, character_resource_service: Any = None) -> list[dict[str, str]]:
         if character_resource_service is None:
@@ -1033,11 +1551,140 @@ class NapCatQQGateway:
                 {
                     "pack_id": pack_id,
                     "name": str(item.get("name") or pack_id).strip()[:80],
-                    "app_name": str(item.get("app_name") or item.get("appName") or item.get("name") or pack_id).strip()[:80],
+                    "app_name": str(item.get("app_name") or item.get("appName") or item.get("name") or pack_id).strip()[
+                        :80
+                    ],
                     "user_title": str(item.get("user_title") or item.get("userTitle") or "").strip()[:80],
                 }
             )
         return normalized
+
+    def _list_manifest_outfits(
+        self,
+        character_pack_id: str,
+        *,
+        resource_manifest_builder: Any = None,
+    ) -> list[dict[str, Any]]:
+        manifest = self._build_outfit_manifest(
+            character_pack_id,
+            resource_manifest_builder=resource_manifest_builder,
+        )
+        raw_outfits = manifest.get("characters", {}).get("outfits") if isinstance(manifest, dict) else []
+        outfits: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in raw_outfits if isinstance(raw_outfits, list) else []:
+            if not isinstance(item, dict):
+                continue
+            outfit_id = _safe_outfit_id(item.get("id") or item.get("name"))
+            if not outfit_id or outfit_id in seen:
+                continue
+            seen.add(outfit_id)
+            aliases = [_safe_outfit_id(alias) for alias in list(item.get("aliases") or []) if _safe_outfit_id(alias)]
+            outfits.append(
+                {
+                    **item,
+                    "id": outfit_id,
+                    "name": str(item.get("name") or outfit_id).strip()[:80],
+                    "aliases": aliases,
+                }
+            )
+        return outfits
+
+    def _build_outfit_manifest(
+        self,
+        character_pack_id: str,
+        *,
+        resource_manifest_builder: Any = None,
+    ) -> dict[str, Any]:
+        if resource_manifest_builder is None:
+            return {}
+        try:
+            manifest = resource_manifest_builder(character_pack_id)
+        except TypeError:
+            try:
+                manifest = resource_manifest_builder(character_pack_id=character_pack_id)
+            except Exception:
+                return {}
+        except Exception:
+            return {}
+        return manifest if isinstance(manifest, dict) else {}
+
+    def _manifest_default_outfit(
+        self,
+        character_pack_id: str,
+        *,
+        resource_manifest_builder: Any = None,
+        outfits: list[dict[str, Any]] | None = None,
+    ) -> str:
+        outfit_items = list(outfits or [])
+        manifest = self._build_outfit_manifest(
+            character_pack_id,
+            resource_manifest_builder=resource_manifest_builder,
+        )
+        defaults = manifest.get("defaults") if isinstance(manifest.get("defaults"), dict) else {}
+        clients = manifest.get("clients") if isinstance(manifest.get("clients"), dict) else {}
+        desktop = clients.get("desktop_pet") if isinstance(clients.get("desktop_pet"), dict) else {}
+        candidates = [
+            desktop.get("default_outfit"),
+            defaults.get("desktop_pet_outfit"),
+            defaults.get("outfit"),
+        ]
+        for candidate in candidates:
+            outfit = self._find_outfit(outfit_items, _safe_outfit_id(candidate))
+            if outfit is not None:
+                return str(outfit.get("id") or "").strip()
+        if outfit_items:
+            return str(outfit_items[0].get("id") or "").strip()
+        return _safe_outfit_id(candidates[0] if candidates else "")
+
+    def _find_outfit(self, outfits: list[dict[str, Any]], requested: str) -> dict[str, Any] | None:
+        target = _outfit_lookup_key(requested)
+        if not target:
+            return None
+        for outfit in outfits:
+            candidates = [
+                outfit.get("id"),
+                outfit.get("name"),
+                *list(outfit.get("aliases") or []),
+            ]
+            if any(_outfit_lookup_key(candidate) == target for candidate in candidates):
+                return outfit
+        return None
+
+    def _build_multiline_option_reply(
+        self,
+        title: str,
+        labels: list[str],
+        *,
+        instruction: str,
+        overflow_count: int = 0,
+    ) -> str:
+        lines = [str(title or "").strip() or "可用选项", "─" * 18]
+        lines.extend(f"  {label}" for label in labels if str(label or "").strip())
+        if overflow_count > 0:
+            lines.append(f"还有 {overflow_count} 个未显示。")
+        instruction_text = str(instruction or "").strip()
+        if instruction_text:
+            lines.append("─" * 18)
+            lines.append(instruction_text)
+        return "\n".join(lines)
+
+    def _build_multiline_available_hint(self, labels: list[str], *, empty_message: str) -> str:
+        visible_labels = [str(label or "").strip() for label in labels if str(label or "").strip()]
+        if not visible_labels:
+            return str(empty_message or "").strip()
+        lines = ["当前可用："]
+        lines.extend(f"  {label}" for label in visible_labels)
+        return "\n".join(lines)
+
+    def _format_outfit_label(self, item: dict[str, Any]) -> str:
+        outfit_id = str(item.get("id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        return (
+            f"{outfit_id}（{name}）"
+            if outfit_id and name and name != outfit_id
+            else (outfit_id or name or "未命名服装")
+        )
 
     def _resolve_pack_identity(
         self,
@@ -1123,6 +1770,31 @@ class NapCatQQGateway:
         )
         label = self._format_identity_label(identity) if identity else active_pack_id
         return f"已恢复 QQ 默认角色：{label}（{active_pack_id}）。"
+
+    def _build_current_outfit_reply(
+        self,
+        active_outfit_id: str,
+        *,
+        default_outfit: str,
+        outfits: list[dict[str, Any]],
+        session_id: str = "",
+    ) -> str:
+        key = _safe_qq_session_key(session_id)
+        with self._outfit_lock:
+            has_override = bool(key and key in self.outfit_overrides)
+        source = "本会话临时切换" if has_override else "角色包默认"
+        outfit = self._find_outfit(outfits, active_outfit_id) or {"id": active_outfit_id or default_outfit}
+        return f"当前 QQ 会话服装：{self._format_outfit_label(outfit)}（来源：{source}）。"
+
+    def _build_outfit_event_turn_message(self, context: QQMessageContext, action_text: str) -> str:
+        text = str(action_text or "").strip()
+        if not text:
+            text = "切换了你的 QQ 当前会话服装。"
+        message = f"用户刚刚{text}"
+        if context.is_group:
+            label = context.sender_label or (f"QQ {context.user_id}" if context.user_id else "群成员")
+            return f"【{label}】{message}"
+        return message
 
     def extract_message_text(self, event: dict[str, Any]) -> str:
         raw_message = str(event.get("raw_message") or "").strip()
@@ -1285,6 +1957,9 @@ class NapCatQQGateway:
                     return True
         return False
 
+    def message_mentions_wake_word(self, clean_message: str) -> bool:
+        return bool(QQ_WAKE_WORD_RE.search(str(clean_message or "")))
+
     def _is_poke_notice(self, event: dict[str, Any]) -> bool:
         post_type = str(event.get("post_type") or "").strip().lower()
         notice_type = str(event.get("notice_type") or "").strip().lower()
@@ -1373,6 +2048,7 @@ class NapCatQQGateway:
         group_id: int,
         sender_label: str = "",
         reply_mode: str = "",
+        chat_model_override: str = "",
     ) -> str:
         sender_label = str(sender_label or self.resolve_sender_label(event=event, user_id=user_id)).strip()
         lines = [
@@ -1392,8 +2068,15 @@ class NapCatQQGateway:
             f"{self._format_reply_mode_label(active_reply_mode)}。"
             "只有自动模式会参考 reply_medium；文字/语音/双发模式由后端强制执行。"
         )
-        lines.append("QQ 会尽早发送 speech 中已经成句的内容；为了响应更快，优先把正文写进 speech，并用自然标点或换行分隔。")
-        lines.append("QQ 里音视频转码、分离人声伴奏、降噪、转写、切片打包这类可能耗时的媒体处理，优先用 delegate_task 交给后台工坊；前台只简短说已经开始，完成后系统会主动通知并交付。")
+        active_chat_model_override = _safe_chat_model_id(chat_model_override)
+        if active_chat_model_override:
+            lines.append(f"当前 QQ 会话临时聊天模型：{active_chat_model_override}。")
+        lines.append(
+            "QQ 会尽早发送 speech 中已经成句的内容；为了响应更快，优先把正文写进 speech，并用自然标点或换行分隔。"
+        )
+        lines.append(
+            "QQ 里音视频转码、分离人声伴奏、降噪、转写、切片打包这类可能耗时的媒体处理，优先用 delegate_task 交给后台工坊；前台只简短说已经开始，完成后系统会主动通知并交付。"
+        )
         return "\n".join(lines)
 
     def render_reply_text(self, frame: dict[str, Any]) -> str:
@@ -1444,7 +2127,9 @@ class NapCatQQGateway:
             "results": results,
         }
 
-    def send_generated_files(self, context: QQMessageContext, tool_events: list[dict[str, Any]] | None) -> dict[str, Any]:
+    def send_generated_files(
+        self, context: QQMessageContext, tool_events: list[dict[str, Any]] | None
+    ) -> dict[str, Any]:
         events = [event for event in tool_events or [] if isinstance(event, dict)]
         targets: list[dict[str, Any]] = []
         for event in events:
@@ -1499,13 +2184,17 @@ class NapCatQQGateway:
                 blocked_count = 0
             else:
                 blocked_count = len(blocked_targets)
-            return {
-                "ok": True,
-                "count": 0,
-                "blocked_count": blocked_count,
-                "reason": "missing_file_delivery_intent",
-                "results": [],
-            } if not targets else self._send_generated_file_targets(context, targets, blocked_count=blocked_count)
+            return (
+                {
+                    "ok": True,
+                    "count": 0,
+                    "blocked_count": blocked_count,
+                    "reason": "missing_file_delivery_intent",
+                    "results": [],
+                }
+                if not targets
+                else self._send_generated_file_targets(context, targets, blocked_count=blocked_count)
+            )
 
         return self._send_generated_file_targets(context, targets)
 
@@ -1603,6 +2292,7 @@ class NapCatQQGateway:
         text = str(message or "").strip()
         if not text:
             return None
+        text = self._strip_wake_word_command_prefix(re.sub(r"\s+", " ", text))
         if text in QQ_ECONOMY_CHECKIN_COMMANDS:
             return {"action": "checkin"}
         if text in QQ_ECONOMY_STATUS_COMMANDS or _is_economy_status_query(text):
@@ -1613,7 +2303,7 @@ class NapCatQQGateway:
             return {"action": "backpack"}
         for prefix in QQ_ECONOMY_BUY_PREFIXES:
             if text.startswith(prefix):
-                item_text = text[len(prefix):].strip()
+                item_text = text[len(prefix) :].strip()
                 if item_text:
                     item_name, qty = _parse_item_and_quantity(item_text)
                     return {"action": "buy", "item_name": item_name, "quantity": qty}
@@ -1621,7 +2311,7 @@ class NapCatQQGateway:
             return {"action": "feed"}
         for prefix in QQ_ECONOMY_FEED_PREFIXES:
             if text.startswith(prefix):
-                item_text = text[len(prefix):].strip()
+                item_text = text[len(prefix) :].strip()
                 if item_text:
                     item_name, qty = _parse_item_and_quantity(item_text)
                     return {"action": "feed", "item_name": item_name, "quantity": qty}
@@ -1633,7 +2323,7 @@ class NapCatQQGateway:
             return {"action": "offering_status"}
         for prefix in QQ_ECONOMY_OFFERING_PREFIXES:
             if text.startswith(prefix):
-                item_name = text[len(prefix):].strip()
+                item_name = text[len(prefix) :].strip()
                 if item_name:
                     return {"action": "offering", "item_name": item_name}
         return None
@@ -1725,11 +2415,7 @@ class NapCatQQGateway:
                 e = snapshot["energy"]
                 a = snapshot["affection"]
                 c = snapshot["coins"]
-                reply = (
-                    "养成状态\n"
-                    f"饥饿 {h}/100（越低越饿）  精力 {e}/100（越高越精神）\n"
-                    f"QQ好感 {a}/100  金币 {c}"
-                )
+                reply = f"养成状态\n饥饿 {h}/100（越低越饿）  精力 {e}/100（越高越精神）\nQQ好感 {a}/100  金币 {c}"
                 return {"ok": True, "reply": reply, "status": "ok"}
 
             if action == "shop_list":
@@ -1738,7 +2424,11 @@ class NapCatQQGateway:
                     return {"ok": True, "reply": "商店暂时没有商品。", "status": "empty"}
                 seasonal_items = [i for i in qq_items if i.get("seasonal")]
                 regular_items = [i for i in qq_items if not i.get("seasonal")]
-                food_items = [i for i in regular_items if i.get("category") not in ("offering", "charm", "gift", "trick", "potion")]
+                food_items = [
+                    i
+                    for i in regular_items
+                    if i.get("category") not in ("offering", "charm", "gift", "trick", "potion")
+                ]
                 trick_items = [i for i in regular_items if i.get("category") in ("charm", "trick", "potion")]
                 offer_items = [i for i in regular_items if i.get("category") in ("offering", "gift")]
                 lines = ["\U0001f6d2 商店", "─" * 18]
@@ -1908,10 +2598,7 @@ class NapCatQQGateway:
                 if result["status"] == "not_in_inventory":
                     return {
                         "ok": False,
-                        "reply": (
-                            f"背包里没有「{item_name_display}」，"
-                            f"先发送「购买 {item_name_display}」入手。"
-                        ),
+                        "reply": (f"背包里没有「{item_name_display}」，先发送「购买 {item_name_display}」入手。"),
                         "status": "not_in_inventory",
                     }
                 if result["status"] == "insufficient_count":
@@ -2058,10 +2745,7 @@ class NapCatQQGateway:
                     if not _item_usable_as_offering(matched):
                         return {
                             "ok": False,
-                            "reply": (
-                                f"「{matched['name']}」不是供奉/礼物类商品；"
-                                f"普通食物请先购买再投喂。"
-                            ),
+                            "reply": (f"「{matched['name']}」不是供奉/礼物类商品；普通食物请先购买再投喂。"),
                             "status": "not_offering_item",
                         }
                     item_id = str(matched.get("id") or "")
@@ -2079,10 +2763,7 @@ class NapCatQQGateway:
                     if use_result["status"] == "not_in_inventory":
                         return {
                             "ok": False,
-                            "reply": (
-                                f"背包里没有「{matched['name']}」，"
-                                f"先发送「购买 {matched['name']}」入手再供奉。"
-                            ),
+                            "reply": (f"背包里没有「{matched['name']}」，先发送「购买 {matched['name']}」入手再供奉。"),
                             "status": "not_in_inventory",
                         }
                     result = care_runtime.claim_daily_offering(
@@ -2131,10 +2812,7 @@ class NapCatQQGateway:
                         f"这是今天的第一次供奉，请自然地回应。"
                     )
                 else:
-                    note = (
-                        f"【供奉通知】用户今日再次来供奉，今日好感奖励已领取，"
-                        f"但依然来了（当前好感 {aff_now}/100）。"
-                    )
+                    note = f"【供奉通知】用户今日再次来供奉，今日好感奖励已领取，但依然来了（当前好感 {aff_now}/100）。"
                 return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": result["status"]}
 
         except Exception as exc:
@@ -2210,7 +2888,10 @@ class NapCatQQGateway:
 
         min_interval = max(0, min(3600, int(config_payload.get("min_interval_seconds") or 0)))
         fingerprint = _mface_fingerprint(mface)
-        session_key = _safe_qq_session_key(context.session_id) or f"{context.target_id}:{'group' if context.is_group else 'private'}"
+        session_key = (
+            _safe_qq_session_key(context.session_id)
+            or f"{context.target_id}:{'group' if context.is_group else 'private'}"
+        )
         now = time.time()
         with self._emotion_mface_lock:
             previous = self.emotion_mface_state.get(session_key) or {}
@@ -2258,7 +2939,10 @@ class NapCatQQGateway:
 
         min_interval = max(0, min(3600, int(min_interval_seconds or 0)))
         fingerprint = f"image|{image_path}"
-        session_key = _safe_qq_session_key(context.session_id) or f"{context.target_id}:{'group' if context.is_group else 'private'}"
+        session_key = (
+            _safe_qq_session_key(context.session_id)
+            or f"{context.target_id}:{'group' if context.is_group else 'private'}"
+        )
         now = time.time()
         with self._emotion_image_lock:
             previous = self.emotion_image_state.get(session_key) or {}
@@ -2641,6 +3325,36 @@ def _clean_character_pack_argument(value: Any) -> str:
     return text.strip()
 
 
+def _safe_outfit_id(value: Any) -> str:
+    text = str(value or "").strip()
+    text = text.strip('`\'"""‘’')
+    text = text.rstrip("。.!！?？,，;；")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text or len(text) > 80:
+        return ""
+    if any(ord(char) < 0x20 or char in {"/", "\\", "\x7f"} for char in text):
+        return ""
+    if text in {".", ".."}:
+        return ""
+    return text
+
+
+def _safe_chat_model_id(value: Any) -> str:
+    text = str(value or "").strip()
+    text = text.strip('`\'"""‘’')
+    text = text.rstrip("。.!！?？,，;；")
+    text = re.sub(r"\s+", "", text)
+    if not text or len(text) > 180:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,179}", text):
+        return ""
+    return text
+
+
+def _outfit_lookup_key(value: Any) -> str:
+    return re.sub(r"[\s_\-.]+", "", _safe_outfit_id(value).lower())
+
+
 def _safe_reply_mode(value: Any, *, default: str = "auto") -> str:
     text = str(value or "").strip().lower().replace("-", "_")
     aliases = {
@@ -2674,8 +3388,6 @@ def _clean_reply_mode_argument(value: Any) -> str:
     text = text.strip('`\'"""‘’')
     text = text.rstrip("。.!！?？,，;；")
     return text.strip()
-
-
 
 
 def _item_usable_in_qq(item: dict[str, Any]) -> bool:
@@ -2902,8 +3614,7 @@ def _build_item_effect_reaction_hint(
             )
         elif target <= 20:
             hints.append(
-                f"特别说明：「{item_name}」刚刚让精力降到 {target}/100；"
-                "回复里必须表现出明显犯困、反应变慢或想休息。"
+                f"特别说明：「{item_name}」刚刚让精力降到 {target}/100；回复里必须表现出明显犯困、反应变慢或想休息。"
             )
     if "hunger_set" in effects_applied:
         target = int(effects_applied.get("hunger_set", hunger))
@@ -2916,8 +3627,7 @@ def _build_item_effect_reaction_hint(
             )
         elif target >= 80:
             hints.append(
-                f"特别说明：「{item_name}」刚刚让饥饿恢复到 {target}/100；"
-                "回复里必须表现出胃里踏实、被喂饱或状态回稳。"
+                f"特别说明：「{item_name}」刚刚让饥饿恢复到 {target}/100；回复里必须表现出胃里踏实、被喂饱或状态回稳。"
             )
     if effects_applied.get("random_vitals"):
         hints.append(

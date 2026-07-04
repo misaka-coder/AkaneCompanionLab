@@ -378,6 +378,7 @@ class AttachmentInboxTests(unittest.TestCase):
 
             self.assertFalse(result["ok"])
             self.assertEqual(result["pending"], [item["attachment_id"]])
+            self.assertEqual(result["kinds_by_id"], {item["attachment_id"]: "image"})
 
     def test_manifest_does_not_include_half_text_preview(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

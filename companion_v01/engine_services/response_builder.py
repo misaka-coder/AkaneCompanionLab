@@ -34,6 +34,7 @@ def prepare_context(
     allow_tool_call: bool = True,
     final_debug_enabled: bool | None = None,
     enable_native_tools: bool = False,
+    chat_model_override: str = "",
 ) -> dict[str, Any]:
     client_context = client_context or engine._resolve_client_protocol_context({})
     prompt_profile = engine._get_prompt_profile_registry().resolve(client_context)
@@ -149,6 +150,13 @@ def prepare_context(
         session_id=session_id,
         current_visual_payload=current_visual_payload,
     )
+    current_character = (
+        current_visual_context_payload.get("character")
+        if isinstance(current_visual_context_payload, dict)
+        and isinstance(current_visual_context_payload.get("character"), dict)
+        else {}
+    )
+    current_character_outfit = str(current_character.get("outfit") or "").strip()
     scene_observation_context = (
         engine.vision_service.build_scene_prompt_context(
             visual_payload=current_visual_context_payload,
@@ -203,6 +211,7 @@ def prepare_context(
             character_pack_id=character_pack_id,
             resource_manifest=resource_manifest,
             client_mode=client_context.effective_mode.value,
+            preferred_outfit=current_character_outfit,
         )
         if character_pack_persona_enabled and prompt_profile.includes(PromptModule.PERSONA)
         else {"system_context": "", "reference_context": "", "active_id": ""}
@@ -331,6 +340,7 @@ def prepare_context(
             (
                 resource_manifest.build_character_prompt_context(
                     extra_character_outfits=user_character_outfits,
+                    preferred_outfit=str(visual_defaults.get("outfit") or current_character_outfit),
                 )
                 if desktop_pet_character_only
                 else resource_manifest.build_prompt_context(
@@ -380,6 +390,12 @@ def prepare_context(
         )
         from .. import tool_orchestration_engine as _toe
 
+        try:
+            provider_supports_native_tools = engine.llm.chat_supports_native_tools(
+                chat_model_override=chat_model_override
+            )
+        except TypeError:
+            provider_supports_native_tools = engine.llm.chat_supports_native_tools()
         native_plan = _toe.build_native_tool_decision_plan(
             engine._resolve_tool_handlers(
                 client_context=client_context,
@@ -387,7 +403,7 @@ def prepare_context(
                 session_id=session_id,
             ),
             allow_tool_call=effective_allow_tool_call,
-            provider_supports_native_tools=engine.llm.chat_supports_native_tools(),
+            provider_supports_native_tools=provider_supports_native_tools,
             allowed_tool_names=native_capability_selection.tool_names,
         )
         if native_plan.enabled:

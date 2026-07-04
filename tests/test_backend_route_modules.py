@@ -41,6 +41,7 @@ from companion_v01.qq_gateway import NapCatQQGateway
 
 QQ_BOT_FIXTURE_ID = 10001
 QQ_USER_FIXTURE_ID = 10003
+QQ_GROUP_FIXTURE_ID = 20001
 
 
 class FakeRuntimeMetrics:
@@ -655,6 +656,176 @@ class BackendRouteModuleTests(unittest.TestCase):
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
         self.assertIn("已切换本 QQ 会话角色为", sent_payload["message"])
+
+    def test_qq_router_passively_records_group_message_without_llm_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        record_calls: list[dict[str, Any]] = []
+        process_calls: list[dict[str, Any]] = []
+
+        class FakeEngine:
+            def record_passive_qq_message(self, payload: dict):
+                record_calls.append(payload)
+                return {"ok": True, "status": "recorded", "source_id": "passive-1"}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "should not run"}}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        response = TestClient(app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "route-passive-group-1",
+                "message": [{"type": "text", "data": {"text": "今晚七点开会"}}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "recorded")
+        self.assertEqual(payload["reason"], "group_passive_observed")
+        self.assertEqual(payload["record_result"]["source_id"], "passive-1")
+        self.assertEqual(len(record_calls), 1)
+        self.assertEqual(record_calls[0]["user_id"], f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
+        self.assertEqual(record_calls[0]["real_user_id"], f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
+        self.assertEqual(record_calls[0]["message"], f"【QQ {QQ_USER_FIXTURE_ID}】今晚七点开会")
+        self.assertEqual(process_calls, [])
+        self.assertIn(("qq_napcat_event", True), runtime.observed)
+
+    def test_qq_router_waits_for_image_vision_before_waking_llm(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        wait_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+        scheduled_tasks: list[Any] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def ingest_qq_attachments(self, **kwargs):
+                return [
+                    {
+                        "attachment_id": "img_pending_1",
+                        "kind": "image",
+                        "profile_user_id": kwargs["profile_user_id"],
+                        "session_id": kwargs["session_id"],
+                    }
+                ]
+
+            def wait_for_qq_attachments_settled(self, **kwargs):
+                wait_calls.append(kwargs)
+                return {
+                    "ok": True,
+                    "ready": ["img_pending_1"],
+                    "failed": [],
+                    "pending": [],
+                    "missing": [],
+                    "kinds_by_id": {"img_pending_1": "image"},
+                }
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "我看到这张图了。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        def fake_create_task(coro):
+            scheduled_tasks.append(coro)
+            return SimpleNamespace()
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_ATTACHMENT_READY_WAIT_SECONDS=0.01,
+                    VISION_REQUEST_TIMEOUT=1.0,
+                ),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with (
+            patch("companion_v01.routes.qq.asyncio.create_task", side_effect=fake_create_task),
+            patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post,
+        ):
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-image-pending-1",
+                    "message": [
+                        {
+                            "type": "image",
+                            "data": {
+                                "file": "pending.jpg",
+                                "url": "http://127.0.0.1:3001/pending.jpg",
+                            },
+                        }
+                    ],
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["status"], "buffered")
+            self.assertEqual(payload["reason"], "qq_image_vision_followup_scheduled")
+            self.assertEqual(process_calls, [])
+            self.assertEqual(wait_calls, [])
+            self.assertEqual(len(scheduled_tasks), 1)
+            mocked_post.assert_not_called()
+
+            asyncio.run(scheduled_tasks.pop())
+
+        self.assertEqual(len(wait_calls), 1)
+        self.assertEqual(len(process_calls), 1)
+        self.assertIn("【本轮 QQ 图片内容】", process_calls[0]["extra_context"])
+        self.assertIn("当前材料工作台里的最新图片", process_calls[0]["extra_context"])
+        self.assertIn(("qq_napcat_event", True), runtime.observed)
+        scheduled_logs = [
+            payload for event_name, payload in log_calls if event_name == "qq_image_vision_followup_scheduled"
+        ]
+        sent_logs = [payload for event_name, payload in log_calls if event_name == "qq_image_vision_followup_sent"]
+        self.assertEqual(len(scheduled_logs), 1)
+        self.assertEqual(len(sent_logs), 1)
+        mocked_post.assert_called_once()
+        sent_payload = mocked_post.call_args.kwargs["json"]
+        self.assertIn("我看到这张图了。", sent_payload["message"])
 
     def test_qq_router_poke_notice_runs_llm_as_normal_user_message(self) -> None:
         runtime = FakeRuntimeMetrics()

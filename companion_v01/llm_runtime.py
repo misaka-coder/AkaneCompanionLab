@@ -65,6 +65,18 @@ def normalize_reply_medium(value: Any) -> str:
     return REPLY_MEDIUM_ALIASES.get(text, "")
 
 
+def _safe_chat_model_override(value: Any) -> str:
+    text = str(value or "").strip()
+    text = text.strip('`\'"""‘’')
+    text = text.rstrip("。.!！?？,，;；")
+    text = re.sub(r"\s+", "", text)
+    if not text or len(text) > 180:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,179}", text):
+        return ""
+    return text
+
+
 @dataclass
 class ModelBundle:
     client: Any
@@ -456,6 +468,14 @@ class LLMRuntime:
         )
         return ModelBundle(client=client, model=config.CHAT_MODEL_NAME)
 
+    def _chat_bundle_for_override(self, chat_model_override: str = "") -> ModelBundle:
+        model_override = _safe_chat_model_override(chat_model_override)
+        with self._bundle_lock:
+            bundle = self.chat
+        if not model_override:
+            return bundle
+        return ModelBundle(client=bundle.client, model=model_override)
+
     def call_aux_json(
         self,
         *,
@@ -489,10 +509,11 @@ class LLMRuntime:
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, str]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
+        chat_model_override: str = "",
     ) -> dict[str, Any]:
         self._record_metric("chat_json_calls")
         return self._call_json(
-            bundle=self.chat,
+            bundle=self._chat_bundle_for_override(chat_model_override),
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             fallback=fallback,
@@ -506,9 +527,8 @@ class LLMRuntime:
             prompt_audit_sections=prompt_audit_sections,
         )
 
-    def chat_supports_native_tools(self) -> bool:
-        with self._bundle_lock:
-            bundle = self.chat
+    def chat_supports_native_tools(self, *, chat_model_override: str = "") -> bool:
+        bundle = self._chat_bundle_for_override(chat_model_override)
         return self._should_send_native_tools(bundle)
 
     def record_metric(self, key: str, amount: int = 1) -> None:
@@ -548,10 +568,11 @@ class LLMRuntime:
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, str]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
+        chat_model_override: str = "",
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         self._record_metric("chat_stream_calls")
         return self._stream_chat_json(
-            bundle=self.chat,
+            bundle=self._chat_bundle_for_override(chat_model_override),
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             fallback=fallback,
