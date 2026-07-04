@@ -56,6 +56,46 @@ def _normalize_reply_text(value: Any) -> str:
     return " ".join(str(value or "").replace("\r\n", "\n").replace("\r", "\n").split()).strip()
 
 
+def _build_qq_image_vision_followup_note(
+    *,
+    attachment_ids: list[str],
+    wait_result: dict[str, Any],
+) -> str:
+    base_lines = [
+        "【本轮 QQ 图片内容】",
+        "用户刚刚发送的图片视觉摘要已经生成；下面就是本轮用户发来的图片内容。请直接基于视觉描述回应，不要说“让我看看”“我还没看到图片”。",
+    ]
+    items_by_id = wait_result.get("items_by_id") if isinstance(wait_result.get("items_by_id"), dict) else {}
+    kinds_by_id = wait_result.get("kinds_by_id") if isinstance(wait_result.get("kinds_by_id"), dict) else {}
+    ready_ids = {str(item or "").strip() for item in list(wait_result.get("ready") or []) if str(item or "").strip()}
+    image_lines: list[str] = []
+    for attachment_id in attachment_ids:
+        normalized_id = str(attachment_id or "").strip()
+        if not normalized_id or normalized_id not in ready_ids:
+            continue
+        item = items_by_id.get(normalized_id) if isinstance(items_by_id, dict) else None
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or kinds_by_id.get(normalized_id) or "").strip().lower()
+        if kind != "image":
+            continue
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        title = _normalize_reply_text(item.get("summary_title") or item.get("attachment_handle") or "图片")[:40]
+        summary = _normalize_reply_text(
+            item.get("short_hint") or detail.get("summary") or detail.get("description") or ""
+        )[:360]
+        if summary:
+            image_lines.append(f"- {title}：{summary}" if title else f"- {summary}")
+    if image_lines:
+        return "\n".join([*base_lines, *image_lines])
+    return "\n".join(
+        [
+            *base_lines,
+            "当前材料工作台里的最新图片就是本轮用户发来的图片内容。",
+        ]
+    )
+
+
 def _reply_similarity(left: str, right: str) -> float:
     left_text = re.sub(r"[\s，。！？!?~～、,.]+", "", str(left or "").strip().lower())
     right_text = re.sub(r"[\s，。！？!?~～、,.]+", "", str(right or "").strip().lower())
@@ -766,10 +806,9 @@ def build_qq_router(
                 event=event,
                 message_override=message_override,
                 action_note=action_note,
-                extra_context_note=(
-                    "【本轮 QQ 图片内容】\n"
-                    "用户刚刚发送的图片视觉摘要已经生成；当前材料工作台里的最新图片就是本轮用户发来的图片内容。"
-                    "请直接基于视觉描述回应，不要说“让我看看”“我还没看到图片”。"
+                extra_context_note=_build_qq_image_vision_followup_note(
+                    attachment_ids=attachment_ids,
+                    wait_result=wait_result if isinstance(wait_result, dict) else {},
                 ),
             )
             turn_result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)

@@ -739,6 +739,16 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "pending": [],
                     "missing": [],
                     "kinds_by_id": {"img_pending_1": "image"},
+                    "items_by_id": {
+                        "img_pending_1": {
+                            "attachment_id": "img_pending_1",
+                            "kind": "image",
+                            "attachment_handle": "img_001",
+                            "summary_title": "草莓蛋糕少女",
+                            "short_hint": "少女正在装饰铺满草莓的奶油蛋糕。",
+                            "detail": {"summary": "备用摘要"},
+                        }
+                    },
                 }
 
             def prefetch_remote_media_links_for_message(self, **_kwargs):
@@ -815,7 +825,8 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(len(wait_calls), 1)
         self.assertEqual(len(process_calls), 1)
         self.assertIn("【本轮 QQ 图片内容】", process_calls[0]["extra_context"])
-        self.assertIn("当前材料工作台里的最新图片", process_calls[0]["extra_context"])
+        self.assertIn("草莓蛋糕少女", process_calls[0]["extra_context"])
+        self.assertIn("少女正在装饰铺满草莓的奶油蛋糕", process_calls[0]["extra_context"])
         self.assertIn(("qq_napcat_event", True), runtime.observed)
         scheduled_logs = [
             payload for event_name, payload in log_calls if event_name == "qq_image_vision_followup_scheduled"

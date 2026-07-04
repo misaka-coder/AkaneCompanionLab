@@ -156,6 +156,11 @@ class AttachmentInboxService:
             "pending": pending_final,
             "missing": missing,
             "kinds_by_id": kinds_by_id,
+            "items_by_id": {
+                item_id: dict(latest[item_id])
+                for item_id in normalized_ids
+                if isinstance(latest.get(item_id), dict)
+            },
         }
 
     def build_prompt_context(
