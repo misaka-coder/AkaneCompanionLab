@@ -2522,7 +2522,7 @@ class MemoryStore:
                         SELECT attachment_id, created_at, sequence_no, updated_at
                         FROM attachment_inbox_items
                         WHERE profile_user_id = ? AND session_id = ? AND status = 'ready'
-                          AND COALESCE(NULLIF(updated_at, 0), created_at) >= ?
+                          AND (created_at >= ? OR attachment_id = ?)
                         ORDER BY created_at DESC, sequence_no DESC, updated_at DESC
                         LIMIT ?
                     )
@@ -2532,6 +2532,7 @@ class MemoryStore:
                         profile_id,
                         session,
                         threshold,
+                        normalized_id,
                         max(1, int(focus_max_items or 1)),
                     ),
                 ).fetchall()
@@ -2543,11 +2544,11 @@ class MemoryStore:
                 conn.execute(
                     """
                     UPDATE attachment_inbox_items
-                    SET focus_rank = 0, updated_at = ?
+                    SET focus_rank = 0
                     WHERE profile_user_id = ? AND session_id = ?
                       AND status IN ('ready', 'pending_observation', 'failed')
                     """,
-                    (effective_ts, profile_id, session),
+                    (profile_id, session),
                 )
                 for rank, focused_id in enumerate(attachment_ids, start=1):
                     conn.execute(

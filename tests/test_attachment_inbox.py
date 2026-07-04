@@ -116,6 +116,123 @@ class AttachmentInboxTests(unittest.TestCase):
             self.assertEqual(created["attachment_handle"], "img_002")
             self.assertEqual(created["sequence_no"], 2)
 
+    def test_auto_focus_does_not_keep_old_items_recent_by_touching_updated_at(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = AttachmentInboxService(store=store)
+            old_item = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="document",
+                origin_name="old.txt",
+                timestamp=100,
+            )
+            service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=old_item["attachment_id"],
+                summary_title="旧文件",
+                short_hint="旧文件摘要。",
+                detail={"summary": "旧文件摘要。"},
+                timestamp=110,
+            )
+            new_item = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="new.jpg",
+                timestamp=1000,
+            )
+
+            service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=new_item["attachment_id"],
+                summary_title="新图片",
+                short_hint="新图片摘要。",
+                detail={"summary": "新图片摘要。"},
+                timestamp=1010,
+            )
+
+            old_reloaded = store.get_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=old_item["attachment_id"],
+            )
+            new_reloaded = store.get_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=new_item["attachment_id"],
+            )
+            self.assertIsNotNone(old_reloaded)
+            self.assertIsNotNone(new_reloaded)
+            self.assertEqual(old_reloaded["focus_rank"], 0)
+            self.assertEqual(old_reloaded["updated_at"], 110)
+            self.assertEqual(new_reloaded["focus_rank"], 1)
+
+    def test_prompt_forces_latest_ready_image_ahead_of_polluted_focus(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = AttachmentInboxService(store=store)
+            old_image = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="old.jpg",
+                timestamp=100,
+            )
+            service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=old_image["attachment_id"],
+                summary_title="旧图片",
+                short_hint="旧图片摘要。",
+                detail={"summary": "旧图片摘要。"},
+                timestamp=110,
+            )
+            latest_image = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="latest.jpg",
+                timestamp=1000,
+            )
+            service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=latest_image["attachment_id"],
+                summary_title="最新图片",
+                short_hint="最新图片摘要。",
+                detail={"summary": "最新图片摘要。"},
+                timestamp=1010,
+            )
+            store.update_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=old_image["attachment_id"],
+                last_used_at=2000,
+                focus_rank=1,
+                updated_at=2000,
+            )
+            store.update_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=latest_image["attachment_id"],
+                last_used_at=1010,
+                focus_rank=20,
+                updated_at=1010,
+            )
+
+            prompt = service.build_prompt_context(profile_user_id="user", session_id="session")
+
+            self.assertIn("最新图片摘要。", prompt)
+            self.assertIn("旧图片摘要。", prompt)
+            self.assertLess(prompt.index("最新图片摘要。"), prompt.index("旧图片摘要。"))
+
     def test_store_find_attachment_prefers_exact_handle_over_fuzzy_title(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))

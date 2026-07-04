@@ -178,6 +178,19 @@ class AttachmentInboxService:
             key=lambda item: int(item.get("focus_rank") or 0),
         )
         ready = [item for item in items if item.get("status") == "ready"]
+        ready_images = [item for item in ready if str(item.get("kind") or "").strip().lower() == "image"]
+        latest_ready_image = (
+            max(
+                ready_images,
+                key=lambda item: (
+                    int(item.get("created_at") or 0),
+                    int(item.get("updated_at") or 0),
+                    int(item.get("sequence_no") or 0),
+                ),
+            )
+            if ready_images
+            else None
+        )
         pending = [item for item in items if item.get("status") == "pending_observation"]
         ready_remote_sources = {
             str(item.get("source_event_id") or "").strip()
@@ -204,7 +217,14 @@ class AttachmentInboxService:
             "不要把这些材料当成礼物、角色资源、生成成果或长期记忆。原始材料和工具生成成果是两类对象：要修改、转写、转换或整理材料时，先使用对应工具生成新成果；用户要拿到某个已有文件时，再按当前客户端可用的交付方式发送或打开它。",
         ]
 
-        detailed_items = focused
+        if latest_ready_image is not None:
+            latest_image_id = str(latest_ready_image.get("attachment_id") or "")
+            detailed_items = [
+                latest_ready_image,
+                *[item for item in focused if str(item.get("attachment_id") or "") != latest_image_id],
+            ]
+        else:
+            detailed_items = focused
         detailed_ids = {str(item.get("attachment_id") or "") for item in detailed_items}
         indexed_ready = [
             item
