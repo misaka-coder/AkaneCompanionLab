@@ -3,6 +3,7 @@
 from __future__ import annotations
 import json
 import logging
+import re
 from typing import Any
 
 from ..client_protocol import ClientCapability, ClientMode, ClientProtocolContext
@@ -13,6 +14,46 @@ from ..resource_manifest import ResourceManifest
 from ..text_utils import render_chat_timeline
 
 logger = logging.getLogger("akane.response_builder")
+
+
+QQ_GENERATED_FILE_CONTEXT_ACTION_MARKERS = (
+    "结果",
+    "成果",
+    "产物",
+    "生成",
+    "导出",
+    "保存",
+    "打包",
+    "压缩",
+    "下载",
+    "发我",
+    "发给我",
+    "给我发",
+    "传给我",
+    "交付",
+    "转换",
+    "转成",
+    "分离",
+    "提取",
+    "修改",
+    "处理",
+)
+QQ_GENERATED_FILE_CONTEXT_HANDLE_RE = re.compile(
+    r"\bgen_\d+\b|\bfile_\d+\b|\bimg_\d+\b|\baudio_\d+\b|\bvideo_\d+\b|"
+    r"\.(?:mp3|wav|flac|m4a|aac|ogg|opus|mp4|mov|mkv|pdf|docx|xlsx|pptx|zip|rar|7z)\b",
+    re.IGNORECASE,
+)
+
+
+def _should_include_generated_file_context(client_context: ClientProtocolContext, user_message: str) -> bool:
+    if client_context.effective_mode != ClientMode.QQ_TEXT:
+        return True
+    normalized = str(user_message or "").strip().lower()
+    if not normalized:
+        return False
+    return bool(QQ_GENERATED_FILE_CONTEXT_HANDLE_RE.search(normalized)) or any(
+        marker in normalized for marker in QQ_GENERATED_FILE_CONTEXT_ACTION_MARKERS
+    )
 
 
 def prepare_context(
@@ -102,6 +143,7 @@ def prepare_context(
         else ""
     )
     generated_file_service = engine._get_generated_file_service()
+    include_generated_file_context = _should_include_generated_file_context(client_context, user_message)
     generated_file_context = (
         generated_file_service.build_prompt_context(
             profile_user_id=profile_user_id,
@@ -112,6 +154,7 @@ def prepare_context(
             generated_file_service is not None
             and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
             and client_context.effective_mode in {ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET}
+            and include_generated_file_context
         )
         else ""
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -87,7 +88,9 @@ def build_compose_followup(
         f"本地路径：{path}",
     ]
     if send_to_user:
-        lines.append("当前客户端如果支持发送文件，系统会尝试把它发给用户；如果发送失败，你可以告诉用户文件已经生成但发送失败。")
+        lines.append(
+            "当前客户端如果支持发送文件，系统会尝试把它发给用户；如果发送失败，你可以告诉用户文件已经生成但发送失败。"
+        )
     else:
         lines.append("这次只生成，不自动发送给用户。")
     if unresolved:
@@ -192,7 +195,9 @@ def build_audio_separation_followup(
         card = generated.get("content_card") if isinstance(generated.get("content_card"), dict) else {}
         separation = card.get("separation") if isinstance(card.get("separation"), dict) else {}
         stem_role = str(separation.get("stem_role") or "").strip().lower()
-        role_label = "人声" if stem_role == "vocals" else "伴奏" if stem_role == "instrumental" else (stem_role or "分离轨")
+        role_label = (
+            "人声" if stem_role == "vocals" else "伴奏" if stem_role == "instrumental" else (stem_role or "分离轨")
+        )
         lines.append(f"- {role_label}：{handle}《{title}》" + (f"，大小：{size_label}" if size_label else ""))
         if absolute_path:
             lines.append(f"  本地路径：{absolute_path}")
@@ -276,9 +281,7 @@ def build_voice_dataset_followup(
         items = issue_slices.get(flag) if isinstance(issue_slices.get(flag), list) else []
         if items:
             labels = [
-                f"{item.get('filename')}({item.get('duration_seconds')}s)"
-                for item in items[:8]
-                if item.get("filename")
+                f"{item.get('filename')}({item.get('duration_seconds')}s)" for item in items[:8] if item.get("filename")
             ]
             if labels:
                 lines.append(f"{label}片段：{', '.join(labels)}。")
@@ -308,7 +311,9 @@ def build_voice_dataset_content_card(service: Any, manifest: dict[str, Any]) -> 
     if sources:
         preview_lines.append("来源统计：")
         for source in sources[:8]:
-            preview_lines.append(f"- {source.get('handle') or source.get('title') or '来源'}：{source.get('slice_count') or 0} 段")
+            preview_lines.append(
+                f"- {source.get('handle') or source.get('title') or '来源'}：{source.get('slice_count') or 0} 段"
+            )
     for flag, label in (
         ("too_short", "过短"),
         ("too_long", "过长"),
@@ -430,12 +435,16 @@ def build_transcribe_followup(
         lines = [f"你刚刚已经生成 {len(generated_files)} 份独立转写稿（{output_format}）。"]
         for generated in generated_files[:8]:
             lines.append(f"- {generated.get('generated_handle')}《{generated.get('output_title')}》")
-    lines.append(f"成功来源 {len(ready)} 个，共 {total_segments} 段，合计 {service._format_duration_label(total_duration) or '0:00'}。")
+    lines.append(
+        f"成功来源 {len(ready)} 个，共 {total_segments} 段，合计 {service._format_duration_label(total_duration) or '0:00'}。"
+    )
     if failed:
         bits = []
         for item in failed[:5]:
             source = item.get("source") if isinstance(item.get("source"), dict) else {}
-            bits.append(f"{source.get('handle') or source.get('title') or item.get('source_index')}：{item.get('error')}")
+            bits.append(
+                f"{source.get('handle') or source.get('title') or item.get('source_index')}：{item.get('error')}"
+            )
         lines.append("部分来源转写失败：" + "；".join(bits))
     if send_to_user:
         lines.append("当前客户端如果支持发送文件，系统会尝试把转写稿发给用户。")
@@ -483,7 +492,9 @@ def build_media_info_followup(
             f"编码 {video.get('codec') or '未知'}，"
             f"{video.get('width') or '?'}x{video.get('height') or '?'}{fps_label}。"
         )
-    lines.append("请基于这些实际规格自然回应用户；如果后续要转换、截取或压缩，可参考这些信息再调用 convert_media_file。")
+    lines.append(
+        "请基于这些实际规格自然回应用户；如果后续要转换、截取或压缩，可参考这些信息再调用 convert_media_file。"
+    )
     return "\n".join(lines)
 
 
@@ -645,13 +656,28 @@ def _format_size_from_item(service: Any, item: dict[str, Any]) -> str:
     return service._format_file_size(parsed) if parsed > 0 else ""
 
 
+def _format_time_anchor(value: Any) -> str:
+    try:
+        timestamp = int(value or 0)
+    except (TypeError, ValueError):
+        return ""
+    if timestamp <= 0:
+        return ""
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(timestamp))
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
 def _render_media_info_lines(service: Any, media_info: dict[str, Any], *, prefix: str = "  ") -> list[str]:
     if not isinstance(media_info, dict) or not media_info:
         return []
     lines: list[str] = []
     format_name = str(media_info.get("format_name") or "").strip()
     duration = service._format_duration_label(media_info.get("duration_seconds"))
-    file_size = service._format_file_size(media_info.get("file_size")) if isinstance(media_info.get("file_size"), int) else ""
+    file_size = (
+        service._format_file_size(media_info.get("file_size")) if isinstance(media_info.get("file_size"), int) else ""
+    )
     basics = []
     if format_name:
         basics.append(f"格式：{format_name}")
@@ -707,9 +733,7 @@ def render_generated_summary_inspection(service: Any, *, generated: dict[str, An
     if preview:
         lines.extend(["内容预览：", preview])
     extra_keys = [
-        key
-        for key in sorted(card.keys())
-        if key not in {"summary", "content_preview", "table_preview", "formatting"}
+        key for key in sorted(card.keys()) if key not in {"summary", "content_preview", "table_preview", "formatting"}
     ]
     for key in extra_keys[:12]:
         value = card.get(key)
@@ -721,7 +745,9 @@ def render_generated_summary_inspection(service: Any, *, generated: dict[str, An
     return "\n".join(lines).strip()
 
 
-def render_generated_binary_inspection(service: Any, *, generated: dict[str, Any], path: Path, output_format: str) -> str:
+def render_generated_binary_inspection(
+    service: Any, *, generated: dict[str, Any], path: Path, output_format: str
+) -> str:
     lines = [
         f"{generated_display_name(generated)} 是 {output_format or '二进制'} 文件，不能按文本直接展开。",
     ]
@@ -734,7 +760,9 @@ def render_generated_binary_inspection(service: Any, *, generated: dict[str, Any
     preview = str(card.get("content_preview") or "").strip()
     if preview:
         lines.extend(["可用内容卡片：", preview])
-    lines.append("如果这是音频/视频，请使用 inspect_media_info、transcribe_media、convert_media_file 等媒体工具继续处理。")
+    lines.append(
+        "如果这是音频/视频，请使用 inspect_media_info、transcribe_media、convert_media_file 等媒体工具继续处理。"
+    )
     return "\n".join(lines).strip()
 
 
@@ -765,6 +793,12 @@ def render_generated_prompt_item(service: Any, item: dict[str, Any]) -> list[str
     size_label = _format_size_from_item(service, item)
     created_by = str(item.get("created_by_tool") or "").strip()
     meta_parts = [f"状态：{status}", f"发送：{delivery}"]
+    created_label = _format_time_anchor(item.get("created_at"))
+    updated_label = _format_time_anchor(item.get("updated_at"))
+    if created_label:
+        meta_parts.append(f"生成：{created_label}")
+    if updated_label and updated_label != created_label:
+        meta_parts.append(f"更新：{updated_label}")
     if size_label:
         meta_parts.append(f"大小：{size_label}")
     if created_by:
@@ -786,7 +820,9 @@ def render_generated_prompt_item(service: Any, item: dict[str, Any]) -> list[str
         separation_output_format = str(separation.get("output_format") or "").strip()
         mode = str(separation.get("mode") or "").strip()
         if mode or separation_output_format:
-            lines.append(f"  处理信息：separation mode={mode or 'unknown'}，output={separation_output_format or 'unknown'}")
+            lines.append(
+                f"  处理信息：separation mode={mode or 'unknown'}，output={separation_output_format or 'unknown'}"
+            )
     voice_cleaning = card.get("voice_cleaning") if isinstance(card.get("voice_cleaning"), dict) else {}
     if voice_cleaning:
         mode = str(voice_cleaning.get("mode") or "").strip()

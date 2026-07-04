@@ -49,11 +49,7 @@ class WorkspaceFileServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "ok")
-        uris = [
-            entry["uri"]
-            for target in result["results"]
-            for entry in target["entries"]
-        ]
+        uris = [entry["uri"] for target in result["results"] for entry in target["entries"]]
         self.assertEqual(uris, ["workspace:/Inbox/one.md", "workspace:/Outputs/two.txt"])
         self.assertNotIn(str(self.root), str(result))
 
@@ -69,6 +65,7 @@ class WorkspaceFileServiceTests(unittest.TestCase):
         self.assertIn("workspace:/（位于用户设置中配置的 Akane Workspace 文件夹）", context)
         self.assertIn("先主动调用 list_workspace", context)
         self.assertIn("workspace:/Inbox/note.md", context)
+        self.assertIn("修改时间", context)
         self.assertNotIn(str(self.root), context)
 
     def test_rejects_absolute_and_traversal_paths(self) -> None:
@@ -406,9 +403,7 @@ class WorkspaceFileServiceTests(unittest.TestCase):
             attachment_service=AttachmentInboxService(store=self.store),
         )
 
-        resolved = generated_service.absolute_path(
-            {"storage_relpath": str(outside.resolve())}
-        )
+        resolved = generated_service.absolute_path({"storage_relpath": str(outside.resolve())})
 
         self.assertEqual(resolved, self.service.layer_dir("Outputs"))
         self.assertNotEqual(resolved, outside)
@@ -510,9 +505,7 @@ class WorkspaceToolHandlerTests(unittest.TestCase):
         list_call = list_handler.normalize_call(
             {"type": "list_workspace", "paths": ["workspace:/Inbox", "workspace:/Outputs"]}
         )
-        read_call = read_handler.normalize_call(
-            {"type": "read_workspace", "targets": ["workspace:/Inbox/note.md"]}
-        )
+        read_call = read_handler.normalize_call({"type": "read_workspace", "targets": ["workspace:/Inbox/note.md"]})
         focus_call = focus_handler.normalize_call(
             {"type": "focus_workspace", "action": "add", "targets": ["workspace:/Inbox/note.md"]}
         )

@@ -935,6 +935,9 @@ class AttachmentInboxService:
     ) -> list[str]:
         detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
         lines = [f"{index}. {self._compact_item_label(item)}"]
+        time_anchor = self._item_time_anchor(item)
+        if time_anchor:
+            lines.append(f"   时间：{time_anchor}")
         if item.get("status") == "pending_observation":
             lines.append("   状态：系统正在生成描述，还没有完整内容。")
             return lines
@@ -1003,15 +1006,21 @@ class AttachmentInboxService:
             description_parts.append(fallback)
         if description_parts:
             lines.append("   视觉描述：" + "\n   ".join(description_parts))
+        visible_text = self._normalize_text_list(detail.get("visible_text") or [])
+        if visible_text:
+            lines.append(f"   可见文字：{', '.join(visible_text[:12])}")
+        concrete_details = self._normalize_text_list(detail.get("concrete_details") or detail.get("details") or [])
+        if concrete_details:
+            lines.append(f"   具体细节：{', '.join(concrete_details[:16])}")
         entities = self._normalize_text_list(detail.get("entities") or detail.get("objects") or [])
         if entities:
             lines.append(f"   要素：{', '.join(entities[:24])}")
         tags = self._normalize_text_list(detail.get("mood_tags") or detail.get("tags") or detail.get("keywords") or [])
         if tags:
             lines.append(f"   标签：{', '.join(tags[:24])}")
-        uncertainty = str(detail.get("uncertainty") or "").strip()
-        if uncertainty:
-            lines.append(f"   不确定处：{uncertainty[:500]}")
+        uncertainty_items = self._normalize_text_list(detail.get("uncertainty") or [])
+        if uncertainty_items:
+            lines.append(f"   不确定处：{', '.join(uncertainty_items[:12])}")
         extra_keys = [
             key
             for key in sorted(detail.keys())
@@ -1023,6 +1032,9 @@ class AttachmentInboxService:
                 "scene_description",
                 "appearance",
                 "composition",
+                "visible_text",
+                "concrete_details",
+                "details",
                 "entities",
                 "objects",
                 "mood_tags",
@@ -1647,6 +1659,29 @@ class AttachmentInboxService:
         if value >= 1_000_000:
             return f"{value / 1_000_000:.2f}Mbps"
         return f"{value / 1000:.0f}kbps"
+
+    def _format_time_anchor(self, value: Any) -> str:
+        try:
+            timestamp = int(value or 0)
+        except (TypeError, ValueError):
+            return ""
+        if timestamp <= 0:
+            return ""
+        try:
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(timestamp))
+        except (OSError, OverflowError, ValueError):
+            return ""
+
+    def _item_time_anchor(self, item: dict[str, Any]) -> str:
+        created_label = self._format_time_anchor(item.get("created_at"))
+        updated_label = self._format_time_anchor(item.get("updated_at"))
+        if created_label and updated_label and updated_label != created_label:
+            return f"加入 {created_label}；摘要/状态更新 {updated_label}"
+        if created_label:
+            return f"加入 {created_label}"
+        if updated_label:
+            return f"摘要/状态更新 {updated_label}"
+        return ""
 
     def _source_label(self, item: dict[str, Any]) -> str:
         source = str(item.get("source") or "").strip().lower()

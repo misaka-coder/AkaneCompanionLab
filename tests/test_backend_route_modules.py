@@ -840,9 +840,77 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(clear_calls[1]["target"], "current")
         self.assertFalse(clear_calls[1]["delete_storage"])
         sent_messages = [call.kwargs["json"]["message"] for call in mocked_post.call_args_list]
-        self.assertTrue(any("当前工作台材料" in message and "file_001" in message for message in sent_messages))
+        self.assertTrue(any("当前工作台" in message and "file_001" in message for message in sent_messages))
         self.assertTrue(any("已删除原始附件文件：2 个" in message for message in sent_messages))
         self.assertTrue(any(event_name == "qq_workspace_command" for event_name, _payload in log_calls))
+
+    def test_qq_router_workspace_natural_question_syncs_state_to_llm(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+
+        class FakeAttachmentStore:
+            def list_attachment_inbox_items(self, **_kwargs):
+                return []
+
+        class FakeAttachmentService:
+            store = FakeAttachmentStore()
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def _get_attachment_inbox_service(self):
+                return FakeAttachmentService()
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "工作台现在是空的。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda _event_name, **_kwargs: None,
+            )
+        )
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "workspace-natural-question-1",
+                    "message": "现在工作台还有东西吗",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reason"], "private")
+        self.assertEqual(len(process_calls), 1)
+        self.assertIn("【当前工作台真实状态】", process_calls[0]["extra_context"])
+        self.assertIn("当前工作台为空", process_calls[0]["extra_context"])
+        self.assertIn("不要根据旧记忆、生成文件工作台", process_calls[0]["extra_context"])
+        mocked_post.assert_called_once()
 
     def test_qq_router_waits_for_image_vision_before_waking_llm(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -881,8 +949,12 @@ class BackendRouteModuleTests(unittest.TestCase):
                             "attachment_handle": "img_001",
                             "summary_title": "草莓蛋糕少女",
                             "short_hint": "少女正在装饰铺满草莓的奶油蛋糕。",
+                            "created_at": 1712400000,
+                            "updated_at": 1712400060,
                             "detail": {
                                 "summary": "备用摘要",
+                                "visible_text": ["Happy Cake"],
+                                "concrete_details": ["桌上有草莓和奶油", "少女手里拿着装饰工具"],
                                 "entities": ["少女", "草莓蛋糕", "厨房"],
                                 "mood_tags": ["温馨", "可爱"],
                                 "uncertainty": ["背景细节较浅"],
@@ -940,6 +1012,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "self_id": QQ_BOT_FIXTURE_ID,
                     "user_id": QQ_USER_FIXTURE_ID,
                     "message_id": "route-image-pending-1",
+                    "time": int(time.time()),
                     "message": [
                         {
                             "type": "image",
@@ -965,8 +1038,12 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(len(wait_calls), 1)
         self.assertEqual(len(process_calls), 1)
         self.assertIn("【本轮 QQ 图片内容】", process_calls[0]["extra_context"])
+        self.assertIn("本轮图片发送时间", process_calls[0]["extra_context"])
         self.assertIn("草莓蛋糕少女", process_calls[0]["extra_context"])
+        self.assertIn("加入 ", process_calls[0]["extra_context"])
         self.assertIn("少女正在装饰铺满草莓的奶油蛋糕", process_calls[0]["extra_context"])
+        self.assertIn("可见文字：Happy Cake", process_calls[0]["extra_context"])
+        self.assertIn("细节：桌上有草莓和奶油、少女手里拿着装饰工具", process_calls[0]["extra_context"])
         self.assertIn("要素：少女、草莓蛋糕、厨房", process_calls[0]["extra_context"])
         self.assertIn("标签：温馨、可爱", process_calls[0]["extra_context"])
         self.assertIn("不确定处：背景细节较浅", process_calls[0]["extra_context"])

@@ -223,6 +223,35 @@ class VisionObservationServiceTests(unittest.TestCase):
         self.assertEqual(captured["profile_user_id"], "user_a")
         self.assertEqual(captured["summary"], "窗边的晚霞照片。")
 
+    def test_attachment_image_card_preserves_visible_text_and_details(self) -> None:
+        temp_dir, root = self._build_assets_root()
+        self.addCleanup(temp_dir.cleanup)
+
+        store = MemoryStore(root / "db")
+        service = VisionObservationService(
+            root / "vision_cache",
+            store=store,
+            analyze_image_fn=lambda target: {},
+        )
+
+        card = service._normalize_observation_card(
+            {
+                "summary_title": "作业截图",
+                "summary": "这是一张数学作业截图，能看到题目和红色批注。",
+                "visible_text": ["函数题", "第 3 题"],
+                "concrete_details": ["页面中央是手写解题过程", "右上角有红色标记"],
+                "entities": ["作业", "批注"],
+                "mood_tags": ["学习", "整理"],
+                "uncertainty": ["小字看不清"],
+            },
+            observation_type="attachment_image",
+        )
+
+        self.assertEqual(card["summary_title"], "作业截图")
+        self.assertEqual(card["visible_text"], ["函数题", "第 3 题"])
+        self.assertEqual(card["concrete_details"], ["页面中央是手写解题过程", "右上角有红色标记"])
+        self.assertEqual(card["uncertainty"], ["小字看不清"])
+
     def test_schedule_scene_observation_retries_stale_pending_record(self) -> None:
         temp_dir, root = self._build_assets_root()
         self.addCleanup(temp_dir.cleanup)

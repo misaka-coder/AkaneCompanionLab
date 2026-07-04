@@ -117,6 +117,38 @@ QQ_WORKSPACE_PURGE_MARKERS = (
     "本地文件也",
     "附件文件也",
 )
+QQ_WORKSPACE_KIND_LABELS = {
+    "image": "图片",
+    "document": "文件",
+    "file": "文件",
+    "audio": "音频",
+    "video": "视频",
+}
+
+
+def _format_qq_timestamp(value: Any) -> str:
+    try:
+        timestamp = int(value or 0)
+    except (TypeError, ValueError):
+        return ""
+    if timestamp <= 0:
+        return ""
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(timestamp))
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _qq_item_time_label(item: dict[str, Any]) -> str:
+    created_label = _format_qq_timestamp(item.get("created_at"))
+    updated_label = _format_qq_timestamp(item.get("updated_at"))
+    if created_label and updated_label and updated_label != created_label:
+        return f"加入 {created_label}，更新 {updated_label}"
+    if created_label:
+        return f"加入 {created_label}"
+    if updated_label:
+        return f"更新 {updated_label}"
+    return ""
 
 
 def _normalize_qq_workspace_command_text(qq_gateway: Any, message: str) -> str:
@@ -171,15 +203,48 @@ def _parse_qq_workspace_command(qq_gateway: Any, message: str) -> dict[str, Any]
     return None
 
 
+def _qq_workspace_kind_label(kind: Any) -> str:
+    normalized = str(kind or "").strip().lower()
+    return QQ_WORKSPACE_KIND_LABELS.get(normalized, "材料")
+
+
+def _looks_like_machine_name(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    stem = Path(text).stem if "." in text else text
+    compact = re.sub(r"[^A-Za-z0-9]", "", stem)
+    if len(compact) >= 18 and len(compact) >= max(1, int(len(stem) * 0.72)):
+        return True
+    if re.fullmatch(r"[A-Fa-f0-9]{12,}", compact):
+        return True
+    if re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F-]{18,}", text):
+        return True
+    return False
+
+
+def _friendly_qq_workspace_title(item: dict[str, Any]) -> str:
+    kind_label = _qq_workspace_kind_label(item.get("kind"))
+    candidates = [
+        str(item.get("summary_title") or "").strip(),
+        str(item.get("origin_name") or "").strip(),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        name = Path(candidate).name
+        if name and not _looks_like_machine_name(name):
+            return name[:48]
+    return f"未命名{kind_label}"
+
+
 def _format_qq_workspace_item(item: dict[str, Any]) -> str:
     handle = str(item.get("attachment_handle") or item.get("attachment_id") or "").strip()
-    title = str(item.get("summary_title") or item.get("origin_name") or "未命名材料").strip()
-    kind = str(item.get("kind") or "file").strip()
-    status = str(item.get("status") or "").strip()
-    focus = int(item.get("focus_rank") or 0)
-    prefix = f"[{handle}] " if handle else ""
-    focus_label = f" focus#{focus}" if focus > 0 else ""
-    return f"{prefix}{kind}{focus_label}：{title[:60]}（{status or 'unknown'}）"
+    title = _friendly_qq_workspace_title(item)
+    kind_label = _qq_workspace_kind_label(item.get("kind"))
+    suffix_parts = [part for part in (handle, _qq_item_time_label(item)) if part]
+    suffix = f"（{'，'.join(suffix_parts)}）" if suffix_parts else ""
+    return f"{kind_label}：{title}{suffix}"
 
 
 def _build_qq_workspace_list_reply(service: Any, *, profile_user_id: str, session_id: str) -> str:
@@ -192,19 +257,57 @@ def _build_qq_workspace_list_reply(service: Any, *, profile_user_id: str, sessio
         statuses=["ready", "pending_observation", "failed"],
         limit=30,
     )
-    lines = ["当前工作台材料", "─" * 18]
+    lines = ["当前工作台"]
     if not items:
-        lines.append("  （空）")
+        lines.append("空。现在没有材料会继续进入 Akane 的上下文。")
     else:
-        for item in items[:20]:
+        lines.append(f"共有 {len(items)} 个材料：")
+        for index, item in enumerate(items[:20], start=1):
             if isinstance(item, dict):
-                lines.append("  " + _format_qq_workspace_item(item))
+                lines.append(f"{index}. {_format_qq_workspace_item(item)}")
         if len(items) > 20:
             lines.append(f"还有 {len(items) - 20} 个未显示。")
-    lines.append("─" * 18)
-    lines.append("清理：发送“清理工作台”")
-    lines.append("只清最新：发送“清理最新材料”")
-    lines.append("彻底删除附件文件：发送“彻底清理工作台”")
+    lines.append("")
+    lines.append("清理工作台：移出上下文")
+    lines.append("清理最新材料：只移出最近一个")
+    lines.append("彻底清理工作台：同时删除附件文件")
+    return "\n".join(lines)
+
+
+def _should_sync_workspace_state_to_llm(qq_gateway: Any, message: str) -> bool:
+    text = _normalize_qq_workspace_command_text(qq_gateway, message)
+    if not text:
+        return False
+    if _parse_qq_workspace_command(qq_gateway, message) is not None:
+        return False
+    return any(marker in text for marker in ("工作台", "材料", "附件"))
+
+
+def _build_qq_workspace_state_context(service: Any, *, profile_user_id: str, session_id: str) -> str:
+    store = getattr(service, "store", None)
+    if store is None or not hasattr(store, "list_attachment_inbox_items"):
+        return ""
+    items = store.list_attachment_inbox_items(
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        statuses=["ready", "pending_observation", "failed"],
+        limit=20,
+    )
+    lines = [
+        "【当前工作台真实状态】",
+        "这是给 Akane 的实时状态同步，不是用户新发来的材料。用户正在自然询问工作台时，请基于这里回答。",
+    ]
+    if not items:
+        lines.append("当前工作台为空。请把“空”作为事实自然回答。")
+        lines.append("不要根据旧记忆、生成文件工作台、之前处理过的 mp3/图片/文件猜测仍有材料。")
+        return "\n".join(lines)
+    lines.append(f"当前工作台有 {len(items)} 个材料。只把下列材料当作当前工作台材料：")
+    for index, item in enumerate(items[:12], start=1):
+        if isinstance(item, dict):
+            lines.append(f"{index}. {_format_qq_workspace_item(item)}")
+    if len(items) > 12:
+        lines.append(f"还有 {len(items) - 12} 个未列出。")
+    lines.append("不要把旧生成文件、聊天记忆或已经清理的材料算进当前工作台。")
     return "\n".join(lines)
 
 
@@ -212,12 +315,12 @@ def _build_qq_workspace_help_reply() -> str:
     return "\n".join(
         [
             "工作台指令",
-            "─" * 18,
-            "  工作台 / 查看工作台：列出当前材料",
-            "  清理工作台：让所有当前材料退出上下文",
-            "  清理最新材料：只清最近一个材料",
-            "  清理工作台 file_001：清指定材料",
-            "  彻底清理工作台：同时删除附件原始文件",
+            "工作台 / 查看工作台：列出当前材料",
+            "自然询问工作台状态时：会同步真实状态给 Akane，让她自然回答",
+            "清理工作台：让所有当前材料退出上下文",
+            "清理最新材料：只清最近一个材料",
+            "清理工作台 file_001：清指定材料",
+            "彻底清理工作台：同时删除附件原始文件",
         ]
     )
 
@@ -226,20 +329,21 @@ def _build_qq_workspace_clear_reply(result: dict[str, Any], *, delete_storage: b
     cleared = [item for item in list(result.get("cleared") or []) if isinstance(item, dict)]
     purged = [str(item or "").strip() for item in list(result.get("purged_files") or []) if str(item or "").strip()]
     unresolved = [str(item or "").strip() for item in list(result.get("unresolved") or []) if str(item or "").strip()]
-    lines = ["工作台清理结果", "─" * 18]
+    lines = ["工作台清理结果"]
     if cleared:
-        lines.append(f"  已移出上下文：{len(cleared)} 个")
-        for item in cleared[:12]:
-            lines.append("  " + _format_qq_workspace_item(item))
+        lines.append(f"已移出上下文：{len(cleared)} 个。")
+        lines.append("现在这些材料不会继续进入 Akane 的上下文。")
+        for index, item in enumerate(cleared[:12], start=1):
+            lines.append(f"{index}. {_format_qq_workspace_item(item)}")
         if len(cleared) > 12:
-            lines.append(f"  还有 {len(cleared) - 12} 个未显示。")
+            lines.append(f"还有 {len(cleared) - 12} 个未显示。")
     else:
-        lines.append("  没有找到可清理的材料。")
+        lines.append("当前工作台已经是空的。")
+        lines.append("没有材料会继续进入 Akane 的上下文。")
     if delete_storage:
-        lines.append(f"  已删除原始附件文件：{len(purged)} 个")
+        lines.append(f"已删除原始附件文件：{len(purged)} 个。")
     if unresolved:
-        lines.append("  未找到：" + "、".join(unresolved[:8]))
-    lines.append("─" * 18)
+        lines.append("未找到：" + "、".join(unresolved[:8]))
     lines.append("发送“工作台”可再次查看。")
     return "\n".join(lines)
 
@@ -248,6 +352,7 @@ def _build_qq_image_vision_followup_note(
     *,
     attachment_ids: list[str],
     wait_result: dict[str, Any],
+    event_timestamp: int | None = None,
 ) -> str:
     def _compact_text_list(value: Any, *, limit: int = 12) -> list[str]:
         if isinstance(value, list):
@@ -267,8 +372,13 @@ def _build_qq_image_vision_followup_note(
 
     base_lines = [
         "【本轮 QQ 图片内容】",
-        "用户刚刚发送的图片视觉摘要已经生成；下面就是本轮用户发来的图片内容。请直接基于视觉描述回应，不要说“让我看看”“我还没看到图片”。",
+        "用户刚刚发送的图片视觉摘要已经生成；下面就是本轮用户发来的图片内容。",
+        "强约束：本轮回复只依据下面的图片摘要；如果旧记忆、旧工作台、生成文件工作台或先前图片与这里冲突，一律以本轮摘要为准。",
+        "不要说“让我看看”“我还没看到图片”“是不是上次那张”；不要把旧图片、旧文件或角色立绘当成这张图。",
     ]
+    event_time_label = _format_qq_timestamp(event_timestamp)
+    if event_time_label:
+        base_lines.insert(1, f"本轮图片发送时间：{event_time_label}。")
     items_by_id = wait_result.get("items_by_id") if isinstance(wait_result.get("items_by_id"), dict) else {}
     kinds_by_id = wait_result.get("kinds_by_id") if isinstance(wait_result.get("kinds_by_id"), dict) else {}
     ready_ids = {str(item or "").strip() for item in list(wait_result.get("ready") or []) if str(item or "").strip()}
@@ -288,12 +398,22 @@ def _build_qq_image_vision_followup_note(
         summary = _normalize_reply_text(
             item.get("short_hint") or detail.get("summary") or detail.get("description") or ""
         )[:360]
+        visible_text = _compact_text_list(detail.get("visible_text") or [], limit=8)
+        concrete_details = _compact_text_list(detail.get("concrete_details") or detail.get("details") or [], limit=8)
         entities = _compact_text_list(detail.get("entities") or detail.get("objects") or [])
         mood_tags = _compact_text_list(detail.get("mood_tags") or detail.get("tags") or detail.get("keywords") or [])
         uncertainty = _compact_text_list(detail.get("uncertainty") or [])
         if summary:
-            line = f"- {title}：{summary}" if title else f"- {summary}"
+            time_label = _qq_item_time_label(item)
+            title_part = title or "图片"
+            if time_label:
+                title_part = f"{title_part}（{time_label}）"
+            line = f"- {title_part}：{summary}" if title_part else f"- {summary}"
             extras = []
+            if visible_text:
+                extras.append("可见文字：" + "、".join(visible_text))
+            if concrete_details:
+                extras.append("细节：" + "、".join(concrete_details))
             if entities:
                 extras.append("要素：" + "、".join(entities))
             if mood_tags:
@@ -1021,14 +1141,18 @@ def build_qq_router(
                 )
                 return
 
+            effective_message_override = (
+                message_override.strip() or "用户刚刚发送了一张图片。请只根据【本轮 QQ 图片内容】中的视觉摘要自然回应。"
+            )
             turn_payload = _prepare_qq_turn_payload(
                 context=context,
                 event=event,
-                message_override=message_override,
+                message_override=effective_message_override,
                 action_note=action_note,
                 extra_context_note=_build_qq_image_vision_followup_note(
                     attachment_ids=attachment_ids,
                     wait_result=wait_result if isinstance(wait_result, dict) else {},
+                    event_timestamp=int(event.get("time") or time.time()),
                 ),
             )
             turn_result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
@@ -1127,6 +1251,7 @@ def build_qq_router(
 
             _qq_action_note = ""
             _qq_turn_message_override = ""
+            _qq_turn_extra_context_note = ""
 
             mface_config_result = qq_gateway.handle_mface_config_command(context, event)
             if isinstance(mface_config_result, dict):
@@ -1231,6 +1356,16 @@ def build_qq_router(
                         "send_result": send_result,
                     }
                 )
+
+            if _should_sync_workspace_state_to_llm(qq_gateway, context.clean_message):
+                service_factory = getattr(engine, "_get_attachment_inbox_service", None)
+                attachment_service = service_factory() if callable(service_factory) else None
+                if attachment_service is not None:
+                    _qq_turn_extra_context_note = _build_qq_workspace_state_context(
+                        attachment_service,
+                        profile_user_id=context.profile_user_id,
+                        session_id=context.session_id,
+                    )
 
             character_command_result = qq_gateway.handle_character_command(
                 context,
@@ -1600,6 +1735,7 @@ def build_qq_router(
                 event=event,
                 message_override=_qq_turn_message_override,
                 action_note=_qq_action_note,
+                extra_context_note=_qq_turn_extra_context_note,
             )
             turn_result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
             frame = dict(turn_result.get("frame") or {})

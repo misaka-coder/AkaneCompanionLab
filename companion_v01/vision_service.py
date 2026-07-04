@@ -20,7 +20,7 @@ from .store import MemoryStore
 
 logger = logging.getLogger("akane.vision")
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
-PROMPT_STYLE_REVISION = "atmo4"
+PROMPT_STYLE_REVISION = "atmo5"
 
 
 @dataclass(frozen=True)
@@ -492,7 +492,9 @@ class VisionObservationService:
                 provider=self._provider_label(),
                 model_name=str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
             )
-            observation = self._normalize_observation_card(self._analyze_image_fn(target), observation_type=target.observation_type)
+            observation = self._normalize_observation_card(
+                self._analyze_image_fn(target), observation_type=target.observation_type
+            )
             saved = self._save_observation(
                 target=target,
                 status="ready",
@@ -697,11 +699,7 @@ class VisionObservationService:
         outfit: dict[str, Any],
         fallback_emotion: Any = None,
     ) -> dict[str, Any] | None:
-        emotions = [
-            emotion
-            for emotion in list(outfit.get("emotions") or [])
-            if isinstance(emotion, dict)
-        ]
+        emotions = [emotion for emotion in list(outfit.get("emotions") or []) if isinstance(emotion, dict)]
         if not emotions and isinstance(fallback_emotion, dict):
             return fallback_emotion
         if not emotions:
@@ -799,10 +797,7 @@ class VisionObservationService:
             raise RuntimeError(f"图像过大，当前限制为 {max_bytes} bytes。")
 
         media_type = self._guess_media_type(target.source_path)
-        image_url = (
-            f"data:{media_type};base64,"
-            f"{base64.b64encode(image_bytes).decode('ascii')}"
-        )
+        image_url = f"data:{media_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
         response = self._client.chat.completions.create(
             model=str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
             messages=[
@@ -875,12 +870,16 @@ class VisionObservationService:
             return (
                 "你是一个视觉观察器。当前任务是观察聊天里临时发来的图片附件。"
                 "请只依据图像和提供的少量提示，输出一个 JSON 对象。"
-                "字段固定为 summary_title, summary, entities, mood_tags, uncertainty。"
+                "字段固定为 summary_title, summary, visible_text, concrete_details, entities, mood_tags, uncertainty。"
                 "summary_title 用 4 到 12 个中文字符写临时标题，方便聊天中称呼它；"
                 "标题要具体，例如“晚餐照片”“作业截图”“白猫窗边”，不要使用原始文件名，不要带扩展名。"
-                "summary 用 1 句中文概括画面里能确认的主要内容和氛围，可以说明它像照片、截图、菜单或文档画面。"
+                "summary 用 1 到 2 句中文概括画面里能确认的主要内容、场景类型和关键氛围，可以说明它像照片、截图、菜单或文档画面；"
+                "summary 必须具体，尽量包含主体、动作/状态、背景或用途，不要只写“用户发来一张图片”“画面比较可爱”“像一张截图”。"
+                "visible_text 写 0 到 8 条能看清的文字、标题、按钮、菜单项、文件名或聊天内容；看不清就留空，不要猜。"
+                "concrete_details 写 3 到 8 条可见细节，例如人物动作、物品、颜色、位置关系、界面元素、文档结构或截图中的关键区域。"
                 "entities 与 mood_tags 各给 2 到 6 个短词；"
-                "不确定的地方写进 uncertainty，不要臆造看不见的故事，不要直接替角色说话，不要输出多余字段。"
+                "如果图片模糊、裁切、遮挡或信息不足，summary 要明确写“看不清具体内容，只能确认……”，并把不确定点写进 uncertainty。"
+                "不要臆造看不见的故事，不要直接替角色说话，不要输出多余字段。"
             )
         return (
             "你是一个视觉观察器。请只依据图像和提供的少量提示，输出一个 JSON 对象。"
@@ -896,11 +895,17 @@ class VisionObservationService:
             f"辅助提示：{target.hint_text or '(无)'}",
         ]
         if target.observation_type == "scene":
-            lines.append("请更关注空间、光线、时间感、冷暖感和整体氛围。默认视角是角色正身处其中，不是站在屏幕外描述图片。")
+            lines.append(
+                "请更关注空间、光线、时间感、冷暖感和整体氛围。默认视角是角色正身处其中，不是站在屏幕外描述图片。"
+            )
         elif target.observation_type == "gift":
             lines.append("请更关注这张图第一眼最打动人的部分，以及它给人的收藏感。不要臆造故事。")
         elif target.observation_type == "attachment_image":
-            lines.append("请为这张临时图片生成一个好称呼的短标题，并概括画面主要内容；如果是截图，也可以明确说像截图。")
+            lines.append(
+                "请为这张临时图片生成一个好称呼的短标题，并整理可见事实；"
+                "如果是截图，请尽量写出界面/软件/页面类型、能看清的文字和关键区域；"
+                "如果看不清，不要补猜。"
+            )
         if target.observation_type == "outfit":
             lines.append(
                 "请重点整理这套服装穿在身上的视觉特点与整体气质，忽略细微表情变化。"
@@ -952,7 +957,9 @@ class VisionObservationService:
                 label += f"（{process_name}）"
             lines.append(f"当前窗口线索：{label}")
         lines.append("请串联这些瞬间，描述这几秒里主人正在看的具体内容。")
-        lines.append("优先提取可读文字、窗口标题、网页标题、按钮、代码关键词、游戏界面、视频标题、卡片/角色/弹窗等具体证据。")
+        lines.append(
+            "优先提取可读文字、窗口标题、网页标题、按钮、代码关键词、游戏界面、视频标题、卡片/角色/弹窗等具体证据。"
+        )
         lines.append("如果看不清，请直接承认看不清，不要用空泛描述假装有信息。")
         lines.append("请输出严格 JSON。")
         return "\n".join(lines)
@@ -1007,7 +1014,7 @@ class VisionObservationService:
             if isinstance(raw, list):
                 result = [str(item).strip() for item in raw if str(item).strip()]
             elif isinstance(raw, str):
-                result = [part.strip() for part in raw.split(",") if part.strip()]
+                result = [part.strip() for part in raw.replace("，", ",").replace("、", ",").split(",") if part.strip()]
             else:
                 result = []
             deduped: list[str] = []
@@ -1026,7 +1033,10 @@ class VisionObservationService:
         }
         if observation_type == "attachment_image":
             title = str(payload.get("summary_title") or payload.get("title") or "").strip()
+            card["summary"] = summary[:360]
             card["summary_title"] = title[:40]
+            card["visible_text"] = _list("visible_text")[:8]
+            card["concrete_details"] = _list("concrete_details", fallback_key="details")[:8]
         if observation_type == "outfit":
             card["appearance_traits"] = _list("appearance_traits", fallback_key="salient_traits")
         return card

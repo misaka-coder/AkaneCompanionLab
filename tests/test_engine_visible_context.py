@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import unittest
 
+from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.engine_services.response_builder import _should_include_generated_file_context
 
 
 class EngineVisibleContextExclusionTests(unittest.TestCase):
@@ -117,6 +119,26 @@ class EngineVisibleContextExclusionTests(unittest.TestCase):
         self.assertNotIn("raw-summarized-3", visible_ids)
         self.assertNotIn("summary-semanticized-1", visible_ids)
         self.assertNotIn("summary-semanticized-2", visible_ids)
+
+    def test_qq_generated_file_context_only_appears_for_file_intent(self) -> None:
+        qq_context = ClientProtocolContext(
+            requested_mode=ClientMode.QQ_TEXT,
+            effective_mode=ClientMode.QQ_TEXT,
+        )
+        desktop_context = ClientProtocolContext(
+            requested_mode=ClientMode.DESKTOP_PET,
+            effective_mode=ClientMode.DESKTOP_PET,
+        )
+
+        self.assertFalse(
+            _should_include_generated_file_context(
+                qq_context,
+                "用户刚刚发送了一张图片。请只根据【本轮 QQ 图片内容】中的视觉摘要自然回应。",
+            )
+        )
+        self.assertTrue(_should_include_generated_file_context(qq_context, "把 gen_001 发给我"))
+        self.assertTrue(_should_include_generated_file_context(qq_context, "帮我转成 mp3"))
+        self.assertTrue(_should_include_generated_file_context(desktop_context, "普通聊天"))
 
 
 if __name__ == "__main__":

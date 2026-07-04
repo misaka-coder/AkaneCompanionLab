@@ -233,6 +233,8 @@ class AttachmentInboxTests(unittest.TestCase):
 
             self.assertIn("最新图片摘要。", prompt)
             self.assertIn("旧图片摘要。", prompt)
+            self.assertIn("时间：加入", prompt)
+            self.assertIn("摘要/状态更新", prompt)
             self.assertLess(prompt.index("最新图片摘要。"), prompt.index("旧图片摘要。"))
 
     def test_store_find_attachment_prefers_exact_handle_over_fuzzy_title(self) -> None:

@@ -93,9 +93,7 @@ class WorkspaceFileService:
     def ensure_layout(self) -> dict[str, Path]:
         if self.root_dir.exists() and not self.root_dir.is_dir():
             raise RuntimeError("configured Akane workspace root is not a directory")
-        if self.root_dir.exists() and (
-            self.root_dir.is_symlink() or self.root_dir.resolve() != self.root_dir
-        ):
+        if self.root_dir.exists() and (self.root_dir.is_symlink() or self.root_dir.resolve() != self.root_dir):
             raise RuntimeError("configured Akane workspace root changed to a linked location")
         self.root_dir.mkdir(parents=True, exist_ok=True)
         layers: dict[str, Path] = {}
@@ -103,9 +101,7 @@ class WorkspaceFileService:
             folder = self.root_dir / folder_name
             if folder.exists() and not folder.is_dir():
                 raise RuntimeError(f"workspace layer is not a directory: {folder_name}")
-            if folder.exists() and (
-                folder.is_symlink() or folder.resolve() != folder
-            ):
+            if folder.exists() and (folder.is_symlink() or folder.resolve() != folder):
                 raise RuntimeError(f"workspace layer changed to a linked location: {folder_name}")
             folder.mkdir(exist_ok=True)
             layers[folder_name] = folder
@@ -373,9 +369,7 @@ class WorkspaceFileService:
             if normalized_action == "remove":
                 directory_prefix = f"{uri.rstrip('/')}/"
                 directory_uris.extend(
-                    state_uri
-                    for state_uri in existing_states
-                    if state_uri.startswith(directory_prefix)
+                    state_uri for state_uri in existing_states if state_uri.startswith(directory_prefix)
                 )
             for candidate_uri in directory_uris:
                 if candidate_uri not in resolved_uris:
@@ -436,9 +430,7 @@ class WorkspaceFileService:
         if recent_files:
             lines.append("- 最近可见文件：")
             for item in recent_files:
-                lines.append(
-                    f"  - {item['uri']} ({item['size']} bytes, modified {item['modified_label']})"
-                )
+                lines.append(f"  - {item['uri']}（{item['size']} bytes，修改时间 {item['modified_label']}）")
         else:
             lines.append("- 当前工作区还没有可见文件。")
         if states:
@@ -462,20 +454,55 @@ class WorkspaceFileService:
             if not path.is_file():
                 lines.append(f"\n### {normalized_uri}\n[当前不是普通文件]")
                 continue
+            time_anchor = self._focused_file_time_anchor(state=state, path=path)
             read_result = self._read_file(path, max_chars=max_chars_per_file)
             if read_result.get("status") == "ok":
-                lines.append(f"\n### {normalized_uri}\n{str(read_result.get('content') or '')}")
+                header = f"\n### {normalized_uri}"
+                if time_anchor:
+                    header += f"\n[时间：{time_anchor}]"
+                lines.append(f"{header}\n{str(read_result.get('content') or '')}")
                 if read_result.get("truncated"):
                     lines.append("[内容因单文件技术上限被截断，可用 read_workspace 单独读取。]")
             else:
                 reason = str(read_result.get("reason") or "当前文件类型不能直接展开")
-                lines.append(f"\n### {normalized_uri}\n[{reason}]")
+                header = f"\n### {normalized_uri}"
+                if time_anchor:
+                    header += f"\n[时间：{time_anchor}]"
+                lines.append(f"{header}\n[{reason}]")
         return "\n".join(lines).strip()
 
     def location_hint(self) -> str:
         if self.uses_default_root:
             return "通常位于用户桌面上的 Akane Workspace 文件夹"
         return "位于用户设置中配置的 Akane Workspace 文件夹"
+
+    def _format_timestamp_label(self, value: Any) -> str:
+        try:
+            timestamp = int(value or 0)
+        except (TypeError, ValueError):
+            return ""
+        if timestamp <= 0:
+            return ""
+        try:
+            return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
+        except (OSError, OverflowError, ValueError):
+            return ""
+
+    def _focused_file_time_anchor(self, *, state: dict[str, Any], path: Path) -> str:
+        parts: list[str] = []
+        created_label = self._format_timestamp_label(state.get("created_at"))
+        updated_label = self._format_timestamp_label(state.get("updated_at"))
+        if created_label:
+            parts.append(f"加入上下文 {created_label}")
+        if updated_label and updated_label != created_label:
+            parts.append(f"焦点更新 {updated_label}")
+        try:
+            modified_label = self._format_timestamp_label(int(path.stat().st_mtime))
+        except OSError:
+            modified_label = ""
+        if modified_label:
+            parts.append(f"文件修改 {modified_label}")
+        return "；".join(parts)
 
     def resolve_uri(self, value: str) -> tuple[Path, str]:
         raw = str(value or "").strip()

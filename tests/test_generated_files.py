@@ -13,7 +13,22 @@ from unittest.mock import patch
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.store import MemoryStore
-from companion_v01.tool_runtime import ApplyStyleToExistingFileToolHandler, CleanVoiceTrackToolHandler, ComposeFileToolHandler, ConvertMediaFileToolHandler, InspectGeneratedFileToolHandler, InspectMediaInfoToolHandler, ManageGeneratedFileToolHandler, PrepareVoiceDatasetToolHandler, ReviseGeneratedFileToolHandler, SendFileToolHandler, SendGeneratedFileToolHandler, SeparateAudioStemsToolHandler, ToolExecutionContext, TranscribeMediaToolHandler
+from companion_v01.tool_runtime import (
+    ApplyStyleToExistingFileToolHandler,
+    CleanVoiceTrackToolHandler,
+    ComposeFileToolHandler,
+    ConvertMediaFileToolHandler,
+    InspectGeneratedFileToolHandler,
+    InspectMediaInfoToolHandler,
+    ManageGeneratedFileToolHandler,
+    PrepareVoiceDatasetToolHandler,
+    ReviseGeneratedFileToolHandler,
+    SendFileToolHandler,
+    SendGeneratedFileToolHandler,
+    SeparateAudioStemsToolHandler,
+    ToolExecutionContext,
+    TranscribeMediaToolHandler,
+)
 
 
 def _write_test_wav(path: Path, *, sample_rate: int = 1000) -> None:
@@ -225,6 +240,7 @@ class GeneratedFileTests(unittest.TestCase):
             )
 
             self.assertIn("大小：", context)
+            self.assertIn("生成：", context)
             self.assertIn("来源工具：separate_audio_stems", context)
             self.assertIn("来源：file_016", context)
             self.assertIn("音轨角色：vocals", context)
@@ -584,10 +600,13 @@ class GeneratedFileTests(unittest.TestCase):
 
                 return Result()
 
-            with patch("companion_v01.generated_files.shutil.which", return_value="ffmpeg"), patch(
-                "companion_v01.generated_files.subprocess.run",
-                side_effect=fake_run,
-            ) as mocked_run:
+            with (
+                patch("companion_v01.generated_files.shutil.which", return_value="ffmpeg"),
+                patch(
+                    "companion_v01.generated_files.subprocess.run",
+                    side_effect=fake_run,
+                ) as mocked_run,
+            ):
                 result = generated_service.convert_media_file(
                     profile_user_id="user",
                     session_id="session",
@@ -662,10 +681,13 @@ class GeneratedFileTests(unittest.TestCase):
                 Path(command[-1]).write_bytes(b"fake mp3 payload")
                 return Result()
 
-            with patch("companion_v01.generated_files.shutil.which", side_effect=lambda name: name), patch(
-                "companion_v01.generated_files.subprocess.run",
-                side_effect=fake_run,
-            ) as mocked_run:
+            with (
+                patch("companion_v01.generated_files.shutil.which", side_effect=lambda name: name),
+                patch(
+                    "companion_v01.generated_files.subprocess.run",
+                    side_effect=fake_run,
+                ) as mocked_run,
+            ):
                 result = generated_service.convert_media_file(
                     profile_user_id="user",
                     session_id="session",
@@ -774,9 +796,12 @@ class GeneratedFileTests(unittest.TestCase):
 
                 return Result()
 
-            with patch("companion_v01.generated_files.shutil.which", return_value="ffprobe"), patch(
-                "companion_v01.generated_files.subprocess.run",
-                side_effect=fake_run,
+            with (
+                patch("companion_v01.generated_files.shutil.which", return_value="ffprobe"),
+                patch(
+                    "companion_v01.generated_files.subprocess.run",
+                    side_effect=fake_run,
+                ),
             ):
                 result = generated_service.inspect_media_info(
                     profile_user_id="user",
@@ -841,10 +866,13 @@ class GeneratedFileTests(unittest.TestCase):
                     "instrumental": instrumental,
                 }
 
-            with patch("companion_v01.generated_files.importlib.util.find_spec", return_value=object()), patch.object(
-                GeneratedFileService,
-                "_separate_audio_with_demucs_module",
-                new=fake_module_separation,
+            with (
+                patch("companion_v01.generated_files.importlib.util.find_spec", return_value=object()),
+                patch.object(
+                    GeneratedFileService,
+                    "_separate_audio_with_demucs_module",
+                    new=fake_module_separation,
+                ),
             ):
                 result = generated_service.separate_audio_stems(
                     profile_user_id="user",
@@ -864,12 +892,15 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertTrue(Path(generated_files[0]["absolute_path"]).exists())
             self.assertTrue(Path(generated_files[1]["absolute_path"]).exists())
             roles = [
-                (item.get("content_card") or {}).get("separation", {}).get("stem_role")
-                for item in generated_files
+                (item.get("content_card") or {}).get("separation", {}).get("stem_role") for item in generated_files
             ]
             self.assertEqual(roles, ["vocals", "instrumental"])
-            self.assertEqual((generated_files[0].get("content_card") or {}).get("media_info", {}).get("format_name"), "wav")
-            self.assertEqual((generated_files[1].get("content_card") or {}).get("media_info", {}).get("format_name"), "wav")
+            self.assertEqual(
+                (generated_files[0].get("content_card") or {}).get("media_info", {}).get("format_name"), "wav"
+            )
+            self.assertEqual(
+                (generated_files[1].get("content_card") or {}).get("media_info", {}).get("format_name"), "wav"
+            )
             self.assertIn("人声 / 伴奏分离", result["followup_context"])
 
     def test_separate_audio_stems_tool_handler_emits_two_generated_events(self) -> None:
@@ -959,11 +990,15 @@ class GeneratedFileTests(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, "", "")
                 raise AssertionError(f"unexpected command: {command}")
 
-            with patch("companion_v01.generated_files.shutil.which", return_value="ffmpeg.exe"), patch.object(
-                GeneratedFileService,
-                "_resolve_deepfilternet_runner",
-                return_value={"kind": "binary", "command": ["deepFilter.exe"]},
-            ), patch("companion_v01.generated_files.subprocess.run", side_effect=fake_run):
+            with (
+                patch("companion_v01.generated_files.shutil.which", return_value="ffmpeg.exe"),
+                patch.object(
+                    GeneratedFileService,
+                    "_resolve_deepfilternet_runner",
+                    return_value={"kind": "binary", "command": ["deepFilter.exe"]},
+                ),
+                patch("companion_v01.generated_files.subprocess.run", side_effect=fake_run),
+            ):
                 result = generated_service.clean_voice_track(
                     profile_user_id="user",
                     session_id="session",
@@ -1069,9 +1104,12 @@ class GeneratedFileTests(unittest.TestCase):
                 _write_test_wav(Path(command[-1]), sample_rate=1000)
                 return subprocess.CompletedProcess(command, 0, "", "")
 
-            with patch("companion_v01.generated_files.shutil.which", return_value="ffmpeg.exe"), patch(
-                "companion_v01.generated_files.subprocess.run",
-                side_effect=fake_run,
+            with (
+                patch("companion_v01.generated_files.shutil.which", return_value="ffmpeg.exe"),
+                patch(
+                    "companion_v01.generated_files.subprocess.run",
+                    side_effect=fake_run,
+                ),
             ):
                 result = generated_service.prepare_voice_dataset(
                     profile_user_id="user",
@@ -1197,13 +1235,18 @@ class GeneratedFileTests(unittest.TestCase):
                 _write_test_wav(Path(command[-1]), sample_rate=1000)
                 return subprocess.CompletedProcess(command, 0, "", "")
 
-            with patch("companion_v01.generated_files.importlib.util.find_spec", return_value=object()), patch(
-                "companion_v01.generated_files.shutil.which",
-                return_value="ffmpeg.exe",
-            ), patch("companion_v01.generated_files.subprocess.run", side_effect=fake_run), patch.object(
-                GeneratedFileService,
-                "_load_faster_whisper_model",
-                return_value=FakeWhisperModel(),
+            with (
+                patch("companion_v01.generated_files.importlib.util.find_spec", return_value=object()),
+                patch(
+                    "companion_v01.generated_files.shutil.which",
+                    return_value="ffmpeg.exe",
+                ),
+                patch("companion_v01.generated_files.subprocess.run", side_effect=fake_run),
+                patch.object(
+                    GeneratedFileService,
+                    "_load_faster_whisper_model",
+                    return_value=FakeWhisperModel(),
+                ),
             ):
                 result = generated_service.transcribe_media(
                     profile_user_id="user",
