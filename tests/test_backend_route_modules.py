@@ -746,7 +746,12 @@ class BackendRouteModuleTests(unittest.TestCase):
                             "attachment_handle": "img_001",
                             "summary_title": "草莓蛋糕少女",
                             "short_hint": "少女正在装饰铺满草莓的奶油蛋糕。",
-                            "detail": {"summary": "备用摘要"},
+                            "detail": {
+                                "summary": "备用摘要",
+                                "entities": ["少女", "草莓蛋糕", "厨房"],
+                                "mood_tags": ["温馨", "可爱"],
+                                "uncertainty": ["背景细节较浅"],
+                            },
                         }
                     },
                 }
@@ -827,6 +832,9 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertIn("【本轮 QQ 图片内容】", process_calls[0]["extra_context"])
         self.assertIn("草莓蛋糕少女", process_calls[0]["extra_context"])
         self.assertIn("少女正在装饰铺满草莓的奶油蛋糕", process_calls[0]["extra_context"])
+        self.assertIn("要素：少女、草莓蛋糕、厨房", process_calls[0]["extra_context"])
+        self.assertIn("标签：温馨、可爱", process_calls[0]["extra_context"])
+        self.assertIn("不确定处：背景细节较浅", process_calls[0]["extra_context"])
         self.assertIn(("qq_napcat_event", True), runtime.observed)
         scheduled_logs = [
             payload for event_name, payload in log_calls if event_name == "qq_image_vision_followup_scheduled"

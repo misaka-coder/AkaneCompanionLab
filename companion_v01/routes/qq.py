@@ -61,6 +61,22 @@ def _build_qq_image_vision_followup_note(
     attachment_ids: list[str],
     wait_result: dict[str, Any],
 ) -> str:
+    def _compact_text_list(value: Any, *, limit: int = 12) -> list[str]:
+        if isinstance(value, list):
+            raw_items = value
+        elif isinstance(value, str):
+            raw_items = re.split(r"[,，、\n]+", value)
+        else:
+            raw_items = []
+        items: list[str] = []
+        for raw_item in raw_items:
+            item = _normalize_reply_text(raw_item)[:60]
+            if item and item not in items:
+                items.append(item)
+            if len(items) >= limit:
+                break
+        return items
+
     base_lines = [
         "【本轮 QQ 图片内容】",
         "用户刚刚发送的图片视觉摘要已经生成；下面就是本轮用户发来的图片内容。请直接基于视觉描述回应，不要说“让我看看”“我还没看到图片”。",
@@ -84,8 +100,21 @@ def _build_qq_image_vision_followup_note(
         summary = _normalize_reply_text(
             item.get("short_hint") or detail.get("summary") or detail.get("description") or ""
         )[:360]
+        entities = _compact_text_list(detail.get("entities") or detail.get("objects") or [])
+        mood_tags = _compact_text_list(detail.get("mood_tags") or detail.get("tags") or detail.get("keywords") or [])
+        uncertainty = _compact_text_list(detail.get("uncertainty") or [])
         if summary:
-            image_lines.append(f"- {title}：{summary}" if title else f"- {summary}")
+            line = f"- {title}：{summary}" if title else f"- {summary}"
+            extras = []
+            if entities:
+                extras.append("要素：" + "、".join(entities))
+            if mood_tags:
+                extras.append("标签：" + "、".join(mood_tags))
+            if uncertainty:
+                extras.append("不确定处：" + "、".join(uncertainty))
+            if extras:
+                line += "；" + "；".join(extras)
+            image_lines.append(line)
     if image_lines:
         return "\n".join([*base_lines, *image_lines])
     return "\n".join(
