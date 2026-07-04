@@ -63,7 +63,9 @@ class AttachmentInboxTests(unittest.TestCase):
                 statuses=["ready", "pending_observation"],
                 limit=10,
             )
-            self.assertEqual([item["attachment_id"] for item in listed], [first["attachment_id"], second["attachment_id"]])
+            self.assertEqual(
+                [item["attachment_id"] for item in listed], [first["attachment_id"], second["attachment_id"]]
+            )
 
             cleared = store.clear_attachment_inbox_items(
                 profile_user_id="user",
@@ -515,7 +517,12 @@ class AttachmentInboxTests(unittest.TestCase):
                 attachment_id=first["attachment_id"],
                 summary_title="第一份文件",
                 short_hint="第一份文件摘要。",
-                detail={"file_kind": "txt", "file_size": 10, "line_count": 2, "text_preview": "不该出现在Manifest里的正文"},
+                detail={
+                    "file_kind": "txt",
+                    "file_size": 10,
+                    "line_count": 2,
+                    "text_preview": "不该出现在Manifest里的正文",
+                },
                 timestamp=110,
             )
             second = service.create_pending(
@@ -887,6 +894,79 @@ class AttachmentInboxTests(unittest.TestCase):
                 [item["attachment_handle"] for item in remaining],
                 ["img_004", "img_002"],
             )
+
+    def test_clear_current_workspace_clears_all_active_materials(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = AttachmentInboxService(store=store)
+            for index in range(1, 4):
+                item = service.create_pending(
+                    profile_user_id="user",
+                    session_id="session",
+                    source="qq",
+                    kind="document",
+                    origin_name=f"old-{index}.pdf",
+                    timestamp=100 + index,
+                )
+                service.mark_ready(
+                    profile_user_id="user",
+                    session_id="session",
+                    attachment_id=item["attachment_id"],
+                    summary_title=f"旧文件{index}",
+                    short_hint=f"旧文件{index}摘要。",
+                    timestamp=110 + index,
+                )
+
+            result = service.clear_focus(
+                profile_user_id="user",
+                session_id="session",
+                target="current",
+                timestamp=200,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(len(result["cleared"]), 3)
+            prompt = service.build_prompt_context(profile_user_id="user", session_id="session")
+            self.assertEqual(prompt, "")
+
+    def test_clear_focus_can_delete_managed_storage_files_when_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attachment_root = root / "attachments"
+            stored = attachment_root / "user" / "session" / "old.txt"
+            stored.parent.mkdir(parents=True)
+            stored.write_text("old material", encoding="utf-8")
+            store = MemoryStore(root)
+            service = AttachmentInboxService(store=store, base_dir=attachment_root)
+            item = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="document",
+                origin_name="old.txt",
+                storage_relpath="user/session/old.txt",
+                timestamp=100,
+            )
+            service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=item["attachment_id"],
+                summary_title="旧文件",
+                short_hint="旧文件摘要。",
+                timestamp=110,
+            )
+
+            result = service.clear_focus(
+                profile_user_id="user",
+                session_id="session",
+                target="current",
+                delete_storage=True,
+                timestamp=120,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["purged_files"], ["file_001"])
+            self.assertFalse(stored.exists())
 
     def test_clear_attachment_focus_requests_confirmation_for_ambiguous_target(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

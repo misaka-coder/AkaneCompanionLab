@@ -2020,9 +2020,10 @@ class ClearAttachmentFocusToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- clear_attachment_focus：当工作台图片/文件已经聊完、用户说发错了、或你判断不需要继续挂在上下文时使用。"
-            '格式为 {"type":"clear_attachment_focus","target":"current|latest|all|附件id/标题/文件名","targets":["img_001","第2张图"],"kind":"any|image|file|document|audio","reason":"可选原因"}。'
+            '格式为 {"type":"clear_attachment_focus","target":"current|latest|all|附件id/标题/文件名","targets":["img_001","第2张图"],"kind":"any|image|file|document|audio","delete_storage":false,"reason":"可选原因"}。'
             "清理多个指定材料时用 targets 数组；清理全部图片或文件时用 target=all 并配合 kind。"
-            "它只清理当前材料工作台，不删除聊天记忆，也不处理礼物系统。"
+            "默认只让材料退出当前工作台；只有用户明确要求删除原始附件文件时才把 delete_storage 设为 true。"
+            "它不删除聊天记忆，也不处理礼物系统。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -2040,6 +2041,7 @@ class ClearAttachmentFocusToolHandler(BaseToolHandler):
             ],
             "targets": self._normalize_targets(targets),
             "kind": self._normalize_kind(value.get("kind") or "any"),
+            "delete_storage": bool(value.get("delete_storage") or value.get("purge") or value.get("delete_files")),
             "reason": str(value.get("reason") or "").strip()[:160],
         }
 
@@ -2051,6 +2053,7 @@ class ClearAttachmentFocusToolHandler(BaseToolHandler):
             targets=list(call.get("targets") or []),
             kind=str(call.get("kind") or "any"),
             reason=str(call.get("reason") or ""),
+            delete_storage=bool(call.get("delete_storage")),
             timestamp=context.now_ts,
         )
         cleared = list(result.get("cleared") or []) if isinstance(result, dict) else []

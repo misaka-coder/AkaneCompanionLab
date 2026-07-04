@@ -709,6 +709,141 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(process_calls, [])
         self.assertIn(("qq_napcat_event", True), runtime.observed)
 
+    def test_qq_router_workspace_command_lists_and_clears_without_llm(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        clear_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeAttachmentStore:
+            def list_attachment_inbox_items(self, **_kwargs):
+                return [
+                    {
+                        "attachment_id": "att-1",
+                        "attachment_handle": "file_001",
+                        "kind": "document",
+                        "status": "ready",
+                        "focus_rank": 1,
+                        "summary_title": "旧四级真题.pdf",
+                    },
+                    {
+                        "attachment_id": "att-2",
+                        "attachment_handle": "img_001",
+                        "kind": "image",
+                        "status": "ready",
+                        "focus_rank": 2,
+                        "summary_title": "蛋糕图片",
+                    },
+                ]
+
+        class FakeAttachmentService:
+            store = FakeAttachmentStore()
+
+            def clear_focus(self, **kwargs):
+                clear_calls.append(kwargs)
+                return {
+                    "ok": True,
+                    "cleared": [
+                        {
+                            "attachment_handle": "file_001",
+                            "kind": "document",
+                            "status": "cleared",
+                            "focus_rank": 1,
+                            "summary_title": "旧四级真题.pdf",
+                        },
+                        {
+                            "attachment_handle": "img_001",
+                            "kind": "image",
+                            "status": "cleared",
+                            "focus_rank": 2,
+                            "summary_title": "蛋糕图片",
+                        },
+                    ],
+                    "purged_files": ["file_001", "img_001"] if kwargs.get("delete_storage") else [],
+                    "unresolved": [],
+                }
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def _get_attachment_inbox_service(self):
+                return FakeAttachmentService()
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "不该走到这里"}}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            list_response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "workspace-list-1",
+                    "message": "工作台",
+                },
+            )
+            clear_response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "workspace-clear-1",
+                    "message": "彻底清理工作台",
+                },
+            )
+            soft_delete_response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "workspace-soft-delete-1",
+                    "message": "Akane 删除工作台",
+                },
+            )
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(clear_response.status_code, 200)
+        self.assertEqual(soft_delete_response.status_code, 200)
+        self.assertEqual(list_response.json()["reason"], "qq_workspace_command")
+        self.assertEqual(clear_response.json()["reason"], "qq_workspace_command")
+        self.assertEqual(soft_delete_response.json()["reason"], "qq_workspace_command")
+        self.assertEqual(process_calls, [])
+        self.assertEqual(clear_calls[0]["target"], "current")
+        self.assertTrue(clear_calls[0]["delete_storage"])
+        self.assertEqual(clear_calls[1]["target"], "current")
+        self.assertFalse(clear_calls[1]["delete_storage"])
+        sent_messages = [call.kwargs["json"]["message"] for call in mocked_post.call_args_list]
+        self.assertTrue(any("当前工作台材料" in message and "file_001" in message for message in sent_messages))
+        self.assertTrue(any("已删除原始附件文件：2 个" in message for message in sent_messages))
+        self.assertTrue(any(event_name == "qq_workspace_command" for event_name, _payload in log_calls))
+
     def test_qq_router_waits_for_image_vision_before_waking_llm(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()

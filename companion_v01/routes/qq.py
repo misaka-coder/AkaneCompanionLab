@@ -56,6 +56,194 @@ def _normalize_reply_text(value: Any) -> str:
     return " ".join(str(value or "").replace("\r\n", "\n").replace("\r", "\n").split()).strip()
 
 
+QQ_WORKSPACE_LIST_COMMANDS = {
+    "工作台",
+    "材料工作台",
+    "工作台列表",
+    "查看工作台",
+    "查看材料",
+    "材料列表",
+    "当前工作台",
+    "当前材料",
+}
+QQ_WORKSPACE_HELP_COMMANDS = {"工作台帮助", "材料帮助", "工作台指令"}
+QQ_WORKSPACE_CLEAR_CURRENT_COMMANDS = {
+    "清理工作台",
+    "清空工作台",
+    "清除工作台",
+    "删除工作台",
+    "移除工作台",
+    "清理当前工作台",
+    "清空当前工作台",
+    "清理材料",
+    "清空材料",
+    "清除材料",
+    "删除材料",
+    "移除材料",
+    "清理附件",
+    "清空附件",
+    "清除附件",
+    "删除附件",
+    "移除附件",
+    "清理文件",
+    "清空文件",
+    "清除文件",
+    "删除文件",
+    "移除文件",
+    "清理全部材料",
+    "清空全部材料",
+    "清除全部材料",
+    "清理所有材料",
+    "清空所有材料",
+    "清除所有材料",
+}
+QQ_WORKSPACE_CLEAR_LATEST_COMMANDS = {
+    "清理最新材料",
+    "清理最近材料",
+    "清理最新附件",
+    "清除最新材料",
+    "清空最新材料",
+    "删除最新材料",
+    "移除最新材料",
+}
+QQ_WORKSPACE_PURGE_MARKERS = (
+    "彻底",
+    "删除原始",
+    "删除本地",
+    "删掉原始",
+    "删掉本地",
+    "连文件",
+    "原始文件也",
+    "本地文件也",
+    "附件文件也",
+)
+
+
+def _normalize_qq_workspace_command_text(qq_gateway: Any, message: str) -> str:
+    normalizer = getattr(qq_gateway, "_normalize_character_command_text", None)
+    if callable(normalizer):
+        try:
+            return str(normalizer(message) or "").strip()
+        except Exception:
+            pass
+    text = re.sub(r"\s+", " ", str(message or "").strip())
+    text = re.sub(r"^akane(?:[\s,，:：;；、-]+|$)", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def _parse_qq_workspace_command(qq_gateway: Any, message: str) -> dict[str, Any] | None:
+    text = _normalize_qq_workspace_command_text(qq_gateway, message)
+    if not text:
+        return None
+    lowered = text.lower()
+    delete_storage = any(marker in text for marker in QQ_WORKSPACE_PURGE_MARKERS) or bool(
+        re.search(r"(?:删除|删掉|移除).*(?:原始|本地|附件)?文件", text)
+    )
+    stripped_for_purge = text
+    for marker in QQ_WORKSPACE_PURGE_MARKERS:
+        stripped_for_purge = stripped_for_purge.replace(marker, "")
+    stripped_for_purge = re.sub(r"\s+", "", stripped_for_purge)
+    kind = "any"
+    if "图片" in text or "照片" in text:
+        kind = "image"
+    elif "音频" in text or "语音" in text or "音乐" in text:
+        kind = "audio"
+    elif "文件" in text or "文档" in text or "pdf" in lowered:
+        kind = "document"
+    if text in QQ_WORKSPACE_HELP_COMMANDS:
+        return {"action": "help"}
+    if text in QQ_WORKSPACE_LIST_COMMANDS:
+        return {"action": "list"}
+    if text in QQ_WORKSPACE_CLEAR_LATEST_COMMANDS:
+        return {"action": "clear", "target": "latest", "kind": kind, "delete_storage": delete_storage}
+    if text in QQ_WORKSPACE_CLEAR_CURRENT_COMMANDS or stripped_for_purge in QQ_WORKSPACE_CLEAR_CURRENT_COMMANDS:
+        return {"action": "clear", "target": "current", "kind": kind, "delete_storage": delete_storage}
+    if re.fullmatch(
+        r"(?:清理|清空|清除|删除|移除|收拾)(?:全部|所有|当前)?(?:工作台|材料|附件|文件)(?:文件|图片|照片|文档|音频)?",
+        stripped_for_purge,
+    ) or re.fullmatch(r"(?:删除|删掉|移除)(?:原始|本地|附件)?文件", text):
+        return {"action": "clear", "target": "current", "kind": kind, "delete_storage": delete_storage}
+    match = re.fullmatch(r"(?:清理|清除|移除|删除)(?:工作台|材料|附件)?[:：\s]+(.+)", text)
+    if match:
+        target = _normalize_reply_text(match.group(1))[:120]
+        if target:
+            return {"action": "clear", "target": target, "kind": kind, "delete_storage": delete_storage}
+    return None
+
+
+def _format_qq_workspace_item(item: dict[str, Any]) -> str:
+    handle = str(item.get("attachment_handle") or item.get("attachment_id") or "").strip()
+    title = str(item.get("summary_title") or item.get("origin_name") or "未命名材料").strip()
+    kind = str(item.get("kind") or "file").strip()
+    status = str(item.get("status") or "").strip()
+    focus = int(item.get("focus_rank") or 0)
+    prefix = f"[{handle}] " if handle else ""
+    focus_label = f" focus#{focus}" if focus > 0 else ""
+    return f"{prefix}{kind}{focus_label}：{title[:60]}（{status or 'unknown'}）"
+
+
+def _build_qq_workspace_list_reply(service: Any, *, profile_user_id: str, session_id: str) -> str:
+    store = getattr(service, "store", None)
+    if store is None or not hasattr(store, "list_attachment_inbox_items"):
+        return "当前工作台服务不可用。"
+    items = store.list_attachment_inbox_items(
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        statuses=["ready", "pending_observation", "failed"],
+        limit=30,
+    )
+    lines = ["当前工作台材料", "─" * 18]
+    if not items:
+        lines.append("  （空）")
+    else:
+        for item in items[:20]:
+            if isinstance(item, dict):
+                lines.append("  " + _format_qq_workspace_item(item))
+        if len(items) > 20:
+            lines.append(f"还有 {len(items) - 20} 个未显示。")
+    lines.append("─" * 18)
+    lines.append("清理：发送“清理工作台”")
+    lines.append("只清最新：发送“清理最新材料”")
+    lines.append("彻底删除附件文件：发送“彻底清理工作台”")
+    return "\n".join(lines)
+
+
+def _build_qq_workspace_help_reply() -> str:
+    return "\n".join(
+        [
+            "工作台指令",
+            "─" * 18,
+            "  工作台 / 查看工作台：列出当前材料",
+            "  清理工作台：让所有当前材料退出上下文",
+            "  清理最新材料：只清最近一个材料",
+            "  清理工作台 file_001：清指定材料",
+            "  彻底清理工作台：同时删除附件原始文件",
+        ]
+    )
+
+
+def _build_qq_workspace_clear_reply(result: dict[str, Any], *, delete_storage: bool) -> str:
+    cleared = [item for item in list(result.get("cleared") or []) if isinstance(item, dict)]
+    purged = [str(item or "").strip() for item in list(result.get("purged_files") or []) if str(item or "").strip()]
+    unresolved = [str(item or "").strip() for item in list(result.get("unresolved") or []) if str(item or "").strip()]
+    lines = ["工作台清理结果", "─" * 18]
+    if cleared:
+        lines.append(f"  已移出上下文：{len(cleared)} 个")
+        for item in cleared[:12]:
+            lines.append("  " + _format_qq_workspace_item(item))
+        if len(cleared) > 12:
+            lines.append(f"  还有 {len(cleared) - 12} 个未显示。")
+    else:
+        lines.append("  没有找到可清理的材料。")
+    if delete_storage:
+        lines.append(f"  已删除原始附件文件：{len(purged)} 个")
+    if unresolved:
+        lines.append("  未找到：" + "、".join(unresolved[:8]))
+    lines.append("─" * 18)
+    lines.append("发送“工作台”可再次查看。")
+    return "\n".join(lines)
+
+
 def _build_qq_image_vision_followup_note(
     *,
     attachment_ids: list[str],
@@ -756,7 +944,10 @@ def build_qq_router(
             message=context.clean_message or context.raw_message,
             timestamp=int(event.get("time") or time.time()),
         )
-        if isinstance(remote_prefetch_result, dict) and str(remote_prefetch_result.get("followup_context") or "").strip():
+        if (
+            isinstance(remote_prefetch_result, dict)
+            and str(remote_prefetch_result.get("followup_context") or "").strip()
+        ):
             prefetch_context = str(remote_prefetch_result.get("followup_context") or "").strip()
             original_extra_context = str(turn_payload.get("extra_context") or "").strip()
             turn_payload["extra_context"] = "\n\n".join(
@@ -969,6 +1160,74 @@ def build_qq_router(
                         "character_pack_id": str(mface_config_result.get("character_pack_id") or ""),
                         "emotion": str(mface_config_result.get("emotion") or ""),
                         "mface": mface_config_result.get("mface"),
+                        "send_result": send_result,
+                    }
+                )
+
+            workspace_command = _parse_qq_workspace_command(qq_gateway, context.clean_message)
+            if isinstance(workspace_command, dict):
+                service_factory = getattr(engine, "_get_attachment_inbox_service", None)
+                attachment_service = service_factory() if callable(service_factory) else None
+                action = str(workspace_command.get("action") or "").strip()
+                command_status = "ok"
+                command_ok = True
+                if action == "help":
+                    reply = _build_qq_workspace_help_reply()
+                elif attachment_service is None:
+                    command_status = "service_unavailable"
+                    command_ok = False
+                    reply = "当前工作台服务不可用。"
+                elif action == "list":
+                    reply = _build_qq_workspace_list_reply(
+                        attachment_service,
+                        profile_user_id=context.profile_user_id,
+                        session_id=context.session_id,
+                    )
+                elif action == "clear":
+                    clear_result = attachment_service.clear_focus(
+                        profile_user_id=context.profile_user_id,
+                        session_id=context.session_id,
+                        target=str(workspace_command.get("target") or "current"),
+                        kind=str(workspace_command.get("kind") or "any"),
+                        delete_storage=bool(workspace_command.get("delete_storage")),
+                        timestamp=int(event.get("time") or time.time()),
+                    )
+                    command_ok = bool(clear_result.get("ok")) if isinstance(clear_result, dict) else False
+                    command_status = "cleared" if command_ok else "not_found"
+                    reply = _build_qq_workspace_clear_reply(
+                        clear_result if isinstance(clear_result, dict) else {},
+                        delete_storage=bool(workspace_command.get("delete_storage")),
+                    )
+                else:
+                    command_status = "unknown_action"
+                    command_ok = False
+                    reply = "这个工作台指令暂时不支持。发送“工作台帮助”查看可用指令。"
+                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                duration_ms = (time.perf_counter() - started_at) * 1000
+                runtime_metrics.observe_request(
+                    "qq_napcat_event",
+                    duration_ms=duration_ms,
+                    ok=bool(send_result.get("ok")) and command_ok,
+                )
+                log_event(
+                    "qq_workspace_command",
+                    session_id=context.session_id,
+                    profile_user_id=context.profile_user_id,
+                    command_action=action,
+                    command_status=command_status,
+                    command_ok=command_ok,
+                    sent=bool(send_result.get("ok")),
+                    duration_ms=round(duration_ms, 1),
+                )
+                return JSONResponse(
+                    {
+                        "status": "ok" if send_result.get("ok") else "send_failed",
+                        "reason": "qq_workspace_command",
+                        "command_action": action,
+                        "command_status": command_status,
+                        "command_ok": command_ok,
+                        "session_id": context.session_id,
+                        "profile_user_id": context.profile_user_id,
                         "send_result": send_result,
                     }
                 )

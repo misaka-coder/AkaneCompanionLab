@@ -2810,7 +2810,7 @@ class MemoryStore:
         normalized_target = str(target or "current").strip()
         effective_ts = int(timestamp or time.time())
         active_statuses = ["ready", "pending_observation", "failed"]
-        if normalized_target.lower() in {"all", "全部", "*"}:
+        if normalized_target.lower() in {"all", "全部", "*", "current", "当前", "工作台", "materials", "workspace"}:
             targets = self.list_attachment_inbox_items(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -2818,7 +2818,7 @@ class MemoryStore:
                 kind=kind,
                 limit=200,
             )
-        elif normalized_target.lower() in {"current", "latest", "最近", "当前"}:
+        elif normalized_target.lower() in {"latest", "最近", "最新"}:
             targets = self.list_attachment_inbox_items(
                 profile_user_id=profile_user_id,
                 session_id=session_id,

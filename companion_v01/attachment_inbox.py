@@ -38,9 +38,7 @@ class AttachmentInboxService:
         self.store = store
         self.base_dir = Path(base_dir) if base_dir is not None else None
         self.legacy_base_dirs = [
-            Path(item)
-            for item in list(legacy_base_dirs or [])
-            if self.base_dir is None or Path(item) != self.base_dir
+            Path(item) for item in list(legacy_base_dirs or []) if self.base_dir is None or Path(item) != self.base_dir
         ]
         self.workspace_uri_resolver = workspace_uri_resolver
 
@@ -157,9 +155,7 @@ class AttachmentInboxService:
             "missing": missing,
             "kinds_by_id": kinds_by_id,
             "items_by_id": {
-                item_id: dict(latest[item_id])
-                for item_id in normalized_ids
-                if isinstance(latest.get(item_id), dict)
+                item_id: dict(latest[item_id]) for item_id in normalized_ids if isinstance(latest.get(item_id), dict)
             },
         }
 
@@ -200,8 +196,7 @@ class AttachmentInboxService:
         ready_remote_sources = {
             str(item.get("source_event_id") or "").strip()
             for item in ready
-            if str(item.get("source") or "").strip() == "remote_url"
-            and str(item.get("source_event_id") or "").strip()
+            if str(item.get("source") or "").strip() == "remote_url" and str(item.get("source_event_id") or "").strip()
         }
         failed = [
             item
@@ -231,11 +226,9 @@ class AttachmentInboxService:
         else:
             detailed_items = focused
         detailed_ids = {str(item.get("attachment_id") or "") for item in detailed_items}
-        indexed_ready = [
-            item
-            for item in ready
-            if str(item.get("attachment_id") or "") not in detailed_ids
-        ][: max(0, int(index_limit or 6))]
+        indexed_ready = [item for item in ready if str(item.get("attachment_id") or "") not in detailed_ids][
+            : max(0, int(index_limit or 6))
+        ]
         if detailed_items:
             lines.append("当前重点材料 Focus（这些材料会持续放在你眼前，直到重新同步或清理）：")
             rendered, budget_overflow = self._render_focus_items_with_budget(
@@ -267,7 +260,9 @@ class AttachmentInboxService:
                 error = str(item.get("error_message") or "").strip()
                 lines.append(f"- {label}" + (f"：{error}" if error else ""))
 
-        overflow = max(0, len(ready) - len([item for item in detailed_items if item.get("status") == "ready"]) - len(indexed_ready))
+        overflow = max(
+            0, len(ready) - len([item for item in detailed_items if item.get("status") == "ready"]) - len(indexed_ready)
+        )
         if overflow:
             lines.append(f"此外还有 {overflow} 个较早材料未展开。")
         lines.append(
@@ -317,7 +312,9 @@ class AttachmentInboxService:
         target_limit = max(1, min(WORKSPACE_MAX_TARGETS, int(max_focus or WORKSPACE_MAX_TARGETS)))
         overflow = resolved[target_limit:]
         selected = resolved[:target_limit]
-        selected_ids = [str(item.get("attachment_id") or "") for item in selected if str(item.get("attachment_id") or "")]
+        selected_ids = [
+            str(item.get("attachment_id") or "") for item in selected if str(item.get("attachment_id") or "")
+        ]
         synced = self.store.sync_attachment_workspace_focus(
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -367,20 +364,20 @@ class AttachmentInboxService:
                 "followup_context": (
                     "你刚刚想查看某个附件，但当前没有找到明确匹配的图片或文件。请自然向用户确认是哪一个。"
                     if not ambiguity
-                    else (
-                        "你刚刚想查看某个附件，但当前有多个候选，请让用户确认："
-                        f"{ambiguity}。不要自己替用户决定。"
-                    )
+                    else (f"你刚刚想查看某个附件，但当前有多个候选，请让用户确认：{ambiguity}。不要自己替用户决定。")
                 ),
             }
 
-        touched = self.store.update_attachment_inbox_item(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            attachment_id=str(item.get("attachment_id") or ""),
-            last_used_at=int(timestamp or time.time()),
-            updated_at=int(timestamp or time.time()),
-        ) or item
+        touched = (
+            self.store.update_attachment_inbox_item(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                attachment_id=str(item.get("attachment_id") or ""),
+                last_used_at=int(timestamp or time.time()),
+                updated_at=int(timestamp or time.time()),
+            )
+            or item
+        )
         return {
             "ok": True,
             "item": touched,
@@ -424,13 +421,16 @@ class AttachmentInboxService:
                 ),
             }
 
-        touched = self.store.update_attachment_inbox_item(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            attachment_id=str(item.get("attachment_id") or ""),
-            last_used_at=int(timestamp or time.time()),
-            updated_at=int(timestamp or time.time()),
-        ) or item
+        touched = (
+            self.store.update_attachment_inbox_item(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                attachment_id=str(item.get("attachment_id") or ""),
+                last_used_at=int(timestamp or time.time()),
+                updated_at=int(timestamp or time.time()),
+            )
+            or item
+        )
         content = self._extract_section_content(touched, section=section)
         if not content:
             return {
@@ -529,6 +529,7 @@ class AttachmentInboxService:
         targets: list[Any] | tuple[Any, ...] | set[Any] | str | None = None,
         kind: str = "any",
         reason: str = "",
+        delete_storage: bool = False,
         timestamp: int | None = None,
     ) -> dict[str, Any]:
         effective_ts = int(timestamp or time.time())
@@ -537,11 +538,19 @@ class AttachmentInboxService:
         ambiguous_targets: list[str] = []
         if normalized_targets:
             lowered_targets = {item.lower() for item in normalized_targets}
-            if lowered_targets & {"all", "全部", "*"}:
+            if lowered_targets & {"all", "全部", "*", "current", "当前", "工作台"}:
                 cleared = self.store.clear_attachment_inbox_items(
                     profile_user_id=profile_user_id,
                     session_id=session_id,
-                    target="all",
+                    target="current",
+                    kind=kind,
+                    timestamp=effective_ts,
+                )
+            elif lowered_targets & {"latest", "最近", "最新"}:
+                cleared = self.store.clear_attachment_inbox_items(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    target="latest",
                     kind=kind,
                     timestamp=effective_ts,
                 )
@@ -559,7 +568,9 @@ class AttachmentInboxService:
                     if item is None:
                         ambiguity = self._format_ambiguity_target(
                             target=item_target,
-                            items=list(resolution.get("ambiguous_matches") or []) if isinstance(resolution, dict) else [],
+                            items=list(resolution.get("ambiguous_matches") or [])
+                            if isinstance(resolution, dict)
+                            else [],
                         )
                         if ambiguity:
                             ambiguous_targets.append(ambiguity)
@@ -589,20 +600,20 @@ class AttachmentInboxService:
                 kind=kind,
                 timestamp=effective_ts,
             )
+        purged_files = self._delete_cleared_storage_files(cleared) if delete_storage else []
         if not cleared:
             missing = f"没有找到这些目标：{', '.join(unresolved[:5])}。" if unresolved else ""
             return {
                 "ok": False,
                 "cleared": [],
+                "purged_files": [],
                 "unresolved": unresolved,
                 "ambiguous_targets": ambiguous_targets,
                 "followup_context": (
                     "你刚刚想移除工作台材料焦点，但没有找到可移除的材料。"
                     + (missing if missing else "")
                     + (
-                        "这些目标不够明确，存在多个候选，请让用户确认："
-                        + "；".join(ambiguous_targets[:5])
-                        + "。"
+                        "这些目标不够明确，存在多个候选，请让用户确认：" + "；".join(ambiguous_targets[:5]) + "。"
                         if ambiguous_targets
                         else ""
                     )
@@ -618,22 +629,58 @@ class AttachmentInboxService:
         return {
             "ok": True,
             "cleared": cleared,
+            "purged_files": purged_files,
             "unresolved": unresolved,
             "ambiguous_targets": ambiguous_targets,
             "followup_context": (
                 f"你刚刚已经从工作台材料焦点中移除了 {len(cleared)} 个材料"
                 f"（{names}）。{missing}"
                 + (
-                    "这些目标不够明确，存在多个候选，请让用户确认："
-                    + "；".join(ambiguous_targets[:5])
-                    + "。"
+                    "这些目标不够明确，存在多个候选，请让用户确认：" + "；".join(ambiguous_targets[:5]) + "。"
                     if ambiguous_targets
                     else ""
                 )
                 + f"{suffix}这些材料不会继续注入上下文，也不会作为礼物、角色资源或长期记忆保存。"
-                "请自然继续回应，不要重复调用工具。"
+                + (f"已同时删除 {len(purged_files)} 个附件原始文件。" if purged_files else "")
+                + "请自然继续回应，不要重复调用工具。"
             ),
         }
+
+    def _delete_cleared_storage_files(self, items: list[dict[str, Any]]) -> list[str]:
+        purged: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            relpath = str(item.get("storage_relpath") or "").strip()
+            if not relpath or relpath.lower().startswith("workspace:"):
+                continue
+            path = self._resolve_storage_path(item)
+            if path is None:
+                continue
+            if not self._is_managed_storage_path(path):
+                continue
+            try:
+                if path.is_file():
+                    path.unlink()
+                    purged.append(str(item.get("attachment_handle") or item.get("summary_title") or path.name))
+            except OSError:
+                continue
+        return purged
+
+    def _is_managed_storage_path(self, path: Path) -> bool:
+        try:
+            resolved = path.resolve(strict=False)
+        except OSError:
+            return False
+        for root in [self.base_dir, *self.legacy_base_dirs]:
+            if root is None:
+                continue
+            try:
+                resolved.relative_to(Path(root).resolve(strict=False))
+                return True
+            except (OSError, ValueError):
+                continue
+        return False
 
     def _resolve_target(
         self,
@@ -812,11 +859,7 @@ class AttachmentInboxService:
 
         sequence_no = self._parse_sequence_no(normalized) if self._looks_like_sequence_reference(normalized) else None
         if sequence_no is not None:
-            sequence_matches = [
-                item
-                for item in kind_filtered
-                if int(item.get("sequence_no") or 0) == sequence_no
-            ]
+            sequence_matches = [item for item in kind_filtered if int(item.get("sequence_no") or 0) == sequence_no]
             return self._dedupe_attachment_items(sequence_matches)
         return []
 
@@ -837,9 +880,7 @@ class AttachmentInboxService:
             limit=80,
         )
         recent = [
-            item
-            for item in candidates
-            if int(item.get("updated_at") or item.get("created_at") or 0) >= threshold
+            item for item in candidates if int(item.get("updated_at") or item.get("created_at") or 0) >= threshold
         ]
         anchor_id = str(anchor.get("attachment_id") or "").strip()
         if anchor_id and anchor_id not in {str(item.get("attachment_id") or "") for item in recent}:
@@ -889,7 +930,9 @@ class AttachmentInboxService:
             remaining -= min(cost, remaining)
         return lines, overflow
 
-    def _render_detail_item(self, index: int, item: dict[str, Any], *, char_budget: int = WORKSPACE_ITEM_CHAR_BUDGET) -> list[str]:
+    def _render_detail_item(
+        self, index: int, item: dict[str, Any], *, char_budget: int = WORKSPACE_ITEM_CHAR_BUDGET
+    ) -> list[str]:
         detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
         lines = [f"{index}. {self._compact_item_label(item)}"]
         if item.get("status") == "pending_observation":
@@ -915,15 +958,12 @@ class AttachmentInboxService:
             remote_source = detail.get("remote_source") if isinstance(detail.get("remote_source"), dict) else {}
             if remote_source:
                 lines.extend(self._render_remote_source_lines(remote_source))
-            lines.append("   说明：这是轻量媒体规格卡；如需转码、截取、调音量、淡入淡出、调速，可用 convert_media_file；如需降噪、去混响或净化人声，可用 clean_voice_track；如需转写文字稿/字幕，可用 transcribe_media；如需整理训练素材，可用 prepare_voice_dataset。")
+            lines.append(
+                "   说明：这是轻量媒体规格卡；如需转码、截取、调音量、淡入淡出、调速，可用 convert_media_file；如需降噪、去混响或净化人声，可用 clean_voice_track；如需转写文字稿/字幕，可用 transcribe_media；如需整理训练素材，可用 prepare_voice_dataset。"
+            )
             return self._clip_rendered_lines(lines, char_budget)
 
-        tags = self._normalize_text_list(
-            detail.get("mood_tags")
-            or detail.get("tags")
-            or detail.get("keywords")
-            or []
-        )
+        tags = self._normalize_text_list(detail.get("mood_tags") or detail.get("tags") or detail.get("keywords") or [])
         if tags:
             lines.append(f"   标签：{', '.join(tags[:8])}")
 
@@ -939,7 +979,9 @@ class AttachmentInboxService:
             lines.append("   内容：")
             lines.append(self._indent_block(content, prefix="   "))
             if len(content) >= content_budget - 20:
-                lines.append("   注意：当前工作台内容已接近预算边界；如需更具体位置，用 read_attachment_section 指定页、行或 sheet 展开。")
+                lines.append(
+                    "   注意：当前工作台内容已接近预算边界；如需更具体位置，用 read_attachment_section 指定页、行或 sheet 展开。"
+                )
         else:
             hint = str(item.get("short_hint") or detail.get("summary") or detail.get("description") or "").strip()
             if hint:
@@ -1149,9 +1191,13 @@ class AttachmentInboxService:
             excerpt_limit = 600
             lines.append(f"文本摘录：{preview[:excerpt_limit]}")
             if detail.get("preview_is_truncated"):
-                lines.append("注意：这只是预览，不是全文；如果要处理完整文件，应继续用 read_attachment_section 展开指定范围。")
+                lines.append(
+                    "注意：这只是预览，不是全文；如果要处理完整文件，应继续用 read_attachment_section 展开指定范围。"
+                )
             elif len(preview) > excerpt_limit:
-                lines.append("注意：这只是本次提示词节选，不是全文；忠实转换/导出原附件时不要复制这段节选，应让文件工具读取原始附件。")
+                lines.append(
+                    "注意：这只是本次提示词节选，不是全文；忠实转换/导出原附件时不要复制这段节选，应让文件工具读取原始附件。"
+                )
         lines.append("请基于这份材料信息自然回应；如果用户聊完了，可以稍后用 clear_attachment_focus 移除它。")
         return "\n".join(lines)
 
@@ -1169,7 +1215,11 @@ class AttachmentInboxService:
                 return sheet_content[:2200]
 
         tables = detail.get("tables")
-        if isinstance(tables, list) and tables and ("表" in normalized_section or "table" in normalized_section.lower()):
+        if (
+            isinstance(tables, list)
+            and tables
+            and ("表" in normalized_section or "table" in normalized_section.lower())
+        ):
             table_content = self._extract_table_section(tables, normalized_section)
             if table_content:
                 return table_content[:2200]
@@ -1220,7 +1270,37 @@ class AttachmentInboxService:
         suffix = source_path.suffix.lower()
         normalized_section = str(section or "").strip()
         try:
-            if suffix in {".txt", ".md", ".markdown", ".log", ".json", ".toml", ".yaml", ".yml", ".csv", ".ini", ".cfg", ".conf", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".xml", ".sql", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".go", ".rs"}:
+            if suffix in {
+                ".txt",
+                ".md",
+                ".markdown",
+                ".log",
+                ".json",
+                ".toml",
+                ".yaml",
+                ".yml",
+                ".csv",
+                ".ini",
+                ".cfg",
+                ".conf",
+                ".py",
+                ".js",
+                ".ts",
+                ".tsx",
+                ".jsx",
+                ".html",
+                ".css",
+                ".xml",
+                ".sql",
+                ".java",
+                ".c",
+                ".cpp",
+                ".h",
+                ".hpp",
+                ".cs",
+                ".go",
+                ".rs",
+            }:
                 return self._read_text_file_section(source_path, section=normalized_section, max_chars=max_chars)
             if suffix == ".docx":
                 return self._read_docx_section(source_path, section=normalized_section, max_chars=max_chars)
@@ -1246,11 +1326,7 @@ class AttachmentInboxService:
             if isinstance(candidate, Path) and candidate.exists() and candidate.is_file():
                 return candidate
             return None
-        storage_roots = [
-            root
-            for root in [self.base_dir, *self.legacy_base_dirs]
-            if isinstance(root, Path)
-        ]
+        storage_roots = [root for root in [self.base_dir, *self.legacy_base_dirs] if isinstance(root, Path)]
         for storage_root in storage_roots:
             candidate = (storage_root / Path(relpath)).resolve()
             try:
@@ -1303,7 +1379,9 @@ class AttachmentInboxService:
             table = document.tables[index - 1]
             lines = [f"[表格 {index}] 行数约 {len(table.rows)}，列数约 {len(table.columns)}"]
             for row in table.rows[:120]:
-                lines.append(" | ".join(str(cell.text or "").strip() for cell in row.cells if str(cell.text or "").strip()))
+                lines.append(
+                    " | ".join(str(cell.text or "").strip() for cell in row.cells if str(cell.text or "").strip())
+                )
             return "\n".join(lines).strip()[:max_chars]
         paragraphs = [str(paragraph.text or "").strip() for paragraph in document.paragraphs]
         paragraphs = [text for text in paragraphs if text]
@@ -1401,7 +1479,9 @@ class AttachmentInboxService:
 
     def _parse_page_range(self, section: str) -> tuple[int, int] | None:
         text = str(section or "").strip()
-        match = re.search(r"(?:第\s*)?(\d+)\s*(?:页|page)?\s*(?:-|到|至|~)\s*(?:第\s*)?(\d+)\s*(?:页|page)?", text, re.IGNORECASE)
+        match = re.search(
+            r"(?:第\s*)?(\d+)\s*(?:页|page)?\s*(?:-|到|至|~)\s*(?:第\s*)?(\d+)\s*(?:页|page)?", text, re.IGNORECASE
+        )
         if match:
             start = int(match.group(1))
             end = int(match.group(2))
@@ -1460,7 +1540,9 @@ class AttachmentInboxService:
 
     def _parse_line_range(self, section: str) -> tuple[int, int] | None:
         text = str(section or "").strip()
-        match = re.search(r"(?:第\s*)?(\d+)\s*(?:行|line)?\s*(?:-|到|至|~)\s*(?:第\s*)?(\d+)\s*(?:行|line)?", text, re.IGNORECASE)
+        match = re.search(
+            r"(?:第\s*)?(\d+)\s*(?:行|line)?\s*(?:-|到|至|~)\s*(?:第\s*)?(\d+)\s*(?:行|line)?", text, re.IGNORECASE
+        )
         if match:
             start = int(match.group(1))
             end = int(match.group(2))
@@ -1475,7 +1557,9 @@ class AttachmentInboxService:
 
     def _parse_section_index(self, section: str) -> int | None:
         text = str(section or "").strip()
-        match = re.search(r"(?:第\s*)?(\d+)\s*(?:页|段|节|章|个|张|表|sheet|page|paragraph|section)?", text, re.IGNORECASE)
+        match = re.search(
+            r"(?:第\s*)?(\d+)\s*(?:页|段|节|章|个|张|表|sheet|page|paragraph|section)?", text, re.IGNORECASE
+        )
         if match:
             return int(match.group(1))
         return self._parse_chinese_number(text)
@@ -1492,9 +1576,7 @@ class AttachmentInboxService:
         if not focused:
             lines = ["你刚刚同步了材料工作台，但没有成功放入任何材料。"]
         else:
-            lines = [
-                f"你刚刚把 {len(focused)} 个材料放到了当前工作台，接下来请只细看这些材料："
-            ]
+            lines = [f"你刚刚把 {len(focused)} 个材料放到了当前工作台，接下来请只细看这些材料："]
             rendered, budget_overflow = self._render_focus_items_with_budget(
                 focused,
                 total_budget=max(12000, DEFAULT_WORKSPACE_CHAR_BUDGET // 2),
@@ -1758,7 +1840,9 @@ class AttachmentInboxService:
         text = re.sub(r"\s+", "", text)
         if re.fullmatch(r"(?:第)?\d+(?:张图|个文件|份文档|段音频|张|个|份|段|图|文件|文档|音频)?", text):
             return True
-        if re.fullmatch(r"(?:第)?[一二两三四五六七八九十]+(?:张图|个文件|份文档|段音频|张|个|份|段|图|文件|文档|音频)?", text):
+        if re.fullmatch(
+            r"(?:第)?[一二两三四五六七八九十]+(?:张图|个文件|份文档|段音频|张|个|份|段|图|文件|文档|音频)?", text
+        ):
             return True
         return False
 
