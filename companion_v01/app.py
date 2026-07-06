@@ -97,17 +97,13 @@ resources = ResourceManifest(ASSETS_DIR)
 desktop_pet_character_resources = DesktopPetCharacterResourceService(
     characters_dir=CREATOR_KIT_CHARACTERS_DIR,
 )
-model_service_config_store = ModelServiceConfigStore(
-    Path(config.DATA_DIR) / "_local" / "model_service.json"
-)
+model_service_config_store = ModelServiceConfigStore(Path(config.DATA_DIR) / "_local" / "model_service.json")
 load_and_apply_saved_model_service(
     store=model_service_config_store,
     config_module=config,
     on_error=lambda exc: logger.warning("Model service config ignored: %s", exc),
 )
-settings_override_store = SettingsOverrideStore(
-    Path(config.DATA_DIR) / "_local" / "settings_overrides.json"
-)
+settings_override_store = SettingsOverrideStore(Path(config.DATA_DIR) / "_local" / "settings_overrides.json")
 load_and_apply_saved_overrides(
     config,
     settings_override_store,
@@ -131,9 +127,7 @@ public_guard = PublicThinkGuard(
     max_concurrent_thinks=int(getattr(config, "MAX_CONCURRENT_THINKS", 2)),
     daily_think_limit=int(getattr(config, "DAILY_THINK_LIMIT", 200)),
     busy_message=str(getattr(config, "PUBLIC_BUSY_MESSAGE", "当前体验人数较多，请稍后再试。")),
-    daily_limit_message=str(
-        getattr(config, "PUBLIC_DAILY_LIMIT_MESSAGE", "今日体验名额已满，明天再来看看吧。")
-    ),
+    daily_limit_message=str(getattr(config, "PUBLIC_DAILY_LIMIT_MESSAGE", "今日体验名额已满，明天再来看看吧。")),
 )
 if getattr(config, "QQ_BRIDGE_ENABLED", False):
     qq_gateway: NapCatQQGateway | None = NapCatQQGateway(
@@ -367,6 +361,8 @@ app.include_router(
 app.include_router(
     build_petdesk_router(
         engine=engine,
+        config_module=config,
+        tts_client=tts_client,
         character_resources=desktop_pet_character_resources,
         runtime_metrics=runtime_metrics,
         public_guard=public_guard,

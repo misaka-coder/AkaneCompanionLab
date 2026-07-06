@@ -221,6 +221,50 @@ def build_petdesk_display_envelope(
     return envelope
 
 
+def add_petdesk_audio_resource(
+    runtime_manifest: dict[str, Any],
+    *,
+    audio_handle: str,
+    url: str,
+    source: str = "akane_tts",
+) -> bool:
+    if not is_safe_petdesk_handle(audio_handle):
+        return False
+    normalized_url = normalize_petdesk_audio_url(url)
+    if not normalized_url:
+        return False
+
+    audio_bucket = runtime_manifest.get("audio")
+    if not isinstance(audio_bucket, dict):
+        audio_bucket = {}
+        runtime_manifest["audio"] = audio_bucket
+    audio_bucket[audio_handle] = {
+        "kind": "audio",
+        "handle": audio_handle,
+        "url": normalized_url,
+        "source": clean_text(source) or "akane_tts",
+    }
+
+    metadata = runtime_manifest.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        runtime_manifest["metadata"] = metadata
+    metadata["audioCount"] = len(audio_bucket)
+    return True
+
+
+def attach_petdesk_tts_audio(envelope: dict[str, Any], *, audio_handle: str) -> bool:
+    if not is_safe_petdesk_handle(audio_handle):
+        return False
+    envelope["audio"] = {
+        "tts": {
+            "enabled": True,
+            "audioHandle": audio_handle,
+        }
+    }
+    return True
+
+
 def build_petdesk_health_payload(character_resources: Any, character_pack_id: Any = "") -> dict[str, Any]:
     pack_id = resolve_petdesk_character_pack_id(character_resources, character_pack_id)
     bundle = build_petdesk_resource_bundle(character_resources, pack_id)
@@ -332,6 +376,30 @@ def normalize_petdesk_resource_url(raw_value: Any, *, pack_id: str) -> str:
     if any(not segment or segment in {".", ".."} for segment in segments):
         return ""
     return "/" + "/".join(quote(segment, safe="-._~%") for segment in segments)
+
+
+def normalize_petdesk_audio_url(raw_value: Any) -> str:
+    value = clean_text(raw_value).replace("\\", "/")
+    if not value or _looks_like_url(value) or re.match(r"^[A-Za-z]:", value):
+        return ""
+    if "?" in value or "#" in value or value.startswith("//"):
+        return ""
+    if not value.startswith("/audio/"):
+        return ""
+    path = value.lstrip("/")
+    segments = path.split("/")
+    if any(not segment or segment in {".", ".."} for segment in segments):
+        return ""
+    return "/" + "/".join(quote(segment, safe="-._~%") for segment in segments)
+
+
+def is_safe_petdesk_handle(value: Any) -> bool:
+    text = clean_text(value)
+    if not text or "://" in text or "\\" in text or re.match(r"^[A-Za-z]:", text):
+        return False
+    if text.startswith("/") or text.endswith("/"):
+        return False
+    return all(_SAFE_HANDLE_SEGMENT_RE.fullmatch(segment) for segment in text.split("/"))
 
 
 def resolve_static_asset_handle(

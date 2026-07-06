@@ -190,6 +190,138 @@ class PetdeskBridgeTests(unittest.TestCase):
         static_images = build_petdesk_resource_bundle(self.resources, "mika_pack").runtime_manifest["staticImages"]
         self.assertIn(display["visual"]["assetHandle"], static_images)
 
+    def test_turn_stream_registers_tts_audio_for_runtime(self) -> None:
+        runtime = FakeRuntimeMetrics()
+
+        class FakeEngine:
+            def process_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "status": "ok",
+                    "speech": f"voice: {payload['message']}",
+                    "emotion": "cheerful",
+                    "character": {"outfit": "猫娘"},
+                }
+
+        class FakeTTS:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            async def synthesize(self, text: str) -> bytes:
+                self.calls.append(text)
+                return b"fake-audio-bytes"
+
+        tts = FakeTTS()
+        app = FastAPI()
+        app.include_router(
+            build_petdesk_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(DATA_DIR=None),
+                tts_client=tts,
+                character_resources=self.resources,
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+        client = TestClient(app)
+
+        turn = client.post(
+            "/pet/turn",
+            json={
+                "text": "hi",
+                "turnId": "turn-audio",
+                "metadata": {
+                    "character_pack_id": "mika_pack",
+                    "user_id": "desktop",
+                    "real_user_id": "master",
+                },
+            },
+        )
+
+        self.assertEqual(turn.status_code, 200)
+        self.assertEqual(tts.calls, ["voice: hi"])
+        manifests = _sse_payloads(turn.text, "resource_manifest")
+        displays = _sse_payloads(turn.text, "display")
+        self.assertGreaterEqual(len(manifests), 2)
+        self.assertGreaterEqual(len(displays), 2)
+
+        audio_manifest = manifests[-1]
+        audio_bucket = audio_manifest["audio"]
+        self.assertEqual(len(audio_bucket), 1)
+        audio_handle, audio_entry = next(iter(audio_bucket.items()))
+        self.assertRegex(audio_handle, r"^akane/tts/[0-9a-f]{32}$")
+        self.assertEqual(audio_entry["kind"], "audio")
+        self.assertEqual(audio_entry["handle"], audio_handle)
+        self.assertTrue(audio_entry["url"].startswith("/audio/petdesk/"))
+        self.assertNotIn(str(self.characters_dir), json.dumps(audio_manifest, ensure_ascii=False))
+
+        final_display = displays[-1]
+        self.assertEqual(final_display["audio"]["tts"]["enabled"], True)
+        self.assertEqual(final_display["audio"]["tts"]["audioHandle"], audio_handle)
+        self.assertEqual(final_display["speech"], "voice: hi")
+
+        audio_response = client.get(audio_entry["url"])
+        self.assertEqual(audio_response.status_code, 200)
+        self.assertEqual(audio_response.content, b"fake-audio-bytes")
+        self.assertEqual(audio_response.headers["content-type"], "audio/mpeg")
+        self.assertIn(("pet_tts", True), runtime.observed)
+        self.assertIn(("pet_turn", True), runtime.observed)
+
+    def test_turn_stream_keeps_display_when_petdesk_tts_fails(self) -> None:
+        class FakeEngine:
+            def process_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "status": "ok",
+                    "speech": "文字仍然要显示",
+                    "emotion": "cheerful",
+                    "character": {"outfit": "猫娘"},
+                }
+
+        class ExplodingTTS:
+            async def synthesize(self, text: str) -> bytes:
+                raise RuntimeError(r"secret token from C:\voices\bad.wav")
+
+        logs: list[dict[str, Any]] = []
+
+        def log_event(event: str, **fields: Any) -> None:
+            logs.append({"event": event, **fields})
+
+        app = FastAPI()
+        app.include_router(
+            build_petdesk_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(DATA_DIR=None),
+                tts_client=ExplodingTTS(),
+                character_resources=self.resources,
+                runtime_metrics=FakeRuntimeMetrics(),
+                log_event=log_event,
+            )
+        )
+        client = TestClient(app)
+
+        turn = client.post(
+            "/pet/turn",
+            json={
+                "text": "hi",
+                "metadata": {
+                    "character_pack_id": "mika_pack",
+                    "user_id": "desktop",
+                    "real_user_id": "master",
+                },
+            },
+        )
+
+        self.assertEqual(turn.status_code, 200)
+        displays = _sse_payloads(turn.text, "display")
+        self.assertEqual(len(displays), 1)
+        self.assertEqual(displays[0]["speech"], "文字仍然要显示")
+        self.assertNotIn("audio", displays[0])
+        self.assertIn("event: done", turn.text)
+        serialized_logs = json.dumps(logs, ensure_ascii=False).lower()
+        self.assertIn("petdesk_tts_failed", serialized_logs)
+        self.assertNotIn("secret", serialized_logs)
+        self.assertNotIn("token", serialized_logs)
+        self.assertNotIn("voices", serialized_logs)
+
     def test_health_runtime_env_is_host_owned_starter_glue(self) -> None:
         payload = build_petdesk_health_payload(self.resources, "mika_pack")
 
@@ -211,6 +343,14 @@ class PetdeskBridgeTests(unittest.TestCase):
             self.assertNotIn("\\", segment)
             self.assertNotIn(":", segment)
             self.assertRegex(segment, r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+
+def _sse_payloads(stream_text: str, event: str) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    pattern = rf"event: {re.escape(event)}\ndata: (.+?)\n\n"
+    for match in re.finditer(pattern, stream_text, flags=re.S):
+        payloads.append(json.loads(match.group(1)))
+    return payloads
 
 
 if __name__ == "__main__":
