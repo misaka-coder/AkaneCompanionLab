@@ -240,7 +240,7 @@ class CapabilityRegistry:
                 layer="common",
                 modes=COMMON_CLIENT_MODES,
                 tools=COMMON_TOOL_NAMES,
-                light_hint="你可以按语义检索长期记忆，也可以在用户明确指定日期时读取原始对话时间线；还可以设置/查看/取消提醒、维护表达侧面。短任务直接调用工具完成，复杂多步任务可以记录到任务工作区，也可以委派给后台工坊分担。",
+                light_hint="需要过去对话、长期事实、偏好或约定时用 retrieve_memory；需要具体日期/时段原始记录时用 read_memory_timeline。普通闲聊和稳定常识直接回复。你还可以设置/查看/取消提醒、维护表达侧面、记录任务或委派后台工坊。",
                 trigger=_always,
             ),
             CapabilityModule(
@@ -248,7 +248,7 @@ class CapabilityRegistry:
                 layer="web",
                 modes=COMMON_CLIENT_MODES,
                 tools=WEB_SEARCH_TOOL_NAMES,
-                light_hint="当用户明确要求联网搜索、查询最新信息或读取公开网页时，你可以使用受限的 AnySearch 联网搜索能力；它只返回搜索/提取结果，不会打开或滚动浏览器。不要用它访问私密、内网或需要登录的内容。",
+                light_hint="需要当前/最新/实时/近期的公开信息时用 web_search，不必等用户说“搜索”；例：日经指数、七月新番、最新模型价格。稳定常识和闲聊直接回复。不要访问私密、内网或登录内容。",
                 trigger=_always,
             ),
             CapabilityModule(

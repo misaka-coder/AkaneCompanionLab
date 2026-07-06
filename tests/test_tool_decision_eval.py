@@ -37,8 +37,9 @@ class ToolDecisionEvalTests(unittest.TestCase):
         self.assertEqual(len(results), len(DEFAULT_WEB_SEARCH_EVAL_CASES) * 2)
         self.assertEqual(summary["modes"]["legacy"]["expectation_match_rate"], 1.0)
         self.assertEqual(summary["modes"]["native"]["expectation_match_rate"], 1.0)
-        self.assertEqual(summary["modes"]["native"]["native_source_call_count"], 4)
-        self.assertEqual(summary["modes"]["legacy"]["legacy_source_call_count"], 4)
+        expected_tool_count = sum(1 for case in DEFAULT_WEB_SEARCH_EVAL_CASES if case.expect_tool)
+        self.assertEqual(summary["modes"]["native"]["native_source_call_count"], expected_tool_count)
+        self.assertEqual(summary["modes"]["legacy"]["legacy_source_call_count"], expected_tool_count)
         self.assertEqual(summary["modes"]["native"]["execution_success_rate"], 1.0)
         self.assertEqual(summary["comparison"]["native_vs_legacy_fallback_hit_delta"], 0)
 
@@ -60,9 +61,9 @@ class ToolDecisionEvalTests(unittest.TestCase):
         self.assertEqual(summary["modes"]["native"]["execution_success_rate"], 1.0)
         self.assertEqual(summary["modes"]["legacy"]["validation_success_rate"], 1.0)
         self.assertEqual(summary["comparison"]["native_vs_legacy_fallback_hit_delta"], 0)
-        # Three expected-tool cases (retrieve x2, timeline x1) carry the source tag.
-        self.assertEqual(summary["modes"]["native"]["native_source_call_count"], 3)
-        self.assertEqual(summary["modes"]["legacy"]["legacy_source_call_count"], 3)
+        expected_tool_count = sum(1 for case in DEFAULT_MEMORY_EVAL_CASES if case.expect_tool)
+        self.assertEqual(summary["modes"]["native"]["native_source_call_count"], expected_tool_count)
+        self.assertEqual(summary["modes"]["legacy"]["legacy_source_call_count"], expected_tool_count)
         # No web_search calls leaked into the memory suite.
         self.assertEqual(summary["modes"]["native"]["web_search_call_count"], 0)
 
@@ -295,6 +296,8 @@ class ToolDecisionEvalTests(unittest.TestCase):
         self.assertTrue(response.native_extracted)
         self.assertFalse(response.fallback_hit)
         self.assertEqual(runtime.calls[0]["native_tools"][0]["function"]["name"], "web_search")
+        self.assertIn("先判断用户真实意图", runtime.calls[0]["system_prompt"])
+        self.assertIn("人设、情绪和口癖", runtime.calls[0]["system_prompt"])
         self.assertNotIn("搜索格式为", runtime.calls[0]["system_prompt"])
 
     def test_live_provider_can_send_memory_native_schemas(self) -> None:
@@ -321,6 +324,8 @@ class ToolDecisionEvalTests(unittest.TestCase):
         )
         self.assertIn("retrieve_memory", runtime.calls[0]["system_prompt"])
         self.assertIn("provider native tool_calls", runtime.calls[0]["system_prompt"])
+        self.assertIn("先判断用户真实意图", runtime.calls[0]["system_prompt"])
+        self.assertIn("人设、情绪和口癖", runtime.calls[0]["system_prompt"])
         self.assertNotIn("web_search 只用于", runtime.calls[0]["system_prompt"])
         self.assertNotIn("格式为", runtime.calls[0]["system_prompt"])
         self.assertEqual(response.final_output[NATIVE_TOOL_CALL_FIELD]["type"], "retrieve_memory")

@@ -642,10 +642,20 @@ class EngineExtensionTests(unittest.TestCase):
             def build_prompt_instruction(self) -> str:
                 return "- fake_tool：测试用工具。"
 
-        self.engine.tool_handlers = {"fake_tool": StubTool()}
+        class StubWebSearchTool:
+            def build_prompt_instruction(self) -> str:
+                return "- web_search：测试用搜索工具。"
+
+        self.engine.tool_handlers = {"fake_tool": StubTool(), "web_search": StubWebSearchTool()}
         prompt = self.engine._build_tool_prompt_context(allow_tool_call=True)
 
         self.assertIn("当前可调用工具", prompt)
+        self.assertIn("工具决策原则", prompt)
+        self.assertIn("日经指数现在多少", prompt)
+        self.assertIn("七月新番有哪些", prompt)
+        self.assertIn("法国首都是哪里", prompt)
+        self.assertIn("人设、情绪和口癖", prompt)
+        self.assertIn("用户真实意图", prompt)
         self.assertIn("\n- fake_tool", prompt)
         self.assertIn("fake_tool", prompt)
         self.assertIn("tool_call 输出 null", prompt)

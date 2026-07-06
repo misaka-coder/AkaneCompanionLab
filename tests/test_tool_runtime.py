@@ -29,9 +29,9 @@ class RetrieveMemoryToolHandlerTests(unittest.TestCase):
         instruction = handler.build_prompt_instruction()
 
         self.assertIn("自己的深层记忆空间", instruction)
-        self.assertIn("生日、重要日期、偏好、称呼、旧约定", instruction)
-        self.assertIn("可以自然在这里翻一下", instruction)
-        self.assertIn("只要你觉得更早的记忆可能有帮助", instruction)
+        self.assertIn("我的生日是哪天", instruction)
+        self.assertIn("我们之前约定了什么", instruction)
+        self.assertIn("稳定常识", instruction)
 
     def test_normalize_call_accepts_precision_filters_and_preserves_zero_importance(self) -> None:
         handler = RetrieveMemoryToolHandler(retrieve_fn=lambda **kwargs: None)
@@ -308,6 +308,18 @@ class WebSearchToolHandlerTests(unittest.TestCase):
         self.assertEqual(metadata.operation, "read")
         self.assertEqual(metadata.risk, "low")
         self.assertGreaterEqual(metadata.default_round_budget, 6)
+
+    def test_prompt_instruction_searches_current_public_facts_without_explicit_search_word(self) -> None:
+        handler = WebSearchToolHandler(config_base_dir="unused", mcp_tool_caller=object())
+
+        instruction = handler.build_prompt_instruction()
+
+        self.assertIn("高变化事实", instruction)
+        self.assertIn("不需要用户显式说", instruction)
+        self.assertIn("日经指数现在多少", instruction)
+        self.assertIn("七月新番有哪些", instruction)
+        self.assertIn("稳定常识", instruction)
+        self.assertNotIn("不确定是否需要实时信息，先自然询问", instruction)
 
     def test_normalize_call_bounds_search_and_rejects_private_extract_url(self) -> None:
         handler = WebSearchToolHandler(config_base_dir="unused", mcp_tool_caller=object())

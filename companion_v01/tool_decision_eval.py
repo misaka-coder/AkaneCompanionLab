@@ -110,6 +110,14 @@ DEFAULT_WEB_SEARCH_EVAL_CASES: tuple[ToolDecisionEvalCase, ...] = (
         category="current_info",
     ),
     ToolDecisionEvalCase(
+        eval_id="implicit_market_index_current",
+        user_prompt="日经指数现在多少？",
+        expect_tool=True,
+        expected_action="search",
+        expected_arguments={"action": "search", "query": "日经指数 现在", "max_results": 5},
+        category="current_info",
+    ),
+    ToolDecisionEvalCase(
         eval_id="batch_compare",
         user_prompt="帮我搜一下 Claude Code 和 Codex CLI 最近的工具调用设计差异。",
         expect_tool=True,
@@ -163,6 +171,14 @@ DEFAULT_MEMORY_EVAL_CASES: tuple[ToolDecisionEvalCase, ...] = (
         expect_tool=True,
         expected_tool_name="retrieve_memory",
         expected_arguments={"query": "一起做的项目名称"},
+        category="memory_recall",
+    ),
+    ToolDecisionEvalCase(
+        eval_id="implicit_personal_long_term_fact",
+        user_prompt="我的生日是哪天来着？",
+        expect_tool=True,
+        expected_tool_name="retrieve_memory",
+        expected_arguments={"query": "我的生日"},
         category="memory_recall",
     ),
     ToolDecisionEvalCase(
@@ -662,12 +678,15 @@ def _build_legacy_tool_instructions(handlers: dict[str, Any]) -> str:
 
 def _build_live_tool_policy_lines(tool_names: Sequence[str]) -> list[str]:
     names = {str(name or "").strip() for name in tool_names}
-    lines: list[str] = []
+    lines: list[str] = [
+        "先判断用户真实意图；人设、情绪和口癖只影响语气，不能改变是否调用工具。",
+        "查证、回忆、执行任务或处理材料 -> 调用合适工具；闲聊、创作、情绪陪伴、主观感受或稳定常识 -> 直接回复。",
+    ]
     if "web_search" in names:
         lines.extend(
             [
-                "web_search 只用于公开网页搜索、最新信息核对、公开 URL 内容提取。",
-                "用户问今天/现在/最新/最近/天气/版本/API 变更等当前公开信息时，应调用 web_search。",
+                "当前/最新/实时/近期/会变化的公开信息 -> web_search；不必等用户明确说搜索。",
+                "例：日经指数现在多少、七月新番有哪些、最新模型价格、今天上海天气 -> web_search。",
                 "用户要求比较多个公开项目或多个独立搜索目标的最近信息时，优先用 web_search 的 batch_search。",
                 "不要用 web_search 访问 localhost、内网地址、file 路径、登录页、付费页或私密链接。",
             ]
@@ -675,8 +694,8 @@ def _build_live_tool_policy_lines(tool_names: Sequence[str]) -> list[str]:
     if "retrieve_memory" in names:
         lines.extend(
             [
-                "retrieve_memory 只用于当前上下文不足时回想用户的旧事实、偏好、称呼、约定、项目或过往事件。",
-                "当用户问“之前/以前/上次/来着/还记得”这类旧共同经历、旧项目、旧偏好或旧约定，且本轮提示没有直接给出答案时，应调用 retrieve_memory。",
+                "旧事实/共同经历/偏好/称呼/约定/计划/项目/过去材料 -> retrieve_memory；不必等用户说“还记得”。",
+                "例：我的生日是哪天、我喜欢什么、我们之前约定了什么 -> retrieve_memory。",
             ]
         )
     if "read_memory_timeline" in names:
@@ -684,7 +703,7 @@ def _build_live_tool_policy_lines(tool_names: Sequence[str]) -> list[str]:
             "read_memory_timeline 只用于用户明确要求查看某一天、日期范围或上午/下午/夜晚/凌晨的原始逐句对话。"
         )
     if {"retrieve_memory", "read_memory_timeline"} & names:
-        lines.append("不要为了普通闲聊、稳定常识、或当前上下文已经足够的问题调用记忆工具。")
+        lines.append("不要为了普通闲聊、稳定常识、情绪陪伴、或当前上下文已经足够的问题调用记忆工具。")
     if "list_reminders" in names:
         lines.append(
             "list_reminders 只用于用户想查看自己当前有哪些提醒；普通闲聊或设置新提醒时不要调用。"

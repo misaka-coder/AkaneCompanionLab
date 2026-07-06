@@ -74,8 +74,9 @@ class ToolMetadata:
 
 RETRIEVE_MEMORY_INPUT_SCHEMA: dict[str, Any] = {
     "description": (
-        "Search Akane's long-term memory when the visible context is not enough "
-        "to answer a user's personal old fact, preference, agreement, project, or past event."
+        "Search Akane's long-term memory before guessing when visible context is not enough "
+        "to answer anything that depends on shared history, identity, relationships, preferences, "
+        "agreements, plans, projects, or past events."
     ),
     "type": "object",
     "additionalProperties": False,
@@ -958,18 +959,16 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- retrieve_memory：当你看完当前原始上下文、阶段摘要、长期语义记忆和可用回忆片段后，"
-            "仍然觉得需要主动回想更早内容时使用。"
-            "它在系统里叫工具，但对你来说就是自己的深层记忆空间；这是你在心里翻回忆，不是对用户说出口的话。"
+            "- retrieve_memory：当前上下文没有可靠答案，且问题依赖旧事实、共同经历、偏好、称呼、约定、计划、项目或过去材料时使用。"
+            "这是自己的深层记忆空间，不要先在 speech 里宣布。"
             '格式为 {"type":"retrieve_memory","query":"简短搜索短句","keywords":["关键词"],'
             '"time_hint":{"date_label":"YYYY-MM-DD","time_of_day":"morning|afternoon|night|midnight"},'
             '"source_layers":["raw","summary","semantic_summary"],"subject_scopes":["user","assistant","other"],'
             '"categories":["preference","plan_goal","project_work"],"importance_min":0.0,"limit":4}。'
             "query 要写具体实体、地点、人物、事件或偏好，不要写“帮我回忆一下”这类空泛句。"
-            "source_layers、subject_scopes、categories、importance_min 只在你有把握时填写；subject_scopes/categories 多选是 OR 命中，不要求全中。"
-            "当用户问生日、重要日期、偏好、称呼、旧约定、跨端聊过的人/事/项目等个人旧事实，而当前可见记忆没有明确答案时，可以自然在这里翻一下。"
+            "例：我的生日是哪天、我喜欢什么、我们之前约定了什么、那张图是谁发的 -> retrieve_memory。"
             "如果用户明确要求查看某一天、某段日期或某个时段的原始逐句对话，不要用本工具，改用 read_memory_timeline。"
-            "当前可见记忆已经足够时无需调用；只要你觉得更早的记忆可能有帮助，就可以调用。"
+            "普通闲聊、创作、稳定常识或当前可见记忆已经足够时无需调用。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -3458,13 +3457,14 @@ class WebSearchToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- web_search：当用户明确要你联网搜索、查最新资料、核对网页内容，或给出一个公开网页 URL 要你提取内容时使用。"
+            "- web_search：当回答依赖公开网页、公开来源核对、最新/当前/实时/近期信息或高变化事实时使用；"
+            "不需要用户显式说“联网”“搜索”“查询”。例：日经指数现在多少、七月新番有哪些、最新模型价格、今天上海天气 -> web_search。"
             '搜索格式为 {"type":"web_search","action":"search","query":"搜索词","max_results":5}；'
             '网页提取格式为 {"type":"web_search","action":"extract","url":"https://...","max_chars":3000}。'
             "只搜索或提取公开网页；不要用它访问 localhost、内网地址、file 路径、登录页、付费页或用户私密链接。"
             "web_search 不会打开浏览器窗口、滚动网页或点击链接；如果用户要看页面或需要你继续操作某条结果，"
             "再调用 browser_page.navigate 或 open_browser。"
-            "如果用户没有要求联网，且你不确定是否需要实时信息，先自然询问或直接基于已有知识回答，不要为了炫技搜索。"
+            "稳定常识、普通闲聊、创作或主观建议直接回复，不要为了展示能力而搜索。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:

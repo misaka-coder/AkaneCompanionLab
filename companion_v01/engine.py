@@ -3841,6 +3841,25 @@ class AkaneMemoryEngine:
                 ]
             )
         lines.extend(media_routing)
+        lines.append("【工具决策原则】")
+        lines.append(
+            "- 先判断用户真实意图；人设、情绪和口癖只影响语气，不能改变是否调用工具。"
+        )
+        if {"retrieve_memory", "read_memory_timeline"} & set(handlers):
+            lines.append(
+                "- 旧事实/共同经历/偏好/约定/过去材料 -> retrieve_memory；"
+                "具体日期或时段的原始逐句记录 -> read_memory_timeline。例：我的生日是哪天、我们之前约定了什么 -> retrieve_memory。"
+            )
+        if "web_search" in handlers:
+            lines.append(
+                "- 当前/最新/实时/近期/会变化的公开信息 -> web_search，不要用旧知识库硬答。"
+                "例：日经指数现在多少、七月新番有哪些、最新模型价格 -> web_search。"
+            )
+        lines.append(
+            "- 普通闲聊、创作、情绪陪伴、主观建议、稳定常识，或当前上下文已有可靠答案 -> 直接回复。"
+            "例：陪我聊会儿、写一段文案、法国首都是哪里 -> 不用工具。"
+        )
+        lines.append("")
         lines.append("【当前可调用工具】")
         for handler in handlers.values():
             instruction = str(handler.build_prompt_instruction() or "").strip()
