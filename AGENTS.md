@@ -73,6 +73,7 @@
 ## Agent 护栏
 
 - 接手桌宠角色自定义、提示词配置、记忆隔离、立绘校准相关任务时，先读 `docs/desktop_pet_character_workshop_v1/`。
+- 接手 `petdesk-runtime` / `/pet/*` 桥接任务时，先读 `docs/petdesk_akane_bridge_m32.md`；当前 `/pet` 是过渡兼容桥，不是旧桌宠协议的长期复制品。
 - 每轮只做一个可验证切片；不要同时推进 UI、数据库迁移、资产导入和提示词链路。
 - Rust 写入角色包文件时使用临时文件再 rename；所有从角色包读取出的相对路径必须走 `safe_child_path`。
 - 新增前端运行时引用必须来自现有模块或明确导入，不能依赖臆造的全局变量。

@@ -34,6 +34,7 @@ from .routes.core import build_core_router
 from .routes.desktop_pet import build_desktop_pet_router
 from .routes.gifts import build_gifts_router
 from .routes.model_services import build_model_services_router
+from .routes.petdesk import build_petdesk_router
 from .routes.qq import build_qq_router
 from .routes.reminders import build_reminders_router
 from .routes.sessions import build_sessions_router
@@ -293,6 +294,11 @@ if CREATOR_KIT_CHARACTERS_DIR.exists():
         StaticFiles(directory=str(CREATOR_KIT_CHARACTERS_DIR)),
         name="desktop_pet_character_packs",
     )
+    app.mount(
+        "/petdesk-character-packs",
+        StaticFiles(directory=str(CREATOR_KIT_CHARACTERS_DIR)),
+        name="petdesk_character_packs",
+    )
 if USER_ASSETS_DIR.exists():
     app.mount("/user-assets", StaticFiles(directory=str(USER_ASSETS_DIR)), name="user-assets")
 
@@ -356,6 +362,15 @@ app.include_router(
         log_event=_log_event,
         resolve_identity_from_query=_resolve_identity_from_query,
         resolve_identity_from_payload=_resolve_identity_from_payload,
+    )
+)
+app.include_router(
+    build_petdesk_router(
+        engine=engine,
+        character_resources=desktop_pet_character_resources,
+        runtime_metrics=runtime_metrics,
+        public_guard=public_guard,
+        log_event=_log_event,
     )
 )
 app.include_router(
