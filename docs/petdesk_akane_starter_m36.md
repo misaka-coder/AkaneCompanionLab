@@ -1,6 +1,6 @@
 # Petdesk Akane Starter M36
 
-Status: implemented; focused validation passed.
+Status: implemented; focused validation and manual starter acceptance passed.
 Date: 2026-07-06
 
 ## Goal
@@ -179,3 +179,5 @@ Manual acceptance:
 - confirm Akane's M35 portrait layout is active without manual env copying;
 - press `S` and confirm `/pet/turn` still streams a response;
 - close the Tauri dev window and confirm env restoration does not leak profile values into the caller process.
+
+Manual acceptance result is recorded in `docs/petdesk_akane_manual_acceptance_m37.md`.
