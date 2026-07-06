@@ -117,3 +117,31 @@ Current conclusion:
 - No `petdesk-runtime` source changes were made for this retry.
 - A practical next retry is to temporarily remove or override `.cargo/config.toml`'s `-C linker=rust-lld.exe`, or fix the local Windows security/toolchain issue that is denying Cargo's linker process.
 - `link.exe` is not currently available in `PATH`, so switching to the MSVC linker is not available without extra environment/toolchain setup.
+
+## Resume After Runtime Linker Fix
+
+Date: 2026-07-06
+
+`petdesk-runtime` commit `accc67f Relax Windows linker configuration` removed the default `rust-lld.exe` hard binding while keeping the
+F-drive Cargo target directory. After that change, `cargo check` and `cargo test --no-run` passed in `petdesk-runtime`, so the real window
+acceptance was retried.
+
+Attempt 4:
+
+- temporary Akane backend on `127.0.0.1:10033` started successfully;
+- `/pet/health` returned `ok: true`, `status: ready`, and the Akane character-pack manifest;
+- `pnpm tauri:dev` compiled and launched `petdesk_runtime.exe`;
+- Akane backend logged `GET /pet/snapshot HTTP/1.1` with `200 OK`;
+- the real Tauri window showed the Akane static portrait and snapshot speech;
+- runtime debug panel showed `backend:ready`, `static_portrait`, `static_portrait:ready`, `manifest:update`, `audio:idle:0`, and
+  `windows-wm-nchittest`;
+- clicking the runtime `S` debug control triggered `OPTIONS /pet/turn` and `POST /pet/turn` with `200 OK`;
+- Akane logged `petdesk_turn_complete` for session `petdesk`;
+- the portrait resource under `/petdesk-character-packs/akane_sample/.../normal.png` returned `200 OK` or `304 Not Modified`;
+- the window remained visible after the turn and did not fall into blank/error state.
+
+Result:
+
+- Level 3 real Tauri window acceptance passed for the current Akane `/pet/*` bridge.
+- Remaining product issue: the default `340x560` runtime window is narrow for Akane's current static portrait and bubble. The bridge works,
+  but layout/profile tuning is still needed before this feels like a polished replacement for the old desktop pet.
