@@ -19,6 +19,33 @@ LEGACY_CHARACTER_PACK_PREFIX = "/desktop-pet-character-packs"
 _SAFE_HANDLE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _UNSAFE_HANDLE_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _ALLOWED_MOTIONS = {"idle", "thinking", "speaking", "interrupted", "local_reaction"}
+_AKANE_INTERACTION_PROFILE = {
+    "window": {
+        "baseSize": {"width": 320, "height": 560},
+        "minScale": 0.7,
+        "maxScale": 1.45,
+    },
+    "layout": {
+        "--pet-bubble-top": "12px",
+        "--pet-bubble-left": "12px",
+        "--pet-bubble-max-width": "min(236px, calc(100% - 72px))",
+        "--pet-drag-top": "92px",
+        "--pet-drag-left": "88%",
+        "--pet-static-left": "3%",
+        "--pet-static-bottom": "0%",
+        "--pet-static-width": "94%",
+        "--pet-static-height": "90%",
+        "--pet-debug-right": "10px",
+        "--pet-debug-bottom": "10px",
+    },
+    "nativeHitTest": {
+        "includeBubble": True,
+        "includeControls": True,
+    },
+    "drag": {
+        "portraitDrag": True,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -211,6 +238,18 @@ def build_petdesk_health_payload(character_resources: Any, character_pack_id: An
         },
         "characterPacks": packs,
         "defaultCharacterPackId": pack_id,
+        "runtimeEnv": build_petdesk_runtime_env(),
+    }
+
+
+def build_petdesk_runtime_env() -> dict[str, str]:
+    return {
+        "VITE_PETDESK_INTERACTION_PROFILE": "default",
+        "VITE_PETDESK_INTERACTION_PROFILE_JSON": json.dumps(
+            _AKANE_INTERACTION_PROFILE,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
     }
 
 

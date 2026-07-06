@@ -15,6 +15,7 @@ from companion_v01.desktop_pet_character_resources import DesktopPetCharacterRes
 from companion_v01.petdesk_bridge import (
     PET_DISPLAY_SCHEMA_VERSION,
     build_petdesk_display_envelope,
+    build_petdesk_health_payload,
     build_petdesk_resource_bundle,
     safe_handle_segment,
 )
@@ -160,6 +161,12 @@ class PetdeskBridgeTests(unittest.TestCase):
         self.assertEqual(health.status_code, 200)
         self.assertTrue(health.json()["ok"])
         self.assertEqual(health.json()["resourceManifest"]["staticImageCount"], 2)
+        self.assertEqual(health.json()["runtimeEnv"]["VITE_PETDESK_INTERACTION_PROFILE"], "default")
+        profile_json = health.json()["runtimeEnv"]["VITE_PETDESK_INTERACTION_PROFILE_JSON"]
+        profile = json.loads(profile_json)
+        self.assertEqual(profile["window"]["baseSize"], {"width": 320, "height": 560})
+        self.assertEqual(profile["layout"]["--pet-static-width"], "94%")
+        self.assertTrue(profile["nativeHitTest"]["includeControls"])
         self.assertEqual(snapshot.status_code, 200)
         self.assertEqual(snapshot.json()["schemaVersion"], PET_DISPLAY_SCHEMA_VERSION)
         self.assertEqual(turn.status_code, 200)
@@ -182,6 +189,20 @@ class PetdeskBridgeTests(unittest.TestCase):
         self.assertEqual(display["visual"]["emotion"], "害羞")
         static_images = build_petdesk_resource_bundle(self.resources, "mika_pack").runtime_manifest["staticImages"]
         self.assertIn(display["visual"]["assetHandle"], static_images)
+
+    def test_health_runtime_env_is_host_owned_starter_glue(self) -> None:
+        payload = build_petdesk_health_payload(self.resources, "mika_pack")
+
+        runtime_env = payload["runtimeEnv"]
+        self.assertEqual(
+            set(runtime_env),
+            {
+                "VITE_PETDESK_INTERACTION_PROFILE",
+                "VITE_PETDESK_INTERACTION_PROFILE_JSON",
+            },
+        )
+        self.assertLess(len(runtime_env["VITE_PETDESK_INTERACTION_PROFILE_JSON"]), 20000)
+        self.assertNotIn(str(self.characters_dir), json.dumps(runtime_env, ensure_ascii=False))
 
     def test_safe_handle_segment_never_returns_path_or_url_shape(self) -> None:
         for raw in ("../secret.png", "https://example.com/a.png", "C:/Users/a.png", "猫娘/开心"):
