@@ -1,0 +1,280 @@
+[CmdletBinding()]
+param(
+    [int]$BackendPort = 9999,
+    [string]$BackendUrl = "",
+    [string]$RuntimeDir = "",
+    [switch]$SkipBackend,
+    [switch]$ReuseBackend,
+    [switch]$CheckOnly,
+    [switch]$DryRun,
+    [int]$HealthTimeoutSeconds = 45
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$PetdeskRuntimeEnvKeys = @(
+    "VITE_PETDESK_INTERACTION_PROFILE",
+    "VITE_PETDESK_INTERACTION_PROFILE_JSON",
+    "VITE_PETDESK_LIVE2D_MODEL_LAYOUT_PROFILE",
+    "VITE_PETDESK_LIVE2D_MODEL_LAYOUT_JSON",
+    "VITE_PETDESK_LIVE2D_MOTION_MAP_JSON",
+    "VITE_PETDESK_LIVE2D_EXPRESSION_MAP_JSON"
+)
+$MaxRuntimeEnvValueLength = 20000
+
+function Write-AkanePetdeskStep {
+    param(
+        [string]$Level,
+        [string]$Message
+    )
+
+    Write-Host ("[{0}] {1}" -f $Level, $Message)
+}
+
+function Find-AkaneProjectRoot {
+    param([string]$StartDir)
+
+    $current = (Resolve-Path -LiteralPath $StartDir).Path
+    while ($current) {
+        if (
+            (Test-Path -LiteralPath (Join-Path $current "launch_akane_memory_v01.py") -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $current "start_akane_next.ps1") -PathType Leaf)
+        ) {
+            return $current
+        }
+
+        $parent = Split-Path -Parent $current
+        if (-not $parent -or $parent -eq $current) {
+            break
+        }
+        $current = $parent
+    }
+
+    throw "akane_project_root_not_found"
+}
+
+function Resolve-PetdeskRuntimeDir {
+    param(
+        [string]$ProjectRoot,
+        [string]$RequestedRuntimeDir
+    )
+
+    $candidate = if ($RequestedRuntimeDir) {
+        if ([System.IO.Path]::IsPathRooted($RequestedRuntimeDir)) {
+            $RequestedRuntimeDir
+        } else {
+            Join-Path $ProjectRoot $RequestedRuntimeDir
+        }
+    } else {
+        Join-Path $ProjectRoot "..\petdesk-runtime"
+    }
+
+    $resolved = [System.IO.Path]::GetFullPath($candidate)
+    $packageJson = Join-Path $resolved "package.json"
+    if (-not (Test-Path -LiteralPath $packageJson -PathType Leaf)) {
+        throw "petdesk_runtime_not_found: $resolved"
+    }
+    return $resolved
+}
+
+function Normalize-BackendUrl {
+    param(
+        [string]$RawUrl,
+        [int]$Port
+    )
+
+    $value = ([string]$RawUrl).Trim()
+    if (-not $value) {
+        return "http://127.0.0.1:{0}" -f $Port
+    }
+    return $value.TrimEnd("/")
+}
+
+function Test-LoopbackBackendUrl {
+    param([string]$Url)
+
+    return [bool]($Url -match "^http://(127\.0\.0\.1|localhost):\d+/?$")
+}
+
+function Start-AkaneBackendForPetdesk {
+    param(
+        [string]$ProjectRoot,
+        [int]$Port,
+        [switch]$Reuse
+    )
+
+    $parameters = @{
+        BackendPort = $Port
+        SkipDesktop = $true
+    }
+    if ($Reuse) {
+        $parameters.ReuseBackend = $true
+    }
+    & (Join-Path $ProjectRoot "start_akane_next.ps1") @parameters
+    if (-not $?) {
+        throw "akane_backend_start_failed"
+    }
+}
+
+function Get-PetdeskHealth {
+    param(
+        [string]$BaseUrl,
+        [int]$TimeoutSeconds
+    )
+
+    $healthUrl = "{0}/pet/health" -f $BaseUrl.TrimEnd("/")
+    $deadline = [DateTime]::UtcNow.AddSeconds([Math]::Max(0, $TimeoutSeconds))
+    do {
+        try {
+            return Invoke-RestMethod `
+                -Uri $healthUrl `
+                -TimeoutSec 3 `
+                -Headers @{ "Cache-Control" = "no-store" }
+        } catch {
+            if ([DateTime]::UtcNow -ge $deadline) {
+                return $null
+            }
+            Start-Sleep -Milliseconds 500
+        }
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    return $null
+}
+
+function ConvertTo-SafePetdeskRuntimeEnv {
+    param([object]$RuntimeEnv)
+
+    $safe = [ordered]@{}
+    if ($null -eq $RuntimeEnv) {
+        return $safe
+    }
+
+    $properties = @($RuntimeEnv.PSObject.Properties)
+    foreach ($property in $properties) {
+        $name = [string]$property.Name
+        if ($PetdeskRuntimeEnvKeys -notcontains $name) {
+            continue
+        }
+        if ($property.Value -isnot [string]) {
+            continue
+        }
+
+        $value = ([string]$property.Value).Trim()
+        if (-not $value -or $value.Length -gt $MaxRuntimeEnvValueLength) {
+            continue
+        }
+        $safe[$name] = $value
+    }
+
+    return $safe
+}
+
+function Set-ScopedEnv {
+    param([System.Collections.IDictionary]$Values)
+
+    $previous = @{}
+    foreach ($key in $Values.Keys) {
+        $envPath = "Env:{0}" -f $key
+        $oldValue = [Environment]::GetEnvironmentVariable($key, "Process")
+        $previous[$key] = $oldValue
+        Set-Item -Path $envPath -Value ([string]$Values[$key])
+    }
+    return $previous
+}
+
+function Restore-ScopedEnv {
+    param([System.Collections.IDictionary]$Previous)
+
+    foreach ($key in $Previous.Keys) {
+        $envPath = "Env:{0}" -f $key
+        $oldValue = $Previous[$key]
+        if ($null -eq $oldValue) {
+            Remove-Item -Path $envPath -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -Path $envPath -Value ([string]$oldValue)
+        }
+    }
+}
+
+function Invoke-PetdeskRuntimeDev {
+    param(
+        [string]$ResolvedRuntimeDir,
+        [System.Collections.IDictionary]$RuntimeEnv
+    )
+
+    $pnpm = Get-Command pnpm -ErrorAction SilentlyContinue
+    if (-not $pnpm) {
+        throw "pnpm_not_found"
+    }
+
+    Push-Location -LiteralPath $ResolvedRuntimeDir
+    $previousEnv = Set-ScopedEnv -Values $RuntimeEnv
+    try {
+        & $pnpm.Source tauri:dev
+        return $LASTEXITCODE
+    } finally {
+        Restore-ScopedEnv -Previous $previousEnv
+        Pop-Location
+    }
+}
+
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $scriptDir) {
+    $scriptDir = (Get-Location).Path
+}
+
+$projectRoot = Find-AkaneProjectRoot -StartDir $scriptDir
+$resolvedRuntimeDir = Resolve-PetdeskRuntimeDir -ProjectRoot $projectRoot -RequestedRuntimeDir $RuntimeDir
+$resolvedBackendUrl = Normalize-BackendUrl -RawUrl $BackendUrl -Port $BackendPort
+
+Write-AkanePetdeskStep "INFO" ("Akane project: {0}" -f $projectRoot)
+Write-AkanePetdeskStep "INFO" ("petdesk-runtime: {0}" -f $resolvedRuntimeDir)
+Write-AkanePetdeskStep "INFO" ("Backend: {0}" -f $resolvedBackendUrl)
+
+if ($CheckOnly) {
+    Write-AkanePetdeskStep "OK" "CheckOnly completed. No backend or runtime process was launched."
+    exit 0
+}
+
+if (-not $SkipBackend) {
+    if (Test-LoopbackBackendUrl -Url $resolvedBackendUrl) {
+        Start-AkaneBackendForPetdesk -ProjectRoot $projectRoot -Port $BackendPort -Reuse:$ReuseBackend
+    } else {
+        Write-AkanePetdeskStep "WARN" "Custom backend URL is not a simple loopback port; skipping backend start."
+    }
+}
+
+$health = Get-PetdeskHealth -BaseUrl $resolvedBackendUrl -TimeoutSeconds $HealthTimeoutSeconds
+$runtimeEnv = [ordered]@{
+    VITE_PETDESK_BACKEND_URL = $resolvedBackendUrl
+}
+
+if ($null -eq $health) {
+    Write-AkanePetdeskStep "WARN" "Could not fetch /pet/health; launching runtime with backend URL only."
+} else {
+    $healthRuntimeEnv = if ($health.PSObject.Properties.Name -contains "runtimeEnv") {
+        $health.runtimeEnv
+    } else {
+        $null
+    }
+    $safeEnv = ConvertTo-SafePetdeskRuntimeEnv -RuntimeEnv $healthRuntimeEnv
+    foreach ($key in $safeEnv.Keys) {
+        $runtimeEnv[$key] = $safeEnv[$key]
+    }
+    if ($safeEnv.Count -gt 0) {
+        Write-AkanePetdeskStep "INFO" ("Petdesk runtime env: {0}" -f (($safeEnv.Keys | Sort-Object) -join ","))
+    } else {
+        Write-AkanePetdeskStep "INFO" "No whitelisted petdesk runtime env was returned by /pet/health."
+    }
+}
+
+if ($DryRun) {
+    $runtimeEnvKeys = (($runtimeEnv.Keys | Sort-Object) -join ",")
+    Write-AkanePetdeskStep "OK" ("DryRun completed. Runtime env keys: {0}" -f $runtimeEnvKeys)
+    exit 0
+}
+
+Write-AkanePetdeskStep "INFO" "Starting petdesk-runtime Tauri dev window..."
+$exitCode = Invoke-PetdeskRuntimeDev -ResolvedRuntimeDir $resolvedRuntimeDir -RuntimeEnv $runtimeEnv
+exit $exitCode
