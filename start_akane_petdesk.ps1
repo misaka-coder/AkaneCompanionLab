@@ -7,6 +7,9 @@ param(
     [switch]$ReuseBackend,
     [switch]$CheckOnly,
     [switch]$DryRun,
+    [switch]$SmokeOnly,
+    [switch]$RunSmokeBeforeLaunch,
+    [string]$SmokeText = "测试一下 petdesk MVP 语音链路。",
     [int]$HealthTimeoutSeconds = 45
 )
 
@@ -33,6 +36,15 @@ if ($CheckOnly) {
 }
 if ($DryRun) {
     $parameters.DryRun = $true
+}
+if ($SmokeOnly) {
+    $parameters.SmokeOnly = $true
+}
+if ($RunSmokeBeforeLaunch) {
+    $parameters.RunSmokeBeforeLaunch = $true
+}
+if ($SmokeText) {
+    $parameters.SmokeText = $SmokeText
 }
 
 & $scriptPath @parameters

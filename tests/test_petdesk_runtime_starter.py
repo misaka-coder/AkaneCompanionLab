@@ -19,6 +19,10 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("pnpm_not_found", source)
         self.assertIn("CheckOnly completed", source)
         self.assertIn("DryRun completed", source)
+        self.assertIn("Invoke-PetdeskMvpSmoke", source)
+        self.assertIn("run_petdesk_mvp_smoke.py", source)
+        self.assertIn("SmokeOnly completed", source)
+        self.assertIn("RunSmokeBeforeLaunch", source)
         self.assertIn("Restore-ScopedEnv", source)
 
         allowed_keys = {
@@ -44,6 +48,8 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertNotIn("start_petdesk_runtime.ps1", bootstrap)
         self.assertNotIn("start_petdesk_runtime.ps1", root_launcher)
         self.assertIn("scripts\\start_petdesk_runtime.ps1", petdesk_script)
+        self.assertIn("SmokeOnly", petdesk_script)
+        self.assertIn("RunSmokeBeforeLaunch", petdesk_script)
         self.assertIn("scripts\\start_petdesk_runtime.ps1", petdesk_bat)
 
     def test_m36_doc_records_transition_boundary(self) -> None:
@@ -54,6 +60,15 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("GET /pet/health", doc)
         self.assertIn("whitelist runtimeEnv", doc)
         self.assertIn("fallback to runtime defaults", doc)
+
+    def test_m41_doc_records_mvp_smoke_boundary(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_akane_mvp_closeout_m41.md").read_text(encoding="utf-8")
+
+        self.assertIn("AKANE_PETDESK_MVP_SMOKE_OK", doc)
+        self.assertIn("SmokeOnly", doc)
+        self.assertIn("RunSmokeBeforeLaunch", doc)
+        self.assertIn("/audio/petdesk/<token>", doc)
+        self.assertIn("full MVP audio acceptance", doc)
 
 
 if __name__ == "__main__":

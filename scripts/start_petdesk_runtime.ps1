@@ -7,6 +7,9 @@ param(
     [switch]$ReuseBackend,
     [switch]$CheckOnly,
     [switch]$DryRun,
+    [switch]$SmokeOnly,
+    [switch]$RunSmokeBeforeLaunch,
+    [string]$SmokeText = "测试一下 petdesk MVP 语音链路。",
     [int]$HealthTimeoutSeconds = 45
 )
 
@@ -22,6 +25,7 @@ $PetdeskRuntimeEnvKeys = @(
     "VITE_PETDESK_LIVE2D_EXPRESSION_MAP_JSON"
 )
 $MaxRuntimeEnvValueLength = 20000
+$script:PetdeskMvpSmokeExitCode = 0
 
 function Write-AkanePetdeskStep {
     param(
@@ -219,6 +223,27 @@ function Invoke-PetdeskRuntimeDev {
     }
 }
 
+function Invoke-PetdeskMvpSmoke {
+    param(
+        [string]$ProjectRoot,
+        [string]$BaseUrl,
+        [string]$Text
+    )
+
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $python) {
+        throw "python_not_found"
+    }
+
+    $smokeScript = Join-Path $ProjectRoot "scripts\tools\run_petdesk_mvp_smoke.py"
+    if (-not (Test-Path -LiteralPath $smokeScript -PathType Leaf)) {
+        throw "petdesk_mvp_smoke_not_found"
+    }
+
+    & $python.Source $smokeScript --base-url $BaseUrl --text $Text
+    $script:PetdeskMvpSmokeExitCode = $LASTEXITCODE
+}
+
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 if (-not $scriptDir) {
     $scriptDir = (Get-Location).Path
@@ -273,6 +298,19 @@ if ($DryRun) {
     $runtimeEnvKeys = (($runtimeEnv.Keys | Sort-Object) -join ",")
     Write-AkanePetdeskStep "OK" ("DryRun completed. Runtime env keys: {0}" -f $runtimeEnvKeys)
     exit 0
+}
+
+if ($SmokeOnly -or $RunSmokeBeforeLaunch) {
+    Write-AkanePetdeskStep "INFO" "Running petdesk MVP smoke..."
+    Invoke-PetdeskMvpSmoke -ProjectRoot $projectRoot -BaseUrl $resolvedBackendUrl -Text $SmokeText
+    $smokeExitCode = $script:PetdeskMvpSmokeExitCode
+    if ($smokeExitCode -ne 0) {
+        exit $smokeExitCode
+    }
+    if ($SmokeOnly) {
+        Write-AkanePetdeskStep "OK" "SmokeOnly completed. No runtime process was launched."
+        exit 0
+    }
 }
 
 Write-AkanePetdeskStep "INFO" "Starting petdesk-runtime Tauri dev window..."

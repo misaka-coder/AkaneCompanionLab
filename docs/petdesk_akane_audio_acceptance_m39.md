@@ -125,3 +125,22 @@ user sees the reply, hears the voice, and the window stays usable.
 
 Record that manual check separately once the user confirms the actual audible
 behavior.
+
+## Follow-up Closeout
+
+M40 and M41 closed the pending line on 2026-07-07:
+
+- M40 manual runtime acceptance confirmed that the user can send a message from
+  the petdesk window and hear Akane's TTS playback.
+- M41 added `scripts/tools/run_petdesk_mvp_smoke.py` and
+  `start_akane_petdesk.ps1 -SmokeOnly` so the backend MVP chain can be
+  revalidated without opening the runtime window.
+
+The M41 live smoke passed against `http://127.0.0.1:9999` with:
+
+```text
+resource_manifest -> display -> resource_manifest -> display -> done
+audio_present: true
+audio_content_type: audio/mpeg
+audio_bytes: non-zero
+```
