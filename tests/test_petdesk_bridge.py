@@ -116,6 +116,34 @@ class PetdeskBridgeTests(unittest.TestCase):
         self.assertIn(envelope["visual"]["assetHandle"], bundle.runtime_manifest["staticImages"])
         self.assertEqual(envelope["safety"]["status"], "ok")
 
+    def test_display_envelope_preserves_allowed_motion_intent(self) -> None:
+        bundle = build_petdesk_resource_bundle(self.resources, "mika_pack")
+        manifest = self.resources.get_manifest("mika_pack")
+
+        thinking = build_petdesk_display_envelope(
+            {
+                "speech": "我想一下。",
+                "emotion": "cheerful",
+                "character": {"outfit": "猫娘"},
+                "visual": {"motion": "thinking"},
+            },
+            bundle=bundle,
+            resource_manifest=manifest,
+        )
+        invalid = build_petdesk_display_envelope(
+            {
+                "speech": "我在。",
+                "emotion": "cheerful",
+                "character": {"outfit": "猫娘"},
+                "pet": {"motion": "../jump"},
+            },
+            bundle=bundle,
+            resource_manifest=manifest,
+        )
+
+        self.assertEqual(thinking["visual"]["motion"], "thinking")
+        self.assertEqual(invalid["visual"]["motion"], "speaking")
+
     def test_router_exposes_health_snapshot_and_turn_stream(self) -> None:
         runtime = FakeRuntimeMetrics()
         guard = FakeGuard()
