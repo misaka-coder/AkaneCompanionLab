@@ -32,6 +32,7 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
             "VITE_PETDESK_LIVE2D_MODEL_LAYOUT_JSON",
             "VITE_PETDESK_LIVE2D_MOTION_MAP_JSON",
             "VITE_PETDESK_LIVE2D_EXPRESSION_MAP_JSON",
+            "VITE_PETDESK_RESOURCE_MANIFEST_URL",
         }
         for key in allowed_keys:
             self.assertIn(key, source)
@@ -69,6 +70,15 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("RunSmokeBeforeLaunch", doc)
         self.assertIn("/audio/petdesk/<token>", doc)
         self.assertIn("full MVP audio acceptance", doc)
+
+    def test_m46_doc_records_startup_manifest_gate(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_startup_gate_m46.md").read_text(encoding="utf-8")
+
+        self.assertIn("VITE_PETDESK_RESOURCE_MANIFEST_URL", doc)
+        self.assertIn("/pet/resource-manifest", doc)
+        self.assertIn("/pet/snapshot.visual.assetHandle", doc)
+        self.assertIn("staticImages[assetHandle]", doc)
+        self.assertIn("image/*", doc)
 
 
 if __name__ == "__main__":

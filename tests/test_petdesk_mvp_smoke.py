@@ -12,6 +12,8 @@ from scripts.tools.run_petdesk_mvp_smoke import PetdeskSmokeError, parse_sse_eve
 AUDIO_TOKEN = "a" * 32
 AUDIO_HANDLE = f"akane/tts/{AUDIO_TOKEN}"
 AUDIO_URL = f"/audio/petdesk/{AUDIO_TOKEN}"
+STATIC_HANDLE = "akane_sample/static/default/normal"
+STATIC_URL = "/petdesk-character-packs/akane_sample/assets/characters/default/normal.png"
 
 
 class PetdeskMvpSmokeTests(unittest.TestCase):
@@ -33,6 +35,10 @@ class PetdeskMvpSmokeTests(unittest.TestCase):
         self.assertEqual(
             summary["event_order"], ["resource_manifest", "display", "resource_manifest", "display", "done"]
         )
+        self.assertEqual(summary["startup_asset_handle"], STATIC_HANDLE)
+        self.assertEqual(summary["startup_image_url"], STATIC_URL)
+        self.assertEqual(summary["startup_image_bytes"], len(SmokeHandler.image_bytes))
+        self.assertEqual(summary["startup_image_content_type"], "image/png")
         self.assertEqual(summary["audio_handle"], AUDIO_HANDLE)
         self.assertEqual(summary["audio_url"], AUDIO_URL)
         self.assertEqual(summary["audio_bytes"], len(SmokeHandler.audio_bytes))
@@ -53,16 +59,25 @@ class PetdeskMvpSmokeTests(unittest.TestCase):
         self.assertFalse(summary["audio_required"])
         self.assertFalse(summary["audio_present"])
 
+    def test_live_smoke_fails_when_startup_snapshot_asset_is_not_in_manifest(self) -> None:
+        with SmokeServer(audio_enabled=True, startup_mode="missing_asset") as server:
+            with self.assertRaises(PetdeskSmokeError) as raised:
+                run_smoke(base_url=server.base_url, text="hi", timeout_seconds=5)
+
+        self.assertEqual(raised.exception.reason, "startup_asset_not_in_manifest")
+
 
 class SmokeServer:
-    def __init__(self, *, audio_enabled: bool) -> None:
+    def __init__(self, *, audio_enabled: bool, startup_mode: str = "ok") -> None:
         self.audio_enabled = audio_enabled
+        self.startup_mode = startup_mode
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), SmokeHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
 
     def __enter__(self) -> SmokeServer:
         SmokeHandler.audio_enabled = self.audio_enabled
+        SmokeHandler.startup_mode = self.startup_mode
         self.thread.start()
         return self
 
@@ -74,7 +89,9 @@ class SmokeServer:
 
 class SmokeHandler(BaseHTTPRequestHandler):
     audio_enabled = True
+    startup_mode = "ok"
     audio_bytes = b"fake-mp3-bytes"
+    image_bytes = b"\x89PNG\r\n\x1a\nfake-image-bytes"
 
     def do_GET(self) -> None:
         if self.path == "/pet/health":
@@ -85,10 +102,64 @@ class SmokeHandler(BaseHTTPRequestHandler):
                     "version": "akane-petdesk-bridge.test",
                     "snapshot": "/pet/snapshot",
                     "turn": "/pet/turn",
+                    "resourceManifest": {
+                        "endpoint": "/pet/resource-manifest",
+                        "staticImageCount": 1,
+                        "characterPackId": "akane_sample",
+                        "prefix": "/petdesk-character-packs",
+                    },
                     "characterPacks": [{"pack_id": "akane_sample"}],
                     "defaultCharacterPackId": "akane_sample",
+                    "runtimeEnv": {
+                        "VITE_PETDESK_RESOURCE_MANIFEST_URL": "/pet/resource-manifest",
+                    },
                 }
             )
+            return
+        if self.path == "/pet/snapshot":
+            self._write_json(
+                {
+                    "schemaVersion": "pet.display.v1",
+                    "speech": "startup hello",
+                    "visual": {
+                        "renderer": "static_portrait",
+                        "emotion": "normal",
+                        "outfit": "default",
+                        "motion": "speaking",
+                        "assetHandle": (
+                            "akane_sample/static/default/missing"
+                            if self.startup_mode == "missing_asset"
+                            else STATIC_HANDLE
+                        ),
+                    },
+                    "metadata": {},
+                }
+            )
+            return
+        if self.path == "/pet/resource-manifest":
+            self._write_json(
+                {
+                    "schemaVersion": "pet.resource_manifest.v1",
+                    "staticImages": {
+                        STATIC_HANDLE: {
+                            "kind": "static_image",
+                            "handle": STATIC_HANDLE,
+                            "url": STATIC_URL,
+                            "source": "test",
+                        }
+                    },
+                    "live2dModels": {},
+                    "audio": {},
+                }
+            )
+            return
+        if self.path == STATIC_URL:
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(self.image_bytes)))
+            self.end_headers()
+            self.wfile.write(self.image_bytes)
             return
         if self.path == AUDIO_URL:
             self.send_response(200)
