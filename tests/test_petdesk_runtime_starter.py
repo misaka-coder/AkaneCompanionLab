@@ -239,6 +239,46 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("start_akane_petdesk_release.ps1", readme)
         self.assertIn("stop_petdesk_runtime.ps1", readme)
 
+    def test_release_doctor_is_read_only_status_script(self) -> None:
+        source = (ROOT / "scripts" / "check_petdesk_release.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("AKANE_PETDESK_RELEASE_DOCTOR_OK", source)
+        self.assertIn("AKANE_PETDESK_RELEASE_DOCTOR_FAILED", source)
+        self.assertIn("SkipBackendHttp", source)
+        self.assertIn("/pet/health", source)
+        self.assertIn("VITE_PETDESK_RESOURCE_MANIFEST_URL", source)
+        self.assertIn("staticImages", source)
+        self.assertIn("/pet/snapshot", source)
+        self.assertIn("Get-Process -Name petdesk_runtime", source)
+        self.assertIn("Resolve-PetdeskRuntimeReleaseExePath", source)
+        self.assertIn(".cargo\\config.toml", source)
+        self.assertIn("release\\petdesk_runtime.exe", source)
+        self.assertIn("scripts\\build_petdesk_runtime_release.ps1", source)
+        self.assertIn("scripts\\stop_petdesk_runtime.ps1", source)
+        self.assertIn("scripts\\tools\\run_petdesk_mvp_smoke.py", source)
+        self.assertNotIn("Stop-Process", source)
+        self.assertNotIn("Start-Process", source)
+        self.assertNotIn("start_akane_next.ps1", source)
+        self.assertNotIn("uvicorn", source.lower())
+        self.assertNotIn("qq", source.lower())
+
+    def test_m56_doc_operator_guide_and_readme_record_release_doctor(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_release_doctor_m56.md").read_text(encoding="utf-8")
+        guide = (ROOT / "docs" / "petdesk_operator_guide_m54.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("check_petdesk_release.ps1", doc)
+        self.assertIn("SkipBackendHttp", doc)
+        self.assertIn("/pet/health", doc)
+        self.assertIn("runtimeEnv.VITE_PETDESK_RESOURCE_MANIFEST_URL", doc)
+        self.assertIn("AKANE_PETDESK_RELEASE_DOCTOR_OK", doc)
+        self.assertIn("does not launch the backend", doc)
+        self.assertIn("does not launch", doc)
+        self.assertIn("does not start the backend", guide)
+        self.assertIn("AKANE_PETDESK_RELEASE_DOCTOR_FAILED", guide)
+        self.assertIn("check_petdesk_release.ps1", readme)
+        self.assertIn("doctor", readme)
+
 
 if __name__ == "__main__":
     unittest.main()

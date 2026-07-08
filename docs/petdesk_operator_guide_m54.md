@@ -157,6 +157,31 @@ Dry-run build and launch:
 .\start_akane_petdesk_release.ps1 -BuildFirst -DryRun -SkipBackend -BackendUrl http://127.0.0.1:1 -HealthTimeoutSeconds 0
 ```
 
+## Doctor
+
+Run the read-only release doctor when startup fails or when checking a machine
+before acceptance:
+
+```powershell
+.\scripts\check_petdesk_release.ps1
+```
+
+Filesystem and process checks only, without backend HTTP requests:
+
+```powershell
+.\scripts\check_petdesk_release.ps1 -SkipBackendHttp
+```
+
+The doctor prints `[OK]`, `[WARN]`, and `[FAIL]` lines and ends with:
+
+```text
+AKANE_PETDESK_RELEASE_DOCTOR_OK
+AKANE_PETDESK_RELEASE_DOCTOR_FAILED
+```
+
+It does not start the backend, open the runtime, stop processes, post
+`/pet/turn`, or touch the QQ bot.
+
 ## Expected Output
 
 Healthy release startup prints:
@@ -210,6 +235,8 @@ petdesk process is separate from those services.
 
 Startup smoke fails before window opens:
 
+- Run `.\scripts\check_petdesk_release.ps1` first to separate missing files,
+  backend health, manifest, snapshot, and process state.
 - The runtime is protected from opening on a broken startup portrait chain.
 - Check `/pet/health`, `/pet/resource-manifest`, and `/pet/snapshot`.
 - Use `-SkipStartupSmoke` only when intentionally testing fallback behavior.

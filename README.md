@@ -304,10 +304,11 @@ Tauri/WebView2，并以 Windows 为主要验证平台。
 ```powershell
 .\start_akane_petdesk_release.ps1
 .\start_akane_petdesk_release.ps1 -BuildFirst
+.\scripts\check_petdesk_release.ps1
 .\scripts\stop_petdesk_runtime.ps1
 ```
 
-完整构建、启动、smoke、dry-run、停止和排障步骤见
+完整构建、启动、doctor、smoke、dry-run、停止和排障步骤见
 `docs/petdesk_operator_guide_m54.md`。
 
 ## 本地访问
