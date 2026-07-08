@@ -133,6 +133,35 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("petdesk_runtime.exe", doc)
         self.assertIn("startup smoke passes first", doc)
 
+    def test_release_build_script_records_serial_warmup(self) -> None:
+        source = (ROOT / "scripts" / "build_petdesk_runtime_release.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("CheckOnly completed. No release build was run.", source)
+        self.assertIn("DryRun completed. No release build was run.", source)
+        self.assertIn("SkipWarmup", source)
+        self.assertIn("cargo", source)
+        self.assertIn('"build", "--manifest-path", $cargoManifest, "--release", "-j", "1"', source)
+        self.assertIn("pnpm", source)
+        self.assertIn("tauri:build", source)
+        self.assertIn(".cargo\\config.toml", source)
+        self.assertIn("target-dir", source)
+        self.assertIn("release\\petdesk_runtime.exe", source)
+        self.assertIn("petdesk_runtime_release_exe_missing_after_build", source)
+        self.assertIn("petdesk-runtime release build completed", source)
+        self.assertNotIn("start_akane_next.ps1 @", source)
+        self.assertNotIn("start_akane_petdesk.ps1", source)
+
+    def test_m52_doc_records_release_build_script(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_release_build_script_m52.md").read_text(encoding="utf-8")
+
+        self.assertIn("build_petdesk_runtime_release.ps1", doc)
+        self.assertIn("cargo build --manifest-path src-tauri\\Cargo.toml --release -j 1", doc)
+        self.assertIn("pnpm tauri:build", doc)
+        self.assertIn("CheckOnly", doc)
+        self.assertIn("DryRun", doc)
+        self.assertIn("SkipWarmup", doc)
+        self.assertIn("does not depend on memory", doc)
+
 
 if __name__ == "__main__":
     unittest.main()
