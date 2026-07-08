@@ -296,6 +296,20 @@ Tauri/WebView2，并以 Windows 为主要验证平台。
 普通用户通过 `启动_Akane.bat` 自动启动后端和桌宠。开发调试入口见
 `desktop_pet_next/README.md`。
 
+### Petdesk release runtime
+
+新的 `petdesk-runtime` release 路径已经有独立操作入口，但仍不是默认公共
+桌宠入口。当前用于验收和产品化打磨：
+
+```powershell
+.\start_akane_petdesk_release.ps1
+.\start_akane_petdesk_release.ps1 -BuildFirst
+.\scripts\stop_petdesk_runtime.ps1
+```
+
+完整构建、启动、smoke、dry-run、停止和排障步骤见
+`docs/petdesk_operator_guide_m54.md`。
+
 ## 本地访问
 
 - 默认后端：`http://127.0.0.1:9999`

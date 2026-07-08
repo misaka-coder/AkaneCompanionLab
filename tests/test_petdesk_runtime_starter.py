@@ -197,6 +197,7 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("Petdesk Operator Guide M54", doc)
         self.assertIn("start_akane_petdesk_release.ps1", doc)
         self.assertIn("build_petdesk_runtime_release.ps1", doc)
+        self.assertIn("stop_petdesk_runtime.ps1", doc)
         self.assertIn("start_akane_petdesk.ps1", doc)
         self.assertIn("StartupSmokeOnly", doc)
         self.assertIn("SmokeOnly", doc)
@@ -204,10 +205,39 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("AKANE_PETDESK_STARTUP_SMOKE_OK", doc)
         self.assertIn("petdesk_runtime_release_exe_not_found", doc)
         self.assertIn("link.exe", doc)
-        self.assertIn("Stop-Process", doc)
+        self.assertIn("-Force", doc)
         self.assertIn("Do not stop the Akane backend or QQ bot", doc)
         self.assertIn("Window shows placeholder", doc)
         self.assertIn("No audio", doc)
+
+    def test_stop_script_targets_only_petdesk_runtime(self) -> None:
+        source = (ROOT / "scripts" / "stop_petdesk_runtime.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("Get-Process -Name petdesk_runtime", source)
+        self.assertIn("Resolve-PetdeskRuntimeReleaseExePath", source)
+        self.assertIn("Target release exe", source)
+        self.assertIn("CheckOnly completed. No petdesk runtime process was stopped.", source)
+        self.assertIn("CloseMainWindow", source)
+        self.assertIn("Stop-Process -Id $process.Id -Force", source)
+        self.assertIn("Re-run with -Force if needed", source)
+        self.assertIn("Matching all petdesk_runtime.exe processes because -All was passed.", source)
+        self.assertNotIn("python", source.lower())
+        self.assertNotIn("qq", source.lower())
+        self.assertNotIn("uvicorn", source.lower())
+
+    def test_m55_doc_and_readme_record_stop_and_discovery(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_stop_and_discovery_m55.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("stop_petdesk_runtime.ps1", doc)
+        self.assertIn("CheckOnly", doc)
+        self.assertIn("-Force", doc)
+        self.assertIn("-All", doc)
+        self.assertIn("does not stop Akane backend, QQ bot", doc)
+        self.assertIn("petdesk_operator_guide_m54.md", doc)
+        self.assertIn("petdesk_operator_guide_m54.md", readme)
+        self.assertIn("start_akane_petdesk_release.ps1", readme)
+        self.assertIn("stop_petdesk_runtime.ps1", readme)
 
 
 if __name__ == "__main__":

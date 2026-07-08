@@ -183,7 +183,19 @@ Close the petdesk window normally when possible.
 If a release runtime window must be stopped from PowerShell:
 
 ```powershell
-Get-Process -Name petdesk_runtime -ErrorAction SilentlyContinue | Stop-Process
+.\scripts\stop_petdesk_runtime.ps1
+```
+
+To inspect matching processes without closing anything:
+
+```powershell
+.\scripts\stop_petdesk_runtime.ps1 -CheckOnly
+```
+
+Force-stop only if graceful close fails:
+
+```powershell
+.\scripts\stop_petdesk_runtime.ps1 -Force
 ```
 
 Do not stop the Akane backend or QQ bot unless that is the task. The release
