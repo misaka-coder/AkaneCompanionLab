@@ -182,6 +182,42 @@ AKANE_PETDESK_RELEASE_DOCTOR_FAILED
 It does not start the backend, open the runtime, stop processes, post
 `/pet/turn`, or touch the QQ bot.
 
+## Acceptance
+
+Run quick no-window release acceptance:
+
+```powershell
+.\scripts\accept_petdesk_release.ps1
+```
+
+This runs the release doctor and startup-only smoke. By default it does not
+start the backend; it expects an existing backend at `http://127.0.0.1:9999` or
+the explicit `-BackendUrl`.
+
+Run full no-window MVP acceptance, including a `/pet/turn` and TTS audio check:
+
+```powershell
+.\scripts\accept_petdesk_release.ps1 -Full
+```
+
+Check script wiring without doctor, smoke, backend, or runtime side effects:
+
+```powershell
+.\scripts\accept_petdesk_release.ps1 -CheckOnly
+```
+
+The acceptance runner ends with:
+
+```text
+AKANE_PETDESK_RELEASE_ACCEPTANCE_OK
+AKANE_PETDESK_RELEASE_ACCEPTANCE_FAILED
+AKANE_PETDESK_RELEASE_ACCEPTANCE_CHECK_OK
+```
+
+It does not open the runtime window or stop any process. Pass `-StartBackend`
+only when intentionally allowing the release wrapper to start the Akane
+backend.
+
 ## Expected Output
 
 Healthy release startup prints:

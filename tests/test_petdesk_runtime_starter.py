@@ -279,6 +279,46 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("check_petdesk_release.ps1", readme)
         self.assertIn("doctor", readme)
 
+    def test_release_acceptance_sequences_doctor_and_smoke_without_window(self) -> None:
+        source = (ROOT / "scripts" / "accept_petdesk_release.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("AKANE_PETDESK_RELEASE_ACCEPTANCE_OK", source)
+        self.assertIn("AKANE_PETDESK_RELEASE_ACCEPTANCE_FAILED", source)
+        self.assertIn("AKANE_PETDESK_RELEASE_ACCEPTANCE_CHECK_OK", source)
+        self.assertIn("check_petdesk_release.ps1", source)
+        self.assertIn("start_akane_petdesk_release.ps1", source)
+        self.assertIn("StartupSmokeOnly", source)
+        self.assertIn("SmokeOnly", source)
+        self.assertIn("Full", source)
+        self.assertIn("SkipDoctor", source)
+        self.assertIn("SkipSmoke", source)
+        self.assertIn("StartBackend", source)
+        self.assertIn("CheckOnly completed. No doctor, smoke, backend, or runtime process was launched.", source)
+        self.assertIn("Backend start: disabled by default", source)
+        self.assertNotIn("Stop-Process", source)
+        self.assertNotIn("Start-Process", source)
+        self.assertNotIn("Invoke-PetdeskRuntimeRelease", source)
+        self.assertNotIn("petdesk_runtime.exe", source)
+        self.assertNotIn("uvicorn", source.lower())
+        self.assertNotIn("qq", source.lower())
+
+    def test_m57_doc_operator_guide_and_readme_record_release_acceptance(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_release_acceptance_m57.md").read_text(encoding="utf-8")
+        guide = (ROOT / "docs" / "petdesk_operator_guide_m54.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("accept_petdesk_release.ps1", doc)
+        self.assertIn("doctor", doc)
+        self.assertIn("startup-only smoke", doc)
+        self.assertIn("Full", doc)
+        self.assertIn("StartBackend", doc)
+        self.assertIn("AKANE_PETDESK_RELEASE_ACCEPTANCE_OK", doc)
+        self.assertIn("does not replace the release starter", doc)
+        self.assertIn("does not open the runtime window", guide)
+        self.assertIn("AKANE_PETDESK_RELEASE_ACCEPTANCE_CHECK_OK", guide)
+        self.assertIn("accept_petdesk_release.ps1", readme)
+        self.assertIn("acceptance", readme)
+
 
 if __name__ == "__main__":
     unittest.main()
