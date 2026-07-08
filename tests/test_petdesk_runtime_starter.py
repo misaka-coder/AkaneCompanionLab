@@ -191,6 +191,24 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("without changing the default", doc)
         self.assertIn("development launcher", doc)
 
+    def test_m54_doc_records_operator_guide(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_operator_guide_m54.md").read_text(encoding="utf-8")
+
+        self.assertIn("Petdesk Operator Guide M54", doc)
+        self.assertIn("start_akane_petdesk_release.ps1", doc)
+        self.assertIn("build_petdesk_runtime_release.ps1", doc)
+        self.assertIn("start_akane_petdesk.ps1", doc)
+        self.assertIn("StartupSmokeOnly", doc)
+        self.assertIn("SmokeOnly", doc)
+        self.assertIn("DryRun", doc)
+        self.assertIn("AKANE_PETDESK_STARTUP_SMOKE_OK", doc)
+        self.assertIn("petdesk_runtime_release_exe_not_found", doc)
+        self.assertIn("link.exe", doc)
+        self.assertIn("Stop-Process", doc)
+        self.assertIn("Do not stop the Akane backend or QQ bot", doc)
+        self.assertIn("Window shows placeholder", doc)
+        self.assertIn("No audio", doc)
+
 
 if __name__ == "__main__":
     unittest.main()
