@@ -1,6 +1,6 @@
 # Petdesk Release Runtime Acceptance M51
 
-Status: blocked by local release build toolchain.
+Status: accepted after fresh release rebuild.
 Date: 2026-07-08
 
 ## Goal
@@ -63,6 +63,15 @@ cd F:\Akane\petdesk-runtime
 pnpm tauri:build
 ```
 
+If the first Tauri build hits the local Windows linker `os error 5`, the
+working recovery path observed in M51 is:
+
+```powershell
+cd F:\Akane\petdesk-runtime
+cargo build --manifest-path src-tauri\Cargo.toml --release -j 1
+pnpm tauri:build
+```
+
 Manual window acceptance, only after a fresh release binary exists:
 
 ```powershell
@@ -119,7 +128,7 @@ start_akane_petdesk.ps1 -RuntimeMode Release -SkipBackend -BackendUrl http://127
 -> startup static image count: 38
 ```
 
-Fresh release build was attempted:
+The first fresh release build was attempted:
 
 ```powershell
 cd F:\Akane\petdesk-runtime
@@ -136,20 +145,70 @@ link.exe: D:\Program Files\VC\Tools\MSVC\14.50.35717\bin\HostX64\x64\link.exe
 crate at failure: serialize-to-javascript-impl
 ```
 
-This matches the M49 release build blocker. Because the only discovered
-`petdesk_runtime.exe` is older than M49, M51 did not launch the stale binary for
-manual acceptance. The release-mode window acceptance remains blocked until a
-fresh release binary can be built.
+Then the release build was recovered with a serial Cargo build:
 
-## Next Step
+```powershell
+cd F:\Akane\petdesk-runtime
+cargo build --manifest-path src-tauri\Cargo.toml --release -j 1
+```
 
-Fix the local Windows release build toolchain before retrying M51 window
-acceptance. Once `pnpm tauri:build` produces a fresh
-`petdesk_runtime.exe`, rerun:
+Result:
+
+```text
+Finished `release` profile [optimized] target(s) in 1m 51s
+```
+
+After that, the full Tauri release build passed:
+
+```powershell
+cd F:\Akane\petdesk-runtime
+pnpm tauri:build
+```
+
+Result:
+
+```text
+Finished `release` profile [optimized] target(s) in 28.83s
+Built application at: F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+```
+
+Fresh release binary:
+
+```text
+F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+last write time: 2026-07-08 21:11:39
+size: 11829760 bytes
+```
+
+Manual release-mode starter acceptance was then run:
 
 ```powershell
 .\start_akane_petdesk.ps1 -RuntimeMode Release -SkipBackend -BackendUrl http://127.0.0.1:9999
 ```
 
-Only then can we verify that the built runtime reads M49 launch env and avoids
-the startup placeholder in release mode.
+Starter output confirmed:
+
+```text
+AKANE_PETDESK_STARTUP_SMOKE_OK
+Starting petdesk-runtime release window...
+```
+
+Runtime process:
+
+```text
+petdesk_runtime.exe
+PID: 36052
+exe: F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+```
+
+Manual visual/audio acceptance:
+
+- user confirmed the release window was OK;
+- startup was Akane rather than the placeholder;
+- interaction/audio had no observed issue.
+
+## Next Step
+
+Keep the release starter opt-in for now. The next packaging slice can turn the
+observed recovery path into a documented or scripted release build command so
+future builds do not depend on remembering to run the serial Cargo warm-up.
