@@ -218,6 +218,42 @@ It does not open the runtime window or stop any process. Pass `-StartBackend`
 only when intentionally allowing the release wrapper to start the Akane
 backend.
 
+## Runtime Bundle
+
+Export a small petdesk runtime bundle for acceptance handoff:
+
+```powershell
+.\scripts\export_petdesk_release_bundle.ps1
+```
+
+Inspect the bundle shape without writing files:
+
+```powershell
+.\scripts\export_petdesk_release_bundle.ps1 -CheckOnly
+.\scripts\export_petdesk_release_bundle.ps1 -DryRun
+```
+
+Default output goes under ignored `reports/petdesk-release-bundles/`. The
+bundle includes:
+
+```text
+runtime/petdesk_runtime.exe
+scripts/start_petdesk_runtime_bundle.ps1
+README.md
+manifest.json
+docs/*.md
+```
+
+The bundle is not a full Akane installer. Start the Akane backend separately,
+then run the bundled starter:
+
+```powershell
+.\scripts\start_petdesk_runtime_bundle.ps1 -BackendUrl http://127.0.0.1:9999
+```
+
+The bundle starter does not start the backend, stop processes, build
+Rust/Tauri, or touch QQ.
+
 ## Expected Output
 
 Healthy release startup prints:

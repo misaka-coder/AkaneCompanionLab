@@ -319,6 +319,64 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("accept_petdesk_release.ps1", readme)
         self.assertIn("acceptance", readme)
 
+    def test_release_bundle_export_script_records_safe_bundle_shape(self) -> None:
+        source = (ROOT / "scripts" / "export_petdesk_release_bundle.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("AKANE_PETDESK_RELEASE_BUNDLE_CHECK_OK", source)
+        self.assertIn("AKANE_PETDESK_RELEASE_BUNDLE_DRY_RUN_OK", source)
+        self.assertIn("AKANE_PETDESK_RELEASE_BUNDLE_EXPORT_OK", source)
+        self.assertIn("reports\\petdesk-release-bundles", source)
+        self.assertIn("runtime/petdesk_runtime.exe", source)
+        self.assertIn("scripts/start_petdesk_runtime_bundle.ps1", source)
+        self.assertIn("manifest.json", source)
+        self.assertIn("Get-FileHash -Algorithm SHA256", source)
+        self.assertIn("petdesk_release_bundle_m58.md", source)
+        self.assertIn("bundle_output_path_already_exists", source)
+        self.assertIn("unsafe_bundle_output_path", source)
+        self.assertIn("Copy-RequiredFile", source)
+        self.assertNotIn("Stop-Process", source)
+        self.assertNotIn("Start-Process", source)
+        self.assertNotIn("start_akane_next.ps1", source)
+        self.assertNotIn("uvicorn", source.lower())
+        self.assertNotIn("qq", source.lower())
+
+    def test_bundle_start_script_is_source_independent_runtime_launcher(self) -> None:
+        source = (ROOT / "scripts" / "start_petdesk_runtime_bundle.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("runtime\\petdesk_runtime.exe", source)
+        self.assertIn("VITE_PETDESK_BACKEND_URL", source)
+        self.assertIn("/pet/health", source)
+        self.assertIn("ConvertTo-SafePetdeskRuntimeEnv", source)
+        self.assertIn("MaxRuntimeEnvValueLength = 20000", source)
+        self.assertIn("CheckOnly completed. No runtime process was launched.", source)
+        self.assertIn("DryRun completed. Runtime env keys", source)
+        self.assertIn("Restore-ScopedEnv", source)
+        self.assertNotIn("Find-AkaneProjectRoot", source)
+        self.assertNotIn("start_akane_next.ps1", source)
+        self.assertNotIn("Stop-Process", source)
+        self.assertNotIn("pnpm", source)
+        self.assertNotIn("cargo", source)
+        self.assertNotIn("qq", source.lower())
+
+    def test_m58_doc_operator_guide_and_readme_record_release_bundle(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_release_bundle_m58.md").read_text(encoding="utf-8")
+        guide = (ROOT / "docs" / "petdesk_operator_guide_m54.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("export_petdesk_release_bundle.ps1", doc)
+        self.assertIn("start_petdesk_runtime_bundle.ps1", doc)
+        self.assertIn("reports/petdesk-release-bundles", doc)
+        self.assertIn("runtime/petdesk_runtime.exe", doc)
+        self.assertIn("manifest.json", doc)
+        self.assertIn("not a full Akane installer", doc)
+        self.assertIn("does not start the backend", doc)
+        self.assertIn("Runtime Bundle", guide)
+        self.assertIn("export_petdesk_release_bundle.ps1", guide)
+        self.assertIn("start_petdesk_runtime_bundle.ps1", guide)
+        self.assertIn("not a full Akane installer", guide)
+        self.assertIn("export_petdesk_release_bundle.ps1", readme)
+        self.assertIn("bundle", readme)
+
 
 if __name__ == "__main__":
     unittest.main()
