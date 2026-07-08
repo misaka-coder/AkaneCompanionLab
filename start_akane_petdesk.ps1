@@ -3,6 +3,9 @@ param(
     [int]$BackendPort = 9999,
     [string]$BackendUrl = "",
     [string]$RuntimeDir = "",
+    [ValidateSet("Dev", "Release")]
+    [string]$RuntimeMode = "Dev",
+    [string]$RuntimeExe = "",
     [switch]$SkipBackend,
     [switch]$ReuseBackend,
     [switch]$CheckOnly,
@@ -27,6 +30,10 @@ if ($BackendUrl) {
 }
 if ($RuntimeDir) {
     $parameters.RuntimeDir = $RuntimeDir
+}
+$parameters.RuntimeMode = $RuntimeMode
+if ($RuntimeExe) {
+    $parameters.RuntimeExe = $RuntimeExe
 }
 if ($SkipBackend) {
     $parameters.SkipBackend = $true

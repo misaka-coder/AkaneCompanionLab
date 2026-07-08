@@ -30,6 +30,15 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("-not $SkipStartupSmoke", source)
         self.assertIn("--startup-only", source)
         self.assertIn("Restore-ScopedEnv", source)
+        self.assertIn("RuntimeMode", source)
+        self.assertIn("RuntimeExe", source)
+        self.assertIn("Resolve-PetdeskRuntimeExe", source)
+        self.assertIn("Invoke-PetdeskRuntimeRelease", source)
+        self.assertIn("Starting petdesk-runtime release window", source)
+        self.assertIn("petdesk_runtime_release_exe_not_found", source)
+        self.assertIn(".cargo\\config.toml", source)
+        self.assertIn("release\\petdesk_runtime.exe", source)
+        self.assertIn("Runtime mode: {0}", source)
 
         allowed_keys = {
             "VITE_PETDESK_INTERACTION_PROFILE",
@@ -39,6 +48,7 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
             "VITE_PETDESK_LIVE2D_MOTION_MAP_JSON",
             "VITE_PETDESK_LIVE2D_EXPRESSION_MAP_JSON",
             "VITE_PETDESK_RESOURCE_MANIFEST_URL",
+            "VITE_PETDESK_RESOURCE_MANIFEST_JSON",
         }
         for key in allowed_keys:
             self.assertIn(key, source)
@@ -60,6 +70,8 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("SkipStartupSmoke", petdesk_script)
         self.assertIn("RunSmokeBeforeLaunch", petdesk_script)
         self.assertIn("RunStartupSmokeBeforeLaunch", petdesk_script)
+        self.assertIn("RuntimeMode", petdesk_script)
+        self.assertIn("RuntimeExe", petdesk_script)
         self.assertIn("scripts\\start_petdesk_runtime.ps1", petdesk_bat)
 
     def test_m36_doc_records_transition_boundary(self) -> None:
@@ -107,6 +119,19 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("RunStartupSmokeBeforeLaunch", doc)
         self.assertIn("CheckOnly", doc)
         self.assertIn("DryRun", doc)
+
+    def test_m50_doc_records_release_runtime_starter(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_release_runtime_starter_m50.md").read_text(encoding="utf-8")
+
+        self.assertIn("RuntimeMode Release", doc)
+        self.assertIn("RuntimeMode Dev", doc)
+        self.assertIn("RuntimeExe", doc)
+        self.assertIn("runtime_launch_env", doc)
+        self.assertIn("does not replace", doc)
+        self.assertIn("release mode is not", doc)
+        self.assertIn("the default", doc)
+        self.assertIn("petdesk_runtime.exe", doc)
+        self.assertIn("startup smoke passes first", doc)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,9 @@ param(
     [int]$BackendPort = 9999,
     [string]$BackendUrl = "",
     [string]$RuntimeDir = "",
+    [ValidateSet("Dev", "Release")]
+    [string]$RuntimeMode = "Dev",
+    [string]$RuntimeExe = "",
     [switch]$SkipBackend,
     [switch]$ReuseBackend,
     [switch]$CheckOnly,
@@ -26,7 +29,8 @@ $PetdeskRuntimeEnvKeys = @(
     "VITE_PETDESK_LIVE2D_MODEL_LAYOUT_JSON",
     "VITE_PETDESK_LIVE2D_MOTION_MAP_JSON",
     "VITE_PETDESK_LIVE2D_EXPRESSION_MAP_JSON",
-    "VITE_PETDESK_RESOURCE_MANIFEST_URL"
+    "VITE_PETDESK_RESOURCE_MANIFEST_URL",
+    "VITE_PETDESK_RESOURCE_MANIFEST_JSON"
 )
 $MaxRuntimeEnvValueLength = 20000
 $script:PetdeskMvpSmokeExitCode = 0
@@ -84,6 +88,52 @@ function Resolve-PetdeskRuntimeDir {
         throw "petdesk_runtime_not_found: $resolved"
     }
     return $resolved
+}
+
+function Resolve-PetdeskRuntimeExe {
+    param(
+        [string]$ProjectRoot,
+        [string]$ResolvedRuntimeDir,
+        [string]$RequestedRuntimeExe
+    )
+
+    if ($RequestedRuntimeExe) {
+        $candidate = if ([System.IO.Path]::IsPathRooted($RequestedRuntimeExe)) {
+            $RequestedRuntimeExe
+        } else {
+            Join-Path $ProjectRoot $RequestedRuntimeExe
+        }
+        $resolved = [System.IO.Path]::GetFullPath($candidate)
+        if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+            throw "petdesk_runtime_release_exe_not_found: $resolved"
+        }
+        return $resolved
+    }
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $cargoConfig = Join-Path $ResolvedRuntimeDir ".cargo\config.toml"
+    if (Test-Path -LiteralPath $cargoConfig -PathType Leaf) {
+        $configText = Get-Content -LiteralPath $cargoConfig -Raw
+        if ($configText -match '(?m)^\s*target-dir\s*=\s*"([^"]+)"') {
+            $targetDir = $Matches[1]
+            if (-not [System.IO.Path]::IsPathRooted($targetDir)) {
+                $targetDir = Join-Path $ResolvedRuntimeDir $targetDir
+            }
+            $candidates.Add((Join-Path $targetDir "release\petdesk_runtime.exe"))
+        }
+    }
+
+    $candidates.Add((Join-Path $ResolvedRuntimeDir "src-tauri\target\release\petdesk_runtime.exe"))
+    $candidates.Add((Join-Path $ResolvedRuntimeDir "target\release\petdesk_runtime.exe"))
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        $resolved = [System.IO.Path]::GetFullPath($candidate)
+        if (Test-Path -LiteralPath $resolved -PathType Leaf) {
+            return $resolved
+        }
+    }
+
+    throw "petdesk_runtime_release_exe_not_found: pass -RuntimeExe or build petdesk-runtime release first"
 }
 
 function Normalize-BackendUrl {
@@ -239,6 +289,24 @@ function Invoke-PetdeskRuntimeDev {
     }
 }
 
+function Invoke-PetdeskRuntimeRelease {
+    param(
+        [string]$ResolvedRuntimeExe,
+        [System.Collections.IDictionary]$RuntimeEnv
+    )
+
+    $previousEnv = Set-ScopedEnv -Values $RuntimeEnv
+    try {
+        & $ResolvedRuntimeExe
+        if ($null -eq $LASTEXITCODE) {
+            return 0
+        }
+        return $LASTEXITCODE
+    } finally {
+        Restore-ScopedEnv -Previous $previousEnv
+    }
+}
+
 function Invoke-PetdeskMvpSmoke {
     param(
         [string]$ProjectRoot,
@@ -274,9 +342,20 @@ if (-not $scriptDir) {
 $projectRoot = Find-AkaneProjectRoot -StartDir $scriptDir
 $resolvedRuntimeDir = Resolve-PetdeskRuntimeDir -ProjectRoot $projectRoot -RequestedRuntimeDir $RuntimeDir
 $resolvedBackendUrl = Normalize-BackendUrl -RawUrl $BackendUrl -Port $BackendPort
+$resolvedRuntimeExe = $null
+if ($RuntimeMode -eq "Release") {
+    $resolvedRuntimeExe = Resolve-PetdeskRuntimeExe `
+        -ProjectRoot $projectRoot `
+        -ResolvedRuntimeDir $resolvedRuntimeDir `
+        -RequestedRuntimeExe $RuntimeExe
+}
 
 Write-AkanePetdeskStep "INFO" ("Akane project: {0}" -f $projectRoot)
 Write-AkanePetdeskStep "INFO" ("petdesk-runtime: {0}" -f $resolvedRuntimeDir)
+Write-AkanePetdeskStep "INFO" ("Runtime mode: {0}" -f $RuntimeMode)
+if ($resolvedRuntimeExe) {
+    Write-AkanePetdeskStep "INFO" ("petdesk-runtime exe: {0}" -f $resolvedRuntimeExe)
+}
 Write-AkanePetdeskStep "INFO" ("Backend: {0}" -f $resolvedBackendUrl)
 
 if ($CheckOnly) {
@@ -318,7 +397,7 @@ if ($null -eq $health) {
 
 if ($DryRun) {
     $runtimeEnvKeys = (($runtimeEnv.Keys | Sort-Object) -join ",")
-    Write-AkanePetdeskStep "OK" ("DryRun completed. Runtime env keys: {0}" -f $runtimeEnvKeys)
+    Write-AkanePetdeskStep "OK" ("DryRun completed. Runtime mode: {0}. Runtime env keys: {1}" -f $RuntimeMode, $runtimeEnvKeys)
     exit 0
 }
 
@@ -361,6 +440,11 @@ if ($SmokeOnly -or $StartupSmokeOnly -or $RunSmokeBeforeLaunch -or $RunStartupSm
     }
 }
 
-Write-AkanePetdeskStep "INFO" "Starting petdesk-runtime Tauri dev window..."
-$exitCode = Invoke-PetdeskRuntimeDev -ResolvedRuntimeDir $resolvedRuntimeDir -RuntimeEnv $runtimeEnv
+if ($RuntimeMode -eq "Release") {
+    Write-AkanePetdeskStep "INFO" "Starting petdesk-runtime release window..."
+    $exitCode = Invoke-PetdeskRuntimeRelease -ResolvedRuntimeExe $resolvedRuntimeExe -RuntimeEnv $runtimeEnv
+} else {
+    Write-AkanePetdeskStep "INFO" "Starting petdesk-runtime Tauri dev window..."
+    $exitCode = Invoke-PetdeskRuntimeDev -ResolvedRuntimeDir $resolvedRuntimeDir -RuntimeEnv $runtimeEnv
+}
 exit $exitCode
