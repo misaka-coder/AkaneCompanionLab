@@ -157,6 +157,7 @@ Useful checks:
 ```powershell
 .\scripts\start_petdesk_runtime_bundle.ps1 -CheckOnly
 .\scripts\start_petdesk_runtime_bundle.ps1 -DryRun -BackendUrl http://127.0.0.1:9999
+.\scripts\audit_petdesk_release_bundle.ps1
 ```
 
 The starter fetches `/pet/health`, whitelists petdesk runtime environment
@@ -242,6 +243,8 @@ $requiredSourceFiles = [ordered]@{
     "docs/petdesk_release_doctor_m56.md" = (Join-Path $projectRoot "docs\petdesk_release_doctor_m56.md")
     "docs/petdesk_release_acceptance_m57.md" = (Join-Path $projectRoot "docs\petdesk_release_acceptance_m57.md")
     "docs/petdesk_release_bundle_m58.md" = (Join-Path $projectRoot "docs\petdesk_release_bundle_m58.md")
+    "docs/petdesk_release_bundle_audit_m59.md" = (Join-Path $projectRoot "docs\petdesk_release_bundle_audit_m59.md")
+    "scripts/audit_petdesk_release_bundle.ps1" = (Join-Path $projectRoot "scripts\audit_petdesk_release_bundle.ps1")
 }
 
 foreach ($entry in $requiredSourceFiles.GetEnumerator()) {

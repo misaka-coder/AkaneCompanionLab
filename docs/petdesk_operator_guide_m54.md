@@ -251,6 +251,18 @@ then run the bundled starter:
 .\scripts\start_petdesk_runtime_bundle.ps1 -BackendUrl http://127.0.0.1:9999
 ```
 
+Audit an exported bundle:
+
+```powershell
+.\scripts\audit_petdesk_release_bundle.ps1 -BundleRoot .\reports\petdesk-release-bundles\petdesk-release-...
+```
+
+Or from inside the bundle:
+
+```powershell
+.\scripts\audit_petdesk_release_bundle.ps1
+```
+
 The bundle starter does not start the backend, stop processes, build
 Rust/Tauri, or touch QQ.
 

@@ -49,10 +49,12 @@ README.md
 manifest.json
 runtime/petdesk_runtime.exe
 scripts/start_petdesk_runtime_bundle.ps1
+scripts/audit_petdesk_release_bundle.ps1
 docs/petdesk_operator_guide_m54.md
 docs/petdesk_release_doctor_m56.md
 docs/petdesk_release_acceptance_m57.md
 docs/petdesk_release_bundle_m58.md
+docs/petdesk_release_bundle_audit_m59.md
 ```
 
 The bundle start script is intentionally source-independent:
@@ -104,6 +106,8 @@ The exporter:
 - refuses to overwrite an existing output path;
 - requires a non-empty `petdesk_runtime.exe`;
 - writes a manifest with relative bundle paths, file sizes, and SHA-256 hashes;
+- includes `scripts/audit_petdesk_release_bundle.ps1` so exported bundles can
+  verify themselves;
 - keeps generated output under ignored `reports/` by default;
 - does not include `.env`, databases, logs, user data, model caches, or source
   build directories;

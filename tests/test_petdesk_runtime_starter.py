@@ -328,9 +328,11 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("reports\\petdesk-release-bundles", source)
         self.assertIn("runtime/petdesk_runtime.exe", source)
         self.assertIn("scripts/start_petdesk_runtime_bundle.ps1", source)
+        self.assertIn("scripts/audit_petdesk_release_bundle.ps1", source)
         self.assertIn("manifest.json", source)
         self.assertIn("Get-FileHash -Algorithm SHA256", source)
         self.assertIn("petdesk_release_bundle_m58.md", source)
+        self.assertIn("petdesk_release_bundle_audit_m59.md", source)
         self.assertIn("bundle_output_path_already_exists", source)
         self.assertIn("unsafe_bundle_output_path", source)
         self.assertIn("Copy-RequiredFile", source)
@@ -376,6 +378,45 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("not a full Akane installer", guide)
         self.assertIn("export_petdesk_release_bundle.ps1", readme)
         self.assertIn("bundle", readme)
+
+    def test_release_bundle_audit_script_verifies_manifest_and_boundaries(self) -> None:
+        source = (ROOT / "scripts" / "audit_petdesk_release_bundle.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("AKANE_PETDESK_RELEASE_BUNDLE_AUDIT_OK", source)
+        self.assertIn("AKANE_PETDESK_RELEASE_BUNDLE_AUDIT_FAILED", source)
+        self.assertIn("akane.petdesk.releaseBundle.v1", source)
+        self.assertIn("manifest.json", source)
+        self.assertIn("runtime/petdesk_runtime.exe", source)
+        self.assertIn("scripts/start_petdesk_runtime_bundle.ps1", source)
+        self.assertIn("scripts/audit_petdesk_release_bundle.ps1", source)
+        self.assertIn("Get-FileHash -Algorithm SHA256", source)
+        self.assertIn("manifest_hash_mismatch", source)
+        self.assertIn("manifest_size_mismatch", source)
+        self.assertIn("file_not_in_manifest", source)
+        self.assertIn("forbidden_top_level_directory", source)
+        self.assertIn("forbidden_env_file", source)
+        self.assertIn("unexpected_exe", source)
+        self.assertNotIn("Stop-Process", source)
+        self.assertNotIn("Start-Process", source)
+        self.assertNotIn("Invoke-RestMethod", source)
+        self.assertNotIn("start_akane_next.ps1", source)
+        self.assertNotIn("uvicorn", source.lower())
+        self.assertNotIn("qq", source.lower())
+
+    def test_m59_doc_operator_guide_and_readme_record_bundle_audit(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_release_bundle_audit_m59.md").read_text(encoding="utf-8")
+        guide = (ROOT / "docs" / "petdesk_operator_guide_m54.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("audit_petdesk_release_bundle.ps1", doc)
+        self.assertIn("manifest hash/size", doc)
+        self.assertIn("AKANE_PETDESK_RELEASE_BUNDLE_AUDIT_OK", doc)
+        self.assertIn("read-only", doc)
+        self.assertIn("does not start the runtime", doc)
+        self.assertIn("audit_petdesk_release_bundle.ps1", guide)
+        self.assertIn("from inside the bundle", guide)
+        self.assertIn("audit_petdesk_release_bundle.ps1", readme)
+        self.assertIn("bundle 导出/审计", readme)
 
 
 if __name__ == "__main__":
