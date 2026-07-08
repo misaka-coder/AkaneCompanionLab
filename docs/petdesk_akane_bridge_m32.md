@@ -10,6 +10,7 @@ The bridge adds the runtime-facing endpoints:
 
 - `GET /pet/health`
 - `GET /pet/snapshot`
+- `GET /pet/resource-manifest`
 - `POST /pet/turn`
 
 It converts existing Akane character resources and final turn output into `petdesk-runtime` contracts:
@@ -88,6 +89,9 @@ Returns a small JSON object:
   "version": "akane-petdesk-bridge.m32",
   "snapshot": "/pet/snapshot",
   "turn": "/pet/turn",
+  "runtimeEnv": {
+    "VITE_PETDESK_RESOURCE_MANIFEST_URL": "/pet/resource-manifest"
+  },
   "resourceManifest": { "...": "runtime manifest summary or payload" }
 }
 ```
@@ -105,6 +109,18 @@ Query parameters:
 - optional `emotion`
 
 Returns a valid `pet.display.v1` envelope with a static portrait visual and safe `assetHandle`.
+
+### `GET /pet/resource-manifest`
+
+Query parameters:
+
+- `character_pack_id` or `characterPackId`
+
+Returns the same `petdesk-runtime` resource manifest shape used by the first
+`POST /pet/turn` stream `resource_manifest` event. The starter passes this
+endpoint to `petdesk-runtime` through `VITE_PETDESK_RESOURCE_MANIFEST_URL` so
+the initial `/pet/snapshot` static `assetHandle` can resolve before the first
+user turn.
 
 ### `POST /pet/turn`
 
@@ -298,3 +314,16 @@ Results:
 - `ruff format --check` for new files: OK.
 - `py_compile`: OK.
 - `git diff --check`: OK, with existing CRLF warnings on unrelated dirty files.
+
+## M45 Startup Manifest Note
+
+M45 found that `/pet/snapshot` could return a valid static `assetHandle` before
+the runtime had any resource manifest, causing the first paint to use the
+runtime placeholder image until the first `/pet/turn` stream delivered a
+`resource_manifest` event.
+
+The bridge now exposes `GET /pet/resource-manifest`, advertises it in
+`/pet/health.runtimeEnv.VITE_PETDESK_RESOURCE_MANIFEST_URL`, and the starter
+whitelists that env key for `petdesk-runtime`. This keeps the runtime from
+guessing file paths from handles while making first paint resolve real character
+assets.

@@ -22,7 +22,8 @@ $PetdeskRuntimeEnvKeys = @(
     "VITE_PETDESK_LIVE2D_MODEL_LAYOUT_PROFILE",
     "VITE_PETDESK_LIVE2D_MODEL_LAYOUT_JSON",
     "VITE_PETDESK_LIVE2D_MOTION_MAP_JSON",
-    "VITE_PETDESK_LIVE2D_EXPRESSION_MAP_JSON"
+    "VITE_PETDESK_LIVE2D_EXPRESSION_MAP_JSON",
+    "VITE_PETDESK_RESOURCE_MANIFEST_URL"
 )
 $MaxRuntimeEnvValueLength = 20000
 $script:PetdeskMvpSmokeExitCode = 0
@@ -147,7 +148,10 @@ function Get-PetdeskHealth {
 }
 
 function ConvertTo-SafePetdeskRuntimeEnv {
-    param([object]$RuntimeEnv)
+    param(
+        [object]$RuntimeEnv,
+        [string]$BackendUrl
+    )
 
     $safe = [ordered]@{}
     if ($null -eq $RuntimeEnv) {
@@ -167,6 +171,15 @@ function ConvertTo-SafePetdeskRuntimeEnv {
         $value = ([string]$property.Value).Trim()
         if (-not $value -or $value.Length -gt $MaxRuntimeEnvValueLength) {
             continue
+        }
+        if ($name -eq "VITE_PETDESK_RESOURCE_MANIFEST_URL" -and $value.StartsWith("/")) {
+            if ($value.StartsWith("//") -or -not $BackendUrl) {
+                continue
+            }
+            $value = "{0}{1}" -f $BackendUrl.TrimEnd("/"), $value
+            if ($value.Length -gt $MaxRuntimeEnvValueLength) {
+                continue
+            }
         }
         $safe[$name] = $value
     }
@@ -283,7 +296,7 @@ if ($null -eq $health) {
     } else {
         $null
     }
-    $safeEnv = ConvertTo-SafePetdeskRuntimeEnv -RuntimeEnv $healthRuntimeEnv
+    $safeEnv = ConvertTo-SafePetdeskRuntimeEnv -RuntimeEnv $healthRuntimeEnv -BackendUrl $resolvedBackendUrl
     foreach ($key in $safeEnv.Keys) {
         $runtimeEnv[$key] = $safeEnv[$key]
     }

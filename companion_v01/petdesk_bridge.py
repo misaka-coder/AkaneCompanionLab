@@ -276,6 +276,7 @@ def build_petdesk_health_payload(character_resources: Any, character_pack_id: An
         "snapshot": "/pet/snapshot",
         "turn": "/pet/turn",
         "resourceManifest": {
+            "endpoint": "/pet/resource-manifest",
             "staticImageCount": len(bundle.runtime_manifest.get("staticImages") or {}),
             "characterPackId": bundle.character_pack_id,
             "prefix": PETDESK_CHARACTER_PACK_PREFIX,
@@ -294,6 +295,7 @@ def build_petdesk_runtime_env() -> dict[str, str]:
             ensure_ascii=False,
             separators=(",", ":"),
         ),
+        "VITE_PETDESK_RESOURCE_MANIFEST_URL": "/pet/resource-manifest",
     }
 
 

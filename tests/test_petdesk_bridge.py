@@ -173,6 +173,7 @@ class PetdeskBridgeTests(unittest.TestCase):
 
         health = client.get("/pet/health?character_pack_id=mika_pack")
         snapshot = client.get("/pet/snapshot?character_pack_id=mika_pack")
+        resource_manifest = client.get("/pet/resource-manifest?character_pack_id=mika_pack")
         turn = client.post(
             "/pet/turn",
             json={
@@ -188,7 +189,12 @@ class PetdeskBridgeTests(unittest.TestCase):
 
         self.assertEqual(health.status_code, 200)
         self.assertTrue(health.json()["ok"])
+        self.assertEqual(health.json()["resourceManifest"]["endpoint"], "/pet/resource-manifest")
         self.assertEqual(health.json()["resourceManifest"]["staticImageCount"], 2)
+        self.assertEqual(
+            health.json()["runtimeEnv"]["VITE_PETDESK_RESOURCE_MANIFEST_URL"],
+            "/pet/resource-manifest",
+        )
         self.assertEqual(health.json()["runtimeEnv"]["VITE_PETDESK_INTERACTION_PROFILE"], "default")
         profile_json = health.json()["runtimeEnv"]["VITE_PETDESK_INTERACTION_PROFILE_JSON"]
         profile = json.loads(profile_json)
@@ -197,6 +203,8 @@ class PetdeskBridgeTests(unittest.TestCase):
         self.assertTrue(profile["nativeHitTest"]["includeControls"])
         self.assertEqual(snapshot.status_code, 200)
         self.assertEqual(snapshot.json()["schemaVersion"], PET_DISPLAY_SCHEMA_VERSION)
+        self.assertEqual(resource_manifest.status_code, 200)
+        self.assertIn(snapshot.json()["visual"]["assetHandle"], resource_manifest.json()["staticImages"])
         self.assertEqual(turn.status_code, 200)
         self.assertIn("event: resource_manifest", turn.text)
         self.assertIn("event: display", turn.text)
@@ -359,8 +367,10 @@ class PetdeskBridgeTests(unittest.TestCase):
             {
                 "VITE_PETDESK_INTERACTION_PROFILE",
                 "VITE_PETDESK_INTERACTION_PROFILE_JSON",
+                "VITE_PETDESK_RESOURCE_MANIFEST_URL",
             },
         )
+        self.assertEqual(runtime_env["VITE_PETDESK_RESOURCE_MANIFEST_URL"], "/pet/resource-manifest")
         self.assertLess(len(runtime_env["VITE_PETDESK_INTERACTION_PROFILE_JSON"]), 20000)
         self.assertNotIn(str(self.characters_dir), json.dumps(runtime_env, ensure_ascii=False))
 

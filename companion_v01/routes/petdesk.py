@@ -93,6 +93,12 @@ def build_petdesk_router(
         )
         return JSONResponse(envelope, headers={"Cache-Control": "no-store"})
 
+    @router.get("/pet/resource-manifest")
+    async def pet_resource_manifest(request: Request) -> JSONResponse:
+        character_pack_id = _character_pack_id_from_request(request)
+        bundle = build_petdesk_resource_bundle(_character_resources(), character_pack_id)
+        return JSONResponse(bundle.runtime_manifest, headers={"Cache-Control": "no-store"})
+
     @router.get("/audio/petdesk/{audio_token}")
     async def petdesk_audio_content(audio_token: str) -> Response:
         item = audio_registry.get(audio_token)
