@@ -151,6 +151,23 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertNotIn("start_akane_next.ps1 @", source)
         self.assertNotIn("start_akane_petdesk.ps1", source)
 
+    def test_release_wrapper_forces_release_mode_and_optional_build(self) -> None:
+        source = (ROOT / "start_akane_petdesk_release.ps1").read_text(encoding="utf-8")
+        batch = (ROOT / "start_akane_petdesk_release.bat").read_text(encoding="utf-8")
+
+        self.assertIn("BuildFirst", source)
+        self.assertIn("SkipBuildWarmup", source)
+        self.assertIn("scripts\\build_petdesk_runtime_release.ps1", source)
+        self.assertIn("scripts\\start_petdesk_runtime.ps1", source)
+        self.assertIn('RuntimeMode = "Release"', source)
+        self.assertNotIn('RuntimeMode = "Dev"', source)
+        self.assertIn("RuntimeExe", source)
+        self.assertIn("StartupSmokeOnly", source)
+        self.assertIn("RunStartupSmokeBeforeLaunch", source)
+        self.assertIn("SkipStartupSmoke", source)
+        self.assertIn("start_akane_petdesk_release.ps1", batch)
+        self.assertNotIn("scripts\\start_petdesk_runtime.ps1", batch)
+
     def test_m52_doc_records_release_build_script(self) -> None:
         doc = (ROOT / "docs" / "petdesk_release_build_script_m52.md").read_text(encoding="utf-8")
 
@@ -161,6 +178,18 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("DryRun", doc)
         self.assertIn("SkipWarmup", doc)
         self.assertIn("does not depend on memory", doc)
+
+    def test_m53_doc_records_release_start_entry(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_release_start_entry_m53.md").read_text(encoding="utf-8")
+
+        self.assertIn("start_akane_petdesk_release.ps1", doc)
+        self.assertIn("start_akane_petdesk_release.bat", doc)
+        self.assertIn("BuildFirst", doc)
+        self.assertIn("SkipBuildWarmup", doc)
+        self.assertIn("RuntimeMode = Release", doc)
+        self.assertIn("do not replace", doc)
+        self.assertIn("without changing the default", doc)
+        self.assertIn("development launcher", doc)
 
 
 if __name__ == "__main__":
