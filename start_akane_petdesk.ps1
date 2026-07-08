@@ -9,6 +9,7 @@ param(
     [switch]$DryRun,
     [switch]$SmokeOnly,
     [switch]$StartupSmokeOnly,
+    [switch]$SkipStartupSmoke,
     [switch]$RunSmokeBeforeLaunch,
     [switch]$RunStartupSmokeBeforeLaunch,
     [string]$SmokeText = "测试一下 petdesk MVP 语音链路。",
@@ -44,6 +45,9 @@ if ($SmokeOnly) {
 }
 if ($StartupSmokeOnly) {
     $parameters.StartupSmokeOnly = $true
+}
+if ($SkipStartupSmoke) {
+    $parameters.SkipStartupSmoke = $true
 }
 if ($RunSmokeBeforeLaunch) {
     $parameters.RunSmokeBeforeLaunch = $true

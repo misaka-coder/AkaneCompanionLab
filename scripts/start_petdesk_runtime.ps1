@@ -9,6 +9,7 @@ param(
     [switch]$DryRun,
     [switch]$SmokeOnly,
     [switch]$StartupSmokeOnly,
+    [switch]$SkipStartupSmoke,
     [switch]$RunSmokeBeforeLaunch,
     [switch]$RunStartupSmokeBeforeLaunch,
     [string]$SmokeText = "测试一下 petdesk MVP 语音链路。",
@@ -331,8 +332,14 @@ if (($SmokeOnly -or $StartupSmokeOnly) -and ($RunSmokeBeforeLaunch -or $RunStart
     throw "choose either a smoke-only mode or a smoke-before-launch mode"
 }
 
-if ($SmokeOnly -or $StartupSmokeOnly -or $RunSmokeBeforeLaunch -or $RunStartupSmokeBeforeLaunch) {
-    $startupOnlySmoke = $StartupSmokeOnly -or $RunStartupSmokeBeforeLaunch
+$runImplicitStartupSmoke = -not $SkipStartupSmoke `
+    -and -not $SmokeOnly `
+    -and -not $StartupSmokeOnly `
+    -and -not $RunSmokeBeforeLaunch `
+    -and -not $RunStartupSmokeBeforeLaunch
+
+if ($SmokeOnly -or $StartupSmokeOnly -or $RunSmokeBeforeLaunch -or $RunStartupSmokeBeforeLaunch -or $runImplicitStartupSmoke) {
+    $startupOnlySmoke = $StartupSmokeOnly -or $RunStartupSmokeBeforeLaunch -or $runImplicitStartupSmoke
     $smokeName = if ($startupOnlySmoke) { "petdesk startup smoke" } else { "petdesk MVP smoke" }
     Write-AkanePetdeskStep "INFO" ("Running {0}..." -f $smokeName)
     Invoke-PetdeskMvpSmoke `

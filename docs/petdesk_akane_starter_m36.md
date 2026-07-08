@@ -140,6 +140,10 @@ Useful options:
 .\start_akane_petdesk.ps1 -SkipBackend -BackendUrl http://127.0.0.1:10033 -DryRun
 ```
 
+M48 update: normal launch now runs the M47 startup-only smoke before opening
+the runtime window. Use `-SkipStartupSmoke` only when intentionally debugging a
+broken startup bridge or testing runtime fallback behavior.
+
 This runs `pnpm tauri:dev`, so it is a source-development starter. Release
 packaging is a later decision because Vite `VITE_*` values are startup/build
 inputs for the frontend bundle.
