@@ -8,7 +8,9 @@ param(
     [switch]$CheckOnly,
     [switch]$DryRun,
     [switch]$SmokeOnly,
+    [switch]$StartupSmokeOnly,
     [switch]$RunSmokeBeforeLaunch,
+    [switch]$RunStartupSmokeBeforeLaunch,
     [string]$SmokeText = "测试一下 petdesk MVP 语音链路。",
     [int]$HealthTimeoutSeconds = 45
 )
@@ -240,7 +242,8 @@ function Invoke-PetdeskMvpSmoke {
     param(
         [string]$ProjectRoot,
         [string]$BaseUrl,
-        [string]$Text
+        [string]$Text,
+        [switch]$StartupOnly
     )
 
     $python = Get-Command python -ErrorAction SilentlyContinue
@@ -253,7 +256,12 @@ function Invoke-PetdeskMvpSmoke {
         throw "petdesk_mvp_smoke_not_found"
     }
 
-    & $python.Source $smokeScript --base-url $BaseUrl --text $Text
+    $arguments = @($smokeScript, "--base-url", $BaseUrl, "--text", $Text)
+    if ($StartupOnly) {
+        $arguments += "--startup-only"
+    }
+
+    & $python.Source @arguments
     $script:PetdeskMvpSmokeExitCode = $LASTEXITCODE
 }
 
@@ -313,15 +321,35 @@ if ($DryRun) {
     exit 0
 }
 
-if ($SmokeOnly -or $RunSmokeBeforeLaunch) {
-    Write-AkanePetdeskStep "INFO" "Running petdesk MVP smoke..."
-    Invoke-PetdeskMvpSmoke -ProjectRoot $projectRoot -BaseUrl $resolvedBackendUrl -Text $SmokeText
+if ($SmokeOnly -and $StartupSmokeOnly) {
+    throw "choose either SmokeOnly or StartupSmokeOnly"
+}
+if ($RunSmokeBeforeLaunch -and $RunStartupSmokeBeforeLaunch) {
+    throw "choose either RunSmokeBeforeLaunch or RunStartupSmokeBeforeLaunch"
+}
+if (($SmokeOnly -or $StartupSmokeOnly) -and ($RunSmokeBeforeLaunch -or $RunStartupSmokeBeforeLaunch)) {
+    throw "choose either a smoke-only mode or a smoke-before-launch mode"
+}
+
+if ($SmokeOnly -or $StartupSmokeOnly -or $RunSmokeBeforeLaunch -or $RunStartupSmokeBeforeLaunch) {
+    $startupOnlySmoke = $StartupSmokeOnly -or $RunStartupSmokeBeforeLaunch
+    $smokeName = if ($startupOnlySmoke) { "petdesk startup smoke" } else { "petdesk MVP smoke" }
+    Write-AkanePetdeskStep "INFO" ("Running {0}..." -f $smokeName)
+    Invoke-PetdeskMvpSmoke `
+        -ProjectRoot $projectRoot `
+        -BaseUrl $resolvedBackendUrl `
+        -Text $SmokeText `
+        -StartupOnly:$startupOnlySmoke
     $smokeExitCode = $script:PetdeskMvpSmokeExitCode
     if ($smokeExitCode -ne 0) {
         exit $smokeExitCode
     }
-    if ($SmokeOnly) {
-        Write-AkanePetdeskStep "OK" "SmokeOnly completed. No runtime process was launched."
+    if ($SmokeOnly -or $StartupSmokeOnly) {
+        if ($StartupSmokeOnly) {
+            Write-AkanePetdeskStep "OK" "StartupSmokeOnly completed. No runtime process was launched."
+        } else {
+            Write-AkanePetdeskStep "OK" "SmokeOnly completed. No runtime process was launched."
+        }
         exit 0
     }
 }

@@ -38,7 +38,10 @@ class SseEvent:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run a live Akane /pet MVP smoke: health, turn stream, and optional TTS audio fetch.",
+        description=(
+            "Run a live Akane /pet smoke. Default mode checks startup visual, turn stream, "
+            "and optional TTS audio fetch."
+        ),
     )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Akane backend base URL.")
     parser.add_argument("--text", default=DEFAULT_TEXT, help="Turn text sent to /pet/turn.")
@@ -65,6 +68,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Allow the smoke to pass without TTS audio. This is not full audio acceptance.",
     )
+    parser.add_argument(
+        "--startup-only",
+        action="store_true",
+        help="Only validate first-paint startup manifest/snapshot/image resolution; do not post /pet/turn.",
+    )
     return parser
 
 
@@ -76,6 +84,7 @@ def run_smoke(
     require_audio: bool = True,
     max_audio_bytes: int = DEFAULT_MAX_AUDIO_BYTES,
     max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
+    startup_only: bool = False,
 ) -> dict[str, Any]:
     normalized_base_url = normalize_base_url(base_url)
     prompt = str(text or "").strip() or DEFAULT_TEXT
@@ -87,6 +96,17 @@ def run_smoke(
         timeout_seconds=timeout_seconds,
         max_image_bytes=max_image_bytes,
     )
+    base_summary = {
+        "status": "ok",
+        "mode": "startup_only" if startup_only else "mvp_turn",
+        "base_url": normalized_base_url,
+        "bridge_version": str(health.get("version") or ""),
+        "default_character_pack_id": str(health.get("defaultCharacterPackId") or ""),
+        "character_pack_count": len(health.get("characterPacks") or []),
+        **startup_summary,
+    }
+    if startup_only:
+        return base_summary
 
     turn_payload = {
         "text": prompt,
@@ -131,16 +151,11 @@ def run_smoke(
     )
 
     return {
-        "status": "ok",
-        "base_url": normalized_base_url,
-        "bridge_version": str(health.get("version") or ""),
-        "default_character_pack_id": str(health.get("defaultCharacterPackId") or ""),
-        "character_pack_count": len(health.get("characterPacks") or []),
+        **base_summary,
         "event_order": event_order,
         "display_count": len(displays),
         "resource_manifest_count": len(manifests),
         "speech_chars": len(speech),
-        **startup_summary,
         **audio_summary,
     }
 
@@ -484,6 +499,7 @@ def has_control_or_whitespace(value: str) -> bool:
 
 def main() -> int:
     args = build_arg_parser().parse_args()
+    marker_prefix = "AKANE_PETDESK_STARTUP_SMOKE" if args.startup_only else "AKANE_PETDESK_MVP_SMOKE"
     try:
         summary = run_smoke(
             base_url=args.base_url,
@@ -492,13 +508,14 @@ def main() -> int:
             require_audio=not args.no_require_audio,
             max_audio_bytes=max(1, args.max_audio_bytes),
             max_image_bytes=max(1, args.max_image_bytes),
+            startup_only=args.startup_only,
         )
     except PetdeskSmokeError as exc:
-        print("AKANE_PETDESK_MVP_SMOKE_FAILED")
+        print(f"{marker_prefix}_FAILED")
         print(json.dumps({"status": "error", "reason": exc.reason, "message": exc.message}, ensure_ascii=False))
         return 1
 
-    print("AKANE_PETDESK_MVP_SMOKE_OK")
+    print(f"{marker_prefix}_OK")
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0
 

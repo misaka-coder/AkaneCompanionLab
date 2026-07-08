@@ -22,7 +22,10 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("Invoke-PetdeskMvpSmoke", source)
         self.assertIn("run_petdesk_mvp_smoke.py", source)
         self.assertIn("SmokeOnly completed", source)
+        self.assertIn("StartupSmokeOnly completed", source)
         self.assertIn("RunSmokeBeforeLaunch", source)
+        self.assertIn("RunStartupSmokeBeforeLaunch", source)
+        self.assertIn("--startup-only", source)
         self.assertIn("Restore-ScopedEnv", source)
 
         allowed_keys = {
@@ -50,7 +53,9 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertNotIn("start_petdesk_runtime.ps1", root_launcher)
         self.assertIn("scripts\\start_petdesk_runtime.ps1", petdesk_script)
         self.assertIn("SmokeOnly", petdesk_script)
+        self.assertIn("StartupSmokeOnly", petdesk_script)
         self.assertIn("RunSmokeBeforeLaunch", petdesk_script)
+        self.assertIn("RunStartupSmokeBeforeLaunch", petdesk_script)
         self.assertIn("scripts\\start_petdesk_runtime.ps1", petdesk_bat)
 
     def test_m36_doc_records_transition_boundary(self) -> None:
@@ -79,6 +84,15 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("/pet/snapshot.visual.assetHandle", doc)
         self.assertIn("staticImages[assetHandle]", doc)
         self.assertIn("image/*", doc)
+
+    def test_m47_doc_records_startup_only_smoke(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_startup_only_smoke_m47.md").read_text(encoding="utf-8")
+
+        self.assertIn("--startup-only", doc)
+        self.assertIn("StartupSmokeOnly", doc)
+        self.assertIn("RunStartupSmokeBeforeLaunch", doc)
+        self.assertIn("does not post", doc)
+        self.assertIn("AKANE_PETDESK_STARTUP_SMOKE_OK", doc)
 
 
 if __name__ == "__main__":

@@ -66,6 +66,17 @@ class PetdeskMvpSmokeTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.reason, "startup_asset_not_in_manifest")
 
+    def test_startup_only_smoke_does_not_post_turn_or_require_audio(self) -> None:
+        with SmokeServer(audio_enabled=False) as server:
+            summary = run_smoke(base_url=server.base_url, text="hi", timeout_seconds=5, startup_only=True)
+
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["mode"], "startup_only")
+        self.assertEqual(summary["startup_asset_handle"], STATIC_HANDLE)
+        self.assertNotIn("event_order", summary)
+        self.assertNotIn("audio_present", summary)
+        self.assertEqual(SmokeHandler.turn_count, 0)
+
 
 class SmokeServer:
     def __init__(self, *, audio_enabled: bool, startup_mode: str = "ok") -> None:
@@ -78,6 +89,7 @@ class SmokeServer:
     def __enter__(self) -> SmokeServer:
         SmokeHandler.audio_enabled = self.audio_enabled
         SmokeHandler.startup_mode = self.startup_mode
+        SmokeHandler.turn_count = 0
         self.thread.start()
         return self
 
@@ -90,6 +102,7 @@ class SmokeServer:
 class SmokeHandler(BaseHTTPRequestHandler):
     audio_enabled = True
     startup_mode = "ok"
+    turn_count = 0
     audio_bytes = b"fake-mp3-bytes"
     image_bytes = b"\x89PNG\r\n\x1a\nfake-image-bytes"
 
@@ -175,6 +188,7 @@ class SmokeHandler(BaseHTTPRequestHandler):
         if self.path != "/pet/turn":
             self.send_error(404)
             return
+        self.__class__.turn_count += 1
         length = int(self.headers.get("Content-Length", "0") or "0")
         if length:
             self.rfile.read(length)
