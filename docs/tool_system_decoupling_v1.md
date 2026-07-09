@@ -164,7 +164,7 @@ INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多�
 
 - **5c 已完成**：`tool_decision_eval` 的 live provider 已从 `web_search` 专用泛化为 `web_search` / `memory` / `all` 三种 toolset。`scripts/tools/run_tool_decision_eval.py --live-llm --toolset memory|all` 现在会发送对应 native schemas 和最小路由提示；评测逻辑同时识别公开 `tool_call` 与内部 `_native_tool_call` 载体，避免 4a 后 native 结果被误判成 no-call。最近一次实测：`--live-llm --toolset memory --mode both --limit 5` 为 native/legacy 双 1.0；`--live-llm --toolset all --mode native --limit 10` 为 1.0、fallback=0、native_degraded=0。生产默认 allowlist 仍未扩大。
 
-- **5e 已完成（激活 = 扩默认 allowlist）**：默认 `NATIVE_TOOL_DECISION_ALLOWLIST` 由 `web_search` 扩为 `web_search,retrieve_memory,read_memory_timeline`，把已过 live acceptance gate 的低风险只读记忆工具纳入 native 允许清单。**总开关 `ENABLE_NATIVE_TOOL_DECISION` 默认仍为 `False`**：allowlist 只决定"允许哪些"，是否真的走 native 仍取决于总开关（通常由 env 控制）。总开关开启后，这三个工具走 provider native schema 并从 legacy prompt 同名说明中排除；未验证 provider/model 或总开关关闭时，全部回退 legacy JSON `tool_call`。写/控制类工具不在 allowlist 内。下一批工具（`inspect_attachment`/`list_workspace`/`load_character_context`）各有路径/附件/动态 schema 边界，按同一 5b→5d 流程逐个推进，不在本步。
+- **5e 已完成（激活 = 扩默认 allowlist）**：默认 `NATIVE_TOOL_DECISION_ALLOWLIST` 由 `web_search` 扩为 `web_search,retrieve_memory,read_memory_timeline`，把已过 live acceptance gate 的低风险只读记忆工具纳入 native 允许清单。后续又纳入 `list_reminders,check_inventory,inspect_media_info`。**总开关 `ENABLE_NATIVE_TOOL_DECISION` 现已默认 `True`**：allowlist 内、且 provider/model 能力档案已验证的工具走 provider native schema，并从 legacy prompt 同名说明中排除；未验证 provider/model、显式关闭总开关、或未进入 allowlist 的工具仍回退 legacy JSON `tool_call`。写/控制/路径类工具不因默认开关绕过原有确认与执行边界。
 
 - **5d 已完成**：真实 engine smoke / acceptance gate 从 `web_search` 泛化到 `memory`，验证全链路（native 决策 → `_native_tool_call` → `ToolInvocation(source=native)` → execute → 最终表现回复）。`run_native_web_search_smoke.py --toolset memory` 用确定性 fixture handler（`SmokeRetrieveMemoryHandler` / `SmokeReadMemoryTimelineHandler`，罐头记忆、不读真实记忆库、不写盘）跑真实 `AkaneMemoryEngine` 一个回合；`run_native_web_search_acceptance.py --toolset memory` 复用同一 gate（`native_tool_call_extracted>0`、`tool_event>0`、流式有 `assistant_working`、fallback=0、最终回复非空 speech）。`web_search` 默认行为不变。新增 `tests/test_native_tool_smoke.py` 覆盖 toolset 映射 / fixture 执行的确定性部分；live `--smoke` 需真实模型，由人触发。
 
@@ -325,9 +325,9 @@ python scripts/tools/run_native_web_search_acceptance.py --live-llm --smoke --re
 
 **安全顺序（不能反，反了工具会断）**：
 
-- **N1 — 全工具装 native 门（确定性，零额度）**：给每个 handler 产出 native schema（通用生成器已支持，并已改由 `capcore-provider-openai` 负责 OpenAI envelope / name mapping / tool_call parsing；精度处补 `input_schema`；描述已扫过基本无 tool_call 污染，仅 `compose_file` 一句待清）。纯新增，开关仍默认关 → 零行为变化。验收：每个工具都能产出合法 native spec + 单测。
+- **N1 — 全工具装 native 门（确定性，零额度）**：给每个 handler 产出 native schema（通用生成器已支持，并已改由 `capcore-provider-openai` 负责 OpenAI envelope / name mapping / tool_call parsing；精度处补 `input_schema`；描述已扫过基本无 tool_call 污染，仅 `compose_file` 一句待清）。这是当时的纯新增、默认关阶段；后续默认开关已翻到 native-first。验收：每个工具都能产出合法 native spec + 单测。
 - **N2 — 接 per-client 分发（确定性，零额度）**：native tools 列表由 `CapabilitySelection` 决定，每个客户端/场景只发其工具子集。验收：native 子集 == legacy capability 子集，按 mode 对齐。
-- **N3 — 翻转优先级：native 为主（需 live，烧额度的一步）**：总开关默认开、allowlist 放开到全部、native 按 capability 子集下发；`tool_call` 字段保留但降为回退。验收：跑 acceptance gate 全工具集——INV-1 表达层完好、fallback 率低、按客户端补路由提示（仿 5c）让选工具质量达标。**这是"commit"那一刻,行为真正改变,要真机验证。**
+- **N3 — 翻转优先级：native 为主（分阶段）**：总开关默认开，native 按 capability 子集下发；`tool_call` 字段保留但降为回退。当前已经完成默认开关翻转，但 allowlist 仍只放已验证/低风险集合；放开到全部工具仍需要 acceptance gate。验收：跑 acceptance gate 全工具集——INV-1 表达层完好、fallback 率低、按客户端补路由提示（仿 5c）让选工具质量达标。
 - **N4 — 收尾（最后,且只在 N3 稳定后）**：二选一——①保留一层薄 `tool_call` 当**文档化回退**（换模型也稳，行业常见）；②彻底从表达 JSON 删除 `tool_call`（Sakura 式纯原生，锁定需支持 native 的 provider）。作者倾向最终走 ②"不维护 tool_call"，但**必须是最后一步**，N1–N3 全绿后再动。
 
 **不变的边界**：写/控制/媒体工具的**执行与权限确认逻辑完全不变**——native 只改"模型怎么表达调用"，不改 execute、不绕过确认。表达层（emotion/persona/scene/segments…）是 Akane 自己的产品域，**没有行业标准、也不需要**，继续按角色需要演化；唯一被行业标准约束的只有"工具调用"这一件，N1–N4 就是把它掰回标准。

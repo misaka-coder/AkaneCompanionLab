@@ -9,12 +9,17 @@ from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.final_output_engine import normalize_final_output
 from companion_v01.llm_runtime import LLMRuntime, ModelBundle
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
-from companion_v01.tool_invocation import NATIVE_OPENAI, NATIVE_TOOL_CALL_FIELD, TOOL_INVOCATION_ID_FIELD, TOOL_SOURCE_FIELD
+from companion_v01.tool_invocation import (
+    NATIVE_OPENAI,
+    NATIVE_TOOL_CALL_FIELD,
+    TOOL_INVOCATION_ID_FIELD,
+    TOOL_SOURCE_FIELD,
+)
 from companion_v01.tool_runtime import TOOL_METADATA_BY_TYPE, ToolExecutionResult
 
 
 class NativeWebSearchToolingTests(unittest.TestCase):
-    def test_native_web_search_schema_is_default_off(self) -> None:
+    def test_native_web_search_schema_respects_global_disable(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
         try:
@@ -27,6 +32,28 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 ),
                 [],
             )
+        finally:
+            config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
+
+    def test_native_tool_decision_is_default_on_for_verified_profiles(self) -> None:
+        from config import Settings
+
+        original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
+        original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        try:
+            config.ENABLE_NATIVE_TOOL_DECISION = bool(Settings.model_fields["ENABLE_NATIVE_TOOL_DECISION"].default)
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search"
+
+            plan = tool_orchestration_engine.build_native_tool_decision_plan(
+                {"web_search": object()},
+                allow_tool_call=True,
+                provider_supports_native_tools=True,
+            )
+
+            self.assertTrue(Settings.model_fields["ENABLE_NATIVE_TOOL_DECISION"].default)
+            self.assertTrue(plan.enabled)
+            self.assertEqual(plan.reason, "verified_native_tools")
         finally:
             config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
             config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
@@ -199,9 +226,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
             self.assertTrue(plan.enabled)
             names = [tool["function"]["name"] for tool in plan.tools]
-            self.assertEqual(
-                set(names), {"web_search", "retrieve_memory", "read_memory_timeline"}
-            )
+            self.assertEqual(set(names), {"web_search", "retrieve_memory", "read_memory_timeline"})
             # Native-provided tools are excluded from the legacy prompt; the
             # write tool (compose_file) is not in the allowlist, so it stays legacy.
             self.assertEqual(
@@ -390,7 +415,9 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
     def test_verified_profile_completion_payload_sends_native_tools(self) -> None:
         runtime = LLMRuntime()
-        bundle = ModelBundle(client=FakeClient("openai", base_url="https://api.deepseek.com/v1"), model="deepseek-v4-flash")
+        bundle = ModelBundle(
+            client=FakeClient("openai", base_url="https://api.deepseek.com/v1"), model="deepseek-v4-flash"
+        )
         schema = tool_orchestration_engine.native_web_search_tool_schema()
 
         payload = runtime._build_completion_kwargs(
@@ -694,15 +721,13 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 [{"type": "web_search_completed", "status": "unavailable", "reason": "timeout"}]
             )
         )
-        self.assertFalse(
-            engine._should_stop_after_tool_events(
-                [{"type": "web_search_completed", "status": "ok"}]
-            )
-        )
+        self.assertFalse(engine._should_stop_after_tool_events([{"type": "web_search_completed", "status": "ok"}]))
 
     def test_tool_unavailable_stop_reason_tells_model_not_to_retry(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        engine._merge_extra_user_context = AkaneMemoryEngine._merge_extra_user_context.__get__(engine, AkaneMemoryEngine)
+        engine._merge_extra_user_context = AkaneMemoryEngine._merge_extra_user_context.__get__(
+            engine, AkaneMemoryEngine
+        )
 
         context = engine._build_tool_round_extra_context(
             turn_extra_user_context="",
@@ -721,11 +746,7 @@ class NativeDescriptionSanitizationTests(unittest.TestCase):
     def test_strip_removes_envelope_clauses_keeps_semantics(self) -> None:
         from companion_v01.native_tool_schema import _strip_legacy_envelope_clauses
 
-        text = (
-            "- demo：当用户要做某事时使用。"
-            "格式为 {\"type\":\"demo\",\"q\":\"x\"}。"
-            "q 要写具体内容，不要写空泛句。"
-        )
+        text = '- demo：当用户要做某事时使用。格式为 {"type":"demo","q":"x"}。q 要写具体内容，不要写空泛句。'
         cleaned = _strip_legacy_envelope_clauses(text)
         self.assertNotIn("格式为", cleaned)
         self.assertNotIn('{"type"', cleaned)
@@ -738,7 +759,7 @@ class NativeDescriptionSanitizationTests(unittest.TestCase):
 
         # If a description is *only* an envelope clause, fall back to the original
         # rather than emit an empty tool description.
-        only_envelope = "格式为 {\"type\":\"x\"}。"
+        only_envelope = '格式为 {"type":"x"}。'
         self.assertEqual(_strip_legacy_envelope_clauses(only_envelope), only_envelope)
 
     def test_fallback_handler_descriptions_have_no_legacy_envelope(self) -> None:
@@ -853,9 +874,7 @@ def build_native_context_engine(*, selected_tool_names: tuple[str, ...]) -> Akan
         chat_supports_native_tools=lambda: True,
         record_metric=lambda _name: None,
     )
-    engine._get_prompt_profile_registry = lambda: SimpleNamespace(
-        resolve=lambda _client_context: FakePromptProfile()
-    )
+    engine._get_prompt_profile_registry = lambda: SimpleNamespace(resolve=lambda _client_context: FakePromptProfile())
     engine._get_prompt_builder = lambda: FakePromptBuilder()
     engine._get_user_runtime_projection = lambda _profile_user_id: {
         "extra_bgm_tracks": [],
@@ -885,9 +904,7 @@ def build_native_context_engine(*, selected_tool_names: tuple[str, ...]) -> Akan
     engine._build_extra_context_audit_sections = lambda _candidates: []
     engine._resolve_capability_selection = lambda **_kwargs: selection
     engine._resolve_tool_handlers = lambda **_kwargs: {
-        name: handlers[name]
-        for name in selected_tool_names
-        if name in handlers
+        name: handlers[name] for name in selected_tool_names if name in handlers
     }
     return engine
 

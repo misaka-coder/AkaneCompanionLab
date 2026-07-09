@@ -193,19 +193,17 @@ class Settings(BaseSettings):
     # === 工具调用 & 后台任务 ===
     # 同轮对话最大工具调用轮次（防止循环）
     MAX_TOOL_ROUNDS: int = 3
-    # native tool 通道总开关。已在已验证的 provider/model 上跑通（见
-    # docs/tool_system_decoupling_v1.md），但默认仍关闭、fail-closed：关闭时下面
-    # 的 allowlist 不生效，所有工具仍走 legacy JSON tool_call。开启（通常经 env）
-    # 后，allowlist 内、且 (host, model) 能力档案已验证的工具才走 provider native schema。
-    ENABLE_NATIVE_TOOL_DECISION: bool = False
+    # native tool 通道总开关。默认开启 native-first：allowlist 内、且 (host, model)
+    # 能力档案已验证的工具走 provider native schema；未知/未验证 provider 会结构化
+    # 回退 legacy JSON tool_call。需要保守兼容时可经 env 显式关闭。
+    ENABLE_NATIVE_TOOL_DECISION: bool = True
     # native tool 允许列表，逗号分隔。低风险只读工具（静态 schema、无写、参数无绝对路径）：
     # web_search（3d live gate）、retrieve_memory / read_memory_timeline（5d live gate）、
     # list_reminders / check_inventory / inspect_media_info（6b：确定性 dry-run 量尺，
     # native 链路已由 memory 5d 证明，未单独跑 live smoke）。写/控制/路径类工具不在此列。
-    # 注意：这只是"允许"，是否真的走 native 仍取决于上面的总开关。
+    # 注意：这只是"允许"，是否真的走 native 仍取决于总开关和 provider/model 能力档案。
     NATIVE_TOOL_DECISION_ALLOWLIST: str = (
-        "web_search,retrieve_memory,read_memory_timeline,"
-        "list_reminders,check_inventory,inspect_media_info"
+        "web_search,retrieve_memory,read_memory_timeline,list_reminders,check_inventory,inspect_media_info"
     )
     # 额外允许的 OpenAI-compatible native tools provider/model，逗号分隔。
     # 格式：host:model 或 host:*；默认空，未知中转仍 fail-closed。
@@ -399,7 +397,12 @@ def _apply_settings(s: Settings) -> None:
     global MAX_BROWSER_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
     global AKANE_WORKSPACE_ROOT, AKANE_WORKSPACE_MAX_READ_BYTES
     global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ, QQ_CHARACTER_PACK_ID
-    global QQ_REPLY_MODE, QQ_TTS_PROFILE_USER_ID, QQ_WEB_SEARCH_PROFILE_USER_ID, QQ_VOICE_MAX_TEXT_CHARS, QQ_VOICE_MAX_SEGMENTS
+    global \
+        QQ_REPLY_MODE, \
+        QQ_TTS_PROFILE_USER_ID, \
+        QQ_WEB_SEARCH_PROFILE_USER_ID, \
+        QQ_VOICE_MAX_TEXT_CHARS, \
+        QQ_VOICE_MAX_SEGMENTS
     global QQ_GROUP_PLAINTEXT_ENABLED, QQ_GROUP_FOLLOW_TTL_SECONDS, QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS
     global QQ_ATTACHMENT_DEBOUNCE_SECONDS, QQ_ATTACHMENT_READY_WAIT_SECONDS, QQ_REPLY_SEGMENT_DELAY_SECONDS
     global QQ_EVENT_MAX_AGE_SECONDS, QQ_ALLOW_STALE_EVENTS, QQ_REQUIRE_FILE_DELIVERY_INTENT
@@ -409,7 +412,12 @@ def _apply_settings(s: Settings) -> None:
     global REMOTE_MEDIA_YTDLP_USER_AGENT, REMOTE_MEDIA_YTDLP_REFERER
     global WEB_IDENTITY_MODE, WEB_OWNER_PROFILE_USER_ID
     global RUN_MODE, PERSONA_CONFIG_PATH, PERSONA_VARIANT
-    global EMBEDDING_PROVIDER, EMBEDDING_MODEL_NAME, EMBEDDING_DEVICE, EMBEDDING_LOCAL_FILES_ONLY, EMBEDDING_CACHE_FOLDER
+    global \
+        EMBEDDING_PROVIDER, \
+        EMBEDDING_MODEL_NAME, \
+        EMBEDDING_DEVICE, \
+        EMBEDDING_LOCAL_FILES_ONLY, \
+        EMBEDDING_CACHE_FOLDER
     global EMBEDDING_CACHE_SIZE, EMBEDDING_REINDEX_BATCH_SIZE
     global ENABLE_SEMANTIC_MEMORY, ENABLE_SEMANTIC_REINFORCEMENT, PRE_RETRIEVAL_DEFAULT_ENABLED
     global PROMPT_CACHE_HINTS_ENABLED, PROMPT_CACHE_HINTS_FORCE, PROMPT_CACHE_NAMESPACE, PROMPT_CACHE_RETENTION
@@ -476,8 +484,7 @@ def _apply_settings(s: Settings) -> None:
     MAX_CONCURRENT_THINKS = max(0, int(s.MAX_CONCURRENT_THINKS))
     DAILY_THINK_LIMIT = max(0, int(s.DAILY_THINK_LIMIT))
     PUBLIC_BUSY_MESSAGE = (
-        str(s.PUBLIC_BUSY_MESSAGE or "当前体验人数较多，请稍后再试。").strip()
-        or "当前体验人数较多，请稍后再试。"
+        str(s.PUBLIC_BUSY_MESSAGE or "当前体验人数较多，请稍后再试。").strip() or "当前体验人数较多，请稍后再试。"
     )
     PUBLIC_DAILY_LIMIT_MESSAGE = (
         str(s.PUBLIC_DAILY_LIMIT_MESSAGE or "今日体验名额已满，明天再来看看 Akane 吧。").strip()
@@ -495,7 +502,9 @@ def _apply_settings(s: Settings) -> None:
 
     # === QQ / NapCat ===
     QQ_BRIDGE_ENABLED = bool(s.QQ_BRIDGE_ENABLED)
-    QQ_ONEBOT_HTTP_URL = str(s.QQ_ONEBOT_HTTP_URL or "http://127.0.0.1:3001").strip().rstrip("/") or "http://127.0.0.1:3001"
+    QQ_ONEBOT_HTTP_URL = (
+        str(s.QQ_ONEBOT_HTTP_URL or "http://127.0.0.1:3001").strip().rstrip("/") or "http://127.0.0.1:3001"
+    )
     raw_qq_bot_qq = str(s.QQ_BOT_QQ or "").strip()
     QQ_BOT_QQ = raw_qq_bot_qq if raw_qq_bot_qq.isdigit() else ""
     raw_qq_character_pack_id = str(s.QQ_CHARACTER_PACK_ID or "").strip()
@@ -551,10 +560,7 @@ def _apply_settings(s: Settings) -> None:
         str(s.REMOTE_MEDIA_YTDLP_USER_AGENT or "").strip()
         or Settings.model_fields["REMOTE_MEDIA_YTDLP_USER_AGENT"].default
     )
-    REMOTE_MEDIA_YTDLP_REFERER = (
-        str(s.REMOTE_MEDIA_YTDLP_REFERER or "").strip()
-        or "https://www.bilibili.com/"
-    )
+    REMOTE_MEDIA_YTDLP_REFERER = str(s.REMOTE_MEDIA_YTDLP_REFERER or "").strip() or "https://www.bilibili.com/"
 
     # === web identity ===
     WEB_IDENTITY_MODE = _normalize_web_identity_mode(s.WEB_IDENTITY_MODE)
@@ -565,7 +571,9 @@ def _apply_settings(s: Settings) -> None:
     PERSONA_CONFIG_PATH = s.PERSONA_CONFIG_PATH or ""
     PERSONA_VARIANT = str(s.PERSONA_VARIANT or "default").strip() or "default"
     EMBEDDING_PROVIDER = str(s.EMBEDDING_PROVIDER or "auto").strip().lower() or "auto"
-    EMBEDDING_MODEL_NAME = str(s.EMBEDDING_MODEL_NAME or DEFAULT_EMBEDDING_MODEL_NAME).strip() or DEFAULT_EMBEDDING_MODEL_NAME
+    EMBEDDING_MODEL_NAME = (
+        str(s.EMBEDDING_MODEL_NAME or DEFAULT_EMBEDDING_MODEL_NAME).strip() or DEFAULT_EMBEDDING_MODEL_NAME
+    )
     EMBEDDING_DEVICE = str(s.EMBEDDING_DEVICE or "").strip()
     EMBEDDING_LOCAL_FILES_ONLY = bool(s.EMBEDDING_LOCAL_FILES_ONLY)
     EMBEDDING_CACHE_FOLDER = str(s.EMBEDDING_CACHE_FOLDER or "").strip()
@@ -597,7 +605,9 @@ def _apply_settings(s: Settings) -> None:
     MEMORY_BACKEND = raw_memory_backend if raw_memory_backend in {"legacy", "dual", "memcore"} else "memcore"
     MEMCORE_STORAGE_PATH = str(s.MEMCORE_STORAGE_PATH or "").strip()
     raw_memcore_visible_scope = str(s.MEMCORE_VISIBLE_SCOPE or "user").strip().lower()
-    MEMCORE_VISIBLE_SCOPE = raw_memcore_visible_scope if raw_memcore_visible_scope in {"conversation", "user"} else "user"
+    MEMCORE_VISIBLE_SCOPE = (
+        raw_memcore_visible_scope if raw_memcore_visible_scope in {"conversation", "user"} else "user"
+    )
     MEMCORE_ENABLE_FLAVOR = bool(s.MEMCORE_ENABLE_FLAVOR)
     MEMCORE_SHADOW_COMPARE = bool(s.MEMCORE_SHADOW_COMPARE)
 

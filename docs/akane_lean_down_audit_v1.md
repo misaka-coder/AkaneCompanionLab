@@ -125,9 +125,9 @@ Files:
 - `tests/test_tool_decision_eval.py`
 - `docs/tool_system_decoupling_v1.md`
 
-Evidence:
+Evidence at audit time:
 
-- `ENABLE_NATIVE_TOOL_DECISION` defaults to false, while allowlisted tools and
+- `ENABLE_NATIVE_TOOL_DECISION` defaulted to false, while allowlisted tools and
   provider profiles already exist.
 - `tool_invocation.py` still says native variants are placeholders for later
   migration, but `llm_runtime.py` already extracts provider native tool calls.
@@ -139,9 +139,19 @@ Evidence:
   back into Akane tool ids.
 - Tests intentionally run legacy and native decision suites in parallel and
   assert parity.
-- `docs/tool_system_decoupling_v1.md` documents the intended native-first
-  direction, but the default production setting still keeps legacy JSON as the
+- `docs/tool_system_decoupling_v1.md` documented the intended native-first
+  direction, but the default production setting still kept legacy JSON as the
   main path unless enabled by config.
+
+Current progress:
+
+- The native tool decision total switch now defaults to enabled. Verified
+  provider/model profiles use provider native schemas for allowlisted tools;
+  unverified providers, explicit disable, or non-allowlisted tools still fall
+  back to legacy JSON `tool_call`.
+- Remaining LD-002 work is to expand native coverage/allowlist with acceptance
+  gates and later decide whether the public `tool_call` field stays as a thin
+  fallback or is deleted after native-first stabilizes.
 
 Why it hurts iteration:
 
