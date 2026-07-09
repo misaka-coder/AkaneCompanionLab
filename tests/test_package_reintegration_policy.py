@@ -53,7 +53,7 @@ class PackageReintegrationPolicyTests(unittest.TestCase):
         for package_name in expected_packages:
             self.assertIn(package_name, doc)
 
-        self.assertIn("promptpack-core reintegration cleanup", doc)
+        self.assertIn("After LD006, the promptpack ownership decision is closed for now", doc)
         self.assertIn("PromptBuilder.build_final_generation_context()", doc)
         self.assertIn("old `ResourceManifest` implementation is no longer Akane-owned", doc)
         self.assertIn("Legacy JSON `tool_call` and provider-native tool calls coexist", doc)
@@ -102,6 +102,24 @@ class PackageReintegrationPolicyTests(unittest.TestCase):
 
         self.assertIn("adapter.descriptor_for_tool(tool)", source)
         self.assertNotIn("adapter._descriptor_for_tool(tool)", source)
+
+    def test_ld006_records_promptpack_ownership_decision(self) -> None:
+        doc = (ROOT / "docs" / "akane_lean_down_ld006_promptpack_ownership.md").read_text(encoding="utf-8")
+        policy = (ROOT / "docs" / "package_reintegration_policy_m63.md").read_text(encoding="utf-8")
+
+        self.assertIn("remains the owner of Akane final chat prompt assembly", policy)
+        self.assertIn("PromptBuilder.build_final_generation_context()", doc)
+        self.assertIn("remains the reusable primitive layer", doc)
+        self.assertIn("must not add a second final chat prompt assembler", doc)
+
+    def test_companion_runtime_does_not_add_promptpack_assembler_parallel_path(self) -> None:
+        offenders: list[str] = []
+        for path in (ROOT / "companion_v01").rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            if "PromptAssembler" in source:
+                offenders.append(str(path.relative_to(ROOT)).replace("\\", "/"))
+
+        self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

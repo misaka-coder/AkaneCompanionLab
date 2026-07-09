@@ -142,18 +142,19 @@ thin adapter
 The old Akane prompt block registry has effectively become an Akane content
 registry layered on `promptpack-core`. That is acceptable.
 
-Known risk:
+LD006 cleanup:
 
-- `PromptBuilder` still hand-assembles large final prompt strings. This is not
-  automatically duplicate logic because Akane owns product prompt content, but
-  any future attempt to use `PromptAssembler` must replace a specific assembly
-  path rather than sit beside it forever.
+- `PromptBuilder` remains the owner of Akane final chat prompt assembly.
+- `promptpack-core` remains the reusable primitive layer for prompt blocks,
+  profiles, sections, and cache/audit helpers.
+- `PromptAssembler` must not be added as a second final chat assembler beside
+  `PromptBuilder.build_final_generation_context()`.
 
 Next cleanup target:
 
-- M64 should audit `PromptBuilder.build_final_generation_context()` and decide
-  whether any assembly mechanics should move to `promptpack-core` or remain
-  explicitly Akane-owned.
+- A future migration to `PromptAssembler` is allowed only if it replaces one
+  specific `PromptBuilder` assembly path in the same change window and updates
+  the LD006 guard tests.
 
 ### `charpack-core`
 
@@ -513,17 +514,16 @@ than add Live2D rendering logic to the Python backend.
 
 ## Preferred Next Work
 
-M64 should be a concrete cleanup slice, not another broad policy pass. The best
-candidate is:
+After LD006, the promptpack ownership decision is closed for now. The best
+remaining lean-down candidates are:
 
 ```text
-promptpack-core reintegration cleanup
+native tools default / legacy tool_call migration window
+memcore default / legacy memory migration window
 ```
 
-M64 should inspect `PromptBuilder` and `prompt_blocks.py`, then decide whether
-there is any duplicated prompt assembly ownership. If there is, collapse it. If
-not, document that `PromptBuilder` is Akane product composition and
-`promptpack-core` remains the generic block/assembly primitive.
+These are higher-risk P1 cuts and should start with focused migration windows,
+not opportunistic rewrites.
 
 ## Validation
 
