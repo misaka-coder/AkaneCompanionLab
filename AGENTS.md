@@ -78,6 +78,7 @@
 - Rust 写入角色包文件时使用临时文件再 rename；所有从角色包读取出的相对路径必须走 `safe_child_path`。
 - 新增前端运行时引用必须来自现有模块或明确导入，不能依赖臆造的全局变量。
 - 审查发现高风险问题时先停在 repair pass，不要继续叠新功能。
+- 抽包回填必须减少权威实现数量，不允许长期新旧逻辑并行。接手抽包回填、删除旧逻辑、或新增 package-backed 路径前，先读 `docs/package_reintegration_policy_m63.md`；旧实现只能进入 `deleted / thin adapter / documented migration window` 三种状态之一。
 
 ## 项目速查
 

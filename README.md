@@ -226,6 +226,9 @@ Akane/
 `F:\Akane\packages\` 是无破坏 junction 导航目录，真实源码路径仍保持 sibling
 布局，避免打断 editable 依赖和 release 脚本。
 
+抽包应用回 Akane 的规则见 `docs/package_reintegration_policy_m63.md`。核心原则是：
+回填包必须替代旧实现或压成薄 adapter，不允许长期新旧逻辑并行。
+
 这些抽出的包如何组合、边界分别在哪里、AI 接手时先读哪些文件，见
 `docs/extracted_packages_ecosystem_v0.md`。装好依赖后可以运行跨包 smoke，
 验证 promptpack / charpack / memcore / capcore / provider envelope 的最小闭环：
