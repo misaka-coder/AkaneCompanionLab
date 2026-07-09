@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
-import uuid
 import time
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -627,6 +628,38 @@ def _resolve_qq_tts_profile_user_id(*, config_module: Any, context: Any) -> str:
     return raw_value
 
 
+def _voice_cache_key(*, text: str, provider: str, resolution: dict[str, Any]) -> str:
+    """Build a stable cache key from the synthesis inputs so identical text
+    reuses an existing file instead of resynthesising."""
+    raw = f"{text}\nprovider={provider}\nprofile={resolution.get('voiceProfileId','')}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+def _prune_voice_cache(cache_dir: Path, *, max_mb: int = 50) -> None:
+    """Trim the voice cache to at most *max_mb* by removing the oldest files."""
+    max_bytes = max(1, max_mb) * 1024 * 1024
+    try:
+        entries = sorted(cache_dir.iterdir(), key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return
+    total = 0
+    # Walk newest-first and decide what to keep
+    for entry in reversed(entries):
+        try:
+            total += entry.stat().st_size
+        except OSError:
+            continue
+    for entry in entries:
+        if total <= max_bytes:
+            break
+        try:
+            size = entry.stat().st_size
+            entry.unlink()
+            total -= size
+        except OSError:
+            continue
+
+
 def _synthesize_qq_voice_file(
     *,
     engine: Any,
@@ -677,8 +710,11 @@ def _synthesize_qq_voice_file(
     cache_dir = data_dir / "qq_voice_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     ext = _media_type_extension(media_type)
-    path = cache_dir / f"qq_reply_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}.{ext}"
-    path.write_bytes(audio)
+    cache_key = _voice_cache_key(text=clean_text, provider=active_provider, resolution=resolution)
+    path = cache_dir / f"{cache_key}.{ext}"
+    if not path.exists():
+        path.write_bytes(audio)
+        _prune_voice_cache(cache_dir, max_mb=50)
     return {
         "ok": True,
         "path": str(path),
