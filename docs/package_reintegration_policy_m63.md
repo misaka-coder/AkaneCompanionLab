@@ -357,6 +357,14 @@ Old implementation status:
 thin adapter with host-owned client bridge
 ```
 
+LD005 cleanup:
+
+- `capcore-adapter-mcp` exposes a public
+  `McpStdioCapabilityAdapter.descriptor_for_tool(...)` API for trusted cached
+  tool metadata.
+- Akane uses that API when building dynamic MCP handlers and no longer calls
+  package-private `_descriptor_for_tool` / `_capability_id` methods.
+
 The host-owned client bridge is acceptable because it binds Akane config and
 process policy. Do not reimplement package-owned descriptor/invocation
 normalization in Akane.

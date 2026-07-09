@@ -288,7 +288,7 @@ def build_mcp_adapter_tool_handlers(
             tool_configs=tuple(prompt_tools),
         )
         for tool in prompt_tools:
-            descriptor = adapter._descriptor_for_tool(tool)
+            descriptor = adapter.descriptor_for_tool(tool)
             if descriptor.id and descriptor.prompt_exposed:
                 handlers[descriptor.id] = AdapterCapabilityToolHandler(
                     capability_id=descriptor.id,

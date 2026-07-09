@@ -83,16 +83,13 @@ class McpStdioCapabilityAdapter:
     async def aclose(self) -> None:
         await self._core.aclose()
 
-    def _descriptor_for_tool(self, tool: Mapping[str, Any]) -> CapabilityDescriptor:
-        descriptor = self._core._descriptor_for_tool(_tool_record(tool))
+    def descriptor_for_tool(self, tool: Mapping[str, Any]) -> CapabilityDescriptor:
+        descriptor = self._core.descriptor_for_tool(_tool_record(tool))
         return _with_akane_raw_metadata(descriptor, self.server_config)
 
     def _risk_and_confirm(self, tool: Mapping[str, Any]) -> tuple[str, str]:
         override = _tool_override(self.server_config, tool)
         return override.risk or "medium", override.confirm or "first_time"
-
-    def _capability_id(self, tool_name: str) -> str:
-        return self._core._capability_id(tool_name)
 
 
 class _AkaneMcpClient:

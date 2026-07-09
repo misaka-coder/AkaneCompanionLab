@@ -83,6 +83,26 @@ class PackageReintegrationPolicyTests(unittest.TestCase):
 
         self.assertEqual(private_imports, [])
 
+    def test_mcp_adapter_wrapper_does_not_call_package_private_core_methods(self) -> None:
+        source_path = ROOT / "companion_v01" / "capability_adapters" / "mcp_stdio.py"
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+        private_core_attrs: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute) or not node.attr.startswith("_"):
+                continue
+            value = node.value
+            if isinstance(value, ast.Attribute) and value.attr == "_core":
+                private_core_attrs.append(node.attr)
+
+        self.assertEqual(private_core_attrs, [])
+
+    def test_dynamic_mcp_handler_builder_uses_public_descriptor_api(self) -> None:
+        source = (ROOT / "companion_v01" / "engine_services" / "tool_rounds.py").read_text(encoding="utf-8")
+
+        self.assertIn("adapter.descriptor_for_tool(tool)", source)
+        self.assertNotIn("adapter._descriptor_for_tool(tool)", source)
+
 
 if __name__ == "__main__":
     unittest.main()
