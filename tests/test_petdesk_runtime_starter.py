@@ -464,6 +464,37 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("release_petdesk_bundle.ps1", readme)
         self.assertIn("release pipeline", readme)
 
+    def test_m61_doc_operator_guide_and_readme_record_release_closeout(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_release_closeout_m61.md").read_text(encoding="utf-8")
+        guide = (ROOT / "docs" / "petdesk_operator_guide_m54.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("Petdesk Release Closeout M61", doc)
+        self.assertIn("closed/frozen except repair", doc)
+        self.assertIn("Live2D Productization L1", doc)
+        self.assertIn("Command Map", doc)
+        self.assertIn("Guarantees", doc)
+        self.assertIn("Non-Goals", doc)
+        self.assertIn("Frozen Boundary", doc)
+        self.assertIn("build_petdesk_runtime_release.ps1", doc)
+        self.assertIn("start_akane_petdesk_release.ps1", doc)
+        self.assertIn("stop_petdesk_runtime.ps1", doc)
+        self.assertIn("check_petdesk_release.ps1", doc)
+        self.assertIn("accept_petdesk_release.ps1", doc)
+        self.assertIn("export_petdesk_release_bundle.ps1", doc)
+        self.assertIn("audit_petdesk_release_bundle.ps1", doc)
+        self.assertIn("release_petdesk_bundle.ps1", doc)
+        self.assertIn("start_petdesk_runtime_bundle.ps1", doc)
+        self.assertIn("does not stop Akane backend or QQ bot", doc)
+        self.assertIn("a full Akane installer", doc)
+        self.assertIn("Live2D model behavior polish", doc)
+        self.assertIn("model layout contract", doc)
+        self.assertIn("what the user sees, hears, and can click", doc)
+        self.assertIn("petdesk_release_closeout_m61.md", guide)
+        self.assertIn("Live2D Productization L1", guide)
+        self.assertIn("petdesk_release_closeout_m61.md", readme)
+        self.assertIn("Live2D", readme)
+
 
 if __name__ == "__main__":
     unittest.main()

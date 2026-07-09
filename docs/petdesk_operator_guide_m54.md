@@ -305,6 +305,18 @@ AKANE_PETDESK_RELEASE_PIPELINE_DRY_RUN_OK
 It is still not an installer and does not open the runtime window or stop any
 process.
 
+## Release Closeout
+
+The release-tooling line is closed/frozen after M61 except repair, safety
+hardening, and compatibility fixes. The closeout map is recorded in:
+
+```text
+docs/petdesk_release_closeout_m61.md
+```
+
+Next product work should move to `Live2D Productization L1` instead of adding
+more release wrappers.
+
 ## Expected Output
 
 Healthy release startup prints:

@@ -313,7 +313,8 @@ Tauri/WebView2，并以 Windows 为主要验证平台。
 ```
 
 完整构建、启动、doctor、acceptance、bundle 导出/审计、release pipeline、smoke、dry-run、停止和排障步骤见
-`docs/petdesk_operator_guide_m54.md`。
+`docs/petdesk_operator_guide_m54.md`。发布工具线的收尾边界见
+`docs/petdesk_release_closeout_m61.md`；后续重点转向 Live2D 产品化。
 
 ## 本地访问
 
