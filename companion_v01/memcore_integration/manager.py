@@ -13,7 +13,7 @@ from pathlib import Path
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 import config
 
@@ -33,6 +33,40 @@ def normalize_memory_backend(value: Any) -> str:
 def normalize_visible_scope(value: Any) -> str:
     text = str(value or "user").strip().lower()
     return text if text in {"conversation", "user"} else "user"
+
+
+def _build_persona_text_provider(engine: Any) -> Any:
+    """Build a persona_text provider that resolves character identity for memcore compaction prompts.
+
+    Returns a callable (profile_user_id, character_pack_id) -> str that extracts the
+    character's system_context persona text. Falls back to PERSONA.final_system_prompt
+    when character-pack-specific context is unavailable or fails.
+    """
+    try:
+        from ..persona_config import PERSONA
+    except Exception:
+        PERSONA = None  # type: ignore[assignment]
+
+    default_text = str(getattr(PERSONA, "final_system_prompt", "") or "").strip()
+
+    def _resolve(profile_user_id: str, character_pack_id: str) -> str:
+        if not profile_user_id:
+            return default_text
+        try:
+            build_context = getattr(engine, "_build_memory_compaction_persona_context", None)
+            if not callable(build_context):
+                return default_text
+            context = build_context(
+                profile_user_id=profile_user_id,
+                session_id=profile_user_id,
+                character_pack_id=character_pack_id or "",
+            )
+            system_context = str(context.get("system_context") or "").strip() if isinstance(context, dict) else ""
+            return system_context or default_text
+        except Exception:
+            return default_text
+
+    return _resolve
 
 
 @dataclass(frozen=True)
@@ -62,6 +96,7 @@ class MemcoreManager:
         shadow_compare: bool,
         llm: Any,
         embedding_provider: Any,
+        persona_text_provider: Callable[[str, str], str] | None = None,
     ) -> None:
         self.backend = normalize_memory_backend(backend)
         self.storage_path = Path(storage_path)
@@ -70,6 +105,7 @@ class MemcoreManager:
         self.shadow_compare = bool(shadow_compare)
         self.llm = llm
         self.embedding_provider = embedding_provider
+        self._persona_text_provider = persona_text_provider
         self._available = False
         self._reason = ""
         self._degraded_embedding = str(getattr(embedding_provider, "name", "") or "").lower() == "hashed"
@@ -97,6 +133,7 @@ class MemcoreManager:
             shadow_compare=bool(getattr(config, "MEMCORE_SHADOW_COMPARE", False)),
             llm=engine.llm,
             embedding_provider=engine.embedding_provider,
+            persona_text_provider=_build_persona_text_provider(engine),
         )
 
     @property
@@ -1100,6 +1137,12 @@ class MemcoreManager:
                     domain_id=domain_id,
                     conversation_id=conversation_id,
                 )
+                persona_text = ""
+                if self._persona_text_provider is not None:
+                    try:
+                        persona_text = self._persona_text_provider(profile_user_id, character_pack_id)
+                    except Exception as exc:
+                        logger.debug("memcore persona_text_provider failed: %s", exc)
                 existing = self._memcore_module.MemorySystem(
                     llm=self._llm_client,
                     namespace=namespace,
@@ -1109,6 +1152,7 @@ class MemcoreManager:
                     store=self._store,
                     index=self._index,
                     embedding=self._embedding,
+                    persona_text=persona_text,
                 )
                 self._systems[key] = existing
         self._warm_index_for_system(existing, operation="get_system")
