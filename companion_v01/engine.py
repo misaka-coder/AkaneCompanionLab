@@ -525,8 +525,49 @@ class AkaneMemoryEngine:
         manager = self._memcore_manager_if_enabled()
         return manager is not None and bool(getattr(manager, "available", False))
 
+    def _memcore_owns_visible_memory(self) -> bool:
+        return self._memcore_owns_legacy_vector_index()
+
     def _should_eager_init_legacy_memory_services(self) -> bool:
         return not self._memcore_owns_legacy_vector_index()
+
+    def _load_turn_visible_memory(
+        self,
+        *,
+        session_id: str,
+        profile_user_id: str,
+        character_pack_id: str,
+        user_record: dict[str, Any],
+        include_transient_user_record: bool,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        if self._memcore_owns_visible_memory():
+            return ([dict(user_record)] if user_record else []), [], []
+
+        recent_raw = self.store.get_unsummarized_messages(
+            session_id,
+            character_pack_id=character_pack_id,
+        )
+        if include_transient_user_record:
+            recent_raw = [*recent_raw, user_record]
+        episodic_limit = max(
+            1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5)))
+        )
+        semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
+        recent_episodic_summaries = self.store.get_visible_episodic_summaries(
+            profile_user_id,
+            limit=episodic_limit,
+            character_pack_id=character_pack_id,
+        )
+        recent_semantic_summaries = (
+            self.store.get_recent_semantic_summaries(
+                profile_user_id,
+                limit=semantic_limit,
+                character_pack_id=character_pack_id,
+            )
+            if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
+            else []
+        )
+        return recent_raw, recent_episodic_summaries, recent_semantic_summaries
 
     def _record_memcore_user_turn(
         self,
@@ -2015,29 +2056,12 @@ class AkaneMemoryEngine:
                 character_pack_id=turn_character_pack_id,
             )
 
-        recent_raw = self.store.get_unsummarized_messages(
-            session_id,
+        recent_raw, recent_episodic_summaries, recent_semantic_summaries = self._load_turn_visible_memory(
+            session_id=session_id,
+            profile_user_id=profile_user_id,
             character_pack_id=turn_character_pack_id,
-        )
-        if transient_user_turn:
-            recent_raw = [*recent_raw, user_record]
-        episodic_limit = max(
-            1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5)))
-        )
-        semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
-        recent_episodic_summaries = self.store.get_visible_episodic_summaries(
-            profile_user_id,
-            limit=episodic_limit,
-            character_pack_id=turn_character_pack_id,
-        )
-        recent_semantic_summaries = (
-            self.store.get_recent_semantic_summaries(
-                profile_user_id,
-                limit=semantic_limit,
-                character_pack_id=turn_character_pack_id,
-            )
-            if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
-            else []
+            user_record=user_record,
+            include_transient_user_record=transient_user_turn,
         )
         verifier_debug_enabled = self._coerce_bool(payload.get("verifier_debug"))
         final_debug_enabled = self._coerce_bool(payload.get("final_debug"))
@@ -2444,29 +2468,12 @@ class AkaneMemoryEngine:
                 character_pack_id=turn_character_pack_id,
             )
 
-        recent_raw = self.store.get_unsummarized_messages(
-            session_id,
+        recent_raw, recent_episodic_summaries, recent_semantic_summaries = self._load_turn_visible_memory(
+            session_id=session_id,
+            profile_user_id=profile_user_id,
             character_pack_id=turn_character_pack_id,
-        )
-        if transient_user_turn:
-            recent_raw = [*recent_raw, user_record]
-        episodic_limit = max(
-            1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5)))
-        )
-        semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
-        recent_episodic_summaries = self.store.get_visible_episodic_summaries(
-            profile_user_id,
-            limit=episodic_limit,
-            character_pack_id=turn_character_pack_id,
-        )
-        recent_semantic_summaries = (
-            self.store.get_recent_semantic_summaries(
-                profile_user_id,
-                limit=semantic_limit,
-                character_pack_id=turn_character_pack_id,
-            )
-            if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
-            else []
+            user_record=user_record,
+            include_transient_user_record=transient_user_turn,
         )
         verifier_debug_enabled = self._coerce_bool(payload.get("verifier_debug"))
         final_debug_enabled = self._coerce_bool(payload.get("final_debug"))

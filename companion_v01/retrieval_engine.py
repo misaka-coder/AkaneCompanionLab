@@ -213,40 +213,20 @@ def execute_retrieve_memory_tool(
         else None
     )
     original_query = str((current_user_record or {}).get("content") or query)
-    episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
-    semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
     character_pack_id = str(getattr(context, "character_pack_id", "") or "").strip()
-    recent_raw = engine.store.get_unsummarized_messages(
-        context.session_id,
-        character_pack_id=character_pack_id,
-    )
-    recent_episodic_summaries = engine.store.get_visible_episodic_summaries(
-        context.profile_user_id,
-        limit=episodic_limit,
-        character_pack_id=character_pack_id,
-    )
-    recent_semantic_summaries = (
-        engine.store.get_recent_semantic_summaries(
-            context.profile_user_id,
-            limit=semantic_limit,
-            character_pack_id=character_pack_id,
-        )
-        if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
-        else []
-    )
     extra_excludes = []
     visual_payload = context.visual_payload if isinstance(context.visual_payload, dict) else {}
     raw_extra_excludes = visual_payload.get("_memory_retrieval_exclude_source_ids")
     if isinstance(raw_extra_excludes, list):
         extra_excludes = [str(item).strip() for item in raw_extra_excludes if str(item).strip()]
-    exclude_source_ids = collect_visible_context_source_ids(
-        recent_raw=recent_raw,
-        recent_episodic_summaries=recent_episodic_summaries,
-        recent_semantic_summaries=recent_semantic_summaries,
-        extra_source_ids=[context.current_user_source_id, *extra_excludes],
-    )
     memcore_read_payload: dict[str, Any] | None = None
     if _memory_backend() == "memcore":
+        exclude_source_ids = collect_visible_context_source_ids(
+            recent_raw=[],
+            recent_episodic_summaries=[],
+            recent_semantic_summaries=[],
+            extra_source_ids=[context.current_user_source_id, *extra_excludes],
+        )
         memcore_read_payload = execute_memcore_retrieve_memory(
             engine,
             context=context,
@@ -311,6 +291,32 @@ def execute_retrieve_memory_tool(
             retrieval_backend="memcore",
             memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
         )
+    episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
+    semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
+    recent_raw = engine.store.get_unsummarized_messages(
+        context.session_id,
+        character_pack_id=character_pack_id,
+    )
+    recent_episodic_summaries = engine.store.get_visible_episodic_summaries(
+        context.profile_user_id,
+        limit=episodic_limit,
+        character_pack_id=character_pack_id,
+    )
+    recent_semantic_summaries = (
+        engine.store.get_recent_semantic_summaries(
+            context.profile_user_id,
+            limit=semantic_limit,
+            character_pack_id=character_pack_id,
+        )
+        if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
+        else []
+    )
+    exclude_source_ids = collect_visible_context_source_ids(
+        recent_raw=recent_raw,
+        recent_episodic_summaries=recent_episodic_summaries,
+        recent_semantic_summaries=recent_semantic_summaries,
+        extra_source_ids=[context.current_user_source_id, *extra_excludes],
+    )
     pipeline = engine._get_retrieval_service().run_explicit(
         profile_user_id=context.profile_user_id,
         character_pack_id=character_pack_id,

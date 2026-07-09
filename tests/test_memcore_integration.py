@@ -72,11 +72,13 @@ class _ToolFakeStore:
             "content": "用户问旧饮料偏好",
             "timestamp": 100,
         }
+        self.legacy_visible_reads: list[str] = []
 
     def get_message_by_source_id(self, source_id: str) -> dict[str, object]:
         return {**self.current_record, "source_id": str(source_id)}
 
     def get_unsummarized_messages(self, session_id: str, *, character_pack_id: str = "") -> list[dict]:
+        self.legacy_visible_reads.append("raw")
         return [{"source_id": "visible-raw", "content": "已在 prompt 里的 raw"}]
 
     def get_visible_episodic_summaries(
@@ -86,6 +88,7 @@ class _ToolFakeStore:
         limit: int,
         character_pack_id: str = "",
     ) -> list[dict]:
+        self.legacy_visible_reads.append("episodic")
         return [{"summary_id": "visible-summary"}]
 
     def get_recent_semantic_summaries(
@@ -95,6 +98,7 @@ class _ToolFakeStore:
         limit: int,
         character_pack_id: str = "",
     ) -> list[dict]:
+        self.legacy_visible_reads.append("semantic")
         return [{"semantic_id": "visible-semantic"}]
 
 
@@ -365,6 +369,58 @@ class _ExplodingLegacyVectorStore:
         raise AssertionError("legacy vector count should not run in memcore mode")
 
 
+class _VisibleMemoryStore:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def get_unsummarized_messages(self, session_id: str, *, character_pack_id: str = "") -> list[dict]:
+        self.calls.append(f"raw:{session_id}:{character_pack_id}")
+        return [{"source_id": "legacy-raw", "content": "旧 raw"}]
+
+    def get_visible_episodic_summaries(
+        self,
+        profile_user_id: str,
+        *,
+        limit: int,
+        character_pack_id: str = "",
+    ) -> list[dict]:
+        self.calls.append(f"episodic:{profile_user_id}:{character_pack_id}:{limit}")
+        return [{"summary_id": "legacy-episodic", "diary_summary": "旧 episodic"}]
+
+    def get_recent_semantic_summaries(
+        self,
+        profile_user_id: str,
+        *,
+        limit: int,
+        character_pack_id: str = "",
+    ) -> list[dict]:
+        self.calls.append(f"semantic:{profile_user_id}:{character_pack_id}:{limit}")
+        return [{"semantic_id": "legacy-semantic", "semantic_summary": "旧 semantic"}]
+
+
+class _ExplodingVisibleMemoryStore:
+    def get_unsummarized_messages(self, session_id: str, *, character_pack_id: str = "") -> list[dict]:
+        raise AssertionError("legacy raw visible memory should not be read in memcore mode")
+
+    def get_visible_episodic_summaries(
+        self,
+        profile_user_id: str,
+        *,
+        limit: int,
+        character_pack_id: str = "",
+    ) -> list[dict]:
+        raise AssertionError("legacy episodic visible memory should not be read in memcore mode")
+
+    def get_recent_semantic_summaries(
+        self,
+        profile_user_id: str,
+        *,
+        limit: int,
+        character_pack_id: str = "",
+    ) -> list[dict]:
+        raise AssertionError("legacy semantic visible memory should not be read in memcore mode")
+
+
 class _LegacyRawStore:
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self.rows = rows
@@ -590,6 +646,67 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(engine._embedding_reindex_status["state"], "disabled")
         self.assertEqual(engine._embedding_reindex_status["error"], "memcore_owns_legacy_vector_index")
         self.assertIsNone(engine._embedding_reindex_thread)
+
+    def test_engine_memcore_mode_uses_current_turn_as_visible_memory_boundary(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.store = _ExplodingVisibleMemoryStore()
+        engine.memcore_manager = _CompactionMemcoreManager(available=True)
+        user_record = {
+            "source_id": "current",
+            "role": "user",
+            "content": "现在的问题",
+            "timestamp": 100,
+        }
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            recent_raw, episodic, semantic = engine._load_turn_visible_memory(
+                session_id="s1",
+                profile_user_id="u1",
+                character_pack_id="char",
+                user_record=user_record,
+                include_transient_user_record=False,
+            )
+
+        self.assertEqual(recent_raw, [user_record])
+        self.assertEqual(episodic, [])
+        self.assertEqual(semantic, [])
+
+    def test_engine_memcore_unavailable_keeps_legacy_visible_memory_fallback(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        store = _VisibleMemoryStore()
+        engine.store = store
+        engine.memcore_manager = _CompactionMemcoreManager(available=False)
+        transient_record = {
+            "source_id": "current",
+            "role": "user",
+            "content": "临时问题",
+            "timestamp": 100,
+        }
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            recent_raw, episodic, semantic = engine._load_turn_visible_memory(
+                session_id="s1",
+                profile_user_id="u1",
+                character_pack_id="char",
+                user_record=transient_record,
+                include_transient_user_record=True,
+            )
+
+        self.assertEqual([row["source_id"] for row in recent_raw], ["legacy-raw", "current"])
+        self.assertEqual(episodic[0]["summary_id"], "legacy-episodic")
+        self.assertEqual(semantic[0]["semantic_id"], "legacy-semantic")
+        episodic_limit = max(
+            1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5)))
+        )
+        semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
+        self.assertEqual(
+            store.calls,
+            [
+                "raw:s1:char",
+                f"episodic:u1:char:{episodic_limit}",
+                f"semantic:u1:char:{semantic_limit}",
+            ],
+        )
 
     def test_memcore_pre_retrieval_skip_does_not_lazy_load_legacy_retrieval(self) -> None:
         class _Engine:
@@ -1319,11 +1436,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         call = memcore_manager.calls[0]
         self.assertEqual(call["query"], "可乐")
         self.assertEqual(call["limit"], 3)
-        self.assertIn("current", call["exclude_source_ids"])
-        self.assertIn("visible-raw", call["exclude_source_ids"])
-        self.assertIn("visible-summary", call["exclude_source_ids"])
-        self.assertIn("visible-semantic", call["exclude_source_ids"])
-        self.assertIn("extra-visible", call["exclude_source_ids"])
+        self.assertEqual(call["exclude_source_ids"], ["current", "extra-visible"])
+        self.assertEqual(engine.store.legacy_visible_reads, [])
         state = result.state_updates["memory_retrieval"]
         self.assertEqual(state["retrieval_backend"], "memcore")
         self.assertEqual(state["confirmed_snippets"], ["memcore snippet about cola"])
