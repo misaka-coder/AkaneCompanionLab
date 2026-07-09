@@ -166,7 +166,16 @@ class MemcoreTimelineToolService:
         )
 
     def build_acquaintance_prompt(self, **kwargs: Any) -> str:
+        manager = self.manager
+        if manager is not None and manager.available:
+            profile_user_id = str(kwargs.get("profile_user_id") or "").strip()
+            result = manager.acquaintance_note(
+                profile_user_id=profile_user_id,
+                session_id=profile_user_id,
+                character_pack_id=str(kwargs.get("character_pack_id") or "").strip(),
+                now_ts=kwargs.get("now_ts"),
+            )
+            if result:
+                return result
         legacy_service = self.legacy_service
-        if legacy_service is None:
-            return ""
-        return legacy_service.build_acquaintance_prompt(**kwargs)
+        return legacy_service.build_acquaintance_prompt(**kwargs) if legacy_service is not None else ""

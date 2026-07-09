@@ -4,7 +4,7 @@ import time
 import tracemalloc
 from typing import Any, Callable
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import Response
 
 
@@ -56,5 +56,25 @@ def build_system_router(
         runtime_metrics.observe_request("reset", duration_ms=(time.perf_counter() - started_at) * 1000, ok=True)
         log_event("reset_complete", duration_ms=round((time.perf_counter() - started_at) * 1000, 1))
         return {"status": "reset"}
+
+    @router.post("/admin/memcore/backfill")
+    async def backfill_memcore(
+        profile_user_id: str = "",
+        character_pack_id: str | None = None,
+        batch_size: int = 64,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """将 legacy SQLite 中的历史记忆导入 memcore（幂等，已存在的不重复导入）。"""
+        started_at = time.perf_counter()
+        result = engine.backfill_memcore_from_legacy_memory(
+            profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
+            batch_size=max(1, batch_size),
+            limit=limit,
+        )
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        runtime_metrics.observe_request("backfill_memcore", duration_ms=duration_ms, ok=bool(result.get("ok")))
+        log_event("backfill_memcore_complete", ok=result.get("ok"), duration_ms=round(duration_ms, 1))
+        return dict(result, duration_ms=round(duration_ms, 1))
 
     return router

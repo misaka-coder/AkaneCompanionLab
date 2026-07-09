@@ -63,34 +63,61 @@ Files:
 - `companion_v01/memcore_integration/manager.py`
 - `companion_v01/memcore_integration/timeline.py`
 
-Evidence:
+Evidence (audit snapshot 2026-07-09, updated same day after LD-001 slice):
 
-- `config.py` defaults `MEMORY_BACKEND` to `memcore` and describes
-  `legacy`/`dual` as compatibility and migration modes.
-- `engine.py` still initializes `MemoryTimelineService`, `RetrievalService`,
-  `MemoryCompactionService`, and `memcore_manager` in the same live engine
-  setup.
-- User and assistant turns still write through the legacy store/raw-vector path
-  and then dual-write or update `memcore`.
-- `response_builder.py` uses `memcore` prompt context in `memcore` mode and
-  returns an empty context on failure rather than falling back to legacy memory,
-  which means `memcore` is the effective main prompt path.
-- `memcore_integration/timeline.py` keeps legacy timeline fallback and still
-  delegates acquaintance/mirror helpers to the legacy service.
+- `config.py` defaults `MEMORY_BACKEND` to `memcore`.
+- In `memcore` mode, `MemoryTimelineService`, `RetrievalService`, and
+  `MemoryCompactionService` are **not initialized**. (commits 0adfaf7, ae86fde)
+- Legacy Chroma vector writes are **suppressed** — `_upsert_raw_record` sets
+  `index_in_vector=False` instead of writing to `vector_store`. (commit 4ffb91b)
+- `_load_turn_visible_memory` returns only the current user record in memcore
+  mode — no legacy store queries. (commit 44cc7f7)
+- `_schedule_summary_cycle` (legacy compaction scheduling) is a no-op in
+  memcore mode; all 7 call sites now have explicit `if not
+  _memcore_owns_compaction()` guards for readability.
+- `response_builder.py` uses memcore prompt context as the primary path;
+  legacy is fallback only when `MEMORY_BACKEND != "memcore"`.
+- `retrieve_memory` and `read_memory_timeline` tools delegate to memcore.
+- Pre-retrieval pipeline is skipped in memcore mode.
+- `_build_memory_relationship_context` and `build_acquaintance_prompt` now
+  use memcore's `acquaintance_note()` (cross-conversation, timezone-aware)
+  before falling back to legacy.
+- Backfill endpoint `POST /admin/memcore/backfill` exposes
+  `engine.backfill_memcore_from_legacy_memory()` via the system router.
+- Legacy `store.add_message()` is still called for every turn — this is the
+  application database (sessions, attachments, tasks, eval traces), not just
+  memory. The remaining dual-write is accepted as the documented migration
+  window.
 
-Why it hurts iteration:
+Why it hurt iteration (resolved by this slice):
 
-Memory behavior is split across legacy store writes, legacy vector writes,
-summary compaction, `memcore` prompt context, `memcore` retrieval, and timeline
-facades. A maintainer debugging recall or metadata cannot quickly tell which
-system is authoritative.
+Previously, memory behavior was split across legacy and memcore paths with
+unclear authority. Now memcore is the single authority for retrieval,
+compaction, timeline, visible memory, and prompt context. Legacy store writes
+remain for non-memory application data only.
 
-Recommended action:
+Migration window:
 
-Define a memory migration window with owner and removal target. In
-`MEMORY_BACKEND=memcore`, stop initializing legacy retrieval, legacy compaction,
-and legacy vector writes unless explicitly running `legacy` or `dual`. Keep
-legacy code only for import/admin compatibility.
+- **Start**: commit 52e6b98 (memcore made default backend, 2026-06-27).
+- **Owner**: AI collaborator (Claude) under author supervision.
+- **Current state**: memcore is the authoritative memory system. Legacy
+  `store.py` continues to receive message writes as the general application
+  database; this is acceptable and does not need deletion.
+- **Removal target for legacy memory services**: `RetrievalService`,
+  `MemoryCompactionService`, `MemoryTimelineService` code can be archived once
+  `legacy` and `dual` backend options are removed and no caller references
+  them. No earlier than 2026-08.
+- **What must NOT be deleted**: `store.py` (application database),
+  `vector_store` (may be needed for legacy data access until backfill is
+  complete).
+
+Suggested validation:
+
+- `python -m py_compile companion_v01/engine.py`
+- `python -m pytest tests/test_memcore_integration.py -x -q` (requires
+  extracted packages in PYTHONPATH)
+- Manual smoke: start server with `MEMORY_BACKEND=memcore`, send one chat
+  message, confirm reply is recorded and visible in next turn.
 
 Deletion or migration risk:
 

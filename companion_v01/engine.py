@@ -1889,11 +1889,12 @@ class AkaneMemoryEngine:
             memory_metadata=memory_metadata,
             index_in_vector=False,
         )
-        self._schedule_summary_cycle(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=turn_character_pack_id,
-        )
+        if not self._memcore_owns_compaction():
+            self._schedule_summary_cycle(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
         memcore_result = self._record_memcore_user_turn(
             user_record=user_record,
             profile_user_id=profile_user_id,
@@ -2057,11 +2058,12 @@ class AkaneMemoryEngine:
                 time_of_day=time_of_day,
                 semantic_tags=extract_semantic_tags(user_message),
             )
-            self._schedule_summary_cycle(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=turn_character_pack_id,
-            )
+            if not self._memcore_owns_compaction():
+                self._schedule_summary_cycle(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                )
 
         recent_raw, recent_episodic_summaries, recent_semantic_summaries = self._load_turn_visible_memory(
             session_id=session_id,
@@ -2371,11 +2373,12 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
             )
-        self._schedule_summary_cycle(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=turn_character_pack_id,
-        )
+        if not self._memcore_owns_compaction():
+            self._schedule_summary_cycle(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
 
         self.store.append_eval_turn(
             trace_id=trace_id,
@@ -2469,11 +2472,12 @@ class AkaneMemoryEngine:
                 time_of_day=time_of_day,
                 semantic_tags=extract_semantic_tags(user_message),
             )
-            self._schedule_summary_cycle(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=turn_character_pack_id,
-            )
+            if not self._memcore_owns_compaction():
+                self._schedule_summary_cycle(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                )
 
         recent_raw, recent_episodic_summaries, recent_semantic_summaries = self._load_turn_visible_memory(
             session_id=session_id,
@@ -2794,11 +2798,12 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
             )
-        self._schedule_summary_cycle(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=turn_character_pack_id,
-        )
+        if not self._memcore_owns_compaction():
+            self._schedule_summary_cycle(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
 
         self.store.append_eval_turn(
             trace_id=trace_id,
@@ -3406,11 +3411,12 @@ class AkaneMemoryEngine:
             memory_metadata=self._build_assistant_timeline_metadata(final_output),
         )
         self._upsert_raw_record(preface_record)
-        self._schedule_summary_cycle(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-        )
+        if not self._memcore_owns_compaction():
+            self._schedule_summary_cycle(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
         recent_raw_for_turn.append(preface_record)
 
     def _execute_and_record_tool_round(
@@ -3480,11 +3486,12 @@ class AkaneMemoryEngine:
                 semantic_tags=extract_semantic_tags(speech),
             )
             self._upsert_raw_record(tool_record)
-            self._schedule_summary_cycle(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=character_pack_id,
-            )
+            if not self._memcore_owns_compaction():
+                self._schedule_summary_cycle(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=character_pack_id,
+                )
             recent_raw_for_turn.append(tool_record)
         return tool_result, current_events
 
@@ -3651,6 +3658,16 @@ class AkaneMemoryEngine:
         character_pack_id: str,
         now_ts: int,
     ) -> str:
+        manager = self._memcore_manager_if_enabled()
+        if manager is not None:
+            result = manager.acquaintance_note(
+                profile_user_id=profile_user_id,
+                session_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                now_ts=now_ts,
+            )
+            if result:
+                return result
         service = getattr(self, "memory_timeline_service", None)
         if service is None:
             return ""

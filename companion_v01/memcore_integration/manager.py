@@ -172,6 +172,29 @@ class MemcoreManager:
             character_pack_id=character_pack_id,
         )
 
+    def acquaintance_note(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        now_ts: int | None = None,
+    ) -> str:
+        """memcore 相处时间感提示（认识第N天等），无历史返回空字符串。"""
+        system = self._get_system_or_none(
+            operation="acquaintance_note",
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return ""
+        try:
+            return str(system.acquaintance_note(now_ts=now_ts) or "")
+        except Exception as exc:
+            logger.debug("memcore acquaintance_note failed: %s", exc)
+            return ""
+
     def update_turn_metadata(
         self,
         source_id: str,
