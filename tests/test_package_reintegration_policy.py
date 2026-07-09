@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import unittest
 from pathlib import Path
 
@@ -67,6 +68,20 @@ class PackageReintegrationPolicyTests(unittest.TestCase):
         self.assertIn("必须减少权威实现数量", agents)
         self.assertIn("docs/package_reintegration_policy_m63.md", agents)
         self.assertIn("deleted / thin adapter / documented migration window", agents)
+
+    def test_charpack_compat_layer_does_not_import_private_helpers(self) -> None:
+        source_path = ROOT / "companion_v01" / "desktop_pet_character_resources.py"
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+        private_imports: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if node.module != "charpack_core.character_resources":
+                continue
+            private_imports.extend(alias.name for alias in node.names if alias.name.startswith("_"))
+
+        self.assertEqual(private_imports, [])
 
 
 if __name__ == "__main__":

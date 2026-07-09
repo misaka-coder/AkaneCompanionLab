@@ -183,12 +183,11 @@ The old `ResourceManifest` implementation is no longer Akane-owned. Akane keeps
 compatibility import paths so existing callers can continue using
 `companion_v01.resource_manifest.ResourceManifest`.
 
-Known risk:
+LD009 cleanup:
 
-- `desktop_pet_character_resources.py` imports some underscored helpers from
-  `charpack-core`. That is a coupling smell. It is acceptable only as a
-  transition bridge and should be reduced to public `charpack-core` APIs before
-  package API stabilization.
+- `desktop_pet_character_resources.py` no longer imports underscored helpers
+  from `charpack-core`; it remains a compatibility re-export over public
+  character resource services, constants, and pack-id sanitizing.
 
 ### `capcore`
 
