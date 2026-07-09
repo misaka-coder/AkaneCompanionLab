@@ -222,6 +222,10 @@ Akane/
 了 AkaneCompanionLab，依赖安装会失败；先 clone 这些 core 包到同级目录。
 `memcore` 是当前对话记忆主后端，旧 Akane 记忆链路仅保留为显式兼容/迁移模式。
 
+工作区分类和后续迁移计划见 `docs/akane_workspace_layout_m62.md`。当前
+`F:\Akane\packages\` 是无破坏 junction 导航目录，真实源码路径仍保持 sibling
+布局，避免打断 editable 依赖和 release 脚本。
+
 这些抽出的包如何组合、边界分别在哪里、AI 接手时先读哪些文件，见
 `docs/extracted_packages_ecosystem_v0.md`。装好依赖后可以运行跨包 smoke，
 验证 promptpack / charpack / memcore / capcore / provider envelope 的最小闭环：
