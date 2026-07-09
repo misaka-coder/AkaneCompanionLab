@@ -418,6 +418,52 @@ class PetdeskRuntimeStarterTests(unittest.TestCase):
         self.assertIn("audit_petdesk_release_bundle.ps1", readme)
         self.assertIn("bundle 导出/审计", readme)
 
+    def test_release_pipeline_orchestrates_existing_scripts_and_summary(self) -> None:
+        source = (ROOT / "scripts" / "release_petdesk_bundle.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("AKANE_PETDESK_RELEASE_PIPELINE_OK", source)
+        self.assertIn("AKANE_PETDESK_RELEASE_PIPELINE_FAILED", source)
+        self.assertIn("AKANE_PETDESK_RELEASE_PIPELINE_CHECK_OK", source)
+        self.assertIn("AKANE_PETDESK_RELEASE_PIPELINE_DRY_RUN_OK", source)
+        self.assertIn("build_petdesk_runtime_release.ps1", source)
+        self.assertIn("accept_petdesk_release.ps1", source)
+        self.assertIn("export_petdesk_release_bundle.ps1", source)
+        self.assertIn("audit_petdesk_release_bundle.ps1", source)
+        self.assertIn("release_summary.json", source)
+        self.assertIn("akane.petdesk.releasePipelineSummary.v1", source)
+        self.assertIn("Update-BundleManifestFileEntry", source)
+        self.assertIn("FullAcceptance", source)
+        self.assertIn("SkipAcceptance", source)
+        self.assertIn("BuildFirst", source)
+        self.assertIn("SkipBuildWarmup", source)
+        self.assertIn("StartBackend", source)
+        self.assertIn("pre_audit", source)
+        self.assertIn("petdesk release bundle final audit", source)
+        self.assertNotIn("Stop-Process", source)
+        self.assertNotIn("Start-Process", source)
+        self.assertNotIn("Invoke-PetdeskRuntimeRelease", source)
+        self.assertNotIn("pnpm tauri:build", source)
+        self.assertNotIn("uvicorn", source.lower())
+        self.assertNotIn("qq", source.lower())
+
+    def test_m60_doc_operator_guide_and_readme_record_release_pipeline(self) -> None:
+        doc = (ROOT / "docs" / "petdesk_release_pipeline_m60.md").read_text(encoding="utf-8")
+        guide = (ROOT / "docs" / "petdesk_operator_guide_m54.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("release_petdesk_bundle.ps1", doc)
+        self.assertIn("release_summary.json", doc)
+        self.assertIn("BuildFirst", doc)
+        self.assertIn("FullAcceptance", doc)
+        self.assertIn("SkipAcceptance", doc)
+        self.assertIn("AKANE_PETDESK_RELEASE_PIPELINE_OK", doc)
+        self.assertIn("not an installer", doc)
+        self.assertIn("Release Pipeline", guide)
+        self.assertIn("release_summary.json", guide)
+        self.assertIn("AKANE_PETDESK_RELEASE_PIPELINE_DRY_RUN_OK", guide)
+        self.assertIn("release_petdesk_bundle.ps1", readme)
+        self.assertIn("release pipeline", readme)
+
 
 if __name__ == "__main__":
     unittest.main()

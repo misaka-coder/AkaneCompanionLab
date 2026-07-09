@@ -266,6 +266,45 @@ Or from inside the bundle:
 The bundle starter does not start the backend, stop processes, build
 Rust/Tauri, or touch QQ.
 
+## Release Pipeline
+
+Run the full release bundle pipeline:
+
+```powershell
+.\scripts\release_petdesk_bundle.ps1
+```
+
+Build first:
+
+```powershell
+.\scripts\release_petdesk_bundle.ps1 -BuildFirst
+```
+
+Run full MVP acceptance before export:
+
+```powershell
+.\scripts\release_petdesk_bundle.ps1 -FullAcceptance
+```
+
+Export and audit without a live backend acceptance pass:
+
+```powershell
+.\scripts\release_petdesk_bundle.ps1 -SkipAcceptance
+```
+
+The pipeline writes `release_summary.json`, adds it to `manifest.json`, and
+runs bundle audit after the summary is included. It ends with:
+
+```text
+AKANE_PETDESK_RELEASE_PIPELINE_OK
+AKANE_PETDESK_RELEASE_PIPELINE_FAILED
+AKANE_PETDESK_RELEASE_PIPELINE_CHECK_OK
+AKANE_PETDESK_RELEASE_PIPELINE_DRY_RUN_OK
+```
+
+It is still not an installer and does not open the runtime window or stop any
+process.
+
 ## Expected Output
 
 Healthy release startup prints:

@@ -308,10 +308,11 @@ Tauri/WebView2，并以 Windows 为主要验证平台。
 .\scripts\accept_petdesk_release.ps1
 .\scripts\export_petdesk_release_bundle.ps1 -CheckOnly
 .\scripts\audit_petdesk_release_bundle.ps1 -BundleRoot <bundle>
+.\scripts\release_petdesk_bundle.ps1 -CheckOnly
 .\scripts\stop_petdesk_runtime.ps1
 ```
 
-完整构建、启动、doctor、acceptance、bundle 导出/审计、smoke、dry-run、停止和排障步骤见
+完整构建、启动、doctor、acceptance、bundle 导出/审计、release pipeline、smoke、dry-run、停止和排障步骤见
 `docs/petdesk_operator_guide_m54.md`。
 
 ## 本地访问
