@@ -5,9 +5,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from companion_v01.capability_adapters.python_local import AkanePythonCapabilityAdapter
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.engine import AkaneMemoryEngine
-from companion_v01.tool_runtime import BaseToolHandler, ToolExecutionContext, ToolExecutionResult
+from companion_v01.tool_runtime import (
+    AdapterCapabilityToolHandler,
+    BaseToolHandler,
+    ToolExecutionContext,
+    ToolExecutionResult,
+)
 
 
 class StubStore:
@@ -55,25 +61,34 @@ def build_engine() -> AkaneMemoryEngine:
     return engine
 
 
+def build_python_handler(
+    capability_id: str, *, config_base_dir: str | Path | None = None
+) -> AdapterCapabilityToolHandler:
+    adapter = AkanePythonCapabilityAdapter()
+    descriptors = {str(descriptor.id): descriptor for descriptor in adapter.list_capabilities_sync()}
+    return AdapterCapabilityToolHandler(
+        capability_id=capability_id,
+        adapter=adapter,
+        descriptor=descriptors[capability_id],
+        config_base_dir=config_base_dir,
+    )
+
+
 class CapabilityAdapterPythonOrchestrationTests(unittest.TestCase):
-    def test_python_adapter_tools_are_profile_scoped(self) -> None:
+    def test_python_adapter_helpers_do_not_enter_prompt_tool_selection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
             engine = build_engine()
             no_profile = engine._resolve_tool_handlers(client_context=context(), profile_user_id="", session_id="s1")
             alice = engine._resolve_tool_handlers(client_context=context(), profile_user_id="alice", session_id="s1")
 
         self.assertNotIn("python.akane.normalize_text", no_profile)
-        self.assertIn("python.akane.normalize_text", alice)
-        self.assertIn("python.akane.extract_semantic_tags", alice)
-        self.assertIn("python.akane.detect_time_of_day", alice)
+        self.assertNotIn("python.akane.normalize_text", alice)
+        self.assertNotIn("python.akane.extract_semantic_tags", alice)
+        self.assertNotIn("python.akane.detect_time_of_day", alice)
 
-    def test_python_adapter_tool_executes_through_capcore_gate(self) -> None:
+    def test_python_adapter_helper_can_still_be_invoked_when_host_wires_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
-            handler = build_engine()._resolve_tool_handlers(
-                client_context=context(),
-                profile_user_id="alice",
-                session_id="s1",
-            )["python.akane.normalize_text"]
+            handler = build_python_handler("python.akane.normalize_text", config_base_dir=temp_dir)
             call = handler.normalize_call({"type": "python.akane.normalize_text", "text": "  hello   world  "})
             assert call is not None
             result = handler.execute(call=call, context=execution_context())
@@ -85,11 +100,7 @@ class CapabilityAdapterPythonOrchestrationTests(unittest.TestCase):
 
     def test_python_adapter_tool_uses_capcore_schema_validation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
-            handler = build_engine()._resolve_tool_handlers(
-                client_context=context(),
-                profile_user_id="alice",
-                session_id="s1",
-            )["python.akane.extract_semantic_tags"]
+            handler = build_python_handler("python.akane.extract_semantic_tags", config_base_dir=temp_dir)
             result = handler.execute(
                 call={
                     "type": "python.akane.extract_semantic_tags",
@@ -102,7 +113,7 @@ class CapabilityAdapterPythonOrchestrationTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "validation_error")
         self.assertEqual(result.stream_events[0]["reason"], "maximum_violation")
 
-    def test_python_adapter_prompt_is_not_labeled_as_mcp(self) -> None:
+    def test_python_adapter_helpers_are_not_rendered_in_tool_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
             prompt = build_engine()._build_tool_prompt_context(
                 allow_tool_call=True,
@@ -111,8 +122,8 @@ class CapabilityAdapterPythonOrchestrationTests(unittest.TestCase):
                 session_id="s1",
             )
 
-        self.assertIn("python.akane.detect_time_of_day", prompt)
-        self.assertIn("该能力来自本地 Python 能力", prompt)
+        self.assertNotIn("python.akane.detect_time_of_day", prompt)
+        self.assertNotIn("该能力来自本地 Python 能力", prompt)
         self.assertNotIn("该能力来自本地 MCP server", prompt)
 
 

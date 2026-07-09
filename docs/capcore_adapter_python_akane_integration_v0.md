@@ -21,7 +21,7 @@ Akane local callable
 
 ## Current Local Python Capabilities
 
-The first exposed capabilities are low-risk, read-only helpers from
+The current registered capabilities are low-risk, read-only helpers from
 `companion_v01.text_utils`:
 
 - `python.akane.normalize_text`
@@ -32,12 +32,17 @@ They are intentionally small. They prove the local Python adapter path without
 touching shell execution, browser control, file writes, provider keys, or user
 profile mutation.
 
+As of the lean-down LD-007 slice, these helpers remain cataloged as internal
+Python adapter capabilities but are no longer prompt-exposed by default. They
+are deterministic host utilities, not product-meaningful actions for the model
+to choose during chat.
+
 ## Host-Owned Pieces
 
 Akane owns:
 
 - which local callables are registered;
-- prompt exposure of these local Python capabilities;
+- prompt exposure policy for local Python capabilities;
 - tool prompt wording through `AdapterCapabilityToolHandler`;
 - profile/session scoping in `tool_rounds`;
 - public catalog entries under `kind="python_tool"`;
@@ -85,7 +90,8 @@ git diff --check
 
 Next likely friction to watch:
 
-- prompt bloat if more Python callables are exposed by default;
+- prompt bloat if more Python callables are exposed by default; LD-007 sets the
+  default expectation that deterministic helpers stay hidden from the model;
 - whether local utility tools should stay always-on or become profile-configured;
 - whether `AdapterCapabilityToolHandler` should eventually move from generic
   JSON followup formatting to source-specific result rendering;

@@ -69,7 +69,7 @@ class LocalCapabilityCatalogTests(unittest.TestCase):
         self.assertEqual(normalize["risk"], "low")
         self.assertEqual(normalize["confirm"], "never")
         self.assertFalse(normalize["requiresConfirmation"])
-        self.assertTrue(normalize["exposedToPrompt"])
+        self.assertFalse(normalize["exposedToPrompt"])
 
 
 if __name__ == "__main__":

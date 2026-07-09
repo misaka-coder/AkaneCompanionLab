@@ -40,7 +40,7 @@ def build_akane_python_capability_specs() -> tuple[PythonCapabilitySpec, ...]:
             display_name="Normalize Text",
             short_hint="Normalize whitespace in a short text string.",
             visible_in=VISIBLE_SURFACES,
-            prompt_exposed=True,
+            prompt_exposed=False,
             risk="low",
             confirm="never",
             inputs=(
@@ -58,7 +58,7 @@ def build_akane_python_capability_specs() -> tuple[PythonCapabilitySpec, ...]:
             display_name="Extract Semantic Tags",
             short_hint="Extract compact semantic tags from short text.",
             visible_in=VISIBLE_SURFACES,
-            prompt_exposed=True,
+            prompt_exposed=False,
             risk="low",
             confirm="never",
             inputs=(
@@ -82,7 +82,7 @@ def build_akane_python_capability_specs() -> tuple[PythonCapabilitySpec, ...]:
             display_name="Detect Time Of Day",
             short_hint="Detect morning, afternoon, night, or midnight hints in text.",
             visible_in=VISIBLE_SURFACES,
-            prompt_exposed=True,
+            prompt_exposed=False,
             risk="low",
             confirm="never",
             inputs=(
