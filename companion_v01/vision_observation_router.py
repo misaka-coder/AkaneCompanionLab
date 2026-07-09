@@ -55,6 +55,16 @@ class VisionObservationRouter:
             return
 
         card = observation.get("observation") if isinstance(observation.get("observation"), dict) else {}
+        existing = self.store.get_attachment_inbox_item(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            attachment_id=attachment_id,
+        )
+        existing_detail = (existing or {}).get("detail") if isinstance((existing or {}).get("detail"), dict) else {}
+        if existing_detail:
+            merged_card = dict(existing_detail)
+            merged_card.update(card)
+            card = merged_card
         summary = str(card.get("summary") or observation.get("summary") or "").strip()
         summary_title = (
             str(card.get("summary_title") or "").strip()

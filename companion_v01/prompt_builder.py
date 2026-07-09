@@ -15,6 +15,14 @@ diary_summary、key_events、core_facts、semantic_summary、stable_facts、open
 如果源摘要里已经有未锚定的相对时间，先用它自己的时间范围重新解释，再继续压缩或融合。
 """.strip()
 
+ATTRIBUTION_RULES = """
+【发言与材料归属规则】
+- 原始消息行、当前用户消息或回忆片段里的 `【名字】正文` 是群聊说话人标签；只把这一行正文归给该名字，不要把相邻行或别人的内容串到同一个人身上。
+- 回答群聊问题时，优先引用明确的昵称/发送者；如果来源只写“群成员”或信息不足，就用中性说法，不要猜是谁。
+- 图片、文件和工作台材料若写有“发送者”，表示这份材料由该发送者发来；讨论图片内容时要保留这个归属，不要默认都是当前主人或另一个群友发的。
+- 记忆和摘要里的称呼、偏好、计划、图片内容都要跟源发言人绑定；不确定归属时先说明不确定或追问，不要张冠李戴。
+""".strip()
+
 
 class PromptBuilder:
     def __init__(self, persona: PersonaConfig):
@@ -213,6 +221,7 @@ class PromptBuilder:
             f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
             "如果记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
             "回应时自然带着这份余温即可，不要把它当作用户事实，也不要生硬复述标签。\n\n"
+            f"{ATTRIBUTION_RULES}\n\n"
             f"{memory_context_prompt}"
             f"当前会话中所有未总结的原始消息：\n{raw_text or '(无)'}\n\n"
             f"可用回忆片段：\n{memory_text}\n\n"

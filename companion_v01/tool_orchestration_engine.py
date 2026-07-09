@@ -92,7 +92,9 @@ def resolve_tool_round_budget(
     *,
     current_budget: int | None = None,
 ) -> int:
-    base_budget = max_tool_rounds() if current_budget is None else _bounded_int(current_budget, default=max_tool_rounds())
+    base_budget = (
+        max_tool_rounds() if current_budget is None else _bounded_int(current_budget, default=max_tool_rounds())
+    )
     tool_type = str((tool_call or {}).get("type") or "").strip()
     if not tool_type:
         return base_budget
@@ -104,11 +106,7 @@ def resolve_tool_round_budget(
 
 
 def tool_call_signature(tool_call: dict[str, Any]) -> str:
-    payload = {
-        str(key): value
-        for key, value in dict(tool_call or {}).items()
-        if not str(key).startswith("_tool_")
-    }
+    payload = {str(key): value for key, value in dict(tool_call or {}).items() if not str(key).startswith("_tool_")}
     if str(payload.get("type") or "").strip() == "web_search":
         action = str(payload.get("action") or "search").strip() or "search"
         if action in {"search", "batch_search"}:
@@ -163,9 +161,13 @@ def shape_tool_followup(
     text = str(followup_context or "").strip()
     if not text:
         return f"（{tool_name} 执行成功，但没有返回可展示的内容。）"
-    limit = int(max_chars) if max_chars else int(
-        getattr(config, "MAX_TOOL_FOLLOWUP_CHARS", DEFAULT_MAX_TOOL_FOLLOWUP_CHARS)
-        or DEFAULT_MAX_TOOL_FOLLOWUP_CHARS
+    limit = (
+        int(max_chars)
+        if max_chars
+        else int(
+            getattr(config, "MAX_TOOL_FOLLOWUP_CHARS", DEFAULT_MAX_TOOL_FOLLOWUP_CHARS)
+            or DEFAULT_MAX_TOOL_FOLLOWUP_CHARS
+        )
     )
     limit = max(500, limit)
     if len(text) <= limit:
@@ -305,8 +307,9 @@ def native_web_search_tool_schema() -> dict[str, Any]:
             "name": "web_search",
             "description": (
                 "Search public web pages or extract public URL content when the user asks for current, "
-                "online, or verifiable public information. Do not use it for localhost, intranet, file "
-                "paths, login pages, paid pages, or private links."
+                "online, volatile, or verifiable public information. Use it before guessing about current "
+                "external state even if the user did not explicitly say search. Do not use it for localhost, "
+                "intranet, file paths, login pages, paid pages, or private links."
             ),
             "parameters": {
                 "type": "object",

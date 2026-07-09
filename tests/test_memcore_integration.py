@@ -329,6 +329,27 @@ class _LegacyRawStore:
             yield self.rows[start : start + max(1, int(batch_size))]
 
 
+class _LegacyLongTermStore:
+    def __init__(
+        self,
+        *,
+        summaries: list[dict[str, object]] | None = None,
+        semantic_summaries: list[dict[str, object]] | None = None,
+    ) -> None:
+        self.summaries = summaries or []
+        self.semantic_summaries = semantic_summaries or []
+
+    def iter_summaries_for_vector_reindex(self, batch_size: int = 64):
+        step = max(1, int(batch_size))
+        for start in range(0, len(self.summaries), step):
+            yield self.summaries[start : start + step]
+
+    def iter_semantic_summaries_for_vector_reindex(self, batch_size: int = 64):
+        step = max(1, int(batch_size))
+        for start in range(0, len(self.semantic_summaries), step):
+            yield self.semantic_summaries[start : start + step]
+
+
 def _tool_context() -> ToolExecutionContext:
     return ToolExecutionContext(
         profile_user_id="u1",
@@ -544,6 +565,157 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(source_ids.count("old-assistant"), 1)
             self.assertNotIn("other-profile", source_ids)
             self.assertNotIn("tool-turn", source_ids)
+            manager.close()
+
+    def test_import_legacy_long_term_memory_preserves_old_summary_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            legacy_store = _LegacyLongTermStore(
+                summaries=[
+                    {
+                        "summary_id": "summary::anime-plan",
+                        "profile_user_id": "u1",
+                        "session_id": "old-session",
+                        "character_pack_id": "reimu",
+                        "timestamp": _ts(2026, 6, 20, 21, 0),
+                        "date_label": "2026-06-20",
+                        "time_of_day": "晚上",
+                        "period_label": "旧约定",
+                        "event_type": "preference",
+                        "importance": 0.9,
+                        "diary_summary": "用户和灵梦约好七月一起看新番。",
+                        "key_events": ["约好七月看新番"],
+                        "core_facts": ["用户喜欢聊动漫和新番"],
+                        "semantic_tags": ["新番", "动漫"],
+                        "memory_metadata": {"keywords": ["新番", "动漫"], "categories": ["preference"]},
+                        "is_semanticized": 1,
+                        "semantic_id": "semantic::anime-plan",
+                        "source_ids": ["old-user", "old-assistant"],
+                    },
+                    {
+                        "summary_id": "summary::other-profile",
+                        "profile_user_id": "u2",
+                        "session_id": "old-session",
+                        "character_pack_id": "reimu",
+                        "timestamp": _ts(2026, 6, 20, 21, 0),
+                        "diary_summary": "别人的摘要不能导入。",
+                    },
+                ],
+                semantic_summaries=[
+                    {
+                        "semantic_id": "semantic::anime-plan",
+                        "profile_user_id": "u1",
+                        "session_id": "old-session",
+                        "character_pack_id": "reimu",
+                        "timestamp": _ts(2026, 6, 20, 21, 0),
+                        "period_start_ts": _ts(2026, 6, 20, 21, 0),
+                        "period_end_ts": _ts(2026, 6, 20, 21, 5),
+                        "date_label": "2026-06-20",
+                        "time_of_day": "晚上",
+                        "importance": 0.95,
+                        "semantic_summary": "用户和灵梦有七月一起看新番的约定，用户也喜欢聊动漫偏好。",
+                        "stable_facts": ["用户喜欢动漫和新番"],
+                        "recurring_topics": ["七月新番"],
+                        "important_people": ["灵梦"],
+                        "open_loops": ["七月看新番"],
+                        "semantic_tags": ["新番", "动漫", "约定"],
+                        "memory_metadata": {"keywords": ["七月", "新番"], "categories": ["preference"]},
+                        "source_summary_ids": ["summary::anime-plan"],
+                        "reinforcement_count": 2,
+                        "last_reinforced_ts": _ts(2026, 6, 20, 21, 5),
+                    }
+                ],
+            )
+
+            first = manager.import_legacy_long_term_memory(
+                legacy_store=legacy_store,
+                profile_user_id="u1",
+                character_pack_id="reimu",
+                batch_size=1,
+            )
+            second = manager.import_legacy_long_term_memory(
+                legacy_store=legacy_store,
+                profile_user_id="u1",
+                character_pack_id="reimu",
+                batch_size=1,
+            )
+
+            self.assertTrue(first["ok"], first)
+            self.assertEqual(first["upserted"], 2)
+            self.assertEqual(first["filtered"], 1)
+            self.assertEqual(first["failed"], 0)
+            self.assertTrue(second["ok"], second)
+            self.assertEqual(second["upserted"], 0)
+            self.assertEqual(second["skipped"], 2)
+
+            summary = manager._store.get_record_by_source_id("summary::anime-plan")
+            semantic = manager._store.get_record_by_source_id("semantic::anime-plan")
+            self.assertEqual(summary["diary_summary"], "用户和灵梦约好七月一起看新番。")
+            self.assertEqual(summary["timestamp"], _ts(2026, 6, 20, 21, 0))
+            self.assertEqual(summary["is_semanticized"], 1)
+            self.assertEqual(summary["semantic_id"], "semantic::anime-plan")
+            self.assertEqual(summary["memory_metadata"]["source_system"], "akane_legacy")
+            self.assertTrue(summary["memory_metadata"]["legacy_import"])
+            self.assertIn("七月一起看新番", semantic["semantic_summary"])
+            manager.close()
+
+    def test_import_legacy_long_term_memory_reports_namespace_conflict_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            other_system = manager._get_system(
+                profile_user_id="u1",
+                session_id="old-session",
+                character_pack_id="akane_v1",
+            )
+            manager._store.add_summary(
+                namespace=other_system.namespace,
+                record={
+                    "summary_id": "summary::shared-id",
+                    "timestamp": _ts(2026, 6, 1, 20, 0),
+                    "diary_summary": "这是 Akane 域已有的摘要，不能被灵梦域覆盖。",
+                },
+            )
+            legacy_store = _LegacyLongTermStore(
+                summaries=[
+                    {
+                        "summary_id": "summary::shared-id",
+                        "profile_user_id": "u1",
+                        "session_id": "old-session",
+                        "character_pack_id": "reimu",
+                        "timestamp": _ts(2026, 6, 2, 20, 0),
+                        "diary_summary": "这条如果强写就会跨角色域覆盖。",
+                    }
+                ]
+            )
+
+            result = manager.import_legacy_summaries(
+                legacy_store=legacy_store,
+                profile_user_id="u1",
+                character_pack_id="reimu",
+            )
+
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["conflicted"], 1)
+            self.assertEqual(result["failed"], 1)
+            stored = manager._store.get_record_by_source_id("summary::shared-id")
+            self.assertEqual(stored["domain_id"], "akane_v1")
+            self.assertEqual(stored["diary_summary"], "这是 Akane 域已有的摘要，不能被灵梦域覆盖。")
             manager.close()
 
     def test_dual_write_records_raw_and_updates_metadata(self) -> None:

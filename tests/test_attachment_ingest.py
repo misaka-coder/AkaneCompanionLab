@@ -36,6 +36,7 @@ class FakeVisionService:
             summary_title="窗边小猫",
             short_hint="一张白猫趴在窗边的照片。",
             detail={
+                **(attachment.get("detail") if isinstance(attachment.get("detail"), dict) else {}),
                 "type": "attachment_image_observation",
                 "summary_title": "窗边小猫",
                 "summary": "一张白猫趴在窗边的照片。",
@@ -196,6 +197,7 @@ class AttachmentIngestTests(unittest.TestCase):
                         "kind": "image",
                         "origin_name": "cat.png",
                         "path": str(source),
+                        "sender_label": "休比",
                     }
                 ],
                 timestamp=100,
@@ -212,6 +214,7 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertEqual(item["attachment_handle"], "img_001")
             self.assertEqual(item["summary_title"], "窗边小猫")
             self.assertEqual(item["detail"]["entities"], ["白猫", "窗边"])
+            self.assertEqual(item["detail"]["qq_sender_label"], "休比")
             self.assertEqual(len(fake_vision.scheduled), 1)
             self.assertTrue(fake_vision.scheduled[0]["source_path"].exists())
 
@@ -376,9 +379,12 @@ class AttachmentIngestTests(unittest.TestCase):
 
                 return Result()
 
-            with patch("companion_v01.attachment_ingest.shutil.which", return_value="ffprobe"), patch(
-                "companion_v01.attachment_ingest.subprocess.run",
-                side_effect=fake_run,
+            with (
+                patch("companion_v01.attachment_ingest.shutil.which", return_value="ffprobe"),
+                patch(
+                    "companion_v01.attachment_ingest.subprocess.run",
+                    side_effect=fake_run,
+                ),
             ):
                 created = service.ingest_qq_attachments(
                     profile_user_id="master",
@@ -590,8 +596,12 @@ class AttachmentIngestTests(unittest.TestCase):
             cookiefile.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
             with patch.dict(sys.modules, {"yt_dlp": fake_module}):
                 with patch("companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIEFILE", str(cookiefile)):
-                    with patch("companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_REFERER", "https://www.bilibili.com/"):
-                        with patch.object(service, "_locate_downloaded_remote_media_file", return_value=downloaded_target):
+                    with patch(
+                        "companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_REFERER", "https://www.bilibili.com/"
+                    ):
+                        with patch.object(
+                            service, "_locate_downloaded_remote_media_file", return_value=downloaded_target
+                        ):
                             result = service._download_remote_media_with_yt_dlp(
                                 descriptor=RemoteMediaDescriptor(
                                     source_url="https://b23.tv/demo",
@@ -631,8 +641,7 @@ class AttachmentIngestTests(unittest.TestCase):
             )
 
             message = service._humanize_remote_fetch_error(
-                "[BiliBili] 1ZJ6qBvEnZ: Unable to download JSON metadata: "
-                "HTTP Error 412: Precondition Failed"
+                "[BiliBili] 1ZJ6qBvEnZ: Unable to download JSON metadata: HTTP Error 412: Precondition Failed"
             )
 
             self.assertIn("平台风控", message)
@@ -651,7 +660,9 @@ class AttachmentIngestTests(unittest.TestCase):
             )
 
             with patch("companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIEFILE", ""):
-                with patch("companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER", "edge:Default"):
+                with patch(
+                    "companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER", "edge:Default"
+                ):
                     options = service._yt_dlp_common_options(timeout=12.0)
 
             self.assertEqual(options["socket_timeout"], 12.0)

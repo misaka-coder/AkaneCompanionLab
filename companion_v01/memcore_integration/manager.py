@@ -80,6 +80,7 @@ class MemcoreManager:
         self._store: Any | None = None
         self._index: Any | None = None
         self._systems: dict[tuple[str, str, str], Any] = {}
+        self._warmed_index_keys: set[tuple[str, str, str]] = set()
         self._lock = threading.RLock()
         if self.enabled:
             self._bootstrap()
@@ -336,6 +337,274 @@ class MemcoreManager:
                 "failed": failed + 1,
             }
         return self._import_result(operation, scanned, upserted, filtered, skipped, failed)
+
+    def import_legacy_long_term_memory(
+        self,
+        *,
+        legacy_store: Any,
+        profile_user_id: str = "",
+        character_pack_id: str | None = None,
+        batch_size: int = 64,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Import legacy episodic and semantic summaries into memcore.
+
+        Raw backfill alone can leave Akane feeling amnesic until memcore has
+        recompressed old history. This maintenance entry carries over the
+        legacy long-term layers directly, preserving old distilled memories.
+        """
+
+        operation = "import_legacy_long_term_memory"
+        summaries = self.import_legacy_summaries(
+            legacy_store=legacy_store,
+            profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
+            batch_size=batch_size,
+            limit=limit,
+        )
+        semantic = self.import_legacy_semantic_summaries(
+            legacy_store=legacy_store,
+            profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
+            batch_size=batch_size,
+            limit=limit,
+        )
+        ok = bool(summaries.get("ok")) and bool(semantic.get("ok"))
+        status = "completed" if ok else "partial"
+        reason = "; ".join(
+            part
+            for part in (
+                str(summaries.get("reason") or ""),
+                str(semantic.get("reason") or ""),
+            )
+            if part
+        )
+        return {
+            **self._status(operation, ok, status, reason=reason),
+            "summaries": summaries,
+            "semantic_summaries": semantic,
+            "scanned": int(summaries.get("scanned") or 0) + int(semantic.get("scanned") or 0),
+            "upserted": int(summaries.get("upserted") or 0) + int(semantic.get("upserted") or 0),
+            "filtered": int(summaries.get("filtered") or 0) + int(semantic.get("filtered") or 0),
+            "skipped": int(summaries.get("skipped") or 0) + int(semantic.get("skipped") or 0),
+            "failed": int(summaries.get("failed") or 0) + int(semantic.get("failed") or 0),
+            "conflicted": int(summaries.get("conflicted") or 0) + int(semantic.get("conflicted") or 0),
+        }
+
+    def import_legacy_summaries(
+        self,
+        *,
+        legacy_store: Any,
+        profile_user_id: str = "",
+        character_pack_id: str | None = None,
+        batch_size: int = 64,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        return self._import_legacy_layer_records(
+            operation="import_legacy_summaries",
+            legacy_store=legacy_store,
+            iterator_name="iter_summaries_for_vector_reindex",
+            entry_type="summary",
+            profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
+            batch_size=batch_size,
+            limit=limit,
+        )
+
+    def import_legacy_semantic_summaries(
+        self,
+        *,
+        legacy_store: Any,
+        profile_user_id: str = "",
+        character_pack_id: str | None = None,
+        batch_size: int = 64,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        return self._import_legacy_layer_records(
+            operation="import_legacy_semantic_summaries",
+            legacy_store=legacy_store,
+            iterator_name="iter_semantic_summaries_for_vector_reindex",
+            entry_type="semantic_summary",
+            profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
+            batch_size=batch_size,
+            limit=limit,
+        )
+
+    def _import_legacy_layer_records(
+        self,
+        *,
+        operation: str,
+        legacy_store: Any,
+        iterator_name: str,
+        entry_type: str,
+        profile_user_id: str,
+        character_pack_id: str | None,
+        batch_size: int,
+        limit: int | None,
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            return {
+                **self._status(operation, False, "disabled", reason="memory_backend_legacy"),
+                "scanned": 0,
+                "upserted": 0,
+                "filtered": 0,
+                "skipped": 0,
+                "failed": 0,
+                "conflicted": 0,
+            }
+        if not self.available:
+            return {
+                **self._status(operation, False, "unavailable", reason=self._reason),
+                "scanned": 0,
+                "upserted": 0,
+                "filtered": 0,
+                "skipped": 0,
+                "failed": 0,
+                "conflicted": 0,
+            }
+        iterator = getattr(legacy_store, iterator_name, None)
+        if not callable(iterator):
+            return {
+                **self._status(operation, False, "invalid_store", reason=f"{iterator_name}_required"),
+                "scanned": 0,
+                "upserted": 0,
+                "filtered": 0,
+                "skipped": 0,
+                "failed": 0,
+                "conflicted": 0,
+            }
+        if self._store is None:
+            return {
+                **self._status(operation, False, "unavailable", reason="memcore_store_not_ready"),
+                "scanned": 0,
+                "upserted": 0,
+                "filtered": 0,
+                "skipped": 0,
+                "failed": 0,
+                "conflicted": 0,
+            }
+
+        profile_filter = str(profile_user_id or "").strip()
+        character_filter = None if character_pack_id is None else str(character_pack_id or "").strip()
+        max_records = self._coerce_positive_int_or_none(limit)
+        scanned = upserted = filtered = skipped = failed = conflicted = 0
+        try:
+            batches = iterator(batch_size=max(1, int(batch_size or 64)))
+            for batch in batches:
+                for record in list(batch or []):
+                    if max_records is not None and scanned >= max_records:
+                        return self._import_layer_result(
+                            operation, scanned, upserted, filtered, skipped, failed, conflicted
+                        )
+                    if not isinstance(record, dict):
+                        skipped += 1
+                        continue
+                    scanned += 1
+                    record_profile = str(record.get("profile_user_id") or "").strip()
+                    record_character = str(record.get("character_pack_id") or "").strip()
+                    if profile_filter and record_profile != profile_filter:
+                        filtered += 1
+                        continue
+                    if character_filter is not None and record_character != character_filter:
+                        filtered += 1
+                        continue
+                    result = self._import_one_legacy_layer_record(
+                        operation=operation,
+                        entry_type=entry_type,
+                        record=record,
+                        profile_user_id=record_profile,
+                        session_id=str(record.get("session_id") or "").strip(),
+                        character_pack_id=record_character,
+                    )
+                    status = str(result.get("status") or "")
+                    if bool(result.get("ok")):
+                        if status == "skipped":
+                            skipped += 1
+                        else:
+                            upserted += 1
+                    elif status == "conflicted":
+                        conflicted += 1
+                        failed += 1
+                    else:
+                        failed += 1
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore legacy layer import failed: %s", reason)
+            return {
+                **self._status(operation, False, "failed", reason=reason),
+                "scanned": scanned,
+                "upserted": upserted,
+                "filtered": filtered,
+                "skipped": skipped,
+                "failed": failed + 1,
+                "conflicted": conflicted,
+            }
+        return self._import_layer_result(operation, scanned, upserted, filtered, skipped, failed, conflicted)
+
+    def _import_one_legacy_layer_record(
+        self,
+        *,
+        operation: str,
+        entry_type: str,
+        record: dict[str, Any],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> dict[str, Any]:
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None or self._store is None:
+            return self._status(operation, False, "unavailable", reason=self._reason)
+        if entry_type == "semantic_summary":
+            record_id = str(record.get("semantic_id") or "").strip()
+            text = str(record.get("semantic_summary") or "").strip()
+            write = self._store.add_semantic_summary
+        else:
+            record_id = str(record.get("summary_id") or "").strip()
+            text = str(record.get("diary_summary") or "").strip()
+            write = self._store.add_summary
+        if not record_id:
+            return self._status(operation, False, "invalid_record", reason="id_required")
+        if not text:
+            return self._status(operation, True, "skipped", source_id=record_id, reason="empty_text")
+
+        existing = self._store.get_record_by_source_id(record_id)
+        if existing is not None:
+            if self._record_belongs_to_namespace(existing, system.namespace):
+                return self._status(operation, True, "skipped", source_id=record_id, reason="already_imported")
+            return self._status(
+                operation,
+                False,
+                "conflicted",
+                source_id=record_id,
+                reason="source_id_belongs_to_different_namespace",
+            )
+
+        payload = dict(record)
+        payload["memory_metadata"] = self._legacy_import_metadata(payload.get("memory_metadata"))
+        saved = write(namespace=system.namespace, record=payload)
+        if entry_type == "summary" and int(record.get("is_semanticized") or 0):
+            semantic_id = str(record.get("semantic_id") or "").strip()
+            if semantic_id:
+                self._store.mark_summaries_semanticized([record_id], semantic_id)
+                saved["is_semanticized"] = 1
+                saved["semantic_id"] = semantic_id
+        try:
+            system._reindex_record(saved)
+            index_status = "indexed"
+        except Exception as exc:
+            index_status = "pending"
+            logger.warning(
+                "memcore legacy layer index pending for %s: %s",
+                record_id,
+                str(exc) or exc.__class__.__name__,
+            )
+        return self._status(operation, True, "recorded", source_id=record_id, index_status=index_status)
 
     def build_prompt_context(
         self,
@@ -801,26 +1070,44 @@ class MemcoreManager:
         key = (user_id, conversation_id, domain_id)
         with self._lock:
             existing = self._systems.get(key)
-            if existing is not None:
-                return existing
-            namespace = self._memcore_module.Namespace(
-                user_id=user_id,
-                tenant_id="",
-                domain_id=domain_id,
-                conversation_id=conversation_id,
-            )
-            system = self._memcore_module.MemorySystem(
-                llm=self._llm_client,
-                namespace=namespace,
-                timezone="Asia/Shanghai",
-                storage_dir=str(self.storage_path),
-                config=self._memory_config,
-                store=self._store,
-                index=self._index,
-                embedding=self._embedding,
-            )
-            self._systems[key] = system
-            return system
+            if existing is None:
+                namespace = self._memcore_module.Namespace(
+                    user_id=user_id,
+                    tenant_id="",
+                    domain_id=domain_id,
+                    conversation_id=conversation_id,
+                )
+                existing = self._memcore_module.MemorySystem(
+                    llm=self._llm_client,
+                    namespace=namespace,
+                    timezone="Asia/Shanghai",
+                    storage_dir=str(self.storage_path),
+                    config=self._memory_config,
+                    store=self._store,
+                    index=self._index,
+                    embedding=self._embedding,
+                )
+                self._systems[key] = existing
+        self._warm_index_for_system(existing, operation="get_system")
+        return existing
+
+    def _warm_index_for_system(self, system: Any, *, operation: str) -> None:
+        namespace = getattr(system, "namespace", None)
+        if namespace is None:
+            return
+        hard_key = tuple(str(item or "") for item in namespace.hard_key())
+        with self._lock:
+            if hard_key in self._warmed_index_keys:
+                return
+            self._warmed_index_keys.add(hard_key)
+        try:
+            raw_limit = getattr(config, "MEMCORE_REINDEX_ON_NAMESPACE_LOAD_LIMIT", None)
+            limit = self._coerce_positive_int_or_none(raw_limit)
+            system.reindex_all(namespace=namespace, limit=limit, current_conversation_only=False)
+        except Exception as exc:
+            with self._lock:
+                self._warmed_index_keys.discard(hard_key)
+            logger.warning("memcore %s index warmup failed: %s", operation, str(exc) or exc.__class__.__name__)
 
     @staticmethod
     def _status(
@@ -862,6 +1149,22 @@ class MemcoreManager:
         return number if number > 0 else None
 
     @staticmethod
+    def _record_belongs_to_namespace(record: dict[str, Any], namespace: Any) -> bool:
+        return (
+            str(record.get("tenant_id") or "") == str(getattr(namespace, "tenant_id", "") or "")
+            and str(record.get("user_id") or "") == str(getattr(namespace, "user_id", "") or "")
+            and str(record.get("domain_id") or "") == str(getattr(namespace, "domain_id", "") or "")
+            and str(record.get("conversation_id") or "") == str(getattr(namespace, "conversation_id", "") or "")
+        )
+
+    @staticmethod
+    def _legacy_import_metadata(memory_metadata: Any) -> dict[str, Any]:
+        metadata = dict(memory_metadata) if isinstance(memory_metadata, dict) else {}
+        metadata.setdefault("source_system", "akane_legacy")
+        metadata.setdefault("legacy_import", True)
+        return metadata
+
+    @staticmethod
     def _apply_limit(snippets: list[str], limit: Any) -> list[str]:
         try:
             value = int(limit)
@@ -886,16 +1189,12 @@ class MemcoreManager:
         raw_text = render_visible_raw(raw, tz=tz)
         episodic_text = "\n\n".join(
             text
-            for text in (
-                render_summary_snippet(row, tz=tz, enable_flavor=enable_flavor) for row in episodic
-            )
+            for text in (render_summary_snippet(row, tz=tz, enable_flavor=enable_flavor) for row in episodic)
             if text
         )
         semantic_text = "\n\n".join(
             text
-            for text in (
-                render_semantic_snippet(row, tz=tz, enable_flavor=enable_flavor) for row in semantic
-            )
+            for text in (render_semantic_snippet(row, tz=tz, enable_flavor=enable_flavor) for row in semantic)
             if text
         )
         return raw_text, episodic_text, semantic_text
@@ -924,7 +1223,9 @@ class MemcoreManager:
         if status in {"ok", "empty"}:
             status = "ok" if messages else "empty"
             reason = "" if messages else "no_activity"
-        active_dates = sorted({str(item.get("date_label") or "") for item in messages if str(item.get("date_label") or "")})
+        active_dates = sorted(
+            {str(item.get("date_label") or "") for item in messages if str(item.get("date_label") or "")}
+        )
         text = render_timeline(messages, tz=str(getattr(system, "timezone", "") or "Asia/Shanghai")) if messages else ""
         return {
             "operation": "read_memory_timeline",
@@ -940,6 +1241,23 @@ class MemcoreManager:
             "text": text,
             "backend": "memcore",
         }
+
+    @classmethod
+    def _import_layer_result(
+        cls,
+        operation: str,
+        scanned: int,
+        upserted: int,
+        filtered: int,
+        skipped: int,
+        failed: int,
+        conflicted: int,
+    ) -> dict[str, Any]:
+        payload = cls._import_result(operation, scanned, upserted, filtered, skipped, failed)
+        payload["conflicted"] = int(conflicted)
+        if conflicted and not payload.get("reason"):
+            payload["reason"] = "some_records_conflicted"
+        return payload
 
     @classmethod
     def _import_result(

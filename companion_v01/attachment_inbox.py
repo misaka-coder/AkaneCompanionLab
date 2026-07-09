@@ -56,6 +56,7 @@ class AttachmentInboxService:
         storage_relpath: str = "",
         source_event_id: str = "",
         source_message_id: str = "",
+        detail: dict[str, Any] | None = None,
         timestamp: int | None = None,
     ) -> dict[str, Any]:
         return self.store.add_attachment_inbox_item(
@@ -71,6 +72,7 @@ class AttachmentInboxService:
             storage_relpath=storage_relpath,
             source_event_id=source_event_id,
             source_message_id=source_message_id,
+            detail=detail if isinstance(detail, dict) else None,
             timestamp=timestamp,
         )
 
@@ -950,6 +952,9 @@ class AttachmentInboxService:
         source_label = self._source_label(item)
         if source_label:
             lines.append(f"   来源：{source_label}")
+        sender_label = self._sender_label(item)
+        if sender_label:
+            lines.append(f"   发送者：{sender_label}")
         kind = str(item.get("kind") or "").strip().lower()
         if kind == "image":
             lines.extend(self._render_image_focus_detail(detail, fallback_hint=str(item.get("short_hint") or "")))
@@ -1694,6 +1699,19 @@ class AttachmentInboxService:
             "web": "Web",
         }
         return labels.get(source, str(item.get("source") or "").strip()[:40])
+
+    def _sender_label(self, item: dict[str, Any]) -> str:
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        for key in ("sender_label", "source_sender_label", "qq_sender_label"):
+            label = self._safe_prompt_label(detail.get(key))
+            if label:
+                return label
+        return ""
+
+    def _safe_prompt_label(self, value: Any) -> str:
+        text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or ""))
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:48]
 
     def _compact_item_label(self, item: dict[str, Any]) -> str:
         attachment_id = str(item.get("attachment_handle") or item.get("attachment_id") or "").strip()

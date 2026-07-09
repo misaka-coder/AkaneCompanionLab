@@ -31,6 +31,7 @@ class VisionObservationRouterTests(unittest.TestCase):
                 source="qq",
                 kind="image",
                 origin_name="pic.png",
+                detail={"qq_sender_label": "休比"},
                 timestamp=100,
             )
             router = VisionObservationRouter(store=store, gift_service=FakeGiftService())
@@ -60,6 +61,7 @@ class VisionObservationRouterTests(unittest.TestCase):
             self.assertEqual(updated["status"], "ready")
             self.assertEqual(updated["summary_title"], "白猫窗边")
             self.assertIn("白猫", updated["short_hint"])
+            self.assertEqual(updated["detail"]["qq_sender_label"], "休比")
 
     def test_attachment_image_error_marks_failed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

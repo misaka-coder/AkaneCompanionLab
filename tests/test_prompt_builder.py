@@ -375,6 +375,37 @@ system = "semantic reinforcement system"
         self.assertNotIn("character.outfit 表示服装大类", prompt)
         self.assertNotIn("activity 是给桌宠执行的请求", prompt)
 
+    def test_final_prompt_includes_group_speaker_and_material_attribution_rules(self) -> None:
+        persona = load_persona_config()
+        builder = PromptBuilder(persona)
+
+        result = builder.build_final_generation_context(
+            now_ts=1712400000,
+            raw_text="[12:00] user: 【休比】这张图是我发的",
+            current_message_text="[12:01] user: 【灵梦】那是谁发的图？",
+            episodic_summary_text="",
+            semantic_summary_text="",
+            memory_text="",
+            current_visual_context="",
+            resource_context="",
+            extra_context="【当前材料工作台】\n1. [img_001] 图片《窗边小猫》\n   发送者：休比",
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "bgm",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=True,
+            tool_prompt_context="",
+            debug_enabled=False,
+        )
+
+        self.assertIn("发言与材料归属规则", result["user_prompt"])
+        self.assertIn("`【名字】正文` 是群聊说话人标签", result["user_prompt"])
+        self.assertIn("图片、文件和工作台材料若写有“发送者”", result["user_prompt"])
+
     def test_desktop_pet_profile_override_removes_generic_scene_rules_from_final_prompt(self) -> None:
         persona = load_persona_config()
         builder = PromptBuilder(persona)

@@ -621,6 +621,66 @@ class AkaneMemoryEngine:
             logger.warning("memcore legacy raw backfill failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
+    def backfill_memcore_from_legacy_long_term(
+        self,
+        *,
+        profile_user_id: str = "",
+        character_pack_id: str | None = None,
+        batch_size: int = 64,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {"ok": False, "status": "disabled", "reason": "memcore_manager_not_enabled"}
+        try:
+            return manager.import_legacy_long_term_memory(
+                legacy_store=self.store,
+                profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                batch_size=batch_size,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.warning("memcore legacy long-term backfill failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
+    def backfill_memcore_from_legacy_memory(
+        self,
+        *,
+        profile_user_id: str = "",
+        character_pack_id: str | None = None,
+        batch_size: int = 64,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        raw = self.backfill_memcore_from_legacy_raw(
+            profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
+            batch_size=batch_size,
+            limit=limit,
+        )
+        long_term = self.backfill_memcore_from_legacy_long_term(
+            profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
+            batch_size=batch_size,
+            limit=limit,
+        )
+        ok = bool(raw.get("ok")) and bool(long_term.get("ok"))
+        reason = "; ".join(
+            part
+            for part in (
+                str(raw.get("reason") or ""),
+                str(long_term.get("reason") or ""),
+            )
+            if part
+        )
+        return {
+            "ok": ok,
+            "status": "completed" if ok else "partial",
+            "reason": reason,
+            "raw": raw,
+            "long_term": long_term,
+        }
+
     def snapshot_embedding_reindex_status(self) -> dict[str, Any]:
         with self._embedding_reindex_lock:
             return dict(self._embedding_reindex_status)
@@ -3842,9 +3902,7 @@ class AkaneMemoryEngine:
             )
         lines.extend(media_routing)
         lines.append("【工具决策原则】")
-        lines.append(
-            "- 先判断用户真实意图；人设、情绪和口癖只影响语气，不能改变是否调用工具。"
-        )
+        lines.append("- 先判断用户真实意图；人设、情绪和口癖只影响语气，不能改变是否调用工具。")
         if {"retrieve_memory", "read_memory_timeline"} & set(handlers):
             lines.append(
                 "- 旧事实/共同经历/偏好/约定/过去材料 -> retrieve_memory；"

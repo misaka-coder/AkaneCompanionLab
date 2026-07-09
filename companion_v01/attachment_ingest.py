@@ -100,9 +100,7 @@ REMOTE_MEDIA_DEFAULT_TIMEOUT = 180.0
 REMOTE_MEDIA_DEFAULT_MAX_BYTES = 1024 * 1024 * 1024
 REMOTE_MEDIA_DEFAULT_MAX_URLS = 8
 REMOTE_MEDIA_DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/123.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 )
 REMOTE_MEDIA_DEFAULT_REFERER = "https://www.bilibili.com/"
 
@@ -147,11 +145,7 @@ class AttachmentIngestService:
     ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.legacy_base_dirs = [
-            Path(item)
-            for item in list(legacy_base_dirs or [])
-            if Path(item) != self.base_dir
-        ]
+        self.legacy_base_dirs = [Path(item) for item in list(legacy_base_dirs or []) if Path(item) != self.base_dir]
         self.ensure_storage_ready = ensure_storage_ready
         self.workspace_uri_resolver = workspace_uri_resolver
         self.store = store
@@ -189,6 +183,7 @@ class AttachmentIngestService:
                 file_size=self._safe_int(payload.get("file_size")),
                 source_event_id=str(payload.get("source_event_id") or "").strip(),
                 source_message_id=str(payload.get("source_message_id") or "").strip(),
+                detail=self._qq_attachment_context_detail(payload),
                 timestamp=effective_ts,
             )
             created_items.append(item)
@@ -308,20 +303,23 @@ class AttachmentIngestService:
             )
             registration_status = "registered"
         else:
-            item = self.store.update_attachment_inbox_item(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                attachment_id=str(existing.get("attachment_id") or ""),
-                status="pending_observation",
-                short_hint="正在重新读取这个工作区文件。",
-                detail={},
-                error_message="",
-                mime_type=mime_type,
-                file_ext=file_ext,
-                file_size=source_path.stat().st_size,
-                storage_relpath=normalized_uri,
-                updated_at=effective_ts,
-            ) or existing
+            item = (
+                self.store.update_attachment_inbox_item(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    attachment_id=str(existing.get("attachment_id") or ""),
+                    status="pending_observation",
+                    short_hint="正在重新读取这个工作区文件。",
+                    detail={},
+                    error_message="",
+                    mime_type=mime_type,
+                    file_ext=file_ext,
+                    file_size=source_path.stat().st_size,
+                    storage_relpath=normalized_uri,
+                    updated_at=effective_ts,
+                )
+                or existing
+            )
             registration_status = "refreshed"
 
         self._process_qq_attachment(
@@ -404,7 +402,7 @@ class AttachmentIngestService:
                 attachment_id=str(item.get("attachment_id") or ""),
                 summary_title=file_card["summary_title"],
                 short_hint=file_card["short_hint"],
-                detail=file_card["detail"],
+                detail=self._merge_item_detail(item, file_card["detail"]),
                 timestamp=timestamp,
             )
         except Exception as exc:
@@ -441,8 +439,7 @@ class AttachmentIngestService:
                 "status": "already_ready",
                 "item": item,
                 "followup_context": (
-                    "这个附件其实已经处理成功了，可以直接查看。"
-                    "请自然告诉用户不用再重试，并基于已有附件内容继续回应。"
+                    "这个附件其实已经处理成功了，可以直接查看。请自然告诉用户不用再重试，并基于已有附件内容继续回应。"
                 ),
             }
         if current_status == "pending_observation":
@@ -451,8 +448,7 @@ class AttachmentIngestService:
                 "status": "already_pending",
                 "item": item,
                 "followup_context": (
-                    "这个附件仍在处理中，还不需要重复重试。"
-                    "请自然告诉用户稍等一下，不要再次调用 retry_attachment。"
+                    "这个附件仍在处理中，还不需要重复重试。请自然告诉用户稍等一下，不要再次调用 retry_attachment。"
                 ),
             }
 
@@ -668,7 +664,13 @@ class AttachmentIngestService:
             raw_items = [value]
         seen: set[str] = set()
         normalized: list[str] = []
-        limit = max(1, int(getattr(config, "REMOTE_MEDIA_MAX_URLS_PER_CALL", REMOTE_MEDIA_DEFAULT_MAX_URLS) or REMOTE_MEDIA_DEFAULT_MAX_URLS))
+        limit = max(
+            1,
+            int(
+                getattr(config, "REMOTE_MEDIA_MAX_URLS_PER_CALL", REMOTE_MEDIA_DEFAULT_MAX_URLS)
+                or REMOTE_MEDIA_DEFAULT_MAX_URLS
+            ),
+        )
         for item in raw_items:
             text = str(item or "").strip()
             if not text:
@@ -718,7 +720,9 @@ class AttachmentIngestService:
         suffix = Path(unquote(parsed.path or "")).suffix.lower()
         if suffix not in MEDIA_SUFFIXES:
             return None
-        title = str(preferred_title or Path(parsed.path).stem or parsed.netloc or "remote_media").strip() or "remote_media"
+        title = (
+            str(preferred_title or Path(parsed.path).stem or parsed.netloc or "remote_media").strip() or "remote_media"
+        )
         mime_type = mimetypes.guess_type(parsed.path or "")[0] or ""
         if not mime_type:
             mime_type = "audio/mpeg" if suffix in AUDIO_MEDIA_SUFFIXES else "video/mp4"
@@ -756,7 +760,10 @@ class AttachmentIngestService:
         }
         options.update(
             self._yt_dlp_common_options(
-                timeout=float(getattr(config, "REMOTE_MEDIA_DOWNLOAD_TIMEOUT", REMOTE_MEDIA_DEFAULT_TIMEOUT) or REMOTE_MEDIA_DEFAULT_TIMEOUT)
+                timeout=float(
+                    getattr(config, "REMOTE_MEDIA_DOWNLOAD_TIMEOUT", REMOTE_MEDIA_DEFAULT_TIMEOUT)
+                    or REMOTE_MEDIA_DEFAULT_TIMEOUT
+                )
             )
         )
         try:
@@ -779,8 +786,12 @@ class AttachmentIngestService:
             mime_type = "audio/mpeg" if str(info.get("vcodec") or "").strip().lower() == "none" else "video/mp4"
         title = str(preferred_title or info.get("title") or "").strip()
         if not title:
-            title = Path(unquote(urlparse(str(info.get("webpage_url") or url).strip()).path or "")).stem or "remote_media"
-        is_audio_only = str(info.get("vcodec") or "").strip().lower() == "none" and str(info.get("acodec") or "").strip().lower() not in {"", "none"}
+            title = (
+                Path(unquote(urlparse(str(info.get("webpage_url") or url).strip()).path or "")).stem or "remote_media"
+            )
+        is_audio_only = str(info.get("vcodec") or "").strip().lower() == "none" and str(
+            info.get("acodec") or ""
+        ).strip().lower() not in {"", "none"}
         return RemoteMediaDescriptor(
             source_url=url,
             webpage_url=str(info.get("webpage_url") or url).strip(),
@@ -808,8 +819,13 @@ class AttachmentIngestService:
         target_dir = self._workspace_date_dir(item)
         target_dir.mkdir(parents=True, exist_ok=True)
         handle = self._safe_path_part(item.get("attachment_handle") or item.get("attachment_id"))
-        timeout = float(getattr(config, "REMOTE_MEDIA_DOWNLOAD_TIMEOUT", REMOTE_MEDIA_DEFAULT_TIMEOUT) or REMOTE_MEDIA_DEFAULT_TIMEOUT)
-        max_bytes = int(getattr(config, "REMOTE_MEDIA_MAX_BYTES", REMOTE_MEDIA_DEFAULT_MAX_BYTES) or REMOTE_MEDIA_DEFAULT_MAX_BYTES)
+        timeout = float(
+            getattr(config, "REMOTE_MEDIA_DOWNLOAD_TIMEOUT", REMOTE_MEDIA_DEFAULT_TIMEOUT)
+            or REMOTE_MEDIA_DEFAULT_TIMEOUT
+        )
+        max_bytes = int(
+            getattr(config, "REMOTE_MEDIA_MAX_BYTES", REMOTE_MEDIA_DEFAULT_MAX_BYTES) or REMOTE_MEDIA_DEFAULT_MAX_BYTES
+        )
 
         if descriptor.download_mode == "direct":
             suffix = f".{descriptor.ext.lstrip('.')}" if descriptor.ext else ".bin"
@@ -896,13 +912,9 @@ class AttachmentIngestService:
 
     def _yt_dlp_common_options(self, *, timeout: float | None = None) -> dict[str, Any]:
         user_agent = (
-            str(getattr(config, "REMOTE_MEDIA_YTDLP_USER_AGENT", "") or "").strip()
-            or REMOTE_MEDIA_DEFAULT_USER_AGENT
+            str(getattr(config, "REMOTE_MEDIA_YTDLP_USER_AGENT", "") or "").strip() or REMOTE_MEDIA_DEFAULT_USER_AGENT
         )
-        referer = (
-            str(getattr(config, "REMOTE_MEDIA_YTDLP_REFERER", "") or "").strip()
-            or REMOTE_MEDIA_DEFAULT_REFERER
-        )
+        referer = str(getattr(config, "REMOTE_MEDIA_YTDLP_REFERER", "") or "").strip() or REMOTE_MEDIA_DEFAULT_REFERER
         headers = {
             "User-Agent": user_agent,
             "Accept": "*/*",
@@ -982,7 +994,11 @@ class AttachmentIngestService:
         summary_title = str(file_card.get("summary_title") or descriptor.title or descriptor.origin_name).strip()
         detail = dict(file_card.get("detail") or {}) if isinstance(file_card.get("detail"), dict) else {}
         detail["remote_source"] = {
-            "platform": str(descriptor.extractor or descriptor.extractor_key or urlparse(descriptor.webpage_url or descriptor.source_url).netloc).strip(),
+            "platform": str(
+                descriptor.extractor
+                or descriptor.extractor_key
+                or urlparse(descriptor.webpage_url or descriptor.source_url).netloc
+            ).strip(),
             "extractor": str(descriptor.extractor or "").strip(),
             "extractor_key": str(descriptor.extractor_key or "").strip(),
             "uploader": str(descriptor.uploader or descriptor.channel or "").strip(),
@@ -1025,7 +1041,9 @@ class AttachmentIngestService:
             labels = "、".join(
                 str(item.get("attachment_handle") or item.get("summary_title") or item.get("origin_name") or "").strip()
                 for item in items[:6]
-                if str(item.get("attachment_handle") or item.get("summary_title") or item.get("origin_name") or "").strip()
+                if str(
+                    item.get("attachment_handle") or item.get("summary_title") or item.get("origin_name") or ""
+                ).strip()
             )
             return (
                 f"你刚刚已经把链接里的媒体素材放进当前材料工作台了：{labels or '已下载媒体'}。"
@@ -1248,7 +1266,10 @@ class AttachmentIngestService:
 
             if not isinstance(payload_data, dict):
                 continue
-            if str(payload_data.get("status") or "").lower() not in {"ok", "async"} and int(payload_data.get("retcode") or 0) != 0:
+            if (
+                str(payload_data.get("status") or "").lower() not in {"ok", "async"}
+                and int(payload_data.get("retcode") or 0) != 0
+            ):
                 continue
             data = payload_data.get("data") if isinstance(payload_data.get("data"), dict) else {}
             for key in ("path", "local_path", "file"):
@@ -1270,8 +1291,14 @@ class AttachmentIngestService:
         max_bytes: int | None = None,
         headers: dict[str, str] | None = None,
     ) -> None:
-        timeout_value = float(timeout if timeout is not None else (getattr(config, "QQ_ATTACHMENT_DOWNLOAD_TIMEOUT", 20.0) or 20.0))
-        max_bytes_value = int(max_bytes if max_bytes is not None else (getattr(config, "QQ_ATTACHMENT_MAX_BYTES", 20 * 1024 * 1024) or 20 * 1024 * 1024))
+        timeout_value = float(
+            timeout if timeout is not None else (getattr(config, "QQ_ATTACHMENT_DOWNLOAD_TIMEOUT", 20.0) or 20.0)
+        )
+        max_bytes_value = int(
+            max_bytes
+            if max_bytes is not None
+            else (getattr(config, "QQ_ATTACHMENT_MAX_BYTES", 20 * 1024 * 1024) or 20 * 1024 * 1024)
+        )
         request_headers = headers or {
             "User-Agent": "Mozilla/5.0 AkaneCompanionLab/1.0",
             "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
@@ -1359,7 +1386,9 @@ class AttachmentIngestService:
         file_size: int,
     ) -> dict[str, Any]:
         media_info = self._probe_media_info(source_path)
-        file_kind = suffix.lstrip(".") or ("audio" if mime_type.startswith("audio/") else "video" if mime_type.startswith("video/") else "media")
+        file_kind = suffix.lstrip(".") or (
+            "audio" if mime_type.startswith("audio/") else "video" if mime_type.startswith("video/") else "media"
+        )
         detail: dict[str, Any] = {
             "summary": f"媒体文件 {title}，格式 {file_kind}，约 {file_size} bytes。",
             "file_kind": file_kind,
@@ -1484,7 +1513,9 @@ class AttachmentIngestService:
                 "headings": headings,
                 "tables": table_summaries,
                 "text_preview": preview,
-                "preview_is_truncated": len(paragraphs) > 20 or len("\n".join(paragraphs[:20])) > 4000 or len(document.tables) > 5,
+                "preview_is_truncated": len(paragraphs) > 20
+                or len("\n".join(paragraphs[:20])) > 4000
+                or len(document.tables) > 5,
             }
             hint_parts = [detail["summary"]]
             if headings:
@@ -1555,7 +1586,8 @@ class AttachmentIngestService:
                 "preview_is_truncated": any(
                     int(sheet.get("max_row") or 0) > 5 or int(sheet.get("max_column") or 0) > 10
                     for sheet in sheet_cards
-                ) or len(sheet_names) > 5,
+                )
+                or len(sheet_names) > 5,
             }
             hint_parts = [detail["summary"]]
             if sheet_names:
@@ -1731,6 +1763,7 @@ class AttachmentIngestService:
         timestamp: int,
     ) -> None:
         card = observation.get("observation") if isinstance(observation.get("observation"), dict) else {}
+        card = self._merge_item_detail(item, card)
         summary = str(card.get("summary") or observation.get("summary") or "").strip()
         summary_title = (
             str(card.get("summary_title") or "").strip()
@@ -1747,6 +1780,33 @@ class AttachmentIngestService:
             detail=card,
             timestamp=timestamp,
         )
+
+    def _qq_attachment_context_detail(self, payload: dict[str, Any]) -> dict[str, Any]:
+        sender_label = self._safe_prompt_label(
+            payload.get("sender_label") or payload.get("qq_sender_label") or payload.get("source_sender_label")
+        )
+        detail: dict[str, Any] = {}
+        if sender_label:
+            detail["qq_sender_label"] = sender_label
+        sender_id = str(payload.get("sender_id") or payload.get("user_id") or "").strip()
+        if sender_id:
+            detail["qq_sender_id"] = sender_id[:40]
+        group_id = str(payload.get("group_id") or "").strip()
+        if group_id:
+            detail["qq_group_id"] = group_id[:40]
+        return detail
+
+    def _merge_item_detail(self, item: dict[str, Any], detail: dict[str, Any] | None) -> dict[str, Any]:
+        base = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        merged = dict(base)
+        if isinstance(detail, dict):
+            merged.update(detail)
+        return merged
+
+    def _safe_prompt_label(self, value: Any) -> str:
+        text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or ""))
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:48]
 
     def _humanize_failure(self, error: str, *, kind: str = "") -> str:
         text = str(error or "").strip()

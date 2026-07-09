@@ -360,7 +360,7 @@ class AttachmentInboxTests(unittest.TestCase):
                 attachment_id=ready["attachment_id"],
                 summary_title="窗边小猫",
                 short_hint="一只白猫趴在窗边。",
-                detail={"entities": ["白猫", "窗边"], "mood_tags": ["安静"]},
+                detail={"entities": ["白猫", "窗边"], "mood_tags": ["安静"], "qq_sender_label": "休比"},
                 timestamp=110,
             )
             service.create_pending(
@@ -384,6 +384,7 @@ class AttachmentInboxTests(unittest.TestCase):
             self.assertIn("窗边小猫", prompt)
             self.assertIn("一只白猫趴在窗边", prompt)
             self.assertIn("来源：QQ", prompt)
+            self.assertIn("发送者：休比", prompt)
             self.assertIn("正在处理", prompt)
             self.assertIn("draft.txt", prompt)
             self.assertIn("sync_attachment_workspace", prompt)

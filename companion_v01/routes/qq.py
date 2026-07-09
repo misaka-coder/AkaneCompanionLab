@@ -126,6 +126,25 @@ QQ_WORKSPACE_KIND_LABELS = {
 }
 
 
+def _with_qq_sender_context(attachments: list[dict[str, Any]] | None, context: Any) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    sender_label = str(getattr(context, "sender_label", "") or "").strip()
+    sender_id = int(getattr(context, "user_id", 0) or 0)
+    group_id = int(getattr(context, "group_id", 0) or 0)
+    for item in list(attachments or []):
+        if not isinstance(item, dict):
+            continue
+        payload = dict(item)
+        if sender_label:
+            payload.setdefault("sender_label", sender_label)
+        if sender_id:
+            payload.setdefault("sender_id", str(sender_id))
+        if group_id:
+            payload.setdefault("group_id", str(group_id))
+        enriched.append(payload)
+    return enriched
+
+
 def _format_qq_timestamp(value: Any) -> str:
     try:
         timestamp = int(value or 0)
@@ -1607,7 +1626,7 @@ def build_qq_router(
                     engine.ingest_qq_attachments,
                     profile_user_id=context.profile_user_id,
                     session_id=context.session_id,
-                    attachments=list(context.attachments),
+                    attachments=_with_qq_sender_context(list(context.attachments), context),
                     timestamp=int(event.get("time") or time.time()),
                 )
                 attachment_ids = [
