@@ -170,28 +170,50 @@ Evidence at audit time:
   direction, but the default production setting still kept legacy JSON as the
   main path unless enabled by config.
 
-Current progress:
+Current progress (updated 2026-07-09, LD-002 slice):
 
-- The native tool decision total switch now defaults to enabled. Verified
-  provider/model profiles use provider native schemas for allowlisted tools;
-  unverified providers, explicit disable, or non-allowlisted tools still fall
-  back to legacy JSON `tool_call`.
-- Remaining LD-002 work is to expand native coverage/allowlist with acceptance
-  gates and later decide whether the public `tool_call` field stays as a thin
-  fallback or is deleted after native-first stabilizes.
+- `ENABLE_NATIVE_TOOL_DECISION` defaults to `True` — native-first is the
+  production default. Verified provider/model profiles use provider native
+  schemas for allowlisted tools; unverified providers, explicit disable, or
+  non-allowlisted tools still fall back to legacy JSON `tool_call`.
+- Allowlist expanded from 6 to 12 read-only tools: web_search (3d live gate),
+  retrieve_memory / read_memory_timeline (5d live gate), list_reminders /
+  check_inventory / inspect_media_info (6b), plus load_character_context /
+  inspect_attachment / read_attachment_section / list_workspace / read_workspace
+  / inspect_generated_file (7b — all read-only, static input_schema, generic
+  builder path already proven by memory 5d).
+- `sync_attachment_workspace` excluded: operation="read" but has file-sync
+  side effects.
+- `tool_invocation.py` docstring and source-constants updated to reflect
+  native-first reality; "placeholder" language removed.
+- `NATIVE_TOOL_PROVIDER_ALLOWLIST` remains empty-string default (fail-closed
+  for unknown provider/model combinations; operators set it explicitly after
+  verifying their specific host:model pair).
 
-Why it hurts iteration:
+N4 decision (2026-07-09):
 
-Every tool change can require updates in legacy prompt instructions, native
-schema projection, provider capability profiles, prompt exclusions, tests, and
-tool execution parity. That is a large maintenance surface for one capability.
+Keep legacy JSON `tool_call` as a **thin documented fallback**. Do not delete
+it at this time. Rationale:
+- The fallback serves unverified providers and non-allowlisted tools with
+  near-zero maintenance cost — it is the existing legacy path, not new code.
+- Deleting `tool_call` would lock out any provider that doesn't support native
+  function calling, which is an unnecessary restriction for a project that
+  supports multiple OpenAI-compatible backends.
+- New tools MUST ship with a proper `input_schema` in their `ToolMetadata` so
+  they work natively; the legacy prompt path is for compatibility only and new
+  tool work should not add only a legacy prompt path.
+- Revisit deletion when: (a) all actively-used providers support native tools,
+  and (b) the full tool catalog (including write/control tools) has native
+  coverage with acceptance gates.
 
-Recommended action:
+Why it hurt iteration (resolved by this slice):
 
-Pick a concrete native-first milestone. For verified providers, make native
-tools the default. Keep legacy JSON `tool_call` only as fallback for unverified
-providers or tools that are explicitly not migrated. Prevent new tool work from
-adding only a legacy prompt path.
+Previously, every tool change required updates in both the legacy prompt path
+and the native schema projection. Now the native path is the primary path for
+all 12 read-only tools. Adding a new read-only tool only requires defining its
+`ToolMetadata.input_schema` — the generic builder handles the rest. The legacy
+`tool_call` path is frozen as a compatibility fallback, not an active
+development surface.
 
 Deletion or migration risk:
 

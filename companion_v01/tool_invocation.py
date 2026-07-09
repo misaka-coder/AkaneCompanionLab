@@ -1,17 +1,15 @@
 """Provider-agnostic internal representation of a tool call.
 
 Step 2 of the tool-system decoupling (see `docs/tool_system_decoupling_v1.md`):
-introduce a single internal shape that every tool-call source — the legacy
-`{"type": name, ...args}` JSON field, and later native OpenAI / Anthropic
-tool_use — normalises into, so the engine stops caring which provider produced
+every tool-call source — native OpenAI provider `tool_calls`, native Anthropic
+`tool_use`, and the legacy `{"type": name, ...args}` JSON fallback — normalises
+into a single internal shape so the engine never cares which provider produced
 the call.
 
-The live legacy dispatch path now routes already-normalized legacy tool calls
-through this boundary before handing them back to the existing execute path. The
-round-trip guarantee
-`invocation_to_legacy_tool_call(legacy_tool_call_to_invocation(tc)) == tc`
-holds for normalized dicts carrying a clean non-empty "type"; raw model output
-is still normalized by the existing handlers first.
+Native-first is now the default production path (N1–N3 complete; see §12 of the
+decoupling doc). Legacy JSON `tool_call` remains as a thin fallback for
+unverified providers and non-allowlisted tools. All sources normalise through
+this module into `ToolInvocation` before validation and execution.
 """
 
 from __future__ import annotations
@@ -21,8 +19,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-# Known invocation sources. Only LEGACY_JSON is produced today; the native
-# variants are placeholders for the later migration steps.
+# Known invocation sources. NATIVE_OPENAI is the active production path
+# for verified providers with allowlisted tools; LEGACY_JSON is the thin
+# fallback for unverified providers and non-allowlisted tools.
+# NATIVE_ANTHROPIC is reserved for future Anthropic provider support.
 LEGACY_JSON = "legacy_json"
 NATIVE_OPENAI = "native_openai"
 NATIVE_ANTHROPIC = "native_anthropic"

@@ -325,10 +325,10 @@ python scripts/tools/run_native_web_search_acceptance.py --live-llm --smoke --re
 
 **安全顺序（不能反，反了工具会断）**：
 
-- **N1 — 全工具装 native 门（确定性，零额度）**：给每个 handler 产出 native schema（通用生成器已支持，并已改由 `capcore-provider-openai` 负责 OpenAI envelope / name mapping / tool_call parsing；精度处补 `input_schema`；描述已扫过基本无 tool_call 污染，仅 `compose_file` 一句待清）。这是当时的纯新增、默认关阶段；后续默认开关已翻到 native-first。验收：每个工具都能产出合法 native spec + 单测。
-- **N2 — 接 per-client 分发（确定性，零额度）**：native tools 列表由 `CapabilitySelection` 决定，每个客户端/场景只发其工具子集。验收：native 子集 == legacy capability 子集，按 mode 对齐。
-- **N3 — 翻转优先级：native 为主（分阶段）**：总开关默认开，native 按 capability 子集下发；`tool_call` 字段保留但降为回退。当前已经完成默认开关翻转，但 allowlist 仍只放已验证/低风险集合；放开到全部工具仍需要 acceptance gate。验收：跑 acceptance gate 全工具集——INV-1 表达层完好、fallback 率低、按客户端补路由提示（仿 5c）让选工具质量达标。
-- **N4 — 收尾（最后,且只在 N3 稳定后）**：二选一——①保留一层薄 `tool_call` 当**文档化回退**（换模型也稳，行业常见）；②彻底从表达 JSON 删除 `tool_call`（Sakura 式纯原生，锁定需支持 native 的 provider）。作者倾向最终走 ②"不维护 tool_call"，但**必须是最后一步**，N1–N3 全绿后再动。
+- **N1 — ✅ 已完成（2026-06-23）**：全工具装 native 门。通用生成器接 `capcore-provider-openai`；handler 精度处补 `input_schema`；描述已扫除 `tool_call` 污染。
+- **N2 — ✅ 已完成（2026-06-23）**：native tools 列表接 `CapabilitySelection`，每客户端/场景只发其工具子集。
+- **N3 — ✅ 已完成（2026-07-09）**：总开关默认开（`ENABLE_NATIVE_TOOL_DECISION=True`）；allowlist 从 6 扩到 12 个只读工具（web_search + memory×2 + reminders/inventory/media_info + character_context/attachment×2/workspace×2/generated_file）。写/控制/路径类工具不在 allowlist。`tool_invocation.py` placeholder 注释已清理——native-first 是现实。
+- **N4 — ✅ 已定调（2026-07-09）**：保留 `tool_call` 为**薄兼容回退**（选项 ①），不删除。理由：fallback 维护成本接近零（就是已有路径，不加新代码）；删除会锁死不支持 native function calling 的 provider。新工具必须带 `input_schema` 走 native；旧路径仅兼容。重访删除条件：(a) 所有活跃 provider 都支持 native tools；(b) 全工具目录（含写/控制）都有 native coverage + acceptance gate。
 
 **不变的边界**：写/控制/媒体工具的**执行与权限确认逻辑完全不变**——native 只改"模型怎么表达调用"，不改 execute、不绕过确认。表达层（emotion/persona/scene/segments…）是 Akane 自己的产品域，**没有行业标准、也不需要**，继续按角色需要演化；唯一被行业标准约束的只有"工具调用"这一件，N1–N4 就是把它掰回标准。
 

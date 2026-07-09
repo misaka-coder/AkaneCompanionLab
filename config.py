@@ -200,10 +200,16 @@ class Settings(BaseSettings):
     # native tool 允许列表，逗号分隔。低风险只读工具（静态 schema、无写、参数无绝对路径）：
     # web_search（3d live gate）、retrieve_memory / read_memory_timeline（5d live gate）、
     # list_reminders / check_inventory / inspect_media_info（6b：确定性 dry-run 量尺，
-    # native 链路已由 memory 5d 证明，未单独跑 live smoke）。写/控制/路径类工具不在此列。
+    # native 链路已由 memory 5d 证明，未单独跑 live smoke）。
+    # load_character_context / inspect_attachment / read_attachment_section /
+    # list_workspace / read_workspace / inspect_generated_file（7b：read-only、
+    # 静态 schema、generic builder 已验证，未单独跑 live smoke）。
+    # sync_attachment_workspace 虽是 operation="read" 但有文件同步副作用，暂不加入。
     # 注意：这只是"允许"，是否真的走 native 仍取决于总开关和 provider/model 能力档案。
     NATIVE_TOOL_DECISION_ALLOWLIST: str = (
-        "web_search,retrieve_memory,read_memory_timeline,list_reminders,check_inventory,inspect_media_info"
+        "web_search,retrieve_memory,read_memory_timeline,list_reminders,check_inventory,inspect_media_info,"
+        "load_character_context,inspect_attachment,read_attachment_section,"
+        "list_workspace,read_workspace,inspect_generated_file"
     )
     # 额外允许的 OpenAI-compatible native tools provider/model，逗号分隔。
     # 格式：host:model 或 host:*；默认空，未知中转仍 fail-closed。
