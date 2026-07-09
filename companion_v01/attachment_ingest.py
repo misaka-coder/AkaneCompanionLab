@@ -1320,27 +1320,36 @@ class AttachmentIngestService:
         title = origin_name or source_path.name
         suffix = source_path.suffix.lower()
         file_size = source_path.stat().st_size if source_path.exists() else 0
+        attachment_id = str(item.get("attachment_id") or "").strip()
+        base_detail: dict[str, Any] = {}
+        if attachment_id:
+            base_detail["attachment_id"] = attachment_id
         if suffix in DOCUMENT_SUFFIXES:
-            return self._build_document_card(
+            card = self._build_document_card(
                 source_path=source_path,
                 title=title,
                 suffix=suffix,
                 mime_type=mime_type,
                 file_size=file_size,
             )
+            card["detail"] = {**base_detail, **card.get("detail", {})}
+            return card
         if suffix in MEDIA_SUFFIXES or mime_type.startswith(("audio/", "video/")):
-            return self._build_media_card(
+            card = self._build_media_card(
                 source_path=source_path,
                 title=title,
                 suffix=suffix,
                 mime_type=mime_type,
                 file_size=file_size,
             )
+            card["detail"] = {**base_detail, **card.get("detail", {})}
+            return card
         if suffix not in TEXT_SUFFIXES:
             return {
                 "summary_title": title,
                 "short_hint": f"一个 {suffix or '未知类型'} 文件，约 {file_size} bytes；当前只保留文件名和基本信息，暂未解析内容。",
                 "detail": {
+                    **base_detail,
                     "summary": "暂不支持直接解析该文件内容。",
                     "file_kind": suffix.lstrip(".") or "binary",
                     "mime_type": mime_type,
@@ -1353,6 +1362,7 @@ class AttachmentIngestService:
         lines = text.splitlines()
         preview = text[:4000]
         detail: dict[str, Any] = {
+            **base_detail,
             "summary": f"文本文件 {title}，约 {len(text)} 字符，{len(lines)} 行。",
             "file_kind": self._file_kind_from_suffix(suffix),
             "mime_type": mime_type,
@@ -1410,6 +1420,11 @@ class AttachmentIngestService:
                     f"{audio.get('channels')}声道" if audio.get("channels") else "",
                 ]
                 hint_parts.append("音频 " + "，".join(bit for bit in audio_bits if bit))
+            if mime_type.startswith("audio/") or file_kind == "audio":
+                detail["transcribable"] = True
+                hint_parts.append(
+                    "可转写——若用户想了解内容，用 transcribe_media 工具并指定此附件 source_id"
+                )
             video = media_info.get("video") if isinstance(media_info.get("video"), dict) else {}
             if video:
                 size = ""
@@ -1812,19 +1827,35 @@ class AttachmentIngestService:
         text = str(error or "").strip()
         lowered = text.lower()
         normalized_kind = self._normalize_kind(kind)
+        kind_label = (
+            "图片" if normalized_kind == "image"
+            else "音频" if normalized_kind == "audio"
+            else "文件" if normalized_kind in ("document", "file")
+            else "附件"
+        )
         if "bad request" in lowered or "400 client error" in lowered:
-            if normalized_kind == "image":
-                return "QQ 临时图片链接返回 400；可以稍后重试，系统会优先尝试从 NapCat 本地缓存读取。"
-            return "QQ 临时文件链接返回 400；可以稍后重试，系统会优先尝试从 NapCat 本地缓存读取。"
+            return (
+                f"QQ 临时{kind_label}链接已过期。建议：请用户在 QQ 上重新发送一次这个{kind_label}，"
+                f"新生成的临时链接就可以用了。"
+            )
         if "视觉模型" in text or "vision" in lowered:
             return text[:240]
         if "timeout" in lowered or "timed out" in lowered:
-            return "读取附件超时，可能是网络、NapCat 缓存或上游接口暂时不可用。"
+            return (
+                f"{kind_label}下载超时（可能是网络波动或文件较大）。"
+                f"建议：请用户稍后重试，或将{kind_label}通过其他方式发送（如电脑端直接拖拽）。"
+            )
         if "附件过大" in text or "too large" in lowered:
-            return text[:240]
+            return (
+                f"{kind_label}超过当前大小限制。"
+                f"建议：请用户压缩{kind_label}后重发，或使用文件传输助手等替代方式。"
+            )
         if "没有可下载" in text:
-            return "没有拿到可下载地址或本地缓存路径，可能需要重新发送附件。"
-        return text[:240] or "附件处理失败，原因未知。"
+            return (
+                f"没有拿到{kind_label}的可下载地址或本地缓存。"
+                f"建议：请用户在 QQ 上重新发送一次这个{kind_label}；如果仍失败，可尝试通过桌面端拖拽发送。"
+            )
+        return f"{kind_label}处理失败：{text[:160] or '原因未知'}。建议：稍后重试，或换一种方式发送。"
 
     def _probe_media_info(self, source_path: Path) -> dict[str, Any] | None:
         ffprobe_path = shutil.which("ffprobe")
