@@ -2072,13 +2072,28 @@ class NapCatQQGateway:
     def render_reply_text(self, frame: dict[str, Any]) -> str:
         return "\n".join(self.render_reply_messages(frame)).strip()
 
+    @staticmethod
+    def _normalize_segment_ending(text: str) -> str:
+        """Ensure a chat segment ends with natural Chinese punctuation.
+
+        If the text already ends with a sentence-ending character
+        (。！？～… ! ?), return it unchanged. Otherwise append a tilde
+        to give the bubble a natural conversational close.
+        """
+        text = str(text or "").strip()
+        if not text:
+            return text
+        if text[-1] in "。！？～…!?~":
+            return text
+        return text + "～"
+
     def render_reply_messages(self, frame: dict[str, Any]) -> list[str]:
         messages: list[str] = []
         max_segments = max(1, min(20, int(getattr(config, "QQ_REPLY_MAX_SEGMENTS", 8) or 8)))
         segments = frame.get("speech_segments")
         if isinstance(segments, list):
             for item in segments:
-                text = str(item or "").strip()
+                text = self._normalize_segment_ending(str(item or ""))
                 if text:
                     messages.append(text[:1800].strip())
                 if len(messages) >= max_segments:
@@ -2086,11 +2101,11 @@ class NapCatQQGateway:
 
         if not messages:
             speech = str(frame.get("speech") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-            inferred = [line.strip() for line in speech.split("\n") if line.strip()]
+            inferred = [self._normalize_segment_ending(line) for line in speech.split("\n") if line.strip()]
             if 1 < len(inferred) <= max_segments:
                 messages = [line[:1800].strip() for line in inferred[:max_segments]]
             elif speech:
-                messages = [speech[:1800].strip()]
+                messages = [self._normalize_segment_ending(speech)[:1800].strip()]
 
         code_snippet = str(frame.get("code_snippet") or "").strip()
         if code_snippet:

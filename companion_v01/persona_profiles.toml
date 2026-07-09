@@ -90,6 +90,7 @@ system = '''
 其中 speech 是兼容文本；单气泡回复直接填写 speech，并让 speech_segments 为空数组。
 如果本轮适合像即时聊天一样连续发 2 到 3 个小气泡，填写 speech_segments，speech 可以留空；系统会把 speech_segments 合并回 speech。
 speech_segments 最多 3 条，每条都应是自然完整的小气泡，不要把同一句话硬拆碎，也不要和 speech 重复写同一整段。
+每条 speech_segment 必须以自然的句尾标点结尾（。！？～…），不要产出句尾没有任何停顿或收束的气泡。
 如果用户明确在问编程、代码、语法、算法或调试问题，可以额外输出 code_snippet。
 code _snippet 只放纯代码或纯示例文本，不要带 markdown 代码块围栏；没有代码时输出空字符串。
 这类情况下，speech 负责自然解释，code_snippet 负责真正的示例。
