@@ -4,6 +4,7 @@ import builtins
 from datetime import datetime
 from pathlib import Path
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -352,6 +353,18 @@ class _VectorWriteRecorder:
         self.entries.extend(entries)
 
 
+class _ExplodingLegacyIndexStore:
+    def count_vectorizable_records(self) -> int:
+        raise AssertionError("legacy vector count should not run in memcore mode")
+
+
+class _ExplodingLegacyVectorStore:
+    collection_name = "legacy_vector"
+
+    def count_entries(self) -> int:
+        raise AssertionError("legacy vector count should not run in memcore mode")
+
+
 class _LegacyRawStore:
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self.rows = rows
@@ -553,6 +566,59 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual([entry["source_id"] for entry in engine.vector_store.entries], ["raw-1"])
         self.assertEqual(engine.store.index_updates, [])
         self.assertTrue(record["index_in_vector"])
+
+    def test_engine_memcore_mode_skips_legacy_embedding_reindex_startup(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.store = _ExplodingLegacyIndexStore()
+        engine.vector_store = _ExplodingLegacyVectorStore()
+        engine.memcore_manager = _CompactionMemcoreManager(available=True)
+        engine._embedding_reindex_lock = threading.RLock()
+        engine._embedding_reindex_thread = None
+        engine._embedding_reindex_status = {
+            "state": "idle",
+            "processed": 0,
+            "total": 0,
+            "started_at": 0.0,
+            "finished_at": 0.0,
+            "error": "",
+            "collection_name": "legacy_vector",
+        }
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            engine._maybe_start_embedding_reindex()
+
+        self.assertEqual(engine._embedding_reindex_status["state"], "disabled")
+        self.assertEqual(engine._embedding_reindex_status["error"], "memcore_owns_legacy_vector_index")
+        self.assertIsNone(engine._embedding_reindex_thread)
+
+    def test_memcore_pre_retrieval_skip_does_not_lazy_load_legacy_retrieval(self) -> None:
+        class _Engine:
+            def _coerce_bool(self, _value):
+                return None
+
+            def _get_retrieval_service(self):
+                raise AssertionError("legacy retrieval should not load in memcore mode")
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = retrieval_engine.run_pre_retrieval_pipeline(
+                _Engine(),
+                payload={},
+                profile_user_id="u1",
+                character_pack_id="char",
+                user_message="晚上我们聊过什么？",
+                now_ts=_ts(2026, 6, 1, 21, 0),
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                current_user_source_id="current",
+                verifier_debug_enabled=False,
+            )
+
+        self.assertFalse(result.used_retrieval)
+        self.assertEqual(result.router_output["route"], "pre_retrieval_disabled")
+        self.assertEqual(result.router_output["time_hint"]["time_of_day"], "night")
+        self.assertEqual(result.router_timing["mode"], "shortcut")
+        self.assertIn("memcore 模式", result.router_output["reason"])
 
     def test_import_legacy_raw_messages_is_idempotent_and_filtered(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

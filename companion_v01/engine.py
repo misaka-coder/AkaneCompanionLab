@@ -278,20 +278,24 @@ class AkaneMemoryEngine:
         self.mode_profile_registry = ModeProfileRegistry()
         self.prompt_profile_registry = PromptProfileRegistry()
         self.output_adapters = OutputAdapterRegistry()
-        self.retrieval_service = RetrievalService(
-            store=self.store,
-            vector_store=self.vector_store,
-            llm=self.llm,
-            prompt_builder=self.prompt_builder,
-        )
-        self.compaction_service = MemoryCompactionService(
-            store=self.store,
-            vector_store=self.vector_store,
-            llm=self.llm,
-            prompt_builder=self.prompt_builder,
-            persona_context_provider=self._build_memory_compaction_persona_context,
-        )
         self.memcore_manager = self._build_memcore_manager()
+        if self._should_eager_init_legacy_memory_services():
+            self.retrieval_service = RetrievalService(
+                store=self.store,
+                vector_store=self.vector_store,
+                llm=self.llm,
+                prompt_builder=self.prompt_builder,
+            )
+            self.compaction_service = MemoryCompactionService(
+                store=self.store,
+                vector_store=self.vector_store,
+                llm=self.llm,
+                prompt_builder=self.prompt_builder,
+                persona_context_provider=self._build_memory_compaction_persona_context,
+            )
+        else:
+            self.retrieval_service = None
+            self.compaction_service = None
         self.task_worker_service = TaskWorkerService(
             llm=self.llm,
             task_workspace_service=self.task_workspace_service,
@@ -328,7 +332,9 @@ class AkaneMemoryEngine:
         return get_akane_data_paths().users_data / profile_user_id / "capability_manifests"
 
     def reset(self) -> None:
-        self._get_compaction_service().reset()
+        compaction_service = getattr(self, "compaction_service", None)
+        if compaction_service is not None:
+            compaction_service.reset()
         self.store.reset()
         self.memory_timeline_service.clear_mirror()
         self.vector_store.reset()
@@ -476,7 +482,9 @@ class AkaneMemoryEngine:
         )
 
     def close(self) -> None:
-        self._get_compaction_service().close()
+        compaction_service = getattr(self, "compaction_service", None)
+        if compaction_service is not None:
+            compaction_service.close()
         memcore_manager = getattr(self, "memcore_manager", None)
         if memcore_manager is not None:
             memcore_manager.close()
@@ -516,6 +524,9 @@ class AkaneMemoryEngine:
             return False
         manager = self._memcore_manager_if_enabled()
         return manager is not None and bool(getattr(manager, "available", False))
+
+    def _should_eager_init_legacy_memory_services(self) -> bool:
+        return not self._memcore_owns_legacy_vector_index()
 
     def _record_memcore_user_turn(
         self,
@@ -713,6 +724,20 @@ class AkaneMemoryEngine:
         return base_provider
 
     def _maybe_start_embedding_reindex(self) -> None:
+        if self._memcore_owns_legacy_vector_index():
+            with self._embedding_reindex_lock:
+                self._embedding_reindex_status.update(
+                    {
+                        "state": "disabled",
+                        "processed": 0,
+                        "total": 0,
+                        "started_at": 0.0,
+                        "finished_at": time.time(),
+                        "error": "memcore_owns_legacy_vector_index",
+                        "collection_name": str(getattr(getattr(self, "vector_store", None), "collection_name", "")),
+                    }
+                )
+            return
         total_records = self.store.count_vectorizable_records()
         current_entries = self.vector_store.count_entries()
         if total_records <= 0 or current_entries >= total_records:
@@ -757,6 +782,17 @@ class AkaneMemoryEngine:
         )
 
     def _run_embedding_reindex(self) -> None:
+        if self._memcore_owns_legacy_vector_index():
+            with self._embedding_reindex_lock:
+                self._embedding_reindex_status.update(
+                    {
+                        "state": "disabled",
+                        "processed": 0,
+                        "finished_at": time.time(),
+                        "error": "memcore_owns_legacy_vector_index",
+                    }
+                )
+            return
         batch_size = max(1, int(getattr(config, "EMBEDDING_REINDEX_BATCH_SIZE", 64) or 64))
         processed = 0
         try:

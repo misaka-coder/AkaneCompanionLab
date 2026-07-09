@@ -51,15 +51,37 @@ def build_skipped_pre_retrieval_pipeline(
     user_message: str,
     now_ts: int,
     reason: str,
+    use_legacy_service: bool = True,
 ) -> RetrievalPipelineResult:
-    retrieval_service = engine._get_retrieval_service()
+    retrieval_service = engine._get_retrieval_service() if use_legacy_service else None
     try:
-        time_hint = retrieval_service._extract_time_hint(user_message=user_message, now_ts=now_ts)
+        time_hint = (
+            retrieval_service._extract_time_hint(user_message=user_message, now_ts=now_ts)
+            if retrieval_service is not None
+            else {
+                "date_label": None,
+                "time_of_day": detect_time_of_day_from_text(user_message),
+                "relative_time": None,
+            }
+        )
     except Exception:
         time_hint = {
             "date_label": None,
             "time_of_day": detect_time_of_day_from_text(user_message),
             "relative_time": None,
+        }
+    if retrieval_service is not None:
+        router_timing = retrieval_service._build_shortcut_timing(
+            stage="router",
+            branch="pre_retrieval_disabled",
+            ready_event_type="decision",
+        )
+    else:
+        router_timing = {
+            "stage": "router",
+            "branch": "pre_retrieval_disabled",
+            "mode": "shortcut",
+            "ready_event_type": "decision",
         }
     return RetrievalPipelineResult(
         used_retrieval=False,
@@ -74,11 +96,7 @@ def build_skipped_pre_retrieval_pipeline(
             "reason": str(reason or "").strip(),
             "confidence": 1.0,
         },
-        router_timing=retrieval_service._build_shortcut_timing(
-            stage="router",
-            branch="pre_retrieval_disabled",
-            ready_event_type="decision",
-        ),
+        router_timing=router_timing,
         retrieval_result={
             "filtered_candidate_count": 0,
             "time_filter": {
@@ -128,6 +146,7 @@ def run_pre_retrieval_pipeline(
             user_message=user_message,
             now_ts=now_ts,
             reason="memcore 模式下不再运行旧前置检索；由模型按需调用 memcore 记忆工具。",
+            use_legacy_service=False,
         )
     if not resolve_pre_retrieval_enabled(engine, payload=payload):
         return build_skipped_pre_retrieval_pipeline(
