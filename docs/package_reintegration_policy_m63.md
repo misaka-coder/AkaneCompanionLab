@@ -76,6 +76,37 @@ Not allowed:
   full implementation for that behavior;
 - tests only check constants/imports and do not prove the intended path is used.
 
+## Lean Reintegration Rule
+
+Package adoption is optional. A reusable package should be applied back to
+Akane only when it clearly reduces Akane's iteration complexity.
+
+Good reasons to apply a package back:
+
+- it deletes an Akane-owned implementation;
+- it turns an old Akane implementation into a thin product adapter;
+- it removes repeated schema normalization, protocol validation, descriptor
+  projection, or resource resolution logic;
+- it makes a product path easier to test by narrowing the number of authority
+  implementations.
+
+Bad reasons to apply a package back:
+
+- it looks more architectural but keeps the old path alive;
+- it adds a second API while existing callers still mutate the first one;
+- it preserves redundant fields, status objects, prompt sections, or UI labels
+  whose product effect is the same;
+- it exposes future-only placeholders to the user, model, or runtime before
+  real behavior exists.
+
+If the package-backed behavior is roughly equivalent to the old behavior, the
+old behavior should be deleted or collapsed in the same change window. Do not
+leave "we will clean it later" as the default outcome.
+
+Future-facing ideas belong in docs or tickets until they have real behavior.
+They should not appear as prompt hints, runtime capability modules, status
+fields, or settings controls just to advertise planned work.
+
 ## Reintegration Gate
 
 Before applying a package back to Akane, do this checklist:
@@ -83,10 +114,14 @@ Before applying a package back to Akane, do this checklist:
 1. Find the old implementation entry points with `rg`.
 2. List all active callers and tests.
 3. Pick one authority implementation.
-4. Change old Akane code to `deleted`, `thin adapter`, or `documented migration window`.
-5. Add or update tests that prove callers use the intended package-backed path.
-6. Update docs with the old implementation status.
-7. If a migration window is needed, document:
+4. Verify that adopting the package reduces Akane-owned logic rather than only
+   adding another layer.
+5. Change old Akane code to `deleted`, `thin adapter`, or `documented migration window`.
+6. Remove redundant fields, status blocks, prompts, docs, or UI hints whose
+   product effect is unchanged.
+7. Add or update tests that prove callers use the intended package-backed path.
+8. Update docs with the old implementation status.
+9. If a migration window is needed, document:
    - start milestone/commit;
    - why coexistence is needed;
    - old files/functions that must be deleted or collapsed;

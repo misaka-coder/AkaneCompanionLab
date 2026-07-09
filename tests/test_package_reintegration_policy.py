@@ -23,6 +23,10 @@ class PackageReintegrationPolicyTests(unittest.TestCase):
         self.assertIn("Reintegration Gate", doc)
         self.assertIn("Find the old implementation entry points with `rg`", doc)
         self.assertIn("Pick one authority implementation", doc)
+        self.assertIn("Lean Reintegration Rule", doc)
+        self.assertIn("only when it clearly reduces Akane's iteration complexity", doc)
+        self.assertIn('Do not leave "we will clean it later" as the default outcome', doc.replace("\n", " "))
+        self.assertIn("Future-facing ideas belong in docs or tickets", doc)
         self.assertIn("public-hard", doc)
         self.assertIn("optional-runtime", doc)
         self.assertIn("dev-only", doc)
@@ -68,6 +72,42 @@ class PackageReintegrationPolicyTests(unittest.TestCase):
         self.assertIn("必须减少权威实现数量", agents)
         self.assertIn("docs/package_reintegration_policy_m63.md", agents)
         self.assertIn("deleted / thin adapter / documented migration window", agents)
+        self.assertIn("只有明显降低 Akane 迭代复杂度", agents)
+        self.assertIn("冗余字段、冗余状态和重复提示", agents)
+        self.assertIn("future-only 占位提示", agents)
+
+    def test_ld003_records_future_only_capability_noise_cleanup(self) -> None:
+        doc = (ROOT / "docs" / "akane_lean_down_ld003_capability_noise.md").read_text(encoding="utf-8")
+
+        self.assertIn("AKANE-LD-003", doc)
+        self.assertIn("desktop_environment", doc)
+        self.assertIn("Future-only capabilities belong in docs or tickets", doc)
+        self.assertIn("real runtime data or real tools", doc)
+
+    def test_desktop_pet_capabilities_do_not_expose_future_only_environment_hint(self) -> None:
+        from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
+        from companion_v01.client_protocol import ClientMode
+
+        selection = CapabilityRegistry().select(
+            CapabilitySnapshot(
+                client_mode=ClientMode.DESKTOP_PET,
+                has_any_attachment=True,
+                has_media_attachment=True,
+            )
+        )
+
+        self.assertIn("desktop_file_workspace", selection.module_names)
+        self.assertIn("desktop_browser_open", selection.module_names)
+        self.assertIn("desktop_music_request", selection.module_names)
+        self.assertIn("desktop_workspace", selection.layer_names)
+        self.assertIn("desktop_browser", selection.layer_names)
+        self.assertIn("music_request", selection.layer_names)
+        self.assertIn("open_browser", selection.tool_names)
+        self.assertIn("browser_page", selection.tool_names)
+        self.assertIn("open_music_search", selection.tool_names)
+        self.assertNotIn("desktop_environment", selection.module_names)
+        self.assertNotIn("desktop_environment", selection.layer_names)
+        self.assertFalse(any("未来可以获得桌面观察" in hint for hint in selection.light_hints))
 
     def test_charpack_compat_layer_does_not_import_private_helpers(self) -> None:
         source_path = ROOT / "companion_v01" / "desktop_pet_character_resources.py"

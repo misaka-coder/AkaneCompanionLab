@@ -83,9 +83,8 @@ Tool layers:
 - `shared_media`
 - `shared_file_authoring`
 - `desktop_workspace`
-- reserved `desktop_environment`
 
-Desktop pet can reuse media tools such as `transcribe_media`, `convert_media_file`, and `clean_voice_track` when a file is already in the workspace. Future automatic local file discovery should be added through `desktop_workspace` or `desktop_environment`, not through QQ delivery.
+Desktop pet can reuse media tools such as `transcribe_media`, `convert_media_file`, and `clean_voice_track` when a file is already in the workspace. Future automatic local file discovery, active-window understanding, screenshots, or shortcuts must first get a real desktop client boundary and permission policy. Until then, keep them as docs/tickets instead of reserved prompt/tool layers.
 
 ## Code Map
 

@@ -66,9 +66,13 @@ V1 modules:
 
 Future modules:
 
-- `desktop_environment`: desktop observation, active window, selected file, shortcuts.
 - `external_query`: weather/search/map/news. This should use intent routing, not only state routing.
 - `video_workbench`: extract frames, clip video, make GIF, subtitles.
+
+Future-only modules should stay out of `CapabilityRegistry` until they expose
+real tools or real runtime context. Planned desktop observation, active-window
+understanding, selected-file awareness, and shortcuts should remain docs/tickets
+until a client can actually provide them safely.
 
 ## 4. Trigger Semantics
 
@@ -265,9 +269,11 @@ Later, gift/artifact tools can become state-triggered if their prompt cost grows
 
 ### Desktop Pet
 
-For now, mirror QQ attachment/file/media logic plus desktop light hints.
+For now, mirror QQ attachment/file/media logic plus real desktop workspace,
+browser, and music-request hints.
 
-Full desktop permission tools should stay unimplemented until the desktop client exists.
+Full desktop observation and shortcut tools should stay unregistered until the
+desktop client can provide real data/actions with an explicit safety boundary.
 
 ## 8. Non-Goals
 

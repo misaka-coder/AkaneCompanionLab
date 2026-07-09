@@ -152,10 +152,6 @@ def _always(_: CapabilitySnapshot) -> bool:
     return True
 
 
-def _never(_: CapabilitySnapshot) -> bool:
-    return False
-
-
 def _has_any_attachment(snapshot: CapabilitySnapshot) -> bool:
     return snapshot.has_any_attachment
 
@@ -354,14 +350,6 @@ class CapabilityRegistry:
                 tools=WEB_SCENE_TOOL_NAMES,
                 light_hint="你可以围绕当前场景、礼物、藏品和临时 NPC 参与小世界构建。",
                 trigger=_is_web_scene,
-            ),
-            CapabilityModule(
-                name="desktop_environment",
-                layer="desktop_environment",
-                modes=(ClientMode.DESKTOP_PET,),
-                tools=(),
-                light_hint="桌宠模式下，你未来可以获得桌面观察、窗口理解和快捷操作能力；当前仅保留能力提示。",
-                trigger=_never,
             ),
         )
 
