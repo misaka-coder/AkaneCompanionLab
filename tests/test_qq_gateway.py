@@ -247,6 +247,40 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(shop, {"action": "shop_list"})
         self.assertEqual(model, {"action": "list"})
 
+    def test_economy_status_command_does_not_steal_natural_money_or_state_chat(self) -> None:
+        gateway = NapCatQQGateway()
+
+        natural_messages = [
+            "多少钱？",
+            "这个多少钱",
+            "Akane 现在有钱吗",
+            "你现在饿吗",
+            "现在状态怎么样",
+        ]
+        for message in natural_messages:
+            with self.subTest(message=message):
+                self.assertIsNone(gateway.parse_economy_command(message))
+
+    def test_economy_status_command_accepts_explicit_status_queries(self) -> None:
+        gateway = NapCatQQGateway()
+
+        explicit_messages = [
+            "养成状态",
+            "Akane 金币多少",
+            "查余额",
+            "查看饥饿",
+            "当前好感度",
+        ]
+        for message in explicit_messages:
+            with self.subTest(message=message):
+                self.assertEqual(gateway.parse_economy_command(message), {"action": "status"})
+
+    def test_outfit_command_requires_clear_separator_for_wear_shortcut(self) -> None:
+        gateway = NapCatQQGateway()
+
+        self.assertIsNone(gateway.parse_outfit_command("穿上泳装好看吗"))
+        self.assertEqual(gateway.parse_outfit_command("穿上 泳装"), {"action": "switch", "outfit_id": "泳装"})
+
     def test_group_mention_opens_attachment_only_buffer_for_same_sender(self) -> None:
         gateway = NapCatQQGateway()
         mention_event = {

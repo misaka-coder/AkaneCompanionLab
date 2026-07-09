@@ -123,7 +123,7 @@ QQ_OUTFIT_SWITCH_PATTERNS = (
     re.compile(r"^(?:使用|启用)(?:QQ)?(?:服装|衣服|衣装)[:：\s]+(.+)$", re.IGNORECASE),
     re.compile(r"^(?:服装|衣服|衣装)(?:切换|切到|改为|换成)[:：\s]+(.+)$", re.IGNORECASE),
     re.compile(r"^(?:服装|衣服|衣装)[:：\s]+(.+)$", re.IGNORECASE),
-    re.compile(r"^(?:穿上|换上)[:：\s]*(.+)$", re.IGNORECASE),
+    re.compile(r"^(?:穿上|换上)[:：\s]+(.+)$", re.IGNORECASE),
 )
 QQ_REPLY_MODES = {"text", "voice", "both", "auto"}
 QQ_REPLY_MODE_LABELS = {
@@ -200,20 +200,9 @@ QQ_ECONOMY_OFFERING_STATUS_COMMANDS: frozenset[str] = frozenset({"查看供奉",
 QQ_ECONOMY_OFFERING_PREFIXES: tuple[str, ...] = ("供奉 ",)
 VALID_USABLE_IN: frozenset[str] = frozenset({"desktop_pet", "qq"})
 
-QQ_ECONOMY_STATUS_QUERY_FIELDS: tuple[str, ...] = (
-    "饥饿",
-    "饥饿度",
-    "饥饿值",
-    "饿",
-    "精力",
-    "精力值",
-    "体力",
-    "好感",
-    "好感度",
-    "金币",
-    "钱",
+QQ_ECONOMY_STATUS_QUERY_FIELDS_RE = (
+    r"(?:养成)?状态|金币(?:余额)?|余额|饥饿(?:度|值)?|精力(?:值)?|体力|好感(?:度)?"
 )
-QQ_ECONOMY_STATUS_QUERY_WORDS: tuple[str, ...] = ("多少", "几", "状态", "现在", "当前")
 QQ_MFACE_CONFIG_COMMAND_RE = re.compile(
     r"^(?:表情包配置|抓表情包|提取表情包|mface配置|mface config)(?:[:：\s]+(.+?))?$",
     re.IGNORECASE,
@@ -221,18 +210,19 @@ QQ_MFACE_CONFIG_COMMAND_RE = re.compile(
 
 
 def _is_economy_status_query(text: str) -> bool:
-    """Recognize natural QQ questions that ask for current care values."""
+    """Recognize explicit QQ status commands without stealing natural chat."""
     normalized = str(text or "").strip()
     if not normalized:
         return False
     compact = re.sub(r"\s+", "", normalized)
     if compact in QQ_ECONOMY_STATUS_COMMANDS:
         return True
-    has_field = any(field in compact for field in QQ_ECONOMY_STATUS_QUERY_FIELDS)
-    has_query_word = any(word in compact for word in QQ_ECONOMY_STATUS_QUERY_WORDS)
-    if has_field and has_query_word:
+    field = f"(?:{QQ_ECONOMY_STATUS_QUERY_FIELDS_RE})"
+    if re.fullmatch(rf"(?:查|查看|看看|显示)(?:我的|当前|现在|QQ)?{field}", compact):
         return True
-    return bool(re.fullmatch(r"(饿|困|累|精神)(不|吗|了没|没|嘛|么)?[？?]?", compact))
+    if re.fullmatch(rf"(?:我的|当前|现在|QQ)?{field}(?:当前|现在)?(?:多少|几|状态|查询)?[？?]?", compact):
+        return True
+    return False
 
 
 @dataclass(frozen=True)
