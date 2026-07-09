@@ -647,6 +647,20 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(engine._embedding_reindex_status["error"], "memcore_owns_legacy_vector_index")
         self.assertIsNone(engine._embedding_reindex_thread)
 
+    def test_engine_memcore_mode_skips_legacy_timeline_mirror_when_available(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.memcore_manager = _CompactionMemcoreManager(available=True)
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            self.assertFalse(engine._should_init_legacy_memory_timeline())
+
+    def test_engine_memcore_unavailable_keeps_legacy_timeline_mirror_fallback(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.memcore_manager = _CompactionMemcoreManager(available=False)
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            self.assertTrue(engine._should_init_legacy_memory_timeline())
+
     def test_engine_memcore_mode_uses_current_turn_as_visible_memory_boundary(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         engine.store = _ExplodingVisibleMemoryStore()
@@ -1615,6 +1629,28 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertTrue(memcore_manager.calls[0]["cross_conversation"])
         self.assertEqual(result.state_updates["memory_timeline"]["status"], "ok")
         self.assertEqual(result.state_updates["memory_timeline"]["message_count"], 1)
+
+    def test_read_memory_timeline_adapter_does_not_need_legacy_service_in_memcore_mode(self) -> None:
+        memcore_manager = _TimelineMemcoreManager()
+        service = MemcoreTimelineToolService(legacy_service=None, memcore_manager=memcore_manager)
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            periods = service.normalize_time_periods(["晚上", "morning", "凌晨", "unknown"])
+            result = service.read(
+                profile_user_id="u1",
+                character_pack_id="char",
+                date_from="2026-06-13",
+                date_to="2026-06-13",
+                time_periods=periods,
+                exclude_source_ids=["current-query"],
+            )
+            rendered = service.render_tool_context(result)
+
+        self.assertEqual(periods, ["midnight", "morning", "night"])
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("MEMCORE TIMELINE", rendered)
+        self.assertEqual(service.build_acquaintance_prompt(profile_user_id="u1", now_ts=100), "")
+        self.assertEqual(memcore_manager.calls[0]["exclude_source_ids"], ["current-query"])
 
     def test_read_memory_timeline_tool_does_not_fallback_to_legacy_when_memcore_unavailable(self) -> None:
         legacy = _TimelineLegacyService()

@@ -16,6 +16,21 @@ TIME_PERIOD_LABELS = {
     "night": "夜晚",
     "midnight": "凌晨",
 }
+TIME_PERIOD_ORDER = ("midnight", "morning", "afternoon", "night")
+TIME_PERIOD_ALIASES = {
+    "morning": "morning",
+    "上午": "morning",
+    "早上": "morning",
+    "afternoon": "afternoon",
+    "下午": "afternoon",
+    "night": "night",
+    "evening": "night",
+    "晚上": "night",
+    "夜晚": "night",
+    "midnight": "midnight",
+    "凌晨": "midnight",
+    "半夜": "midnight",
+}
 
 
 def _memory_backend() -> str:
@@ -26,16 +41,27 @@ def _memory_backend() -> str:
 class MemcoreTimelineToolService:
     """A MemoryTimelineService-compatible facade for the read_memory_timeline tool.
 
-    Legacy timeline remains the fallback and still owns acquaintance/mirror helpers.
-    In memcore mode only the precise read path is switched.
+    In memcore mode the precise read path does not need the legacy timeline
+    mirror. Legacy timeline remains an optional fallback for legacy/dual modes.
     """
 
-    def __init__(self, *, legacy_service: Any, memcore_manager: Any | None) -> None:
+    def __init__(self, *, legacy_service: Any | None, memcore_manager: Any | None) -> None:
         self.legacy_service = legacy_service
         self.memcore_manager = memcore_manager
 
     def normalize_time_periods(self, values: Iterable[str] | None) -> list[str]:
-        return self.legacy_service.normalize_time_periods(values)
+        legacy_service = self.legacy_service
+        if legacy_service is not None:
+            return legacy_service.normalize_time_periods(values)
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values or []:
+            period = TIME_PERIOD_ALIASES.get(str(value or "").strip().lower())
+            if not period or period in seen:
+                continue
+            seen.add(period)
+            normalized.append(period)
+        return [period for period in TIME_PERIOD_ORDER if period in normalized]
 
     def read(
         self,
@@ -87,7 +113,22 @@ class MemcoreTimelineToolService:
                 "text": "",
                 "backend": "memcore",
             }
-        return self.legacy_service.read(
+        legacy_service = self.legacy_service
+        if legacy_service is None:
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "legacy_timeline_unavailable",
+                "date_from": str(date_from or ""),
+                "date_to": str(date_to or ""),
+                "time_periods": list(time_periods or []),
+                "active_dates": [],
+                "message_count": 0,
+                "messages": [],
+                "text": "",
+                "backend": "legacy",
+            }
+        return legacy_service.read(
             profile_user_id=profile_user_id,
             character_pack_id=character_pack_id,
             date_from=date_from,
@@ -97,8 +138,11 @@ class MemcoreTimelineToolService:
         )
 
     def render_tool_context(self, result: dict[str, Any]) -> str:
+        legacy_service = self.legacy_service
         if str((result or {}).get("backend") or "") != "memcore":
-            return self.legacy_service.render_tool_context(result)
+            if legacy_service is not None:
+                return legacy_service.render_tool_context(result)
+            return "原始对话时间线读取失败：当前记忆时间线服务不可用。"
         status = str(result.get("status") or "")
         date_from = str(result.get("date_from") or "")
         date_to = str(result.get("date_to") or "")
@@ -122,4 +166,7 @@ class MemcoreTimelineToolService:
         )
 
     def build_acquaintance_prompt(self, **kwargs: Any) -> str:
-        return self.legacy_service.build_acquaintance_prompt(**kwargs)
+        legacy_service = self.legacy_service
+        if legacy_service is None:
+            return ""
+        return legacy_service.build_acquaintance_prompt(**kwargs)

@@ -172,6 +172,7 @@ class AkaneMemoryEngine:
             embedding_provider=self.embedding_provider,
         )
         self.llm = LLMRuntime()
+        self.memcore_manager = self._build_memcore_manager()
         self.gift_service = GiftSystemService(
             self.base_dir / "user_assets",
             store=self.store,
@@ -184,18 +185,20 @@ class AkaneMemoryEngine:
             },
             default_workers=int(getattr(config, "BACKGROUND_DEFAULT_WORKERS", 1) or 1),
         )
-        self.memory_timeline_service = MemoryTimelineService(
-            store=self.store,
-            root_dir=self.base_dir / "memory",
-            characters_dir=getattr(
-                self.desktop_pet_character_resources,
-                "characters_dir",
-                None,
-            ),
-            background_tasks=self.background_tasks,
-        )
-        self.store.set_message_write_callback(self.memory_timeline_service.handle_message_write)
-        self.memory_timeline_service.schedule_existing_backfill()
+        self.memory_timeline_service = None
+        if self._should_init_legacy_memory_timeline():
+            self.memory_timeline_service = MemoryTimelineService(
+                store=self.store,
+                root_dir=self.base_dir / "memory",
+                characters_dir=getattr(
+                    self.desktop_pet_character_resources,
+                    "characters_dir",
+                    None,
+                ),
+                background_tasks=self.background_tasks,
+            )
+            self.store.set_message_write_callback(self.memory_timeline_service.handle_message_write)
+            self.memory_timeline_service.schedule_existing_backfill()
         self.workspace_file_service = WorkspaceFileService(
             root_dir=getattr(config, "AKANE_WORKSPACE_ROOT", ""),
             store=self.store,
@@ -278,7 +281,6 @@ class AkaneMemoryEngine:
         self.mode_profile_registry = ModeProfileRegistry()
         self.prompt_profile_registry = PromptProfileRegistry()
         self.output_adapters = OutputAdapterRegistry()
-        self.memcore_manager = self._build_memcore_manager()
         if self._should_eager_init_legacy_memory_services():
             self.retrieval_service = RetrievalService(
                 store=self.store,
@@ -336,7 +338,9 @@ class AkaneMemoryEngine:
         if compaction_service is not None:
             compaction_service.reset()
         self.store.reset()
-        self.memory_timeline_service.clear_mirror()
+        memory_timeline_service = getattr(self, "memory_timeline_service", None)
+        if memory_timeline_service is not None:
+            memory_timeline_service.clear_mirror()
         self.vector_store.reset()
         self.gift_service.reset()
         if self.vision_service is not None:
@@ -530,6 +534,9 @@ class AkaneMemoryEngine:
 
     def _should_eager_init_legacy_memory_services(self) -> bool:
         return not self._memcore_owns_legacy_vector_index()
+
+    def _should_init_legacy_memory_timeline(self) -> bool:
+        return not self._memcore_owns_visible_memory()
 
     def _load_turn_visible_memory(
         self,
@@ -3695,12 +3702,12 @@ class AkaneMemoryEngine:
             from .memcore_integration.timeline import MemcoreTimelineToolService
 
             return MemcoreTimelineToolService(
-                legacy_service=self.memory_timeline_service,
+                legacy_service=getattr(self, "memory_timeline_service", None),
                 memcore_manager=getattr(self, "memcore_manager", None),
             )
         except Exception as exc:
             logger.warning("memcore timeline tool adapter disabled: %s", exc)
-            return self.memory_timeline_service
+            return getattr(self, "memory_timeline_service", None)
 
     def _build_tool_handlers(self) -> dict[str, BaseToolHandler]:
         return {
