@@ -510,6 +510,13 @@ class AkaneMemoryEngine:
         manager = self._memcore_manager_if_enabled()
         return manager is not None and bool(getattr(manager, "available", False))
 
+    def _memcore_owns_legacy_vector_index(self) -> bool:
+        backend = str(getattr(config, "MEMORY_BACKEND", "memcore") or "memcore").strip().lower()
+        if backend != "memcore":
+            return False
+        manager = self._memcore_manager_if_enabled()
+        return manager is not None and bool(getattr(manager, "available", False))
+
     def _record_memcore_user_turn(
         self,
         *,
@@ -4337,5 +4344,12 @@ class AkaneMemoryEngine:
 
     def _upsert_raw_record(self, record: dict[str, Any]) -> None:
         if not bool(record.get("index_in_vector", True)):
+            return
+        if self._memcore_owns_legacy_vector_index():
+            record["index_in_vector"] = False
+            source_id = str(record.get("source_id") or "").strip()
+            update_index_flag = getattr(getattr(self, "store", None), "update_message_index_in_vector", None)
+            if source_id and callable(update_index_flag):
+                update_index_flag(source_id, False)
             return
         self.vector_store.upsert_entries([build_raw_vector_entry(record)])

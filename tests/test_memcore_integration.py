@@ -46,6 +46,24 @@ def _ts(year: int, month: int, day: int, hour: int, minute: int = 0) -> int:
     return int(datetime(year, month, day, hour, minute, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp())
 
 
+def _raw_vector_record() -> dict[str, object]:
+    return {
+        "source_id": "raw-1",
+        "profile_user_id": "u1",
+        "session_id": "s1",
+        "character_pack_id": "char",
+        "seq_no": 1,
+        "role": "user",
+        "content": "我喜欢冰可乐。",
+        "timestamp": _ts(2026, 6, 1, 9, 0),
+        "date_label": "2026-06-01",
+        "time_of_day": "morning",
+        "semantic_tags": ["可乐"],
+        "memory_metadata": {"keywords": ["可乐"], "categories": ["preference"]},
+        "index_in_vector": True,
+    }
+
+
 class _ToolFakeStore:
     def __init__(self) -> None:
         self.current_record = {
@@ -318,6 +336,22 @@ class _CompactionMemcoreManager:
         return {"ok": True, "status": "completed", "stats": {}}
 
 
+class _VectorWriteStore:
+    def __init__(self) -> None:
+        self.index_updates: list[tuple[str, bool]] = []
+
+    def update_message_index_in_vector(self, source_id: str, value: bool) -> None:
+        self.index_updates.append((source_id, value))
+
+
+class _VectorWriteRecorder:
+    def __init__(self) -> None:
+        self.entries: list[dict[str, object]] = []
+
+    def upsert_entries(self, entries: list[dict[str, object]]) -> None:
+        self.entries.extend(entries)
+
+
 class _LegacyRawStore:
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self.rows = rows
@@ -477,6 +511,48 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(legacy_compaction.scheduled, [expected])
         self.assertEqual(legacy_compaction.ran, [expected])
         self.assertEqual(memcore_manager.sync_calls, [])
+
+    def test_engine_memcore_mode_stops_legacy_raw_vector_writes_when_available(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.store = _VectorWriteStore()
+        engine.vector_store = _VectorWriteRecorder()
+        engine.memcore_manager = _CompactionMemcoreManager(available=True)
+        record = _raw_vector_record()
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            engine._upsert_raw_record(record)
+
+        self.assertEqual(engine.vector_store.entries, [])
+        self.assertEqual(engine.store.index_updates, [("raw-1", False)])
+        self.assertFalse(record["index_in_vector"])
+
+    def test_engine_memcore_mode_keeps_legacy_raw_vector_fallback_when_unavailable(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.store = _VectorWriteStore()
+        engine.vector_store = _VectorWriteRecorder()
+        engine.memcore_manager = _CompactionMemcoreManager(available=False)
+        record = _raw_vector_record()
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            engine._upsert_raw_record(record)
+
+        self.assertEqual([entry["source_id"] for entry in engine.vector_store.entries], ["raw-1"])
+        self.assertEqual(engine.store.index_updates, [])
+        self.assertTrue(record["index_in_vector"])
+
+    def test_engine_dual_mode_keeps_legacy_raw_vector_writes(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.store = _VectorWriteStore()
+        engine.vector_store = _VectorWriteRecorder()
+        engine.memcore_manager = _CompactionMemcoreManager(available=True)
+        record = _raw_vector_record()
+
+        with patch.object(config, "MEMORY_BACKEND", "dual"):
+            engine._upsert_raw_record(record)
+
+        self.assertEqual([entry["source_id"] for entry in engine.vector_store.entries], ["raw-1"])
+        self.assertEqual(engine.store.index_updates, [])
+        self.assertTrue(record["index_in_vector"])
 
     def test_import_legacy_raw_messages_is_idempotent_and_filtered(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
