@@ -2828,7 +2828,7 @@ class NapCatQQGateway:
         return None
 
     def send_reply(self, context: QQMessageContext, message: str) -> dict[str, Any]:
-        clean_message = str(message or "").strip()
+        clean_message = self._trim_segment_ending(str(message or ""))
         if not context.target_id or not clean_message:
             return {"ok": False, "reason": "empty_target_or_message"}
 
