@@ -25,6 +25,7 @@ class PromptModule(str, Enum):
     PENDING_GIFTS = "pending_gifts"
     FOCUSED_GIFT_OBSERVATION = "focused_gift_observation"
     PERSONA = "persona"
+    DOMAIN_PROFILE = "domain_profile"
     TOOLS = "tools"
 
 
@@ -135,6 +136,7 @@ class PromptProfileRegistry:
                     PromptModule.EXTRA_CONTEXT.value,
                     PromptModule.PENDING_GIFTS.value,
                     PromptModule.PERSONA.value,
+                    PromptModule.DOMAIN_PROFILE.value,
                     PromptModule.TOOLS.value,
                 ),
                 supports_thought_debug=False,

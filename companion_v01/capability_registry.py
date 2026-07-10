@@ -182,7 +182,13 @@ class CapabilityRegistry:
     def __init__(self, modules: tuple[CapabilityModule, ...] | None = None) -> None:
         self.modules = modules or self._default_modules()
 
-    def select(self, snapshot: CapabilitySnapshot) -> CapabilitySelection:
+    def select(
+        self,
+        snapshot: CapabilitySnapshot,
+        *,
+        allowed_tool_names: tuple[str, ...] | None = None,
+        hidden_tool_names: tuple[str, ...] = (),
+    ) -> CapabilitySelection:
         hints: list[str] = []
         tools: list[str] = []
         module_names: list[str] = []
@@ -190,8 +196,21 @@ class CapabilityRegistry:
         seen_tools: set[str] = set()
         seen_hints: set[str] = set()
         seen_layers: set[str] = set()
+        allowed = (
+            {str(name or "").strip() for name in allowed_tool_names if str(name or "").strip()}
+            if allowed_tool_names is not None
+            else None
+        )
+        hidden = {str(name or "").strip() for name in hidden_tool_names if str(name or "").strip()}
         for module in self.modules:
             if not module.applies_to_mode(snapshot.client_mode):
+                continue
+            module_tools = tuple(
+                tool_name
+                for tool_name in module.tools
+                if tool_name not in hidden and (allowed is None or tool_name in allowed)
+            )
+            if allowed is not None and not module_tools:
                 continue
             hint = module.light_hint.strip()
             if hint and hint not in seen_hints:
@@ -204,7 +223,7 @@ class CapabilityRegistry:
             if layer and layer not in seen_layers:
                 seen_layers.add(layer)
                 layer_names.append(layer)
-            for tool_name in module.tools:
+            for tool_name in module_tools:
                 if tool_name in seen_tools:
                     continue
                 seen_tools.add(tool_name)

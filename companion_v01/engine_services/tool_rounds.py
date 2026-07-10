@@ -18,6 +18,11 @@ from ..capability_registry import (
     is_media_generated_file,
 )
 from ..client_protocol import ClientMode, ClientProtocolContext
+from ..domain_profiles import (
+    DEFAULT_DOMAIN_PROFILE_ID,
+    DomainProfileRegistry,
+    filter_tool_names,
+)
 from .. import tool_orchestration_engine
 from ..local_capability_config import load_capability_config
 
@@ -90,6 +95,7 @@ def resolve_tool_round_budget(
     client_context: ClientProtocolContext | None = None,
     profile_user_id: str = "",
     session_id: str = "",
+    domain_profile_id: str = "",
 ) -> int:
     return tool_orchestration_engine.resolve_tool_round_budget(
         resolve_tool_handlers(
@@ -97,6 +103,7 @@ def resolve_tool_round_budget(
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            domain_profile_id=domain_profile_id,
         ),
         tool_call,
         current_budget=current_budget,
@@ -109,6 +116,7 @@ def resolve_tool_handlers(
     client_context: ClientProtocolContext | None = None,
     profile_user_id: str = "",
     session_id: str = "",
+    domain_profile_id: str = "",
 ) -> dict[str, Any]:
     handlers = getattr(engine, "tool_handlers", {}) or {}
     dynamic_handlers = build_adapter_tool_handlers(
@@ -116,8 +124,11 @@ def resolve_tool_handlers(
         profile_user_id=profile_user_id,
         client_context=client_context,
     )
+    all_handlers = {**dict(handlers), **dynamic_handlers}
+    domain_profile = DomainProfileRegistry().get(domain_profile_id)
     if client_context is None:
-        return {**dict(handlers), **dynamic_handlers}
+        allowed_names = filter_tool_names(tuple(all_handlers.keys()), domain_profile)
+        return {name: all_handlers[name] for name in allowed_names if name in all_handlers}
 
     selected_names = list(
         resolve_capability_selection(
@@ -125,12 +136,13 @@ def resolve_tool_handlers(
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            domain_profile_id=domain_profile_id,
         ).tool_names
     )
     return {
-        tool_name: ({**handlers, **dynamic_handlers})[tool_name]
+        tool_name: all_handlers[tool_name]
         for tool_name in selected_names
-        if tool_name in {**handlers, **dynamic_handlers}
+        if tool_name in all_handlers
     }
 
 
@@ -140,20 +152,29 @@ def resolve_capability_selection(
     client_context: ClientProtocolContext | None = None,
     profile_user_id: str = "",
     session_id: str = "",
+    domain_profile_id: str = "",
 ) -> CapabilitySelection:
     from ..capability_registry import CapabilityRegistry
 
     handlers = getattr(engine, "tool_handlers", {}) or {}
+    domain_profile = DomainProfileRegistry().get(domain_profile_id)
     if client_context is None:
+        tool_names = filter_tool_names(tuple(handlers.keys()), domain_profile)
         return CapabilitySelection(
             light_hints=(),
-            tool_names=tuple(handlers.keys()),
+            tool_names=tool_names,
             module_names=("all_tools",),
         )
     if not str(profile_user_id or "").strip() or not str(session_id or "").strip():
         return CapabilitySelection(
             light_hints=(),
-            tool_names=tuple(legacy_mode_tool_names(engine, client_context)),
+            tool_names=tuple(
+                legacy_mode_tool_names(
+                    engine,
+                    client_context,
+                    domain_profile_id=domain_profile_id,
+                )
+            ),
             module_names=("legacy_mode_pack",),
         )
     snapshot = build_capability_snapshot(
@@ -163,7 +184,22 @@ def resolve_capability_selection(
         session_id=session_id,
     )
     registry = getattr(engine, "capability_registry", None) or CapabilityRegistry()
-    selection = registry.select(snapshot)
+    selection = registry.select(
+        snapshot,
+        allowed_tool_names=(
+            domain_profile.allowed_tool_names
+            if domain_profile.id != DEFAULT_DOMAIN_PROFILE_ID
+            else None
+        ),
+        hidden_tool_names=domain_profile.hidden_tool_names,
+    )
+    if domain_profile.id != DEFAULT_DOMAIN_PROFILE_ID:
+        selection = CapabilitySelection(
+            light_hints=domain_profile.capability_hints,
+            tool_names=selection.tool_names,
+            module_names=selection.module_names,
+            layer_names=selection.layer_names,
+        )
     dynamic_handlers = build_adapter_tool_handlers(
         engine,
         profile_user_id=profile_user_id,
@@ -171,7 +207,11 @@ def resolve_capability_selection(
     )
     if not dynamic_handlers:
         return selection
-    dynamic_tool_names = tuple(name for name in dynamic_handlers.keys() if name not in selection.tool_names)
+    dynamic_tool_names = tuple(
+        name
+        for name in filter_tool_names(tuple(dynamic_handlers.keys()), domain_profile)
+        if name not in selection.tool_names
+    )
     if not dynamic_tool_names:
         return selection
     return CapabilitySelection(
@@ -217,11 +257,22 @@ def build_capability_snapshot(
     )
 
 
-def legacy_mode_tool_names(engine: Any, client_context: ClientProtocolContext) -> list[str]:
+def legacy_mode_tool_names(
+    engine: Any,
+    client_context: ClientProtocolContext,
+    *,
+    domain_profile_id: str = "",
+) -> list[str]:
     from ..capability_registry import CapabilityRegistry
 
     registry = getattr(engine, "capability_registry", None) or CapabilityRegistry()
-    return list(registry.tool_names_for_mode(client_context.effective_mode))
+    domain_profile = DomainProfileRegistry().get(domain_profile_id)
+    return list(
+        filter_tool_names(
+            registry.tool_names_for_mode(client_context.effective_mode),
+            domain_profile,
+        )
+    )
 
 
 def build_adapter_tool_handlers(

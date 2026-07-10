@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+import config
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
@@ -656,6 +657,68 @@ class BackendRouteModuleTests(unittest.TestCase):
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
         self.assertIn("已切换本 QQ 会话角色为", sent_payload["message"])
+
+    def test_qq_router_finance_command_switches_without_llm_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "should not run"}}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        with patch.object(config, "FINANCE_ASSISTANT_ENABLED", True, create=True), patch.object(
+            config,
+            "QQ_FINANCE_MODE_COMMANDS_ENABLED",
+            True,
+            create=True,
+        ), patch.object(config, "QQ_FINANCE_PUSH_ENABLED", False, create=True), patch(
+            "companion_v01.qq_gateway.requests.post",
+            return_value=FakeResponse(),
+        ) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-finance-switch-1",
+                    "raw_message": "开启金融模式",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_finance_mode_command")
+        self.assertEqual(payload["command_status"], "switched")
+        self.assertEqual(payload["finance_mode"], "qa")
+        self.assertEqual(payload["domain_profile"], "finance_v1")
+        self.assertEqual(gateway.finance_mode_overrides[f"qq_pri_{QQ_USER_FIXTURE_ID}"], "qa")
+        self.assertEqual(process_calls, [])
+        mocked_post.assert_called_once()
+        sent_payload = mocked_post.call_args.kwargs["json"]
+        self.assertIn("金融问答模式", sent_payload["message"])
 
     def test_qq_router_passively_records_group_message_without_llm_turn(self) -> None:
         runtime = FakeRuntimeMetrics()

@@ -63,6 +63,7 @@ _TTS = "语音 (TTS)"
 _MUS = "系统音乐感知 / 在线歌词"
 _PUB = "公开访问保护 & 限流"
 _TOOL = "工具调用 & 后台任务"
+_FIN = "金融领域档案"
 _QQ = "QQ / NapCat 桥接"
 _BG = "后台 Worker"
 _RM = "远程媒体 (yt-dlp)"
@@ -184,6 +185,13 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("MAX_TASK_WORKER_ROUNDS", _TOOL, SCOPE_RUNTIME, "后台 Workshop Worker 最大循环轮次"),
     _s("AKANE_WORKSPACE_ROOT", _TOOL, SCOPE_RESTART_CLIENT, "单一文件工作区路径（留空=桌面/默认）"),
     _s("AKANE_WORKSPACE_MAX_READ_BYTES", _TOOL, SCOPE_RESTART_CLIENT, "单个工作区文件最大直接读取字节数"),
+    # 金融领域档案
+    _s("FINANCE_ASSISTANT_ENABLED", _FIN, SCOPE_RUNTIME, "金融问答领域总开关"),
+    _s("FINANCE_DEFAULT_MODE", _FIN, SCOPE_RUNTIME, "QQ 会话默认金融模式：off/qa/push"),
+    _s("FINANCE_TOOL_ROUND_BUDGET", _FIN, SCOPE_RUNTIME, "金融研究建议工具轮次预算"),
+    _s("FINANCE_TOOL_ROUND_HARD_LIMIT", _FIN, SCOPE_RUNTIME, "金融研究工具轮次硬上限"),
+    _s("QQ_FINANCE_MODE_COMMANDS_ENABLED", _FIN, SCOPE_RUNTIME, "允许 QQ 切换金融模式"),
+    _s("QQ_FINANCE_PUSH_ENABLED", _FIN, SCOPE_RUNTIME, "允许 QQ 会话进入财经主动推送模式"),
     # QQ / NapCat 桥接
     _s("QQ_BRIDGE_ENABLED", _QQ, SCOPE_RESTART, "QQ 桥总开关（启动时决定是否构造 gateway）"),
     _s("QQ_ONEBOT_HTTP_URL", _QQ, SCOPE_RUNTIME, "OneBot HTTP 服务地址"),

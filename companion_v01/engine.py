@@ -1019,6 +1019,13 @@ class AkaneMemoryEngine:
 
         return _fn(payload)
 
+    @staticmethod
+    def _resolve_turn_domain_profile(payload: dict[str, Any]) -> tuple[str, str]:
+        from .domain_profiles import resolve_turn_domain_context
+
+        profile, finance_mode = resolve_turn_domain_context(payload)
+        return profile.id, finance_mode
+
     def _resolve_turn_speaker_identity(
         self,
         client_context: ClientProtocolContext,
@@ -2078,6 +2085,10 @@ class AkaneMemoryEngine:
         client_context = self._resolve_client_protocol_context(payload)
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
+        turn_domain_profile_id, finance_mode = self._resolve_turn_domain_profile(payload)
+        payload = dict(payload)
+        payload["finance_mode"] = finance_mode
+        payload["domain_profile"] = turn_domain_profile_id
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
@@ -2195,6 +2206,7 @@ class AkaneMemoryEngine:
             user_images=desktop_screen_images,
             final_debug_enabled=final_debug_enabled,
             chat_model_override=chat_model_override,
+            domain_profile_id=turn_domain_profile_id,
         )
         recent_raw_for_turn = list(recent_raw)
         tool_turns: list[dict[str, Any]] = []
@@ -2219,6 +2231,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                domain_profile_id=turn_domain_profile_id,
             )
             if not tool_call:
                 if not rejection:
@@ -2254,6 +2267,7 @@ class AkaneMemoryEngine:
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
                     post_user_turns=native_tool_history_turns,
+                    domain_profile_id=turn_domain_profile_id,
                 )
                 tool_round_index += 1
                 if allow_retry:
@@ -2265,6 +2279,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                domain_profile_id=turn_domain_profile_id,
             )
 
             tool_signature = self._tool_call_signature(tool_call)
@@ -2296,6 +2311,7 @@ class AkaneMemoryEngine:
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
                     post_user_turns=native_tool_history_turns,
+                    domain_profile_id=turn_domain_profile_id,
                 )
                 break
             seen_tool_calls.add(tool_signature)
@@ -2329,6 +2345,7 @@ class AkaneMemoryEngine:
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
                 native_tool_history_turns=native_tool_history_turns,
+                domain_profile_id=turn_domain_profile_id,
             )
 
             stop_after_tool = self._should_stop_after_tool_events(_current_events)
@@ -2363,6 +2380,7 @@ class AkaneMemoryEngine:
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
                 post_user_turns=native_tool_history_turns,
+                domain_profile_id=turn_domain_profile_id,
             )
             tool_round_index += 1
 
@@ -2502,6 +2520,10 @@ class AkaneMemoryEngine:
         client_context = self._resolve_client_protocol_context(payload)
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
+        turn_domain_profile_id, finance_mode = self._resolve_turn_domain_profile(payload)
+        payload = dict(payload)
+        payload["finance_mode"] = finance_mode
+        payload["domain_profile"] = turn_domain_profile_id
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
@@ -2619,6 +2641,7 @@ class AkaneMemoryEngine:
             user_images=desktop_screen_images,
             final_debug_enabled=final_debug_enabled,
             chat_model_override=chat_model_override,
+            domain_profile_id=turn_domain_profile_id,
         )
         recent_raw_for_turn = list(recent_raw)
         tool_turns: list[dict[str, Any]] = []
@@ -2643,6 +2666,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                domain_profile_id=turn_domain_profile_id,
             )
             yield {
                 "type": "assistant_stage_decision",
@@ -2684,6 +2708,7 @@ class AkaneMemoryEngine:
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
                     post_user_turns=native_tool_history_turns,
+                    domain_profile_id=turn_domain_profile_id,
                 )
                 tool_round_index += 1
                 if allow_retry:
@@ -2695,6 +2720,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                domain_profile_id=turn_domain_profile_id,
             )
 
             tool_signature = self._tool_call_signature(tool_call)
@@ -2726,6 +2752,7 @@ class AkaneMemoryEngine:
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
                     post_user_turns=native_tool_history_turns,
+                    domain_profile_id=turn_domain_profile_id,
                 )
                 break
             seen_tool_calls.add(tool_signature)
@@ -2760,6 +2787,7 @@ class AkaneMemoryEngine:
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
                 native_tool_history_turns=native_tool_history_turns,
+                domain_profile_id=turn_domain_profile_id,
             )
             for stream_event in current_events:
                 yield stream_event
@@ -2796,6 +2824,7 @@ class AkaneMemoryEngine:
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
                 post_user_turns=native_tool_history_turns,
+                domain_profile_id=turn_domain_profile_id,
             )
             tool_round_index += 1
 
@@ -3075,6 +3104,7 @@ class AkaneMemoryEngine:
         final_debug_enabled: bool | None = None,
         chat_model_override: str = "",
         post_user_turns: list[dict[str, Any]] | None = None,
+        domain_profile_id: str = "",
     ) -> dict[str, Any]:
         generation_context = self._prepare_final_response_context(
             session_id=session_id,
@@ -3095,6 +3125,7 @@ class AkaneMemoryEngine:
             enable_native_tools=True,
             chat_model_override=chat_model_override,
             post_user_turns=post_user_turns,
+            domain_profile_id=domain_profile_id,
         )
         result = self.llm.call_chat_json(
             system_prompt=str(generation_context["system_prompt"]),
@@ -3144,6 +3175,7 @@ class AkaneMemoryEngine:
         final_debug_enabled: bool | None = None,
         chat_model_override: str = "",
         post_user_turns: list[dict[str, Any]] | None = None,
+        domain_profile_id: str = "",
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
         generation_context = self._prepare_final_response_context(
             session_id=session_id,
@@ -3164,6 +3196,7 @@ class AkaneMemoryEngine:
             enable_native_tools=True,
             chat_model_override=chat_model_override,
             post_user_turns=post_user_turns,
+            domain_profile_id=domain_profile_id,
         )
         speaker_identity = self._resolve_turn_speaker_identity(
             client_context,
@@ -3194,6 +3227,7 @@ class AkaneMemoryEngine:
                         client_context=client_context,
                         profile_user_id=profile_user_id,
                         session_id=session_id,
+                        domain_profile_id=domain_profile_id,
                     )
                     is not None
                 )
@@ -3243,6 +3277,7 @@ class AkaneMemoryEngine:
         enable_native_tools: bool = False,
         chat_model_override: str = "",
         post_user_turns: list[dict[str, Any]] | None = None,
+        domain_profile_id: str = "",
     ) -> dict[str, Any]:
         from .engine_services.response_builder import prepare_context as _fn
 
@@ -3266,6 +3301,7 @@ class AkaneMemoryEngine:
             enable_native_tools=enable_native_tools,
             chat_model_override=chat_model_override,
             post_user_turns=post_user_turns,
+            domain_profile_id=domain_profile_id,
         )
 
     def _normalize_final_output(
@@ -3366,6 +3402,7 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext | None = None,
         profile_user_id: str = "",
         session_id: str = "",
+        domain_profile_id: str = "",
     ) -> int:
         from .engine_services.tool_rounds import resolve_tool_round_budget as _fn
 
@@ -3376,6 +3413,7 @@ class AkaneMemoryEngine:
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            domain_profile_id=domain_profile_id,
         )
 
     def _tool_call_signature(self, tool_call: dict[str, Any]) -> str:
@@ -3406,6 +3444,7 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext,
         profile_user_id: str,
         session_id: str,
+        domain_profile_id: str = "",
     ) -> tuple[dict[str, Any], dict[str, Any] | None, str]:
         native_tool_call = final_output.pop(NATIVE_TOOL_CALL_FIELD, None)
         raw_tool_call = native_tool_call if isinstance(native_tool_call, dict) and native_tool_call else None
@@ -3425,6 +3464,7 @@ class AkaneMemoryEngine:
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            domain_profile_id=domain_profile_id,
         )
         rejection = (
             self._describe_tool_call_rejection(
@@ -3432,6 +3472,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                domain_profile_id=domain_profile_id,
             )
             if raw_tool_call and not tool_call
             else ""
@@ -3536,6 +3577,7 @@ class AkaneMemoryEngine:
         memory_exclude_source_ids: list[str],
         request_context: dict[str, Any],
         native_tool_history_turns: list[dict[str, Any]] | None = None,
+        domain_profile_id: str = "",
     ) -> tuple[ToolExecutionResult | None, list[dict[str, Any]]]:
         tool_result = self._execute_tool_call(
             profile_user_id=profile_user_id,
@@ -3548,6 +3590,7 @@ class AkaneMemoryEngine:
             client_context=client_context,
             memory_exclude_source_ids=memory_exclude_source_ids,
             request_context=request_context,
+            domain_profile_id=domain_profile_id,
         )
         if not tool_result:
             return None, []
@@ -4013,6 +4056,7 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext | None = None,
         profile_user_id: str = "",
         session_id: str = "",
+        domain_profile_id: str = "",
     ) -> dict[str, BaseToolHandler]:
         from .engine_services.tool_rounds import resolve_tool_handlers as _fn
 
@@ -4021,6 +4065,7 @@ class AkaneMemoryEngine:
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            domain_profile_id=domain_profile_id,
         )
 
     def _resolve_capability_selection(
@@ -4029,6 +4074,7 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext | None = None,
         profile_user_id: str = "",
         session_id: str = "",
+        domain_profile_id: str = "",
     ) -> CapabilitySelection:
         from .engine_services.tool_rounds import resolve_capability_selection as _fn
 
@@ -4037,6 +4083,7 @@ class AkaneMemoryEngine:
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            domain_profile_id=domain_profile_id,
         )
 
     def _build_mcp_adapter_tool_handlers(
@@ -4067,10 +4114,15 @@ class AkaneMemoryEngine:
             client_context=client_context,
         )
 
-    def _legacy_mode_tool_names(self, client_context: ClientProtocolContext) -> list[str]:
+    def _legacy_mode_tool_names(
+        self,
+        client_context: ClientProtocolContext,
+        *,
+        domain_profile_id: str = "",
+    ) -> list[str]:
         from .engine_services.tool_rounds import legacy_mode_tool_names as _fn
 
-        return _fn(self, client_context)
+        return _fn(self, client_context, domain_profile_id=domain_profile_id)
 
     def _build_capability_snapshot(
         self,
@@ -4096,6 +4148,7 @@ class AkaneMemoryEngine:
         profile_user_id: str = "",
         session_id: str = "",
         exclude_tool_types: set[str] | None = None,
+        domain_profile_id: str = "",
     ) -> str:
         if not allow_tool_call:
             return "本轮不要调用任何工具，tool_call 固定为 null。"
@@ -4104,11 +4157,13 @@ class AkaneMemoryEngine:
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            domain_profile_id=domain_profile_id,
         )
         handlers = self._resolve_tool_handlers(
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            domain_profile_id=domain_profile_id,
         )
         excluded = {str(item).strip() for item in (exclude_tool_types or set()) if str(item).strip()}
         if excluded:
@@ -4277,6 +4332,7 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext | None = None,
         profile_user_id: str = "",
         session_id: str = "",
+        domain_profile_id: str = "",
     ) -> dict[str, Any] | None:
         return tool_orchestration_engine.normalize_tool_call(
             self,
@@ -4284,6 +4340,7 @@ class AkaneMemoryEngine:
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            domain_profile_id=domain_profile_id,
         )
 
     def _describe_tool_call_rejection(
@@ -4293,6 +4350,7 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext | None = None,
         profile_user_id: str = "",
         session_id: str = "",
+        domain_profile_id: str = "",
     ) -> str:
         return tool_orchestration_engine.classify_tool_call_rejection(
             self,
@@ -4300,6 +4358,7 @@ class AkaneMemoryEngine:
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            domain_profile_id=domain_profile_id,
         )
 
     def _promote_narrated_tool_call(
@@ -4333,6 +4392,7 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext | None = None,
         memory_exclude_source_ids: list[str] | None = None,
         request_context: dict[str, Any] | None = None,
+        domain_profile_id: str = "",
     ) -> ToolExecutionResult | None:
         return tool_orchestration_engine.execute_tool_call(
             self,
@@ -4346,6 +4406,7 @@ class AkaneMemoryEngine:
             client_context=client_context,
             memory_exclude_source_ids=memory_exclude_source_ids,
             request_context=request_context,
+            domain_profile_id=domain_profile_id,
         )
 
     def _execute_retrieve_memory_tool(

@@ -1440,6 +1440,45 @@ def build_qq_router(
                         session_id=context.session_id,
                     )
 
+            finance_mode_command_result = qq_gateway.handle_finance_mode_command(
+                context,
+                event=event,
+            )
+            if isinstance(finance_mode_command_result, dict):
+                reply = str(finance_mode_command_result.get("reply") or "").strip()
+                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                duration_ms = (time.perf_counter() - started_at) * 1000
+                runtime_metrics.observe_request(
+                    "qq_napcat_event",
+                    duration_ms=duration_ms,
+                    ok=bool(send_result.get("ok")) and bool(finance_mode_command_result.get("ok")),
+                )
+                log_event(
+                    "qq_finance_mode_command",
+                    session_id=context.session_id,
+                    profile_user_id=context.profile_user_id,
+                    command_status=str(finance_mode_command_result.get("status") or ""),
+                    command_ok=bool(finance_mode_command_result.get("ok")),
+                    finance_mode=str(finance_mode_command_result.get("finance_mode") or ""),
+                    state_persisted=finance_mode_command_result.get("state_persisted"),
+                    sent=bool(send_result.get("ok")),
+                    duration_ms=round(duration_ms, 1),
+                )
+                return JSONResponse(
+                    {
+                        "status": "ok" if send_result.get("ok") else "send_failed",
+                        "reason": "qq_finance_mode_command",
+                        "command_status": str(finance_mode_command_result.get("status") or ""),
+                        "command_ok": bool(finance_mode_command_result.get("ok")),
+                        "session_id": context.session_id,
+                        "profile_user_id": context.profile_user_id,
+                        "finance_mode": str(finance_mode_command_result.get("finance_mode") or ""),
+                        "domain_profile": str(finance_mode_command_result.get("domain_profile") or ""),
+                        "state_persisted": finance_mode_command_result.get("state_persisted"),
+                        "send_result": send_result,
+                    }
+                )
+
             character_command_result = qq_gateway.handle_character_command(
                 context,
                 character_resource_service=getattr(engine, "desktop_pet_character_resources", None),

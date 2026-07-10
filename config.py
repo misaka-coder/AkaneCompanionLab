@@ -227,6 +227,18 @@ class Settings(BaseSettings):
     # 单个工作区文件允许直接读取的最大字节数（技术保护，不是 prompt 预算）
     AKANE_WORKSPACE_MAX_READ_BYTES: int = 64 * 1024 * 1024
 
+    # === 金融领域档案 ===
+    # 金融问答领域总开关；关闭时所有会话强制回到 off
+    FINANCE_ASSISTANT_ENABLED: bool = False
+    # 新 QQ 会话没有覆盖值时的默认模式：off/qa/push
+    FINANCE_DEFAULT_MODE: str = "off"
+    # 金融研究建议工具轮次预算与全局硬上限
+    FINANCE_TOOL_ROUND_BUDGET: int = 12
+    FINANCE_TOOL_ROUND_HARD_LIMIT: int = 16
+    # QQ 金融模式命令与主动推送授权开关
+    QQ_FINANCE_MODE_COMMANDS_ENABLED: bool = True
+    QQ_FINANCE_PUSH_ENABLED: bool = False
+
     # === QQ / NapCat 桥接 ===
     # 总开关
     QQ_BRIDGE_ENABLED: bool = False
@@ -402,6 +414,9 @@ def _apply_settings(s: Settings) -> None:
     global NATIVE_TOOL_DECISION_ALLOWLIST, NATIVE_TOOL_PROVIDER_ALLOWLIST, MAX_WEB_RESEARCH_TOOL_ROUNDS
     global MAX_BROWSER_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
     global AKANE_WORKSPACE_ROOT, AKANE_WORKSPACE_MAX_READ_BYTES
+    global FINANCE_ASSISTANT_ENABLED, FINANCE_DEFAULT_MODE
+    global FINANCE_TOOL_ROUND_BUDGET, FINANCE_TOOL_ROUND_HARD_LIMIT
+    global QQ_FINANCE_MODE_COMMANDS_ENABLED, QQ_FINANCE_PUSH_ENABLED
     global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ, QQ_CHARACTER_PACK_ID
     global \
         QQ_REPLY_MODE, \
@@ -505,6 +520,18 @@ def _apply_settings(s: Settings) -> None:
     MAX_TASK_WORKER_ROUNDS = max(1, min(5, int(s.MAX_TASK_WORKER_ROUNDS)))
     AKANE_WORKSPACE_ROOT = str(s.AKANE_WORKSPACE_ROOT or "").strip()
     AKANE_WORKSPACE_MAX_READ_BYTES = max(1024, int(s.AKANE_WORKSPACE_MAX_READ_BYTES))
+
+    # === Finance domain ===
+    FINANCE_ASSISTANT_ENABLED = bool(s.FINANCE_ASSISTANT_ENABLED)
+    raw_finance_default_mode = str(s.FINANCE_DEFAULT_MODE or "off").strip().lower()
+    FINANCE_DEFAULT_MODE = raw_finance_default_mode if raw_finance_default_mode in {"off", "qa", "push"} else "off"
+    FINANCE_TOOL_ROUND_HARD_LIMIT = max(1, min(16, int(s.FINANCE_TOOL_ROUND_HARD_LIMIT)))
+    FINANCE_TOOL_ROUND_BUDGET = max(
+        1,
+        min(FINANCE_TOOL_ROUND_HARD_LIMIT, int(s.FINANCE_TOOL_ROUND_BUDGET)),
+    )
+    QQ_FINANCE_MODE_COMMANDS_ENABLED = bool(s.QQ_FINANCE_MODE_COMMANDS_ENABLED)
+    QQ_FINANCE_PUSH_ENABLED = bool(s.QQ_FINANCE_PUSH_ENABLED)
 
     # === QQ / NapCat ===
     QQ_BRIDGE_ENABLED = bool(s.QQ_BRIDGE_ENABLED)

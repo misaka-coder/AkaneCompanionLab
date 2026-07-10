@@ -8,6 +8,7 @@ from typing import Any
 
 from ..client_protocol import ClientCapability, ClientMode, ClientProtocolContext
 import config as mod_config
+from ..domain_profiles import DomainProfileRegistry, build_domain_profile_prompt
 from ..memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from ..prompt_profiles import PromptModule
 from ..resource_manifest import ResourceManifest
@@ -77,9 +78,14 @@ def prepare_context(
     enable_native_tools: bool = False,
     chat_model_override: str = "",
     post_user_turns: list[dict[str, Any]] | None = None,
+    domain_profile_id: str = "",
 ) -> dict[str, Any]:
     client_context = client_context or engine._resolve_client_protocol_context({})
     prompt_profile = engine._get_prompt_profile_registry().resolve(client_context)
+    domain_profile = DomainProfileRegistry().get(
+        domain_profile_id if prompt_profile.includes(PromptModule.DOMAIN_PROFILE) else ""
+    )
+    domain_profile_context = build_domain_profile_prompt(domain_profile)
     effective_allow_tool_call = bool(
         allow_tool_call
         and prompt_profile.includes(PromptModule.TOOLS)
@@ -432,6 +438,7 @@ def prepare_context(
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            domain_profile_id=domain_profile.id,
         )
         from .. import tool_orchestration_engine as _toe
 
@@ -446,6 +453,7 @@ def prepare_context(
                 client_context=client_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                domain_profile_id=domain_profile.id,
             ),
             allow_tool_call=effective_allow_tool_call,
             provider_supports_native_tools=provider_supports_native_tools,
@@ -470,6 +478,7 @@ def prepare_context(
         persona_system_context=str(persona_context.get("system_context") or ""),
         persona_reference_context=str(persona_context.get("reference_context") or ""),
         persona_active_id=str(persona_context.get("active_id") or ""),
+        domain_profile_context=domain_profile_context,
         visual_defaults=visual_defaults,
         allow_tool_call=effective_allow_tool_call,
         tool_prompt_context=engine._build_tool_prompt_context(
@@ -478,6 +487,7 @@ def prepare_context(
             profile_user_id=profile_user_id,
             session_id=session_id,
             exclude_tool_types=native_legacy_exclusions,
+            domain_profile_id=domain_profile.id,
         ),
         debug_enabled=debug_enabled,
         system_prompt_override=prompt_profile.system_prompt_override,
@@ -502,6 +512,7 @@ def prepare_context(
     generation_context["native_tool_choice"] = "auto" if native_tools else ""
     generation_context["post_user_turns"] = list(post_user_turns) if post_user_turns else []
     generation_context["prompt_profile"] = prompt_profile.to_public_dict()
+    generation_context["domain_profile"] = domain_profile.to_public_dict()
     if client_context.effective_mode == ClientMode.QQ_TEXT:
         fallback_payload = generation_context.get("fallback")
         if isinstance(fallback_payload, dict):

@@ -138,6 +138,7 @@ class PromptBuilder:
         persona_system_context: str = "",
         persona_reference_context: str = "",
         persona_active_id: str = "",
+        domain_profile_context: str = "",
         system_prompt_override: str = "",
         mode_prompt_override: str = "",
         extra_context_audit_sections: list[dict[str, str]] | None = None,
@@ -200,6 +201,12 @@ class PromptBuilder:
             {"name": "system.format_addendum", "text": format_addendum},
             {"name": "system.persona_state", "text": persona_system},
         ]
+        domain_profile_text = str(domain_profile_context or "").strip()
+        if domain_profile_text:
+            system_extra_blocks.append(domain_profile_text)
+            prompt_audit_sections.append(
+                {"name": "system_extra.domain_profile", "text": domain_profile_text}
+            )
         resource_context_text = str(resource_context or "").strip()
         if resource_context_text:
             resource_block = f"可用视觉资源：\n{resource_context_text}"

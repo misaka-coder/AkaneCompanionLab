@@ -14,6 +14,7 @@ import requests
 
 import config
 from .care_runtime import DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECKIN_COINS, get_seasonal_shop_items
+from .domain_profiles import FINANCE_DOMAIN_PROFILE_ID, FINANCE_MODES, normalize_finance_mode
 
 
 QQ_TEXT_CAPABILITIES = (
@@ -173,6 +174,36 @@ QQ_CHAT_MODEL_SWITCH_PATTERNS = (
     re.compile(r"^模型(?:切换|切到|改为|换成)[:：\s]+(.+)$", re.IGNORECASE),
     re.compile(r"^model[:：\s]+(.+)$", re.IGNORECASE),
 )
+QQ_FINANCE_MODE_CURRENT_COMMANDS = {
+    "当前金融模式",
+    "当前财经模式",
+    "金融模式状态",
+    "财经模式状态",
+}
+QQ_FINANCE_MODE_QA_COMMANDS = {
+    "开启金融模式",
+    "启用金融模式",
+    "开启财经模式",
+    "启用财经模式",
+}
+QQ_FINANCE_MODE_OFF_COMMANDS = {
+    "关闭金融模式",
+    "停用金融模式",
+    "关闭财经模式",
+    "停用财经模式",
+}
+QQ_FINANCE_MODE_PUSH_COMMANDS = {
+    "开启财经推送",
+    "开启金融推送",
+    "启用财经推送",
+    "启用金融推送",
+}
+QQ_FINANCE_MODE_PUSH_OFF_COMMANDS = {
+    "关闭财经推送",
+    "关闭金融推送",
+    "停用财经推送",
+    "停用金融推送",
+}
 QQ_GATEWAY_STATE_SCHEMA_VERSION = "akane.qq_gateway_state.v1"
 
 QQ_ECONOMY_CHECKIN_COMMANDS: frozenset[str] = frozenset({"签到", "每日签到", "领签到", "签到领奖"})
@@ -233,6 +264,7 @@ class QQMessageContext:
     character_pack_id: str = ""
     reply_mode: str = ""
     chat_model_override: str = ""
+    finance_mode: str = "off"
     attachments: list[dict[str, Any]] | None = None
 
     def to_turn_payload(self) -> dict[str, Any]:
@@ -262,6 +294,10 @@ class QQMessageContext:
         chat_model_override = _safe_chat_model_id(self.chat_model_override)
         if chat_model_override:
             payload["chat_model_override"] = chat_model_override
+        finance_mode = normalize_finance_mode(self.finance_mode)
+        payload["finance_mode"] = finance_mode
+        if finance_mode in {"qa", "push"}:
+            payload["domain_profile"] = FINANCE_DOMAIN_PROFILE_ID
         return payload
 
     def to_delivery_context(self) -> dict[str, Any]:
@@ -289,6 +325,10 @@ class QQMessageContext:
         chat_model_override = _safe_chat_model_id(self.chat_model_override)
         if chat_model_override:
             payload["chat_model_override"] = chat_model_override
+        finance_mode = normalize_finance_mode(self.finance_mode)
+        payload["finance_mode"] = finance_mode
+        if finance_mode in {"qa", "push"}:
+            payload["domain_profile"] = FINANCE_DOMAIN_PROFILE_ID
         return payload
 
 
@@ -308,6 +348,8 @@ class NapCatQQGateway:
         self._reply_mode_lock = threading.RLock()
         self.chat_model_overrides: dict[str, str] = {}
         self._chat_model_lock = threading.RLock()
+        self.finance_mode_overrides: dict[str, str] = {}
+        self._finance_mode_lock = threading.RLock()
         self.emotion_mface_state: dict[str, dict[str, Any]] = {}
         self._emotion_mface_lock = threading.RLock()
         self.emotion_image_state: dict[str, dict[str, Any]] = {}
@@ -362,6 +404,18 @@ class NapCatQQGateway:
         with self._chat_model_lock:
             self.chat_model_overrides = model_overrides
 
+        finance_overrides: dict[str, str] = {}
+        raw_finance_modes = payload.get("finance_mode_overrides")
+        if isinstance(raw_finance_modes, dict):
+            for raw_key, raw_value in raw_finance_modes.items():
+                key = _safe_qq_session_key(raw_key)
+                raw_mode = str(raw_value or "").strip().lower()
+                if key and raw_mode in FINANCE_MODES:
+                    mode = normalize_finance_mode(raw_mode)
+                    finance_overrides[key] = mode
+        with self._finance_mode_lock:
+            self.finance_mode_overrides = finance_overrides
+
     def _persist_gateway_state(self) -> bool:
         if self._state_path is None:
             self._state_error = ""
@@ -373,11 +427,14 @@ class NapCatQQGateway:
                 outfit_overrides = dict(self.outfit_overrides)
             with self._chat_model_lock:
                 chat_model_overrides = dict(self.chat_model_overrides)
+            with self._finance_mode_lock:
+                finance_mode_overrides = dict(self.finance_mode_overrides)
             payload = {
                 "schema_version": QQ_GATEWAY_STATE_SCHEMA_VERSION,
                 "character_pack_overrides": character_overrides,
                 "outfit_overrides": outfit_overrides,
                 "chat_model_overrides": chat_model_overrides,
+                "finance_mode_overrides": finance_mode_overrides,
                 "updated_at": int(time.time()),
             }
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -409,6 +466,9 @@ class NapCatQQGateway:
     def _persist_chat_model_overrides(self) -> bool:
         return self._persist_gateway_state()
 
+    def _persist_finance_mode_overrides(self) -> bool:
+        return self._persist_gateway_state()
+
     def status(self) -> dict[str, Any]:
         return {
             "enabled": bool(getattr(config, "QQ_BRIDGE_ENABLED", False)),
@@ -424,6 +484,10 @@ class NapCatQQGateway:
             "active_character_override_count": len(self.character_pack_overrides),
             "active_outfit_override_count": len(self.outfit_overrides),
             "active_chat_model_override_count": len(self.chat_model_overrides),
+            "active_finance_mode_override_count": len(self.finance_mode_overrides),
+            "finance_assistant_enabled": bool(getattr(config, "FINANCE_ASSISTANT_ENABLED", False)),
+            "finance_default_mode": self.default_finance_mode,
+            "finance_push_enabled": bool(getattr(config, "QQ_FINANCE_PUSH_ENABLED", False)),
             "state_persistence_enabled": self._state_path is not None,
             "state_status": "error"
             if self._state_error
@@ -568,6 +632,15 @@ class NapCatQQGateway:
         return _safe_reply_mode(getattr(config, "QQ_REPLY_MODE", "auto"), default="auto")
 
     @property
+    def default_finance_mode(self) -> str:
+        if not bool(getattr(config, "FINANCE_ASSISTANT_ENABLED", False)):
+            return "off"
+        mode = normalize_finance_mode(getattr(config, "FINANCE_DEFAULT_MODE", "off"))
+        if mode == "push" and not bool(getattr(config, "QQ_FINANCE_PUSH_ENABLED", False)):
+            return "qa"
+        return mode
+
+    @property
     def master_qq(self) -> str:
         value = str(getattr(config, "MASTER_QQ", "") or "").strip()
         return value if value.isdigit() else ""
@@ -612,6 +685,7 @@ class NapCatQQGateway:
         character_pack_id = self.resolve_character_pack_id(session_id)
         reply_mode = self.resolve_reply_mode(session_id)
         chat_model_override = self.resolve_chat_model_override(session_id)
+        finance_mode = self.resolve_finance_mode(session_id)
 
         if is_group:
             if mentions_bot or mentions_wake_word:
@@ -639,6 +713,7 @@ class NapCatQQGateway:
                     character_pack_id=character_pack_id,
                     reply_mode=reply_mode,
                     chat_model_override=chat_model_override,
+                    finance_mode=finance_mode,
                     attachments=attachments,
                 )
 
@@ -663,6 +738,7 @@ class NapCatQQGateway:
             character_pack_id=character_pack_id,
             reply_mode=reply_mode,
             chat_model_override=chat_model_override,
+            finance_mode=finance_mode,
             attachments=attachments,
             extra_context=self.build_extra_context(
                 event=event,
@@ -702,6 +778,7 @@ class NapCatQQGateway:
         character_pack_id = self.resolve_character_pack_id(session_id)
         reply_mode = self.resolve_reply_mode(session_id)
         chat_model_override = self.resolve_chat_model_override(session_id)
+        finance_mode = self.resolve_finance_mode(session_id)
         actor_label = sender_label or (f"QQ {user_id}" if user_id else "这位 QQ 用户")
         clean_message = f"刚才发生的互动：{actor_label}在 QQ 里戳了戳你的头像。"
         return QQMessageContext(
@@ -719,6 +796,7 @@ class NapCatQQGateway:
             character_pack_id=character_pack_id,
             reply_mode=reply_mode,
             chat_model_override=chat_model_override,
+            finance_mode=finance_mode,
             attachments=[],
             extra_context=self.build_extra_context(
                 event=event,
@@ -754,6 +832,7 @@ class NapCatQQGateway:
             character_pack_id=_safe_character_pack_id(value.get("character_pack_id") or value.get("characterPackId")),
             reply_mode=_safe_reply_mode(value.get("reply_mode") or value.get("replyMode"), default=""),
             chat_model_override=_safe_chat_model_id(value.get("chat_model_override") or value.get("chatModelOverride")),
+            finance_mode=normalize_finance_mode(value.get("finance_mode") or value.get("financeMode")),
             attachments=[],
         )
 
@@ -1141,6 +1220,156 @@ class NapCatQQGateway:
                 continue
             return {"action": "switch", "model": _safe_chat_model_id(match.group(1))}
         return None
+
+    def parse_finance_mode_command(self, message: str) -> dict[str, str] | None:
+        text = self._normalize_character_command_text(message)
+        if not text:
+            return None
+        if text in QQ_FINANCE_MODE_CURRENT_COMMANDS:
+            return {"action": "current"}
+        if text in QQ_FINANCE_MODE_QA_COMMANDS:
+            return {"action": "switch", "finance_mode": "qa"}
+        if text in QQ_FINANCE_MODE_OFF_COMMANDS:
+            return {"action": "switch", "finance_mode": "off"}
+        if text in QQ_FINANCE_MODE_PUSH_COMMANDS:
+            return {"action": "switch", "finance_mode": "push"}
+        if text in QQ_FINANCE_MODE_PUSH_OFF_COMMANDS:
+            return {"action": "switch", "finance_mode": "qa"}
+        return None
+
+    def resolve_finance_mode(self, session_id: str) -> str:
+        if not bool(getattr(config, "FINANCE_ASSISTANT_ENABLED", False)):
+            return "off"
+        key = _safe_qq_session_key(session_id)
+        if not key:
+            return self.default_finance_mode
+        with self._finance_mode_lock:
+            mode = normalize_finance_mode(
+                self.finance_mode_overrides.get(key),
+                default=self.default_finance_mode,
+            )
+        if mode == "push" and not bool(getattr(config, "QQ_FINANCE_PUSH_ENABLED", False)):
+            return "qa"
+        return mode
+
+    def set_session_finance_mode(self, session_id: str, finance_mode: str) -> bool:
+        key = _safe_qq_session_key(session_id)
+        raw_mode = str(finance_mode or "").strip().lower()
+        if not key or raw_mode not in FINANCE_MODES:
+            return False
+        mode = normalize_finance_mode(raw_mode)
+        with self._finance_mode_lock:
+            self.finance_mode_overrides[key] = mode
+        return self._persist_finance_mode_overrides()
+
+    def handle_finance_mode_command(
+        self,
+        context: QQMessageContext,
+        *,
+        event: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        command = self.parse_finance_mode_command(context.clean_message)
+        if command is None:
+            return None
+
+        active_mode = self.resolve_finance_mode(context.session_id)
+        if not bool(getattr(config, "QQ_FINANCE_MODE_COMMANDS_ENABLED", True)):
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "commands_disabled",
+                "reply": "当前没有开放 QQ 金融模式切换命令。",
+                "finance_mode": active_mode,
+                "domain_profile": FINANCE_DOMAIN_PROFILE_ID if active_mode in {"qa", "push"} else "",
+            }
+
+        action = str(command.get("action") or "")
+        if action == "current":
+            enabled = bool(getattr(config, "FINANCE_ASSISTANT_ENABLED", False))
+            suffix = "" if enabled else "（金融领域总开关当前关闭）"
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "current",
+                "reply": f"当前 QQ 会话金融模式：{self._format_finance_mode_label(active_mode)}{suffix}。",
+                "finance_mode": active_mode,
+                "domain_profile": FINANCE_DOMAIN_PROFILE_ID if active_mode in {"qa", "push"} else "",
+            }
+
+        requested_mode = normalize_finance_mode(command.get("finance_mode"), default="")
+        if requested_mode in {"qa", "push"} and not bool(
+            getattr(config, "FINANCE_ASSISTANT_ENABLED", False)
+        ):
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "finance_disabled",
+                "reply": "金融领域能力总开关还没有启用，当前会话仍保持普通模式。",
+                "finance_mode": active_mode,
+                "domain_profile": "",
+            }
+        if requested_mode == "push" and not bool(getattr(config, "QQ_FINANCE_PUSH_ENABLED", False)):
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "push_disabled",
+                "reply": "财经主动推送还没有开放；当前可以先使用金融问答模式。",
+                "finance_mode": active_mode,
+                "domain_profile": FINANCE_DOMAIN_PROFILE_ID if active_mode in {"qa", "push"} else "",
+            }
+        if requested_mode == "push" and context.is_group and not self._can_enable_group_finance_push(
+            context,
+            event=event,
+        ):
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "forbidden",
+                "reply": "群聊财经推送只能由主人、群主或管理员开启。",
+                "finance_mode": active_mode,
+                "domain_profile": FINANCE_DOMAIN_PROFILE_ID if active_mode in {"qa", "push"} else "",
+            }
+
+        state_persisted = self.set_session_finance_mode(context.session_id, requested_mode)
+        reply = f"已把当前 QQ 会话切换为{self._format_finance_mode_label(requested_mode)}。"
+        if requested_mode == "qa":
+            reply += "后续金融问题会加载证据、时效和风险纪律；当前角色与 QQ 文字协议保持不变。"
+        elif requested_mode == "push":
+            reply += "当前只是开放主动推送领域状态；订阅、关注列表和事件投递会在后续切片接通。"
+        else:
+            reply += "后续回复恢复普通领域档案。"
+        return {
+            "handled": True,
+            "ok": True,
+            "status": "switched",
+            "reply": self._append_state_persistence_warning(reply, state_persisted),
+            "finance_mode": requested_mode,
+            "domain_profile": FINANCE_DOMAIN_PROFILE_ID if requested_mode in {"qa", "push"} else "",
+            "state_persisted": state_persisted,
+        }
+
+    def _can_enable_group_finance_push(
+        self,
+        context: QQMessageContext,
+        *,
+        event: dict[str, Any] | None = None,
+    ) -> bool:
+        master_qq = self._safe_int(getattr(config, "MASTER_QQ", 0))
+        if master_qq and int(context.user_id or 0) == master_qq:
+            return True
+        source = event if isinstance(event, dict) else {}
+        sender = source.get("sender") if isinstance(source.get("sender"), dict) else {}
+        role = str(sender.get("role") or source.get("sender_role") or "").strip().lower()
+        return role in {"owner", "admin"}
+
+    @staticmethod
+    def _format_finance_mode_label(finance_mode: str) -> str:
+        labels = {
+            "off": "普通模式",
+            "qa": "金融问答模式",
+            "push": "财经推送模式",
+        }
+        return labels.get(normalize_finance_mode(finance_mode), labels["off"])
 
     def set_session_character_pack_id(self, session_id: str, character_pack_id: str) -> bool:
         key = _safe_qq_session_key(session_id)

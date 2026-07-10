@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定，待按切片实现
+状态：设计锁定；F0 Actor repair、F1 Finance domain profile 已完成，下一步 F2
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -70,7 +70,7 @@ rg -n "finance|market_event|emquant|actor_stable_id" companion_v01 tests docs co
 - memcore 已是 Akane 的对话记忆主路。
 - MemcoreManager 已接 user/assistant raw、metadata 回写、可见三层、retrieve_for_turn、read_timeline 和后台压缩。
 - memcore 支持 Actor、record_tool_exchange、材料轨迹、时间线、metadata 前置过滤和跨会话检索。
-- 当前 Akane → memcore 接线尚未把 QQ 发送者映射为结构化 Actor，这是本主线必须先修的缺口。
+- Akane → memcore 已把 QQ 群发送者和附件上传者映射为结构化 Actor，并在 metadata 回写时使用同一 Actor owner。
 
 ### 2.4 文件与产物
 
@@ -1277,6 +1277,13 @@ tests/
 
 ### Slice F0：Actor repair
 
+状态：已完成。
+
+实际提交：
+
+- memcore：ba4a67a feat: support actor-owned metadata updates
+- Akane：94187b8 feat: preserve QQ actor attribution in memcore
+
 目标：QQ 群 user 和 attachment 进入 memcore 时保留稳定 Actor。
 
 改动：
@@ -1294,6 +1301,17 @@ tests/
 - 现有 QQ 和 memcore 测试保持通过。
 
 ### Slice F1：Finance domain profile
+
+状态：已完成。
+
+实际落地：
+
+- `companion_v01/domain_profiles.py` 提供 `default / finance_v1` 不可变领域档案、稳定金融 prompt、工具 allow/hidden 集和预算元数据；
+- QQ gateway 按会话持久化 `off / qa / push`，payload 与 delivery context 带 `finance_mode / domain_profile`；
+- QQ 命令已接“开启/关闭金融模式、开启/关闭财经推送、当前金融模式”，群 push 仅主人、群主或管理员可开，且默认受 `QQ_FINANCE_PUSH_ENABLED=false` 保护；
+- `PromptModule.DOMAIN_PROFILE` 与 `system_extra_blocks` 已接稳定金融规则，不替换当前 persona，也不新增 client mode；
+- CapabilitySelection、native schema、legacy tool prompt、校验与执行共用同一 domain tool filter，金融模式隐藏表情包、礼物、世界、媒体加工、浏览器等无关工具；
+- F1 只提供领域模式和问答工具裁剪，不假接市场行情、新闻订阅或主动事件投递；这些仍属于 F2-F6。
 
 目标：按 QQ 会话开启 off/qa/push，加载金融提示词并裁剪工具。
 
@@ -1560,12 +1578,12 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-上下文恢复后，从 Slice F0 开始，不要直接从 EmQuant live 登录或云端生图开始。
+上下文恢复后，从 Slice F2 开始，不要直接从 EmQuant live 登录或云端生图开始。
 
-推荐首个提交边界：
+推荐下一个提交边界：
 
 ~~~text
-QQ Actor → memcore 结构化归因
+Market provider contract + Mock
 ~~~
 
-该提交只改 Actor 接线与测试，不同时混入金融数据库、Choice SDK 和提示词大改。F0 验证完成后再进入 F1。
+该提交只增加人格无关、QQ 无关的市场数据契约、Mock provider、标准化与 health contract；不同时创建事件数据库，不加载 Choice DLL，不调用真实网络。

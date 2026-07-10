@@ -220,6 +220,7 @@ def normalize_tool_call(
     client_context: ClientProtocolContext | None = None,
     profile_user_id: str = "",
     session_id: str = "",
+    domain_profile_id: str = "",
 ) -> dict[str, Any] | None:
     invocation = normalize_tool_invocation(
         engine,
@@ -227,6 +228,7 @@ def normalize_tool_call(
         client_context=client_context,
         profile_user_id=profile_user_id,
         session_id=session_id,
+        domain_profile_id=domain_profile_id,
     )
     if invocation is None:
         return None
@@ -240,6 +242,7 @@ def normalize_tool_invocation(
     client_context: ClientProtocolContext | None = None,
     profile_user_id: str = "",
     session_id: str = "",
+    domain_profile_id: str = "",
 ) -> ToolInvocation | None:
     if not isinstance(value, dict):
         return None
@@ -254,6 +257,7 @@ def normalize_tool_invocation(
         client_context=client_context,
         profile_user_id=profile_user_id,
         session_id=session_id,
+        domain_profile_id=domain_profile_id,
     )
     delegated_media_call = _maybe_delegate_qq_media_tool(
         value,
@@ -494,6 +498,7 @@ def validate_tool_invocation(
     profile_user_id: str = "",
     session_id: str = "",
     raw_tool_call: Any = None,
+    domain_profile_id: str = "",
 ) -> ValidationResult:
     if invocation is None:
         return ValidationResult.success()
@@ -506,6 +511,7 @@ def validate_tool_invocation(
         client_context=client_context,
         profile_user_id=profile_user_id,
         session_id=session_id,
+        domain_profile_id=domain_profile_id,
     )
     handler = handlers.get(tool_type)
     if handler is None:
@@ -540,6 +546,7 @@ def validate_legacy_tool_call(
     client_context: ClientProtocolContext | None = None,
     profile_user_id: str = "",
     session_id: str = "",
+    domain_profile_id: str = "",
 ) -> ValidationResult:
     if not isinstance(value, dict):
         return ValidationResult.success()
@@ -551,6 +558,7 @@ def validate_legacy_tool_call(
         client_context=client_context,
         profile_user_id=profile_user_id,
         session_id=session_id,
+        domain_profile_id=domain_profile_id,
     )
     delegated_media_call = _maybe_delegate_qq_media_tool(
         value,
@@ -566,6 +574,7 @@ def validate_legacy_tool_call(
             profile_user_id=profile_user_id,
             session_id=session_id,
             raw_tool_call=delegated_media_call,
+            domain_profile_id=domain_profile_id,
         )
     return validate_tool_invocation(
         engine,
@@ -574,6 +583,7 @@ def validate_legacy_tool_call(
         profile_user_id=profile_user_id,
         session_id=session_id,
         raw_tool_call=value,
+        domain_profile_id=domain_profile_id,
     )
 
 
@@ -584,6 +594,7 @@ def classify_tool_call_rejection(
     client_context: ClientProtocolContext | None = None,
     profile_user_id: str = "",
     session_id: str = "",
+    domain_profile_id: str = "",
 ) -> str:
     """Explain why an attempted tool call could not be dispatched.
 
@@ -603,6 +614,7 @@ def classify_tool_call_rejection(
         client_context=client_context,
         profile_user_id=profile_user_id,
         session_id=session_id,
+        domain_profile_id=domain_profile_id,
     )
     if validation.ok:
         return ""
@@ -727,6 +739,7 @@ def execute_tool_call(
     client_context: ClientProtocolContext | None = None,
     memory_exclude_source_ids: list[str] | None = None,
     request_context: dict[str, Any] | None = None,
+    domain_profile_id: str = "",
 ) -> Any | None:
     invocation = normalize_tool_invocation(
         engine,
@@ -734,6 +747,7 @@ def execute_tool_call(
         client_context=client_context,
         profile_user_id=profile_user_id,
         session_id=session_id,
+        domain_profile_id=domain_profile_id,
     )
     if invocation is None:
         return None
@@ -749,6 +763,7 @@ def execute_tool_call(
         client_context=client_context,
         memory_exclude_source_ids=memory_exclude_source_ids,
         request_context=request_context,
+        domain_profile_id=domain_profile_id,
     )
     return result
 
@@ -766,6 +781,7 @@ def execute_tool_invocation(
     client_context: ClientProtocolContext | None = None,
     memory_exclude_source_ids: list[str] | None = None,
     request_context: dict[str, Any] | None = None,
+    domain_profile_id: str = "",
 ) -> tuple[Any | None, ToolResultEnvelope]:
     validation = validate_tool_invocation(
         engine,
@@ -773,6 +789,7 @@ def execute_tool_invocation(
         client_context=client_context,
         profile_user_id=profile_user_id,
         session_id=session_id,
+        domain_profile_id=domain_profile_id,
     )
     if not validation.ok:
         return None, validation_result_to_envelope(invocation=invocation, validation=validation)
@@ -782,6 +799,7 @@ def execute_tool_invocation(
         client_context=client_context,
         profile_user_id=profile_user_id,
         session_id=session_id,
+        domain_profile_id=domain_profile_id,
     )
     handler = handlers.get(str(normalized_call.get("type") or ""))
     if handler is None:
