@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0 Actor repair、F1 Finance domain profile、F2 Market provider contract + Mock、F3 MarketEventStore + subscriptions 已完成，下一步 F4
+状态：设计锁定；F0 Actor repair、F1 Finance domain profile、F2 Market provider contract + Mock、F3 MarketEventStore + subscriptions、F4 EmQuant Bridge + Fake SDK 已完成，下一步 F5
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -687,9 +687,12 @@ services/market_data/
 
 services/emquant_bridge/
   __init__.py
+  types.py
+  error_codes.py
   main.py
   runtime.py
   sdk_loader.py
+  fake_sdk.py
   normalizers.py
   subscription_manager.py
   local_api.py
@@ -720,8 +723,9 @@ HTTPTimeout=15
 
 运行：
 
-- cnq/csq 回调只做数据拷贝、标准化和入队；
+- cnq/csq 回调只做有界数据拷贝、轻量标准化和 `put_nowait` 入队；
 - 不在 native callback 线程中调用 LLM、SQLite 长事务或 QQ HTTP；
+- 回调队列满时不阻塞 native 线程，记录 dropped_callback_count 并把 health 降级；
 - worker 消费队列并写 MarketEventStore；
 - Bridge 维护每个 SerialID 的类型、参数、状态和最近事件时间。
 
@@ -732,6 +736,8 @@ HTTPTimeout=15
 3. 刷新待写事件；
 4. 调 c.stop；
 5. 返回结构化关闭状态。
+
+当前 F4 在 FastAPI lifespan 关闭时调用 runtime.stop；队列中的事件不会被静默删除，但真正的 worker 消费与落库属于 F6/F9。
 
 ### 8.4 错误状态
 
@@ -761,9 +767,14 @@ Bridge health 至少返回：
   "last_quote_at": 0,
   "last_error_code": 0,
   "last_error_reason": "",
-  "quota_status": {}
+  "quota_status": {},
+  "capabilities": {},
+  "queue_size": 0,
+  "dropped_callback_count": 0
 }
 ~~~
+
+本地 API 固定为 loopback-only：CLI 强制绑定 `127.0.0.1 / localhost / ::1`，HTTP middleware 也拒绝非 loopback 客户端。只暴露 lifecycle、health、quota、cfn、csqsnapshot、订阅管理和事件出队，没有通用 SDK function endpoint。
 
 ### 8.5 审批等待期间
 
@@ -1420,12 +1431,14 @@ FINANCE_PASSIVE_MEMORY_MODE=selected
 EMQUANT_ENABLED=false
 EMQUANT_API_ROOT=
 EMQUANT_BRIDGE_URL=http://127.0.0.1:9910
+EMQUANT_BRIDGE_HOST=127.0.0.1
+EMQUANT_BRIDGE_PORT=9910
+EMQUANT_SUBSCRIPTION_STATE_PATH=
 EMQUANT_BRIDGE_TOKEN=
 EMQUANT_LOGIN_FORCE=false
 EMQUANT_RECORD_LOGIN_INFO=false
 EMQUANT_HTTP_TIMEOUT_SECONDS=15
-EMQUANT_NEWS_QUEUE_MAX=5000
-EMQUANT_QUOTE_QUEUE_MAX=20000
+EMQUANT_CALLBACK_QUEUE_MAX=5000
 
 # QQ finance
 QQ_FINANCE_MODE_COMMANDS_ENABLED=true
@@ -1470,9 +1483,12 @@ services/
     emquant_bridge_client.py
   emquant_bridge/
     __init__.py
+    types.py
+    error_codes.py
     main.py
     runtime.py
     sdk_loader.py
+    fake_sdk.py
     normalizers.py
     subscription_manager.py
     local_api.py
@@ -1484,7 +1500,7 @@ tests/
   test_finance_tools.py
   test_finance_event_orchestrator.py
   test_finance_qq_delivery.py
-  test_emquant_bridge_contract.py
+  test_emquant_bridge.py
   test_finance_artifacts.py
 ~~~
 
@@ -1610,6 +1626,20 @@ tests/
 - 关闭订阅后不再匹配。
 
 ### Slice F4：EmQuant Bridge
+
+状态：已完成 Fake SDK 验收；真实 Choice 最小冒烟等待账户权限。
+
+实际落地：
+
+- `sdk_loader.py` 只从显式 `EMQUANT_API_ROOT` 动态定位 Python SDK，缺配置返回 missing_config，模块或生命周期函数无效返回 invalid_sdk；导入阶段不主动调用 SDK 或登录；
+- `runtime.py` 使用固定 `ForceLogin=0,RecordLoginInfo=0,HTTPTimeout=15`，依次执行 start、datastatistics、订阅恢复，并在 stop 前取消 cnq/csq；
+- capability health 分开记录 present、authorized、quota_available、operational、last_checked_at 和 reason；
+- Choice 已知权限、流量、重连和断线错误码映射为 permission_denied、rate_limited、degraded、disconnected 或 unavailable；
+- `subscription_manager.py` 只允许 news/quote 两种订阅，拒绝账户敏感 options，可选原子 JSON 持久化，取消失败保留 serial_id 并返回 cancel_failed；
+- callback 只进行有界拷贝、Choice 字段轻量展开和非阻塞入队，不调用 LLM、QQ、memcore 或 MarketEventStore；
+- `local_api.py / main.py` 提供 loopback-only health/start/stop/quota/news/query/quotes/snapshot/subscriptions/events API，可选 Bearer/header token 二次保护且响应不回显 token，没有通用 `call_emquant` 或交易函数入口；
+- `fake_sdk.py` 覆盖同步查询、订阅、回调、权限错误、流量错误、取消和断线；测试未加载真实 DLL、未登录真实账号、未调用网络；
+- F4 尚未把 Bridge 接成 Akane 的 `MarketDataProvider` 或模型工具，这属于 F5。
 
 目标：独立进程读 Choice SDK，主进程不加载 DLL。
 
@@ -1837,12 +1867,12 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-上下文恢复后，从 Slice F4 开始；先实现 Fake SDK、loader、capability probe 和独立 Bridge 生命周期，不要直接登录真实账号或接 QQ 推送。
+上下文恢复后，从 Slice F5 开始：先实现主进程 Bridge client、只读 provider/tool handlers 和程序侧指标；真实 Choice 冒烟仍需等待权限并单独执行。
 
 推荐下一个提交边界：
 
 ~~~text
-EmQuant Bridge + Fake SDK
+Bridge client + finance read-only tools
 ~~~
 
-该提交只增加独立 Bridge 进程边界、SDK loader、只读函数 allowlist、Fake SDK、health/capability probe、回调入队和 start/stop；不同时接 QQ 主动投递，不调用 LLM，不使用真实账号凭据。
+该提交只把已有 Bridge/Mock provider 接成 `market_news_search / market_quote_snapshot / market_price_series` 等只读能力，并接 native schema、严格参数校验、证据返回和金融轮次预算；不同时接 QQ 主动推送编排。
