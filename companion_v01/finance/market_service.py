@@ -9,6 +9,7 @@ from typing import Any
 
 from services.market_data import (
     MarketDataProvider,
+    MarketDataResponse,
     MarketDataValidationError,
     MarketEvent,
     MarketEventStore,
@@ -243,7 +244,7 @@ class MarketDataToolService:
         }
 
     def price_series(self, request: MarketSeriesRequest) -> dict[str, Any]:
-        response = self.provider.get_price_series(request)
+        response = self.price_series_response(request)
         public = response.to_public_dict()
         series = response.data
         if series is None:
@@ -269,6 +270,10 @@ class MarketDataToolService:
             "program_metrics": compute_series_metrics(series),
         }
         return public
+
+    def price_series_response(self, request: MarketSeriesRequest) -> MarketDataResponse[MarketSeries | None]:
+        """Return the normalized provider object for deterministic downstream renderers."""
+        return self.provider.get_price_series(request)
 
 
 def compute_quote_metrics(quote: MarketQuoteSnapshot) -> dict[str, float | None]:

@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0-F6 已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析和 QQ 幂等投递已接通；真实 Choice 冒烟仍等待账户权限
+状态：设计锁定；F0-F6 与 F7a 确定性 PNG 图表已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析、QQ 幂等文字投递与授权图表投递已接通；真实 Choice 冒烟仍等待账户权限
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -74,9 +74,9 @@ rg -n "finance|market_event|emquant|actor_stable_id" companion_v01 tests docs co
 
 ### 2.4 文件与产物
 
-- GeneratedFileService 已支持 txt、md、docx、xlsx、pdf、json、csv、html。
+- GeneratedFileService 已支持 txt、md、docx、xlsx、pdf、json、csv、html，并可安全登记固定渲染器生成的 PNG。
 - QQ 能投递生成文件和普通图片。
-- 当前没有面向金融数据的确定性 PNG 图表工具。
+- F7a 已加入面向金融数据的确定性 PNG 图表工具；当前固定支持日线 K 线、成交量与 MA5/10/20/60，不接受模型绘图代码或任意价格数组。
 - 当前 ComfyUI 接线主要服务角色工坊，不作为本主线依赖。
 
 ### 2.5 已验证测试基线
@@ -1141,23 +1141,32 @@ providers
 
 ### 11.5 render_market_chart
 
-输入只接受结构化数据引用和声明式样式：
+F7a 输入只接受显式可信证券代码和固定枚举参数：
 
 ~~~json
 {
-  "chart_type": "candlestick|line|volume|comparison",
-  "codes": ["600519.SH"],
-  "range": "5d",
+  "code": "600519.SH",
+  "chart_type": "candlestick_volume",
   "interval": "1d",
-  "indicators": ["ma5", "ma20", "volume"],
-  "title": "贵州茅台近五日量价",
-  "output_format": "png"
+  "adjusted": "forward",
+  "lookback": 120,
+  "moving_averages": [5, 20],
+  "title": "贵州茅台日线量价",
+  "send_to_user": true
 }
 ~~~
 
-工具内部重新读取受信数据，不接受模型直接传任意价格数组作为最终事实。
+工具内部通过 MarketDataToolService 重新读取受信 MarketSeries，不接受模型直接传价格数组、输出路径、绘图代码或任意样式。
 
-输出写入 GeneratedFileStore，并返回 generated_id、mime_type、width、height、as_of。
+LocalChartProvider 固定执行：
+
+- 校验 code、interval、adjusted 与请求一致；
+- 校验时间戳唯一且严格递增、OHLCV 为有限数、`low <= open/close <= high`；
+- 程序计算均线，按固定 1280x720 模板绘制 K 线和成交量；
+- 在 PNG 元数据和工具证据中写入 title、code、区间、provider/source、as_of、最新 OHLCV 与序列 SHA-256；
+- 使用临时文件完成渲染后再原子替换目标，失败时不登记、不发送空文件。
+
+输出写入 GeneratedFileStore，并返回 generated_id、mime_type、width、height、as_of。QQ 问答使用 `finance_tool_result` 授权，主动推送使用已再次校验的 `finance_subscription_push` 授权；普通对话的文件发送意图保护保持不变。
 
 ### 11.6 compose_finance_report
 
@@ -1772,6 +1781,8 @@ F6b 实际落地：
 
 目标：真实数据生成 PNG、MD、PDF、XLSX 并投递 QQ。
 
+状态：F7a 确定性 PNG 图表、GeneratedFileStore 登记、QQ 问答/订阅图片投递已完成；F7b compose_finance_report 与 MD/PDF/XLSX 报告仍待实现。
+
 改动：
 
 - LocalChartProvider；
@@ -1779,6 +1790,15 @@ F6b 实际落地：
 - compose_finance_report；
 - GeneratedFileStore 接线；
 - QQ send_image/send_file。
+
+F7a 实际落地：
+
+- `companion_v01/finance/chart_provider.py` 新增严格 `ChartRequest`、`LocalChartProvider` 与固定 PNG 元数据；
+- `render_market_chart` 只允许 `candlestick_volume + 1d + bounded lookback + fixed MA enum`，并沿用可信证券代码 provenance；
+- 图表通过 GeneratedFileService 的受管路径分配与非空产物登记进入 GeneratedFileStore，PNG 成为可追踪的 `gen_XXX`；
+- QQ 新增专用市场图表图片投递入口：只有真实工具事件、金融模式和明确的问答/订阅授权同时成立时才调用 send_image；
+- 主动推送先完成文字投递，再尝试图表；图片失败会结构化记录并发送降级提示，不把整条已发送文字重新伪装成未投递；
+- Pillow 成为显式运行依赖；ComfyUI 和云端生图仍不参与真实数值图表。
 
 验收：
 
@@ -1919,11 +1939,11 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F6 已完成 Fake Bridge/Mock 主链验收，真实主动推送仍因默认开关和 Choice 权限保持关闭。上下文恢复后按以下顺序继续：
+F6 与 F7a 已完成 Fake Bridge/Mock 主链验收，真实主动推送仍因默认开关和 Choice 权限保持关闭。上下文恢复后按以下顺序继续：
 
 1. 在真实 Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/cnq/csqsnapshot/csd 的实际权限、callback 字段、证券主数据来源和 AdjustFlag 口径；未确认前继续使用 Fake SDK；
-2. 进入 F7：使用真实数值生成确定性 PNG/MD/PDF/XLSX，并通过 subscription 授权投递，不让 AI 生图承担事实行情表达；
+2. 继续 F7b：复用 compose_file/GeneratedFileStore 生成带来源与 as_of 的 MD/PDF/XLSX 金融报告，并把已生成 PNG 作为报告引用；
 3. 视真实权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
 4. F9 再补 processing 跨进程租约、部分 QQ 气泡投递恢复、速率限制、digest、metrics 和人工 replay，不在 F6 假装已经完成这些运营能力。
 
-推荐下一个独立提交边界：`deterministic finance chart + QQ subscription delivery`；如果 Choice 权限仍未开通，继续用明确标记 synthetic 的序列验算图表像素数据和标题，不把测试图冒充真实行情。
+推荐下一个独立提交边界：`compose_finance_report + deterministic report evidence`；如果 Choice 权限仍未开通，继续用明确标记 synthetic 的序列验算报告字段和图表引用，不把测试产物冒充真实行情。

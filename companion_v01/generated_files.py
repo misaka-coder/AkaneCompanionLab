@@ -24,6 +24,9 @@ from .store import MemoryStore
 SUPPORTED_OUTPUT_FORMATS = {"txt", "md", "docx", "xlsx", "pdf", "json", "csv", "html"}
 MEDIA_OUTPUT_FORMATS = {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"}
 TRANSCRIPT_OUTPUT_FORMATS = {"md", "txt", "srt", "vtt", "json"}
+REGISTERED_ARTIFACT_FORMATS = (
+    SUPPORTED_OUTPUT_FORMATS | MEDIA_OUTPUT_FORMATS | TRANSCRIPT_OUTPUT_FORMATS | {"png", "zip"}
+)
 TEXT_INSPECT_FORMATS = {"txt", "md", "json", "csv", "html", "srt", "vtt", "xml", "log", "yaml", "yml"}
 PROTECTED_MEDIA_EXTENSIONS = {"kgm", "ncm", "qmc", "qmc0", "qmc3", "mflac", "mgg", "tkm"}
 VIDEO_MEDIA_EXTENSIONS = {"mp4", "mov", "mkv", "webm", "avi"}
@@ -652,6 +655,76 @@ class GeneratedFileService:
             if candidate.exists():
                 return candidate
         return fallback
+
+    def allocate_output_path(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        title: str,
+        output_format: str,
+        timestamp: int | None = None,
+    ) -> Path:
+        """Reserve a safe path inside GeneratedFileStore-managed output storage."""
+        normalized_format = str(output_format or "").strip().lower().lstrip(".")
+        if normalized_format not in REGISTERED_ARTIFACT_FORMATS:
+            raise ValueError("generated output format is invalid")
+        return self._build_output_path(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            title=title,
+            output_format=normalized_format,
+            timestamp=int(timestamp or time.time()),
+        )
+
+    def register_generated_artifact(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        output_path: Path,
+        output_title: str,
+        output_format: str,
+        mime_type: str,
+        content_card: dict[str, Any],
+        summary: str,
+        created_by_tool: str,
+        source_ids: list[str] | tuple[str, ...] | None = None,
+        send_to_user: bool = False,
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        """Register a non-empty artifact already rendered into managed output storage."""
+        target = Path(output_path)
+        if not self.is_managed_storage_path(target):
+            raise RuntimeError("generated artifact is outside managed output storage")
+        if not target.is_file():
+            raise RuntimeError("generated artifact was not created")
+        file_size = target.stat().st_size
+        if file_size <= 0:
+            raise RuntimeError("generated artifact is empty")
+        normalized_format = str(output_format or target.suffix).strip().lower().lstrip(".")
+        if normalized_format not in REGISTERED_ARTIFACT_FORMATS:
+            raise RuntimeError("generated artifact format is unsupported")
+        if target.suffix.lower() != f".{normalized_format}":
+            raise RuntimeError("generated artifact format does not match its file extension")
+        generated = self.store.add_generated_file(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            output_title=str(output_title or target.stem).strip(),
+            output_format=normalized_format,
+            storage_relpath=self._storage_relpath(target),
+            mime_type=str(mime_type or "application/octet-stream").strip(),
+            file_ext=normalized_format,
+            file_size=file_size,
+            source_ids=source_ids,
+            content_card=content_card if isinstance(content_card, dict) else {},
+            summary=str(summary or "").strip(),
+            created_by_tool=str(created_by_tool or "").strip(),
+            delivery_status="pending" if send_to_user else "not_requested",
+            timestamp=timestamp,
+        )
+        generated["absolute_path"] = str(self.absolute_path(generated))
+        return generated
 
     def is_managed_storage_path(self, path: Path) -> bool:
         try:
@@ -2983,6 +3056,7 @@ class GeneratedFileService:
             "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "pdf": "application/pdf",
+            "png": "image/png",
             "srt": "application/x-subrip; charset=utf-8",
             "vtt": "text/vtt; charset=utf-8",
             "mp3": "audio/mpeg",

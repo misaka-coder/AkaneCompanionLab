@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, time as datetime_time
 import hashlib
 import json
+from pathlib import Path
 import re
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -15,6 +16,7 @@ from services.market_data import (
 )
 
 from ..tool_runtime import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolMetadata
+from .chart_provider import ChartRequest, LocalChartProvider
 from .market_service import MarketDataToolService
 
 
@@ -91,6 +93,32 @@ MARKET_PRICE_SERIES_SCHEMA: dict[str, Any] = {
     "required": ["code"],
 }
 
+RENDER_MARKET_CHART_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Render a deterministic local PNG from trusted provider OHLCV data. "
+        "The model selects only a fixed chart enum and bounded parameters; it cannot pass price arrays, "
+        "file paths, plotting code, or arbitrary styles."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "code": {"type": "string", "minLength": 1, "maxLength": 40},
+        "chart_type": {"type": "string", "enum": ["candlestick_volume"]},
+        "interval": {"type": "string", "enum": ["1d"]},
+        "adjusted": {"type": "string", "enum": ["none", "forward", "backward"]},
+        "lookback": {"type": "integer", "minimum": 20, "maximum": 250},
+        "moving_averages": {
+            "type": "array",
+            "items": {"type": "integer", "enum": [5, 10, 20, 60]},
+            "maxItems": 4,
+            "uniqueItems": True,
+        },
+        "title": {"type": "string", "maxLength": 80},
+        "send_to_user": {"type": "boolean"},
+    },
+    "required": ["code"],
+}
+
 
 class _FinanceReadToolHandler(BaseToolHandler):
     input_schema: dict[str, Any] = {}
@@ -104,7 +132,7 @@ class _FinanceReadToolHandler(BaseToolHandler):
     def _result(self, payload: dict[str, Any]) -> ToolExecutionResult:
         status = str(payload.get("status") or "unavailable").strip().lower()
         followup = (
-            "以下是金融只读工具返回的结构化证据。区分来源事实、程序计算与分析推断；"
+            "以下是金融工具返回的结构化证据。区分来源事实、程序计算与分析推断；"
             "任何时效性结论都必须引用 as_of。\n"
             + json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
         )
@@ -383,13 +411,242 @@ class MarketPriceSeriesToolHandler(_FinanceReadToolHandler):
             return self._failure(exc)
 
 
-def build_market_tool_handlers(service: MarketDataToolService) -> dict[str, BaseToolHandler]:
-    handlers: tuple[BaseToolHandler, ...] = (
+class RenderMarketChartToolHandler(_FinanceReadToolHandler):
+    tool_type = "render_market_chart"
+    input_schema = RENDER_MARKET_CHART_SCHEMA
+
+    def __init__(
+        self,
+        *,
+        service: MarketDataToolService,
+        generated_file_service: Any,
+        chart_provider: LocalChartProvider | None = None,
+    ) -> None:
+        super().__init__(service=service)
+        self.generated_file_service = generated_file_service
+        self.chart_provider = chart_provider or LocalChartProvider()
+
+    def tool_metadata(self) -> ToolMetadata:
+        return ToolMetadata(
+            family="finance_artifact",
+            operation="control",
+            risk="low",
+            default_round_budget=12,
+            input_schema=self.input_schema,
+        )
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            '- render_market_chart：从可信行情源重新读取 OHLCV，并用本地固定模板生成 K 线+成交量 PNG。格式为 '
+            '{"type":"render_market_chart","code":"600519.SH","chart_type":"candlestick_volume",'
+            '"interval":"1d","adjusted":"none","lookback":120,"moving_averages":[5,20],'
+            '"title":"贵州茅台日线量价","send_to_user":true}。'
+            "用户只给名称/别名时先调用 market_resolve_security；不得传价格数组、任意样式、文件路径或绘图代码。"
+            "工具会校验数据、计算均线、写入 GeneratedFileStore，并返回来源、区间和 as_of。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not _is_tool_call(value, self.tool_type):
+            return None
+        if not _has_only_keys(
+            value,
+            {
+                "type",
+                "code",
+                "chart_type",
+                "interval",
+                "adjusted",
+                "lookback",
+                "moving_averages",
+                "title",
+                "send_to_user",
+            },
+        ):
+            return None
+        raw_moving_averages = value.get("moving_averages", (5, 20))
+        if not isinstance(raw_moving_averages, (list, tuple)) or len(raw_moving_averages) > 4:
+            return None
+        if isinstance(value.get("send_to_user"), bool):
+            send_to_user = bool(value.get("send_to_user"))
+        elif value.get("send_to_user") is None:
+            send_to_user = True
+        else:
+            return None
+        try:
+            request = ChartRequest(
+                code=str(value.get("code") or ""),
+                chart_type=str(value.get("chart_type") or "candlestick_volume"),
+                interval=str(value.get("interval") or "1d"),
+                adjusted=str(value.get("adjusted") or "none"),
+                lookback=value.get("lookback", 120),
+                moving_averages=tuple(raw_moving_averages),
+                title=str(value.get("title") or ""),
+            )
+        except MarketDataValidationError:
+            return None
+        return {
+            "type": self.tool_type,
+            "code": request.code,
+            "chart_type": request.chart_type,
+            "interval": request.interval,
+            "adjusted": request.adjusted,
+            "lookback": request.lookback,
+            "moving_averages": list(request.moving_averages),
+            "title": request.title,
+            "send_to_user": send_to_user,
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        output_path = None
+        try:
+            request = ChartRequest(
+                code=str(call.get("code") or ""),
+                chart_type=str(call.get("chart_type") or "candlestick_volume"),
+                interval=str(call.get("interval") or "1d"),
+                adjusted=str(call.get("adjusted") or "none"),
+                lookback=call.get("lookback", 120),
+                moving_averages=tuple(call.get("moving_averages") or ()),
+                title=str(call.get("title") or ""),
+            )
+            self.service.ensure_trusted_codes(
+                (request.code,),
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                request_context=context.request_context,
+            )
+            response = self.service.price_series_response(
+                MarketSeriesRequest(
+                    code=request.code,
+                    interval=request.interval,
+                    adjusted=request.adjusted,
+                    limit=request.lookback,
+                )
+            )
+            if response.status != "ok" or response.data is None:
+                return self._result(response.to_public_dict())
+
+            output_title = request.title or f"{request.code}_日线K线与成交量"
+            output_path = self.generated_file_service.allocate_output_path(
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                title=output_title,
+                output_format="png",
+                timestamp=context.now_ts,
+            )
+            artifact = self.chart_provider.render(
+                series=response.data,
+                request=request,
+                output_path=output_path,
+                source=response.source,
+            )
+            evidence = artifact.evidence_metadata()
+            summary = (
+                f"{artifact.code} {artifact.date_from} 至 {artifact.date_to} 的日线 K 线与成交量图，"
+                f"数据截至 {artifact.as_of}。"
+            )
+            source_ids = []
+            if context.current_user_source_id:
+                source_ids.append(str(context.current_user_source_id))
+            market_event = (
+                context.request_context.get("market_event")
+                if isinstance(context.request_context.get("market_event"), dict)
+                else {}
+            )
+            event_id = str(market_event.get("event_id") or "").strip()
+            if event_id and event_id not in source_ids:
+                source_ids.append(event_id)
+            generated = self.generated_file_service.register_generated_artifact(
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                output_path=artifact.output_path,
+                output_title=artifact.title,
+                output_format="png",
+                mime_type="image/png",
+                content_card={
+                    "kind": "market_chart",
+                    "title": artifact.title,
+                    "summary": summary,
+                    "chart": evidence,
+                },
+                summary=summary,
+                created_by_tool=self.tool_type,
+                source_ids=source_ids,
+                send_to_user=bool(call.get("send_to_user", True)),
+                timestamp=context.now_ts,
+            )
+            output_path = None
+            public_generated = {
+                "generated_id": str(generated.get("generated_id") or ""),
+                "generated_handle": str(generated.get("generated_handle") or ""),
+                "output_title": str(generated.get("output_title") or artifact.title),
+                "output_format": "png",
+                "mime_type": "image/png",
+                "file_size": int(generated.get("file_size") or 0),
+                "created_by_tool": self.tool_type,
+            }
+            payload = {
+                "ok": True,
+                "status": "ok",
+                "provider": artifact.provider,
+                "source": artifact.source,
+                "as_of": artifact.as_of,
+                "reason": "",
+                "data": {
+                    "generated_file": public_generated,
+                    "chart": evidence,
+                },
+            }
+            base_result = self._result(payload)
+            base_result.stream_events = [
+                {
+                    "type": "market_chart_ready",
+                    "generated_file": generated,
+                    "send_to_user": bool(call.get("send_to_user", True)),
+                    "delivery_scope": "finance_market_chart",
+                    "chart": evidence,
+                }
+            ]
+            return base_result
+        except Exception as exc:
+            if output_path is not None:
+                try:
+                    path = Path(output_path)
+                    if self.generated_file_service.is_managed_storage_path(path):
+                        path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            return self._chart_failure(exc)
+
+    def _chart_failure(self, exc: Exception) -> ToolExecutionResult:
+        if isinstance(exc, MarketDataValidationError):
+            payload = exc.to_public_dict()
+            if payload.get("status") not in {"invalid_arguments", "unavailable"}:
+                payload["status"] = "unavailable"
+            payload["data"] = None
+            return self._result(payload)
+        return self._failure(exc)
+
+
+def build_market_tool_handlers(
+    service: MarketDataToolService,
+    *,
+    generated_file_service: Any | None = None,
+    chart_provider: LocalChartProvider | None = None,
+) -> dict[str, BaseToolHandler]:
+    handlers: list[BaseToolHandler] = [
         MarketResolveSecurityToolHandler(service=service),
         MarketNewsSearchToolHandler(service=service),
         MarketQuoteSnapshotToolHandler(service=service),
         MarketPriceSeriesToolHandler(service=service),
-    )
+    ]
+    if generated_file_service is not None:
+        handlers.append(
+            RenderMarketChartToolHandler(
+                service=service,
+                generated_file_service=generated_file_service,
+                chart_provider=chart_provider,
+            )
+        )
     return {handler.tool_type: handler for handler in handlers}
 
 
@@ -497,9 +754,11 @@ __all__ = [
     "MARKET_PRICE_SERIES_SCHEMA",
     "MARKET_QUOTE_SNAPSHOT_SCHEMA",
     "MARKET_RESOLVE_SECURITY_SCHEMA",
+    "RENDER_MARKET_CHART_SCHEMA",
     "MarketNewsSearchToolHandler",
     "MarketPriceSeriesToolHandler",
     "MarketQuoteSnapshotToolHandler",
     "MarketResolveSecurityToolHandler",
+    "RenderMarketChartToolHandler",
     "build_market_tool_handlers",
 ]

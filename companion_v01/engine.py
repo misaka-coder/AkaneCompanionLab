@@ -4085,7 +4085,12 @@ class AkaneMemoryEngine:
         if market_service is not None:
             from .finance import build_market_tool_handlers
 
-            handlers.update(build_market_tool_handlers(market_service))
+            handlers.update(
+                build_market_tool_handlers(
+                    market_service,
+                    generated_file_service=self._get_generated_file_service(),
+                )
+            )
         return handlers
 
     def _resolve_tool_handlers(

@@ -45,6 +45,7 @@ python-docx
 openpyxl
 pypdf
 reportlab
+Pillow>=10,<13
 tzdata
 yt-dlp
 syncedlyrics

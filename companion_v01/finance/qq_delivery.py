@@ -79,4 +79,32 @@ class QQFinanceDeliveryAdapter:
                 ]
                 reason = next((item for item in failures if item), "qq_send_failed")
             return FinanceDeliveryResult(False, "failed", reason, detail=result)
-        return FinanceDeliveryResult(True, "delivered", detail=result)
+        chart_result = {"ok": True, "status": "skipped", "count": 0, "results": []}
+        chart_sender = getattr(self.gateway, "send_market_charts", None)
+        if callable(chart_sender):
+            try:
+                chart_result = chart_sender(
+                    context,
+                    list(analysis.frame.get("tool_events") or []),
+                    authorization="finance_subscription_push",
+                )
+            except Exception as exc:
+                chart_result = {
+                    "ok": False,
+                    "status": "failed",
+                    "reason": f"market_chart_delivery_failed:{type(exc).__name__}",
+                    "count": 0,
+                    "results": [],
+                }
+        if str(chart_result.get("status") or "").strip().lower() == "failed":
+            notice_sender = getattr(self.gateway, "send_reply", None)
+            if callable(notice_sender):
+                try:
+                    notice_sender(context, "本次市场图表生成成功，但 QQ 图片发送失败；文字分析仍然有效。")
+                except Exception:
+                    pass
+        return FinanceDeliveryResult(
+            True,
+            "delivered" if chart_result.get("ok") else "delivered_with_chart_failure",
+            detail={"text_result": result, "chart_result": chart_result},
+        )

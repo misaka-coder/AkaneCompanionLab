@@ -2462,6 +2462,80 @@ class NapCatQQGateway:
 
         return self._send_generated_file_targets(context, targets)
 
+    def send_market_charts(
+        self,
+        context: QQMessageContext,
+        tool_events: list[dict[str, Any]] | None,
+        *,
+        authorization: str,
+    ) -> dict[str, Any]:
+        """Deliver fixed finance chart artifacts through an explicit finance authorization path."""
+        events = [event for event in tool_events or [] if isinstance(event, dict)]
+        targets: list[dict[str, str]] = []
+        for event in events:
+            if str(event.get("type") or "").strip() != "market_chart_ready":
+                continue
+            if str(event.get("delivery_scope") or "").strip() != "finance_market_chart":
+                continue
+            if not bool(event.get("send_to_user")):
+                continue
+            generated = event.get("generated_file") if isinstance(event.get("generated_file"), dict) else {}
+            if str(generated.get("created_by_tool") or "").strip() != "render_market_chart":
+                continue
+            if str(generated.get("mime_type") or "").strip().lower() != "image/png":
+                continue
+            if str(generated.get("file_ext") or generated.get("output_format") or "").strip().lower() != "png":
+                continue
+            path = str(generated.get("absolute_path") or "").strip()
+            generated_id = str(generated.get("generated_id") or "").strip()
+            if not path or not generated_id:
+                continue
+            targets.append(
+                {
+                    "generated_id": generated_id,
+                    "path": path,
+                    "name": str(generated.get("output_title") or generated.get("generated_handle") or "市场图表"),
+                }
+            )
+        if not targets:
+            return {"ok": True, "status": "skipped", "count": 0, "results": []}
+
+        clean_authorization = str(authorization or "").strip().lower()
+        finance_mode = str(context.finance_mode or "").strip().lower()
+        if clean_authorization == "finance_subscription_push":
+            authorized = finance_mode == "push" and context.reason == "finance_subscription_push"
+        elif clean_authorization == "finance_tool_result":
+            authorized = finance_mode in {"qa", "push"}
+        else:
+            authorized = False
+        if not authorized:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "reason": "finance_chart_delivery_not_authorized",
+                "count": 0,
+                "blocked_count": len(targets),
+                "results": [],
+            }
+
+        results: list[dict[str, Any]] = []
+        for target in targets:
+            result = self.send_image(
+                context,
+                image_path=target["path"],
+                name=target["name"],
+            )
+            result["generated_id"] = target["generated_id"]
+            results.append(result)
+        ok = bool(results) and all(bool(result.get("ok")) for result in results)
+        return {
+            "ok": ok,
+            "status": "sent" if ok else "failed",
+            "authorization": clean_authorization,
+            "count": len(results),
+            "results": results,
+        }
+
     def _send_generated_file_targets(
         self,
         context: QQMessageContext,

@@ -5656,6 +5656,7 @@ class MemoryStore:
             "aac",
             "ogg",
             "opus",
+            "png",
         }:
             return normalized
         return "md"

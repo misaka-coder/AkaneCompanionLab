@@ -1,3 +1,4 @@
+from .chart_provider import ChartArtifactResult, ChartRequest, LocalChartProvider
 from .event_analysis import AkaneFinanceAnalysisClient, ensure_market_push_contract
 from .event_contracts import (
     FinanceAnalysisClient,
@@ -30,11 +31,14 @@ from .tool_handlers import (
     MarketPriceSeriesToolHandler,
     MarketQuoteSnapshotToolHandler,
     MarketResolveSecurityToolHandler,
+    RenderMarketChartToolHandler,
     build_market_tool_handlers,
 )
 
 __all__ = [
     "AkaneFinanceAnalysisClient",
+    "ChartArtifactResult",
+    "ChartRequest",
     "FinanceAnalysisClient",
     "FinanceAnalysisRequest",
     "FinanceAnalysisResult",
@@ -52,10 +56,12 @@ __all__ = [
     "FinanceSubscriptionService",
     "IMPORTANCE_LEVELS",
     "ImportanceDecision",
+    "LocalChartProvider",
     "MarketNewsSearchToolHandler",
     "MarketPriceSeriesToolHandler",
     "MarketQuoteSnapshotToolHandler",
     "MarketResolveSecurityToolHandler",
+    "RenderMarketChartToolHandler",
     "QQFinanceDeliveryAdapter",
     "build_market_tool_handlers",
     "compute_quote_metrics",
