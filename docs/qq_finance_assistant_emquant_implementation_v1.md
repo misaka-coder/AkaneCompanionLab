@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0 Actor repair、F1 Finance domain profile 已完成，下一步 F2
+状态：设计锁定；F0 Actor repair、F1 Finance domain profile、F2 Market provider contract + Mock 已完成，下一步 F3
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -1334,6 +1334,17 @@ tests/
 
 ### Slice F2：Market provider contract + Mock
 
+状态：已完成。
+
+实际落地：
+
+- `services/market_data/types.py` 提供不可变 `MarketEvent / MarketQuoteSnapshot / MarketBar / MarketSeries`、统一 `MarketDataResponse`、provider health 和结构化校验错误；
+- `services/market_data/provider.py` 提供人格无关、QQ 无关的只读 `MarketDataProvider` 接口，以及严格的新闻、快照和序列查询参数契约；
+- `services/market_data/normalizers.py` 标准化 Choice 资讯字段与行情字段，程序侧计算 `change / change_pct`，拒绝坏时间、坏代码、非有限数值和不可能的 OHLC；
+- `MockMarketDataProvider` 只接受显式 `synthetic=true` 且 schema 匹配的离线 fixture，health 明确标记 `mock_choice / Synthetic Choice Fixture / network=disabled`，不会声称已登录 Choice；
+- `tests/fixtures/choice_market_data_synthetic_v1.json` 只含虚构代码 `000000.TEST` 和 `example.invalid` 来源，不包含真实 Choice 受限数据；
+- 当前未创建市场事件数据库、订阅、QQ 投递、运行时工具 handler 或 EmQuant SDK 加载路径，这些仍属于 F3-F6。
+
 目标：无 Choice 权限也能开发完整上层。
 
 改动：
@@ -1578,12 +1589,12 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-上下文恢复后，从 Slice F2 开始，不要直接从 EmQuant live 登录或云端生图开始。
+上下文恢复后，从 Slice F3 开始，不要直接从 EmQuant live 登录或云端生图开始。
 
 推荐下一个提交边界：
 
 ~~~text
-Market provider contract + Mock
+MarketEventStore + subscriptions
 ~~~
 
-该提交只增加人格无关、QQ 无关的市场数据契约、Mock provider、标准化与 health contract；不同时创建事件数据库，不加载 Choice DLL，不调用真实网络。
+该提交只增加独立 SQLite schema、事件精确去重、raw_hash 去重、订阅/关注列表与投递幂等状态；不同时加载 Choice DLL，不接 QQ 主动投递，不调用 LLM。
