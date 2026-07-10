@@ -15,6 +15,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from .normalizers import normalize_market_code
 from .store_models import (
+    DeliveryClaim,
     DeliveryReservation,
     EventUpsertResult,
     FinanceSubscription,
@@ -26,7 +27,7 @@ from .store_models import (
 from .types import MarketDataValidationError, MarketEvent
 
 
-MARKET_STORE_SCHEMA_VERSION = 2
+MARKET_STORE_SCHEMA_VERSION = 3
 EVENT_STATUSES = frozenset({"active", "updated", "archived"})
 DELIVERY_STATUSES = frozenset({"pending", "processing", "delivered", "failed", "cancelled"})
 RETRYABLE_DELIVERY_STATUSES = frozenset({"pending", "failed"})
@@ -75,6 +76,7 @@ CREATE TABLE IF NOT EXISTS finance_subscriptions (
     subscription_id TEXT PRIMARY KEY,
     client TEXT NOT NULL,
     target_id TEXT NOT NULL,
+    is_group INTEGER NOT NULL DEFAULT 0 CHECK(is_group IN (0, 1)),
     session_id TEXT NOT NULL,
     profile_user_id TEXT NOT NULL,
     character_pack_id TEXT NOT NULL DEFAULT '',
@@ -205,10 +207,29 @@ class MarketEventStore:
     def _init_db(self) -> None:
         with self._write_lock, self._connect(write=True) as connection:
             connection.executescript(_SCHEMA_SQL)
+            self._migrate_schema(connection)
             try:
                 connection.execute("PRAGMA journal_mode = WAL")
             except sqlite3.DatabaseError:
                 pass
+
+    @staticmethod
+    def _migrate_schema(connection: sqlite3.Connection) -> None:
+        subscription_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(finance_subscriptions)").fetchall()
+        }
+        if "is_group" not in subscription_columns:
+            connection.execute(
+                "ALTER TABLE finance_subscriptions ADD COLUMN is_group INTEGER NOT NULL DEFAULT 0"
+            )
+            connection.execute(
+                """
+                UPDATE finance_subscriptions
+                SET is_group = 1
+                WHERE session_id LIKE 'qq_group_%'
+                """
+            )
+        connection.execute(f"PRAGMA user_version = {MARKET_STORE_SCHEMA_VERSION}")
 
     def schema_version(self) -> int:
         with self._connect() as connection:
@@ -382,6 +403,7 @@ class MarketEventStore:
         subscription_id: str,
         client: str,
         target_id: str,
+        is_group: bool | None = None,
         session_id: str,
         profile_user_id: str,
         character_pack_id: str = "",
@@ -396,6 +418,7 @@ class MarketEventStore:
             subscription_id=subscription_id,
             client=client,
             target_id=target_id,
+            is_group=is_group,
             session_id=session_id,
             profile_user_id=profile_user_id,
             character_pack_id=character_pack_id,
@@ -412,9 +435,17 @@ class MarketEventStore:
                 (normalized["subscription_id"],),
             ).fetchone()
             if existing is not None:
-                immutable_fields = ("client", "target_id", "session_id", "profile_user_id")
+                immutable_fields = ("client", "target_id", "is_group", "session_id", "profile_user_id")
                 for field_name in immutable_fields:
-                    if str(existing[field_name] or "") != str(normalized[field_name] or ""):
+                    existing_value = bool(existing[field_name]) if field_name == "is_group" else str(
+                        existing[field_name] or ""
+                    )
+                    normalized_value = (
+                        bool(normalized[field_name])
+                        if field_name == "is_group"
+                        else str(normalized[field_name] or "")
+                    )
+                    if existing_value != normalized_value:
                         raise _invalid_argument(
                             field_name,
                             f"cannot change subscription owner field {field_name}",
@@ -442,15 +473,16 @@ class MarketEventStore:
                 connection.execute(
                     """
                     INSERT INTO finance_subscriptions (
-                        subscription_id, client, target_id, session_id, profile_user_id,
+                        subscription_id, client, target_id, is_group, session_id, profile_user_id,
                         character_pack_id, finance_mode, enabled, filters_json,
                         delivery_policy_json, created_by_actor_id, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         normalized["subscription_id"],
                         normalized["client"],
                         normalized["target_id"],
+                        int(normalized["is_group"]),
                         normalized["session_id"],
                         normalized["profile_user_id"],
                         normalized["character_pack_id"],
@@ -996,6 +1028,20 @@ class MarketEventStore:
         subscription_id: str,
         now_ts: int | None = None,
     ) -> MarketEventDelivery | None:
+        claim = self.claim_delivery_attempt(
+            event_id=event_id,
+            subscription_id=subscription_id,
+            now_ts=now_ts,
+        )
+        return claim.delivery if claim is not None else None
+
+    def claim_delivery_attempt(
+        self,
+        *,
+        event_id: str,
+        subscription_id: str,
+        now_ts: int | None = None,
+    ) -> DeliveryClaim | None:
         clean_event_id = _safe_id(event_id, field="event_id")
         clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
         now = self._now(now_ts)
@@ -1011,7 +1057,7 @@ class MarketEventStore:
                 return None
             delivery = _row_to_delivery(row)
             if delivery.status not in RETRYABLE_DELIVERY_STATUSES:
-                return delivery
+                return DeliveryClaim(acquired=False, delivery=delivery)
             enabled_row = connection.execute(
                 "SELECT enabled FROM finance_subscriptions WHERE subscription_id = ?",
                 (clean_subscription_id,),
@@ -1025,6 +1071,7 @@ class MarketEventStore:
                     """,
                     (now, clean_event_id, clean_subscription_id),
                 )
+                acquired = False
             else:
                 connection.execute(
                     """
@@ -1035,6 +1082,7 @@ class MarketEventStore:
                     """,
                     (now, now, clean_event_id, clean_subscription_id),
                 )
+                acquired = True
             updated = connection.execute(
                 """
                 SELECT * FROM market_event_deliveries
@@ -1042,7 +1090,7 @@ class MarketEventStore:
                 """,
                 (clean_event_id, clean_subscription_id),
             ).fetchone()
-        return _row_to_delivery(updated)
+        return DeliveryClaim(acquired=acquired, delivery=_row_to_delivery(updated))
 
     def mark_delivery_delivered(
         self,
@@ -1110,6 +1158,38 @@ class MarketEventStore:
                 (clean_limit,),
             ).fetchall()
         return tuple(_row_to_delivery(row) for row in rows)
+
+    def has_delivered_cluster(
+        self,
+        *,
+        subscription_id: str,
+        cluster_id: str,
+        exclude_event_id: str = "",
+    ) -> bool:
+        clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        clean_cluster_id = _safe_id(cluster_id, field="cluster_id")
+        clean_exclude = _safe_id(exclude_event_id, field="exclude_event_id") if exclude_event_id else ""
+        clauses = [
+            "d.subscription_id = ?",
+            "d.status = 'delivered'",
+            "e.cluster_id = ?",
+        ]
+        parameters: list[Any] = [clean_subscription_id, clean_cluster_id]
+        if clean_exclude:
+            clauses.append("e.event_id != ?")
+            parameters.append(clean_exclude)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT 1
+                FROM market_event_deliveries AS d
+                JOIN market_events AS e ON e.event_id = d.event_id
+                WHERE {" AND ".join(clauses)}
+                LIMIT 1
+                """,
+                tuple(parameters),
+            ).fetchone()
+        return row is not None
 
     def _finish_delivery(
         self,
@@ -1325,11 +1405,18 @@ def _normalize_subscription_input(**values: Any) -> dict[str, Any]:
     enabled = values.get("enabled")
     if not isinstance(enabled, bool):
         raise _invalid_argument("enabled", "enabled must be a boolean")
+    session_id = _required_text(values.get("session_id"), field="session_id", max_length=240)
+    is_group = values.get("is_group")
+    if is_group is None:
+        is_group = session_id.startswith("qq_group_")
+    if not isinstance(is_group, bool):
+        raise _invalid_argument("is_group", "is_group must be a boolean")
     return {
         "subscription_id": _safe_id(values.get("subscription_id"), field="subscription_id"),
         "client": _required_text(values.get("client"), field="client", max_length=40).lower(),
         "target_id": _required_text(values.get("target_id"), field="target_id", max_length=200),
-        "session_id": _required_text(values.get("session_id"), field="session_id", max_length=240),
+        "is_group": is_group,
+        "session_id": session_id,
         "profile_user_id": _required_text(values.get("profile_user_id"), field="profile_user_id", max_length=240),
         "character_pack_id": _bounded_text(values.get("character_pack_id"), field="character_pack_id", max_length=120),
         "finance_mode": finance_mode,
@@ -1399,6 +1486,7 @@ def _row_to_subscription(row: sqlite3.Row) -> FinanceSubscription:
         subscription_id=str(row["subscription_id"] or ""),
         client=str(row["client"] or ""),
         target_id=str(row["target_id"] or ""),
+        is_group=bool(row["is_group"]),
         session_id=str(row["session_id"] or ""),
         profile_user_id=str(row["profile_user_id"] or ""),
         character_pack_id=str(row["character_pack_id"] or ""),

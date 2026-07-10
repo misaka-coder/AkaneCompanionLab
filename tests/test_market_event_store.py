@@ -103,6 +103,46 @@ class MarketEventStoreTests(unittest.TestCase):
         )
         self.assertEqual(upgraded.resolve_security("合成测试公司")[0]["code"], "000000.TEST")
 
+    def test_v2_subscription_schema_adds_and_backfills_is_group(self) -> None:
+        legacy_path = Path(self.temp_dir.name) / "market_events_v2.sqlite3"
+        with closing(sqlite3.connect(legacy_path)) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE finance_subscriptions (
+                    subscription_id TEXT PRIMARY KEY,
+                    client TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    profile_user_id TEXT NOT NULL,
+                    character_pack_id TEXT NOT NULL DEFAULT '',
+                    finance_mode TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    filters_json TEXT NOT NULL DEFAULT '{}',
+                    delivery_policy_json TEXT NOT NULL DEFAULT '{}',
+                    created_by_actor_id TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                INSERT INTO finance_subscriptions (
+                    subscription_id, client, target_id, session_id, profile_user_id,
+                    character_pack_id, finance_mode, enabled, filters_json,
+                    delivery_policy_json, created_by_actor_id, created_at, updated_at
+                ) VALUES (
+                    'legacy-group', 'qq', '20001', 'qq_group_shared_20001',
+                    'qq_group_shared_20001', '', 'push', 1, '{}',
+                    '{"level":"notify"}', 'qq:10001', 100, 100
+                );
+                PRAGMA user_version = 2;
+                """
+            )
+
+        upgraded = MarketEventStore(legacy_path, clock=lambda: 1_752_110_000)
+        subscription = upgraded.get_subscription("legacy-group")
+
+        self.assertEqual(upgraded.schema_version(), MARKET_STORE_SCHEMA_VERSION)
+        self.assertIsNotNone(subscription)
+        self.assertTrue(subscription.is_group)
+
     def test_exact_event_replay_is_idempotent(self) -> None:
         first = self.store.upsert_event(self.event, now_ts=100)
         replay = self.store.upsert_event(self.event, now_ts=200)
@@ -478,6 +518,32 @@ class MarketEventStoreTests(unittest.TestCase):
         self.assertTrue(retry.should_deliver)
         self.assertEqual(second_attempt.attempt_count, 2)
         self.assertEqual(second_attempt.status, "processing")
+
+    def test_delivery_claim_is_acquired_only_once(self) -> None:
+        self.store.upsert_event(self.event, now_ts=100)
+        self._subscription("sub-claim", "20001")
+        self.store.ensure_delivery(
+            event_id=self.event.event_id,
+            subscription_id="sub-claim",
+            now_ts=200,
+        )
+
+        first = self.store.claim_delivery_attempt(
+            event_id=self.event.event_id,
+            subscription_id="sub-claim",
+            now_ts=210,
+        )
+        second = self.store.claim_delivery_attempt(
+            event_id=self.event.event_id,
+            subscription_id="sub-claim",
+            now_ts=211,
+        )
+
+        self.assertTrue(first.acquired)
+        self.assertFalse(second.acquired)
+        self.assertEqual(first.delivery.attempt_count, 1)
+        self.assertEqual(second.delivery.attempt_count, 1)
+        self.assertEqual(second.delivery.status, "processing")
 
     def test_disabling_subscription_cancels_open_deliveries(self) -> None:
         self.store.upsert_event(self.event, now_ts=100)

@@ -63,6 +63,7 @@ class FinanceSubscription:
     subscription_id: str
     client: str
     target_id: str
+    is_group: bool
     session_id: str
     profile_user_id: str
     character_pack_id: str
@@ -83,6 +84,7 @@ class FinanceSubscription:
             "subscription_id": self.subscription_id,
             "client": self.client,
             "target_id": self.target_id,
+            "is_group": bool(self.is_group),
             "session_id": self.session_id,
             "profile_user_id": self.profile_user_id,
             "character_pack_id": self.character_pack_id,
@@ -186,5 +188,17 @@ class DeliveryReservation:
         return {
             "created": self.created,
             "should_deliver": self.should_deliver,
+            "delivery": self.delivery.to_public_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class DeliveryClaim:
+    acquired: bool
+    delivery: MarketEventDelivery
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "acquired": self.acquired,
             "delivery": self.delivery.to_public_dict(),
         }

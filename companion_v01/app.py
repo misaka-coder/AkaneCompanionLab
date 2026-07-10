@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 import config
 from services.tts_client import EdgeTTSClient
 from .engine import AkaneMemoryEngine
+from .finance import AkaneFinanceAnalysisClient, FinanceEventOrchestrator, QQFinanceDeliveryAdapter
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
@@ -135,6 +136,16 @@ if getattr(config, "QQ_BRIDGE_ENABLED", False):
     )
 else:
     qq_gateway = None
+
+finance_event_orchestrator: FinanceEventOrchestrator | None = None
+market_data_tool_service = getattr(engine, "market_data_tool_service", None)
+market_event_store = getattr(market_data_tool_service, "event_store", None)
+if qq_gateway is not None and market_event_store is not None:
+    finance_event_orchestrator = FinanceEventOrchestrator(
+        store=market_event_store,
+        analysis_client=AkaneFinanceAnalysisClient(engine),
+        delivery_adapter=QQFinanceDeliveryAdapter(qq_gateway),
+    )
 
 
 def _install_qq_task_completion_notifications() -> None:

@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0-F4 已完成，F5 Bridge client + 金融只读工具 + provider code resolver 已完成；真实 Choice 冒烟等待权限，宏观/比较指标仍为后续增强
+状态：设计锁定；F0-F5 已完成；F6a Fake-event → AI → QQ 核心编排、幂等投递和双开关适配已完成；QQ 命令到 subscription/watchlist 的同步、自动事件消费与真实 Choice 冒烟仍等待后续接线
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -1002,6 +1002,7 @@ updated_at INTEGER NOT NULL
 subscription_id TEXT PRIMARY KEY
 client TEXT NOT NULL
 target_id TEXT NOT NULL
+is_group INTEGER NOT NULL
 session_id TEXT NOT NULL
 profile_user_id TEXT NOT NULL
 character_pack_id TEXT
@@ -1599,7 +1600,7 @@ tests/
 
 实际落地：
 
-- `services/market_data/store.py` 创建独立 `market_events.sqlite3`，不复用或修改 memcore SQLite；F5 code resolver 将 schema 从 v1 可迁移升级为 v2，保留原事件与投递数据；
+- `services/market_data/store.py` 创建独立 `market_events.sqlite3`，不复用或修改 memcore SQLite；F5 code resolver 将 schema 从 v1 可迁移升级为 v2，F6a 再升级为 v3 并补充订阅 `is_group`，所有迁移保留原事件与投递数据；
 - event upsert 支持 `inserted / updated / duplicate_event_id / duplicate_raw_hash`，保存 canonical event、cluster_id 和 revision；
 - 聚类限定为相同代码、相同资讯类型、六小时窗口和保守标题相似度，不把不同标的或不同类型强行聚合；
 - subscription owner 字段创建后不可改绑，filters 使用固定枚举，空订阅 fail closed；
@@ -1713,6 +1714,20 @@ tests/
 - 资金流结果保留数据源统计口径，不伪装成真实机构账户。
 
 ### Slice F6：Event → AI → QQ
+
+状态：F6a 核心闭环已完成；未自动启动 Bridge 事件轮询、后台 worker 或真实 QQ 推送。
+
+实际落地：
+
+- `FinanceEventImportancePolicy` 在调用昂贵模型前按资讯类型、重大/业绩/停复牌等关键词、可信标签和 watchlist priority 做确定性分级；`archive/digest` 不即时调用 AI，`notify/alert` 才进入主动分析；同一 subscription 已投递的 cluster 不再次推送；
+- `FinanceAnalysisRequest` 构造 `turn_kind=market_event / client_turn_kind=proactive / transient_user_message=true / finance_mode=push / domain_profile=finance_v1`，并使用“外部市场事件，不是用户发言”的明确边界；事件完整 provider code、来源和发布时间进入临时 prompt，但不附带 Actor，不会伪装成群成员发言；
+- `AkaneFinanceAnalysisClient` 复用现有最多 12/16 轮金融工具链。模型若没有按推送结构分层，程序会基于事件已知字段补齐“已确认事实 / 客观数据与时间 / 分析推断 / 尚待验证与风险 / 接下来观察 / 来源”，并拒绝把短小“处理中/未处理完”占位语当最终推送；
+- memcore 门面新增公开 `record_tool_exchange(...)`，F6a 用确定性 source prefix 记录 `market_feed` 工具证据，并显式记录 assistant `market_analysis`；外部事件本身不走 `record_user_turn`；memcore 固定 category enum 增加金融类别后再写入，不修改 memcore 私有表；
+- `FinanceEventOrchestrator` 实现 event upsert → subscription match → importance → authorization → delivery claim → AI → QQ → delivered/failed。QQ 或 AI 失败保留 failed，可由显式 `retry_pending()` 重试；delivered 重放不再次调用 AI/QQ；
+- MarketEventStore schema v3 为 subscription 持久化 `is_group`，从 v2 升级时根据旧 QQ session id 回填；新增原子 `claim_delivery_attempt()`，同进程并发只有一个执行者能从 pending/failed 领取 processing；跨进程崩溃后的 processing 租约回收仍按原设计留到 F9；
+- `QQFinanceDeliveryAdapter` 在调用 NapCat 前同时检查 `FINANCE_ASSISTANT_ENABLED / QQ_FINANCE_PUSH_ENABLED / QQ_BRIDGE_ENABLED`、subscription enabled、client=qq、finance_mode=push 和合法 target；默认配置下不会真实发送；
+- `companion_v01.app` 只在现有 market store 与 QQ gateway 都已装配时创建 orchestrator 对象，不启动轮询、不消费 Bridge 队列，也不在应用启动时发送任何消息；
+- Fake 端到端测试覆盖：外部事件不带 Actor、完整推送契约、同事件幂等、同 cluster 去重、开关关闭不花费 AI、QQ 失败重试、原子 claim、v2→v3 迁移以及群聊 delivery context。
 
 目标：新事件触发人格化金融分析并主动投递。
 
@@ -1886,10 +1901,11 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F5 核心提交边界已经完成，仍不接 QQ 主动推送。上下文恢复后按以下顺序继续：
+F6a 核心编排已经完成，但默认不自动消费 Bridge 事件，也不自动向真实 QQ 发送。上下文恢复后按以下顺序继续：
 
-1. 在真实 Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/csqsnapshot/csd 的实际权限、字段、证券主数据来源和 AdjustFlag 口径；未确认前继续使用 Fake SDK；
-2. 视真实权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
-3. 进入 F6：Event → AI → QQ 主动投递编排，继续复用本阶段的只读工具、code provenance、证据契约、轮次预算和强制完整收尾。
+1. 做 F6b 订阅与受控事件入口：把群管理员“开启财经推送”同步为 `finance_subscriptions` 授权记录，补齐 watchlist 管理入口，再把 Bridge 已标准化事件显式交给 `FinanceEventOrchestrator.process_event()`；提供停机、队列背压和结构化日志，启动开关默认关闭，不能在 import 或测试时登录 Choice、轮询或发送 QQ；
+2. 在真实 Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/csqsnapshot/csd 的实际权限、字段、证券主数据来源和 AdjustFlag 口径；未确认前继续使用 Fake SDK；
+3. 视真实权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
+4. 进入 F7：使用真实数值生成确定性 PNG/MD/PDF/XLSX，并通过 subscription 授权投递，不让 AI 生图承担事实行情表达。
 
-推荐下一个独立提交边界：`real-permission smoke harness`；它只提供显式人工执行的只读探针，不在测试或应用启动时自动登录。若权限仍未开通，则直接进入不依赖真实 API 的 F6 Fake-event 编排，不用假数据冒充真实主数据。
+推荐下一个独立提交边界：`finance event ingestion worker (disabled by default)`；若真实 Choice 权限仍未开通，继续只用 Fake Bridge 事件验证 worker，不用假数据冒充真实市场事件。

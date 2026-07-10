@@ -213,6 +213,57 @@ class MemcoreManager:
             character_pack_id=character_pack_id,
         )
 
+    def record_tool_exchange(
+        self,
+        *,
+        tool_name: str,
+        result: Any,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        tool_input: Any = None,
+        tool_call_id: str = "",
+        source: str = "",
+        timestamp: int | None = None,
+        source_id_prefix: str = "",
+        keywords: list[str] | None = None,
+        importance: float = 0.2,
+        confidence: float = 1.0,
+    ) -> dict[str, Any]:
+        operation = "record_tool_exchange"
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", reason=self._reason)
+        try:
+            written = system.record_tool_exchange(
+                tool_name=str(tool_name or "").strip(),
+                result=result,
+                tool_input=tool_input,
+                tool_call_id=str(tool_call_id or "").strip(),
+                source=str(source or "").strip(),
+                timestamp=timestamp,
+                source_id_prefix=str(source_id_prefix or "").strip() or None,
+                keywords=[str(item).strip() for item in (keywords or []) if str(item).strip()],
+                importance=max(0.0, min(1.0, float(importance))),
+                confidence=max(0.0, min(1.0, float(confidence))),
+            )
+            tool_use = written.get("tool_use") if isinstance(written, dict) else {}
+            tool_result = written.get("tool_result") if isinstance(written, dict) else {}
+            return {
+                **self._status(operation, True, "recorded"),
+                "tool_use_source_id": str((tool_use or {}).get("source_id") or ""),
+                "tool_result_source_id": str((tool_result or {}).get("source_id") or ""),
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore tool exchange dual-write failed: %s", reason)
+            return self._status(operation, False, "failed", reason=reason)
+
     def record_material_reference(
         self,
         *,
@@ -1044,6 +1095,10 @@ class MemcoreManager:
                 raise
 
     def _build_memory_config(self, memcore: Any) -> Any:
+        from ..domain_profiles import FINANCE_MEMORY_CATEGORIES
+
+        base_categories = tuple(getattr(memcore, "DEFAULT_CATEGORIES", ()))
+        categories = tuple(dict.fromkeys((*base_categories, *FINANCE_MEMORY_CATEGORIES)))
         return memcore.MemoryConfig(
             raw_trigger_count=max(1, int(getattr(config, "SUMMARY_TRIGGER_COUNT", 30) or 30)),
             summary_batch_size=max(1, int(getattr(config, "SUMMARY_BATCH_SIZE", 20) or 20)),
@@ -1077,6 +1132,7 @@ class MemcoreManager:
             ),
             visible_memory_scope=self.visible_scope,
             enable_flavor=self.enable_flavor,
+            categories=categories,
         )
 
     def _record_turn(

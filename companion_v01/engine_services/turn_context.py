@@ -51,7 +51,11 @@ def coerce_bool(value):
 
 def is_transient_user_turn(payload):
     turn_kind = str(payload.get("turn_kind") or payload.get("client_turn_kind") or "").strip().lower()
-    return bool(payload.get("transient_user_message")) or turn_kind in {"desktop_pet_proactive", "proactive"}
+    return bool(payload.get("transient_user_message")) or turn_kind in {
+        "desktop_pet_proactive",
+        "market_event",
+        "proactive",
+    }
 
 
 def build_transient_user_record(*, user_message, now_ts, date_label, time_of_day):

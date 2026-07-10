@@ -10,6 +10,18 @@ DEFAULT_DOMAIN_PROFILE_ID = "default"
 FINANCE_DOMAIN_PROFILE_ID = "finance_v1"
 FINANCE_MODES = ("off", "qa", "push")
 
+FINANCE_MEMORY_CATEGORIES = (
+    "finance_question",
+    "watchlist",
+    "portfolio_context",
+    "risk_preference",
+    "investment_goal",
+    "market_thesis",
+    "alert_preference",
+    "market_event",
+    "market_analysis",
+)
+
 FINANCE_ALLOWED_TOOL_NAMES = (
     "retrieve_memory",
     "read_memory_timeline",
