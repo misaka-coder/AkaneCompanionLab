@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0-F6 与 F7a 确定性 PNG 图表已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析、QQ 幂等文字投递与授权图表投递已接通；真实 Choice 冒烟仍等待账户权限
+状态：设计锁定；F0-F7 已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析、QQ 幂等文字投递、确定性 PNG 图表和 MD/PDF/XLSX 金融报告已接通；真实 Choice 冒烟仍等待账户权限
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -74,9 +74,10 @@ rg -n "finance|market_event|emquant|actor_stable_id" companion_v01 tests docs co
 
 ### 2.4 文件与产物
 
-- GeneratedFileService 已支持 txt、md、docx、xlsx、pdf、json、csv、html，并可安全登记固定渲染器生成的 PNG。
+- GeneratedFileService 已支持 txt、md、docx、xlsx、pdf、json、csv、html，并可安全登记固定渲染器生成的 PNG 与金融报告。
 - QQ 能投递生成文件和普通图片。
 - F7a 已加入面向金融数据的确定性 PNG 图表工具；当前固定支持日线 K 线、成交量与 MA5/10/20/60，不接受模型绘图代码或任意价格数组。
+- F7b 已加入 MD/PDF/XLSX 金融报告工具；事实数据由程序重新读取并计算，模型文字只进入明确标注的分析、风险和观察章节。
 - 当前 ComfyUI 接线主要服务角色工坊，不作为本主线依赖。
 
 ### 2.5 已验证测试基线
@@ -1170,16 +1171,38 @@ LocalChartProvider 固定执行：
 
 ### 11.6 compose_finance_report
 
-可以包装现有 compose_file，而不是重写文档系统。
+F7b 已实现专用的严格报告工具，复用 GeneratedFileService 的受管路径和 GeneratedFileStore 登记，不让模型直接提交事实数据或任意模板：
+
+~~~json
+{
+  "report_type": "security_brief",
+  "codes": ["600519.SH"],
+  "output_format": "pdf",
+  "interval": "1d",
+  "adjusted": "forward",
+  "lookback": 120,
+  "chart_ids": ["gen_001"],
+  "title": "贵州茅台证券简报",
+  "analysis_summary": "明确标注为模型分析的解读",
+  "risk_notes": ["待验证风险"],
+  "watch_items": ["后续观察"],
+  "send_to_user": true
+}
+~~~
 
 支持：
 
 - md：快速日报；
-- pdf：正式简报；
-- xlsx：结构化数据；
-- html：带图表说明的可读报告。
+- pdf：正式简报并嵌入受信图表；
+- xlsx：Summary、Metrics、Quotes、逐标的 OHLCV、Evidence、Notes 和 Charts 工作表。
 
-图表先生成，再作为报告来源引用。
+工具会为每个代码重新读取可信日线序列和行情快照，程序计算收益、回撤、波动率、相对成交量和均线。任一请求代码缺少完整可信序列时不生成部分报告；行情快照不可用时可以在报告中结构化降级，但不得伪造。
+
+`chart_ids` 只能精确引用当前会话由 `render_market_chart` 生成、仍存在于受管存储中的 PNG，并且 code、interval 和 adjusted 必须与报告一致。PDF/XLSX 嵌入图表，MD 使用受管相对引用；任意附件、普通生成图片、路径、模板和代码都不能进入嵌入链路。
+
+模型提供的 `analysis_summary`、`risk_notes` 和 `watch_items` 只进入明确标注的模型分析、风险和观察章节。事实表、原始 OHLCV、provider/source、as_of、序列 SHA-256、报告 evidence SHA-256 与免责声明由程序固定生成。XLSX 会中和以 `= + - @` 开头的文本，避免公式注入；MD 会转义模型文本中的链接和图片语法。
+
+输出写入 GeneratedFileStore，QQ 问答使用 `finance_tool_result` 授权发送文件，主动推送使用再次校验后的 `finance_subscription_push` 授权；普通对话的文件意图保护不变。HTML 暂不在 F7b 支持枚举中，避免出现未验收的第四套渲染口径。
 
 ## 12. 工具轮次与证据收敛
 
@@ -1781,7 +1804,7 @@ F6b 实际落地：
 
 目标：真实数据生成 PNG、MD、PDF、XLSX 并投递 QQ。
 
-状态：F7a 确定性 PNG 图表、GeneratedFileStore 登记、QQ 问答/订阅图片投递已完成；F7b compose_finance_report 与 MD/PDF/XLSX 报告仍待实现。
+状态：F7a 确定性 PNG 图表与 F7b compose_finance_report 均已完成 Fake Bridge/Mock 验收；真实 Choice 和真实 QQ 仍保持未调用。
 
 改动：
 
@@ -1799,6 +1822,16 @@ F7a 实际落地：
 - QQ 新增专用市场图表图片投递入口：只有真实工具事件、金融模式和明确的问答/订阅授权同时成立时才调用 send_image；
 - 主动推送先完成文字投递，再尝试图表；图片失败会结构化记录并发送降级提示，不把整条已发送文字重新伪装成未投递；
 - Pillow 成为显式运行依赖；ComfyUI 和云端生图仍不参与真实数值图表。
+
+F7b 实际落地：
+
+- `companion_v01/finance/report_provider.py` 新增严格 `FinanceReportRequest`、可信行情证据结构和固定 MD/PDF/XLSX 渲染器；
+- `compose_finance_report` 重新读取每个请求代码的可信日线和行情快照，任一代码序列缺失时 fail closed，不生成不完整报告；
+- PDF 嵌入可信图表，XLSX 包含原始 OHLCV 与证据工作表，MD 使用受管相对图表引用；
+- 普通生成图片和任意本地路径不能作为金融报告图表；代码、周期和复权口径必须匹配；
+- 模型分析与程序事实字段分区，报告固定携带 provider/source、as_of、序列指纹、总证据指纹和免责声明；
+- QQ 新增专用金融报告文件投递入口，问答与 subscription 授权不依赖当前文本文件意图，普通文件保护仍有效；
+- 主动推送的文字一旦成功不会因图片/报告部分发送失败而重复整条推送，产物失败以结构化降级和提示处理。
 
 验收：
 
@@ -1939,11 +1972,11 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F6 与 F7a 已完成 Fake Bridge/Mock 主链验收，真实主动推送仍因默认开关和 Choice 权限保持关闭。上下文恢复后按以下顺序继续：
+F6 与 F7 已完成 Fake Bridge/Mock 主链验收，真实主动推送仍因默认开关和 Choice 权限保持关闭。上下文恢复后按以下顺序继续：
 
 1. 在真实 Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/cnq/csqsnapshot/csd 的实际权限、callback 字段、证券主数据来源和 AdjustFlag 口径；未确认前继续使用 Fake SDK；
-2. 继续 F7b：复用 compose_file/GeneratedFileStore 生成带来源与 as_of 的 MD/PDF/XLSX 金融报告，并把已生成 PNG 作为报告引用；
+2. 进入 F8：仅为装饰性封面、非事实插图或可选高保真文档接云端 Provider；真实行情图和报告事实表继续由本地确定性程序生成；
 3. 视真实权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
 4. F9 再补 processing 跨进程租约、部分 QQ 气泡投递恢复、速率限制、digest、metrics 和人工 replay，不在 F6 假装已经完成这些运营能力。
 
-推荐下一个独立提交边界：`compose_finance_report + deterministic report evidence`；如果 Choice 权限仍未开通，继续用明确标记 synthetic 的序列验算报告字段和图表引用，不把测试产物冒充真实行情。
+推荐下一个独立提交边界：`optional cloud artifact provider with local factual fallback`；如果暂不接云端，可先进入 F9 的 quota、digest、metrics 和人工 replay，不能让云端能力成为金融主链依赖。

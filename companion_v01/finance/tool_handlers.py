@@ -18,6 +18,13 @@ from services.market_data import (
 from ..tool_runtime import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolMetadata
 from .chart_provider import ChartRequest, LocalChartProvider
 from .market_service import MarketDataToolService
+from .report_provider import (
+    FinanceChartReference,
+    FinanceQuoteEvidence,
+    FinanceReportProvider,
+    FinanceReportRequest,
+    FinanceSeriesEvidence,
+)
 
 
 _ZONE = ZoneInfo("Asia/Shanghai")
@@ -117,6 +124,42 @@ RENDER_MARKET_CHART_SCHEMA: dict[str, Any] = {
         "send_to_user": {"type": "boolean"},
     },
     "required": ["code"],
+}
+
+COMPOSE_FINANCE_REPORT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Create a deterministic finance report from freshly fetched trusted quotes/series and optional "
+        "render_market_chart outputs. The model may provide clearly labeled analysis/risk prose, but cannot "
+        "pass raw market data, arbitrary files, templates, code, or paths."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "report_type": {"type": "string", "enum": ["security_brief", "market_comparison"]},
+        "codes": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 40},
+            "minItems": 1,
+            "maxItems": 5,
+            "uniqueItems": True,
+        },
+        "output_format": {"type": "string", "enum": ["md", "pdf", "xlsx"]},
+        "interval": {"type": "string", "enum": ["1d"]},
+        "adjusted": {"type": "string", "enum": ["none", "forward", "backward"]},
+        "lookback": {"type": "integer", "minimum": 20, "maximum": 250},
+        "chart_ids": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 120},
+            "maxItems": 5,
+            "uniqueItems": True,
+        },
+        "title": {"type": "string", "maxLength": 100},
+        "analysis_summary": {"type": "string", "maxLength": 6000},
+        "risk_notes": {"type": "array", "items": {"type": "string", "maxLength": 500}, "maxItems": 10},
+        "watch_items": {"type": "array", "items": {"type": "string", "maxLength": 500}, "maxItems": 10},
+        "send_to_user": {"type": "boolean"},
+    },
+    "required": ["report_type", "codes", "output_format"],
 }
 
 
@@ -627,11 +670,399 @@ class RenderMarketChartToolHandler(_FinanceReadToolHandler):
         return self._failure(exc)
 
 
+class ComposeFinanceReportToolHandler(_FinanceReadToolHandler):
+    tool_type = "compose_finance_report"
+    input_schema = COMPOSE_FINANCE_REPORT_SCHEMA
+
+    def __init__(
+        self,
+        *,
+        service: MarketDataToolService,
+        generated_file_service: Any,
+        report_provider: FinanceReportProvider | None = None,
+    ) -> None:
+        super().__init__(service=service)
+        self.generated_file_service = generated_file_service
+        self.report_provider = report_provider or FinanceReportProvider()
+
+    def tool_metadata(self) -> ToolMetadata:
+        return ToolMetadata(
+            family="finance_artifact",
+            operation="control",
+            risk="low",
+            default_round_budget=12,
+            input_schema=self.input_schema,
+        )
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            '- compose_finance_report：生成带可信行情、程序指标、来源、as_of 和免责声明的金融报告。格式为 '
+            '{"type":"compose_finance_report","report_type":"security_brief|market_comparison",'
+            '"codes":["600519.SH"],"output_format":"md|pdf|xlsx","interval":"1d",'
+            '"adjusted":"none","lookback":120,"chart_ids":["gen_001"],'
+            '"title":"贵州茅台证券简报","analysis_summary":"明确标注为分析的解读",'
+            '"risk_notes":["待验证风险"],"watch_items":["后续观察"],"send_to_user":true}。'
+            "工具会重新读取每个代码的可信行情并计算指标；不得传原始价格数组、任意文件、模板、路径或代码。"
+            "chart_ids 只能引用当前会话由 render_market_chart 生成的 PNG；PDF/XLSX 会嵌入图表，MD 会写受管相对引用。"
+            "analysis_summary、risk_notes 和 watch_items 会被明确标成模型分析/风险观察，不能替代事实证据。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not _is_tool_call(value, self.tool_type):
+            return None
+        if not _has_only_keys(
+            value,
+            {
+                "type",
+                "report_type",
+                "codes",
+                "output_format",
+                "interval",
+                "adjusted",
+                "lookback",
+                "chart_ids",
+                "title",
+                "analysis_summary",
+                "risk_notes",
+                "watch_items",
+                "send_to_user",
+            },
+        ):
+            return None
+        codes = _string_list(value.get("codes"), limit=5, max_length=40, uppercase=True)
+        chart_ids = _artifact_id_list(value.get("chart_ids"), limit=5)
+        risk_notes = _bounded_text_list(value.get("risk_notes"), limit=10, max_length=500)
+        watch_items = _bounded_text_list(value.get("watch_items"), limit=10, max_length=500)
+        if not codes or chart_ids is None or risk_notes is None or watch_items is None:
+            return None
+        if isinstance(value.get("send_to_user"), bool):
+            send_to_user = bool(value.get("send_to_user"))
+        elif value.get("send_to_user") is None:
+            send_to_user = True
+        else:
+            return None
+        try:
+            request = FinanceReportRequest(
+                report_type=str(value.get("report_type") or ""),
+                codes=tuple(codes),
+                output_format=str(value.get("output_format") or ""),
+                interval=str(value.get("interval") or "1d"),
+                adjusted=str(value.get("adjusted") or "none"),
+                lookback=value.get("lookback", 120),
+                chart_targets=tuple(chart_ids),
+                title=str(value.get("title") or ""),
+                analysis_summary=str(value.get("analysis_summary") or ""),
+                risk_notes=tuple(risk_notes),
+                watch_items=tuple(watch_items),
+            )
+        except MarketDataValidationError:
+            return None
+        return {
+            "type": self.tool_type,
+            "report_type": request.report_type,
+            "codes": list(request.codes),
+            "output_format": request.output_format,
+            "interval": request.interval,
+            "adjusted": request.adjusted,
+            "lookback": request.lookback,
+            "chart_ids": list(request.chart_targets),
+            "title": request.title,
+            "analysis_summary": request.analysis_summary,
+            "risk_notes": list(request.risk_notes),
+            "watch_items": list(request.watch_items),
+            "send_to_user": send_to_user,
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        output_path = None
+        try:
+            request = FinanceReportRequest(
+                report_type=str(call.get("report_type") or ""),
+                codes=tuple(call.get("codes") or ()),
+                output_format=str(call.get("output_format") or ""),
+                interval=str(call.get("interval") or "1d"),
+                adjusted=str(call.get("adjusted") or "none"),
+                lookback=call.get("lookback", 120),
+                chart_targets=tuple(call.get("chart_ids") or ()),
+                title=str(call.get("title") or ""),
+                analysis_summary=str(call.get("analysis_summary") or ""),
+                risk_notes=tuple(call.get("risk_notes") or ()),
+                watch_items=tuple(call.get("watch_items") or ()),
+            )
+            self.service.ensure_trusted_codes(
+                request.codes,
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                request_context=context.request_context,
+            )
+            series_evidence: list[FinanceSeriesEvidence] = []
+            series_failures: list[dict[str, Any]] = []
+            for code in request.codes:
+                response = self.service.price_series_response(
+                    MarketSeriesRequest(
+                        code=code,
+                        interval=request.interval,
+                        adjusted=request.adjusted,
+                        limit=request.lookback,
+                    )
+                )
+                if response.status != "ok" or response.data is None:
+                    series_failures.append(
+                        {
+                            "code": code,
+                            "status": response.status,
+                            "provider": response.provider,
+                            "source": response.source,
+                            "reason": response.reason,
+                        }
+                    )
+                    continue
+                series_evidence.append(FinanceSeriesEvidence(source=response.source, series=response.data))
+            if series_failures:
+                return self._result(
+                    {
+                        "ok": False,
+                        "status": "unavailable",
+                        "provider": self.service.provider.id,
+                        "source": self.service.provider.source,
+                        "as_of": None,
+                        "reason": "report requires complete trusted series for every requested code",
+                        "data": {"series_failures": series_failures},
+                    }
+                )
+
+            quote_response = self.service.quote_snapshots_response(MarketQuoteRequest(codes=request.codes))
+            quotes = tuple(quote_response.data) if quote_response.status == "ok" else ()
+            missing_quote_codes = sorted(set(request.codes) - {quote.code for quote in quotes})
+            quote_status = quote_response.status
+            quote_reason = quote_response.reason
+            if quote_response.status == "ok" and missing_quote_codes:
+                quote_status = "partial"
+                quote_reason = f"missing quote snapshots for: {', '.join(missing_quote_codes)}"
+            quote_evidence = FinanceQuoteEvidence(
+                source=quote_response.source,
+                quotes=quotes,
+                status=quote_status,
+                reason=quote_reason,
+            )
+            chart_references = tuple(
+                self._resolve_chart_reference(
+                    target,
+                    request=request,
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                )
+                for target in request.chart_targets
+            )
+            output_title = request.title or (
+                f"{'_'.join(request.codes)}_{'证券简报' if request.report_type == 'security_brief' else '市场对比简报'}"
+            )
+            output_path = self.generated_file_service.allocate_output_path(
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                title=output_title,
+                output_format=request.output_format,
+                timestamp=context.now_ts,
+            )
+            artifact = self.report_provider.render(
+                request=request,
+                series_evidence=tuple(series_evidence),
+                quote_evidence=quote_evidence,
+                chart_references=chart_references,
+                output_path=output_path,
+                created_at=context.now_ts,
+            )
+            report_metadata = artifact.public_metadata()
+            source_ids = [chart.generated_id for chart in chart_references]
+            if context.current_user_source_id and context.current_user_source_id not in source_ids:
+                source_ids.append(str(context.current_user_source_id))
+            market_event = (
+                context.request_context.get("market_event")
+                if isinstance(context.request_context.get("market_event"), dict)
+                else {}
+            )
+            event_id = str(market_event.get("event_id") or "").strip()
+            if event_id and event_id not in source_ids:
+                source_ids.append(event_id)
+            summary = (
+                f"{artifact.title}（{artifact.output_format.upper()}），覆盖 {'、'.join(artifact.codes)}，"
+                f"数据截至 {artifact.as_of}。"
+            )
+            generated = self.generated_file_service.register_generated_artifact(
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                output_path=artifact.output_path,
+                output_title=artifact.title,
+                output_format=artifact.output_format,
+                mime_type=_finance_report_mime_type(artifact.output_format),
+                content_card={
+                    "kind": "finance_report",
+                    "title": artifact.title,
+                    "summary": summary,
+                    "report": report_metadata,
+                    "content_preview": artifact.markdown[:4000],
+                },
+                summary=summary,
+                created_by_tool=self.tool_type,
+                source_ids=source_ids,
+                send_to_user=bool(call.get("send_to_user", True)),
+                timestamp=context.now_ts,
+            )
+            output_path = None
+            public_generated = {
+                "generated_id": str(generated.get("generated_id") or ""),
+                "generated_handle": str(generated.get("generated_handle") or ""),
+                "output_title": str(generated.get("output_title") or artifact.title),
+                "output_format": artifact.output_format,
+                "mime_type": _finance_report_mime_type(artifact.output_format),
+                "file_size": int(generated.get("file_size") or 0),
+                "created_by_tool": self.tool_type,
+            }
+            payload = {
+                "ok": True,
+                "status": "ok",
+                "provider": self.service.provider.id,
+                "source": " + ".join(artifact.sources),
+                "as_of": artifact.as_of,
+                "reason": quote_evidence.reason if quote_evidence.status not in {"ok", "empty"} else "",
+                "data": {
+                    "generated_file": public_generated,
+                    "report": report_metadata,
+                },
+            }
+            base_result = self._result(payload)
+            base_result.stream_events = [
+                {
+                    "type": "finance_report_ready",
+                    "generated_file": generated,
+                    "send_to_user": bool(call.get("send_to_user", True)),
+                    "delivery_scope": "finance_report",
+                    "report": {
+                        "report_type": artifact.report_type,
+                        "codes": list(artifact.codes),
+                        "as_of": artifact.as_of,
+                        "evidence_sha256": artifact.evidence_sha256,
+                    },
+                }
+            ]
+            return base_result
+        except Exception as exc:
+            if output_path is not None:
+                try:
+                    path = Path(output_path)
+                    if self.generated_file_service.is_managed_storage_path(path):
+                        path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            return self._report_failure(exc)
+
+    def _resolve_chart_reference(
+        self,
+        target: str,
+        *,
+        request: FinanceReportRequest,
+        profile_user_id: str,
+        session_id: str,
+    ) -> FinanceChartReference:
+        generated = self.generated_file_service.resolve_generated_artifact(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            target=target,
+        )
+        if not isinstance(generated, dict):
+            raise MarketDataValidationError(
+                field="chart_ids",
+                reason=f"chart reference was not found: {target}",
+                code="invalid_arguments",
+                status="invalid_arguments",
+                provider=self.report_provider.provider_id,
+            )
+        content_card = generated.get("content_card") if isinstance(generated.get("content_card"), dict) else {}
+        chart = content_card.get("chart") if isinstance(content_card.get("chart"), dict) else {}
+        if (
+            str(generated.get("created_by_tool") or "").strip() != "render_market_chart"
+            or str(generated.get("output_format") or "").strip().lower() != "png"
+            or str(content_card.get("kind") or "").strip() != "market_chart"
+        ):
+            raise MarketDataValidationError(
+                field="chart_ids",
+                reason=f"referenced generated file is not a trusted market chart: {target}",
+                code="invalid_arguments",
+                status="invalid_arguments",
+                provider=self.report_provider.provider_id,
+            )
+        code = str(chart.get("code") or "").strip().upper()
+        if code not in request.codes:
+            raise MarketDataValidationError(
+                field="chart_ids",
+                reason=f"chart code {code or '<empty>'} is outside the report code set",
+                code="invalid_arguments",
+                status="invalid_arguments",
+                provider=self.report_provider.provider_id,
+            )
+        if (
+            str(chart.get("interval") or "").strip().lower() != request.interval
+            or str(chart.get("adjusted") or "").strip().lower() != request.adjusted
+        ):
+            raise MarketDataValidationError(
+                field="chart_ids",
+                reason="chart interval or adjustment does not match the report request",
+                code="invalid_arguments",
+                status="invalid_arguments",
+                provider=self.report_provider.provider_id,
+            )
+        as_of = str(chart.get("as_of") or "").strip()
+        source = str(chart.get("source") or "").strip()
+        series_sha256 = str(chart.get("series_sha256") or "").strip().lower()
+        try:
+            width = int(chart.get("width") or 0)
+            height = int(chart.get("height") or 0)
+        except (TypeError, ValueError):
+            width = 0
+            height = 0
+        if (
+            not as_of
+            or not source
+            or not re.fullmatch(r"[0-9a-f]{64}", series_sha256)
+            or width <= 0
+            or height <= 0
+        ):
+            raise MarketDataValidationError(
+                field="chart_ids",
+                reason="trusted chart metadata is incomplete",
+                code="invalid_arguments",
+                status="invalid_arguments",
+                provider=self.report_provider.provider_id,
+            )
+        return FinanceChartReference(
+            generated_id=str(generated.get("generated_id") or ""),
+            generated_handle=str(generated.get("generated_handle") or ""),
+            title=str(generated.get("output_title") or "市场图表"),
+            path=Path(str(generated.get("absolute_path") or "")),
+            code=code,
+            as_of=as_of,
+            source=source,
+            series_sha256=series_sha256,
+            width=width,
+            height=height,
+        )
+
+    def _report_failure(self, exc: Exception) -> ToolExecutionResult:
+        if isinstance(exc, MarketDataValidationError):
+            payload = exc.to_public_dict()
+            if payload.get("status") not in {"invalid_arguments", "unavailable"}:
+                payload["status"] = "unavailable"
+            payload["data"] = None
+            return self._result(payload)
+        return self._failure(exc)
+
+
 def build_market_tool_handlers(
     service: MarketDataToolService,
     *,
     generated_file_service: Any | None = None,
     chart_provider: LocalChartProvider | None = None,
+    report_provider: FinanceReportProvider | None = None,
 ) -> dict[str, BaseToolHandler]:
     handlers: list[BaseToolHandler] = [
         MarketResolveSecurityToolHandler(service=service),
@@ -645,6 +1076,13 @@ def build_market_tool_handlers(
                 service=service,
                 generated_file_service=generated_file_service,
                 chart_provider=chart_provider,
+            )
+        )
+        handlers.append(
+            ComposeFinanceReportToolHandler(
+                service=service,
+                generated_file_service=generated_file_service,
+                report_provider=report_provider,
             )
         )
     return {handler.tool_type: handler for handler in handlers}
@@ -695,6 +1133,44 @@ def _string_list(
         if len(result) >= limit:
             break
     return result
+
+
+def _artifact_id_list(value: Any, *, limit: int) -> list[str] | None:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)) or len(value) > limit:
+        return None
+    result: list[str] = []
+    for raw in value:
+        text = str(raw or "").strip()
+        if not text or len(text) > 120 or not re.fullmatch(r"[A-Za-z0-9_.:-]+", text):
+            return None
+        if text not in result:
+            result.append(text)
+    return result
+
+
+def _bounded_text_list(value: Any, *, limit: int, max_length: int) -> list[str] | None:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)) or len(value) > limit:
+        return None
+    result: list[str] = []
+    for raw in value:
+        text = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if not text or len(text) > max_length or any(ord(char) < 32 for char in text):
+            return None
+        if text not in result:
+            result.append(text)
+    return result
+
+
+def _finance_report_mime_type(output_format: str) -> str:
+    return {
+        "md": "text/markdown; charset=utf-8",
+        "pdf": "application/pdf",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }.get(str(output_format or "").strip().lower(), "application/octet-stream")
 
 
 def _date_to_timestamp(value: Any, *, end_of_day: bool) -> int | None:
@@ -751,11 +1227,13 @@ def _collect_evidence_identifiers(value: Any) -> tuple[list[str], list[str], lis
 
 __all__ = [
     "MARKET_NEWS_SEARCH_SCHEMA",
+    "COMPOSE_FINANCE_REPORT_SCHEMA",
     "MARKET_PRICE_SERIES_SCHEMA",
     "MARKET_QUOTE_SNAPSHOT_SCHEMA",
     "MARKET_RESOLVE_SECURITY_SCHEMA",
     "RENDER_MARKET_CHART_SCHEMA",
     "MarketNewsSearchToolHandler",
+    "ComposeFinanceReportToolHandler",
     "MarketPriceSeriesToolHandler",
     "MarketQuoteSnapshotToolHandler",
     "MarketResolveSecurityToolHandler",

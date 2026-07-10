@@ -25,12 +25,22 @@ from .importance_policy import (
 )
 from .market_service import MarketDataToolService, compute_quote_metrics, compute_series_metrics
 from .qq_delivery import QQFinanceDeliveryAdapter
+from .report_provider import (
+    FINANCE_REPORT_DISCLAIMER,
+    FinanceChartReference,
+    FinanceQuoteEvidence,
+    FinanceReportArtifact,
+    FinanceReportProvider,
+    FinanceReportRequest,
+    FinanceSeriesEvidence,
+)
 from .subscription_service import FinanceSubscriptionService
 from .tool_handlers import (
     MarketNewsSearchToolHandler,
     MarketPriceSeriesToolHandler,
     MarketQuoteSnapshotToolHandler,
     MarketResolveSecurityToolHandler,
+    ComposeFinanceReportToolHandler,
     RenderMarketChartToolHandler,
     build_market_tool_handlers,
 )
@@ -39,6 +49,8 @@ __all__ = [
     "AkaneFinanceAnalysisClient",
     "ChartArtifactResult",
     "ChartRequest",
+    "ComposeFinanceReportToolHandler",
+    "FINANCE_REPORT_DISCLAIMER",
     "FinanceAnalysisClient",
     "FinanceAnalysisRequest",
     "FinanceAnalysisResult",
@@ -52,6 +64,12 @@ __all__ = [
     "FinanceEventRunResult",
     "FinanceEventWorker",
     "FinanceEventWorkerCycleResult",
+    "FinanceChartReference",
+    "FinanceQuoteEvidence",
+    "FinanceReportArtifact",
+    "FinanceReportProvider",
+    "FinanceReportRequest",
+    "FinanceSeriesEvidence",
     "FinanceMarketEventSource",
     "FinanceSubscriptionService",
     "IMPORTANCE_LEVELS",

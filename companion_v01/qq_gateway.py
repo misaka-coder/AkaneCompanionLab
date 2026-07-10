@@ -2536,6 +2536,87 @@ class NapCatQQGateway:
             "results": results,
         }
 
+    def send_finance_reports(
+        self,
+        context: QQMessageContext,
+        tool_events: list[dict[str, Any]] | None,
+        *,
+        authorization: str,
+    ) -> dict[str, Any]:
+        """Deliver trusted finance reports without weakening normal QQ file-intent protection."""
+        events = [event for event in tool_events or [] if isinstance(event, dict)]
+        targets: list[dict[str, str]] = []
+        mime_types = {
+            "md": "text/markdown; charset=utf-8",
+            "pdf": "application/pdf",
+            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+        for event in events:
+            if str(event.get("type") or "").strip() != "finance_report_ready":
+                continue
+            if str(event.get("delivery_scope") or "").strip() != "finance_report":
+                continue
+            if not bool(event.get("send_to_user")):
+                continue
+            generated = event.get("generated_file") if isinstance(event.get("generated_file"), dict) else {}
+            if str(generated.get("created_by_tool") or "").strip() != "compose_finance_report":
+                continue
+            output_format = str(generated.get("file_ext") or generated.get("output_format") or "").strip().lower()
+            if output_format not in mime_types:
+                continue
+            if str(generated.get("mime_type") or "").strip().lower() != mime_types[output_format].lower():
+                continue
+            path = str(generated.get("absolute_path") or "").strip()
+            generated_id = str(generated.get("generated_id") or "").strip()
+            if not path or not generated_id:
+                continue
+            title = str(generated.get("output_title") or generated.get("generated_handle") or "金融报告").strip()
+            targets.append(
+                {
+                    "generated_id": generated_id,
+                    "path": path,
+                    "name": title if title.lower().endswith(f".{output_format}") else f"{title}.{output_format}",
+                }
+            )
+        if not targets:
+            return {"ok": True, "status": "skipped", "count": 0, "results": []}
+
+        clean_authorization = str(authorization or "").strip().lower()
+        finance_mode = str(context.finance_mode or "").strip().lower()
+        if clean_authorization == "finance_subscription_push":
+            authorized = finance_mode == "push" and context.reason == "finance_subscription_push"
+        elif clean_authorization == "finance_tool_result":
+            authorized = finance_mode in {"qa", "push"}
+        else:
+            authorized = False
+        if not authorized:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "reason": "finance_report_delivery_not_authorized",
+                "count": 0,
+                "blocked_count": len(targets),
+                "results": [],
+            }
+
+        results: list[dict[str, Any]] = []
+        for target in targets:
+            result = self.send_file(
+                context,
+                file_path=target["path"],
+                name=target["name"],
+            )
+            result["generated_id"] = target["generated_id"]
+            results.append(result)
+        ok = bool(results) and all(bool(result.get("ok")) for result in results)
+        return {
+            "ok": ok,
+            "status": "sent" if ok else "failed",
+            "authorization": clean_authorization,
+            "count": len(results),
+            "results": results,
+        }
+
     def _send_generated_file_targets(
         self,
         context: QQMessageContext,

@@ -230,7 +230,7 @@ class MarketDataToolService:
         }
 
     def quote_snapshots(self, request: MarketQuoteRequest) -> dict[str, Any]:
-        response = self.provider.get_quote_snapshots(request)
+        response = self.quote_snapshots_response(request)
         return {
             **response.to_public_dict(),
             "data": [
@@ -242,6 +242,13 @@ class MarketDataToolService:
                 for quote in response.data
             ],
         }
+
+    def quote_snapshots_response(
+        self,
+        request: MarketQuoteRequest,
+    ) -> MarketDataResponse[tuple[MarketQuoteSnapshot, ...]]:
+        """Return normalized quote objects for deterministic downstream artifacts."""
+        return self.provider.get_quote_snapshots(request)
 
     def price_series(self, request: MarketSeriesRequest) -> dict[str, Any]:
         response = self.price_series_response(request)

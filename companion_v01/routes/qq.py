@@ -1041,6 +1041,11 @@ def _process_qq_turn_streaming(
         list(frame.get("tool_events") or []),
         authorization="finance_tool_result",
     )
+    report_send_result = qq_gateway.send_finance_reports(
+        context,
+        list(frame.get("tool_events") or []),
+        authorization="finance_tool_result",
+    )
     file_delivery_feedback_result = {"ok": True, "status": "skipped", "reason": "no_delivery_issue"}
     file_delivery_status = str(file_send_result.get("status") or "").strip().lower()
     if file_delivery_status == "blocked":
@@ -1064,6 +1069,13 @@ def _process_qq_turn_streaming(
             "图表已经生成，但这次 QQ 图片发送失败了；生成结果仍保留着，可以稍后再试。",
         )
         chart_delivery_feedback_result["status"] = "failure_notice_sent"
+    report_delivery_feedback_result = {"ok": True, "status": "skipped", "reason": "no_delivery_issue"}
+    if str(report_send_result.get("status") or "").strip().lower() == "failed":
+        report_delivery_feedback_result = qq_gateway.send_reply(
+            context,
+            "金融报告已经生成，但这次 QQ 文件发送失败了；生成结果仍保留着，可以稍后再试。",
+        )
+        report_delivery_feedback_result["status"] = "failure_notice_sent"
     sticker_send_result = qq_gateway.send_stickers(
         context,
         list(frame.get("tool_events") or []),
@@ -1078,6 +1090,8 @@ def _process_qq_turn_streaming(
         "file_delivery_feedback_result": file_delivery_feedback_result,
         "chart_send_result": chart_send_result,
         "chart_delivery_feedback_result": chart_delivery_feedback_result,
+        "report_send_result": report_send_result,
+        "report_delivery_feedback_result": report_delivery_feedback_result,
         "sticker_send_result": sticker_send_result,
     }
 

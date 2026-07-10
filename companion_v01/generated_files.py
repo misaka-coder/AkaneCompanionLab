@@ -726,6 +726,47 @@ class GeneratedFileService:
         generated["absolute_path"] = str(self.absolute_path(generated))
         return generated
 
+    def resolve_generated_artifact(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        target: str,
+    ) -> dict[str, Any] | None:
+        """Resolve an exact generated id/handle and verify its managed file still exists."""
+        normalized = str(target or "").strip()
+        if not normalized:
+            return None
+        if normalized.lower().startswith("generated::"):
+            generated = self.store.get_generated_file(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                generated_id=normalized,
+            )
+        else:
+            generated = self.store.find_generated_file(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                query=normalized,
+                statuses=["ready"],
+            )
+        if not isinstance(generated, dict):
+            return None
+        exact_values = {
+            str(generated.get("generated_id") or "").strip().lower(),
+            str(generated.get("generated_handle") or "").strip().lower(),
+        }
+        if normalized.lower() not in exact_values:
+            return None
+        if str(generated.get("status") or "").strip().lower() != "ready":
+            return None
+        path = self.absolute_path(generated)
+        if not self.is_managed_storage_path(path) or not path.is_file() or path.stat().st_size <= 0:
+            return None
+        resolved = dict(generated)
+        resolved["absolute_path"] = str(path)
+        return resolved
+
     def is_managed_storage_path(self, path: Path) -> bool:
         try:
             resolved = Path(path).resolve()
