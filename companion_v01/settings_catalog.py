@@ -190,6 +190,10 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("FINANCE_DEFAULT_MODE", _FIN, SCOPE_RUNTIME, "QQ 会话默认金融模式：off/qa/push"),
     _s("FINANCE_TOOL_ROUND_BUDGET", _FIN, SCOPE_RUNTIME, "金融研究建议工具轮次预算"),
     _s("FINANCE_TOOL_ROUND_HARD_LIMIT", _FIN, SCOPE_RUNTIME, "金融研究工具轮次硬上限"),
+    _s("FINANCE_EVENT_DB_PATH", _FIN, SCOPE_RESTART_CLIENT, "金融事件数据库路径", sensitive=True),
+    _s("EMQUANT_BRIDGE_URL", _FIN, SCOPE_RESTART_CLIENT, "本机 EmQuant Bridge 地址"),
+    _s("EMQUANT_BRIDGE_TOKEN", _FIN, SCOPE_RESTART_CLIENT, "本机 EmQuant Bridge 鉴权值", sensitive=True),
+    _s("EMQUANT_HTTP_TIMEOUT_SECONDS", _FIN, SCOPE_RESTART_CLIENT, "EmQuant Bridge 请求超时（秒）"),
     _s("QQ_FINANCE_MODE_COMMANDS_ENABLED", _FIN, SCOPE_RUNTIME, "允许 QQ 切换金融模式"),
     _s("QQ_FINANCE_PUSH_ENABLED", _FIN, SCOPE_RUNTIME, "允许 QQ 会话进入财经主动推送模式"),
     # QQ / NapCat 桥接

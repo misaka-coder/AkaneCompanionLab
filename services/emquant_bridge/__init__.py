@@ -11,6 +11,7 @@ from .local_api import LOOPBACK_CLIENT_HOSTS, create_emquant_bridge_app
 from .normalizers import (
     extract_choice_news_records,
     extract_choice_quote_records,
+    extract_choice_series_records,
     result_error_code,
     result_error_reason,
     result_serial_id,
@@ -68,6 +69,7 @@ __all__ = [
     "create_emquant_bridge_app",
     "extract_choice_news_records",
     "extract_choice_quote_records",
+    "extract_choice_series_records",
     "result_error_code",
     "result_error_reason",
     "result_serial_id",

@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0 Actor repair、F1 Finance domain profile、F2 Market provider contract + Mock、F3 MarketEventStore + subscriptions、F4 EmQuant Bridge + Fake SDK 已完成，下一步 F5
+状态：设计锁定；F0-F4 已完成，F5 Bridge client + 三个金融只读工具核心已完成；真实 Choice 冒烟等待权限，证券主数据/宏观/比较指标仍为后续增强
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -1637,9 +1637,9 @@ tests/
 - Choice 已知权限、流量、重连和断线错误码映射为 permission_denied、rate_limited、degraded、disconnected 或 unavailable；
 - `subscription_manager.py` 只允许 news/quote 两种订阅，拒绝账户敏感 options，可选原子 JSON 持久化，取消失败保留 serial_id 并返回 cancel_failed；
 - callback 只进行有界拷贝、Choice 字段轻量展开和非阻塞入队，不调用 LLM、QQ、memcore 或 MarketEventStore；
-- `local_api.py / main.py` 提供 loopback-only health/start/stop/quota/news/query/quotes/snapshot/subscriptions/events API，可选 Bearer/header token 二次保护且响应不回显 token，没有通用 `call_emquant` 或交易函数入口；
+- `local_api.py / main.py` 提供 loopback-only health/start/stop/quota/news/query/quotes/snapshot/subscriptions/events API；F5 在同一只读边界内补充 prices/series，不增加通用 SDK 调用入口；可选 Bearer/header token 二次保护且响应不回显 token，没有通用 `call_emquant` 或交易函数入口；
 - `fake_sdk.py` 覆盖同步查询、订阅、回调、权限错误、流量错误、取消和断线；测试未加载真实 DLL、未登录真实账号、未调用网络；
-- F4 尚未把 Bridge 接成 Akane 的 `MarketDataProvider` 或模型工具，这属于 F5。
+- F4 本身不把 Bridge 接成 Akane 模型工具；该接线已在 F5 完成。
 
 目标：独立进程读 Choice SDK，主进程不加载 DLL。
 
@@ -1667,6 +1667,22 @@ tests/
 真实权限未开通前只跑 fake SDK 测试。
 
 ### Slice F5：金融只读工具
+
+状态：核心已完成；真实 Choice 最小冒烟、证券主数据/别名权威解析、market_macro_series、基准超额收益、估值/预期差属于后续增强，当前不伪装已具备。
+
+实际落地：
+
+- `services/market_data/emquant_bridge_client.py` 实现 loopback-only `EmQuantBridgeMarketDataProvider`；只接受 `http://127.0.0.1 / localhost / ::1`，拒绝凭据、路径、query、fragment 和外部主机；支持可选 Bridge token、超时、断线、权限、限流和坏 JSON 的结构化降级，绝不静默切到 Mock；
+- Bridge 增加固定 `csd` 历史序列方法和 `/prices/series` API；`extract_choice_series_records()` 将官方 SDK 的 `Data[code][indicator][date]` 展平，Fake SDK 提供合成 OHLCV 序列且按日期范围过滤；
+- `MarketDataToolService` 将资讯优先与 `MarketEventStore` 合并，显式 codes + content_types 才会向 Choice 发 cfn；缺少条件时只查本地库，不广播全市场；
+- `market_news_search / market_quote_snapshot / market_price_series` 三个 handler 使用 `family=finance_read / operation=read / risk=low / default_round_budget=12`，同时进入 legacy JSON 与 provider native schema；`additionalProperties=false`，非法代码、日期、interval、adjusted 和未知参数 fail closed；
+- 三个工具只在启用的 finance_v1 档案中动态暴露，默认陪伴模式不出现；主进程只访问 Bridge HTTP，不导入 Choice SDK/DLL；
+- 行情快照由程序计算 change、change_pct、跳空、日内振幅和区间位置；历史序列由程序计算区间收益、最新收益、总振幅、年化波动率、最大回撤、MA5/10/20/60、20 周期突破/跌破和 relative volume；relative volume 返回公式、实际窗口和“仅完整周期、未做盘中时间对齐”的口径说明；
+- 所有工具结果保留 provider、source、as_of、reason；新闻保留 event_id/source URL，原始序列与程序指标分字段返回，模型只负责解释；
+- 金融档案初始建议预算真正接为 12，硬上限 16；保留完全相同调用签名拦截，并增加连续金融结果 hash 不变或连续空/不可用的 no-progress guard；
+- 预算耗尽、重复调用、no-progress、权限失败或工具不可用后，系统不会静默结束：最终 prompt 明确要求模型停止工具调用，基于已有证据立即产出完整可交付回答，说明 as_of、证据缺口和置信度，并禁止只回复“还在处理/没完成/需要继续查询”等占位语；同步与流式路径使用同一收尾契约；
+- 配置补充 `FINANCE_EVENT_DB_PATH / EMQUANT_BRIDGE_URL / EMQUANT_BRIDGE_TOKEN / EMQUANT_HTTP_TIMEOUT_SECONDS`，示例环境默认关闭真实 EmQuant，不包含账号或密钥；
+- 当前仍不允许模型自行拼交易所后缀。工具只接收 provider code；在证券主数据解析器完成前，名称到代码必须来自已保存 watchlist、可信主数据或经来源核验的公开信息，不能靠模型猜测。
 
 目标：Sonnet 可主动查询新闻、行情、历史序列和宏观数据。
 
@@ -1867,12 +1883,11 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-上下文恢复后，从 Slice F5 开始：先实现主进程 Bridge client、只读 provider/tool handlers 和程序侧指标；真实 Choice 冒烟仍需等待权限并单独执行。
+F5 核心提交边界已经完成，仍不接 QQ 主动推送。上下文恢复后按以下顺序继续：
 
-推荐下一个提交边界：
+1. 在真实 Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/csqsnapshot/csd 的实际权限、字段和 AdjustFlag 口径；未确认前继续使用 Fake SDK；
+2. 增加证券主数据与 watchlist 别名解析，使中文名称只能通过权威映射得到 provider code；不允许模型拼 `.SH/.SZ/.BJ`；
+3. 视真实权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
+4. 进入 F6：Event → AI → QQ 主动投递编排，继续复用本阶段的只读工具、证据契约、轮次预算和强制完整收尾。
 
-~~~text
-Bridge client + finance read-only tools
-~~~
-
-该提交只把已有 Bridge/Mock provider 接成 `market_news_search / market_quote_snapshot / market_price_series` 等只读能力，并接 native schema、严格参数校验、证据返回和金融轮次预算；不同时接 QQ 主动推送编排。
+推荐下一个独立提交边界：`provider code resolver + real-permission smoke harness`；若 Choice 权限仍未开通，则先做不依赖真实 API 的 code resolver，不用假数据冒充真实主数据。

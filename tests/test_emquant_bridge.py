@@ -48,6 +48,29 @@ SYNTHETIC_QUOTE_ROWS = [
     }
 ]
 
+SYNTHETIC_SERIES_ROWS = [
+    {
+        "datetime": "2026-07-09",
+        "code": "000000.TEST",
+        "OPEN": 99,
+        "HIGH": 101,
+        "LOW": 98,
+        "CLOSE": 100,
+        "VOLUME": 1000,
+        "AMOUNT": 100000,
+    },
+    {
+        "datetime": "2026-07-10",
+        "code": "000000.TEST",
+        "OPEN": 100,
+        "HIGH": 103,
+        "LOW": 99,
+        "CLOSE": 102,
+        "VOLUME": 1500,
+        "AMOUNT": 153000,
+    },
+]
+
 
 class EmQuantSDKLoaderTests(unittest.TestCase):
     def test_missing_or_invalid_sdk_root_fails_without_importing_dll(self) -> None:
@@ -139,7 +162,11 @@ class EmQuantBridgeRuntimeTests(unittest.TestCase):
         self.assertNotEqual(runtime.health().status, "ready")
 
     def test_sync_queries_return_choice_shaped_records(self) -> None:
-        sdk = FakeEmQuantSDK(news_rows=SYNTHETIC_NEWS_ROWS, quote_rows=SYNTHETIC_QUOTE_ROWS)
+        sdk = FakeEmQuantSDK(
+            news_rows=SYNTHETIC_NEWS_ROWS,
+            quote_rows=SYNTHETIC_QUOTE_ROWS,
+            series_rows=SYNTHETIC_SERIES_ROWS,
+        )
         runtime = self._runtime(sdk)
         runtime.start()
 
@@ -150,6 +177,11 @@ class EmQuantBridgeRuntimeTests(unittest.TestCase):
             options="count=5",
         )
         quote = runtime.quote_snapshot(codes=("000000.TEST",))
+        series = runtime.price_series(
+            codes=("000000.TEST",),
+            start_date="2026-07-09",
+            end_date="2026-07-10",
+        )
 
         self.assertTrue(news.ok, news.to_public_dict())
         self.assertEqual(news.data["records"][0]["infoCode"], "BRIDGE-NEWS-001")
@@ -157,6 +189,10 @@ class EmQuantBridgeRuntimeTests(unittest.TestCase):
         self.assertTrue(quote.ok, quote.to_public_dict())
         self.assertEqual(quote.data["records"][0]["NOW"], 102)
         self.assertEqual(quote.data["records"][0]["code"], "000000.TEST")
+        self.assertTrue(series.ok, series.to_public_dict())
+        self.assertEqual(len(series.data["records"]), 2)
+        self.assertEqual(series.data["records"][-1]["CLOSE"], 102)
+        self.assertIn("csd", [name for name, _args in sdk.calls])
 
     def test_subscription_callback_only_enqueues_structured_event(self) -> None:
         sdk = FakeEmQuantSDK()
@@ -345,7 +381,7 @@ class EmQuantBridgeLocalAPITests(unittest.TestCase):
         self.assertEqual(response.json()["status"], "forbidden")
 
     def test_loopback_api_exposes_read_only_operations_without_generic_sdk_call(self) -> None:
-        sdk = FakeEmQuantSDK(quote_rows=SYNTHETIC_QUOTE_ROWS)
+        sdk = FakeEmQuantSDK(quote_rows=SYNTHETIC_QUOTE_ROWS, series_rows=SYNTHETIC_SERIES_ROWS)
         runtime = EmQuantBridgeRuntime(
             enabled=True,
             sdk=sdk,
@@ -357,6 +393,14 @@ class EmQuantBridgeLocalAPITests(unittest.TestCase):
 
         start = client.post("/start")
         quote = client.post("/quotes/snapshot", json={"codes": ["000000.TEST"]})
+        series = client.post(
+            "/prices/series",
+            json={
+                "codes": ["000000.TEST"],
+                "start_date": "2026-07-09",
+                "end_date": "2026-07-10",
+            },
+        )
         subscription = client.post(
             "/subscriptions",
             json={
@@ -371,6 +415,8 @@ class EmQuantBridgeLocalAPITests(unittest.TestCase):
         self.assertEqual(start.status_code, 200)
         self.assertEqual(quote.status_code, 200)
         self.assertEqual(quote.json()["data"]["records"][0]["NOW"], 102)
+        self.assertEqual(series.status_code, 200)
+        self.assertEqual(series.json()["data"]["records"][-1]["CLOSE"], 102)
         self.assertEqual(subscription.status_code, 200)
         self.assertEqual(subscription.json()["subscription"]["status"], "active")
         self.assertEqual(forbidden.status_code, 404)

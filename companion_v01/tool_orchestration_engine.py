@@ -35,7 +35,7 @@ class NativeToolDecisionPlan:
         return bool(self.tools)
 
 
-def _bounded_int(raw_value: Any, *, default: int, lower: int = 1, upper: int = 12) -> int:
+def _bounded_int(raw_value: Any, *, default: int, lower: int = 1, upper: int = 16) -> int:
     try:
         value = int(raw_value)
     except Exception:
@@ -53,6 +53,17 @@ def _configured_family_budget(family: str, *, fallback: int) -> int:
         return _bounded_int(getattr(config, "MAX_WEB_RESEARCH_TOOL_ROUNDS", fallback), default=fallback)
     if clean_family == "browser_control":
         return _bounded_int(getattr(config, "MAX_BROWSER_TOOL_ROUNDS", fallback), default=fallback)
+    if clean_family in {"finance_read", "finance_artifact"}:
+        hard_limit = _bounded_int(
+            getattr(config, "FINANCE_TOOL_ROUND_HARD_LIMIT", 16),
+            default=16,
+            upper=16,
+        )
+        return _bounded_int(
+            getattr(config, "FINANCE_TOOL_ROUND_BUDGET", fallback),
+            default=fallback,
+            upper=hard_limit,
+        )
     return _bounded_int(fallback, default=max_tool_rounds())
 
 
@@ -206,10 +217,25 @@ def build_multi_tool_followup_context(
         )
     else:
         if str(stop_reason or "").strip() == "tool_budget_exhausted":
-            lines.append("本轮工具预算已经用完；请停止继续调用工具，基于已有搜索、网页或操作结果直接总结。")
+            lines.append(
+                "本轮工具预算已经用完；工具阶段到此结束。请基于已有证据立即完成面向用户的答案，"
+                "回答可回答的部分，并明确仍缺少的证据、数据截止时间和结论置信度。"
+            )
         elif str(stop_reason or "").strip() == "tool_unavailable":
-            lines.append("刚才的工具返回不可用或失败状态；请停止继续调用工具，自然说明这次没有拿到可靠结果，不要编造。")
-        lines.append("本轮不要再调用工具，请将 tool_call 设为 null，并基于已有结果自然回复主人。")
+            lines.append(
+                "刚才的工具返回不可用或失败状态；工具阶段到此结束。请使用此前已经取得的可靠证据回答，"
+                "并明确这次未能取得的部分；没有证据的内容不要编造。"
+            )
+        elif str(stop_reason or "").strip() == "finance_no_progress":
+            lines.append(
+                "连续金融查询没有带来新证据，系统已触发无进展保险丝。请停止查询，基于现有来源、as_of 与程序计算"
+                "给出当前最可靠的完整答复，并明确证据缺口和置信度。"
+            )
+        lines.append(
+            "本轮不要再调用工具，请将 tool_call 设为 null，并立即输出完整、可交付的最终回复。"
+            "不得只回复“仍在处理”“还没完成”“需要继续查询”或类似占位语；即使证据不足，也要给出当前可支持的结论、"
+            "限制与下一步建议。"
+        )
     return "\n\n".join(lines)
 
 

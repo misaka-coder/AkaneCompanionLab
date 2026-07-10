@@ -204,12 +204,15 @@ class Settings(BaseSettings):
     # load_character_context / inspect_attachment / read_attachment_section /
     # list_workspace / read_workspace / inspect_generated_file（7b：read-only、
     # 静态 schema、generic builder 已验证，未单独跑 live smoke）。
+    # market_news_search / market_quote_snapshot / market_price_series（F5：金融档案专属、
+    # 只读静态 schema；真实 Choice 权限未开通前仅跑 Fake/Mock 测试）。
     # sync_attachment_workspace 虽是 operation="read" 但有文件同步副作用，暂不加入。
     # 注意：这只是"允许"，是否真的走 native 仍取决于总开关和 provider/model 能力档案。
     NATIVE_TOOL_DECISION_ALLOWLIST: str = (
         "web_search,retrieve_memory,read_memory_timeline,list_reminders,check_inventory,inspect_media_info,"
         "load_character_context,inspect_attachment,read_attachment_section,"
-        "list_workspace,read_workspace,inspect_generated_file"
+        "list_workspace,read_workspace,inspect_generated_file,"
+        "market_news_search,market_quote_snapshot,market_price_series"
     )
     # 额外允许的 OpenAI-compatible native tools provider/model，逗号分隔。
     # 格式：host:model 或 host:*；默认空，未知中转仍 fail-closed。
@@ -235,6 +238,11 @@ class Settings(BaseSettings):
     # 金融研究建议工具轮次预算与全局硬上限
     FINANCE_TOOL_ROUND_BUDGET: int = 12
     FINANCE_TOOL_ROUND_HARD_LIMIT: int = 16
+    # 金融事件真相源与独立 EmQuant Bridge（Bridge 必须是 loopback HTTP）
+    FINANCE_EVENT_DB_PATH: str = ""
+    EMQUANT_BRIDGE_URL: str = "http://127.0.0.1:9910"
+    EMQUANT_BRIDGE_TOKEN: str = ""
+    EMQUANT_HTTP_TIMEOUT_SECONDS: float = 15.0
     # QQ 金融模式命令与主动推送授权开关
     QQ_FINANCE_MODE_COMMANDS_ENABLED: bool = True
     QQ_FINANCE_PUSH_ENABLED: bool = False
@@ -348,6 +356,12 @@ _KNOWN_EXTERNAL_ENV_KEYS: set[str] = {
     "ANYSEARCH_API_KEY",
     "COMPANION_HOST",
     "COMPANION_PORT",
+    "EMQUANT_API_ROOT",
+    "EMQUANT_BRIDGE_HOST",
+    "EMQUANT_BRIDGE_PORT",
+    "EMQUANT_CALLBACK_QUEUE_MAX",
+    "EMQUANT_ENABLED",
+    "EMQUANT_SUBSCRIPTION_STATE_PATH",
 }
 
 
@@ -416,6 +430,7 @@ def _apply_settings(s: Settings) -> None:
     global AKANE_WORKSPACE_ROOT, AKANE_WORKSPACE_MAX_READ_BYTES
     global FINANCE_ASSISTANT_ENABLED, FINANCE_DEFAULT_MODE
     global FINANCE_TOOL_ROUND_BUDGET, FINANCE_TOOL_ROUND_HARD_LIMIT
+    global FINANCE_EVENT_DB_PATH, EMQUANT_BRIDGE_URL, EMQUANT_BRIDGE_TOKEN, EMQUANT_HTTP_TIMEOUT_SECONDS
     global QQ_FINANCE_MODE_COMMANDS_ENABLED, QQ_FINANCE_PUSH_ENABLED
     global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ, QQ_CHARACTER_PACK_ID
     global \
@@ -530,6 +545,10 @@ def _apply_settings(s: Settings) -> None:
         1,
         min(FINANCE_TOOL_ROUND_HARD_LIMIT, int(s.FINANCE_TOOL_ROUND_BUDGET)),
     )
+    FINANCE_EVENT_DB_PATH = str(s.FINANCE_EVENT_DB_PATH or "").strip()
+    EMQUANT_BRIDGE_URL = str(s.EMQUANT_BRIDGE_URL or "http://127.0.0.1:9910").strip()
+    EMQUANT_BRIDGE_TOKEN = str(s.EMQUANT_BRIDGE_TOKEN or "").strip()
+    EMQUANT_HTTP_TIMEOUT_SECONDS = max(1.0, min(60.0, float(s.EMQUANT_HTTP_TIMEOUT_SECONDS)))
     QQ_FINANCE_MODE_COMMANDS_ENABLED = bool(s.QQ_FINANCE_MODE_COMMANDS_ENABLED)
     QQ_FINANCE_PUSH_ENABLED = bool(s.QQ_FINANCE_PUSH_ENABLED)
 

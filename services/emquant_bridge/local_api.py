@@ -33,6 +33,18 @@ class QuoteSnapshotBody(BaseModel):
     options: str = "Ispandas=0"
 
 
+class PriceSeriesBody(BaseModel):
+    codes: list[str] = Field(min_length=1, max_length=10)
+    indicators: list[str] = Field(
+        default_factory=lambda: ["OPEN", "HIGH", "LOW", "CLOSE", "VOLUME", "AMOUNT"],
+        min_length=1,
+        max_length=16,
+    )
+    start_date: str
+    end_date: str
+    options: str = "Period=1,AdjustFlag=1,Order=1,RowIndex=1,Ispandas=0"
+
+
 class SubscriptionBody(BaseModel):
     subscription_id: str
     kind: str
@@ -110,6 +122,17 @@ def create_emquant_bridge_app(
         result = runtime.quote_snapshot(
             codes=body.codes,
             indicators=body.indicators,
+            options=body.options,
+        )
+        return JSONResponse(result.to_public_dict(), status_code=200 if result.ok else 503)
+
+    @app.post("/prices/series")
+    async def price_series(body: PriceSeriesBody) -> JSONResponse:
+        result = runtime.price_series(
+            codes=body.codes,
+            indicators=body.indicators,
+            start_date=body.start_date,
+            end_date=body.end_date,
             options=body.options,
         )
         return JSONResponse(result.to_public_dict(), status_code=200 if result.ok else 503)

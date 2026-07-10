@@ -13,6 +13,7 @@ from .error_codes import classify_error_code
 from .normalizers import (
     extract_choice_news_records,
     extract_choice_quote_records,
+    extract_choice_series_records,
     result_error_code,
     result_error_reason,
     result_serial_id,
@@ -260,6 +261,35 @@ class EmQuantBridgeRuntime:
             clean_options,
             data_builder=lambda result: {
                 "records": list(extract_choice_quote_records(result)),
+                "sdk": snapshot_emquant_data(result),
+            },
+        )
+
+    def price_series(
+        self,
+        *,
+        codes: Iterable[str],
+        indicators: Iterable[str] = ("OPEN", "HIGH", "LOW", "CLOSE", "VOLUME", "AMOUNT"),
+        start_date: str,
+        end_date: str,
+        options: str = "Period=1,AdjustFlag=1,Order=1,RowIndex=1,Ispandas=0",
+    ) -> BridgeResult:
+        clean_codes = _normalize_codes(codes)
+        clean_indicators = _normalize_fields(indicators, field="indicators")
+        clean_start = _normalize_iso_date(start_date, field="start_date")
+        clean_end = _normalize_iso_date(end_date, field="end_date")
+        if clean_start > clean_end:
+            raise _invalid_argument("start_date", "start_date cannot be later than end_date")
+        clean_options = _normalize_options(options)
+        return self._call_query(
+            "csd",
+            ",".join(clean_codes),
+            ",".join(clean_indicators),
+            clean_start,
+            clean_end,
+            clean_options,
+            data_builder=lambda result: {
+                "records": list(extract_choice_series_records(result)),
                 "sdk": snapshot_emquant_data(result),
             },
         )
@@ -612,6 +642,17 @@ def _normalize_options(value: Any) -> str:
     if any(key in lowered for key in ("username=", "password=", "token=", "account=")):
         raise _invalid_argument("options", "sensitive account options are not allowed")
     return options
+
+
+def _normalize_iso_date(value: Any, *, field: str) -> str:
+    from datetime import date
+
+    text = str(value or "").strip()
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError as exc:
+        raise _invalid_argument(field, f"{field} must use YYYY-MM-DD") from exc
+    return parsed.isoformat()
 
 
 def _invalid_argument(field: str, reason: str) -> MarketDataValidationError:

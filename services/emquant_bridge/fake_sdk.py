@@ -26,11 +26,13 @@ class FakeEmQuantSDK:
         function_error_codes: dict[str, int] | None = None,
         news_rows: list[dict[str, Any]] | None = None,
         quote_rows: list[dict[str, Any]] | None = None,
+        series_rows: list[dict[str, Any]] | None = None,
     ) -> None:
         self.start_error_code = int(start_error_code)
         self.function_error_codes = {str(name): int(code) for name, code in dict(function_error_codes or {}).items()}
         self.news_rows = list(news_rows or [])
         self.quote_rows = list(quote_rows or [])
+        self.series_rows = list(series_rows or [])
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.started = False
         self.main_callback: Callable[[Any], Any] | None = None
@@ -105,7 +107,47 @@ class FakeEmQuantSDK:
 
     def csd(self, codes: str, indicators: str, startdate=None, enddate=None, options: str = ""):
         self.calls.append(("csd", (codes, indicators, startdate, enddate, options)))
-        return self._result("csd", error_code=self._error("csd"))
+        code = self._error("csd")
+        requested_codes = [item.strip() for item in str(codes or "").split(",") if item.strip()]
+        fields = [item.strip() for item in str(indicators or "").split(",") if item.strip()]
+        dates = sorted(
+            {
+                str(row.get("datetime") or row.get("date") or "").strip()
+                for row in self.series_rows
+                if str(row.get("datetime") or row.get("date") or "").strip()
+            }
+        )
+        start_text = str(startdate or "").strip()
+        end_text = str(enddate or "").strip()
+        dates = [
+            date_value
+            for date_value in dates
+            if (not start_text or date_value[:10] >= start_text[:10])
+            and (not end_text or date_value[:10] <= end_text[:10])
+        ]
+        data: dict[str, list[list[Any]]] = {}
+        for requested_code in requested_codes:
+            rows_by_date = {
+                str(row.get("datetime") or row.get("date") or "").strip(): {
+                    str(key).lower(): value for key, value in row.items()
+                }
+                for row in self.series_rows
+                if str(row.get("code") or row.get("CODE") or "").strip().upper() == requested_code.upper()
+            }
+            if not rows_by_date:
+                continue
+            data[requested_code] = [
+                [rows_by_date.get(date_value, {}).get(field.lower()) for date_value in dates]
+                for field in fields
+            ]
+        return FakeEmQuantData(
+            ErrorCode=code,
+            ErrorMsg=self._message(code),
+            Codes=list(data.keys()),
+            Indicators=fields,
+            Dates=dates,
+            Data=data if code == 0 else {},
+        )
 
     def css(self, codes: str, indicators: str, options: str = ""):
         self.calls.append(("css", (codes, indicators, options)))

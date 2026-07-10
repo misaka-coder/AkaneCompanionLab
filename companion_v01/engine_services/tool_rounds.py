@@ -20,6 +20,7 @@ from ..capability_registry import (
 from ..client_protocol import ClientMode, ClientProtocolContext
 from ..domain_profiles import (
     DEFAULT_DOMAIN_PROFILE_ID,
+    FINANCE_DOMAIN_PROFILE_ID,
     DomainProfileRegistry,
     filter_tool_names,
 )
@@ -30,8 +31,15 @@ from ..local_capability_config import load_capability_config
 # ── Group A: Pure helpers ────────────────────────────────────────
 
 
-def max_tool_rounds() -> int:
-    return tool_orchestration_engine.max_tool_rounds()
+def max_tool_rounds(*, domain_profile_id: str = "") -> int:
+    base_budget = tool_orchestration_engine.max_tool_rounds()
+    profile = DomainProfileRegistry().get(domain_profile_id)
+    if profile.id != FINANCE_DOMAIN_PROFILE_ID:
+        return base_budget
+    return min(
+        int(profile.hard_tool_round_limit),
+        max(base_budget, int(profile.default_tool_round_budget)),
+    )
 
 
 def tool_call_signature(tool_call: dict[str, Any]) -> str:
@@ -54,7 +62,15 @@ def build_tool_working_stream_event(tool_call: dict[str, Any]) -> dict[str, Any]
 
 
 def should_stop_after_tool_events(events: list[dict[str, Any]]) -> bool:
-    blocking_statuses = {"unavailable", "error", "failed", "failure"}
+    blocking_statuses = {
+        "unavailable",
+        "permission_denied",
+        "rate_limited",
+        "invalid_arguments",
+        "error",
+        "failed",
+        "failure",
+    }
     for event in events or []:
         if not isinstance(event, dict):
             continue
@@ -62,6 +78,30 @@ def should_stop_after_tool_events(events: list[dict[str, Any]]) -> bool:
         if status in blocking_statuses:
             return True
     return False
+
+
+def should_stop_for_finance_no_progress(tool_results: list[Any]) -> bool:
+    evidence: list[dict[str, Any]] = []
+    for result in tool_results or []:
+        state_updates = getattr(result, "state_updates", None)
+        item = state_updates.get("finance_evidence") if isinstance(state_updates, dict) else None
+        if isinstance(item, dict):
+            evidence.append(item)
+    if len(evidence) < 2:
+        return False
+    previous, current = evidence[-2:]
+    previous_status = str(previous.get("status") or "").strip().lower()
+    current_status = str(current.get("status") or "").strip().lower()
+    if previous_status in {"empty", "unavailable", "permission_denied", "rate_limited"} and current_status in {
+        "empty",
+        "unavailable",
+        "permission_denied",
+        "rate_limited",
+    }:
+        return True
+    previous_hash = str(previous.get("result_hash") or "").strip()
+    current_hash = str(current.get("result_hash") or "").strip()
+    return bool(previous_hash and previous_hash == current_hash)
 
 
 def build_native_tool_round_instruction(native_tools: list[dict[str, Any]] | None) -> str:
@@ -97,7 +137,7 @@ def resolve_tool_round_budget(
     session_id: str = "",
     domain_profile_id: str = "",
 ) -> int:
-    return tool_orchestration_engine.resolve_tool_round_budget(
+    budget = tool_orchestration_engine.resolve_tool_round_budget(
         resolve_tool_handlers(
             engine,
             client_context=client_context,
@@ -108,6 +148,10 @@ def resolve_tool_round_budget(
         tool_call,
         current_budget=current_budget,
     )
+    profile = DomainProfileRegistry().get(domain_profile_id)
+    if profile.id == FINANCE_DOMAIN_PROFILE_ID:
+        return min(int(profile.hard_tool_round_limit), max(int(profile.default_tool_round_budget), budget))
+    return budget
 
 
 def resolve_tool_handlers(
@@ -126,6 +170,12 @@ def resolve_tool_handlers(
     )
     all_handlers = {**dict(handlers), **dynamic_handlers}
     domain_profile = DomainProfileRegistry().get(domain_profile_id)
+    if domain_profile.id == DEFAULT_DOMAIN_PROFILE_ID:
+        all_handlers = {
+            name: handler
+            for name, handler in all_handlers.items()
+            if not _is_finance_only_handler(handler)
+        }
     if client_context is None:
         allowed_names = filter_tool_names(tuple(all_handlers.keys()), domain_profile)
         return {name: all_handlers[name] for name in allowed_names if name in all_handlers}
@@ -194,9 +244,14 @@ def resolve_capability_selection(
         hidden_tool_names=domain_profile.hidden_tool_names,
     )
     if domain_profile.id != DEFAULT_DOMAIN_PROFILE_ID:
+        domain_handler_names = tuple(
+            name
+            for name in filter_tool_names(tuple(handlers.keys()), domain_profile)
+            if name in handlers and name not in selection.tool_names
+        )
         selection = CapabilitySelection(
             light_hints=domain_profile.capability_hints,
-            tool_names=selection.tool_names,
+            tool_names=(*selection.tool_names, *domain_handler_names),
             module_names=selection.module_names,
             layer_names=selection.layer_names,
         )
@@ -223,6 +278,17 @@ def resolve_capability_selection(
         module_names=(*selection.module_names, "adapter_tools"),
         layer_names=(*selection.layer_names, "adapter"),
     )
+
+
+def _is_finance_only_handler(handler: Any) -> bool:
+    tool_metadata = getattr(handler, "tool_metadata", None)
+    if not callable(tool_metadata):
+        return False
+    try:
+        metadata = tool_metadata()
+    except Exception:
+        return False
+    return str(getattr(metadata, "family", "") or "").strip() in {"finance_read", "finance_artifact"}
 
 
 def build_capability_snapshot(

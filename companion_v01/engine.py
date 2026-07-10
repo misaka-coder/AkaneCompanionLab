@@ -313,6 +313,7 @@ class AkaneMemoryEngine:
             generated_context_builder=self._build_task_worker_generated_context,
             record_tool_artifacts=self._record_tool_result_artifacts_in_task_workspace,
         )
+        self.market_data_tool_service = self._build_market_data_tool_service()
         self.tool_handlers = self._build_tool_handlers()
         self.capability_registry = CapabilityRegistry()
         self._embedding_reindex_lock = threading.RLock()
@@ -2217,7 +2218,7 @@ class AkaneMemoryEngine:
         tool_followups: list[str] = []
         native_tool_history_turns: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
-        max_tool_rounds = self._max_tool_rounds()
+        max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
         tool_round_index = 0
         memory_exclude_source_ids = [
             str(hit.get("source_id") or "").strip()
@@ -2348,7 +2349,8 @@ class AkaneMemoryEngine:
                 domain_profile_id=turn_domain_profile_id,
             )
 
-            stop_after_tool = self._should_stop_after_tool_events(_current_events)
+            finance_no_progress = self._should_stop_for_finance_no_progress(tool_results)
+            stop_after_tool = self._should_stop_after_tool_events(_current_events) or finance_no_progress
             allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = self._build_final_response(
                 session_id=session_id,
@@ -2365,7 +2367,9 @@ class AkaneMemoryEngine:
                     tool_followups=tool_followups,
                     allow_more=allow_more_tools,
                     stop_reason=(
-                        "tool_unavailable"
+                        "finance_no_progress"
+                        if finance_no_progress
+                        else "tool_unavailable"
                         if stop_after_tool
                         else "tool_budget_exhausted"
                         if not allow_more_tools
@@ -2652,7 +2656,7 @@ class AkaneMemoryEngine:
         tool_followups: list[str] = []
         native_tool_history_turns: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
-        max_tool_rounds = self._max_tool_rounds()
+        max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
         tool_round_index = 0
         memory_exclude_source_ids = [
             str(hit.get("source_id") or "").strip()
@@ -2792,7 +2796,8 @@ class AkaneMemoryEngine:
             for stream_event in current_events:
                 yield stream_event
 
-            stop_after_tool = self._should_stop_after_tool_events(current_events)
+            finance_no_progress = self._should_stop_for_finance_no_progress(tool_results)
+            stop_after_tool = self._should_stop_after_tool_events(current_events) or finance_no_progress
             allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = yield from self._stream_final_response(
                 session_id=session_id,
@@ -2809,7 +2814,9 @@ class AkaneMemoryEngine:
                     tool_followups=tool_followups,
                     allow_more=allow_more_tools,
                     stop_reason=(
-                        "tool_unavailable"
+                        "finance_no_progress"
+                        if finance_no_progress
+                        else "tool_unavailable"
                         if stop_after_tool
                         else "tool_budget_exhausted"
                         if not allow_more_tools
@@ -3389,10 +3396,15 @@ class AkaneMemoryEngine:
             speaker_name=speaker_name,
         )
 
-    def _max_tool_rounds(self) -> int:
+    def _max_tool_rounds(self, *, domain_profile_id: str = "") -> int:
         from .engine_services.tool_rounds import max_tool_rounds as _fn
 
-        return _fn()
+        return _fn(domain_profile_id=domain_profile_id)
+
+    def _should_stop_for_finance_no_progress(self, tool_results: list[ToolExecutionResult]) -> bool:
+        from .engine_services.tool_rounds import should_stop_for_finance_no_progress as _fn
+
+        return _fn(tool_results)
 
     def _resolve_tool_round_budget(
         self,
@@ -3944,8 +3956,28 @@ class AkaneMemoryEngine:
             logger.warning("memcore timeline tool adapter disabled: %s", exc)
             return getattr(self, "memory_timeline_service", None)
 
+    def _build_market_data_tool_service(self) -> Any:
+        if not bool(getattr(config, "FINANCE_ASSISTANT_ENABLED", False)):
+            return None
+        try:
+            from services.market_data import EmQuantBridgeMarketDataProvider, MarketEventStore
+
+            from .finance import MarketDataToolService
+
+            raw_db_path = str(getattr(config, "FINANCE_EVENT_DB_PATH", "") or "").strip()
+            db_path = Path(raw_db_path).expanduser() if raw_db_path else Path(config.STATE_DIR) / "market_events.sqlite3"
+            provider = EmQuantBridgeMarketDataProvider(
+                str(getattr(config, "EMQUANT_BRIDGE_URL", "http://127.0.0.1:9910") or ""),
+                access_token=str(getattr(config, "EMQUANT_BRIDGE_TOKEN", "") or ""),
+                timeout_seconds=float(getattr(config, "EMQUANT_HTTP_TIMEOUT_SECONDS", 15.0) or 15.0),
+            )
+            return MarketDataToolService(provider=provider, event_store=MarketEventStore(db_path))
+        except Exception as exc:
+            logger.warning("finance market data tools disabled: %s", type(exc).__name__)
+            return None
+
     def _build_tool_handlers(self) -> dict[str, BaseToolHandler]:
-        return {
+        handlers: dict[str, BaseToolHandler] = {
             "retrieve_memory": RetrieveMemoryToolHandler(
                 retrieve_fn=self._execute_retrieve_memory_tool,
             ),
@@ -4049,6 +4081,12 @@ class AkaneMemoryEngine:
             "open_music_search": OpenMusicSearchToolHandler(),
             "browser_page": BrowserPageToolHandler(),
         }
+        market_service = getattr(self, "market_data_tool_service", None)
+        if market_service is not None:
+            from .finance import build_market_tool_handlers
+
+            handlers.update(build_market_tool_handlers(market_service))
+        return handlers
 
     def _resolve_tool_handlers(
         self,

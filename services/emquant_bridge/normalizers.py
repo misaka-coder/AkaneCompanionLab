@@ -85,6 +85,41 @@ def extract_choice_quote_records(result: Any) -> tuple[dict[str, Any], ...]:
     return tuple(rows)
 
 
+def extract_choice_series_records(result: Any) -> tuple[dict[str, Any], ...]:
+    """Flatten Choice ``csd`` rank-3 data into one record per code/date.
+
+    The official SDK exposes ``Data[code][indicator_index][date_index]``.
+    Keeping that provider-specific layout inside the bridge prevents the host
+    process and model-facing tools from depending on SDK object internals.
+    """
+
+    indicators = _safe_string_list(getattr(result, "Indicators", []))
+    dates = _safe_string_list(getattr(result, "Dates", []), limit=5000)
+    raw_data = getattr(result, "Data", {})
+    if not indicators or not dates or not isinstance(raw_data, Mapping):
+        return ()
+    rows: list[dict[str, Any]] = []
+    for raw_code, raw_indicator_values in raw_data.items():
+        if not isinstance(raw_indicator_values, Sequence) or isinstance(
+            raw_indicator_values,
+            (str, bytes, bytearray),
+        ):
+            continue
+        code = str(raw_code or "").strip()
+        for date_index, date_value in enumerate(dates):
+            row: dict[str, Any] = {"code": code, "datetime": date_value}
+            for indicator_index, indicator in enumerate(indicators):
+                if indicator_index >= len(raw_indicator_values):
+                    continue
+                values = raw_indicator_values[indicator_index]
+                if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+                    continue
+                if date_index < len(values):
+                    row[indicator] = _bounded_copy(values[date_index])
+            rows.append(row)
+    return tuple(rows)
+
+
 def _safe_string_list(value: Any, *, limit: int = 512) -> list[str]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return []

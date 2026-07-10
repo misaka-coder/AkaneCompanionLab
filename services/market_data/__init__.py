@@ -1,3 +1,4 @@
+from .emquant_bridge_client import EmQuantBridgeMarketDataProvider, LOOPBACK_HOSTS
 from .mock import MOCK_CHOICE_FIXTURE_SCHEMA, MockMarketDataProvider
 from .normalizers import (
     normalize_choice_news_record,
@@ -41,6 +42,8 @@ from .types import (
 )
 
 __all__ = [
+    "EmQuantBridgeMarketDataProvider",
+    "LOOPBACK_HOSTS",
     "MARKET_HEALTH_STATUSES",
     "MARKET_RESULT_STATUSES",
     "MOCK_CHOICE_FIXTURE_SCHEMA",
