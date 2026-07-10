@@ -164,12 +164,18 @@ class MarketEventDelivery:
     reason: str
     created_at: int
     updated_at: int
+    delivery_mode: str = "immediate"
+    importance_level: str = "notify"
+    available_at: int = 0
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
             "event_id": self.event_id,
             "subscription_id": self.subscription_id,
             "status": self.status,
+            "delivery_mode": self.delivery_mode,
+            "importance_level": self.importance_level,
+            "available_at": self.available_at,
             "analysis_id": self.analysis_id,
             "attempt_count": self.attempt_count,
             "last_attempt_at": self.last_attempt_at,

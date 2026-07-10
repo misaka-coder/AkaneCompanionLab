@@ -146,7 +146,19 @@ class AkaneFinanceAnalysisClient:
             return {"ok": False, "status": "disabled", "reason": "memcore_not_enabled"}
 
         event = request.event_record.event
-        keywords = [event.code, event.content_type, event.source or event.provider]
+        batch_records = (request.event_record, *request.related_event_records)
+        keywords = list(
+            dict.fromkeys(
+                item
+                for record in batch_records
+                for item in (
+                    record.event.code,
+                    record.event.content_type,
+                    record.event.source or record.event.provider,
+                )
+                if item
+            )
+        )
         evidence_status = manager.record_tool_exchange(
             tool_name="market_feed",
             tool_call_id=event.event_id,
@@ -154,8 +166,14 @@ class AkaneFinanceAnalysisClient:
                 "subscription_id": request.subscription.subscription_id,
                 "attempt_count": request.attempt_count,
                 "importance": request.importance.to_public_dict(),
+                "batch_kind": request.batch_kind,
+                "event_count": len(batch_records),
             },
-            result=request.event_record.to_public_dict(),
+            result={
+                "batch_kind": request.batch_kind,
+                "primary_event": request.event_record.to_public_dict(),
+                "related_events": [record.to_public_dict() for record in request.related_event_records],
+            },
             source=event.source or event.provider,
             timestamp=event.published_at,
             source_id_prefix=request.analysis_id,
@@ -213,12 +231,28 @@ def ensure_market_push_contract(
     source_line = f"来源：{source_name}｜发布时间：{published_iso}"
     if event.url:
         source_line += f"｜{event.url}"
+    if request.related_event_records:
+        related_sources = "；".join(
+            f"{record.event.source or record.event.provider}｜"
+            f"{_event_time_iso(record.event.published_at)}｜{record.event.url or '无 URL'}"
+            for record in request.related_event_records[:8]
+        )
+        source_line += f"\n补充来源：{related_sources}"
+    related_titles = "；".join(record.event.title for record in request.related_event_records[:8])
+    confirmed_fact = event.title
+    if related_titles:
+        confirmed_fact += f"；同批次补充事件：{related_titles}"
+    code_text = "、".join(
+        dict.fromkeys(
+            [event.code, *(record.event.code for record in request.related_event_records if record.event.code)]
+        )
+    )
 
     if not all(marker in body for marker in _STRUCTURE_MARKERS):
         body = "\n".join(
             [
-                f"已确认事实：{event.title}",
-                f"客观数据与时间：证券代码 {event.code}；事件发布时间 {published_iso}。",
+                f"已确认事实：{confirmed_fact}",
+                f"客观数据与时间：证券代码 {code_text}；主事件发布时间 {published_iso}。",
                 f"分析推断：{body}",
                 "尚待验证与风险：当前直接证据仅包含事件结构化字段，标题不等于完整正文；"
                 "如事件与行情同时出现，也不能据此确认因果。",
@@ -227,7 +261,7 @@ def ensure_market_push_contract(
         )
     if not body.startswith("【市场快讯"):
         body = f"{header}\n{body}"
-    if "来源：" not in body or "发布时间：" not in body:
+    if "来源：" not in body or "发布时间：" not in body or (request.related_event_records and "补充来源：" not in body):
         body = f"{body}\n{source_line}"
     return _split_messages(body, max_chars=max(200, min(1800, int(max_message_chars))))
 

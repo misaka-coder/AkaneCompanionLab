@@ -24,6 +24,7 @@ from .finance import (
     AkaneFinanceAnalysisClient,
     FinanceEventOrchestrator,
     FinanceEventWorker,
+    FinancePushGovernancePolicy,
     FinanceSubscriptionService,
     QQFinanceDeliveryAdapter,
 )
@@ -159,6 +160,19 @@ if qq_gateway is not None and market_event_store is not None:
         store=market_event_store,
         analysis_client=AkaneFinanceAnalysisClient(engine),
         delivery_adapter=QQFinanceDeliveryAdapter(qq_gateway),
+        push_governance=FinancePushGovernancePolicy(
+            enabled=bool(getattr(config, "FINANCE_PUSH_GOVERNANCE_ENABLED", True)),
+            cluster_coalesce_seconds=int(getattr(config, "FINANCE_PUSH_CLUSTER_COALESCE_SECONDS", 90)),
+            cluster_max_wait_seconds=int(getattr(config, "FINANCE_PUSH_CLUSTER_MAX_WAIT_SECONDS", 180)),
+            digest_enabled=bool(getattr(config, "FINANCE_PUSH_DIGEST_ENABLED", True)),
+            digest_interval_seconds=int(getattr(config, "FINANCE_PUSH_DIGEST_INTERVAL_SECONDS", 30 * 60)),
+            min_interval_seconds=int(getattr(config, "FINANCE_PUSH_MIN_INTERVAL_SECONDS", 20)),
+            rate_window_seconds=int(getattr(config, "FINANCE_PUSH_RATE_WINDOW_SECONDS", 5 * 60)),
+            max_notifications_per_window=int(getattr(config, "FINANCE_PUSH_MAX_PER_WINDOW", 6)),
+            quiet_hours_enabled=bool(getattr(config, "FINANCE_PUSH_QUIET_HOURS_ENABLED", False)),
+            quiet_start=str(getattr(config, "FINANCE_PUSH_QUIET_START", "23:00")),
+            quiet_end=str(getattr(config, "FINANCE_PUSH_QUIET_END", "07:00")),
+        ),
     )
     if bool(
         callable(getattr(market_event_provider, "supports", None))

@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0-F7c 与 F9a 已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析重试、逐项 QQ 投递账本、确定性 PNG 图表、MD/PDF/XLSX 金融报告和行情 Provider 解耦已接通；真实 Choice 冒烟仍等待账户权限
+状态：设计锁定；F0-F7c 与 F9a-F9b 已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析重试、逐项 QQ 投递账本、持久化推送治理、确定性 PNG 图表、MD/PDF/XLSX 金融报告和行情 Provider 解耦已接通；真实 Choice 冒烟仍等待账户权限
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -1894,13 +1894,49 @@ F7b 实际落地：
 
 F9a 仍不包含跨进程 processing 租约回收；进程在 claim 后崩溃的 watchdog/lease 属于 F9c。
 
+#### F9b：持久化推送治理、聚类与摘要
+
+状态：已完成；不依赖 Choice 权限。
+
+设计边界：F9b 只控制“什么时候主动向 QQ 发送”，不限制 Bridge callback 消费、MarketEventStore 入库、行情工具实时查询或用户主动问答。`alert` 级重大事件始终绕过聚类等待、普通速率窗口和免打扰时段。
+
+已落地：
+
+- MarketEventStore schema v6 为父 delivery 增加 `delivery_mode=immediate|cluster|digest`、`importance_level` 和 `available_at`。等待状态是 SQLite 真相源，worker 或主进程重启后仍可按到期时间恢复，不使用易丢失的进程内延迟队列；v5 迁移保留原 delivery，并按 `immediate/notify/available_at=0` 回填；
+- 普通 `notify` 默认先等待 90 秒收集同主题补充，最长延伸到 180 秒。同 subscription、同 cluster 的后续事件以 `clustered_into:<representative_event_id>` 留下可审计覆盖记录，代表事件到期后把全部补充事件作为一个 `cluster` 批次交给 AI，只生成一次分析；
+- `digest` 事件默认进入本地 30 分钟摘要窗口。同 subscription 在窗口内的不同事件以 `digested_into:<representative_event_id>` 合并，到期后作为一个 `digest` 批次分析和发送，不再把每条低重要度资讯逐条刷群；
+- 普通推送默认至少间隔 20 秒，并采用 5 分钟最多 6 条的软窗口。超过窗口时只更新 `available_at`，不删除事件、不增加模型调用次数；到期后由同一 retry/worker 链继续；
+- 可选免打扰默认关闭，预设 `23:00-07:00 Asia/Shanghai`。开启后普通 cluster/digest 延后到结束时间；`alert` 仍立即推送；
+- `FinanceAnalysisRequest` 增加结构化 `market_event_batch_kind / market_event_batch`，明确要求合并共同事实、保留各自来源和时间，不能把多条同时出现的信息自动写成确定因果；memcore 的 `market_feed` tool trace 同步保存主事件和批次补充事件，但只记录一次正式 assistant 分析；
+- worker 状态和 cycle 指标增加 `scheduled_count / coalesced_count` 与脱敏 governance 配置快照；队列等待不会计为失败；
+- F9a 的逐部件账本保持不变：分析已经生成后，图表或报告补发不再受普通消息节奏二次阻挡，也不会重发已成功文字。
+
+默认配置：
+
+~~~dotenv
+FINANCE_PUSH_GOVERNANCE_ENABLED=true
+FINANCE_PUSH_CLUSTER_COALESCE_SECONDS=90
+FINANCE_PUSH_CLUSTER_MAX_WAIT_SECONDS=180
+FINANCE_PUSH_DIGEST_ENABLED=true
+FINANCE_PUSH_DIGEST_INTERVAL_SECONDS=1800
+FINANCE_PUSH_MIN_INTERVAL_SECONDS=20
+FINANCE_PUSH_RATE_WINDOW_SECONDS=300
+FINANCE_PUSH_MAX_PER_WINDOW=6
+FINANCE_PUSH_QUIET_HOURS_ENABLED=false
+FINANCE_PUSH_QUIET_START=23:00
+FINANCE_PUSH_QUIET_END=07:00
+~~~
+
+若产品希望普通 `notify` 也完全实时，可把 cluster/min interval/max per window 设为 `0` 并关闭 quiet hours；重大 `alert` 无需改配置，本来就是实时通道。关闭 digest 只会停止低重要度主动摘要，不影响这些事件入库或之后被工具查询。
+
+F9b 仍不包含 processing lease/watchdog、Bridge 自动重订阅、quota 告警、retention、手动 replay 和真实 Choice 授权范围记录；这些继续留给 F9c 及后续切片。
+
 其余 F9 包括：
 
 - Bridge watchdog；
+- processing lease 回收；
 - 订阅自动恢复；
 - quota/流量告警；
-- digest；
-- 速率限制；
 - retention；
 - metrics；
 - 手动 replay；
@@ -2010,12 +2046,12 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F6、F7、F7c 与 F9a 已完成 Fake Bridge/Mock 主链验收，真实主动推送仍因默认开关和 Choice 权限保持关闭。上下文恢复后按以下顺序继续：
+F6、F7、F7c 与 F9a-F9b 已完成 Fake Bridge/Mock 主链验收，真实主动推送仍因默认开关和 Choice 权限保持关闭。上下文恢复后按以下顺序继续：
 
 1. Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/cnq/csqsnapshot/csd 的实际权限、callback 字段、证券主数据来源和 AdjustFlag 口径；未确认前保持 `FINANCE_MARKET_PROVIDER=disabled` 或仅使用 Fake SDK 测试；
 2. 如果 Choice 未授权，按统一能力契约新增另一家只读 provider，优先补 `quote_snapshot / price_series / news_search`，不改上层主链；
 3. 进入 F8：仅为装饰性封面、非事实插图或可选高保真文档接云端 Provider；真实行情图和报告事实表继续由本地确定性程序生成；
 4. 视真实数据源权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
-5. 继续 F9b：事件限频、同类聚合、安静时段与 digest；随后 F9c 补 processing 跨进程租约、Bridge watchdog 与订阅恢复，F9d 补 metrics 和人工 replay。
+5. 进入 F9c：补 processing 跨进程租约回收、Bridge watchdog 与订阅恢复；F9d 再补 quota/流量告警、retention、运行指标和人工 replay。
 
-推荐下一个独立提交边界：`finance notification rate limits, quiet hours and digest`；F8 云端产物仍为可选增强，不能让 Choice 或云端能力成为金融主链依赖。
+推荐下一个独立提交边界：`finance delivery leases and bridge watchdog`；F8 云端产物仍为可选增强，不能让 Choice 或云端能力成为金融主链依赖。

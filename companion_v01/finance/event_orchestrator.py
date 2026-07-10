@@ -19,6 +19,7 @@ from .event_contracts import (
     build_finance_delivery_parts,
 )
 from .importance_policy import FinanceEventImportancePolicy, ImportanceDecision
+from .push_governance import FinancePushGovernancePolicy
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,9 @@ class FinanceDeliveryAttemptResult:
     importance: ImportanceDecision
     analysis_id: str = ""
     attempt_count: int = 0
+    delivery_mode: str = "immediate"
+    available_at: int = 0
+    coalesced_event_count: int = 0
 
     def to_public_dict(self) -> dict[str, object]:
         return {
@@ -40,6 +44,9 @@ class FinanceDeliveryAttemptResult:
             "importance": self.importance.to_public_dict(),
             "analysis_id": self.analysis_id,
             "attempt_count": self.attempt_count,
+            "delivery_mode": self.delivery_mode,
+            "available_at": self.available_at,
+            "coalesced_event_count": self.coalesced_event_count,
         }
 
 
@@ -70,12 +77,14 @@ class FinanceEventOrchestrator:
         analysis_client: FinanceAnalysisClient,
         delivery_adapter: FinanceDeliveryAdapter,
         importance_policy: FinanceEventImportancePolicy | None = None,
+        push_governance: FinancePushGovernancePolicy | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.store = store
         self.analysis_client = analysis_client
         self.delivery_adapter = delivery_adapter
         self.importance_policy = importance_policy or FinanceEventImportancePolicy()
+        self.push_governance = push_governance or FinancePushGovernancePolicy()
         self._clock = clock
 
     def process_event(self, event: MarketEvent, *, now_ts: int | None = None) -> FinanceEventRunResult:
@@ -133,7 +142,7 @@ class FinanceEventOrchestrator:
     def retry_pending(self, *, limit: int = 100, now_ts: int | None = None) -> tuple[FinanceDeliveryAttemptResult, ...]:
         now = self._now(now_ts)
         results: list[FinanceDeliveryAttemptResult] = []
-        for delivery in self.store.list_retryable_deliveries(limit=limit):
+        for delivery in self.store.list_retryable_deliveries(limit=limit, now_ts=now):
             record = self.store.get_event(delivery.event_id)
             subscription = self.store.get_subscription(delivery.subscription_id)
             if record is None or subscription is None:
@@ -150,6 +159,11 @@ class FinanceEventOrchestrator:
         retry_existing: bool = True,
     ) -> FinanceDeliveryAttemptResult:
         event = record.event
+        existing_delivery = self.store.get_delivery(
+            event_id=event.event_id,
+            subscription_id=subscription.subscription_id,
+        )
+        delivery_preexisted = existing_delivery is not None
         cluster_delivered = self.store.has_delivered_cluster(
             subscription_id=subscription.subscription_id,
             cluster_id=record.cluster_id,
@@ -161,20 +175,37 @@ class FinanceEventOrchestrator:
             watchlist_priority=self._watchlist_priority(subscription, event),
             cluster_already_delivered=cluster_delivered,
         )
-        if not decision.should_deliver:
+        if cluster_delivered:
+            if existing_delivery is not None and existing_delivery.status not in {"delivered", "cancelled"}:
+                self.store.mark_delivery_cancelled(
+                    event_id=event.event_id,
+                    subscription_id=subscription.subscription_id,
+                    reason="same_cluster_already_delivered",
+                    now_ts=now_ts,
+                )
+            return FinanceDeliveryAttemptResult(
+                event_id=event.event_id,
+                subscription_id=subscription.subscription_id,
+                status="duplicate_cluster",
+                reason="same_cluster_already_delivered",
+                importance=decision,
+                delivery_mode=existing_delivery.delivery_mode if existing_delivery is not None else "cluster",
+                available_at=existing_delivery.available_at if existing_delivery is not None else 0,
+            )
+
+        initial_plan = self.push_governance.plan_initial(importance=decision, now_ts=now_ts)
+        if existing_delivery is None and initial_plan.action == "skip":
             status = (
-                "duplicate_cluster"
-                if "same_cluster_already_delivered" in decision.reasons
-                else "deferred_digest"
-                if decision.level == "digest" or decision.minimum_level == "digest"
-                else "archived"
+                "deferred_digest" if decision.level == "digest" or decision.minimum_level == "digest" else "archived"
             )
             return FinanceDeliveryAttemptResult(
                 event_id=event.event_id,
                 subscription_id=subscription.subscription_id,
                 status=status,
-                reason=decision.reasons[-1] if decision.reasons else "importance_policy",
+                reason=initial_plan.reason or (decision.reasons[-1] if decision.reasons else "importance_policy"),
                 importance=decision,
+                delivery_mode=initial_plan.delivery_mode,
+                available_at=initial_plan.available_at,
             )
 
         authorization = self.delivery_adapter.authorize(subscription)
@@ -185,49 +216,150 @@ class FinanceEventOrchestrator:
                 status="unauthorized",
                 reason=authorization.reason or authorization.status,
                 importance=decision,
+                delivery_mode=(
+                    existing_delivery.delivery_mode if existing_delivery is not None else initial_plan.delivery_mode
+                ),
+                available_at=(existing_delivery.available_at if existing_delivery is not None else 0),
             )
 
-        if not retry_existing:
-            existing_delivery = self.store.get_delivery(
+        if existing_delivery is None:
+            coalesced = self._coalesce_initial_delivery(
+                record=record,
+                subscription=subscription,
+                decision=decision,
+                delivery_mode=initial_plan.delivery_mode,
+                available_at=initial_plan.available_at,
+                reason=initial_plan.reason,
+                now_ts=now_ts,
+            )
+            if coalesced is not None:
+                return coalesced
+            reservation = self.store.ensure_delivery(
                 event_id=event.event_id,
                 subscription_id=subscription.subscription_id,
+                available_at=initial_plan.available_at,
+                delivery_mode=initial_plan.delivery_mode,
+                importance_level=decision.level,
+                reason=f"scheduled:{initial_plan.reason}" if initial_plan.action == "defer" else "",
+                now_ts=now_ts,
             )
-            if existing_delivery is not None:
-                return FinanceDeliveryAttemptResult(
+            existing_delivery = reservation.delivery
+            if initial_plan.action == "defer":
+                return self._scheduled_result(
                     event_id=event.event_id,
                     subscription_id=subscription.subscription_id,
-                    status=(
-                        "already_delivered"
-                        if existing_delivery.status == "delivered"
-                        else "in_progress"
-                        if existing_delivery.status == "processing"
-                        else existing_delivery.status
-                    ),
-                    reason=existing_delivery.reason or "existing_delivery_not_retried_during_recovery",
-                    importance=decision,
-                    analysis_id=existing_delivery.analysis_id,
-                    attempt_count=existing_delivery.attempt_count,
+                    decision=decision,
+                    delivery=existing_delivery,
+                    reason=initial_plan.reason,
                 )
+        elif initial_plan.bypassed and existing_delivery.status in {"pending", "failed"}:
+            existing_delivery = (
+                self.store.reschedule_delivery(
+                    event_id=event.event_id,
+                    subscription_id=subscription.subscription_id,
+                    available_at=now_ts,
+                    reason="scheduled:alert_bypass",
+                    delivery_mode="immediate",
+                    importance_level="alert",
+                    now_ts=now_ts,
+                )
+                or existing_delivery
+            )
 
-        reservation = self.store.ensure_delivery(
-            event_id=event.event_id,
-            subscription_id=subscription.subscription_id,
-            now_ts=now_ts,
-        )
-        if not reservation.should_deliver:
+        if existing_delivery.status == "delivered":
             return FinanceDeliveryAttemptResult(
                 event_id=event.event_id,
                 subscription_id=subscription.subscription_id,
-                status="already_delivered"
-                if reservation.delivery.status == "delivered"
-                else "in_progress"
-                if reservation.delivery.status == "processing"
-                else "cancelled",
-                reason=reservation.delivery.reason or reservation.delivery.status,
+                status="already_delivered",
+                reason=existing_delivery.reason or "delivered",
                 importance=decision,
-                analysis_id=reservation.delivery.analysis_id,
-                attempt_count=reservation.delivery.attempt_count,
+                analysis_id=existing_delivery.analysis_id,
+                attempt_count=existing_delivery.attempt_count,
+                delivery_mode=existing_delivery.delivery_mode,
+                available_at=existing_delivery.available_at,
             )
+        if existing_delivery.status == "cancelled":
+            return FinanceDeliveryAttemptResult(
+                event_id=event.event_id,
+                subscription_id=subscription.subscription_id,
+                status="cancelled",
+                reason=existing_delivery.reason or "cancelled",
+                importance=decision,
+                analysis_id=existing_delivery.analysis_id,
+                attempt_count=existing_delivery.attempt_count,
+                delivery_mode=existing_delivery.delivery_mode,
+                available_at=existing_delivery.available_at,
+            )
+        if existing_delivery.status == "processing":
+            return FinanceDeliveryAttemptResult(
+                event_id=event.event_id,
+                subscription_id=subscription.subscription_id,
+                status="in_progress",
+                reason=existing_delivery.reason or "processing",
+                importance=decision,
+                analysis_id=existing_delivery.analysis_id,
+                attempt_count=existing_delivery.attempt_count,
+                delivery_mode=existing_delivery.delivery_mode,
+                available_at=existing_delivery.available_at,
+            )
+        if not retry_existing and delivery_preexisted:
+            return FinanceDeliveryAttemptResult(
+                event_id=event.event_id,
+                subscription_id=subscription.subscription_id,
+                status="scheduled" if existing_delivery.available_at > now_ts else existing_delivery.status,
+                reason=existing_delivery.reason or "existing_delivery_not_retried_during_recovery",
+                importance=decision,
+                analysis_id=existing_delivery.analysis_id,
+                attempt_count=existing_delivery.attempt_count,
+                delivery_mode=existing_delivery.delivery_mode,
+                available_at=existing_delivery.available_at,
+            )
+        if existing_delivery.available_at > now_ts:
+            return self._scheduled_result(
+                event_id=event.event_id,
+                subscription_id=subscription.subscription_id,
+                decision=decision,
+                delivery=existing_delivery,
+                reason=existing_delivery.reason or "not_due",
+            )
+
+        parts = self.store.list_delivery_parts(
+            event_id=event.event_id,
+            subscription_id=subscription.subscription_id,
+        )
+        if not parts:
+            recent_delivery_times = self.store.list_recent_delivery_times(
+                subscription_id=subscription.subscription_id,
+                since_ts=max(
+                    0,
+                    now_ts
+                    - max(
+                        self.push_governance.rate_window_seconds,
+                        self.push_governance.min_interval_seconds,
+                    ),
+                ),
+            )
+            runtime_plan = self.push_governance.plan_runtime(
+                importance=decision,
+                delivery_mode=existing_delivery.delivery_mode,
+                now_ts=now_ts,
+                recent_delivery_times=recent_delivery_times,
+            )
+            if runtime_plan.action == "defer":
+                rescheduled = self.store.reschedule_delivery(
+                    event_id=event.event_id,
+                    subscription_id=subscription.subscription_id,
+                    available_at=runtime_plan.available_at,
+                    reason=f"scheduled:{runtime_plan.reason}",
+                    now_ts=now_ts,
+                )
+                return self._scheduled_result(
+                    event_id=event.event_id,
+                    subscription_id=subscription.subscription_id,
+                    decision=decision,
+                    delivery=rescheduled or existing_delivery,
+                    reason=runtime_plan.reason,
+                )
 
         claim = self.store.claim_delivery_attempt(
             event_id=event.event_id,
@@ -241,6 +373,8 @@ class FinanceEventOrchestrator:
                 status="failed",
                 reason="delivery_claim_missing",
                 importance=decision,
+                delivery_mode=existing_delivery.delivery_mode,
+                available_at=existing_delivery.available_at,
             )
         if not claim.acquired:
             return FinanceDeliveryAttemptResult(
@@ -251,13 +385,15 @@ class FinanceEventOrchestrator:
                 importance=decision,
                 analysis_id=claim.delivery.analysis_id,
                 attempt_count=claim.delivery.attempt_count,
+                delivery_mode=claim.delivery.delivery_mode,
+                available_at=claim.delivery.available_at,
             )
 
-        parts = self.store.list_delivery_parts(
-            event_id=event.event_id,
+        analysis_id = claim.delivery.analysis_id
+        coalesced_records = self.store.list_coalesced_events(
+            representative_event_id=event.event_id,
             subscription_id=subscription.subscription_id,
         )
-        analysis_id = claim.delivery.analysis_id
         if not parts:
             request = FinanceAnalysisRequest.create(
                 event_record=record,
@@ -265,6 +401,8 @@ class FinanceEventOrchestrator:
                 importance=decision,
                 requested_at=now_ts,
                 attempt_count=claim.delivery.attempt_count,
+                related_event_records=coalesced_records,
+                batch_kind=(claim.delivery.delivery_mode if coalesced_records else "single"),
             )
             analysis_id = request.analysis_id
             try:
@@ -322,6 +460,9 @@ class FinanceEventOrchestrator:
                 attempt_count=(
                     current_delivery.attempt_count if current_delivery is not None else claim.delivery.attempt_count
                 ),
+                delivery_mode=claim.delivery.delivery_mode,
+                available_at=claim.delivery.available_at,
+                coalesced_event_count=len(coalesced_records),
             )
         if not parts:
             try:
@@ -418,6 +559,104 @@ class FinanceEventOrchestrator:
             importance=decision,
             analysis_id=analysis_id,
             attempt_count=final_delivery.attempt_count if final_delivery else claim.delivery.attempt_count,
+            delivery_mode=claim.delivery.delivery_mode,
+            available_at=claim.delivery.available_at,
+            coalesced_event_count=len(coalesced_records),
+        )
+
+    def _coalesce_initial_delivery(
+        self,
+        *,
+        record: StoredMarketEvent,
+        subscription: FinanceSubscription,
+        decision: ImportanceDecision,
+        delivery_mode: str,
+        available_at: int,
+        reason: str,
+        now_ts: int,
+    ) -> FinanceDeliveryAttemptResult | None:
+        if delivery_mode == "cluster":
+            representative = self.store.find_open_cluster_delivery(
+                subscription_id=subscription.subscription_id,
+                cluster_id=record.cluster_id,
+                exclude_event_id=record.event.event_id,
+            )
+            relation = "clustered_into"
+            status = "cluster_coalesced"
+        elif delivery_mode == "digest":
+            representative = self.store.find_open_digest_delivery(
+                subscription_id=subscription.subscription_id,
+                exclude_event_id=record.event.event_id,
+            )
+            relation = "digested_into"
+            status = "digest_coalesced"
+        else:
+            return None
+        if representative is None:
+            return None
+
+        current = self.store.ensure_delivery(
+            event_id=record.event.event_id,
+            subscription_id=subscription.subscription_id,
+            available_at=available_at,
+            delivery_mode=delivery_mode,
+            importance_level=decision.level,
+            reason=f"scheduled:{reason}",
+            now_ts=now_ts,
+        ).delivery
+        self.store.mark_delivery_cancelled(
+            event_id=record.event.event_id,
+            subscription_id=subscription.subscription_id,
+            reason=f"{relation}:{representative.event_id}",
+            analysis_id=representative.analysis_id,
+            now_ts=now_ts,
+        )
+        if delivery_mode == "cluster" and representative.status in {"pending", "failed"}:
+            max_wait_at = representative.created_at + self.push_governance.cluster_max_wait_seconds
+            extended_at = min(max_wait_at, max(representative.available_at, int(available_at)))
+            if extended_at > representative.available_at:
+                representative = (
+                    self.store.reschedule_delivery(
+                        event_id=representative.event_id,
+                        subscription_id=subscription.subscription_id,
+                        available_at=extended_at,
+                        reason="scheduled:cluster_coalesce",
+                        now_ts=now_ts,
+                    )
+                    or representative
+                )
+        return FinanceDeliveryAttemptResult(
+            event_id=record.event.event_id,
+            subscription_id=subscription.subscription_id,
+            status=status,
+            reason=f"{relation}:{representative.event_id}",
+            importance=decision,
+            analysis_id=representative.analysis_id,
+            attempt_count=current.attempt_count,
+            delivery_mode=delivery_mode,
+            available_at=representative.available_at,
+            coalesced_event_count=1,
+        )
+
+    @staticmethod
+    def _scheduled_result(
+        *,
+        event_id: str,
+        subscription_id: str,
+        decision: ImportanceDecision,
+        delivery,
+        reason: str,
+    ) -> FinanceDeliveryAttemptResult:
+        return FinanceDeliveryAttemptResult(
+            event_id=event_id,
+            subscription_id=subscription_id,
+            status="scheduled",
+            reason=str(reason or delivery.reason or "scheduled"),
+            importance=decision,
+            analysis_id=delivery.analysis_id,
+            attempt_count=delivery.attempt_count,
+            delivery_mode=delivery.delivery_mode,
+            available_at=delivery.available_at,
         )
 
     def _fail_delivery(
@@ -431,7 +670,7 @@ class FinanceEventOrchestrator:
         attempt_count: int,
         now_ts: int,
     ) -> FinanceDeliveryAttemptResult:
-        self.store.mark_delivery_failed(
+        delivery = self.store.mark_delivery_failed(
             event_id=record.event.event_id,
             subscription_id=subscription.subscription_id,
             analysis_id=analysis_id,
@@ -446,6 +685,8 @@ class FinanceEventOrchestrator:
             importance=decision,
             analysis_id=analysis_id,
             attempt_count=attempt_count,
+            delivery_mode=delivery.delivery_mode if delivery is not None else "immediate",
+            available_at=delivery.available_at if delivery is not None else 0,
         )
 
     def _watchlist_priority(self, subscription: FinanceSubscription, event: MarketEvent) -> float:

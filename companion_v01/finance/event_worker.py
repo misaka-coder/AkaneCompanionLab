@@ -25,6 +25,8 @@ class FinanceEventWorkerCycleResult:
     retry_count: int = 0
     recovery_count: int = 0
     reason: str = ""
+    scheduled_count: int = 0
+    coalesced_count: int = 0
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -36,6 +38,8 @@ class FinanceEventWorkerCycleResult:
             "ignored_count": self.ignored_count,
             "retry_count": self.retry_count,
             "recovery_count": self.recovery_count,
+            "scheduled_count": self.scheduled_count,
+            "coalesced_count": self.coalesced_count,
             "reason": self.reason,
         }
 
@@ -115,6 +119,7 @@ class FinanceEventWorker:
                 "poll_interval_seconds": self.poll_interval_seconds,
                 "poll_batch_size": self.poll_batch_size,
                 "recovery_complete": self._recovery_complete,
+                "push_governance": self.orchestrator.push_governance.to_public_dict(),
             }
 
     def run_once(self, *, now_ts: int | None = None) -> FinanceEventWorkerCycleResult:
@@ -150,6 +155,16 @@ class FinanceEventWorker:
                     failed_count=self._failed_count(retry_results, recovery_results),
                     retry_count=len(retry_results),
                     recovery_count=len(recovery_results),
+                    scheduled_count=self._status_count(
+                        retry_results,
+                        recovery_results,
+                        statuses={"scheduled"},
+                    ),
+                    coalesced_count=self._status_count(
+                        retry_results,
+                        recovery_results,
+                        statuses={"cluster_coalesced", "digest_coalesced"},
+                    ),
                     reason=batch.reason or batch.status,
                 )
                 self._record_cycle(result, now_ts=now)
@@ -185,6 +200,11 @@ class FinanceEventWorker:
                 ignored_count=batch.ignored_count,
                 retry_count=len(retry_results),
                 recovery_count=len(recovery_results),
+                scheduled_count=self._status_count(all_results, statuses={"scheduled"}),
+                coalesced_count=self._status_count(
+                    all_results,
+                    statuses={"cluster_coalesced", "digest_coalesced"},
+                ),
                 reason=batch.reason,
             )
             self._record_cycle(result, now_ts=now)
@@ -262,5 +282,17 @@ class FinanceEventWorker:
                 if delivery_results:
                     count += sum(1 for item in delivery_results if getattr(item, "status", "") == "failed")
                 elif getattr(result, "status", "") == "failed":
+                    count += 1
+        return count
+
+    @staticmethod
+    def _status_count(*result_groups: Any, statuses: set[str]) -> int:
+        count = 0
+        for group in result_groups:
+            for result in group or ():
+                delivery_results = getattr(result, "delivery_results", ()) or ()
+                if delivery_results:
+                    count += sum(1 for item in delivery_results if getattr(item, "status", "") in statuses)
+                elif getattr(result, "status", "") in statuses:
                     count += 1
         return count

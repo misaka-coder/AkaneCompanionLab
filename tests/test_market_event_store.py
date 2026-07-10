@@ -65,6 +65,9 @@ class MarketEventStoreTests(unittest.TestCase):
                 str(row[0])
                 for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
             }
+            delivery_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(market_event_deliveries)").fetchall()
+            }
 
         self.assertTrue(
             {
@@ -81,6 +84,7 @@ class MarketEventStoreTests(unittest.TestCase):
         self.assertIn("idx_market_event_deliveries_status", indexes)
         self.assertIn("idx_market_event_delivery_parts_status", indexes)
         self.assertIn("idx_market_security_alias_norm", indexes)
+        self.assertTrue({"delivery_mode", "importance_level", "available_at"}.issubset(delivery_columns))
         self.assertNotIn("chat_messages", tables)
 
     def test_v1_database_upgrades_security_master_without_losing_events(self) -> None:
@@ -208,6 +212,57 @@ class MarketEventStoreTests(unittest.TestCase):
             ),
             (),
         )
+
+    def test_v5_delivery_schema_adds_governance_fields_without_losing_queue(self) -> None:
+        self.store.upsert_event(self.event, now_ts=100)
+        self._subscription("legacy-v5-delivery", "20001")
+        self.store.ensure_delivery(
+            event_id=self.event.event_id,
+            subscription_id="legacy-v5-delivery",
+            now_ts=200,
+        )
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            connection.executescript(
+                """
+                DROP TABLE market_event_delivery_parts;
+                ALTER TABLE market_event_deliveries RENAME TO market_event_deliveries_v6;
+                CREATE TABLE market_event_deliveries (
+                    event_id TEXT NOT NULL,
+                    subscription_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    analysis_id TEXT NOT NULL DEFAULT '',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at INTEGER,
+                    delivered_at INTEGER,
+                    reason TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(event_id, subscription_id)
+                );
+                INSERT INTO market_event_deliveries (
+                    event_id, subscription_id, status, analysis_id, attempt_count,
+                    last_attempt_at, delivered_at, reason, created_at, updated_at
+                )
+                SELECT event_id, subscription_id, status, analysis_id, attempt_count,
+                       last_attempt_at, delivered_at, reason, created_at, updated_at
+                FROM market_event_deliveries_v6;
+                DROP TABLE market_event_deliveries_v6;
+                PRAGMA user_version = 5;
+                """
+            )
+
+        upgraded = MarketEventStore(self.db_path, clock=lambda: 1_752_110_000)
+        delivery = upgraded.get_delivery(
+            event_id=self.event.event_id,
+            subscription_id="legacy-v5-delivery",
+        )
+
+        self.assertEqual(upgraded.schema_version(), MARKET_STORE_SCHEMA_VERSION)
+        self.assertIsNotNone(delivery)
+        self.assertEqual(delivery.status, "pending")
+        self.assertEqual(delivery.delivery_mode, "immediate")
+        self.assertEqual(delivery.importance_level, "notify")
+        self.assertEqual(delivery.available_at, 0)
 
     def test_exact_event_replay_is_idempotent(self) -> None:
         first = self.store.upsert_event(self.event, now_ts=100)
@@ -651,6 +706,41 @@ class MarketEventStoreTests(unittest.TestCase):
         self.assertEqual(first.delivery.attempt_count, 1)
         self.assertEqual(second.delivery.attempt_count, 1)
         self.assertEqual(second.delivery.status, "processing")
+
+    def test_scheduled_delivery_survives_restart_and_is_not_claimed_early(self) -> None:
+        self.store.upsert_event(self.event, now_ts=100)
+        self._subscription("sub-scheduled", "20001")
+        reservation = self.store.ensure_delivery(
+            event_id=self.event.event_id,
+            subscription_id="sub-scheduled",
+            available_at=500,
+            delivery_mode="cluster",
+            importance_level="notify",
+            reason="scheduled:cluster_coalesce",
+            now_ts=200,
+        )
+
+        early_claim = self.store.claim_delivery_attempt(
+            event_id=self.event.event_id,
+            subscription_id="sub-scheduled",
+            now_ts=499,
+        )
+        restarted = MarketEventStore(self.db_path, clock=lambda: 1_752_111_000)
+        stored = restarted.get_delivery(
+            event_id=self.event.event_id,
+            subscription_id="sub-scheduled",
+        )
+        early_retry = restarted.list_retryable_deliveries(now_ts=499)
+        due_retry = restarted.list_retryable_deliveries(now_ts=500)
+
+        self.assertTrue(reservation.created)
+        self.assertFalse(early_claim.acquired)
+        self.assertEqual(early_claim.delivery.attempt_count, 0)
+        self.assertEqual(stored.delivery_mode, "cluster")
+        self.assertEqual(stored.importance_level, "notify")
+        self.assertEqual(stored.available_at, 500)
+        self.assertEqual(early_retry, ())
+        self.assertEqual([item.event_id for item in due_retry], [self.event.event_id])
 
     def test_delivery_parts_retry_independently_and_finalize_parent(self) -> None:
         self.store.upsert_event(self.event, now_ts=100)

@@ -11,6 +11,7 @@ from companion_v01.finance import (
     FinanceDeliveryResult,
     FinanceEventOrchestrator,
     FinanceEventWorker,
+    FinancePushGovernancePolicy,
     ensure_market_push_contract,
 )
 from services.market_data import MarketEvent, MarketEventPollResult, MarketEventStore
@@ -255,6 +256,48 @@ class FinanceEventWorkerTests(unittest.TestCase):
         self.assertEqual(first.recovery_count, 1)
         self.assertEqual(first.delivered_count, 1)
         self.assertEqual(second.recovery_count, 0)
+        self.assertEqual(len(analysis.requests), 1)
+        self.assertEqual(len(delivery.deliveries), 1)
+
+    def test_worker_reports_scheduled_push_and_delivers_it_when_due(self) -> None:
+        self._subscription()
+        event = _event("choice:worker-scheduled", "合成公司披露季度经营数据")
+        source = _FakeSource(
+            [
+                MarketEventPollResult(
+                    ok=True,
+                    status="ok",
+                    provider="mock_choice",
+                    source="Synthetic Worker Source",
+                    events=(event,),
+                )
+            ]
+        )
+        analysis = _FakeAnalysis()
+        delivery = _FakeDelivery()
+        worker = FinanceEventWorker(
+            source=source,
+            orchestrator=FinanceEventOrchestrator(
+                store=self.store,
+                analysis_client=analysis,
+                delivery_adapter=delivery,
+                push_governance=FinancePushGovernancePolicy(
+                    enabled=True,
+                    cluster_coalesce_seconds=90,
+                    cluster_max_wait_seconds=180,
+                ),
+            ),
+            enabled=True,
+            recovery_max_age_seconds=3600,
+        )
+
+        scheduled = worker.run_once(now_ts=1_752_153_600)
+        delivered = worker.run_once(now_ts=1_752_153_690)
+
+        self.assertEqual(scheduled.scheduled_count, 1)
+        self.assertEqual(scheduled.delivered_count, 0)
+        self.assertEqual(scheduled.failed_count, 0)
+        self.assertEqual(delivered.delivered_count, 1)
         self.assertEqual(len(analysis.requests), 1)
         self.assertEqual(len(delivery.deliveries), 1)
 

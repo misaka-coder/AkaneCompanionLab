@@ -29,10 +29,12 @@ from .store_models import (
 from .types import MarketDataValidationError, MarketEvent
 
 
-MARKET_STORE_SCHEMA_VERSION = 5
+MARKET_STORE_SCHEMA_VERSION = 6
 EVENT_STATUSES = frozenset({"active", "updated", "archived"})
 DELIVERY_STATUSES = frozenset({"pending", "processing", "delivered", "failed", "cancelled"})
 RETRYABLE_DELIVERY_STATUSES = frozenset({"pending", "failed"})
+DELIVERY_MODES = frozenset({"immediate", "cluster", "digest"})
+DELIVERY_IMPORTANCE_LEVELS = frozenset({"archive", "digest", "notify", "alert"})
 DELIVERY_PART_TYPES = frozenset({"text", "chart", "report"})
 DELIVERY_PART_STATUSES = frozenset({"pending", "processing", "delivered", "failed"})
 RETRYABLE_DELIVERY_PART_STATUSES = frozenset({"pending", "failed"})
@@ -151,6 +153,11 @@ CREATE TABLE IF NOT EXISTS market_event_deliveries (
     subscription_id TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK(status IN ('pending', 'processing', 'delivered', 'failed', 'cancelled')),
+    delivery_mode TEXT NOT NULL DEFAULT 'immediate'
+        CHECK(delivery_mode IN ('immediate', 'cluster', 'digest')),
+    importance_level TEXT NOT NULL DEFAULT 'notify'
+        CHECK(importance_level IN ('archive', 'digest', 'notify', 'alert')),
+    available_at INTEGER NOT NULL DEFAULT 0,
     analysis_id TEXT NOT NULL DEFAULT '',
     attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
     last_attempt_at INTEGER,
@@ -162,9 +169,6 @@ CREATE TABLE IF NOT EXISTS market_event_deliveries (
     FOREIGN KEY(event_id) REFERENCES market_events(event_id) ON DELETE CASCADE,
     FOREIGN KEY(subscription_id) REFERENCES finance_subscriptions(subscription_id) ON DELETE CASCADE
 );
-
-CREATE INDEX IF NOT EXISTS idx_market_event_deliveries_status
-ON market_event_deliveries(status, updated_at, event_id, subscription_id);
 
 CREATE TABLE IF NOT EXISTS market_event_delivery_parts (
     event_id TEXT NOT NULL,
@@ -260,9 +264,31 @@ class MarketEventStore:
         watchlist_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(watchlist_items)").fetchall()}
         if "provider" not in watchlist_columns:
             connection.execute("ALTER TABLE watchlist_items ADD COLUMN provider TEXT NOT NULL DEFAULT 'choice_emquant'")
+        delivery_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(market_event_deliveries)").fetchall()
+        }
+        if "delivery_mode" not in delivery_columns:
+            connection.execute(
+                "ALTER TABLE market_event_deliveries ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'immediate'"
+            )
+        if "importance_level" not in delivery_columns:
+            connection.execute(
+                "ALTER TABLE market_event_deliveries ADD COLUMN importance_level TEXT NOT NULL DEFAULT 'notify'"
+            )
+        if "available_at" not in delivery_columns:
+            connection.execute(
+                "ALTER TABLE market_event_deliveries ADD COLUMN available_at INTEGER NOT NULL DEFAULT 0"
+            )
         connection.execute("DROP INDEX IF EXISTS idx_watchlist_code")
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_watchlist_code ON watchlist_items(provider, code, priority DESC)"
+        )
+        connection.execute("DROP INDEX IF EXISTS idx_market_event_deliveries_status")
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_market_event_deliveries_status
+            ON market_event_deliveries(status, available_at, updated_at, event_id, subscription_id)
+            """
         )
         connection.execute(f"PRAGMA user_version = {MARKET_STORE_SCHEMA_VERSION}")
 
@@ -1005,11 +1031,23 @@ class MarketEventStore:
         *,
         event_id: str,
         subscription_id: str,
+        available_at: int | None = None,
+        delivery_mode: str = "immediate",
+        importance_level: str = "notify",
+        reason: str = "",
         now_ts: int | None = None,
     ) -> DeliveryReservation:
         clean_event_id = _safe_id(event_id, field="event_id")
         clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
         now = self._now(now_ts)
+        clean_available_at = now if available_at is None else max(0, int(available_at))
+        clean_delivery_mode = str(delivery_mode or "immediate").strip().lower()
+        if clean_delivery_mode not in DELIVERY_MODES:
+            raise _invalid_argument("delivery_mode", "unsupported delivery mode")
+        clean_importance_level = str(importance_level or "notify").strip().lower()
+        if clean_importance_level not in DELIVERY_IMPORTANCE_LEVELS:
+            raise _invalid_argument("importance_level", "unsupported importance level")
+        clean_reason = _bounded_text(reason, field="reason", max_length=2000)
         with self._write_lock, self._connect(write=True) as connection:
             event_row = connection.execute(
                 "SELECT event_id FROM market_events WHERE event_id = ?",
@@ -1038,15 +1076,26 @@ class MarketEventStore:
                     delivery=delivery,
                 )
             status = "pending" if bool(subscription_row["enabled"]) else "cancelled"
-            reason = "" if status == "pending" else "subscription_disabled"
+            stored_reason = clean_reason if status == "pending" else "subscription_disabled"
             connection.execute(
                 """
                 INSERT INTO market_event_deliveries (
-                    event_id, subscription_id, status, analysis_id, attempt_count,
+                    event_id, subscription_id, status, delivery_mode, importance_level,
+                    available_at, analysis_id, attempt_count,
                     last_attempt_at, delivered_at, reason, created_at, updated_at
-                ) VALUES (?, ?, ?, '', 0, NULL, NULL, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, '', 0, NULL, NULL, ?, ?, ?)
                 """,
-                (clean_event_id, clean_subscription_id, status, reason, now, now),
+                (
+                    clean_event_id,
+                    clean_subscription_id,
+                    status,
+                    clean_delivery_mode,
+                    clean_importance_level,
+                    clean_available_at,
+                    stored_reason,
+                    now,
+                    now,
+                ),
             )
             row = connection.execute(
                 """
@@ -1117,6 +1166,8 @@ class MarketEventStore:
                 return None
             delivery = _row_to_delivery(row)
             if delivery.status not in RETRYABLE_DELIVERY_STATUSES:
+                return DeliveryClaim(acquired=False, delivery=delivery)
+            if delivery.available_at > now:
                 return DeliveryClaim(acquired=False, delivery=delivery)
             enabled_row = connection.execute(
                 "SELECT enabled FROM finance_subscriptions WHERE subscription_id = ?",
@@ -1203,6 +1254,241 @@ class MarketEventStore:
             ).fetchone()
         return _row_to_delivery(row) if row is not None else None
 
+    def reschedule_delivery(
+        self,
+        *,
+        event_id: str,
+        subscription_id: str,
+        available_at: int,
+        reason: str,
+        delivery_mode: str | None = None,
+        importance_level: str | None = None,
+        now_ts: int | None = None,
+    ) -> MarketEventDelivery | None:
+        clean_event_id = _safe_id(event_id, field="event_id")
+        clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        clean_available_at = max(0, int(available_at))
+        clean_reason = _bounded_text(reason, field="reason", max_length=2000) or "scheduled"
+        clean_mode = str(delivery_mode or "").strip().lower()
+        if clean_mode and clean_mode not in DELIVERY_MODES:
+            raise _invalid_argument("delivery_mode", "unsupported delivery mode")
+        clean_level = str(importance_level or "").strip().lower()
+        if clean_level and clean_level not in DELIVERY_IMPORTANCE_LEVELS:
+            raise _invalid_argument("importance_level", "unsupported importance level")
+        now = self._now(now_ts)
+        updates = ["status = 'pending'", "available_at = ?", "reason = ?", "updated_at = ?"]
+        parameters: list[Any] = [clean_available_at, clean_reason, now]
+        if clean_mode:
+            updates.append("delivery_mode = ?")
+            parameters.append(clean_mode)
+        if clean_level:
+            updates.append("importance_level = ?")
+            parameters.append(clean_level)
+        parameters.extend((clean_event_id, clean_subscription_id))
+        with self._write_lock, self._connect(write=True) as connection:
+            connection.execute(
+                f"""
+                UPDATE market_event_deliveries
+                SET {", ".join(updates)}
+                WHERE event_id = ? AND subscription_id = ?
+                  AND status IN ('pending', 'failed')
+                """,
+                tuple(parameters),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM market_event_deliveries
+                WHERE event_id = ? AND subscription_id = ?
+                """,
+                (clean_event_id, clean_subscription_id),
+            ).fetchone()
+        return _row_to_delivery(row) if row is not None else None
+
+    def mark_delivery_cancelled(
+        self,
+        *,
+        event_id: str,
+        subscription_id: str,
+        reason: str,
+        analysis_id: str = "",
+        now_ts: int | None = None,
+    ) -> MarketEventDelivery | None:
+        clean_event_id = _safe_id(event_id, field="event_id")
+        clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        clean_reason = _bounded_text(reason, field="reason", max_length=2000) or "cancelled"
+        clean_analysis_id = _bounded_text(analysis_id, field="analysis_id", max_length=240)
+        now = self._now(now_ts)
+        with self._write_lock, self._connect(write=True) as connection:
+            connection.execute(
+                """
+                UPDATE market_event_deliveries
+                SET status = 'cancelled', analysis_id = CASE WHEN ? != '' THEN ? ELSE analysis_id END,
+                    reason = ?, updated_at = ?
+                WHERE event_id = ? AND subscription_id = ? AND status != 'delivered'
+                """,
+                (
+                    clean_analysis_id,
+                    clean_analysis_id,
+                    clean_reason,
+                    now,
+                    clean_event_id,
+                    clean_subscription_id,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE market_event_delivery_parts
+                SET status = 'failed', reason = ?, updated_at = ?
+                WHERE event_id = ? AND subscription_id = ? AND status != 'delivered'
+                """,
+                (clean_reason, now, clean_event_id, clean_subscription_id),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM market_event_deliveries
+                WHERE event_id = ? AND subscription_id = ?
+                """,
+                (clean_event_id, clean_subscription_id),
+            ).fetchone()
+        return _row_to_delivery(row) if row is not None else None
+
+    def find_open_cluster_delivery(
+        self,
+        *,
+        subscription_id: str,
+        cluster_id: str,
+        exclude_event_id: str = "",
+    ) -> MarketEventDelivery | None:
+        clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        clean_cluster_id = _safe_id(cluster_id, field="cluster_id")
+        clean_exclude = _safe_id(exclude_event_id, field="exclude_event_id") if exclude_event_id else ""
+        clauses = [
+            "d.subscription_id = ?",
+            "d.delivery_mode = 'cluster'",
+            "d.status IN ('pending', 'processing', 'failed')",
+            "d.reason NOT LIKE 'analysis_exhausted:%'",
+            "e.cluster_id = ?",
+            "NOT EXISTS (SELECT 1 FROM market_event_delivery_parts p "
+            "WHERE p.event_id = d.event_id AND p.subscription_id = d.subscription_id)",
+            "(SELECT COUNT(*) FROM market_event_deliveries covered "
+            "WHERE covered.subscription_id = d.subscription_id AND covered.status = 'cancelled' "
+            "AND covered.reason = 'clustered_into:' || d.event_id) < 49",
+        ]
+        parameters: list[Any] = [clean_subscription_id, clean_cluster_id]
+        if clean_exclude:
+            clauses.append("d.event_id != ?")
+            parameters.append(clean_exclude)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT d.*
+                FROM market_event_deliveries d
+                JOIN market_events e ON e.event_id = d.event_id
+                WHERE {" AND ".join(clauses)}
+                ORDER BY d.created_at, d.event_id
+                LIMIT 1
+                """,
+                tuple(parameters),
+            ).fetchone()
+        return _row_to_delivery(row) if row is not None else None
+
+    def find_open_digest_delivery(
+        self,
+        *,
+        subscription_id: str,
+        exclude_event_id: str = "",
+    ) -> MarketEventDelivery | None:
+        clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        clean_exclude = _safe_id(exclude_event_id, field="exclude_event_id") if exclude_event_id else ""
+        clauses = [
+            "d.subscription_id = ?",
+            "d.delivery_mode = 'digest'",
+            "d.status IN ('pending', 'processing', 'failed')",
+            "d.reason NOT LIKE 'analysis_exhausted:%'",
+            "NOT EXISTS (SELECT 1 FROM market_event_delivery_parts p "
+            "WHERE p.event_id = d.event_id AND p.subscription_id = d.subscription_id)",
+            "(SELECT COUNT(*) FROM market_event_deliveries covered "
+            "WHERE covered.subscription_id = d.subscription_id AND covered.status = 'cancelled' "
+            "AND covered.reason = 'digested_into:' || d.event_id) < 49",
+        ]
+        parameters: list[Any] = [clean_subscription_id]
+        if clean_exclude:
+            clauses.append("d.event_id != ?")
+            parameters.append(clean_exclude)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT d.* FROM market_event_deliveries d
+                WHERE {" AND ".join(clauses)}
+                ORDER BY d.created_at, d.event_id
+                LIMIT 1
+                """,
+                tuple(parameters),
+            ).fetchone()
+        return _row_to_delivery(row) if row is not None else None
+
+    def list_coalesced_events(
+        self,
+        *,
+        representative_event_id: str,
+        subscription_id: str,
+        limit: int = 50,
+    ) -> tuple[StoredMarketEvent, ...]:
+        clean_event_id = _safe_id(representative_event_id, field="representative_event_id")
+        clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        clean_limit = _bounded_int(limit, field="limit", lower=1, upper=200)
+        reasons = (f"clustered_into:{clean_event_id}", f"digested_into:{clean_event_id}")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT e.*
+                FROM market_event_deliveries d
+                JOIN market_events e ON e.event_id = d.event_id
+                WHERE d.subscription_id = ? AND d.status = 'cancelled'
+                  AND d.reason IN (?, ?)
+                ORDER BY e.published_at, e.event_id
+                LIMIT ?
+                """,
+                (clean_subscription_id, reasons[0], reasons[1], clean_limit),
+            ).fetchall()
+        return tuple(_row_to_stored_event(row) for row in rows)
+
+    def list_recent_delivery_times(
+        self,
+        *,
+        subscription_id: str,
+        since_ts: int,
+        limit: int = 1000,
+    ) -> tuple[int, ...]:
+        clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        clean_since = max(0, int(since_ts))
+        clean_limit = _bounded_int(limit, field="limit", lower=1, upper=5000)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT visible_at FROM (
+                    SELECT d.event_id,
+                           COALESCE(
+                               d.delivered_at,
+                               MIN(CASE
+                                   WHEN p.part_type = 'text' AND p.status = 'delivered'
+                                   THEN p.delivered_at
+                               END)
+                           ) AS visible_at
+                    FROM market_event_deliveries d
+                    LEFT JOIN market_event_delivery_parts p
+                      ON p.event_id = d.event_id AND p.subscription_id = d.subscription_id
+                    WHERE d.subscription_id = ?
+                    GROUP BY d.event_id
+                )
+                WHERE visible_at IS NOT NULL AND visible_at >= ?
+                ORDER BY visible_at
+                LIMIT ?
+                """,
+                (clean_subscription_id, clean_since, clean_limit),
+            ).fetchall()
+        return tuple(int(row["visible_at"]) for row in rows)
+
     def ensure_delivery_parts(
         self,
         *,
@@ -1257,6 +1543,21 @@ class MarketEventStore:
                 WHERE event_id = ? AND subscription_id = ?
                 """,
                 (clean_analysis_id, now, clean_event_id, clean_subscription_id),
+            )
+            connection.execute(
+                """
+                UPDATE market_event_deliveries
+                SET analysis_id = ?, updated_at = ?
+                WHERE subscription_id = ? AND status = 'cancelled'
+                  AND reason IN (?, ?)
+                """,
+                (
+                    clean_analysis_id,
+                    now,
+                    clean_subscription_id,
+                    f"clustered_into:{clean_event_id}",
+                    f"digested_into:{clean_event_id}",
+                ),
             )
             connection.executemany(
                 """
@@ -1424,8 +1725,14 @@ class MarketEventStore:
             now_ts=now_ts,
         )
 
-    def list_retryable_deliveries(self, *, limit: int = 100) -> tuple[MarketEventDelivery, ...]:
+    def list_retryable_deliveries(
+        self,
+        *,
+        limit: int = 100,
+        now_ts: int | None = None,
+    ) -> tuple[MarketEventDelivery, ...]:
         clean_limit = _bounded_int(limit, field="limit", lower=1, upper=1000)
+        now = self._now(now_ts)
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -1433,11 +1740,12 @@ class MarketEventStore:
                 FROM market_event_deliveries AS d
                 JOIN finance_subscriptions AS s ON s.subscription_id = d.subscription_id
                 WHERE d.status IN ('pending', 'failed') AND s.enabled = 1
+                  AND d.available_at <= ?
                   AND d.reason NOT LIKE 'analysis_exhausted:%'
-                ORDER BY d.updated_at, d.event_id, d.subscription_id
+                ORDER BY d.available_at, d.updated_at, d.event_id, d.subscription_id
                 LIMIT ?
                 """,
-                (clean_limit,),
+                (now, clean_limit),
             ).fetchall()
         return tuple(_row_to_delivery(row) for row in rows)
 
@@ -1892,6 +2200,17 @@ def _row_to_delivery(row: sqlite3.Row) -> MarketEventDelivery:
         event_id=str(row["event_id"] or ""),
         subscription_id=str(row["subscription_id"] or ""),
         status=status,
+        delivery_mode=(
+            str(row["delivery_mode"] or "immediate")
+            if str(row["delivery_mode"] or "immediate") in DELIVERY_MODES
+            else "immediate"
+        ),
+        importance_level=(
+            str(row["importance_level"] or "notify")
+            if str(row["importance_level"] or "notify") in DELIVERY_IMPORTANCE_LEVELS
+            else "notify"
+        ),
+        available_at=max(0, int(row["available_at"] or 0)),
         analysis_id=str(row["analysis_id"] or ""),
         attempt_count=max(0, int(row["attempt_count"] or 0)),
         last_attempt_at=int(row["last_attempt_at"]) if row["last_attempt_at"] is not None else None,
