@@ -75,15 +75,52 @@ class FinanceEventOrchestrator:
     def process_event(self, event: MarketEvent, *, now_ts: int | None = None) -> FinanceEventRunResult:
         now = self._now(now_ts)
         upsert = self.store.upsert_event(event, now_ts=now)
-        record = upsert.record
+        return self._process_record(
+            record=upsert.record,
+            upsert_status=upsert.status,
+            now_ts=now,
+            retry_existing=True,
+        )
+
+    def process_stored_event(
+        self,
+        event_id: str,
+        *,
+        upsert_status: str = "stored",
+        now_ts: int | None = None,
+        retry_existing: bool = True,
+    ) -> FinanceEventRunResult | None:
+        record = self.store.get_event(event_id)
+        if record is None:
+            return None
+        return self._process_record(
+            record=record,
+            upsert_status=upsert_status,
+            now_ts=self._now(now_ts),
+            retry_existing=retry_existing,
+        )
+
+    def _process_record(
+        self,
+        *,
+        record: StoredMarketEvent,
+        upsert_status: str,
+        now_ts: int,
+        retry_existing: bool,
+    ) -> FinanceEventRunResult:
         subscriptions = self.store.match_subscriptions(record)
         results = tuple(
-            self._process_subscription(record=record, subscription=subscription, now_ts=now)
+            self._process_subscription(
+                record=record,
+                subscription=subscription,
+                now_ts=now_ts,
+                retry_existing=retry_existing,
+            )
             for subscription in subscriptions
         )
         return FinanceEventRunResult(
             event_id=record.event.event_id,
-            upsert_status=upsert.status,
+            upsert_status=upsert_status,
             delivery_results=results,
         )
 
@@ -104,6 +141,7 @@ class FinanceEventOrchestrator:
         record: StoredMarketEvent,
         subscription: FinanceSubscription,
         now_ts: int,
+        retry_existing: bool = True,
     ) -> FinanceDeliveryAttemptResult:
         event = record.event
         cluster_delivered = self.store.has_delivered_cluster(
@@ -142,6 +180,28 @@ class FinanceEventOrchestrator:
                 reason=authorization.reason or authorization.status,
                 importance=decision,
             )
+
+        if not retry_existing:
+            existing_delivery = self.store.get_delivery(
+                event_id=event.event_id,
+                subscription_id=subscription.subscription_id,
+            )
+            if existing_delivery is not None:
+                return FinanceDeliveryAttemptResult(
+                    event_id=event.event_id,
+                    subscription_id=subscription.subscription_id,
+                    status=(
+                        "already_delivered"
+                        if existing_delivery.status == "delivered"
+                        else "in_progress"
+                        if existing_delivery.status == "processing"
+                        else existing_delivery.status
+                    ),
+                    reason=existing_delivery.reason or "existing_delivery_not_retried_during_recovery",
+                    importance=decision,
+                    analysis_id=existing_delivery.analysis_id,
+                    attempt_count=existing_delivery.attempt_count,
+                )
 
         reservation = self.store.ensure_delivery(
             event_id=event.event_id,
@@ -213,8 +273,39 @@ class FinanceEventOrchestrator:
                 now_ts=now_ts,
             )
 
+        current_subscription = self.store.get_subscription(subscription.subscription_id)
+        if (
+            current_subscription is None
+            or not current_subscription.enabled
+            or current_subscription.finance_mode != "push"
+        ):
+            current_delivery = self.store.get_delivery(
+                event_id=event.event_id,
+                subscription_id=subscription.subscription_id,
+            )
+            return FinanceDeliveryAttemptResult(
+                event_id=event.event_id,
+                subscription_id=subscription.subscription_id,
+                status="cancelled",
+                reason="subscription_disabled_before_delivery",
+                importance=decision,
+                analysis_id=request.analysis_id,
+                attempt_count=(
+                    current_delivery.attempt_count if current_delivery is not None else claim.delivery.attempt_count
+                ),
+            )
+        delivery_authorization = self.delivery_adapter.authorize(current_subscription)
+        if not delivery_authorization.allowed:
+            return self._fail(
+                request=request,
+                decision=decision,
+                reason=f"delivery_authorization_lost:{delivery_authorization.reason or delivery_authorization.status}",
+                attempt_count=claim.delivery.attempt_count,
+                now_ts=now_ts,
+            )
+
         try:
-            delivered = self.delivery_adapter.deliver(subscription=subscription, analysis=analysis)
+            delivered = self.delivery_adapter.deliver(subscription=current_subscription, analysis=analysis)
         except Exception as exc:
             return self._fail(
                 request=request,

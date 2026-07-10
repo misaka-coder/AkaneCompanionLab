@@ -1267,6 +1267,7 @@ class NapCatQQGateway:
         context: QQMessageContext,
         *,
         event: dict[str, Any] | None = None,
+        subscription_service: Any = None,
     ) -> dict[str, Any] | None:
         command = self.parse_finance_mode_command(context.clean_message)
         if command is None:
@@ -1330,12 +1331,42 @@ class NapCatQQGateway:
                 "domain_profile": FINANCE_DOMAIN_PROFILE_ID if active_mode in {"qa", "push"} else "",
             }
 
+        subscription_sync: dict[str, Any] = {}
+        if subscription_service is not None:
+            try:
+                raw_sync = subscription_service.sync_mode(context, requested_mode)
+                subscription_sync = dict(raw_sync) if isinstance(raw_sync, dict) else {}
+            except Exception as exc:
+                subscription_sync = {
+                    "ok": False,
+                    "status": "subscription_failed",
+                    "reason": type(exc).__name__,
+                }
+            if not bool(subscription_sync.get("ok")):
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "status": "subscription_sync_failed",
+                    "reply": "财经订阅状态没有安全落库，因此本次模式切换未生效，请稍后重试。",
+                    "finance_mode": active_mode,
+                    "domain_profile": FINANCE_DOMAIN_PROFILE_ID if active_mode in {"qa", "push"} else "",
+                    "subscription_status": str(subscription_sync.get("status") or "failed"),
+                    "subscription_reason": str(subscription_sync.get("reason") or ""),
+                }
+
         state_persisted = self.set_session_finance_mode(context.session_id, requested_mode)
         reply = f"已把当前 QQ 会话切换为{self._format_finance_mode_label(requested_mode)}。"
         if requested_mode == "qa":
             reply += "后续金融问题会加载证据、时效和风险纪律；当前角色与 QQ 文字协议保持不变。"
         elif requested_mode == "push":
-            reply += "当前只是开放主动推送领域状态；订阅、关注列表和事件投递会在后续切片接通。"
+            if subscription_sync:
+                watchlist_count = max(0, int(subscription_sync.get("watchlist_count") or 0))
+                reply += (
+                    f"主动推送订阅已落库，当前关注列表有 {watchlist_count} 项。"
+                    "发送“关注 证券代码或精确名称”添加标的，发送“关注列表”查看。"
+                )
+            else:
+                reply += "当前只是开放主动推送领域状态；订阅服务尚未装配。"
         else:
             reply += "后续回复恢复普通领域档案。"
         return {
@@ -1346,7 +1377,18 @@ class NapCatQQGateway:
             "finance_mode": requested_mode,
             "domain_profile": FINANCE_DOMAIN_PROFILE_ID if requested_mode in {"qa", "push"} else "",
             "state_persisted": state_persisted,
+            "subscription_id": str(subscription_sync.get("subscription_id") or ""),
+            "subscription_status": str(subscription_sync.get("status") or ""),
+            "watchlist_count": max(0, int(subscription_sync.get("watchlist_count") or 0)),
         }
+
+    def can_manage_finance_subscription(
+        self,
+        context: QQMessageContext,
+        *,
+        event: dict[str, Any] | None = None,
+    ) -> bool:
+        return not context.is_group or self._can_enable_group_finance_push(context, event=event)
 
     def _can_enable_group_finance_push(
         self,

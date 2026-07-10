@@ -81,8 +81,15 @@ class _TestClientSession:
     def __init__(self, client: TestClient) -> None:
         self.client = client
 
-    def request(self, method, url, *, json, headers, timeout, allow_redirects):
-        return self.client.request(method, url, json=json, headers=headers, follow_redirects=allow_redirects)
+    def request(self, method, url, *, json, headers, timeout, allow_redirects, params=None):
+        return self.client.request(
+            method,
+            url,
+            json=json,
+            headers=headers,
+            params=params,
+            follow_redirects=allow_redirects,
+        )
 
 
 class _BrokenSession:
@@ -91,6 +98,57 @@ class _BrokenSession:
 
 
 class EmQuantBridgeMarketDataProviderTests(unittest.TestCase):
+    def test_provider_polls_and_normalizes_news_callback_events(self) -> None:
+        sdk = FakeEmQuantSDK()
+        runtime = EmQuantBridgeRuntime(
+            enabled=True,
+            sdk=sdk,
+            provider_id="fake_emquant",
+            source_name="Fake EmQuant SDK",
+            clock=lambda: 1_752_153_600,
+        )
+        runtime.register_subscription(
+            subscription_id="news-sub-worker",
+            kind="news",
+            codes=("000000.TEST",),
+            fields=("companynews",),
+        )
+        client = TestClient(create_emquant_bridge_app(runtime, access_token="bridge-secret"))
+        client.post("/start", headers={"Authorization": "Bearer bridge-secret"})
+        state = runtime.list_subscriptions()[0]
+        sdk.emit_news(
+            state.serial_id,
+            [
+                {
+                    "datetime": "2026-07-10 09:30:00",
+                    "eitime": "2026-07-10 09:31:00",
+                    "code": "000000.TEST",
+                    "content": "离线合成 callback。",
+                    "title": "合成公司披露季度经营数据",
+                    "infoCode": "WORKER-NEWS-001",
+                    "medianname": "Fake EmQuant SDK",
+                    "url": "https://example.invalid/WORKER-NEWS-001",
+                    "type": "companynews",
+                    "label": "earnings,synthetic",
+                }
+            ],
+        )
+        provider = EmQuantBridgeMarketDataProvider(
+            access_token="bridge-secret",
+            session=_TestClientSession(client),
+            clock=lambda: 1_752_153_600,
+        )
+
+        batch = provider.poll_market_events(limit=10)
+
+        self.assertTrue(batch.ok, batch.to_public_dict())
+        self.assertEqual(batch.status, "ok")
+        self.assertEqual(len(batch.events), 1)
+        self.assertEqual(batch.events[0].event_id, "choice:WORKER-NEWS-001")
+        self.assertEqual(batch.events[0].code, "000000.TEST")
+        self.assertEqual(runtime.poll_events(), ())
+        self.assertNotIn("bridge-secret", str(batch.to_public_dict()))
+
     def test_provider_reads_loopback_bridge_and_normalizes_series(self) -> None:
         sdk = FakeEmQuantSDK(series_rows=SERIES_ROWS)
         runtime = EmQuantBridgeRuntime(

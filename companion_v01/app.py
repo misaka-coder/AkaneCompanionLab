@@ -20,7 +20,13 @@ from fastapi.staticfiles import StaticFiles
 import config
 from services.tts_client import EdgeTTSClient
 from .engine import AkaneMemoryEngine
-from .finance import AkaneFinanceAnalysisClient, FinanceEventOrchestrator, QQFinanceDeliveryAdapter
+from .finance import (
+    AkaneFinanceAnalysisClient,
+    FinanceEventOrchestrator,
+    FinanceEventWorker,
+    FinanceSubscriptionService,
+    QQFinanceDeliveryAdapter,
+)
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
@@ -140,12 +146,37 @@ else:
 finance_event_orchestrator: FinanceEventOrchestrator | None = None
 market_data_tool_service = getattr(engine, "market_data_tool_service", None)
 market_event_store = getattr(market_data_tool_service, "event_store", None)
+market_event_provider = getattr(market_data_tool_service, "provider", None)
+finance_subscription_service: FinanceSubscriptionService | None = None
+finance_event_worker: FinanceEventWorker | None = None
+if market_event_store is not None:
+    finance_subscription_service = FinanceSubscriptionService(
+        store=market_event_store,
+        provider_id=str(getattr(market_event_provider, "id", "choice_emquant") or "choice_emquant"),
+    )
 if qq_gateway is not None and market_event_store is not None:
     finance_event_orchestrator = FinanceEventOrchestrator(
         store=market_event_store,
         analysis_client=AkaneFinanceAnalysisClient(engine),
         delivery_adapter=QQFinanceDeliveryAdapter(qq_gateway),
     )
+    if callable(getattr(market_event_provider, "poll_market_events", None)):
+        event_source_factory = getattr(market_event_provider, "clone", None)
+        finance_event_source = event_source_factory() if callable(event_source_factory) else market_event_provider
+        finance_event_worker = FinanceEventWorker(
+            source=finance_event_source,
+            orchestrator=finance_event_orchestrator,
+            enabled=bool(getattr(config, "FINANCE_EVENT_INGESTION_ENABLED", False))
+            and bool(getattr(config, "FINANCE_ASSISTANT_ENABLED", False))
+            and bool(getattr(config, "QQ_FINANCE_PUSH_ENABLED", False))
+            and bool(getattr(config, "QQ_BRIDGE_ENABLED", False)),
+            poll_interval_seconds=float(getattr(config, "FINANCE_EVENT_POLL_INTERVAL_SECONDS", 2.0)),
+            poll_batch_size=int(getattr(config, "FINANCE_EVENT_POLL_BATCH_SIZE", 20)),
+            recovery_max_age_seconds=int(
+                getattr(config, "FINANCE_EVENT_RECOVERY_MAX_AGE_SECONDS", 6 * 60 * 60)
+            ),
+            log_event=lambda event, **fields: _log_event(event, **fields),
+        )
 
 
 def _install_qq_task_completion_notifications() -> None:
@@ -291,6 +322,12 @@ def _send_qq_completion_files(
 if qq_gateway is not None:
     _install_qq_task_completion_notifications()
 
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    if finance_event_worker is not None:
+        finance_event_worker.start()
+
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 if CREATOR_KIT_CHARACTERS_DIR.exists():
@@ -310,6 +347,8 @@ if USER_ASSETS_DIR.exists():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
+    if finance_event_worker is not None:
+        finance_event_worker.stop(timeout_seconds=5.0)
     engine.close()
 
 
@@ -399,6 +438,8 @@ if qq_gateway is not None:
             logger=logger,
             log_event=_log_event,
             tts_client=tts_client,
+            finance_subscription_service=finance_subscription_service,
+            finance_event_worker=finance_event_worker,
         )
     )
 app.include_router(

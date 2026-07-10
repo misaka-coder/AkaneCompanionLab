@@ -12,6 +12,11 @@ from .event_orchestrator import (
     FinanceEventOrchestrator,
     FinanceEventRunResult,
 )
+from .event_worker import (
+    FinanceEventWorker,
+    FinanceEventWorkerCycleResult,
+    FinanceMarketEventSource,
+)
 from .importance_policy import (
     IMPORTANCE_LEVELS,
     FinanceEventImportancePolicy,
@@ -19,6 +24,7 @@ from .importance_policy import (
 )
 from .market_service import MarketDataToolService, compute_quote_metrics, compute_series_metrics
 from .qq_delivery import QQFinanceDeliveryAdapter
+from .subscription_service import FinanceSubscriptionService
 from .tool_handlers import (
     MarketNewsSearchToolHandler,
     MarketPriceSeriesToolHandler,
@@ -40,6 +46,10 @@ __all__ = [
     "FinanceEventImportancePolicy",
     "FinanceEventOrchestrator",
     "FinanceEventRunResult",
+    "FinanceEventWorker",
+    "FinanceEventWorkerCycleResult",
+    "FinanceMarketEventSource",
+    "FinanceSubscriptionService",
     "IMPORTANCE_LEVELS",
     "ImportanceDecision",
     "MarketNewsSearchToolHandler",

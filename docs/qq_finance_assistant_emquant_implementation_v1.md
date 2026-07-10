@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0-F5 已完成；F6a Fake-event → AI → QQ 核心编排、幂等投递和双开关适配已完成；QQ 命令到 subscription/watchlist 的同步、自动事件消费与真实 Choice 冒烟仍等待后续接线
+状态：设计锁定；F0-F6 已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析和 QQ 幂等投递已接通；真实 Choice 冒烟仍等待账户权限
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -1441,6 +1441,12 @@ EMQUANT_RECORD_LOGIN_INFO=false
 EMQUANT_HTTP_TIMEOUT_SECONDS=15
 EMQUANT_CALLBACK_QUEUE_MAX=5000
 
+# Akane 主进程事件 worker；四重开关与 subscription 全部满足时才消费
+FINANCE_EVENT_INGESTION_ENABLED=false
+FINANCE_EVENT_POLL_INTERVAL_SECONDS=2
+FINANCE_EVENT_POLL_BATCH_SIZE=20
+FINANCE_EVENT_RECOVERY_MAX_AGE_SECONDS=21600
+
 # QQ finance
 QQ_FINANCE_MODE_COMMANDS_ENABLED=true
 QQ_FINANCE_PUSH_ENABLED=false
@@ -1715,7 +1721,7 @@ tests/
 
 ### Slice F6：Event → AI → QQ
 
-状态：F6a 核心闭环已完成；未自动启动 Bridge 事件轮询、后台 worker 或真实 QQ 推送。
+状态：F6a/F6b 已完成 Fake Bridge 验收；事件 worker 默认关闭，未执行真实 Choice 登录或真实 QQ 推送。
 
 实际落地：
 
@@ -1728,6 +1734,18 @@ tests/
 - `QQFinanceDeliveryAdapter` 在调用 NapCat 前同时检查 `FINANCE_ASSISTANT_ENABLED / QQ_FINANCE_PUSH_ENABLED / QQ_BRIDGE_ENABLED`、subscription enabled、client=qq、finance_mode=push 和合法 target；默认配置下不会真实发送；
 - `companion_v01.app` 只在现有 market store 与 QQ gateway 都已装配时创建 orchestrator 对象，不启动轮询、不消费 Bridge 队列，也不在应用启动时发送任何消息；
 - Fake 端到端测试覆盖：外部事件不带 Actor、完整推送契约、同事件幂等、同 cluster 去重、开关关闭不花费 AI、QQ 失败重试、原子 claim、v2→v3 迁移以及群聊 delivery context。
+
+F6b 实际落地：
+
+- `FinanceSubscriptionService` 将群管理员/群主/主人或私聊用户的“开启财经推送”同步为 `finance_subscriptions`；切回 qa/off 时先禁用 subscription，再更新 QQ 会话模式，订阅落库失败则模式切换 fail closed；
+- 新增“关注 证券代码或精确名称 / 取消关注 / 关注列表”固定命令。群聊增加和删除仍要求管理员权限，普通群成员可查看列表；名称只接受可信证券主数据的唯一 exact match，候选不唯一时要求完整 provider code，程序不会拼 `.SH/.SZ/.BJ`；
+- watchlist 在关闭/重新开启推送后保留，subscription creator Actor 首次写入后不被后续管理员覆盖；空关注列表继续匹配零事件，不会退化成全市场广播；
+- `EmQuantBridgeMarketDataProvider.poll_market_events()` 只访问 loopback Bridge 的固定 `/events`，只规范化成功的 news callback；quote/system/error callback 只计入 ignored，不冒充市场新闻；Bridge 失败不生成 Mock 事件；
+- `FinanceEventWorker` 是串行 daemon worker，不占用普通聊天请求线程。没有 enabled push subscription 时不会 drain Bridge；拿到 callback batch 后先把整批事件写入 MarketEventStore，再逐条调用 orchestrator，降低中途退出导致整批丢失的风险；
+- worker 首轮会在可配置时间窗内扫描已落库事件并恢复未完成分析，同时先处理 pending/failed delivery；同事件、同 cluster 和 delivered 状态仍由 F6a 幂等约束保护；
+- 应用 startup/shutdown 只负责 start/stop worker。worker 的有效启动同时要求 `FINANCE_EVENT_INGESTION_ENABLED / FINANCE_ASSISTANT_ENABLED / QQ_FINANCE_PUSH_ENABLED / QQ_BRIDGE_ENABLED`，且默认第一个开关为 false；启动不会调用 Bridge `/start`，主进程仍不加载 Choice DLL；
+- `/api/qq/napcat/status` 可附带 worker 运行状态；worker cycle 只记录结构化计数和安全原因，不记录 token、SDK 路径、原始正文或本地数据库绝对路径；
+- Fake 测试覆盖管理员命令真实落 subscription、可信名称进 watchlist、未授权群成员修改被拒绝、无订阅不 drain、整批先落库再分析、近期事件恢复、worker start/stop、Bridge callback 规范化和 source failure fail closed。
 
 目标：新事件触发人格化金融分析并主动投递。
 
@@ -1901,11 +1919,11 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F6a 核心编排已经完成，但默认不自动消费 Bridge 事件，也不自动向真实 QQ 发送。上下文恢复后按以下顺序继续：
+F6 已完成 Fake Bridge/Mock 主链验收，真实主动推送仍因默认开关和 Choice 权限保持关闭。上下文恢复后按以下顺序继续：
 
-1. 做 F6b 订阅与受控事件入口：把群管理员“开启财经推送”同步为 `finance_subscriptions` 授权记录，补齐 watchlist 管理入口，再把 Bridge 已标准化事件显式交给 `FinanceEventOrchestrator.process_event()`；提供停机、队列背压和结构化日志，启动开关默认关闭，不能在 import 或测试时登录 Choice、轮询或发送 QQ；
-2. 在真实 Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/csqsnapshot/csd 的实际权限、字段、证券主数据来源和 AdjustFlag 口径；未确认前继续使用 Fake SDK；
+1. 在真实 Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/cnq/csqsnapshot/csd 的实际权限、callback 字段、证券主数据来源和 AdjustFlag 口径；未确认前继续使用 Fake SDK；
+2. 进入 F7：使用真实数值生成确定性 PNG/MD/PDF/XLSX，并通过 subscription 授权投递，不让 AI 生图承担事实行情表达；
 3. 视真实权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
-4. 进入 F7：使用真实数值生成确定性 PNG/MD/PDF/XLSX，并通过 subscription 授权投递，不让 AI 生图承担事实行情表达。
+4. F9 再补 processing 跨进程租约、部分 QQ 气泡投递恢复、速率限制、digest、metrics 和人工 replay，不在 F6 假装已经完成这些运营能力。
 
-推荐下一个独立提交边界：`finance event ingestion worker (disabled by default)`；若真实 Choice 权限仍未开通，继续只用 Fake Bridge 事件验证 worker，不用假数据冒充真实市场事件。
+推荐下一个独立提交边界：`deterministic finance chart + QQ subscription delivery`；如果 Choice 权限仍未开通，继续用明确标记 synthetic 的序列验算图表像素数据和标题，不把测试图冒充真实行情。

@@ -194,6 +194,10 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("EMQUANT_BRIDGE_URL", _FIN, SCOPE_RESTART_CLIENT, "本机 EmQuant Bridge 地址"),
     _s("EMQUANT_BRIDGE_TOKEN", _FIN, SCOPE_RESTART_CLIENT, "本机 EmQuant Bridge 鉴权值", sensitive=True),
     _s("EMQUANT_HTTP_TIMEOUT_SECONDS", _FIN, SCOPE_RESTART_CLIENT, "EmQuant Bridge 请求超时（秒）"),
+    _s("FINANCE_EVENT_INGESTION_ENABLED", _FIN, SCOPE_RESTART, "启动财经事件消费 worker（默认关闭）"),
+    _s("FINANCE_EVENT_POLL_INTERVAL_SECONDS", _FIN, SCOPE_RESTART, "财经事件轮询间隔（秒）"),
+    _s("FINANCE_EVENT_POLL_BATCH_SIZE", _FIN, SCOPE_RESTART, "单次财经事件轮询最大 callback 数"),
+    _s("FINANCE_EVENT_RECOVERY_MAX_AGE_SECONDS", _FIN, SCOPE_RESTART, "启动时恢复近期事件的最大年龄"),
     _s("QQ_FINANCE_MODE_COMMANDS_ENABLED", _FIN, SCOPE_RUNTIME, "允许 QQ 切换金融模式"),
     _s("QQ_FINANCE_PUSH_ENABLED", _FIN, SCOPE_RUNTIME, "允许 QQ 会话进入财经主动推送模式"),
     # QQ / NapCat 桥接

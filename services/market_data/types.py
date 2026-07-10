@@ -89,6 +89,33 @@ class MarketEvent:
 
 
 @dataclass(frozen=True)
+class MarketEventPollResult:
+    ok: bool
+    status: str
+    provider: str
+    source: str
+    events: tuple[MarketEvent, ...]
+    raw_event_count: int = 0
+    ignored_count: int = 0
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "events", tuple(self.events or ()))
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "ok": bool(self.ok),
+            "status": str(self.status or ""),
+            "provider": str(self.provider or ""),
+            "source": str(self.source or ""),
+            "events": [event.to_public_dict() for event in self.events],
+            "raw_event_count": max(0, int(self.raw_event_count)),
+            "ignored_count": max(0, int(self.ignored_count)),
+            "reason": str(self.reason or ""),
+        }
+
+
+@dataclass(frozen=True)
 class MarketQuoteSnapshot:
     provider: str
     code: str

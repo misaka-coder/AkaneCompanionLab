@@ -18,6 +18,7 @@ from .types import (
     MarketDataResponse,
     MarketDataValidationError,
     MarketEvent,
+    MarketEventPollResult,
     MarketProviderHealth,
     MarketQuoteSnapshot,
     MarketSeries,
@@ -63,6 +64,17 @@ class EmQuantBridgeMarketDataProvider(MarketDataProvider):
         self.provider_id = str(provider_id or "choice_emquant").strip() or "choice_emquant"
         self.source_name = str(source_name or "Choice EmQuant").strip() or "Choice EmQuant"
         self._clock = clock
+
+    def clone(self) -> "EmQuantBridgeMarketDataProvider":
+        """Create an isolated HTTP session for background event polling."""
+        return EmQuantBridgeMarketDataProvider(
+            self.base_url,
+            access_token=self.access_token,
+            timeout_seconds=self.timeout_seconds,
+            provider_id=self.provider_id,
+            source_name=self.source_name,
+            clock=self._clock,
+        )
 
     def health(self) -> MarketProviderHealth:
         payload, failure = self._request("GET", "/health")
@@ -149,6 +161,76 @@ class EmQuantBridgeMarketDataProvider(MarketDataProvider):
             reason="" if data else "Choice returned no matching normalized news records",
         )
 
+    def poll_market_events(self, *, limit: int = 100) -> MarketEventPollResult:
+        if isinstance(limit, bool):
+            raise _invalid_request("limit", "limit must be an integer", provider=self.id)
+        clean_limit = max(1, min(1000, int(limit)))
+        payload, failure = self._request("GET", "/events", params={"limit": clean_limit})
+        if failure is not None or payload is None:
+            return MarketEventPollResult(
+                ok=False,
+                status=failure[0],
+                provider=self.id,
+                source=self.source,
+                events=(),
+                reason=failure[1],
+            )
+        raw_events = payload.get("events")
+        if not isinstance(raw_events, list):
+            return MarketEventPollResult(
+                ok=False,
+                status="unavailable",
+                provider=self.id,
+                source=self.source,
+                events=(),
+                reason="EmQuant bridge events response is missing an events list",
+            )
+
+        events: list[MarketEvent] = []
+        ignored_count = 0
+        for callback in raw_events:
+            if not isinstance(callback, Mapping):
+                ignored_count += 1
+                continue
+            if str(callback.get("kind") or "").strip().lower() != "news":
+                ignored_count += 1
+                continue
+            if _safe_int(callback.get("error_code")) != 0:
+                ignored_count += 1
+                continue
+            callback_payload = callback.get("payload")
+            records = callback_payload.get("records") if isinstance(callback_payload, Mapping) else None
+            if not isinstance(records, list):
+                ignored_count += 1
+                continue
+            received_at = _positive_int(callback.get("received_at"), fallback=max(1, int(self._clock())))
+            for raw in records:
+                if not isinstance(raw, Mapping):
+                    ignored_count += 1
+                    continue
+                try:
+                    events.append(
+                        normalize_choice_news_record(
+                            raw,
+                            provider=self.id,
+                            event_namespace="choice",
+                            received_at=received_at,
+                        )
+                    )
+                except MarketDataValidationError:
+                    ignored_count += 1
+        events.sort(key=lambda item: (item.published_at, item.event_id))
+        return MarketEventPollResult(
+            ok=True,
+            status="ok" if events else "empty",
+            provider=self.id,
+            source=self.source,
+            events=tuple(events),
+            raw_event_count=len(raw_events),
+            ignored_count=ignored_count,
+            reason="" if events else "Bridge returned no normalized news events",
+        )
+
     def get_quote_snapshots(
         self,
         request: MarketQuoteRequest,
@@ -232,19 +314,21 @@ class EmQuantBridgeMarketDataProvider(MarketDataProvider):
         path: str,
         *,
         json_body: Mapping[str, Any] | None = None,
+        params: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, Any] | None, tuple[str, str] | None]:
         headers = {"Accept": "application/json"}
         if self.access_token:
             headers["Authorization"] = f"Bearer {self.access_token}"
         try:
-            response = self.session.request(
-                method,
-                f"{self.base_url}{path}",
-                json=dict(json_body) if json_body is not None else None,
-                headers=headers,
-                timeout=self.timeout_seconds,
-                allow_redirects=False,
-            )
+            request_kwargs = {
+                "json": dict(json_body) if json_body is not None else None,
+                "headers": headers,
+                "timeout": self.timeout_seconds,
+                "allow_redirects": False,
+            }
+            if params is not None:
+                request_kwargs["params"] = dict(params)
+            response = self.session.request(method, f"{self.base_url}{path}", **request_kwargs)
         except requests.Timeout:
             return None, ("unavailable", "EmQuant bridge request timed out")
         except requests.RequestException:

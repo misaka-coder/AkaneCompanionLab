@@ -177,6 +177,36 @@ class FinanceEventOrchestratorTests(unittest.TestCase):
             )
         )
 
+    def test_subscription_disabled_during_analysis_prevents_qq_send(self) -> None:
+        delivery = _FakeDeliveryAdapter()
+
+        class DisablingAnalysis(_FakeAnalysisClient):
+            def analyze(inner_self, request):
+                result = super().analyze(request)
+                self.store.set_subscription_enabled(
+                    self.subscription.subscription_id,
+                    enabled=False,
+                    now_ts=250,
+                )
+                return result
+
+        analysis = DisablingAnalysis()
+        orchestrator = FinanceEventOrchestrator(
+            store=self.store,
+            analysis_client=analysis,
+            delivery_adapter=delivery,
+        )
+
+        result = orchestrator.process_event(_event(event_id="choice:finance-f6-cancelled"), now_ts=200)
+
+        self.assertEqual(result.delivery_results[0].status, "cancelled")
+        self.assertEqual(delivery.deliveries, [])
+        stored = self.store.get_delivery(
+            event_id="choice:finance-f6-cancelled",
+            subscription_id=self.subscription.subscription_id,
+        )
+        self.assertEqual(stored.status, "cancelled")
+
     def test_low_importance_event_is_archived_without_ai(self) -> None:
         orchestrator, analysis, delivery = self._orchestrator()
         low = replace(
