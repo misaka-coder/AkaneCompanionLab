@@ -43,6 +43,7 @@ def ingest_desktop_pet_audio_attachment(
     source_path: Path | str,
     origin_name: str = "",
     mime_type: str = "",
+    character_pack_id: str = "",
     timestamp: int | None = None,
 ) -> dict[str, Any]:
     service = engine._get_attachment_ingest_service()
@@ -56,6 +57,7 @@ def ingest_desktop_pet_audio_attachment(
         mime_type=mime_type,
         kind="audio",
         source="desktop_pet",
+        character_pack_id=character_pack_id,
         timestamp=timestamp,
     )
 
@@ -68,6 +70,7 @@ def import_desktop_pet_local_paths(
     paths: list[Any] | tuple[Any, ...] | set[Any] | str,
     recursive: bool = False,
     max_files: int = DESKTOP_PET_DEFAULT_LOCAL_IMPORT_LIMIT,
+    character_pack_id: str = "",
     timestamp: int | None = None,
 ) -> dict[str, Any]:
     service = engine._get_attachment_ingest_service()
@@ -110,6 +113,7 @@ def import_desktop_pet_local_paths(
                 mime_type=mimetypes.guess_type(path.name)[0] or "",
                 kind=kind,
                 source="desktop_pet",
+                character_pack_id=character_pack_id,
                 timestamp=effective_ts,
             )
         except Exception as exc:

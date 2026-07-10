@@ -1319,6 +1319,21 @@ class GeneratedFileTests(unittest.TestCase):
         self.assertEqual(result.stream_events[1]["generated_file"]["generated_handle"], "gen_002")
         self.assertEqual(result.followup_context, "转写完成。")
 
+    def test_transcribe_media_tool_handler_does_not_send_by_default(self) -> None:
+        handler = TranscribeMediaToolHandler(generated_file_service=object())
+
+        call = handler.normalize_call(
+            {
+                "type": "transcribe_media",
+                "source_ids": ["audio_001"],
+                "output_format": "md",
+            }
+        )
+
+        self.assertIsNotNone(call)
+        self.assertFalse((call or {}).get("send_to_user"))
+        self.assertIn('"send_to_user":false', handler.build_prompt_instruction())
+
     def test_inspect_media_info_tool_handler_emits_media_info_event(self) -> None:
         class FakeGeneratedService:
             def inspect_media_info(self, **kwargs):
@@ -1634,6 +1649,9 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertEqual(result["generated"]["generated_handle"], "gen_001")
             self.assertEqual(result["generated"]["delivery_status"], "pending")
             self.assertTrue(Path(result["generated"]["absolute_path"]).exists())
+            self.assertIn("进入客户端投递队列", result["followup_context"])
+            self.assertIn("不能说用户已经收到或发送成功", result["followup_context"])
+            self.assertNotIn(str(root), result["followup_context"])
 
     def test_send_generated_file_supports_multiple_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1837,6 +1855,8 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertEqual(result["files"][0]["name"], "clip.mp4")
             self.assertEqual(result["files"][1]["handle"], "gen_001")
             self.assertIn("2 个已有文件", result["followup_context"])
+            self.assertIn("尚无最终回执", result["followup_context"])
+            self.assertNotIn(str(root), result["followup_context"])
 
     def test_send_file_requests_confirmation_for_ambiguous_generated_name(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

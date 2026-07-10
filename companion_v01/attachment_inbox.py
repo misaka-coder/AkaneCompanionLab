@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import logging
 import time
 import re
 from pathlib import Path
@@ -17,6 +18,8 @@ DEFAULT_WORKSPACE_CHAR_BUDGET = 24000
 WORKSPACE_ITEM_CHAR_BUDGET = 12000
 WORKSPACE_MAX_TARGETS = 30
 AUTO_FOCUS_MAX_ITEMS = WORKSPACE_MAX_TARGETS
+INTERNAL_ATTACHMENT_DETAIL_KEYS = frozenset({"character_pack_id"})
+logger = logging.getLogger("akane.attachment_inbox")
 
 
 class AttachmentInboxService:
@@ -34,6 +37,7 @@ class AttachmentInboxService:
         base_dir: Path | None = None,
         legacy_base_dirs: list[Path] | tuple[Path, ...] | None = None,
         workspace_uri_resolver: Callable[[str], Path | None] | None = None,
+        material_trace_recorder: Callable[..., Any] | None = None,
     ) -> None:
         self.store = store
         self.base_dir = Path(base_dir) if base_dir is not None else None
@@ -41,6 +45,7 @@ class AttachmentInboxService:
             Path(item) for item in list(legacy_base_dirs or []) if self.base_dir is None or Path(item) != self.base_dir
         ]
         self.workspace_uri_resolver = workspace_uri_resolver
+        self.material_trace_recorder = material_trace_recorder
 
     def create_pending(
         self,
@@ -59,7 +64,7 @@ class AttachmentInboxService:
         detail: dict[str, Any] | None = None,
         timestamp: int | None = None,
     ) -> dict[str, Any]:
-        return self.store.add_attachment_inbox_item(
+        item = self.store.add_attachment_inbox_item(
             profile_user_id=profile_user_id,
             session_id=session_id,
             source=source,
@@ -75,6 +80,8 @@ class AttachmentInboxService:
             detail=detail if isinstance(detail, dict) else None,
             timestamp=timestamp,
         )
+        self.record_material_status(item, event_type="reference", timestamp=timestamp)
+        return item
 
     def mark_ready(
         self,
@@ -87,7 +94,7 @@ class AttachmentInboxService:
         detail: dict[str, Any] | None = None,
         timestamp: int | None = None,
     ) -> dict[str, Any] | None:
-        return self.store.mark_attachment_inbox_item_ready(
+        item = self.store.mark_attachment_inbox_item_ready(
             profile_user_id=profile_user_id,
             session_id=session_id,
             attachment_id=attachment_id,
@@ -98,6 +105,31 @@ class AttachmentInboxService:
             focus_max_items=AUTO_FOCUS_MAX_ITEMS,
             timestamp=timestamp,
         )
+        self.record_material_status(item, event_type="reference", timestamp=timestamp)
+        return item
+
+    def record_material_status(
+        self,
+        item: dict[str, Any] | None,
+        *,
+        event_type: str,
+        timestamp: int | None = None,
+        reason: str = "",
+        delete_storage: bool = False,
+    ) -> None:
+        recorder = self.material_trace_recorder
+        if recorder is None or not isinstance(item, dict):
+            return
+        try:
+            recorder(
+                event_type=str(event_type or "reference"),
+                item=dict(item),
+                timestamp=int(timestamp or item.get("updated_at") or item.get("created_at") or time.time()),
+                reason=str(reason or ""),
+                delete_storage=bool(delete_storage),
+            )
+        except Exception as exc:
+            logger.debug("attachment material trace recorder failed: %s", exc)
 
     def wait_for_attachments_settled(
         self,
@@ -603,6 +635,14 @@ class AttachmentInboxService:
                 timestamp=effective_ts,
             )
         purged_files = self._delete_cleared_storage_files(cleared) if delete_storage else []
+        for item in cleared:
+            self.record_material_status(
+                item,
+                event_type="cleanup",
+                timestamp=effective_ts,
+                reason=reason,
+                delete_storage=delete_storage,
+            )
         if not cleared:
             missing = f"没有找到这些目标：{', '.join(unresolved[:5])}。" if unresolved else ""
             return {
@@ -967,7 +1007,7 @@ class AttachmentInboxService:
             if remote_source:
                 lines.extend(self._render_remote_source_lines(remote_source))
             lines.append(
-                "   说明：这是轻量媒体规格卡；如需转码、截取、调音量、淡入淡出、调速，可用 convert_media_file；如需降噪、去混响或净化人声，可用 clean_voice_track；如需转写文字稿/字幕，可用 transcribe_media；如需整理训练素材，可用 prepare_voice_dataset。"
+                "   说明：这是轻量媒体规格卡，只表示材料可用，不代表存在待处理任务；只有用户当前明确提出处理目标时才调用对应工具。"
             )
             return self._clip_rendered_lines(lines, char_budget)
 
@@ -1046,6 +1086,7 @@ class AttachmentInboxService:
                 "tags",
                 "keywords",
                 "uncertainty",
+                *INTERNAL_ATTACHMENT_DETAIL_KEYS,
             }
         ]
         for key in extra_keys[:8]:

@@ -163,6 +163,7 @@ def build_desktop_pet_router(
             raise HTTPException(status_code=400, detail="Payload must be an object")
 
         session_id, profile_user_id = resolve_identity_from_payload(payload)
+        character_pack_id = resolve_character_pack_id_from_payload(payload)
         raw_paths = payload.get("paths")
         if raw_paths is None and payload.get("path") is not None:
             raw_paths = [payload.get("path")]
@@ -177,6 +178,7 @@ def build_desktop_pet_router(
                 paths=raw_paths,
                 recursive=recursive,
                 max_files=max_files,
+                character_pack_id=character_pack_id,
                 timestamp=int(time.time()),
             )
             decorate_desktop_workspace_attachment_urls(
@@ -241,6 +243,7 @@ def build_desktop_pet_router(
             raise HTTPException(status_code=400, detail="Missing audio file")
 
         session_id, profile_user_id = resolve_identity_from_form_or_query(request, form)
+        character_pack_id = resolve_character_pack_id_from_form_or_query(request, form)
         filename = safe_upload_filename(str(getattr(upload, "filename", "") or "akane_audio.mp3"))
         content_type = str(getattr(upload, "content_type", "") or mimetypes.guess_type(filename)[0] or "").strip()
         suffix = Path(filename).suffix.lower()
@@ -284,6 +287,7 @@ def build_desktop_pet_router(
                 source_path=tmp_path,
                 origin_name=filename,
                 mime_type=content_type,
+                character_pack_id=character_pack_id,
                 timestamp=int(time.time()),
             )
         except Exception as exc:
@@ -688,6 +692,22 @@ def resolve_identity_from_form_or_query(request: Request, form) -> tuple[str, st
     )
     profile_user_id = str(form.get("real_user_id") or request.query_params.get("real_user_id") or session_id)
     return session_id, profile_user_id
+
+
+def resolve_character_pack_id_from_payload(payload: dict[str, Any]) -> str:
+    for key in ("character_pack_id", "characterPackId", "character_pack"):
+        value = str((payload or {}).get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def resolve_character_pack_id_from_form_or_query(request: Request, form) -> str:
+    for key in ("character_pack_id", "characterPackId", "character_pack"):
+        value = str(form.get(key) or request.query_params.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def safe_upload_filename(value: str) -> str:

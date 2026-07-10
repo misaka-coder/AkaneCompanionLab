@@ -95,7 +95,7 @@ function Test-PythonImports {
             $oldNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
             $PSNativeCommandUseErrorActionPreference = $false
         }
-        & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, charpack_core, promptpack_core, memcore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
+        & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, capcore_provider_anthropic, charpack_core, promptpack_core, memcore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
         return $LASTEXITCODE -eq 0
     } finally {
         if ($null -ne $hasNativeCommandPreference) {
@@ -148,6 +148,12 @@ function Assert-CoreSourceDependencies {
     $openaiProviderPyproject = Join-Path $openaiProviderPath "pyproject.toml"
     if (-not (Test-Path -LiteralPath $openaiProviderPyproject -PathType Leaf)) {
         throw "capcore-provider-openai source checkout was not found at '$openaiProviderPath'. Clone capcore-provider-openai next to AkaneCompanionLab, or install a packaged capcore-provider-openai release and update requirements.txt."
+    }
+
+    $anthropicProviderPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore-provider-anthropic"))
+    $anthropicProviderPyproject = Join-Path $anthropicProviderPath "pyproject.toml"
+    if (-not (Test-Path -LiteralPath $anthropicProviderPyproject -PathType Leaf)) {
+        throw "capcore-provider-anthropic source checkout was not found at '$anthropicProviderPath'. Clone capcore-provider-anthropic next to AkaneCompanionLab, or install a packaged capcore-provider-anthropic release and update requirements.txt."
     }
 
     $charpackPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\charpack-core"))

@@ -12,9 +12,11 @@ from services.llm_client import _build_anthropic_payload, build_llm_client, norm
 from companion_v01.llm_runtime import LLMRuntime, ModelBundle
 from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
 from companion_v01.tool_invocation import (
+    NATIVE_ANTHROPIC,
     NATIVE_OPENAI,
     NATIVE_TOOL_CALL_FIELD,
     TOOL_INVOCATION_ID_FIELD,
+    TOOL_MODEL_NAME_FIELD,
     TOOL_SOURCE_FIELD,
 )
 
@@ -381,6 +383,36 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(payload["response_format"], {"type": "json_object"})
         self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
 
+    def test_llm_runtime_adds_native_tools_for_anthropic_protocol(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="anthropic", base_url="https://api.anthropic.com"),
+            model="claude-sonnet-5",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            json_mode=True,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertEqual(payload["tool_choice"], "auto")
+        self.assertNotIn("response_format", payload)
+
     def test_llm_runtime_skips_native_tools_for_unverified_openai_compatible_model(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
@@ -499,6 +531,91 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertNotIn("tools", payload)
         self.assertNotIn("tool_choice", payload)
 
+    def test_anthropic_payload_converts_native_tools_to_messages_shape(self) -> None:
+        payload = _build_anthropic_payload(
+            {
+                "model": "claude-test",
+                "messages": [{"role": "user", "content": "hello"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        NATIVE_TOOL_CAPABILITY_ID_FIELD: "internal.should_not_leak",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search the public web.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"query": {"type": "string"}},
+                                "required": ["query"],
+                            },
+                        },
+                    }
+                ],
+                "tool_choice": "auto",
+            }
+        )
+
+        self.assertEqual(
+            payload["tools"],
+            [
+                {
+                    "name": "web_search",
+                    "description": "Search the public web.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                }
+            ],
+        )
+        self.assertEqual(payload["tool_choice"], {"type": "auto"})
+        self.assertNotIn(NATIVE_TOOL_CAPABILITY_ID_FIELD, json.dumps(payload, ensure_ascii=False))
+
+    def test_llm_runtime_appends_post_user_turns_after_current_user_prompt_for_anthropic(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="current user prompt",
+            temperature=0.1,
+            post_user_turns=[
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "web_search",
+                            "input": {"query": "Akane"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": "result text",
+                        }
+                    ],
+                },
+            ],
+        )
+
+        self.assertEqual([message["role"] for message in payload["messages"]], ["system", "user", "assistant", "user"])
+        self.assertEqual(payload["messages"][1]["content"], "current user prompt")
+        self.assertEqual(payload["messages"][2]["content"][0]["type"], "tool_use")
+        self.assertEqual(payload["messages"][3]["content"][0]["type"], "tool_result")
+
+        anthropic_payload = _build_anthropic_payload(payload)
+        self.assertEqual([message["role"] for message in anthropic_payload["messages"]], ["user", "assistant", "user"])
+        self.assertEqual(anthropic_payload["messages"][1]["content"][0]["type"], "tool_use")
+        self.assertEqual(anthropic_payload["messages"][2]["content"][0]["type"], "tool_result")
+
     def test_llm_runtime_extracts_native_tool_call_to_akane_shape(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         response = SimpleNamespace(
@@ -560,6 +677,78 @@ class LLMClientConfigTests(unittest.TestCase):
                 "text": "hi",
                 TOOL_SOURCE_FIELD: NATIVE_OPENAI,
                 TOOL_INVOCATION_ID_FIELD: "call_mapped_1",
+            },
+        )
+
+    def test_llm_runtime_extracts_anthropic_tool_use_to_akane_shape(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=[
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_1",
+                                "name": "web_search",
+                                "input": {"query": "Akane", "max_results": 3, "type": "ignored"},
+                            }
+                        ]
+                    )
+                )
+            ]
+        )
+
+        self.assertEqual(
+            runtime._extract_native_tool_call(response, native_tools=None, bundle=bundle),
+            {
+                "type": "web_search",
+                "query": "Akane",
+                "max_results": 3,
+                TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
+                TOOL_INVOCATION_ID_FIELD: "toolu_1",
+            },
+        )
+
+    def test_llm_runtime_keeps_anthropic_model_tool_name_for_safe_name_mapping(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
+        native_tools = [
+            {
+                "type": "function",
+                NATIVE_TOOL_CAPABILITY_ID_FIELD: "mcp.demo.echo",
+                "function": {
+                    "name": "mcp_demo_echo_abcd123456",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=[
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_safe",
+                                "name": "mcp_demo_echo_abcd123456",
+                                "input": {"text": "hi"},
+                            }
+                        ]
+                    )
+                )
+            ]
+        )
+
+        self.assertEqual(
+            runtime._extract_native_tool_call(response, native_tools=native_tools, bundle=bundle),
+            {
+                "type": "mcp.demo.echo",
+                "text": "hi",
+                TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
+                TOOL_INVOCATION_ID_FIELD: "toolu_safe",
+                TOOL_MODEL_NAME_FIELD: "mcp_demo_echo_abcd123456",
             },
         )
 
@@ -752,6 +941,46 @@ class LLMClientConfigTests(unittest.TestCase):
             },
         )
 
+    def test_llm_runtime_collects_anthropic_stream_tool_use_to_akane_shape(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
+        parts: dict[object, dict[str, object]] = {}
+        first_chunk = {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_stream_1",
+                "name": "web_search",
+                "input": {},
+            },
+        }
+        second_chunk = {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": '{"query":"A'},
+        }
+        third_chunk = {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": 'kane","max_results":3}'},
+        }
+
+        runtime._collect_stream_native_tool_call_parts(first_chunk, parts, bundle=bundle)
+        runtime._collect_stream_native_tool_call_parts(second_chunk, parts, bundle=bundle)
+        runtime._collect_stream_native_tool_call_parts(third_chunk, parts, bundle=bundle)
+
+        self.assertEqual(
+            runtime._stream_native_tool_call_from_parts(parts, native_tools=None, bundle=bundle),
+            {
+                "type": "web_search",
+                "query": "Akane",
+                "max_results": 3,
+                TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
+                TOOL_INVOCATION_ID_FIELD: "toolu_stream_1",
+            },
+        )
+
     def test_llm_runtime_skips_prompt_cache_hints_for_non_openai_base_url_by_default(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
@@ -810,6 +1039,7 @@ class LLMClientConfigTests(unittest.TestCase):
         )
         self.assertEqual(sum(1 for block in system_blocks if "cache_control" in block), 4)
         self.assertNotIn("cache_control", system_blocks[-1])
+        self.assertEqual(payload["max_tokens"], 4096)
 
     def test_llm_runtime_records_deepseek_cache_usage_fields(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
@@ -880,10 +1110,9 @@ class LLMClientConfigTests(unittest.TestCase):
 
 
 class ResponseTruncationDetectionTests(unittest.TestCase):
-    """D1: the non-stream payload sends no max_tokens, so a provider cap (the
-    Anthropic shim defaults to 1024) can silently cut a reply mid-JSON. These
-    lock in that finish_reason=length is surfaced (metric + last_error) instead
-    of passing as a normal short answer."""
+    """Provider output limits can still cut a reply mid-JSON. These lock in
+    that finish_reason=length is surfaced (metric + last_error) instead of
+    passing as a normal short answer."""
 
     def _runtime(self) -> LLMRuntime:
         runtime = LLMRuntime.__new__(LLMRuntime)

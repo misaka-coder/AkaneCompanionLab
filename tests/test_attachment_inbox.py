@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.store import MemoryStore
+from companion_v01.task_workspace import TaskWorkspaceService
 from companion_v01.tool_runtime import (
     ClearAttachmentFocusToolHandler,
     InspectAttachmentToolHandler,
@@ -18,6 +19,49 @@ from companion_v01.tool_runtime import (
 
 
 class AttachmentInboxTests(unittest.TestCase):
+    def test_material_trace_recorder_observes_reference_ready_and_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            events: list[dict[str, object]] = []
+
+            def recorder(**kwargs) -> None:
+                events.append(dict(kwargs))
+
+            store = MemoryStore(Path(temp_dir))
+            service = AttachmentInboxService(store=store, material_trace_recorder=recorder)
+            pending = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="meal.jpg",
+                detail={"character_pack_id": "akane"},
+                timestamp=100,
+            )
+            ready = service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=pending["attachment_id"],
+                summary_title="晚餐",
+                short_hint="盘子里有热汤。",
+                detail={"character_pack_id": "akane", "summary": "盘子里有热汤。"},
+                timestamp=110,
+            )
+            prompt = service.build_prompt_context(profile_user_id="user", session_id="session")
+            self.assertNotIn("character_pack_id", prompt)
+            service.clear_focus(
+                profile_user_id="user",
+                session_id="session",
+                target=str((ready or pending).get("attachment_handle") or ""),
+                reason="聊完了",
+                timestamp=120,
+            )
+
+            self.assertEqual([event["event_type"] for event in events], ["reference", "reference", "cleanup"])
+            self.assertEqual(events[0]["item"]["status"], "pending_observation")  # type: ignore[index]
+            self.assertEqual(events[1]["item"]["status"], "ready")  # type: ignore[index]
+            self.assertEqual(events[2]["reason"], "聊完了")
+            self.assertEqual(events[2]["delete_storage"], False)
+
     def test_store_roundtrip_and_clear_latest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))
@@ -581,6 +625,16 @@ class AttachmentInboxTests(unittest.TestCase):
                 detail={"mood_tags": ["温暖"]},
                 timestamp=110,
             )
+            task_service = TaskWorkspaceService(store)
+            task = task_service.create_task(
+                profile_user_id="user",
+                session_id="session",
+                raw_request_text="分析晚餐图片。",
+                normalized_goal="读取并分析图片。",
+                metadata={"workshop": {"inputs": [pending["attachment_handle"]]}},
+                status="waiting_user",
+                timestamp=111,
+            )
             context = ToolExecutionContext(
                 profile_user_id="user",
                 session_id="session",
@@ -596,13 +650,19 @@ class AttachmentInboxTests(unittest.TestCase):
             self.assertIn("盘子里有面包和热汤", inspected.followup_context)
             self.assertEqual(inspected.stream_events[0]["type"], "attachment_inspected")
 
-            clear_handler = ClearAttachmentFocusToolHandler(attachment_service=service)
+            clear_handler = ClearAttachmentFocusToolHandler(
+                attachment_service=service,
+                task_workspace_service=task_service,
+            )
             cleared = clear_handler.execute(
                 call=clear_handler.normalize_call({"type": "clear_attachment_focus", "target": "晚餐"}) or {},
                 context=context,
             )
             self.assertIn("移除了 1 个材料", cleared.followup_context)
+            self.assertIn("关闭了 1 个", cleared.followup_context)
             self.assertEqual(cleared.stream_events[0]["type"], "attachment_focus_cleared")
+            self.assertEqual(cleared.stream_events[1]["type"], "task_workspaces_cleaned")
+            self.assertEqual(task_service.get_task(task["task_id"])["status"], "cleaned")
 
     def test_inspect_attachment_requests_confirmation_for_ambiguous_target(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

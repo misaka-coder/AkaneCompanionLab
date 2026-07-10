@@ -61,7 +61,11 @@ from . import task_workspace_engine
 from .task_worker import TaskWorkerService
 from .task_worker_tool import DelegateTaskToolHandler
 from . import tool_orchestration_engine
+from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD
+from .tool_invocation import TOOL_MODEL_NAME_FIELD
+from .tool_invocation import TOOL_INVOCATION_ID_FIELD
+from .tool_invocation import TOOL_SOURCE_FIELD
 from .tool_runtime import (
     AdapterCapabilityToolHandler,
     ApplyStyleToExistingFileToolHandler,
@@ -148,6 +152,7 @@ MEDIA_PRESET_ROUTING = [
     "- 训练素材切片打包 → prepare_voice_dataset",
     "- 只要原文件不处理 → send_file，不要转写/转码/净化",
     "",
+    "生成与交付是两件事：媒体处理工具的 send_to_user 默认必须为 false。只有当前用户明确要求收到文件时才设为 true；否则先生成，等用户确认后再用 send_file 精确交付。",
     "涉及大小、码率、分辨率、时长、格式兼容等具体约束时，先 inspect_media_info 查当前规格，再决定 convert_media_file 参数。",
     "人声处理组合：需要人声/伴奏分离时先 separate_audio_stems；需要更干净人声时，再对 vocals 结果调用 clean_voice_track。",
 ]
@@ -213,6 +218,7 @@ class AkaneMemoryEngine:
             base_dir=attachment_workspace_dir,
             legacy_base_dirs=[self.base_dir / "attachment_inbox_files"],
             workspace_uri_resolver=self.workspace_file_service.resolve_file_uri,
+            material_trace_recorder=self._record_attachment_material_trace,
         )
         if getattr(config, "VISION_ENABLED", True):
             self.vision_observation_router: VisionObservationRouter | None = VisionObservationRouter(
@@ -642,6 +648,44 @@ class AkaneMemoryEngine:
             )
         except Exception as exc:
             logger.warning("memcore metadata dual-write failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
+    def _record_attachment_material_trace(
+        self,
+        *,
+        event_type: str,
+        item: dict[str, Any],
+        timestamp: int,
+        reason: str = "",
+        delete_storage: bool = False,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None or not isinstance(item, dict):
+            return {}
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        profile_user_id = str(item.get("profile_user_id") or "").strip()
+        session_id = str(item.get("session_id") or "").strip()
+        character_pack_id = str(detail.get("character_pack_id") or item.get("character_pack_id") or "").strip()
+        try:
+            if str(event_type or "").strip().lower() == "cleanup":
+                return manager.record_material_cleanup(
+                    item=item,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=character_pack_id,
+                    timestamp=timestamp,
+                    reason=reason,
+                    delete_storage=delete_storage,
+                )
+            return manager.record_material_reference(
+                item=item,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                timestamp=timestamp,
+            )
+        except Exception as exc:
+            logger.warning("memcore attachment material trace failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
     def _schedule_memcore_compaction(
@@ -1137,6 +1181,7 @@ class AkaneMemoryEngine:
             base_dir=base_dir,
             legacy_base_dirs=[self.base_dir / "attachment_inbox_files"],
             workspace_uri_resolver=workspace_service.resolve_file_uri if workspace_service is not None else None,
+            material_trace_recorder=self._record_attachment_material_trace,
         )
         self.attachment_inbox_service = service
         return service
@@ -1578,6 +1623,7 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str,
         attachments: list[dict[str, Any]],
+        character_pack_id: str = "",
         timestamp: int | None = None,
     ) -> list[dict[str, Any]]:
         service = self._get_attachment_ingest_service()
@@ -1587,6 +1633,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             attachments=attachments,
+            character_pack_id=character_pack_id,
             timestamp=timestamp,
         )
 
@@ -1598,6 +1645,7 @@ class AkaneMemoryEngine:
         source_path: Path | str,
         origin_name: str = "",
         mime_type: str = "",
+        character_pack_id: str = "",
         timestamp: int | None = None,
     ) -> dict[str, Any]:
         return desktop_pet_engine.ingest_desktop_pet_audio_attachment(
@@ -1607,6 +1655,7 @@ class AkaneMemoryEngine:
             source_path=source_path,
             origin_name=origin_name,
             mime_type=mime_type,
+            character_pack_id=character_pack_id,
             timestamp=timestamp,
         )
 
@@ -1618,6 +1667,7 @@ class AkaneMemoryEngine:
         paths: list[Any] | tuple[Any, ...] | set[Any] | str,
         recursive: bool = False,
         max_files: int = 40,
+        character_pack_id: str = "",
         timestamp: int | None = None,
     ) -> dict[str, Any]:
         return desktop_pet_engine.import_desktop_pet_local_paths(
@@ -1627,6 +1677,7 @@ class AkaneMemoryEngine:
             paths=paths,
             recursive=recursive,
             max_files=max_files,
+            character_pack_id=character_pack_id,
             timestamp=timestamp,
         )
 
@@ -1937,6 +1988,7 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str,
         message: str,
+        character_pack_id: str = "",
         timestamp: int | None = None,
     ) -> dict[str, Any]:
         return media_bridge_engine.prefetch_remote_media_links_for_message(
@@ -1944,6 +1996,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             message=message,
+            character_pack_id=character_pack_id,
             timestamp=timestamp,
         )
 
@@ -2130,6 +2183,7 @@ class AkaneMemoryEngine:
         tool_results: list[ToolExecutionResult] = []
         tool_events: list[dict[str, Any]] = []
         tool_followups: list[str] = []
+        native_tool_history_turns: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
         max_tool_rounds = self._max_tool_rounds()
         tool_round_index = 0
@@ -2179,6 +2233,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
+                    post_user_turns=native_tool_history_turns,
                 )
                 tool_round_index += 1
                 if allow_retry:
@@ -2220,6 +2275,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
+                    post_user_turns=native_tool_history_turns,
                 )
                 break
             seen_tool_calls.add(tool_signature)
@@ -2252,6 +2308,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
+                native_tool_history_turns=native_tool_history_turns,
             )
 
             stop_after_tool = self._should_stop_after_tool_events(_current_events)
@@ -2285,6 +2342,7 @@ class AkaneMemoryEngine:
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
+                post_user_turns=native_tool_history_turns,
             )
             tool_round_index += 1
 
@@ -2544,6 +2602,7 @@ class AkaneMemoryEngine:
         tool_results: list[ToolExecutionResult] = []
         tool_events: list[dict[str, Any]] = []
         tool_followups: list[str] = []
+        native_tool_history_turns: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
         max_tool_rounds = self._max_tool_rounds()
         tool_round_index = 0
@@ -2599,6 +2658,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
+                    post_user_turns=native_tool_history_turns,
                 )
                 tool_round_index += 1
                 if allow_retry:
@@ -2640,6 +2700,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
+                    post_user_turns=native_tool_history_turns,
                 )
                 break
             seen_tool_calls.add(tool_signature)
@@ -2673,6 +2734,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
+                native_tool_history_turns=native_tool_history_turns,
             )
             for stream_event in current_events:
                 yield stream_event
@@ -2708,6 +2770,7 @@ class AkaneMemoryEngine:
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
+                post_user_turns=native_tool_history_turns,
             )
             tool_round_index += 1
 
@@ -2984,6 +3047,7 @@ class AkaneMemoryEngine:
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
         chat_model_override: str = "",
+        post_user_turns: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         generation_context = self._prepare_final_response_context(
             session_id=session_id,
@@ -3003,6 +3067,7 @@ class AkaneMemoryEngine:
             final_debug_enabled=final_debug_enabled,
             enable_native_tools=True,
             chat_model_override=chat_model_override,
+            post_user_turns=post_user_turns,
         )
         result = self.llm.call_chat_json(
             system_prompt=str(generation_context["system_prompt"]),
@@ -3013,6 +3078,7 @@ class AkaneMemoryEngine:
             user_images=user_images,
             system_extra_blocks=generation_context.get("system_extra_blocks"),
             history_turns=generation_context.get("history_turns"),
+            post_user_turns=generation_context.get("post_user_turns"),
             prompt_audit_sections=generation_context.get("prompt_audit_sections"),
             native_tools=generation_context.get("native_tools"),
             native_tool_choice=generation_context.get("native_tool_choice", ""),
@@ -3050,6 +3116,7 @@ class AkaneMemoryEngine:
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
         chat_model_override: str = "",
+        post_user_turns: list[dict[str, Any]] | None = None,
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
         generation_context = self._prepare_final_response_context(
             session_id=session_id,
@@ -3069,6 +3136,7 @@ class AkaneMemoryEngine:
             final_debug_enabled=final_debug_enabled,
             enable_native_tools=True,
             chat_model_override=chat_model_override,
+            post_user_turns=post_user_turns,
         )
         speaker_identity = self._resolve_turn_speaker_identity(
             client_context,
@@ -3089,6 +3157,7 @@ class AkaneMemoryEngine:
             native_tool_choice=generation_context.get("native_tool_choice", ""),
             system_extra_blocks=generation_context.get("system_extra_blocks"),
             history_turns=generation_context.get("history_turns"),
+            post_user_turns=generation_context.get("post_user_turns"),
             prompt_audit_sections=generation_context.get("prompt_audit_sections"),
             chat_model_override=chat_model_override,
             early_tool_call_validator=(
@@ -3146,6 +3215,7 @@ class AkaneMemoryEngine:
         final_debug_enabled: bool | None = None,
         enable_native_tools: bool = False,
         chat_model_override: str = "",
+        post_user_turns: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         from .engine_services.response_builder import prepare_context as _fn
 
@@ -3168,6 +3238,7 @@ class AkaneMemoryEngine:
             final_debug_enabled=final_debug_enabled,
             enable_native_tools=enable_native_tools,
             chat_model_override=chat_model_override,
+            post_user_turns=post_user_turns,
         )
 
     def _normalize_final_output(
@@ -3437,6 +3508,7 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext,
         memory_exclude_source_ids: list[str],
         request_context: dict[str, Any],
+        native_tool_history_turns: list[dict[str, Any]] | None = None,
     ) -> tuple[ToolExecutionResult | None, list[dict[str, Any]]]:
         tool_result = self._execute_tool_call(
             profile_user_id=profile_user_id,
@@ -3463,12 +3535,20 @@ class AkaneMemoryEngine:
         )
         current_events.extend(workspace_events)
         tool_events.extend(current_events)
-        tool_followups.append(
-            f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n"
-            f"{tool_orchestration_engine.shape_tool_followup(tool_result.followup_context, tool_type=tool_result.tool_type)}"
+        shaped_followup = tool_orchestration_engine.shape_tool_followup(
+            tool_result.followup_context,
+            tool_type=tool_result.tool_type,
         )
+        tool_followups.append(f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n{shaped_followup}")
         if workspace_followup:
             tool_followups.append(workspace_followup)
+        self._append_native_anthropic_tool_history_turns(
+            native_tool_history_turns=native_tool_history_turns,
+            tool_call=tool_call,
+            tool_result=tool_result,
+            shaped_followup=shaped_followup,
+            workspace_followup=workspace_followup,
+        )
         current_tool_turns = list(tool_result.raw_turns)
         tool_turns.extend(current_tool_turns)
         for tool_turn in current_tool_turns:
@@ -3494,6 +3574,74 @@ class AkaneMemoryEngine:
                 )
             recent_raw_for_turn.append(tool_record)
         return tool_result, current_events
+
+    def _append_native_anthropic_tool_history_turns(
+        self,
+        *,
+        native_tool_history_turns: list[dict[str, Any]] | None,
+        tool_call: dict[str, Any],
+        tool_result: ToolExecutionResult,
+        shaped_followup: str,
+        workspace_followup: str = "",
+    ) -> None:
+        if native_tool_history_turns is None:
+            return
+        if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() != NATIVE_ANTHROPIC:
+            return
+        tool_use_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
+        if not tool_use_id:
+            return
+        model_name = (
+            str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip()
+            or str(tool_call.get("type") or tool_result.tool_type or "").strip()
+        )
+        if not model_name:
+            return
+        tool_input = {
+            str(key): value for key, value in tool_call.items() if key != "type" and not str(key).startswith("_tool_")
+        }
+        feedback_parts = [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()]
+        feedback = "\n\n".join(part for part in feedback_parts if part).strip()
+        if not feedback:
+            feedback = tool_orchestration_engine.shape_tool_followup("", tool_type=tool_result.tool_type)
+        result_block: dict[str, Any] = {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": feedback,
+        }
+        if self._tool_result_is_error(tool_result):
+            result_block["is_error"] = True
+        native_tool_history_turns.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": tool_use_id,
+                            "name": model_name,
+                            "input": tool_input,
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [result_block],
+                },
+            ]
+        )
+
+    def _tool_result_is_error(self, tool_result: ToolExecutionResult) -> bool:
+        feedback = str(getattr(tool_result, "followup_context", "") or "")
+        if "<tool_use_error>" in feedback:
+            return True
+        for event in getattr(tool_result, "stream_events", []) or []:
+            if not isinstance(event, dict):
+                continue
+            status = str(event.get("status") or event.get("state") or "").strip().lower()
+            if status in {"error", "failed", "failure", "unavailable", "denied", "blocked"}:
+                return True
+        return False
 
     def _record_tool_result_artifacts_in_task_workspace(
         self,
@@ -3758,7 +3906,8 @@ class AkaneMemoryEngine:
                 attachment_service=self._get_attachment_inbox_service()
             ),
             "clear_attachment_focus": ClearAttachmentFocusToolHandler(
-                attachment_service=self._get_attachment_inbox_service()
+                attachment_service=self._get_attachment_inbox_service(),
+                task_workspace_service=self._get_task_workspace_service(),
             ),
             "list_workspace": ListWorkspaceToolHandler(workspace_service=self._get_workspace_file_service()),
             "read_workspace": ReadWorkspaceToolHandler(workspace_service=self._get_workspace_file_service()),

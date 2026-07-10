@@ -162,6 +162,7 @@ class AttachmentIngestService:
         profile_user_id: str,
         session_id: str,
         attachments: list[dict[str, Any]],
+        character_pack_id: str = "",
         timestamp: int | None = None,
     ) -> list[dict[str, Any]]:
         effective_ts = int(timestamp or time.time())
@@ -183,7 +184,10 @@ class AttachmentIngestService:
                 file_size=self._safe_int(payload.get("file_size")),
                 source_event_id=str(payload.get("source_event_id") or "").strip(),
                 source_message_id=str(payload.get("source_message_id") or "").strip(),
-                detail=self._qq_attachment_context_detail(payload),
+                detail=self._with_material_context_detail(
+                    self._qq_attachment_context_detail(payload),
+                    character_pack_id=character_pack_id or str(payload.get("character_pack_id") or ""),
+                ),
                 timestamp=effective_ts,
             )
             created_items.append(item)
@@ -205,6 +209,7 @@ class AttachmentIngestService:
         mime_type: str = "",
         kind: str = "",
         source: str = "local",
+        character_pack_id: str = "",
         timestamp: int | None = None,
     ) -> dict[str, Any]:
         """Synchronously copy a trusted local file into the attachment inbox."""
@@ -232,6 +237,7 @@ class AttachmentIngestService:
             file_size=local_path.stat().st_size,
             source_event_id="",
             source_message_id="",
+            detail=self._material_context_detail(character_pack_id=character_pack_id),
             timestamp=effective_ts,
         )
         self._process_qq_attachment(
@@ -242,6 +248,7 @@ class AttachmentIngestService:
                 "mime_type": guessed_mime,
                 "file_ext": suffix,
                 "kind": normalized_kind,
+                "character_pack_id": character_pack_id,
             },
             effective_ts,
         )
@@ -260,6 +267,7 @@ class AttachmentIngestService:
         profile_user_id: str,
         session_id: str,
         workspace_uri: str,
+        character_pack_id: str = "",
         timestamp: int | None = None,
     ) -> dict[str, Any]:
         normalized_uri = str(workspace_uri or "").strip()
@@ -299,6 +307,7 @@ class AttachmentIngestService:
                 file_ext=file_ext,
                 file_size=source_path.stat().st_size,
                 storage_relpath=normalized_uri,
+                detail=self._material_context_detail(character_pack_id=character_pack_id),
                 timestamp=effective_ts,
             )
             registration_status = "registered"
@@ -310,7 +319,10 @@ class AttachmentIngestService:
                     attachment_id=str(existing.get("attachment_id") or ""),
                     status="pending_observation",
                     short_hint="正在重新读取这个工作区文件。",
-                    detail={},
+                    detail=self._merge_item_detail(
+                        existing,
+                        self._material_context_detail(character_pack_id=character_pack_id),
+                    ),
                     error_message="",
                     mime_type=mime_type,
                     file_ext=file_ext,
@@ -330,6 +342,7 @@ class AttachmentIngestService:
                 "mime_type": mime_type,
                 "file_ext": file_ext,
                 "kind": kind,
+                "character_pack_id": character_pack_id,
             },
             effective_ts,
         )
@@ -460,13 +473,16 @@ class AttachmentIngestService:
             status="pending_observation",
             short_hint="正在重新读取这个附件。",
             error_message="",
-            detail={
-                "retry": {
-                    "previous_status": current_status,
-                    "previous_error": previous_error[:500],
-                    "retried_at": effective_ts,
-                }
-            },
+            detail=self._merge_item_detail(
+                item,
+                {
+                    "retry": {
+                        "previous_status": current_status,
+                        "previous_error": previous_error[:500],
+                        "retried_at": effective_ts,
+                    }
+                },
+            ),
             updated_at=effective_ts,
         ) or dict(item, status="pending_observation", error_message="", updated_at=effective_ts)
 
@@ -495,6 +511,7 @@ class AttachmentIngestService:
         session_id: str,
         urls: list[str] | tuple[str, ...] | set[str] | str,
         preferred_title: str = "",
+        character_pack_id: str = "",
         timestamp: int | None = None,
     ) -> dict[str, Any]:
         effective_ts = int(timestamp or time.time())
@@ -532,6 +549,7 @@ class AttachmentIngestService:
                     file_size=max(0, int(descriptor.file_size_hint or 0)),
                     source_event_id=url,
                     source_message_id="",
+                    detail=self._material_context_detail(character_pack_id=character_pack_id),
                     timestamp=effective_ts,
                 )
                 ready_item = self._process_remote_media_download(
@@ -607,12 +625,19 @@ class AttachmentIngestService:
                 continue
             if str(failed.get("source_event_id") or "").strip() != normalized_url:
                 continue
-            self.store.update_attachment_inbox_item(
+            updated = self.store.update_attachment_inbox_item(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 attachment_id=failed_id,
                 status="cleared",
                 updated_at=timestamp,
+            )
+            self.attachment_service.record_material_status(
+                updated or dict(failed, status="cleared", updated_at=timestamp),
+                event_type="cleanup",
+                timestamp=timestamp,
+                reason="同一远程链接已经重新获取成功，旧失败记录已清理。",
+                delete_storage=False,
             )
 
     def _process_remote_media_download(
@@ -651,7 +676,10 @@ class AttachmentIngestService:
             attachment_id=str(item.get("attachment_id") or ""),
             summary_title=str(remote_card.get("summary_title") or file_card.get("summary_title") or ""),
             short_hint=str(remote_card.get("short_hint") or file_card.get("short_hint") or ""),
-            detail=remote_card.get("detail") if isinstance(remote_card.get("detail"), dict) else {},
+            detail=self._merge_item_detail(
+                item,
+                remote_card.get("detail") if isinstance(remote_card.get("detail"), dict) else {},
+            ),
             timestamp=timestamp,
         )
 
@@ -1422,9 +1450,6 @@ class AttachmentIngestService:
                 hint_parts.append("音频 " + "，".join(bit for bit in audio_bits if bit))
             if mime_type.startswith("audio/") or file_kind == "audio":
                 detail["transcribable"] = True
-                hint_parts.append(
-                    "可转写——若用户想了解内容，用 transcribe_media 工具并指定此附件 source_id"
-                )
             video = media_info.get("video") if isinstance(media_info.get("video"), dict) else {}
             if video:
                 size = ""
@@ -1753,21 +1778,30 @@ class AttachmentIngestService:
 
     def _mark_failed(self, item: dict[str, Any], error: str, *, timestamp: int) -> None:
         readable_error = self._humanize_failure(error, kind=str(item.get("kind") or ""))
-        self.store.update_attachment_inbox_item(
+        updated = self.store.update_attachment_inbox_item(
             profile_user_id=str(item.get("profile_user_id") or ""),
             session_id=str(item.get("session_id") or ""),
             attachment_id=str(item.get("attachment_id") or ""),
             status="failed",
             error_message=str(error or "")[:500],
             short_hint=readable_error,
-            detail={
-                "failure": {
-                    "reason": readable_error,
-                    "raw_error": str(error or "")[:500],
-                    "failed_at": timestamp,
-                }
-            },
+            detail=self._merge_item_detail(
+                item,
+                {
+                    "failure": {
+                        "reason": readable_error,
+                        "raw_error": str(error or "")[:500],
+                        "failed_at": timestamp,
+                    }
+                },
+            ),
             updated_at=timestamp,
+        )
+        self.attachment_service.record_material_status(
+            updated or dict(item, status="failed", short_hint=readable_error, updated_at=timestamp),
+            event_type="reference",
+            timestamp=timestamp,
+            reason=readable_error,
         )
 
     def _mark_image_ready_from_observation(
@@ -1809,6 +1843,9 @@ class AttachmentIngestService:
         group_id = str(payload.get("group_id") or "").strip()
         if group_id:
             detail["qq_group_id"] = group_id[:40]
+        character_pack_id = str(payload.get("character_pack_id") or "").strip()
+        if character_pack_id:
+            detail["character_pack_id"] = character_pack_id[:120]
         return detail
 
     def _merge_item_detail(self, item: dict[str, Any], detail: dict[str, Any] | None) -> dict[str, Any]:
@@ -1816,6 +1853,20 @@ class AttachmentIngestService:
         merged = dict(base)
         if isinstance(detail, dict):
             merged.update(detail)
+        return merged
+
+    def _material_context_detail(self, *, character_pack_id: str = "") -> dict[str, Any]:
+        text = str(character_pack_id or "").strip()
+        return {"character_pack_id": text[:120]} if text else {}
+
+    def _with_material_context_detail(
+        self,
+        detail: dict[str, Any] | None,
+        *,
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
+        merged = dict(detail) if isinstance(detail, dict) else {}
+        merged.update(self._material_context_detail(character_pack_id=character_pack_id))
         return merged
 
     def _safe_prompt_label(self, value: Any) -> str:

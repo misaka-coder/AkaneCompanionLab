@@ -121,7 +121,7 @@ class QQGatewayTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(messages, ["我先说一句。", "代码在这里。\n\nprint('hi')"])
+        self.assertEqual(messages, ["我先说一句", "代码在这里\n\nprint('hi')"])
 
     def test_duplicate_message_id_is_ignored(self) -> None:
         gateway = NapCatQQGateway()
@@ -1697,14 +1697,15 @@ class QQGatewayTests(unittest.TestCase):
                 ],
             )
 
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["count"], 0)
         self.assertEqual(result["blocked_count"], 1)
         self.assertEqual(result["reason"], "missing_file_delivery_intent")
         mocked_post.assert_not_called()
 
     @patch("companion_v01.qq_gateway.config.QQ_REQUIRE_FILE_DELIVERY_INTENT", True)
-    def test_send_generated_files_allows_current_generated_file_without_repeated_delivery_phrase(self) -> None:
+    def test_send_generated_files_does_not_bypass_intent_for_current_generated_file(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
             {
@@ -1717,14 +1718,7 @@ class QQGatewayTests(unittest.TestCase):
             }
         )
 
-        class FakeResponse:
-            def raise_for_status(self) -> None:
-                return None
-
-            def json(self):
-                return {"status": "ok"}
-
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch("companion_v01.qq_gateway.requests.post") as mocked_post:
             result = gateway.send_generated_files(
                 context,
                 [
@@ -1743,12 +1737,11 @@ class QQGatewayTests(unittest.TestCase):
                 ],
             )
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["count"], 1)
-        mocked_post.assert_called_once()
-        payload = mocked_post.call_args.kwargs["json"]
-        self.assertEqual(payload["file"], "C:/tmp/story.md")
-        self.assertEqual(payload["name"], "会说话的猫和它的室友.md")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["blocked_count"], 1)
+        mocked_post.assert_not_called()
 
     def test_file_delivery_intent_respects_negative_request(self) -> None:
         gateway = NapCatQQGateway()

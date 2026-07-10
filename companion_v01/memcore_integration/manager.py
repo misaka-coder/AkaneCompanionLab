@@ -209,6 +209,48 @@ class MemcoreManager:
             character_pack_id=character_pack_id,
         )
 
+    def record_material_reference(
+        self,
+        *,
+        item: dict[str, Any],
+        profile_user_id: str = "",
+        session_id: str = "",
+        character_pack_id: str = "",
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        return self._record_material_event(
+            operation="record_material_reference",
+            event_type="reference",
+            item=item,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            timestamp=timestamp,
+        )
+
+    def record_material_cleanup(
+        self,
+        *,
+        item: dict[str, Any],
+        profile_user_id: str = "",
+        session_id: str = "",
+        character_pack_id: str = "",
+        timestamp: int | None = None,
+        reason: str = "",
+        delete_storage: bool = False,
+    ) -> dict[str, Any]:
+        return self._record_material_event(
+            operation="record_material_cleanup",
+            event_type="cleanup",
+            item=item,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            timestamp=timestamp,
+            reason=reason,
+            delete_storage=delete_storage,
+        )
+
     def acquaintance_note(
         self,
         *,
@@ -1087,6 +1129,140 @@ class MemcoreManager:
             reason = str(exc) or exc.__class__.__name__
             logger.warning("memcore %s failed: %s", operation, reason)
             return self._status(operation, False, "failed", source_id=source_id, reason=reason)
+
+    def _record_material_event(
+        self,
+        *,
+        operation: str,
+        event_type: str,
+        item: dict[str, Any],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        timestamp: int | None,
+        reason: str = "",
+        delete_storage: bool = False,
+    ) -> dict[str, Any]:
+        if not isinstance(item, dict):
+            return self._status(operation, False, "invalid_record", reason="item_required")
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        profile = str(profile_user_id or item.get("profile_user_id") or "").strip()
+        session = str(session_id or item.get("session_id") or "").strip()
+        character = str(character_pack_id or detail.get("character_pack_id") or item.get("character_pack_id") or "").strip()
+        attachment_id = str(item.get("attachment_id") or "").strip()
+        if not attachment_id:
+            return self._status(operation, False, "invalid_record", reason="attachment_id_required")
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile,
+            session_id=session,
+            character_pack_id=character,
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", source_id=attachment_id, reason=self._reason)
+
+        effective_ts = int(timestamp or item.get("updated_at") or item.get("created_at") or time.time())
+        handle = str(item.get("attachment_handle") or "").strip()
+        file_id = handle or attachment_id
+        status_part = self._attachment_file_status(item, event_type=event_type, delete_storage=delete_storage)
+        source_id = f"attachment:{attachment_id}:{event_type}:{status_part}:{effective_ts}"
+        try:
+            if event_type == "cleanup":
+                written = system.record_material_cleanup(
+                    file_id=file_id,
+                    kind=str(item.get("kind") or "file"),
+                    filename=self._attachment_filename(item),
+                    file_status=status_part,
+                    derived_status=self._attachment_derived_status(item),
+                    reason=reason,
+                    timestamp=effective_ts,
+                    source_id=source_id,
+                    keywords=self._attachment_keywords(item),
+                )
+            else:
+                written = system.record_material_reference(
+                    file_id=file_id,
+                    kind=str(item.get("kind") or "file"),
+                    filename=self._attachment_filename(item),
+                    mime_type=str(item.get("mime_type") or ""),
+                    file_status=status_part,
+                    derived_status=self._attachment_derived_status(item),
+                    timestamp=effective_ts,
+                    source_id=source_id,
+                    keywords=self._attachment_keywords(item),
+                )
+            return self._status(
+                operation,
+                True,
+                "recorded",
+                source_id=str(written.get("source_id") or source_id),
+                index_status=str(written.get("index_status") or ""),
+            )
+        except Exception as exc:
+            failed_reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, failed_reason)
+            return self._status(operation, False, "failed", source_id=source_id, reason=failed_reason)
+
+    @staticmethod
+    def _attachment_filename(item: dict[str, Any]) -> str:
+        for key in ("origin_name", "summary_title", "attachment_handle", "attachment_id"):
+            text = str(item.get(key) or "").strip()
+            if text:
+                return text[:160]
+        return "attachment"
+
+    @classmethod
+    def _attachment_keywords(cls, item: dict[str, Any]) -> list[str]:
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        candidates = [
+            item.get("attachment_handle"),
+            item.get("origin_name"),
+            item.get("summary_title"),
+            item.get("kind"),
+            item.get("source"),
+            detail.get("qq_sender_label"),
+        ]
+        out: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            out.append(text[:80])
+            if len(out) >= 4:
+                break
+        return out
+
+    @staticmethod
+    def _attachment_file_status(
+        item: dict[str, Any],
+        *,
+        event_type: str,
+        delete_storage: bool,
+    ) -> str:
+        if event_type == "cleanup":
+            return "deleted" if delete_storage else "cleared"
+        status = str(item.get("status") or "").strip().lower()
+        if status == "pending_observation":
+            return "processing"
+        if status in {"ready", "failed", "cleared"}:
+            return status
+        return status or "unknown"
+
+    @staticmethod
+    def _attachment_derived_status(item: dict[str, Any]) -> str:
+        status = str(item.get("status") or "").strip().lower()
+        if status == "pending_observation":
+            return "processing"
+        if status == "failed":
+            return "failed"
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        if str(item.get("summary_title") or "").strip() or str(item.get("short_hint") or "").strip() or detail:
+            return "ready"
+        if status == "ready":
+            return "ready"
+        return "unknown"
 
     def _get_system_or_none(
         self,

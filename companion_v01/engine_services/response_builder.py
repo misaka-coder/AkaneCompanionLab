@@ -76,6 +76,7 @@ def prepare_context(
     final_debug_enabled: bool | None = None,
     enable_native_tools: bool = False,
     chat_model_override: str = "",
+    post_user_turns: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     client_context = client_context or engine._resolve_client_protocol_context({})
     prompt_profile = engine._get_prompt_profile_registry().resolve(client_context)
@@ -176,6 +177,7 @@ def prepare_context(
         task_workspace_service.build_prompt_context(
             profile_user_id=profile_user_id,
             session_id=session_id,
+            now_ts=now_ts,
         )
         if (task_workspace_service is not None and prompt_profile.includes(PromptModule.EXTRA_CONTEXT))
         else ""
@@ -498,6 +500,7 @@ def prepare_context(
     generation_context["allow_tool_call"] = effective_allow_tool_call
     generation_context["native_tools"] = native_tools
     generation_context["native_tool_choice"] = "auto" if native_tools else ""
+    generation_context["post_user_turns"] = list(post_user_turns) if post_user_turns else []
     generation_context["prompt_profile"] = prompt_profile.to_public_dict()
     if client_context.effective_mode == ClientMode.QQ_TEXT:
         fallback_payload = generation_context.get("fallback")

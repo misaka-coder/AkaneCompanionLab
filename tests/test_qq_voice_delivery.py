@@ -34,12 +34,20 @@ class FakeQQGateway:
         self.text_sends.append(clean)
         return {"ok": bool(clean), "count": len(clean), "results": [{"ok": True, "message": item} for item in clean]}
 
+    def send_reply(self, context, message: str) -> dict:
+        clean = str(message or "").strip()
+        self.text_sends.append([clean] if clean else [])
+        return {"ok": bool(clean), "message": clean}
+
     def send_voice(self, context, *, audio_path: str, name: str = "") -> dict:
         self.voice_sends.append(audio_path)
         return {"ok": Path(audio_path).exists(), "file": audio_path}
 
     def send_generated_files(self, context, tool_events):
         return {"ok": True, "count": 0, "results": []}
+
+    def send_emotion_mface(self, context, frame, *, qq_delivery_config):
+        return {"ok": True, "status": "sent"}
 
     def send_stickers(self, context, tool_events):
         return {"ok": True, "count": 0, "results": []}
@@ -161,6 +169,53 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertTrue(result["send_result"]["ok"])
         self.assertEqual(result["send_result"]["delivery"]["voice_reason"], "auto_voice_text_too_long")
         self.assertFalse(result["send_result"]["delivery"]["voice_enabled"])
+
+    def test_blocked_file_delivery_sends_truthful_feedback(self) -> None:
+        class BlockedGateway(FakeQQGateway):
+            def send_generated_files(self, context, tool_events):
+                return {
+                    "ok": False,
+                    "status": "blocked",
+                    "count": 0,
+                    "blocked_count": 1,
+                    "reason": "missing_file_delivery_intent",
+                    "results": [],
+                }
+
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "我先准备一下。",
+                        "speech_segments": ["我先准备一下。"],
+                        "tool_events": [{"type": "file_ready", "send_to_user": True}],
+                    },
+                }
+
+        gateway = BlockedGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_1",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "在吗"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=False,
+                QQ_STREAM_MAX_SEGMENTS=0,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(result["file_delivery_feedback_result"]["status"], "blocked_notice_sent")
+        self.assertTrue(any("文件这次没有发出" in message for batch in gateway.text_sends for message in batch))
 
 
 if __name__ == "__main__":

@@ -249,6 +249,8 @@ system = "semantic reinforcement system"
             self.assertEqual(result["fallback"]["persona"]["active"], "current_card")
             self.assertIn("final system", result["system_prompt"])
             self.assertIn("debug mode", result["system_prompt"])
+            self.assertIn("历史记忆与当前任务边界", result["system_prompt"])
+            self.assertIn("历史状态不是当前待办", result["system_prompt"])
             self.assertIn("- fake tool", result["system_prompt"])
             self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", result["system_prompt"])
             self.assertIn("persona state", result["system_prompt"])

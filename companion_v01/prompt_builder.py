@@ -23,6 +23,14 @@ ATTRIBUTION_RULES = """
 - 记忆和摘要里的称呼、偏好、计划、图片内容都要跟源发言人绑定；不确定归属时先说明不确定或追问，不要张冠李戴。
 """.strip()
 
+MEMORY_STATUS_RULES = """
+【历史记忆与当前任务边界】
+- 原始对话、阶段摘要和长期记忆只说明过去发生过什么，不自动代表现在仍要继续处理。
+- 后出现的“已清理、已取消、不用了、先不要、已经结束”优先于更早的失败、等待确认或待续描述；把相关事项视为已关闭。
+- 除非当前用户正在追问这件事，或【当前任务工作区】明确把它列为活跃任务，否则不要主动提起旧附件、旧转写、旧工具失败、旧交付请求或历史待续线索。
+- 不能因为旧记忆里写着“卡住/待确认/要不要继续”，就在无关话题末尾追问用户；历史状态不是当前待办。
+""".strip()
+
 
 class PromptBuilder:
     def __init__(self, persona: PersonaConfig):
@@ -172,7 +180,7 @@ class PromptBuilder:
         mode_prompt = str(mode_prompt_override or "").strip() or (
             self.persona.final_debug_mode_prompt if debug_enabled else self.persona.final_fast_mode_prompt
         )
-        format_addendum = mode_prompt + tool_prompt_context
+        format_addendum = mode_prompt + f"\n\n{MEMORY_STATUS_RULES}\n" + tool_prompt_context
         if allow_tool_call:
             format_addendum += "\n如果你给出 choices，建议 2 到 4 个，文字简短，方向有区别。"
         if CURRENT_ASSISTANT_STATE_MARKER in base_system_prompt:

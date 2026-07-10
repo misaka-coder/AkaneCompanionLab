@@ -11,6 +11,11 @@ from typing import Any, Callable, Generator
 from urllib.parse import urlparse
 
 import config
+from capcore_provider_anthropic import (
+    collect_anthropic_messages_stream_tool_use_delta,
+    parse_anthropic_messages_stream_tool_uses,
+    parse_anthropic_messages_tool_uses,
+)
 from capcore_provider_openai import (
     collect_openai_chat_stream_tool_call_delta,
     parse_openai_chat_stream_tool_calls,
@@ -18,8 +23,10 @@ from capcore_provider_openai import (
 )
 from services.llm_client import build_llm_client
 from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
+from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD
+from .tool_invocation import TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
 from .tool_invocation import TOOL_SOURCE_FIELD
 
@@ -507,7 +514,8 @@ class LLMRuntime:
         native_tools: list[dict[str, Any]] | None = None,
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
-        history_turns: list[dict[str, str]] | None = None,
+        history_turns: list[dict[str, Any]] | None = None,
+        post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         chat_model_override: str = "",
     ) -> dict[str, Any]:
@@ -524,6 +532,7 @@ class LLMRuntime:
             native_tool_choice=native_tool_choice,
             system_extra_blocks=system_extra_blocks,
             history_turns=history_turns,
+            post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
         )
 
@@ -566,7 +575,8 @@ class LLMRuntime:
         native_tools: list[dict[str, Any]] | None = None,
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
-        history_turns: list[dict[str, str]] | None = None,
+        history_turns: list[dict[str, Any]] | None = None,
+        post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         chat_model_override: str = "",
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
@@ -584,6 +594,7 @@ class LLMRuntime:
             native_tool_choice=native_tool_choice,
             system_extra_blocks=system_extra_blocks,
             history_turns=history_turns,
+            post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
         )
 
@@ -600,7 +611,8 @@ class LLMRuntime:
         native_tools: list[dict[str, Any]] | None = None,
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
-        history_turns: list[dict[str, str]] | None = None,
+        history_turns: list[dict[str, Any]] | None = None,
+        post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         native_requested = bool(self._normalize_native_tools(native_tools))
@@ -619,11 +631,12 @@ class LLMRuntime:
                     native_tool_choice=native_tool_choice,
                     system_extra_blocks=system_extra_blocks,
                     history_turns=history_turns,
+                    post_user_turns=post_user_turns,
                     prompt_audit_sections=prompt_audit_sections,
                 ),
             )
             self._record_cache_metrics(response)
-            native_tool_call = self._extract_native_tool_call(response, native_tools=native_tools)
+            native_tool_call = self._extract_native_tool_call(response, native_tools=native_tools, bundle=bundle)
             if native_tool_call is not None:
                 self._record_metric("native_tool_call_extracted")
                 return {NATIVE_TOOL_CALL_FIELD: native_tool_call, "tool_call": None}
@@ -745,7 +758,8 @@ class LLMRuntime:
         native_tools: list[dict[str, Any]] | None = None,
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
-        history_turns: list[dict[str, str]] | None = None,
+        history_turns: list[dict[str, Any]] | None = None,
+        post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         import time
@@ -776,12 +790,13 @@ class LLMRuntime:
                     native_tool_choice=native_tool_choice,
                     system_extra_blocks=system_extra_blocks,
                     history_turns=history_turns,
+                    post_user_turns=post_user_turns,
                     prompt_audit_sections=prompt_audit_sections,
                 ),
             )
             for chunk in response:
                 self._record_cache_metrics(chunk)
-                self._collect_stream_native_tool_call_parts(chunk, native_tool_parts)
+                self._collect_stream_native_tool_call_parts(chunk, native_tool_parts, bundle=bundle)
                 text = self._extract_stream_text(chunk)
                 if not text:
                     continue
@@ -808,7 +823,11 @@ class LLMRuntime:
             self._close_stream(response)
 
         raw_text = "".join(raw_parts)
-        native_tool_call = self._stream_native_tool_call_from_parts(native_tool_parts, native_tools=native_tools)
+        native_tool_call = self._stream_native_tool_call_from_parts(
+            native_tool_parts,
+            native_tools=native_tools,
+            bundle=bundle,
+        )
         if native_tool_call is not None:
             self._record_metric("native_tool_call_extracted")
             parsed = {NATIVE_TOOL_CALL_FIELD: native_tool_call, "tool_call": None}
@@ -975,7 +994,8 @@ class LLMRuntime:
         native_tools: list[dict[str, Any]] | None = None,
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
-        history_turns: list[dict[str, str]] | None = None,
+        history_turns: list[dict[str, Any]] | None = None,
+        post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         user_content: str | list[dict[str, Any]]
@@ -993,10 +1013,15 @@ class LLMRuntime:
         messages: list[dict[str, Any]] = [{"role": "system", "content": effective_system_prompt}]
         for turn in history_turns or []:
             role = str(turn.get("role", "") or "").strip().lower()
-            content = str(turn.get("content", "") or "").strip()
+            content = self._normalize_message_content_for_payload(turn.get("content"))
             if content and role in {"user", "assistant"}:
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_content})
+        for turn in post_user_turns or []:
+            role = str(turn.get("role", "") or "").strip().lower()
+            content = self._normalize_message_content_for_payload(turn.get("content"))
+            if content and role in {"user", "assistant"}:
+                messages.append({"role": role, "content": content})
         payload: dict[str, Any] = {
             "model": bundle.model,
             "temperature": temperature,
@@ -1042,6 +1067,7 @@ class LLMRuntime:
             messages=messages,
             system_extra_blocks=filtered_system_extra_blocks if self._is_anthropic_protocol(bundle) else [],
             history_turns=history_turns,
+            post_user_turns=post_user_turns,
             user_prompt=user_prompt,
             user_image_count=len(image_items),
             prompt_audit_sections=prompt_audit_sections,
@@ -1051,15 +1077,20 @@ class LLMRuntime:
         )
         return payload
 
+    def _normalize_message_content_for_payload(self, content: Any) -> str | list[dict[str, Any]]:
+        if isinstance(content, list):
+            blocks = [dict(item) for item in content if isinstance(item, dict)]
+            return blocks if blocks else self._flatten_message_content(content).strip()
+        return str(content or "").strip()
+
     def _normalize_system_extra_blocks(self, value: Any) -> list[str]:
         if not isinstance(value, list):
             return []
         return [str(item or "").strip() for item in value if str(item or "").strip()]
 
     def _is_anthropic_protocol(self, bundle: ModelBundle) -> bool:
-        protocol = (
-            str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
-        )
+        client = getattr(bundle, "client", bundle)
+        protocol = str(getattr(client, "_akane_protocol", getattr(client, "protocol", "")) or "").strip().lower()
         return protocol == "anthropic"
 
     def _supports_stream_usage(self, bundle: ModelBundle) -> bool:
@@ -1072,7 +1103,8 @@ class LLMRuntime:
         prompt_cache_key: str,
         messages: list[dict[str, Any]],
         system_extra_blocks: list[str],
-        history_turns: list[dict[str, str]] | None,
+        history_turns: list[dict[str, Any]] | None,
+        post_user_turns: list[dict[str, Any]] | None,
         user_prompt: str,
         user_image_count: int,
         prompt_audit_sections: list[dict[str, Any]] | None,
@@ -1087,6 +1119,7 @@ class LLMRuntime:
                 messages=messages,
                 system_extra_blocks=system_extra_blocks,
                 history_turns=history_turns,
+                post_user_turns=post_user_turns,
                 user_prompt=user_prompt,
             )
             record = {
@@ -1100,6 +1133,7 @@ class LLMRuntime:
                 "json_mode": bool(json_mode),
                 "message_count": len(messages),
                 "history_turn_count": len(history_turns or []),
+                "post_user_turn_count": len(post_user_turns or []),
                 "user_image_count": max(0, int(user_image_count or 0)),
                 "native_tool_count": max(0, int(native_tool_count or 0)),
                 "payload_totals": self._sum_audit_sections(payload_sections),
@@ -1123,7 +1157,8 @@ class LLMRuntime:
         *,
         messages: list[dict[str, Any]],
         system_extra_blocks: list[str],
-        history_turns: list[dict[str, str]] | None,
+        history_turns: list[dict[str, Any]] | None,
+        post_user_turns: list[dict[str, Any]] | None,
         user_prompt: str,
     ) -> list[dict[str, Any]]:
         sections: list[dict[str, Any]] = []
@@ -1134,12 +1169,19 @@ class LLMRuntime:
                 )
             )
         history_text = "\n".join(
-            f"{str(turn.get('role') or '').strip().lower()}:{str(turn.get('content') or '').strip()}"
+            f"{str(turn.get('role') or '').strip().lower()}:{self._flatten_message_content(turn.get('content'))}"
             for turn in history_turns or []
             if str(turn.get("content") or "").strip()
         )
         sections.append(self._audit_text_section("payload.history_turns", history_text))
         sections.append(self._audit_text_section("payload.user_prompt", user_prompt))
+        post_user_text = "\n".join(
+            f"{str(turn.get('role') or '').strip().lower()}:{self._flatten_message_content(turn.get('content'))}"
+            for turn in post_user_turns or []
+            if turn.get("content")
+        )
+        if post_user_text:
+            sections.append(self._audit_text_section("payload.post_user_turns", post_user_text))
         if system_extra_blocks:
             sections.append(self._audit_text_section("payload.system_extra_blocks", "\n\n".join(system_extra_blocks)))
         return sections
@@ -1229,6 +1271,14 @@ class LLMRuntime:
         protocol = (
             str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
         )
+        if protocol == "anthropic":
+            return ProviderToolProfile(
+                supports_native_tools=True,
+                native_tools_coexist_with_forced_json=False,
+                native_call_shape="anthropic_tool_use",
+                verified=True,
+                notes="Anthropic Messages API supports native tools/tool_use; forced JSON is not sent on this protocol.",
+            )
         if protocol != "openai":
             return DEFAULT_PROVIDER_TOOL_PROFILE
         host = self._bundle_base_host(bundle)
@@ -1358,15 +1408,30 @@ class LLMRuntime:
         response: Any,
         *,
         native_tools: list[dict[str, Any]] | None = None,
+        bundle: ModelBundle | None = None,
     ) -> dict[str, Any] | None:
-        invocations = parse_openai_chat_tool_calls(response)
+        source = NATIVE_OPENAI
+        if bundle is not None and self._is_anthropic_protocol(bundle):
+            invocations = parse_anthropic_messages_tool_uses(self._chat_response_message(response))
+            source = NATIVE_ANTHROPIC
+        else:
+            invocations = parse_openai_chat_tool_calls(response)
         if not invocations:
             return None
         if len(invocations) > 1:
             self._record_metric("native_tool_calls_extra", len(invocations) - 1)
-        return self._native_invocation_to_tool_call(invocations[0], native_tools=native_tools)
+        return self._native_invocation_to_tool_call(invocations[0], native_tools=native_tools, source=source)
 
-    def _collect_stream_native_tool_call_parts(self, chunk: Any, parts: dict[Any, dict[str, Any]]) -> None:
+    def _collect_stream_native_tool_call_parts(
+        self,
+        chunk: Any,
+        parts: dict[Any, dict[str, Any]],
+        *,
+        bundle: ModelBundle | None = None,
+    ) -> None:
+        if bundle is not None and self._is_anthropic_protocol(bundle):
+            collect_anthropic_messages_stream_tool_use_delta(chunk, parts)
+            return
         collect_openai_chat_stream_tool_call_delta(chunk, parts)
 
     def _stream_native_tool_call_from_parts(
@@ -1374,19 +1439,26 @@ class LLMRuntime:
         parts: dict[Any, dict[str, Any]],
         *,
         native_tools: list[dict[str, Any]] | None = None,
+        bundle: ModelBundle | None = None,
     ) -> dict[str, Any] | None:
-        invocations = parse_openai_chat_stream_tool_calls(parts)
+        source = NATIVE_OPENAI
+        if bundle is not None and self._is_anthropic_protocol(bundle):
+            invocations = parse_anthropic_messages_stream_tool_uses(parts)
+            source = NATIVE_ANTHROPIC
+        else:
+            invocations = parse_openai_chat_stream_tool_calls(parts)
         if not invocations:
             return None
         if len(invocations) > 1:
             self._record_metric("native_tool_calls_extra", len(invocations) - 1)
-        return self._native_invocation_to_tool_call(invocations[0], native_tools=native_tools)
+        return self._native_invocation_to_tool_call(invocations[0], native_tools=native_tools, source=source)
 
     def _native_invocation_to_tool_call(
         self,
         invocation: Any,
         *,
         native_tools: list[dict[str, Any]] | None,
+        source: str = NATIVE_OPENAI,
     ) -> dict[str, Any] | None:
         model_name = str(getattr(invocation, "model_name", "") or "").strip()
         if not model_name or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", model_name):
@@ -1399,18 +1471,34 @@ class LLMRuntime:
         result = {
             **(dict(arguments) if isinstance(arguments, dict) else {}),
             "type": capability_id,
-            TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+            TOOL_SOURCE_FIELD: source if source in {NATIVE_OPENAI, NATIVE_ANTHROPIC} else NATIVE_OPENAI,
         }
-        call_id = self._native_invocation_provider_id(invocation)
+        call_id = self._native_invocation_provider_id(invocation, source=source)
         if call_id:
             result[TOOL_INVOCATION_ID_FIELD] = call_id
+        if source == NATIVE_ANTHROPIC and model_name != capability_id:
+            result[TOOL_MODEL_NAME_FIELD] = model_name
         return result
 
-    def _native_invocation_provider_id(self, invocation: Any) -> str:
+    def _native_invocation_provider_id(self, invocation: Any, *, source: str = NATIVE_OPENAI) -> str:
         raw = getattr(invocation, "raw", None)
         if isinstance(raw, dict) and "id" in raw:
             return str(raw.get("id") or "").strip()
+        provider_id = str(getattr(invocation, "id", "") or "").strip()
+        if source == NATIVE_ANTHROPIC and provider_id:
+            return provider_id
         return ""
+
+    def _chat_response_message(self, response: Any) -> Any:
+        try:
+            return response.choices[0].message
+        except Exception:
+            if isinstance(response, dict):
+                try:
+                    return response.get("choices", [{}])[0].get("message")
+                except Exception:
+                    return response
+            return response
 
     def _native_tool_model_name_map(self, native_tools: list[dict[str, Any]] | None) -> dict[str, str]:
         mapping: dict[str, str] = {}
@@ -1710,9 +1798,8 @@ class LLMRuntime:
         """Surface silent length-truncation through the metric + last-error
         channels (this file's structured-failure pattern; INV-3).
 
-        The non-stream payload sends no max_tokens, so a provider cap (the
-        Anthropic shim defaults to 1024) can cut the response mid-JSON, which
-        then parses or recovers as if it were complete. The Anthropic stop
+        A provider output cap can still cut the response mid-JSON, which then
+        parses or recovers as if it were complete. The Anthropic stop
         reason maps to finish_reason="length"; without this, a truncated reply
         is indistinguishable from a normal short answer or a fallback.
         """

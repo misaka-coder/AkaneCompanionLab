@@ -2013,8 +2013,9 @@ class SyncAttachmentWorkspaceToolHandler(BaseToolHandler):
 class ClearAttachmentFocusToolHandler(BaseToolHandler):
     tool_type = "clear_attachment_focus"
 
-    def __init__(self, *, attachment_service) -> None:
+    def __init__(self, *, attachment_service, task_workspace_service=None) -> None:
         self.attachment_service = attachment_service
+        self.task_workspace_service = task_workspace_service
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -2022,7 +2023,7 @@ class ClearAttachmentFocusToolHandler(BaseToolHandler):
             '格式为 {"type":"clear_attachment_focus","target":"current|latest|all|附件id/标题/文件名","targets":["img_001","第2张图"],"kind":"any|image|file|document|audio","delete_storage":false,"reason":"可选原因"}。'
             "清理多个指定材料时用 targets 数组；清理全部图片或文件时用 target=all 并配合 kind。"
             "默认只让材料退出当前工作台；只有用户明确要求删除原始附件文件时才把 delete_storage 设为 true。"
-            "它不删除聊天记忆，也不处理礼物系统。"
+            "关联这些材料、仍未收尾的任务白板会一并关闭，避免旧任务继续占用上下文；它不删除聊天记忆、生成成果或礼物。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -2057,6 +2058,7 @@ class ClearAttachmentFocusToolHandler(BaseToolHandler):
         )
         cleared = list(result.get("cleared") or []) if isinstance(result, dict) else []
         events = []
+        cleaned_tasks: list[dict[str, Any]] = []
         if cleared:
             events.append(
                 {
@@ -2064,10 +2066,39 @@ class ClearAttachmentFocusToolHandler(BaseToolHandler):
                     "items": cleared,
                 }
             )
+            if self.task_workspace_service is not None:
+                artifact_ids = {
+                    str(value or "").strip()
+                    for item in cleared
+                    if isinstance(item, dict)
+                    for value in (item.get("attachment_id"), item.get("attachment_handle"))
+                    if str(value or "").strip()
+                }
+                cleaned_tasks = self.task_workspace_service.cleanup_tasks_for_artifacts(
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                    artifact_ids=artifact_ids,
+                    reason=str(call.get("reason") or "").strip() or "关联材料已退出当前工作台。",
+                    timestamp=context.now_ts,
+                )
+                if cleaned_tasks:
+                    events.append(
+                        {
+                            "type": "task_workspaces_cleaned",
+                            "task_ids": [str(task.get("task_id") or "") for task in cleaned_tasks],
+                            "reason": "material_cleared",
+                        }
+                    )
+        followup_context = str(result.get("followup_context") or "") if isinstance(result, dict) else ""
+        if cleaned_tasks:
+            followup_context += (
+                f"\n系统同时关闭了 {len(cleaned_tasks)} 个依赖这些材料的未收尾任务白板；"
+                "这些旧任务不再是当前待办，不要主动继续汇报或追问。"
+            )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            followup_context=followup_context,
         )
 
     def _normalize_kind(self, value: Any) -> str:
@@ -2401,6 +2432,7 @@ class RegisterWorkspaceItemsToolHandler(BaseToolHandler):
                     profile_user_id=context.profile_user_id,
                     session_id=context.session_id,
                     workspace_uri=resolved.uri,
+                    character_pack_id=context.character_pack_id,
                     timestamp=context.now_ts,
                 )
                 item = result.get("item") if isinstance(result.get("item"), dict) else {}
@@ -2580,6 +2612,7 @@ class FetchMediaFromUrlToolHandler(BaseToolHandler):
             session_id=context.session_id,
             urls=list(call.get("urls") or []),
             preferred_title=str(call.get("preferred_title") or ""),
+            character_pack_id=context.character_pack_id,
             timestamp=context.now_ts,
         )
         events = []
@@ -3998,7 +4031,7 @@ class ComposeFileToolHandler(BaseToolHandler):
             '"style":"clean|formal|casual","content_markdown":"你整理好的正文或 Markdown",'
             '"table_rows":[["列1","列2"],["内容1","内容2"]],'
             '"formatting":{"header":{"bold":true},"columns":[{"match_header":"姓名","font_color":"red"}],'
-            '"highlights":[{"text":"重点","fill_color":"yellow"}]},"send_to_user":true}。'
+            '"highlights":[{"text":"重点","fill_color":"yellow"}]},"send_to_user":false}。'
             "这个工具只负责把你已经整理好的内容渲染成文件；如果需要提取重点、改写或排版，"
             "请把最终内容写进 content_markdown 或 table_rows，不要只写一句任务就指望工具替你思考。"
             "但如果用户只是要求忠实转换/导出原始附件（例如 TXT 转 PDF/Word、原文导出），"
@@ -4047,7 +4080,7 @@ class ComposeFileToolHandler(BaseToolHandler):
             "formatting": self._normalize_formatting(
                 value.get("formatting") or value.get("styles") or value.get("style_rules")
             ),
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
+            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -4195,7 +4228,7 @@ class ConvertMediaFileToolHandler(BaseToolHandler):
             '"output_format":"mp3|wav|flac|m4a|aac|ogg|opus","output_title":"输出文件名",'
             '"start_time":"00:00:35","end_time":"00:01:20","normalize_volume":true,'
             '"volume_gain_db":6,"trim_silence":true,"fade_in_seconds":2,"fade_out_seconds":3,"speed_ratio":1.25,'
-            '"bitrate":"192k","sample_rate":44100,"channels":2,"send_to_user":true}。'
+            '"bitrate":"192k","sample_rate":44100,"channels":2,"send_to_user":false}。'
             "它适合普通非加密音频转码、压缩体积、截取片段、音量标准化、整体音量增减、自动去掉头尾静音、淡入淡出、调速、从 mp4/mov/mkv/webm 等视频提取音轨；不要用于 kgm/ncm/qmc 等平台加密或专有缓存格式的解密。"
             "start_time、end_time、normalize_volume、volume_gain_db、trim_silence、fade_in_seconds、fade_out_seconds、speed_ratio、bitrate、sample_rate、channels 都是可选项：用户没指定时不要硬填。"
             "如果只是转 mp3，通常只填 source_id、output_format、output_title 即可；如果是语音识别/统一语音规格，可考虑 wav、sample_rate=16000、channels=1；音乐文件通常保留原采样率和声道更自然。"
@@ -4243,7 +4276,7 @@ class ConvertMediaFileToolHandler(BaseToolHandler):
             "speed_ratio": self._coerce_float(
                 value.get("speed_ratio") or value.get("speed") or value.get("atempo") or 0
             ),
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
+            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -4338,7 +4371,7 @@ class SeparateAudioStemsToolHandler(BaseToolHandler):
             "- separate_audio_stems：当用户想把一首歌、录音或带音轨视频拆成人声和伴奏两轨时使用。"
             '格式为 {"type":"separate_audio_stems","source_id":"file_001|audio_001|gen_001",'
             '"mode":"vocals_instrumental","output_format":"wav|flac|mp3",'
-            '"output_title":"输出标题","send_to_user":true}。'
+            '"output_title":"输出标题","send_to_user":false}。'
             "当前只支持 vocals_instrumental，也就是分离出人声（vocals）和伴奏（instrumental）两份结果。"
             "这个工具负责拆轨，不负责后续精修；如果还要转码、裁剪、统一采样率、去头尾静音或调音量，请对分离后的结果再调用 convert_media_file。"
             "如果来源是普通视频文件，系统会先尝试抽取音轨再分离。不要用于 kgm/ncm/qmc 等平台加密或专有缓存格式的解密。"
@@ -4360,7 +4393,7 @@ class SeparateAudioStemsToolHandler(BaseToolHandler):
             "mode": self._normalize_mode(value.get("mode") or value.get("separation_mode") or "vocals_instrumental"),
             "output_format": self._normalize_output_format(value.get("output_format") or value.get("format") or "wav"),
             "output_title": str(value.get("output_title") or value.get("title") or "").strip()[:80],
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
+            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -4439,7 +4472,7 @@ class CleanVoiceTrackToolHandler(BaseToolHandler):
             "- clean_voice_track：当用户想把语音/人声再净化一下时使用，比如降噪、去混响、去回声、让说话更干净。"
             '格式为 {"type":"clean_voice_track","source_id":"file_001|audio_001|gen_001",'
             '"mode":"denoise|dereverb|deecho|voice_focus","quality":"auto|ai|basic",'
-            '"output_format":"wav|flac|mp3","output_title":"输出标题","post_filter":false,"send_to_user":true}。'
+            '"output_format":"wav|flac|mp3","output_title":"输出标题","post_filter":false,"send_to_user":false}。'
             "它适合说话录音、直播片段、播客人声、分离后的人声轨；如果只是普通转码、裁剪、统一采样率、去头尾静音或调音量，请继续用 convert_media_file。"
             "quality=auto 会优先尝试本地 AI 语音净化模型（当前设计对接 DeepFilterNet），没装环境时再退回基础净化；quality=basic 表示直接走 ffmpeg 轻净化；quality=ai 表示只接受 AI 净化。"
             "mode 主要是意图提示：denoise 更偏降噪，dereverb/deecho 更偏混响与回声整理，voice_focus 更偏让人声主体更靠前。"
@@ -4464,7 +4497,7 @@ class CleanVoiceTrackToolHandler(BaseToolHandler):
             "output_format": self._normalize_output_format(value.get("output_format") or value.get("format") or "wav"),
             "output_title": str(value.get("output_title") or value.get("title") or "").strip()[:80],
             "post_filter": self._coerce_bool(value.get("post_filter") or value.get("pf"), default=False),
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
+            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -4566,7 +4599,7 @@ class TranscribeMediaToolHandler(BaseToolHandler):
             '格式为 {"type":"transcribe_media","source_ids":["audio_001","file_002","gen_003"],'
             '"output_format":"md|txt|srt|vtt|json","output_title":"转写稿标题","language":"zh|en|auto",'
             '"with_timestamps":true,"merge_outputs":true,"model_size":"small|medium|large-v3",'
-            '"vad_filter":true,"send_to_user":true}。'
+            '"vad_filter":true,"send_to_user":false}。'
             "V1 支持批量来源：merge_outputs=true 会生成一份合并转写稿；merge_outputs=false 会每个来源各生成一份。"
             "如果用户要字幕文件，优先用 srt 或 vtt；如果要后续总结、会议纪要、内容梳理，优先用 md 并保留时间戳。"
             "音频较吵、歌曲伴奏很重或人声不清时，可先调用 separate_audio_stems / clean_voice_track，再对生成的人声结果调用 transcribe_media。"
@@ -4611,7 +4644,7 @@ class TranscribeMediaToolHandler(BaseToolHandler):
                 value.get("vad_filter") if "vad_filter" in value else value.get("vad"),
                 default=True,
             ),
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
+            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -4739,7 +4772,7 @@ class PrepareVoiceDatasetToolHandler(BaseToolHandler):
             '"profile":"gpt_sovits|rvc|archive","output_title":"训练集名称",'
             '"target_sr":44100,"min_clip_seconds":3,"max_clip_seconds":12,'
             '"silence_threshold_db":-40,"min_silence_ms":300,"max_silence_kept_ms":300,'
-            '"clean_first":false,"normalize_volume":false,"send_to_user":true}。'
+            '"clean_first":false,"normalize_volume":false,"send_to_user":false}。'
             "这个工具会把多个来源统一成训练用 wav、按停顿切片、生成 manifest.json 和 zip 批次；摘要会列出过短、过长、音量偏低、可能爆音等片段文件名，方便后续和用户一起筛。"
             "它适合处理已经分离/净化后的人声轨，也可以直接处理普通语音音频或带音轨视频；如果用户还没做人声分离/净化，且需要更干净素材，可先调用 separate_audio_stems 或 clean_voice_track。"
             "训练素材任务可以分多步组合：必要时先 convert_media_file 提音频，再 separate_audio_stems 拿人声，再 clean_voice_track 降噪，最后 prepare_voice_dataset 切片打包；不要把这些步骤用于只要原文件的请求。"
@@ -4782,7 +4815,7 @@ class PrepareVoiceDatasetToolHandler(BaseToolHandler):
             "normalize_volume": self._coerce_bool(
                 value.get("normalize_volume") or value.get("loudnorm"), default=False
             ),
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
+            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -4949,7 +4982,7 @@ class ReviseGeneratedFileToolHandler(BaseToolHandler):
             '"instruction":"用户要求怎么改","output_format":"md|txt|docx|xlsx|pdf|json|csv|html",'
             '"output_title":"修改版标题","content_markdown":"修改后的完整正文或 Markdown",'
             '"table_rows":[["列1","列2"],["内容1","内容2"]],'
-            '"formatting":{"rows":[{"index":2,"fill_color":"yellow"}]},"send_to_user":true}。'
+            '"formatting":{"rows":[{"index":2,"fill_color":"yellow"}]},"send_to_user":false}。'
             "这个工具不会替你理解“删第二段、加总结”；你需要根据生成文件工作台里的预览先整理出修改后的最终内容，"
             "再把最终内容写进 content_markdown 或 table_rows。"
             "如果只是调整颜色、加粗或高亮，把明确样式规则写进 formatting。"
@@ -4985,7 +5018,7 @@ class ReviseGeneratedFileToolHandler(BaseToolHandler):
             "formatting": ComposeFileToolHandler._normalize_formatting(
                 self, value.get("formatting") or value.get("styles") or value.get("style_rules")
             ),
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
+            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -5069,7 +5102,7 @@ class ApplyStyleToExistingFileToolHandler(BaseToolHandler):
             '"formatting":{"header":{"bold":true},"columns":[{"match_header":"姓名","font_color":"red"}],'
             '"rows":[{"index":2,"fill_color":"yellow"}],'
             '"row_rules":[{"where":{"column":"分数","lt":60},"font_color":"red"}],'
-            '"highlights":[{"text":"重点","fill_color":"yellow"}]},"send_to_user":true}。'
+            '"highlights":[{"text":"重点","fill_color":"yellow"}]},"send_to_user":false}。'
             "适合“把姓名列标红”“低于60分整行标红”“重点高亮”这类操作；"
             "它会复制原文件并套样式，不需要你把大表格或整篇 Word 重新输出。"
             "如果用户要增删改正文内容，用 revise_generated_file；如果要从附件整理成新文件，用 compose_file。"
@@ -5095,7 +5128,7 @@ class ApplyStyleToExistingFileToolHandler(BaseToolHandler):
             "formatting": ComposeFileToolHandler._normalize_formatting(
                 self, value.get("formatting") or value.get("styles") or value.get("style_rules")
             ),
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
+            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:

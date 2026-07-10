@@ -22,6 +22,8 @@ fastapi
 -e ../capcore-provider-native-tools
 # OpenAI native tool provider envelope extracted from Akane/capcore integration.
 -e ../capcore-provider-openai
+# Anthropic Messages native tool provider envelope extracted from Akane/capcore integration.
+-e ../capcore-provider-anthropic
 # Akane uses memcore as the primary dialogue memory backend.
 # Clone memcore next to this repository as another extracted sibling package.
 -e ../memcore

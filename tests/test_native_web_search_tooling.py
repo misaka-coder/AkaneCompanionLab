@@ -10,9 +10,11 @@ from companion_v01.final_output_engine import normalize_final_output
 from companion_v01.llm_runtime import LLMRuntime, ModelBundle
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.tool_invocation import (
+    NATIVE_ANTHROPIC,
     NATIVE_OPENAI,
     NATIVE_TOOL_CALL_FIELD,
     TOOL_INVOCATION_ID_FIELD,
+    TOOL_MODEL_NAME_FIELD,
     TOOL_SOURCE_FIELD,
 )
 from companion_v01.tool_runtime import TOOL_METADATA_BY_TYPE, ToolExecutionResult
@@ -156,6 +158,12 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 "list_reminders",
                 "check_inventory",
                 "inspect_media_info",
+                "load_character_context",
+                "inspect_attachment",
+                "read_attachment_section",
+                "list_workspace",
+                "read_workspace",
+                "inspect_generated_file",
             },
         )
 
@@ -438,7 +446,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
     def test_unsupported_provider_does_not_send_native_tools(self) -> None:
         runtime = LLMRuntime()
-        bundle = ModelBundle(client=FakeClient("anthropic"), model="fake-model")
+        bundle = ModelBundle(client=FakeClient("ollama"), model="fake-model")
         schema = tool_orchestration_engine.native_web_search_tool_schema()
 
         payload = runtime._build_completion_kwargs(
@@ -607,6 +615,85 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(tool_events, current_events)
         self.assertIn("第 1 次工具（web_search）结果", tool_followups[0])
         self.assertIn("上海今天晴", tool_followups[0])
+
+    def test_engine_tool_round_builds_native_anthropic_tool_result_history(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine._execute_tool_call = lambda **_kwargs: ToolExecutionResult(
+            tool_type="mcp.demo.echo",
+            followup_context="echo ok",
+            stream_events=[{"type": "mcp_tool_completed", "status": "ok"}],
+        )
+        engine._record_tool_result_artifacts_in_task_workspace = lambda **_kwargs: ([], "workspace artifact recorded")
+        client_context = ClientProtocolContext(
+            requested_mode=ClientMode.SCENE_STATIC,
+            effective_mode=ClientMode.SCENE_STATIC,
+        )
+        native_history: list[dict] = []
+
+        engine._execute_and_record_tool_round(
+            tool_call={
+                "type": "mcp.demo.echo",
+                "text": "hi",
+                TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
+                TOOL_INVOCATION_ID_FIELD: "toolu_1",
+                TOOL_MODEL_NAME_FIELD: "mcp_demo_echo_abcd123456",
+            },
+            final_output={"speech": "", "tool_call": None},
+            tool_results=[],
+            tool_events=[],
+            tool_followups=[],
+            tool_turns=[],
+            recent_raw_for_turn=[],
+            profile_user_id="u",
+            session_id="s",
+            character_pack_id="",
+            now_ts=0,
+            current_user_source_id="",
+            client_context=client_context,
+            memory_exclude_source_ids=[],
+            request_context={},
+            native_tool_history_turns=native_history,
+        )
+
+        self.assertEqual([turn["role"] for turn in native_history], ["assistant", "user"])
+        tool_use = native_history[0]["content"][0]
+        tool_result = native_history[1]["content"][0]
+        self.assertEqual(
+            tool_use,
+            {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "mcp_demo_echo_abcd123456",
+                "input": {"text": "hi"},
+            },
+        )
+        self.assertEqual(tool_result["type"], "tool_result")
+        self.assertEqual(tool_result["tool_use_id"], "toolu_1")
+        self.assertIn("echo ok", tool_result["content"])
+        self.assertIn("workspace artifact recorded", tool_result["content"])
+        self.assertNotIn("is_error", tool_result)
+
+    def test_engine_native_anthropic_tool_result_marks_errors(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        native_history: list[dict] = []
+
+        engine._append_native_anthropic_tool_history_turns(
+            native_tool_history_turns=native_history,
+            tool_call={
+                "type": "web_search",
+                "query": "Akane",
+                TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
+                TOOL_INVOCATION_ID_FIELD: "toolu_error",
+            },
+            tool_result=ToolExecutionResult(
+                tool_type="web_search",
+                followup_context="<tool_use_error>网络不可用</tool_use_error>",
+                stream_events=[],
+            ),
+            shaped_followup="<tool_use_error>网络不可用</tool_use_error>",
+        )
+
+        self.assertTrue(native_history[1]["content"][0]["is_error"])
 
     def test_tool_call_signature_ignores_native_invocation_metadata(self) -> None:
         first = tool_orchestration_engine.tool_call_signature(

@@ -502,16 +502,14 @@ def build_send_followup(service: Any, *, generated: dict[str, Any]) -> str:
     handle = str(generated.get("generated_handle") or "").strip()
     title = str(generated.get("output_title") or "生成文件").strip()
     output_format = str(generated.get("output_format") or "").strip()
-    path = str(generated.get("absolute_path") or "").strip()
     size_label = _format_size_from_item(service, generated)
-    lines = [f"你刚刚已经请求把生成文件 {handle}《{title}》（{output_format}）再次发送给用户。"]
+    lines = [f"生成文件 {handle}《{title}》（{output_format}）已经进入客户端投递队列。"]
     if size_label:
         lines.append(f"文件大小：{size_label}。")
     lines.extend(
         [
-            f"本地路径：{path}",
-            "当前客户端如果支持发送文件，系统会尝试上传它；如果发送失败，你可以告诉用户文件还在但发送失败。",
-            "请基于这个既成事实自然回应，不要重复调用 send_generated_file。",
+            "此时还没有客户端最终投递回执。最终回复只能说正在尝试发送或已进入投递队列，不能说用户已经收到或发送成功。",
+            "请等待客户端实际文件消息；不要重复调用 send_generated_file。",
         ]
     )
     return "\n".join(lines)
@@ -535,14 +533,11 @@ def build_send_followup_batch(
             handle = str(generated.get("generated_handle") or "").strip()
             title = str(generated.get("output_title") or "生成文件").strip()
             output_format = str(generated.get("output_format") or "").strip()
-            path = str(generated.get("absolute_path") or "").strip()
             size_label = _format_size_from_item(service, generated)
             suffix = f"，大小：{size_label}" if size_label else ""
             lines.append(f"- {handle}《{title}》（{output_format}{suffix}）")
-            if path:
-                lines.append(f"  本地路径：{path}")
-        lines.append("当前客户端如果支持发送文件，系统会尝试依次上传这些文件。")
-        lines.append("请基于这个既成事实自然回应，不要重复调用 send_generated_file。")
+        lines.append("这些文件只进入了客户端投递队列，尚无最终回执；不能说用户已经收到或发送成功。")
+        lines.append("请等待客户端实际文件消息，不要重复调用 send_generated_file。")
     if unresolved:
         lines.append(f"这些目标没有找到：{', '.join(unresolved[:8])}。")
     if ambiguous_targets:
@@ -585,14 +580,13 @@ def build_send_file_followup_batch(
     if len(files) == 1:
         file_ref = files[0]
         size_label = _format_size_from_item(service, file_ref)
-        lines = [f"你刚刚已经请求把 {service._sendable_file_label(file_ref)} 发送给用户。"]
+        lines = [f"{service._sendable_file_label(file_ref)} 已经进入客户端投递队列。"]
         if size_label:
             lines.append(f"文件大小：{size_label}。")
         lines.extend(
             [
-                f"本地路径：{file_ref.get('absolute_path') or ''}",
-                "当前客户端如果支持发送文件，系统会尝试上传它；如果发送失败，你可以告诉用户文件还在但发送失败。",
-                "请基于这个既成事实自然回应，不要重复调用 send_file。",
+                "此时还没有客户端最终投递回执。最终回复只能说正在尝试发送或已进入投递队列，不能说用户已经收到或发送成功。",
+                "请等待客户端实际文件消息；不要重复调用 send_file。",
             ]
         )
     else:
@@ -601,11 +595,8 @@ def build_send_file_followup_batch(
             size_label = _format_size_from_item(service, file_ref)
             suffix = f"，大小：{size_label}" if size_label else ""
             lines.append(f"- {service._sendable_file_label(file_ref)}{suffix}")
-            path = str(file_ref.get("absolute_path") or "").strip()
-            if path:
-                lines.append(f"  本地路径：{path}")
-        lines.append("当前客户端如果支持发送文件，系统会尝试依次上传这些文件。")
-        lines.append("请基于这个既成事实自然回应，不要重复调用 send_file。")
+        lines.append("这些文件只进入了客户端投递队列，尚无最终回执；不能说用户已经收到或发送成功。")
+        lines.append("请等待客户端实际文件消息，不要重复调用 send_file。")
     if unresolved:
         lines.append(f"这些目标没有找到：{', '.join(unresolved[:8])}。")
     if ambiguous_targets:

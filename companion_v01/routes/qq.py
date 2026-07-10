@@ -1036,6 +1036,22 @@ def _process_qq_turn_streaming(
         context,
         list(frame.get("tool_events") or []),
     )
+    file_delivery_feedback_result = {"ok": True, "status": "skipped", "reason": "no_delivery_issue"}
+    file_delivery_status = str(file_send_result.get("status") or "").strip().lower()
+    if file_delivery_status == "blocked":
+        file_delivery_feedback_result = qq_gateway.send_reply(
+            context,
+            "文件这次没有发出，因为当前消息没有明确要求发送。需要时请直接说要发送哪一份。",
+        )
+        file_delivery_feedback_result["status"] = "blocked_notice_sent"
+    elif file_delivery_status == "failed" or (
+        int(file_send_result.get("count") or 0) > 0 and not bool(file_send_result.get("ok"))
+    ):
+        file_delivery_feedback_result = qq_gateway.send_reply(
+            context,
+            "文件这次发送失败了，现有结果仍保留着，可以稍后再试。",
+        )
+        file_delivery_feedback_result["status"] = "failure_notice_sent"
     sticker_send_result = qq_gateway.send_stickers(
         context,
         list(frame.get("tool_events") or []),
@@ -1047,6 +1063,7 @@ def _process_qq_turn_streaming(
         "emotion_mface_result": emotion_mface_result,
         "emotion_image_result": emotion_image_result,
         "file_send_result": file_send_result,
+        "file_delivery_feedback_result": file_delivery_feedback_result,
         "sticker_send_result": sticker_send_result,
     }
 
@@ -1117,6 +1134,7 @@ def build_qq_router(
             profile_user_id=context.profile_user_id,
             session_id=context.session_id,
             message=context.clean_message or context.raw_message,
+            character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
             timestamp=int(event.get("time") or time.time()),
         )
         if (
@@ -1663,6 +1681,7 @@ def build_qq_router(
                     profile_user_id=context.profile_user_id,
                     session_id=context.session_id,
                     attachments=_with_qq_sender_context(list(context.attachments), context),
+                    character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
                     timestamp=int(event.get("time") or time.time()),
                 )
                 attachment_ids = [

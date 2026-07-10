@@ -6,6 +6,10 @@ from typing import Any
 from .store import MemoryStore
 
 
+TASK_WORKSPACE_PROMPT_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+TASK_WORKSPACE_PROMPT_SCAN_LIMIT = 80
+
+
 class TaskWorkspaceService:
     """A lightweight task ledger for future multi-step/background work.
 
@@ -163,14 +167,20 @@ class TaskWorkspaceService:
         step_limit: int = 6,
         artifact_limit: int = 8,
         event_limit: int = 3,
+        now_ts: int | None = None,
+        max_age_seconds: int = TASK_WORKSPACE_PROMPT_MAX_AGE_SECONDS,
     ) -> str:
         """Render active task state as compact working context for the frontstage assistant."""
 
+        updated_after_ts = 0
+        if now_ts is not None and int(max_age_seconds or 0) > 0:
+            updated_after_ts = max(0, int(now_ts) - int(max_age_seconds))
         tasks = self._list_prompt_tasks(
             profile_user_id=profile_user_id,
             session_id=session_id,
             active_limit=max(1, int(task_limit or 2)),
             handoff_limit=2,
+            updated_after_ts=updated_after_ts,
         )
         if not tasks:
             return ""
@@ -271,13 +281,18 @@ class TaskWorkspaceService:
         session_id: str,
         active_limit: int,
         handoff_limit: int = 2,
+        updated_after_ts: int = 0,
     ) -> list[dict[str, Any]]:
-        active_tasks = self.list_tasks(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            statuses=["running", "waiting_user", "queued"],
-            limit=max(1, int(active_limit or 2)),
-        )
+        active_tasks = [
+            task
+            for task in self.list_tasks(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                statuses=["running", "waiting_user", "queued"],
+                limit=max(TASK_WORKSPACE_PROMPT_SCAN_LIMIT, int(active_limit or 2)),
+            )
+            if not updated_after_ts or int(task.get("updated_at") or task.get("created_at") or 0) >= updated_after_ts
+        ][: max(1, int(active_limit or 2))]
         seen_ids = {
             str(task.get("task_id") or "").strip()
             for task in active_tasks
@@ -303,11 +318,88 @@ class TaskWorkspaceService:
             status = str(task.get("status") or "").strip().lower()
             if status in {"cleaned", "canceled"}:
                 continue
+            if updated_after_ts and int(task.get("updated_at") or task.get("created_at") or 0) < updated_after_ts:
+                continue
             seen_ids.add(task_id)
             handoff_tasks.append(task)
             if len(handoff_tasks) >= max(1, int(handoff_limit or 2)):
                 break
         return [*active_tasks, *handoff_tasks]
+
+    def cleanup_tasks_for_artifacts(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        artifact_ids: list[str] | tuple[str, ...] | set[str],
+        reason: str = "",
+        timestamp: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Close active task ledgers connected to cleared material.
+
+        References are expanded through matched task artifacts so clearing an
+        original file also closes downstream work that only names generated
+        handles from that task.
+        """
+
+        anchors = {str(item or "").strip() for item in artifact_ids or [] if str(item or "").strip()}
+        if not anchors:
+            return []
+        candidates = self.list_tasks(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            statuses=["running", "waiting_user", "queued"],
+            limit=200,
+        )
+        matched: list[dict[str, Any]] = []
+        matched_ids: set[str] = set()
+        changed = True
+        while changed:
+            changed = False
+            for task in candidates:
+                task_id = str(task.get("task_id") or "").strip()
+                if not task_id or task_id in matched_ids:
+                    continue
+                references = self._task_reference_ids(task)
+                if not (references & anchors):
+                    continue
+                matched.append(task)
+                matched_ids.add(task_id)
+                previous_size = len(anchors)
+                anchors.update(references)
+                changed = changed or len(anchors) != previous_size
+
+        effective_ts = int(timestamp or time.time())
+        cleanup_reason = str(reason or "").strip() or "关联材料已退出当前工作台。"
+        cleaned: list[dict[str, Any]] = []
+        for task in matched:
+            updated = self.cleanup_task(
+                task_id=str(task.get("task_id") or ""),
+                mode="material_cleared",
+                reason=cleanup_reason,
+                timestamp=effective_ts,
+            )
+            if updated:
+                cleaned.append(updated)
+        return cleaned
+
+    @staticmethod
+    def _task_reference_ids(task: dict[str, Any]) -> set[str]:
+        references: set[str] = set()
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        workshop = metadata.get("workshop") if isinstance(metadata.get("workshop"), dict) else {}
+        for value in workshop.get("inputs") or []:
+            text = str(value or "").strip()
+            if text:
+                references.add(text)
+        for artifact in task.get("artifacts") or []:
+            if not isinstance(artifact, dict):
+                continue
+            for key in ("id", "generated_handle", "generated_id", "attachment_handle", "attachment_id"):
+                text = str(artifact.get(key) or "").strip()
+                if text:
+                    references.add(text)
+        return references
 
     def get_task_handoff(self, task: dict[str, Any]) -> dict[str, Any]:
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}

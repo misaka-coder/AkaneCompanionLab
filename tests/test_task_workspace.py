@@ -201,6 +201,65 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
 
             self.assertEqual(context, "")
 
+    def test_service_build_prompt_context_hides_stale_open_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store)
+            service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="很早以前卡住的转写。",
+                normalized_goal="继续转写旧音频。",
+                status="waiting_user",
+                timestamp=100,
+            )
+
+            context = service.build_prompt_context(
+                profile_user_id="master",
+                session_id="qq-private",
+                now_ts=1000,
+                max_age_seconds=500,
+            )
+
+            self.assertEqual(context, "")
+
+    def test_cleanup_tasks_for_artifacts_closes_downstream_task_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store)
+            parent = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="处理 file_013。",
+                normalized_goal="转换并分离 file_013。",
+                artifacts=[{"id": "gen_012", "kind": "mp3"}],
+                metadata={"workshop": {"inputs": ["file_013"]}},
+                status="running",
+                timestamp=100,
+            )
+            child = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="转写 gen_012。",
+                normalized_goal="转写人声。",
+                metadata={"workshop": {"inputs": ["gen_012"]}},
+                status="waiting_user",
+                timestamp=110,
+            )
+
+            cleaned = service.cleanup_tasks_for_artifacts(
+                profile_user_id="master",
+                session_id="qq-private",
+                artifact_ids=["file_013"],
+                reason="用户清理了原始材料。",
+                timestamp=120,
+            )
+
+            self.assertEqual({task["task_id"] for task in cleaned}, {parent["task_id"], child["task_id"]})
+            self.assertEqual(service.get_task(parent["task_id"])["status"], "cleaned")
+            self.assertEqual(service.get_task(child["task_id"])["status"], "cleaned")
+            self.assertEqual(service.get_task(child["task_id"])["metadata"]["cleanup"]["mode"], "material_cleared")
+
     def test_service_build_prompt_context_keeps_completed_task_with_pending_worker_handoff(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))

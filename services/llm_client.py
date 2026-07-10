@@ -7,6 +7,9 @@ import requests
 from openai import OpenAI
 
 
+ANTHROPIC_DEFAULT_MAX_TOKENS = 4096
+
+
 def normalize_api_protocol(protocol: str = "", base_url: str = "") -> str:
     explicit = str(protocol or "").strip().lower()
     if explicit in {"openai", "anthropic", "ollama"}:
@@ -171,14 +174,14 @@ def _build_anthropic_payload(kwargs: dict) -> dict:
     raw_messages = kwargs.get("messages") or []
     system_text, messages = _convert_messages(raw_messages)
     system_extra_blocks = [
-        str(b or "").strip()
-        for b in (kwargs.get("system_extra_blocks") or [])
-        if str(b or "").strip()
+        str(b or "").strip() for b in (kwargs.get("system_extra_blocks") or []) if str(b or "").strip()
     ]
     payload = {
         "model": kwargs.get("model", ""),
         "messages": messages,
-        "max_tokens": int(kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or 1024),
+        "max_tokens": int(
+            kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or ANTHROPIC_DEFAULT_MAX_TOKENS
+        ),
     }
     max_system_cache_blocks = 4
     system_blocks = []
@@ -207,6 +210,13 @@ def _build_anthropic_payload(kwargs: dict) -> dict:
     if kwargs.get("stream") is not None:
         payload["stream"] = bool(kwargs.get("stream"))
 
+    tools = _convert_openai_tools_to_anthropic_tools(kwargs.get("tools"))
+    if tools:
+        payload["tools"] = tools
+        tool_choice = _convert_anthropic_tool_choice(kwargs.get("tool_choice"))
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
+
     extra_body = kwargs.get("extra_body")
     if isinstance(extra_body, dict):
         for key, value in extra_body.items():
@@ -214,6 +224,56 @@ def _build_anthropic_payload(kwargs: dict) -> dict:
                 payload[key] = value
 
     return payload
+
+
+def _convert_openai_tools_to_anthropic_tools(value) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    tools = []
+    seen = set()
+    for raw in value[:64]:
+        if not isinstance(raw, dict):
+            continue
+        function = raw.get("function")
+        if str(raw.get("type") or "").strip() != "function" or not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        input_schema = function.get("parameters")
+        if not isinstance(input_schema, dict):
+            input_schema = {"type": "object", "additionalProperties": True}
+        tool = {
+            "name": name,
+            "description": " ".join(str(function.get("description") or "").split()) or f"Call Akane tool {name}.",
+            "input_schema": input_schema,
+        }
+        if bool(function.get("strict")):
+            tool["strict"] = True
+        tools.append(tool)
+        seen.add(name)
+    return tools
+
+
+def _convert_anthropic_tool_choice(value):
+    if isinstance(value, dict):
+        choice_type = str(value.get("type") or "").strip().lower()
+        if choice_type in {"auto", "any", "none"}:
+            return {"type": choice_type}
+        if choice_type == "tool":
+            name = str(value.get("name") or "").strip()
+            return {"type": "tool", "name": name} if name else {}
+        function = value.get("function")
+        if isinstance(function, dict):
+            name = str(function.get("name") or "").strip()
+            return {"type": "tool", "name": name} if name else {}
+        return {}
+    raw = str(value or "").strip().lower()
+    if raw == "required":
+        return {"type": "any"}
+    if raw in {"auto", "any", "none"}:
+        return {"type": raw}
+    return {}
 
 
 def _build_system_text_block(text: str, *, cache_enabled: bool) -> dict:
@@ -280,9 +340,47 @@ def _convert_content_blocks(content):
                 image_payload = _convert_image_url_block(item.get("image_url"))
                 if image_payload is not None:
                     blocks.append(image_payload)
+                continue
+            if block_type == "tool_result":
+                tool_result = _convert_tool_result_block(item)
+                if tool_result is not None:
+                    blocks.append(tool_result)
+                continue
+            if block_type == "tool_use":
+                tool_use = _convert_tool_use_block(item)
+                if tool_use is not None:
+                    blocks.append(tool_use)
         if blocks:
             return blocks
     return _flatten_content_to_text(content)
+
+
+def _convert_tool_result_block(item: dict):
+    tool_use_id = str(item.get("tool_use_id") or item.get("tool_call_id") or "").strip()
+    if not tool_use_id:
+        return None
+    block = {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": str(item.get("content") or ""),
+    }
+    if bool(item.get("is_error")):
+        block["is_error"] = True
+    return block
+
+
+def _convert_tool_use_block(item: dict):
+    tool_use_id = str(item.get("id") or "").strip()
+    name = str(item.get("name") or "").strip()
+    if not tool_use_id or not name:
+        return None
+    input_value = item.get("input")
+    return {
+        "type": "tool_use",
+        "id": tool_use_id,
+        "name": name,
+        "input": input_value if isinstance(input_value, dict) else {},
+    }
 
 
 def _convert_image_url_block(image_url_payload):
@@ -332,9 +430,11 @@ def _raise_for_status(response: requests.Response) -> None:
 
 def _build_openai_style_response(payload: dict, model: str):
     text = _extract_anthropic_text(payload)
+    raw_content = payload.get("content") or []
     usage = payload.get("usage") or {}
     prompt_tokens = int(usage.get("input_tokens", 0) or 0)
     completion_tokens = int(usage.get("output_tokens", 0) or 0)
+    message_content = raw_content if _anthropic_content_has_tool_use(raw_content) else text
     return SimpleNamespace(
         id=payload.get("id", f"chatcmpl-{uuid.uuid4().hex}"),
         object="chat.completion",
@@ -346,7 +446,7 @@ def _build_openai_style_response(payload: dict, model: str):
                 finish_reason=_map_finish_reason(payload.get("stop_reason")),
                 message=SimpleNamespace(
                     role="assistant",
-                    content=text,
+                    content=message_content,
                     tool_calls=[],
                 ),
             )
@@ -371,12 +471,24 @@ def _chunk_from_sse_event(event_name: str, data_lines: list[str], model: str):
     payload = json.loads(raw)
     if event_name == "content_block_start":
         block = payload.get("content_block") or {}
+        if str(block.get("type") or "").strip() == "tool_use":
+            return {
+                "type": "content_block_start",
+                "index": payload.get("index", 0),
+                "content_block": block,
+            }
         text = str(block.get("text", "") or "")
         if text:
             return _build_stream_chunk(text=text, model=model)
         return None
     if event_name == "content_block_delta":
         delta = payload.get("delta") or {}
+        if str(delta.get("type") or "").strip() == "input_json_delta":
+            return {
+                "type": "content_block_delta",
+                "index": payload.get("index", 0),
+                "delta": delta,
+            }
         text = str(delta.get("text", "") or "")
         if text:
             return _build_stream_chunk(text=text, model=model)
@@ -412,6 +524,12 @@ def _extract_anthropic_text(payload: dict) -> str:
         if str(item.get("type", "")).strip() == "text":
             parts.append(str(item.get("text", "")))
     return "".join(parts).strip()
+
+
+def _anthropic_content_has_tool_use(content) -> bool:
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(item, dict) and str(item.get("type") or "").strip() == "tool_use" for item in content)
 
 
 def _map_finish_reason(stop_reason):

@@ -166,10 +166,13 @@ class MemcoreTimelineToolService:
         )
 
     def build_acquaintance_prompt(self, **kwargs: Any) -> str:
-        manager = self.manager
+        manager = self.memcore_manager
         if manager is not None and manager.available:
+            acquaintance_note = getattr(manager, "acquaintance_note", None)
+            if not callable(acquaintance_note):
+                return ""
             profile_user_id = str(kwargs.get("profile_user_id") or "").strip()
-            result = manager.acquaintance_note(
+            result = acquaintance_note(
                 profile_user_id=profile_user_id,
                 session_id=profile_user_id,
                 character_pack_id=str(kwargs.get("character_pack_id") or "").strip(),

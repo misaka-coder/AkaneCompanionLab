@@ -13,6 +13,7 @@ def prefetch_remote_media_links_for_message(
     profile_user_id: str,
     session_id: str,
     message: str,
+    character_pack_id: str = "",
     timestamp: int | None = None,
 ) -> dict[str, Any]:
     """Deterministically fetch explicit media links before the final reply."""
@@ -34,6 +35,7 @@ def prefetch_remote_media_links_for_message(
         profile_user_id=profile_user_id,
         session_id=session_id,
         urls=urls,
+        character_pack_id=character_pack_id,
         timestamp=timestamp,
     )
 

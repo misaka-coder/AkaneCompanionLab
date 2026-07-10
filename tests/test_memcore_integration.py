@@ -341,6 +341,33 @@ class _CompactionMemcoreManager:
         return {"ok": True, "status": "completed", "stats": {}}
 
 
+class _MaterialFakeSystem:
+    def __init__(self) -> None:
+        self.references: list[dict[str, object]] = []
+        self.cleanups: list[dict[str, object]] = []
+
+    def record_material_reference(self, **kwargs) -> dict[str, object]:
+        self.references.append(dict(kwargs))
+        return {"source_id": str(kwargs.get("source_id") or ""), "index_status": "indexed"}
+
+    def record_material_cleanup(self, **kwargs) -> dict[str, object]:
+        self.cleanups.append(dict(kwargs))
+        return {"source_id": str(kwargs.get("source_id") or ""), "index_status": "indexed"}
+
+
+class _MaterialMemcoreManager(MemcoreManager):
+    def __init__(self) -> None:
+        self.backend = "memcore"
+        self._available = True
+        self._reason = ""
+        self.system = _MaterialFakeSystem()
+        self.system_calls: list[dict[str, object]] = []
+
+    def _get_system_or_none(self, **kwargs) -> _MaterialFakeSystem:
+        self.system_calls.append(dict(kwargs))
+        return self.system
+
+
 class _VectorWriteStore:
     def __init__(self) -> None:
         self.index_updates: list[tuple[str, bool]] = []
@@ -1076,6 +1103,42 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(stored_user["memory_metadata"]["mood_tags"], ["happy"])
             self.assertEqual(stored_user["memory_metadata"]["importance"], 0.8)
             manager.close()
+
+    def test_material_trace_bridge_records_safe_attachment_anchor(self) -> None:
+        manager = _MaterialMemcoreManager()
+        item = {
+            "attachment_id": "attachment::abc",
+            "attachment_handle": "img_001",
+            "profile_user_id": "master",
+            "session_id": "qq_group_1",
+            "kind": "image",
+            "origin_name": "meal.jpg",
+            "mime_type": "image/jpeg",
+            "status": "ready",
+            "summary_title": "晚餐图片",
+            "storage_relpath": "C:/Users/Lenovo/secret/meal.jpg",
+            "detail": {"character_pack_id": "akane_v1", "summary": "盘子里有热汤。"},
+        }
+
+        reference = manager.record_material_reference(item=item, timestamp=100)
+        cleanup = manager.record_material_cleanup(
+            item=item,
+            timestamp=120,
+            reason="聊完了",
+            delete_storage=True,
+        )
+
+        self.assertTrue(reference["ok"])
+        self.assertTrue(cleanup["ok"])
+        self.assertEqual(manager.system_calls[0]["character_pack_id"], "akane_v1")
+        self.assertEqual(manager.system.references[0]["file_id"], "img_001")
+        self.assertEqual(manager.system.references[0]["file_status"], "ready")
+        self.assertEqual(manager.system.references[0]["derived_status"], "ready")
+        self.assertIn("reference:ready:100", manager.system.references[0]["source_id"])
+        self.assertNotIn("storage_relpath", manager.system.references[0])
+        self.assertNotIn("C:/Users", str(manager.system.references[0]))
+        self.assertEqual(manager.system.cleanups[0]["file_status"], "deleted")
+        self.assertEqual(manager.system.cleanups[0]["reason"], "聊完了")
 
     def test_build_prompt_context_returns_memcore_visible_layers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

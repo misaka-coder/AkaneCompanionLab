@@ -19,15 +19,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-# Known invocation sources. NATIVE_OPENAI is the active production path
-# for verified providers with allowlisted tools; LEGACY_JSON is the thin
-# fallback for unverified providers and non-allowlisted tools.
-# NATIVE_ANTHROPIC is reserved for future Anthropic provider support.
+# Known invocation sources. Native OpenAI and Anthropic calls are active
+# production paths for verified providers with allowlisted tools; LEGACY_JSON is
+# the thin fallback for unverified providers and non-allowlisted tools.
 LEGACY_JSON = "legacy_json"
 NATIVE_OPENAI = "native_openai"
 NATIVE_ANTHROPIC = "native_anthropic"
 TOOL_SOURCE_FIELD = "_tool_source"
 TOOL_INVOCATION_ID_FIELD = "_tool_invocation_id"
+TOOL_MODEL_NAME_FIELD = "_tool_model_name"
 NATIVE_TOOL_CALL_FIELD = "_native_tool_call"
 
 
@@ -103,11 +103,7 @@ def legacy_tool_call_to_invocation(
         return None
     embedded_source = str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip()
     embedded_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
-    arguments = {
-        key: value
-        for key, value in tool_call.items()
-        if key != "type" and not str(key).startswith("_tool_")
-    }
+    arguments = {key: value for key, value in tool_call.items() if key != "type" and not str(key).startswith("_tool_")}
     return ToolInvocation(
         name=name,
         arguments=arguments,

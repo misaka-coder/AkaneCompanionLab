@@ -9,6 +9,7 @@ import config
 from .client_protocol import ClientProtocolContext
 from .client_protocol import ClientMode
 from .tool_invocation import LEGACY_JSON
+from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
 from .tool_invocation import TOOL_SOURCE_FIELD
@@ -278,7 +279,7 @@ def normalize_tool_invocation(
 
 def _normalize_invocation_source(value: Any) -> str:
     source = str(value or "").strip()
-    if source in {NATIVE_OPENAI}:
+    if source in {NATIVE_OPENAI, NATIVE_ANTHROPIC}:
         return source
     return LEGACY_JSON
 

@@ -44,14 +44,24 @@ class VisionObservationRouter:
 
         status = self._status(observation)
         if status != "ready":
-            self.store.update_attachment_inbox_item(
+            timestamp = int(time.time())
+            updated = self.store.update_attachment_inbox_item(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 attachment_id=attachment_id,
                 status="failed",
                 error_message=str(observation.get("error_message") or "视觉观察失败。")[:500],
-                updated_at=int(time.time()),
+                updated_at=timestamp,
             )
+            attachment_service = getattr(self, "attachment_service", None)
+            recorder = getattr(attachment_service, "record_material_status", None)
+            if callable(recorder):
+                recorder(
+                    updated,
+                    event_type="reference",
+                    timestamp=timestamp,
+                    reason=str(observation.get("error_message") or "视觉观察失败。"),
+                )
             return
 
         card = observation.get("observation") if isinstance(observation.get("observation"), dict) else {}
@@ -85,7 +95,7 @@ class VisionObservationRouter:
             )
             return
 
-        self.store.update_attachment_inbox_item(
+        updated = self.store.update_attachment_inbox_item(
             profile_user_id=profile_user_id,
             session_id=session_id,
             attachment_id=attachment_id,
@@ -95,6 +105,9 @@ class VisionObservationRouter:
             detail=card,
             updated_at=timestamp,
         )
+        recorder = getattr(attachment_service, "record_material_status", None)
+        if callable(recorder):
+            recorder(updated, event_type="reference", timestamp=timestamp)
 
     def _handle_gift_image(self, *, target: VisionTarget, observation: dict[str, Any]) -> None:
         if self._status(observation) != "ready":
