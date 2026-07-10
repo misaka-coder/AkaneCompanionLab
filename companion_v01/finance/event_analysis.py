@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+import time
 from typing import Any
 from zoneinfo import ZoneInfo
+
+import config
 
 from .event_contracts import FinanceAnalysisRequest, FinanceAnalysisResult
 
@@ -15,23 +18,74 @@ _INCOMPLETE_FINAL_MARKERS = (
     "稍后再回复",
     "稍后给你结果",
 )
+_TRANSIENT_FALLBACK_MARKERS = (
+    "我在认真听你说",
+    "要不要再多告诉我一点",
+)
 _STRUCTURE_MARKERS = ("已确认事实", "客观数据与时间", "分析推断", "待验证")
 
 
 class AkaneFinanceAnalysisClient:
-    def __init__(self, engine: Any) -> None:
+    def __init__(
+        self,
+        engine: Any,
+        *,
+        max_attempts: int | None = None,
+        retry_backoff_seconds: float | None = None,
+        sleeper=time.sleep,
+    ) -> None:
         self.engine = engine
+        configured_attempts = (
+            getattr(config, "FINANCE_ANALYSIS_MAX_ATTEMPTS", 3) if max_attempts is None else max_attempts
+        )
+        configured_backoff = (
+            getattr(config, "FINANCE_ANALYSIS_RETRY_BACKOFF_SECONDS", 0.5)
+            if retry_backoff_seconds is None
+            else retry_backoff_seconds
+        )
+        self.max_attempts = max(1, min(5, int(configured_attempts)))
+        self.retry_backoff_seconds = max(0.0, min(5.0, float(configured_backoff)))
+        self._sleeper = sleeper
 
     def analyze(self, request: FinanceAnalysisRequest) -> FinanceAnalysisResult:
-        try:
-            raw_frame = self.engine.process_turn(request.to_turn_payload())
-        except Exception as exc:
-            return FinanceAnalysisResult(
-                ok=False,
-                status="analysis_failed",
-                analysis_id=request.analysis_id,
-                reason=f"{type(exc).__name__}: {exc}",
-            )
+        last_status = "analysis_failed"
+        last_reason = "analysis did not run"
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                raw_frame = self.engine.process_turn(request.to_turn_payload())
+            except Exception as exc:
+                last_status = "analysis_failed"
+                last_reason = f"{type(exc).__name__}: {exc}"
+            else:
+                validation = self._validate_frame(request=request, raw_frame=raw_frame)
+                if validation.ok:
+                    return FinanceAnalysisResult(
+                        ok=True,
+                        status="analyzed" if attempt == 1 else "analyzed_after_retry",
+                        analysis_id=request.analysis_id,
+                        messages=validation.messages,
+                        frame=validation.frame,
+                        memory_status=self._record_memory(request=request, messages=validation.messages),
+                        analysis_attempts=attempt,
+                    )
+                last_status = validation.status
+                last_reason = validation.reason
+            if attempt < self.max_attempts and self.retry_backoff_seconds > 0:
+                self._sleeper(self.retry_backoff_seconds * attempt)
+        return FinanceAnalysisResult(
+            ok=False,
+            status=last_status,
+            analysis_id=request.analysis_id,
+            reason=f"{last_reason}; exhausted {self.max_attempts} analysis attempt(s)",
+            analysis_attempts=self.max_attempts,
+        )
+
+    @staticmethod
+    def _validate_frame(
+        *,
+        request: FinanceAnalysisRequest,
+        raw_frame: Any,
+    ) -> FinanceAnalysisResult:
         if not isinstance(raw_frame, dict):
             return FinanceAnalysisResult(
                 ok=False,
@@ -39,7 +93,6 @@ class AkaneFinanceAnalysisClient:
                 analysis_id=request.analysis_id,
                 reason="engine result must be an object",
             )
-
         original_text = _frame_text(raw_frame)
         if not original_text:
             return FinanceAnalysisResult(
@@ -49,6 +102,13 @@ class AkaneFinanceAnalysisClient:
                 reason="analysis produced no user-facing speech",
             )
         compact = "".join(original_text.split())
+        if len(compact) <= 160 and any(marker in compact for marker in _TRANSIENT_FALLBACK_MARKERS):
+            return FinanceAnalysisResult(
+                ok=False,
+                status="transient_fallback_analysis",
+                analysis_id=request.analysis_id,
+                reason="analysis returned the transient persona fallback",
+            )
         if len(compact) <= 80 and any(marker in compact for marker in _INCOMPLETE_FINAL_MARKERS):
             return FinanceAnalysisResult(
                 ok=False,
@@ -56,7 +116,6 @@ class AkaneFinanceAnalysisClient:
                 analysis_id=request.analysis_id,
                 reason="analysis stopped at a progress placeholder",
             )
-
         messages = ensure_market_push_contract(request=request, frame=raw_frame)
         if not messages:
             return FinanceAnalysisResult(
@@ -68,14 +127,12 @@ class AkaneFinanceAnalysisClient:
         frame = dict(raw_frame)
         frame["speech"] = "\n".join(messages)
         frame["speech_segments"] = list(messages) if len(messages) > 1 else []
-        memory_status = self._record_memory(request=request, messages=messages)
         return FinanceAnalysisResult(
             ok=True,
-            status="analyzed",
+            status="validated",
             analysis_id=request.analysis_id,
             messages=messages,
             frame=frame,
-            memory_status=memory_status,
         )
 
     def _record_memory(

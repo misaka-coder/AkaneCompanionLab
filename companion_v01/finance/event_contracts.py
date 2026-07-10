@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Protocol
@@ -9,6 +10,9 @@ from services.market_data import FinanceSubscription, StoredMarketEvent, timesta
 
 from ..domain_profiles import FINANCE_DOMAIN_PROFILE_ID
 from .importance_policy import ImportanceDecision
+
+
+FINANCE_DELIVERY_PART_TYPES = ("text", "chart", "report")
 
 
 @dataclass(frozen=True)
@@ -68,6 +72,7 @@ class FinanceAnalysisRequest:
             "turn_kind": "market_event",
             "client_turn_kind": "proactive",
             "transient_user_message": True,
+            "transient_assistant_message": True,
             "finance_mode": "push",
             "domain_profile": FINANCE_DOMAIN_PROFILE_ID,
             "extra_context": self.render_analysis_instruction(),
@@ -123,11 +128,13 @@ class FinanceAnalysisResult:
     frame: Mapping[str, Any] = field(default_factory=dict)
     reason: str = ""
     memory_status: Mapping[str, Any] = field(default_factory=dict)
+    analysis_attempts: int = 1
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "messages", tuple(str(item) for item in self.messages if str(item).strip()))
         object.__setattr__(self, "frame", MappingProxyType(dict(self.frame or {})))
         object.__setattr__(self, "memory_status", MappingProxyType(dict(self.memory_status or {})))
+        object.__setattr__(self, "analysis_attempts", max(1, int(self.analysis_attempts)))
 
 
 @dataclass(frozen=True)
@@ -148,6 +155,74 @@ class FinanceDeliveryResult:
         object.__setattr__(self, "detail", MappingProxyType(dict(self.detail or {})))
 
 
+@dataclass(frozen=True)
+class FinanceDeliveryPartSpec:
+    part_key: str
+    part_type: str
+    payload: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        part_type = str(self.part_type or "").strip().lower()
+        if part_type not in FINANCE_DELIVERY_PART_TYPES:
+            raise ValueError(f"unsupported finance delivery part type: {part_type or '<empty>'}")
+        part_key = str(self.part_key or "").strip()
+        if not part_key:
+            raise ValueError("finance delivery part key is required")
+        object.__setattr__(self, "part_key", part_key)
+        object.__setattr__(self, "part_type", part_type)
+        object.__setattr__(self, "payload", MappingProxyType(dict(self.payload or {})))
+
+    def to_store_dict(self) -> dict[str, Any]:
+        return {
+            "part_key": self.part_key,
+            "part_type": self.part_type,
+            "payload": dict(self.payload),
+        }
+
+
+def build_finance_delivery_parts(analysis: FinanceAnalysisResult) -> tuple[FinanceDeliveryPartSpec, ...]:
+    parts: list[FinanceDeliveryPartSpec] = []
+    for index, message in enumerate(analysis.messages):
+        text = str(message or "").strip()
+        if text:
+            parts.append(
+                FinanceDeliveryPartSpec(
+                    part_key=f"text:{index:03d}",
+                    part_type="text",
+                    payload={"message": text},
+                )
+            )
+
+    tool_events = analysis.frame.get("tool_events")
+    if not isinstance(tool_events, (list, tuple)):
+        return tuple(parts)
+    for index, event in enumerate(tool_events):
+        if not isinstance(event, Mapping) or event.get("send_to_user") is not True:
+            continue
+        event_type = str(event.get("type") or "").strip()
+        if event_type == "market_chart_ready":
+            part_type = "chart"
+        elif event_type == "finance_report_ready":
+            part_type = "report"
+        else:
+            continue
+        generated = event.get("generated_file") if isinstance(event.get("generated_file"), Mapping) else {}
+        generated_id = str(generated.get("generated_id") or "").strip()
+        if generated_id:
+            material = generated_id
+        else:
+            material = json.dumps(dict(event), ensure_ascii=False, sort_keys=True, default=str)
+        digest = hashlib.sha256(f"{part_type}|{index}|{material}".encode("utf-8")).hexdigest()[:24]
+        parts.append(
+            FinanceDeliveryPartSpec(
+                part_key=f"{part_type}:{digest}",
+                part_type=part_type,
+                payload={"tool_event": dict(event)},
+            )
+        )
+    return tuple(parts)
+
+
 class FinanceAnalysisClient(Protocol):
     def analyze(self, request: FinanceAnalysisRequest) -> FinanceAnalysisResult: ...
 
@@ -160,4 +235,11 @@ class FinanceDeliveryAdapter(Protocol):
         *,
         subscription: FinanceSubscription,
         analysis: FinanceAnalysisResult,
+    ) -> FinanceDeliveryResult: ...
+
+    def deliver_part(
+        self,
+        *,
+        subscription: FinanceSubscription,
+        part: FinanceDeliveryPartSpec,
     ) -> FinanceDeliveryResult: ...

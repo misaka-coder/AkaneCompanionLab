@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0-F7c 已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析、QQ 幂等文字投递、确定性 PNG 图表、MD/PDF/XLSX 金融报告和行情 Provider 解耦已接通；真实 Choice 冒烟仍等待账户权限
+状态：设计锁定；F0-F7c 与 F9a 已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析重试、逐项 QQ 投递账本、确定性 PNG 图表、MD/PDF/XLSX 金融报告和行情 Provider 解耦已接通；真实 Choice 冒烟仍等待账户权限
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -1456,6 +1456,8 @@ FINANCE_ASSISTANT_ENABLED=false
 FINANCE_DEFAULT_MODE=off
 FINANCE_TOOL_ROUND_BUDGET=12
 FINANCE_TOOL_ROUND_HARD_LIMIT=16
+FINANCE_ANALYSIS_MAX_ATTEMPTS=3
+FINANCE_ANALYSIS_RETRY_BACKOFF_SECONDS=0.5
 FINANCE_MARKET_PROVIDER=disabled
 FINANCE_TURN_TIMEOUT_SECONDS=90
 FINANCE_EVENT_DB_PATH=
@@ -1875,7 +1877,24 @@ F7b 实际落地：
 
 目标：长期运行。
 
-包括：
+#### F9a：逐项投递账本与分析兜底重试
+
+状态：已完成；不依赖 Choice 权限。
+
+已落地：
+
+- MarketEventStore schema v5 新增 `market_event_delivery_parts`。每条文字分段、每张图表和每份报告都有独立 `part_key / part_type / pending|processing|delivered|failed / attempt_count / reason`；
+- 首次有效分析会把实际待发送部件持久化。后续 retry 直接读取部件账本，只 claim `pending/failed` 项；已经 delivered 的文字、图表或报告不会重复发送；
+- 某张图或报告失败时，父 delivery 保持 failed 以进入 worker retry，但已成功文字保持 delivered。附件补发成功后父 delivery 才变为 delivered；
+- 分析完成后才创建投递部件，因此 QQ 故障不会再次调用模型，也不会重复消耗行情工具与 memcore 写入；
+- `AkaneFinanceAnalysisClient` 对异常、非对象、空回复、短进度占位，以及人设兜底句“我在认真听你说……”执行最多 `FINANCE_ANALYSIS_MAX_ATTEMPTS` 次进程内重试，并使用可配置退避；
+- 进程内尝试全部耗尽后，父 delivery 记录为 `analysis_exhausted`，不会被每两秒 worker 循环再次调用模型；它保留为显式失败，等待后续人工 replay 能力处理；
+- 兜底句只被当作 transient retry sentinel。所有尝试耗尽前不调用金融 `_record_memory`；FinanceAnalysisRequest 同时标记 `transient_assistant_message=true`，Engine 不把这些临时 assistant 尝试写进旧聊天库、raw 索引、memcore 或 eval 库；只有验收通过的正式市场分析由金融门面写入 `market_analysis`；
+- 共享测试确认：兜底两次后成功时 memcore 只出现最终分析；三次均兜底时没有任何 assistant memory；图表首次失败后仅重试图表，文字 attempt_count 保持 1，分析客户端只调用一次。
+
+F9a 仍不包含跨进程 processing 租约回收；进程在 claim 后崩溃的 watchdog/lease 属于 F9c。
+
+其余 F9 包括：
 
 - Bridge watchdog；
 - 订阅自动恢复；
@@ -1991,12 +2010,12 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F6、F7 与 F7c 已完成 Fake Bridge/Mock 主链验收，真实主动推送仍因默认开关和 Choice 权限保持关闭。上下文恢复后按以下顺序继续：
+F6、F7、F7c 与 F9a 已完成 Fake Bridge/Mock 主链验收，真实主动推送仍因默认开关和 Choice 权限保持关闭。上下文恢复后按以下顺序继续：
 
 1. Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/cnq/csqsnapshot/csd 的实际权限、callback 字段、证券主数据来源和 AdjustFlag 口径；未确认前保持 `FINANCE_MARKET_PROVIDER=disabled` 或仅使用 Fake SDK 测试；
 2. 如果 Choice 未授权，按统一能力契约新增另一家只读 provider，优先补 `quote_snapshot / price_series / news_search`，不改上层主链；
 3. 进入 F8：仅为装饰性封面、非事实插图或可选高保真文档接云端 Provider；真实行情图和报告事实表继续由本地确定性程序生成；
 4. 视真实数据源权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
-5. F9 再补 processing 跨进程租约、部分 QQ 气泡投递恢复、速率限制、digest、metrics 和人工 replay，不在 F6 假装已经完成这些运营能力。
+5. 继续 F9b：事件限频、同类聚合、安静时段与 digest；随后 F9c 补 processing 跨进程租约、Bridge watchdog 与订阅恢复，F9d 补 metrics 和人工 replay。
 
-推荐下一个独立提交边界：优先进入 F9 的 per-part delivery ledger、quota、digest、metrics 和人工 replay；F8 云端产物仍为可选增强，不能让 Choice 或云端能力成为金融主链依赖。
+推荐下一个独立提交边界：`finance notification rate limits, quiet hours and digest`；F8 云端产物仍为可选增强，不能让 Choice 或云端能力成为金融主链依赖。

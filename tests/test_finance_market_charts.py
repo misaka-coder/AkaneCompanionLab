@@ -362,7 +362,7 @@ class FinanceChartQQDeliveryTests(unittest.TestCase):
             status="analyzed",
             analysis_id="market_analysis:chart",
             messages=("市场快讯",),
-            frame={"tool_events": [{"type": "market_chart_ready"}]},
+            frame={"tool_events": [{"type": "market_chart_ready", "send_to_user": True}]},
         )
 
         with (

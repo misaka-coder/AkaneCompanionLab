@@ -190,6 +190,8 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("FINANCE_DEFAULT_MODE", _FIN, SCOPE_RUNTIME, "QQ 会话默认金融模式：off/qa/push"),
     _s("FINANCE_TOOL_ROUND_BUDGET", _FIN, SCOPE_RUNTIME, "金融研究建议工具轮次预算"),
     _s("FINANCE_TOOL_ROUND_HARD_LIMIT", _FIN, SCOPE_RUNTIME, "金融研究工具轮次硬上限"),
+    _s("FINANCE_ANALYSIS_MAX_ATTEMPTS", _FIN, SCOPE_RESTART_CLIENT, "主动金融分析最大尝试次数"),
+    _s("FINANCE_ANALYSIS_RETRY_BACKOFF_SECONDS", _FIN, SCOPE_RESTART_CLIENT, "金融分析重试退避秒数"),
     _s("FINANCE_MARKET_PROVIDER", _FIN, SCOPE_RESTART_CLIENT, "行情供应商：disabled/emquant"),
     _s("FINANCE_EVENT_DB_PATH", _FIN, SCOPE_RESTART_CLIENT, "金融事件数据库路径", sensitive=True),
     _s("EMQUANT_BRIDGE_URL", _FIN, SCOPE_RESTART_CLIENT, "本机 EmQuant Bridge 地址"),

@@ -16,10 +16,12 @@ from typing import Any, Callable, Iterable, Mapping
 from .normalizers import normalize_market_code
 from .store_models import (
     DeliveryClaim,
+    DeliveryPartClaim,
     DeliveryReservation,
     EventUpsertResult,
     FinanceSubscription,
     MarketEventDelivery,
+    MarketEventDeliveryPart,
     MarketSecurity,
     StoredMarketEvent,
     WatchlistItem,
@@ -27,10 +29,13 @@ from .store_models import (
 from .types import MarketDataValidationError, MarketEvent
 
 
-MARKET_STORE_SCHEMA_VERSION = 4
+MARKET_STORE_SCHEMA_VERSION = 5
 EVENT_STATUSES = frozenset({"active", "updated", "archived"})
 DELIVERY_STATUSES = frozenset({"pending", "processing", "delivered", "failed", "cancelled"})
 RETRYABLE_DELIVERY_STATUSES = frozenset({"pending", "failed"})
+DELIVERY_PART_TYPES = frozenset({"text", "chart", "report"})
+DELIVERY_PART_STATUSES = frozenset({"pending", "processing", "delivered", "failed"})
+RETRYABLE_DELIVERY_PART_STATUSES = frozenset({"pending", "failed"})
 SUBSCRIPTION_FILTER_KEYS = frozenset({"codes", "content_types", "sector_codes", "labels_any", "providers"})
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,200}$")
@@ -160,6 +165,28 @@ CREATE TABLE IF NOT EXISTS market_event_deliveries (
 
 CREATE INDEX IF NOT EXISTS idx_market_event_deliveries_status
 ON market_event_deliveries(status, updated_at, event_id, subscription_id);
+
+CREATE TABLE IF NOT EXISTS market_event_delivery_parts (
+    event_id TEXT NOT NULL,
+    subscription_id TEXT NOT NULL,
+    part_key TEXT NOT NULL,
+    part_type TEXT NOT NULL CHECK(part_type IN ('text', 'chart', 'report')),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'processing', 'delivered', 'failed')),
+    payload_json TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    last_attempt_at INTEGER,
+    delivered_at INTEGER,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(event_id, subscription_id, part_key),
+    FOREIGN KEY(event_id, subscription_id)
+        REFERENCES market_event_deliveries(event_id, subscription_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_event_delivery_parts_status
+ON market_event_delivery_parts(status, updated_at, event_id, subscription_id, part_key);
 
 PRAGMA user_version = {MARKET_STORE_SCHEMA_VERSION};
 """
@@ -1176,6 +1203,227 @@ class MarketEventStore:
             ).fetchone()
         return _row_to_delivery(row) if row is not None else None
 
+    def ensure_delivery_parts(
+        self,
+        *,
+        event_id: str,
+        subscription_id: str,
+        analysis_id: str,
+        parts: Iterable[Mapping[str, Any]],
+        now_ts: int | None = None,
+    ) -> tuple[MarketEventDeliveryPart, ...]:
+        clean_event_id = _safe_id(event_id, field="event_id")
+        clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        clean_analysis_id = _bounded_text(analysis_id, field="analysis_id", max_length=240)
+        raw_parts = list(parts)
+        if not raw_parts or len(raw_parts) > 100:
+            raise _invalid_argument("parts", "between 1 and 100 delivery parts are required")
+        normalized: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for index, raw in enumerate(raw_parts):
+            if not isinstance(raw, Mapping):
+                raise _invalid_argument(f"parts[{index}]", "delivery part must be an object")
+            part_key = _safe_id(raw.get("part_key"), field=f"parts[{index}].part_key")
+            part_type = str(raw.get("part_type") or "").strip().lower()
+            if part_type not in DELIVERY_PART_TYPES:
+                raise _invalid_argument(f"parts[{index}].part_type", "unsupported delivery part type")
+            payload = raw.get("payload")
+            if not isinstance(payload, Mapping):
+                raise _invalid_argument(f"parts[{index}].payload", "delivery part payload must be an object")
+            payload_json = _json_dumps(dict(payload), field=f"parts[{index}].payload")
+            if len(payload_json.encode("utf-8")) > 2 * 1024 * 1024:
+                raise _invalid_argument(f"parts[{index}].payload", "delivery part payload exceeds 2 MiB")
+            if part_key in seen:
+                raise _invalid_argument(f"parts[{index}].part_key", "delivery part key must be unique")
+            seen.add(part_key)
+            normalized.append((part_key, part_type, payload_json))
+        now = self._now(now_ts)
+        with self._write_lock, self._connect(write=True) as connection:
+            parent = connection.execute(
+                """
+                SELECT status FROM market_event_deliveries
+                WHERE event_id = ? AND subscription_id = ?
+                """,
+                (clean_event_id, clean_subscription_id),
+            ).fetchone()
+            if parent is None:
+                raise _invalid_argument("delivery", "parent delivery does not exist")
+            if str(parent["status"] or "") == "cancelled":
+                raise _invalid_argument("delivery", "cancelled delivery cannot accept parts")
+            connection.execute(
+                """
+                UPDATE market_event_deliveries
+                SET analysis_id = ?, updated_at = ?
+                WHERE event_id = ? AND subscription_id = ?
+                """,
+                (clean_analysis_id, now, clean_event_id, clean_subscription_id),
+            )
+            connection.executemany(
+                """
+                INSERT INTO market_event_delivery_parts (
+                    event_id, subscription_id, part_key, part_type, status, payload_json,
+                    attempt_count, last_attempt_at, delivered_at, reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'pending', ?, 0, NULL, NULL, '', ?, ?)
+                ON CONFLICT(event_id, subscription_id, part_key) DO NOTHING
+                """,
+                [
+                    (
+                        clean_event_id,
+                        clean_subscription_id,
+                        part_key,
+                        part_type,
+                        payload_json,
+                        now,
+                        now,
+                    )
+                    for part_key, part_type, payload_json in normalized
+                ],
+            )
+            rows = connection.execute(
+                """
+                SELECT * FROM market_event_delivery_parts
+                WHERE event_id = ? AND subscription_id = ?
+                ORDER BY CASE part_type WHEN 'text' THEN 0 WHEN 'chart' THEN 1 ELSE 2 END,
+                         created_at, part_key
+                """,
+                (clean_event_id, clean_subscription_id),
+            ).fetchall()
+        return tuple(_row_to_delivery_part(row) for row in rows)
+
+    def list_delivery_parts(
+        self,
+        *,
+        event_id: str,
+        subscription_id: str,
+    ) -> tuple[MarketEventDeliveryPart, ...]:
+        clean_event_id = _safe_id(event_id, field="event_id")
+        clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM market_event_delivery_parts
+                WHERE event_id = ? AND subscription_id = ?
+                ORDER BY CASE part_type WHEN 'text' THEN 0 WHEN 'chart' THEN 1 ELSE 2 END,
+                         created_at, part_key
+                """,
+                (clean_event_id, clean_subscription_id),
+            ).fetchall()
+        return tuple(_row_to_delivery_part(row) for row in rows)
+
+    def claim_delivery_part(
+        self,
+        *,
+        event_id: str,
+        subscription_id: str,
+        part_key: str,
+        now_ts: int | None = None,
+    ) -> DeliveryPartClaim | None:
+        clean_event_id = _safe_id(event_id, field="event_id")
+        clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        clean_part_key = _safe_id(part_key, field="part_key")
+        now = self._now(now_ts)
+        with self._write_lock, self._connect(write=True) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM market_event_delivery_parts
+                WHERE event_id = ? AND subscription_id = ? AND part_key = ?
+                """,
+                (clean_event_id, clean_subscription_id, clean_part_key),
+            ).fetchone()
+            if row is None:
+                return None
+            part = _row_to_delivery_part(row)
+            if part.status not in RETRYABLE_DELIVERY_PART_STATUSES:
+                return DeliveryPartClaim(acquired=False, part=part)
+            connection.execute(
+                """
+                UPDATE market_event_delivery_parts
+                SET status = 'processing', attempt_count = attempt_count + 1,
+                    last_attempt_at = ?, delivered_at = NULL, reason = '', updated_at = ?
+                WHERE event_id = ? AND subscription_id = ? AND part_key = ?
+                """,
+                (now, now, clean_event_id, clean_subscription_id, clean_part_key),
+            )
+            updated = connection.execute(
+                """
+                SELECT * FROM market_event_delivery_parts
+                WHERE event_id = ? AND subscription_id = ? AND part_key = ?
+                """,
+                (clean_event_id, clean_subscription_id, clean_part_key),
+            ).fetchone()
+        return DeliveryPartClaim(acquired=True, part=_row_to_delivery_part(updated))
+
+    def mark_delivery_part_delivered(
+        self,
+        *,
+        event_id: str,
+        subscription_id: str,
+        part_key: str,
+        now_ts: int | None = None,
+    ) -> MarketEventDeliveryPart | None:
+        return self._finish_delivery_part(
+            event_id=event_id,
+            subscription_id=subscription_id,
+            part_key=part_key,
+            status="delivered",
+            reason="",
+            now_ts=now_ts,
+        )
+
+    def mark_delivery_part_failed(
+        self,
+        *,
+        event_id: str,
+        subscription_id: str,
+        part_key: str,
+        reason: str,
+        now_ts: int | None = None,
+    ) -> MarketEventDeliveryPart | None:
+        clean_reason = str(reason or "delivery_part_failed").strip()[:2000] or "delivery_part_failed"
+        return self._finish_delivery_part(
+            event_id=event_id,
+            subscription_id=subscription_id,
+            part_key=part_key,
+            status="failed",
+            reason=clean_reason,
+            now_ts=now_ts,
+        )
+
+    def finalize_delivery_parts(
+        self,
+        *,
+        event_id: str,
+        subscription_id: str,
+        analysis_id: str,
+        now_ts: int | None = None,
+    ) -> MarketEventDelivery | None:
+        parts = self.list_delivery_parts(event_id=event_id, subscription_id=subscription_id)
+        if parts and all(part.status == "delivered" for part in parts):
+            return self.mark_delivery_delivered(
+                event_id=event_id,
+                subscription_id=subscription_id,
+                analysis_id=analysis_id,
+                now_ts=now_ts,
+            )
+        failures = [part for part in parts if part.status == "failed"]
+        if failures:
+            reason = "delivery_parts_failed:" + ",".join(
+                f"{part.part_type}:{part.reason or 'failed'}" for part in failures[:10]
+            )
+        elif parts:
+            reason = "delivery_parts_incomplete:" + ",".join(
+                f"{part.part_type}:{part.status}" for part in parts[:10] if part.status != "delivered"
+            )
+        else:
+            reason = "delivery_parts_missing"
+        return self.mark_delivery_failed(
+            event_id=event_id,
+            subscription_id=subscription_id,
+            analysis_id=analysis_id,
+            reason=reason[:2000],
+            now_ts=now_ts,
+        )
+
     def list_retryable_deliveries(self, *, limit: int = 100) -> tuple[MarketEventDelivery, ...]:
         clean_limit = _bounded_int(limit, field="limit", lower=1, upper=1000)
         with self._connect() as connection:
@@ -1185,6 +1433,7 @@ class MarketEventStore:
                 FROM market_event_deliveries AS d
                 JOIN finance_subscriptions AS s ON s.subscription_id = d.subscription_id
                 WHERE d.status IN ('pending', 'failed') AND s.enabled = 1
+                  AND d.reason NOT LIKE 'analysis_exhausted:%'
                 ORDER BY d.updated_at, d.event_id, d.subscription_id
                 LIMIT ?
                 """,
@@ -1204,7 +1453,16 @@ class MarketEventStore:
         clean_exclude = _safe_id(exclude_event_id, field="exclude_event_id") if exclude_event_id else ""
         clauses = [
             "d.subscription_id = ?",
-            "d.status = 'delivered'",
+            """(
+                d.status = 'delivered'
+                OR EXISTS (
+                    SELECT 1 FROM market_event_delivery_parts AS p
+                    WHERE p.event_id = d.event_id
+                      AND p.subscription_id = d.subscription_id
+                      AND p.part_type = 'text'
+                      AND p.status = 'delivered'
+                )
+            )""",
             "e.cluster_id = ?",
         ]
         parameters: list[Any] = [clean_subscription_id, clean_cluster_id]
@@ -1279,6 +1537,60 @@ class MarketEventStore:
             ).fetchone()
         return _row_to_delivery(updated)
 
+    def _finish_delivery_part(
+        self,
+        *,
+        event_id: str,
+        subscription_id: str,
+        part_key: str,
+        status: str,
+        reason: str,
+        now_ts: int | None,
+    ) -> MarketEventDeliveryPart | None:
+        if status not in {"delivered", "failed"}:
+            raise _invalid_argument("status", "unsupported delivery part final status")
+        clean_event_id = _safe_id(event_id, field="event_id")
+        clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        clean_part_key = _safe_id(part_key, field="part_key")
+        now = self._now(now_ts)
+        with self._write_lock, self._connect(write=True) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM market_event_delivery_parts
+                WHERE event_id = ? AND subscription_id = ? AND part_key = ?
+                """,
+                (clean_event_id, clean_subscription_id, clean_part_key),
+            ).fetchone()
+            if row is None:
+                return None
+            current = _row_to_delivery_part(row)
+            if current.status == "delivered":
+                return current
+            connection.execute(
+                """
+                UPDATE market_event_delivery_parts
+                SET status = ?, delivered_at = ?, reason = ?, updated_at = ?
+                WHERE event_id = ? AND subscription_id = ? AND part_key = ?
+                """,
+                (
+                    status,
+                    now if status == "delivered" else None,
+                    reason,
+                    now,
+                    clean_event_id,
+                    clean_subscription_id,
+                    clean_part_key,
+                ),
+            )
+            updated = connection.execute(
+                """
+                SELECT * FROM market_event_delivery_parts
+                WHERE event_id = ? AND subscription_id = ? AND part_key = ?
+                """,
+                (clean_event_id, clean_subscription_id, clean_part_key),
+            ).fetchone()
+        return _row_to_delivery_part(updated)
+
     def _cancel_open_deliveries(
         self,
         connection: sqlite3.Connection,
@@ -1289,6 +1601,14 @@ class MarketEventStore:
             """
             UPDATE market_event_deliveries
             SET status = 'cancelled', reason = 'subscription_disabled', updated_at = ?
+            WHERE subscription_id = ? AND status IN ('pending', 'processing', 'failed')
+            """,
+            (now_ts, subscription_id),
+        )
+        connection.execute(
+            """
+            UPDATE market_event_delivery_parts
+            SET status = 'failed', reason = 'subscription_disabled', updated_at = ?
             WHERE subscription_id = ? AND status IN ('pending', 'processing', 'failed')
             """,
             (now_ts, subscription_id),
@@ -1573,6 +1893,29 @@ def _row_to_delivery(row: sqlite3.Row) -> MarketEventDelivery:
         subscription_id=str(row["subscription_id"] or ""),
         status=status,
         analysis_id=str(row["analysis_id"] or ""),
+        attempt_count=max(0, int(row["attempt_count"] or 0)),
+        last_attempt_at=int(row["last_attempt_at"]) if row["last_attempt_at"] is not None else None,
+        delivered_at=int(row["delivered_at"]) if row["delivered_at"] is not None else None,
+        reason=str(row["reason"] or ""),
+        created_at=int(row["created_at"]),
+        updated_at=int(row["updated_at"]),
+    )
+
+
+def _row_to_delivery_part(row: sqlite3.Row) -> MarketEventDeliveryPart:
+    status = str(row["status"] or "pending")
+    if status not in DELIVERY_PART_STATUSES:
+        status = "failed"
+    part_type = str(row["part_type"] or "")
+    if part_type not in DELIVERY_PART_TYPES:
+        part_type = "text"
+    return MarketEventDeliveryPart(
+        event_id=str(row["event_id"] or ""),
+        subscription_id=str(row["subscription_id"] or ""),
+        part_key=str(row["part_key"] or ""),
+        part_type=part_type,
+        status=status,
+        payload=_json_loads_object(row["payload_json"]),
         attempt_count=max(0, int(row["attempt_count"] or 0)),
         last_attempt_at=int(row["last_attempt_at"]) if row["last_attempt_at"] is not None else None,
         delivered_at=int(row["delivered_at"]) if row["delivered_at"] is not None else None,

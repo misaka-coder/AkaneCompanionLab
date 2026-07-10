@@ -411,7 +411,7 @@ class FinanceReportQQDeliveryTests(unittest.TestCase):
             status="analyzed",
             analysis_id="market_analysis:report",
             messages=("市场快讯",),
-            frame={"tool_events": [{"type": "finance_report_ready"}]},
+            frame={"tool_events": [{"type": "finance_report_ready", "send_to_user": True}]},
         )
 
         with (

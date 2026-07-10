@@ -181,6 +181,43 @@ class MarketEventDelivery:
 
 
 @dataclass(frozen=True)
+class MarketEventDeliveryPart:
+    event_id: str
+    subscription_id: str
+    part_key: str
+    part_type: str
+    status: str
+    payload: Mapping[str, Any]
+    attempt_count: int
+    last_attempt_at: int | None
+    delivered_at: int | None
+    reason: str
+    created_at: int
+    updated_at: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", MappingProxyType(dict(self.payload or {})))
+
+    def to_public_dict(self, *, include_payload: bool = False) -> dict[str, Any]:
+        result = {
+            "event_id": self.event_id,
+            "subscription_id": self.subscription_id,
+            "part_key": self.part_key,
+            "part_type": self.part_type,
+            "status": self.status,
+            "attempt_count": self.attempt_count,
+            "last_attempt_at": self.last_attempt_at,
+            "delivered_at": self.delivered_at,
+            "reason": self.reason,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+        if include_payload:
+            result["payload"] = dict(self.payload)
+        return result
+
+
+@dataclass(frozen=True)
 class DeliveryReservation:
     created: bool
     should_deliver: bool
@@ -203,4 +240,16 @@ class DeliveryClaim:
         return {
             "acquired": self.acquired,
             "delivery": self.delivery.to_public_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class DeliveryPartClaim:
+    acquired: bool
+    part: MarketEventDeliveryPart
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "acquired": self.acquired,
+            "part": self.part.to_public_dict(),
         }

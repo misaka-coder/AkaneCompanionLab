@@ -9,7 +9,9 @@ from ..qq_gateway import QQMessageContext
 from .event_contracts import (
     FinanceAnalysisResult,
     FinanceDeliveryAuthorization,
+    FinanceDeliveryPartSpec,
     FinanceDeliveryResult,
+    build_finance_delivery_parts,
 )
 
 
@@ -49,9 +51,98 @@ class QQFinanceDeliveryAdapter:
             return FinanceDeliveryResult(False, authorization.status, authorization.reason)
         if not analysis.ok or not analysis.messages:
             return FinanceDeliveryResult(False, "invalid_analysis", analysis.reason or "empty_analysis_messages")
+        parts = build_finance_delivery_parts(analysis)
+        if not parts:
+            return FinanceDeliveryResult(False, "invalid_analysis", "analysis_has_no_delivery_parts")
+        results = [self.deliver_part(subscription=subscription, part=part) for part in parts]
+        ok = all(result.ok for result in results)
+        return FinanceDeliveryResult(
+            ok,
+            "delivered" if ok else "failed",
+            next((result.reason for result in results if not result.ok and result.reason), ""),
+            detail={
+                "parts": [
+                    {
+                        "part_key": part.part_key,
+                        "part_type": part.part_type,
+                        "ok": result.ok,
+                        "status": result.status,
+                        "reason": result.reason,
+                        "detail": dict(result.detail),
+                    }
+                    for part, result in zip(parts, results, strict=True)
+                ]
+            },
+        )
 
+    def deliver_part(
+        self,
+        *,
+        subscription: FinanceSubscription,
+        part: FinanceDeliveryPartSpec,
+    ) -> FinanceDeliveryResult:
+        authorization = self.authorize(subscription)
+        if not authorization.allowed:
+            return FinanceDeliveryResult(False, authorization.status, authorization.reason)
+        context = self._build_context(subscription)
+        try:
+            if part.part_type == "text":
+                message = str(part.payload.get("message") or "").strip()
+                if not message:
+                    return FinanceDeliveryResult(False, "invalid_part", "empty_text_delivery_part")
+                result = self.gateway.send_replies(context, [message])
+            elif part.part_type == "chart":
+                sender = getattr(self.gateway, "send_market_charts", None)
+                if not callable(sender):
+                    return FinanceDeliveryResult(False, "unavailable", "market_chart_sender_unavailable")
+                event = part.payload.get("tool_event")
+                if not isinstance(event, dict):
+                    return FinanceDeliveryResult(False, "invalid_part", "market_chart_event_missing")
+                result = sender(context, [event], authorization="finance_subscription_push")
+            elif part.part_type == "report":
+                sender = getattr(self.gateway, "send_finance_reports", None)
+                if not callable(sender):
+                    return FinanceDeliveryResult(False, "unavailable", "finance_report_sender_unavailable")
+                event = part.payload.get("tool_event")
+                if not isinstance(event, dict):
+                    return FinanceDeliveryResult(False, "invalid_part", "finance_report_event_missing")
+                result = sender(context, [event], authorization="finance_subscription_push")
+            else:
+                return FinanceDeliveryResult(False, "invalid_part", "unsupported_delivery_part_type")
+        except Exception as exc:
+            return FinanceDeliveryResult(
+                False,
+                "failed",
+                f"{part.part_type}_delivery_exception:{type(exc).__name__}",
+            )
+        return self._normalize_gateway_result(result, part_type=part.part_type)
+
+    @staticmethod
+    def _normalize_gateway_result(result: Any, *, part_type: str) -> FinanceDeliveryResult:
+        if not isinstance(result, dict):
+            return FinanceDeliveryResult(False, "invalid_gateway_result", "gateway_result_not_object")
+        try:
+            delivered_count = int(result.get("count") or 0)
+        except (TypeError, ValueError):
+            delivered_count = 0
+        if bool(result.get("ok")) and (part_type == "text" or delivered_count > 0):
+            return FinanceDeliveryResult(True, "delivered", detail=result)
+        reason = str(result.get("reason") or "").strip()
+        if not reason:
+            failures = [
+                str(item.get("reason") or "").strip()
+                for item in list(result.get("results") or [])
+                if isinstance(item, dict) and not bool(item.get("ok"))
+            ]
+            reason = next((item for item in failures if item), "qq_send_failed")
+        if bool(result.get("ok")) and part_type in {"chart", "report"}:
+            reason = f"{part_type}_delivery_target_missing"
+        return FinanceDeliveryResult(False, str(result.get("status") or "failed"), reason, detail=result)
+
+    @staticmethod
+    def _build_context(subscription: FinanceSubscription) -> QQMessageContext:
         target_id = int(subscription.target_id)
-        context = QQMessageContext(
+        return QQMessageContext(
             should_respond=True,
             reason="finance_subscription_push",
             is_group=bool(subscription.is_group),
@@ -65,67 +156,4 @@ class QQFinanceDeliveryAdapter:
             clean_message="",
             raw_message="",
             attachments=[],
-        )
-        result = self.gateway.send_replies(context, list(analysis.messages))
-        if not isinstance(result, dict):
-            return FinanceDeliveryResult(False, "invalid_gateway_result", "gateway_result_not_object")
-        if not bool(result.get("ok")):
-            reason = str(result.get("reason") or "")
-            if not reason:
-                failures = [
-                    str(item.get("reason") or "")
-                    for item in list(result.get("results") or [])
-                    if isinstance(item, dict) and not bool(item.get("ok"))
-                ]
-                reason = next((item for item in failures if item), "qq_send_failed")
-            return FinanceDeliveryResult(False, "failed", reason, detail=result)
-        chart_result = {"ok": True, "status": "skipped", "count": 0, "results": []}
-        report_result = {"ok": True, "status": "skipped", "count": 0, "results": []}
-        chart_sender = getattr(self.gateway, "send_market_charts", None)
-        if callable(chart_sender):
-            try:
-                chart_result = chart_sender(
-                    context,
-                    list(analysis.frame.get("tool_events") or []),
-                    authorization="finance_subscription_push",
-                )
-            except Exception as exc:
-                chart_result = {
-                    "ok": False,
-                    "status": "failed",
-                    "reason": f"market_chart_delivery_failed:{type(exc).__name__}",
-                    "count": 0,
-                    "results": [],
-                }
-        report_sender = getattr(self.gateway, "send_finance_reports", None)
-        if callable(report_sender):
-            try:
-                report_result = report_sender(
-                    context,
-                    list(analysis.frame.get("tool_events") or []),
-                    authorization="finance_subscription_push",
-                )
-            except Exception as exc:
-                report_result = {
-                    "ok": False,
-                    "status": "failed",
-                    "reason": f"finance_report_delivery_failed:{type(exc).__name__}",
-                    "count": 0,
-                    "results": [],
-                }
-        artifact_failed = any(
-            str(item.get("status") or "").strip().lower() == "failed" for item in (chart_result, report_result)
-        )
-        if artifact_failed:
-            notice_sender = getattr(self.gateway, "send_reply", None)
-            if callable(notice_sender):
-                try:
-                    notice_sender(context, "本次金融产物已经生成，但 QQ 图片或文件发送失败；文字分析仍然有效。")
-                except Exception:
-                    pass
-        artifact_ok = bool(chart_result.get("ok")) and bool(report_result.get("ok"))
-        return FinanceDeliveryResult(
-            True,
-            "delivered" if artifact_ok else "delivered_with_artifact_failure",
-            detail={"text_result": result, "chart_result": chart_result, "report_result": report_result},
         )

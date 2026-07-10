@@ -85,14 +85,14 @@ class _FakeDelivery:
     def authorize(self, subscription):
         return FinanceDeliveryAuthorization(True, "authorized")
 
-    def deliver(self, *, subscription, analysis):
-        self.deliveries.append((subscription, analysis))
+    def deliver_part(self, *, subscription, part):
+        self.deliveries.append((subscription, part))
         return FinanceDeliveryResult(True, "delivered")
 
 
 class _FailingDelivery(_FakeDelivery):
-    def deliver(self, *, subscription, analysis):
-        self.deliveries.append((subscription, analysis))
+    def deliver_part(self, *, subscription, part):
+        self.deliveries.append((subscription, part))
         return FinanceDeliveryResult(False, "failed", "synthetic_offline")
 
 

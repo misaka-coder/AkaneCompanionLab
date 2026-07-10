@@ -74,10 +74,12 @@ class MarketEventStoreTests(unittest.TestCase):
                 "market_securities",
                 "market_security_aliases",
                 "market_event_deliveries",
+                "market_event_delivery_parts",
             }.issubset(tables)
         )
         self.assertIn("idx_market_events_raw_hash_unique", indexes)
         self.assertIn("idx_market_event_deliveries_status", indexes)
+        self.assertIn("idx_market_event_delivery_parts_status", indexes)
         self.assertIn("idx_market_security_alias_norm", indexes)
         self.assertNotIn("chat_messages", tables)
 
@@ -649,6 +651,92 @@ class MarketEventStoreTests(unittest.TestCase):
         self.assertEqual(first.delivery.attempt_count, 1)
         self.assertEqual(second.delivery.attempt_count, 1)
         self.assertEqual(second.delivery.status, "processing")
+
+    def test_delivery_parts_retry_independently_and_finalize_parent(self) -> None:
+        self.store.upsert_event(self.event, now_ts=100)
+        self._subscription("sub-parts", "20001")
+        self.store.ensure_delivery(
+            event_id=self.event.event_id,
+            subscription_id="sub-parts",
+            now_ts=200,
+        )
+        self.store.claim_delivery_attempt(
+            event_id=self.event.event_id,
+            subscription_id="sub-parts",
+            now_ts=210,
+        )
+        parts = self.store.ensure_delivery_parts(
+            event_id=self.event.event_id,
+            subscription_id="sub-parts",
+            analysis_id="analysis-parts",
+            parts=(
+                {"part_key": "text:000", "part_type": "text", "payload": {"message": "分析"}},
+                {
+                    "part_key": "chart:synthetic",
+                    "part_type": "chart",
+                    "payload": {"tool_event": {"type": "market_chart_ready"}},
+                },
+            ),
+            now_ts=220,
+        )
+
+        for part in parts:
+            claim = self.store.claim_delivery_part(
+                event_id=self.event.event_id,
+                subscription_id="sub-parts",
+                part_key=part.part_key,
+                now_ts=230,
+            )
+            self.assertTrue(claim.acquired)
+            if part.part_type == "text":
+                self.store.mark_delivery_part_delivered(
+                    event_id=self.event.event_id,
+                    subscription_id="sub-parts",
+                    part_key=part.part_key,
+                    now_ts=240,
+                )
+            else:
+                self.store.mark_delivery_part_failed(
+                    event_id=self.event.event_id,
+                    subscription_id="sub-parts",
+                    part_key=part.part_key,
+                    reason="qq_image_failed",
+                    now_ts=240,
+                )
+        first_final = self.store.finalize_delivery_parts(
+            event_id=self.event.event_id,
+            subscription_id="sub-parts",
+            analysis_id="analysis-parts",
+            now_ts=250,
+        )
+        chart_claim = self.store.claim_delivery_part(
+            event_id=self.event.event_id,
+            subscription_id="sub-parts",
+            part_key="chart:synthetic",
+            now_ts=260,
+        )
+        self.store.mark_delivery_part_delivered(
+            event_id=self.event.event_id,
+            subscription_id="sub-parts",
+            part_key="chart:synthetic",
+            now_ts=270,
+        )
+        second_final = self.store.finalize_delivery_parts(
+            event_id=self.event.event_id,
+            subscription_id="sub-parts",
+            analysis_id="analysis-parts",
+            now_ts=280,
+        )
+        final_parts = self.store.list_delivery_parts(
+            event_id=self.event.event_id,
+            subscription_id="sub-parts",
+        )
+
+        self.assertEqual(first_final.status, "failed")
+        self.assertTrue(chart_claim.acquired)
+        self.assertEqual(second_final.status, "delivered")
+        self.assertEqual({part.status for part in final_parts}, {"delivered"})
+        self.assertEqual({part.part_type: part.attempt_count for part in final_parts}, {"text": 1, "chart": 2})
 
     def test_disabling_subscription_cancels_open_deliveries(self) -> None:
         self.store.upsert_event(self.event, now_ts=100)

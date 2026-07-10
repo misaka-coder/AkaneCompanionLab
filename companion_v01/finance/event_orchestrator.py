@@ -11,7 +11,13 @@ from services.market_data import (
     StoredMarketEvent,
 )
 
-from .event_contracts import FinanceAnalysisClient, FinanceAnalysisRequest, FinanceDeliveryAdapter
+from .event_contracts import (
+    FinanceAnalysisClient,
+    FinanceAnalysisRequest,
+    FinanceDeliveryAdapter,
+    FinanceDeliveryPartSpec,
+    build_finance_delivery_parts,
+)
 from .importance_policy import FinanceEventImportancePolicy, ImportanceDecision
 
 
@@ -152,7 +158,7 @@ class FinanceEventOrchestrator:
         decision = self.importance_policy.evaluate(
             event=event,
             subscription=subscription,
-            watchlist_priority=self._watchlist_priority(subscription, event.code),
+            watchlist_priority=self._watchlist_priority(subscription, event),
             cluster_already_delivered=cluster_delivered,
         )
         if not decision.should_deliver:
@@ -247,31 +253,54 @@ class FinanceEventOrchestrator:
                 attempt_count=claim.delivery.attempt_count,
             )
 
-        request = FinanceAnalysisRequest.create(
-            event_record=record,
-            subscription=subscription,
-            importance=decision,
-            requested_at=now_ts,
-            attempt_count=claim.delivery.attempt_count,
+        parts = self.store.list_delivery_parts(
+            event_id=event.event_id,
+            subscription_id=subscription.subscription_id,
         )
-        try:
-            analysis = self.analysis_client.analyze(request)
-        except Exception as exc:
-            return self._fail(
-                request=request,
-                decision=decision,
-                reason=f"analysis_exception:{type(exc).__name__}:{exc}",
+        analysis_id = claim.delivery.analysis_id
+        if not parts:
+            request = FinanceAnalysisRequest.create(
+                event_record=record,
+                subscription=subscription,
+                importance=decision,
+                requested_at=now_ts,
                 attempt_count=claim.delivery.attempt_count,
-                now_ts=now_ts,
             )
-        if not analysis.ok:
-            return self._fail(
-                request=request,
-                decision=decision,
-                reason=f"analysis_failed:{analysis.reason or analysis.status}",
-                attempt_count=claim.delivery.attempt_count,
-                now_ts=now_ts,
-            )
+            analysis_id = request.analysis_id
+            try:
+                analysis = self.analysis_client.analyze(request)
+            except Exception as exc:
+                return self._fail_delivery(
+                    record=record,
+                    subscription=subscription,
+                    decision=decision,
+                    analysis_id=analysis_id,
+                    reason=f"analysis_exception:{type(exc).__name__}:{exc}",
+                    attempt_count=claim.delivery.attempt_count,
+                    now_ts=now_ts,
+                )
+            if not analysis.ok:
+                failure_prefix = "analysis_exhausted" if "exhausted" in analysis.reason else "analysis_failed"
+                return self._fail_delivery(
+                    record=record,
+                    subscription=subscription,
+                    decision=decision,
+                    analysis_id=analysis_id,
+                    reason=f"{failure_prefix}:{analysis.reason or analysis.status}",
+                    attempt_count=claim.delivery.attempt_count,
+                    now_ts=now_ts,
+                )
+            part_specs = build_finance_delivery_parts(analysis)
+            if not part_specs:
+                return self._fail_delivery(
+                    record=record,
+                    subscription=subscription,
+                    decision=decision,
+                    analysis_id=analysis_id,
+                    reason="analysis_failed:no_delivery_parts",
+                    attempt_count=claim.delivery.attempt_count,
+                    now_ts=now_ts,
+                )
 
         current_subscription = self.store.get_subscription(subscription.subscription_id)
         if (
@@ -289,85 +318,141 @@ class FinanceEventOrchestrator:
                 status="cancelled",
                 reason="subscription_disabled_before_delivery",
                 importance=decision,
-                analysis_id=request.analysis_id,
+                analysis_id=analysis_id,
                 attempt_count=(
                     current_delivery.attempt_count if current_delivery is not None else claim.delivery.attempt_count
                 ),
             )
+        if not parts:
+            try:
+                parts = self.store.ensure_delivery_parts(
+                    event_id=event.event_id,
+                    subscription_id=subscription.subscription_id,
+                    analysis_id=analysis_id,
+                    parts=(part.to_store_dict() for part in part_specs),
+                    now_ts=now_ts,
+                )
+            except Exception as exc:
+                return self._fail_delivery(
+                    record=record,
+                    subscription=subscription,
+                    decision=decision,
+                    analysis_id=analysis_id,
+                    reason=f"delivery_parts_persist_failed:{type(exc).__name__}:{exc}",
+                    attempt_count=claim.delivery.attempt_count,
+                    now_ts=now_ts,
+                )
         delivery_authorization = self.delivery_adapter.authorize(current_subscription)
         if not delivery_authorization.allowed:
-            return self._fail(
-                request=request,
+            return self._fail_delivery(
+                record=record,
+                subscription=subscription,
                 decision=decision,
+                analysis_id=analysis_id,
                 reason=f"delivery_authorization_lost:{delivery_authorization.reason or delivery_authorization.status}",
                 attempt_count=claim.delivery.attempt_count,
                 now_ts=now_ts,
             )
 
-        try:
-            delivered = self.delivery_adapter.deliver(subscription=current_subscription, analysis=analysis)
-        except Exception as exc:
-            return self._fail(
-                request=request,
-                decision=decision,
-                reason=f"delivery_exception:{type(exc).__name__}:{exc}",
-                attempt_count=claim.delivery.attempt_count,
+        deliver_part = getattr(self.delivery_adapter, "deliver_part", None)
+        for stored_part in parts:
+            if stored_part.status == "delivered":
+                continue
+            part_claim = self.store.claim_delivery_part(
+                event_id=event.event_id,
+                subscription_id=subscription.subscription_id,
+                part_key=stored_part.part_key,
                 now_ts=now_ts,
             )
-        if not delivered.ok:
-            return self._fail(
-                request=request,
-                decision=decision,
-                reason=f"delivery_failed:{delivered.reason or delivered.status}",
-                attempt_count=claim.delivery.attempt_count,
-                now_ts=now_ts,
+            if part_claim is None or not part_claim.acquired:
+                continue
+            if not callable(deliver_part):
+                self.store.mark_delivery_part_failed(
+                    event_id=event.event_id,
+                    subscription_id=subscription.subscription_id,
+                    part_key=stored_part.part_key,
+                    reason="delivery_part_adapter_unavailable",
+                    now_ts=now_ts,
+                )
+                continue
+            part = FinanceDeliveryPartSpec(
+                part_key=part_claim.part.part_key,
+                part_type=part_claim.part.part_type,
+                payload=part_claim.part.payload,
             )
+            try:
+                delivered = deliver_part(subscription=current_subscription, part=part)
+            except Exception as exc:
+                delivered = None
+                failure_reason = f"delivery_exception:{type(exc).__name__}:{exc}"
+            else:
+                failure_reason = f"delivery_failed:{delivered.reason or delivered.status}"
+            if delivered is not None and delivered.ok:
+                self.store.mark_delivery_part_delivered(
+                    event_id=event.event_id,
+                    subscription_id=subscription.subscription_id,
+                    part_key=part.part_key,
+                    now_ts=now_ts,
+                )
+            else:
+                self.store.mark_delivery_part_failed(
+                    event_id=event.event_id,
+                    subscription_id=subscription.subscription_id,
+                    part_key=part.part_key,
+                    reason=failure_reason,
+                    now_ts=now_ts,
+                )
 
-        final_delivery = self.store.mark_delivery_delivered(
+        final_delivery = self.store.finalize_delivery_parts(
             event_id=event.event_id,
             subscription_id=subscription.subscription_id,
-            analysis_id=request.analysis_id,
+            analysis_id=analysis_id,
             now_ts=now_ts,
         )
+        delivered_ok = final_delivery is not None and final_delivery.status == "delivered"
         return FinanceDeliveryAttemptResult(
             event_id=event.event_id,
             subscription_id=subscription.subscription_id,
-            status="delivered",
-            reason="",
+            status="delivered" if delivered_ok else "failed",
+            reason="" if delivered_ok else (final_delivery.reason if final_delivery else "delivery_finalize_failed"),
             importance=decision,
-            analysis_id=request.analysis_id,
+            analysis_id=analysis_id,
             attempt_count=final_delivery.attempt_count if final_delivery else claim.delivery.attempt_count,
         )
 
-    def _fail(
+    def _fail_delivery(
         self,
         *,
-        request: FinanceAnalysisRequest,
+        record: StoredMarketEvent,
+        subscription: FinanceSubscription,
         decision: ImportanceDecision,
+        analysis_id: str,
         reason: str,
         attempt_count: int,
         now_ts: int,
     ) -> FinanceDeliveryAttemptResult:
         self.store.mark_delivery_failed(
-            event_id=request.event_record.event.event_id,
-            subscription_id=request.subscription.subscription_id,
-            analysis_id=request.analysis_id,
+            event_id=record.event.event_id,
+            subscription_id=subscription.subscription_id,
+            analysis_id=analysis_id,
             reason=reason,
             now_ts=now_ts,
         )
         return FinanceDeliveryAttemptResult(
-            event_id=request.event_record.event.event_id,
-            subscription_id=request.subscription.subscription_id,
+            event_id=record.event.event_id,
+            subscription_id=subscription.subscription_id,
             status="failed",
             reason=reason,
             importance=decision,
-            analysis_id=request.analysis_id,
+            analysis_id=analysis_id,
             attempt_count=attempt_count,
         )
 
-    def _watchlist_priority(self, subscription: FinanceSubscription, code: str) -> float:
+    def _watchlist_priority(self, subscription: FinanceSubscription, event: MarketEvent) -> float:
         priorities = [
-            item.priority for item in self.store.list_watchlist(subscription.subscription_id) if item.code == code
+            item.priority
+            for item in self.store.list_watchlist(subscription.subscription_id)
+            if item.provider == event.provider and item.code == event.code
         ]
         return max(priorities, default=0.0)
 

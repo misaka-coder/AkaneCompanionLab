@@ -14,6 +14,7 @@ from companion_v01.finance import (
     FinanceEventOrchestrator,
     ensure_market_push_contract,
 )
+from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.engine_services.turn_context import is_transient_user_turn
 from companion_v01.memcore_integration.manager import MemcoreManager
 from services.market_data import MarketEvent, MarketEventStore
@@ -43,8 +44,9 @@ def _event(*, event_id: str = "choice:finance-f6-001", title: str = "合成公�
 
 
 class _FakeAnalysisClient:
-    def __init__(self) -> None:
+    def __init__(self, *, tool_events=None) -> None:
         self.requests = []
+        self.tool_events = list(tool_events or [])
 
     def analyze(self, request):
         self.requests.append(request)
@@ -57,14 +59,15 @@ class _FakeAnalysisClient:
             status="analyzed",
             analysis_id=request.analysis_id,
             messages=messages,
-            frame={"speech": "\n".join(messages)},
+            frame={"speech": "\n".join(messages), "tool_events": list(self.tool_events)},
         )
 
 
 class _FakeDeliveryAdapter:
-    def __init__(self, *, authorized: bool = True, failures: int = 0) -> None:
+    def __init__(self, *, authorized: bool = True, failures: int = 0, part_failures=None) -> None:
         self.authorized = authorized
         self.failures = failures
+        self.part_failures = dict(part_failures or {})
         self.authorizations = []
         self.deliveries = []
 
@@ -76,11 +79,15 @@ class _FakeDeliveryAdapter:
             "" if self.authorized else "push_disabled",
         )
 
-    def deliver(self, *, subscription, analysis):
-        self.deliveries.append((subscription, analysis))
+    def deliver_part(self, *, subscription, part):
+        self.deliveries.append((subscription, part))
         if self.failures > 0:
             self.failures -= 1
             return FinanceDeliveryResult(False, "failed", "qq_unreachable")
+        remaining = int(self.part_failures.get(part.part_type) or 0)
+        if remaining > 0:
+            self.part_failures[part.part_type] = remaining - 1
+            return FinanceDeliveryResult(False, "failed", f"{part.part_type}_unreachable")
         return FinanceDeliveryResult(True, "delivered")
 
 
@@ -105,9 +112,13 @@ class FinanceEventOrchestratorTests(unittest.TestCase):
             now_ts=100,
         )
 
-    def _orchestrator(self, *, authorized: bool = True, failures: int = 0):
-        analysis = _FakeAnalysisClient()
-        delivery = _FakeDeliveryAdapter(authorized=authorized, failures=failures)
+    def _orchestrator(self, *, authorized: bool = True, failures: int = 0, tool_events=None, part_failures=None):
+        analysis = _FakeAnalysisClient(tool_events=tool_events)
+        delivery = _FakeDeliveryAdapter(
+            authorized=authorized,
+            failures=failures,
+            part_failures=part_failures,
+        )
         orchestrator = FinanceEventOrchestrator(
             store=self.store,
             analysis_client=analysis,
@@ -132,12 +143,15 @@ class FinanceEventOrchestratorTests(unittest.TestCase):
         self.assertEqual(payload["turn_kind"], "market_event")
         self.assertEqual(payload["client_turn_kind"], "proactive")
         self.assertTrue(payload["transient_user_message"])
+        self.assertTrue(payload["transient_assistant_message"])
+        self.assertFalse(AkaneMemoryEngine._should_persist_assistant_turn(payload))
+        self.assertTrue(AkaneMemoryEngine._should_persist_assistant_turn({}))
         self.assertEqual(payload["finance_mode"], "push")
         self.assertTrue(is_transient_user_turn(payload))
         self.assertIn("【外部市场事件，不是用户发言】", payload["message"])
         self.assertIn("000000.TEST", payload["message"])
         self.assertNotIn("actor_stable_id", payload)
-        pushed = "\n".join(delivery.deliveries[0][1].messages)
+        pushed = str(delivery.deliveries[0][1].payload.get("message") or "")
         self.assertIn("已确认事实", pushed)
         self.assertIn("分析推断", pushed)
         self.assertIn("尚待验证与风险", pushed)
@@ -152,8 +166,7 @@ class FinanceEventOrchestratorTests(unittest.TestCase):
 
         self.assertEqual(first.delivery_results[0].status, "failed")
         self.assertEqual(retry[0].status, "delivered")
-        self.assertEqual(len(analysis.requests), 2)
-        self.assertNotEqual(analysis.requests[0].analysis_id, analysis.requests[1].analysis_id)
+        self.assertEqual(len(analysis.requests), 1)
         self.assertEqual(len(delivery.deliveries), 2)
         stored = self.store.get_delivery(
             event_id="choice:finance-f6-retry",
@@ -161,6 +174,83 @@ class FinanceEventOrchestratorTests(unittest.TestCase):
         )
         self.assertEqual(stored.status, "delivered")
         self.assertEqual(stored.attempt_count, 2)
+
+    def test_artifact_retry_does_not_repeat_delivered_text_or_rerun_analysis(self) -> None:
+        chart_event = {
+            "type": "market_chart_ready",
+            "delivery_scope": "finance_market_chart",
+            "send_to_user": True,
+            "generated_file": {"generated_id": "chart-retry-test"},
+        }
+        orchestrator, analysis, delivery = self._orchestrator(
+            tool_events=[chart_event],
+            part_failures={"chart": 1},
+        )
+
+        first_event = _event(event_id="choice:finance-f9-parts")
+        first = orchestrator.process_event(first_event, now_ts=200)
+        clustered = orchestrator.process_event(
+            replace(
+                first_event,
+                event_id="choice:finance-f9-parts-clustered",
+                title=f"{first_event.title} 更新",
+                published_at=first_event.published_at + 60,
+                raw_hash=_hash("choice:finance-f9-parts-clustered"),
+            ),
+            now_ts=250,
+        )
+        retry = orchestrator.retry_pending(now_ts=300)
+
+        self.assertEqual(first.delivery_results[0].status, "failed")
+        self.assertEqual(clustered.delivery_results[0].status, "duplicate_cluster")
+        self.assertEqual(retry[0].status, "delivered")
+        self.assertEqual(len(analysis.requests), 1)
+        self.assertEqual([part.part_type for _, part in delivery.deliveries], ["text", "chart", "chart"])
+        parts = self.store.list_delivery_parts(
+            event_id="choice:finance-f9-parts",
+            subscription_id=self.subscription.subscription_id,
+        )
+        by_type = {part.part_type: part for part in parts}
+        self.assertEqual(by_type["text"].status, "delivered")
+        self.assertEqual(by_type["text"].attempt_count, 1)
+        self.assertEqual(by_type["chart"].status, "delivered")
+        self.assertEqual(by_type["chart"].attempt_count, 2)
+
+    def test_exhausted_analysis_is_not_retried_every_worker_cycle(self) -> None:
+        class ExhaustedAnalysis:
+            def __init__(self):
+                self.requests = []
+
+            def analyze(inner_self, request):
+                inner_self.requests.append(request)
+                return FinanceAnalysisResult(
+                    ok=False,
+                    status="transient_fallback_analysis",
+                    analysis_id=request.analysis_id,
+                    reason="transient fallback; exhausted 3 analysis attempt(s)",
+                    analysis_attempts=3,
+                )
+
+        analysis = ExhaustedAnalysis()
+        delivery = _FakeDeliveryAdapter()
+        orchestrator = FinanceEventOrchestrator(
+            store=self.store,
+            analysis_client=analysis,
+            delivery_adapter=delivery,
+        )
+
+        first = orchestrator.process_event(_event(event_id="choice:finance-f9-exhausted"), now_ts=200)
+        retry = orchestrator.retry_pending(now_ts=300)
+        stored = self.store.get_delivery(
+            event_id="choice:finance-f9-exhausted",
+            subscription_id=self.subscription.subscription_id,
+        )
+
+        self.assertEqual(first.delivery_results[0].status, "failed")
+        self.assertTrue(stored.reason.startswith("analysis_exhausted:"))
+        self.assertEqual(retry, ())
+        self.assertEqual(len(analysis.requests), 1)
+        self.assertEqual(delivery.deliveries, [])
 
     def test_disabled_push_does_not_spend_analysis_or_create_delivery(self) -> None:
         orchestrator, analysis, delivery = self._orchestrator(authorized=False)
@@ -242,6 +332,115 @@ class FinanceEventOrchestratorTests(unittest.TestCase):
 
 
 class FinanceAnalysisClientTests(unittest.TestCase):
+    def _request(self, event_id: str):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        store = MarketEventStore(Path(temp_dir.name) / "analysis_retry.sqlite3")
+        event_result = store.upsert_event(_event(event_id=event_id), now_ts=100)
+        subscription = store.upsert_subscription(
+            subscription_id=f"sub-{event_id.rsplit(':', 1)[-1]}",
+            client="qq",
+            target_id="20001",
+            is_group=True,
+            session_id="qq_group_shared_20001",
+            profile_user_id="qq_group_shared_20001",
+            finance_mode="push",
+            enabled=True,
+            filters={"codes": ["000000.TEST"]},
+            delivery_policy={"level": "notify"},
+            now_ts=100,
+        )
+        from companion_v01.finance import FinanceAnalysisRequest, FinanceEventImportancePolicy
+
+        decision = FinanceEventImportancePolicy().evaluate(event=event_result.record.event, subscription=subscription)
+        return FinanceAnalysisRequest.create(
+            event_record=event_result.record,
+            subscription=subscription,
+            importance=decision,
+            requested_at=1_752_111_000,
+        )
+
+    def test_persona_fallback_retries_and_only_final_analysis_enters_memcore(self) -> None:
+        request = self._request("choice:finance-f9-fallback-retry")
+
+        class FakeMemcore:
+            enabled = True
+
+            def __init__(self):
+                self.calls = []
+
+            def record_tool_exchange(self, **kwargs):
+                self.calls.append(("tool", kwargs))
+                return {"ok": True, "status": "recorded"}
+
+            def record_assistant_turn(self, record, **kwargs):
+                self.calls.append(("assistant", record, kwargs))
+                return {"ok": True, "status": "recorded"}
+
+            def compact_due_background(self, **kwargs):
+                self.calls.append(("compact", kwargs))
+                return {"ok": True, "status": "scheduled"}
+
+        class FakeEngine:
+            def __init__(self):
+                self.memcore_manager = FakeMemcore()
+                self.outputs = [
+                    {"speech": "我在认真听你说，要不要再多告诉我一点？"},
+                    {"speech": "我在认真听你说，要不要再多告诉我一点？"},
+                    {"speech": "事件可能影响短期预期，但必须继续核验完整正文与带时间戳的行情。"},
+                ]
+                self.payloads = []
+
+            def process_turn(self, payload):
+                self.payloads.append(payload)
+                return self.outputs.pop(0)
+
+        engine = FakeEngine()
+        result = AkaneFinanceAnalysisClient(
+            engine,
+            max_attempts=3,
+            retry_backoff_seconds=0,
+        ).analyze(request)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.status, "analyzed_after_retry")
+        self.assertEqual(result.analysis_attempts, 3)
+        self.assertEqual(len(engine.payloads), 3)
+        self.assertEqual([item[0] for item in engine.memcore_manager.calls], ["tool", "assistant", "compact"])
+        stored_content = engine.memcore_manager.calls[1][1]["content"]
+        self.assertNotIn("我在认真听你说", stored_content)
+
+    def test_exhausted_fallback_attempts_never_pollute_memcore(self) -> None:
+        request = self._request("choice:finance-f9-fallback-exhausted")
+
+        class FakeMemcore:
+            enabled = True
+
+            def __init__(self):
+                self.calls = []
+
+        class FakeEngine:
+            def __init__(self):
+                self.memcore_manager = FakeMemcore()
+                self.calls = 0
+
+            def process_turn(self, _payload):
+                self.calls += 1
+                return {"speech": "我在认真听你说，要不要再多告诉我一点？"}
+
+        engine = FakeEngine()
+        result = AkaneFinanceAnalysisClient(
+            engine,
+            max_attempts=3,
+            retry_backoff_seconds=0,
+        ).analyze(request)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, "transient_fallback_analysis")
+        self.assertEqual(result.analysis_attempts, 3)
+        self.assertEqual(engine.calls, 3)
+        self.assertEqual(engine.memcore_manager.calls, [])
+
     def test_engine_analysis_records_tool_trace_and_assistant_not_user(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)

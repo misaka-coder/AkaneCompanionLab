@@ -1916,6 +1916,10 @@ class AkaneMemoryEngine:
 
         return _fn(payload)
 
+    @staticmethod
+    def _should_persist_assistant_turn(payload: dict[str, Any]) -> bool:
+        return not bool(payload.get("transient_assistant_message"))
+
     def _build_transient_user_record(
         self,
         *,
@@ -2114,6 +2118,7 @@ class AkaneMemoryEngine:
                 self._build_desktop_screen_frame_prompt_context(desktop_screen_images),
             )
         transient_user_turn = self._is_transient_user_turn(payload)
+        persist_assistant_turn = self._should_persist_assistant_turn(payload)
 
         self.consume_due_reminders(
             profile_user_id=profile_user_id,
@@ -2452,29 +2457,30 @@ class AkaneMemoryEngine:
                 session_id=session_id,
             )
 
-        assistant_record = self.store.add_message(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=turn_character_pack_id,
-            role="assistant",
-            content=final_output.get("speech", ""),
-            timestamp=int(time.time()),
-            semantic_tags=extract_semantic_tags(final_output.get("speech", "")),
-            memory_metadata=self._build_assistant_timeline_metadata(final_output),
-        )
-        self._upsert_raw_record(assistant_record)
-        if not transient_user_turn:
-            self._record_memcore_assistant_turn(
-                assistant_record=assistant_record,
+        if persist_assistant_turn:
+            assistant_record = self.store.add_message(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
+                role="assistant",
+                content=final_output.get("speech", ""),
+                timestamp=int(time.time()),
+                semantic_tags=extract_semantic_tags(final_output.get("speech", "")),
+                memory_metadata=self._build_assistant_timeline_metadata(final_output),
             )
-            self._schedule_memcore_compaction(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=turn_character_pack_id,
-            )
+            self._upsert_raw_record(assistant_record)
+            if not transient_user_turn:
+                self._record_memcore_assistant_turn(
+                    assistant_record=assistant_record,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                )
+                self._schedule_memcore_compaction(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                )
         if not self._memcore_owns_compaction():
             self._schedule_summary_cycle(
                 profile_user_id=profile_user_id,
@@ -2482,16 +2488,17 @@ class AkaneMemoryEngine:
                 character_pack_id=turn_character_pack_id,
             )
 
-        self.store.append_eval_turn(
-            trace_id=trace_id,
-            session_id=session_id,
-            profile_user_id=profile_user_id,
-            character_pack_id=turn_character_pack_id,
-            user_message=user_message,
-            router_json=router_output,
-            verifier_json=verifier_output,
-            final_json=final_output,
-        )
+        if persist_assistant_turn:
+            self.store.append_eval_turn(
+                trace_id=trace_id,
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                character_pack_id=turn_character_pack_id,
+                user_message=user_message,
+                router_json=router_output,
+                verifier_json=verifier_output,
+                final_json=final_output,
+            )
 
         final_output["trace_id"] = trace_id
         debug_payload = self._build_retrieval_debug_payload(
@@ -2552,6 +2559,7 @@ class AkaneMemoryEngine:
                 self._build_desktop_screen_frame_prompt_context(desktop_screen_images),
             )
         transient_user_turn = self._is_transient_user_turn(payload)
+        persist_assistant_turn = self._should_persist_assistant_turn(payload)
 
         self.consume_due_reminders(
             profile_user_id=profile_user_id,
@@ -2901,29 +2909,30 @@ class AkaneMemoryEngine:
 
         ui_final_payload = dict(final_output)
 
-        assistant_record = self.store.add_message(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=turn_character_pack_id,
-            role="assistant",
-            content=final_output.get("speech", ""),
-            timestamp=int(time.time()),
-            semantic_tags=extract_semantic_tags(final_output.get("speech", "")),
-            memory_metadata=self._build_assistant_timeline_metadata(final_output),
-        )
-        self._upsert_raw_record(assistant_record)
-        if not transient_user_turn:
-            self._record_memcore_assistant_turn(
-                assistant_record=assistant_record,
+        if persist_assistant_turn:
+            assistant_record = self.store.add_message(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
+                role="assistant",
+                content=final_output.get("speech", ""),
+                timestamp=int(time.time()),
+                semantic_tags=extract_semantic_tags(final_output.get("speech", "")),
+                memory_metadata=self._build_assistant_timeline_metadata(final_output),
             )
-            self._schedule_memcore_compaction(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=turn_character_pack_id,
-            )
+            self._upsert_raw_record(assistant_record)
+            if not transient_user_turn:
+                self._record_memcore_assistant_turn(
+                    assistant_record=assistant_record,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                )
+                self._schedule_memcore_compaction(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                )
         if not self._memcore_owns_compaction():
             self._schedule_summary_cycle(
                 profile_user_id=profile_user_id,
@@ -2931,16 +2940,17 @@ class AkaneMemoryEngine:
                 character_pack_id=turn_character_pack_id,
             )
 
-        self.store.append_eval_turn(
-            trace_id=trace_id,
-            session_id=session_id,
-            profile_user_id=profile_user_id,
-            character_pack_id=turn_character_pack_id,
-            user_message=user_message,
-            router_json=router_output,
-            verifier_json=verifier_output,
-            final_json=final_output,
-        )
+        if persist_assistant_turn:
+            self.store.append_eval_turn(
+                trace_id=trace_id,
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                character_pack_id=turn_character_pack_id,
+                user_message=user_message,
+                router_json=router_output,
+                verifier_json=verifier_output,
+                final_json=final_output,
+            )
 
         yield {"type": "final_ui", "payload": ui_final_payload}
 
