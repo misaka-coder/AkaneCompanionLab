@@ -1,0 +1,1571 @@
+# Akane QQ 金融助手与 EmQuant 接入实施细案 V1
+
+状态：设计锁定，待按切片实现
+更新时间：2026-07-10
+适用仓库：AkaneCompanionLab
+外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
+实施分支：feature/qq-finance-assistant-emquant（从包含现有 QQ、memcore 和 Anthropic 工具链的 feature/monogatari-web 分出）
+
+## 0. 文档目的
+
+这份文档用于在上下文压缩、换模型、换协作者或暂停开发后，恢复 Akane QQ 金融助手主线。
+
+目标不是重写 Akane，也不是另做一个没有人格的财经机器人。目标是在现有 QQ、工具调用、memcore、文件生成和后台任务能力之上，增加一个可按会话开启的金融领域档案，使当前角色能够：
+
+- 接收 Choice 新闻、公告、行情和宏观数据；
+- 主动调用多种只读工具核验事实；
+- 结合群聊人物归因、关注标的、历史观点和风险偏好分析；
+- 在 QQ 中主动推送文字、真实数据图表和报告文件；
+- 保持当前角色人格，但在金融事实、证据和时间戳上更严格；
+- 失败时结构化降级，不编造数据、不假装发送、不执行交易。
+
+这份文档优先记录不可轻易推翻的边界、真实代码接点、数据契约、切片顺序和验收口径。后续实现前先读本文件，不要凭对话摘要重新猜架构。
+
+## 1. 上下文恢复顺序
+
+上下文丢失后，按以下顺序阅读：
+
+1. 根目录 AGENTS.md
+2. 本文件
+3. docs/qq_napcat_integration_v1.md
+4. docs/qq_workshop_capabilities_v1.md
+5. docs/memcore_integration_plan_v1.md
+6. docs/tool_system_decoupling_v1.md
+7. docs/file_processing_generated_artifacts_v1.md
+8. sibling memcore 仓库的 AGENTS.md、README.md 和 docs/model_prompt_playbook_v1.md
+9. Choice SDK 自带的 EMQuantAPI_Python.pdf、python3/EmQuantAPI.py 和 python3/demo.py
+
+恢复后先执行：
+
+~~~powershell
+git status --short
+rg -n "finance|market_event|emquant|actor_stable_id" companion_v01 tests docs config.py
+~~~
+
+不要覆盖用户已有改动，不要把外部 SDK、userInfo、登录日志、API 密钥或数据库加入仓库。
+
+## 2. 已确认的现有基础
+
+以下能力已经存在，后续应复用，不要平行重造。
+
+### 2.1 QQ / NapCat
+
+- companion_v01/qq_gateway.py 已实现 OneBot HTTP 私聊和群聊收发。
+- companion_v01/routes/qq.py 已实现事件入口、流式回复、附件处理、文件投递和错误状态。
+- QQ 群会话使用 qq_group_shared_<group_id> 作为 session/profile 身份。
+- QQ 已支持会话级角色、模型和回复媒介覆盖，并可持久化部分 gateway 状态。
+- qq_gateway.send_reply、send_image、send_file 已是真实投递路径。
+- 后台任务完成后主动通知 QQ 的路径已经存在于 companion_v01/app.py。
+
+### 2.2 模型与工具调用
+
+- services/llm_client.py 支持 OpenAI compatible、Anthropic 和 Ollama 协议。
+- companion_v01/llm_runtime.py 支持 Anthropic tool_use/tool_result 与流式工具调用。
+- companion_v01/engine.py 已有同轮多工具循环、重复调用拦截和结构化工具结果回填。
+- companion_v01/tool_orchestration_engine.py 和 tool_runtime.py 已有工具元数据、风险和轮次预算。
+- web_search、retrieve_memory、read_memory_timeline 等只读能力已经支持原生工具通道。
+
+### 2.3 memcore
+
+- memcore 已是 Akane 的对话记忆主路。
+- MemcoreManager 已接 user/assistant raw、metadata 回写、可见三层、retrieve_for_turn、read_timeline 和后台压缩。
+- memcore 支持 Actor、record_tool_exchange、材料轨迹、时间线、metadata 前置过滤和跨会话检索。
+- 当前 Akane → memcore 接线尚未把 QQ 发送者映射为结构化 Actor，这是本主线必须先修的缺口。
+
+### 2.4 文件与产物
+
+- GeneratedFileService 已支持 txt、md、docx、xlsx、pdf、json、csv、html。
+- QQ 能投递生成文件和普通图片。
+- 当前没有面向金融数据的确定性 PNG 图表工具。
+- 当前 ComfyUI 接线主要服务角色工坊，不作为本主线依赖。
+
+### 2.5 已验证测试基线
+
+设计阶段曾验证以下测试全部通过：
+
+- tests.test_memcore_integration：35
+- tests.test_qq_gateway：68
+- tests.test_llm_client：43
+- tests.test_generated_files：50
+
+实现期间仍应重新运行，不能把历史通过当作当前通过。
+
+## 3. 锁定设计决定
+
+以下决定在 V1 中视为架构约束。
+
+### 3.1 金融模式不是新的客户端模式
+
+不要新增 qq_finance ClientMode。
+
+ClientMode 表示投递和渲染能力，金融是业务领域。QQ 仍使用：
+
+~~~text
+client_mode = qq_text
+domain_profile = finance
+finance_mode = off | qa | push
+~~~
+
+- off：普通 Akane，不加载金融提示词和金融工具。
+- qa：只有用户主动询问时启用金融问答能力。
+- push：包含 qa，并允许订阅事件主动触发分析与 QQ 推送。
+
+### 3.2 人格保留，事实优先
+
+金融模式不替换当前角色包，不创建独立的无人格分析机器人。
+
+角色身份、称呼和表达风格继续来自当前 persona/character pack。金融领域提示词只增加：
+
+- 工具使用纪律；
+- 证据和时间戳纪律；
+- 分析结构；
+- 风险与不确定性表达；
+- 产物选择策略。
+
+人格不能替代行情、新闻、公告或历史证据。
+
+### 3.3 Choice SDK 作为正式数据主通道
+
+Choice EmQuantAPI 审批通过后，作为新闻、行情、历史序列、板块和宏观数据的优先主通道。
+
+公开网页搜索继续保留，用于：
+
+- 补充资讯正文；
+- 交叉核验；
+- 查询 Choice 未覆盖的公开来源；
+- 在 Choice 权限或流量不可用时结构化降级。
+
+### 3.4 Choice SDK 独立进程运行
+
+不要把 ctypes DLL 和长连接订阅直接加载进 FastAPI 主进程。
+
+新增独立 EmQuant Bridge 进程，负责：
+
+- SDK 注册路径与 DLL 加载；
+- 登录、心跳、断线状态；
+- cfn/cnq/csq/csqsnapshot 等只读调用；
+- 回调快速入队；
+- 订阅恢复；
+- 本地只读 IPC/HTTP 接口；
+- 健康与流量状态。
+
+Akane 主进程只消费标准化事件和只读结果。Bridge 崩溃或 SDK 断线不能拖垮聊天主路。
+
+### 3.5 不把全量市场流灌进 memcore
+
+数据职责固定为：
+
+- MarketEventStore：原始新闻、公告、行情事件和投递状态的真相源。
+- memcore：群聊人物、偏好、关注标的、历史观点、已推送事件证据和重要分析结论。
+- GeneratedFileStore：图表、日报、PDF、Excel 等产物。
+
+只对真正分析或推送的事件调用 record_tool_exchange 留证；不把每一条市场新闻当用户消息写入 raw。
+
+### 3.6 图表确定性生成
+
+K 线、收益曲线、成交量、资金变化和指标图必须从真实数据确定性渲染。
+
+云端生图只用于：
+
+- 日报封面；
+- 装饰性信息图；
+- 非数据承载的视觉包装。
+
+禁止让图片生成模型虚构 K 线或数值图。
+
+### 3.7 多轮工具自适应放宽，但保留保险丝
+
+不把金融分析硬限制为三轮。
+
+建议预算：
+
+- 普通问答：6 轮；
+- 金融研究：10 至 12 轮；
+- 深度报告：最多 16 轮；
+- 全局绝对上限：16 轮。
+
+同时保留：
+
+- 完全相同工具签名禁止重复；
+- 连续两轮无新增证据时停止；
+- 连续失败或空结果时收束；
+- 单轮和整轮墙钟超时；
+- 工具返回体积限制；
+- 文件/图片必须真实生成后才能声称完成。
+
+### 3.8 Choice 只暴露只读能力
+
+允许：
+
+- cfn、cnq、cfnquery
+- csq、csqcancel、csqsnapshot
+- csc、cmc、csd、css
+- edb、edbquery
+- sector、tradedates、getdate、tradedatesnum
+- ctr、cfc、cec、cps、datastatistics
+
+V1 禁止：
+
+- pcreate
+- porder
+- pctransfer
+- pdelete
+
+不要向模型暴露通用的 call_emquant(function_name, arguments)。
+
+### 3.9 V1 不执行真实交易
+
+金融助手只提供数据查询、分析、提醒、图表和报告。
+
+不接券商交易，不自动下单，不根据模型结论执行资金动作。未来若讨论交易执行，必须另立设计、授权、风控和确认边界。
+
+### 3.10 保持可复用边界，但不提前抽包
+
+这条主线不仅服务当前 Akane，也应为以后自己或其他宿主复用保留清晰边界。
+
+以下模块必须保持人格无关、QQ 无关：
+
+- MarketEvent、MarketQuoteSnapshot、MarketSeries 等数据契约；
+- MarketDataProvider 接口；
+- EmQuant Bridge；
+- MarketEventStore；
+- 去重、聚类、指标计算和图表数据准备；
+- 只读金融工具的结构化返回契约。
+
+以下能力属于 Akane 宿主：
+
+- 当前角色 persona；
+- 金融领域提示词的角色表达；
+- QQ 命令、群权限和投递；
+- memcore namespace/Actor 映射；
+- Akane GeneratedFileStore 与任务工作区接线。
+
+V1 先在 Akane 仓库内以独立目录实现并验证。只有出现第二个真实宿主，或抽包能删除 Akane 中一条重复权威实现时，再评估提取独立 package。不要仅为了“以后可能复用”提前制造双实现和版本同步负担。
+
+## 4. 目标架构
+
+~~~text
+Choice EmQuantAPI
+  ├─ cfn / cnq 新闻公告
+  ├─ csq / csqsnapshot 实时行情
+  ├─ csc / cmc / csd 历史序列
+  └─ css / edb / sector 基本面与宏观
+          │
+          ▼
+EmQuant Bridge 独立进程
+  ├─ 登录与权限
+  ├─ 回调队列
+  ├─ 断线/订阅状态
+  ├─ 只读本地 API
+  └─ 数据标准化
+          │
+          ▼
+MarketEventStore
+  ├─ 去重
+  ├─ 聚类
+  ├─ 订阅匹配
+  ├─ 投递幂等
+  └─ 事件留存
+          │
+          ▼
+FinanceEventOrchestrator
+  ├─ 重要性规则
+  ├─ 成本与频率控制
+  ├─ Akane transient market_event 回合
+  ├─ Sonnet 多工具分析
+  └─ 结果与证据记录
+       │             │
+       │             ├─ memcore：Actor、偏好、观点、证据与结论
+       │             ├─ web_search：正文补充与交叉核验
+       │             └─ GeneratedFileStore：图表与报告
+       ▼
+NapCat / OneBot
+  ├─ QQ 文字
+  ├─ PNG 图表
+  └─ PDF / MD / XLSX 报告
+~~~
+
+## 5. 金融领域档案
+
+### 5.1 建议数据结构
+
+新增不可变领域档案：
+
+~~~python
+@dataclass(frozen=True)
+class DomainProfile:
+    id: str
+    enabled: bool
+    prompt_block_ids: tuple[str, ...]
+    allowed_tool_names: tuple[str, ...]
+    hidden_tool_names: tuple[str, ...]
+    default_tool_round_budget: int
+    hard_tool_round_limit: int
+    proactive_delivery_enabled: bool
+~~~
+
+V1 至少提供：
+
+~~~text
+default
+finance_v1
+~~~
+
+不要把 domain_profile 塞进 ClientCapability 枚举。ClientCapability 是端能力，金融是领域能力。
+
+### 5.2 QQ 会话状态
+
+在 NapCatQQGateway 持久化状态中增加：
+
+~~~json
+{
+  "finance_mode_overrides": {
+    "qq_group_shared_123": "push",
+    "qq_pri_456": "qa"
+  }
+}
+~~~
+
+建议命令：
+
+~~~text
+开启金融模式
+关闭金融模式
+开启财经推送
+关闭财经推送
+当前金融模式
+关注 600519.SH
+取消关注 600519.SH
+关注列表
+~~~
+
+权限建议：
+
+- 私聊：当前用户可切自己的 qa；push 是否开放由产品配置控制。
+- 群聊：仅 MASTER_QQ、群主、管理员或配置白名单可切 push。
+- 普通群成员不能静默开启全群主动推送。
+
+### 5.3 Payload
+
+QQ turn payload 增加：
+
+~~~json
+{
+  "domain_profile": "finance_v1",
+  "finance_mode": "qa",
+  "actor_stable_id": "qq:123456",
+  "actor_display_name": "当前群昵称",
+  "actor_platform": "qq"
+}
+~~~
+
+finance_mode=off 时可以省略 domain_profile。
+
+### 5.4 Prompt 组合
+
+在 PromptModule 中新增 DOMAIN_PROFILE，或在现有稳定 system_extra_blocks 中加入领域块。
+
+推荐顺序：
+
+1. 固定输出协议；
+2. 固定当前人格和安全边界；
+3. 固定金融领域规则；
+4. 固定金融工具说明；
+5. 动态当前时间；
+6. 动态 memcore 可见记忆；
+7. 动态市场事件、工具结果和用户消息。
+
+金融模式稳定后，system prompt 字节内容不要每轮随机变化，以保留前缀缓存。
+
+### 5.5 金融提示词必须包含
+
+- 你仍是当前角色，不要自称另一个金融机器人。
+- 涉及当前、最新、实时、价格、涨跌、公告或宏观数据时主动使用工具。
+- 一次结果不足时允许继续查询，直到证据足够或确认不可用。
+- 明确区分来源事实、程序计算和分析推断。
+- 实时数据必须写明 as_of 时间与时区。
+- 新闻标题不足以支持深度结论时，应提取正文或降低置信度。
+- 不能把过去观点当成当前事实；应说明新证据强化、削弱还是未改变旧判断。
+- 不保证收益，不编造价格、公告、财务数据或来源。
+- 用户未要求长文时优先短而有信息密度的 QQ 回复。
+- 只有图表确实提升理解时才生成图表。
+- 每条普通新闻不自动生成文件；日报、重大事件和对比分析可生成。
+
+### 5.6 金融模式工具裁剪
+
+默认显示：
+
+- retrieve_memory
+- read_memory_timeline
+- web_search
+- market_news_search
+- market_quote_snapshot
+- market_price_series
+- market_macro_series
+- render_market_chart
+- compose_finance_report
+- send_file
+
+按条件显示：
+
+- 附件存在时显示附件和文档读取工具；
+- 已有生成物时显示生成文件管理工具；
+- 用户要求长任务时显示 delegate_task 和 task workspace；
+- 用户要求提醒时显示 reminder 工具。
+
+在金融模式下隐藏与当前请求无关的世界、礼物、媒体加工和桌宠演出工具提示。人格模块仍保留。
+
+## 6. QQ Actor 结构化接线
+
+### 6.1 当前问题
+
+QQMessageContext.to_turn_payload 当前主要把群发送者写成：
+
+~~~text
+【发送者昵称】正文
+~~~
+
+这对模型当轮理解有帮助，但 memcore raw 没有 Actor 结构，长期摘要和归因仍可能串人。
+
+### 6.2 目标映射
+
+~~~python
+Actor(
+    stable_id=f"qq:{user_id}",
+    display_name=sender_label,
+)
+~~~
+
+稳定 ID 必须来自 QQ 用户 ID，不能使用昵称。
+
+### 6.3 修改接点
+
+companion_v01/qq_gateway.py
+
+- QQMessageContext.to_turn_payload 增加 actor_stable_id、actor_display_name、actor_platform。
+- to_delivery_context 保留同样字段，供后台任务与主动推送恢复上下文。
+- context_from_delivery_context 恢复 Actor 字段。
+
+companion_v01/engine.py
+
+- process_turn / process_turn_stream 解析 turn_actor。
+- 调用 _record_memcore_user_turn 时传 Actor。
+- record_passive_qq_message 接受 Actor。
+
+companion_v01/memcore_integration/manager.py
+
+- record_user_turn 增加 actor 参数或 actor_stable_id/display_name 参数。
+- _record_turn 的 user 分支调用 system.record_user_turn(..., actor=Actor(...))。
+- assistant 不传 Actor。
+- record_material_reference 从附件 detail 中提取 QQ sender id/name，并传 Actor。
+
+### 6.4 被动群消息策略
+
+V1 不应默认把全部水群写入可检索长期记忆。
+
+金融 push 群可配置：
+
+~~~text
+QQ_FINANCE_PASSIVE_MEMORY_MODE=off|selected|all
+~~~
+
+- off：保持当前行为。
+- selected：只记录含证券代码、关注标的、持仓、风险偏好、明确观点、任务或承诺的消息。
+- all：全部写 raw，但低重要度，并继续由 memcore 压缩。
+
+默认 selected。
+
+### 6.5 Actor 验收
+
+- 两名不同 QQ 用户使用相同昵称，仍按 stable_id 区分。
+- 同一用户改昵称后，历史归因仍属于同一 stable_id。
+- 谁说了某个观点、谁关注某只股票可由 timeline/retrieve 找到明确证据。
+- QQ 图片和文件保留上传者 Actor。
+- 不把群成员观点归成主人私聊观点。
+
+## 7. memcore 金融配置
+
+### 7.1 Categories 使用全局稳定超集
+
+MemoryConfig.categories 在 MemcoreManager 级别构造，不应每次切 finance_mode 都重建一套不兼容枚举。
+
+建议在所有模式使用稳定超集：
+
+~~~text
+casual
+preference
+personal_profile
+plan_goal
+project_work
+relationship
+emotion_state
+life_event
+memory_query
+system_meta
+finance_question
+watchlist
+portfolio_context
+risk_preference
+investment_goal
+market_thesis
+alert_preference
+market_event
+market_analysis
+tool_trace
+material_trace
+~~~
+
+关闭金融模式时，模型不会被提示使用金融 category，但旧金融记忆仍合法存在。
+
+### 7.2 domain_id
+
+V1 不把 finance_mode 拼进 memcore domain_id。
+
+继续使用 character_pack_id 作为 domain_id，原因：
+
+- 金融模式切换不应让同一角色突然失忆；
+- QQ 群本身已用 profile/session 隔离；
+- categories 足以区分金融记忆。
+
+若未来合规要求金融与陪伴记忆硬隔离，必须另立迁移方案，不能直接改 key 导致历史不可见。
+
+### 7.3 外部事件记忆
+
+外部新闻不是用户消息。
+
+推荐：
+
+~~~python
+mem.record_tool_exchange(
+    tool_name="market_feed",
+    tool_call_id=event.event_id,
+    tool_input={"subscription_id": event.subscription_id},
+    result=event.evidence_payload(),
+    timestamp=event.published_at,
+    keywords=[event.code, event.content_type, event.source],
+)
+
+mem.record_assistant_turn(
+    analysis_text,
+    timestamp=analysis_ts,
+    memory_metadata={
+        "categories": ["market_analysis"],
+        "keywords": [...],
+        "subject_scopes": ["assistant"],
+        "importance": ...,
+        "confidence": ...,
+    },
+)
+~~~
+
+Akane 当前 transient turn 不会自动双写 assistant 到 memcore，因此 FinanceEventOrchestrator 必须显式记录推送分析。
+
+不要修改 memcore 私有表；通过 MemorySystem 公共 API 或 MemcoreManager 门面调用。
+
+## 8. EmQuant Bridge
+
+### 8.1 外部 SDK 管理
+
+SDK 放在仓库外，通过环境变量定位：
+
+~~~text
+EMQUANT_API_ROOT=
+EMQUANT_ENABLED=false
+~~~
+
+不要把以下内容提交：
+
+- DLL / so / dylib；
+- userInfo；
+- logininfo.log；
+- ServerSelect.txt；
+- 账号密码；
+- 激活日志；
+- Choice 数据缓存样本中的受限原文。
+
+建议在 Akane 专用虚拟环境里运行官方 installEmQuantAPI.py，不要污染系统 Python。
+
+### 8.2 进程边界
+
+建议新增：
+
+~~~text
+services/market_data/
+  __init__.py
+  types.py
+  provider.py
+  emquant_bridge_client.py
+
+services/emquant_bridge/
+  __init__.py
+  main.py
+  runtime.py
+  sdk_loader.py
+  normalizers.py
+  subscription_manager.py
+  local_api.py
+~~~
+
+Bridge 可先使用 loopback HTTP；若后续需要更低延迟，再考虑本地 socket。V1 不需要消息队列中间件。
+
+### 8.3 生命周期
+
+启动：
+
+1. 校验 EMQUANT_API_ROOT；
+2. 校验 SDK 版本、Python 位数和 DLL；
+3. 调用 c.start；
+4. 查询 datastatistics；
+5. 恢复已启用订阅；
+6. 暴露 ready 状态。
+
+登录参数建议：
+
+~~~text
+ForceLogin=0
+RecordLoginInfo=0
+HTTPTimeout=15
+~~~
+
+不要默认 ForceLogin=1，避免踢掉 Choice 终端或其他 API 会话。
+
+运行：
+
+- cnq/csq 回调只做数据拷贝、标准化和入队；
+- 不在 native callback 线程中调用 LLM、SQLite 长事务或 QQ HTTP；
+- worker 消费队列并写 MarketEventStore；
+- Bridge 维护每个 SerialID 的类型、参数、状态和最近事件时间。
+
+关闭：
+
+1. 停止接收新订阅；
+2. 调 cnqcancel / csqcancel；
+3. 刷新待写事件；
+4. 调 c.stop；
+5. 返回结构化关闭状态。
+
+### 8.4 错误状态
+
+必须显式处理：
+
+- 10001003：无 API 权限；
+- 10001012：权限不足；
+- 10001024：资讯订阅登录失败；
+- 10001025：资讯流量验证失败；
+- 10002013：资讯重连；
+- 10002014：资讯连续重连失败；
+- 10000016：请求频次过高；
+- 10003013：订阅数或股票数达到上限；
+- 10003015：订阅指标达到上限；
+- 10003024：资讯数据量过大。
+
+Bridge health 至少返回：
+
+~~~json
+{
+  "ok": true,
+  "status": "ready|degraded|disconnected|permission_denied",
+  "logged_in": true,
+  "news_subscription_count": 1,
+  "quote_subscription_count": 2,
+  "last_news_at": 0,
+  "last_quote_at": 0,
+  "last_error_code": 0,
+  "last_error_reason": "",
+  "quota_status": {}
+}
+~~~
+
+### 8.5 审批等待期间
+
+先实现 MockMarketDataProvider，并用与 Choice 输出字段一致的 fixture：
+
+- datetime
+- eitime
+- code
+- content
+- title
+- infoCode
+- medianname
+- url
+- type
+- label
+
+所有上层逻辑必须在无真实 Choice 权限时可测试。
+
+## 9. 标准数据契约
+
+### 9.1 MarketEvent
+
+~~~python
+@dataclass(frozen=True)
+class MarketEvent:
+    provider: str
+    event_id: str
+    published_at: int
+    produced_at: int | None
+    received_at: int
+    code: str
+    content_type: str
+    title: str
+    source: str
+    url: str
+    sentiment: str
+    labels: tuple[str, ...]
+    sector_code: str
+    raw_hash: str
+~~~
+
+event_id 优先使用：
+
+~~~text
+choice:<infoCode>
+~~~
+
+infoCode 缺失时：
+
+~~~text
+choice:sha256(code|content_type|title|published_at|source)
+~~~
+
+### 9.2 MarketQuoteSnapshot
+
+~~~python
+@dataclass(frozen=True)
+class MarketQuoteSnapshot:
+    provider: str
+    code: str
+    as_of: int
+    timezone: str
+    previous_close: float | None
+    open: float | None
+    high: float | None
+    low: float | None
+    last: float | None
+    volume: float | None
+    amount: float | None
+    change: float | None
+    change_pct: float | None
+    status: str
+~~~
+
+change 和 change_pct 优先由程序根据 last/previous_close 计算，保留原始字段用于校验。
+
+### 9.3 MarketSeries
+
+~~~python
+@dataclass(frozen=True)
+class MarketSeries:
+    provider: str
+    code: str
+    interval: str
+    adjusted: str
+    timezone: str
+    points: tuple[MarketBar, ...]
+    as_of: int
+~~~
+
+### 9.4 工具返回通用字段
+
+所有金融只读工具返回：
+
+~~~json
+{
+  "ok": true,
+  "status": "ok|empty|unavailable|permission_denied|rate_limited|invalid_arguments",
+  "provider": "choice_emquant",
+  "as_of": "2026-07-10T14:32:00+08:00",
+  "source": "Choice",
+  "reason": "",
+  "data": {}
+}
+~~~
+
+非法参数不能退化为宽泛查询。
+
+## 10. MarketEventStore
+
+建议新增独立 SQLite：
+
+~~~text
+market_events.sqlite3
+~~~
+
+不要把表塞进 memcore SQLite。
+
+### 10.1 market_events
+
+~~~text
+event_id TEXT PRIMARY KEY
+provider TEXT NOT NULL
+published_at INTEGER NOT NULL
+produced_at INTEGER
+received_at INTEGER NOT NULL
+code TEXT NOT NULL
+content_type TEXT NOT NULL
+title TEXT NOT NULL
+source TEXT
+url TEXT
+sentiment TEXT
+labels_json TEXT
+sector_code TEXT
+raw_hash TEXT NOT NULL
+cluster_id TEXT
+status TEXT NOT NULL
+created_at INTEGER NOT NULL
+updated_at INTEGER NOT NULL
+~~~
+
+索引：
+
+- code, published_at
+- content_type, published_at
+- cluster_id
+- raw_hash
+
+### 10.2 finance_subscriptions
+
+~~~text
+subscription_id TEXT PRIMARY KEY
+client TEXT NOT NULL
+target_id TEXT NOT NULL
+session_id TEXT NOT NULL
+profile_user_id TEXT NOT NULL
+character_pack_id TEXT
+finance_mode TEXT NOT NULL
+enabled INTEGER NOT NULL
+filters_json TEXT NOT NULL
+delivery_policy_json TEXT NOT NULL
+created_by_actor_id TEXT
+created_at INTEGER NOT NULL
+updated_at INTEGER NOT NULL
+~~~
+
+### 10.3 watchlist_items
+
+~~~text
+subscription_id TEXT NOT NULL
+code TEXT NOT NULL
+display_name TEXT
+aliases_json TEXT
+priority REAL NOT NULL
+created_by_actor_id TEXT
+created_at INTEGER NOT NULL
+PRIMARY KEY(subscription_id, code)
+~~~
+
+### 10.4 market_event_deliveries
+
+~~~text
+event_id TEXT NOT NULL
+subscription_id TEXT NOT NULL
+status TEXT NOT NULL
+analysis_id TEXT
+attempt_count INTEGER NOT NULL
+last_attempt_at INTEGER
+delivered_at INTEGER
+reason TEXT
+PRIMARY KEY(event_id, subscription_id)
+~~~
+
+这个表保证进程重启和回调重放时不重复推送。
+
+### 10.5 去重与聚类
+
+第一层：event_id/infoCode 精确去重。
+第二层：raw_hash 去重。
+第三层：同代码、同类型、相近标题、短时间窗口聚类。
+
+同一事件的后续版本只有出现实质性新信息时再次推送，并明确标注“更新”。
+
+## 11. 金融工具
+
+### 11.1 market_news_search
+
+用途：查询某标的、板块、类型或时间范围的历史事件。
+
+输入：
+
+~~~json
+{
+  "query": "英伟达 财报",
+  "codes": ["NVDA.US"],
+  "content_types": ["companynews", "report"],
+  "date_from": "2026-07-01",
+  "date_to": "2026-07-10",
+  "limit": 20
+}
+~~~
+
+先查 MarketEventStore，必要时由 Bridge 调 cfn 补历史。
+
+### 11.2 market_quote_snapshot
+
+用途：读取当前行情，不订阅长连接。
+
+底层：csqsnapshot。
+
+必须返回 as_of，不允许用缓存旧值假装实时。
+
+### 11.3 market_price_series
+
+用途：分钟线、日线、收益和量价分析。
+
+底层：
+
+- csc/cmc：分钟；
+- csd：日/周/月序列。
+
+程序侧可计算：
+
+- 区间收益；
+- 振幅；
+- 均线；
+- 成交量变化；
+- 波动率；
+- 突破/回撤；
+- 相对指数表现。
+
+计算结果和原始序列分字段返回，模型只负责解释。
+
+### 11.4 market_macro_series
+
+底层：edb/edbquery。
+
+宏观数据必须保留发布日期，避免前视偏差。
+
+### 11.5 render_market_chart
+
+输入只接受结构化数据引用和声明式样式：
+
+~~~json
+{
+  "chart_type": "candlestick|line|volume|comparison",
+  "codes": ["600519.SH"],
+  "range": "5d",
+  "interval": "1d",
+  "indicators": ["ma5", "ma20", "volume"],
+  "title": "贵州茅台近五日量价",
+  "output_format": "png"
+}
+~~~
+
+工具内部重新读取受信数据，不接受模型直接传任意价格数组作为最终事实。
+
+输出写入 GeneratedFileStore，并返回 generated_id、mime_type、width、height、as_of。
+
+### 11.6 compose_finance_report
+
+可以包装现有 compose_file，而不是重写文档系统。
+
+支持：
+
+- md：快速日报；
+- pdf：正式简报；
+- xlsx：结构化数据；
+- html：带图表说明的可读报告。
+
+图表先生成，再作为报告来源引用。
+
+## 12. 工具轮次与证据收敛
+
+### 12.1 预算
+
+在 ToolMetadata 增加 finance family：
+
+~~~text
+family=finance_read
+operation=read
+risk=low
+default_round_budget=12
+~~~
+
+图表和报告：
+
+~~~text
+family=finance_artifact
+operation=control
+risk=low_or_medium
+default_round_budget=12
+~~~
+
+### 12.2 No-progress guard
+
+每轮记录 evidence fingerprint：
+
+~~~text
+tool_name
+normalized_arguments
+provider
+as_of
+result_hash
+source_urls
+event_ids
+~~~
+
+满足任一条件停止追加工具：
+
+- 连续两轮 result_hash 无变化；
+- 连续两轮没有新增 event_id/source_url/as_of；
+- 连续两轮 empty/unavailable；
+- 已达到用户问题所需证据最小集；
+- 达到硬上限或墙钟超时。
+
+### 12.3 最小证据集
+
+实时价格问题：
+
+- quote snapshot；
+- as_of。
+
+新闻影响问题：
+
+- 新闻事件；
+- 相关行情或明确说明行情不可用；
+- 来源 URL/来源名；
+- 必要时历史事件或公开正文。
+
+趋势问题：
+
+- 足够长度的价格序列；
+- 计算指标；
+- 数据截止时间；
+- 不把新闻情绪直接等同趋势。
+
+## 13. 主动事件分析
+
+### 13.1 market_event 不是 user turn
+
+扩展 transient turn 判断：
+
+~~~text
+turn_kind = market_event
+transient_user_message = true
+~~~
+
+输入 prompt 中使用明确边界：
+
+~~~text
+【外部市场事件，不是用户发言】
+事件 ID：
+发布时间：
+生产时间：
+证券代码：
+资讯类型：
+标题：
+来源：
+URL：
+舆情标签：
+~~~
+
+不得把外部事件 metadata 回写成某位群成员的偏好或陈述。
+
+### 13.2 FinanceEventOrchestrator 流程
+
+1. MarketEventStore 新事件入库；
+2. 匹配 finance_subscriptions；
+3. 创建 delivery pending；
+4. 规则判断是否需要 AI；
+5. 构造 market_event transient turn；
+6. 模型按需调用行情、历史、记忆、网页和图表工具；
+7. 解析最终输出；
+8. 记录 market_feed tool trace；
+9. 显式记录 assistant market_analysis 到 memcore；
+10. 投递 QQ；
+11. 更新 delivery 状态；
+12. 失败按策略重试或进入 digest。
+
+### 13.3 AI 调用前的确定性过滤
+
+不要每条资讯都调用最贵模型。
+
+先用规则：
+
+- 是否命中 watchlist；
+- 是否为 report/regularreport/tradeinfo；
+- 是否包含重大、停牌、复牌、业绩、回购、增减持、处罚等关键词；
+- 是否与短时间价格/成交量异常同时发生；
+- 是否属于订阅板块；
+- 是否已被同 cluster 推送。
+
+规则不直接产出最终投资结论，只决定是否进入 AI 分析或摘要池。
+
+## 14. QQ 主动投递
+
+### 14.1 授权来源
+
+主动推送依赖 finance_subscriptions 中的明确授权，不伪造“当前用户要求发送文件”的意图。
+
+QQ_REQUIRE_FILE_DELIVERY_INTENT 仍保护普通对话。金融 push 使用独立 subscription delivery policy。
+
+### 14.2 Delivery context
+
+订阅保存：
+
+- is_group
+- target_id
+- session_id
+- profile_user_id
+- character_pack_id
+- finance_mode
+- current actor/admin who enabled it
+
+投递时通过结构化 context 调 qq_gateway.send_reply/send_image/send_file。
+
+### 14.3 默认推送格式
+
+~~~text
+【市场快讯｜14:32】
+发生了什么：
+为什么值得看：
+当前行情：
+与之前观点的关系：
+接下来观察：
+来源：
+~~~
+
+要求：
+
+- QQ 首条尽量控制在可读长度；
+- 长证据放后续气泡或报告；
+- 图表只在明显有价值时附带；
+- 标明数据时间；
+- 不使用绝对化“必涨/必跌”；
+- 同一事件不重复刷屏。
+
+### 14.4 推送等级
+
+- archive：只入库。
+- digest：进入定时摘要。
+- notify：发送文字。
+- alert：文字 + 图表，必要时报告。
+
+### 14.5 限流
+
+建议每个群：
+
+- 普通 notify 最小间隔可配置；
+- 同代码短时间聚合；
+- 每分钟和每日上限；
+- 超限事件进入 digest；
+- alert 可绕过普通间隔，但仍受硬上限。
+
+## 15. 文件、图表与云端 Provider
+
+### 15.1 不替换 GeneratedFileStore
+
+新增 Provider 层，输出仍进入现有 GeneratedFileStore：
+
+~~~python
+class ArtifactProvider(Protocol):
+    def generate(self, request: ArtifactRequest) -> ArtifactResult:
+        ...
+~~~
+
+Provider 可包括：
+
+- LocalDocumentProvider
+- LocalChartProvider
+- CloudDocumentProvider
+- CloudImageGenerationProvider
+
+### 15.2 Provider 路由
+
+~~~text
+金融数据图表 → LocalChartProvider 或可信图表 API
+MD/CSV/XLSX → 现有本地实现
+高保真 PDF/DOCX → 本地优先，按配置可切云端
+装饰性封面/信息图 → 云端生图
+~~~
+
+### 15.3 云端边界
+
+- API key 只在 provider 配置层使用；
+- 不进入 prompt、日志、snapshot 或生成文件 metadata；
+- 上传前移除本地绝对路径；
+- 只上传任务必要内容；
+- 云端失败时结构化回退本地或只发文字；
+- 不把云端 URL 当成永久存储，下载后进入 GeneratedFileStore。
+
+## 16. 配置建议
+
+~~~text
+# Finance domain
+FINANCE_ASSISTANT_ENABLED=false
+FINANCE_DEFAULT_MODE=off
+FINANCE_TOOL_ROUND_BUDGET=12
+FINANCE_TOOL_ROUND_HARD_LIMIT=16
+FINANCE_TURN_TIMEOUT_SECONDS=90
+FINANCE_EVENT_DB_PATH=
+FINANCE_PASSIVE_MEMORY_MODE=selected
+
+# Choice bridge
+EMQUANT_ENABLED=false
+EMQUANT_API_ROOT=
+EMQUANT_BRIDGE_URL=http://127.0.0.1:9910
+EMQUANT_BRIDGE_TOKEN=
+EMQUANT_LOGIN_FORCE=false
+EMQUANT_RECORD_LOGIN_INFO=false
+EMQUANT_HTTP_TIMEOUT_SECONDS=15
+EMQUANT_NEWS_QUEUE_MAX=5000
+EMQUANT_QUOTE_QUEUE_MAX=20000
+
+# QQ finance
+QQ_FINANCE_MODE_COMMANDS_ENABLED=true
+QQ_FINANCE_PUSH_ENABLED=false
+QQ_FINANCE_NOTIFY_MIN_INTERVAL_SECONDS=20
+QQ_FINANCE_MAX_MESSAGES_PER_MINUTE=6
+QQ_FINANCE_MAX_MESSAGES_PER_DAY=200
+QQ_FINANCE_DEFAULT_DIGEST_TIME=15:10
+
+# Artifact providers
+FINANCE_CHART_PROVIDER=local
+FINANCE_DOCUMENT_PROVIDER=local
+FINANCE_IMAGE_PROVIDER=disabled
+~~~
+
+EMQUANT_BRIDGE_TOKEN 是本机进程间鉴权值，不得进入客户端 snapshot。
+
+## 17. 建议代码地图
+
+~~~text
+companion_v01/
+  domain_profiles.py
+  finance/
+    __init__.py
+    types.py
+    config.py
+    event_store.py
+    subscription_service.py
+    event_orchestrator.py
+    importance_policy.py
+    prompt_block.py
+    tool_handlers.py
+    chart_service.py
+    report_service.py
+    memory_bridge.py
+
+services/
+  market_data/
+    __init__.py
+    provider.py
+    types.py
+    emquant_bridge_client.py
+  emquant_bridge/
+    __init__.py
+    main.py
+    runtime.py
+    sdk_loader.py
+    normalizers.py
+    subscription_manager.py
+    local_api.py
+
+tests/
+  test_qq_actor_memcore.py
+  test_finance_domain_profile.py
+  test_finance_event_store.py
+  test_finance_tools.py
+  test_finance_event_orchestrator.py
+  test_finance_qq_delivery.py
+  test_emquant_bridge_contract.py
+  test_finance_artifacts.py
+~~~
+
+避免继续扩大 engine.py。engine.py 只增加薄的 service 装配和调用点。
+
+## 18. 实施切片
+
+### Slice F0：Actor repair
+
+目标：QQ 群 user 和 attachment 进入 memcore 时保留稳定 Actor。
+
+改动：
+
+- QQMessageContext payload/delivery context；
+- engine turn_actor 解析；
+- MemcoreManager user/material Actor 接线；
+- 群聊归因提示与测试。
+
+验收：
+
+- 两人同昵称不串；
+- 改名不丢历史；
+- 当前 QQ 和 memcore timeline 中可见 id/name；
+- 现有 QQ 和 memcore 测试保持通过。
+
+### Slice F1：Finance domain profile
+
+目标：按 QQ 会话开启 off/qa/push，加载金融提示词并裁剪工具。
+
+改动：
+
+- domain_profiles.py；
+- gateway finance override 持久化；
+- QQ 命令；
+- PromptModule.DOMAIN_PROFILE；
+- CapabilityRegistry 金融选择；
+- config/settings catalog。
+
+验收：
+
+- off 模式 prompt 不包含金融块；
+- qa/push 模式包含稳定金融块；
+- QQ 仍使用 qq_text 输出协议；
+- 当前角色 persona 不被替换；
+- 无关工具不进入金融 prompt。
+
+### Slice F2：Market provider contract + Mock
+
+目标：无 Choice 权限也能开发完整上层。
+
+改动：
+
+- services/market_data types/provider；
+- MockMarketDataProvider；
+- Choice 字段 fixture；
+- provider health contract。
+
+验收：
+
+- mock 新闻/行情可标准化；
+- 无效字段结构化失败；
+- 不依赖外部网络。
+
+### Slice F3：MarketEventStore + subscriptions
+
+目标：事件真相源、去重、关注列表和投递幂等。
+
+改动：
+
+- SQLite schema；
+- event upsert；
+- cluster/dedupe；
+- subscription/watchlist；
+- delivery state。
+
+验收：
+
+- 同 infoCode 重放不重复；
+- 不同群投递状态隔离；
+- 进程重启后不重复推送；
+- 关闭订阅后不再匹配。
+
+### Slice F4：EmQuant Bridge
+
+目标：独立进程读 Choice SDK，主进程不加载 DLL。
+
+改动：
+
+- SDK loader；
+- start/stop/health；
+- cfn/cnq/csq/csqsnapshot；
+- callback queue；
+- cancel/resubscribe；
+- datastatistics。
+
+验收：
+
+- 无 SDK 时 missing_config；
+- 无权限时 permission_denied；
+- callback 不执行 LLM/QQ；
+- Bridge 失败不影响 Akane；
+- 只读 allowlist；
+- 状态修改函数不可调用。
+
+真实权限未开通前只跑 fake SDK 测试。
+
+### Slice F5：金融只读工具
+
+目标：Sonnet 可主动查询新闻、行情、历史序列和宏观数据。
+
+改动：
+
+- tool handlers；
+- native schema；
+- NATIVE_TOOL_DECISION_ALLOWLIST；
+- finance family budget；
+- evidence/no-progress guard。
+
+验收：
+
+- Anthropic 原生工具路径；
+- 非法代码/日期不宽泛查询；
+- 所有实时结果包含 as_of；
+- 失败不编造；
+- 深度问题允许超过三轮；
+- 相同调用不会循环。
+
+### Slice F6：Event → AI → QQ
+
+目标：新事件触发人格化金融分析并主动投递。
+
+改动：
+
+- importance policy；
+- FinanceEventOrchestrator；
+- market_event transient turn；
+- memcore tool trace + assistant analysis；
+- QQ subscription delivery。
+
+验收：
+
+- 外部事件不存成 user；
+- Actor 偏好检索可参与分析；
+- 每次推送有来源与时间；
+- 同事件不重复；
+- QQ 失败保留 pending/retry；
+- 普通聊天不被阻塞。
+
+### Slice F7：图表和报告
+
+目标：真实数据生成 PNG、MD、PDF、XLSX 并投递 QQ。
+
+改动：
+
+- LocalChartProvider；
+- render_market_chart；
+- compose_finance_report；
+- GeneratedFileStore 接线；
+- QQ send_image/send_file。
+
+验收：
+
+- 图表数值与输入序列一致；
+- 标题、代码、区间和 as_of 正确；
+- 生成失败不发送空文件；
+- 不需要当前用户文本文件意图，使用 subscription 授权；
+- 普通对话文件保护仍有效。
+
+### Slice F8：云端产物 Provider
+
+目标：可配置云端文档或生图，但不是主链依赖。
+
+验收：
+
+- provider 可切换；
+- 云端失败有本地/文字降级；
+- 密钥和路径不泄漏；
+- 生成图片不承担真实行情数值表达。
+
+### Slice F9：可靠性与运营
+
+目标：长期运行。
+
+包括：
+
+- Bridge watchdog；
+- 订阅自动恢复；
+- quota/流量告警；
+- digest；
+- 速率限制；
+- retention；
+- metrics；
+- 手动 replay；
+- Choice 授权范围记录。
+
+## 19. 测试矩阵
+
+### 单元测试
+
+- Actor 稳定 ID 与改名；
+- finance mode 命令解析与持久化；
+- domain profile prompt 选择；
+- capability 裁剪；
+- Choice 字段 normalizer；
+- event id/hash/cluster；
+- quote 和技术指标计算；
+- no-progress guard；
+- chart 数据一致性；
+- delivery 幂等。
+
+### 集成测试
+
+- Mock provider → MarketEventStore → Orchestrator → Fake QQ；
+- Anthropic native tool_use → market tool → tool_result → final；
+- memcore retrieve 历史观点；
+- 两个群不同 watchlist；
+- Bridge unavailable 时聊天仍正常；
+- 生成图表后真实调用 QQ image/file 路径。
+
+### 必跑回归
+
+~~~powershell
+python -m unittest tests.test_memcore_integration
+python -m unittest tests.test_qq_gateway
+python -m unittest tests.test_llm_client
+python -m unittest tests.test_generated_files
+python -m unittest tests.test_prompt_builder
+python -m unittest tests.test_native_tool_schema
+python -m unittest tests.quick_regression_suite
+git diff --check
+~~~
+
+修改 memcore 自身时，再按 memcore/AGENTS.md 跑完整验证。
+
+## 20. 真实 API 最小冒烟
+
+Choice 权限开通后，不运行官方完整 demo。
+
+只做：
+
+1. c.start，ForceLogin=0、RecordLoginInfo=0；
+2. datastatistics 查询权限和流量；
+3. cfn 查询一个代码最近 1 至 3 条资讯；
+4. csqsnapshot 查询一个代码；
+5. cnq 订阅一个代码或板块短时间；
+6. cnqcancel；
+7. c.stop。
+
+不得在冒烟中调用组合创建、组合订单、资金调配或删除。
+
+## 21. 安全与授权
+
+- Choice API 权限不自动等于允许向第三方群重新分发全部数据。
+- 正式商用前向 Choice 确认 QQ 推送、缓存期限、行情展示和新闻链接的授权范围。
+- 若授权只允许内部使用，Demo 群必须限制为授权成员。
+- API key、账号、userInfo、token、数据库、登录日志和本地绝对路径不能进入 prompt、日志、snapshot、文档或 commit。
+- 不记录完整受限正文，除非合同允许。
+- 每条分析应保留 source/as_of/event_id，方便审计。
+
+## 22. 非目标
+
+V1 不做：
+
+- 真实交易和券商下单；
+- 全市场每条 tick 都调用 LLM；
+- 把所有新闻写入 memcore；
+- 用生图模型画行情图；
+- 在主 FastAPI 进程加载 Choice DLL；
+- 重写 GeneratedFileStore；
+- 重写 memcore；
+- 新建 qq_finance ClientMode；
+- 为效果伪造数据、文件、发送状态或 API 成功。
+
+## 23. 完成定义
+
+V1 完成时，下面场景必须真实成立：
+
+1. 群管理员发送“开启财经推送”。
+2. 该群关注一个证券代码。
+3. Mock 或 Choice 推送一条命中关注列表的新资讯。
+4. 系统通过 event_id 去重并读取当前行情。
+5. Sonnet 主动补查必要证据，能超过三轮但不会死循环。
+6. 回复保留当前角色人格，明确事实、推断、来源和数据时间。
+7. 重大事件可生成真实 PNG 图表并发到 QQ。
+8. memcore 记录事件证据、分析结论和正确 Actor。
+9. 同一资讯重放不重复推送。
+10. Choice/图表/QQ 任一环节失败时结构化降级，普通聊天仍可用。
+
+达到以上结果，才算“有人格的金融问答与主动分析助手”主链完成。
+
+## 24. 下一步
+
+上下文恢复后，从 Slice F0 开始，不要直接从 EmQuant live 登录或云端生图开始。
+
+推荐首个提交边界：
+
+~~~text
+QQ Actor → memcore 结构化归因
+~~~
+
+该提交只改 Actor 接线与测试，不同时混入金融数据库、Choice SDK 和提示词大改。F0 验证完成后再进入 F1。
