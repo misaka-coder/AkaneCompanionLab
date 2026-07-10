@@ -360,12 +360,46 @@ class _MaterialMemcoreManager(MemcoreManager):
         self.backend = "memcore"
         self._available = True
         self._reason = ""
+        self._memcore_module = SimpleNamespace(
+            Actor=lambda *, stable_id, display_name: SimpleNamespace(
+                stable_id=stable_id,
+                display_name=display_name,
+            )
+        )
         self.system = _MaterialFakeSystem()
         self.system_calls: list[dict[str, object]] = []
 
     def _get_system_or_none(self, **kwargs) -> _MaterialFakeSystem:
         self.system_calls.append(dict(kwargs))
         return self.system
+
+
+class _ActorCaptureMemcoreManager:
+    enabled = True
+    available = True
+
+    def __init__(self) -> None:
+        self.user_calls: list[dict[str, object]] = []
+        self.metadata_calls: list[dict[str, object]] = []
+
+    def record_user_turn(self, record: dict[str, object], **kwargs) -> dict[str, object]:
+        self.user_calls.append({"record": dict(record), **dict(kwargs)})
+        return {"ok": True, "status": "recorded"}
+
+    def update_turn_metadata(
+        self,
+        source_id: str,
+        memory_metadata: dict[str, object],
+        **kwargs,
+    ) -> dict[str, object]:
+        self.metadata_calls.append(
+            {
+                "source_id": source_id,
+                "memory_metadata": dict(memory_metadata),
+                **dict(kwargs),
+            }
+        )
+        return {"ok": True, "status": "updated"}
 
 
 class _VectorWriteStore:
@@ -1104,6 +1138,86 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(stored_user["memory_metadata"]["importance"], 0.8)
             manager.close()
 
+    def test_dual_write_preserves_qq_actor_during_metadata_update(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="dual",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            self.assertTrue(manager.available, manager.status())
+
+            created = manager.record_user_turn(
+                {
+                    "source_id": "qq-group-turn-1",
+                    "content": "我更关注稳健型基金。",
+                    "timestamp": 1_777_777_000,
+                    "memory_metadata": {},
+                },
+                profile_user_id="qq-group-1",
+                session_id="qq-group-1",
+                character_pack_id="char-1",
+                actor_stable_id="qq:10001",
+                actor_display_name="张三",
+            )
+            updated = manager.update_turn_metadata(
+                "qq-group-turn-1",
+                {
+                    "keywords": ["稳健型基金", "基金偏好"],
+                    "subject_scopes": ["user"],
+                    "categories": ["preference"],
+                    "importance": 0.8,
+                    "confidence": 0.9,
+                },
+                profile_user_id="qq-group-1",
+                session_id="qq-group-1",
+                character_pack_id="char-1",
+                actor_stable_id="qq:10001",
+                actor_display_name="张三",
+            )
+
+            self.assertTrue(created["ok"], created)
+            self.assertTrue(updated["ok"], updated)
+            stored = manager._store.get_record_by_source_id("qq-group-turn-1")
+            self.assertEqual(stored["actor_id"], "qq:10001")
+            self.assertEqual(stored["actor_display_name"], "张三")
+            self.assertEqual(stored["memory_metadata"]["keywords"], ["稳健型基金", "基金偏好"])
+            manager.close()
+
+    def test_engine_memcore_wrappers_forward_turn_actor(self) -> None:
+        manager = _ActorCaptureMemcoreManager()
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.memcore_manager = manager
+
+        recorded = engine._record_memcore_user_turn(
+            user_record={"source_id": "qq-turn-1", "content": "关注黄金", "timestamp": 100},
+            profile_user_id="qq-group-1",
+            session_id="qq-group-1",
+            character_pack_id="char-1",
+            actor_stable_id="qq:10001",
+            actor_display_name="张三",
+        )
+        updated = engine._update_memcore_turn_metadata(
+            source_id="qq-turn-1",
+            memory_metadata={"keywords": ["黄金"]},
+            profile_user_id="qq-group-1",
+            session_id="qq-group-1",
+            character_pack_id="char-1",
+            actor_stable_id="qq:10001",
+            actor_display_name="张三",
+        )
+
+        self.assertTrue(recorded["ok"])
+        self.assertTrue(updated["ok"])
+        self.assertEqual(manager.user_calls[0]["actor_stable_id"], "qq:10001")
+        self.assertEqual(manager.user_calls[0]["actor_display_name"], "张三")
+        self.assertEqual(manager.metadata_calls[0]["actor_stable_id"], "qq:10001")
+        self.assertEqual(manager.metadata_calls[0]["actor_display_name"], "张三")
+
     def test_material_trace_bridge_records_safe_attachment_anchor(self) -> None:
         manager = _MaterialMemcoreManager()
         item = {
@@ -1117,7 +1231,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
             "status": "ready",
             "summary_title": "晚餐图片",
             "storage_relpath": "C:/Users/Lenovo/secret/meal.jpg",
-            "detail": {"character_pack_id": "akane_v1", "summary": "盘子里有热汤。"},
+            "detail": {
+                "character_pack_id": "akane_v1",
+                "summary": "盘子里有热汤。",
+                "qq_sender_id": "10001",
+                "qq_sender_label": "张三",
+            },
         }
 
         reference = manager.record_material_reference(item=item, timestamp=100)
@@ -1134,6 +1253,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(manager.system.references[0]["file_id"], "img_001")
         self.assertEqual(manager.system.references[0]["file_status"], "ready")
         self.assertEqual(manager.system.references[0]["derived_status"], "ready")
+        self.assertEqual(manager.system.references[0]["actor"].stable_id, "qq:10001")
+        self.assertEqual(manager.system.references[0]["actor"].display_name, "张三")
         self.assertIn("reference:ready:100", manager.system.references[0]["source_id"])
         self.assertNotIn("storage_relpath", manager.system.references[0])
         self.assertNotIn("C:/Users", str(manager.system.references[0]))

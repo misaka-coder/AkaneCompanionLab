@@ -28,6 +28,15 @@ def resolve_payload_character_pack_id(payload):
     return ""
 
 
+def resolve_turn_actor(payload):
+    source = payload if isinstance(payload, dict) else {}
+    stable_id = str(source.get("actor_stable_id") or "").strip()
+    if not stable_id:
+        return "", ""
+    display_name = str(source.get("actor_display_name") or "").strip()
+    return stable_id[:160], display_name[:160]
+
+
 def coerce_bool(value):
     if isinstance(value, bool):
         return value

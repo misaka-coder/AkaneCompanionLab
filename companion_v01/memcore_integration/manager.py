@@ -182,6 +182,8 @@ class MemcoreManager:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str = "",
+        actor_stable_id: str = "",
+        actor_display_name: str = "",
     ) -> dict[str, Any]:
         return self._record_turn(
             operation="record_user_turn",
@@ -190,6 +192,8 @@ class MemcoreManager:
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
+            actor_stable_id=actor_stable_id,
+            actor_display_name=actor_display_name,
         )
 
     def record_assistant_turn(
@@ -282,6 +286,8 @@ class MemcoreManager:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str = "",
+        actor_stable_id: str = "",
+        actor_display_name: str = "",
     ) -> dict[str, Any]:
         system = self._get_system_or_none(
             operation="update_turn_metadata",
@@ -293,7 +299,12 @@ class MemcoreManager:
         if system is None:
             return self._status("update_turn_metadata", False, "unavailable", source_id=sid, reason=self._reason)
         try:
-            result = system.update_turn_metadata(sid, memory_metadata if isinstance(memory_metadata, dict) else {})
+            actor = self._build_actor(actor_stable_id, actor_display_name)
+            result = system.update_turn_metadata(
+                sid,
+                memory_metadata if isinstance(memory_metadata, dict) else {},
+                actor=actor,
+            )
             return dict(result, operation="update_turn_metadata")
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
@@ -1077,6 +1088,8 @@ class MemcoreManager:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
+        actor_stable_id: str = "",
+        actor_display_name: str = "",
     ) -> dict[str, Any]:
         source_id = str((record or {}).get("source_id") or "").strip()
         if not source_id:
@@ -1112,8 +1125,10 @@ class MemcoreManager:
                     memory_metadata=memory_metadata,
                 )
             else:
+                actor = self._build_actor(actor_stable_id, actor_display_name)
                 written = system.record_user_turn(
                     content,
+                    actor=actor,
                     source_id=source_id,
                     timestamp=timestamp,
                     memory_metadata=memory_metadata,
@@ -1180,9 +1195,11 @@ class MemcoreManager:
                     keywords=self._attachment_keywords(item),
                 )
             else:
+                actor_stable_id, actor_display_name = self._attachment_actor_identity(item)
                 written = system.record_material_reference(
                     file_id=file_id,
                     kind=str(item.get("kind") or "file"),
+                    actor=self._build_actor(actor_stable_id, actor_display_name),
                     filename=self._attachment_filename(item),
                     mime_type=str(item.get("mime_type") or ""),
                     file_status=status_part,
@@ -1210,6 +1227,26 @@ class MemcoreManager:
             if text:
                 return text[:160]
         return "attachment"
+
+    def _build_actor(self, stable_id: str, display_name: str = "") -> Any | None:
+        actor_id = str(stable_id or "").strip()
+        if not actor_id:
+            return None
+        memcore = self._memcore_module or self._import_memcore()
+        return memcore.Actor(
+            stable_id=actor_id[:160],
+            display_name=str(display_name or "").strip()[:160],
+        )
+
+    @staticmethod
+    def _attachment_actor_identity(item: dict[str, Any]) -> tuple[str, str]:
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        raw_id = str(detail.get("qq_sender_id") or "").strip()
+        if not raw_id:
+            return "", ""
+        stable_id = raw_id if raw_id.startswith("qq:") else f"qq:{raw_id}"
+        display_name = str(detail.get("qq_sender_label") or "").strip()
+        return stable_id, display_name
 
     @classmethod
     def _attachment_keywords(cls, item: dict[str, Any]) -> list[str]:

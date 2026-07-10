@@ -589,6 +589,8 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
+        actor_stable_id: str = "",
+        actor_display_name: str = "",
     ) -> dict[str, Any]:
         manager = self._memcore_manager_if_enabled()
         if manager is None:
@@ -599,6 +601,8 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
+                actor_stable_id=actor_stable_id,
+                actor_display_name=actor_display_name,
             )
         except Exception as exc:
             logger.warning("memcore user dual-write failed: %s", exc)
@@ -634,6 +638,8 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
+        actor_stable_id: str = "",
+        actor_display_name: str = "",
     ) -> dict[str, Any]:
         manager = self._memcore_manager_if_enabled()
         if manager is None:
@@ -645,6 +651,8 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
+                actor_stable_id=actor_stable_id,
+                actor_display_name=actor_display_name,
             )
         except Exception as exc:
             logger.warning("memcore metadata dual-write failed: %s", exc)
@@ -1002,6 +1010,12 @@ class AkaneMemoryEngine:
     @staticmethod
     def _resolve_payload_character_pack_id(payload: dict[str, Any]) -> str:
         from .engine_services.turn_context import resolve_payload_character_pack_id as _fn
+
+        return _fn(payload)
+
+    @staticmethod
+    def _resolve_turn_actor(payload: dict[str, Any]) -> tuple[str, str]:
+        from .engine_services.turn_context import resolve_turn_actor as _fn
 
         return _fn(payload)
 
@@ -1908,6 +1922,7 @@ class AkaneMemoryEngine:
 
     def record_passive_qq_message(self, payload: dict[str, Any]) -> dict[str, Any]:
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
+        actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
         session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
         profile_user_id = str(payload.get("real_user_id") or session_id)
         user_message = str(payload.get("message") or "").strip()
@@ -1951,6 +1966,8 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=turn_character_pack_id,
+            actor_stable_id=actor_stable_id,
+            actor_display_name=actor_display_name,
         )
         compaction_result = (
             self._schedule_memcore_compaction(
@@ -2060,6 +2077,7 @@ class AkaneMemoryEngine:
     def process_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
         client_context = self._resolve_client_protocol_context(payload)
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
+        actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
@@ -2156,6 +2174,8 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
+                actor_stable_id=actor_stable_id,
+                actor_display_name=actor_display_name,
             )
 
         final_output = self._build_final_response(
@@ -2395,6 +2415,8 @@ class AkaneMemoryEngine:
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
+                    actor_stable_id=actor_stable_id,
+                    actor_display_name=actor_display_name,
                 )
         if memory_tags and not transient_user_turn:
             user_record = self._apply_memory_tags_to_user_record(
@@ -2479,6 +2501,7 @@ class AkaneMemoryEngine:
     def process_turn_stream(self, payload: dict[str, Any]) -> Generator[dict[str, Any], None, None]:
         client_context = self._resolve_client_protocol_context(payload)
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
+        actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
@@ -2575,6 +2598,8 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
+                actor_stable_id=actor_stable_id,
+                actor_display_name=actor_display_name,
             )
 
         final_output = yield from self._stream_final_response(
@@ -2823,6 +2848,8 @@ class AkaneMemoryEngine:
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
+                    actor_stable_id=actor_stable_id,
+                    actor_display_name=actor_display_name,
                 )
         if memory_tags and not transient_user_turn:
             user_record = self._apply_memory_tags_to_user_record(

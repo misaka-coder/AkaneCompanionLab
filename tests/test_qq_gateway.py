@@ -214,7 +214,11 @@ class QQGatewayTests(unittest.TestCase):
         self.assertFalse(follow.should_respond)
         self.assertTrue(follow.should_record)
         self.assertEqual(follow.reason, "group_passive_observed")
-        self.assertEqual(follow.to_turn_payload()["message"], f"【QQ {QQ_MASTER_FIXTURE_ID}】我是在回复别人")
+        follow_payload = follow.to_turn_payload()
+        self.assertEqual(follow_payload["message"], f"【QQ {QQ_MASTER_FIXTURE_ID}】我是在回复别人")
+        self.assertEqual(follow_payload["actor_stable_id"], f"qq:{QQ_MASTER_FIXTURE_ID}")
+        self.assertEqual(follow_payload["actor_display_name"], f"QQ {QQ_MASTER_FIXTURE_ID}")
+        self.assertEqual(follow_payload["actor_platform"], "qq")
 
     def test_group_wake_word_triggers_response_without_at(self) -> None:
         gateway = NapCatQQGateway()
@@ -393,6 +397,11 @@ class QQGatewayTests(unittest.TestCase):
 
         self.assertEqual(context.sender_label, "休比")
         self.assertEqual(payload["message"], "【休比】你好")
+        self.assertEqual(payload["actor_stable_id"], f"qq:{QQ_USER_FIXTURE_ID}")
+        self.assertEqual(payload["actor_display_name"], "休比")
+        self.assertEqual(payload["actor_platform"], "qq")
+        self.assertEqual(payload["qq_delivery_context"]["actor_stable_id"], f"qq:{QQ_USER_FIXTURE_ID}")
+        self.assertEqual(payload["qq_delivery_context"]["actor_display_name"], "休比")
         self.assertIn("【昵称】", payload["extra_context"])
 
     def test_private_poke_notice_to_bot_becomes_normal_turn_payload(self) -> None:

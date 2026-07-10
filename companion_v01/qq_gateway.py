@@ -249,6 +249,10 @@ class QQMessageContext:
             "extra_context": self.extra_context,
             "qq_delivery_context": self.to_delivery_context(),
         }
+        if self.is_group and self.user_id:
+            payload["actor_stable_id"] = f"qq:{self.user_id}"
+            payload["actor_display_name"] = self.sender_label
+            payload["actor_platform"] = "qq"
         character_pack_id = _safe_character_pack_id(self.character_pack_id)
         if character_pack_id:
             payload["character_pack_id"] = character_pack_id
@@ -272,6 +276,10 @@ class QQMessageContext:
             "raw_message": self.raw_message,
             "sender_label": self.sender_label,
         }
+        if self.is_group and self.user_id:
+            payload["actor_stable_id"] = f"qq:{self.user_id}"
+            payload["actor_display_name"] = self.sender_label
+            payload["actor_platform"] = "qq"
         character_pack_id = _safe_character_pack_id(self.character_pack_id)
         if character_pack_id:
             payload["character_pack_id"] = character_pack_id
