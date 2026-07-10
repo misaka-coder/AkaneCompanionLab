@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0 Actor repair、F1 Finance domain profile、F2 Market provider contract + Mock 已完成，下一步 F3
+状态：设计锁定；F0 Actor repair、F1 Finance domain profile、F2 Market provider contract + Mock、F3 MarketEventStore + subscriptions 已完成，下一步 F4
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -971,8 +971,9 @@ sentiment TEXT
 labels_json TEXT
 sector_code TEXT
 raw_hash TEXT NOT NULL
-cluster_id TEXT
+cluster_id TEXT NOT NULL
 status TEXT NOT NULL
+revision INTEGER NOT NULL
 created_at INTEGER NOT NULL
 updated_at INTEGER NOT NULL
 ~~~
@@ -1012,6 +1013,7 @@ aliases_json TEXT
 priority REAL NOT NULL
 created_by_actor_id TEXT
 created_at INTEGER NOT NULL
+updated_at INTEGER NOT NULL
 PRIMARY KEY(subscription_id, code)
 ~~~
 
@@ -1026,10 +1028,22 @@ attempt_count INTEGER NOT NULL
 last_attempt_at INTEGER
 delivered_at INTEGER
 reason TEXT
+created_at INTEGER NOT NULL
+updated_at INTEGER NOT NULL
 PRIMARY KEY(event_id, subscription_id)
 ~~~
 
 这个表保证进程重启和回调重放时不重复推送。
+
+投递状态固定为：
+
+~~~text
+pending → processing → delivered
+                    ↘ failed → processing
+pending / processing / failed → cancelled（订阅关闭）
+~~~
+
+`delivered` 和 `cancelled` 都不能被普通重放重新声明为待发送。`processing` 的超时租约回收属于 F9，F3 不假装已经实现跨进程 worker lease。
 
 ### 10.5 去重与聚类
 
@@ -1037,7 +1051,25 @@ PRIMARY KEY(event_id, subscription_id)
 第二层：raw_hash 去重。
 第三层：同代码、同类型、相近标题、短时间窗口聚类。
 
-同一事件的后续版本只有出现实质性新信息时再次推送，并明确标注“更新”。
+F3 的实际语义：
+
+- 完全相同 event_id + raw_hash 返回 `duplicate_event_id`，不修改首次写入时间；
+- 不同 event_id 但 raw_hash 相同返回 `duplicate_raw_hash`，并指向 canonical event；
+- 相同 event_id 但 raw_hash 改变时更新原记录并递增 revision；
+- 聚类只在代码、资讯类型和时间窗口一致时比较标准化标题，保守复用 cluster_id；
+- 同一事件的后续版本是否构成“实质性更新”以及是否重置已投递状态，由 F6 的重要性策略决定，F3 不自动重复推送。
+
+订阅过滤当前只允许：
+
+~~~text
+codes
+content_types
+sector_codes
+labels_any
+providers
+~~~
+
+未知过滤字段结构化拒绝。空 filters 且没有 watchlist 的订阅默认匹配零事件，不能退化为全市场广播。
 
 ## 11. 金融工具
 
@@ -1547,6 +1579,19 @@ tests/
 
 ### Slice F3：MarketEventStore + subscriptions
 
+状态：已完成。
+
+实际落地：
+
+- `services/market_data/store.py` 创建独立 `market_events.sqlite3` schema v1，不复用或修改 memcore SQLite；
+- event upsert 支持 `inserted / updated / duplicate_event_id / duplicate_raw_hash`，保存 canonical event、cluster_id 和 revision；
+- 聚类限定为相同代码、相同资讯类型、六小时窗口和保守标题相似度，不把不同标的或不同类型强行聚合；
+- subscription owner 字段创建后不可改绑，filters 使用固定枚举，空订阅 fail closed；
+- watchlist 使用 provider code，支持显示名、别名、优先级和创建者 Actor；
+- delivery 以 `event_id + subscription_id` 隔离，保存 pending/processing/delivered/failed/cancelled、尝试次数和失败原因；
+- 关闭订阅会取消尚未完成的 delivery，重启后 delivered 不会重新进入可投递状态；
+- 当前未接 Choice、LLM、QQ、后台 worker 或运行时配置，F3 只是持久化真相源和状态机。
+
 目标：事件真相源、去重、关注列表和投递幂等。
 
 改动：
@@ -1792,12 +1837,12 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-上下文恢复后，从 Slice F3 开始，不要直接从 EmQuant live 登录或云端生图开始。
+上下文恢复后，从 Slice F4 开始；先实现 Fake SDK、loader、capability probe 和独立 Bridge 生命周期，不要直接登录真实账号或接 QQ 推送。
 
 推荐下一个提交边界：
 
 ~~~text
-MarketEventStore + subscriptions
+EmQuant Bridge + Fake SDK
 ~~~
 
-该提交只增加独立 SQLite schema、事件精确去重、raw_hash 去重、订阅/关注列表与投递幂等状态；不同时加载 Choice DLL，不接 QQ 主动投递，不调用 LLM。
+该提交只增加独立 Bridge 进程边界、SDK loader、只读函数 allowlist、Fake SDK、health/capability probe、回调入队和 start/stop；不同时接 QQ 主动投递，不调用 LLM，不使用真实账号凭据。
