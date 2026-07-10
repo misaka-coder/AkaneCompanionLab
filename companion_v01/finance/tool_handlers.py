@@ -26,6 +26,21 @@ _FINANCE_METADATA = {
     "default_round_budget": 12,
 }
 
+MARKET_RESOLVE_SECURITY_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Resolve a user-provided security name or alias to a trusted provider code using the local security master "
+        "and the current session watchlist. Call this before quote/news/series tools when the user did not provide "
+        "a complete provider code. Never manufacture .SH/.SZ/.BJ suffixes."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "query": {"type": "string", "minLength": 1, "maxLength": 120},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+    },
+    "required": ["query"],
+}
+
 MARKET_NEWS_SEARCH_SCHEMA: dict[str, Any] = {
     "description": (
         "Search stored and provider-backed market news using explicit provider security codes. "
@@ -138,6 +153,43 @@ class _FinanceReadToolHandler(BaseToolHandler):
         return self._result(payload)
 
 
+class MarketResolveSecurityToolHandler(_FinanceReadToolHandler):
+    tool_type = "market_resolve_security"
+    input_schema = MARKET_RESOLVE_SECURITY_SCHEMA
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            '- market_resolve_security：把用户给出的证券名称/别名解析成可信 provider code。格式为 '
+            '{"type":"market_resolve_security","query":"贵州茅台","limit":5}。'
+            "用户没有直接给出完整 provider code 时，必须先用本工具；只有 resolved=true 才能直接继续查行情。"
+            "ambiguous/needs_confirmation 时向用户澄清，不要自行拼 .SH/.SZ/.BJ。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not _is_tool_call(value, self.tool_type):
+            return None
+        if not _has_only_keys(value, {"type", "query", "limit"}):
+            return None
+        query = str(value.get("query") or "").strip()
+        limit = _bounded_int(value.get("limit"), default=5, lower=1, upper=10)
+        if not query or len(query) > 120 or limit is None:
+            return None
+        return {"type": self.tool_type, "query": query, "limit": limit}
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        try:
+            return self._result(
+                self.service.resolve_security(
+                    str(call.get("query") or ""),
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                    limit=int(call.get("limit") or 5),
+                )
+            )
+        except Exception as exc:
+            return self._failure(exc)
+
+
 class MarketNewsSearchToolHandler(_FinanceReadToolHandler):
     tool_type = "market_news_search"
     input_schema = MARKET_NEWS_SEARCH_SCHEMA
@@ -148,6 +200,7 @@ class MarketNewsSearchToolHandler(_FinanceReadToolHandler):
             '"codes":["provider代码"],"content_types":["companynews"],"date_from":"YYYY-MM-DD",'
             '"date_to":"YYYY-MM-DD","limit":10}。证券代码必须来自可信来源，不要自行拼接交易所后缀；'
             "缺少显式 codes/content_types 时只查本地事件库，不会广播查询全市场。"
+            "用户只给名称/别名时先调用 market_resolve_security。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -195,6 +248,12 @@ class MarketNewsSearchToolHandler(_FinanceReadToolHandler):
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         try:
+            self.service.ensure_trusted_codes(
+                tuple(call.get("codes") or ()),
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                request_context=context.request_context,
+            )
             request = MarketNewsQuery(
                 query=str(call.get("query") or ""),
                 codes=tuple(call.get("codes") or ()),
@@ -215,7 +274,8 @@ class MarketQuoteSnapshotToolHandler(_FinanceReadToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             '- market_quote_snapshot：查询当前行情快照。格式为 {"type":"market_quote_snapshot",'
-            '"codes":["600519.SH"]}。代码必须来自 provider/可信主数据；返回值含 as_of 和程序计算指标。'
+            '"codes":["600519.SH"]}。用户只给名称/别名时先调用 market_resolve_security；'
+            "代码必须来自用户原文、resolver、当前会话 watchlist 或可信主数据；返回值含 as_of 和程序计算指标。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -234,6 +294,12 @@ class MarketQuoteSnapshotToolHandler(_FinanceReadToolHandler):
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         try:
+            self.service.ensure_trusted_codes(
+                tuple(call.get("codes") or ()),
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                request_context=context.request_context,
+            )
             return self._result(
                 self.service.quote_snapshots(MarketQuoteRequest(codes=tuple(call.get("codes") or ())))
             )
@@ -249,7 +315,8 @@ class MarketPriceSeriesToolHandler(_FinanceReadToolHandler):
         return (
             '- market_price_series：查询单个标的历史 OHLCV 与程序计算指标。格式为 {"type":"market_price_series",'
             '"code":"600519.SH","interval":"1d","adjusted":"none","date_from":"YYYY-MM-DD",'
-            '"date_to":"YYYY-MM-DD","limit":120}。模型负责解释，不要自行重算或编造价格。'
+            '"date_to":"YYYY-MM-DD","limit":120}。用户只给名称/别名时先调用 market_resolve_security；'
+            "模型负责解释，不要自行重算或编造价格。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -297,6 +364,12 @@ class MarketPriceSeriesToolHandler(_FinanceReadToolHandler):
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         try:
+            self.service.ensure_trusted_codes(
+                (str(call.get("code") or ""),),
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                request_context=context.request_context,
+            )
             request = MarketSeriesRequest(
                 code=str(call.get("code") or ""),
                 interval=str(call.get("interval") or "1d"),
@@ -312,6 +385,7 @@ class MarketPriceSeriesToolHandler(_FinanceReadToolHandler):
 
 def build_market_tool_handlers(service: MarketDataToolService) -> dict[str, BaseToolHandler]:
     handlers: tuple[BaseToolHandler, ...] = (
+        MarketResolveSecurityToolHandler(service=service),
         MarketNewsSearchToolHandler(service=service),
         MarketQuoteSnapshotToolHandler(service=service),
         MarketPriceSeriesToolHandler(service=service),
@@ -422,8 +496,10 @@ __all__ = [
     "MARKET_NEWS_SEARCH_SCHEMA",
     "MARKET_PRICE_SERIES_SCHEMA",
     "MARKET_QUOTE_SNAPSHOT_SCHEMA",
+    "MARKET_RESOLVE_SECURITY_SCHEMA",
     "MarketNewsSearchToolHandler",
     "MarketPriceSeriesToolHandler",
     "MarketQuoteSnapshotToolHandler",
+    "MarketResolveSecurityToolHandler",
     "build_market_tool_handlers",
 ]

@@ -147,6 +147,18 @@ class FinanceMarketToolTests(unittest.TestCase):
         self.service = MarketDataToolService(
             provider=self.provider,
             event_store=MarketEventStore(Path(self.temp_dir.name) / "events.sqlite3"),
+            clock=lambda: 1_752_153_600,
+        )
+        self.service.event_store.upsert_security(
+            provider=self.provider.id,
+            code="000000.TEST",
+            display_name="合成测试公司",
+            aliases=("测试公司", "Synthetic Corp"),
+            market="TEST",
+            security_type="equity",
+            source="Synthetic Choice Fixture",
+            as_of=1_752_153_600,
+            now_ts=1_752_153_600,
         )
         self.handlers = build_market_tool_handlers(self.service)
 
@@ -159,7 +171,12 @@ class FinanceMarketToolTests(unittest.TestCase):
 
         self.assertEqual(
             names,
-            {"market_news_search", "market_quote_snapshot", "market_price_series"},
+            {
+                "market_resolve_security",
+                "market_news_search",
+                "market_quote_snapshot",
+                "market_price_series",
+            },
         )
         quote_schema = next(item for item in specs if item["function"]["name"] == "market_quote_snapshot")
         self.assertFalse(quote_schema["function"]["parameters"]["additionalProperties"])
@@ -173,6 +190,65 @@ class FinanceMarketToolTests(unittest.TestCase):
             self.assertEqual(metadata.family, "finance_read")
             self.assertEqual(metadata.operation, "read")
             self.assertEqual(metadata.default_round_budget, 12)
+
+    def test_resolver_requires_unique_exact_match_before_trusting_code(self) -> None:
+        resolver = self.handlers["market_resolve_security"]
+        context = ToolExecutionContext(
+            profile_user_id="owner",
+            session_id="session",
+            now_ts=1_752_153_600,
+            visual_payload={},
+        )
+
+        exact = resolver.execute(
+            call=resolver.normalize_call({"type": "market_resolve_security", "query": "测试公司"}),
+            context=context,
+        )
+        partial = resolver.execute(
+            call=resolver.normalize_call({"type": "market_resolve_security", "query": "合成"}),
+            context=context,
+        )
+
+        self.assertIn('"resolved": true', exact.followup_context)
+        self.assertIn('"resolved_code": "000000.TEST"', exact.followup_context)
+        self.assertIn('"resolution_status": "needs_confirmation"', partial.followup_context)
+        self.service.ensure_trusted_codes(
+            ("000000.TEST",),
+            profile_user_id="owner",
+            session_id="session",
+        )
+        with self.assertRaises(MarketDataValidationError):
+            self.service.ensure_trusted_codes(
+                ("000000.TEST",),
+                profile_user_id="owner",
+                session_id="other-session",
+            )
+
+    def test_master_code_still_requires_resolver_but_user_literal_is_allowed(self) -> None:
+        with self.assertRaises(MarketDataValidationError) as unresolved_master:
+            self.service.ensure_trusted_codes(
+                ("000000.TEST",),
+                profile_user_id="owner",
+                session_id="session",
+                request_context={"message": "帮我看看测试公司"},
+            )
+
+        self.assertEqual(unresolved_master.exception.code, "untrusted_provider_code")
+        with self.assertRaises(MarketDataValidationError) as blocked:
+            self.service.ensure_trusted_codes(
+                ("999999.TEST",),
+                profile_user_id="owner",
+                session_id="session",
+                request_context={"message": "帮我看看测试公司"},
+            )
+
+        self.assertEqual(blocked.exception.code, "untrusted_provider_code")
+        self.service.ensure_trusted_codes(
+            ("999999.TEST",),
+            profile_user_id="owner",
+            session_id="session",
+            request_context={"message": "帮我看看 999999.TEST"},
+        )
 
     def test_legacy_normalization_rejects_unknown_or_invalid_parameters(self) -> None:
         quote = self.handlers["market_quote_snapshot"]
@@ -215,8 +291,12 @@ class FinanceMarketToolTests(unittest.TestCase):
             "latest_volume / mean(previous_completed_period_volumes)",
         )
 
-    def test_all_three_handlers_execute_with_source_and_as_of_evidence(self) -> None:
+    def test_all_market_handlers_execute_with_source_and_as_of_evidence(self) -> None:
         calls = {
+            "market_resolve_security": {
+                "type": "market_resolve_security",
+                "query": "测试公司",
+            },
             "market_news_search": {
                 "type": "market_news_search",
                 "query": "季度经营",
@@ -280,6 +360,7 @@ class FinanceMarketToolTests(unittest.TestCase):
             )
 
         self.assertIn("market_quote_snapshot", finance_handlers)
+        self.assertIn("market_resolve_security", finance_handlers)
         self.assertNotIn("market_quote_snapshot", default_handlers)
 
     def test_finance_round_budget_and_stop_handoff_are_explicit(self) -> None:

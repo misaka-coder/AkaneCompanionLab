@@ -71,12 +71,37 @@ class MarketEventStoreTests(unittest.TestCase):
                 "market_events",
                 "finance_subscriptions",
                 "watchlist_items",
+                "market_securities",
+                "market_security_aliases",
                 "market_event_deliveries",
             }.issubset(tables)
         )
         self.assertIn("idx_market_events_raw_hash_unique", indexes)
         self.assertIn("idx_market_event_deliveries_status", indexes)
+        self.assertIn("idx_market_security_alias_norm", indexes)
         self.assertNotIn("chat_messages", tables)
+
+    def test_v1_database_upgrades_security_master_without_losing_events(self) -> None:
+        self.store.upsert_event(self.event, now_ts=100)
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            connection.execute("DROP TABLE market_security_aliases")
+            connection.execute("DROP TABLE market_securities")
+            connection.execute("PRAGMA user_version = 1")
+            connection.commit()
+
+        upgraded = MarketEventStore(self.db_path, clock=lambda: 1_752_110_000)
+
+        self.assertEqual(upgraded.schema_version(), MARKET_STORE_SCHEMA_VERSION)
+        self.assertIsNotNone(upgraded.get_event(self.event.event_id))
+        upgraded.upsert_security(
+            provider="mock_choice",
+            code="000000.TEST",
+            display_name="合成测试公司",
+            source="synthetic provider master",
+            as_of=1_752_110_000,
+            now_ts=200,
+        )
+        self.assertEqual(upgraded.resolve_security("合成测试公司")[0]["code"], "000000.TEST")
 
     def test_exact_event_replay_is_idempotent(self) -> None:
         first = self.store.upsert_event(self.event, now_ts=100)
@@ -182,6 +207,89 @@ class MarketEventStoreTests(unittest.TestCase):
         self.assertEqual(len(reservations), 1)
         self.assertTrue(reservations[0].created)
         self.assertTrue(reservations[0].should_deliver)
+
+    def test_security_master_resolves_exact_alias_without_guessing_partial(self) -> None:
+        security = self.store.upsert_security(
+            provider="mock_choice",
+            code="000000.TEST",
+            display_name="合成测试公司",
+            aliases=("测试公司", "Synthetic Corp"),
+            market="TEST",
+            security_type="equity",
+            source="synthetic provider master",
+            as_of=1_752_110_000,
+            now_ts=100,
+        )
+
+        exact = self.store.resolve_security("测试公司", provider="mock_choice")
+        partial = self.store.resolve_security("合成", provider="mock_choice")
+
+        self.assertEqual(security.code, "000000.TEST")
+        self.assertEqual(exact[0]["match_type"], "exact")
+        self.assertEqual(exact[0]["source"], "synthetic provider master")
+        self.assertEqual(partial[0]["match_type"], "partial")
+        self.assertTrue(self.store.is_trusted_security_code("000000.TEST", provider="mock_choice"))
+
+    def test_security_resolution_returns_ambiguous_exact_candidates(self) -> None:
+        for code, name in (("000001.TEST", "合成甲"), ("000002.TEST", "合成乙")):
+            self.store.upsert_security(
+                provider="mock_choice",
+                code=code,
+                display_name=name,
+                aliases=("同名证券",),
+                source="synthetic provider master",
+                as_of=1_752_110_000,
+                now_ts=100,
+            )
+
+        matches = self.store.resolve_security("同名证券", provider="mock_choice")
+
+        self.assertEqual({item["code"] for item in matches}, {"000001.TEST", "000002.TEST"})
+        self.assertTrue(all(item["match_type"] == "exact" for item in matches))
+
+    def test_watchlist_alias_resolution_isolated_by_profile_and_session(self) -> None:
+        first = self._subscription("sub-alice", "20001")
+        second = self._subscription("sub-bob", "20002")
+        self.store.upsert_watchlist_item(
+            subscription_id=first.subscription_id,
+            code="000001.TEST",
+            display_name="Alice 的测试标的",
+            aliases=("我的标的",),
+            now_ts=100,
+        )
+        self.store.upsert_watchlist_item(
+            subscription_id=second.subscription_id,
+            code="000002.TEST",
+            display_name="Bob 的测试标的",
+            aliases=("我的标的",),
+            now_ts=100,
+        )
+
+        alice = self.store.resolve_security(
+            "我的标的",
+            provider="mock_choice",
+            profile_user_id=first.profile_user_id,
+            session_id=first.session_id,
+        )
+
+        self.assertEqual([item["code"] for item in alice], ["000001.TEST"])
+        self.assertEqual(alice[0]["scope"], "session_watchlist")
+        self.assertTrue(
+            self.store.is_trusted_security_code(
+                "000001.TEST",
+                provider="mock_choice",
+                profile_user_id=first.profile_user_id,
+                session_id=first.session_id,
+            )
+        )
+        self.assertFalse(
+            self.store.is_trusted_security_code(
+                "000002.TEST",
+                provider="mock_choice",
+                profile_user_id=first.profile_user_id,
+                session_id=first.session_id,
+            )
+        )
 
     def test_subscription_filters_and_disabled_state_fail_closed(self) -> None:
         self._subscription(

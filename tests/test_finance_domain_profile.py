@@ -76,6 +76,7 @@ class FinanceDomainProfileTests(unittest.TestCase):
         self.assertIn("当前角色身份：测试角色", result["system_prompt"])
         self.assertEqual(result["system_extra_blocks"][0], FINANCE_PROMPT_BLOCK)
         self.assertIn("不要自称另一个金融机器人", result["system_extra_blocks"][0])
+        self.assertIn("market_resolve_security", result["system_extra_blocks"][0])
 
     def test_finance_profile_filters_unrelated_qq_tools(self) -> None:
         profile = DomainProfileRegistry(finance_enabled=True).get(FINANCE_DOMAIN_PROFILE_ID)

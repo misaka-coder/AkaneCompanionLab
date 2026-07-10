@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import math
+import re
 from statistics import stdev
+import threading
+import time
 from typing import Any
 
 from services.market_data import (
@@ -21,9 +24,157 @@ from services.market_data.types import timestamp_to_iso
 class MarketDataToolService:
     """Personality-free orchestration for the model-facing finance read tools."""
 
-    def __init__(self, *, provider: MarketDataProvider, event_store: MarketEventStore) -> None:
+    def __init__(
+        self,
+        *,
+        provider: MarketDataProvider,
+        event_store: MarketEventStore,
+        clock=time.time,
+        resolved_code_ttl_seconds: int = 10 * 60,
+    ) -> None:
         self.provider = provider
         self.event_store = event_store
+        self._clock = clock
+        self._resolved_code_ttl_seconds = max(30, min(60 * 60, int(resolved_code_ttl_seconds)))
+        self._resolved_codes: dict[tuple[str, str, str], int] = {}
+        self._resolved_codes_lock = threading.RLock()
+
+    def resolve_security(
+        self,
+        query: str,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        candidates = list(
+            self.event_store.resolve_security(
+                query,
+                provider=self.provider.id,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                limit=limit,
+            )
+        )
+        by_code: dict[str, dict[str, Any]] = {}
+        for candidate in candidates:
+            code = str(candidate.get("code") or "").strip()
+            if not code:
+                continue
+            existing = by_code.get(code)
+            if existing is None or (
+                str(candidate.get("match_type") or "") == "exact"
+                and str(existing.get("match_type") or "") != "exact"
+            ):
+                by_code[code] = dict(candidate)
+        unique = list(by_code.values())
+        exact = [item for item in unique if str(item.get("match_type") or "") == "exact"]
+        resolved = len(exact) == 1
+        resolved_code = str(exact[0].get("code") or "") if resolved else ""
+        if resolved_code:
+            self._remember_resolved_code(
+                resolved_code,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
+        if not unique:
+            reason = "no trusted security master or current-session watchlist entry matched"
+            resolution_status = "not_found"
+        elif resolved:
+            reason = "unique exact alias match"
+            resolution_status = "resolved"
+        elif exact:
+            reason = "multiple exact matches; ask the user to disambiguate"
+            resolution_status = "ambiguous"
+        else:
+            reason = "only partial trusted candidates matched; confirm the intended security before querying data"
+            resolution_status = "needs_confirmation"
+        as_of_ts = max((int(item.get("as_of") or 0) for item in unique), default=0)
+        return {
+            "ok": bool(unique),
+            "status": "ok" if unique else "empty",
+            "provider": self.provider.id,
+            "source": "Trusted Security Master + Current Session Watchlist",
+            "as_of": timestamp_to_iso(as_of_ts, "Asia/Shanghai") if as_of_ts else None,
+            "reason": reason,
+            "resolution_status": resolution_status,
+            "resolved": resolved,
+            "resolved_code": resolved_code,
+            "data": [
+                {
+                    **item,
+                    "as_of_iso": timestamp_to_iso(int(item.get("as_of") or 0), "Asia/Shanghai")
+                    if int(item.get("as_of") or 0) > 0
+                    else None,
+                }
+                for item in unique
+            ],
+        }
+
+    def ensure_trusted_codes(
+        self,
+        codes: tuple[str, ...] | list[str],
+        *,
+        profile_user_id: str,
+        session_id: str,
+        request_context: dict[str, Any] | None = None,
+    ) -> None:
+        context = request_context if isinstance(request_context, dict) else {}
+        user_text = "\n".join(
+            str(context.get(key) or "")
+            for key in ("message", "raw_message", "clean_message")
+            if str(context.get(key) or "").strip()
+        )
+        blocked: list[str] = []
+        for code in codes:
+            clean_code = str(code or "").strip().upper()
+            if not clean_code:
+                continue
+            if _code_is_literal_in_text(clean_code, user_text):
+                continue
+            if self._was_recently_resolved(
+                clean_code,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            ):
+                continue
+            if profile_user_id and session_id and self.event_store.is_session_watchlist_code(
+                clean_code,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            ):
+                continue
+            blocked.append(clean_code)
+        if blocked:
+            raise MarketDataValidationError(
+                field="codes",
+                reason=(
+                    "provider code provenance is missing; call market_resolve_security first, "
+                    "use a current-session watchlist/master-data code, or quote the full code in the user message"
+                ),
+                code="untrusted_provider_code",
+                status="invalid_arguments",
+                provider=self.provider.id,
+            )
+
+    def _remember_resolved_code(self, code: str, *, profile_user_id: str, session_id: str) -> None:
+        expires_at = max(1, int(self._clock())) + self._resolved_code_ttl_seconds
+        key = (str(profile_user_id or ""), str(session_id or ""), str(code or "").upper())
+        with self._resolved_codes_lock:
+            self._resolved_codes[key] = expires_at
+            self._purge_resolved_codes_locked(now_ts=max(1, int(self._clock())))
+
+    def _was_recently_resolved(self, code: str, *, profile_user_id: str, session_id: str) -> bool:
+        now = max(1, int(self._clock()))
+        key = (str(profile_user_id or ""), str(session_id or ""), str(code or "").upper())
+        with self._resolved_codes_lock:
+            self._purge_resolved_codes_locked(now_ts=now)
+            return int(self._resolved_codes.get(key) or 0) >= now
+
+    def _purge_resolved_codes_locked(self, *, now_ts: int) -> None:
+        expired = [key for key, expires_at in self._resolved_codes.items() if int(expires_at) < now_ts]
+        for key in expired:
+            self._resolved_codes.pop(key, None)
 
     def search_news(self, request: MarketNewsQuery) -> dict[str, Any]:
         local_records = self.event_store.list_events(
@@ -219,6 +370,13 @@ def _event_public(event: MarketEvent) -> dict[str, Any]:
 
 def _rounded(value: float | None, digits: int = 6) -> float | None:
     return round(float(value), digits) if value is not None and math.isfinite(float(value)) else None
+
+
+def _code_is_literal_in_text(code: str, text: str) -> bool:
+    if not code or not text:
+        return False
+    pattern = rf"(?<![A-Za-z0-9_.]){re.escape(code)}(?![A-Za-z0-9_.])"
+    return re.search(pattern, text, flags=re.IGNORECASE) is not None
 
 
 __all__ = [

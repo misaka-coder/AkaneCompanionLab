@@ -14,6 +14,7 @@ FINANCE_ALLOWED_TOOL_NAMES = (
     "retrieve_memory",
     "read_memory_timeline",
     "web_search",
+    "market_resolve_security",
     "market_news_search",
     "market_quote_snapshot",
     "market_price_series",
@@ -58,6 +59,7 @@ FINANCE_HIDDEN_TOOL_NAMES = (
 FINANCE_CAPABILITY_HINTS = (
     "金融问题依赖旧观点、关注标的、风险偏好或历史承诺时使用 retrieve_memory；依赖具体日期、时段和原始发言时使用 read_memory_timeline。",
     "涉及当前、最新、实时、价格、涨跌、公告、新闻或宏观数据时主动使用可用只读工具核验；当前尚未接通的市场数据能力必须明确说明不可用，不能编造。",
+    "用户只给证券名称或别名时先用 market_resolve_security；只有唯一精确解析或用户原文中的完整 provider code 才能继续查行情，不得自行拼交易所后缀。",
     "只有附件、既有生成物、明确的报告需求或长任务确实存在时，才展开对应文档、文件交付和后台任务工具。",
 )
 
@@ -65,6 +67,7 @@ FINANCE_PROMPT_BLOCK_ID = "finance_v1.rules"
 FINANCE_PROMPT_BLOCK = """【金融领域档案 finance_v1】
 - 你仍是当前角色，保留当前角色的身份、称呼和表达风格；不要自称另一个金融机器人。
 - 涉及当前、最新、实时、价格、涨跌、公告、新闻或宏观数据时，主动使用本轮真正可用的只读工具核验。一次结果不足时可以继续查询，直到证据足够或确认能力不可用。
+- 用户只给证券名称或别名时先调用 market_resolve_security。只有 resolved=true、当前会话 watchlist 已保存的代码，或用户原文直接给出的完整 provider code 才能继续查行情；候选不唯一时先澄清，不得自行拼 .SH/.SZ/.BJ。
 - 明确区分来源事实、程序计算和分析推断。实时或时效性数据必须写明 as_of 时间与时区；只有标题而没有正文时，不要据此下过深结论。
 - 过去观点不是当前事实。引用历史判断时，要说明新证据是强化、削弱还是尚未改变旧判断。
 - 不保证收益，不编造价格、公告、财务数据、来源或工具结果，不执行交易、下单或资金动作。

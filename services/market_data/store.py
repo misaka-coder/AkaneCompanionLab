@@ -19,13 +19,14 @@ from .store_models import (
     EventUpsertResult,
     FinanceSubscription,
     MarketEventDelivery,
+    MarketSecurity,
     StoredMarketEvent,
     WatchlistItem,
 )
 from .types import MarketDataValidationError, MarketEvent
 
 
-MARKET_STORE_SCHEMA_VERSION = 1
+MARKET_STORE_SCHEMA_VERSION = 2
 EVENT_STATUSES = frozenset({"active", "updated", "archived"})
 DELIVERY_STATUSES = frozenset({"pending", "processing", "delivered", "failed", "cancelled"})
 RETRYABLE_DELIVERY_STATUSES = frozenset({"pending", "failed"})
@@ -107,6 +108,35 @@ CREATE TABLE IF NOT EXISTS watchlist_items (
 
 CREATE INDEX IF NOT EXISTS idx_watchlist_code
 ON watchlist_items(code, priority DESC);
+
+CREATE TABLE IF NOT EXISTS market_securities (
+    provider TEXT NOT NULL,
+    code TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    market TEXT NOT NULL DEFAULT '',
+    security_type TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL,
+    as_of INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(provider, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_securities_name
+ON market_securities(display_name, provider, code);
+
+CREATE TABLE IF NOT EXISTS market_security_aliases (
+    provider TEXT NOT NULL,
+    code TEXT NOT NULL,
+    alias_norm TEXT NOT NULL,
+    alias TEXT NOT NULL,
+    PRIMARY KEY(provider, code, alias_norm),
+    FOREIGN KEY(provider, code) REFERENCES market_securities(provider, code) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_security_alias_norm
+ON market_security_aliases(alias_norm, provider, code);
 
 CREATE TABLE IF NOT EXISTS market_event_deliveries (
     event_id TEXT NOT NULL,
@@ -595,6 +625,269 @@ class MarketEventStore:
                 (clean_id,),
             ).fetchall()
         return tuple(_row_to_watchlist_item(row) for row in rows)
+
+    def upsert_security(
+        self,
+        *,
+        provider: str,
+        code: str,
+        display_name: str,
+        aliases: Iterable[str] = (),
+        market: str = "",
+        security_type: str = "",
+        source: str,
+        as_of: int,
+        now_ts: int | None = None,
+    ) -> MarketSecurity:
+        clean_provider = _safe_id(provider, field="provider")
+        clean_code = normalize_market_code(
+            code,
+            field="code",
+            status="invalid_arguments",
+            error_code="invalid_arguments",
+        )
+        clean_name = _required_text(display_name, field="display_name", max_length=300)
+        clean_aliases = _normalized_security_alias_values(aliases, max_items=64, max_length=300)
+        clean_market = _bounded_text(market, field="market", max_length=120).upper()
+        clean_type = _bounded_text(security_type, field="security_type", max_length=120).lower()
+        clean_source = _required_text(source, field="source", max_length=500)
+        clean_as_of = _positive_int(as_of, field="as_of")
+        now = self._now(now_ts)
+        alias_values = _unique_security_aliases((clean_code, clean_name, *clean_aliases))
+        with self._write_lock, self._connect(write=True) as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM market_securities WHERE provider = ? AND code = ?",
+                (clean_provider, clean_code),
+            ).fetchone()
+            created_at = int(existing["created_at"]) if existing is not None else now
+            connection.execute(
+                """
+                INSERT INTO market_securities (
+                    provider, code, display_name, aliases_json, market, security_type,
+                    source, as_of, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider, code) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    aliases_json = excluded.aliases_json,
+                    market = excluded.market,
+                    security_type = excluded.security_type,
+                    source = excluded.source,
+                    as_of = excluded.as_of,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    clean_provider,
+                    clean_code,
+                    clean_name,
+                    _json_dumps(list(clean_aliases), field="aliases"),
+                    clean_market,
+                    clean_type,
+                    clean_source,
+                    clean_as_of,
+                    created_at,
+                    now,
+                ),
+            )
+            connection.execute(
+                "DELETE FROM market_security_aliases WHERE provider = ? AND code = ?",
+                (clean_provider, clean_code),
+            )
+            connection.executemany(
+                """
+                INSERT INTO market_security_aliases (provider, code, alias_norm, alias)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (clean_provider, clean_code, _normalize_security_alias(alias), alias)
+                    for alias in alias_values
+                ],
+            )
+            row = connection.execute(
+                "SELECT * FROM market_securities WHERE provider = ? AND code = ?",
+                (clean_provider, clean_code),
+            ).fetchone()
+        return _row_to_market_security(row)
+
+    def resolve_security(
+        self,
+        query: str,
+        *,
+        provider: str = "",
+        profile_user_id: str = "",
+        session_id: str = "",
+        limit: int = 10,
+    ) -> tuple[dict[str, Any], ...]:
+        clean_query = _required_text(query, field="query", max_length=300)
+        query_norm = _normalize_security_alias(clean_query)
+        if not query_norm:
+            raise _invalid_argument("query", "query must contain searchable characters")
+        clean_provider = _safe_id(provider, field="provider") if str(provider or "").strip() else ""
+        clean_profile = _safe_id(profile_user_id, field="profile_user_id") if str(profile_user_id or "").strip() else ""
+        clean_session = _safe_id(session_id, field="session_id") if str(session_id or "").strip() else ""
+        clean_limit = _bounded_int(limit, field="limit", lower=1, upper=20)
+        matches: dict[tuple[str, str, str], dict[str, Any]] = {}
+        provider_clause = "AND s.provider = ?" if clean_provider else ""
+        provider_parameters: list[Any] = [query_norm]
+        if clean_provider:
+            provider_parameters.append(clean_provider)
+        provider_parameters.append(clean_limit)
+        with self._connect() as connection:
+            exact_rows = connection.execute(
+                f"""
+                SELECT s.*, a.alias AS matched_alias
+                FROM market_security_aliases a
+                JOIN market_securities s ON s.provider = a.provider AND s.code = a.code
+                WHERE a.alias_norm = ? {provider_clause}
+                ORDER BY s.updated_at DESC, s.provider, s.code
+                LIMIT ?
+                """,
+                tuple(provider_parameters),
+            ).fetchall()
+            partial_parameters: list[Any] = [f"%{_escape_like(query_norm)}%"]
+            if clean_provider:
+                partial_parameters.append(clean_provider)
+            partial_parameters.append(clean_limit)
+            partial_rows = connection.execute(
+                f"""
+                SELECT s.*, a.alias AS matched_alias
+                FROM market_security_aliases a
+                JOIN market_securities s ON s.provider = a.provider AND s.code = a.code
+                WHERE a.alias_norm LIKE ? ESCAPE '\\' {provider_clause}
+                ORDER BY length(a.alias_norm), s.updated_at DESC, s.provider, s.code
+                LIMIT ?
+                """,
+                tuple(partial_parameters),
+            ).fetchall()
+            watch_rows = []
+            if clean_profile and clean_session:
+                watch_rows = connection.execute(
+                    """
+                    SELECT w.*
+                    FROM watchlist_items w
+                    JOIN finance_subscriptions f ON f.subscription_id = w.subscription_id
+                    WHERE f.profile_user_id = ? AND f.session_id = ? AND f.enabled = 1
+                    ORDER BY w.priority DESC, w.updated_at DESC, w.code
+                    LIMIT 200
+                    """,
+                    (clean_profile, clean_session),
+                ).fetchall()
+        for row in (*exact_rows, *partial_rows):
+            security = _row_to_market_security(row)
+            matched_alias = str(row["matched_alias"] or "")
+            match_type = "exact" if _normalize_security_alias(matched_alias) == query_norm else "partial"
+            key = (security.provider, security.code, "security_master")
+            previous = matches.get(key)
+            if previous is None or previous["match_type"] != "exact":
+                matches[key] = {
+                    **security.to_public_dict(),
+                    "matched_alias": matched_alias,
+                    "match_type": match_type,
+                    "scope": "security_master",
+                }
+        for row in watch_rows:
+            item = _row_to_watchlist_item(row)
+            aliases = _unique_security_aliases((item.code, item.display_name, *item.aliases))
+            exact_alias = next((alias for alias in aliases if _normalize_security_alias(alias) == query_norm), "")
+            partial_alias = next((alias for alias in aliases if query_norm in _normalize_security_alias(alias)), "")
+            matched_alias = exact_alias or partial_alias
+            if not matched_alias:
+                continue
+            key = (clean_provider or "watchlist", item.code, "session_watchlist")
+            matches[key] = {
+                "provider": clean_provider,
+                "code": item.code,
+                "display_name": item.display_name,
+                "aliases": list(item.aliases),
+                "market": "",
+                "security_type": "",
+                "source": "session_watchlist",
+                "as_of": item.updated_at,
+                "created_at": item.created_at,
+                "updated_at": item.updated_at,
+                "matched_alias": matched_alias,
+                "match_type": "exact" if exact_alias else "partial",
+                "scope": "session_watchlist",
+            }
+        ordered = sorted(
+            matches.values(),
+            key=lambda item: (
+                0 if item["match_type"] == "exact" else 1,
+                0 if item["scope"] == "session_watchlist" else 1,
+                str(item.get("display_name") or ""),
+                str(item.get("code") or ""),
+            ),
+        )
+        return tuple(ordered[:clean_limit])
+
+    def is_trusted_security_code(
+        self,
+        code: str,
+        *,
+        provider: str = "",
+        profile_user_id: str = "",
+        session_id: str = "",
+    ) -> bool:
+        clean_code = normalize_market_code(
+            code,
+            field="code",
+            status="invalid_arguments",
+            error_code="invalid_arguments",
+        )
+        clean_provider = _safe_id(provider, field="provider") if str(provider or "").strip() else ""
+        with self._connect() as connection:
+            if clean_provider:
+                master = connection.execute(
+                    "SELECT 1 FROM market_securities WHERE provider = ? AND code = ?",
+                    (clean_provider, clean_code),
+                ).fetchone()
+            else:
+                master = connection.execute(
+                    "SELECT 1 FROM market_securities WHERE code = ? LIMIT 1",
+                    (clean_code,),
+                ).fetchone()
+            if master is not None:
+                return True
+            if not str(profile_user_id or "").strip() or not str(session_id or "").strip():
+                return False
+            watch = connection.execute(
+                """
+                SELECT 1
+                FROM watchlist_items w
+                JOIN finance_subscriptions f ON f.subscription_id = w.subscription_id
+                WHERE w.code = ? AND f.profile_user_id = ? AND f.session_id = ? AND f.enabled = 1
+                LIMIT 1
+                """,
+                (clean_code, str(profile_user_id).strip(), str(session_id).strip()),
+            ).fetchone()
+        return watch is not None
+
+    def is_session_watchlist_code(
+        self,
+        code: str,
+        *,
+        profile_user_id: str,
+        session_id: str,
+    ) -> bool:
+        clean_code = normalize_market_code(
+            code,
+            field="code",
+            status="invalid_arguments",
+            error_code="invalid_arguments",
+        )
+        clean_profile = _safe_id(profile_user_id, field="profile_user_id")
+        clean_session = _safe_id(session_id, field="session_id")
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM watchlist_items w
+                JOIN finance_subscriptions f ON f.subscription_id = w.subscription_id
+                WHERE w.code = ? AND f.profile_user_id = ? AND f.session_id = ? AND f.enabled = 1
+                LIMIT 1
+                """,
+                (clean_code, clean_profile, clean_session),
+            ).fetchone()
+        return row is not None
 
     def match_subscriptions(self, event: MarketEvent | StoredMarketEvent) -> tuple[FinanceSubscription, ...]:
         market_event = event.event if isinstance(event, StoredMarketEvent) else event
@@ -1133,6 +1426,22 @@ def _row_to_watchlist_item(row: sqlite3.Row) -> WatchlistItem:
     )
 
 
+def _row_to_market_security(row: sqlite3.Row) -> MarketSecurity:
+    aliases = _json_loads_list(row["aliases_json"])
+    return MarketSecurity(
+        provider=str(row["provider"] or ""),
+        code=str(row["code"] or ""),
+        display_name=str(row["display_name"] or ""),
+        aliases=tuple(str(item) for item in aliases if str(item).strip()),
+        market=str(row["market"] or ""),
+        security_type=str(row["security_type"] or ""),
+        source=str(row["source"] or ""),
+        as_of=int(row["as_of"]),
+        created_at=int(row["created_at"]),
+        updated_at=int(row["updated_at"]),
+    )
+
+
 def _row_to_delivery(row: sqlite3.Row) -> MarketEventDelivery:
     status = str(row["status"] or "pending")
     if status not in DELIVERY_STATUSES:
@@ -1154,6 +1463,51 @@ def _row_to_delivery(row: sqlite3.Row) -> MarketEventDelivery:
 def _normalize_title(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
     return _TITLE_TOKEN_RE.sub("", normalized)
+
+
+def _normalize_security_alias(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return _TITLE_TOKEN_RE.sub("", normalized)
+
+
+def _unique_security_aliases(values: Iterable[Any]) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        normalized = _normalize_security_alias(text)
+        if not text or not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(text)
+    return tuple(result)
+
+
+def _normalized_security_alias_values(
+    values: Iterable[Any],
+    *,
+    max_items: int,
+    max_length: int,
+) -> tuple[str, ...]:
+    if isinstance(values, str):
+        raw_values = [values]
+    else:
+        try:
+            raw_values = list(values)
+        except TypeError as exc:
+            raise _invalid_argument("aliases", "value must be a list") from exc
+    if len(raw_values) > max_items:
+        raise _invalid_argument("aliases", f"at most {max_items} values are allowed")
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        text = _bounded_text(value, field="aliases", max_length=max_length)
+        normalized = _normalize_security_alias(text)
+        if not text or not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(text)
+    return tuple(result)
 
 
 def _json_dumps(value: Any, *, field: str) -> str:

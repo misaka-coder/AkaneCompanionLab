@@ -121,6 +121,34 @@ class WatchlistItem:
 
 
 @dataclass(frozen=True)
+class MarketSecurity:
+    provider: str
+    code: str
+    display_name: str
+    aliases: tuple[str, ...]
+    market: str
+    security_type: str
+    source: str
+    as_of: int
+    created_at: int
+    updated_at: int
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "code": self.code,
+            "display_name": self.display_name,
+            "aliases": list(self.aliases),
+            "market": self.market,
+            "security_type": self.security_type,
+            "source": self.source,
+            "as_of": self.as_of,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+@dataclass(frozen=True)
 class MarketEventDelivery:
     event_id: str
     subscription_id: str

@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0-F4 已完成，F5 Bridge client + 三个金融只读工具核心已完成；真实 Choice 冒烟等待权限，证券主数据/宏观/比较指标仍为后续增强
+状态：设计锁定；F0-F4 已完成，F5 Bridge client + 金融只读工具 + provider code resolver 已完成；真实 Choice 冒烟等待权限，宏观/比较指标仍为后续增强
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -1599,7 +1599,7 @@ tests/
 
 实际落地：
 
-- `services/market_data/store.py` 创建独立 `market_events.sqlite3` schema v1，不复用或修改 memcore SQLite；
+- `services/market_data/store.py` 创建独立 `market_events.sqlite3`，不复用或修改 memcore SQLite；F5 code resolver 将 schema 从 v1 可迁移升级为 v2，保留原事件与投递数据；
 - event upsert 支持 `inserted / updated / duplicate_event_id / duplicate_raw_hash`，保存 canonical event、cluster_id 和 revision；
 - 聚类限定为相同代码、相同资讯类型、六小时窗口和保守标题相似度，不把不同标的或不同类型强行聚合；
 - subscription owner 字段创建后不可改绑，filters 使用固定枚举，空订阅 fail closed；
@@ -1668,21 +1668,24 @@ tests/
 
 ### Slice F5：金融只读工具
 
-状态：核心已完成；真实 Choice 最小冒烟、证券主数据/别名权威解析、market_macro_series、基准超额收益、估值/预期差属于后续增强，当前不伪装已具备。
+状态：核心与证券主数据/别名权威解析已完成；真实 Choice 最小冒烟、market_macro_series、基准超额收益、估值/预期差属于后续增强，当前不伪装已具备。
 
 实际落地：
 
 - `services/market_data/emquant_bridge_client.py` 实现 loopback-only `EmQuantBridgeMarketDataProvider`；只接受 `http://127.0.0.1 / localhost / ::1`，拒绝凭据、路径、query、fragment 和外部主机；支持可选 Bridge token、超时、断线、权限、限流和坏 JSON 的结构化降级，绝不静默切到 Mock；
 - Bridge 增加固定 `csd` 历史序列方法和 `/prices/series` API；`extract_choice_series_records()` 将官方 SDK 的 `Data[code][indicator][date]` 展平，Fake SDK 提供合成 OHLCV 序列且按日期范围过滤；
 - `MarketDataToolService` 将资讯优先与 `MarketEventStore` 合并，显式 codes + content_types 才会向 Choice 发 cfn；缺少条件时只查本地库，不广播全市场；
-- `market_news_search / market_quote_snapshot / market_price_series` 三个 handler 使用 `family=finance_read / operation=read / risk=low / default_round_budget=12`，同时进入 legacy JSON 与 provider native schema；`additionalProperties=false`，非法代码、日期、interval、adjusted 和未知参数 fail closed；
-- 三个工具只在启用的 finance_v1 档案中动态暴露，默认陪伴模式不出现；主进程只访问 Bridge HTTP，不导入 Choice SDK/DLL；
+- `market_resolve_security / market_news_search / market_quote_snapshot / market_price_series` 四个 handler 使用 `family=finance_read / operation=read / risk=low / default_round_budget=12`，同时进入 legacy JSON 与 provider native schema；`additionalProperties=false`，非法代码、日期、interval、adjusted 和未知参数 fail closed；
+- 四个工具只在启用的 finance_v1 档案中动态暴露，默认陪伴模式不出现；主进程只访问 Bridge HTTP，不导入 Choice SDK/DLL；
 - 行情快照由程序计算 change、change_pct、跳空、日内振幅和区间位置；历史序列由程序计算区间收益、最新收益、总振幅、年化波动率、最大回撤、MA5/10/20/60、20 周期突破/跌破和 relative volume；relative volume 返回公式、实际窗口和“仅完整周期、未做盘中时间对齐”的口径说明；
 - 所有工具结果保留 provider、source、as_of、reason；新闻保留 event_id/source URL，原始序列与程序指标分字段返回，模型只负责解释；
 - 金融档案初始建议预算真正接为 12，硬上限 16；保留完全相同调用签名拦截，并增加连续金融结果 hash 不变或连续空/不可用的 no-progress guard；
 - 预算耗尽、重复调用、no-progress、权限失败或工具不可用后，系统不会静默结束：最终 prompt 明确要求模型停止工具调用，基于已有证据立即产出完整可交付回答，说明 as_of、证据缺口和置信度，并禁止只回复“还在处理/没完成/需要继续查询”等占位语；同步与流式路径使用同一收尾契约；
 - 配置补充 `FINANCE_EVENT_DB_PATH / EMQUANT_BRIDGE_URL / EMQUANT_BRIDGE_TOKEN / EMQUANT_HTTP_TIMEOUT_SECONDS`，示例环境默认关闭真实 EmQuant，不包含账号或密钥；
-- 当前仍不允许模型自行拼交易所后缀。工具只接收 provider code；在证券主数据解析器完成前，名称到代码必须来自已保存 watchlist、可信主数据或经来源核验的公开信息，不能靠模型猜测。
+- MarketEventStore schema v2 增加 `market_securities / market_security_aliases`：主数据记录 provider、code、名称、别名、市场、证券类型、来源和 as_of；升级会保留 v1 事件、订阅和投递表；
+- `market_resolve_security` 只查询可信证券主数据与当前 profile/session 的启用 watchlist。唯一精确别名才返回 `resolved=true`；部分匹配返回 `needs_confirmation`，同名多代码返回 `ambiguous`，均不会自动选择；watchlist 别名不会跨群或跨会话泄漏；
+- resolver 成功后只在相同 profile/session 内保存十分钟短期代码凭证。新闻、快照和序列工具执行前会校验代码来源：允许用户原文直接给出的完整 code、当前会话 watchlist code，或本轮 resolver 精确解析过的 code；仅仅“这个 code 存在于全局主数据”仍不够，防止模型把用户名称错配到另一个真实证券；
+- 当前仍不允许模型自行拼交易所后缀；解析不到或候选不唯一时必须澄清。仓库不提交任何真实证券主数据快照，真实主数据只能由授权 provider/受控导入流程写入。
 
 目标：Sonnet 可主动查询新闻、行情、历史序列和宏观数据。
 
@@ -1885,9 +1888,8 @@ V1 完成时，下面场景必须真实成立：
 
 F5 核心提交边界已经完成，仍不接 QQ 主动推送。上下文恢复后按以下顺序继续：
 
-1. 在真实 Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/csqsnapshot/csd 的实际权限、字段和 AdjustFlag 口径；未确认前继续使用 Fake SDK；
-2. 增加证券主数据与 watchlist 别名解析，使中文名称只能通过权威映射得到 provider code；不允许模型拼 `.SH/.SZ/.BJ`；
-3. 视真实权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
-4. 进入 F6：Event → AI → QQ 主动投递编排，继续复用本阶段的只读工具、证据契约、轮次预算和强制完整收尾。
+1. 在真实 Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/csqsnapshot/csd 的实际权限、字段、证券主数据来源和 AdjustFlag 口径；未确认前继续使用 Fake SDK；
+2. 视真实权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
+3. 进入 F6：Event → AI → QQ 主动投递编排，继续复用本阶段的只读工具、code provenance、证据契约、轮次预算和强制完整收尾。
 
-推荐下一个独立提交边界：`provider code resolver + real-permission smoke harness`；若 Choice 权限仍未开通，则先做不依赖真实 API 的 code resolver，不用假数据冒充真实主数据。
+推荐下一个独立提交边界：`real-permission smoke harness`；它只提供显式人工执行的只读探针，不在测试或应用启动时自动登录。若权限仍未开通，则直接进入不依赖真实 API 的 F6 Fake-event 编排，不用假数据冒充真实主数据。

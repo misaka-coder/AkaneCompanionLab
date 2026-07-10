@@ -164,6 +164,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 "list_workspace",
                 "read_workspace",
                 "inspect_generated_file",
+                "market_resolve_security",
                 "market_news_search",
                 "market_quote_snapshot",
                 "market_price_series",

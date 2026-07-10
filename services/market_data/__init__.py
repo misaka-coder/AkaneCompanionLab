@@ -26,6 +26,7 @@ from .store_models import (
     EventUpsertResult,
     FinanceSubscription,
     MarketEventDelivery,
+    MarketSecurity,
     StoredMarketEvent,
     WatchlistItem,
 )
@@ -62,6 +63,7 @@ __all__ = [
     "MarketEvent",
     "MarketEventDelivery",
     "MarketEventStore",
+    "MarketSecurity",
     "MarketNewsQuery",
     "MarketProviderHealth",
     "MarketQuoteRequest",
