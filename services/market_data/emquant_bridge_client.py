@@ -13,7 +13,13 @@ from .normalizers import (
     normalize_choice_quote_record,
     normalize_choice_series_record,
 )
-from .provider import MarketDataProvider, MarketNewsQuery, MarketQuoteRequest, MarketSeriesRequest
+from .provider import (
+    MarketDataProvider,
+    MarketNewsQuery,
+    MarketProviderCapabilities,
+    MarketQuoteRequest,
+    MarketSeriesRequest,
+)
 from .types import (
     MarketDataResponse,
     MarketDataValidationError,
@@ -45,6 +51,12 @@ class EmQuantBridgeMarketDataProvider(MarketDataProvider):
 
     provider_id = "choice_emquant"
     source_name = "Choice EmQuant"
+    capabilities = MarketProviderCapabilities(
+        news_search=True,
+        event_poll=True,
+        quote_snapshot=True,
+        price_series=True,
+    )
 
     def __init__(
         self,

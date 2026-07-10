@@ -11,7 +11,13 @@ from .normalizers import (
     normalize_choice_series_record,
     parse_market_timestamp,
 )
-from .provider import MarketDataProvider, MarketNewsQuery, MarketQuoteRequest, MarketSeriesRequest
+from .provider import (
+    MarketDataProvider,
+    MarketNewsQuery,
+    MarketProviderCapabilities,
+    MarketQuoteRequest,
+    MarketSeriesRequest,
+)
 from .types import (
     MarketDataResponse,
     MarketDataValidationError,
@@ -30,6 +36,11 @@ class MockMarketDataProvider(MarketDataProvider):
 
     provider_id = "mock_choice"
     source_name = "Synthetic Choice Fixture"
+    capabilities = MarketProviderCapabilities(
+        news_search=True,
+        quote_snapshot=True,
+        price_series=True,
+    )
 
     def __init__(self, fixture: Mapping[str, Any]) -> None:
         if not isinstance(fixture, Mapping):

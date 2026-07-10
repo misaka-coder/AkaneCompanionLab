@@ -143,6 +143,70 @@ class MarketEventStoreTests(unittest.TestCase):
         self.assertIsNotNone(subscription)
         self.assertTrue(subscription.is_group)
 
+    def test_v3_watchlist_schema_backfills_choice_provider_provenance(self) -> None:
+        legacy_path = Path(self.temp_dir.name) / "market_events_v3.sqlite3"
+        with closing(sqlite3.connect(legacy_path)) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE finance_subscriptions (
+                    subscription_id TEXT PRIMARY KEY,
+                    client TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    is_group INTEGER NOT NULL DEFAULT 0,
+                    session_id TEXT NOT NULL,
+                    profile_user_id TEXT NOT NULL,
+                    character_pack_id TEXT NOT NULL DEFAULT '',
+                    finance_mode TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    filters_json TEXT NOT NULL DEFAULT '{}',
+                    delivery_policy_json TEXT NOT NULL DEFAULT '{}',
+                    created_by_actor_id TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE watchlist_items (
+                    subscription_id TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    display_name TEXT NOT NULL DEFAULT '',
+                    aliases_json TEXT NOT NULL DEFAULT '[]',
+                    priority REAL NOT NULL DEFAULT 0.5,
+                    created_by_actor_id TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(subscription_id, code)
+                );
+                CREATE INDEX idx_watchlist_code ON watchlist_items(code, priority DESC);
+                INSERT INTO finance_subscriptions (
+                    subscription_id, client, target_id, is_group, session_id, profile_user_id,
+                    character_pack_id, finance_mode, enabled, filters_json,
+                    delivery_policy_json, created_by_actor_id, created_at, updated_at
+                ) VALUES (
+                    'legacy-choice', 'qq', '20001', 1, 'qq_group_shared_20001',
+                    'qq_group_shared_20001', '', 'push', 1, '{}', '{}', '', 100, 100
+                );
+                INSERT INTO watchlist_items (
+                    subscription_id, code, display_name, aliases_json, priority,
+                    created_by_actor_id, created_at, updated_at
+                ) VALUES ('legacy-choice', '000000.TEST', '旧关注项', '["旧别名"]', 0.8, '', 100, 100);
+                PRAGMA user_version = 3;
+                """
+            )
+
+        upgraded = MarketEventStore(legacy_path, clock=lambda: 1_752_110_000)
+        item = upgraded.list_watchlist("legacy-choice")[0]
+
+        self.assertEqual(upgraded.schema_version(), MARKET_STORE_SCHEMA_VERSION)
+        self.assertEqual(item.provider, "choice_emquant")
+        self.assertEqual(
+            upgraded.resolve_security(
+                "旧别名",
+                provider="mock_choice",
+                profile_user_id="qq_group_shared_20001",
+                session_id="qq_group_shared_20001",
+            ),
+            (),
+        )
+
     def test_exact_event_replay_is_idempotent(self) -> None:
         first = self.store.upsert_event(self.event, now_ts=100)
         replay = self.store.upsert_event(self.event, now_ts=200)
@@ -233,6 +297,7 @@ class MarketEventStoreTests(unittest.TestCase):
 
         item = self.store.upsert_watchlist_item(
             subscription_id="sub-empty",
+            provider="mock_choice",
             code=self.event.code,
             display_name="合成测试标的",
             aliases=("测试标的", "TEST"),
@@ -243,6 +308,7 @@ class MarketEventStoreTests(unittest.TestCase):
         reservations = self.store.ensure_matching_deliveries(self.event.event_id, now_ts=120)
 
         self.assertEqual(item.code, "000000.TEST")
+        self.assertEqual(item.provider, "mock_choice")
         self.assertEqual([item.subscription_id for item in matches], ["sub-empty"])
         self.assertEqual(len(reservations), 1)
         self.assertTrue(reservations[0].created)
@@ -292,6 +358,7 @@ class MarketEventStoreTests(unittest.TestCase):
         second = self._subscription("sub-bob", "20002")
         self.store.upsert_watchlist_item(
             subscription_id=first.subscription_id,
+            provider="mock_choice",
             code="000001.TEST",
             display_name="Alice 的测试标的",
             aliases=("我的标的",),
@@ -299,6 +366,7 @@ class MarketEventStoreTests(unittest.TestCase):
         )
         self.store.upsert_watchlist_item(
             subscription_id=second.subscription_id,
+            provider="mock_choice",
             code="000002.TEST",
             display_name="Bob 的测试标的",
             aliases=("我的标的",),
@@ -330,6 +398,41 @@ class MarketEventStoreTests(unittest.TestCase):
                 session_id=first.session_id,
             )
         )
+
+    def test_watchlist_codes_do_not_cross_provider_boundaries(self) -> None:
+        subscription = self._subscription("sub-provider-scope", "20001")
+        self.store.upsert_watchlist_item(
+            subscription_id=subscription.subscription_id,
+            provider="mock_choice",
+            code=self.event.code,
+            display_name="供应商隔离标的",
+            aliases=("隔离标的",),
+            now_ts=100,
+        )
+
+        mock_matches = self.store.resolve_security(
+            "隔离标的",
+            provider="mock_choice",
+            profile_user_id=subscription.profile_user_id,
+            session_id=subscription.session_id,
+        )
+        emquant_matches = self.store.resolve_security(
+            "隔离标的",
+            provider="choice_emquant",
+            profile_user_id=subscription.profile_user_id,
+            session_id=subscription.session_id,
+        )
+        choice_event = replace(
+            self.event,
+            provider="choice_emquant",
+            event_id="choice:provider-scope",
+            raw_hash=_hash("choice-provider-scope"),
+        )
+
+        self.assertEqual([item["provider"] for item in mock_matches], ["mock_choice"])
+        self.assertEqual(emquant_matches, ())
+        self.assertTrue(self.store.match_subscriptions(self.event))
+        self.assertEqual(self.store.match_subscriptions(choice_event), ())
 
     def test_subscription_filters_and_disabled_state_fail_closed(self) -> None:
         self._subscription(
@@ -393,6 +496,7 @@ class MarketEventStoreTests(unittest.TestCase):
         self._subscription("sub-watch-owner", "20001")
         original = self.store.upsert_watchlist_item(
             subscription_id="sub-watch-owner",
+            provider="mock_choice",
             code=self.event.code,
             display_name="初始名称",
             created_by_actor_id="qq:10001",
@@ -400,6 +504,7 @@ class MarketEventStoreTests(unittest.TestCase):
         )
         updated = self.store.upsert_watchlist_item(
             subscription_id="sub-watch-owner",
+            provider="mock_choice",
             code=self.event.code,
             display_name="更新名称",
             created_by_actor_id="qq:99999",

@@ -95,7 +95,8 @@ class MarketDataToolService:
             "ok": bool(unique),
             "status": "ok" if unique else "empty",
             "provider": self.provider.id,
-            "source": "Trusted Security Master + Current Session Watchlist",
+            "source": f"Trusted Security Master ({self.provider.id}) + Current Session Watchlist",
+            "provider_capabilities": self.provider.capabilities.to_public_dict(),
             "as_of": timestamp_to_iso(as_of_ts, "Asia/Shanghai") if as_of_ts else None,
             "reason": reason,
             "resolution_status": resolution_status,
@@ -139,10 +140,15 @@ class MarketDataToolService:
                 session_id=session_id,
             ):
                 continue
-            if profile_user_id and session_id and self.event_store.is_session_watchlist_code(
-                clean_code,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
+            if (
+                profile_user_id
+                and session_id
+                and self.event_store.is_session_watchlist_code(
+                    clean_code,
+                    provider=self.provider.id,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                )
             ):
                 continue
             blocked.append(clean_code)

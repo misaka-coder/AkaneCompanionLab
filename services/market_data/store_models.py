@@ -101,6 +101,7 @@ class FinanceSubscription:
 @dataclass(frozen=True)
 class WatchlistItem:
     subscription_id: str
+    provider: str
     code: str
     display_name: str
     aliases: tuple[str, ...]
@@ -112,6 +113,7 @@ class WatchlistItem:
     def to_public_dict(self) -> dict[str, Any]:
         return {
             "subscription_id": self.subscription_id,
+            "provider": self.provider,
             "code": self.code,
             "display_name": self.display_name,
             "aliases": list(self.aliases),

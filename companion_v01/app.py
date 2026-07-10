@@ -160,7 +160,11 @@ if qq_gateway is not None and market_event_store is not None:
         analysis_client=AkaneFinanceAnalysisClient(engine),
         delivery_adapter=QQFinanceDeliveryAdapter(qq_gateway),
     )
-    if callable(getattr(market_event_provider, "poll_market_events", None)):
+    if bool(
+        callable(getattr(market_event_provider, "supports", None))
+        and market_event_provider.supports("event_poll")
+        and callable(getattr(market_event_provider, "poll_market_events", None))
+    ):
         event_source_factory = getattr(market_event_provider, "clone", None)
         finance_event_source = event_source_factory() if callable(event_source_factory) else market_event_provider
         finance_event_worker = FinanceEventWorker(

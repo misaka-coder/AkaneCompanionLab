@@ -133,6 +133,7 @@ class FinanceSubscriptionServiceTests(unittest.TestCase):
             )
             self.store.upsert_watchlist_item(
                 subscription_id=subscription_id,
+                provider="mock_choice",
                 code=code,
                 now_ts=now_ts,
             )

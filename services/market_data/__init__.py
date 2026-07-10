@@ -1,4 +1,11 @@
+from .disabled import DisabledMarketDataProvider
 from .emquant_bridge_client import EmQuantBridgeMarketDataProvider, LOOPBACK_HOSTS
+from .factory import (
+    MarketDataProviderRegistry,
+    MarketDataProviderSettings,
+    build_default_market_data_provider_registry,
+    build_market_data_provider,
+)
 from .mock import MOCK_CHOICE_FIXTURE_SCHEMA, MockMarketDataProvider
 from .normalizers import (
     normalize_choice_news_record,
@@ -8,8 +15,10 @@ from .normalizers import (
     parse_market_timestamp,
 )
 from .provider import (
+    MARKET_PROVIDER_CAPABILITY_NAMES,
     MarketDataProvider,
     MarketNewsQuery,
+    MarketProviderCapabilities,
     MarketQuoteRequest,
     MarketSeriesRequest,
 )
@@ -47,8 +56,10 @@ from .types import (
 
 __all__ = [
     "EmQuantBridgeMarketDataProvider",
+    "DisabledMarketDataProvider",
     "LOOPBACK_HOSTS",
     "MARKET_HEALTH_STATUSES",
+    "MARKET_PROVIDER_CAPABILITY_NAMES",
     "MARKET_RESULT_STATUSES",
     "MOCK_CHOICE_FIXTURE_SCHEMA",
     "MARKET_STORE_SCHEMA_VERSION",
@@ -62,6 +73,8 @@ __all__ = [
     "FinanceSubscription",
     "MarketBar",
     "MarketDataProvider",
+    "MarketDataProviderRegistry",
+    "MarketDataProviderSettings",
     "MarketDataResponse",
     "MarketDataValidationError",
     "MarketEvent",
@@ -70,6 +83,7 @@ __all__ = [
     "MarketEventStore",
     "MarketSecurity",
     "MarketNewsQuery",
+    "MarketProviderCapabilities",
     "MarketProviderHealth",
     "MarketQuoteRequest",
     "MarketQuoteSnapshot",
@@ -78,6 +92,8 @@ __all__ = [
     "MockMarketDataProvider",
     "StoredMarketEvent",
     "WatchlistItem",
+    "build_default_market_data_provider_registry",
+    "build_market_data_provider",
     "normalize_choice_news_record",
     "normalize_choice_quote_record",
     "normalize_choice_series_record",

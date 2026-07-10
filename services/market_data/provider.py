@@ -15,6 +15,40 @@ from .types import (
 )
 
 
+MARKET_PROVIDER_CAPABILITY_NAMES = (
+    "news_search",
+    "event_poll",
+    "quote_snapshot",
+    "price_series",
+    "macro_series",
+    "streaming",
+    "security_master",
+)
+
+
+@dataclass(frozen=True)
+class MarketProviderCapabilities:
+    """Implemented capabilities of one normalized market-data adapter."""
+
+    news_search: bool = False
+    event_poll: bool = False
+    quote_snapshot: bool = False
+    price_series: bool = False
+    macro_series: bool = False
+    streaming: bool = False
+    security_master: bool = False
+
+    def enabled(self) -> tuple[str, ...]:
+        return tuple(name for name in MARKET_PROVIDER_CAPABILITY_NAMES if bool(getattr(self, name)))
+
+    def supports(self, capability: str) -> bool:
+        name = str(capability or "").strip().lower()
+        return name in MARKET_PROVIDER_CAPABILITY_NAMES and bool(getattr(self, name))
+
+    def to_public_dict(self) -> dict[str, bool]:
+        return {name: bool(getattr(self, name)) for name in MARKET_PROVIDER_CAPABILITY_NAMES}
+
+
 @dataclass(frozen=True)
 class MarketNewsQuery:
     query: str = ""
@@ -124,6 +158,7 @@ class MarketDataProvider(ABC):
 
     provider_id = "market_data"
     source_name = "Market Data"
+    capabilities = MarketProviderCapabilities()
 
     @property
     def id(self) -> str:
@@ -132,6 +167,9 @@ class MarketDataProvider(ABC):
     @property
     def source(self) -> str:
         return str(self.source_name or "Market Data").strip() or "Market Data"
+
+    def supports(self, capability: str) -> bool:
+        return self.capabilities.supports(capability)
 
     @abstractmethod
     def health(self) -> MarketProviderHealth:

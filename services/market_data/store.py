@@ -27,7 +27,7 @@ from .store_models import (
 from .types import MarketDataValidationError, MarketEvent
 
 
-MARKET_STORE_SCHEMA_VERSION = 3
+MARKET_STORE_SCHEMA_VERSION = 4
 EVENT_STATUSES = frozenset({"active", "updated", "archived"})
 DELIVERY_STATUSES = frozenset({"pending", "processing", "delivered", "failed", "cancelled"})
 RETRYABLE_DELIVERY_STATUSES = frozenset({"pending", "failed"})
@@ -97,6 +97,7 @@ ON finance_subscriptions(profile_user_id, enabled, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS watchlist_items (
     subscription_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
     code TEXT NOT NULL,
     display_name TEXT NOT NULL DEFAULT '',
     aliases_json TEXT NOT NULL DEFAULT '[]',
@@ -229,6 +230,13 @@ class MarketEventStore:
                 WHERE session_id LIKE 'qq_group_%'
                 """
             )
+        watchlist_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(watchlist_items)").fetchall()}
+        if "provider" not in watchlist_columns:
+            connection.execute("ALTER TABLE watchlist_items ADD COLUMN provider TEXT NOT NULL DEFAULT 'choice_emquant'")
+        connection.execute("DROP INDEX IF EXISTS idx_watchlist_code")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_watchlist_code ON watchlist_items(provider, code, priority DESC)"
+        )
         connection.execute(f"PRAGMA user_version = {MARKET_STORE_SCHEMA_VERSION}")
 
     def schema_version(self) -> int:
@@ -575,6 +583,7 @@ class MarketEventStore:
         self,
         *,
         subscription_id: str,
+        provider: str,
         code: str,
         display_name: str = "",
         aliases: Iterable[str] = (),
@@ -583,6 +592,7 @@ class MarketEventStore:
         now_ts: int | None = None,
     ) -> WatchlistItem:
         clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        clean_provider = _safe_id(provider, field="provider")
         clean_code = normalize_market_code(
             code,
             field="code",
@@ -604,10 +614,11 @@ class MarketEventStore:
             connection.execute(
                 """
                 INSERT INTO watchlist_items (
-                    subscription_id, code, display_name, aliases_json, priority,
+                    subscription_id, provider, code, display_name, aliases_json, priority,
                     created_by_actor_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(subscription_id, code) DO UPDATE SET
+                    provider = excluded.provider,
                     display_name = excluded.display_name,
                     aliases_json = excluded.aliases_json,
                     priority = excluded.priority,
@@ -615,6 +626,7 @@ class MarketEventStore:
                 """,
                 (
                     clean_subscription_id,
+                    clean_provider,
                     clean_code,
                     clean_name,
                     _json_dumps(list(clean_aliases), field="aliases"),
@@ -630,8 +642,9 @@ class MarketEventStore:
             ).fetchone()
         return _row_to_watchlist_item(row)
 
-    def remove_watchlist_item(self, *, subscription_id: str, code: str) -> bool:
+    def remove_watchlist_item(self, *, subscription_id: str, provider: str, code: str) -> bool:
         clean_subscription_id = _safe_id(subscription_id, field="subscription_id")
+        clean_provider = _safe_id(provider, field="provider")
         clean_code = normalize_market_code(
             code,
             field="code",
@@ -640,8 +653,8 @@ class MarketEventStore:
         )
         with self._write_lock, self._connect(write=True) as connection:
             cursor = connection.execute(
-                "DELETE FROM watchlist_items WHERE subscription_id = ? AND code = ?",
-                (clean_subscription_id, clean_code),
+                "DELETE FROM watchlist_items WHERE subscription_id = ? AND provider = ? AND code = ?",
+                (clean_subscription_id, clean_provider, clean_code),
             )
         return int(cursor.rowcount or 0) > 0
 
@@ -792,16 +805,21 @@ class MarketEventStore:
             ).fetchall()
             watch_rows = []
             if clean_profile and clean_session:
+                watch_provider_clause = "AND w.provider = ?" if clean_provider else ""
+                watch_parameters: list[Any] = [clean_profile, clean_session]
+                if clean_provider:
+                    watch_parameters.append(clean_provider)
                 watch_rows = connection.execute(
-                    """
+                    f"""
                     SELECT w.*
                     FROM watchlist_items w
                     JOIN finance_subscriptions f ON f.subscription_id = w.subscription_id
                     WHERE f.profile_user_id = ? AND f.session_id = ? AND f.enabled = 1
+                    {watch_provider_clause}
                     ORDER BY w.priority DESC, w.updated_at DESC, w.code
                     LIMIT 200
                     """,
-                    (clean_profile, clean_session),
+                    tuple(watch_parameters),
                 ).fetchall()
         for row in (*exact_rows, *partial_rows):
             security = _row_to_market_security(row)
@@ -824,9 +842,9 @@ class MarketEventStore:
             matched_alias = exact_alias or partial_alias
             if not matched_alias:
                 continue
-            key = (clean_provider or "watchlist", item.code, "session_watchlist")
+            key = (item.provider, item.code, "session_watchlist")
             matches[key] = {
-                "provider": clean_provider,
+                "provider": item.provider,
                 "code": item.code,
                 "display_name": item.display_name,
                 "aliases": list(item.aliases),
@@ -882,14 +900,20 @@ class MarketEventStore:
             if not str(profile_user_id or "").strip() or not str(session_id or "").strip():
                 return False
             watch = connection.execute(
-                """
+                f"""
                 SELECT 1
                 FROM watchlist_items w
                 JOIN finance_subscriptions f ON f.subscription_id = w.subscription_id
                 WHERE w.code = ? AND f.profile_user_id = ? AND f.session_id = ? AND f.enabled = 1
+                {"AND w.provider = ?" if clean_provider else ""}
                 LIMIT 1
                 """,
-                (clean_code, str(profile_user_id).strip(), str(session_id).strip()),
+                (
+                    clean_code,
+                    str(profile_user_id).strip(),
+                    str(session_id).strip(),
+                    *((clean_provider,) if clean_provider else ()),
+                ),
             ).fetchone()
         return watch is not None
 
@@ -897,6 +921,7 @@ class MarketEventStore:
         self,
         code: str,
         *,
+        provider: str,
         profile_user_id: str,
         session_id: str,
     ) -> bool:
@@ -906,6 +931,7 @@ class MarketEventStore:
             status="invalid_arguments",
             error_code="invalid_arguments",
         )
+        clean_provider = _safe_id(provider, field="provider")
         clean_profile = _safe_id(profile_user_id, field="profile_user_id")
         clean_session = _safe_id(session_id, field="session_id")
         with self._connect() as connection:
@@ -914,10 +940,11 @@ class MarketEventStore:
                 SELECT 1
                 FROM watchlist_items w
                 JOIN finance_subscriptions f ON f.subscription_id = w.subscription_id
-                WHERE w.code = ? AND f.profile_user_id = ? AND f.session_id = ? AND f.enabled = 1
+                WHERE w.provider = ? AND w.code = ?
+                  AND f.profile_user_id = ? AND f.session_id = ? AND f.enabled = 1
                 LIMIT 1
                 """,
-                (clean_code, clean_profile, clean_session),
+                (clean_provider, clean_code, clean_profile, clean_session),
             ).fetchone()
         return row is not None
 
@@ -928,14 +955,20 @@ class MarketEventStore:
             subscription_rows = connection.execute(
                 "SELECT * FROM finance_subscriptions WHERE enabled = 1 ORDER BY updated_at DESC, subscription_id"
             ).fetchall()
-            watch_rows = connection.execute("SELECT subscription_id, code FROM watchlist_items").fetchall()
-        watch_by_subscription: dict[str, set[str]] = {}
+            watch_rows = connection.execute("SELECT subscription_id, provider, code FROM watchlist_items").fetchall()
+        watch_by_subscription: dict[str, set[tuple[str, str]]] = {}
         for row in watch_rows:
-            watch_by_subscription.setdefault(str(row["subscription_id"]), set()).add(str(row["code"]))
+            watch_by_subscription.setdefault(str(row["subscription_id"]), set()).add(
+                (str(row["provider"]), str(row["code"]))
+            )
         matches: list[FinanceSubscription] = []
         for row in subscription_rows:
             subscription = _row_to_subscription(row)
-            watch_codes = watch_by_subscription.get(subscription.subscription_id, set())
+            watch_codes = {
+                code
+                for provider, code in watch_by_subscription.get(subscription.subscription_id, set())
+                if provider == normalized.provider
+            }
             if _subscription_matches_event(subscription, normalized, watch_codes=watch_codes):
                 matches.append(subscription)
         return tuple(matches)
@@ -1504,6 +1537,7 @@ def _row_to_watchlist_item(row: sqlite3.Row) -> WatchlistItem:
     aliases = _json_loads_list(row["aliases_json"])
     return WatchlistItem(
         subscription_id=str(row["subscription_id"] or ""),
+        provider=str(row["provider"] or ""),
         code=str(row["code"] or ""),
         display_name=str(row["display_name"] or ""),
         aliases=tuple(str(item) for item in aliases if str(item).strip()),

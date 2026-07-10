@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0-F7 已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析、QQ 幂等文字投递、确定性 PNG 图表和 MD/PDF/XLSX 金融报告已接通；真实 Choice 冒烟仍等待账户权限
+状态：设计锁定；F0-F7c 已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析、QQ 幂等文字投递、确定性 PNG 图表、MD/PDF/XLSX 金融报告和行情 Provider 解耦已接通；真实 Choice 冒烟仍等待账户权限
 更新时间：2026-07-10
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -125,9 +125,9 @@ finance_mode = off | qa | push
 
 人格不能替代行情、新闻、公告或历史证据。
 
-### 3.3 Choice SDK 作为正式数据主通道
+### 3.3 Choice SDK 作为首个正式数据适配器
 
-Choice EmQuantAPI 审批通过后，作为新闻、行情、历史序列、板块和宏观数据的优先主通道。
+Choice EmQuantAPI 审批通过后，可以作为新闻、行情、历史序列、板块和宏观数据的优先主通道，但金融上层能力不能依赖 Choice 专有对象。Engine 只选择统一 `MarketDataProvider`，更换行情源不应改动 QQ、事件编排、图表、报告或 memcore 主链。
 
 公开网页搜索继续保留，用于：
 
@@ -1456,6 +1456,7 @@ FINANCE_ASSISTANT_ENABLED=false
 FINANCE_DEFAULT_MODE=off
 FINANCE_TOOL_ROUND_BUDGET=12
 FINANCE_TOOL_ROUND_HARD_LIMIT=16
+FINANCE_MARKET_PROVIDER=disabled
 FINANCE_TURN_TIMEOUT_SECONDS=90
 FINANCE_EVENT_DB_PATH=
 FINANCE_PASSIVE_MEMORY_MODE=selected
@@ -1720,7 +1721,7 @@ tests/
 - 所有工具结果保留 provider、source、as_of、reason；新闻保留 event_id/source URL，原始序列与程序指标分字段返回，模型只负责解释；
 - 金融档案初始建议预算真正接为 12，硬上限 16；保留完全相同调用签名拦截，并增加连续金融结果 hash 不变或连续空/不可用的 no-progress guard；
 - 预算耗尽、重复调用、no-progress、权限失败或工具不可用后，系统不会静默结束：最终 prompt 明确要求模型停止工具调用，基于已有证据立即产出完整可交付回答，说明 as_of、证据缺口和置信度，并禁止只回复“还在处理/没完成/需要继续查询”等占位语；同步与流式路径使用同一收尾契约；
-- 配置补充 `FINANCE_EVENT_DB_PATH / EMQUANT_BRIDGE_URL / EMQUANT_BRIDGE_TOKEN / EMQUANT_HTTP_TIMEOUT_SECONDS`，示例环境默认关闭真实 EmQuant，不包含账号或密钥；
+- 配置补充 `FINANCE_MARKET_PROVIDER / FINANCE_EVENT_DB_PATH / EMQUANT_BRIDGE_URL / EMQUANT_BRIDGE_TOKEN / EMQUANT_HTTP_TIMEOUT_SECONDS`；`FINANCE_MARKET_PROVIDER` 默认 `disabled`，示例环境默认关闭真实 EmQuant，不包含账号或密钥；
 - MarketEventStore schema v2 增加 `market_securities / market_security_aliases`：主数据记录 provider、code、名称、别名、市场、证券类型、来源和 as_of；升级会保留 v1 事件、订阅和投递表；
 - `market_resolve_security` 只查询可信证券主数据与当前 profile/session 的启用 watchlist。唯一精确别名才返回 `resolved=true`；部分匹配返回 `needs_confirmation`，同名多代码返回 `ambiguous`，均不会自动选择；watchlist 别名不会跨群或跨会话泄漏；
 - resolver 成功后只在相同 profile/session 内保存十分钟短期代码凭证。新闻、快照和序列工具执行前会校验代码来源：允许用户原文直接给出的完整 code、当前会话 watchlist code，或本轮 resolver 精确解析过的 code；仅仅“这个 code 存在于全局主数据”仍不够，防止模型把用户名称错配到另一个真实证券；
@@ -1840,6 +1841,24 @@ F7b 实际落地：
 - 生成失败不发送空文件；
 - 不需要当前用户文本文件意图，使用 subscription 授权；
 - 普通对话文件保护仍有效。
+
+### Slice F7c：行情 Provider 解耦与可信代码来源隔离
+
+状态：已完成；不依赖真实 Choice 权限。
+
+目标：Choice 审核失败或后续更换数据源时，F0-F7 的上层能力继续保留。
+
+已落地：
+
+- `FINANCE_MARKET_PROVIDER=disabled|emquant` 显式选择行情供应商，默认 `disabled`；金融领域开关与数据源选择互相独立；
+- `MarketDataProviderRegistry / MarketDataProviderSettings` 从 Engine 抽出供应商构造。Engine 不再直接实例化 `EmQuantBridgeMarketDataProvider`；未来适配器注册 builder 即可，不需要改图表、报告、QQ 或事件编排；
+- 默认生产 registry 只注册 `disabled / emquant`，绝不注册 Mock。未知 provider 返回 `unsupported_provider` 并关闭行情工具服务，不会静默回退到合成数据；
+- `DisabledMarketDataProvider` 保留统一工具契约，对新闻、快照和序列返回明确 `unavailable`，本地事件库和普通金融问答仍可独立工作；
+- 每个适配器声明 `news_search / event_poll / quote_snapshot / price_series / macro_series / streaming / security_master` 能力。当前 EmQuant 只声明已经实现的前四项（含 `event_poll`），Mock 只声明离线新闻、快照和序列；未实现的宏观、流式和证券主数据抓取不做假成功；
+- MarketEventStore schema v4 为 watchlist 增加 provider provenance。证券主数据、当前会话 watchlist 解析、可信代码校验和事件匹配均按 provider 隔离；旧 v3 关注项按此前唯一正式通道无损回填为 `choice_emquant`，不会在切换供应商后被自动冒充为新 provider 代码；
+- 共享 provider 契约测试覆盖 Disabled、Mock、EmQuant 及未来 registry 扩展入口。
+
+因此 Choice 不给权限时，损失的是 `choice_emquant` 这个数据适配器，不是订阅、事件状态机、AI 分析、图表、报告、memcore 或 QQ 投递能力。可以继续接入另一家 provider，或先使用公开检索与 `disabled` 的结构化降级。
 
 ### Slice F8：云端产物 Provider
 
@@ -1972,11 +1991,12 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F6 与 F7 已完成 Fake Bridge/Mock 主链验收，真实主动推送仍因默认开关和 Choice 权限保持关闭。上下文恢复后按以下顺序继续：
+F6、F7 与 F7c 已完成 Fake Bridge/Mock 主链验收，真实主动推送仍因默认开关和 Choice 权限保持关闭。上下文恢复后按以下顺序继续：
 
-1. 在真实 Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/cnq/csqsnapshot/csd 的实际权限、callback 字段、证券主数据来源和 AdjustFlag 口径；未确认前继续使用 Fake SDK；
-2. 进入 F8：仅为装饰性封面、非事实插图或可选高保真文档接云端 Provider；真实行情图和报告事实表继续由本地确定性程序生成；
-3. 视真实权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
-4. F9 再补 processing 跨进程租约、部分 QQ 气泡投递恢复、速率限制、digest、metrics 和人工 replay，不在 F6 假装已经完成这些运营能力。
+1. Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/cnq/csqsnapshot/csd 的实际权限、callback 字段、证券主数据来源和 AdjustFlag 口径；未确认前保持 `FINANCE_MARKET_PROVIDER=disabled` 或仅使用 Fake SDK 测试；
+2. 如果 Choice 未授权，按统一能力契约新增另一家只读 provider，优先补 `quote_snapshot / price_series / news_search`，不改上层主链；
+3. 进入 F8：仅为装饰性封面、非事实插图或可选高保真文档接云端 Provider；真实行情图和报告事实表继续由本地确定性程序生成；
+4. 视真实数据源权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
+5. F9 再补 processing 跨进程租约、部分 QQ 气泡投递恢复、速率限制、digest、metrics 和人工 replay，不在 F6 假装已经完成这些运营能力。
 
-推荐下一个独立提交边界：`optional cloud artifact provider with local factual fallback`；如果暂不接云端，可先进入 F9 的 quota、digest、metrics 和人工 replay，不能让云端能力成为金融主链依赖。
+推荐下一个独立提交边界：优先进入 F9 的 per-part delivery ledger、quota、digest、metrics 和人工 replay；F8 云端产物仍为可选增强，不能让 Choice 或云端能力成为金融主链依赖。

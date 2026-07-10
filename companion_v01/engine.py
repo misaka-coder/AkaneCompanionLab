@@ -3960,18 +3960,38 @@ class AkaneMemoryEngine:
         if not bool(getattr(config, "FINANCE_ASSISTANT_ENABLED", False)):
             return None
         try:
-            from services.market_data import EmQuantBridgeMarketDataProvider, MarketEventStore
+            from services.market_data import (
+                MarketDataProviderSettings,
+                MarketDataValidationError,
+                MarketEventStore,
+                build_default_market_data_provider_registry,
+            )
 
             from .finance import MarketDataToolService
 
             raw_db_path = str(getattr(config, "FINANCE_EVENT_DB_PATH", "") or "").strip()
-            db_path = Path(raw_db_path).expanduser() if raw_db_path else Path(config.STATE_DIR) / "market_events.sqlite3"
-            provider = EmQuantBridgeMarketDataProvider(
-                str(getattr(config, "EMQUANT_BRIDGE_URL", "http://127.0.0.1:9910") or ""),
-                access_token=str(getattr(config, "EMQUANT_BRIDGE_TOKEN", "") or ""),
-                timeout_seconds=float(getattr(config, "EMQUANT_HTTP_TIMEOUT_SECONDS", 15.0) or 15.0),
+            db_path = (
+                Path(raw_db_path).expanduser() if raw_db_path else Path(config.STATE_DIR) / "market_events.sqlite3"
+            )
+            provider_registry = build_default_market_data_provider_registry()
+            self.market_data_provider_registry = provider_registry
+            provider = provider_registry.create(
+                MarketDataProviderSettings(
+                    provider=str(getattr(config, "FINANCE_MARKET_PROVIDER", "disabled") or "disabled"),
+                    emquant_bridge_url=str(getattr(config, "EMQUANT_BRIDGE_URL", "http://127.0.0.1:9910") or ""),
+                    emquant_bridge_token=str(getattr(config, "EMQUANT_BRIDGE_TOKEN", "") or ""),
+                    emquant_timeout_seconds=float(getattr(config, "EMQUANT_HTTP_TIMEOUT_SECONDS", 15.0) or 15.0),
+                )
             )
             return MarketDataToolService(provider=provider, event_store=MarketEventStore(db_path))
+        except MarketDataValidationError as exc:
+            logger.warning(
+                "finance market data provider rejected: field=%s code=%s provider=%s",
+                exc.field,
+                exc.code,
+                exc.provider,
+            )
+            return None
         except Exception as exc:
             logger.warning("finance market data tools disabled: %s", type(exc).__name__)
             return None

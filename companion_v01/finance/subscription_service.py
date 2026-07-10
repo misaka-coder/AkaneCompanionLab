@@ -74,13 +74,14 @@ class FinanceSubscriptionService:
             for item in duplicate_watchlist:
                 self.store.upsert_watchlist_item(
                     subscription_id=subscription.subscription_id,
+                    provider=item.provider,
                     code=item.code,
                     display_name=item.display_name,
                     aliases=item.aliases,
                     priority=item.priority,
                     created_by_actor_id=item.created_by_actor_id,
                 )
-            watchlist_count = len(self.store.list_watchlist(subscription.subscription_id))
+            watchlist_count = len(self._list_provider_watchlist(subscription.subscription_id))
             return {
                 "ok": True,
                 "status": "enabled",
@@ -143,7 +144,7 @@ class FinanceSubscriptionService:
 
         action = command["action"]
         if action == "list":
-            items = self.store.list_watchlist(subscription.subscription_id)
+            items = self._list_provider_watchlist(subscription.subscription_id)
             if not items:
                 reply = "当前财经关注列表为空。发送“关注 证券代码或精确名称”即可添加。"
             else:
@@ -181,7 +182,11 @@ class FinanceSubscriptionService:
         code = str(resolved["code"])
         display_name = str(resolved.get("display_name") or "")
         if action == "remove":
-            removed = self.store.remove_watchlist_item(subscription_id=subscription.subscription_id, code=code)
+            removed = self.store.remove_watchlist_item(
+                subscription_id=subscription.subscription_id,
+                provider=self.provider_id,
+                code=code,
+            )
             return {
                 "handled": True,
                 "ok": removed,
@@ -193,12 +198,13 @@ class FinanceSubscriptionService:
                 ),
                 "subscription_id": subscription.subscription_id,
                 "code": code,
-                "watchlist_count": len(self.store.list_watchlist(subscription.subscription_id)),
+                "watchlist_count": len(self._list_provider_watchlist(subscription.subscription_id)),
             }
 
         aliases = (query,) if query and self._normalize_alias(query) not in {self._normalize_alias(code)} else ()
         item = self.store.upsert_watchlist_item(
             subscription_id=subscription.subscription_id,
+            provider=self.provider_id,
             code=code,
             display_name=display_name,
             aliases=aliases,
@@ -212,7 +218,7 @@ class FinanceSubscriptionService:
             "reply": f"已关注 {item.display_name or item.code}（{item.code}）。后续重要事件才会进入即时分析，普通资讯不会刷屏。",
             "subscription_id": subscription.subscription_id,
             "code": item.code,
-            "watchlist_count": len(self.store.list_watchlist(subscription.subscription_id)),
+            "watchlist_count": len(self._list_provider_watchlist(subscription.subscription_id)),
         }
 
     def _resolve_watchlist_target(
@@ -234,7 +240,7 @@ class FinanceSubscriptionService:
 
         watchlist_matches = [
             item
-            for item in self.store.list_watchlist(subscription_id)
+            for item in self._list_provider_watchlist(subscription_id)
             if self._normalize_alias(text)
             in {
                 self._normalize_alias(item.code),
@@ -289,6 +295,9 @@ class FinanceSubscriptionService:
             ),
             None,
         )
+
+    def _list_provider_watchlist(self, subscription_id: str):
+        return tuple(item for item in self.store.list_watchlist(subscription_id) if item.provider == self.provider_id)
 
     def _matching_subscriptions(self, context: Any):
         target_id = str(int(getattr(context, "target_id", 0) or 0))
