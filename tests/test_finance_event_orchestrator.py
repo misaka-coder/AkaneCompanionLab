@@ -631,6 +631,10 @@ class FinanceAnalysisClientTests(unittest.TestCase):
         self.assertNotIn("发布时间：", result.messages[0])
         self.assertEqual(result.messages[0].count(event.url), 1)
         self.assertTrue(result.messages[0].endswith(f"原文链接：{event.url}"))
+        instruction = request.render_analysis_instruction()
+        self.assertIn("具体比例、价格、涨跌幅", instruction)
+        self.assertIn("强行套用 A 股、美股", instruction)
+        self.assertIn("结论成立条件与可能的反向情形", instruction)
 
     def test_direct_news_analysis_removes_duplicate_metadata_and_template_labels(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
