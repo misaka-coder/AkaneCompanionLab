@@ -277,8 +277,19 @@ def ensure_market_push_contract(
     header = f"【市场快讯｜{header_time}】"
     source_name = event.source or event.provider or "unknown"
     is_source_report = "source_report_only" in event.labels
+    if is_source_report:
+        clean_body = _clean_source_report_body(body, source_url=event.url)
+        if not clean_body:
+            return ()
+        clean_body = f"【财经快讯｜{header_time}】\n{clean_body}"
+        if event.url:
+            clean_body = f"{clean_body}\n原文链接：{event.url}"
+        return _split_messages(
+            clean_body,
+            max_chars=max(200, min(1800, int(max_message_chars))),
+        )
     source_line = f"来源：{source_name}｜发布时间：{published_iso}"
-    if event.url and not is_source_report:
+    if event.url:
         source_line += f"｜{event.url}"
     if request.related_event_records:
         related_sources = "；".join(
@@ -289,11 +300,6 @@ def ensure_market_push_contract(
         source_line += f"\n补充来源：{related_sources}"
     related_titles = "；".join(record.event.title for record in request.related_event_records[:8])
     confirmed_fact = event.title
-    if is_source_report:
-        confirmed_fact = (
-            f"{event.source or event.provider} 于 {published_iso} 发布了一条财经快讯；"
-            "具体内容以文末原文链接为准，快讯所述事项本身尚待官方来源核验"
-        )
     if related_titles:
         confirmed_fact += f"；同批次补充事件：{related_titles}"
     code_text = "、".join(
@@ -330,14 +336,10 @@ def ensure_market_push_contract(
     if (
         "来源：" not in body
         or "发布时间：" not in body
-        or (event.url and not is_source_report and event.url not in body)
+        or (event.url and event.url not in body)
         or (request.related_event_records and "补充来源：" not in body)
     ):
         body = f"{body}\n{source_line}"
-    if is_source_report and event.url:
-        original_link_line = f"原文链接：{event.url}"
-        if not body.rstrip().endswith(original_link_line):
-            body = f"{body}\n{original_link_line}"
     return _split_messages(body, max_chars=max(200, min(1800, int(max_message_chars))))
 
 
@@ -355,6 +357,57 @@ def _direct_news_relay_message(request: FinanceAnalysisRequest) -> str:
         lines.append(f"原文：{event.url}")
     lines.append("说明：这是来源原文/摘要转发，不代表相关事项已经获得官方确认。")
     return "\n".join(lines)
+
+
+def _clean_source_report_body(text: str, *, source_url: str) -> str:
+    removable_prefixes = (
+        "已确认事实：",
+        "已确认事实:",
+        "客观数据与时间：",
+        "客观数据与时间:",
+        "分析推断：",
+        "分析推断:",
+        "尚待验证与风险：",
+        "尚待验证与风险:",
+    )
+    discard_prefixes = ("接下来观察：", "接下来观察:")
+    discard_fragments = (
+        "当前直接证据仅包含事件结构化字段",
+        "等待完整公告或报道正文",
+    )
+    metadata_prefixes = (
+        "来源：",
+        "来源:",
+        "发布时间：",
+        "发布时间:",
+        "原文链接：",
+        "原文链接:",
+        "原文：",
+        "原文:",
+    )
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw_line in str(text or "").splitlines():
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        if line.startswith(("【市场快讯", "【财经快讯")):
+            continue
+        if line.startswith(metadata_prefixes):
+            continue
+        if line.startswith(discard_prefixes) or any(fragment in line for fragment in discard_fragments):
+            continue
+        if source_url:
+            line = line.replace(source_url, "").strip(" ｜|：:，,；;。")
+        for prefix in removable_prefixes:
+            if line.startswith(prefix):
+                line = line[len(prefix) :].strip()
+                break
+        if not line or line in seen:
+            continue
+        seen.add(line)
+        cleaned.append(line)
+    return "\n".join(cleaned)
 
 
 def _frame_text(frame: dict[str, Any]) -> str:

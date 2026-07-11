@@ -625,7 +625,88 @@ class FinanceAnalysisClientTests(unittest.TestCase):
         self.assertEqual(len(result.messages), 1)
         self.assertNotIn("东方财富 7×24 快讯原文转发", result.messages[0])
         self.assertNotIn(event.title, result.messages[0])
+        self.assertNotIn("尚待验证与风险", result.messages[0])
+        self.assertNotIn("接下来观察", result.messages[0])
+        self.assertNotIn("来源：", result.messages[0])
+        self.assertNotIn("发布时间：", result.messages[0])
+        self.assertEqual(result.messages[0].count(event.url), 1)
         self.assertTrue(result.messages[0].endswith(f"原文链接：{event.url}"))
+
+    def test_direct_news_analysis_removes_duplicate_metadata_and_template_labels(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        store = MarketEventStore(Path(temp_dir.name) / "direct_relay_cleanup.sqlite3")
+        event = MarketEvent(
+            provider="public_market",
+            event_id="public_news:test-analysis-cleanup",
+            published_at=1_783_667_400,
+            produced_at=1_783_667_405,
+            received_at=1_783_667_410,
+            code="GLOBAL.MARKET",
+            content_type="news_flash",
+            title="东方财富7×24快讯：海外市场出现新的政策信号",
+            source="东方财富 7×24 全球财经快讯",
+            url="https://finance.eastmoney.com/a/test-analysis-cleanup.html",
+            sentiment="unknown",
+            labels=("direct_relay", "optional_model_analysis", "source_report_only", "market_wide"),
+            sector_code="",
+            raw_hash=_hash("public_news:test-analysis-cleanup"),
+        )
+        record = store.upsert_event(event, now_ts=1_783_667_410).record
+        subscription = store.upsert_subscription(
+            subscription_id="direct-relay-cleanup-sub",
+            client="qq",
+            target_id="872732158",
+            is_group=True,
+            session_id="qq_group_shared_872732158",
+            profile_user_id="qq_group_shared_872732158",
+            finance_mode="push",
+            enabled=True,
+            filters={"include_market_wide": True},
+            delivery_policy={"level": "notify"},
+            now_ts=1_783_667_410,
+        )
+        from companion_v01.finance import FinanceAnalysisRequest, FinanceEventImportancePolicy
+
+        request = FinanceAnalysisRequest.create(
+            event_record=record,
+            subscription=subscription,
+            importance=FinanceEventImportancePolicy().evaluate(event=event, subscription=subscription),
+            requested_at=1_783_667_420,
+        )
+
+        class VerboseEngine:
+            memcore_manager = None
+
+            def process_turn(self, _payload):
+                return {
+                    "speech": "\n".join(
+                        [
+                            "已确认事实：海外市场出现新的政策信号。",
+                            "分析推断：短期可能影响风险偏好，但仍需核验政策细节。",
+                            "来源：东方财富 7×24 全球财经快讯｜发布时间：2026-07-11T21:58:40+08:00",
+                            f"原文链接：{event.url}",
+                            "接下来观察：等待更多信息。",
+                        ]
+                    )
+                }
+
+        result = AkaneFinanceAnalysisClient(
+            VerboseEngine(),
+            max_attempts=1,
+            retry_backoff_seconds=0,
+        ).analyze(request)
+
+        combined = "\n".join(result.messages)
+        self.assertTrue(result.ok)
+        self.assertIn("海外市场出现新的政策信号", combined)
+        self.assertIn("短期可能影响风险偏好", combined)
+        self.assertNotIn("已确认事实：", combined)
+        self.assertNotIn("分析推断：", combined)
+        self.assertNotIn("发布时间：", combined)
+        self.assertNotIn("等待更多信息", combined)
+        self.assertEqual(combined.count(event.url), 1)
+        self.assertTrue(combined.endswith(f"原文链接：{event.url}"))
 
     def test_direct_news_analysis_can_be_disabled_without_calling_engine(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
