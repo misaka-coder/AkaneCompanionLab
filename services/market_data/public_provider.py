@@ -14,6 +14,7 @@ from .provider import (
 from .public_akshare import AkShareETFAdapter
 from .public_instruments import (
     PUBLIC_INSTRUMENT_REGISTRY_AS_OF,
+    PublicInstrument,
     PublicInstrumentRegistry,
     build_default_public_instrument_registry,
 )
@@ -123,6 +124,26 @@ class PublicMarketProvider(MarketDataProvider):
                 )
             )
         return tuple(records)
+
+    def discover_securities(self, query: str, *, limit: int = 10) -> tuple[PublicInstrument, ...]:
+        """Verify candidate symbols through Yahoo search and add them to the runtime registry."""
+
+        if not self.yahoo_enabled or not self._dependency_probe("yfinance"):
+            return ()
+        discovered: list[PublicInstrument] = []
+        for quote in self.yahoo.search_quotes(query, max_results=limit):
+            instrument = _public_instrument_from_yahoo_quote(quote)
+            if instrument is None:
+                continue
+            try:
+                verified = self.registry.register_verified(instrument)
+            except (TypeError, ValueError):
+                continue
+            if verified not in discovered:
+                discovered.append(verified)
+            if len(discovered) >= max(1, min(20, int(limit))):
+                break
+        return tuple(discovered)
 
     def get_price_series(self, request: MarketSeriesRequest) -> MarketDataResponse[MarketSeries | None]:
         if not isinstance(request, MarketSeriesRequest):
@@ -238,6 +259,60 @@ class PublicMarketProvider(MarketDataProvider):
 
 def _dependency_available(package: str) -> bool:
     return importlib.util.find_spec(str(package or "")) is not None
+
+
+def _public_instrument_from_yahoo_quote(quote: dict) -> PublicInstrument | None:
+    quote_type = str(quote.get("quoteType") or quote.get("typeDisp") or "").strip().upper()
+    instrument_type = {"EQUITY": "equity", "ETF": "etf", "INDEX": "index"}.get(quote_type)
+    symbol = str(quote.get("symbol") or "").strip().upper()
+    if instrument_type is None or not symbol:
+        return None
+    exchange = str(quote.get("exchange") or "").strip().upper()
+    market, timezone, currency, canonical_code = _yahoo_market_identity(symbol, exchange)
+    if not market:
+        return None
+    display_name = str(quote.get("longname") or quote.get("shortname") or symbol).strip() or symbol
+    aliases = tuple(
+        dict.fromkeys(
+            item
+            for item in (
+                symbol,
+                symbol.split(".", 1)[0] if "." in symbol else "",
+                str(quote.get("shortname") or "").strip(),
+                str(quote.get("longname") or "").strip(),
+            )
+            if item
+        )
+    )
+    try:
+        return PublicInstrument(
+            canonical_code=canonical_code,
+            display_name=display_name,
+            instrument_type=instrument_type,
+            market=market,
+            exchange_timezone=timezone,
+            currency=currency,
+            route="yahoo",
+            vendor_symbol=symbol,
+            quote_delay_kind="delayed",
+            aliases=aliases,
+        )
+    except (TypeError, ValueError, MarketDataValidationError):
+        return None
+
+
+def _yahoo_market_identity(symbol: str, exchange: str) -> tuple[str, str, str, str]:
+    if symbol.endswith(".SZ") or exchange == "SHZ":
+        return "SZ", "Asia/Shanghai", "CNY", symbol
+    if symbol.endswith(".SS") or exchange == "SHH":
+        return "SH", "Asia/Shanghai", "CNY", symbol
+    if symbol.endswith(".HK") or exchange == "HKG":
+        return "HK", "Asia/Hong_Kong", "HKD", symbol
+    if symbol.endswith(".T") or exchange in {"JPX", "TYO"}:
+        return "JP", "Asia/Tokyo", "JPY", symbol
+    if exchange in {"NMS", "NGM", "NCM", "NYQ", "ASE", "PCX", "BTS"} or "." not in symbol:
+        return "US", "America/New_York", "USD", f"{symbol}.US"
+    return "", "", "", ""
 
 
 __all__ = ["PublicMarketProvider"]

@@ -343,6 +343,16 @@ class WebSearchToolHandlerTests(unittest.TestCase):
         self.assertIn("batch_search", followup)
         self.assertIn("extract", followup)
 
+    def test_transient_failure_invites_alternate_read_only_research(self) -> None:
+        handler = WebSearchToolHandler(config_base_dir="unused", mcp_tool_caller=object())
+
+        result = handler._failure("mcp_tool_call_timeout", "AnySearch MCP 调用超时。")
+
+        self.assertIn("换查询词", result.followup_context)
+        self.assertIn("拆小批次", result.followup_context)
+        self.assertIn("其它检索工具", result.followup_context)
+        self.assertNotIn("所有公开信息渠道都不可用", result.followup_context.split("不要把", 1)[0])
+
     def test_normalize_call_bounds_search_and_rejects_private_extract_url(self) -> None:
         handler = WebSearchToolHandler(config_base_dir="unused", mcp_tool_caller=object())
 

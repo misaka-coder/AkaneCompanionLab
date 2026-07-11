@@ -57,6 +57,39 @@ class MarketDataToolService:
                 limit=limit,
             )
         )
+        if not candidates:
+            discover = getattr(self.provider, "discover_securities", None)
+            if callable(discover):
+                try:
+                    discovered = tuple(discover(query, limit=limit) or ())
+                except Exception:
+                    discovered = ()
+                now_ts = max(1, int(self._clock()))
+                for instrument in discovered:
+                    try:
+                        self.event_store.upsert_security(
+                            provider=self.provider.id,
+                            code=instrument.canonical_code,
+                            display_name=instrument.display_name,
+                            aliases=instrument.aliases,
+                            market=instrument.market,
+                            security_type=instrument.instrument_type,
+                            source="Yahoo Finance Search (runtime verified)",
+                            as_of=now_ts,
+                            now_ts=now_ts,
+                        )
+                    except Exception:
+                        continue
+                if discovered:
+                    candidates = list(
+                        self.event_store.resolve_security(
+                            query,
+                            provider=self.provider.id,
+                            profile_user_id=profile_user_id,
+                            session_id=session_id,
+                            limit=limit,
+                        )
+                    )
         by_code: dict[str, dict[str, Any]] = {}
         match_priority = {"exact": 0, "embedded": 1, "partial": 2}
         for candidate in candidates:
@@ -191,8 +224,7 @@ class MarketDataToolService:
             exact_codes = {
                 str(candidate.get("code") or "").strip().upper()
                 for candidate in candidates
-                if str(candidate.get("match_type") or "") == "exact"
-                and str(candidate.get("code") or "").strip()
+                if str(candidate.get("match_type") or "") == "exact" and str(candidate.get("code") or "").strip()
             }
             resolved_code = next(iter(exact_codes)) if len(exact_codes) == 1 else clean_code
             if len(exact_codes) == 1:
@@ -246,7 +278,9 @@ class MarketDataToolService:
         else:
             provider_reason = "provider query skipped because explicit codes and content_types were not both supplied"
 
-        events = sorted(by_id.values(), key=lambda item: (item.published_at, item.event_id), reverse=True)[: request.limit]
+        events = sorted(by_id.values(), key=lambda item: (item.published_at, item.event_id), reverse=True)[
+            : request.limit
+        ]
         if events:
             reason_parts = []
             if provider_status not in {"ok", "empty", "not_queried"}:
@@ -352,11 +386,7 @@ def compute_quote_metrics(quote: MarketQuoteSnapshot) -> dict[str, float | None]
 def compute_series_metrics(series: MarketSeries) -> dict[str, Any]:
     points = series.points
     closes = [point.close for point in points]
-    returns = [
-        (closes[index] / closes[index - 1]) - 1.0
-        for index in range(1, len(closes))
-        if closes[index - 1] != 0
-    ]
+    returns = [(closes[index] / closes[index - 1]) - 1.0 for index in range(1, len(closes)) if closes[index - 1] != 0]
     interval_return_pct = ((closes[-1] / closes[0]) - 1.0) * 100.0 if len(closes) >= 2 and closes[0] else None
     latest_return_pct = returns[-1] * 100.0 if returns else None
     max_high = max(point.high for point in points)

@@ -795,6 +795,77 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(captured["native_tools"], [schema])
         self.assertEqual(captured["native_tool_choice"], "auto")
 
+    def test_stream_final_response_discards_fallback_attempt_before_qq_delivery(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        prompts = []
+        metrics = []
+
+        class FakeLLM:
+            def stream_chat_json(self, **kwargs):
+                prompts.append(kwargs["user_prompt"])
+                if len(prompts) == 1:
+                    yield {"type": "speech_segment", "text": "我在认真听你说，要不要再多告诉我一点？"}
+                    return SimpleNamespace(
+                        parsed={"speech": "我在认真听你说，要不要再多告诉我一点？", "tool_call": None},
+                        error="",
+                        latest_emotion="",
+                        latest_speech="",
+                        latest_reply_medium="",
+                    )
+                yield {"type": "speech_segment", "text": "这是重试后的完整答复。"}
+                return SimpleNamespace(
+                    parsed={"speech": "这是重试后的完整答复。", "tool_call": None},
+                    error="",
+                    latest_emotion="",
+                    latest_speech="",
+                    latest_reply_medium="",
+                )
+
+            def record_metric(self, name):
+                metrics.append(name)
+
+        engine.llm = FakeLLM()
+        engine._prepare_final_response_context = lambda **_kwargs: {
+            "system_prompt": "system",
+            "user_prompt": "user",
+            "fallback": {"speech": "我在认真听你说，要不要再多告诉我一点？", "tool_call": None},
+            "visual_defaults": {},
+            "debug_enabled": False,
+            "allow_tool_call": True,
+            "native_tools": [],
+            "native_tool_choice": "",
+            "system_extra_blocks": [],
+            "history_turns": [],
+            "prompt_audit_sections": [],
+        }
+        engine._resolve_turn_speaker_identity = lambda *_args, **_kwargs: {"assistant_name": "Akane"}
+        engine._normalize_final_output = lambda **kwargs: kwargs["result"]
+
+        events, result = exhaust_generator_return(
+            engine._stream_final_response(
+                session_id="s",
+                profile_user_id="u",
+                user_message="查一下天气",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=0,
+            )
+        )
+
+        self.assertEqual(
+            events,
+            [
+                {"type": "turn_start", "speaker": "Akane"},
+                {"type": "speech_segment", "text": "这是重试后的完整答复。"},
+            ],
+        )
+        self.assertEqual(result["speech"], "这是重试后的完整答复。")
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("最终答复修复重试", prompts[1])
+        self.assertEqual(metrics, ["chat_final_response_retries"])
+
     def test_tool_working_stream_event_is_in_progress_only(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
 
@@ -806,12 +877,50 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(event["tool_type"], "web_search")
         self.assertNotIn("done", str(event).lower())
 
-    def test_unavailable_tool_event_stops_more_tool_rounds(self) -> None:
+    def test_final_fallback_and_progress_placeholders_are_retryable(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
 
         self.assertTrue(
+            engine._is_retryable_final_output({"speech": "我在认真听你说，要不要再多告诉我一点？", "tool_call": None})
+        )
+        self.assertTrue(engine._is_retryable_final_output({"speech": "还没处理完", "tool_call": None}))
+        self.assertTrue(
+            engine._is_retryable_final_output(
+                {"speech": "已有完整答复。", "tool_call": None},
+                parse_fallback=True,
+            )
+        )
+        self.assertFalse(
+            engine._is_retryable_final_output(
+                {"speech": "我继续查一下。", "tool_call": {"type": "web_search", "query": "日经225"}}
+            )
+        )
+        self.assertFalse(
+            engine._is_retryable_final_output({"speech": "这是基于现有证据形成的完整结论。", "tool_call": None})
+        )
+
+    def test_transient_web_search_failure_allows_alternate_research_round(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+
+        self.assertFalse(
             engine._should_stop_after_tool_events(
-                [{"type": "web_search_completed", "status": "unavailable", "reason": "timeout"}]
+                [
+                    {
+                        "type": "web_search_completed",
+                        "status": "unavailable",
+                        "reason": "mcp_tool_call_timeout",
+                    }
+                ]
+            )
+        )
+        self.assertTrue(
+            engine._should_stop_after_tool_events(
+                [{"type": "web_search_completed", "status": "unavailable", "reason": "missing_config"}]
+            )
+        )
+        self.assertTrue(
+            engine._should_stop_after_tool_events(
+                [{"type": "other_tool_completed", "status": "unavailable", "reason": "timeout"}]
             )
         )
         self.assertFalse(engine._should_stop_after_tool_events([{"type": "web_search_completed", "status": "ok"}]))

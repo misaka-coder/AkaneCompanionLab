@@ -2355,10 +2355,13 @@ class AkaneMemoryEngine:
             )
 
             finance_no_progress = self._should_stop_for_finance_no_progress(tool_results)
-            stop_after_tool = self._should_stop_after_tool_events(
-                _current_events,
-                domain_profile_id=turn_domain_profile_id,
-            ) or finance_no_progress
+            stop_after_tool = (
+                self._should_stop_after_tool_events(
+                    _current_events,
+                    domain_profile_id=turn_domain_profile_id,
+                )
+                or finance_no_progress
+            )
             allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = self._build_final_response(
                 session_id=session_id,
@@ -2808,10 +2811,13 @@ class AkaneMemoryEngine:
                 yield stream_event
 
             finance_no_progress = self._should_stop_for_finance_no_progress(tool_results)
-            stop_after_tool = self._should_stop_after_tool_events(
-                current_events,
-                domain_profile_id=turn_domain_profile_id,
-            ) or finance_no_progress
+            stop_after_tool = (
+                self._should_stop_after_tool_events(
+                    current_events,
+                    domain_profile_id=turn_domain_profile_id,
+                )
+                or finance_no_progress
+            )
             allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = yield from self._stream_final_response(
                 session_id=session_id,
@@ -3150,32 +3156,79 @@ class AkaneMemoryEngine:
             post_user_turns=post_user_turns,
             domain_profile_id=domain_profile_id,
         )
-        result = self.llm.call_chat_json(
-            system_prompt=str(generation_context["system_prompt"]),
-            user_prompt=str(generation_context["user_prompt"]),
-            fallback=dict(generation_context["fallback"]),
-            temperature=0.7,
-            prompt_cache_key="chat:final",
-            user_images=user_images,
-            system_extra_blocks=generation_context.get("system_extra_blocks"),
-            history_turns=generation_context.get("history_turns"),
-            post_user_turns=generation_context.get("post_user_turns"),
-            prompt_audit_sections=generation_context.get("prompt_audit_sections"),
-            native_tools=generation_context.get("native_tools"),
-            native_tool_choice=generation_context.get("native_tool_choice", ""),
-            chat_model_override=chat_model_override,
-        )
-        return self._normalize_final_output(
-            result=result,
-            visual_defaults=dict(generation_context["visual_defaults"]),
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            client_context=client_context,
-            resource_manifest=resource_manifest,
-            allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
-            debug_enabled=bool(generation_context["debug_enabled"]),
-            user_message=user_message,
-        )
+        max_attempts = max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
+        normalized: dict[str, Any] = {}
+        for attempt in range(1, max_attempts + 1):
+            metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
+            retry_note = ""
+            if attempt > 1:
+                retry_note = (
+                    "\n\n【最终答复修复重试】上一次生成没有形成有效、可交付的最终答复。"
+                    "请重新基于当前消息、已有工具结果和证据完成回答；保持规定输出格式，"
+                    "不要只输出通用兜底语、处理中占位语或未完成声明。"
+                    "是否继续调用工具仍由你根据现有证据和可用工具自主判断。"
+                )
+            result = self.llm.call_chat_json(
+                system_prompt=str(generation_context["system_prompt"]),
+                user_prompt=str(generation_context["user_prompt"]) + retry_note,
+                fallback=dict(generation_context["fallback"]),
+                temperature=0.7,
+                prompt_cache_key="chat:final",
+                user_images=user_images,
+                system_extra_blocks=generation_context.get("system_extra_blocks"),
+                history_turns=generation_context.get("history_turns"),
+                post_user_turns=generation_context.get("post_user_turns"),
+                prompt_audit_sections=generation_context.get("prompt_audit_sections"),
+                native_tools=generation_context.get("native_tools"),
+                native_tool_choice=generation_context.get("native_tool_choice", ""),
+                chat_model_override=chat_model_override,
+            )
+            metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
+            parse_fallback = int(metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
+                metrics_before.get("chat_json_fallbacks", 0) or 0
+            )
+            normalized = self._normalize_final_output(
+                result=result,
+                visual_defaults=dict(generation_context["visual_defaults"]),
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
+                debug_enabled=bool(generation_context["debug_enabled"]),
+                user_message=user_message,
+            )
+            if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
+                return normalized
+            if attempt < max_attempts and hasattr(self.llm, "record_metric"):
+                self.llm.record_metric("chat_final_response_retries")
+        normalized["_transient_final_failure"] = True
+        return normalized
+
+    def _is_retryable_final_output(self, output: Any, *, parse_fallback: bool = False) -> bool:
+        if not isinstance(output, dict):
+            return True
+        if output.get("tool_call") or output.get(NATIVE_TOOL_CALL_FIELD):
+            return False
+        text = str(output.get("speech") or "").strip()
+        compact = "".join(text.split())
+        if not compact:
+            return True
+        if parse_fallback:
+            return True
+        if len(compact) <= 160 and any(
+            marker in compact
+            for marker in (
+                "我在认真听你说",
+                "要不要再多告诉我一点",
+                "还没处理完",
+                "尚未处理完",
+                "正在处理中",
+                "稍后给你结果",
+            )
+        ):
+            return True
+        return False
 
     def _stream_final_response(
         self,
@@ -3229,55 +3282,92 @@ class AkaneMemoryEngine:
             "type": "turn_start",
             "speaker": speaker_identity["assistant_name"],
         }
-        stream_result = yield from self.llm.stream_chat_json(
-            system_prompt=str(generation_context["system_prompt"]),
-            user_prompt=str(generation_context["user_prompt"]),
-            fallback=dict(generation_context["fallback"]),
-            temperature=0.7,
-            prompt_cache_key="chat:final",
-            user_images=user_images,
-            native_tools=generation_context.get("native_tools"),
-            native_tool_choice=generation_context.get("native_tool_choice", ""),
-            system_extra_blocks=generation_context.get("system_extra_blocks"),
-            history_turns=generation_context.get("history_turns"),
-            post_user_turns=generation_context.get("post_user_turns"),
-            prompt_audit_sections=generation_context.get("prompt_audit_sections"),
-            chat_model_override=chat_model_override,
-            early_tool_call_validator=(
-                lambda call: (
-                    self._normalize_tool_call(
-                        call,
-                        client_context=client_context,
-                        profile_user_id=profile_user_id,
-                        session_id=session_id,
-                        domain_profile_id=domain_profile_id,
-                    )
-                    is not None
+        max_attempts = max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
+        normalized: dict[str, Any] = {}
+        buffered_events: list[dict[str, Any]] = []
+        stream_result: Any = None
+        for attempt in range(1, max_attempts + 1):
+            metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
+            retry_note = ""
+            if attempt > 1:
+                retry_note = (
+                    "\n\n【最终答复修复重试】上一次生成没有形成有效、可交付的最终答复。"
+                    "请重新基于当前消息、已有工具结果和证据完成回答；保持规定输出格式，"
+                    "不要只输出通用兜底语、处理中占位语或未完成声明。"
+                    "是否继续调用工具仍由你根据现有证据和可用工具自主判断。"
                 )
+            iterator = self.llm.stream_chat_json(
+                system_prompt=str(generation_context["system_prompt"]),
+                user_prompt=str(generation_context["user_prompt"]) + retry_note,
+                fallback=dict(generation_context["fallback"]),
+                temperature=0.7,
+                prompt_cache_key="chat:final",
+                user_images=user_images,
+                native_tools=generation_context.get("native_tools"),
+                native_tool_choice=generation_context.get("native_tool_choice", ""),
+                system_extra_blocks=generation_context.get("system_extra_blocks"),
+                history_turns=generation_context.get("history_turns"),
+                post_user_turns=generation_context.get("post_user_turns"),
+                prompt_audit_sections=generation_context.get("prompt_audit_sections"),
+                chat_model_override=chat_model_override,
+                early_tool_call_validator=(
+                    lambda call: (
+                        self._normalize_tool_call(
+                            call,
+                            client_context=client_context,
+                            profile_user_id=profile_user_id,
+                            session_id=session_id,
+                            domain_profile_id=domain_profile_id,
+                        )
+                        is not None
+                    )
+                )
+                if bool(generation_context.get("allow_tool_call", allow_tool_call))
+                else None,
             )
-            if bool(generation_context.get("allow_tool_call", allow_tool_call))
-            else None,
-        )
-        if str(stream_result.error or "").strip():
+            current_events: list[dict[str, Any]] = []
+            while True:
+                try:
+                    event = next(iterator)
+                except StopIteration as stop:
+                    stream_result = stop.value
+                    break
+                if isinstance(event, dict):
+                    current_events.append(event)
+            metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
+            parse_fallback = int(metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
+                metrics_before.get("chat_json_fallbacks", 0) or 0
+            )
+            normalized = self._normalize_final_output(
+                result=getattr(stream_result, "parsed", None),
+                visual_defaults=dict(generation_context["visual_defaults"]),
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                user_message=user_message,
+                allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
+                debug_enabled=bool(generation_context["debug_enabled"]),
+            )
+            buffered_events = current_events
+            if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
+                break
+            if attempt < max_attempts and hasattr(self.llm, "record_metric"):
+                self.llm.record_metric("chat_final_response_retries")
+        for event in buffered_events:
+            yield event
+        if stream_result is not None and str(getattr(stream_result, "error", "") or "").strip():
             yield {
                 "type": "stream_error",
                 "message": str(stream_result.error),
                 "partial": {
-                    "emotion": str(stream_result.latest_emotion or ""),
-                    "speech": str(stream_result.latest_speech or ""),
+                    "emotion": str(getattr(stream_result, "latest_emotion", "") or ""),
+                    "speech": str(getattr(stream_result, "latest_speech", "") or ""),
                 },
             }
-        return self._normalize_final_output(
-            result=stream_result.parsed,
-            visual_defaults=dict(generation_context["visual_defaults"]),
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            client_context=client_context,
-            resource_manifest=resource_manifest,
-            user_message=user_message,
-            allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
-            debug_enabled=bool(generation_context["debug_enabled"]),
-        )
+        if self._is_retryable_final_output(normalized):
+            normalized["_transient_final_failure"] = True
+        return normalized
 
     def _prepare_final_response_context(
         self,
@@ -4005,12 +4095,24 @@ class AkaneMemoryEngine:
                     public_yahoo_enabled=bool(getattr(config, "FINANCE_PUBLIC_MARKET_YAHOO_ENABLED", True)),
                     public_akshare_enabled=bool(getattr(config, "FINANCE_PUBLIC_MARKET_AKSHARE_ENABLED", True)),
                     public_timeout_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_TIMEOUT_SECONDS", 8.0) or 8.0),
-                    public_cache_max_entries=int(getattr(config, "FINANCE_PUBLIC_MARKET_CACHE_MAX_ENTRIES", 256) or 256),
-                    public_yahoo_series_ttl_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_YAHOO_SERIES_TTL_SECONDS", 900.0) or 900.0),
-                    public_yahoo_quote_ttl_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_YAHOO_QUOTE_TTL_SECONDS", 60.0) or 60.0),
-                    public_akshare_series_ttl_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_AKSHARE_SERIES_TTL_SECONDS", 300.0) or 300.0),
-                    public_akshare_quote_ttl_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_AKSHARE_QUOTE_TTL_SECONDS", 15.0) or 15.0),
-                    public_failure_ttl_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_FAILURE_TTL_SECONDS", 15.0) or 15.0),
+                    public_cache_max_entries=int(
+                        getattr(config, "FINANCE_PUBLIC_MARKET_CACHE_MAX_ENTRIES", 256) or 256
+                    ),
+                    public_yahoo_series_ttl_seconds=float(
+                        getattr(config, "FINANCE_PUBLIC_MARKET_YAHOO_SERIES_TTL_SECONDS", 900.0) or 900.0
+                    ),
+                    public_yahoo_quote_ttl_seconds=float(
+                        getattr(config, "FINANCE_PUBLIC_MARKET_YAHOO_QUOTE_TTL_SECONDS", 60.0) or 60.0
+                    ),
+                    public_akshare_series_ttl_seconds=float(
+                        getattr(config, "FINANCE_PUBLIC_MARKET_AKSHARE_SERIES_TTL_SECONDS", 300.0) or 300.0
+                    ),
+                    public_akshare_quote_ttl_seconds=float(
+                        getattr(config, "FINANCE_PUBLIC_MARKET_AKSHARE_QUOTE_TTL_SECONDS", 15.0) or 15.0
+                    ),
+                    public_failure_ttl_seconds=float(
+                        getattr(config, "FINANCE_PUBLIC_MARKET_FAILURE_TTL_SECONDS", 15.0) or 15.0
+                    ),
                 )
             )
             event_store = MarketEventStore(db_path)

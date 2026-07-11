@@ -15,6 +15,7 @@ READ-ONLY: this module never writes config. Editing is a later slice and must
 follow the model-service pattern (store + apply + reload + local-request gate +
 secret redaction); see companion_v01/routes/model_services.py.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -23,8 +24,8 @@ from typing import Any
 import config
 
 # How a change to a setting takes effect — drives the (future) editing UX.
-SCOPE_RUNTIME = "runtime"               # read per request/use -> takes effect live
-SCOPE_RESTART = "restart"               # only projected at startup -> needs restart/reload
+SCOPE_RUNTIME = "runtime"  # read per request/use -> takes effect live
+SCOPE_RESTART = "restart"  # only projected at startup -> needs restart/reload
 SCOPE_RESTART_CLIENT = "restart_client"  # read when a subsystem/client is built -> rebuild that
 
 VALID_SCOPES = frozenset({SCOPE_RUNTIME, SCOPE_RESTART, SCOPE_RESTART_CLIENT})
@@ -124,15 +125,42 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("MEMCORE_ENABLE_FLAVOR", _MEM, SCOPE_RESTART_CLIENT, "memcore 情绪/口吻温度层"),
     _s("MEMCORE_SHADOW_COMPARE", _MEM, SCOPE_RUNTIME, "memcore 影子检索对比（不改变回复）"),
     # LLM 密钥 & 接入（密钥/接入由模型服务页管理）
-    _s("TEXT_API_KEY", _LLM, SCOPE_RESTART_CLIENT, "TEXT（辅助任务）API Key", sensitive=True, managed_in=MANAGED_MODEL_SERVICE),
+    _s(
+        "TEXT_API_KEY",
+        _LLM,
+        SCOPE_RESTART_CLIENT,
+        "TEXT（辅助任务）API Key",
+        sensitive=True,
+        managed_in=MANAGED_MODEL_SERVICE,
+    ),
     _s("TEXT_BASE_URL", _LLM, SCOPE_RESTART_CLIENT, "TEXT base_url", managed_in=MANAGED_MODEL_SERVICE),
     _s("TEXT_MODEL_NAME", _LLM, SCOPE_RESTART_CLIENT, "TEXT 模型名", managed_in=MANAGED_MODEL_SERVICE),
-    _s("TEXT_API_PROTOCOL", _LLM, SCOPE_RESTART_CLIENT, "TEXT 协议：auto/openai/anthropic/ollama", managed_in=MANAGED_MODEL_SERVICE),
-    _s("AUX_API_KEY", _LLM, SCOPE_RESTART_CLIENT, "AUX（额外辅助）API Key", sensitive=True, managed_in=MANAGED_MODEL_SERVICE),
+    _s(
+        "TEXT_API_PROTOCOL",
+        _LLM,
+        SCOPE_RESTART_CLIENT,
+        "TEXT 协议：auto/openai/anthropic/ollama",
+        managed_in=MANAGED_MODEL_SERVICE,
+    ),
+    _s(
+        "AUX_API_KEY",
+        _LLM,
+        SCOPE_RESTART_CLIENT,
+        "AUX（额外辅助）API Key",
+        sensitive=True,
+        managed_in=MANAGED_MODEL_SERVICE,
+    ),
     _s("AUX_BASE_URL", _LLM, SCOPE_RESTART_CLIENT, "AUX base_url", managed_in=MANAGED_MODEL_SERVICE),
     _s("AUX_MODEL_NAME", _LLM, SCOPE_RESTART_CLIENT, "AUX 模型名", managed_in=MANAGED_MODEL_SERVICE),
     _s("AUX_API_PROTOCOL", _LLM, SCOPE_RESTART_CLIENT, "AUX 协议", managed_in=MANAGED_MODEL_SERVICE),
-    _s("CHAT_API_KEY", _LLM, SCOPE_RESTART_CLIENT, "CHAT（聊天对话）API Key", sensitive=True, managed_in=MANAGED_MODEL_SERVICE),
+    _s(
+        "CHAT_API_KEY",
+        _LLM,
+        SCOPE_RESTART_CLIENT,
+        "CHAT（聊天对话）API Key",
+        sensitive=True,
+        managed_in=MANAGED_MODEL_SERVICE,
+    ),
     _s("CHAT_BASE_URL", _LLM, SCOPE_RESTART_CLIENT, "CHAT base_url", managed_in=MANAGED_MODEL_SERVICE),
     _s("CHAT_MODEL_NAME", _LLM, SCOPE_RESTART_CLIENT, "CHAT 主模型名", managed_in=MANAGED_MODEL_SERVICE),
     _s("CHAT_API_PROTOCOL", _LLM, SCOPE_RESTART_CLIENT, "CHAT 协议", managed_in=MANAGED_MODEL_SERVICE),
@@ -156,19 +184,45 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("TTS_PITCH", _TTS, SCOPE_RESTART_CLIENT, "Edge TTS 音调"),
     _s("WHISPER_CACHE_DIR", _TTS, SCOPE_RESTART_CLIENT, "Whisper / faster-whisper 模型缓存目录（留空=默认）"),
     _s("STREAMING_TTS_ENABLED", _TTS, SCOPE_RUNTIME, "流式 TTS（边生成边播放）", managed_in=MANAGED_CAPABILITIES),
-    _s("GPT_SOVITS_TTS_TIMEOUT_SECONDS", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 请求超时（秒）", managed_in=MANAGED_CAPABILITIES),
+    _s(
+        "GPT_SOVITS_TTS_TIMEOUT_SECONDS",
+        _TTS,
+        SCOPE_RUNTIME,
+        "GPT-SoVITS 请求超时（秒）",
+        managed_in=MANAGED_CAPABILITIES,
+    ),
     _s("GPT_SOVITS_TEXT_LANG", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 文本语言", managed_in=MANAGED_CAPABILITIES),
     _s("GPT_SOVITS_MEDIA_TYPE", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 输出媒体类型", managed_in=MANAGED_CAPABILITIES),
     _s("GPT_SOVITS_STREAMING_MODE", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 流式模式", managed_in=MANAGED_CAPABILITIES),
-    _s("GPT_SOVITS_PARALLEL_INFER", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 并行推理（可空）", managed_in=MANAGED_CAPABILITIES),
+    _s(
+        "GPT_SOVITS_PARALLEL_INFER", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 并行推理（可空）", managed_in=MANAGED_CAPABILITIES
+    ),
     _s("GPT_SOVITS_SPLIT_BUCKET", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 分桶（可空）", managed_in=MANAGED_CAPABILITIES),
     _s("GPT_SOVITS_BATCH_SIZE", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 批大小（可空）", managed_in=MANAGED_CAPABILITIES),
     _s("GPT_SOVITS_SPEED_FACTOR", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 语速系数（可空）", managed_in=MANAGED_CAPABILITIES),
-    _s("GPT_SOVITS_FRAGMENT_INTERVAL", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 片段间隔（可空）", managed_in=MANAGED_CAPABILITIES),
+    _s(
+        "GPT_SOVITS_FRAGMENT_INTERVAL",
+        _TTS,
+        SCOPE_RUNTIME,
+        "GPT-SoVITS 片段间隔（可空）",
+        managed_in=MANAGED_CAPABILITIES,
+    ),
     _s("GPT_SOVITS_TEXT_SPLIT_METHOD", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 文本切分方法", managed_in=MANAGED_CAPABILITIES),
     # 系统音乐感知 / 在线歌词
-    _s("MUSIC_ONLINE_LYRICS_ENABLED", _MUS, SCOPE_RUNTIME, "允许按系统媒体歌名/歌手访问在线歌词", managed_in=MANAGED_CAPABILITIES),
-    _s("MUSIC_ONLINE_LYRICS_PROVIDERS", _MUS, SCOPE_RUNTIME, "歌词 provider 顺序（逗号分隔）", managed_in=MANAGED_CAPABILITIES),
+    _s(
+        "MUSIC_ONLINE_LYRICS_ENABLED",
+        _MUS,
+        SCOPE_RUNTIME,
+        "允许按系统媒体歌名/歌手访问在线歌词",
+        managed_in=MANAGED_CAPABILITIES,
+    ),
+    _s(
+        "MUSIC_ONLINE_LYRICS_PROVIDERS",
+        _MUS,
+        SCOPE_RUNTIME,
+        "歌词 provider 顺序（逗号分隔）",
+        managed_in=MANAGED_CAPABILITIES,
+    ),
     # 公开访问保护 & 限流（启动时构造 guard）
     _s("PUBLIC_GUARD_ENABLED", _PUB, SCOPE_RESTART_CLIENT, "公开访问保护总开关"),
     _s("MAX_CONCURRENT_THINKS", _PUB, SCOPE_RESTART_CLIENT, "最大并发 /think 请求数"),
@@ -178,6 +232,8 @@ _SPECS: tuple[SettingSpec, ...] = (
     # 工具调用 & 后台任务
     _s("MAX_TOOL_ROUNDS", _TOOL, SCOPE_RUNTIME, "同轮对话最大工具调用轮次（防循环）"),
     _s("ENABLE_NATIVE_TOOL_DECISION", _TOOL, SCOPE_RUNTIME, "native tool 通道总开关（默认关、fail-closed）"),
+    _s("WEB_SEARCH_MCP_TIMEOUT_SECONDS", _TOOL, SCOPE_RESTART_CLIENT, "AnySearch MCP 单次调用超时（秒）"),
+    _s("CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", _TOOL, SCOPE_RUNTIME, "最终答复异常时的最大生成次数"),
     _s("NATIVE_TOOL_DECISION_ALLOWLIST", _TOOL, SCOPE_RUNTIME, "native tool 允许列表（逗号分隔，只读类工具）"),
     _s("NATIVE_TOOL_PROVIDER_ALLOWLIST", _TOOL, SCOPE_RUNTIME, "native provider/model 允许列表（host:model[:json]）"),
     _s("MAX_WEB_RESEARCH_TOOL_ROUNDS", _TOOL, SCOPE_RUNTIME, "联网搜索/网页提取同轮扩展预算"),
@@ -250,7 +306,13 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("BACKGROUND_ATTACHMENT_WORKERS", _BG, SCOPE_RESTART_CLIENT, "附件处理并发 Worker 数"),
     # 远程媒体 (yt-dlp)
     _s("REMOTE_MEDIA_YTDLP_COOKIEFILE", _RM, SCOPE_RUNTIME, "Cookie 文件路径（需登录的平台）", sensitive=True),
-    _s("REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER", _RM, SCOPE_RUNTIME, "从浏览器读取 cookie（如 chrome）", sensitive=True),
+    _s(
+        "REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER",
+        _RM,
+        SCOPE_RUNTIME,
+        "从浏览器读取 cookie（如 chrome）",
+        sensitive=True,
+    ),
     _s("REMOTE_MEDIA_YTDLP_USER_AGENT", _RM, SCOPE_RUNTIME, "自定义 User-Agent"),
     _s("REMOTE_MEDIA_YTDLP_REFERER", _RM, SCOPE_RUNTIME, "Referer 头"),
     # Web 身份模式
@@ -281,12 +343,7 @@ def is_runtime_editable(key: str) -> bool:
     capabilities page stay read-only here so the same value never has two
     competing edit surfaces — the catalog links to that page instead."""
     spec = _SPEC_BY_KEY.get(key)
-    return bool(
-        spec is not None
-        and spec.scope == SCOPE_RUNTIME
-        and not spec.sensitive
-        and not spec.managed_in
-    )
+    return bool(spec is not None and spec.scope == SCOPE_RUNTIME and not spec.sensitive and not spec.managed_in)
 
 
 def _type_label(field: Any) -> str:

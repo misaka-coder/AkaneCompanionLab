@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import threading
 import unicodedata
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -10,7 +11,7 @@ from .types import MarketDataValidationError
 
 
 PUBLIC_INSTRUMENT_ROUTES = frozenset({"yahoo", "akshare_etf"})
-PUBLIC_INSTRUMENT_TYPES = frozenset({"index", "etf"})
+PUBLIC_INSTRUMENT_TYPES = frozenset({"index", "etf", "equity"})
 PUBLIC_QUOTE_DELAY_KINDS = frozenset({"delayed", "end_of_day", "unknown"})
 PUBLIC_INSTRUMENT_REGISTRY_AS_OF = 1_783_699_200
 
@@ -124,7 +125,7 @@ class PublicInstrumentResolution:
 
 
 class PublicInstrumentRegistry:
-    """Immutable canonical-code and exact-alias registry for public market adapters."""
+    """Canonical-code and exact-alias registry with a verified runtime overlay."""
 
     def __init__(self, instruments: tuple[PublicInstrument, ...] | list[PublicInstrument]) -> None:
         records = tuple(instruments or ())
@@ -163,9 +164,44 @@ class PublicInstrumentRegistry:
                     f"tracking target must be an index for {instrument.canonical_code}: {instrument.tracking_target}"
                 )
 
+        self._lock = threading.RLock()
         self._records = tuple(sorted(records, key=lambda item: item.canonical_code))
         self._by_code = dict(by_code)
         self._aliases = {key: tuple(dict.fromkeys(codes)) for key, codes in aliases.items()}
+        self._vendor_keys = set(vendor_keys)
+
+    def register_verified(self, instrument: PublicInstrument) -> PublicInstrument:
+        """Add one provider-verified instrument without replacing an existing identity."""
+
+        if not isinstance(instrument, PublicInstrument):
+            raise TypeError("public instrument registry only accepts PublicInstrument values")
+        with self._lock:
+            existing = self._by_code.get(instrument.canonical_code)
+            if existing is not None:
+                return existing
+            vendor_key = (instrument.route, instrument.vendor_symbol.casefold())
+            if vendor_key in self._vendor_keys:
+                raise ValueError(
+                    f"duplicate public vendor symbol for route {instrument.route}: {instrument.vendor_symbol}"
+                )
+            if instrument.tracking_target:
+                target = self._by_code.get(instrument.tracking_target)
+                if target is None or target.instrument_type != "index":
+                    raise ValueError(
+                        f"unknown or invalid tracking target for {instrument.canonical_code}: "
+                        f"{instrument.tracking_target}"
+                    )
+            self._by_code[instrument.canonical_code] = instrument
+            self._vendor_keys.add(vendor_key)
+            self._records = tuple(sorted((*self._records, instrument), key=lambda item: item.canonical_code))
+            aliases = dict(self._aliases)
+            for alias in (instrument.canonical_code, instrument.display_name, *instrument.aliases):
+                normalized = normalize_public_instrument_alias(alias)
+                if not normalized:
+                    continue
+                aliases[normalized] = tuple(dict.fromkeys((*aliases.get(normalized, ()), instrument.canonical_code)))
+            self._aliases = aliases
+            return instrument
 
     def all(self, *, active_only: bool = True) -> tuple[PublicInstrument, ...]:
         if not active_only:
@@ -209,11 +245,7 @@ class PublicInstrumentRegistry:
             return PublicInstrumentResolution(query=clean_query, status="resolved", candidates=(direct,))
         normalized = normalize_public_instrument_alias(clean_query)
         codes = self._aliases.get(normalized, ()) if normalized else ()
-        candidates = tuple(
-            self._by_code[code]
-            for code in codes
-            if include_inactive or self._by_code[code].active
-        )
+        candidates = tuple(self._by_code[code] for code in codes if include_inactive or self._by_code[code].active)
         status = "resolved" if len(candidates) == 1 else "ambiguous" if candidates else "not_found"
         return PublicInstrumentResolution(query=clean_query, status=status, candidates=candidates)
 
@@ -322,6 +354,54 @@ def build_default_public_instrument_registry() -> PublicInstrumentRegistry:
                 quote_delay_kind="unknown",
                 aliases=("513520", "华夏野村日经225ETF", "日经225ETF华夏"),
                 tracking_target="NIKKEI225.INDEX",
+            ),
+            PublicInstrument(
+                canonical_code="002594.SZ",
+                display_name="比亚迪股份A股",
+                instrument_type="equity",
+                market="SZ",
+                exchange_timezone="Asia/Shanghai",
+                currency="CNY",
+                route="yahoo",
+                vendor_symbol="002594.SZ",
+                quote_delay_kind="delayed",
+                aliases=("002594", "比亚迪", "比亚迪A股", "比亚迪股份A股", "BYD A Share"),
+            ),
+            PublicInstrument(
+                canonical_code="1211.HK",
+                display_name="比亚迪股份港股",
+                instrument_type="equity",
+                market="HK",
+                exchange_timezone="Asia/Hong_Kong",
+                currency="HKD",
+                route="yahoo",
+                vendor_symbol="1211.HK",
+                quote_delay_kind="delayed",
+                aliases=("01211", "1211", "比亚迪", "比亚迪港股", "比亚迪股份港股", "BYD Company"),
+            ),
+            PublicInstrument(
+                canonical_code="600519.SS",
+                display_name="贵州茅台",
+                instrument_type="equity",
+                market="SH",
+                exchange_timezone="Asia/Shanghai",
+                currency="CNY",
+                route="yahoo",
+                vendor_symbol="600519.SS",
+                quote_delay_kind="delayed",
+                aliases=("600519", "茅台", "贵州茅台A股", "Kweichow Moutai"),
+            ),
+            PublicInstrument(
+                canonical_code="AAPL.US",
+                display_name="苹果公司",
+                instrument_type="equity",
+                market="US",
+                exchange_timezone="America/New_York",
+                currency="USD",
+                route="yahoo",
+                vendor_symbol="AAPL",
+                quote_delay_kind="delayed",
+                aliases=("AAPL", "苹果", "Apple", "Apple Inc."),
             ),
         ]
     )

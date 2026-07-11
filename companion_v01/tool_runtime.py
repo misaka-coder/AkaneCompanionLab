@@ -3486,7 +3486,9 @@ class WebSearchToolHandler(BaseToolHandler):
     ) -> None:
         self.config_base_dir = config_base_dir if config_base_dir is not None else getattr(config, "DATA_DIR", None)
         self.server_id = str(server_id or "anysearch").strip() or "anysearch"
-        self.mcp_tool_caller = mcp_tool_caller or McpStdioToolCaller(timeout_seconds=20)
+        self.mcp_tool_caller = mcp_tool_caller or McpStdioToolCaller(
+            timeout_seconds=float(getattr(config, "WEB_SEARCH_MCP_TIMEOUT_SECONDS", 35.0) or 35.0)
+        )
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -3877,12 +3879,22 @@ class WebSearchToolHandler(BaseToolHandler):
 
     def _failure(self, status: str, message: str) -> ToolExecutionResult:
         reason = str(status or "unavailable").strip()[:120]
+        transient = reason in {"mcp_tool_call_timeout", "mcp_call_failed"}
+        next_step = (
+            "如果仍有工具预算和其它安全的只读路径，可以换查询词、拆小批次、换公开来源或改用其它检索工具继续核验；"
+            "如果没有可用路径，再基于现有证据降级回答。"
+            if transient
+            else "这是配置、启用状态或其它当前不可恢复的问题，不要反复调用同一工具。"
+        )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=[
                 {"type": "web_search_completed", "provider": "anysearch", "status": "unavailable", "reason": reason}
             ],
-            followup_context=f"AnySearch 联网能力暂时不可用：{message} 状态：{reason}。请自然告知用户，并不要编造搜索结果。",
+            followup_context=(
+                f"AnySearch 联网能力暂时不可用：{message} 状态：{reason}。{next_step}"
+                "不要编造搜索结果，也不要把一次来源失败说成所有公开信息渠道都不可用。"
+            ),
             state_updates={"web_search_status": "unavailable", "web_search_reason": reason},
         )
 

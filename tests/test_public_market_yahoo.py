@@ -103,6 +103,25 @@ class YahooFinanceAdapterTests(unittest.TestCase):
             },
         )
 
+    def test_search_quotes_returns_bounded_mapping_results(self) -> None:
+        calls = []
+
+        def searcher(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                quotes=[
+                    {"symbol": "002594.SZ", "quoteType": "EQUITY"},
+                    {"symbol": "1211.HK", "quoteType": "EQUITY"},
+                ]
+            )
+
+        adapter = YahooFinanceAdapter(searcher=searcher)
+
+        result = adapter.search_quotes("比亚迪代码", max_results=1)
+
+        self.assertEqual(result, ({"symbol": "002594.SZ", "quoteType": "EQUITY"},))
+        self.assertEqual(calls[0], {"query": "比亚迪代码", "max_results": 1, "news_count": 0})
+
     def test_daily_series_uses_canonical_code_and_preserves_provenance(self) -> None:
         calls = []
 
@@ -332,9 +351,7 @@ class YahooFinanceAdapterTests(unittest.TestCase):
             clock=lambda: FIXED_NOW,
         )
 
-        result = adapter.get_quote_snapshots(
-            MarketQuoteRequest(codes=("NIKKEI225.INDEX", "SP500.INDEX"))
-        )
+        result = adapter.get_quote_snapshots(MarketQuoteRequest(codes=("NIKKEI225.INDEX", "SP500.INDEX")))
 
         self.assertFalse(result.ok)
         self.assertEqual(result.status, "unavailable")
@@ -413,7 +430,11 @@ class YahooFinanceAdapterTests(unittest.TestCase):
         cases = (
             (missing, "unavailable", "optional_dependency_missing:yfinance"),
             (lambda **_kwargs: (_ for _ in ()).throw(CaptureTimeoutError()), "unavailable", "upstream_timeout:yahoo"),
-            (lambda **_kwargs: (_ for _ in ()).throw(YFRateLimitError()), "rate_limited", "upstream_rate_limited:yahoo"),
+            (
+                lambda **_kwargs: (_ for _ in ()).throw(YFRateLimitError()),
+                "rate_limited",
+                "upstream_rate_limited:yahoo",
+            ),
         )
         for downloader, status, reason in cases:
             with self.subTest(status=status, reason=reason):
@@ -433,9 +454,9 @@ class YahooFinanceAdapterTests(unittest.TestCase):
         )
         for frame in frames:
             with self.subTest(columns=frame.columns):
-                result = YahooFinanceAdapter(downloader=lambda **_kwargs: frame, clock=lambda: FIXED_NOW).get_price_series(
-                    MarketSeriesRequest(code="NIKKEI225.INDEX", limit=5)
-                )
+                result = YahooFinanceAdapter(
+                    downloader=lambda **_kwargs: frame, clock=lambda: FIXED_NOW
+                ).get_price_series(MarketSeriesRequest(code="NIKKEI225.INDEX", limit=5))
                 self.assertFalse(result.ok)
                 self.assertEqual(result.status, "unavailable")
                 self.assertTrue(result.reason.startswith("upstream_schema_changed:yahoo_v1:"))

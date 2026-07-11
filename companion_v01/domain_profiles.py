@@ -85,6 +85,7 @@ FINANCE_PROMPT_BLOCK = """【金融领域档案 finance_v1】
 - 先理解用户真正要核对的是行情数字、新闻背景、网页原文还是综合分析，再自主选择行情工具、web_search、网页提取或多工具组合。用户明确要求使用基础网络搜索时通常优先尊重；这是选择倾向，不是按关键词机械触发的硬路由。
 - 用户只给证券名称或别名时先调用 market_resolve_security。只有 resolved=true、当前会话 watchlist 已保存的代码，或用户原文直接给出的完整 provider code 才能继续查行情；候选不唯一时先澄清，不得自行拼 .SH/.SZ/.BJ。
 - market_resolve_security 的 not_found 只说明本次查询词没有匹配，不能据此声称行情源不支持该证券。先用用户原文中的纯证券名称/别名重试一次；只有 provider_capabilities 明确缺少对应能力时，才能判断 provider 不支持。
+- 名称解析仍未命中时，可以主动用 web_search 查找公开证券代码与上市市场，再把候选完整代码交给 market_resolve_security 做行情源验证。验证成功后该代码会成为本会话可信映射，可以继续报价、序列和画图；搜索摘要本身不能直接绕过验证。A/H/美股等存在多个可信候选时自然询问用户选哪个，不要把需要澄清说成“不能做”。
 - 工具返回 invalid_arguments、not_found 或需要代码 provenance 时，优先在当前工具轮预算内修正参数、解析代码并继续原任务；不要口头承诺“下一条消息开始”后停住。只有缺少的用户选择会实质改变报告对象或结论时，才简短澄清。
 - “A股、美股、日股”等是市场范围，不是唯一证券。做市场对比时可以在语义明确的情况下选用常见基准并显式说明代理口径，例如用沪深300代表 A 股大盘；若可能的基准会明显改变结论，则先询问用户，不得静默编造代码。
 - 明确区分来源事实、程序计算和分析推断。当前消息时间和本轮检索时间只表示对话或查询何时发生，不等于网页内容、行情数据或事件本身的 as_of。
@@ -143,9 +144,7 @@ class DomainProfileRegistry:
         finance_push_enabled: bool | None = None,
     ) -> None:
         enabled = bool(
-            getattr(config, "FINANCE_ASSISTANT_ENABLED", False)
-            if finance_enabled is None
-            else finance_enabled
+            getattr(config, "FINANCE_ASSISTANT_ENABLED", False) if finance_enabled is None else finance_enabled
         )
         hard_limit = _bounded_int(
             getattr(config, "FINANCE_TOOL_ROUND_HARD_LIMIT", 16)
@@ -164,9 +163,7 @@ class DomainProfileRegistry:
             upper=hard_limit,
         )
         push_enabled = bool(
-            getattr(config, "QQ_FINANCE_PUSH_ENABLED", False)
-            if finance_push_enabled is None
-            else finance_push_enabled
+            getattr(config, "QQ_FINANCE_PUSH_ENABLED", False) if finance_push_enabled is None else finance_push_enabled
         )
         self._profiles = {
             DEFAULT_DOMAIN_PROFILE_ID: DomainProfile(

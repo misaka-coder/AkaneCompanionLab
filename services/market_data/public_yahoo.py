@@ -22,6 +22,7 @@ from .types import (
 
 
 YahooDownloader = Callable[..., Any]
+YahooSearcher = Callable[..., Any]
 
 
 class YahooFinanceDependencyUnavailable(RuntimeError):
@@ -42,6 +43,7 @@ class YahooFinanceAdapter:
         *,
         registry: PublicInstrumentRegistry | None = None,
         downloader: YahooDownloader | None = None,
+        searcher: YahooSearcher | None = None,
         timeout_seconds: float = 8.0,
         cache: TTLMarketDataCache | None = None,
         cache_max_entries: int = 256,
@@ -55,6 +57,7 @@ class YahooFinanceAdapter:
     ) -> None:
         self.registry = registry or build_default_public_instrument_registry()
         self._downloader = downloader or _default_yahoo_downloader
+        self._searcher = searcher or _default_yahoo_searcher
         self.timeout_seconds = max(1.0, min(60.0, float(timeout_seconds)))
         self.cache = cache if cache is not None else TTLMarketDataCache(max_entries=cache_max_entries)
         self.series_ttl_seconds = _bounded_ttl(series_ttl_seconds, field="series_ttl_seconds")
@@ -66,6 +69,25 @@ class YahooFinanceAdapter:
         )
         self._retry_sleeper = retry_sleeper
         self._clock = clock
+
+    def search_quotes(self, query: str, *, max_results: int = 10) -> tuple[dict[str, Any], ...]:
+        clean_query = str(query or "").strip()
+        if not clean_query:
+            return ()
+        bounded_results = max(1, min(20, int(max_results)))
+        try:
+            result = call_with_transient_retry(
+                lambda: self._searcher(query=clean_query, max_results=bounded_results, news_count=0),
+                max_attempts=self.retry_max_attempts,
+                backoff_seconds=self.retry_backoff_seconds,
+                sleeper=self._retry_sleeper,
+            )
+        except Exception:
+            return ()
+        quotes = getattr(result, "quotes", result)
+        if not isinstance(quotes, (list, tuple)):
+            return ()
+        return tuple(dict(item) for item in quotes[:bounded_results] if isinstance(item, Mapping))
 
     def get_price_series(self, request: MarketSeriesRequest) -> MarketDataResponse[MarketSeries | None]:
         if not isinstance(request, MarketSeriesRequest):
@@ -397,14 +419,10 @@ class YahooFinanceAdapter:
 
         zone = ZoneInfo(instrument.exchange_timezone)
         requested_date_from = (
-            datetime.fromtimestamp(request.date_from, tz=zone).date()
-            if request.date_from is not None
-            else None
+            datetime.fromtimestamp(request.date_from, tz=zone).date() if request.date_from is not None else None
         )
         requested_date_to = (
-            datetime.fromtimestamp(request.date_to, tz=zone).date()
-            if request.date_to is not None
-            else None
+            datetime.fromtimestamp(request.date_to, tz=zone).date() if request.date_to is not None else None
         )
         points: list[MarketBar] = []
         seen_dates: set[str] = set()
@@ -412,7 +430,9 @@ class YahooFinanceAdapter:
             if not isinstance(raw_record, Mapping):
                 raise YahooFinanceSchemaError("record_not_mapping")
             record = {_normalize_column_name(key): value for key, value in raw_record.items()}
-            raw_date = next((record.get(key) for key in ("Date", "Datetime", "index") if record.get(key) is not None), None)
+            raw_date = next(
+                (record.get(key) for key in ("Date", "Datetime", "index") if record.get(key) is not None), None
+            )
             trading_date = _parse_trading_date(raw_date, zone=zone)
             if requested_date_from is not None and trading_date < requested_date_from:
                 continue
@@ -529,6 +549,14 @@ def _default_yahoo_downloader(**kwargs: Any) -> Any:
         keepna=False,
         raise_errors=True,
     )
+
+
+def _default_yahoo_searcher(**kwargs: Any) -> Any:
+    try:
+        import yfinance as yf
+    except ImportError as exc:
+        raise YahooFinanceDependencyUnavailable("yfinance is not installed") from exc
+    return yf.Search(**kwargs)
 
 
 def _normalize_column_name(value: Any) -> str:

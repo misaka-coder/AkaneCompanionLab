@@ -78,9 +78,16 @@ def should_stop_after_tool_events(
         if not isinstance(event, dict):
             continue
         status = str(event.get("status") or "").strip().lower()
+        reason = str(event.get("reason") or "").strip().lower()
         if str(domain_profile_id or "").strip() == FINANCE_DOMAIN_PROFILE_ID:
             if status == "permission_denied":
                 return True
+            continue
+        if (
+            str(event.get("type") or "").strip() == "web_search_completed"
+            and status in {"unavailable", "error", "failed", "failure"}
+            and reason in {"mcp_tool_call_timeout", "mcp_call_failed", "timeout"}
+        ):
             continue
         if status in blocking_statuses:
             return True
@@ -179,9 +186,7 @@ def resolve_tool_handlers(
     domain_profile = DomainProfileRegistry().get(domain_profile_id)
     if domain_profile.id == DEFAULT_DOMAIN_PROFILE_ID:
         all_handlers = {
-            name: handler
-            for name, handler in all_handlers.items()
-            if not _is_finance_only_handler(handler)
+            name: handler for name, handler in all_handlers.items() if not _is_finance_only_handler(handler)
         }
     if client_context is None:
         allowed_names = filter_tool_names(tuple(all_handlers.keys()), domain_profile)
@@ -196,11 +201,7 @@ def resolve_tool_handlers(
             domain_profile_id=domain_profile_id,
         ).tool_names
     )
-    return {
-        tool_name: all_handlers[tool_name]
-        for tool_name in selected_names
-        if tool_name in all_handlers
-    }
+    return {tool_name: all_handlers[tool_name] for tool_name in selected_names if tool_name in all_handlers}
 
 
 def resolve_capability_selection(
@@ -244,9 +245,7 @@ def resolve_capability_selection(
     selection = registry.select(
         snapshot,
         allowed_tool_names=(
-            domain_profile.allowed_tool_names
-            if domain_profile.id != DEFAULT_DOMAIN_PROFILE_ID
-            else None
+            domain_profile.allowed_tool_names if domain_profile.id != DEFAULT_DOMAIN_PROFILE_ID else None
         ),
         hidden_tool_names=domain_profile.hidden_tool_names,
     )
