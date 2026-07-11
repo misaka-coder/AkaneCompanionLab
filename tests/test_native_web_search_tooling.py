@@ -168,6 +168,8 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 "market_news_search",
                 "market_quote_snapshot",
                 "market_price_series",
+                "render_market_chart",
+                "compose_finance_report",
             },
         )
 

@@ -205,14 +205,16 @@ class Settings(BaseSettings):
     # list_workspace / read_workspace / inspect_generated_file（7b：read-only、
     # 静态 schema、generic builder 已验证，未单独跑 live smoke）。
     # market_resolve_security / market_news_search / market_quote_snapshot / market_price_series（F5：金融档案专属、
-    # 只读静态 schema；真实 Choice 权限未开通前仅跑 Fake/Mock 测试）。
+    # 只读静态 schema）；render_market_chart / compose_finance_report（F6/F7：低风险固定语法的受管产物工具，
+    # 由程序重读可信行情并写入 GeneratedFileStore，不接受代码、原始价格数组或任意路径）。
     # sync_attachment_workspace 虽是 operation="read" 但有文件同步副作用，暂不加入。
     # 注意：这只是"允许"，是否真的走 native 仍取决于总开关和 provider/model 能力档案。
     NATIVE_TOOL_DECISION_ALLOWLIST: str = (
         "web_search,retrieve_memory,read_memory_timeline,list_reminders,check_inventory,inspect_media_info,"
         "load_character_context,inspect_attachment,read_attachment_section,"
         "list_workspace,read_workspace,inspect_generated_file,"
-        "market_resolve_security,market_news_search,market_quote_snapshot,market_price_series"
+        "market_resolve_security,market_news_search,market_quote_snapshot,market_price_series,"
+        "render_market_chart,compose_finance_report"
     )
     # 额外允许的 OpenAI-compatible native tools provider/model，逗号分隔。
     # 格式：host:model 或 host:*；默认空，未知中转仍 fail-closed。

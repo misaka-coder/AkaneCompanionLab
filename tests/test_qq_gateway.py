@@ -1422,6 +1422,45 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["group_id"], QQ_GROUP_FIXTURE_ID)
         self.assertEqual(payload["message"][0]["type"], "image")
 
+    def test_emotion_images_are_suppressed_during_finance_artifact_delivery(self) -> None:
+        gateway = NapCatQQGateway()
+        context = QQMessageContext(
+            should_respond=True,
+            reason="test",
+            is_group=False,
+            target_id=QQ_USER_FIXTURE_ID,
+            user_id=QQ_USER_FIXTURE_ID,
+            session_id=f"qq_pri_{QQ_USER_FIXTURE_ID}",
+            profile_user_id=f"qq_{QQ_USER_FIXTURE_ID}",
+        )
+
+        chart_frame = {
+            "emotion": "happy",
+            "tool_events": [{"type": "market_chart_ready", "send_to_user": True}],
+        }
+        failed_chart_frame = {
+            "emotion": "thinking",
+            "tool_events": [
+                {
+                    "type": "finance_tool_completed",
+                    "tool_type": "render_market_chart",
+                    "status": "unavailable",
+                }
+            ],
+        }
+
+        mface_result = gateway.send_emotion_mface(
+            context,
+            chart_frame,
+            qq_delivery_config={"emotion_mface": {"enabled": True}},
+        )
+        image_result = gateway.send_emotion_image(context, chart_frame, image={})
+        failed_image_result = gateway.send_emotion_image(context, failed_chart_frame, image={})
+
+        self.assertEqual(mface_result["reason"], "artifact_delivery_turn")
+        self.assertEqual(image_result["reason"], "artifact_delivery_turn")
+        self.assertEqual(failed_image_result["reason"], "artifact_delivery_turn")
+
     def test_current_outfit_id_is_read_from_turn_payload_for_emotion_image_fallback(self) -> None:
         self.assertEqual(
             qq_current_outfit_id_from_turn_payload(

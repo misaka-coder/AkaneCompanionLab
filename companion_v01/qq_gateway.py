@@ -3317,6 +3317,8 @@ class NapCatQQGateway:
         qq_delivery_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Send a configured QQ mface based on final_output.emotion."""
+        if self._frame_has_artifact_delivery_activity(frame):
+            return {"ok": True, "status": "skipped", "reason": "artifact_delivery_turn"}
         emotion = str((frame or {}).get("emotion") or "").strip()
         if not emotion:
             return {"ok": True, "status": "skipped", "reason": "empty_emotion"}
@@ -3372,6 +3374,8 @@ class NapCatQQGateway:
         min_interval_seconds: int = 20,
     ) -> dict[str, Any]:
         """Send the current character pack emotion image as a QQ image fallback."""
+        if self._frame_has_artifact_delivery_activity(frame):
+            return {"ok": True, "status": "skipped", "reason": "artifact_delivery_turn"}
         emotion = str((frame or {}).get("emotion") or "").strip()
         if not emotion:
             return {"ok": True, "status": "skipped", "reason": "empty_emotion"}
@@ -3418,6 +3422,30 @@ class NapCatQQGateway:
                     "sent_at": now,
                 }
         return result
+
+    @staticmethod
+    def _frame_has_artifact_delivery_activity(frame: dict[str, Any] | None) -> bool:
+        events = (frame or {}).get("tool_events")
+        if not isinstance(events, list):
+            return False
+        artifact_ready_types = {
+            "generated_file_ready",
+            "file_ready",
+            "market_chart_ready",
+            "finance_report_ready",
+        }
+        artifact_tool_types = {"render_market_chart", "compose_finance_report"}
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("type") or "").strip()
+            if event_type in artifact_ready_types and event.get("send_to_user") is not False:
+                return True
+            if event_type == "finance_tool_completed":
+                tool_type = str(event.get("tool_type") or "").strip()
+                if tool_type in artifact_tool_types:
+                    return True
+        return False
 
     def send_image(self, context: QQMessageContext, *, image_path: str, name: str = "") -> dict[str, Any]:
         clean_path = str(image_path or "").strip()
