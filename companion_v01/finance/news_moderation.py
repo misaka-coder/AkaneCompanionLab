@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import time
 from typing import Any, Iterable
 
 from services.market_data import PublicNewsItem
@@ -12,13 +13,24 @@ class FinanceNewsModerationDecision:
     allowed: bool
     reason: str
     confidence: float = 0.0
+    retryable: bool = False
 
 
 class FinanceNewsModerationClient:
     """Batch LLM moderation with fail-closed parsing."""
 
-    def __init__(self, llm_runtime: Any) -> None:
+    def __init__(
+        self,
+        llm_runtime: Any,
+        *,
+        max_attempts: int = 2,
+        retry_backoff_seconds: float = 0.4,
+        sleeper=time.sleep,
+    ) -> None:
         self.llm_runtime = llm_runtime
+        self.max_attempts = max(1, min(4, int(max_attempts)))
+        self.retry_backoff_seconds = max(0.0, min(5.0, float(retry_backoff_seconds)))
+        self._sleeper = sleeper
 
     def moderate_items(
         self,
@@ -27,6 +39,36 @@ class FinanceNewsModerationClient:
         bounded = tuple(items)[:30]
         if not bounded:
             return {}
+        decisions: dict[str, FinanceNewsModerationDecision] = {}
+        pending = bounded
+        for attempt in range(1, self.max_attempts + 1):
+            current = self._moderate_once(pending)
+            retry_items: list[PublicNewsItem] = []
+            for item in pending:
+                decision = current.get(
+                    item.item_id,
+                    FinanceNewsModerationDecision(False, "missing_moderation_decision", 0.0, True),
+                )
+                if decision.retryable and attempt < self.max_attempts:
+                    retry_items.append(item)
+                else:
+                    decisions[item.item_id] = decision
+            if not retry_items:
+                break
+            pending = tuple(retry_items)
+            if self.retry_backoff_seconds > 0:
+                self._sleeper(self.retry_backoff_seconds * attempt)
+        for item in bounded:
+            decisions.setdefault(
+                item.item_id,
+                FinanceNewsModerationDecision(False, "moderation_unavailable", 0.0, True),
+            )
+        return decisions
+
+    def _moderate_once(
+        self,
+        bounded: tuple[PublicNewsItem, ...],
+    ) -> dict[str, FinanceNewsModerationDecision]:
         fallback = {
             "decisions": [
                 {
@@ -66,6 +108,15 @@ class FinanceNewsModerationClient:
             )
         except Exception:
             result = fallback
+        if result == fallback:
+            error_type = self._runtime_error_type()
+            if error_type:
+                result = {
+                    "decisions": [
+                        {**row, "reason": f"moderation_unavailable:{error_type}"}
+                        for row in fallback["decisions"]
+                    ]
+                }
         rows = result.get("decisions") if isinstance(result, dict) else None
         by_id: dict[str, FinanceNewsModerationDecision] = {}
         if isinstance(rows, list):
@@ -86,13 +137,28 @@ class FinanceNewsModerationClient:
                     allowed=decision == "allow",
                     reason=reason if decision in {"allow", "block"} else "invalid_moderation_decision",
                     confidence=confidence,
+                    retryable=(
+                        decision not in {"allow", "block"}
+                        or reason.startswith("moderation_unavailable")
+                        or reason == "missing_moderation_decision"
+                    ),
                 )
         for item in bounded:
             by_id.setdefault(
                 item.item_id,
-                FinanceNewsModerationDecision(False, "missing_moderation_decision", 0.0),
+                FinanceNewsModerationDecision(False, "missing_moderation_decision", 0.0, True),
             )
         return by_id
+
+    def _runtime_error_type(self) -> str:
+        snapshot = getattr(self.llm_runtime, "snapshot_last_error", None)
+        if not callable(snapshot):
+            return ""
+        try:
+            detail = dict(snapshot() or {})
+        except Exception:
+            return ""
+        return str(detail.get("type") or "").strip()[:80]
 
 
 __all__ = ["FinanceNewsModerationClient", "FinanceNewsModerationDecision"]

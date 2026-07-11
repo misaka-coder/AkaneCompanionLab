@@ -76,6 +76,41 @@ class FakeModerator:
         }
 
 
+class RetryThenAllowModerator:
+    def __init__(self):
+        self.calls = []
+
+    def moderate_items(self, items):
+        self.calls.append(tuple(item.item_id for item in items))
+        retryable = len(self.calls) == 1
+        return {
+            item.item_id: FinanceNewsModerationDecision(
+                not retryable,
+                "moderation_unavailable" if retryable else "ordinary_finance_news",
+                0.0 if retryable else 0.98,
+                retryable,
+            )
+            for item in items
+        }
+
+
+class AlwaysRetryableModerator:
+    def __init__(self):
+        self.calls = []
+
+    def moderate_items(self, items):
+        self.calls.append(tuple(item.item_id for item in items))
+        return {
+            item.item_id: FinanceNewsModerationDecision(
+                False,
+                "moderation_unavailable:TimeoutError",
+                0.0,
+                True,
+            )
+            for item in items
+        }
+
+
 class FinancePublicNewsEventSourceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -180,6 +215,63 @@ class FinancePublicNewsEventSourceTests(unittest.TestCase):
 
         self.assertEqual(result.events[0].code, "002594.SZ")
         self.assertIn("security_matched", result.events[0].labels)
+
+    def test_retryable_moderation_failure_is_not_marked_seen_and_recovers_next_poll(self) -> None:
+        clock = [NOW]
+        new = _item("retry", "长江存储公布IPO辅导团队")
+        adapter = SequenceNewsAdapter(((_item("old", "普通财经快讯"),), (new,), (new,)))
+        moderator = RetryThenAllowModerator()
+        source = self._source(adapter, moderator, lambda: clock[0])
+
+        source.poll_market_events()
+        clock[0] += 10
+        failed = source.poll_market_events()
+        pending_state = self.store.get_event_source_state("public_news:eastmoney_fast_news")
+        clock[0] += 10
+        recovered = source.poll_market_events()
+        final_state = self.store.get_event_source_state("public_news:eastmoney_fast_news")
+
+        self.assertEqual(failed.events, ())
+        self.assertNotIn("retry", dict(pending_state.state)["seen_item_ids"])
+        self.assertEqual(dict(pending_state.state)["moderation_attempts"], {"retry": 1})
+        self.assertEqual(len(recovered.events), 1)
+        self.assertIn("retry", dict(final_state.state)["seen_item_ids"])
+        self.assertEqual(dict(final_state.state)["moderation_attempts"], {})
+        self.assertEqual(moderator.calls, [("retry",), ("retry",)])
+
+    def test_retryable_moderation_failure_is_finalized_only_after_defer_limit(self) -> None:
+        clock = [NOW]
+        new = _item("exhaust", "企业公布新的融资安排")
+        adapter = SequenceNewsAdapter(((_item("old", "普通财经快讯"),), (new,), (new,), (new,)))
+        moderator = AlwaysRetryableModerator()
+        source = FinancePublicNewsEventSource(
+            store=self.store,
+            adapters=(adapter,),
+            moderator=moderator,
+            require_llm_moderation=True,
+            minimum_poll_interval_seconds=5,
+            moderation_defer_max_attempts=2,
+            clock=lambda: clock[0],
+        )
+
+        source.poll_market_events()
+        clock[0] += 10
+        first_failure = source.poll_market_events()
+        clock[0] += 10
+        exhausted = source.poll_market_events()
+        exhausted_state = self.store.get_event_source_state("public_news:eastmoney_fast_news")
+        clock[0] += 10
+        replay = source.poll_market_events()
+
+        self.assertEqual(first_failure.events, ())
+        self.assertEqual(exhausted.events, ())
+        self.assertEqual(replay.events, ())
+        self.assertIn("exhaust", dict(exhausted_state.state)["seen_item_ids"])
+        self.assertEqual(dict(exhausted_state.state)["moderation_attempts"], {})
+        self.assertEqual(moderator.calls, [("exhaust",), ("exhaust",)])
+        rejection = self.store.list_market_data_rejections(provider="public_market")[0]
+        self.assertEqual(rejection.stage, "news_moderation")
+        self.assertIn("retry_exhausted_2", rejection.reason)
 
     def test_composite_source_keeps_news_when_quote_source_fails(self) -> None:
         class FailedSource:

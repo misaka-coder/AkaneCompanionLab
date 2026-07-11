@@ -94,6 +94,7 @@ class FinancePublicNewsEventSource:
         max_event_age_seconds: int = 30 * 60,
         future_tolerance_seconds: int = 5 * 60,
         seen_item_limit: int = 500,
+        moderation_defer_max_attempts: int = 3,
         relay_policy: FinanceNewsRelayPolicy | None = None,
         moderator: Any | None = None,
         require_llm_moderation: bool = False,
@@ -107,6 +108,7 @@ class FinancePublicNewsEventSource:
         self.max_event_age_seconds = max(60, min(24 * 60 * 60, int(max_event_age_seconds)))
         self.future_tolerance_seconds = max(30, min(30 * 60, int(future_tolerance_seconds)))
         self.seen_item_limit = max(50, min(5000, int(seen_item_limit)))
+        self.moderation_defer_max_attempts = max(1, min(20, int(moderation_defer_max_attempts)))
         self.relay_policy = relay_policy or FinanceNewsRelayPolicy()
         self.moderator = moderator
         self.require_llm_moderation = bool(require_llm_moderation)
@@ -215,6 +217,11 @@ class FinancePublicNewsEventSource:
         previous_seen = [str(item) for item in state.get("seen_item_ids", []) if str(item).strip()]
         seen = set(previous_seen)
         current_ids = [item.item_id for item in items]
+        moderation_attempts = {
+            str(item_id): max(0, int(attempts or 0))
+            for item_id, attempts in dict(state.get("moderation_attempts") or {}).items()
+            if str(item_id).strip()
+        }
         if not state.get("baseline_seeded"):
             self._save_state(
                 source_state_id,
@@ -230,6 +237,7 @@ class FinancePublicNewsEventSource:
         emitted: list[MarketEvent] = []
         ignored = 0
         candidates: list[PublicNewsItem] = []
+        finalized_ids: list[str] = []
         for item in sorted(items, key=lambda value: (value.published_at, value.item_id)):
             if item.item_id in seen:
                 ignored += 1
@@ -245,6 +253,8 @@ class FinancePublicNewsEventSource:
                 continue
             if now - item.published_at > self.max_event_age_seconds:
                 ignored += 1
+                finalized_ids.append(item.item_id)
+                moderation_attempts.pop(item.item_id, None)
                 continue
             relay_decision = self.relay_policy.evaluate(item)
             if not relay_decision.allowed:
@@ -255,6 +265,8 @@ class FinancePublicNewsEventSource:
                     reason=f"{relay_decision.reason}:{relay_decision.matched_term}",
                     payload=item.to_public_dict(),
                 )
+                finalized_ids.append(item.item_id)
+                moderation_attempts.pop(item.item_id, None)
                 continue
             candidates.append(item)
 
@@ -269,27 +281,54 @@ class FinancePublicNewsEventSource:
             if self.require_llm_moderation and not bool(getattr(moderation, "allowed", False)):
                 ignored += 1
                 reason = str(getattr(moderation, "reason", "moderation_unavailable") or "moderation_unavailable")
+                retryable = bool(getattr(moderation, "retryable", moderation is None))
+                if retryable:
+                    attempt_count = moderation_attempts.get(item.item_id, 0) + 1
+                    moderation_attempts[item.item_id] = attempt_count
+                    if attempt_count < self.moderation_defer_max_attempts:
+                        self._record_rejection(
+                            now=now,
+                            stage="news_moderation_retry",
+                            reason=f"{item.adapter_id}:{reason}:attempt_{attempt_count}",
+                            payload=item.to_public_dict(),
+                        )
+                        continue
+                    reason = f"{reason}:retry_exhausted_{attempt_count}"
                 self._record_rejection(
                     now=now,
                     stage="news_moderation",
                     reason=f"{item.adapter_id}:{reason}",
                     payload=item.to_public_dict(),
                 )
+                finalized_ids.append(item.item_id)
+                moderation_attempts.pop(item.item_id, None)
                 continue
             codes = self._resolve_item_codes(item)
+            emitted_for_item = False
             for code in codes:
                 if len(emitted) >= max(0, limit):
                     break
                 emitted.append(self._build_event(item=item, code=code, now=now))
+                emitted_for_item = True
+            if emitted_for_item:
+                finalized_ids.append(item.item_id)
+                moderation_attempts.pop(item.item_id, None)
             if len(emitted) >= max(0, limit):
                 break
 
-        merged_seen = list(dict.fromkeys([*current_ids, *previous_seen]))[: self.seen_item_limit]
+        current_id_set = set(current_ids)
+        moderation_attempts = {
+            item_id: attempts
+            for item_id, attempts in moderation_attempts.items()
+            if item_id in current_id_set and item_id not in finalized_ids and item_id not in seen
+        }
+        merged_seen = list(dict.fromkeys([*finalized_ids, *previous_seen]))[: self.seen_item_limit]
         self._save_state(
             source_state_id,
             {
                 "baseline_seeded": True,
                 "seen_item_ids": merged_seen,
+                "moderation_attempts": moderation_attempts,
                 "latest_published_at": max(
                     [max((item.published_at for item in items), default=0), int(state.get("latest_published_at") or 0)]
                 ),

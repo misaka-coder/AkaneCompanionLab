@@ -1968,6 +1968,7 @@ F9b 仍不包含 processing lease/watchdog、Bridge 自动重订阅、quota 告�
 - 新闻与公开行情通过 `FinanceCompositeEventSource` 合并。一个来源失败不会隐藏另一个来源成功，worker、Orchestrator、importance、delivery ledger 和 QQ adapter 不需要绑定东方财富类型；
 - 公共 push subscription 默认允许 `market_wide` 新闻；命中可信 security alias 的新闻仍可按 `security_matched` 进入关注标的路径；
 - 本地确定性敏感策略先拦截明确国内高级政治主体和未豁免的“中央”语义，随后结构化 LLM 审核逐条 allow/block。任一层失败都 fail closed；外国政治人物新闻单独出现时允许；
+- LLM审核的“内容 block”和“审核服务临时不可用”分离：单轮有界重试后仍超时、异常、JSON fallback或缺失决定时不发送，但也不提前标记 seen；待审核次数持久化到SQLite并在后续轮询继续，只有明确 block、成功 allow、超过新鲜度或跨轮重试耗尽才终结；
 - 审核通过的事件带 `direct_relay / optional_model_analysis / source_report_only`。已确认事实只能写成“东方财富在该时间发布了这条快讯”，不能把快讯标题自动升级成官方确认；
 - 开启分析时固定采用“简短快讯时间头 + 有用的事实转述/补充核验/分析推断 + 文末原文链接”；不前置粘贴整段东财原文/摘要，不重复来源名称、ISO 发布时间、五段式小标题、通用免责声明和观察套话；模型可以主动调用只读工具；
 - 模型按新闻自主选择确认程度、影响机制、直接受影响资产、结论成立条件和反向情形，不使用新的固定模板；“据悉/商讨/拟议”优先查官方或第二独立来源，具体比例、价格、当前行情、交易时点和官方确认状态只有得到事件字段或本轮工具结果支持时才能写入；不为迎合场景强行扩展到 A 股；
