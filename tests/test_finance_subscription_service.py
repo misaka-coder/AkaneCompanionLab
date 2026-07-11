@@ -161,6 +161,7 @@ class FinanceSubscriptionServiceTests(unittest.TestCase):
             patch.object(config, "QQ_FINANCE_MODE_COMMANDS_ENABLED", True),
             patch.object(config, "QQ_FINANCE_PUSH_ENABLED", True),
         ):
+            active_mode = gateway.resolve_finance_mode(self.context.session_id)
             result = gateway.handle_finance_mode_command(
                 self.context,
                 event={"sender": {"role": "admin"}},
@@ -168,7 +169,7 @@ class FinanceSubscriptionServiceTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "subscription_sync_failed")
-        self.assertEqual(gateway.resolve_finance_mode(self.context.session_id), "off")
+        self.assertEqual(gateway.resolve_finance_mode(self.context.session_id), active_mode)
 
 
 class FinanceSubscriptionRouteTests(unittest.TestCase):

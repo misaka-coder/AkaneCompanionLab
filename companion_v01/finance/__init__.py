@@ -21,6 +21,7 @@ from .event_worker import (
     FinanceEventWorkerCycleResult,
     FinanceMarketEventSource,
 )
+from .public_quote_event_source import FinancePublicQuoteEventSource, QuoteQualityError
 from .importance_policy import (
     IMPORTANCE_LEVELS,
     FinanceEventImportancePolicy,
@@ -75,6 +76,8 @@ __all__ = [
     "FinanceEventRunResult",
     "FinanceEventWorker",
     "FinanceEventWorkerCycleResult",
+    "FinancePublicQuoteEventSource",
+    "QuoteQualityError",
     "FinancePushGovernanceDecision",
     "FinancePushGovernancePolicy",
     "FinanceChartReference",

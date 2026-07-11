@@ -78,6 +78,8 @@ class MarketEventStoreTests(unittest.TestCase):
                 "market_security_aliases",
                 "market_event_deliveries",
                 "market_event_delivery_parts",
+                "market_quote_baselines",
+                "market_data_rejections",
             }.issubset(tables)
         )
         self.assertIn("idx_market_events_raw_hash_unique", indexes)
@@ -86,6 +88,63 @@ class MarketEventStoreTests(unittest.TestCase):
         self.assertIn("idx_market_security_alias_norm", indexes)
         self.assertTrue({"delivery_mode", "importance_level", "available_at"}.issubset(delivery_columns))
         self.assertNotIn("chat_messages", tables)
+
+    def test_quote_baseline_and_quality_rejection_survive_restart(self) -> None:
+        baseline = self.store.upsert_quote_baseline(
+            provider="public_market",
+            code="513000.SH",
+            confirmed_snapshot={"last": 1.0, "as_of": 100},
+            candidate_snapshot={"last": 1.01, "as_of": 200},
+            candidate_count=1,
+            last_fetch_at=210,
+            last_event_key="513000.SH|quote_move|test",
+            now_ts=300,
+        )
+        rejection = self.store.record_market_data_rejection(
+            provider="public_market",
+            code="513000.SH",
+            observed_at=300,
+            stage="quality_gate",
+            reason="stale_instant_snapshot",
+            payload_hash=_hash("dirty"),
+            now_ts=300,
+        )
+
+        restarted = MarketEventStore(self.db_path, clock=lambda: 400)
+        loaded = restarted.get_quote_baseline(provider="public_market", code="513000.SH")
+        loaded_rejections = restarted.list_market_data_rejections(provider="public_market")
+
+        self.assertEqual(baseline.code, "513000.SH")
+        self.assertEqual(loaded.last_fetch_at, 210)
+        self.assertEqual(dict(loaded.candidate_snapshot)["last"], 1.01)
+        self.assertEqual(loaded_rejections[0].rejection_id, rejection.rejection_id)
+        self.assertEqual(loaded_rejections[0].reason, "stale_instant_snapshot")
+
+    def test_identical_quality_rejections_are_coalesced_for_five_minutes(self) -> None:
+        first = self.store.record_market_data_rejection(
+            provider="public_market",
+            code="513000.SH",
+            observed_at=100,
+            stage="quality_gate",
+            reason="stale_instant_snapshot",
+            payload_hash=_hash("same-dirty-payload"),
+            now_ts=100,
+        )
+        second = self.store.record_market_data_rejection(
+            provider="public_market",
+            code="513000.SH",
+            observed_at=200,
+            stage="quality_gate",
+            reason="stale_instant_snapshot",
+            payload_hash=_hash("same-dirty-payload"),
+            now_ts=200,
+        )
+
+        rows = self.store.list_market_data_rejections(provider="public_market")
+
+        self.assertEqual(first.rejection_id, second.rejection_id)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].observed_at, 200)
 
     def test_v1_database_upgrades_security_master_without_losing_events(self) -> None:
         self.store.upsert_event(self.event, now_ts=100)

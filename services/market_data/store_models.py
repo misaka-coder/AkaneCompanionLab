@@ -125,6 +125,60 @@ class WatchlistItem:
 
 
 @dataclass(frozen=True)
+class MarketQuoteBaseline:
+    provider: str
+    code: str
+    confirmed_snapshot: Mapping[str, Any] = field(default_factory=dict)
+    candidate_snapshot: Mapping[str, Any] = field(default_factory=dict)
+    candidate_count: int = 0
+    last_fetch_at: int = 0
+    last_event_key: str = ""
+    created_at: int = 0
+    updated_at: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "confirmed_snapshot", MappingProxyType(dict(self.confirmed_snapshot or {})))
+        object.__setattr__(self, "candidate_snapshot", MappingProxyType(dict(self.candidate_snapshot or {})))
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "code": self.code,
+            "confirmed_snapshot": dict(self.confirmed_snapshot),
+            "candidate_snapshot": dict(self.candidate_snapshot),
+            "candidate_count": max(0, int(self.candidate_count)),
+            "last_fetch_at": max(0, int(self.last_fetch_at)),
+            "last_event_key": self.last_event_key,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+@dataclass(frozen=True)
+class MarketDataRejection:
+    rejection_id: int
+    provider: str
+    code: str
+    observed_at: int
+    stage: str
+    reason: str
+    payload_hash: str
+    created_at: int
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "rejection_id": self.rejection_id,
+            "provider": self.provider,
+            "code": self.code,
+            "observed_at": self.observed_at,
+            "stage": self.stage,
+            "reason": self.reason,
+            "payload_hash": self.payload_hash,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass(frozen=True)
 class MarketSecurity:
     provider: str
     code: str

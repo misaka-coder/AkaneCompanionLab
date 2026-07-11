@@ -441,6 +441,60 @@ class FinanceAnalysisClientTests(unittest.TestCase):
         self.assertEqual(engine.calls, 3)
         self.assertEqual(engine.memcore_manager.calls, [])
 
+    def test_validated_quote_push_reinjects_authoritative_facts(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        store = MarketEventStore(Path(temp_dir.name) / "validated_quote.sqlite3")
+        title = "513000.SH 公开聚合盘中快照：上涨1.30%，最新价 1.013，昨收 1，数据时间 2026-07-10T14:29:45+08:00"
+        event = MarketEvent(
+            provider="public_market",
+            event_id="public_quote:test",
+            published_at=1_783_667_400,
+            produced_at=1_783_667_390,
+            received_at=1_783_667_400,
+            code="513000.SH",
+            content_type="quote_move",
+            title=title,
+            source="AkShare/Eastmoney public web data",
+            url="",
+            sentiment="positive",
+            labels=("validated_quote", "deterministic_calculation", "public_intraday_snapshot"),
+            sector_code="",
+            raw_hash=_hash("public_quote:test"),
+        )
+        record = store.upsert_event(event, now_ts=1_783_667_400).record
+        subscription = store.upsert_subscription(
+            subscription_id="validated-quote-sub",
+            client="qq",
+            target_id="872732158",
+            is_group=True,
+            session_id="qq_group_shared_872732158",
+            profile_user_id="qq_group_shared_872732158",
+            finance_mode="push",
+            enabled=True,
+            delivery_policy={"level": "notify"},
+            now_ts=1_783_667_400,
+        )
+        from companion_v01.finance import FinanceAnalysisRequest, FinanceEventImportancePolicy
+
+        decision = FinanceEventImportancePolicy().evaluate(event=event, subscription=subscription)
+        request = FinanceAnalysisRequest.create(
+            event_record=record,
+            subscription=subscription,
+            importance=decision,
+            requested_at=1_783_667_410,
+        )
+
+        messages = ensure_market_push_contract(
+            request=request,
+            frame={"speech": "可能反映跨境 ETF 风险偏好变化，但需继续观察。"},
+        )
+
+        combined = "\n".join(messages)
+        self.assertIn(f"已确认事实：{title}", combined)
+        self.assertIn("模型解释不能修改上述价格", combined)
+        self.assertIn("标题是本次推送唯一权威行情事实", request.render_analysis_instruction())
+
     def test_engine_analysis_records_tool_trace_and_assistant_not_user(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)

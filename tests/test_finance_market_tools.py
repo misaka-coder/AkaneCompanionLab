@@ -243,6 +243,9 @@ class FinanceMarketToolTests(unittest.TestCase):
         anthropic_quote = next(item for item in anthropic_specs if item["name"] == "market_quote_snapshot")
         self.assertEqual(anthropic_quote["input_schema"]["required"], ["codes"])
         self.assertFalse(anthropic_quote["input_schema"]["additionalProperties"])
+        series_schema = next(item for item in specs if item["function"]["name"] == "market_price_series")
+        self.assertEqual(series_schema["function"]["parameters"]["properties"]["interval"]["enum"], ["1d"])
+        self.assertEqual(series_schema["function"]["parameters"]["properties"]["adjusted"]["enum"], ["none"])
         for handler in self.handlers.values():
             metadata = handler.tool_metadata()
             self.assertEqual(metadata.family, "finance_read")
@@ -380,6 +383,16 @@ class FinanceMarketToolTests(unittest.TestCase):
         )
         self.assertIsNone(
             series.normalize_call(
+                {"type": "market_price_series", "code": "000000.TEST", "interval": "1w"}
+            )
+        )
+        self.assertIsNone(
+            series.normalize_call(
+                {"type": "market_price_series", "code": "000000.TEST", "adjusted": "forward"}
+            )
+        )
+        self.assertIsNone(
+            series.normalize_call(
                 {"type": "market_price_series", "code": "000000.TEST", "limit": 9999}
             )
         )
@@ -436,6 +449,7 @@ class FinanceMarketToolTests(unittest.TestCase):
             self.assertIsNotNone(normalized, name)
             result = handler.execute(call=normalized, context=context)
             self.assertEqual(result.stream_events[0]["status"], "ok", result.followup_context)
+            self.assertIn("reason", result.stream_events[0])
             self.assertIn('"source":', result.followup_context)
             self.assertIn('"as_of":', result.followup_context)
             self.assertEqual(result.state_updates["finance_evidence"]["status"], "ok")

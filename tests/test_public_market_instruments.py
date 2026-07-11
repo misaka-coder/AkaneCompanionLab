@@ -16,7 +16,7 @@ class PublicInstrumentRegistryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.registry = build_default_public_instrument_registry()
 
-    def test_default_registry_contains_five_indices_and_two_verified_etfs(self) -> None:
+    def test_default_registry_contains_indices_etfs_and_common_verified_securities(self) -> None:
         instruments = self.registry.all()
         self.assertEqual(
             {instrument.canonical_code for instrument in instruments},
@@ -28,9 +28,13 @@ class PublicInstrumentRegistryTests(unittest.TestCase):
                 "CSI300.INDEX",
                 "513000.SH",
                 "513520.SH",
+                "002594.SZ",
+                "1211.HK",
+                "600519.SS",
+                "AAPL.US",
             },
         )
-        self.assertEqual(len(self.registry.for_route("yahoo")), 5)
+        self.assertEqual(len(self.registry.for_route("yahoo")), 9)
         self.assertEqual(len(self.registry.for_route("akshare_etf")), 2)
 
     def test_seed_metadata_has_valid_timezone_currency_and_distinct_vendor_symbol(self) -> None:
@@ -38,7 +42,8 @@ class PublicInstrumentRegistryTests(unittest.TestCase):
             with self.subTest(code=instrument.canonical_code):
                 self.assertIsNotNone(ZoneInfo(instrument.exchange_timezone))
                 self.assertRegex(instrument.currency, r"^[A-Z]{3}$")
-                self.assertNotEqual(instrument.canonical_code, instrument.vendor_symbol)
+                if instrument.instrument_type in {"index", "etf"}:
+                    self.assertNotEqual(instrument.canonical_code, instrument.vendor_symbol)
                 self.assertTrue(instrument.active)
 
     def test_exact_alias_resolution_does_not_use_partial_or_vendor_symbols(self) -> None:

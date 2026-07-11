@@ -22,6 +22,8 @@ from .store_models import (
     FinanceSubscription,
     MarketEventDelivery,
     MarketEventDeliveryPart,
+    MarketDataRejection,
+    MarketQuoteBaseline,
     MarketSecurity,
     StoredMarketEvent,
     WatchlistItem,
@@ -29,7 +31,7 @@ from .store_models import (
 from .types import MarketDataValidationError, MarketEvent
 
 
-MARKET_STORE_SCHEMA_VERSION = 6
+MARKET_STORE_SCHEMA_VERSION = 7
 EVENT_STATUSES = frozenset({"active", "updated", "archived"})
 DELIVERY_STATUSES = frozenset({"pending", "processing", "delivered", "failed", "cancelled"})
 RETRYABLE_DELIVERY_STATUSES = frozenset({"pending", "failed"})
@@ -118,6 +120,33 @@ CREATE TABLE IF NOT EXISTS watchlist_items (
 
 CREATE INDEX IF NOT EXISTS idx_watchlist_code
 ON watchlist_items(code, priority DESC);
+
+CREATE TABLE IF NOT EXISTS market_quote_baselines (
+    provider TEXT NOT NULL,
+    code TEXT NOT NULL,
+    confirmed_snapshot_json TEXT NOT NULL DEFAULT '{{}}',
+    candidate_snapshot_json TEXT NOT NULL DEFAULT '{{}}',
+    candidate_count INTEGER NOT NULL DEFAULT 0 CHECK(candidate_count >= 0),
+    last_fetch_at INTEGER NOT NULL DEFAULT 0,
+    last_event_key TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(provider, code)
+);
+
+CREATE TABLE IF NOT EXISTS market_data_rejections (
+    rejection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    code TEXT NOT NULL DEFAULT '',
+    observed_at INTEGER NOT NULL,
+    stage TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    payload_hash TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_data_rejections_time
+ON market_data_rejections(provider, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS market_securities (
     provider TEXT NOT NULL,
@@ -251,9 +280,7 @@ class MarketEventStore:
             str(row[1]) for row in connection.execute("PRAGMA table_info(finance_subscriptions)").fetchall()
         }
         if "is_group" not in subscription_columns:
-            connection.execute(
-                "ALTER TABLE finance_subscriptions ADD COLUMN is_group INTEGER NOT NULL DEFAULT 0"
-            )
+            connection.execute("ALTER TABLE finance_subscriptions ADD COLUMN is_group INTEGER NOT NULL DEFAULT 0")
             connection.execute(
                 """
                 UPDATE finance_subscriptions
@@ -276,9 +303,7 @@ class MarketEventStore:
                 "ALTER TABLE market_event_deliveries ADD COLUMN importance_level TEXT NOT NULL DEFAULT 'notify'"
             )
         if "available_at" not in delivery_columns:
-            connection.execute(
-                "ALTER TABLE market_event_deliveries ADD COLUMN available_at INTEGER NOT NULL DEFAULT 0"
-            )
+            connection.execute("ALTER TABLE market_event_deliveries ADD COLUMN available_at INTEGER NOT NULL DEFAULT 0")
         connection.execute("DROP INDEX IF EXISTS idx_watchlist_code")
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_watchlist_code ON watchlist_items(provider, code, priority DESC)"
@@ -498,13 +523,11 @@ class MarketEventStore:
             if existing is not None:
                 immutable_fields = ("client", "target_id", "is_group", "session_id", "profile_user_id")
                 for field_name in immutable_fields:
-                    existing_value = bool(existing[field_name]) if field_name == "is_group" else str(
-                        existing[field_name] or ""
+                    existing_value = (
+                        bool(existing[field_name]) if field_name == "is_group" else str(existing[field_name] or "")
                     )
                     normalized_value = (
-                        bool(normalized[field_name])
-                        if field_name == "is_group"
-                        else str(normalized[field_name] or "")
+                        bool(normalized[field_name]) if field_name == "is_group" else str(normalized[field_name] or "")
                     )
                     if existing_value != normalized_value:
                         raise _invalid_argument(
@@ -724,6 +747,181 @@ class MarketEventStore:
             ).fetchall()
         return tuple(_row_to_watchlist_item(row) for row in rows)
 
+    def get_quote_baseline(self, *, provider: str, code: str) -> MarketQuoteBaseline | None:
+        clean_provider = _safe_id(provider, field="provider")
+        clean_code = normalize_market_code(
+            code,
+            field="code",
+            status="invalid_arguments",
+            error_code="invalid_arguments",
+        )
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM market_quote_baselines WHERE provider = ? AND code = ?",
+                (clean_provider, clean_code),
+            ).fetchone()
+        return _row_to_quote_baseline(row) if row is not None else None
+
+    def upsert_quote_baseline(
+        self,
+        *,
+        provider: str,
+        code: str,
+        confirmed_snapshot: Mapping[str, Any] | None = None,
+        candidate_snapshot: Mapping[str, Any] | None = None,
+        candidate_count: int = 0,
+        last_fetch_at: int = 0,
+        last_event_key: str = "",
+        now_ts: int | None = None,
+    ) -> MarketQuoteBaseline:
+        clean_provider = _safe_id(provider, field="provider")
+        clean_code = normalize_market_code(
+            code,
+            field="code",
+            status="invalid_arguments",
+            error_code="invalid_arguments",
+        )
+        clean_candidate_count = max(0, min(1000, int(candidate_count)))
+        clean_fetch_at = max(0, int(last_fetch_at))
+        clean_event_key = _bounded_text(last_event_key, field="last_event_key", max_length=300)
+        confirmed_json = _json_dumps(dict(confirmed_snapshot or {}), field="confirmed_snapshot")
+        candidate_json = _json_dumps(dict(candidate_snapshot or {}), field="candidate_snapshot")
+        now = self._now(now_ts)
+        with self._write_lock, self._connect(write=True) as connection:
+            connection.execute(
+                """
+                INSERT INTO market_quote_baselines (
+                    provider, code, confirmed_snapshot_json, candidate_snapshot_json,
+                    candidate_count, last_fetch_at, last_event_key, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider, code) DO UPDATE SET
+                    confirmed_snapshot_json = excluded.confirmed_snapshot_json,
+                    candidate_snapshot_json = excluded.candidate_snapshot_json,
+                    candidate_count = excluded.candidate_count,
+                    last_fetch_at = excluded.last_fetch_at,
+                    last_event_key = excluded.last_event_key,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    clean_provider,
+                    clean_code,
+                    confirmed_json,
+                    candidate_json,
+                    clean_candidate_count,
+                    clean_fetch_at,
+                    clean_event_key,
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM market_quote_baselines WHERE provider = ? AND code = ?",
+                (clean_provider, clean_code),
+            ).fetchone()
+        return _row_to_quote_baseline(row)
+
+    def record_market_data_rejection(
+        self,
+        *,
+        provider: str,
+        code: str = "",
+        observed_at: int,
+        stage: str,
+        reason: str,
+        payload_hash: str = "",
+        now_ts: int | None = None,
+    ) -> MarketDataRejection:
+        clean_provider = _safe_id(provider, field="provider")
+        clean_code = ""
+        if str(code or "").strip():
+            clean_code = normalize_market_code(
+                code,
+                field="code",
+                status="invalid_arguments",
+                error_code="invalid_arguments",
+            )
+        clean_stage = _safe_id(stage, field="stage")
+        clean_reason = _required_text(reason, field="reason", max_length=1000)
+        clean_hash = str(payload_hash or "").strip().lower()
+        if clean_hash and not _RAW_HASH_RE.fullmatch(clean_hash):
+            raise _invalid_argument("payload_hash", "payload hash must be lowercase sha256")
+        observed = max(1, int(observed_at))
+        now = self._now(now_ts)
+        with self._write_lock, self._connect(write=True) as connection:
+            existing = connection.execute(
+                """
+                SELECT * FROM market_data_rejections
+                WHERE provider = ? AND code = ? AND stage = ? AND reason = ? AND payload_hash = ?
+                ORDER BY created_at DESC, rejection_id DESC
+                LIMIT 1
+                """,
+                (clean_provider, clean_code, clean_stage, clean_reason, clean_hash),
+            ).fetchone()
+            if existing is not None and int(existing["created_at"] or 0) >= now - 5 * 60:
+                connection.execute(
+                    """
+                    UPDATE market_data_rejections
+                    SET observed_at = ?, created_at = ?
+                    WHERE rejection_id = ?
+                    """,
+                    (observed, now, int(existing["rejection_id"])),
+                )
+                rejection_id = int(existing["rejection_id"])
+            else:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO market_data_rejections (
+                        provider, code, observed_at, stage, reason, payload_hash, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (clean_provider, clean_code, observed, clean_stage, clean_reason, clean_hash, now),
+                )
+                rejection_id = int(cursor.lastrowid)
+            connection.execute(
+                "DELETE FROM market_data_rejections WHERE created_at < ?",
+                (max(1, now - 30 * 24 * 60 * 60),),
+            )
+            row = connection.execute(
+                "SELECT * FROM market_data_rejections WHERE rejection_id = ?",
+                (rejection_id,),
+            ).fetchone()
+        return _row_to_market_data_rejection(row)
+
+    def list_market_data_rejections(
+        self,
+        *,
+        provider: str = "",
+        code: str = "",
+        limit: int = 100,
+    ) -> tuple[MarketDataRejection, ...]:
+        clauses = ["1 = 1"]
+        parameters: list[Any] = []
+        if str(provider or "").strip():
+            clauses.append("provider = ?")
+            parameters.append(_safe_id(provider, field="provider"))
+        if str(code or "").strip():
+            clauses.append("code = ?")
+            parameters.append(
+                normalize_market_code(
+                    code,
+                    field="code",
+                    status="invalid_arguments",
+                    error_code="invalid_arguments",
+                )
+            )
+        parameters.append(max(1, min(1000, int(limit))))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM market_data_rejections
+                WHERE {" AND ".join(clauses)}
+                ORDER BY created_at DESC, rejection_id DESC
+                LIMIT ?
+                """,
+                tuple(parameters),
+            ).fetchall()
+        return tuple(_row_to_market_data_rejection(row) for row in rows)
+
     def upsert_security(
         self,
         *,
@@ -795,10 +993,7 @@ class MarketEventStore:
                 INSERT INTO market_security_aliases (provider, code, alias_norm, alias)
                 VALUES (?, ?, ?, ?)
                 """,
-                [
-                    (clean_provider, clean_code, _normalize_security_alias(alias), alias)
-                    for alias in alias_values
-                ],
+                [(clean_provider, clean_code, _normalize_security_alias(alias), alias) for alias in alias_values],
             )
             row = connection.execute(
                 "SELECT * FROM market_securities WHERE provider = ? AND code = ?",
@@ -2205,6 +2400,33 @@ def _row_to_watchlist_item(row: sqlite3.Row) -> WatchlistItem:
         created_by_actor_id=str(row["created_by_actor_id"] or ""),
         created_at=int(row["created_at"]),
         updated_at=int(row["updated_at"]),
+    )
+
+
+def _row_to_quote_baseline(row: sqlite3.Row) -> MarketQuoteBaseline:
+    return MarketQuoteBaseline(
+        provider=str(row["provider"] or ""),
+        code=str(row["code"] or ""),
+        confirmed_snapshot=_json_loads_object(row["confirmed_snapshot_json"]),
+        candidate_snapshot=_json_loads_object(row["candidate_snapshot_json"]),
+        candidate_count=max(0, int(row["candidate_count"] or 0)),
+        last_fetch_at=max(0, int(row["last_fetch_at"] or 0)),
+        last_event_key=str(row["last_event_key"] or ""),
+        created_at=int(row["created_at"]),
+        updated_at=int(row["updated_at"]),
+    )
+
+
+def _row_to_market_data_rejection(row: sqlite3.Row) -> MarketDataRejection:
+    return MarketDataRejection(
+        rejection_id=int(row["rejection_id"]),
+        provider=str(row["provider"] or ""),
+        code=str(row["code"] or ""),
+        observed_at=int(row["observed_at"]),
+        stage=str(row["stage"] or ""),
+        reason=str(row["reason"] or ""),
+        payload_hash=str(row["payload_hash"] or ""),
+        created_at=int(row["created_at"]),
     )
 
 

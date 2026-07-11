@@ -853,7 +853,7 @@ feat(finance): add public etf market adapter
 - `market_resolve_security` 现在可把“日经225”“标普500”“日经ETF华夏”等精确别名解析为可信 canonical code；
 - seed 不写 vendor symbol 别名，`^N225` 和纯 vendor code 仍不能绕过 canonical code 边界；
 - Engine 使用通用可选 `seed_security_master` 钩子，没有新增 public_market 类型特判；seed 失败会记录 provider/reason 类型但不拖垮普通聊天；
-- Yahoo 与 AkShare loader 对 timeout、连接重置/中断和明确 HTTP 5xx 最多执行 2 次总尝试，首次失败后短退避；
+- Yahoo 与 AkShare loader 对 timeout、连接重置/中断、SSL/certificate/curl transport 错误和明确 HTTP 5xx 最多执行 3 次总尝试，并使用有界短退避；
 - 缺依赖、限流、HTTP 4xx、参数错误、空数据和 schema 错误不重试；最终失败仍进入原有短 TTL 负缓存；
 - 默认 `FINANCE_MARKET_PROVIDER=disabled`，默认启动行为保持不变。
 
@@ -897,7 +897,7 @@ F7d0-F7d4 完成必须同时满足：
 - provider health 为 `ready`，Yahoo 与 AkShare 两个可选依赖均可导入；
 - Yahoo `NIKKEI225.INDEX` 曾成功返回 20 个日线观察，最后交易日为 `2026-07-10`，source 为 `Yahoo Finance`，时区为 `Asia/Tokyo`，币种为 `JPY`，delay 为 `end_of_day`；
 - AkShare `513000.SH` 快照成功，最后价 `2.403`，交易日为 `2026-07-10`，source 为 `AkShare/Eastmoney public web data`；
-- AkShare `513000.SH` history 当前被远端断开：异常链为 `ConnectionError -> ProtocolError -> RemoteDisconnected`；adapter 确实执行 2 次总尝试和一次 `0.2s` 退避，随后返回 `unavailable / upstream_unavailable:akshare:ConnectionError`；
+- AkShare `513000.SH` history 曾被远端断开：异常链为 `ConnectionError -> ProtocolError -> RemoteDisconnected`；当前 adapter 对同类瞬态传输错误最多执行 3 次总尝试，随后仍会返回结构化 `unavailable`，不会伪造行情；
 - Yahoo 在后续重复 smoke 中出现 `upstream_timeout:yahoo`，即使只为本次 smoke 把单次 timeout 提高到 30 秒仍可能失败，说明当前免费上游可达性确有波动；
 - 行情失败时 `render_market_chart` 返回结构化 `unavailable`，没有登记空 PNG；报告链也不会在缺少可信图表/series 时伪造成功；
 - security master 的“日经225”解析成功，得到 `NIKKEI225.INDEX`；ETF partial candidates 不会覆盖唯一 exact index match。
@@ -917,18 +917,36 @@ F7d0-F7d4 完成必须同时满足：
 
 仍可能发生但不属于私聊/群聊能力漂移的是免费上游瞬时超时：同一 Provider 在不同时间请求可能一成一败。系统必须准确报告 `upstream_timeout`，不得写成“群聊不支持”或“security master 没有”。
 
+### 21.3 2026-07-11 免费行情主动推送质量门禁
+
+- 新增独立 `FinancePublicQuoteEventSource`，不把 `PublicMarketProvider` 假装成通用新闻 callback Provider；它只读取已启用 push subscription 的 `public_market` watchlist。
+- Yahoo 路由只生成 `daily_close`，并明确称为“最近完成交易日收盘”；不会生成或宣称盘中实时事件。
+- AkShare ETF 路由只在 `time_semantics=instant`、来源 provenance 完整、观察时间与当前时间同属一个 A 股交易日且都处于 `09:30-11:30 / 13:00-15:00` 连续交易时段、数据时间未过期时生成 `quote_move` 候选。
+- 每条候选必须通过 provider/code 精确匹配、时区、as_of、fetched_at、正价格、非负成交量/额、OHLC 内部一致、程序重算 change/change_pct 一致、无时间回退和异常涨跌上限检查。
+- 第一次观察只建立候选基线；至少两个不同 `fetched_at` 的一致观察后才确认。新收盘日线或新盘中涨跌档位同样需要二次确认，宁可漏推，不用单次脏数据触发群消息。
+- 基线、候选、确认次数、最近抓取时间和上次事件档位写入 SQLite；重启后继续确认，不会因进程重启把旧数据当新事件。
+- 被拒绝的数据只保存 reason、stage 和 payload SHA-256，五分钟内相同拒绝会合并，保留 30 天诊断窗口，不把完整上游响应写入事件或模型上下文。
+- `quote_move` 使用 1/2/3/5/8/10% 确定性档位去重；相同交易日、方向和档位不会重复生成事件。3%/5% 标签只影响确定性重要度，不由模型自由判断。
+- 行情事件标题由程序生成，包含 canonical code、价格、昨收、涨跌幅和数据时间。模型只解释影响、风险与观察项；最终 QQ 文本始终重新注入该权威事实，新闻冲突时必须放弃新闻推断，不能覆盖行情事实。
+- `market_price_series`、图表和报告的公开 schema 已收紧为当前 Provider 真正支持的 `1d + none`；不再向模型承诺尚未实现的周/月聚合或前后复权。
+- `finance_tool_completed` 事件现在携带结构化 `reason`；Yahoo/AkShare 对 SSL/certificate/curl 瞬态错误最多尝试 3 次，便于区分网络波动与参数/数据质量错误。
+- 生产开关仍保持关闭：`FINANCE_EVENT_INGESTION_ENABLED=false`、`QQ_FINANCE_PUSH_ENABLED=false`。只有离线测试、真实只读干跑和单群受控验收全部通过后才允许打开。
+- 本轮真实只读干跑中，`513000.SH` 快照与 `NIKKEI225.INDEX` 五日线均成功；随后把休市后的真实 `513000.SH` 快照送入最终事件源，结果为 `events=0 / rejection_reason=instant_not_current_trading_date`，证明“工具能查到旧快照”不会被误转成盘中主动推送。
+
 ## 22. 上下文恢复后的精确下一步
 
-若接手者看到本文，F7d0-F7d4、名称解析 bootstrap 和瞬时网络重试已完成。下一步做显式本地验收，不要改默认开关：
+若接手者看到本文，F7d0-F7d4、名称解析 bootstrap、三次瞬时网络重试和免费行情主动推送质量门禁已完成。下一步做显式本地验收，不要直接打开生产推送：
 
 1. `git status --short --branch`，确认不碰用户的 `uv.lock`；
 2. 安装 `requirements-finance-public.txt`，但只在本地测试环境设置 `FINANCE_MARKET_PROVIDER=public_market`；
 3. 保持 `FINANCE_ASSISTANT_ENABLED=true`、主动事件消费和 QQ push 关闭，先走用户主动查询；
 4. 查询 provider health，并先用“日经225”“日经ETF华夏”验证 security master exact resolution；
 5. 先复测 `NIKKEI225.INDEX` 日线和 `513000.SH` 日线；513000 快照已真实成功，不必反复高频拉取；
-6. Yahoo 或 AkShare 网络失败时保留结构化 status/reason，不提高重试上限、不改成 Mock；
+6. Yahoo 或 AkShare 网络失败时保留结构化 status/reason，不继续提高三次重试上限、不改成 Mock；
 7. 在任一真实 series 成功的同一 provider/cache 生命周期内立即执行确定性 PNG 和一份最小金融报告 smoke，避免第二次网络抖动；
-8. 再走真实 QQ 主动查询“日经225最近走势”，验证文字、图片/报告投递、source 和 as_of；事件 worker 与主动 push 仍关闭；
-9. 验证完成后恢复默认 disabled，并按产品优先级选择 F7d5、F9c，或另立“全球指数第二公开源”设计切片。
+8. 再走真实 QQ 主动查询“日经225最近走势”，验证文字、图片/报告投递、source 和 as_of；
+9. 用隔离测试数据库给 `513000.SH` 建立关注项，手动连续运行 public quote source，确认第一次只建基线、第二次确认、脏数据进入 rejection、相同档位不重复出事件；此时仍不发送 QQ；
+10. 检查生成事件标题、source、as_of、importance 和 delivery reservation 后，只对测试群开启一次受控 QQ 推送；若任一字段不可信立即恢复两个 false 开关；
+11. 验证完成后恢复默认 disabled，再按产品优先级选择 F7d5、F9c，或“全球指数第二公开源”。
 
 Yahoo live smoke 失败不得改成假成功；后续网络恢复时再补成功观察。Choice 继续保持可选，现有金融主链不受影响。

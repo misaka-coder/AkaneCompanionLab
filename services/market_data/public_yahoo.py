@@ -50,7 +50,7 @@ class YahooFinanceAdapter:
         series_ttl_seconds: float = 900.0,
         quote_ttl_seconds: float = 60.0,
         failure_ttl_seconds: float = 15.0,
-        retry_max_attempts: int = 2,
+        retry_max_attempts: int = 3,
         retry_backoff_seconds: float = 0.2,
         retry_sleeper=time.sleep,
         clock=time.time,

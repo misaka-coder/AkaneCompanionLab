@@ -54,9 +54,10 @@ def _daily_rows():
 
 
 class YahooFinanceAdapterTests(unittest.TestCase):
-    def test_retry_policy_rejects_more_than_two_attempts_or_negative_backoff(self) -> None:
+    def test_retry_policy_allows_three_attempts_but_rejects_more_or_negative_backoff(self) -> None:
+        YahooFinanceAdapter(retry_max_attempts=3)
         with self.assertRaises(ValueError):
-            YahooFinanceAdapter(retry_max_attempts=3)
+            YahooFinanceAdapter(retry_max_attempts=4)
         with self.assertRaises(ValueError):
             YahooFinanceAdapter(retry_backoff_seconds=-0.1)
 
@@ -201,7 +202,25 @@ class YahooFinanceAdapterTests(unittest.TestCase):
         failing_adapter.get_price_series(failure_request)
 
         self.assertIs(failed_first, failed_second)
-        self.assertEqual(len(failure_calls), 4)
+        self.assertEqual(len(failure_calls), 6)
+
+    def test_ssl_transport_failure_retries_up_to_third_attempt(self) -> None:
+        calls = []
+
+        def downloader(**_kwargs):
+            calls.append(True)
+            if len(calls) < 3:
+                raise RuntimeError("curl: (35) SSL connect error")
+            return FakeFrame(_daily_rows())
+
+        result = YahooFinanceAdapter(
+            downloader=downloader,
+            retry_sleeper=lambda _seconds: None,
+            clock=lambda: FIXED_NOW,
+        ).get_price_series(MarketSeriesRequest(code="NIKKEI225.INDEX", limit=2))
+
+        self.assertTrue(result.ok)
+        self.assertEqual(len(calls), 3)
 
     def test_series_cache_key_includes_limit_and_date_range(self) -> None:
         calls = []

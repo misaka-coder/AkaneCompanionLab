@@ -134,24 +134,32 @@ class FinanceAnalysisRequest:
 
     def render_analysis_instruction(self) -> str:
         reasons = "；".join(self.importance.reasons) or "命中订阅规则"
-        return "\n".join(
-            [
-                "【财经主动推送任务】",
-                "这是订阅授权触发的临时分析，不是任何群成员刚刚说的话；不得把事件字段归因给用户，也不得写成用户偏好。",
-                "当前直接证据只有上方结构化事件字段，标题不等于公告或报道全文；需要当前行情、历史走势、旧观点或用户风险偏好时，应主动调用可用只读工具核验。",
-                "规则只决定是否进入分析，不构成投资结论。",
-                f"规则等级：{self.importance.level}；规则分数：{self.importance.score:.2f}；原因：{reasons}",
-                (
-                    f"本次任务是 {self.batch_kind} 批次，共含 {1 + len(self.related_event_records)} 条事件；"
-                    "应合并共同事实并保留各自来源与时间，不要逐条机械重复。"
-                    if self.related_event_records
-                    else "本次任务只包含一条事件。"
-                ),
-                "最终必须给出完整、可直接发送的 QQ 推送，不要停在‘正在处理’或‘尚未完成’。",
-                "重要推送要清楚区分：已确认事实、客观数据与时间、分析推断、尚待验证与风险、接下来观察，并写明来源和时间。",
-                "只观察到事件与行情同时发生时，不得把相关性写成确定因果；不得保证收益或给出交易指令。",
-            ]
-        )
+        event = self.event_record.event
+        instructions = [
+            "【财经主动推送任务】",
+            "这是订阅授权触发的临时分析，不是任何群成员刚刚说的话；不得把事件字段归因给用户，也不得写成用户偏好。",
+            "当前直接证据只有上方结构化事件字段，标题不等于公告或报道全文；需要当前行情、历史走势、旧观点或用户风险偏好时，应主动调用可用只读工具核验。",
+            "规则只决定是否进入分析，不构成投资结论。",
+            f"规则等级：{self.importance.level}；规则分数：{self.importance.score:.2f}；原因：{reasons}",
+            (
+                f"本次任务是 {self.batch_kind} 批次，共含 {1 + len(self.related_event_records)} 条事件；"
+                "应合并共同事实并保留各自来源与时间，不要逐条机械重复。"
+                if self.related_event_records
+                else "本次任务只包含一条事件。"
+            ),
+            "最终必须给出完整、可直接发送的 QQ 推送，不要停在‘正在处理’或‘尚未完成’。",
+            "重要推送要清楚区分：已确认事实、客观数据与时间、分析推断、尚待验证与风险、接下来观察，并写明来源和时间。",
+            "只观察到事件与行情同时发生时，不得把相关性写成确定因果；不得保证收益或给出交易指令。",
+        ]
+        if event.content_type in {"quote_move", "daily_close"} and "validated_quote" in event.labels:
+            instructions.extend(
+                [
+                    "该事件的价格、昨收、涨跌幅和数据时间已经由程序重新计算并通过质量门禁；标题是本次推送唯一权威行情事实。",
+                    "模型只解释可能影响、风险与后续观察，不得改写标题中的数值，不得用搜索新闻覆盖、修正或替代这些行情事实。",
+                    "若补充新闻与行情事实冲突，应明确标记冲突并放弃新闻推断；不能为了凑结论选择任一方。",
+                ]
+            )
+        return "\n".join(instructions)
 
 
 @dataclass(frozen=True)

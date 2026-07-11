@@ -93,8 +93,8 @@ MARKET_PRICE_SERIES_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "code": {"type": "string", "minLength": 1, "maxLength": 40},
-        "interval": {"type": "string", "enum": ["1d", "1w", "1mo"]},
-        "adjusted": {"type": "string", "enum": ["none", "forward", "backward"]},
+        "interval": {"type": "string", "enum": ["1d"]},
+        "adjusted": {"type": "string", "enum": ["none"]},
         "date_from": {"type": "string", "description": "Optional YYYY-MM-DD lower bound."},
         "date_to": {"type": "string", "description": "Optional YYYY-MM-DD upper bound."},
         "limit": {"type": "integer", "minimum": 2, "maximum": 500},
@@ -114,7 +114,7 @@ RENDER_MARKET_CHART_SCHEMA: dict[str, Any] = {
         "code": {"type": "string", "minLength": 1, "maxLength": 40},
         "chart_type": {"type": "string", "enum": ["candlestick_volume"]},
         "interval": {"type": "string", "enum": ["1d"]},
-        "adjusted": {"type": "string", "enum": ["none", "forward", "backward"]},
+        "adjusted": {"type": "string", "enum": ["none"]},
         "lookback": {"type": "integer", "minimum": 20, "maximum": 250},
         "moving_averages": {
             "type": "array",
@@ -147,7 +147,7 @@ COMPOSE_FINANCE_REPORT_SCHEMA: dict[str, Any] = {
         },
         "output_format": {"type": "string", "enum": ["md", "pdf", "xlsx"]},
         "interval": {"type": "string", "enum": ["1d"]},
-        "adjusted": {"type": "string", "enum": ["none", "forward", "backward"]},
+        "adjusted": {"type": "string", "enum": ["none"]},
         "lookback": {"type": "integer", "minimum": 20, "maximum": 250},
         "chart_ids": {
             "type": "array",
@@ -192,6 +192,7 @@ class _FinanceReadToolHandler(BaseToolHandler):
                     "status": status,
                     "provider": str(payload.get("provider") or ""),
                     "as_of": payload.get("as_of"),
+                    "reason": str(payload.get("reason") or ""),
                 }
             ],
             followup_context=followup,
@@ -443,7 +444,7 @@ class MarketPriceSeriesToolHandler(_FinanceReadToolHandler):
         code = str(value.get("code") or "").strip().upper()
         interval = str(value.get("interval") or "1d").strip().lower()
         adjusted = str(value.get("adjusted") or "none").strip().lower()
-        if interval not in {"1d", "1w", "1mo"} or adjusted not in {"none", "forward", "backward"}:
+        if interval != "1d" or adjusted != "none":
             return None
         limit = _bounded_int(value.get("limit"), default=120, lower=2, upper=500)
         if limit is None:

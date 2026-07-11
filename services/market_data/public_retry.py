@@ -7,7 +7,7 @@ from typing import Any, TypeVar
 
 T = TypeVar("T")
 
-DEFAULT_PUBLIC_RETRY_MAX_ATTEMPTS = 2
+DEFAULT_PUBLIC_RETRY_MAX_ATTEMPTS = 3
 DEFAULT_PUBLIC_RETRY_BACKOFF_SECONDS = 0.2
 
 
@@ -44,7 +44,17 @@ def is_retryable_public_upstream_error(exc: Exception) -> bool:
         if isinstance(current, (ConnectionResetError, ConnectionAbortedError)):
             return True
         name = type(current).__name__.lower()
-        if "timeout" in name or "connectionreset" in name or "connectionaborted" in name:
+        if any(
+            marker in name
+            for marker in (
+                "timeout",
+                "connectionreset",
+                "connectionaborted",
+                "sslerror",
+                "certificateerror",
+                "curlerror",
+            )
+        ):
             return True
         message = str(current).strip().lower()
         if any(
@@ -54,6 +64,16 @@ def is_retryable_public_upstream_error(exc: Exception) -> bool:
                 "reset by peer",
                 "connection aborted",
                 "remote end closed connection",
+                "ssl connect error",
+                "ssl connection error",
+                "ssl certificate problem",
+                "certificate verify failed",
+                "certificate verification failed",
+                "unexpected eof while reading",
+                "curl: (35)",
+                "curl: (56)",
+                "curl_cffi",
+                "pycurl",
             )
         ):
             return True
@@ -106,7 +126,7 @@ def _bounded_attempts(value: Any) -> int:
         raise ValueError("max_attempts must be an integer")
     attempts = int(value)
     if attempts < 1 or attempts > DEFAULT_PUBLIC_RETRY_MAX_ATTEMPTS:
-        raise ValueError("max_attempts must be between 1 and 2")
+        raise ValueError(f"max_attempts must be between 1 and {DEFAULT_PUBLIC_RETRY_MAX_ATTEMPTS}")
     return attempts
 
 

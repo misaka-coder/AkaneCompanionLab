@@ -108,7 +108,7 @@ class AkShareETFAdapterTests(unittest.TestCase):
         self.assertFalse(first.ok)
         self.assertEqual(first.reason, "upstream_timeout:akshare")
         self.assertIs(first, second)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
 
     def test_connection_reset_retries_once_then_history_recovers(self):
         calls = []

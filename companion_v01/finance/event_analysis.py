@@ -248,7 +248,19 @@ def ensure_market_push_contract(
         )
     )
 
-    if not all(marker in body for marker in _STRUCTURE_MARKERS):
+    validated_quote = event.content_type in {"quote_move", "daily_close"} and "validated_quote" in event.labels
+    if validated_quote:
+        body = "\n".join(
+            [
+                f"已确认事实：{confirmed_fact}",
+                f"客观数据与时间：证券代码 {code_text}；行情事实与 as_of 均来自程序质量门禁，事件进入分析时间 {published_iso}。",
+                f"分析推断：{body}",
+                "尚待验证与风险：模型解释不能修改上述价格、昨收、涨跌幅或数据时间；"
+                "补充新闻若与行情事实冲突，应放弃该新闻推断，而不是覆盖行情数据。",
+                "接下来观察：等待下一次通过同等质量门禁的独立行情观察，并核验是否跨越新的涨跌档位或形成新收盘日线。",
+            ]
+        )
+    elif not all(marker in body for marker in _STRUCTURE_MARKERS):
         body = "\n".join(
             [
                 f"已确认事实：{confirmed_fact}",

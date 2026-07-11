@@ -2072,13 +2072,15 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F6、F7、F7c、F7d0-F7d4、public security master bootstrap、公开源瞬时网络重试与 F9a-F9b 已完成。免费公开行情代码主链和自然语言标的解析已经接通但默认关闭；真实 Yahoo 日线和 AkShare ETF 快照已经成功观察，ETF history 的两次重试与 Yahoo timeout 的 fail-closed 也已确认。当前优先级是在稳定网络窗口完成产物与 QQ 端到端 smoke：
+F6、F7、F7c、F7d0-F7d4、public security master bootstrap、公开源三次瞬时网络重试、F9a-F9b 和免费行情主动推送质量门禁已完成。免费公开行情代码主链、自然语言标的解析及 watchlist 行情事件源已经接通但默认关闭；Yahoo 只允许完成日线事件，AkShare ETF 才允许通过新鲜度检查后的盘中候选。当前优先级是质量干跑与单群受控验收：
 
 1. 先读 `docs/public_market_provider_implementation_v1.md` 和 F7d0 离线 fixture；不要重新跑大范围依赖调查，不改基础 `requirements.txt`，不接未文档化快讯接口；
-2. 安装可选依赖并仅在本地显式设置 `FINANCE_MARKET_PROVIDER=public_market`；保持事件 worker 和 QQ push 关闭；
+2. 安装可选依赖并仅在本地显式设置 `FINANCE_MARKET_PROVIDER=public_market`；先保持 `FINANCE_EVENT_INGESTION_ENABLED=false` 和 `QQ_FINANCE_PUSH_ENABLED=false`；
 3. 名称解析与 health 已通过；先复测指数/ETF 日线，任一真实 series 成功后在同一 provider/cache 生命周期内立即生成确定性图表与最小报告；
-4. Choice 权限开通后仍按第 20 节执行最小只读冒烟，确认实际权限、callback 字段、证券主数据来源、AdjustFlag 和再分发边界；它是可选高级 Provider，不阻塞免费主线；
-5. F7d0-F7d4 完成后，再在 F8 云端产物与 F9c processing lease/Bridge watchdog 之间按演示需求选择；真实行情图继续由本地确定性程序生成；
-6. 视可靠数据权限补 `market_macro_series`，并为发布日期和修订时间防前视偏差。
+4. 给隔离测试库创建一条 `public_market` push subscription 与 `513000.SH` watchlist，直接运行 `FinancePublicQuoteEventSource.poll_market_events()`：首观测不得出事件，独立二次观察才可确认，过期/字段不一致/OHLC 异常必须进入 rejection；
+5. 检查 baseline、event title、source、数据时间、importance、去重档位与 delivery queue 后，只给测试群开启一次 QQ 推送。任何无法说明来源和时间的事件都不得进入模型；
+6. Choice 权限开通后仍按第 20 节执行最小只读冒烟，确认实际权限、callback 字段、证券主数据来源、AdjustFlag 和再分发边界；它是可选高级 Provider，不阻塞免费主线；
+7. 再在 F8 云端产物与 F9c processing lease/Bridge watchdog 之间按演示需求选择；真实行情图继续由本地确定性程序生成；
+8. 视可靠数据权限补 `market_macro_series`，并为发布日期和修订时间防前视偏差。
 
 任何公开 Provider 失败都必须返回结构化 `status/reason`，不能静默回退 Mock、把 ETF 冒充指数，或把最近收盘伪装成实时行情。

@@ -24,6 +24,7 @@ from .finance import (
     AkaneFinanceAnalysisClient,
     FinanceEventOrchestrator,
     FinanceEventWorker,
+    FinancePublicQuoteEventSource,
     FinancePushGovernancePolicy,
     FinanceSubscriptionService,
     QQFinanceDeliveryAdapter,
@@ -174,13 +175,23 @@ if qq_gateway is not None and market_event_store is not None:
             quiet_end=str(getattr(config, "FINANCE_PUSH_QUIET_END", "07:00")),
         ),
     )
-    if bool(
+    finance_event_source = None
+    if str(getattr(market_event_provider, "id", "") or "").strip() == "public_market":
+        try:
+            finance_event_source = FinancePublicQuoteEventSource(
+                provider=market_event_provider,
+                store=market_event_store,
+            )
+        except (TypeError, ValueError):
+            finance_event_source = None
+    elif bool(
         callable(getattr(market_event_provider, "supports", None))
         and market_event_provider.supports("event_poll")
         and callable(getattr(market_event_provider, "poll_market_events", None))
     ):
         event_source_factory = getattr(market_event_provider, "clone", None)
         finance_event_source = event_source_factory() if callable(event_source_factory) else market_event_provider
+    if finance_event_source is not None:
         finance_event_worker = FinanceEventWorker(
             source=finance_event_source,
             orchestrator=finance_event_orchestrator,
@@ -190,9 +201,7 @@ if qq_gateway is not None and market_event_store is not None:
             and bool(getattr(config, "QQ_BRIDGE_ENABLED", False)),
             poll_interval_seconds=float(getattr(config, "FINANCE_EVENT_POLL_INTERVAL_SECONDS", 2.0)),
             poll_batch_size=int(getattr(config, "FINANCE_EVENT_POLL_BATCH_SIZE", 20)),
-            recovery_max_age_seconds=int(
-                getattr(config, "FINANCE_EVENT_RECOVERY_MAX_AGE_SECONDS", 6 * 60 * 60)
-            ),
+            recovery_max_age_seconds=int(getattr(config, "FINANCE_EVENT_RECOVERY_MAX_AGE_SECONDS", 6 * 60 * 60)),
             log_event=lambda event, **fields: _log_event(event, **fields),
         )
 
@@ -345,6 +354,7 @@ if qq_gateway is not None:
 async def startup_event() -> None:
     if finance_event_worker is not None:
         finance_event_worker.start()
+
 
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
