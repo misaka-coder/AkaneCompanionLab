@@ -1,7 +1,7 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0-F7c 与 F9a-F9b 已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析重试、逐项 QQ 投递账本、持久化推送治理、确定性 PNG 图表、MD/PDF/XLSX 金融报告和行情 Provider 解耦已接通；真实 Choice 冒烟仍等待账户权限
-更新时间：2026-07-10
+状态：设计锁定；F0-F7c 与 F9a-F9b 已完成 Fake Bridge/Mock 验收；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析重试、逐项 QQ 投递账本、持久化推送治理、确定性 PNG 图表、MD/PDF/XLSX 金融报告和行情 Provider 解耦已接通；免费公开行情 F7d0-F7d4 已另立实施细案，真实 Choice 冒烟仍等待账户权限
+更新时间：2026-07-11
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
 实施分支：feature/qq-finance-assistant-emquant（从包含现有 QQ、memcore 和 Anthropic 工具链的 feature/monogatari-web 分出）
@@ -27,13 +27,14 @@
 
 1. 根目录 AGENTS.md
 2. 本文件
-3. docs/qq_napcat_integration_v1.md
-4. docs/qq_workshop_capabilities_v1.md
-5. docs/memcore_integration_plan_v1.md
-6. docs/tool_system_decoupling_v1.md
-7. docs/file_processing_generated_artifacts_v1.md
-8. sibling memcore 仓库的 AGENTS.md、README.md 和 docs/model_prompt_playbook_v1.md
-9. Choice SDK 自带的 EMQuantAPI_Python.pdf、python3/EmQuantAPI.py 和 python3/demo.py
+3. docs/public_market_provider_implementation_v1.md
+4. docs/qq_napcat_integration_v1.md
+5. docs/qq_workshop_capabilities_v1.md
+6. docs/memcore_integration_plan_v1.md
+7. docs/tool_system_decoupling_v1.md
+8. docs/file_processing_generated_artifacts_v1.md
+9. sibling memcore 仓库的 AGENTS.md、README.md 和 docs/model_prompt_playbook_v1.md
+10. 只有准备真实 Choice 冒烟时，再读 SDK 自带的 EMQuantAPI_Python.pdf、python3/EmQuantAPI.py 和 python3/demo.py
 
 恢复后先执行：
 
@@ -125,9 +126,11 @@ finance_mode = off | qa | push
 
 人格不能替代行情、新闻、公告或历史证据。
 
-### 3.3 Choice SDK 作为首个正式数据适配器
+### 3.3 Choice SDK 作为可选高级数据适配器
 
-Choice EmQuantAPI 审批通过后，可以作为新闻、行情、历史序列、板块和宏观数据的优先主通道，但金融上层能力不能依赖 Choice 专有对象。Engine 只选择统一 `MarketDataProvider`，更换行情源不应改动 QQ、事件编排、图表、报告或 memcore 主链。
+Choice EmQuantAPI 审批通过且授权范围明确后，可以作为新闻、行情、历史序列、板块和宏观数据的高级通道，但金融上层能力不能依赖 Choice 专有对象。Engine 只选择统一 `MarketDataProvider`，更换行情源不应改动 QQ、事件编排、图表、报告或 memcore 主链。
+
+在审批和预算未确定时，免费演示主线按 `docs/public_market_provider_implementation_v1.md` 接入 `public_market` composite Provider：Yahoo 负责全球指数，AkShare 负责已复核的境内 ETF。Choice SDK 可下载不等于免费权限或再分发授权，不得让它阻塞主链。
 
 公开网页搜索继续保留，用于：
 
@@ -1862,6 +1865,28 @@ F7b 实际落地：
 
 因此 Choice 不给权限时，损失的是 `choice_emquant` 这个数据适配器，不是订阅、事件状态机、AI 分析、图表、报告、memcore 或 QQ 投递能力。可以继续接入另一家 provider，或先使用公开检索与 `disabled` 的结构化降级。
 
+### Slice F7d：免费公开行情 Provider
+
+状态：实施细案已锁定，代码尚未开始。
+
+完整设计、数据 provenance、时区纪律、依赖隔离、测试矩阵和提交边界见：
+
+~~~text
+docs/public_market_provider_implementation_v1.md
+~~~
+
+实施顺序固定为：
+
+1. F7d0：依赖、许可证和真实数据形状 spike，保存脱敏离线 fixture；
+2. F7d1a：canonical instrument registry；
+3. F7d1b：Yahoo 全球指数日线；
+4. F7d2：延迟快照与 TTL cache；
+5. F7d3：AkShare 境内 ETF；
+6. F7d4：`public_market` composite Provider 注册与配置；
+7. F7d5：只有可靠 FX 数据源存在时再做指数/ETF/FX 联合分析。
+
+免费 Provider 不替代 Choice，也不能回退 Mock。指数和境内 ETF 必须保持不同 canonical code、来源、币种、时间语义和代理风险说明。
+
 ### Slice F8：云端产物 Provider
 
 目标：可配置云端文档或生图，但不是主链依赖。
@@ -2046,12 +2071,13 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F6、F7、F7c 与 F9a-F9b 已完成 Fake Bridge/Mock 主链验收，真实主动推送仍因默认开关和 Choice 权限保持关闭。上下文恢复后按以下顺序继续：
+F6、F7、F7c 与 F9a-F9b 已完成 Fake Bridge/Mock 主链验收。当前优先级是不等待 Choice 审批，先完成免费公开行情 F7d0-F7d4，让真实指数/ETF 查询、图表和报告可用于演示。上下文恢复后按以下顺序继续：
 
-1. Choice 权限开通后按第 20 节执行最小只读冒烟，确认 cfn/cnq/csqsnapshot/csd 的实际权限、callback 字段、证券主数据来源和 AdjustFlag 口径；未确认前保持 `FINANCE_MARKET_PROVIDER=disabled` 或仅使用 Fake SDK 测试；
-2. 如果 Choice 未授权，按统一能力契约新增另一家只读 provider，优先补 `quote_snapshot / price_series / news_search`，不改上层主链；
-3. 进入 F8：仅为装饰性封面、非事实插图或可选高保真文档接云端 Provider；真实行情图和报告事实表继续由本地确定性程序生成；
-4. 视真实数据源权限补 `market_macro_series`，并为发布日期/修订时间防前视偏差；
-5. 进入 F9c：补 processing 跨进程租约回收、Bridge watchdog 与订阅恢复；F9d 再补 quota/流量告警、retention、运行指标和人工 replay。
+1. 先读 `docs/public_market_provider_implementation_v1.md`，执行 F7d0 依赖、许可证和数据形状 spike；不改基础 `requirements.txt`，不接未文档化快讯接口；
+2. 第一个生产代码提交只做 canonical instrument registry，推荐提交名 `feat(finance): add public market instrument registry`；
+3. 之后单独实现 Yahoo 全球指数日线，再做延迟快照/TTL cache、AkShare 境内 ETF 和 `public_market` registry/config 接线；
+4. Choice 权限开通后仍按第 20 节执行最小只读冒烟，确认实际权限、callback 字段、证券主数据来源、AdjustFlag 和再分发边界；它是可选高级 Provider，不阻塞免费主线；
+5. F7d0-F7d4 完成后，再在 F8 云端产物与 F9c processing lease/Bridge watchdog 之间按演示需求选择；真实行情图继续由本地确定性程序生成；
+6. 视可靠数据权限补 `market_macro_series`，并为发布日期和修订时间防前视偏差。
 
-推荐下一个独立提交边界：`finance delivery leases and bridge watchdog`；F8 云端产物仍为可选增强，不能让 Choice 或云端能力成为金融主链依赖。
+任何公开 Provider 失败都必须返回结构化 `status/reason`，不能静默回退 Mock、把 ETF 冒充指数，或把最近收盘伪装成实时行情。
