@@ -216,6 +216,21 @@ class FinancePublicNewsEventSourceTests(unittest.TestCase):
         self.assertEqual(result.events[0].code, "002594.SZ")
         self.assertIn("security_matched", result.events[0].labels)
 
+    def test_long_news_summary_does_not_break_security_resolution(self) -> None:
+        clock = [NOW]
+        long_summary = "企业披露经营进展。" * 80
+        new = _item("long", "海外企业发布经营更新", summary=long_summary)
+        adapter = SequenceNewsAdapter(((_item("old", "普通财经快讯"),), (new,)))
+        source = self._source(adapter, FakeModerator(), lambda: clock[0])
+
+        source.poll_market_events()
+        clock[0] += 10
+        result = source.poll_market_events()
+
+        self.assertTrue(result.ok)
+        self.assertEqual(len(result.events), 1)
+        self.assertEqual(result.events[0].code, "GLOBAL.MARKET")
+
     def test_retryable_moderation_failure_is_not_marked_seen_and_recovers_next_poll(self) -> None:
         clock = [NOW]
         new = _item("retry", "长江存储公布IPO辅导团队")
@@ -285,7 +300,8 @@ class FinancePublicNewsEventSourceTests(unittest.TestCase):
         result = FinanceCompositeEventSource(sources=(FailedSource(), EmptySource())).poll_market_events()
 
         self.assertTrue(result.ok)
-        self.assertEqual(result.reason, "partial_event_source_failure")
+        self.assertTrue(result.reason.startswith("partial_event_source_failure:"))
+        self.assertIn("down", result.reason)
 
 
 if __name__ == "__main__":

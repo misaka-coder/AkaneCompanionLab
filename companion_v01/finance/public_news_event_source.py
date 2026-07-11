@@ -339,8 +339,9 @@ class FinancePublicNewsEventSource:
 
     def _resolve_item_codes(self, item: PublicNewsItem) -> tuple[str, ...]:
         text = " ".join(part for part in (item.title, item.summary) if part)
+        resolution_query = str(item.title or item.summary or "").strip()[:300]
         codes: list[str] = []
-        for candidate in self.store.resolve_security(text, provider=self.provider_id, limit=20):
+        for candidate in self.store.resolve_security(resolution_query, provider=self.provider_id, limit=20):
             if str(candidate.get("match_type") or "") not in {"exact", "embedded"}:
                 continue
             code = str(candidate.get("code") or "").strip().upper()

@@ -68,7 +68,11 @@ class FinanceCompositeEventSource:
             events=tuple(events),
             raw_event_count=raw_count,
             ignored_count=ignored_count,
-            reason="partial_event_source_failure" if failed_sources else "",
+            reason=(
+                "partial_event_source_failure:" + ";".join(dict.fromkeys(reasons))[:900]
+                if failed_sources
+                else ""
+            ),
         )
 
 
