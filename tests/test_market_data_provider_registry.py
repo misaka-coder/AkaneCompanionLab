@@ -17,6 +17,7 @@ from services.market_data import (
     MarketDataValidationError,
     MarketNewsQuery,
     MarketProviderCapabilities,
+    PublicMarketProvider,
     MarketQuoteRequest,
     MarketSeriesRequest,
     MockMarketDataProvider,
@@ -33,6 +34,7 @@ class MarketDataProviderContractTests(unittest.TestCase):
             DisabledMarketDataProvider(clock=lambda: 1_752_153_600),
             MockMarketDataProvider.from_fixture_path(FIXTURE_PATH),
             EmQuantBridgeMarketDataProvider(clock=lambda: 1_752_153_600),
+            PublicMarketProvider(clock=lambda: 1_752_153_600, dependency_probe=lambda _name: False),
         )
 
         for provider in providers:
@@ -56,6 +58,7 @@ class MarketDataProviderContractTests(unittest.TestCase):
         disabled = DisabledMarketDataProvider()
         mock = MockMarketDataProvider.from_fixture_path(FIXTURE_PATH)
         emquant = EmQuantBridgeMarketDataProvider()
+        public_market = PublicMarketProvider(dependency_probe=lambda _name: False)
 
         self.assertEqual(disabled.capabilities.enabled(), ())
         self.assertEqual(
@@ -69,6 +72,8 @@ class MarketDataProviderContractTests(unittest.TestCase):
         self.assertTrue(callable(getattr(emquant, "poll_market_events", None)))
         self.assertFalse(callable(getattr(mock, "poll_market_events", None)))
         self.assertFalse(emquant.supports("security_master"))
+        self.assertEqual(public_market.capabilities.enabled(), ("quote_snapshot", "price_series"))
+        self.assertFalse(public_market.supports("news_search"))
 
     def test_disabled_provider_returns_structured_unavailable_without_fake_data(self) -> None:
         provider = DisabledMarketDataProvider(
@@ -98,14 +103,17 @@ class MarketDataProviderRegistryTests(unittest.TestCase):
     def test_default_registry_is_explicit_and_never_registers_mock(self) -> None:
         registry = build_default_market_data_provider_registry()
 
-        self.assertEqual(registry.provider_ids(), ("disabled", "emquant"))
+        self.assertEqual(registry.provider_ids(), ("disabled", "emquant", "public_market"))
         disabled = registry.create(MarketDataProviderSettings(provider="disabled"))
         emquant = registry.create(MarketDataProviderSettings(provider="emquant"))
+        public_market = registry.create(MarketDataProviderSettings(provider="public_market"))
 
         self.assertIsInstance(disabled, DisabledMarketDataProvider)
         self.assertIsInstance(emquant, EmQuantBridgeMarketDataProvider)
+        self.assertIsInstance(public_market, PublicMarketProvider)
         self.assertNotIsInstance(disabled, MockMarketDataProvider)
         self.assertNotIsInstance(emquant, MockMarketDataProvider)
+        self.assertNotIsInstance(public_market, MockMarketDataProvider)
 
     def test_unknown_provider_fails_closed_instead_of_falling_back(self) -> None:
         registry = build_default_market_data_provider_registry()
@@ -150,7 +158,19 @@ class MarketDataProviderRegistryTests(unittest.TestCase):
 
         self.assertIsNotNone(service)
         self.assertIsInstance(service.provider, DisabledMarketDataProvider)
-        self.assertEqual(engine.market_data_provider_registry.provider_ids(), ("disabled", "emquant"))
+        self.assertEqual(engine.market_data_provider_registry.provider_ids(), ("disabled", "emquant", "public_market"))
+
+    def test_engine_constructs_public_market_without_importing_optional_dependencies(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True),
+            patch.object(config, "FINANCE_MARKET_PROVIDER", "public_market", create=True),
+            patch.object(config, "FINANCE_EVENT_DB_PATH", str(Path(temp_dir) / "market.sqlite3")),
+        ):
+            service = engine._build_market_data_tool_service()
+        self.assertIsNotNone(service)
+        self.assertIsInstance(service.provider, PublicMarketProvider)
 
     def test_engine_rejects_unknown_provider_without_constructing_mock(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)

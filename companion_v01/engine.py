@@ -3991,6 +3991,15 @@ class AkaneMemoryEngine:
                     emquant_bridge_url=str(getattr(config, "EMQUANT_BRIDGE_URL", "http://127.0.0.1:9910") or ""),
                     emquant_bridge_token=str(getattr(config, "EMQUANT_BRIDGE_TOKEN", "") or ""),
                     emquant_timeout_seconds=float(getattr(config, "EMQUANT_HTTP_TIMEOUT_SECONDS", 15.0) or 15.0),
+                    public_yahoo_enabled=bool(getattr(config, "FINANCE_PUBLIC_MARKET_YAHOO_ENABLED", True)),
+                    public_akshare_enabled=bool(getattr(config, "FINANCE_PUBLIC_MARKET_AKSHARE_ENABLED", True)),
+                    public_timeout_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_TIMEOUT_SECONDS", 8.0) or 8.0),
+                    public_cache_max_entries=int(getattr(config, "FINANCE_PUBLIC_MARKET_CACHE_MAX_ENTRIES", 256) or 256),
+                    public_yahoo_series_ttl_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_YAHOO_SERIES_TTL_SECONDS", 900.0) or 900.0),
+                    public_yahoo_quote_ttl_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_YAHOO_QUOTE_TTL_SECONDS", 60.0) or 60.0),
+                    public_akshare_series_ttl_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_AKSHARE_SERIES_TTL_SECONDS", 300.0) or 300.0),
+                    public_akshare_quote_ttl_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_AKSHARE_QUOTE_TTL_SECONDS", 15.0) or 15.0),
+                    public_failure_ttl_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_FAILURE_TTL_SECONDS", 15.0) or 15.0),
                 )
             )
             return MarketDataToolService(provider=provider, event_store=MarketEventStore(db_path))

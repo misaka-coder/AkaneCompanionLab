@@ -34,6 +34,7 @@ from .public_instruments import (
     build_default_public_instrument_registry,
     normalize_public_instrument_alias,
 )
+from .public_provider import PublicMarketProvider
 from .public_yahoo import (
     YahooFinanceAdapter,
     YahooFinanceDependencyUnavailable,
@@ -139,6 +140,7 @@ __all__ = [
     "PublicInstrument",
     "PublicInstrumentRegistry",
     "PublicInstrumentResolution",
+    "PublicMarketProvider",
     "YahooFinanceAdapter",
     "YahooFinanceDependencyUnavailable",
     "YahooFinanceSchemaError",

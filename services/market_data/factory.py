@@ -6,6 +6,11 @@ from typing import Callable
 from .disabled import DisabledMarketDataProvider
 from .emquant_bridge_client import EmQuantBridgeMarketDataProvider
 from .provider import MarketDataProvider
+from .public_akshare import AkShareETFAdapter
+from .public_cache import TTLMarketDataCache
+from .public_instruments import build_default_public_instrument_registry
+from .public_provider import PublicMarketProvider
+from .public_yahoo import YahooFinanceAdapter
 from .types import MarketDataValidationError
 
 
@@ -18,6 +23,15 @@ class MarketDataProviderSettings:
     emquant_bridge_url: str = "http://127.0.0.1:9910"
     emquant_bridge_token: str = ""
     emquant_timeout_seconds: float = 15.0
+    public_yahoo_enabled: bool = True
+    public_akshare_enabled: bool = True
+    public_timeout_seconds: float = 8.0
+    public_cache_max_entries: int = 256
+    public_yahoo_series_ttl_seconds: float = 900.0
+    public_yahoo_quote_ttl_seconds: float = 60.0
+    public_akshare_series_ttl_seconds: float = 300.0
+    public_akshare_quote_ttl_seconds: float = 15.0
+    public_failure_ttl_seconds: float = 15.0
 
     @property
     def provider_id(self) -> str:
@@ -76,7 +90,16 @@ def build_default_market_data_provider_registry() -> MarketDataProviderRegistry:
             timeout_seconds=settings.emquant_timeout_seconds,
         ),
     )
+    registry.register("public_market", _build_public_market_provider)
     return registry
+
+
+def _build_public_market_provider(settings: MarketDataProviderSettings) -> MarketDataProvider:
+    cache = TTLMarketDataCache(max_entries=settings.public_cache_max_entries)
+    instruments = build_default_public_instrument_registry()
+    yahoo = YahooFinanceAdapter(registry=instruments, cache=cache, timeout_seconds=settings.public_timeout_seconds, series_ttl_seconds=settings.public_yahoo_series_ttl_seconds, quote_ttl_seconds=settings.public_yahoo_quote_ttl_seconds, failure_ttl_seconds=settings.public_failure_ttl_seconds)
+    akshare = AkShareETFAdapter(registry=instruments, cache=cache, series_ttl_seconds=settings.public_akshare_series_ttl_seconds, quote_ttl_seconds=settings.public_akshare_quote_ttl_seconds, failure_ttl_seconds=settings.public_failure_ttl_seconds)
+    return PublicMarketProvider(registry=instruments, yahoo=yahoo, akshare=akshare, yahoo_enabled=settings.public_yahoo_enabled, akshare_enabled=settings.public_akshare_enabled)
 
 
 def build_market_data_provider(

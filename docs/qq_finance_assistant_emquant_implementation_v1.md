@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0-F7c、免费公开行情 F7d0-F7d3 与 F9a-F9b 已完成；QQ subscription/watchlist、默认关闭的事件 worker、AI 分析重试、逐项 QQ 投递账本、持久化推送治理、确定性 PNG 图表、MD/PDF/XLSX 金融报告和行情 Provider 解耦已接通；F7d4 public_market composite 注册与配置为下一切片，真实 Choice 冒烟仍等待账户权限
+状态：设计锁定；F0-F7d4 与 F9a-F9b 已完成；免费 public_market 已注册但默认 disabled；QQ subscription/watchlist、事件 worker、AI 分析重试、逐项投递账本、推送治理、确定性图表/报告和 Provider 解耦已接通；真实公开源端到端 smoke 受当前 Yahoo/AkShare 网络稳定性影响，Choice 冒烟仍等待账户权限
 更新时间：2026-07-11
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -1867,7 +1867,7 @@ F7b 实际落地：
 
 ### Slice F7d：免费公开行情 Provider
 
-状态：F7d0-F7d3 已完成；Yahoo live 超时与 AkShare history live ConnectionError 均结构化保留；下一步为 F7d4 public_market composite 注册与配置。
+状态：F7d0-F7d4 已完成；public_market 已进入生产 registry 但默认 disabled；Yahoo live 超时与 AkShare history live ConnectionError 均结构化保留。
 
 完整设计、数据 provenance、时区纪律、依赖隔离、测试矩阵和提交边界见：
 
@@ -1882,7 +1882,7 @@ docs/public_market_provider_implementation_v1.md
 3. F7d1b：Yahoo 全球指数日线；已完成；
 4. F7d2：最近已完成日线快照与 TTL cache；已完成；
 5. F7d3：AkShare 境内 ETF；已完成；
-6. F7d4：`public_market` composite Provider 注册与配置；
+6. F7d4：`public_market` composite Provider 注册与配置；已完成；
 7. F7d5：只有可靠 FX 数据源存在时再做指数/ETF/FX 联合分析。
 
 免费 Provider 不替代 Choice，也不能回退 Mock。指数和境内 ETF 必须保持不同 canonical code、来源、币种、时间语义和代理风险说明。
@@ -2071,11 +2071,11 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F6、F7、F7c、F7d0-F7d3 与 F9a-F9b 已完成。当前优先级是不等待 Choice 审批，完成免费公开行情 F7d4 composite 接线，让真实指数/ETF 查询、图表和报告可用于演示。上下文恢复后按以下顺序继续：
+F6、F7、F7c、F7d0-F7d4 与 F9a-F9b 已完成。免费公开行情代码主链已经接通但默认关闭；当前优先级是显式本地端到端 smoke，再决定 F7d5 或 F9c。上下文恢复后按以下顺序继续：
 
 1. 先读 `docs/public_market_provider_implementation_v1.md` 和 F7d0 离线 fixture；不要重新跑大范围依赖调查，不改基础 `requirements.txt`，不接未文档化快讯接口；
-2. 直接执行 F7d4，实现 `public_market` composite、生产 registry/config/Engine 接线，推荐提交名 `feat(finance): register public market provider`；
-3. 默认仍保持 `disabled`，公开行情只有显式选择后才联网；
+2. 安装可选依赖并仅在本地显式设置 `FINANCE_MARKET_PROVIDER=public_market`；保持事件 worker 和 QQ push 关闭；
+3. 先验证 health、日经指数日线和 513000 ETF 快照/日线，再验证确定性图表与最小报告；
 4. Choice 权限开通后仍按第 20 节执行最小只读冒烟，确认实际权限、callback 字段、证券主数据来源、AdjustFlag 和再分发边界；它是可选高级 Provider，不阻塞免费主线；
 5. F7d0-F7d4 完成后，再在 F8 云端产物与 F9c processing lease/Bridge watchdog 之间按演示需求选择；真实行情图继续由本地确定性程序生成；
 6. 视可靠数据权限补 `market_macro_series`，并为发布日期和修订时间防前视偏差。

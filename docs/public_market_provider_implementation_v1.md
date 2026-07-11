@@ -1,6 +1,6 @@
 # Akane 免费公开行情 Provider 实施细案 V1
 
-状态：F7d0-F7d3 已完成；Yahoo live 超时、AkShare history live ConnectionError 均结构化保留；下一步为 F7d4 public_market composite 注册与配置
+状态：F7d0-F7d4 已完成；public_market 已进入生产 registry 但默认 disabled；Yahoo live 超时、AkShare history live ConnectionError 均结构化保留
 更新时间：2026-07-11
 适用仓库：AkaneCompanionLab
 实施分支：`feature/qq-finance-assistant-emquant`
@@ -833,7 +833,23 @@ feat(finance): add public etf market adapter
 
 ### F7d4：`public_market` composite 注册与配置
 
+状态：已完成；生产 registry 已注册，默认配置仍为 `disabled`，不会因安装依赖自动联网。
+
 目标：完成 Engine、config、settings catalog 和生产 registry 接线，默认仍关闭。
+
+实际落地：
+
+- `PublicMarketProvider` 完整实现 `MarketDataProvider`，只声明 `quote_snapshot / price_series`；
+- `news_search` 明确返回 `unavailable`，不伪造新闻能力；
+- series 按 canonical instrument route 分发到 Yahoo 或 AkShare；
+- mixed quote 按 route 分组并按原请求顺序重组，任一路失败时不返回部分数据；
+- route 被配置关闭时返回 `unavailable / public_route_disabled:<route>`；
+- health 只检查可选包是否存在，不发起网络请求；全部可用为 ready，部分为 degraded，全部缺失为 disconnected；
+- Yahoo/AkShare 共享同一 instrument registry 和有界 TTL cache；
+- `MarketDataProviderSettings`、`config.py`、settings catalog 和 Engine 已接全部公开行情开关/TTL；
+- production registry 固定为 `disabled / emquant / public_market`，仍不包含 Mock；
+- Engine 构造 public_market 时不会立即导入 yfinance/AkShare，也不会请求网络；
+- 默认 `FINANCE_MARKET_PROVIDER=disabled`，默认启动行为保持不变。
 
 建议提交：
 
@@ -870,17 +886,17 @@ F7d0-F7d4 完成必须同时满足：
 
 ## 22. 上下文恢复后的精确下一步
 
-若接手者看到本文，下一步直接执行 F7d4，不要重新跑大范围依赖调查：
+若接手者看到本文，F7d0-F7d4 已完成。下一步先做显式本地验收，不要改默认开关：
 
 1. `git status --short --branch`，确认不碰用户的 `uv.lock`；
-2. 新建 `services/market_data/public_provider.py`，实现完整 `MarketDataProvider` composite；
-3. quote/series 按 registry route 分组到 Yahoo 或 AkShare，跨 route 任一失败时 fail closed；
-4. news 明确返回 `unavailable`，不伪造 `news_search` capability；
-5. health 汇总两个子适配器的依赖/可用状态，部分可用为 degraded；
-6. 扩展 `MarketDataProviderSettings`、`config.py` 模块导出和 settings catalog；
-7. production registry 增加 `public_market`，最终仅为 `disabled/emquant/public_market`，仍无 Mock；
-8. 默认 `FINANCE_MARKET_PROVIDER=disabled`，安装依赖不会自动启用网络；
-9. Engine 只通过现有 factory 构造，不新增 Yahoo/AkShare 特判；
-10. 跑 Provider、金融工具、图表、报告、QQ 和默认启动回归，只提交 `feat(finance): register public market provider`。
+2. 安装 `requirements-finance-public.txt`，但只在本地测试环境设置 `FINANCE_MARKET_PROVIDER=public_market`；
+3. 保持 `FINANCE_ASSISTANT_ENABLED=true`、主动事件消费和 QQ push 关闭，先走用户主动查询；
+4. 查询 provider health，确认 route 的依赖状态；
+5. 分别查询 `NIKKEI225.INDEX` 日线、`513000.SH` 快照和日线；
+6. Yahoo 或 AkShare 网络失败时记录结构化 status/reason，不改成 Mock；
+7. 在真实 series 成功后执行确定性 PNG 和一份最小金融报告 smoke；
+8. 验证输出包含 source、as_of、fetched_at、timezone、currency、delay 和 adjustment；
+9. 验证默认配置恢复为 disabled 后不联网；
+10. 再按产品优先级选择 F7d5 指数/ETF/FX 联合分析，或 F9c processing lease/Bridge watchdog。
 
 Yahoo live smoke 失败不得改成假成功；后续网络恢复时再补成功观察。Choice 继续保持可选，现有金融主链不受影响。
