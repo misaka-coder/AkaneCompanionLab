@@ -2355,7 +2355,10 @@ class AkaneMemoryEngine:
             )
 
             finance_no_progress = self._should_stop_for_finance_no_progress(tool_results)
-            stop_after_tool = self._should_stop_after_tool_events(_current_events) or finance_no_progress
+            stop_after_tool = self._should_stop_after_tool_events(
+                _current_events,
+                domain_profile_id=turn_domain_profile_id,
+            ) or finance_no_progress
             allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = self._build_final_response(
                 session_id=session_id,
@@ -2805,7 +2808,10 @@ class AkaneMemoryEngine:
                 yield stream_event
 
             finance_no_progress = self._should_stop_for_finance_no_progress(tool_results)
-            stop_after_tool = self._should_stop_after_tool_events(current_events) or finance_no_progress
+            stop_after_tool = self._should_stop_after_tool_events(
+                current_events,
+                domain_profile_id=turn_domain_profile_id,
+            ) or finance_no_progress
             allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = yield from self._stream_final_response(
                 session_id=session_id,
@@ -3453,10 +3459,15 @@ class AkaneMemoryEngine:
 
         return _fn(tool_call)
 
-    def _should_stop_after_tool_events(self, events: list[dict[str, Any]]) -> bool:
+    def _should_stop_after_tool_events(
+        self,
+        events: list[dict[str, Any]],
+        *,
+        domain_profile_id: str = "",
+    ) -> bool:
         from .engine_services.tool_rounds import should_stop_after_tool_events as _fn
 
-        return _fn(events)
+        return _fn(events, domain_profile_id=domain_profile_id)
 
     def _prepare_tool_round_decision(
         self,

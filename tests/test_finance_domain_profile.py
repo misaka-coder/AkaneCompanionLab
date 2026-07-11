@@ -81,6 +81,7 @@ class FinanceDomainProfileTests(unittest.TestCase):
         self.assertIn("当前消息时间和本轮检索时间", result["system_extra_blocks"][0])
         self.assertIn("最近一个已完成交易日", result["system_extra_blocks"][0])
         self.assertIn("搜索摘要是发现线索，不是规范化行情快照", result["system_extra_blocks"][0])
+        self.assertIn("单次 web_search 只覆盖一个日期", result["system_extra_blocks"][0])
         self.assertIn("不能把尚未获得的 Choice 权限当成现成兜底", result["system_extra_blocks"][0])
 
     def test_finance_profile_filters_unrelated_qq_tools(self) -> None:

@@ -61,7 +61,11 @@ def build_tool_working_stream_event(tool_call: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def should_stop_after_tool_events(events: list[dict[str, Any]]) -> bool:
+def should_stop_after_tool_events(
+    events: list[dict[str, Any]],
+    *,
+    domain_profile_id: str = "",
+) -> bool:
     blocking_statuses = {
         "unavailable",
         "permission_denied",
@@ -74,6 +78,10 @@ def should_stop_after_tool_events(events: list[dict[str, Any]]) -> bool:
         if not isinstance(event, dict):
             continue
         status = str(event.get("status") or "").strip().lower()
+        if str(domain_profile_id or "").strip() == FINANCE_DOMAIN_PROFILE_ID:
+            if status == "permission_denied":
+                return True
+            continue
         if status in blocking_statuses:
             return True
     return False

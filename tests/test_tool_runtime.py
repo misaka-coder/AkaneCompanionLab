@@ -316,10 +316,32 @@ class WebSearchToolHandlerTests(unittest.TestCase):
 
         self.assertIn("高变化事实", instruction)
         self.assertIn("不需要用户显式说", instruction)
+        self.assertIn("batch_search", instruction)
+        self.assertIn("时间范围", instruction)
         self.assertIn("日经指数现在多少", instruction)
         self.assertIn("七月新番有哪些", instruction)
         self.assertIn("稳定常识", instruction)
         self.assertNotIn("不确定是否需要实时信息，先自然询问", instruction)
+
+    def test_time_range_search_followup_requests_broader_coverage(self) -> None:
+        handler = WebSearchToolHandler(config_base_dir="unused", mcp_tool_caller=object())
+
+        followup = handler._format_search_followup(
+            action="search",
+            call={"query": "最近一周和日经225有关的新闻"},
+            payload=[
+                {
+                    "title": "单日行情",
+                    "url": "https://example.com/one-day",
+                    "snippet": "只覆盖 2026-07-10。",
+                }
+            ],
+            redaction_terms=[],
+        )
+
+        self.assertIn("当前任务尚未完成", followup)
+        self.assertIn("batch_search", followup)
+        self.assertIn("extract", followup)
 
     def test_normalize_call_bounds_search_and_rejects_private_extract_url(self) -> None:
         handler = WebSearchToolHandler(config_base_dir="unused", mcp_tool_caller=object())

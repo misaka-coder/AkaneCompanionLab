@@ -3493,7 +3493,10 @@ class WebSearchToolHandler(BaseToolHandler):
             "- web_search：当回答依赖公开网页、公开来源核对、最新/当前/实时/近期信息或高变化事实时使用；"
             "不需要用户显式说“联网”“搜索”“查询”。例：日经指数现在多少、七月新番有哪些、最新模型价格、今天上海天气 -> web_search。"
             '搜索格式为 {"type":"web_search","action":"search","query":"搜索词","max_results":5}；'
+            '多目标/时间范围检索格式为 {"type":"web_search","action":"batch_search","queries":["查询1","查询2"],"max_results":3}；'
             '网页提取格式为 {"type":"web_search","action":"extract","url":"https://...","max_chars":3000}。'
+            "最近一周、时间范围、新闻汇总或多来源核验通常优先 batch_search；如果结果只覆盖一个日期或单一来源，"
+            "继续换日期、语言或来源检索，并对关键结果 extract，不要把一次搜索当成完整覆盖。"
             "只搜索或提取公开网页；不要用它访问 localhost、内网地址、file 路径、登录页、付费页或用户私密链接。"
             "web_search 不会打开浏览器窗口、滚动网页或点击链接；如果用户要看页面或需要你继续操作某条结果，"
             "再调用 browser_page.navigate 或 open_browser。"
@@ -3584,6 +3587,8 @@ class WebSearchToolHandler(BaseToolHandler):
             result=result if isinstance(result, dict) else {},
             redaction_terms=redaction_terms,
         )
+        query_label = str(call.get("query") or " / ".join(str(item) for item in call.get("queries") or [])).strip()
+        coverage_status = "unverified" if self._search_needs_broader_coverage(query_label) else "not_required"
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=[
@@ -3592,6 +3597,7 @@ class WebSearchToolHandler(BaseToolHandler):
                     "provider": "anysearch",
                     "action": action,
                     "status": "ok",
+                    "coverage_status": coverage_status,
                 }
             ],
             followup_context=followup,
@@ -3599,6 +3605,7 @@ class WebSearchToolHandler(BaseToolHandler):
                 "web_search_status": "ok",
                 "web_search_provider": "anysearch",
                 "web_search_profile_user_id": runtime_profile_user_id,
+                "web_search_coverage_status": coverage_status,
             },
         )
 
@@ -3680,6 +3687,11 @@ class WebSearchToolHandler(BaseToolHandler):
         lines = ["【AnySearch 联网搜索结果】"]
         if query_label:
             lines.append(f"查询：{self._sanitize_output(query_label, redaction_terms=redaction_terms)[:240]}")
+        if self._search_needs_broader_coverage(query_label):
+            lines.append(
+                "覆盖提醒：这是时间范围、新闻汇总或多来源核验请求。若当前结果只覆盖单一日期或单一来源，当前任务尚未完成；"
+                "请继续 batch_search（拆分日期、语言或来源）并对关键页面 extract。某个查询失败时优先换查询词或来源，不要直接放弃整个检索。"
+            )
         lines.extend(
             [
                 "证据口径：当前消息时间和本次检索时间只表示何时提问或查询，不能充当网页内容、行情数据或事件本身的日期。",
@@ -3830,6 +3842,19 @@ class WebSearchToolHandler(BaseToolHandler):
             if value:
                 return value
         return ""
+
+    def _search_needs_broader_coverage(self, query: str) -> bool:
+        text = str(query or "").strip().lower()
+        if not text:
+            return False
+        return bool(
+            re.search(
+                r"(?:最近|过去|近\s*\d+|本周|上周|一周|周报|月报|新闻|消息|动态|事件|回顾|汇总|梳理|"
+                r"weekly|week|news|updates?|between|from\s+.+\s+to)",
+                text,
+                re.IGNORECASE,
+            )
+        )
 
     def _payload_to_text(self, payload: Any, *, redaction_terms: list[str]) -> str:
         if isinstance(payload, str):

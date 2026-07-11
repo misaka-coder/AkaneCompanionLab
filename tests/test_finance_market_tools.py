@@ -497,6 +497,12 @@ class FinanceMarketToolTests(unittest.TestCase):
         self.assertIn("当前可支持的结论", prompt)
         self.assertTrue(should_stop_after_tool_events([{"status": "permission_denied"}]))
         self.assertFalse(should_stop_after_tool_events([{"status": "invalid_arguments"}]))
+        self.assertFalse(
+            should_stop_after_tool_events(
+                [{"status": "unavailable"}],
+                domain_profile_id=FINANCE_DOMAIN_PROFILE_ID,
+            )
+        )
         repeated = [
             SimpleNamespace(
                 state_updates={
