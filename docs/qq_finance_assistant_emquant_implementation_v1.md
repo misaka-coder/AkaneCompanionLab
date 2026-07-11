@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0-F7d4、public security master bootstrap、公开源瞬时网络重试与 F9a-F9b 已完成；免费 public_market 已注册但默认 disabled；自然语言标的解析、QQ subscription/watchlist、图表/报告和 Provider 解耦已接通；下一步为真实 QQ 问答 smoke
+状态：设计锁定；F0-F7d4、public security master bootstrap、公开源瞬时网络重试与 F9a-F9b 已完成；免费 public_market 已注册但默认 disabled；真实 Yahoo 日线与 AkShare ETF 快照成功路径已观察，重复查询仍受免费上游波动影响；下一步为稳定窗口下的真实产物与 QQ 问答 smoke
 更新时间：2026-07-11
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -2072,11 +2072,11 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F6、F7、F7c、F7d0-F7d4、public security master bootstrap、公开源瞬时网络重试与 F9a-F9b 已完成。免费公开行情代码主链和自然语言标的解析已经接通但默认关闭；当前优先级是执行本地端到端 smoke。上下文恢复后按以下顺序继续：
+F6、F7、F7c、F7d0-F7d4、public security master bootstrap、公开源瞬时网络重试与 F9a-F9b 已完成。免费公开行情代码主链和自然语言标的解析已经接通但默认关闭；真实 Yahoo 日线和 AkShare ETF 快照已经成功观察，ETF history 的两次重试与 Yahoo timeout 的 fail-closed 也已确认。当前优先级是在稳定网络窗口完成产物与 QQ 端到端 smoke：
 
 1. 先读 `docs/public_market_provider_implementation_v1.md` 和 F7d0 离线 fixture；不要重新跑大范围依赖调查，不改基础 `requirements.txt`，不接未文档化快讯接口；
 2. 安装可选依赖并仅在本地显式设置 `FINANCE_MARKET_PROVIDER=public_market`；保持事件 worker 和 QQ push 关闭；
-3. 先验证“日经225”“日经ETF华夏”能解析，再验证 health、指数/ETF 行情、确定性图表与最小报告；
+3. 名称解析与 health 已通过；先复测指数/ETF 日线，任一真实 series 成功后在同一 provider/cache 生命周期内立即生成确定性图表与最小报告；
 4. Choice 权限开通后仍按第 20 节执行最小只读冒烟，确认实际权限、callback 字段、证券主数据来源、AdjustFlag 和再分发边界；它是可选高级 Provider，不阻塞免费主线；
 5. F7d0-F7d4 完成后，再在 F8 云端产物与 F9c processing lease/Bridge watchdog 之间按演示需求选择；真实行情图继续由本地确定性程序生成；
 6. 视可靠数据权限补 `market_macro_series`，并为发布日期和修订时间防前视偏差。

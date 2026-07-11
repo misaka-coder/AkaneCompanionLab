@@ -1,6 +1,6 @@
 # Akane 免费公开行情 Provider 实施细案 V1
 
-状态：F7d0-F7d4、public security master bootstrap 与瞬时网络重试已完成；public_market 默认 disabled；下一步为真实 QQ 问答 smoke
+状态：F7d0-F7d4、public security master bootstrap 与瞬时网络重试已完成；公开源 live smoke 部分通过且确认上游波动会 fail closed；public_market 默认 disabled
 更新时间：2026-07-11
 适用仓库：AkaneCompanionLab
 实施分支：`feature/qq-finance-assistant-emquant`
@@ -890,6 +890,20 @@ F7d0-F7d4 完成必须同时满足：
 
 达到这些条件，免费行情地基才算可用于给群主演示。它提供的是可核验的市场数据和分析能力，不是交易级实时行情承诺。
 
+### 21.1 2026-07-11 真实公开源 smoke 记录
+
+本地按 `requirements-finance-public.txt` 安装锁定版本后，在事件 worker、QQ push 和默认 provider 开关均不改变的前提下执行只读查询：
+
+- provider health 为 `ready`，Yahoo 与 AkShare 两个可选依赖均可导入；
+- Yahoo `NIKKEI225.INDEX` 曾成功返回 20 个日线观察，最后交易日为 `2026-07-10`，source 为 `Yahoo Finance`，时区为 `Asia/Tokyo`，币种为 `JPY`，delay 为 `end_of_day`；
+- AkShare `513000.SH` 快照成功，最后价 `2.403`，交易日为 `2026-07-10`，source 为 `AkShare/Eastmoney public web data`；
+- AkShare `513000.SH` history 当前被远端断开：异常链为 `ConnectionError -> ProtocolError -> RemoteDisconnected`；adapter 确实执行 2 次总尝试和一次 `0.2s` 退避，随后返回 `unavailable / upstream_unavailable:akshare:ConnectionError`；
+- Yahoo 在后续重复 smoke 中出现 `upstream_timeout:yahoo`，即使只为本次 smoke 把单次 timeout 提高到 30 秒仍可能失败，说明当前免费上游可达性确有波动；
+- 行情失败时 `render_market_chart` 返回结构化 `unavailable`，没有登记空 PNG；报告链也不会在缺少可信图表/series 时伪造成功；
+- security master 的“日经225”解析成功，得到 `NIKKEI225.INDEX`；ETF partial candidates 不会覆盖唯一 exact index match。
+
+因此当前已经验证“真实成功路径的行情规范化”和“真实失败路径的重试、负缓存、结构化降级”。尚未完成的是同一次稳定网络窗口中的真实 series → PNG → 报告 → QQ 发送验收；不能把上游超时写成产品成功。
+
 ## 22. 上下文恢复后的精确下一步
 
 若接手者看到本文，F7d0-F7d4、名称解析 bootstrap 和瞬时网络重试已完成。下一步做显式本地验收，不要改默认开关：
@@ -898,10 +912,10 @@ F7d0-F7d4 完成必须同时满足：
 2. 安装 `requirements-finance-public.txt`，但只在本地测试环境设置 `FINANCE_MARKET_PROVIDER=public_market`；
 3. 保持 `FINANCE_ASSISTANT_ENABLED=true`、主动事件消费和 QQ push 关闭，先走用户主动查询；
 4. 查询 provider health，并先用“日经225”“日经ETF华夏”验证 security master exact resolution；
-5. 分别查询 `NIKKEI225.INDEX` 日线、`513000.SH` 快照和日线；
-6. Yahoo 或 AkShare 网络失败时确认最多 2 次总尝试，随后记录结构化 status/reason，不改成 Mock；
-7. 在真实 series 成功后执行确定性 PNG 和一份最小金融报告 smoke；
-8. 验证输出证据字段，并恢复默认 disabled 确认不联网；
-9. 再按产品优先级选择 F7d5 或 F9c。
+5. 先复测 `NIKKEI225.INDEX` 日线和 `513000.SH` 日线；513000 快照已真实成功，不必反复高频拉取；
+6. Yahoo 或 AkShare 网络失败时保留结构化 status/reason，不提高重试上限、不改成 Mock；
+7. 在任一真实 series 成功的同一 provider/cache 生命周期内立即执行确定性 PNG 和一份最小金融报告 smoke，避免第二次网络抖动；
+8. 再走真实 QQ 主动查询“日经225最近走势”，验证文字、图片/报告投递、source 和 as_of；事件 worker 与主动 push 仍关闭；
+9. 验证完成后恢复默认 disabled，并按产品优先级选择 F7d5、F9c，或另立“全球指数第二公开源”设计切片。
 
 Yahoo live smoke 失败不得改成假成功；后续网络恢复时再补成功观察。Choice 继续保持可选，现有金融主链不受影响。
