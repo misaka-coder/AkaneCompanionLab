@@ -1,6 +1,6 @@
 # Akane 免费公开行情 Provider 实施细案 V1
 
-状态：F7d0 依赖/许可证/数据形状 spike 已完成；Yahoo live 查询在当前网络超时并明确保留为 smoke 项；下一步为 F7d1a 标的注册表
+状态：F7d0 依赖/许可证/数据形状 spike 与 F7d1a 标的注册表已完成；Yahoo live 查询在当前网络超时并明确保留为 smoke 项；下一步为 F7d1b Yahoo 全球指数日线
 更新时间：2026-07-11
 适用仓库：AkaneCompanionLab
 实施分支：`feature/qq-finance-assistant-emquant`
@@ -723,6 +723,8 @@ test(finance): capture public market data shapes
 
 ### F7d1a：规范化标的注册表
 
+状态：已完成；纯离线实现，不导入公开行情依赖，不修改生产 Provider factory。
+
 目标：先建立稳定 canonical code 和路由真相源，不访问网络。
 
 交付：
@@ -730,8 +732,16 @@ test(finance): capture public market data shapes
 - `public_instruments.py`；
 - 第一批指数和已复核 ETF；
 - alias 查找；
-- registry 单测；
-- provenance 标准类型的最小兼容扩展。
+- registry 单测。
+
+实际实现额外锁定：
+
+- 公开序列化不输出 vendor symbol 和内部 route；
+- 不接受 `^N225` 或纯数字 ETF vendor code 直接解析；
+- alias 只做规范化后的 exact match，不做模糊猜测；
+- 同名 alias 返回 `ambiguous` 和候选；
+- ETF 的 tracking target 必须指向 registry 中真实存在的 index；
+- 未知代码由 `require()` 返回 `invalid_arguments / unknown_instrument`。
 
 第一个生产实现提交必须保持小：
 
@@ -742,6 +752,8 @@ feat(finance): add public market instrument registry
 ### F7d1b：Yahoo 全球指数日线
 
 目标：让 `market_price_series` 对全球指数返回真实日线，并能直接复用现有图表和报告。
+
+本切片同时加入 provenance 标准类型的最小向后兼容扩展；不把这一类型改动塞回已经完成的 registry commit。
 
 建议提交：
 
@@ -808,17 +820,17 @@ F7d0-F7d4 完成必须同时满足：
 
 ## 22. 上下文恢复后的精确下一步
 
-若接手者看到本文，下一步直接执行 F7d1a，不要重新跑大范围依赖调查，也不要直接写完整 composite Provider：
+若接手者看到本文，下一步直接执行 F7d1b，不要重新跑大范围依赖调查，也不要直接写完整 composite Provider：
 
 1. `git status --short --branch`，确认不碰用户的 `uv.lock`；
-2. 读取 F7d0 两份 fixture 和 `tests/test_public_market_data_shapes.py`；
-3. 新建 `services/market_data/public_instruments.py`；
-4. 实现不可变 `PublicInstrument`、固定 route/type/delay enum 和 `PublicInstrumentRegistry`；
-5. 写入四个全球指数与两只已核验 ETF，canonical code 与 vendor symbol 严格分离；
-6. 实现规范化 alias 查找，歧义返回候选，未知代码 fail closed；
-7. 新建 `tests/test_public_market_instruments.py`，测试唯一性、时区、币种、别名、ETF/指数分离和未知代码；
-8. 暂不导入 yfinance/AkShare，不改 factory/config，不访问网络；
-9. 运行新测试、现有 Provider 契约测试和 `git diff --check`；
-10. 只提交 `feat(finance): add public market instrument registry`。
+2. 读取 `public_instruments.py`、Yahoo schema fixture 和现有标准类型；
+3. 为 `MarketQuoteSnapshot`、`MarketSeries` 增加末尾可选 provenance，为 `MarketBar` 增加末尾默认 `trading_date/time_semantics`，保证旧构造兼容；
+4. 新建 `services/market_data/public_yahoo.py`，通过依赖注入的 downloader 测试，默认 downloader 才延迟导入 yfinance；
+5. 只支持 registry route 为 `yahoo`、`interval=1d`、`adjusted=none`；
+6. 显式传 `auto_adjust=False / multi_level_index=False / threads=False / progress=False`；
+7. 规范化 OHLCV、交易日、交易所时区、as_of、fetched_at、currency、delay 和 source；
+8. 缺依赖、空数据、超时、schema 变化和非法复权全部结构化失败，不回退 Mock；
+9. 本切片不改 factory/config，不实现 AkShare，不依赖 live Yahoo 测试；
+10. 运行新测试、现有 Provider/图表/报告契约测试和 `git diff --check`，只提交 `feat(finance): add yahoo public index series adapter`。
 
 Yahoo live smoke 失败不得改成假成功；后续网络恢复时再补成功观察。Choice 继续保持可选，现有金融主链不受影响。
