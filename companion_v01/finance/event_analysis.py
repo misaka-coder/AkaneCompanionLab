@@ -27,6 +27,19 @@ _TRANSIENT_FALLBACK_MARKERS = (
 _STRUCTURE_MARKERS = ("已确认事实", "客观数据与时间", "分析推断", "待验证")
 _ANALYSIS_REFUSAL_MARKERS = ("无法分析", "不能分析", "无法提供", "不能提供", "抱歉")
 _NEWS_OUTPUT_POLICY = FinanceNewsRelayPolicy()
+_SUCCESSFUL_EVIDENCE_EVENT_TYPES = {"web_search_completed", "finance_tool_completed"}
+_SUCCESSFUL_EVIDENCE_STATUSES = {"ok", "ready", "success", "completed", "available"}
+_MARKET_SCHEDULE_PATTERN = re.compile(r"(?:休市|开盘|收盘|交易时段|交易时间|下一交易日|下个交易日)")
+_PERCENTAGE_PATTERN = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s*%")
+_CHINESE_FRACTION_PATTERN = re.compile(r"[一二两三四五六七八九十百千万]+分之[一二两三四五六七八九十百千万]+")
+_MULTIPLE_CHANGE_PATTERN = re.compile(
+    r"(?:涨|增|升|扩大|扩至|翻|跳|降|减|缩)[^。！？\n]{0,10}"
+    r"(?:\d+(?:\.\d+)?|[一二两三四五六七八九十百]+)\s*倍"
+)
+_TIMED_COMPARISON_PATTERN = re.compile(
+    r"(?:\d+(?:\.\d+)?|[一二两三四五六七八九十百]+)\s*(?:分钟|小时|天)内"
+    r"[^。！？\n]{0,50}(?:从|由)[^。！？\n]{0,50}(?:到|至|跳|升|降|增|减)"
+)
 
 
 class AkaneFinanceAnalysisClient:
@@ -53,9 +66,7 @@ class AkaneFinanceAnalysisClient:
 
     def analyze(self, request: FinanceAnalysisRequest) -> FinanceAnalysisResult:
         direct_relay_message = _direct_news_relay_message(request)
-        if direct_relay_message and not bool(
-            getattr(config, "FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED", True)
-        ):
+        if direct_relay_message and not bool(getattr(config, "FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED", True)):
             return FinanceAnalysisResult(
                 ok=True,
                 status="relayed_without_analysis",
@@ -66,9 +77,19 @@ class AkaneFinanceAnalysisClient:
             )
         last_status = "analysis_failed"
         last_reason = "analysis did not run"
+        retry_feedback = ""
         for attempt in range(1, self.max_attempts + 1):
             try:
-                raw_frame = self.engine.process_turn(request.to_turn_payload())
+                turn_payload = request.to_turn_payload()
+                if retry_feedback:
+                    turn_payload["extra_context"] = (
+                        f"{turn_payload.get('extra_context', '')}\n"
+                        "【上一次输出未通过发送前证据门禁】\n"
+                        f"原因：{retry_feedback}\n"
+                        "请重新完成分析：可以调用合适的只读工具核验；若无法核验，就删除该精确说法，"
+                        "改成由当前事件字段直接支持的定性、条件性表述。不要重复未通过门禁的原句。"
+                    ).strip()
+                raw_frame = self.engine.process_turn(turn_payload)
             except Exception as exc:
                 last_status = "analysis_failed"
                 last_reason = f"{type(exc).__name__}: {exc}"
@@ -88,6 +109,7 @@ class AkaneFinanceAnalysisClient:
                     )
                 last_status = validation.status
                 last_reason = validation.reason
+                retry_feedback = validation.reason
             if attempt < self.max_attempts and self.retry_backoff_seconds > 0:
                 self._sleeper(self.retry_backoff_seconds * attempt)
         if direct_relay_message:
@@ -164,6 +186,18 @@ class AkaneFinanceAnalysisClient:
                 status="incomplete_analysis",
                 analysis_id=request.analysis_id,
                 reason="analysis stopped at a progress placeholder",
+            )
+        evidence_issue = _unsupported_news_evidence_claim(
+            request=request,
+            raw_frame=raw_frame,
+            text=original_text,
+        )
+        if evidence_issue:
+            return FinanceAnalysisResult(
+                ok=False,
+                status="unsupported_news_evidence_claim",
+                analysis_id=request.analysis_id,
+                reason=evidence_issue,
             )
         messages = ensure_market_push_contract(request=request, frame=raw_frame)
         if not messages:
@@ -412,6 +446,61 @@ def _clean_source_report_body(text: str, *, source_url: str) -> str:
         seen.add(line)
         cleaned.append(line)
     return "\n".join(cleaned)
+
+
+def _unsupported_news_evidence_claim(
+    *,
+    request: FinanceAnalysisRequest,
+    raw_frame: dict[str, Any],
+    text: str,
+) -> str:
+    event = request.event_record.event
+    if "source_report_only" not in event.labels or _has_successful_evidence_tool(raw_frame):
+        return ""
+
+    evidence_text = "\n".join(record.event.title for record in (request.event_record, *request.related_event_records))
+    normalized_evidence = "".join(evidence_text.split())
+    normalized_output = "".join(str(text or "").split())
+    issues: list[str] = []
+
+    if _MARKET_SCHEDULE_PATTERN.search(normalized_output) and not _MARKET_SCHEDULE_PATTERN.search(normalized_evidence):
+        issues.append("当前开盘、收盘或休市判断没有本次事件字段或成功工具结果支持")
+
+    for sentence in re.split(r"[。！？!?；;\n]+", str(text or "")):
+        compact_sentence = "".join(sentence.split())
+        if not compact_sentence or not _TIMED_COMPARISON_PATTERN.search(compact_sentence):
+            continue
+        numbers = set(re.findall(r"\d+(?:\.\d+)?", compact_sentence))
+        evidence_numbers = set(re.findall(r"\d+(?:\.\d+)?", normalized_evidence))
+        if len(numbers) < 2 or not numbers.issubset(evidence_numbers):
+            issues.append("带时间窗口的数量变化比较没有同口径、同统计时点的事件字段或成功工具结果支持")
+            break
+
+    for pattern, label in (
+        (_PERCENTAGE_PATTERN, "精确百分比"),
+        (_CHINESE_FRACTION_PATTERN, "精确比例"),
+        (_MULTIPLE_CHANGE_PATTERN, "倍数变化"),
+    ):
+        for match in pattern.finditer(normalized_output):
+            claim = match.group(0)
+            if claim not in normalized_evidence:
+                issues.append(f"{label}“{claim}”没有本次事件字段或成功工具结果支持")
+                break
+    return "；".join(dict.fromkeys(issues))
+
+
+def _has_successful_evidence_tool(raw_frame: dict[str, Any]) -> bool:
+    events = raw_frame.get("tool_events")
+    if not isinstance(events, (list, tuple)):
+        return False
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "").strip().lower()
+        status = str(event.get("status") or "").strip().lower()
+        if event_type in _SUCCESSFUL_EVIDENCE_EVENT_TYPES and status in _SUCCESSFUL_EVIDENCE_STATUSES:
+            return True
+    return False
 
 
 def _frame_text(frame: dict[str, Any]) -> str:

@@ -633,8 +633,143 @@ class FinanceAnalysisClientTests(unittest.TestCase):
         self.assertTrue(result.messages[0].endswith(f"原文链接：{event.url}"))
         instruction = request.render_analysis_instruction()
         self.assertIn("具体比例、价格、涨跌幅", instruction)
+        self.assertIn("新闻的发布时间当成数据统计时点", instruction)
         self.assertIn("强行套用 A 股、美股", instruction)
+        self.assertIn("没有有意义的金融或市场传导", instruction)
         self.assertIn("结论成立条件与可能的反向情形", instruction)
+
+    def test_direct_news_analysis_retries_unsupported_timed_comparison_with_feedback(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        store = MarketEventStore(Path(temp_dir.name) / "direct_relay_evidence_retry.sqlite3")
+        event = MarketEvent(
+            provider="public_market",
+            event_id="public_news:test-evidence-retry",
+            published_at=1_783_667_400,
+            produced_at=1_783_667_405,
+            received_at=1_783_667_410,
+            code="GLOBAL.MARKET",
+            content_type="news_flash",
+            title="东方财富7×24快讯：国内航司计划取消明日航班超2800架次",
+            source="东方财富 7×24 全球财经快讯",
+            url="https://finance.eastmoney.com/a/test-evidence-retry.html",
+            sentiment="unknown",
+            labels=("direct_relay", "optional_model_analysis", "source_report_only", "market_wide"),
+            sector_code="",
+            raw_hash=_hash("public_news:test-evidence-retry"),
+        )
+        record = store.upsert_event(event, now_ts=1_783_667_410).record
+        subscription = store.upsert_subscription(
+            subscription_id="direct-relay-evidence-retry-sub",
+            client="qq",
+            target_id="872732158",
+            is_group=True,
+            session_id="qq_group_shared_872732158",
+            profile_user_id="qq_group_shared_872732158",
+            finance_mode="push",
+            enabled=True,
+            filters={"include_market_wide": True},
+            delivery_policy={"level": "notify"},
+            now_ts=1_783_667_410,
+        )
+        from companion_v01.finance import FinanceAnalysisRequest, FinanceEventImportancePolicy
+
+        request = FinanceAnalysisRequest.create(
+            event_record=record,
+            subscription=subscription,
+            importance=FinanceEventImportancePolicy().evaluate(event=event, subscription=subscription),
+            requested_at=1_783_667_420,
+        )
+
+        class RetryEngine:
+            memcore_manager = None
+
+            def __init__(self):
+                self.payloads = []
+
+            def process_turn(self, payload):
+                self.payloads.append(payload)
+                if len(self.payloads) == 1:
+                    return {"speech": "航班取消量两小时内从1000架次跳到2800架次，涨了近三倍。"}
+                return {
+                    "speech": "新快讯称，国内航司计划取消明日进出港航班超过2800架次，具体统计口径和时点仍以原文为准。"
+                }
+
+        engine = RetryEngine()
+        result = AkaneFinanceAnalysisClient(
+            engine,
+            max_attempts=2,
+            retry_backoff_seconds=0,
+        ).analyze(request)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.status, "analyzed_after_retry")
+        self.assertEqual(result.analysis_attempts, 2)
+        self.assertEqual(len(engine.payloads), 2)
+        self.assertIn("上一次输出未通过发送前证据门禁", engine.payloads[1]["extra_context"])
+        self.assertIn("同口径、同统计时点", engine.payloads[1]["extra_context"])
+        self.assertNotIn("1000", "\n".join(result.messages))
+
+    def test_direct_news_analysis_allows_precise_claim_after_successful_search(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        store = MarketEventStore(Path(temp_dir.name) / "direct_relay_evidence_tool.sqlite3")
+        event = MarketEvent(
+            provider="public_market",
+            event_id="public_news:test-evidence-tool",
+            published_at=1_783_667_400,
+            produced_at=1_783_667_405,
+            received_at=1_783_667_410,
+            code="GLOBAL.MARKET",
+            content_type="news_flash",
+            title="东方财富7×24快讯：海外运输通道出现新进展",
+            source="东方财富 7×24 全球财经快讯",
+            url="https://finance.eastmoney.com/a/test-evidence-tool.html",
+            sentiment="unknown",
+            labels=("direct_relay", "optional_model_analysis", "source_report_only", "market_wide"),
+            sector_code="",
+            raw_hash=_hash("public_news:test-evidence-tool"),
+        )
+        record = store.upsert_event(event, now_ts=1_783_667_410).record
+        subscription = store.upsert_subscription(
+            subscription_id="direct-relay-evidence-tool-sub",
+            client="qq",
+            target_id="872732158",
+            is_group=True,
+            session_id="qq_group_shared_872732158",
+            profile_user_id="qq_group_shared_872732158",
+            finance_mode="push",
+            enabled=True,
+            filters={"include_market_wide": True},
+            delivery_policy={"level": "notify"},
+            now_ts=1_783_667_410,
+        )
+        from companion_v01.finance import FinanceAnalysisRequest, FinanceEventImportancePolicy
+
+        request = FinanceAnalysisRequest.create(
+            event_record=record,
+            subscription=subscription,
+            importance=FinanceEventImportancePolicy().evaluate(event=event, subscription=subscription),
+            requested_at=1_783_667_420,
+        )
+
+        class EvidenceEngine:
+            memcore_manager = None
+
+            def process_turn(self, _payload):
+                return {
+                    "speech": "经补充核验，该通道承担约20%的相关运输量；该比例仍应结合后续官方数据观察。",
+                    "tool_events": [{"type": "web_search_completed", "status": "ok", "provider": "anysearch"}],
+                }
+
+        result = AkaneFinanceAnalysisClient(
+            EvidenceEngine(),
+            max_attempts=1,
+            retry_backoff_seconds=0,
+        ).analyze(request)
+
+        self.assertTrue(result.ok)
+        self.assertIn("20%", "\n".join(result.messages))
 
     def test_direct_news_analysis_removes_duplicate_metadata_and_template_labels(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
