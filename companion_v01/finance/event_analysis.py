@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 import time
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -391,7 +392,10 @@ def _clean_source_report_body(text: str, *, source_url: str) -> str:
         line = str(raw_line or "").strip()
         if not line:
             continue
-        if line.startswith(("【市场快讯", "【财经快讯")):
+        if line.startswith(("【市场快讯", "【财经快讯")) or re.fullmatch(
+            r"【[^】]*快讯[^】]*】",
+            line,
+        ):
             continue
         if line.startswith(metadata_prefixes):
             continue

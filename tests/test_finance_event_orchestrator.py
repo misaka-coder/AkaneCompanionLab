@@ -686,6 +686,7 @@ class FinanceAnalysisClientTests(unittest.TestCase):
                 return {
                     "speech": "\n".join(
                         [
+                            "【快讯|22:46】",
                             "已确认事实：海外市场出现新的政策信号。",
                             "分析推断：短期可能影响风险偏好，但仍需核验政策细节。",
                             "来源：东方财富 7×24 全球财经快讯｜发布时间：2026-07-11T21:58:40+08:00",
@@ -708,6 +709,8 @@ class FinanceAnalysisClientTests(unittest.TestCase):
         self.assertNotIn("已确认事实：", combined)
         self.assertNotIn("分析推断：", combined)
         self.assertNotIn("发布时间：", combined)
+        self.assertNotIn("【快讯|22:46】", combined)
+        self.assertEqual(combined.count("【财经快讯｜"), 1)
         self.assertNotIn("等待更多信息", combined)
         self.assertEqual(combined.count(event.url), 1)
         self.assertTrue(combined.endswith(f"原文链接：{event.url}"))
