@@ -424,10 +424,12 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(context.reason, "qq_poke")
         self.assertFalse(context.is_group)
         self.assertEqual(context.target_id, QQ_USER_FIXTURE_ID)
-        self.assertEqual(payload["message"], f"刚才发生的互动：QQ {QQ_USER_FIXTURE_ID}在 QQ 里戳了戳你的头像。")
+        self.assertEqual(payload["message"], "刚才发生的互动：我在 QQ 里戳了戳你的头像。")
         self.assertNotIn("transient_user_message", payload)
         self.assertEqual(payload["client_mode"], "qq_text")
-        self.assertIn(f"QQ {QQ_USER_FIXTURE_ID}", payload["extra_context"])
+        self.assertNotIn("actor_stable_id", payload)
+        self.assertNotIn("actor_display_name", payload)
+        self.assertIn("我就是本轮戳一戳的发送者", payload["extra_context"])
         self.assertIn("戳了戳你", payload["extra_context"])
 
     def test_group_poke_notice_to_bot_uses_group_memory_and_sender_label(self) -> None:
@@ -544,7 +546,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(context.should_respond)
         self.assertEqual(context.user_id, QQ_USER_FIXTURE_ID)
         self.assertEqual(context.target_id, QQ_USER_FIXTURE_ID)
-        self.assertEqual(payload["message"], f"刚才发生的互动：QQ {QQ_USER_FIXTURE_ID}在 QQ 里戳了戳你的头像。")
+        self.assertEqual(payload["message"], "刚才发生的互动：我在 QQ 里戳了戳你的头像。")
 
     def test_poke_notice_not_targeting_bot_is_ignored(self) -> None:
         gateway = NapCatQQGateway()
@@ -878,6 +880,8 @@ class QQGatewayTests(unittest.TestCase):
             self.assertTrue(result["_llm_passthrough"])
             self.assertIn("水手服", result["qq_action_note"])
             self.assertIn("水手服", result["turn_message"])
+            self.assertIn("我把你的 QQ 当前会话服装切换为", result["turn_message"])
+            self.assertNotIn("用户刚刚", result["turn_message"])
             self.assertEqual(result["character_pack_id"], "reimu")
             self.assertEqual(result["outfit_id"], "sailor")
             self.assertEqual(gateway.resolve_session_outfit_id(f"qq_pri_{QQ_USER_FIXTURE_ID}"), "sailor")

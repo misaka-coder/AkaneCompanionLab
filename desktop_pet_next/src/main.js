@@ -7465,7 +7465,7 @@ async function sendCareFeedReply({ item, care, hungerDelta, energyDelta, affecti
     }
     if (!isTurnActive(turnToken)) return;
     const message = [
-      `刚才发生的互动：用户投喂了你${itemName}。`,
+      `刚才发生的互动：我投喂了你「${itemName}」。`,
       `状态变化：饥饿 ${formatSignedCareDelta(hungerDelta)}，精力 ${formatSignedCareDelta(energyDelta)}，好感 ${formatSignedCareDelta(affectionDelta)}。`,
       `当前状态：饥饿 ${care.hunger}/100，精力 ${care.energy}/100，好感 ${care.affection}/100。`
     ].join("\n");

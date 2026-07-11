@@ -354,6 +354,8 @@ class NapCatQQGateway:
         self._emotion_mface_lock = threading.RLock()
         self.emotion_image_state: dict[str, dict[str, Any]] = {}
         self._emotion_image_lock = threading.RLock()
+        self._delivery_notes: dict[str, list[str]] = {}
+        self._delivery_notes_lock = threading.RLock()
         self._state_error = ""
         self._load_persisted_state()
 
@@ -748,6 +750,7 @@ class NapCatQQGateway:
                 sender_label=sender_label,
                 reply_mode=reply_mode,
                 chat_model_override=chat_model_override,
+                session_id=session_id,
             ),
         )
 
@@ -779,7 +782,7 @@ class NapCatQQGateway:
         reply_mode = self.resolve_reply_mode(session_id)
         chat_model_override = self.resolve_chat_model_override(session_id)
         finance_mode = self.resolve_finance_mode(session_id)
-        actor_label = sender_label or (f"QQ {user_id}" if user_id else "这位 QQ 用户")
+        actor_label = "我" if not is_group else (sender_label or (f"QQ {user_id}" if user_id else "这位 QQ 用户"))
         clean_message = f"刚才发生的互动：{actor_label}在 QQ 里戳了戳你的头像。"
         return QQMessageContext(
             should_respond=True,
@@ -806,6 +809,7 @@ class NapCatQQGateway:
                 sender_label=sender_label,
                 reply_mode=reply_mode,
                 chat_model_override=chat_model_override,
+                session_id=session_id,
             )
             + f"\n本轮 QQ 事件：{actor_label}双击头像戳了戳你；{actor_label}就是本轮戳一戳的发送者，请把它当作一次真实互动回应。"
             + "\n若历史记忆、旧聊天记录或用户转述里出现“有人戳了戳你”这类模糊说法，请优先依据本轮 QQ 事件里的发送者标识来回应。",
@@ -2049,11 +2053,10 @@ class NapCatQQGateway:
         text = str(action_text or "").strip()
         if not text:
             text = "切换了你的 QQ 当前会话服装。"
-        message = f"用户刚刚{text}"
         if context.is_group:
             label = context.sender_label or (f"QQ {context.user_id}" if context.user_id else "群成员")
-            return f"【{label}】{message}"
-        return message
+            return f"【{label}】用户刚刚{text}"
+        return f"我{text}"
 
     def extract_message_text(self, event: dict[str, Any]) -> str:
         raw_message = str(event.get("raw_message") or "").strip()
@@ -2298,6 +2301,23 @@ class NapCatQQGateway:
         label = str(member.get("card") or member.get("nickname") or "").strip()
         return label
 
+
+    def add_delivery_note(self, session_id: str, note: str) -> None:
+        key = str(session_id or "").strip()
+        note_text = str(note or "").strip()
+        if not key or not note_text:
+            return
+        with self._delivery_notes_lock:
+            self._delivery_notes.setdefault(key, []).append(note_text)
+
+    def consume_delivery_notes(self, session_id: str) -> list[str]:
+        key = str(session_id or "").strip()
+        if not key:
+            return []
+        with self._delivery_notes_lock:
+            notes = self._delivery_notes.pop(key, [])
+        return [str(n).strip() for n in notes if str(n).strip()]
+
     def build_extra_context(
         self,
         *,
@@ -2308,6 +2328,7 @@ class NapCatQQGateway:
         sender_label: str = "",
         reply_mode: str = "",
         chat_model_override: str = "",
+        session_id: str = "",
     ) -> str:
         sender_label = str(sender_label or self.resolve_sender_label(event=event, user_id=user_id)).strip()
         lines = [
@@ -2327,6 +2348,11 @@ class NapCatQQGateway:
             f"{self._format_reply_mode_label(active_reply_mode)}。"
             "只有自动模式会参考 reply_medium；文字/语音/双发模式由后端强制执行。"
         )
+        if active_reply_mode in {"voice", "both"}:
+            lines.append(
+                "当前是语音/双发模式：speech 要自然口语化，避免列表和 Markdown，控制在 150 字以内；"
+                "语音合成会读出标点，注意断句自然。"
+            )
         active_chat_model_override = _safe_chat_model_id(chat_model_override)
         if active_chat_model_override:
             lines.append(f"当前 QQ 会话临时聊天模型：{active_chat_model_override}。")
@@ -3061,15 +3087,17 @@ class NapCatQQGateway:
                         f"特别说明：这是「{item_name_display}」刚刚生效，把饥饿值和精力值交换了；"
                         "不要理解成用户说反了，也不要说“你把饥饿和精力对调了”。"
                     )
+                _feed_actor = context.sender_label or ("我" if not context.is_group else "用户")
                 note = (
-                    f"【最新投喂】用户此刻给了你「{item_name_display}」{qty_str}{eff_note}。"
+                    f"【最新投喂】{_feed_actor}此刻给了你「{item_name_display}」{qty_str}{eff_note}。"
                     f"{effect_context}"
                     f"投喂后你的状态：饥饿 {h}/100，精力 {e}/100（{state_desc}）。"
                     f"请用符合你当前状态和性格的方式回应——把真实感受说出来，"
                     f"不只是念出食物名字，也不要假装特别感动。"
                     f"这是此刻刚发生的投喂，与历史对话无关。"
                 )
-                return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": "ok"}
+                _feed_turn_msg = f"刚才发生的互动：{_feed_actor}投喂了你「{item_name_display}」。"
+                return {"_llm_passthrough": True, "qq_action_note": note, "turn_message": _feed_turn_msg, "ok": True, "status": "ok"}
 
             if action == "lottery":
                 SLIP_COST = 5

@@ -378,11 +378,14 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 session_id=PROFILE,
                 profile_user_id=PROFILE,
                 clean_message="投喂 逆转卡",
+                sender_label="休比",
                 character_pack_id=CHAR_ID,
             )
             feed_result = gateway.handle_economy_command(feed_context, care_runtime=store, shop_items=[], now_ms=3000)
             self.assertIsInstance(feed_result, dict)
             self.assertTrue(feed_result["_llm_passthrough"])
+            self.assertEqual(feed_result["turn_message"], "刚才发生的互动：休比投喂了你「逆转卡」。")
+            self.assertIn("休比此刻给了你", feed_result["qq_action_note"])
             self.assertIn("逆转卡", feed_result["qq_action_note"])
             self.assertIn("把饥饿值和精力值交换了", feed_result["qq_action_note"])
             self.assertIn("不要理解成用户说反了", feed_result["qq_action_note"])

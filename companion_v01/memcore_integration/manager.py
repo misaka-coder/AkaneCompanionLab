@@ -1415,17 +1415,34 @@ class MemcoreManager:
                 existing = self._memcore_module.MemorySystem(
                     llm=self._llm_client,
                     namespace=namespace,
-                    timezone="Asia/Shanghai",
+                    timezone=str(getattr(config, "MEMCORE_TIMEZONE", "") or "Asia/Shanghai").strip() or "Asia/Shanghai",
                     storage_dir=str(self.storage_path),
                     config=self._memory_config,
                     store=self._store,
                     index=self._index,
                     embedding=self._embedding,
                     persona_text=persona_text,
+                    prompt_overrides=self._build_prompt_overrides(persona_text),
                 )
                 self._systems[key] = existing
         self._warm_index_for_system(existing, operation="get_system")
         return existing
+
+    @staticmethod
+    def _build_prompt_overrides(persona_text: str) -> Any:
+        """Build PromptOverrides with Akane-specific compaction guidance."""
+        try:
+            from memcore.prompts import PromptOverrides
+        except ImportError:
+            return None
+        extra_semantic = (
+            "stable_facts 只保留用户反复确认过的偏好、身份、关系和长期计划；"
+            "单次工具操作的执行结果和系统配置字段（finance_mode、reply_mode 等）不应出现在 stable_facts 里。"
+        )
+        return PromptOverrides(
+            persona_text=persona_text,
+            extra_semantic_guidance=extra_semantic,
+        )
 
     def _warm_index_for_system(self, system: Any, *, operation: str) -> None:
         namespace = getattr(system, "namespace", None)

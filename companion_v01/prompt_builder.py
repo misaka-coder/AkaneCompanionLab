@@ -182,8 +182,7 @@ class PromptBuilder:
             self.persona.final_debug_mode_prompt if debug_enabled else self.persona.final_fast_mode_prompt
         )
         format_addendum = mode_prompt + f"\n\n{MEMORY_STATUS_RULES}\n" + tool_prompt_context
-        if allow_tool_call:
-            format_addendum += "\n如果你给出 choices，建议 2 到 4 个，文字简短，方向有区别。"
+        format_addendum += "\n如果你给出 choices，建议 2 到 4 个，文字简短，方向有区别。"
         if CURRENT_ASSISTANT_STATE_MARKER in base_system_prompt:
             system_prompt = base_system_prompt.replace(CURRENT_ASSISTANT_STATE_MARKER, "", 1).rstrip()
             system_prompt += format_addendum

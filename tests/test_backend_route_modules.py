@@ -1119,7 +1119,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(len(sent_logs), 1)
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
-        self.assertIn("我看到这张图了。", sent_payload["message"])
+        self.assertIn("我看到这张图了", sent_payload["message"])
 
     def test_qq_router_poke_notice_runs_llm_as_normal_user_message(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -1157,6 +1157,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
+        event_timestamp = int(time.time())
         with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
@@ -1167,7 +1168,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "self_id": QQ_BOT_FIXTURE_ID,
                     "sender_id": QQ_USER_FIXTURE_ID,
                     "target_id": QQ_BOT_FIXTURE_ID,
-                    "time": int(time.time()),
+                    "time": event_timestamp,
                 },
             )
 
@@ -1177,7 +1178,9 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(len(process_calls), 1)
         turn_payload = process_calls[0]
-        self.assertEqual(turn_payload["message"], f"刚才发生的互动：QQ {QQ_USER_FIXTURE_ID}在 QQ 里戳了戳你的头像。")
+        self.assertEqual(turn_payload["message"], "刚才发生的互动：我在 QQ 里戳了戳你的头像。")
+        self.assertEqual(turn_payload["timestamp"], event_timestamp)
+        self.assertNotIn("actor_stable_id", turn_payload)
         self.assertEqual(turn_payload["client_mode"], "qq_text")
         self.assertNotIn("transient_user_message", turn_payload)
         self.assertIn(f"QQ {QQ_USER_FIXTURE_ID}", turn_payload["extra_context"])
@@ -1187,10 +1190,10 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(len(poke_logs), 1)
         self.assertEqual(poke_logs[0]["event_sender_id"], str(QQ_USER_FIXTURE_ID))
         self.assertEqual(poke_logs[0]["resolved_user_id"], QQ_USER_FIXTURE_ID)
-        self.assertIn(f"QQ {QQ_USER_FIXTURE_ID}", poke_logs[0]["turn_message"])
+        self.assertIn("我在 QQ 里戳了戳", poke_logs[0]["turn_message"])
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
-        self.assertEqual(sent_payload["message"], "别戳了。")
+        self.assertEqual(str(sent_payload["message"]).rstrip("。"), "别戳了")
 
     # ---------- control center action contract ----------
 

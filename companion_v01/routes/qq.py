@@ -1077,6 +1077,7 @@ def _process_qq_turn_streaming(
     )
     file_delivery_feedback_result = {"ok": True, "status": "skipped", "reason": "no_delivery_issue"}
     file_delivery_status = str(file_send_result.get("status") or "").strip().lower()
+    _sid = str(getattr(context, "session_id", "") or "")
     if file_delivery_status == "blocked":
         file_delivery_feedback_result = qq_gateway.send_reply(
             context,
@@ -1091,6 +1092,12 @@ def _process_qq_turn_streaming(
             "文件这次发送失败了，现有结果仍保留着，可以稍后再试。",
         )
         file_delivery_feedback_result["status"] = "failure_notice_sent"
+        qq_gateway.add_delivery_note(_sid, "【上一轮交付状态】文件发送失败，文件仍在工作台，用户已收到通知。")
+    elif int(file_send_result.get("count") or 0) > 0 and bool(file_send_result.get("ok")):
+        qq_gateway.add_delivery_note(
+            _sid,
+            f"【上一轮交付状态】文件发送成功（共 {file_send_result.get('count', 0)} 个）。",
+        )
     chart_delivery_feedback_result = {"ok": True, "status": "skipped", "reason": "no_delivery_issue"}
     if str(chart_send_result.get("status") or "").strip().lower() == "failed":
         chart_delivery_feedback_result = qq_gateway.send_reply(
@@ -1098,6 +1105,12 @@ def _process_qq_turn_streaming(
             "图表已经生成，但这次 QQ 图片发送失败了；生成结果仍保留着，可以稍后再试。",
         )
         chart_delivery_feedback_result["status"] = "failure_notice_sent"
+        qq_gateway.add_delivery_note(_sid, "【上一轮交付状态】图表已生成但 QQ 图片发送失败，文件仍在工作台，用户已收到通知。")
+    elif int(chart_send_result.get("count") or 0) > 0 and bool(chart_send_result.get("ok")):
+        qq_gateway.add_delivery_note(
+            _sid,
+            f"【上一轮交付状态】图表发送成功（共 {chart_send_result.get('count', 0)} 张）。",
+        )
     report_delivery_feedback_result = {"ok": True, "status": "skipped", "reason": "no_delivery_issue"}
     if str(report_send_result.get("status") or "").strip().lower() == "failed":
         report_delivery_feedback_result = qq_gateway.send_reply(
@@ -1105,6 +1118,12 @@ def _process_qq_turn_streaming(
             "金融报告已经生成，但这次 QQ 文件发送失败了；生成结果仍保留着，可以稍后再试。",
         )
         report_delivery_feedback_result["status"] = "failure_notice_sent"
+        qq_gateway.add_delivery_note(_sid, "【上一轮交付状态】金融报告已生成但文件发送失败，文件仍在工作台，用户已收到通知。")
+    elif int(report_send_result.get("count") or 0) > 0 and bool(report_send_result.get("ok")):
+        qq_gateway.add_delivery_note(
+            _sid,
+            f"【上一轮交付状态】金融报告发送成功（共 {report_send_result.get('count', 0)} 个）。",
+        )
     sticker_send_result = qq_gateway.send_stickers(
         context,
         list(frame.get("tool_events") or []),
@@ -1149,6 +1168,7 @@ def build_qq_router(
         extra_context_note: str = "",
     ) -> dict[str, Any]:
         turn_payload = context.to_turn_payload()
+        turn_payload["timestamp"] = int(event.get("time") or time.time())
         if message_override:
             turn_payload["message"] = message_override
         _apply_qq_current_outfit_visual(turn_payload, qq_gateway=qq_gateway, context=context, engine=engine)

@@ -61,6 +61,9 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
                 }
             )
         )
+        source = Path("desktop_pet_next/src/main.js").read_text(encoding="utf-8")
+        self.assertIn("刚才发生的互动：我投喂了你「${itemName}」。", source)
+        self.assertNotIn("刚才发生的互动：用户投喂了你${itemName}。", source)
         self.assertFalse(
             self.engine._is_transient_user_turn(
                 {
