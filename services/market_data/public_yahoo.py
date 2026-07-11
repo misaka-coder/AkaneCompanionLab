@@ -7,13 +7,15 @@ import time
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .provider import MarketSeriesRequest
+from .provider import MarketQuoteRequest, MarketSeriesRequest
+from .public_cache import TTLMarketDataCache
 from .public_instruments import PublicInstrument, PublicInstrumentRegistry, build_default_public_instrument_registry
 from .types import (
     MarketBar,
     MarketDataProvenance,
     MarketDataResponse,
     MarketDataValidationError,
+    MarketQuoteSnapshot,
     MarketSeries,
 )
 
@@ -40,11 +42,20 @@ class YahooFinanceAdapter:
         registry: PublicInstrumentRegistry | None = None,
         downloader: YahooDownloader | None = None,
         timeout_seconds: float = 8.0,
+        cache: TTLMarketDataCache | None = None,
+        cache_max_entries: int = 256,
+        series_ttl_seconds: float = 900.0,
+        quote_ttl_seconds: float = 60.0,
+        failure_ttl_seconds: float = 15.0,
         clock=time.time,
     ) -> None:
         self.registry = registry or build_default_public_instrument_registry()
         self._downloader = downloader or _default_yahoo_downloader
         self.timeout_seconds = max(1.0, min(60.0, float(timeout_seconds)))
+        self.cache = cache if cache is not None else TTLMarketDataCache(max_entries=cache_max_entries)
+        self.series_ttl_seconds = _bounded_ttl(series_ttl_seconds, field="series_ttl_seconds")
+        self.quote_ttl_seconds = _bounded_ttl(quote_ttl_seconds, field="quote_ttl_seconds")
+        self.failure_ttl_seconds = _bounded_ttl(failure_ttl_seconds, field="failure_ttl_seconds")
         self._clock = clock
 
     def get_price_series(self, request: MarketSeriesRequest) -> MarketDataResponse[MarketSeries | None]:
@@ -82,36 +93,69 @@ class YahooFinanceAdapter:
                 provider=self.provider_id,
             )
 
+        cache_key = self._series_cache_key(request)
+        cached = self.cache.get(cache_key)
+        if cached.hit:
+            return cached.value
+
         fetched_at = max(1, int(self._clock()))
         download_arguments = self._download_arguments(request, instrument=instrument, now_ts=fetched_at)
         try:
             frame = self._downloader(**download_arguments)
         except YahooFinanceDependencyUnavailable:
-            return self._failure("unavailable", "optional_dependency_missing:yfinance", instrument=instrument)
+            return self._cache_response(
+                cache_key,
+                self._failure("unavailable", "optional_dependency_missing:yfinance", instrument=instrument),
+                success_ttl=self.series_ttl_seconds,
+            )
         except Exception as exc:
             exception_name = type(exc).__name__.lower()
             if "ratelimit" in exception_name or "rate_limit" in exception_name:
-                return self._failure("rate_limited", "upstream_rate_limited:yahoo", instrument=instrument)
+                return self._cache_response(
+                    cache_key,
+                    self._failure("rate_limited", "upstream_rate_limited:yahoo", instrument=instrument),
+                    success_ttl=self.series_ttl_seconds,
+                )
             if "timeout" in exception_name:
-                return self._failure("unavailable", "upstream_timeout:yahoo", instrument=instrument)
-            return self._failure(
-                "unavailable",
-                f"upstream_unavailable:yahoo:{type(exc).__name__}",
-                instrument=instrument,
+                return self._cache_response(
+                    cache_key,
+                    self._failure("unavailable", "upstream_timeout:yahoo", instrument=instrument),
+                    success_ttl=self.series_ttl_seconds,
+                )
+            return self._cache_response(
+                cache_key,
+                self._failure(
+                    "unavailable",
+                    f"upstream_unavailable:yahoo:{type(exc).__name__}",
+                    instrument=instrument,
+                ),
+                success_ttl=self.series_ttl_seconds,
             )
 
         if frame is None or bool(getattr(frame, "empty", False)):
-            return self._empty(instrument, reason=f"no_observations:{instrument.canonical_code}")
+            return self._cache_response(
+                cache_key,
+                self._empty(instrument, reason=f"no_observations:{instrument.canonical_code}"),
+                success_ttl=self.series_ttl_seconds,
+            )
         try:
             points = self._normalize_frame(frame, instrument=instrument, request=request)
         except YahooFinanceSchemaError as exc:
-            return self._failure(
-                "unavailable",
-                f"upstream_schema_changed:yahoo_v1:{str(exc)}",
-                instrument=instrument,
+            return self._cache_response(
+                cache_key,
+                self._failure(
+                    "unavailable",
+                    f"upstream_schema_changed:yahoo_v1:{str(exc)}",
+                    instrument=instrument,
+                ),
+                success_ttl=self.series_ttl_seconds,
             )
         if not points:
-            return self._empty(instrument, reason=f"no_observations:{instrument.canonical_code}")
+            return self._cache_response(
+                cache_key,
+                self._empty(instrument, reason=f"no_observations:{instrument.canonical_code}"),
+                success_ttl=self.series_ttl_seconds,
+            )
 
         provenance = MarketDataProvenance(
             source=self.source_name,
@@ -135,15 +179,156 @@ class YahooFinanceAdapter:
             as_of=points[-1].timestamp,
             provenance=provenance,
         )
+        return self._cache_response(
+            cache_key,
+            MarketDataResponse(
+                ok=True,
+                status="ok",
+                provider=self.provider_id,
+                source=self.source_name,
+                as_of=series.as_of,
+                reason="",
+                data=series,
+                timezone=instrument.exchange_timezone,
+            ),
+            success_ttl=self.series_ttl_seconds,
+        )
+
+    def get_quote_snapshots(
+        self,
+        request: MarketQuoteRequest,
+    ) -> MarketDataResponse[tuple[MarketQuoteSnapshot, ...]]:
+        if not isinstance(request, MarketQuoteRequest):
+            raise MarketDataValidationError(
+                field="request",
+                reason="MarketQuoteRequest is required",
+                code="invalid_arguments",
+                status="invalid_arguments",
+                provider=self.provider_id,
+            )
+        instruments = tuple(self.registry.require(code) for code in request.codes)
+        for instrument in instruments:
+            if instrument.route != "yahoo":
+                raise MarketDataValidationError(
+                    field="codes",
+                    reason=f"instrument is not routed to Yahoo Finance: {instrument.canonical_code}",
+                    code="unsupported_route",
+                    status="invalid_arguments",
+                    provider=self.provider_id,
+                )
+
+        snapshots: list[MarketQuoteSnapshot] = []
+        for instrument in instruments:
+            result = self._get_quote_snapshot(instrument)
+            if result.status == "empty":
+                return MarketDataResponse(
+                    ok=True,
+                    status="empty",
+                    provider=self.provider_id,
+                    source=self.source_name,
+                    as_of=None,
+                    reason=result.reason,
+                    data=(),
+                    timezone=instrument.exchange_timezone,
+                )
+            if not result.ok or result.data is None:
+                return MarketDataResponse(
+                    ok=False,
+                    status=result.status,
+                    provider=self.provider_id,
+                    source=self.source_name,
+                    as_of=None,
+                    reason=result.reason,
+                    data=(),
+                    timezone=instrument.exchange_timezone,
+                )
+            snapshots.append(result.data)
+
+        response_timezone = instruments[0].exchange_timezone if len(instruments) == 1 else "Asia/Shanghai"
         return MarketDataResponse(
             ok=True,
             status="ok",
             provider=self.provider_id,
             source=self.source_name,
-            as_of=series.as_of,
-            reason="",
-            data=series,
+            as_of=max(snapshot.as_of for snapshot in snapshots),
+            reason="latest_completed_daily_bar",
+            data=tuple(snapshots),
+            timezone=response_timezone,
+        )
+
+    def _get_quote_snapshot(
+        self,
+        instrument: PublicInstrument,
+    ) -> MarketDataResponse[MarketQuoteSnapshot | None]:
+        cache_key = (self.adapter_version, instrument.canonical_code, "quote_snapshot")
+        cached = self.cache.get(cache_key)
+        if cached.hit:
+            return cached.value
+        series_result = self.get_price_series(MarketSeriesRequest(code=instrument.canonical_code, limit=5))
+        if not series_result.ok:
+            return self._cache_response(
+                cache_key,
+                self._failure(series_result.status, series_result.reason, instrument=instrument),
+                success_ttl=self.quote_ttl_seconds,
+            )
+        if series_result.status == "empty" or series_result.data is None:
+            return self._cache_response(
+                cache_key,
+                self._empty(instrument, reason=series_result.reason),
+                success_ttl=self.quote_ttl_seconds,
+            )
+
+        series = series_result.data
+        fetched_at = series.provenance.fetched_at if series.provenance is not None else max(1, int(self._clock()))
+        fetched_date = datetime.fromtimestamp(fetched_at, tz=ZoneInfo(instrument.exchange_timezone)).date()
+        completed = tuple(
+            point
+            for point in series.points
+            if point.trading_date and date.fromisoformat(point.trading_date) < fetched_date
+        )
+        if not completed:
+            return self._cache_response(
+                cache_key,
+                self._failure("unavailable", "observation_time_unavailable", instrument=instrument),
+                success_ttl=self.quote_ttl_seconds,
+            )
+        latest = completed[-1]
+        previous = completed[-2] if len(completed) > 1 else None
+        previous_close = previous.close if previous is not None else None
+        change = latest.close - previous_close if previous_close is not None else None
+        change_pct = (change / previous_close) * 100.0 if change is not None and previous_close else None
+        snapshot = MarketQuoteSnapshot(
+            provider=self.provider_id,
+            code=instrument.canonical_code,
+            as_of=latest.timestamp,
             timezone=instrument.exchange_timezone,
+            previous_close=previous_close,
+            open=latest.open,
+            high=latest.high,
+            low=latest.low,
+            last=latest.close,
+            volume=latest.volume,
+            amount=latest.amount,
+            change=change,
+            change_pct=change_pct,
+            status="end_of_day",
+            provenance=series.provenance,
+            trading_date=latest.trading_date,
+            time_semantics="trading_date",
+        )
+        return self._cache_response(
+            cache_key,
+            MarketDataResponse(
+                ok=True,
+                status="ok",
+                provider=self.provider_id,
+                source=self.source_name,
+                as_of=snapshot.as_of,
+                reason="latest_completed_daily_bar",
+                data=snapshot,
+                timezone=instrument.exchange_timezone,
+            ),
+            success_ttl=self.quote_ttl_seconds,
         )
 
     def _download_arguments(
@@ -252,13 +437,37 @@ class YahooFinanceAdapter:
         ordered = tuple(sorted(points, key=lambda point: point.timestamp))
         return ordered[-request.limit :]
 
+    def _series_cache_key(self, request: MarketSeriesRequest) -> tuple[Any, ...]:
+        return (
+            self.adapter_version,
+            request.code,
+            "price_series",
+            request.interval,
+            request.adjusted,
+            request.date_from or 0,
+            request.date_to or 0,
+            request.limit,
+        )
+
+    def _cache_response(
+        self,
+        key: tuple[Any, ...],
+        response: MarketDataResponse[Any],
+        *,
+        success_ttl: float,
+    ) -> MarketDataResponse[Any]:
+        negative = response.status != "ok"
+        ttl = self.failure_ttl_seconds if negative else success_ttl
+        self.cache.set(key, response, ttl_seconds=ttl, negative=negative)
+        return response
+
     def _failure(
         self,
         status: str,
         reason: str,
         *,
         instrument: PublicInstrument,
-    ) -> MarketDataResponse[MarketSeries | None]:
+    ) -> MarketDataResponse[Any]:
         return MarketDataResponse(
             ok=False,
             status=status,
@@ -275,7 +484,7 @@ class YahooFinanceAdapter:
         instrument: PublicInstrument,
         *,
         reason: str,
-    ) -> MarketDataResponse[MarketSeries | None]:
+    ) -> MarketDataResponse[Any]:
         return MarketDataResponse(
             ok=True,
             status="empty",
@@ -365,6 +574,15 @@ def _optional_number(value: Any, *, field: str) -> float | None:
     if not math.isfinite(parsed):
         raise YahooFinanceSchemaError(f"invalid_numeric:{field}")
     return parsed
+
+
+def _bounded_ttl(value: Any, *, field: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be numeric")
+    ttl = float(value)
+    if not 0 < ttl <= 24 * 60 * 60:
+        raise ValueError(f"{field} must be greater than zero and at most one day")
+    return ttl
 
 
 __all__ = [

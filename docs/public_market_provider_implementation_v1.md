@@ -1,6 +1,6 @@
 # Akane 免费公开行情 Provider 实施细案 V1
 
-状态：F7d0-F7d1b 已完成；Yahoo live 查询在当前网络超时并明确保留为 smoke 项；下一步为 F7d2 Yahoo 延迟快照与 TTL cache
+状态：F7d0-F7d2 已完成；Yahoo live 查询在当前网络超时并明确保留为 smoke 项；下一步为 F7d3 AkShare 境内 ETF adapter
 更新时间：2026-07-11
 适用仓库：AkaneCompanionLab
 实施分支：`feature/qq-finance-assistant-emquant`
@@ -780,7 +780,23 @@ feat(finance): add yahoo public index series adapter
 
 ### F7d2：Yahoo 延迟快照与 TTL cache
 
+状态：已完成；当前快照明确是最近已完成日线观察，不冒充盘中实时行情；尚未注册进生产 factory。
+
 目标：在不冒充实时数据的前提下补 quote snapshot，并保护公开上游。
+
+实际落地：
+
+- `TTLMarketDataCache` 是线程安全、有界 LRU/TTL cache，支持成功 TTL、失败负缓存、过期清理、显式 delete/clear 和 deterministic clock；
+- series cache key 包含 adapter、canonical code、capability、interval、adjusted、日期区间和 limit；
+- cache 命中直接返回原不可变 response，保留原始 `as_of/fetched_at`，不制造新时间；
+- Yahoo series 默认缓存 900 秒、quote 60 秒、失败/空数据 15 秒，均可在 adapter 构造时覆盖；
+- `MarketQuoteSnapshot` 向后兼容增加 `trading_date/time_semantics`；
+- Yahoo quote 使用最近“严格早于抓取本地日期”的已完成日线，主动排除同日可能仍在形成的 partial bar；
+- quote 固定 `status=end_of_day`、`delay_kind=end_of_day`、`reason=latest_completed_daily_bar`；
+- 没有可信已完成交易日时返回 `unavailable / observation_time_unavailable`；
+- 多代码请求任一失败时整次 fail closed，不返回部分结果；
+- 当前未实现 Yahoo 盘中 quote，不因切片名中的“延迟快照”声称交易级或盘中实时能力；
+- 本切片没有修改 factory/config，没有启用默认联网或 QQ 推送。
 
 建议提交：
 
@@ -837,17 +853,17 @@ F7d0-F7d4 完成必须同时满足：
 
 ## 22. 上下文恢复后的精确下一步
 
-若接手者看到本文，下一步直接执行 F7d2，不要重新跑大范围依赖调查，也不要直接写完整 composite Provider：
+若接手者看到本文，下一步直接执行 F7d3，不要重新跑大范围依赖调查，也不要直接写完整 composite Provider：
 
 1. `git status --short --branch`，确认不碰用户的 `uv.lock`；
-2. 读取 `public_yahoo.py`、`MarketQuoteSnapshot` provenance 和 F7d0 Yahoo timeout 结论；
-3. 新建独立、有界、线程安全的 `public_cache.py`，支持成功 TTL、失败负缓存、最大条目和 deterministic clock 测试；
-4. Yahoo snapshot 只能来自带可信观察时间的上游字段，或明确标记为最近收盘观察；绝不能用 `fetched_at` 代替 `as_of`；
-5. 若复用日线最后一根生成最近收盘快照，status/session/delay 必须写 `end_of_day`，不能写实时；
-6. cache key 包含 adapter、canonical code、capability、interval、adjusted 和区间；
-7. 命中 cache 保留原 as_of/fetched_at，不制造新时间；
-8. 当前 Yahoo 网络不可达时，live smoke 继续返回结构化 timeout，不得用 fixture 或 Mock 顶替；
-9. 本切片仍不改 production factory/config，不实现 AkShare；
-10. 运行新测试、现有 Provider/工具/图表/报告回归和 `git diff --check`，只提交 `feat(finance): cache delayed public market quotes`。
+2. 读取 AkShare F7d0 fixture、`public_instruments.py` 和共享 TTL cache；
+3. 新建 `services/market_data/public_akshare.py`，默认调用路径才延迟导入 AkShare；
+4. 只接受 registry route 为 `akshare_etf` 的 canonical code，不开放任意 AkShare 函数给模型；
+5. 日线只支持 `1d + adjusted=none`，使用 `fund_etf_hist_em` 的受测列名；
+6. spot 使用 `fund_etf_spot_em`，按精确 vendor code 选唯一行，并使用 timezone-aware `更新时间` 作为 as_of；
+7. spot/history 的 `成交量` 从手乘 100 规范化为份额，成交额保持 CNY；
+8. source 写 `AkShare/Eastmoney public web data`，保留聚合源和授权边界；
+9. 复用共享 cache，字段缺失、重复代码、空数据、超时和 schema 变化均结构化失败；
+10. 本切片仍不改 production factory/config；运行相关测试和金融回归后，只提交 `feat(finance): add public etf market adapter`。
 
 Yahoo live smoke 失败不得改成假成功；后续网络恢复时再补成功观察。Choice 继续保持可选，现有金融主链不受影响。

@@ -8,7 +8,9 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from services.market_data import (
+    MarketQuoteRequest,
     MarketSeriesRequest,
+    TTLMarketDataCache,
     YahooFinanceAdapter,
     YahooFinanceDependencyUnavailable,
 )
@@ -18,6 +20,14 @@ import services.market_data.public_yahoo as public_yahoo
 
 TOKYO = ZoneInfo("Asia/Tokyo")
 FIXED_NOW = int(datetime(2026, 7, 11, 12, 0, tzinfo=TOKYO).timestamp())
+
+
+class MutableClock:
+    def __init__(self, value: float = 100.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
 
 
 class FakeFrame:
@@ -113,6 +123,80 @@ class YahooFinanceAdapterTests(unittest.TestCase):
         self.assertEqual(result.data.provenance.data_quality, "public_web")
         self.assertEqual(len(calls), 1)
 
+    def test_series_success_and_failures_use_separate_ttls(self) -> None:
+        cache_clock = MutableClock()
+        cache = TTLMarketDataCache(max_entries=10, clock=cache_clock)
+        calls = []
+
+        def downloader(**kwargs):
+            calls.append(kwargs)
+            return FakeFrame(_daily_rows())
+
+        adapter = YahooFinanceAdapter(
+            downloader=downloader,
+            cache=cache,
+            series_ttl_seconds=30,
+            failure_ttl_seconds=5,
+            clock=lambda: FIXED_NOW,
+        )
+        request = MarketSeriesRequest(code="NIKKEI225.INDEX", limit=2)
+        first = adapter.get_price_series(request)
+        cache_clock.value = 120
+        second = adapter.get_price_series(request)
+        cache_clock.value = 131
+        third = adapter.get_price_series(request)
+
+        self.assertIs(first, second)
+        self.assertEqual(first.data.provenance.fetched_at, second.data.provenance.fetched_at)
+        self.assertIsNot(first, third)
+        self.assertEqual(len(calls), 2)
+
+        failure_calls = []
+
+        class CaptureTimeoutError(Exception):
+            pass
+
+        def failing(**_kwargs):
+            failure_calls.append(True)
+            raise CaptureTimeoutError()
+
+        failing_adapter = YahooFinanceAdapter(
+            downloader=failing,
+            cache=TTLMarketDataCache(max_entries=10, clock=cache_clock),
+            failure_ttl_seconds=5,
+            clock=lambda: FIXED_NOW,
+        )
+        cache_clock.value = 200
+        failure_request = MarketSeriesRequest(code="HSI.INDEX", limit=2)
+        failed_first = failing_adapter.get_price_series(failure_request)
+        cache_clock.value = 204
+        failed_second = failing_adapter.get_price_series(failure_request)
+        cache_clock.value = 206
+        failing_adapter.get_price_series(failure_request)
+
+        self.assertIs(failed_first, failed_second)
+        self.assertEqual(len(failure_calls), 2)
+
+    def test_series_cache_key_includes_limit_and_date_range(self) -> None:
+        calls = []
+
+        def downloader(**kwargs):
+            calls.append(kwargs)
+            return FakeFrame(_daily_rows())
+
+        adapter = YahooFinanceAdapter(downloader=downloader, clock=lambda: FIXED_NOW)
+        adapter.get_price_series(MarketSeriesRequest(code="NIKKEI225.INDEX", limit=1))
+        adapter.get_price_series(MarketSeriesRequest(code="NIKKEI225.INDEX", limit=2))
+        adapter.get_price_series(
+            MarketSeriesRequest(
+                code="NIKKEI225.INDEX",
+                limit=2,
+                date_from=int(datetime(2026, 7, 9, tzinfo=TOKYO).timestamp()),
+            )
+        )
+
+        self.assertEqual(len(calls), 3)
+
     def test_download_arguments_override_yfinance_defaults_and_use_exclusive_end(self) -> None:
         calls = []
 
@@ -172,6 +256,79 @@ class YahooFinanceAdapterTests(unittest.TestCase):
         self.assertEqual(result.status, "empty")
         self.assertIsNone(result.data)
         self.assertEqual(result.reason, "no_observations:SP500.INDEX")
+
+    def test_quote_snapshot_is_explicitly_latest_completed_daily_bar(self) -> None:
+        calls = []
+
+        def downloader(**kwargs):
+            calls.append(kwargs)
+            return FakeFrame(_daily_rows())
+
+        adapter = YahooFinanceAdapter(downloader=downloader, clock=lambda: FIXED_NOW)
+        request = MarketQuoteRequest(codes=("NIKKEI225.INDEX",))
+        first = adapter.get_quote_snapshots(request)
+        second = adapter.get_quote_snapshots(request)
+
+        self.assertTrue(first.ok)
+        self.assertEqual(first.status, "ok")
+        self.assertEqual(first.reason, "latest_completed_daily_bar")
+        self.assertEqual(len(first.data), 1)
+        snapshot = first.data[0]
+        self.assertEqual(snapshot.code, "NIKKEI225.INDEX")
+        self.assertEqual(snapshot.status, "end_of_day")
+        self.assertEqual(snapshot.trading_date, "2026-07-10")
+        self.assertEqual(snapshot.time_semantics, "trading_date")
+        self.assertEqual(snapshot.previous_close, 50800)
+        self.assertEqual(snapshot.last, 51100)
+        self.assertEqual(snapshot.change, 300)
+        self.assertAlmostEqual(snapshot.change_pct, 300 / 50800 * 100)
+        self.assertEqual(snapshot.provenance.delay_kind, "end_of_day")
+        self.assertIs(first.data[0], second.data[0])
+        self.assertEqual(len(calls), 1)
+
+    def test_quote_excludes_same_day_partial_bar_without_guessing_market_close(self) -> None:
+        current_day = int(datetime(2026, 7, 10, 12, 0, tzinfo=TOKYO).timestamp())
+        adapter = YahooFinanceAdapter(
+            downloader=lambda **_kwargs: FakeFrame(_daily_rows()),
+            clock=lambda: current_day,
+        )
+
+        result = adapter.get_quote_snapshots(MarketQuoteRequest(codes=("NIKKEI225.INDEX",)))
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data[0].trading_date, "2026-07-09")
+        self.assertEqual(result.data[0].last, 50800)
+
+    def test_quote_without_completed_daily_observation_is_unavailable(self) -> None:
+        rows = [{"Date": "2026-07-11", "Open": 10, "High": 12, "Low": 9, "Close": 11, "Volume": 0}]
+        adapter = YahooFinanceAdapter(
+            downloader=lambda **_kwargs: FakeFrame(rows),
+            clock=lambda: FIXED_NOW,
+        )
+
+        result = adapter.get_quote_snapshots(MarketQuoteRequest(codes=("NIKKEI225.INDEX",)))
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, "unavailable")
+        self.assertEqual(result.reason, "observation_time_unavailable")
+        self.assertEqual(result.data, ())
+
+    def test_multi_code_quote_fails_closed_without_returning_partial_data(self) -> None:
+        def downloader(**kwargs):
+            if kwargs["tickers"] == "^GSPC":
+                raise TimeoutError()
+            return FakeFrame(_daily_rows())
+
+        adapter = YahooFinanceAdapter(downloader=downloader, clock=lambda: FIXED_NOW)
+
+        result = adapter.get_quote_snapshots(
+            MarketQuoteRequest(codes=("NIKKEI225.INDEX", "SP500.INDEX"))
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, "unavailable")
+        self.assertEqual(result.reason, "upstream_timeout:yahoo")
+        self.assertEqual(result.data, ())
 
     def test_missing_dependency_timeout_and_rate_limit_are_structured(self) -> None:
         def missing(**_kwargs):

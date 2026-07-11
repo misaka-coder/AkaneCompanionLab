@@ -135,6 +135,16 @@ class MarketQuoteSnapshot:
     change_pct: float | None
     status: str
     provenance: MarketDataProvenance | None = None
+    trading_date: str = ""
+    time_semantics: str = "instant"
+
+    def __post_init__(self) -> None:
+        trading_date, time_semantics = _normalize_market_time_semantics(
+            self.trading_date,
+            self.time_semantics,
+        )
+        object.__setattr__(self, "trading_date", trading_date)
+        object.__setattr__(self, "time_semantics", time_semantics)
 
     def to_public_dict(self) -> dict[str, Any]:
         payload = {
@@ -155,6 +165,9 @@ class MarketQuoteSnapshot:
         }
         if self.provenance is not None:
             payload["provenance"] = self.provenance.to_public_dict()
+        if self.trading_date or self.time_semantics != "instant":
+            payload["trading_date"] = self.trading_date
+            payload["time_semantics"] = self.time_semantics
         return payload
 
 
@@ -243,20 +256,10 @@ class MarketBar:
     time_semantics: str = "instant"
 
     def __post_init__(self) -> None:
-        trading_date = str(self.trading_date or "").strip()
-        time_semantics = str(self.time_semantics or "instant").strip().lower() or "instant"
-        if time_semantics not in MARKET_BAR_TIME_SEMANTICS:
-            raise MarketDataValidationError(field="time_semantics", reason="unsupported market bar time semantics")
-        if trading_date:
-            try:
-                date.fromisoformat(trading_date)
-            except ValueError as exc:
-                raise MarketDataValidationError(field="trading_date", reason="expected YYYY-MM-DD") from exc
-        if time_semantics == "trading_date" and not trading_date:
-            raise MarketDataValidationError(
-                field="trading_date",
-                reason="trading_date is required when time semantics is trading_date",
-            )
+        trading_date, time_semantics = _normalize_market_time_semantics(
+            self.trading_date,
+            self.time_semantics,
+        )
         object.__setattr__(self, "trading_date", trading_date)
         object.__setattr__(self, "time_semantics", time_semantics)
 
@@ -466,3 +469,21 @@ def _require_nonnegative_int(value: Any, *, field: str) -> int:
     if number < 0:
         raise MarketDataValidationError(field=field, reason="value cannot be negative")
     return number
+
+
+def _normalize_market_time_semantics(trading_date_value: Any, time_semantics_value: Any) -> tuple[str, str]:
+    trading_date = str(trading_date_value or "").strip()
+    time_semantics = str(time_semantics_value or "instant").strip().lower() or "instant"
+    if time_semantics not in MARKET_BAR_TIME_SEMANTICS:
+        raise MarketDataValidationError(field="time_semantics", reason="unsupported market time semantics")
+    if trading_date:
+        try:
+            date.fromisoformat(trading_date)
+        except ValueError as exc:
+            raise MarketDataValidationError(field="trading_date", reason="expected YYYY-MM-DD") from exc
+    if time_semantics == "trading_date" and not trading_date:
+        raise MarketDataValidationError(
+            field="trading_date",
+            reason="trading_date is required when time semantics is trading_date",
+        )
+    return trading_date, time_semantics
