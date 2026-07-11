@@ -856,6 +856,21 @@ class MarketEventStore:
                 """,
                 tuple(partial_parameters),
             ).fetchall()
+            embedded_parameters: list[Any] = [query_norm]
+            if clean_provider:
+                embedded_parameters.append(clean_provider)
+            embedded_parameters.append(min(80, clean_limit * 4))
+            embedded_rows = connection.execute(
+                f"""
+                SELECT s.*, a.alias AS matched_alias
+                FROM market_security_aliases a
+                JOIN market_securities s ON s.provider = a.provider AND s.code = a.code
+                WHERE instr(?, a.alias_norm) > 0 AND length(a.alias_norm) >= 2 {provider_clause}
+                ORDER BY length(a.alias_norm) DESC, s.updated_at DESC, s.provider, s.code
+                LIMIT ?
+                """,
+                tuple(embedded_parameters),
+            ).fetchall()
             watch_rows = []
             if clean_profile and clean_session:
                 watch_provider_clause = "AND w.provider = ?" if clean_provider else ""
@@ -874,13 +889,21 @@ class MarketEventStore:
                     """,
                     tuple(watch_parameters),
                 ).fetchall()
-        for row in (*exact_rows, *partial_rows):
+        for row in (*exact_rows, *embedded_rows, *partial_rows):
             security = _row_to_market_security(row)
             matched_alias = str(row["matched_alias"] or "")
-            match_type = "exact" if _normalize_security_alias(matched_alias) == query_norm else "partial"
+            matched_alias_norm = _normalize_security_alias(matched_alias)
+            if matched_alias_norm == query_norm:
+                match_type = "exact"
+            elif _security_alias_is_embeddable(matched_alias_norm) and matched_alias_norm in query_norm:
+                match_type = "embedded"
+            else:
+                match_type = "partial"
             key = (security.provider, security.code, "security_master")
             previous = matches.get(key)
-            if previous is None or previous["match_type"] != "exact":
+            if previous is None or _security_match_priority(match_type) < _security_match_priority(
+                str(previous.get("match_type") or "partial")
+            ):
                 matches[key] = {
                     **security.to_public_dict(),
                     "matched_alias": matched_alias,
@@ -891,8 +914,17 @@ class MarketEventStore:
             item = _row_to_watchlist_item(row)
             aliases = _unique_security_aliases((item.code, item.display_name, *item.aliases))
             exact_alias = next((alias for alias in aliases if _normalize_security_alias(alias) == query_norm), "")
+            embedded_alias = next(
+                (
+                    alias
+                    for alias in aliases
+                    if _security_alias_is_embeddable(_normalize_security_alias(alias))
+                    and _normalize_security_alias(alias) in query_norm
+                ),
+                "",
+            )
             partial_alias = next((alias for alias in aliases if query_norm in _normalize_security_alias(alias)), "")
-            matched_alias = exact_alias or partial_alias
+            matched_alias = exact_alias or embedded_alias or partial_alias
             if not matched_alias:
                 continue
             key = (item.provider, item.code, "session_watchlist")
@@ -908,13 +940,13 @@ class MarketEventStore:
                 "created_at": item.created_at,
                 "updated_at": item.updated_at,
                 "matched_alias": matched_alias,
-                "match_type": "exact" if exact_alias else "partial",
+                "match_type": "exact" if exact_alias else ("embedded" if embedded_alias else "partial"),
                 "scope": "session_watchlist",
             }
         ordered = sorted(
             matches.values(),
             key=lambda item: (
-                0 if item["match_type"] == "exact" else 1,
+                _security_match_priority(str(item.get("match_type") or "partial")),
                 0 if item["scope"] == "session_watchlist" else 1,
                 str(item.get("display_name") or ""),
                 str(item.get("code") or ""),
@@ -2252,6 +2284,19 @@ def _normalize_title(value: str) -> str:
 def _normalize_security_alias(value: Any) -> str:
     normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
     return _TITLE_TOKEN_RE.sub("", normalized)
+
+
+def _security_alias_is_embeddable(value: str) -> bool:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return False
+    if normalized.isascii():
+        return len(normalized) >= 4
+    return len(normalized) >= 2
+
+
+def _security_match_priority(value: str) -> int:
+    return {"exact": 0, "embedded": 1, "partial": 2}.get(str(value or "").strip(), 3)
 
 
 def _unique_security_aliases(values: Iterable[Any]) -> tuple[str, ...]:

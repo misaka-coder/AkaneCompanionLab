@@ -385,11 +385,14 @@ class MarketEventStoreTests(unittest.TestCase):
         )
 
         exact = self.store.resolve_security("测试公司", provider="mock_choice")
+        embedded = self.store.resolve_security("请画测试公司最近三个月K线", provider="mock_choice")
         partial = self.store.resolve_security("合成", provider="mock_choice")
 
         self.assertEqual(security.code, "000000.TEST")
         self.assertEqual(exact[0]["match_type"], "exact")
         self.assertEqual(exact[0]["source"], "synthetic provider master")
+        self.assertEqual(embedded[0]["code"], "000000.TEST")
+        self.assertEqual(embedded[0]["match_type"], "embedded")
         self.assertEqual(partial[0]["match_type"], "partial")
         self.assertTrue(self.store.is_trusted_security_code("000000.TEST", provider="mock_choice"))
 

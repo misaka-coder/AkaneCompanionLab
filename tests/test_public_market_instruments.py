@@ -16,7 +16,7 @@ class PublicInstrumentRegistryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.registry = build_default_public_instrument_registry()
 
-    def test_default_registry_contains_four_indices_and_two_verified_etfs(self) -> None:
+    def test_default_registry_contains_five_indices_and_two_verified_etfs(self) -> None:
         instruments = self.registry.all()
         self.assertEqual(
             {instrument.canonical_code for instrument in instruments},
@@ -25,11 +25,12 @@ class PublicInstrumentRegistryTests(unittest.TestCase):
                 "SP500.INDEX",
                 "NASDAQCOMPOSITE.INDEX",
                 "HSI.INDEX",
+                "CSI300.INDEX",
                 "513000.SH",
                 "513520.SH",
             },
         )
-        self.assertEqual(len(self.registry.for_route("yahoo")), 4)
+        self.assertEqual(len(self.registry.for_route("yahoo")), 5)
         self.assertEqual(len(self.registry.for_route("akshare_etf")), 2)
 
     def test_seed_metadata_has_valid_timezone_currency_and_distinct_vendor_symbol(self) -> None:
@@ -53,6 +54,9 @@ class PublicInstrumentRegistryTests(unittest.TestCase):
         etf = self.registry.resolve("513000")
         self.assertTrue(etf.ok)
         self.assertEqual(etf.instrument.canonical_code, "513000.SH")
+        csi300 = self.registry.resolve("000300")
+        self.assertTrue(csi300.ok)
+        self.assertEqual(csi300.instrument.canonical_code, "CSI300.INDEX")
 
     def test_public_serialization_excludes_vendor_routing_details(self) -> None:
         payload = self.registry.require("NIKKEI225.INDEX").to_public_dict()

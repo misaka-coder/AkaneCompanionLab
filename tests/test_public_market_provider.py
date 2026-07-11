@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 import tempfile
 
+from companion_v01.finance.market_service import MarketDataToolService
 from services.market_data import (
     MarketBar,
     MarketDataResponse,
@@ -111,17 +112,30 @@ class PublicMarketProviderTests(unittest.TestCase):
             first = provider.seed_security_master(store, now_ts=200)
             second = provider.seed_security_master(store, now_ts=300)
             nikkei = store.resolve_security("日经225", provider="public_market")
+            nikkei_request = store.resolve_security("画一张日经225最近三个月K线", provider="public_market")
             etf = store.resolve_security("日经ETF华夏", provider="public_market")
             etf_code = store.resolve_security("513000", provider="public_market")
+            csi300 = store.resolve_security("000300", provider="public_market")
             vendor = store.resolve_security("^N225", provider="public_market")
+            service = MarketDataToolService(provider=provider, event_store=store)
+            canonical_pair = service.canonicalize_trusted_codes(
+                ("513000", "000300"),
+                profile_user_id="qq_group_shared_123",
+                session_id="qq_group_shared_123",
+            )
 
-        self.assertEqual(len(first), 6)
-        self.assertEqual(len(second), 6)
+        self.assertEqual(len(first), 7)
+        self.assertEqual(len(second), 7)
         self.assertEqual(nikkei[0]["code"], "NIKKEI225.INDEX")
         self.assertEqual(nikkei[0]["match_type"], "exact")
+        self.assertEqual(nikkei_request[0]["code"], "NIKKEI225.INDEX")
+        self.assertEqual(nikkei_request[0]["match_type"], "embedded")
         self.assertEqual(etf[0]["code"], "513520.SH")
         self.assertEqual(etf_code[0]["code"], "513000.SH")
         self.assertEqual(etf_code[0]["match_type"], "exact")
+        self.assertEqual(csi300[0]["code"], "CSI300.INDEX")
+        self.assertEqual(csi300[0]["match_type"], "exact")
+        self.assertEqual(canonical_pair, ("513000.SH", "CSI300.INDEX"))
         self.assertEqual(vendor, ())
 
     def test_series_routes_by_canonical_instrument(self) -> None:

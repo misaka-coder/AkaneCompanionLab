@@ -19,7 +19,7 @@ from companion_v01.persona_config import load_persona_config
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.prompt_builder import PromptBuilder
 from companion_v01.prompt_profiles import PromptModule, PromptProfileRegistry
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 
 
 class FinanceDomainProfileTests(unittest.TestCase):
@@ -171,6 +171,37 @@ class QQFinanceModeTests(unittest.TestCase):
             "raw_message": raw_message,
             "sender": {"nickname": "张三"},
         }
+
+    def test_private_and_group_qa_payloads_share_finance_capability_profile(self) -> None:
+        private_payload = QQMessageContext(
+            should_respond=True,
+            reason="private_message",
+            is_group=False,
+            target_id=10001,
+            user_id=10001,
+            session_id="master",
+            profile_user_id="master",
+            clean_message="画一张日经225三个月K线",
+            finance_mode="qa",
+        ).to_turn_payload()
+        group_payload = QQMessageContext(
+            should_respond=True,
+            reason="group_mention",
+            is_group=True,
+            target_id=20001,
+            user_id=10001,
+            group_id=20001,
+            session_id="qq_group_shared_20001",
+            profile_user_id="qq_group_shared_20001",
+            sender_label="测试成员",
+            clean_message="画一张日经225三个月K线",
+            finance_mode="qa",
+        ).to_turn_payload()
+
+        for key in ("client_mode", "client_capabilities", "finance_mode", "domain_profile"):
+            self.assertEqual(private_payload[key], group_payload[key])
+        self.assertNotIn("actor_stable_id", private_payload)
+        self.assertEqual(group_payload["actor_stable_id"], "qq:10001")
 
     @staticmethod
     def _group_event(*, message_id: str, raw_message: str, role: str) -> dict:

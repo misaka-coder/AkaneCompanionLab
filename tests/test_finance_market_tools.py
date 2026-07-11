@@ -266,9 +266,41 @@ class FinanceMarketToolTests(unittest.TestCase):
             call=resolver.normalize_call({"type": "market_resolve_security", "query": "合成"}),
             context=context,
         )
+        group_context = ToolExecutionContext(
+            profile_user_id="qq_group_shared_123",
+            session_id="qq_group_shared_123",
+            now_ts=1_752_153_600,
+            visual_payload={},
+            request_context={"message": "【群成员】请画测试公司最近三个月K线和成交量图"},
+        )
+        embedded_group = resolver.execute(
+            call=resolver.normalize_call(
+                {
+                    "type": "market_resolve_security",
+                    "query": "请画测试公司最近三个月K线和成交量图",
+                }
+            ),
+            context=group_context,
+        )
+        recovered_group = resolver.execute(
+            call=resolver.normalize_call(
+                {
+                    "type": "market_resolve_security",
+                    "query": "^FAKE_VENDOR",
+                }
+            ),
+            context=group_context,
+        )
 
         self.assertIn('"resolved": true', exact.followup_context)
         self.assertIn('"resolved_code": "000000.TEST"', exact.followup_context)
+        self.assertIn('"resolved": true', embedded_group.followup_context)
+        self.assertIn('"resolved_code": "000000.TEST"', embedded_group.followup_context)
+        self.assertIn("unique embedded literal alias match", embedded_group.followup_context)
+        self.assertIn('"resolved": true', recovered_group.followup_context)
+        self.assertIn('"resolved_code": "000000.TEST"', recovered_group.followup_context)
+        self.assertIn('"source": "current_user_message"', recovered_group.followup_context)
+        self.assertIn('"model_query": "^FAKE_VENDOR"', recovered_group.followup_context)
         self.assertIn('"resolution_status": "needs_confirmation"', partial.followup_context)
         self.service.ensure_trusted_codes(
             ("000000.TEST",),
@@ -429,6 +461,12 @@ class FinanceMarketToolTests(unittest.TestCase):
                 session_id="session",
                 domain_profile_id=FINANCE_DOMAIN_PROFILE_ID,
             )
+            group_finance_handlers = engine._resolve_tool_handlers(
+                client_context=context,
+                profile_user_id="qq_group_shared_123",
+                session_id="qq_group_shared_123",
+                domain_profile_id=FINANCE_DOMAIN_PROFILE_ID,
+            )
             default_handlers = engine._resolve_tool_handlers(
                 client_context=context,
                 profile_user_id="owner",
@@ -437,6 +475,10 @@ class FinanceMarketToolTests(unittest.TestCase):
 
         self.assertIn("market_quote_snapshot", finance_handlers)
         self.assertIn("market_resolve_security", finance_handlers)
+        self.assertEqual(
+            set(self.handlers).intersection(finance_handlers),
+            set(self.handlers).intersection(group_finance_handlers),
+        )
         self.assertNotIn("market_quote_snapshot", default_handlers)
 
     def test_finance_round_budget_and_stop_handoff_are_explicit(self) -> None:
@@ -454,6 +496,7 @@ class FinanceMarketToolTests(unittest.TestCase):
         self.assertIn("不得只回复", prompt)
         self.assertIn("当前可支持的结论", prompt)
         self.assertTrue(should_stop_after_tool_events([{"status": "permission_denied"}]))
+        self.assertFalse(should_stop_after_tool_events([{"status": "invalid_arguments"}]))
         repeated = [
             SimpleNamespace(
                 state_updates={

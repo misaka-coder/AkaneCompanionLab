@@ -66,7 +66,6 @@ def should_stop_after_tool_events(events: list[dict[str, Any]]) -> bool:
         "unavailable",
         "permission_denied",
         "rate_limited",
-        "invalid_arguments",
         "error",
         "failed",
         "failure",

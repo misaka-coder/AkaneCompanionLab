@@ -58,20 +58,22 @@ class MarketDataToolService:
             )
         )
         by_code: dict[str, dict[str, Any]] = {}
+        match_priority = {"exact": 0, "embedded": 1, "partial": 2}
         for candidate in candidates:
             code = str(candidate.get("code") or "").strip()
             if not code:
                 continue
             existing = by_code.get(code)
-            if existing is None or (
-                str(candidate.get("match_type") or "") == "exact"
-                and str(existing.get("match_type") or "") != "exact"
-            ):
+            candidate_priority = match_priority.get(str(candidate.get("match_type") or ""), 3)
+            existing_priority = match_priority.get(str((existing or {}).get("match_type") or ""), 3)
+            if existing is None or candidate_priority < existing_priority:
                 by_code[code] = dict(candidate)
         unique = list(by_code.values())
         exact = [item for item in unique if str(item.get("match_type") or "") == "exact"]
-        resolved = len(exact) == 1
-        resolved_code = str(exact[0].get("code") or "") if resolved else ""
+        embedded = [item for item in unique if str(item.get("match_type") or "") == "embedded"]
+        resolved_candidates = exact if exact else embedded
+        resolved = len(resolved_candidates) == 1
+        resolved_code = str(resolved_candidates[0].get("code") or "") if resolved else ""
         if resolved_code:
             self._remember_resolved_code(
                 resolved_code,
@@ -79,13 +81,16 @@ class MarketDataToolService:
                 session_id=session_id,
             )
         if not unique:
-            reason = "no trusted security master or current-session watchlist entry matched"
+            reason = (
+                "no trusted security master or current-session watchlist entry matched the supplied query; "
+                "retry with only the literal user-provided security name or alias, not a guessed vendor symbol"
+            )
             resolution_status = "not_found"
         elif resolved:
-            reason = "unique exact alias match"
+            reason = "unique exact alias match" if exact else "unique embedded literal alias match"
             resolution_status = "resolved"
-        elif exact:
-            reason = "multiple exact matches; ask the user to disambiguate"
+        elif exact or embedded:
+            reason = "multiple exact or embedded matches; ask the user to disambiguate"
             resolution_status = "ambiguous"
         else:
             reason = "only partial trusted candidates matched; confirm the intended security before querying data"

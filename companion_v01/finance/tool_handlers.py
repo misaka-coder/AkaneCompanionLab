@@ -39,7 +39,9 @@ MARKET_RESOLVE_SECURITY_SCHEMA: dict[str, Any] = {
     "description": (
         "Resolve a user-provided security name or alias to a trusted provider code using the local security master "
         "and the current session watchlist. Call this before quote/news/series tools when the user did not provide "
-        "a complete provider code. Never manufacture .SH/.SZ/.BJ suffixes."
+        "a complete provider code. The query should be the literal security name or alias copied from the user's "
+        "message, not the full task sentence and not a guessed vendor ticker such as ^N225. Never manufacture "
+        ".SH/.SZ/.BJ suffixes."
     ),
     "type": "object",
     "additionalProperties": False,
@@ -232,7 +234,9 @@ class MarketResolveSecurityToolHandler(_FinanceReadToolHandler):
         return (
             '- market_resolve_security：把用户给出的证券名称/别名解析成可信 provider code。格式为 '
             '{"type":"market_resolve_security","query":"贵州茅台","limit":5}。'
+            "query 只放用户原文里的证券名称/别名，不放整句任务，也不要把日经225改写成猜测的 ^N225 等 vendor symbol。"
             "用户没有直接给出完整 provider code 时，必须先用本工具；只有 resolved=true 才能直接继续查行情。"
+            "not_found 只表示本次查询词没匹配，不代表 provider 不支持；先用用户原文中的纯证券名重试一次。"
             "ambiguous/needs_confirmation 时向用户澄清，不要自行拼 .SH/.SZ/.BJ。"
         )
 
@@ -249,14 +253,44 @@ class MarketResolveSecurityToolHandler(_FinanceReadToolHandler):
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         try:
-            return self._result(
-                self.service.resolve_security(
-                    str(call.get("query") or ""),
+            query = str(call.get("query") or "")
+            limit = int(call.get("limit") or 5)
+            payload = self.service.resolve_security(
+                query,
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                limit=limit,
+            )
+            resolution_status = str(payload.get("resolution_status") or "").strip()
+            request_text = "\n".join(
+                str(context.request_context.get(key) or "").strip()
+                for key in ("message", "raw_message", "clean_message")
+                if str(context.request_context.get(key) or "").strip()
+            )
+            if (
+                not bool(payload.get("resolved"))
+                and resolution_status in {"not_found", "needs_confirmation"}
+                and request_text
+                and request_text.strip() != query.strip()
+            ):
+                recovered = self.service.resolve_security(
+                    request_text,
                     profile_user_id=context.profile_user_id,
                     session_id=context.session_id,
-                    limit=int(call.get("limit") or 5),
+                    limit=limit,
                 )
-            )
+                if bool(recovered.get("resolved")):
+                    recovered["reason"] = (
+                        "model query did not uniquely match; recovered a unique trusted alias from the current "
+                        "user message"
+                    )
+                    recovered["resolution_recovery"] = {
+                        "used": True,
+                        "source": "current_user_message",
+                        "model_query": query,
+                    }
+                    payload = recovered
+            return self._result(payload)
         except Exception as exc:
             return self._failure(exc)
 

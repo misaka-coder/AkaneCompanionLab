@@ -281,6 +281,18 @@ def build_default_public_instrument_registry() -> PublicInstrumentRegistry:
                 aliases=("恒指", "Hang Seng Index", "Hang Seng"),
             ),
             PublicInstrument(
+                canonical_code="CSI300.INDEX",
+                display_name="沪深300指数",
+                instrument_type="index",
+                market="CN",
+                exchange_timezone="Asia/Shanghai",
+                currency="CNY",
+                route="yahoo",
+                vendor_symbol="000300.SS",
+                quote_delay_kind="delayed",
+                aliases=("沪深300", "沪深300指数", "CSI 300", "CSI300", "000300"),
+            ),
+            PublicInstrument(
                 canonical_code="513000.SH",
                 display_name="日经225ETF易方达",
                 instrument_type="etf",
