@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any, Generic, Mapping, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -20,6 +20,9 @@ MARKET_RESULT_STATUSES = frozenset(
     }
 )
 MARKET_HEALTH_STATUSES = frozenset({"ready", "degraded", "disconnected", "permission_denied"})
+MARKET_DATA_DELAY_KINDS = frozenset({"real_time", "delayed", "end_of_day", "unknown"})
+MARKET_DATA_QUALITY_LEVELS = frozenset({"official", "vendor", "aggregated", "public_web", "derived", "unknown"})
+MARKET_BAR_TIME_SEMANTICS = frozenset({"instant", "trading_date"})
 
 
 class MarketDataValidationError(ValueError):
@@ -131,9 +134,10 @@ class MarketQuoteSnapshot:
     change: float | None
     change_pct: float | None
     status: str
+    provenance: MarketDataProvenance | None = None
 
     def to_public_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "provider": self.provider,
             "code": self.code,
             "as_of": self.as_of,
@@ -149,6 +153,81 @@ class MarketQuoteSnapshot:
             "change_pct": self.change_pct,
             "status": self.status,
         }
+        if self.provenance is not None:
+            payload["provenance"] = self.provenance.to_public_dict()
+        return payload
+
+
+@dataclass(frozen=True)
+class MarketDataProvenance:
+    source: str
+    vendor_symbol: str
+    fetched_at: int
+    exchange_timezone: str
+    currency: str
+    session: str
+    delay_kind: str
+    delay_seconds: int | None
+    data_quality: str
+    adapter_version: str
+
+    def __post_init__(self) -> None:
+        source = str(self.source or "").strip()
+        vendor_symbol = str(self.vendor_symbol or "").strip()
+        exchange_timezone = str(self.exchange_timezone or "").strip()
+        currency = str(self.currency or "").strip().upper()
+        session = str(self.session or "").strip().lower()
+        delay_kind = str(self.delay_kind or "").strip().lower()
+        data_quality = str(self.data_quality or "").strip().lower()
+        adapter_version = str(self.adapter_version or "").strip()
+        if not source:
+            raise MarketDataValidationError(field="source", reason="provenance source is required")
+        if not vendor_symbol:
+            raise MarketDataValidationError(field="vendor_symbol", reason="vendor symbol is required")
+        try:
+            ZoneInfo(exchange_timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise MarketDataValidationError(field="exchange_timezone", reason="unknown timezone") from exc
+        if len(currency) != 3 or not currency.isalpha():
+            raise MarketDataValidationError(field="currency", reason="currency must be a three-letter code")
+        if not session or len(session) > 40:
+            raise MarketDataValidationError(field="session", reason="session must be between 1 and 40 characters")
+        if delay_kind not in MARKET_DATA_DELAY_KINDS:
+            raise MarketDataValidationError(field="delay_kind", reason="unsupported market data delay kind")
+        if data_quality not in MARKET_DATA_QUALITY_LEVELS:
+            raise MarketDataValidationError(field="data_quality", reason="unsupported market data quality level")
+        if not adapter_version or len(adapter_version) > 80:
+            raise MarketDataValidationError(
+                field="adapter_version",
+                reason="adapter version must be between 1 and 80 characters",
+            )
+        delay_seconds = self.delay_seconds
+        if delay_seconds is not None:
+            delay_seconds = _require_nonnegative_int(delay_seconds, field="delay_seconds")
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "vendor_symbol", vendor_symbol)
+        object.__setattr__(self, "fetched_at", _require_positive_int(self.fetched_at, field="fetched_at"))
+        object.__setattr__(self, "exchange_timezone", exchange_timezone)
+        object.__setattr__(self, "currency", currency)
+        object.__setattr__(self, "session", session)
+        object.__setattr__(self, "delay_kind", delay_kind)
+        object.__setattr__(self, "delay_seconds", delay_seconds)
+        object.__setattr__(self, "data_quality", data_quality)
+        object.__setattr__(self, "adapter_version", adapter_version)
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "vendor_symbol": self.vendor_symbol,
+            "fetched_at": self.fetched_at,
+            "exchange_timezone": self.exchange_timezone,
+            "currency": self.currency,
+            "session": self.session,
+            "delay_kind": self.delay_kind,
+            "delay_seconds": self.delay_seconds,
+            "data_quality": self.data_quality,
+            "adapter_version": self.adapter_version,
+        }
 
 
 @dataclass(frozen=True)
@@ -160,9 +239,29 @@ class MarketBar:
     close: float
     volume: float | None = None
     amount: float | None = None
+    trading_date: str = ""
+    time_semantics: str = "instant"
+
+    def __post_init__(self) -> None:
+        trading_date = str(self.trading_date or "").strip()
+        time_semantics = str(self.time_semantics or "instant").strip().lower() or "instant"
+        if time_semantics not in MARKET_BAR_TIME_SEMANTICS:
+            raise MarketDataValidationError(field="time_semantics", reason="unsupported market bar time semantics")
+        if trading_date:
+            try:
+                date.fromisoformat(trading_date)
+            except ValueError as exc:
+                raise MarketDataValidationError(field="trading_date", reason="expected YYYY-MM-DD") from exc
+        if time_semantics == "trading_date" and not trading_date:
+            raise MarketDataValidationError(
+                field="trading_date",
+                reason="trading_date is required when time semantics is trading_date",
+            )
+        object.__setattr__(self, "trading_date", trading_date)
+        object.__setattr__(self, "time_semantics", time_semantics)
 
     def to_public_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "timestamp": self.timestamp,
             "open": self.open,
             "high": self.high,
@@ -171,6 +270,10 @@ class MarketBar:
             "volume": self.volume,
             "amount": self.amount,
         }
+        if self.trading_date or self.time_semantics != "instant":
+            payload["trading_date"] = self.trading_date
+            payload["time_semantics"] = self.time_semantics
+        return payload
 
 
 @dataclass(frozen=True)
@@ -182,9 +285,10 @@ class MarketSeries:
     timezone: str
     points: tuple[MarketBar, ...]
     as_of: int
+    provenance: MarketDataProvenance | None = None
 
     def to_public_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "provider": self.provider,
             "code": self.code,
             "interval": self.interval,
@@ -193,6 +297,9 @@ class MarketSeries:
             "points": [point.to_public_dict() for point in self.points],
             "as_of": self.as_of,
         }
+        if self.provenance is not None:
+            payload["provenance"] = self.provenance.to_public_dict()
+        return payload
 
 
 @dataclass(frozen=True)

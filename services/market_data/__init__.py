@@ -32,6 +32,11 @@ from .public_instruments import (
     build_default_public_instrument_registry,
     normalize_public_instrument_alias,
 )
+from .public_yahoo import (
+    YahooFinanceAdapter,
+    YahooFinanceDependencyUnavailable,
+    YahooFinanceSchemaError,
+)
 from .store import (
     DELIVERY_IMPORTANCE_LEVELS,
     DELIVERY_MODES,
@@ -60,7 +65,11 @@ from .store_models import (
 from .types import (
     MARKET_HEALTH_STATUSES,
     MARKET_RESULT_STATUSES,
+    MARKET_BAR_TIME_SEMANTICS,
+    MARKET_DATA_DELAY_KINDS,
+    MARKET_DATA_QUALITY_LEVELS,
     MarketBar,
+    MarketDataProvenance,
     MarketDataResponse,
     MarketDataValidationError,
     MarketEvent,
@@ -78,6 +87,9 @@ __all__ = [
     "MARKET_HEALTH_STATUSES",
     "MARKET_PROVIDER_CAPABILITY_NAMES",
     "MARKET_RESULT_STATUSES",
+    "MARKET_BAR_TIME_SEMANTICS",
+    "MARKET_DATA_DELAY_KINDS",
+    "MARKET_DATA_QUALITY_LEVELS",
     "PUBLIC_INSTRUMENT_ROUTES",
     "PUBLIC_INSTRUMENT_TYPES",
     "PUBLIC_QUOTE_DELAY_KINDS",
@@ -98,6 +110,7 @@ __all__ = [
     "EventUpsertResult",
     "FinanceSubscription",
     "MarketBar",
+    "MarketDataProvenance",
     "MarketDataProvider",
     "MarketDataProviderRegistry",
     "MarketDataProviderSettings",
@@ -119,6 +132,9 @@ __all__ = [
     "PublicInstrument",
     "PublicInstrumentRegistry",
     "PublicInstrumentResolution",
+    "YahooFinanceAdapter",
+    "YahooFinanceDependencyUnavailable",
+    "YahooFinanceSchemaError",
     "MockMarketDataProvider",
     "StoredMarketEvent",
     "WatchlistItem",

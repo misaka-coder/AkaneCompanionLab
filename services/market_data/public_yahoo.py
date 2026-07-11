@@ -1,0 +1,374 @@
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from datetime import date, datetime, time as datetime_time, timedelta
+import math
+import time
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from .provider import MarketSeriesRequest
+from .public_instruments import PublicInstrument, PublicInstrumentRegistry, build_default_public_instrument_registry
+from .types import (
+    MarketBar,
+    MarketDataProvenance,
+    MarketDataResponse,
+    MarketDataValidationError,
+    MarketSeries,
+)
+
+
+YahooDownloader = Callable[..., Any]
+
+
+class YahooFinanceDependencyUnavailable(RuntimeError):
+    pass
+
+
+class YahooFinanceSchemaError(ValueError):
+    pass
+
+
+class YahooFinanceAdapter:
+    provider_id = "public_market"
+    source_name = "Yahoo Finance"
+    adapter_version = "public_yahoo_v1"
+
+    def __init__(
+        self,
+        *,
+        registry: PublicInstrumentRegistry | None = None,
+        downloader: YahooDownloader | None = None,
+        timeout_seconds: float = 8.0,
+        clock=time.time,
+    ) -> None:
+        self.registry = registry or build_default_public_instrument_registry()
+        self._downloader = downloader or _default_yahoo_downloader
+        self.timeout_seconds = max(1.0, min(60.0, float(timeout_seconds)))
+        self._clock = clock
+
+    def get_price_series(self, request: MarketSeriesRequest) -> MarketDataResponse[MarketSeries | None]:
+        if not isinstance(request, MarketSeriesRequest):
+            raise MarketDataValidationError(
+                field="request",
+                reason="MarketSeriesRequest is required",
+                code="invalid_arguments",
+                status="invalid_arguments",
+                provider=self.provider_id,
+            )
+        instrument = self.registry.require(request.code)
+        if instrument.route != "yahoo":
+            raise MarketDataValidationError(
+                field="code",
+                reason=f"instrument is not routed to Yahoo Finance: {instrument.canonical_code}",
+                code="unsupported_route",
+                status="invalid_arguments",
+                provider=self.provider_id,
+            )
+        if request.interval != "1d":
+            raise MarketDataValidationError(
+                field="interval",
+                reason="public Yahoo adapter v1 only supports 1d",
+                code="unsupported_interval",
+                status="invalid_arguments",
+                provider=self.provider_id,
+            )
+        if request.adjusted != "none":
+            raise MarketDataValidationError(
+                field="adjusted",
+                reason="public Yahoo adapter v1 only supports unadjusted series",
+                code="unsupported_adjustment",
+                status="invalid_arguments",
+                provider=self.provider_id,
+            )
+
+        fetched_at = max(1, int(self._clock()))
+        download_arguments = self._download_arguments(request, instrument=instrument, now_ts=fetched_at)
+        try:
+            frame = self._downloader(**download_arguments)
+        except YahooFinanceDependencyUnavailable:
+            return self._failure("unavailable", "optional_dependency_missing:yfinance", instrument=instrument)
+        except Exception as exc:
+            exception_name = type(exc).__name__.lower()
+            if "ratelimit" in exception_name or "rate_limit" in exception_name:
+                return self._failure("rate_limited", "upstream_rate_limited:yahoo", instrument=instrument)
+            if "timeout" in exception_name:
+                return self._failure("unavailable", "upstream_timeout:yahoo", instrument=instrument)
+            return self._failure(
+                "unavailable",
+                f"upstream_unavailable:yahoo:{type(exc).__name__}",
+                instrument=instrument,
+            )
+
+        if frame is None or bool(getattr(frame, "empty", False)):
+            return self._empty(instrument, reason=f"no_observations:{instrument.canonical_code}")
+        try:
+            points = self._normalize_frame(frame, instrument=instrument, request=request)
+        except YahooFinanceSchemaError as exc:
+            return self._failure(
+                "unavailable",
+                f"upstream_schema_changed:yahoo_v1:{str(exc)}",
+                instrument=instrument,
+            )
+        if not points:
+            return self._empty(instrument, reason=f"no_observations:{instrument.canonical_code}")
+
+        provenance = MarketDataProvenance(
+            source=self.source_name,
+            vendor_symbol=instrument.vendor_symbol,
+            fetched_at=fetched_at,
+            exchange_timezone=instrument.exchange_timezone,
+            currency=instrument.currency,
+            session="daily",
+            delay_kind="end_of_day",
+            delay_seconds=None,
+            data_quality="public_web",
+            adapter_version=self.adapter_version,
+        )
+        series = MarketSeries(
+            provider=self.provider_id,
+            code=instrument.canonical_code,
+            interval="1d",
+            adjusted="none",
+            timezone=instrument.exchange_timezone,
+            points=points,
+            as_of=points[-1].timestamp,
+            provenance=provenance,
+        )
+        return MarketDataResponse(
+            ok=True,
+            status="ok",
+            provider=self.provider_id,
+            source=self.source_name,
+            as_of=series.as_of,
+            reason="",
+            data=series,
+            timezone=instrument.exchange_timezone,
+        )
+
+    def _download_arguments(
+        self,
+        request: MarketSeriesRequest,
+        *,
+        instrument: PublicInstrument,
+        now_ts: int,
+    ) -> dict[str, Any]:
+        zone = ZoneInfo(instrument.exchange_timezone)
+        now_date = datetime.fromtimestamp(now_ts, tz=zone).date()
+        end_date = (
+            datetime.fromtimestamp(request.date_to, tz=zone).date() + timedelta(days=1)
+            if request.date_to is not None
+            else now_date + timedelta(days=1)
+        )
+        lookback_days = max(30, min(20_000, request.limit * 2 + 30))
+        start_date = (
+            datetime.fromtimestamp(request.date_from, tz=zone).date()
+            if request.date_from is not None
+            else end_date - timedelta(days=lookback_days)
+        )
+        return {
+            "tickers": instrument.vendor_symbol,
+            "start": start_date.isoformat(),
+            "end": end_date.isoformat(),
+            "interval": "1d",
+            "auto_adjust": False,
+            "multi_level_index": False,
+            "threads": False,
+            "progress": False,
+            "timeout": self.timeout_seconds,
+        }
+
+    def _normalize_frame(
+        self,
+        frame: Any,
+        *,
+        instrument: PublicInstrument,
+        request: MarketSeriesRequest,
+    ) -> tuple[MarketBar, ...]:
+        columns = {_normalize_column_name(value) for value in tuple(getattr(frame, "columns", ()))}
+        missing = {"Open", "High", "Low", "Close"} - columns
+        if missing:
+            raise YahooFinanceSchemaError("missing_columns:" + ",".join(sorted(missing)))
+        try:
+            records = frame.reset_index().to_dict(orient="records")
+        except Exception as exc:
+            raise YahooFinanceSchemaError("records_unavailable") from exc
+        if not isinstance(records, list):
+            raise YahooFinanceSchemaError("records_not_list")
+
+        zone = ZoneInfo(instrument.exchange_timezone)
+        requested_date_from = (
+            datetime.fromtimestamp(request.date_from, tz=zone).date()
+            if request.date_from is not None
+            else None
+        )
+        requested_date_to = (
+            datetime.fromtimestamp(request.date_to, tz=zone).date()
+            if request.date_to is not None
+            else None
+        )
+        points: list[MarketBar] = []
+        seen_dates: set[str] = set()
+        for raw_record in records:
+            if not isinstance(raw_record, Mapping):
+                raise YahooFinanceSchemaError("record_not_mapping")
+            record = {_normalize_column_name(key): value for key, value in raw_record.items()}
+            raw_date = next((record.get(key) for key in ("Date", "Datetime", "index") if record.get(key) is not None), None)
+            trading_date = _parse_trading_date(raw_date, zone=zone)
+            if requested_date_from is not None and trading_date < requested_date_from:
+                continue
+            if requested_date_to is not None and trading_date > requested_date_to:
+                continue
+            trading_date_text = trading_date.isoformat()
+            if trading_date_text in seen_dates:
+                raise YahooFinanceSchemaError(f"duplicate_trading_date:{trading_date_text}")
+            seen_dates.add(trading_date_text)
+            timestamp = int(datetime.combine(trading_date, datetime_time.min, tzinfo=zone).timestamp())
+            open_value = _required_number(record.get("Open"), field="Open")
+            high = _required_number(record.get("High"), field="High")
+            low = _required_number(record.get("Low"), field="Low")
+            close = _required_number(record.get("Close"), field="Close")
+            volume = _optional_number(record.get("Volume"), field="Volume")
+            if high < max(open_value, low, close):
+                raise YahooFinanceSchemaError(f"invalid_high:{trading_date_text}")
+            if low > min(open_value, high, close):
+                raise YahooFinanceSchemaError(f"invalid_low:{trading_date_text}")
+            if volume is not None and volume < 0:
+                raise YahooFinanceSchemaError(f"negative_volume:{trading_date_text}")
+            points.append(
+                MarketBar(
+                    timestamp=timestamp,
+                    open=open_value,
+                    high=high,
+                    low=low,
+                    close=close,
+                    volume=volume,
+                    amount=None,
+                    trading_date=trading_date_text,
+                    time_semantics="trading_date",
+                )
+            )
+
+        ordered = tuple(sorted(points, key=lambda point: point.timestamp))
+        return ordered[-request.limit :]
+
+    def _failure(
+        self,
+        status: str,
+        reason: str,
+        *,
+        instrument: PublicInstrument,
+    ) -> MarketDataResponse[MarketSeries | None]:
+        return MarketDataResponse(
+            ok=False,
+            status=status,
+            provider=self.provider_id,
+            source=self.source_name,
+            as_of=None,
+            reason=reason,
+            data=None,
+            timezone=instrument.exchange_timezone,
+        )
+
+    def _empty(
+        self,
+        instrument: PublicInstrument,
+        *,
+        reason: str,
+    ) -> MarketDataResponse[MarketSeries | None]:
+        return MarketDataResponse(
+            ok=True,
+            status="empty",
+            provider=self.provider_id,
+            source=self.source_name,
+            as_of=None,
+            reason=reason,
+            data=None,
+            timezone=instrument.exchange_timezone,
+        )
+
+
+def _default_yahoo_downloader(**kwargs: Any) -> Any:
+    try:
+        import yfinance as yf
+    except ImportError as exc:
+        raise YahooFinanceDependencyUnavailable("yfinance is not installed") from exc
+    arguments = dict(kwargs)
+    symbol = str(arguments.pop("tickers", "") or "").strip()
+    arguments.pop("multi_level_index", None)
+    arguments.pop("threads", None)
+    arguments.pop("progress", None)
+    return yf.Ticker(symbol).history(
+        **arguments,
+        actions=False,
+        back_adjust=False,
+        repair=False,
+        keepna=False,
+        raise_errors=True,
+    )
+
+
+def _normalize_column_name(value: Any) -> str:
+    if isinstance(value, tuple):
+        value = value[0] if value else ""
+    text = str(value or "").strip()
+    aliases = {
+        "date": "Date",
+        "datetime": "Datetime",
+        "index": "index",
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close",
+        "adj close": "Adj Close",
+        "volume": "Volume",
+    }
+    return aliases.get(text.casefold(), text)
+
+
+def _parse_trading_date(value: Any, *, zone: ZoneInfo) -> date:
+    if value is None:
+        raise YahooFinanceSchemaError("missing_trading_date")
+    if hasattr(value, "to_pydatetime") and callable(value.to_pydatetime):
+        value = value.to_pydatetime()
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(zone).date()
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError as exc:
+        raise YahooFinanceSchemaError("invalid_trading_date") from exc
+
+
+def _required_number(value: Any, *, field: str) -> float:
+    parsed = _optional_number(value, field=field)
+    if parsed is None:
+        raise YahooFinanceSchemaError(f"missing_numeric:{field}")
+    return parsed
+
+
+def _optional_number(value: Any, *, field: str) -> float | None:
+    if value is None or (isinstance(value, str) and value.strip().lower() in {"", "--", "null", "none", "n/a"}):
+        return None
+    if isinstance(value, bool):
+        raise YahooFinanceSchemaError(f"invalid_numeric:{field}")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise YahooFinanceSchemaError(f"invalid_numeric:{field}") from exc
+    if math.isnan(parsed):
+        return None
+    if not math.isfinite(parsed):
+        raise YahooFinanceSchemaError(f"invalid_numeric:{field}")
+    return parsed
+
+
+__all__ = [
+    "YahooFinanceAdapter",
+    "YahooFinanceDependencyUnavailable",
+    "YahooFinanceSchemaError",
+]

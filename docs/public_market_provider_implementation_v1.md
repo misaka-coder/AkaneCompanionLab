@@ -1,6 +1,6 @@
 # Akane 免费公开行情 Provider 实施细案 V1
 
-状态：F7d0 依赖/许可证/数据形状 spike 与 F7d1a 标的注册表已完成；Yahoo live 查询在当前网络超时并明确保留为 smoke 项；下一步为 F7d1b Yahoo 全球指数日线
+状态：F7d0-F7d1b 已完成；Yahoo live 查询在当前网络超时并明确保留为 smoke 项；下一步为 F7d2 Yahoo 延迟快照与 TTL cache
 更新时间：2026-07-11
 适用仓库：AkaneCompanionLab
 实施分支：`feature/qq-finance-assistant-emquant`
@@ -144,6 +144,7 @@ SDK 可下载
 - 两者都会引入 pandas，AkShare 还带来 lxml、curl_cffi、mini-racer 等较重依赖，因此继续采用独立 `requirements-finance-public.txt`；
 - yfinance 1.5.1 的 `download` 默认 `auto_adjust=True`、`multi_level_index=True`、`threads=True`、`progress=True`；适配器必须显式覆盖为未复权、单层列、单线程、无进度输出；
 - 当前环境对 Yahoo chart host 连续超时；本轮只保存 yfinance 确定性函数/列契约，不保存或伪造 live Yahoo 行情；真实成功观察留给显式网络 smoke；
+- spike 同时确认 yfinance 批量 `download()` 可能记录错误后返回空 DataFrame；生产默认 downloader 因此使用单标的 `Ticker.history(..., raise_errors=True)`，避免把网络失败误报为合法空数据；
 - AkShare `fund_etf_spot_em()` 成功返回 37 列，包含 `数据日期` 和 timezone-aware 的 `更新时间`；`fund_etf_hist_em(..., period="daily", adjust="")` 成功返回 11 列未复权日线；
 - 2026-07-11 抓取“实时行情”时，样本的 `数据日期/更新时间` 仍是 2026-07-10 收盘后；因此 `as_of` 必须来自数据字段，`fetched_at` 只能表示抓取时间，函数名中的“实时”不能直接变成产品承诺；
 - AkShare ETF 的 `成交量` 与成交额/价格的数量级显示其源单位为“手”，统一适配时必须乘 100 转为份额；原值不能直接写入标准 `volume`；
@@ -751,9 +752,25 @@ feat(finance): add public market instrument registry
 
 ### F7d1b：Yahoo 全球指数日线
 
+状态：已完成；离线 adapter 契约已接通，尚未注册进生产 factory，真实 Yahoo 成功查询仍等待网络 smoke。
+
 目标：让 `market_price_series` 对全球指数返回真实日线，并能直接复用现有图表和报告。
 
 本切片同时加入 provenance 标准类型的最小向后兼容扩展；不把这一类型改动塞回已经完成的 registry commit。
+
+实际落地：
+
+- `MarketDataProvenance` 保存 source、vendor symbol、fetched_at、exchange timezone、currency、session、delay 和 data quality；
+- `MarketBar` 向后兼容增加 `trading_date/time_semantics`，日线使用交易所本地日期排序锚点并明确标记为 `trading_date`；
+- `YahooFinanceAdapter` 只接受 registry 中 route 为 Yahoo 的 canonical code；
+- 默认 downloader 延迟导入 yfinance，模块导入和基础测试不要求公开行情依赖；
+- 默认 downloader 使用能抛出上游错误的单标的 history 路径；批量 download 吞错返回的空表不能作为生产失败判断依据；
+- 生产调用参数显式锁定 `auto_adjust=False / multi_level_index=False / threads=False / progress=False`；
+- 只支持 `1d + adjusted=none`，请求区间按交易所本地 trading date 解释；
+- 空数据返回 `empty`，缺依赖、超时、限流和 schema 变化返回结构化失败；
+- adapter 兼容上游意外返回 MultiIndex 列，但不把 vendor symbol 当业务 code；
+- 本切片没有修改 factory/config，没有启用网络或 QQ 推送。
+- 使用临时可选依赖环境执行一次真实失败 smoke：当前网络仍无法连接 Yahoo，但 adapter 正确返回 `unavailable / upstream_timeout:yahoo`，没有误报 `empty`，也没有产生 fixture/Mock 数据。
 
 建议提交：
 
@@ -820,17 +837,17 @@ F7d0-F7d4 完成必须同时满足：
 
 ## 22. 上下文恢复后的精确下一步
 
-若接手者看到本文，下一步直接执行 F7d1b，不要重新跑大范围依赖调查，也不要直接写完整 composite Provider：
+若接手者看到本文，下一步直接执行 F7d2，不要重新跑大范围依赖调查，也不要直接写完整 composite Provider：
 
 1. `git status --short --branch`，确认不碰用户的 `uv.lock`；
-2. 读取 `public_instruments.py`、Yahoo schema fixture 和现有标准类型；
-3. 为 `MarketQuoteSnapshot`、`MarketSeries` 增加末尾可选 provenance，为 `MarketBar` 增加末尾默认 `trading_date/time_semantics`，保证旧构造兼容；
-4. 新建 `services/market_data/public_yahoo.py`，通过依赖注入的 downloader 测试，默认 downloader 才延迟导入 yfinance；
-5. 只支持 registry route 为 `yahoo`、`interval=1d`、`adjusted=none`；
-6. 显式传 `auto_adjust=False / multi_level_index=False / threads=False / progress=False`；
-7. 规范化 OHLCV、交易日、交易所时区、as_of、fetched_at、currency、delay 和 source；
-8. 缺依赖、空数据、超时、schema 变化和非法复权全部结构化失败，不回退 Mock；
-9. 本切片不改 factory/config，不实现 AkShare，不依赖 live Yahoo 测试；
-10. 运行新测试、现有 Provider/图表/报告契约测试和 `git diff --check`，只提交 `feat(finance): add yahoo public index series adapter`。
+2. 读取 `public_yahoo.py`、`MarketQuoteSnapshot` provenance 和 F7d0 Yahoo timeout 结论；
+3. 新建独立、有界、线程安全的 `public_cache.py`，支持成功 TTL、失败负缓存、最大条目和 deterministic clock 测试；
+4. Yahoo snapshot 只能来自带可信观察时间的上游字段，或明确标记为最近收盘观察；绝不能用 `fetched_at` 代替 `as_of`；
+5. 若复用日线最后一根生成最近收盘快照，status/session/delay 必须写 `end_of_day`，不能写实时；
+6. cache key 包含 adapter、canonical code、capability、interval、adjusted 和区间；
+7. 命中 cache 保留原 as_of/fetched_at，不制造新时间；
+8. 当前 Yahoo 网络不可达时，live smoke 继续返回结构化 timeout，不得用 fixture 或 Mock 顶替；
+9. 本切片仍不改 production factory/config，不实现 AkShare；
+10. 运行新测试、现有 Provider/工具/图表/报告回归和 `git diff --check`，只提交 `feat(finance): cache delayed public market quotes`。
 
 Yahoo live smoke 失败不得改成假成功；后续网络恢复时再补成功观察。Choice 继续保持可选，现有金融主链不受影响。
