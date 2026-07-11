@@ -74,6 +74,15 @@ class FinanceSubscriptionServiceTests(unittest.TestCase):
         self.assertEqual(reenabled["watchlist_count"], 1)
         self.assertEqual(self.store.list_watchlist(subscription.subscription_id)[0].display_name, "合成测试公司")
 
+    def test_public_market_push_subscription_enables_market_wide_news(self) -> None:
+        service = FinanceSubscriptionService(store=self.store, provider_id="public_market")
+
+        result = service.sync_mode(self.context, "push")
+        subscription = self.store.get_subscription(result["subscription_id"])
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(dict(subscription.filters)["include_market_wide"])
+
     def test_watchlist_commands_require_push_subscription_and_group_authority(self) -> None:
         add_context = QQMessageContext(
             **{

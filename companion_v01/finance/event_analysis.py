@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import config
 
 from .event_contracts import FinanceAnalysisRequest, FinanceAnalysisResult
+from .public_news_event_source import FinanceNewsRelayPolicy
 
 
 _INCOMPLETE_FINAL_MARKERS = (
@@ -23,6 +24,8 @@ _TRANSIENT_FALLBACK_MARKERS = (
     "要不要再多告诉我一点",
 )
 _STRUCTURE_MARKERS = ("已确认事实", "客观数据与时间", "分析推断", "待验证")
+_ANALYSIS_REFUSAL_MARKERS = ("无法分析", "不能分析", "无法提供", "不能提供", "抱歉")
+_NEWS_OUTPUT_POLICY = FinanceNewsRelayPolicy()
 
 
 class AkaneFinanceAnalysisClient:
@@ -48,6 +51,18 @@ class AkaneFinanceAnalysisClient:
         self._sleeper = sleeper
 
     def analyze(self, request: FinanceAnalysisRequest) -> FinanceAnalysisResult:
+        direct_relay_message = _direct_news_relay_message(request)
+        if direct_relay_message and not bool(
+            getattr(config, "FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED", True)
+        ):
+            return FinanceAnalysisResult(
+                ok=True,
+                status="relayed_without_analysis",
+                analysis_id=request.analysis_id,
+                messages=(direct_relay_message,),
+                frame={"speech": direct_relay_message, "speech_segments": [direct_relay_message]},
+                reason="optional news model analysis disabled",
+            )
         last_status = "analysis_failed"
         last_reason = "analysis did not run"
         for attempt in range(1, self.max_attempts + 1):
@@ -59,19 +74,31 @@ class AkaneFinanceAnalysisClient:
             else:
                 validation = self._validate_frame(request=request, raw_frame=raw_frame)
                 if validation.ok:
+                    messages = validation.messages
+                    frame = dict(validation.frame)
                     return FinanceAnalysisResult(
                         ok=True,
                         status="analyzed" if attempt == 1 else "analyzed_after_retry",
                         analysis_id=request.analysis_id,
-                        messages=validation.messages,
-                        frame=validation.frame,
-                        memory_status=self._record_memory(request=request, messages=validation.messages),
+                        messages=messages,
+                        frame=frame,
+                        memory_status=self._record_memory(request=request, messages=messages),
                         analysis_attempts=attempt,
                     )
                 last_status = validation.status
                 last_reason = validation.reason
             if attempt < self.max_attempts and self.retry_backoff_seconds > 0:
                 self._sleeper(self.retry_backoff_seconds * attempt)
+        if direct_relay_message:
+            return FinanceAnalysisResult(
+                ok=True,
+                status="relayed_without_analysis",
+                analysis_id=request.analysis_id,
+                messages=(direct_relay_message,),
+                frame={"speech": direct_relay_message, "speech_segments": [direct_relay_message]},
+                reason=f"{last_reason}; analysis omitted after {self.max_attempts} attempt(s)",
+                analysis_attempts=self.max_attempts,
+            )
         return FinanceAnalysisResult(
             ok=False,
             status=last_status,
@@ -102,6 +129,27 @@ class AkaneFinanceAnalysisClient:
                 reason="analysis produced no user-facing speech",
             )
         compact = "".join(original_text.split())
+        if "direct_relay" in request.event_record.event.labels and any(
+            marker in compact for marker in _ANALYSIS_REFUSAL_MARKERS
+        ):
+            return FinanceAnalysisResult(
+                ok=False,
+                status="analysis_refused",
+                analysis_id=request.analysis_id,
+                reason="optional analysis returned refusal language",
+            )
+        if "direct_relay" in request.event_record.event.labels:
+            relay_decision = _NEWS_OUTPUT_POLICY.evaluate_text(original_text)
+            if not relay_decision.allowed:
+                return FinanceAnalysisResult(
+                    ok=False,
+                    status="analysis_policy_blocked",
+                    analysis_id=request.analysis_id,
+                    reason=(
+                        "optional analysis reintroduced blocked content:"
+                        f"{relay_decision.reason}:{relay_decision.matched_term}"
+                    ),
+                )
         if len(compact) <= 160 and any(marker in compact for marker in _TRANSIENT_FALLBACK_MARKERS):
             return FinanceAnalysisResult(
                 ok=False,
@@ -228,8 +276,9 @@ def ensure_market_push_contract(
     header_time = datetime.fromtimestamp(event.published_at, tz=ZoneInfo("Asia/Shanghai")).strftime("%H:%M")
     header = f"【市场快讯｜{header_time}】"
     source_name = event.source or event.provider or "unknown"
+    is_source_report = "source_report_only" in event.labels
     source_line = f"来源：{source_name}｜发布时间：{published_iso}"
-    if event.url:
+    if event.url and not is_source_report:
         source_line += f"｜{event.url}"
     if request.related_event_records:
         related_sources = "；".join(
@@ -240,6 +289,11 @@ def ensure_market_push_contract(
         source_line += f"\n补充来源：{related_sources}"
     related_titles = "；".join(record.event.title for record in request.related_event_records[:8])
     confirmed_fact = event.title
+    if is_source_report:
+        confirmed_fact = (
+            f"{event.source or event.provider} 于 {published_iso} 发布了一条财经快讯；"
+            "具体内容以文末原文链接为准，快讯所述事项本身尚待官方来源核验"
+        )
     if related_titles:
         confirmed_fact += f"；同批次补充事件：{related_titles}"
     code_text = "、".join(
@@ -273,9 +327,34 @@ def ensure_market_push_contract(
         )
     if not body.startswith("【市场快讯"):
         body = f"{header}\n{body}"
-    if "来源：" not in body or "发布时间：" not in body or (request.related_event_records and "补充来源：" not in body):
+    if (
+        "来源：" not in body
+        or "发布时间：" not in body
+        or (event.url and not is_source_report and event.url not in body)
+        or (request.related_event_records and "补充来源：" not in body)
+    ):
         body = f"{body}\n{source_line}"
+    if is_source_report and event.url:
+        original_link_line = f"原文链接：{event.url}"
+        if not body.rstrip().endswith(original_link_line):
+            body = f"{body}\n{original_link_line}"
     return _split_messages(body, max_chars=max(200, min(1800, int(max_message_chars))))
+
+
+def _direct_news_relay_message(request: FinanceAnalysisRequest) -> str:
+    event = request.event_record.event
+    if "direct_relay" not in event.labels:
+        return ""
+    published_iso = _event_time_iso(event.published_at)
+    lines = [
+        "【东方财富 7×24 快讯原文转发】",
+        event.title,
+        f"来源：{event.source or event.provider}｜发布时间：{published_iso}",
+    ]
+    if event.url:
+        lines.append(f"原文：{event.url}")
+    lines.append("说明：这是来源原文/摘要转发，不代表相关事项已经获得官方确认。")
+    return "\n".join(lines)
 
 
 def _frame_text(frame: dict[str, Any]) -> str:

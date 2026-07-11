@@ -933,9 +933,62 @@ F7d0-F7d4 完成必须同时满足：
 - 生产开关仍保持关闭：`FINANCE_EVENT_INGESTION_ENABLED=false`、`QQ_FINANCE_PUSH_ENABLED=false`。只有离线测试、真实只读干跑和单群受控验收全部通过后才允许打开。
 - 本轮真实只读干跑中，`513000.SH` 快照与 `NIKKEI225.INDEX` 五日线均成功；随后把休市后的真实 `513000.SH` 快照送入最终事件源，结果为 `events=0 / rejection_reason=instant_not_current_trading_date`，证明“工具能查到旧快照”不会被误转成盘中主动推送。
 
+### 21.4 2026-07-11 东方财富 7×24 免费新闻主动推送
+
+状态：代码、离线测试与真实只读 smoke 已完成；生产消费和 QQ 推送总开关仍关闭，等待单群受控验收。
+
+数据入口与边界：
+
+- `EastmoneyFastNewsAdapter` 只读访问东方财富 7×24 页面使用的公开列表接口 `https://np-weblist.eastmoney.com/comm/web/getFastNewsList`，来源页固定为 `https://kuaixun.eastmoney.com/7_24.html`；
+- adapter 负责超时、有界瞬时重试、熔断、schema 校验、时间解析、正文链接构造和规范化 `PublicNewsItem`，不直接知道 QQ、订阅或模型；
+- 默认每 15 秒允许一次源级抓取。首次运行只把当前最多 100 条建立为持久化 baseline，绝不把启动前历史快讯一次性刷进群；seen ID、latest published time 和 last poll time 写入 SQLite，重启后继续去重；
+- 新闻发布时间必须不晚于当前时间容差且不早于最大新鲜度窗口；旧闻、未来时间、schema 变化和上游失败都不会伪造成新事件；
+- 标题命中 security master/watchlist 唯一可信别名时生成 `security_matched` 事件，否则进入 `GLOBAL.MARKET / market_wide`，供允许市场级快讯的订阅消费；
+- 同一规范化事件未来可被 `market_news_search` 从 `MarketEventStore` 查询。当前没有把抓取器直接暴露为任意模型网页工具，但保留了后续 model-facing news adapter 的接口边界。
+
+转发审核采用两层 fail-closed 门禁：
+
+1. 本地确定性策略先拦截 `习近平 / 总书记 / 中共中央 / 党中央 / 中央政治局 / 政治局常委 / 中央军委` 等明确国内敏感主体；裸 `中央` 默认同样拦截，但 `中央银行 / 欧洲中央银行 / 中央气象台 / 中央结算 / 中央国债登记结算` 等明确非政治短语可通过；
+2. 通过本地门禁后，再由结构化 LLM 审核器批量输出逐条 `allow|block`。缺失决定、非法 JSON、拒绝、异常、隐晦指代或不确定都按 block 处理；特朗普、高市早苗等外国政治人物新闻本身允许，但同条同时涉及被拦截的国内主体仍 block。
+
+允许后的 QQ 内容按分析开关选择一种主形态：
+
+- 开启分析时，只发送 Akane 的自然语言转述、补充核验和影响分析，不再前置粘贴整段东方财富原文/摘要。模型可调用只读工具，必须区分来源发布事实、分析推断和待核验事项；分析最后固定单独保留东方财富原文 URL，若模型漏写或只在中间写出，后处理会在结尾补回；
+- `FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED=false` 时完全不调用模型，立即只生成原文转发；
+- 模型异常、空回复、进度占位或拒绝最多按现有分析策略重试，全部失败后状态为 `relayed_without_analysis`，回退为程序生成的原文/摘要转发，固定含来源、发布时间、原文 URL 和“来源发布不等于事项已获官方确认”的说明，不发送拒绝话术；
+- 模型分析若重新引入本地禁止的国内敏感主体，整段分析作废并回退原文，不通过同义改写规避内容审核；
+- 原文进入事件前已经通过两层审核。审核失败的内容不会因为“模型可以改写”而获得转发资格。
+
+新增配置：
+
+~~~dotenv
+FINANCE_PUBLIC_NEWS_ENABLED=true
+FINANCE_PUBLIC_NEWS_POLL_INTERVAL_SECONDS=15
+FINANCE_PUBLIC_NEWS_TIMEOUT_SECONDS=6
+FINANCE_PUBLIC_NEWS_REQUIRE_LLM_MODERATION=true
+FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED=true
+~~~
+
+这些局部能力开关不等于授权发送。真正开始轮询并向 QQ 发消息仍同时要求：
+
+~~~dotenv
+FINANCE_ASSISTANT_ENABLED=true
+FINANCE_MARKET_PROVIDER=public_market
+FINANCE_EVENT_INGESTION_ENABLED=true
+QQ_BRIDGE_ENABLED=true
+QQ_FINANCE_PUSH_ENABLED=true
+~~~
+
+真实只读 smoke：
+
+- 东方财富 adapter 成功返回 5 条最新快讯，最新项带真实发布时间和 `finance.eastmoney.com/a/...html` 原文链接；
+- 首次事件源抓取读取 100 条并得到 `events=0 / ignored=100 / baseline_seeded=true`，证明不会启动洪水；
+- 当前配置的 LLM 审核对只涉及特朗普的样本返回 allow，对涉及中共中央政治局的样本返回 block；
+- 两个全局推送开关继续保持 false，尚未向真实群发送上述 smoke 数据。
+
 ## 22. 上下文恢复后的精确下一步
 
-若接手者看到本文，F7d0-F7d4、名称解析 bootstrap、三次瞬时网络重试和免费行情主动推送质量门禁已完成。下一步做显式本地验收，不要直接打开生产推送：
+若接手者看到本文，F7d0-F7d4、名称解析 bootstrap、三次瞬时网络重试、免费行情质量门禁和东方财富 7×24 新闻源已经完成。下一步做显式本地验收，不要直接打开生产推送：
 
 1. `git status --short --branch`，确认不碰用户的 `uv.lock`；
 2. 安装 `requirements-finance-public.txt`，但只在本地测试环境设置 `FINANCE_MARKET_PROVIDER=public_market`；
@@ -946,7 +999,9 @@ F7d0-F7d4 完成必须同时满足：
 7. 在任一真实 series 成功的同一 provider/cache 生命周期内立即执行确定性 PNG 和一份最小金融报告 smoke，避免第二次网络抖动；
 8. 再走真实 QQ 主动查询“日经225最近走势”，验证文字、图片/报告投递、source 和 as_of；
 9. 用隔离测试数据库给 `513000.SH` 建立关注项，手动连续运行 public quote source，确认第一次只建基线、第二次确认、脏数据进入 rejection、相同档位不重复出事件；此时仍不发送 QQ；
-10. 检查生成事件标题、source、as_of、importance 和 delivery reservation 后，只对测试群开启一次受控 QQ 推送；若任一字段不可信立即恢复两个 false 开关；
-11. 验证完成后恢复默认 disabled，再按产品优先级选择 F7d5、F9c，或“全球指数第二公开源”。
+10. 使用隔离数据库先运行新闻源首轮 baseline，再注入一条允许的外国财经快讯、一条国内敏感快讯和一条审核器故障样本；只允许第一条形成事件；
+11. 分别测试“仅转述分析+文末链接”“关闭分析只发原文”“分析拒绝回退原文”和“分析漏 URL 自动补到结尾”；任何 blocked 新闻都不得进入分析客户端；
+12. 检查生成事件标题、source、published_at、原文 URL、importance 和 delivery reservation 后，只对测试群开启一次受控 QQ 推送；若任一字段不可信立即恢复两个 false 开关；
+13. 验证完成后恢复默认 disabled，再按产品优先级选择 F7d5、F9c，或“全球指数/财经快讯第二公开源”。
 
 Yahoo live smoke 失败不得改成假成功；后续网络恢复时再补成功观察。Choice 继续保持可选，现有金融主链不受影响。

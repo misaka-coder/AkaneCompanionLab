@@ -1,4 +1,5 @@
 from .chart_provider import ChartArtifactResult, ChartRequest, LocalChartProvider
+from .composite_event_source import FinanceCompositeEventSource
 from .event_analysis import AkaneFinanceAnalysisClient, ensure_market_push_contract
 from .event_contracts import (
     FINANCE_DELIVERY_PART_TYPES,
@@ -22,6 +23,14 @@ from .event_worker import (
     FinanceMarketEventSource,
 )
 from .public_quote_event_source import FinancePublicQuoteEventSource, QuoteQualityError
+from .public_news_event_source import (
+    DEFAULT_ALLOWED_CENTRAL_PHRASES,
+    DEFAULT_BLOCKED_DOMESTIC_POLITICAL_TERMS,
+    FinanceNewsRelayDecision,
+    FinanceNewsRelayPolicy,
+    FinancePublicNewsEventSource,
+    GLOBAL_MARKET_CODE,
+)
 from .importance_policy import (
     IMPORTANCE_LEVELS,
     FinanceEventImportancePolicy,
@@ -34,6 +43,7 @@ from .push_governance import (
     FinancePushGovernancePolicy,
 )
 from .market_service import MarketDataToolService, compute_quote_metrics, compute_series_metrics
+from .news_moderation import FinanceNewsModerationClient, FinanceNewsModerationDecision
 from .qq_delivery import QQFinanceDeliveryAdapter
 from .report_provider import (
     FINANCE_REPORT_DISCLAIMER,
@@ -76,7 +86,16 @@ __all__ = [
     "FinanceEventRunResult",
     "FinanceEventWorker",
     "FinanceEventWorkerCycleResult",
+    "FinanceCompositeEventSource",
+    "FinanceNewsRelayDecision",
+    "FinanceNewsRelayPolicy",
+    "FinanceNewsModerationClient",
+    "FinanceNewsModerationDecision",
+    "FinancePublicNewsEventSource",
     "FinancePublicQuoteEventSource",
+    "GLOBAL_MARKET_CODE",
+    "DEFAULT_ALLOWED_CENTRAL_PHRASES",
+    "DEFAULT_BLOCKED_DOMESTIC_POLITICAL_TERMS",
     "QuoteQualityError",
     "FinancePushGovernanceDecision",
     "FinancePushGovernancePolicy",

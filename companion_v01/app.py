@@ -18,12 +18,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 import config
+from services.market_data import EastmoneyFastNewsAdapter
 from services.tts_client import EdgeTTSClient
 from .engine import AkaneMemoryEngine
 from .finance import (
     AkaneFinanceAnalysisClient,
+    FinanceCompositeEventSource,
     FinanceEventOrchestrator,
     FinanceEventWorker,
+    FinanceNewsModerationClient,
+    FinancePublicNewsEventSource,
     FinancePublicQuoteEventSource,
     FinancePushGovernancePolicy,
     FinanceSubscriptionService,
@@ -178,9 +182,34 @@ if qq_gateway is not None and market_event_store is not None:
     finance_event_source = None
     if str(getattr(market_event_provider, "id", "") or "").strip() == "public_market":
         try:
-            finance_event_source = FinancePublicQuoteEventSource(
-                provider=market_event_provider,
-                store=market_event_store,
+            public_event_sources = [
+                FinancePublicQuoteEventSource(
+                    provider=market_event_provider,
+                    store=market_event_store,
+                )
+            ]
+            if bool(getattr(config, "FINANCE_PUBLIC_NEWS_ENABLED", True)):
+                public_event_sources.append(
+                    FinancePublicNewsEventSource(
+                        store=market_event_store,
+                        adapters=(
+                            EastmoneyFastNewsAdapter(
+                                timeout_seconds=float(
+                                    getattr(config, "FINANCE_PUBLIC_NEWS_TIMEOUT_SECONDS", 6.0)
+                                ),
+                            ),
+                        ),
+                        minimum_poll_interval_seconds=int(
+                            getattr(config, "FINANCE_PUBLIC_NEWS_POLL_INTERVAL_SECONDS", 15)
+                        ),
+                        moderator=FinanceNewsModerationClient(engine.llm),
+                        require_llm_moderation=bool(
+                            getattr(config, "FINANCE_PUBLIC_NEWS_REQUIRE_LLM_MODERATION", True)
+                        ),
+                    )
+                )
+            finance_event_source = FinanceCompositeEventSource(
+                sources=tuple(public_event_sources),
             )
         except (TypeError, ValueError):
             finance_event_source = None

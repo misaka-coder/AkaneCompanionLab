@@ -57,6 +57,9 @@ class FinanceSubscriptionService:
             subscription_id = (
                 existing.subscription_id if existing is not None else self._subscription_id_for_context(context)
             )
+            subscription_filters = dict(existing.filters) if existing is not None else {}
+            if self.provider_id == "public_market":
+                subscription_filters.setdefault("include_market_wide", True)
             subscription = self.store.upsert_subscription(
                 subscription_id=subscription_id,
                 client="qq",
@@ -67,7 +70,7 @@ class FinanceSubscriptionService:
                 character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
                 finance_mode="push",
                 enabled=True,
-                filters=dict(existing.filters) if existing is not None else {},
+                filters=subscription_filters,
                 delivery_policy=(dict(existing.delivery_policy) if existing is not None else {"level": "notify"}),
                 created_by_actor_id=(existing.created_by_actor_id if existing is not None else self._actor_id(context)),
             )

@@ -179,6 +179,27 @@ class MarketDataRejection:
 
 
 @dataclass(frozen=True)
+class MarketEventSourceState:
+    source_id: str
+    cursor: str = ""
+    state: Mapping[str, Any] = field(default_factory=dict)
+    created_at: int = 0
+    updated_at: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "state", MappingProxyType(dict(self.state or {})))
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "source_id": self.source_id,
+            "cursor": self.cursor,
+            "state": dict(self.state),
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+@dataclass(frozen=True)
 class MarketSecurity:
     provider: str
     code: str

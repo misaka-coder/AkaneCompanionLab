@@ -22,6 +22,7 @@ from .store_models import (
     FinanceSubscription,
     MarketEventDelivery,
     MarketEventDeliveryPart,
+    MarketEventSourceState,
     MarketDataRejection,
     MarketQuoteBaseline,
     MarketSecurity,
@@ -31,7 +32,7 @@ from .store_models import (
 from .types import MarketDataValidationError, MarketEvent
 
 
-MARKET_STORE_SCHEMA_VERSION = 7
+MARKET_STORE_SCHEMA_VERSION = 8
 EVENT_STATUSES = frozenset({"active", "updated", "archived"})
 DELIVERY_STATUSES = frozenset({"pending", "processing", "delivered", "failed", "cancelled"})
 RETRYABLE_DELIVERY_STATUSES = frozenset({"pending", "failed"})
@@ -40,7 +41,9 @@ DELIVERY_IMPORTANCE_LEVELS = frozenset({"archive", "digest", "notify", "alert"})
 DELIVERY_PART_TYPES = frozenset({"text", "chart", "report"})
 DELIVERY_PART_STATUSES = frozenset({"pending", "processing", "delivered", "failed"})
 RETRYABLE_DELIVERY_PART_STATUSES = frozenset({"pending", "failed"})
-SUBSCRIPTION_FILTER_KEYS = frozenset({"codes", "content_types", "sector_codes", "labels_any", "providers"})
+SUBSCRIPTION_FILTER_KEYS = frozenset(
+    {"codes", "content_types", "sector_codes", "labels_any", "providers", "include_market_wide"}
+)
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,200}$")
 _RAW_HASH_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -147,6 +150,14 @@ CREATE TABLE IF NOT EXISTS market_data_rejections (
 
 CREATE INDEX IF NOT EXISTS idx_market_data_rejections_time
 ON market_data_rejections(provider, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS market_event_source_states (
+    source_id TEXT PRIMARY KEY,
+    cursor TEXT NOT NULL DEFAULT '',
+    state_json TEXT NOT NULL DEFAULT '{{}}',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS market_securities (
     provider TEXT NOT NULL,
@@ -921,6 +932,46 @@ class MarketEventStore:
                 tuple(parameters),
             ).fetchall()
         return tuple(_row_to_market_data_rejection(row) for row in rows)
+
+    def get_event_source_state(self, source_id: str) -> MarketEventSourceState | None:
+        clean_source_id = _safe_id(source_id, field="source_id")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM market_event_source_states WHERE source_id = ?",
+                (clean_source_id,),
+            ).fetchone()
+        return _row_to_event_source_state(row) if row is not None else None
+
+    def upsert_event_source_state(
+        self,
+        *,
+        source_id: str,
+        cursor: str = "",
+        state: Mapping[str, Any] | None = None,
+        now_ts: int | None = None,
+    ) -> MarketEventSourceState:
+        clean_source_id = _safe_id(source_id, field="source_id")
+        clean_cursor = _bounded_text(cursor, field="cursor", max_length=500)
+        state_json = _json_dumps(dict(state or {}), field="state")
+        now = self._now(now_ts)
+        with self._write_lock, self._connect(write=True) as connection:
+            connection.execute(
+                """
+                INSERT INTO market_event_source_states (
+                    source_id, cursor, state_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(source_id) DO UPDATE SET
+                    cursor = excluded.cursor,
+                    state_json = excluded.state_json,
+                    updated_at = excluded.updated_at
+                """,
+                (clean_source_id, clean_cursor, state_json, now, now),
+            )
+            row = connection.execute(
+                "SELECT * FROM market_event_source_states WHERE source_id = ?",
+                (clean_source_id,),
+            ).fetchone()
+        return _row_to_event_source_state(row)
 
     def upsert_security(
         self,
@@ -2317,7 +2368,7 @@ def _normalize_subscription_input(**values: Any) -> dict[str, Any]:
     }
 
 
-def _normalize_subscription_filters(value: Any) -> dict[str, list[str]]:
+def _normalize_subscription_filters(value: Any) -> dict[str, Any]:
     if value is None:
         return {}
     if not isinstance(value, Mapping):
@@ -2325,7 +2376,7 @@ def _normalize_subscription_filters(value: Any) -> dict[str, list[str]]:
     unknown = {str(key) for key in value.keys()} - SUBSCRIPTION_FILTER_KEYS
     if unknown:
         raise _invalid_argument("filters", f"unsupported filter keys: {', '.join(sorted(unknown))}")
-    normalized: dict[str, list[str]] = {}
+    normalized: dict[str, Any] = {}
     if "codes" in value:
         normalized["codes"] = list(_normalized_codes(value.get("codes") or (), field="filters.codes"))
     for key in ("content_types", "labels_any", "providers"):
@@ -2335,6 +2386,12 @@ def _normalize_subscription_filters(value: Any) -> dict[str, list[str]]:
         normalized["sector_codes"] = list(
             _normalized_codes(value.get("sector_codes") or (), field="filters.sector_codes")
         )
+    if "include_market_wide" in value:
+        include_market_wide = value.get("include_market_wide")
+        if not isinstance(include_market_wide, bool):
+            raise _invalid_argument("filters.include_market_wide", "include_market_wide must be a boolean")
+        if include_market_wide:
+            normalized["include_market_wide"] = True
     return {key: items for key, items in normalized.items() if items}
 
 
@@ -2349,10 +2406,15 @@ def _subscription_matches_event(
     filters = dict(subscription.filters)
     filter_codes = set(str(item) for item in filters.get("codes", []))
     code_scope = set(watch_codes) | filter_codes
+    include_market_wide = bool(filters.get("include_market_wide"))
+    is_market_wide = event.code == "GLOBAL.MARKET" and "market_wide" in event.labels
+    market_wide_match = include_market_wide and is_market_wide
     has_non_code_filter = any(filters.get(key) for key in ("content_types", "sector_codes", "labels_any", "providers"))
-    if not code_scope and not has_non_code_filter:
+    if not code_scope and not has_non_code_filter and not market_wide_match:
         return False
-    if code_scope and event.code not in code_scope:
+    if code_scope and event.code not in code_scope and not market_wide_match:
+        return False
+    if not code_scope and include_market_wide and not is_market_wide and not has_non_code_filter:
         return False
     content_types = set(str(item) for item in filters.get("content_types", []))
     if content_types and event.content_type not in content_types:
@@ -2427,6 +2489,16 @@ def _row_to_market_data_rejection(row: sqlite3.Row) -> MarketDataRejection:
         reason=str(row["reason"] or ""),
         payload_hash=str(row["payload_hash"] or ""),
         created_at=int(row["created_at"]),
+    )
+
+
+def _row_to_event_source_state(row: sqlite3.Row) -> MarketEventSourceState:
+    return MarketEventSourceState(
+        source_id=str(row["source_id"] or ""),
+        cursor=str(row["cursor"] or ""),
+        state=_json_loads_object(row["state_json"]),
+        created_at=int(row["created_at"]),
+        updated_at=int(row["updated_at"]),
     )
 
 

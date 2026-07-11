@@ -80,6 +80,7 @@ class MarketEventStoreTests(unittest.TestCase):
                 "market_event_delivery_parts",
                 "market_quote_baselines",
                 "market_data_rejections",
+                "market_event_source_states",
             }.issubset(tables)
         )
         self.assertIn("idx_market_events_raw_hash_unique", indexes)
@@ -145,6 +146,54 @@ class MarketEventStoreTests(unittest.TestCase):
         self.assertEqual(first.rejection_id, second.rejection_id)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].observed_at, 200)
+
+    def test_event_source_state_persists_cursor_and_seen_items(self) -> None:
+        state = self.store.upsert_event_source_state(
+            source_id="public_news:eastmoney_fast_news",
+            cursor="200",
+            state={"baseline_seeded": True, "seen_item_ids": ["a", "b"]},
+            now_ts=200,
+        )
+
+        restarted = MarketEventStore(self.db_path, clock=lambda: 300)
+        loaded = restarted.get_event_source_state("public_news:eastmoney_fast_news")
+
+        self.assertEqual(state.cursor, "200")
+        self.assertEqual(loaded.cursor, "200")
+        self.assertEqual(dict(loaded.state)["seen_item_ids"], ["a", "b"])
+
+    def test_market_wide_filter_matches_global_news_without_broadening_security_events(self) -> None:
+        subscription = self.store.upsert_subscription(
+            subscription_id="market-wide",
+            client="qq",
+            target_id="20001",
+            session_id="qq_group_shared_20001",
+            profile_user_id="qq_group_shared_20001",
+            finance_mode="push",
+            enabled=True,
+            filters={"include_market_wide": True},
+            delivery_policy={"level": "notify"},
+            now_ts=100,
+        )
+        global_event = replace(
+            self.event,
+            event_id="public_news:global-test",
+            provider="public_market",
+            code="GLOBAL.MARKET",
+            content_type="news_flash",
+            labels=("market_wide", "direct_relay"),
+            raw_hash=_hash("public_news:global-test"),
+        )
+        security_event = replace(
+            global_event,
+            event_id="public_news:security-test",
+            code="000000.TEST",
+            labels=("security_matched", "direct_relay"),
+            raw_hash=_hash("public_news:security-test"),
+        )
+
+        self.assertEqual(self.store.match_subscriptions(global_event), (subscription,))
+        self.assertEqual(self.store.match_subscriptions(security_event), ())
 
     def test_v1_database_upgrades_security_master_without_losing_events(self) -> None:
         self.store.upsert_event(self.event, now_ts=100)

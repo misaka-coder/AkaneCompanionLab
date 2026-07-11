@@ -1957,6 +1957,35 @@ FINANCE_PUSH_QUIET_END=07:00
 
 F9b 仍不包含 processing lease/watchdog、Bridge 自动重订阅、quota 告警、retention、手动 replay 和真实 Choice 授权范围记录；这些继续留给 F9c 及后续切片。
 
+#### F9c0：东方财富 7×24 免费新闻入口、双层审核与可选分析
+
+状态：代码、单测和真实只读 smoke 已完成；真实 QQ 推送仍未开启。
+
+这一切片满足“东财主页新快讯出现后转发到聊天机器人，再推送到群”的免费演示路径，同时保持 Choice 为可选高级 Provider：
+
+- 公开新闻 adapter 读取东方财富 7×24 页面使用的公开快讯列表，规范化 item ID、标题、摘要、发布时间、抓取时间、来源和原文链接；显式 timeout、有界重试、熔断和 schema 变化错误不会拖垮普通聊天；
+- `FinancePublicNewsEventSource` 使用 SQLite 保存首轮 baseline、seen ID 和轮询时间。第一次启动只记住现有最多 100 条，不回放历史；默认源级最小间隔 15 秒；
+- 新闻与公开行情通过 `FinanceCompositeEventSource` 合并。一个来源失败不会隐藏另一个来源成功，worker、Orchestrator、importance、delivery ledger 和 QQ adapter 不需要绑定东方财富类型；
+- 公共 push subscription 默认允许 `market_wide` 新闻；命中可信 security alias 的新闻仍可按 `security_matched` 进入关注标的路径；
+- 本地确定性敏感策略先拦截明确国内高级政治主体和未豁免的“中央”语义，随后结构化 LLM 审核逐条 allow/block。任一层失败都 fail closed；外国政治人物新闻单独出现时允许；
+- 审核通过的事件带 `direct_relay / optional_model_analysis / source_report_only`。已确认事实只能写成“东方财富在该时间发布了这条快讯”，不能把快讯标题自动升级成官方确认；
+- 开启分析时只发送模型的自然语言转述、补充核验和影响分析，不前置粘贴整段东财原文/摘要；模型可以主动调用只读工具，最后必须单独附东财原文 URL；
+- 模型正常分析但漏写链接或只在中间写出时，后处理强制把东财原文 URL 补到结尾；模型拒绝、异常、空回复或尝试耗尽时回退为程序生成的原文/摘要转发；关闭 `FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED` 时完全跳过模型并直接转发原文；
+- 模型分析输出再次命中国内敏感策略时，分析整体丢弃并回退原文。系统不通过同义改写、删词或模型转述去规避 QQ/平台内容治理；
+- 当前 `market_news_search` 已能搜索持久化新闻事件，未来可把同一 normalized adapter 接成模型实时新闻查询，不需要重写抓取和审核边界。
+
+局部配置为：
+
+~~~dotenv
+FINANCE_PUBLIC_NEWS_ENABLED=true
+FINANCE_PUBLIC_NEWS_POLL_INTERVAL_SECONDS=15
+FINANCE_PUBLIC_NEWS_TIMEOUT_SECONDS=6
+FINANCE_PUBLIC_NEWS_REQUIRE_LLM_MODERATION=true
+FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED=true
+~~~
+
+全局安全门仍是 `FINANCE_EVENT_INGESTION_ENABLED=false` 与 `QQ_FINANCE_PUSH_ENABLED=false`。只有测试群完成 baseline、双层审核、原文链接、分析降级、重启去重和实际 QQ 文本投递验收后，才允许同时打开。
+
 其余 F9 包括：
 
 - Bridge watchdog；
@@ -2072,15 +2101,17 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F6、F7、F7c、F7d0-F7d4、public security master bootstrap、公开源三次瞬时网络重试、F9a-F9b 和免费行情主动推送质量门禁已完成。免费公开行情代码主链、自然语言标的解析及 watchlist 行情事件源已经接通但默认关闭；Yahoo 只允许完成日线事件，AkShare ETF 才允许通过新鲜度检查后的盘中候选。当前优先级是质量干跑与单群受控验收：
+F6、F7、F7c、F7d0-F7d4、public security master bootstrap、公开源三次瞬时网络重试、F9a-F9b、免费行情质量门禁和东方财富 7×24 新闻入口已完成。免费公开行情代码主链、自然语言标的解析、watchlist 行情事件源和 market-wide 新闻事件源已经接通但默认关闭；Yahoo 只允许完成日线事件，AkShare ETF 才允许通过新鲜度检查后的盘中候选。当前优先级是质量干跑与单群受控验收：
 
-1. 先读 `docs/public_market_provider_implementation_v1.md` 和 F7d0 离线 fixture；不要重新跑大范围依赖调查，不改基础 `requirements.txt`，不接未文档化快讯接口；
+1. 先读 `docs/public_market_provider_implementation_v1.md` 的 21.3/21.4 和 F7d0 离线 fixture；不要重新跑大范围依赖调查，不改基础 `requirements.txt`；新增快讯源必须继续走 normalized adapter、持久化 baseline 和双层审核；
 2. 安装可选依赖并仅在本地显式设置 `FINANCE_MARKET_PROVIDER=public_market`；先保持 `FINANCE_EVENT_INGESTION_ENABLED=false` 和 `QQ_FINANCE_PUSH_ENABLED=false`；
 3. 名称解析与 health 已通过；先复测指数/ETF 日线，任一真实 series 成功后在同一 provider/cache 生命周期内立即生成确定性图表与最小报告；
 4. 给隔离测试库创建一条 `public_market` push subscription 与 `513000.SH` watchlist，直接运行 `FinancePublicQuoteEventSource.poll_market_events()`：首观测不得出事件，独立二次观察才可确认，过期/字段不一致/OHLC 异常必须进入 rejection；
-5. 检查 baseline、event title、source、数据时间、importance、去重档位与 delivery queue 后，只给测试群开启一次 QQ 推送。任何无法说明来源和时间的事件都不得进入模型；
-6. Choice 权限开通后仍按第 20 节执行最小只读冒烟，确认实际权限、callback 字段、证券主数据来源、AdjustFlag 和再分发边界；它是可选高级 Provider，不阻塞免费主线；
-7. 再在 F8 云端产物与 F9c processing lease/Bridge watchdog 之间按演示需求选择；真实行情图继续由本地确定性程序生成；
-8. 视可靠数据权限补 `market_macro_series`，并为发布日期和修订时间防前视偏差。
+5. 在隔离库先跑东财新闻 baseline，再验证：外国财经快讯通过、国内敏感快讯本地拦截、隐晦/不确定样本由 LLM block、审核器失败 fail closed；
+6. 对允许样本验证“仅转述分析+补充核验+文末原文 URL”；再关闭分析开关验证只发原文，并让分析模型拒绝/漏链接/重新引入敏感主体，确认分别回退原文、补链接、丢弃分析；
+7. 检查行情与新闻的 event title、source、数据时间、原文 URL、importance、去重状态与 delivery queue 后，只给测试群开启一次 QQ 推送。任何无法说明来源和时间的事件都不得进入模型；
+8. Choice 权限开通后仍按第 20 节执行最小只读冒烟，确认实际权限、callback 字段、证券主数据来源、AdjustFlag 和再分发边界；它是可选高级 Provider，不阻塞免费主线；
+9. 再在 F8 云端产物与 F9c processing lease/Bridge watchdog 之间按演示需求选择；真实行情图继续由本地确定性程序生成；
+10. 视可靠数据权限补 `market_macro_series`，并为发布日期和修订时间防前视偏差。
 
 任何公开 Provider 失败都必须返回结构化 `status/reason`，不能静默回退 Mock、把 ETF 冒充指数，或把最近收盘伪装成实时行情。

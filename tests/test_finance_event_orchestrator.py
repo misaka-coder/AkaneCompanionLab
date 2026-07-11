@@ -5,6 +5,9 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
+
+import config
 
 from companion_v01.finance import (
     AkaneFinanceAnalysisClient,
@@ -494,6 +497,253 @@ class FinanceAnalysisClientTests(unittest.TestCase):
         self.assertIn(f"已确认事实：{title}", combined)
         self.assertIn("模型解释不能修改上述价格", combined)
         self.assertIn("标题是本次推送唯一权威行情事实", request.render_analysis_instruction())
+
+    def test_direct_news_relay_survives_optional_analysis_refusal(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        store = MarketEventStore(Path(temp_dir.name) / "direct_relay.sqlite3")
+        event = MarketEvent(
+            provider="public_market",
+            event_id="public_news:test-relay",
+            published_at=1_783_667_400,
+            produced_at=1_783_667_405,
+            received_at=1_783_667_410,
+            code="GLOBAL.MARKET",
+            content_type="news_flash",
+            title="东方财富7×24快讯：特朗普表示将公布新的经济政策",
+            source="东方财富 7×24 全球财经快讯",
+            url="https://finance.eastmoney.com/a/test-relay.html",
+            sentiment="unknown",
+            labels=(
+                "direct_relay",
+                "optional_model_analysis",
+                "source_report_only",
+                "market_wide",
+            ),
+            sector_code="",
+            raw_hash=_hash("public_news:test-relay"),
+        )
+        record = store.upsert_event(event, now_ts=1_783_667_410).record
+        subscription = store.upsert_subscription(
+            subscription_id="direct-relay-sub",
+            client="qq",
+            target_id="872732158",
+            is_group=True,
+            session_id="qq_group_shared_872732158",
+            profile_user_id="qq_group_shared_872732158",
+            finance_mode="push",
+            enabled=True,
+            filters={"include_market_wide": True},
+            delivery_policy={"level": "notify"},
+            now_ts=1_783_667_410,
+        )
+        from companion_v01.finance import FinanceAnalysisRequest, FinanceEventImportancePolicy
+
+        request = FinanceAnalysisRequest.create(
+            event_record=record,
+            subscription=subscription,
+            importance=FinanceEventImportancePolicy().evaluate(event=event, subscription=subscription),
+            requested_at=1_783_667_420,
+        )
+
+        class RefusingEngine:
+            memcore_manager = None
+
+            def process_turn(self, _payload):
+                return {"speech": "抱歉，我无法分析这条消息。"}
+
+        result = AkaneFinanceAnalysisClient(
+            RefusingEngine(),
+            max_attempts=2,
+            retry_backoff_seconds=0,
+        ).analyze(request)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.status, "relayed_without_analysis")
+        self.assertEqual(len(result.messages), 1)
+        self.assertIn("东方财富 7×24 快讯原文转发", result.messages[0])
+        self.assertIn(event.title, result.messages[0])
+        self.assertNotIn("抱歉", result.messages[0])
+
+    def test_direct_news_analysis_keeps_original_link_in_analysis_message(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        store = MarketEventStore(Path(temp_dir.name) / "direct_relay_link.sqlite3")
+        event = MarketEvent(
+            provider="public_market",
+            event_id="public_news:test-analysis-link",
+            published_at=1_783_667_400,
+            produced_at=1_783_667_405,
+            received_at=1_783_667_410,
+            code="GLOBAL.MARKET",
+            content_type="news_flash",
+            title="东方财富7×24快讯：特朗普表示将公布新的经济政策",
+            source="东方财富 7×24 全球财经快讯",
+            url="https://finance.eastmoney.com/a/test-analysis-link.html",
+            sentiment="unknown",
+            labels=("direct_relay", "optional_model_analysis", "source_report_only", "market_wide"),
+            sector_code="",
+            raw_hash=_hash("public_news:test-analysis-link"),
+        )
+        record = store.upsert_event(event, now_ts=1_783_667_410).record
+        subscription = store.upsert_subscription(
+            subscription_id="direct-relay-link-sub",
+            client="qq",
+            target_id="872732158",
+            is_group=True,
+            session_id="qq_group_shared_872732158",
+            profile_user_id="qq_group_shared_872732158",
+            finance_mode="push",
+            enabled=True,
+            filters={"include_market_wide": True},
+            delivery_policy={"level": "notify"},
+            now_ts=1_783_667_410,
+        )
+        from companion_v01.finance import FinanceAnalysisRequest, FinanceEventImportancePolicy
+
+        request = FinanceAnalysisRequest.create(
+            event_record=record,
+            subscription=subscription,
+            importance=FinanceEventImportancePolicy().evaluate(event=event, subscription=subscription),
+            requested_at=1_783_667_420,
+        )
+
+        class AnalyzingEngine:
+            memcore_manager = None
+
+            def process_turn(self, _payload):
+                return {"speech": "这可能影响短期风险偏好，但政策细节和市场反应仍需继续核验。"}
+
+        result = AkaneFinanceAnalysisClient(
+            AnalyzingEngine(),
+            max_attempts=1,
+            retry_backoff_seconds=0,
+        ).analyze(request)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.status, "analyzed")
+        self.assertEqual(len(result.messages), 1)
+        self.assertNotIn("东方财富 7×24 快讯原文转发", result.messages[0])
+        self.assertNotIn(event.title, result.messages[0])
+        self.assertTrue(result.messages[0].endswith(f"原文链接：{event.url}"))
+
+    def test_direct_news_analysis_can_be_disabled_without_calling_engine(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        store = MarketEventStore(Path(temp_dir.name) / "direct_relay_disabled.sqlite3")
+        event = MarketEvent(
+            provider="public_market",
+            event_id="public_news:test-analysis-disabled",
+            published_at=1_783_667_400,
+            produced_at=1_783_667_405,
+            received_at=1_783_667_410,
+            code="GLOBAL.MARKET",
+            content_type="news_flash",
+            title="东方财富7×24快讯：海外市场公布新的经济数据",
+            source="东方财富 7×24 全球财经快讯",
+            url="https://finance.eastmoney.com/a/test-analysis-disabled.html",
+            sentiment="unknown",
+            labels=("direct_relay", "optional_model_analysis", "source_report_only", "market_wide"),
+            sector_code="",
+            raw_hash=_hash("public_news:test-analysis-disabled"),
+        )
+        record = store.upsert_event(event, now_ts=1_783_667_410).record
+        subscription = store.upsert_subscription(
+            subscription_id="direct-relay-disabled-sub",
+            client="qq",
+            target_id="872732158",
+            is_group=True,
+            session_id="qq_group_shared_872732158",
+            profile_user_id="qq_group_shared_872732158",
+            finance_mode="push",
+            enabled=True,
+            filters={"include_market_wide": True},
+            delivery_policy={"level": "notify"},
+            now_ts=1_783_667_410,
+        )
+        from companion_v01.finance import FinanceAnalysisRequest, FinanceEventImportancePolicy
+
+        request = FinanceAnalysisRequest.create(
+            event_record=record,
+            subscription=subscription,
+            importance=FinanceEventImportancePolicy().evaluate(event=event, subscription=subscription),
+            requested_at=1_783_667_420,
+        )
+
+        class UnexpectedEngine:
+            memcore_manager = None
+
+            def process_turn(self, _payload):
+                raise AssertionError("engine must not be called when optional analysis is disabled")
+
+        with patch.object(config, "FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED", False):
+            result = AkaneFinanceAnalysisClient(UnexpectedEngine()).analyze(request)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.status, "relayed_without_analysis")
+        self.assertEqual(len(result.messages), 1)
+        self.assertIn(event.url, result.messages[0])
+
+    def test_direct_news_analysis_reintroducing_sensitive_subject_is_omitted(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        store = MarketEventStore(Path(temp_dir.name) / "direct_relay_output_policy.sqlite3")
+        event = MarketEvent(
+            provider="public_market",
+            event_id="public_news:test-analysis-policy",
+            published_at=1_783_667_400,
+            produced_at=1_783_667_405,
+            received_at=1_783_667_410,
+            code="GLOBAL.MARKET",
+            content_type="news_flash",
+            title="东方财富7×24快讯：海外市场风险偏好出现变化",
+            source="东方财富 7×24 全球财经快讯",
+            url="https://finance.eastmoney.com/a/test-analysis-policy.html",
+            sentiment="unknown",
+            labels=("direct_relay", "optional_model_analysis", "source_report_only", "market_wide"),
+            sector_code="",
+            raw_hash=_hash("public_news:test-analysis-policy"),
+        )
+        record = store.upsert_event(event, now_ts=1_783_667_410).record
+        subscription = store.upsert_subscription(
+            subscription_id="direct-relay-output-policy-sub",
+            client="qq",
+            target_id="872732158",
+            is_group=True,
+            session_id="qq_group_shared_872732158",
+            profile_user_id="qq_group_shared_872732158",
+            finance_mode="push",
+            enabled=True,
+            filters={"include_market_wide": True},
+            delivery_policy={"level": "notify"},
+            now_ts=1_783_667_410,
+        )
+        from companion_v01.finance import FinanceAnalysisRequest, FinanceEventImportancePolicy
+
+        request = FinanceAnalysisRequest.create(
+            event_record=record,
+            subscription=subscription,
+            importance=FinanceEventImportancePolicy().evaluate(event=event, subscription=subscription),
+            requested_at=1_783_667_420,
+        )
+
+        class UnsafeAnalysisEngine:
+            memcore_manager = None
+
+            def process_turn(self, _payload):
+                return {"speech": "分析中意外引入中共中央政治局相关内容。"}
+
+        result = AkaneFinanceAnalysisClient(
+            UnsafeAnalysisEngine(),
+            max_attempts=1,
+            retry_backoff_seconds=0,
+        ).analyze(request)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.status, "relayed_without_analysis")
+        self.assertEqual(len(result.messages), 1)
+        self.assertNotIn("政治局", result.messages[0])
+        self.assertIn(event.url, result.messages[0])
 
     def test_engine_analysis_records_tool_trace_and_assistant_not_user(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()

@@ -18,6 +18,7 @@ _CONTENT_TYPE_BASE_SCORES = {
     "announcement": 0.70,
     "quote_move": 0.52,
     "daily_close": 0.34,
+    "news_flash": 0.58,
 }
 _ALERT_KEYWORDS = (
     "重大资产重组",
@@ -118,6 +119,9 @@ class FinanceEventImportancePolicy:
         elif "move_ge_3pct" in labels:
             score += 0.18
             reasons.append("deterministic_move_ge_3pct")
+        if "direct_relay" in labels:
+            score = max(score, 0.58)
+            reasons.append("authorized_direct_news_relay")
 
         priority = max(0.0, min(1.0, float(watchlist_priority or 0.0)))
         if priority > 0:

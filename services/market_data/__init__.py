@@ -35,6 +35,14 @@ from .public_instruments import (
     build_default_public_instrument_registry,
     normalize_public_instrument_alias,
 )
+from .public_news import (
+    EASTMONEY_FAST_NEWS_ENDPOINT,
+    EASTMONEY_FAST_NEWS_PAGE,
+    EastmoneyFastNewsAdapter,
+    PublicNewsFetchResult,
+    PublicNewsItem,
+    PublicNewsSchemaError,
+)
 from .public_provider import PublicMarketProvider
 from .public_yahoo import (
     YahooFinanceAdapter,
@@ -62,6 +70,7 @@ from .store_models import (
     FinanceSubscription,
     MarketEventDelivery,
     MarketEventDeliveryPart,
+    MarketEventSourceState,
     MarketDataRejection,
     MarketQuoteBaseline,
     MarketSecurity,
@@ -100,6 +109,8 @@ __all__ = [
     "PUBLIC_INSTRUMENT_REGISTRY_AS_OF",
     "PUBLIC_INSTRUMENT_TYPES",
     "PUBLIC_QUOTE_DELAY_KINDS",
+    "EASTMONEY_FAST_NEWS_ENDPOINT",
+    "EASTMONEY_FAST_NEWS_PAGE",
     "MOCK_CHOICE_FIXTURE_SCHEMA",
     "MARKET_STORE_SCHEMA_VERSION",
     "DELIVERY_STATUSES",
@@ -132,6 +143,7 @@ __all__ = [
     "MarketEventPollResult",
     "MarketEventDelivery",
     "MarketEventDeliveryPart",
+    "MarketEventSourceState",
     "MarketDataRejection",
     "MarketQuoteBaseline",
     "MarketEventStore",
@@ -146,6 +158,10 @@ __all__ = [
     "PublicInstrument",
     "PublicInstrumentRegistry",
     "PublicInstrumentResolution",
+    "EastmoneyFastNewsAdapter",
+    "PublicNewsFetchResult",
+    "PublicNewsItem",
+    "PublicNewsSchemaError",
     "PublicMarketProvider",
     "YahooFinanceAdapter",
     "YahooFinanceDependencyUnavailable",
