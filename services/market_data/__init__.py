@@ -26,6 +26,7 @@ from .public_akshare import AkShareDependencyUnavailable, AkShareETFAdapter, AkS
 from .public_cache import TTLCacheLookup, TTLMarketDataCache
 from .public_instruments import (
     PUBLIC_INSTRUMENT_ROUTES,
+    PUBLIC_INSTRUMENT_REGISTRY_AS_OF,
     PUBLIC_INSTRUMENT_TYPES,
     PUBLIC_QUOTE_DELAY_KINDS,
     PublicInstrument,
@@ -94,6 +95,7 @@ __all__ = [
     "MARKET_DATA_DELAY_KINDS",
     "MARKET_DATA_QUALITY_LEVELS",
     "PUBLIC_INSTRUMENT_ROUTES",
+    "PUBLIC_INSTRUMENT_REGISTRY_AS_OF",
     "PUBLIC_INSTRUMENT_TYPES",
     "PUBLIC_QUOTE_DELAY_KINDS",
     "MOCK_CHOICE_FIXTURE_SCHEMA",

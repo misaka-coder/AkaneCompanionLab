@@ -72,7 +72,7 @@ class MarketDataProviderContractTests(unittest.TestCase):
         self.assertTrue(callable(getattr(emquant, "poll_market_events", None)))
         self.assertFalse(callable(getattr(mock, "poll_market_events", None)))
         self.assertFalse(emquant.supports("security_master"))
-        self.assertEqual(public_market.capabilities.enabled(), ("quote_snapshot", "price_series"))
+        self.assertEqual(public_market.capabilities.enabled(), ("quote_snapshot", "price_series", "security_master"))
         self.assertFalse(public_market.supports("news_search"))
 
     def test_disabled_provider_returns_structured_unavailable_without_fake_data(self) -> None:
@@ -169,8 +169,15 @@ class MarketDataProviderRegistryTests(unittest.TestCase):
             patch.object(config, "FINANCE_EVENT_DB_PATH", str(Path(temp_dir) / "market.sqlite3")),
         ):
             service = engine._build_market_data_tool_service()
-        self.assertIsNotNone(service)
-        self.assertIsInstance(service.provider, PublicMarketProvider)
+            self.assertIsNotNone(service)
+            self.assertIsInstance(service.provider, PublicMarketProvider)
+            resolved = service.resolve_security(
+                "日经225",
+                profile_user_id="owner",
+                session_id="session",
+            )
+            self.assertTrue(resolved["resolved"])
+            self.assertEqual(resolved["resolved_code"], "NIKKEI225.INDEX")
 
     def test_engine_rejects_unknown_provider_without_constructing_mock(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)

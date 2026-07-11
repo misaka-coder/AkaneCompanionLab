@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+import tempfile
 
 from services.market_data import (
     MarketBar,
     MarketDataResponse,
+    MarketEventStore,
     MarketNewsQuery,
     MarketQuoteRequest,
     MarketQuoteSnapshot,
@@ -95,11 +98,28 @@ class StubAdapter:
 class PublicMarketProviderTests(unittest.TestCase):
     def test_capabilities_and_news_failure_are_explicit(self) -> None:
         provider = PublicMarketProvider(dependency_probe=lambda _name: True)
-        self.assertEqual(provider.capabilities.enabled(), ("quote_snapshot", "price_series"))
+        self.assertEqual(provider.capabilities.enabled(), ("quote_snapshot", "price_series", "security_master"))
         result = provider.search_news(MarketNewsQuery(query="test"))
         self.assertFalse(result.ok)
         self.assertEqual(result.status, "unavailable")
         self.assertEqual(result.reason, "capability_unavailable:news_search")
+
+    def test_security_master_seed_is_idempotent_and_resolves_exact_aliases(self) -> None:
+        provider = PublicMarketProvider(dependency_probe=lambda _name: False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MarketEventStore(Path(temp_dir) / "market.sqlite3")
+            first = provider.seed_security_master(store, now_ts=200)
+            second = provider.seed_security_master(store, now_ts=300)
+            nikkei = store.resolve_security("日经225", provider="public_market")
+            etf = store.resolve_security("日经ETF华夏", provider="public_market")
+            vendor = store.resolve_security("^N225", provider="public_market")
+
+        self.assertEqual(len(first), 6)
+        self.assertEqual(len(second), 6)
+        self.assertEqual(nikkei[0]["code"], "NIKKEI225.INDEX")
+        self.assertEqual(nikkei[0]["match_type"], "exact")
+        self.assertEqual(etf[0]["code"], "513520.SH")
+        self.assertEqual(vendor, ())
 
     def test_series_routes_by_canonical_instrument(self) -> None:
         yahoo = StubAdapter(source="Yahoo", timezone="Asia/Tokyo")

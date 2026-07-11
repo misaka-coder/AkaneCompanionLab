@@ -4002,7 +4002,18 @@ class AkaneMemoryEngine:
                     public_failure_ttl_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_FAILURE_TTL_SECONDS", 15.0) or 15.0),
                 )
             )
-            return MarketDataToolService(provider=provider, event_store=MarketEventStore(db_path))
+            event_store = MarketEventStore(db_path)
+            seed_security_master = getattr(provider, "seed_security_master", None)
+            if callable(seed_security_master):
+                try:
+                    seed_security_master(event_store)
+                except Exception as exc:
+                    logger.warning(
+                        "finance provider security master seed failed: provider=%s reason=%s",
+                        str(getattr(provider, "id", "") or ""),
+                        type(exc).__name__,
+                    )
+            return MarketDataToolService(provider=provider, event_store=event_store)
         except MarketDataValidationError as exc:
             logger.warning(
                 "finance market data provider rejected: field=%s code=%s provider=%s",

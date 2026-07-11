@@ -12,7 +12,11 @@ from .provider import (
     MarketSeriesRequest,
 )
 from .public_akshare import AkShareETFAdapter
-from .public_instruments import PublicInstrumentRegistry, build_default_public_instrument_registry
+from .public_instruments import (
+    PUBLIC_INSTRUMENT_REGISTRY_AS_OF,
+    PublicInstrumentRegistry,
+    build_default_public_instrument_registry,
+)
 from .public_yahoo import YahooFinanceAdapter
 from .types import (
     MarketDataResponse,
@@ -27,7 +31,7 @@ from .types import (
 class PublicMarketProvider(MarketDataProvider):
     provider_id = "public_market"
     source_name = "Public Market (Yahoo Finance + AkShare/Eastmoney)"
-    capabilities = MarketProviderCapabilities(quote_snapshot=True, price_series=True)
+    capabilities = MarketProviderCapabilities(quote_snapshot=True, price_series=True, security_master=True)
 
     def __init__(
         self,
@@ -101,6 +105,24 @@ class PublicMarketProvider(MarketDataProvider):
             reason="capability_unavailable:news_search",
             data=(),
         )
+
+    def seed_security_master(self, store, *, now_ts: int | None = None) -> tuple[object, ...]:
+        records = []
+        for instrument in self.registry.all():
+            records.append(
+                store.upsert_security(
+                    provider=self.id,
+                    code=instrument.canonical_code,
+                    display_name=instrument.display_name,
+                    aliases=instrument.aliases,
+                    market=instrument.market,
+                    security_type=instrument.instrument_type,
+                    source="Akane Public Instrument Registry v1",
+                    as_of=PUBLIC_INSTRUMENT_REGISTRY_AS_OF,
+                    now_ts=now_ts,
+                )
+            )
+        return tuple(records)
 
     def get_price_series(self, request: MarketSeriesRequest) -> MarketDataResponse[MarketSeries | None]:
         if not isinstance(request, MarketSeriesRequest):

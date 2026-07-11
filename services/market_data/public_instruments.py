@@ -12,6 +12,7 @@ from .types import MarketDataValidationError
 PUBLIC_INSTRUMENT_ROUTES = frozenset({"yahoo", "akshare_etf"})
 PUBLIC_INSTRUMENT_TYPES = frozenset({"index", "etf"})
 PUBLIC_QUOTE_DELAY_KINDS = frozenset({"delayed", "end_of_day", "unknown"})
+PUBLIC_INSTRUMENT_REGISTRY_AS_OF = 1_783_699_200
 
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 _MARKET_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]{1,19}$")
@@ -356,6 +357,7 @@ def _invalid_field(field: str, reason: str) -> MarketDataValidationError:
 
 __all__ = [
     "PUBLIC_INSTRUMENT_ROUTES",
+    "PUBLIC_INSTRUMENT_REGISTRY_AS_OF",
     "PUBLIC_INSTRUMENT_TYPES",
     "PUBLIC_QUOTE_DELAY_KINDS",
     "PublicInstrument",
