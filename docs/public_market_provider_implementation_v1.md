@@ -1,6 +1,6 @@
 # Akane 免费公开行情 Provider 实施细案 V1
 
-状态：F7d0-F7d2 已完成；Yahoo live 查询在当前网络超时并明确保留为 smoke 项；下一步为 F7d3 AkShare 境内 ETF adapter
+状态：F7d0-F7d3 已完成；Yahoo live 超时、AkShare history live ConnectionError 均结构化保留；下一步为 F7d4 public_market composite 注册与配置
 更新时间：2026-07-11
 适用仓库：AkaneCompanionLab
 实施分支：`feature/qq-finance-assistant-emquant`
@@ -806,7 +806,24 @@ feat(finance): cache delayed public market quotes
 
 ### F7d3：AkShare 境内 ETF adapter
 
+状态：已完成 adapter 与离线契约；显式 live smoke 中 513000 快照成功，history 上游本次 ConnectionError 并正确降级；尚未注册进生产 factory。
+
 目标：增加境内 ETF 快照和日线，保留代理信号限制。
+
+实际落地：
+
+- `AkShareETFAdapter` 只接受 registry 中 route 为 `akshare_etf` 的 canonical code；
+- 默认 loader 延迟导入 AkShare，不影响基础安装和普通 Akane 启动；
+- history 固定 `fund_etf_hist_em / daily / adjust=""`，按受测中文列名规范化；
+- spot 固定 `fund_etf_spot_em`，只按精确 vendor code 取唯一行；
+- spot `as_of` 来自 timezone-aware `更新时间`，`fetched_at` 仅记录抓取时间；
+- spot/history 的成交量均从“手”乘 100 转为份额，成交额保持 CNY；
+- provenance 明确写 `AkShare/Eastmoney public web data`、`data_quality=aggregated`；
+- quote 的 delay 保持 `unknown`，不因函数名包含“实时”宣称零延迟；
+- 多代码任一缺失时整次返回 empty，不返回不完整成功；
+- schema、重复代码、非法 OHLC、负成交量/成交额、超时和限流均结构化失败；
+- 复用共享 TTL cache 和失败负缓存；
+- live smoke：513000 快照成功，返回 2026-07-10 的真实观察时间与 114,530,800 份规范化成交量；同轮 history 遇到上游 `ConnectionError`，返回 `unavailable`，没有使用 fixture 或 Mock 顶替。
 
 建议提交：
 
@@ -853,17 +870,17 @@ F7d0-F7d4 完成必须同时满足：
 
 ## 22. 上下文恢复后的精确下一步
 
-若接手者看到本文，下一步直接执行 F7d3，不要重新跑大范围依赖调查，也不要直接写完整 composite Provider：
+若接手者看到本文，下一步直接执行 F7d4，不要重新跑大范围依赖调查：
 
 1. `git status --short --branch`，确认不碰用户的 `uv.lock`；
-2. 读取 AkShare F7d0 fixture、`public_instruments.py` 和共享 TTL cache；
-3. 新建 `services/market_data/public_akshare.py`，默认调用路径才延迟导入 AkShare；
-4. 只接受 registry route 为 `akshare_etf` 的 canonical code，不开放任意 AkShare 函数给模型；
-5. 日线只支持 `1d + adjusted=none`，使用 `fund_etf_hist_em` 的受测列名；
-6. spot 使用 `fund_etf_spot_em`，按精确 vendor code 选唯一行，并使用 timezone-aware `更新时间` 作为 as_of；
-7. spot/history 的 `成交量` 从手乘 100 规范化为份额，成交额保持 CNY；
-8. source 写 `AkShare/Eastmoney public web data`，保留聚合源和授权边界；
-9. 复用共享 cache，字段缺失、重复代码、空数据、超时和 schema 变化均结构化失败；
-10. 本切片仍不改 production factory/config；运行相关测试和金融回归后，只提交 `feat(finance): add public etf market adapter`。
+2. 新建 `services/market_data/public_provider.py`，实现完整 `MarketDataProvider` composite；
+3. quote/series 按 registry route 分组到 Yahoo 或 AkShare，跨 route 任一失败时 fail closed；
+4. news 明确返回 `unavailable`，不伪造 `news_search` capability；
+5. health 汇总两个子适配器的依赖/可用状态，部分可用为 degraded；
+6. 扩展 `MarketDataProviderSettings`、`config.py` 模块导出和 settings catalog；
+7. production registry 增加 `public_market`，最终仅为 `disabled/emquant/public_market`，仍无 Mock；
+8. 默认 `FINANCE_MARKET_PROVIDER=disabled`，安装依赖不会自动启用网络；
+9. Engine 只通过现有 factory 构造，不新增 Yahoo/AkShare 特判；
+10. 跑 Provider、金融工具、图表、报告、QQ 和默认启动回归，只提交 `feat(finance): register public market provider`。
 
 Yahoo live smoke 失败不得改成假成功；后续网络恢复时再补成功观察。Choice 继续保持可选，现有金融主链不受影响。

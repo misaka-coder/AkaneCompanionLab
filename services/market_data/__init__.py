@@ -22,6 +22,7 @@ from .provider import (
     MarketQuoteRequest,
     MarketSeriesRequest,
 )
+from .public_akshare import AkShareDependencyUnavailable, AkShareETFAdapter, AkShareSchemaError
 from .public_cache import TTLCacheLookup, TTLMarketDataCache
 from .public_instruments import (
     PUBLIC_INSTRUMENT_ROUTES,
@@ -105,6 +106,9 @@ __all__ = [
     "RETRYABLE_DELIVERY_STATUSES",
     "RETRYABLE_DELIVERY_PART_STATUSES",
     "SUBSCRIPTION_FILTER_KEYS",
+    "AkShareDependencyUnavailable",
+    "AkShareETFAdapter",
+    "AkShareSchemaError",
     "TTLCacheLookup",
     "TTLMarketDataCache",
     "DeliveryClaim",
