@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from .provider import MarketQuoteRequest, MarketSeriesRequest
 from .public_cache import TTLMarketDataCache
 from .public_instruments import PublicInstrument, PublicInstrumentRegistry, build_default_public_instrument_registry
+from .public_retry import call_with_transient_retry, normalize_public_retry_policy
 from .types import MarketBar, MarketDataProvenance, MarketDataResponse, MarketDataValidationError, MarketQuoteSnapshot, MarketSeries
 
 
@@ -41,6 +42,9 @@ class AkShareETFAdapter:
         series_ttl_seconds: float = 300.0,
         quote_ttl_seconds: float = 15.0,
         failure_ttl_seconds: float = 15.0,
+        retry_max_attempts: int = 2,
+        retry_backoff_seconds: float = 0.2,
+        retry_sleeper=time.sleep,
         clock=time.time,
     ) -> None:
         self.registry = registry or build_default_public_instrument_registry()
@@ -50,6 +54,11 @@ class AkShareETFAdapter:
         self.series_ttl_seconds = _bounded_ttl(series_ttl_seconds)
         self.quote_ttl_seconds = _bounded_ttl(quote_ttl_seconds)
         self.failure_ttl_seconds = _bounded_ttl(failure_ttl_seconds)
+        self.retry_max_attempts, self.retry_backoff_seconds = normalize_public_retry_policy(
+            max_attempts=retry_max_attempts,
+            backoff_seconds=retry_backoff_seconds,
+        )
+        self._retry_sleeper = retry_sleeper
         self._clock = clock
 
     def get_price_series(self, request: MarketSeriesRequest) -> MarketDataResponse[MarketSeries | None]:
@@ -65,7 +74,12 @@ class AkShareETFAdapter:
         end_date = datetime.fromtimestamp(request.date_to or fetched_at, tz=zone).date()
         start_date = datetime.fromtimestamp(request.date_from, tz=zone).date() if request.date_from else end_date - timedelta(days=max(30, request.limit * 2 + 30))
         try:
-            frame = self._history_loader(symbol=instrument.vendor_symbol, period="daily", start_date=start_date.strftime("%Y%m%d"), end_date=end_date.strftime("%Y%m%d"), adjust="")
+            frame = call_with_transient_retry(
+                lambda: self._history_loader(symbol=instrument.vendor_symbol, period="daily", start_date=start_date.strftime("%Y%m%d"), end_date=end_date.strftime("%Y%m%d"), adjust=""),
+                max_attempts=self.retry_max_attempts,
+                backoff_seconds=self.retry_backoff_seconds,
+                sleeper=self._retry_sleeper,
+            )
             if frame is None or bool(getattr(frame, "empty", False)):
                 return self._cache(key, self._empty(instrument, f"no_observations:{instrument.canonical_code}"), self.series_ttl_seconds)
             points = self._normalize_history(frame, instrument=instrument, request=request)
@@ -92,7 +106,12 @@ class AkShareETFAdapter:
             return cached.value
         fetched_at = max(1, int(self._clock()))
         try:
-            frame = self._spot_loader()
+            frame = call_with_transient_retry(
+                self._spot_loader,
+                max_attempts=self.retry_max_attempts,
+                backoff_seconds=self.retry_backoff_seconds,
+                sleeper=self._retry_sleeper,
+            )
             if frame is None or bool(getattr(frame, "empty", False)):
                 return self._cache(key, self._empty_quotes("no_observations:akshare_etf"), self.quote_ttl_seconds)
             snapshots = self._normalize_spot(frame, instruments=instruments, fetched_at=fetched_at)

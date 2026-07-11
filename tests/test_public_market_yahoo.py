@@ -54,6 +54,12 @@ def _daily_rows():
 
 
 class YahooFinanceAdapterTests(unittest.TestCase):
+    def test_retry_policy_rejects_more_than_two_attempts_or_negative_backoff(self) -> None:
+        with self.assertRaises(ValueError):
+            YahooFinanceAdapter(retry_max_attempts=3)
+        with self.assertRaises(ValueError):
+            YahooFinanceAdapter(retry_backoff_seconds=-0.1)
+
     def test_default_downloader_uses_single_ticker_history_with_errors_enabled(self) -> None:
         calls = []
 
@@ -164,6 +170,7 @@ class YahooFinanceAdapterTests(unittest.TestCase):
             downloader=failing,
             cache=TTLMarketDataCache(max_entries=10, clock=cache_clock),
             failure_ttl_seconds=5,
+            retry_sleeper=lambda _seconds: None,
             clock=lambda: FIXED_NOW,
         )
         cache_clock.value = 200
@@ -175,7 +182,7 @@ class YahooFinanceAdapterTests(unittest.TestCase):
         failing_adapter.get_price_series(failure_request)
 
         self.assertIs(failed_first, failed_second)
-        self.assertEqual(len(failure_calls), 2)
+        self.assertEqual(len(failure_calls), 4)
 
     def test_series_cache_key_includes_limit_and_date_range(self) -> None:
         calls = []
@@ -319,7 +326,11 @@ class YahooFinanceAdapterTests(unittest.TestCase):
                 raise TimeoutError()
             return FakeFrame(_daily_rows())
 
-        adapter = YahooFinanceAdapter(downloader=downloader, clock=lambda: FIXED_NOW)
+        adapter = YahooFinanceAdapter(
+            downloader=downloader,
+            retry_sleeper=lambda _seconds: None,
+            clock=lambda: FIXED_NOW,
+        )
 
         result = adapter.get_quote_snapshots(
             MarketQuoteRequest(codes=("NIKKEI225.INDEX", "SP500.INDEX"))
@@ -329,6 +340,65 @@ class YahooFinanceAdapterTests(unittest.TestCase):
         self.assertEqual(result.status, "unavailable")
         self.assertEqual(result.reason, "upstream_timeout:yahoo")
         self.assertEqual(result.data, ())
+
+    def test_timeout_retries_once_then_recovers(self) -> None:
+        calls = []
+        sleeps = []
+
+        def downloader(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise TimeoutError("temporary timeout")
+            return FakeFrame(_daily_rows())
+
+        adapter = YahooFinanceAdapter(
+            downloader=downloader,
+            retry_sleeper=sleeps.append,
+            clock=lambda: FIXED_NOW,
+        )
+
+        result = adapter.get_price_series(MarketSeriesRequest(code="NIKKEI225.INDEX", limit=2))
+
+        self.assertTrue(result.ok)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(sleeps, [0.2])
+
+    def test_explicit_http_503_retries_but_http_400_does_not(self) -> None:
+        class HTTPFailure(Exception):
+            def __init__(self, status_code):
+                super().__init__(f"HTTP {status_code}")
+                self.response = SimpleNamespace(status_code=status_code)
+
+        retry_calls = []
+
+        def temporary_503(**_kwargs):
+            retry_calls.append(True)
+            if len(retry_calls) == 1:
+                raise HTTPFailure(503)
+            return FakeFrame(_daily_rows())
+
+        retry_result = YahooFinanceAdapter(
+            downloader=temporary_503,
+            retry_sleeper=lambda _seconds: None,
+            clock=lambda: FIXED_NOW,
+        ).get_price_series(MarketSeriesRequest(code="SP500.INDEX", limit=2))
+
+        bad_request_calls = []
+
+        def permanent_400(**_kwargs):
+            bad_request_calls.append(True)
+            raise HTTPFailure(400)
+
+        failure_result = YahooFinanceAdapter(
+            downloader=permanent_400,
+            retry_sleeper=lambda _seconds: None,
+            clock=lambda: FIXED_NOW,
+        ).get_price_series(MarketSeriesRequest(code="HSI.INDEX", limit=2))
+
+        self.assertTrue(retry_result.ok)
+        self.assertEqual(len(retry_calls), 2)
+        self.assertFalse(failure_result.ok)
+        self.assertEqual(len(bad_request_calls), 1)
 
     def test_missing_dependency_timeout_and_rate_limit_are_structured(self) -> None:
         def missing(**_kwargs):

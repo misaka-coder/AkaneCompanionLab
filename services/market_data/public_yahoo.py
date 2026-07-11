@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from .provider import MarketQuoteRequest, MarketSeriesRequest
 from .public_cache import TTLMarketDataCache
 from .public_instruments import PublicInstrument, PublicInstrumentRegistry, build_default_public_instrument_registry
+from .public_retry import call_with_transient_retry, normalize_public_retry_policy
 from .types import (
     MarketBar,
     MarketDataProvenance,
@@ -47,6 +48,9 @@ class YahooFinanceAdapter:
         series_ttl_seconds: float = 900.0,
         quote_ttl_seconds: float = 60.0,
         failure_ttl_seconds: float = 15.0,
+        retry_max_attempts: int = 2,
+        retry_backoff_seconds: float = 0.2,
+        retry_sleeper=time.sleep,
         clock=time.time,
     ) -> None:
         self.registry = registry or build_default_public_instrument_registry()
@@ -56,6 +60,11 @@ class YahooFinanceAdapter:
         self.series_ttl_seconds = _bounded_ttl(series_ttl_seconds, field="series_ttl_seconds")
         self.quote_ttl_seconds = _bounded_ttl(quote_ttl_seconds, field="quote_ttl_seconds")
         self.failure_ttl_seconds = _bounded_ttl(failure_ttl_seconds, field="failure_ttl_seconds")
+        self.retry_max_attempts, self.retry_backoff_seconds = normalize_public_retry_policy(
+            max_attempts=retry_max_attempts,
+            backoff_seconds=retry_backoff_seconds,
+        )
+        self._retry_sleeper = retry_sleeper
         self._clock = clock
 
     def get_price_series(self, request: MarketSeriesRequest) -> MarketDataResponse[MarketSeries | None]:
@@ -101,7 +110,12 @@ class YahooFinanceAdapter:
         fetched_at = max(1, int(self._clock()))
         download_arguments = self._download_arguments(request, instrument=instrument, now_ts=fetched_at)
         try:
-            frame = self._downloader(**download_arguments)
+            frame = call_with_transient_retry(
+                lambda: self._downloader(**download_arguments),
+                max_attempts=self.retry_max_attempts,
+                backoff_seconds=self.retry_backoff_seconds,
+                sleeper=self._retry_sleeper,
+            )
         except YahooFinanceDependencyUnavailable:
             return self._cache_response(
                 cache_key,

@@ -96,14 +96,66 @@ class AkShareETFAdapterTests(unittest.TestCase):
         def timeout():
             calls.append(True)
             raise TimeoutError()
-        adapter = AkShareETFAdapter(spot_loader=timeout, history_loader=lambda **_kwargs: history_frame(), clock=lambda: FIXED_NOW)
+        adapter = AkShareETFAdapter(
+            spot_loader=timeout,
+            history_loader=lambda **_kwargs: history_frame(),
+            retry_sleeper=lambda _seconds: None,
+            clock=lambda: FIXED_NOW,
+        )
         request = MarketQuoteRequest(codes=("513000.SH",))
         first = adapter.get_quote_snapshots(request)
         second = adapter.get_quote_snapshots(request)
         self.assertFalse(first.ok)
         self.assertEqual(first.reason, "upstream_timeout:akshare")
         self.assertIs(first, second)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
+
+    def test_connection_reset_retries_once_then_history_recovers(self):
+        calls = []
+        sleeps = []
+
+        def history(**_kwargs):
+            calls.append(True)
+            if len(calls) == 1:
+                raise ConnectionResetError("reset by peer")
+            return history_frame()
+
+        adapter = AkShareETFAdapter(
+            spot_loader=spot_frame,
+            history_loader=history,
+            retry_sleeper=sleeps.append,
+            clock=lambda: FIXED_NOW,
+        )
+
+        result = adapter.get_price_series(MarketSeriesRequest(code="513000.SH", limit=2))
+
+        self.assertTrue(result.ok)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(sleeps, [0.2])
+
+    def test_empty_and_schema_failures_are_not_retried(self):
+        empty_calls = []
+        schema_calls = []
+
+        empty_result = AkShareETFAdapter(
+            spot_loader=lambda: empty_calls.append(True) or FakeFrame([], SPOT_COLUMNS, empty=True),
+            history_loader=lambda **_kwargs: history_frame(),
+            retry_sleeper=lambda _seconds: self.fail("empty data must not retry"),
+            clock=lambda: FIXED_NOW,
+        ).get_quote_snapshots(MarketQuoteRequest(codes=("513000.SH",)))
+
+        bad = FakeFrame(history_frame().rows, ("日期", "开盘"))
+        schema_result = AkShareETFAdapter(
+            spot_loader=spot_frame,
+            history_loader=lambda **_kwargs: schema_calls.append(True) or bad,
+            retry_sleeper=lambda _seconds: self.fail("schema failures must not retry"),
+            clock=lambda: FIXED_NOW,
+        ).get_price_series(MarketSeriesRequest(code="513000.SH"))
+
+        self.assertEqual(empty_result.status, "empty")
+        self.assertEqual(len(empty_calls), 1)
+        self.assertFalse(schema_result.ok)
+        self.assertEqual(len(schema_calls), 1)
 
 
 if __name__ == "__main__":

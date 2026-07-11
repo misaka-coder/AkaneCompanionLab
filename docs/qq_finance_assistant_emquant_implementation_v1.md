@@ -1,6 +1,6 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
-状态：设计锁定；F0-F7d4、public security master bootstrap 与 F9a-F9b 已完成；免费 public_market 已注册但默认 disabled；自然语言标的解析、QQ subscription/watchlist、图表/报告和 Provider 解耦已接通；下一步为公开源瞬时网络重试和真实 QQ 问答 smoke
+状态：设计锁定；F0-F7d4、public security master bootstrap、公开源瞬时网络重试与 F9a-F9b 已完成；免费 public_market 已注册但默认 disabled；自然语言标的解析、QQ subscription/watchlist、图表/报告和 Provider 解耦已接通；下一步为真实 QQ 问答 smoke
 更新时间：2026-07-11
 适用仓库：AkaneCompanionLab
 外部依赖：memcore、Choice EmQuantAPI Python SDK 2.7.2.x、NapCat / OneBot
@@ -1867,7 +1867,7 @@ F7b 实际落地：
 
 ### Slice F7d：免费公开行情 Provider
 
-状态：F7d0-F7d4 已完成；public_market 已进入生产 registry 但默认 disabled；Yahoo live 超时与 AkShare history live ConnectionError 均结构化保留。
+状态：F7d0-F7d4、security master bootstrap 和瞬时网络重试已完成；public_market 已进入生产 registry 但默认 disabled；Yahoo live 超时与 AkShare history live ConnectionError 均结构化保留。
 
 完整设计、数据 provenance、时区纪律、依赖隔离、测试矩阵和提交边界见：
 
@@ -1883,7 +1883,8 @@ docs/public_market_provider_implementation_v1.md
 4. F7d2：最近已完成日线快照与 TTL cache；已完成；
 5. F7d3：AkShare 境内 ETF；已完成；
 6. F7d4：`public_market` composite Provider 注册与配置；已完成；
-7. F7d5：只有可靠 FX 数据源存在时再做指数/ETF/FX 联合分析。
+7. F7d4r：timeout、连接重置/中断与明确 HTTP 5xx 最多 2 次总尝试，最终失败继续负缓存；已完成；
+8. F7d5：只有可靠 FX 数据源存在时再做指数/ETF/FX 联合分析。
 
 免费 Provider 不替代 Choice，也不能回退 Mock。指数和境内 ETF 必须保持不同 canonical code、来源、币种、时间语义和代理风险说明。
 
@@ -2071,7 +2072,7 @@ V1 完成时，下面场景必须真实成立：
 
 ## 24. 下一步
 
-F6、F7、F7c、F7d0-F7d4、public security master bootstrap 与 F9a-F9b 已完成。免费公开行情代码主链和自然语言标的解析已经接通但默认关闭；当前优先级是补瞬时网络重试并执行本地端到端 smoke。上下文恢复后按以下顺序继续：
+F6、F7、F7c、F7d0-F7d4、public security master bootstrap、公开源瞬时网络重试与 F9a-F9b 已完成。免费公开行情代码主链和自然语言标的解析已经接通但默认关闭；当前优先级是执行本地端到端 smoke。上下文恢复后按以下顺序继续：
 
 1. 先读 `docs/public_market_provider_implementation_v1.md` 和 F7d0 离线 fixture；不要重新跑大范围依赖调查，不改基础 `requirements.txt`，不接未文档化快讯接口；
 2. 安装可选依赖并仅在本地显式设置 `FINANCE_MARKET_PROVIDER=public_market`；保持事件 worker 和 QQ push 关闭；
