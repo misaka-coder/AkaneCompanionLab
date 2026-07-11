@@ -386,6 +386,7 @@ class WebSearchToolHandlerTests(unittest.TestCase):
                                         {
                                             "title": "AnySearch 文档",
                                             "url": "https://example.com/anysearch",
+                                            "published_at": "2026-07-10T15:00:00+09:00",
                                             "snippet": "公开搜索结果，密钥 dotenv-secret Authorization: Bearer dotenv-secret",
                                         }
                                     ]
@@ -427,6 +428,9 @@ class WebSearchToolHandlerTests(unittest.TestCase):
             self.assertIn("AnySearch 联网搜索结果", result.followup_context)
             self.assertIn("AnySearch 文档", result.followup_context)
             self.assertIn("https://example.com/anysearch", result.followup_context)
+            self.assertIn("当前消息时间和本次检索时间", result.followup_context)
+            self.assertIn("搜索摘要不是规范化行情快照", result.followup_context)
+            self.assertIn("2026-07-10T15:00:00+09:00", result.followup_context)
             self.assertNotIn("dotenv-secret", result.followup_context)
             self.assertNotIn("Authorization: Bearer dotenv-secret", result.followup_context)
             self.assertNotIn(temp_dir, result.followup_context)

@@ -3680,6 +3680,12 @@ class WebSearchToolHandler(BaseToolHandler):
         lines = ["【AnySearch 联网搜索结果】"]
         if query_label:
             lines.append(f"查询：{self._sanitize_output(query_label, redaction_terms=redaction_terms)[:240]}")
+        lines.extend(
+            [
+                "证据口径：当前消息时间和本次检索时间只表示何时提问或查询，不能充当网页内容、行情数据或事件本身的日期。",
+                "搜索摘要不是规范化行情快照。涉及时效性结论时，应从结果正文明确核对内容日期、来源时区和交易状态；只有时分没有日期、日期冲突或含义不明时，应继续提取正文或交叉搜索，仍不明确就降低置信度，不能擅自称为“今天盘中”或“今天收盘”。",
+            ]
+        )
         if not results:
             text = self._payload_to_text(payload, redaction_terms=redaction_terms)
             if text:
@@ -3707,6 +3713,12 @@ class WebSearchToolHandler(BaseToolHandler):
                 lines.append(f"{index}. {title}")
                 if url:
                     lines.append(f"   URL: {url}")
+                source_date = self._search_result_date_hint(item)
+                if source_date:
+                    lines.append(
+                        "   来源日期字段（需结合正文判断含义）: "
+                        + self._sanitize_output(source_date, redaction_terms=redaction_terms)[:160]
+                    )
                 if snippet:
                     lines.append(f"   摘要: {self._clip(snippet, 420)}")
         lines.append("请只基于这些公开搜索结果回答；没查到或不确定的部分要明确说明。")
@@ -3734,6 +3746,9 @@ class WebSearchToolHandler(BaseToolHandler):
         ]
         if title:
             lines.append(f"标题：{self._clip(title, 160)}")
+        lines.append(
+            "证据口径：本轮网页提取发生时间不等于正文事实日期；涉及时效性事实时，以正文明确的日期、更新字段和来源时区为准。"
+        )
         lines.append("正文摘录：")
         lines.append(self._clip(text or "没有拿到可用正文。", max_chars))
         return self._clip("\n".join(lines), self.MAX_FOLLOWUP_CHARS)
@@ -3799,6 +3814,22 @@ class WebSearchToolHandler(BaseToolHandler):
                     results.append({"title": item})
             return results
         return []
+
+    def _search_result_date_hint(self, item: Mapping[str, Any]) -> str:
+        for key in (
+            "published_at",
+            "publishedAt",
+            "published_date",
+            "publication_date",
+            "updated_at",
+            "updatedAt",
+            "date",
+            "datetime",
+        ):
+            value = str(item.get(key) or "").strip()
+            if value:
+                return value
+        return ""
 
     def _payload_to_text(self, payload: Any, *, redaction_terms: list[str]) -> str:
         if isinstance(payload, str):

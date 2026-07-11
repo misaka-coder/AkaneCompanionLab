@@ -6,7 +6,6 @@ Group B — module-level functions that take engine as first param.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from ..capability_registry import (
@@ -123,21 +122,6 @@ def build_native_tool_round_instruction(native_tools: list[dict[str, Any]] | Non
         "如果不需要任何 legacy 工具，最终表现 JSON 的 tool_call 字段必须为 null。\n"
         "不要在 speech 里声称工具已调用、已完成或已失败；真实状态以系统工具结果为准。"
     )
-
-
-def required_finance_tool_call(user_message: str, *, domain_profile_id: str = "") -> dict[str, Any] | None:
-    if str(domain_profile_id or "").strip() != FINANCE_DOMAIN_PROFILE_ID:
-        return None
-    text = " ".join(str(user_message or "").split()).strip()
-    if not text or not re.search(r"(?:搜索|搜一下|帮我搜|查找|联网查|上网查)", text, re.IGNORECASE):
-        return None
-    query = re.sub(r"^(?:请|麻烦|帮我)?\s*(?:搜索一下|搜索|搜一下|帮我搜|查找|联网查|上网查)\s*", "", text)
-    return {
-        "type": "web_search",
-        "action": "search",
-        "query": query or text,
-        "max_results": 5,
-    }
 
 
 # ── Group B: Engine-coupled helpers ──────────────────────────────
