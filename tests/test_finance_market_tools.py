@@ -211,7 +211,7 @@ class FinanceMarketToolTests(unittest.TestCase):
             provider=self.provider.id,
             code="000000.TEST",
             display_name="合成测试公司",
-            aliases=("测试公司", "Synthetic Corp"),
+            aliases=("000000", "测试公司", "Synthetic Corp"),
             market="TEST",
             security_type="equity",
             source="Synthetic Choice Fixture",
@@ -307,6 +307,24 @@ class FinanceMarketToolTests(unittest.TestCase):
             session_id="session",
             request_context={"message": "帮我看看 999999.TEST"},
         )
+
+    def test_exact_short_code_is_canonicalized_before_quote_provider_call(self) -> None:
+        quote = self.handlers["market_quote_snapshot"]
+        context = ToolExecutionContext(
+            profile_user_id="owner",
+            session_id="session",
+            now_ts=1_752_153_600,
+            visual_payload={},
+            request_context={"message": "分析一下000000现在的情况"},
+        )
+
+        result = quote.execute(
+            call=quote.normalize_call({"type": "market_quote_snapshot", "codes": ["000000"]}) or {},
+            context=context,
+        )
+
+        self.assertIn('"status": "ok"', result.followup_context)
+        self.assertIn('"code": "000000.TEST"', result.followup_context)
 
     def test_legacy_normalization_rejects_unknown_or_invalid_parameters(self) -> None:
         quote = self.handlers["market_quote_snapshot"]

@@ -319,15 +319,20 @@ class MarketNewsSearchToolHandler(_FinanceReadToolHandler):
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         try:
-            self.service.ensure_trusted_codes(
+            codes = self.service.canonicalize_trusted_codes(
                 tuple(call.get("codes") or ()),
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+            )
+            self.service.ensure_trusted_codes(
+                codes,
                 profile_user_id=context.profile_user_id,
                 session_id=context.session_id,
                 request_context=context.request_context,
             )
             request = MarketNewsQuery(
                 query=str(call.get("query") or ""),
-                codes=tuple(call.get("codes") or ()),
+                codes=codes,
                 content_types=tuple(call.get("content_types") or ()),
                 date_from=call.get("date_from"),
                 date_to=call.get("date_to"),
@@ -365,15 +370,18 @@ class MarketQuoteSnapshotToolHandler(_FinanceReadToolHandler):
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         try:
-            self.service.ensure_trusted_codes(
+            codes = self.service.canonicalize_trusted_codes(
                 tuple(call.get("codes") or ()),
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+            )
+            self.service.ensure_trusted_codes(
+                codes,
                 profile_user_id=context.profile_user_id,
                 session_id=context.session_id,
                 request_context=context.request_context,
             )
-            return self._result(
-                self.service.quote_snapshots(MarketQuoteRequest(codes=tuple(call.get("codes") or ())))
-            )
+            return self._result(self.service.quote_snapshots(MarketQuoteRequest(codes=codes)))
         except Exception as exc:
             return self._failure(exc)
 
@@ -435,14 +443,20 @@ class MarketPriceSeriesToolHandler(_FinanceReadToolHandler):
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         try:
-            self.service.ensure_trusted_codes(
+            codes = self.service.canonicalize_trusted_codes(
                 (str(call.get("code") or ""),),
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+            )
+            code = codes[0] if codes else ""
+            self.service.ensure_trusted_codes(
+                (code,),
                 profile_user_id=context.profile_user_id,
                 session_id=context.session_id,
                 request_context=context.request_context,
             )
             request = MarketSeriesRequest(
-                code=str(call.get("code") or ""),
+                code=code,
                 interval=str(call.get("interval") or "1d"),
                 adjusted=str(call.get("adjusted") or "none"),
                 date_from=call.get("date_from"),
@@ -551,6 +565,21 @@ class RenderMarketChartToolHandler(_FinanceReadToolHandler):
                 moving_averages=tuple(call.get("moving_averages") or ()),
                 title=str(call.get("title") or ""),
             )
+            canonical_codes = self.service.canonicalize_trusted_codes(
+                (request.code,),
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+            )
+            if canonical_codes and canonical_codes[0] != request.code:
+                request = ChartRequest(
+                    code=canonical_codes[0],
+                    chart_type=request.chart_type,
+                    interval=request.interval,
+                    adjusted=request.adjusted,
+                    lookback=request.lookback,
+                    moving_averages=request.moving_averages,
+                    title=request.title,
+                )
             self.service.ensure_trusted_codes(
                 (request.code,),
                 profile_user_id=context.profile_user_id,
@@ -789,6 +818,25 @@ class ComposeFinanceReportToolHandler(_FinanceReadToolHandler):
                 risk_notes=tuple(call.get("risk_notes") or ()),
                 watch_items=tuple(call.get("watch_items") or ()),
             )
+            canonical_codes = self.service.canonicalize_trusted_codes(
+                request.codes,
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+            )
+            if canonical_codes != request.codes:
+                request = FinanceReportRequest(
+                    report_type=request.report_type,
+                    codes=canonical_codes,
+                    output_format=request.output_format,
+                    interval=request.interval,
+                    adjusted=request.adjusted,
+                    lookback=request.lookback,
+                    chart_targets=request.chart_targets,
+                    title=request.title,
+                    analysis_summary=request.analysis_summary,
+                    risk_notes=request.risk_notes,
+                    watch_items=request.watch_items,
+                )
             self.service.ensure_trusted_codes(
                 request.codes,
                 profile_user_id=context.profile_user_id,

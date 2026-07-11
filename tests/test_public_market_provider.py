@@ -112,6 +112,7 @@ class PublicMarketProviderTests(unittest.TestCase):
             second = provider.seed_security_master(store, now_ts=300)
             nikkei = store.resolve_security("日经225", provider="public_market")
             etf = store.resolve_security("日经ETF华夏", provider="public_market")
+            etf_code = store.resolve_security("513000", provider="public_market")
             vendor = store.resolve_security("^N225", provider="public_market")
 
         self.assertEqual(len(first), 6)
@@ -119,6 +120,8 @@ class PublicMarketProviderTests(unittest.TestCase):
         self.assertEqual(nikkei[0]["code"], "NIKKEI225.INDEX")
         self.assertEqual(nikkei[0]["match_type"], "exact")
         self.assertEqual(etf[0]["code"], "513520.SH")
+        self.assertEqual(etf_code[0]["code"], "513000.SH")
+        self.assertEqual(etf_code[0]["match_type"], "exact")
         self.assertEqual(vendor, ())
 
     def test_series_routes_by_canonical_instrument(self) -> None:

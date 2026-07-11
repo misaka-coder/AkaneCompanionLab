@@ -50,7 +50,9 @@ class PublicInstrumentRegistryTests(unittest.TestCase):
         self.assertEqual(nasdaq.instrument.canonical_code, "NASDAQCOMPOSITE.INDEX")
         self.assertEqual(self.registry.resolve("纳指").status, "not_found")
         self.assertEqual(self.registry.resolve("^N225").status, "not_found")
-        self.assertEqual(self.registry.resolve("513000").status, "not_found")
+        etf = self.registry.resolve("513000")
+        self.assertTrue(etf.ok)
+        self.assertEqual(etf.instrument.canonical_code, "513000.SH")
 
     def test_public_serialization_excludes_vendor_routing_details(self) -> None:
         payload = self.registry.require("NIKKEI225.INDEX").to_public_dict()

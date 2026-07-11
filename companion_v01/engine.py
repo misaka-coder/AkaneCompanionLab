@@ -2239,6 +2239,14 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 domain_profile_id=turn_domain_profile_id,
             )
+            if not tool_call and not rejection and tool_round_index == 0:
+                tool_call = self._required_finance_tool_call(
+                    user_message=user_message,
+                    client_context=client_context,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    domain_profile_id=turn_domain_profile_id,
+                )
             if not tool_call:
                 if not rejection:
                     break
@@ -2680,6 +2688,14 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 domain_profile_id=turn_domain_profile_id,
             )
+            if not tool_call and not rejection and tool_round_index == 0:
+                tool_call = self._required_finance_tool_call(
+                    user_message=user_message,
+                    client_context=client_context,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    domain_profile_id=turn_domain_profile_id,
+                )
             yield {
                 "type": "assistant_stage_decision",
                 "has_tool_call": bool(tool_call),
@@ -3500,6 +3516,28 @@ class AkaneMemoryEngine:
             else ""
         )
         return final_output, tool_call, rejection
+
+    def _required_finance_tool_call(
+        self,
+        *,
+        user_message: str,
+        client_context: ClientProtocolContext,
+        profile_user_id: str,
+        session_id: str,
+        domain_profile_id: str = "",
+    ) -> dict[str, Any] | None:
+        from .engine_services.tool_rounds import required_finance_tool_call as _fn
+
+        raw_tool_call = _fn(user_message, domain_profile_id=domain_profile_id)
+        if raw_tool_call is None:
+            return None
+        return self._normalize_tool_call(
+            raw_tool_call,
+            client_context=client_context,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            domain_profile_id=domain_profile_id,
+        )
 
     def _record_tool_call_rejection(
         self,

@@ -164,6 +164,41 @@ class MarketDataToolService:
                 provider=self.provider.id,
             )
 
+    def canonicalize_trusted_codes(
+        self,
+        codes: tuple[str, ...] | list[str],
+        *,
+        profile_user_id: str,
+        session_id: str,
+    ) -> tuple[str, ...]:
+        canonical: list[str] = []
+        for code in codes:
+            clean_code = str(code or "").strip().upper()
+            if not clean_code:
+                continue
+            candidates = self.event_store.resolve_security(
+                clean_code,
+                provider=self.provider.id,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                limit=10,
+            )
+            exact_codes = {
+                str(candidate.get("code") or "").strip().upper()
+                for candidate in candidates
+                if str(candidate.get("match_type") or "") == "exact"
+                and str(candidate.get("code") or "").strip()
+            }
+            resolved_code = next(iter(exact_codes)) if len(exact_codes) == 1 else clean_code
+            if len(exact_codes) == 1:
+                self._remember_resolved_code(
+                    resolved_code,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                )
+            canonical.append(resolved_code)
+        return tuple(canonical)
+
     def _remember_resolved_code(self, code: str, *, profile_user_id: str, session_id: str) -> None:
         expires_at = max(1, int(self._clock())) + self._resolved_code_ttl_seconds
         key = (str(profile_user_id or ""), str(session_id or ""), str(code or "").upper())

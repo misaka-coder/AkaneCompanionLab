@@ -291,6 +291,7 @@ def build_default_public_instrument_registry() -> PublicInstrumentRegistry:
                 vendor_symbol="513000",
                 quote_delay_kind="unknown",
                 aliases=(
+                    "513000",
                     "易方达奥明日经225ETF",
                     "易方达奥明日经225交易型开放式指数证券投资基金QDII",
                     "225ETF",
@@ -307,7 +308,7 @@ def build_default_public_instrument_registry() -> PublicInstrumentRegistry:
                 route="akshare_etf",
                 vendor_symbol="513520",
                 quote_delay_kind="unknown",
-                aliases=("华夏野村日经225ETF", "日经225ETF华夏"),
+                aliases=("513520", "华夏野村日经225ETF", "日经225ETF华夏"),
                 tracking_target="NIKKEI225.INDEX",
             ),
         ]

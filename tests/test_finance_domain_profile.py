@@ -17,6 +17,7 @@ from companion_v01.domain_profiles import (
 )
 from companion_v01.persona_config import load_persona_config
 from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.engine_services.tool_rounds import required_finance_tool_call
 from companion_v01.prompt_builder import PromptBuilder
 from companion_v01.prompt_profiles import PromptModule, PromptProfileRegistry
 from companion_v01.qq_gateway import NapCatQQGateway
@@ -77,6 +78,26 @@ class FinanceDomainProfileTests(unittest.TestCase):
         self.assertEqual(result["system_extra_blocks"][0], FINANCE_PROMPT_BLOCK)
         self.assertIn("不要自称另一个金融机器人", result["system_extra_blocks"][0])
         self.assertIn("market_resolve_security", result["system_extra_blocks"][0])
+        self.assertIn("必须先调用 web_search", result["system_extra_blocks"][0])
+        self.assertIn("不能把尚未获得的 Choice 权限当成现成兜底", result["system_extra_blocks"][0])
+
+    def test_explicit_finance_search_gets_deterministic_web_search_call(self) -> None:
+        call = required_finance_tool_call(
+            "搜索一下今天影响日经指数的重要信息",
+            domain_profile_id=FINANCE_DOMAIN_PROFILE_ID,
+        )
+
+        self.assertEqual(
+            call,
+            {
+                "type": "web_search",
+                "action": "search",
+                "query": "今天影响日经指数的重要信息",
+                "max_results": 5,
+            },
+        )
+        self.assertIsNone(required_finance_tool_call("聊聊日经指数", domain_profile_id=FINANCE_DOMAIN_PROFILE_ID))
+        self.assertIsNone(required_finance_tool_call("搜索一下日经指数", domain_profile_id="default"))
 
     def test_finance_profile_filters_unrelated_qq_tools(self) -> None:
         profile = DomainProfileRegistry(finance_enabled=True).get(FINANCE_DOMAIN_PROFILE_ID)
@@ -215,6 +236,11 @@ class QQFinanceModeTests(unittest.TestCase):
 
     def test_group_push_requires_admin_or_owner(self) -> None:
         with patch.object(config, "FINANCE_ASSISTANT_ENABLED", True, create=True), patch.object(
+            config,
+            "FINANCE_DEFAULT_MODE",
+            "off",
+            create=True,
+        ), patch.object(
             config,
             "QQ_FINANCE_MODE_COMMANDS_ENABLED",
             True,

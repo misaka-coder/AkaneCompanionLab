@@ -6,7 +6,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from companion_v01.routes.qq import _process_qq_turn_streaming, _synthesize_qq_voice_file
+from companion_v01.routes.qq import (
+    _filter_unsent_reply_messages,
+    _process_qq_turn_streaming,
+    _synthesize_qq_voice_file,
+)
 
 
 class FakeTTSClient:
@@ -46,6 +50,12 @@ class FakeQQGateway:
     def send_generated_files(self, context, tool_events):
         return {"ok": True, "count": 0, "results": []}
 
+    def send_market_charts(self, context, tool_events, *, authorization=""):
+        return {"ok": True, "count": 0, "results": []}
+
+    def send_finance_reports(self, context, tool_events, *, authorization=""):
+        return {"ok": True, "count": 0, "results": []}
+
     def send_emotion_mface(self, context, frame, *, qq_delivery_config):
         return {"ok": True, "status": "sent"}
 
@@ -54,6 +64,22 @@ class FakeQQGateway:
 
 
 class QQVoiceDeliveryTests(unittest.TestCase):
+    def test_streamed_segments_are_not_resent_as_one_final_bubble(self) -> None:
+        streamed = [
+            "第一段已经发出",
+            "第二段也已经发出",
+            "第三段同样发出",
+        ]
+        final = "第一段已经发出。\n\n第二段也已经发出！\n\n第三段同样发出。"
+
+        self.assertEqual(_filter_unsent_reply_messages([final], streamed), [])
+
+    def test_streamed_prefix_keeps_only_new_final_tail(self) -> None:
+        streamed = ["第一段已经发出", "第二段也已经发出"]
+        final = "第一段已经发出。\n第二段也已经发出。\n这是最终阶段新增的结论。"
+
+        self.assertEqual(_filter_unsent_reply_messages([final], streamed), ["这是最终阶段新增的结论"])
+
     def test_group_voice_uses_owner_tts_profile_scope(self) -> None:
         captured_payload: dict = {}
 

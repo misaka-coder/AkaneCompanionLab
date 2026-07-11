@@ -57,6 +57,27 @@ def _normalize_reply_text(value: Any) -> str:
     return " ".join(str(value or "").replace("\r\n", "\n").replace("\r", "\n").split()).strip()
 
 
+def _canonical_reply_text(value: Any) -> str:
+    return re.sub(r"[\s，。！？!?~～、,.;；:：…—-]+", "", str(value or "").strip().lower())
+
+
+def _strip_canonical_prefix(text: str, canonical_prefix: str) -> str:
+    prefix = str(canonical_prefix or "")
+    if not prefix:
+        return str(text or "").strip()
+    matched = ""
+    for index, character in enumerate(str(text or "")):
+        canonical_character = _canonical_reply_text(character)
+        if not canonical_character:
+            continue
+        matched += canonical_character
+        if not prefix.startswith(matched):
+            return str(text or "").strip()
+        if matched == prefix:
+            return str(text or "")[index + 1 :].strip(" \t\r\n，。！？!?~～、,.;；:：…—-")
+    return str(text or "").strip()
+
+
 QQ_WORKSPACE_LIST_COMMANDS = {
     "工作台",
     "材料工作台",
@@ -483,11 +504,19 @@ def _filter_unsent_reply_messages(messages: list[str], sent_messages: list[str])
     sent_normalized = {_normalize_reply_text(item) for item in sent_messages if _normalize_reply_text(item)}
     sent_joined = "".join(str(item or "").strip() for item in sent_messages if str(item or "").strip()).strip()
     sent_joined_normalized = _normalize_reply_text(sent_joined)
+    sent_canonical_prefix = "".join(_canonical_reply_text(item) for item in sent_messages)
     unsent: list[str] = []
     for message in messages:
         text = str(message or "").strip()
         if not text:
             continue
+        canonical = _canonical_reply_text(text)
+        if sent_canonical_prefix and canonical.startswith(sent_canonical_prefix):
+            if canonical == sent_canonical_prefix:
+                continue
+            text = _strip_canonical_prefix(text, sent_canonical_prefix)
+            if not text:
+                continue
         normalized = _normalize_reply_text(text)
         if normalized and normalized in sent_normalized:
             continue
