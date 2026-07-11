@@ -1,10 +1,10 @@
 # Akane 免费公开行情 Provider 实施细案 V1
 
-状态：设计锁定，等待按 F7d0-F7d4 小步实施；Choice 保持可选高级 Provider，不再阻塞可演示主线
+状态：F7d0 依赖/许可证/数据形状 spike 已完成；Yahoo live 查询在当前网络超时并明确保留为 smoke 项；下一步为 F7d1a 标的注册表
 更新时间：2026-07-11
 适用仓库：AkaneCompanionLab
 实施分支：`feature/qq-finance-assistant-emquant`
-当前基线提交：`09c7fdc feat(finance): govern proactive push delivery`
+F7d0 起点提交：`93e0cef docs(finance): plan public market provider`
 
 ## 0. 文档目的
 
@@ -134,6 +134,32 @@ SDK 可下载
 7. 性能足够问答和低频推送，不追求交易级延迟。
 
 在 F7d0 锁依赖版本前，必须重新核对所选包的当前许可证、官方仓库、PyPI 包所有者和上游服务条款。不能只根据“无 Key”判断它免费、稳定或允许再分发。
+
+### 5.1 F7d0 已确认事实
+
+2026-07-11 在仓库外临时环境完成最小 spike，确认：
+
+- yfinance 当前选定版本为 `1.5.1`，wheel 元数据写 Apache，项目说明同时明确其与 Yahoo 无隶属关系、主要用于研究教育，并提示 Yahoo 数据 API 面向个人使用；客户端开源许可证不授予行情再分发权；
+- AkShare 当前选定版本为 `1.18.64`，wheel 元数据写 MIT，打包项目说明要求数据仅用于学术研究并提示数据风险；实际 ETF endpoint 标明上游为东方财富；
+- 两者都会引入 pandas，AkShare 还带来 lxml、curl_cffi、mini-racer 等较重依赖，因此继续采用独立 `requirements-finance-public.txt`；
+- yfinance 1.5.1 的 `download` 默认 `auto_adjust=True`、`multi_level_index=True`、`threads=True`、`progress=True`；适配器必须显式覆盖为未复权、单层列、单线程、无进度输出；
+- 当前环境对 Yahoo chart host 连续超时；本轮只保存 yfinance 确定性函数/列契约，不保存或伪造 live Yahoo 行情；真实成功观察留给显式网络 smoke；
+- AkShare `fund_etf_spot_em()` 成功返回 37 列，包含 `数据日期` 和 timezone-aware 的 `更新时间`；`fund_etf_hist_em(..., period="daily", adjust="")` 成功返回 11 列未复权日线；
+- 2026-07-11 抓取“实时行情”时，样本的 `数据日期/更新时间` 仍是 2026-07-10 收盘后；因此 `as_of` 必须来自数据字段，`fetched_at` 只能表示抓取时间，函数名中的“实时”不能直接变成产品承诺；
+- AkShare ETF 的 `成交量` 与成交额/价格的数量级显示其源单位为“手”，统一适配时必须乘 100 转为份额；原值不能直接写入标准 `volume`；
+- `513000` 与 `513520` 均由 AkShare 返回，且已通过上交所基本信息页和对应基金管理人页面交叉核验；它们分别映射为 `513000.SH`、`513520.SH`，跟踪对象为日经 225，但仍是人民币 ETF 代理而非指数本体；
+- 513000 的基金管理人公开名称在 2025-09-01 后发生过变更，registry 应保留稳定代码和可更新 display name，不能把历史简称当永久身份。
+
+F7d0 产物：
+
+~~~text
+requirements-finance-public.txt
+tests/fixtures/public_market_yahoo_v1.json
+tests/fixtures/public_market_akshare_etf_v1.json
+tests/test_public_market_data_shapes.py
+~~~
+
+使用边界因此进一步锁定：这些免费客户端只进入开发、研究和内部效果验证；若 QQ 群属于公开、收费或商业再分发场景，必须先取得上游许可或更换有相应授权的数据 Provider。
 
 ## 6. Provider 架构
 
@@ -676,6 +702,8 @@ Mock 仍不注册。
 
 ### F7d0：依赖、许可证和数据形状 spike
 
+状态：已完成；Yahoo live 成功观察因当前网络不可达保留为显式 smoke 项，不阻塞离线 adapter 实现。
+
 目标：在写生产 adapter 前锁定真实包版本、字段、单位、时间语义和使用边界。
 
 交付：
@@ -780,17 +808,17 @@ F7d0-F7d4 完成必须同时满足：
 
 ## 22. 上下文恢复后的精确下一步
 
-若接手者看到本文且 F7d0 尚未开始，按以下顺序执行，不要直接写完整 Provider：
+若接手者看到本文，下一步直接执行 F7d1a，不要重新跑大范围依赖调查，也不要直接写完整 composite Provider：
 
 1. `git status --short --branch`，确认不碰用户的 `uv.lock`；
-2. 建立临时、可删除的依赖验证环境，不修改基础 `requirements.txt`；
-3. 核对 yfinance、AkShare 包来源、许可证和当前 API；
-4. 对 `^N225`、`^GSPC` 和一个候选 ETF 做最小只读数据形状 spike；
-5. 记录列名、单位、时区、观察时间、交易日和空值行为；
-6. 用脱敏最小样本创建离线 fixture；
-7. 写 `public_instruments.py` 和 registry 测试；
-8. 只提交第一个小边界：`feat(finance): add public market instrument registry`；
-9. 再单独实现 Yahoo 日线 adapter；
-10. 每步运行相关测试、`git diff --check`，并只暂存本切片文件。
+2. 读取 F7d0 两份 fixture 和 `tests/test_public_market_data_shapes.py`；
+3. 新建 `services/market_data/public_instruments.py`；
+4. 实现不可变 `PublicInstrument`、固定 route/type/delay enum 和 `PublicInstrumentRegistry`；
+5. 写入四个全球指数与两只已核验 ETF，canonical code 与 vendor symbol 严格分离；
+6. 实现规范化 alias 查找，歧义返回候选，未知代码 fail closed；
+7. 新建 `tests/test_public_market_instruments.py`，测试唯一性、时区、币种、别名、ETF/指数分离和未知代码；
+8. 暂不导入 yfinance/AkShare，不改 factory/config，不访问网络；
+9. 运行新测试、现有 Provider 契约测试和 `git diff --check`；
+10. 只提交 `feat(finance): add public market instrument registry`。
 
-如果外部包或条款核验失败，停在结构化调查结论，不写伪适配器。Choice 继续保持可选，现有金融主链不受影响。
+Yahoo live smoke 失败不得改成假成功；后续网络恢复时再补成功观察。Choice 继续保持可选，现有金融主链不受影响。

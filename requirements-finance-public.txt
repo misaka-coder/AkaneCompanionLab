@@ -1,0 +1,7 @@
+# Optional public-market research dependencies.
+#
+# These packages are intentionally excluded from requirements.txt so normal
+# Akane installations do not pull pandas or public-data clients. Their client
+# licenses do not grant redistribution rights for upstream market data.
+yfinance==1.5.1
+akshare==1.18.64

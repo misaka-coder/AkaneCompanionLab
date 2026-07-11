@@ -1,0 +1,173 @@
+{
+  "fixture_schema": "akane.public_market.akshare_etf_shape.v1",
+  "fixture_kind": "minimal_live_observation",
+  "captured_at": "2026-07-11T11:31:25+08:00",
+  "library": {
+    "name": "akshare",
+    "version": "1.18.64",
+    "license_metadata": "MIT",
+    "homepage": "https://github.com/akfamily/akshare",
+    "usage_notice": "academic research only according to packaged project description; upstream data terms apply"
+  },
+  "upstream": {
+    "name": "Eastmoney public web data",
+    "spot_function": "fund_etf_spot_em",
+    "history_function": "fund_etf_hist_em",
+    "spot_reference": "https://quote.eastmoney.com/center/gridlist.html#fund_etf"
+  },
+  "spot_shape": {
+    "row_count_observed": 1543,
+    "timezone": "Asia/Shanghai",
+    "columns": [
+      "代码",
+      "名称",
+      "最新价",
+      "IOPV实时估值",
+      "基金折价率",
+      "涨跌额",
+      "涨跌幅",
+      "成交量",
+      "成交额",
+      "开盘价",
+      "最高价",
+      "最低价",
+      "昨收",
+      "振幅",
+      "换手率",
+      "量比",
+      "委比",
+      "外盘",
+      "内盘",
+      "主力净流入-净额",
+      "主力净流入-净占比",
+      "超大单净流入-净额",
+      "超大单净流入-净占比",
+      "大单净流入-净额",
+      "大单净流入-净占比",
+      "中单净流入-净额",
+      "中单净流入-净占比",
+      "小单净流入-净额",
+      "小单净流入-净占比",
+      "现手",
+      "买一",
+      "卖一",
+      "最新份额",
+      "流通市值",
+      "总市值",
+      "数据日期",
+      "更新时间"
+    ],
+    "dtypes": {
+      "代码": "str",
+      "名称": "str",
+      "最新价": "float64",
+      "成交量": "float64",
+      "成交额": "float64",
+      "数据日期": "datetime64",
+      "更新时间": "datetime64[Asia/Shanghai]"
+    },
+    "volume_source_unit": "lot_100_shares",
+    "volume_normalization_multiplier": 100,
+    "samples": [
+      {
+        "code": "513000",
+        "name": "日经225ETF易方达",
+        "last": 2.403,
+        "volume_lots": 1145308,
+        "amount_cny": 278431674,
+        "data_date": "2026-07-10",
+        "updated_at": "2026-07-10T16:11:36+08:00"
+      },
+      {
+        "code": "513520",
+        "name": "日经ETF华夏",
+        "last": 2.343,
+        "volume_lots": 1907128,
+        "amount_cny": 451333607,
+        "data_date": "2026-07-10",
+        "updated_at": "2026-07-10T16:11:41+08:00"
+      }
+    ]
+  },
+  "history_shape": {
+    "function_arguments": {
+      "period": "daily",
+      "adjust": ""
+    },
+    "columns": [
+      "日期",
+      "开盘",
+      "收盘",
+      "最高",
+      "最低",
+      "成交量",
+      "成交额",
+      "振幅",
+      "涨跌幅",
+      "涨跌额",
+      "换手率"
+    ],
+    "dtypes": {
+      "日期": "str",
+      "开盘": "float64",
+      "收盘": "float64",
+      "最高": "float64",
+      "最低": "float64",
+      "成交量": "int64",
+      "成交额": "float64"
+    },
+    "volume_source_unit": "lot_100_shares",
+    "volume_normalization_multiplier": 100,
+    "samples": [
+      {
+        "code": "513000",
+        "trading_date": "2026-07-10",
+        "open": 2.42,
+        "close": 2.403,
+        "high": 2.458,
+        "low": 2.4,
+        "volume_lots": 1145308,
+        "amount_cny": 278431674
+      },
+      {
+        "code": "513520",
+        "trading_date": "2026-07-10",
+        "open": 2.373,
+        "close": 2.343,
+        "high": 2.384,
+        "low": 2.343,
+        "volume_lots": 1907128,
+        "amount_cny": 451333607
+      }
+    ]
+  },
+  "verified_instruments": [
+    {
+      "canonical_code": "513000.SH",
+      "vendor_symbol": "513000",
+      "official_name": "易方达奥明日经225交易型开放式指数证券投资基金（QDII）",
+      "tracking_target": "日经225指数",
+      "exchange": "上海证券交易所",
+      "official_sources": [
+        "https://www.sse.com.cn/assortment/fund/list/etfinfo/basic/index.shtml?FUNDID=513000",
+        "https://www.efunds.com.cn/fund/513000.shtml"
+      ]
+    },
+    {
+      "canonical_code": "513520.SH",
+      "vendor_symbol": "513520",
+      "official_name": "华夏野村日经225ETF",
+      "tracking_target": "日经225指数",
+      "exchange": "上海证券交易所",
+      "official_sources": [
+        "https://www.sse.com.cn/assortment/fund/list/etfinfo/basic/index.shtml?FUNDID=513520",
+        "https://www.chinaamc.com/fund/513520/index.shtml"
+      ]
+    }
+  ],
+  "safety": {
+    "contains_credentials": false,
+    "contains_response_headers": false,
+    "sample_scope": "two instruments and one observation per capability for offline contract tests"
+  }
+}
