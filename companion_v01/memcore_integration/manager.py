@@ -8,6 +8,7 @@ is being retired.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from concurrent.futures import ThreadPoolExecutor
 import logging
 from pathlib import Path
 import sys
@@ -117,6 +118,7 @@ class MemcoreManager:
         self._index: Any | None = None
         self._systems: dict[tuple[str, str, str], Any] = {}
         self._warmed_index_keys: set[tuple[str, str, str]] = set()
+        self._index_warmup_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="akane-memcore-warmup")
         self._lock = threading.RLock()
         if self.enabled:
             self._bootstrap()
@@ -164,6 +166,7 @@ class MemcoreManager:
             store = self._store
             self._store = None
             self._index = None
+            warmup_executor = self._index_warmup_executor
         for system in systems:
             try:
                 system.close()
@@ -174,6 +177,7 @@ class MemcoreManager:
                 store.close()
             except Exception as exc:
                 logger.debug("memcore store close failed: %s", exc)
+        warmup_executor.shutdown(wait=False, cancel_futures=True)
 
     def record_user_turn(
         self,
@@ -1454,6 +1458,27 @@ class MemcoreManager:
                 return
             self._warmed_index_keys.add(hard_key)
         try:
+            self._index_warmup_executor.submit(
+                self._run_index_warmup,
+                system,
+                hard_key,
+                operation,
+            )
+        except Exception as exc:
+            with self._lock:
+                self._warmed_index_keys.discard(hard_key)
+            logger.warning("memcore %s index warmup scheduling failed: %s", operation, str(exc) or exc.__class__.__name__)
+
+    def _run_index_warmup(
+        self,
+        system: Any,
+        hard_key: tuple[str, str, str],
+        operation: str,
+    ) -> None:
+        try:
+            namespace = getattr(system, "namespace", None)
+            if namespace is None:
+                return
             raw_limit = getattr(config, "MEMCORE_REINDEX_ON_NAMESPACE_LOAD_LIMIT", None)
             limit = self._coerce_positive_int_or_none(raw_limit)
             system.reindex_all(namespace=namespace, limit=limit, current_conversation_only=False)

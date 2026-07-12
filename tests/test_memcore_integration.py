@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -526,6 +527,37 @@ def _tool_context() -> ToolExecutionContext:
 
 
 class MemcoreIntegrationTests(unittest.TestCase):
+    def test_index_warmup_is_scheduled_without_blocking_first_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="legacy",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=False,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            started = threading.Event()
+            release = threading.Event()
+
+            class _SlowWarmupSystem:
+                namespace = SimpleNamespace(hard_key=lambda: ("tenant", "user", "domain"))
+
+                def reindex_all(self, **_kwargs):
+                    started.set()
+                    release.wait(timeout=2)
+
+            started_at = time.perf_counter()
+            manager._warm_index_for_system(_SlowWarmupSystem(), operation="test")
+            elapsed = time.perf_counter() - started_at
+            try:
+                self.assertLess(elapsed, 0.2)
+                self.assertTrue(started.wait(timeout=1))
+            finally:
+                release.set()
+                manager.close()
+
     def test_normalize_memory_backend(self) -> None:
         self.assertEqual(normalize_memory_backend("legacy"), "legacy")
         self.assertEqual(normalize_memory_backend("dual"), "dual")
