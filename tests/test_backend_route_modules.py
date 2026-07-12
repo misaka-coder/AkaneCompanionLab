@@ -687,15 +687,20 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with patch.object(config, "FINANCE_ASSISTANT_ENABLED", True, create=True), patch.object(
-            config,
-            "QQ_FINANCE_MODE_COMMANDS_ENABLED",
-            True,
-            create=True,
-        ), patch.object(config, "QQ_FINANCE_PUSH_ENABLED", False, create=True), patch(
-            "companion_v01.qq_gateway.requests.post",
-            return_value=FakeResponse(),
-        ) as mocked_post:
+        with (
+            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True, create=True),
+            patch.object(
+                config,
+                "QQ_FINANCE_MODE_COMMANDS_ENABLED",
+                True,
+                create=True,
+            ),
+            patch.object(config, "QQ_FINANCE_PUSH_ENABLED", False, create=True),
+            patch(
+                "companion_v01.qq_gateway.requests.post",
+                return_value=FakeResponse(),
+            ) as mocked_post,
+        ):
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -968,11 +973,119 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["reason"], "private")
+        self.assertEqual(response.json()["reason"], "private", response.json())
         self.assertEqual(len(process_calls), 1)
         self.assertIn("【当前工作台真实状态】", process_calls[0]["extra_context"])
         self.assertIn("当前工作台为空", process_calls[0]["extra_context"])
         self.assertIn("不要根据旧记忆、生成文件工作台", process_calls[0]["extra_context"])
+        mocked_post.assert_called_once()
+
+    def test_qq_router_passes_current_image_to_native_multimodal_chat_once(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        prepare_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def ingest_qq_attachments(self, **kwargs):
+                return [
+                    {
+                        "attachment_id": "img_native_1",
+                        "kind": "image",
+                        "profile_user_id": kwargs["profile_user_id"],
+                        "session_id": kwargs["session_id"],
+                    }
+                ]
+
+            def prepare_qq_native_image_inputs(self, **kwargs):
+                prepare_calls.append(kwargs)
+                return {
+                    "ok": True,
+                    "status": "ready",
+                    "images": [
+                        {
+                            "attachment_id": "img_native_1",
+                            "attachment_handle": "img_001",
+                            "title": "当前图片",
+                            "media_type": "image/png",
+                            "data_url": "data:image/png;base64,c3ludGhldGlj",
+                        }
+                    ],
+                    "skipped": [],
+                }
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "我直接看到了这张图。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_ATTACHMENT_READY_WAIT_SECONDS=0.01,
+                    VISION_REQUEST_TIMEOUT=1.0,
+                ),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-image-native-1",
+                    "time": int(time.time()),
+                    "message": [
+                        {
+                            "type": "image",
+                            "data": {
+                                "file": "native.png",
+                                "url": "http://127.0.0.1:3001/native.png",
+                            },
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reason"], "private", response.json())
+        self.assertEqual(len(prepare_calls), 1)
+        self.assertEqual(len(process_calls), 1)
+        self.assertEqual(process_calls[0]["native_user_images"][0]["attachment_handle"], "img_001")
+        self.assertTrue(process_calls[0]["native_user_images"][0]["data_url"].startswith("data:image/png;base64,"))
+        self.assertEqual(
+            len([payload for event_name, payload in log_calls if event_name == "qq_native_multimodal_images_ready"]),
+            1,
+        )
+        self.assertEqual(
+            [payload for event_name, payload in log_calls if event_name == "qq_image_vision_followup_scheduled"],
+            [],
+        )
         mocked_post.assert_called_once()
 
     def test_qq_router_waits_for_image_vision_before_waking_llm(self) -> None:

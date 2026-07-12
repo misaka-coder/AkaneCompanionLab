@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import config
 from companion_v01 import tool_orchestration_engine
@@ -25,6 +26,51 @@ from companion_v01.tool_runtime import TOOL_METADATA_BY_TYPE, ToolExecutionResul
 
 
 class NativeWebSearchToolingTests(unittest.TestCase):
+    def test_engine_native_chat_vision_requires_same_chat_and_vision_route(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        with patch.multiple(
+            config,
+            VISION_ENABLED=True,
+            CHAT_API_KEY="shared-key",
+            VISION_API_KEY="shared-key",
+            CHAT_BASE_URL="https://api.pinaic.com",
+            VISION_BASE_URL="https://api.pinaic.com/",
+            CHAT_API_PROTOCOL="anthropic",
+            VISION_API_PROTOCOL="anthropic",
+            CHAT_MODEL_NAME="claude-sonnet-5",
+            VISION_MODEL_NAME="claude-sonnet-5",
+        ):
+            enabled = engine.native_chat_vision_status()
+            mismatched = engine.native_chat_vision_status(chat_model_override="deepseek-v4-flash")
+
+        self.assertTrue(enabled["enabled"])
+        self.assertEqual(enabled["protocol"], "anthropic")
+        self.assertFalse(mismatched["enabled"])
+        self.assertEqual(mismatched["reason"], "chat_vision_model_mismatch")
+
+    def test_engine_native_user_image_context_keeps_only_handles_out_of_prompt(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        data_url = "data:image/png;base64,c3ludGhldGlj"
+
+        images = engine._extract_native_user_images(
+            {
+                "native_user_images": [
+                    {
+                        "attachment_id": "attachment-1",
+                        "attachment_handle": "img_001",
+                        "title": "当前图片",
+                        "data_url": data_url,
+                    }
+                ]
+            }
+        )
+        context = engine._build_native_user_image_prompt_context(images)
+
+        self.assertEqual(images[0]["data_url"], data_url)
+        self.assertIn("img_001", context)
+        self.assertNotIn("base64", context)
+        self.assertNotIn("c3ludGhldGlj", context)
+
     def test_native_web_search_schema_respects_global_disable(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")

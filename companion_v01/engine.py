@@ -2010,6 +2010,46 @@ class AkaneMemoryEngine:
 
         return _fn(payload)
 
+    def _extract_native_user_images(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_images = payload.get("native_user_images") if isinstance(payload, dict) else None
+        if not isinstance(raw_images, list):
+            return []
+        images: list[dict[str, Any]] = []
+        for raw in raw_images[:5]:
+            if not isinstance(raw, dict):
+                continue
+            data_url = str(raw.get("data_url") or "").strip()
+            if not data_url.startswith("data:image/"):
+                continue
+            images.append(
+                {
+                    "data_url": data_url,
+                    "attachment_id": str(raw.get("attachment_id") or "").strip(),
+                    "attachment_handle": str(raw.get("attachment_handle") or "").strip(),
+                    "title": str(raw.get("title") or "").strip()[:80],
+                }
+            )
+        return images
+
+    @staticmethod
+    def _build_native_user_image_prompt_context(images: list[dict[str, Any]]) -> str:
+        labels: list[str] = []
+        for image in images:
+            label = (
+                str(image.get("attachment_handle") or "").strip()
+                or str(image.get("title") or "").strip()
+                or str(image.get("attachment_id") or "").strip()
+            )
+            if label and label not in labels:
+                labels.append(label)
+        suffix = "、".join(labels[:5]) or f"{len(images)} 张图片"
+        return (
+            "【本轮原生图片】\n"
+            f"系统已通过 provider 原生多模态通道提供 {len(images)} 张当前图片：{suffix}。\n"
+            "请直接依据这些原始图片和用户本轮文字回答；工作台里的视觉摘要只是辅助证据。"
+            "不要声称只能看到摘要，也不要把旧图片、角色立绘或历史附件当成本轮图片。"
+        )
+
     def _build_desktop_screen_frame_prompt_context(self, frames: list[dict[str, Any]]) -> str:
         from .engine_services.turn_context import build_desktop_screen_frame_prompt_context as _fn
 
@@ -2072,6 +2112,51 @@ class AkaneMemoryEngine:
             timeout_seconds=timeout_seconds,
         )
 
+    def native_chat_vision_status(self, *, chat_model_override: str = "") -> dict[str, Any]:
+        if not bool(getattr(config, "VISION_ENABLED", True)):
+            return {"enabled": False, "reason": "vision_disabled"}
+        chat_key = str(getattr(config, "CHAT_API_KEY", "") or "").strip()
+        vision_key = str(getattr(config, "VISION_API_KEY", "") or "").strip()
+        chat_base = str(getattr(config, "CHAT_BASE_URL", "") or "").strip().rstrip("/")
+        vision_base = str(getattr(config, "VISION_BASE_URL", "") or "").strip().rstrip("/")
+        chat_protocol = str(getattr(config, "CHAT_API_PROTOCOL", "auto") or "auto").strip().lower()
+        vision_protocol = str(getattr(config, "VISION_API_PROTOCOL", "auto") or "auto").strip().lower()
+        chat_model = str(chat_model_override or getattr(config, "CHAT_MODEL_NAME", "") or "").strip()
+        vision_model = str(getattr(config, "VISION_MODEL_NAME", "") or "").strip()
+        if not all((chat_key, vision_key, chat_base, vision_base, chat_model, vision_model)):
+            return {"enabled": False, "reason": "native_vision_not_configured"}
+        if chat_key != vision_key or chat_base.lower() != vision_base.lower() or chat_protocol != vision_protocol:
+            return {"enabled": False, "reason": "chat_vision_provider_mismatch"}
+        if chat_model.lower() != vision_model.lower():
+            return {"enabled": False, "reason": "chat_vision_model_mismatch"}
+        return {"enabled": True, "reason": "configured", "model": chat_model, "protocol": chat_protocol}
+
+    def prepare_qq_native_image_inputs(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        attachment_ids: list[str],
+        chat_model_override: str = "",
+        timeout_seconds: float = 8.0,
+    ) -> dict[str, Any]:
+        native_status = self.native_chat_vision_status(chat_model_override=chat_model_override)
+        if not native_status.get("enabled"):
+            return {"ok": False, "status": "disabled", "reason": native_status.get("reason"), "images": []}
+        service = self._get_attachment_inbox_service()
+        if service is None or not hasattr(service, "build_native_image_inputs"):
+            return {"ok": False, "status": "unavailable", "reason": "attachment_service_unavailable", "images": []}
+        result = service.build_native_image_inputs(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            attachment_ids=attachment_ids,
+            timeout_seconds=timeout_seconds,
+            max_count=5,
+            max_bytes_per_image=int(getattr(config, "VISION_MAX_IMAGE_BYTES", 8 * 1024 * 1024) or 0),
+            max_total_bytes=20 * 1024 * 1024,
+        )
+        return {**dict(result or {}), "native_vision": native_status}
+
     def mark_generated_file_delivery(
         self,
         *,
@@ -2115,12 +2200,19 @@ class AkaneMemoryEngine:
         date_label = timestamp_to_date_label(now_ts)
         time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
         turn_extra_user_context = self._build_turn_extra_user_context(payload, client_context)
+        native_user_images = self._extract_native_user_images(payload)
+        if native_user_images:
+            turn_extra_user_context = self._merge_extra_user_context(
+                turn_extra_user_context,
+                self._build_native_user_image_prompt_context(native_user_images),
+            )
         desktop_screen_images = self._extract_desktop_screen_frame_images(payload)
         if desktop_screen_images:
             turn_extra_user_context = self._merge_extra_user_context(
                 turn_extra_user_context,
                 self._build_desktop_screen_frame_prompt_context(desktop_screen_images),
             )
+        turn_user_images = [*native_user_images, *desktop_screen_images][:5]
         transient_user_turn = self._is_transient_user_turn(payload)
         persist_assistant_turn = self._should_persist_assistant_turn(payload)
 
@@ -2213,7 +2305,7 @@ class AkaneMemoryEngine:
             client_context=client_context,
             resource_manifest=turn_resource_manifest,
             character_pack_id=turn_character_pack_id,
-            user_images=desktop_screen_images,
+            user_images=turn_user_images,
             final_debug_enabled=final_debug_enabled,
             chat_model_override=chat_model_override,
             domain_profile_id=turn_domain_profile_id,
@@ -2273,7 +2365,7 @@ class AkaneMemoryEngine:
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
                     character_pack_id=turn_character_pack_id,
-                    user_images=desktop_screen_images,
+                    user_images=turn_user_images,
                     allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
@@ -2324,7 +2416,7 @@ class AkaneMemoryEngine:
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
                     character_pack_id=turn_character_pack_id,
-                    user_images=desktop_screen_images,
+                    user_images=turn_user_images,
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
@@ -2403,7 +2495,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
                 character_pack_id=turn_character_pack_id,
-                user_images=desktop_screen_images,
+                user_images=turn_user_images,
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
@@ -2571,12 +2663,19 @@ class AkaneMemoryEngine:
         date_label = timestamp_to_date_label(now_ts)
         time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
         turn_extra_user_context = self._build_turn_extra_user_context(payload, client_context)
+        native_user_images = self._extract_native_user_images(payload)
+        if native_user_images:
+            turn_extra_user_context = self._merge_extra_user_context(
+                turn_extra_user_context,
+                self._build_native_user_image_prompt_context(native_user_images),
+            )
         desktop_screen_images = self._extract_desktop_screen_frame_images(payload)
         if desktop_screen_images:
             turn_extra_user_context = self._merge_extra_user_context(
                 turn_extra_user_context,
                 self._build_desktop_screen_frame_prompt_context(desktop_screen_images),
             )
+        turn_user_images = [*native_user_images, *desktop_screen_images][:5]
         transient_user_turn = self._is_transient_user_turn(payload)
         persist_assistant_turn = self._should_persist_assistant_turn(payload)
 
@@ -2669,7 +2768,7 @@ class AkaneMemoryEngine:
             client_context=client_context,
             resource_manifest=turn_resource_manifest,
             character_pack_id=turn_character_pack_id,
-            user_images=desktop_screen_images,
+            user_images=turn_user_images,
             final_debug_enabled=final_debug_enabled,
             chat_model_override=chat_model_override,
             domain_profile_id=turn_domain_profile_id,
@@ -2737,7 +2836,7 @@ class AkaneMemoryEngine:
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
                     character_pack_id=turn_character_pack_id,
-                    user_images=desktop_screen_images,
+                    user_images=turn_user_images,
                     allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
@@ -2788,7 +2887,7 @@ class AkaneMemoryEngine:
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
                     character_pack_id=turn_character_pack_id,
-                    user_images=desktop_screen_images,
+                    user_images=turn_user_images,
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
@@ -2880,7 +2979,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
                 character_pack_id=turn_character_pack_id,
-                user_images=desktop_screen_images,
+                user_images=turn_user_images,
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,

@@ -19,6 +19,47 @@ from companion_v01.tool_runtime import (
 
 
 class AttachmentInboxTests(unittest.TestCase):
+    def test_build_native_image_inputs_reads_only_managed_session_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attachment_root = root / "attachments"
+            image_path = attachment_root / "user" / "session" / "sample.png"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic-image")
+            store = MemoryStore(root / "store")
+            service = AttachmentInboxService(store=store, base_dir=attachment_root)
+            item = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="sample.png",
+                mime_type="image/png",
+                storage_relpath="user/session/sample.png",
+                timestamp=100,
+            )
+
+            result = service.build_native_image_inputs(
+                profile_user_id="user",
+                session_id="session",
+                attachment_ids=[item["attachment_id"]],
+                timeout_seconds=0,
+            )
+            isolated = service.build_native_image_inputs(
+                profile_user_id="other",
+                session_id="session",
+                attachment_ids=[item["attachment_id"]],
+                timeout_seconds=0,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["image_count"], 1)
+            self.assertEqual(result["images"][0]["attachment_handle"], "img_001")
+            self.assertTrue(result["images"][0]["data_url"].startswith("data:image/png;base64,"))
+            self.assertNotIn(str(image_path), str(result))
+            self.assertFalse(isolated["ok"])
+            self.assertEqual(isolated["images"], [])
+
     def test_material_trace_recorder_observes_reference_ready_and_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             events: list[dict[str, object]] = []

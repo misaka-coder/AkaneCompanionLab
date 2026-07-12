@@ -253,6 +253,14 @@ def apply_model_service_settings(config_module: Any, settings: ModelServiceSetti
         setattr(config_module, "VISION_BASE_URL", settings.base_url)
         setattr(config_module, "VISION_MODEL_NAME", settings.vision_model or settings.chat_model)
         setattr(config_module, "VISION_API_PROTOCOL", settings.protocol)
+    else:
+        # The visible model-service settings own the runtime VISION_* route.
+        # Leaving previous values in place silently keeps an old provider alive
+        # (for example a stale DashScope key) even though the UI says vision is off.
+        setattr(config_module, "VISION_API_KEY", "")
+        setattr(config_module, "VISION_BASE_URL", "")
+        setattr(config_module, "VISION_MODEL_NAME", "")
+        setattr(config_module, "VISION_API_PROTOCOL", settings.protocol)
 
 
 def probe_model_ids(settings: ModelServiceSettings) -> list[str]:

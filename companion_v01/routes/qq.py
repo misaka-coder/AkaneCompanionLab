@@ -660,7 +660,7 @@ def _resolve_qq_tts_profile_user_id(*, config_module: Any, context: Any) -> str:
 def _voice_cache_key(*, text: str, provider: str, resolution: dict[str, Any]) -> str:
     """Build a stable cache key from the synthesis inputs so identical text
     reuses an existing file instead of resynthesising."""
-    raw = f"{text}\nprovider={provider}\nprofile={resolution.get('voiceProfileId','')}"
+    raw = f"{text}\nprovider={provider}\nprofile={resolution.get('voiceProfileId', '')}"
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
@@ -1105,7 +1105,9 @@ def _process_qq_turn_streaming(
             "图表已经生成，但这次 QQ 图片发送失败了；生成结果仍保留着，可以稍后再试。",
         )
         chart_delivery_feedback_result["status"] = "failure_notice_sent"
-        qq_gateway.add_delivery_note(_sid, "【上一轮交付状态】图表已生成但 QQ 图片发送失败，文件仍在工作台，用户已收到通知。")
+        qq_gateway.add_delivery_note(
+            _sid, "【上一轮交付状态】图表已生成但 QQ 图片发送失败，文件仍在工作台，用户已收到通知。"
+        )
     elif int(chart_send_result.get("count") or 0) > 0 and bool(chart_send_result.get("ok")):
         qq_gateway.add_delivery_note(
             _sid,
@@ -1118,7 +1120,9 @@ def _process_qq_turn_streaming(
             "金融报告已经生成，但这次 QQ 文件发送失败了；生成结果仍保留着，可以稍后再试。",
         )
         report_delivery_feedback_result["status"] = "failure_notice_sent"
-        qq_gateway.add_delivery_note(_sid, "【上一轮交付状态】金融报告已生成但文件发送失败，文件仍在工作台，用户已收到通知。")
+        qq_gateway.add_delivery_note(
+            _sid, "【上一轮交付状态】金融报告已生成但文件发送失败，文件仍在工作台，用户已收到通知。"
+        )
     elif int(report_send_result.get("count") or 0) > 0 and bool(report_send_result.get("ok")):
         qq_gateway.add_delivery_note(
             _sid,
@@ -1407,6 +1411,7 @@ def build_qq_router(
             _qq_action_note = ""
             _qq_turn_message_override = ""
             _qq_turn_extra_context_note = ""
+            _qq_native_user_images: list[dict[str, Any]] = []
 
             mface_config_result = qq_gateway.handle_mface_config_command(context, event)
             if isinstance(mface_config_result, dict):
@@ -1523,9 +1528,7 @@ def build_qq_router(
                     )
 
             if finance_subscription_service is not None:
-                finance_watchlist_command = finance_subscription_service.parse_watchlist_command(
-                    context.clean_message
-                )
+                finance_watchlist_command = finance_subscription_service.parse_watchlist_command(context.clean_message)
                 if isinstance(finance_watchlist_command, dict):
                     finance_watchlist_result = await asyncio.to_thread(
                         finance_subscription_service.handle_watchlist_command,
@@ -1537,9 +1540,7 @@ def build_qq_router(
                     )
                     reply = str(watchlist_payload.get("reply") or "").strip()
                     send_result = (
-                        qq_gateway.send_reply(context, reply)
-                        if reply
-                        else {"ok": False, "reason": "empty_reply"}
+                        qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
                     )
                     duration_ms = (time.perf_counter() - started_at) * 1000
                     runtime_metrics.observe_request(
@@ -1617,9 +1618,7 @@ def build_qq_router(
                         "domain_profile": str(finance_mode_command_result.get("domain_profile") or ""),
                         "state_persisted": finance_mode_command_result.get("state_persisted"),
                         "subscription_id": str(finance_mode_command_result.get("subscription_id") or ""),
-                        "subscription_status": str(
-                            finance_mode_command_result.get("subscription_status") or ""
-                        ),
+                        "subscription_status": str(finance_mode_command_result.get("subscription_status") or ""),
                         "watchlist_count": int(finance_mode_command_result.get("watchlist_count") or 0),
                         "send_result": send_result,
                     }
@@ -1911,83 +1910,118 @@ def build_qq_router(
                         for item in list(context.attachments or [])
                     )
                     if has_image_attachment:
-                        asyncio.create_task(
-                            _run_qq_image_vision_followup(
-                                context=context,
-                                event=dict(event),
-                                attachment_ids=attachment_ids,
-                                attachments_registered=[
-                                    item for item in attachments_registered if isinstance(item, dict)
-                                ],
-                                message_override=_qq_turn_message_override,
-                                action_note=_qq_action_note,
+                        native_prepare = getattr(engine, "prepare_qq_native_image_inputs", None)
+                        native_result: dict[str, Any] = {}
+                        if callable(native_prepare):
+                            native_wait_seconds = max(
+                                0.0,
+                                min(
+                                    15.0,
+                                    float(getattr(config_module, "QQ_ATTACHMENT_READY_WAIT_SECONDS", 8.0) or 0.0),
+                                ),
                             )
-                        )
-                        duration_ms = (time.perf_counter() - started_at) * 1000
-                        runtime_metrics.observe_request("qq_napcat_event", duration_ms=duration_ms, ok=True)
-                        log_event(
-                            "qq_image_vision_followup_scheduled",
-                            session_id=context.session_id,
-                            profile_user_id=context.profile_user_id,
-                            attachment_count=len(context.attachments or []),
-                            attachments_registered=len(attachments_registered),
-                            duration_ms=round(duration_ms, 1),
-                        )
-                        return JSONResponse(
-                            {
-                                "status": "buffered",
-                                "reason": "qq_image_vision_followup_scheduled",
-                                "session_id": context.session_id,
-                                "profile_user_id": context.profile_user_id,
-                                "character_pack_id": str(getattr(context, "character_pack_id", "") or ""),
-                                "attachment_count": len(context.attachments or []),
-                                "attachments_registered": len(attachments_registered),
-                            }
-                        )
-                    attachment_wait_result = await asyncio.to_thread(
-                        engine.wait_for_qq_attachments_settled,
-                        profile_user_id=context.profile_user_id,
-                        session_id=context.session_id,
-                        attachment_ids=attachment_ids,
-                        timeout_seconds=_qq_attachment_ready_wait_seconds(context, config_module),
-                    )
-                    pending_image_ids = _qq_pending_image_attachment_ids([], attachment_wait_result)
-                    if pending_image_ids:
-                        asyncio.create_task(
-                            _run_qq_image_vision_followup(
-                                context=context,
-                                event=dict(event),
+                            native_result = await asyncio.to_thread(
+                                native_prepare,
+                                profile_user_id=context.profile_user_id,
+                                session_id=context.session_id,
                                 attachment_ids=attachment_ids,
-                                attachments_registered=[
-                                    item for item in attachments_registered if isinstance(item, dict)
-                                ],
-                                message_override=_qq_turn_message_override,
-                                action_note=_qq_action_note,
+                                chat_model_override=str(getattr(context, "chat_model_override", "") or ""),
+                                timeout_seconds=native_wait_seconds,
                             )
-                        )
-                        duration_ms = (time.perf_counter() - started_at) * 1000
-                        runtime_metrics.observe_request("qq_napcat_event", duration_ms=duration_ms, ok=True)
-                        log_event(
-                            "qq_image_vision_followup_scheduled",
-                            session_id=context.session_id,
+                        _qq_native_user_images = [
+                            dict(item)
+                            for item in list(native_result.get("images") or [])
+                            if isinstance(item, dict) and str(item.get("data_url") or "").startswith("data:image/")
+                        ][:5]
+                        if _qq_native_user_images:
+                            log_event(
+                                "qq_native_multimodal_images_ready",
+                                session_id=context.session_id,
+                                profile_user_id=context.profile_user_id,
+                                image_count=len(_qq_native_user_images),
+                                skipped_count=len(list(native_result.get("skipped") or [])),
+                                native_status=str(native_result.get("status") or "ready"),
+                            )
+                        else:
+                            asyncio.create_task(
+                                _run_qq_image_vision_followup(
+                                    context=context,
+                                    event=dict(event),
+                                    attachment_ids=attachment_ids,
+                                    attachments_registered=[
+                                        item for item in attachments_registered if isinstance(item, dict)
+                                    ],
+                                    message_override=_qq_turn_message_override,
+                                    action_note=_qq_action_note,
+                                )
+                            )
+                            duration_ms = (time.perf_counter() - started_at) * 1000
+                            runtime_metrics.observe_request("qq_napcat_event", duration_ms=duration_ms, ok=True)
+                            log_event(
+                                "qq_image_vision_followup_scheduled",
+                                session_id=context.session_id,
+                                profile_user_id=context.profile_user_id,
+                                attachment_count=len(context.attachments or []),
+                                attachments_registered=len(attachments_registered),
+                                native_reason=str(native_result.get("reason") or "native_image_unavailable"),
+                                duration_ms=round(duration_ms, 1),
+                            )
+                            return JSONResponse(
+                                {
+                                    "status": "buffered",
+                                    "reason": "qq_image_vision_followup_scheduled",
+                                    "session_id": context.session_id,
+                                    "profile_user_id": context.profile_user_id,
+                                    "character_pack_id": str(getattr(context, "character_pack_id", "") or ""),
+                                    "attachment_count": len(context.attachments or []),
+                                    "attachments_registered": len(attachments_registered),
+                                }
+                            )
+                    if not _qq_native_user_images:
+                        attachment_wait_result = await asyncio.to_thread(
+                            engine.wait_for_qq_attachments_settled,
                             profile_user_id=context.profile_user_id,
-                            attachment_count=len(context.attachments or []),
-                            attachments_registered=len(attachments_registered),
-                            pending_image_count=len(pending_image_ids),
-                            duration_ms=round(duration_ms, 1),
+                            session_id=context.session_id,
+                            attachment_ids=attachment_ids,
+                            timeout_seconds=_qq_attachment_ready_wait_seconds(context, config_module),
                         )
-                        return JSONResponse(
-                            {
-                                "status": "buffered",
-                                "reason": "qq_image_vision_followup_scheduled",
-                                "session_id": context.session_id,
-                                "profile_user_id": context.profile_user_id,
-                                "character_pack_id": str(getattr(context, "character_pack_id", "") or ""),
-                                "attachment_count": len(context.attachments or []),
-                                "attachments_registered": len(attachments_registered),
-                                "pending_image_count": len(pending_image_ids),
-                            }
-                        )
+                        pending_image_ids = _qq_pending_image_attachment_ids([], attachment_wait_result)
+                        if pending_image_ids:
+                            asyncio.create_task(
+                                _run_qq_image_vision_followup(
+                                    context=context,
+                                    event=dict(event),
+                                    attachment_ids=attachment_ids,
+                                    attachments_registered=[
+                                        item for item in attachments_registered if isinstance(item, dict)
+                                    ],
+                                    message_override=_qq_turn_message_override,
+                                    action_note=_qq_action_note,
+                                )
+                            )
+                            duration_ms = (time.perf_counter() - started_at) * 1000
+                            runtime_metrics.observe_request("qq_napcat_event", duration_ms=duration_ms, ok=True)
+                            log_event(
+                                "qq_image_vision_followup_scheduled",
+                                session_id=context.session_id,
+                                profile_user_id=context.profile_user_id,
+                                attachment_count=len(context.attachments or []),
+                                attachments_registered=len(attachments_registered),
+                                pending_image_count=len(pending_image_ids),
+                                duration_ms=round(duration_ms, 1),
+                            )
+                            return JSONResponse(
+                                {
+                                    "status": "buffered",
+                                    "reason": "qq_image_vision_followup_scheduled",
+                                    "session_id": context.session_id,
+                                    "profile_user_id": context.profile_user_id,
+                                    "character_pack_id": str(getattr(context, "character_pack_id", "") or ""),
+                                    "attachment_count": len(context.attachments or []),
+                                    "attachments_registered": len(attachments_registered),
+                                    "pending_image_count": len(pending_image_ids),
+                                }
+                            )
 
             turn_payload = _prepare_qq_turn_payload(
                 context=context,
@@ -1996,6 +2030,8 @@ def build_qq_router(
                 action_note=_qq_action_note,
                 extra_context_note=_qq_turn_extra_context_note,
             )
+            if _qq_native_user_images:
+                turn_payload["native_user_images"] = _qq_native_user_images
             turn_result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
             frame = dict(turn_result.get("frame") or {})
             reply_messages = list(turn_result.get("reply_messages") or [])

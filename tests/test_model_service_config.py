@@ -89,6 +89,29 @@ class ModelServiceConfigTests(unittest.TestCase):
         self.assertEqual(config.AUX_API_PROTOCOL, "ollama")
         self.assertEqual(config.VISION_MODEL_NAME, "qwen2.5vl:7b")
 
+    def test_disabling_visible_vision_clears_stale_runtime_provider(self) -> None:
+        config = build_config()
+        config.VISION_API_KEY = "stale-dashscope-key"
+        config.VISION_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        config.VISION_MODEL_NAME = "qwen-vl-max"
+        settings = settings_from_mapping(
+            {
+                "providerId": "anthropic",
+                "baseUrl": "https://api.pinaic.com",
+                "chatModel": "claude-sonnet-5",
+                "apiKey": "current-key",
+                "useForVision": False,
+            }
+        )
+
+        apply_model_service_settings(config, settings)
+
+        self.assertEqual(config.CHAT_MODEL_NAME, "claude-sonnet-5")
+        self.assertEqual(config.VISION_API_KEY, "")
+        self.assertEqual(config.VISION_BASE_URL, "")
+        self.assertEqual(config.VISION_MODEL_NAME, "")
+        self.assertEqual(config.VISION_API_PROTOCOL, "anthropic")
+
     def test_openai_compatible_probe_and_test_use_real_http_contract(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, format, *args):
