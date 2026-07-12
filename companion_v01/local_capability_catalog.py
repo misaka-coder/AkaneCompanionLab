@@ -58,6 +58,7 @@ TOOL_GROUPS: dict[str, str] = {
     "apply_style_to_existing_file": "documents",
     "inspect_media_info": "media",
     "separate_audio_stems": "audio",
+    "cover_song": "audio",
     "clean_voice_track": "audio",
     "transcribe_media": "asr",
     "prepare_voice_dataset": "voice_dataset",
@@ -77,6 +78,7 @@ TOOL_USED_BY: dict[str, list[str]] = {
     "load_character_context": ["agent", "desktop_pet", "qq_text"],
     "load_material": ["agent", "desktop_pet", "qq_text"],
     "generate_image": ["agent", "desktop_pet", "qq_text"],
+    "cover_song": ["agent", "desktop_pet", "qq_text"],
     "call_npc": ["agent", "web_scene"],
     "check_inventory": ["agent", "web_scene"],
     "manage_gift": ["agent", "web_scene"],
@@ -118,6 +120,15 @@ KNOWN_LOCAL_SERVICE_PROBES = (
         endpoint="http://127.0.0.1:9880",
         host="127.0.0.1",
         port=9880,
+    ),
+    LocalServiceProbe(
+        id="provider.voice_conversion.rvc.local",
+        name="本地 RVC WebUI",
+        type="voice_conversion_provider",
+        adapter="rvc_webui",
+        endpoint="http://127.0.0.1:7899",
+        host="127.0.0.1",
+        port=7899,
     ),
 )
 

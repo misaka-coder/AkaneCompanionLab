@@ -1112,6 +1112,13 @@ def _process_qq_turn_streaming(
             "文件这次没有发出，因为当前消息没有明确要求发送。需要时请直接说要发送哪一份。",
         )
         file_delivery_feedback_result["status"] = "blocked_notice_sent"
+    elif file_delivery_status == "partial":
+        file_delivery_feedback_result = qq_gateway.send_reply(
+            context,
+            "这次只有一部分音频/文件发送成功，完整生成结果仍保留在工作台，可以稍后补发。",
+        )
+        file_delivery_feedback_result["status"] = "partial_notice_sent"
+        qq_gateway.add_delivery_note(_sid, "【上一轮交付状态】生成结果只发送成功一部分，完整文件仍在工作台。")
     elif file_delivery_status == "failed" or (
         int(file_send_result.get("count") or 0) > 0 and not bool(file_send_result.get("ok"))
     ):

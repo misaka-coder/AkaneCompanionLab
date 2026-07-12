@@ -221,9 +221,7 @@ QQ_ECONOMY_OFFERING_STATUS_COMMANDS: frozenset[str] = frozenset({"查看供奉",
 QQ_ECONOMY_OFFERING_PREFIXES: tuple[str, ...] = ("供奉 ",)
 VALID_USABLE_IN: frozenset[str] = frozenset({"desktop_pet", "qq"})
 
-QQ_ECONOMY_STATUS_QUERY_FIELDS_RE = (
-    r"(?:养成)?状态|金币(?:余额)?|余额|饥饿(?:度|值)?|精力(?:值)?|体力|好感(?:度)?"
-)
+QQ_ECONOMY_STATUS_QUERY_FIELDS_RE = r"(?:养成)?状态|金币(?:余额)?|余额|饥饿(?:度|值)?|精力(?:值)?|体力|好感(?:度)?"
 QQ_MFACE_CONFIG_COMMAND_RE = re.compile(
     r"^(?:表情包配置|抓表情包|提取表情包|mface配置|mface config)(?:[:：\s]+(.+?))?$",
     re.IGNORECASE,
@@ -1302,9 +1300,7 @@ class NapCatQQGateway:
             }
 
         requested_mode = normalize_finance_mode(command.get("finance_mode"), default="")
-        if requested_mode in {"qa", "push"} and not bool(
-            getattr(config, "FINANCE_ASSISTANT_ENABLED", False)
-        ):
+        if requested_mode in {"qa", "push"} and not bool(getattr(config, "FINANCE_ASSISTANT_ENABLED", False)):
             return {
                 "handled": True,
                 "ok": False,
@@ -1322,9 +1318,13 @@ class NapCatQQGateway:
                 "finance_mode": active_mode,
                 "domain_profile": FINANCE_DOMAIN_PROFILE_ID if active_mode in {"qa", "push"} else "",
             }
-        if requested_mode == "push" and context.is_group and not self._can_enable_group_finance_push(
-            context,
-            event=event,
+        if (
+            requested_mode == "push"
+            and context.is_group
+            and not self._can_enable_group_finance_push(
+                context,
+                event=event,
+            )
         ):
             return {
                 "handled": True,
@@ -2425,7 +2425,6 @@ class NapCatQQGateway:
         label = str(member.get("card") or member.get("nickname") or "").strip()
         return label
 
-
     def add_delivery_note(self, session_id: str, note: str) -> None:
         key = str(session_id or "").strip()
         note_text = str(note or "").strip()
@@ -2587,6 +2586,7 @@ class NapCatQQGateway:
             generated_id = str(generated.get("generated_id") or "").strip()
             title = str(generated.get("output_title") or generated.get("generated_handle") or "akane_output").strip()
             ext = str(generated.get("file_ext") or generated.get("output_format") or "").strip().lstrip(".")
+            mime_type = str(generated.get("mime_type") or "").strip().lower()
             if path and generated_id:
                 targets.append(
                     {
@@ -2596,23 +2596,34 @@ class NapCatQQGateway:
                         "path": path,
                         "name": f"{title}.{ext}" if ext and not title.lower().endswith(f".{ext.lower()}") else title,
                         "is_image": ext.lower() in {"png", "jpg", "jpeg", "webp", "gif"}
-                        or str(generated.get("mime_type") or "").strip().lower().startswith("image/"),
+                        or mime_type.startswith("image/"),
+                        "is_audio": ext.lower() in {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"}
+                        or mime_type.startswith("audio/"),
+                        "delivery_mode": str(event.get("delivery_mode") or "file").strip().lower(),
+                        "delivery_scope": str(event.get("delivery_scope") or "").strip().lower(),
                     }
                 )
         if not targets:
             return {"ok": True, "count": 0, "results": []}
 
+        blocked_count = 0
         if self._should_block_file_delivery(context):
-            return {
-                "ok": False,
-                "status": "blocked",
-                "count": 0,
-                "blocked_count": len(targets),
-                "reason": "missing_file_delivery_intent",
-                "results": [],
-            }
+            authorized_targets = [
+                target for target in targets if str(target.get("delivery_scope") or "") == "cover_song"
+            ]
+            blocked_count = len(targets) - len(authorized_targets)
+            if not authorized_targets:
+                return {
+                    "ok": False,
+                    "status": "blocked",
+                    "count": 0,
+                    "blocked_count": len(targets),
+                    "reason": "missing_file_delivery_intent",
+                    "results": [],
+                }
+            targets = authorized_targets
 
-        return self._send_generated_file_targets(context, targets)
+        return self._send_generated_file_targets(context, targets, blocked_count=blocked_count)
 
     def send_market_charts(
         self,
@@ -2784,6 +2795,38 @@ class NapCatQQGateway:
                     image_path=str(target.get("path") or ""),
                     name=str(target.get("name") or ""),
                 )
+            elif bool(target.get("is_audio")) and str(target.get("delivery_scope") or "") == "cover_song":
+                delivery_mode = str(target.get("delivery_mode") or "voice").strip().lower()
+                if delivery_mode == "both":
+                    voice_result = self.send_voice(
+                        context,
+                        audio_path=str(target.get("path") or ""),
+                        name=str(target.get("name") or ""),
+                    )
+                    file_result = self.send_file(
+                        context,
+                        file_path=str(target.get("path") or ""),
+                        name=str(target.get("name") or ""),
+                    )
+                    result = {
+                        "ok": bool(voice_result.get("ok")) and bool(file_result.get("ok")),
+                        "mode": "both",
+                        "voice_result": voice_result,
+                        "file_result": file_result,
+                        "file": str(target.get("path") or ""),
+                    }
+                elif delivery_mode == "file":
+                    result = self.send_file(
+                        context,
+                        file_path=str(target.get("path") or ""),
+                        name=str(target.get("name") or ""),
+                    )
+                else:
+                    result = self.send_voice(
+                        context,
+                        audio_path=str(target.get("path") or ""),
+                        name=str(target.get("name") or ""),
+                    )
             else:
                 result = self.send_file(
                     context,
@@ -2792,9 +2835,12 @@ class NapCatQQGateway:
                 )
             result["generated_id"] = str(target.get("generated_id") or "")
             results.append(result)
+        all_ok = bool(results) and all(bool(result.get("ok")) for result in results)
+        any_ok = any(bool(result.get("ok")) for result in results)
+        status = "sent" if all_ok else "partial" if any_ok else "failed"
         return {
-            "ok": all(bool(result.get("ok")) for result in results),
-            "status": "sent" if results and all(bool(result.get("ok")) for result in results) else "failed",
+            "ok": all_ok,
+            "status": status,
             "count": len(results),
             "results": results,
             **({"blocked_count": blocked_count} if blocked_count else {}),
@@ -3230,7 +3276,13 @@ class NapCatQQGateway:
                     f"这是此刻刚发生的投喂，与历史对话无关。"
                 )
                 _feed_turn_msg = f"刚才发生的互动：{_feed_actor}投喂了你「{item_name_display}」。"
-                return {"_llm_passthrough": True, "qq_action_note": note, "turn_message": _feed_turn_msg, "ok": True, "status": "ok"}
+                return {
+                    "_llm_passthrough": True,
+                    "qq_action_note": note,
+                    "turn_message": _feed_turn_msg,
+                    "ok": True,
+                    "status": "ok",
+                }
 
             if action == "lottery":
                 SLIP_COST = 5

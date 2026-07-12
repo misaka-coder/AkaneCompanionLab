@@ -31,6 +31,7 @@ from .capability_registry import (
 from . import desktop_pet_engine
 from .embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
 from .generated_files import GeneratedFileService
+from .cover_song import CoverSongService, RvcWebUiProvider
 from .image_generation import ImageGenerationService, PinAIImageProvider
 from .image_materials import SessionImageMaterialResolver
 from . import gift_engine
@@ -81,6 +82,7 @@ from .tool_runtime import (
     CancelReminderToolHandler,
     CheckInventoryToolHandler,
     CleanVoiceTrackToolHandler,
+    CoverSongToolHandler,
     ClearAttachmentFocusToolHandler,
     ComposeFileToolHandler,
     ConvertMediaFileToolHandler,
@@ -157,12 +159,14 @@ MEDIA_PRESET_ROUTING = [
     "- 声音太大 → convert_media_file volume_gain_db 负数",
     "- 人声降噪/去混响 → clean_voice_track",
     "- 人声伴奏分离 → separate_audio_stems",
+    "- 固定角色音色翻唱整首歌 → cover_song",
     "- 训练素材切片打包 → prepare_voice_dataset",
     "- 只要原文件不处理 → send_file，不要转写/转码/净化",
     "",
     "生成与交付是两件事：媒体处理工具的 send_to_user 默认必须为 false。只有当前用户明确要求收到文件时才设为 true；否则先生成，等用户确认后再用 send_file 精确交付。",
     "涉及大小、码率、分辨率、时长、格式兼容等具体约束时，先 inspect_media_info 查当前规格，再决定 convert_media_file 参数。",
     "人声处理组合：需要人声/伴奏分离时先 separate_audio_stems；需要更干净人声时，再对 vocals 结果调用 clean_voice_track。",
+    "完整翻唱不要手工串联分轨和转码；优先直接调用 cover_song，让后端统一处理缓存、RVC 推理、混音与交付。",
 ]
 
 
@@ -250,6 +254,7 @@ class AkaneMemoryEngine:
             ensure_storage_ready=self.workspace_file_service.ensure_layout,
             work_dir=self.base_dir / "generated_work",
         )
+        self.cover_song_service: CoverSongService | None = None
         self.desktop_music_timeline_service = DesktopMusicTimelineService(
             store=self.store,
             generated_file_service=self.generated_file_service,
@@ -1335,11 +1340,43 @@ class AkaneMemoryEngine:
             max_input_images=int(getattr(config, "IMAGE_GENERATION_MAX_INPUT_IMAGES", 5) or 5),
             max_output_images=int(getattr(config, "IMAGE_GENERATION_MAX_OUTPUT_IMAGES", 4) or 4),
             max_image_bytes=int(getattr(config, "IMAGE_GENERATION_MAX_IMAGE_BYTES", 8 * 1024 * 1024) or 0),
-            max_total_input_bytes=int(
-                getattr(config, "IMAGE_GENERATION_MAX_TOTAL_INPUT_BYTES", 20 * 1024 * 1024) or 0
-            ),
+            max_total_input_bytes=int(getattr(config, "IMAGE_GENERATION_MAX_TOTAL_INPUT_BYTES", 20 * 1024 * 1024) or 0),
         )
         self.image_generation_service = service
+        return service
+
+    def _get_cover_song_service(self) -> CoverSongService | None:
+        service = getattr(self, "cover_song_service", None)
+        if service is not None:
+            return service
+        if not bool(getattr(config, "COVER_SONG_ENABLED", False)):
+            return None
+        generated_file_service = self._get_generated_file_service()
+        if generated_file_service is None:
+            return None
+        try:
+            provider = RvcWebUiProvider(
+                base_url=str(getattr(config, "RVC_WEBUI_BASE_URL", "http://127.0.0.1:7899") or ""),
+                root_dir=str(getattr(config, "RVC_ROOT_DIR", "") or ""),
+                timeout_seconds=float(getattr(config, "COVER_SONG_TIMEOUT_SECONDS", 1800.0) or 1800.0),
+                separation_model=str(
+                    getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal") or "HP5_only_main_vocal"
+                ),
+            )
+        except ValueError as exc:
+            logger.warning("cover song provider disabled: %s", exc)
+            return None
+        service = CoverSongService(
+            generated_file_service=generated_file_service,
+            provider=provider,
+            cache_root=self.base_dir / "generated_work" / "cover_song_cache",
+            default_model=str(getattr(config, "RVC_DEFAULT_MODEL", "") or ""),
+            default_output_format=str(getattr(config, "COVER_SONG_DEFAULT_OUTPUT_FORMAT", "mp3") or "mp3"),
+            default_delivery=str(getattr(config, "COVER_SONG_DEFAULT_DELIVERY", "auto") or "auto"),
+            max_duration_seconds=float(getattr(config, "COVER_SONG_MAX_DURATION_SECONDS", 900.0) or 900.0),
+            max_input_bytes=int(getattr(config, "COVER_SONG_MAX_INPUT_BYTES", 256 * 1024 * 1024) or 0),
+        )
+        self.cover_song_service = service
         return service
 
     def _get_desktop_music_timeline_service(self) -> DesktopMusicTimelineService | None:
@@ -4891,6 +4928,9 @@ class AkaneMemoryEngine:
             handlers["generate_image"] = GenerateImageToolHandler(
                 image_generation_service=image_generation_service,
             )
+        cover_song_service = self._get_cover_song_service()
+        if cover_song_service is not None:
+            handlers["cover_song"] = CoverSongToolHandler(cover_song_service=cover_song_service)
         market_service = getattr(self, "market_data_tool_service", None)
         if market_service is not None:
             from .finance import build_market_tool_handlers

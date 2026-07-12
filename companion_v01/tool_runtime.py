@@ -528,6 +528,50 @@ INSPECT_GENERATED_FILE_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+COVER_SONG_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Create or restore a cached AI cover from a current-session audio/video/generated material. "
+        "The backend separates vocals and instrumental, converts the lead vocal with a local voice model, "
+        "mixes the result, stores it as a generated artifact, and can deliver it as QQ voice or file."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "source_id": {
+            "type": "string",
+            "description": "Optional current-session audio/video/generated handle such as audio_001, file_001, or gen_001.",
+            "maxLength": 120,
+        },
+        "song_title": {
+            "type": "string",
+            "description": "Song title. Required when restoring a previously cached cover without source_id.",
+            "maxLength": 120,
+        },
+        "artist": {
+            "type": "string",
+            "description": "Optional original artist for cache disambiguation.",
+            "maxLength": 80,
+        },
+        "voice_model": {
+            "type": "string",
+            "description": "Target local RVC model name, or auto for the configured default.",
+            "maxLength": 120,
+        },
+        "pitch_shift": {"type": "integer", "minimum": -24, "maximum": 24},
+        "index_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "filter_radius": {"type": "integer", "minimum": 0, "maximum": 7},
+        "rms_mix_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "protect": {"type": "number", "minimum": 0.0, "maximum": 0.5},
+        "vocal_gain_db": {"type": "number", "minimum": -12.0, "maximum": 12.0},
+        "instrumental_gain_db": {"type": "number", "minimum": -12.0, "maximum": 6.0},
+        "output_format": {"type": "string", "enum": ["mp3", "flac", "wav"]},
+        "delivery": {"type": "string", "enum": ["auto", "voice", "file", "both", "none"]},
+        "force_rebuild": {"type": "boolean"},
+    },
+    "required": [],
+}
+
+
 TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     "retrieve_memory": ToolMetadata(
         family="memory",
@@ -687,6 +731,14 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         default_round_budget=4,
         background=True,
         requires_confirmation=True,
+    ),
+    "cover_song": ToolMetadata(
+        family="media_workbench",
+        operation="background",
+        risk="medium",
+        default_round_budget=5,
+        background=True,
+        input_schema=COVER_SONG_INPUT_SCHEMA,
     ),
     "clean_voice_track": ToolMetadata(
         family="media_workbench",
@@ -2078,9 +2130,7 @@ class GenerateImageToolHandler(BaseToolHandler):
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
             return None
-        prompt = str(value.get("prompt") or value.get("instruction") or value.get("description") or "").strip()[
-            :4000
-        ]
+        prompt = str(value.get("prompt") or value.get("instruction") or value.get("description") or "").strip()[:4000]
         if not prompt:
             return None
         raw_references = value.get("reference_images")
@@ -4885,6 +4935,143 @@ class SeparateAudioStemsToolHandler(BaseToolHandler):
         if text in {"1", "true", "yes", "y", "on", "发送", "发给用户"}:
             return True
         if text in {"0", "false", "no", "n", "off", "不发送", "仅生成"}:
+            return False
+        return default
+
+
+class CoverSongToolHandler(BaseToolHandler):
+    tool_type = "cover_song"
+
+    def __init__(self, *, cover_song_service) -> None:
+        self.cover_song_service = cover_song_service
+
+    def capability_status(self) -> dict[str, Any]:
+        status = getattr(self.cover_song_service, "capability_status", None)
+        if not callable(status):
+            return {"enabled": False, "status": "unavailable", "reason": "cover_song_service_missing"}
+        return dict(status() or {})
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- cover_song：当用户要 Akane 用固定角色音色翻唱当前音频/视频，或再次点播已经完成的翻唱缓存时使用。"
+            '格式为 {"type":"cover_song","source_id":"audio_001|file_001|gen_001（已有缓存时可省略）",'
+            '"song_title":"歌曲名","artist":"可选原唱","voice_model":"auto|模型名","pitch_shift":0,'
+            '"index_rate":0.6,"filter_radius":3,"rms_mix_rate":0.25,"protect":0.33,'
+            '"vocal_gain_db":0,"instrumental_gain_db":-1,"output_format":"mp3|flac|wav",'
+            '"delivery":"auto|voice|file|both|none","force_rebuild":false}。'
+            "它会自动做人声/伴奏分离、RVC 音色转换和重新混音；不要先手工调用 separate_audio_stems，除非用户只想要分轨。"
+            "没有明确音域证据时 pitch_shift 保持 0，不要只根据男女声标签强制升降八度。"
+            "delivery=auto 在 QQ 中会优先作为语音发送，其他客户端保留普通生成文件交付；完整高质量结果始终进入生成区。"
+            "如果没有 source_id，只有在用户明确点播此前已翻唱歌曲时才用 song_title 查缓存；缓存不存在时应告诉用户需要歌曲材料。"
+            "整首歌可能耗时较长，允许直接调用，也可以由 delegate_task 交给 media_agent 后台处理。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        source_id = str(
+            value.get("source_id") or value.get("source") or value.get("target") or value.get("attachment_id") or ""
+        ).strip()
+        song_title = str(value.get("song_title") or value.get("title") or "").strip()
+        if not source_id and not song_title:
+            return None
+        return {
+            "type": self.tool_type,
+            "source_id": source_id[:120],
+            "song_title": song_title[:120],
+            "artist": str(value.get("artist") or value.get("singer") or "").strip()[:80],
+            "voice_model": str(value.get("voice_model") or value.get("model") or "auto").strip()[:120] or "auto",
+            "pitch_shift": self._coerce_int(value.get("pitch_shift") or value.get("transpose"), -24, 24, 0),
+            "index_rate": self._coerce_float(value.get("index_rate"), 0.0, 1.0, 0.6),
+            "filter_radius": self._coerce_int(value.get("filter_radius"), 0, 7, 3),
+            "rms_mix_rate": self._coerce_float(value.get("rms_mix_rate"), 0.0, 1.0, 0.25),
+            "protect": self._coerce_float(value.get("protect"), 0.0, 0.5, 0.33),
+            "vocal_gain_db": self._coerce_float(value.get("vocal_gain_db"), -12.0, 12.0, 0.0),
+            "instrumental_gain_db": self._coerce_float(value.get("instrumental_gain_db"), -12.0, 6.0, -1.0),
+            "output_format": self._normalize_output_format(value.get("output_format") or value.get("format") or "mp3"),
+            "delivery": self._normalize_delivery(value.get("delivery") or value.get("send_as") or "auto"),
+            "force_rebuild": self._coerce_bool(value.get("force_rebuild"), default=False),
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        delivery = str(call.get("delivery") or "auto")
+        if delivery == "auto":
+            delivery = "voice" if str(context.client_mode or "").strip().lower() == "qq_text" else "file"
+        result = self.cover_song_service.cover_song(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            source_target=str(call.get("source_id") or ""),
+            song_title=str(call.get("song_title") or ""),
+            artist=str(call.get("artist") or ""),
+            voice_model=str(call.get("voice_model") or "auto"),
+            pitch_shift=int(call.get("pitch_shift") or 0),
+            index_rate=float(call.get("index_rate") if call.get("index_rate") is not None else 0.6),
+            filter_radius=int(call.get("filter_radius") if call.get("filter_radius") is not None else 3),
+            rms_mix_rate=float(call.get("rms_mix_rate") if call.get("rms_mix_rate") is not None else 0.25),
+            protect=float(call.get("protect") if call.get("protect") is not None else 0.33),
+            vocal_gain_db=float(call.get("vocal_gain_db") or 0.0),
+            instrumental_gain_db=float(
+                call.get("instrumental_gain_db") if call.get("instrumental_gain_db") is not None else -1.0
+            ),
+            output_format=str(call.get("output_format") or "mp3"),
+            delivery=delivery,
+            force_rebuild=bool(call.get("force_rebuild")),
+            timestamp=context.now_ts,
+        )
+        generated = result.get("generated") if isinstance(result, dict) else None
+        events: list[dict[str, Any]] = []
+        if isinstance(generated, dict):
+            events.append(
+                {
+                    "type": "generated_file_ready",
+                    "generated_file": generated,
+                    "send_to_user": bool(result.get("send_to_user")),
+                    "delivery_mode": str(result.get("delivery_mode") or delivery),
+                    "delivery_scope": "cover_song",
+                    "client_mode": str(context.client_mode or ""),
+                }
+            )
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=events,
+            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+        )
+
+    def _normalize_output_format(self, value: Any) -> str:
+        text = str(value or "mp3").strip().lower().lstrip(".")
+        text = {"wave": "wav", "mpeg3": "mp3"}.get(text, text)
+        return text if text in {"mp3", "flac", "wav"} else "mp3"
+
+    def _normalize_delivery(self, value: Any) -> str:
+        text = str(value or "auto").strip().lower()
+        text = {"qq_voice": "voice", "audio": "voice", "不发送": "none"}.get(text, text)
+        return text if text in {"auto", "voice", "file", "both", "none"} else "auto"
+
+    def _coerce_int(self, value: Any, lower: int, upper: int, default: int) -> int:
+        try:
+            parsed = int(float(str(value).strip()))
+        except Exception:
+            parsed = default
+        return max(lower, min(upper, parsed))
+
+    def _coerce_float(self, value: Any, lower: float, upper: float, default: float) -> float:
+        try:
+            parsed = float(str(value).strip())
+        except Exception:
+            parsed = default
+        return max(lower, min(upper, parsed))
+
+    def _coerce_bool(self, value: Any, *, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "y", "on", "重新生成", "强制重做"}:
+            return True
+        if text in {"0", "false", "no", "n", "off", "使用缓存"}:
             return False
         return default
 

@@ -41,6 +41,7 @@ AGENT_ALLOWED_TOOLS: dict[str, set[str]] = {
         "inspect_media_info",
         "convert_media_file",
         "separate_audio_stems",
+        "cover_song",
         "clean_voice_track",
         "transcribe_media",
         "prepare_voice_dataset",
@@ -52,6 +53,7 @@ AGENT_ALLOWED_TOOLS: dict[str, set[str]] = {
         "inspect_attachment",
         "inspect_media_info",
         "separate_audio_stems",
+        "cover_song",
         "clean_voice_track",
         "transcribe_media",
         "prepare_voice_dataset",
@@ -189,7 +191,8 @@ class TaskWorkerService:
                     "brief": clean_brief,
                     "status": "queued",
                     "inputs": self._normalize_text_list(inputs) or list(workshop.get("inputs") or []),
-                    "expected_outputs": self._normalize_text_list(expected_outputs) or list(workshop.get("expected_outputs") or []),
+                    "expected_outputs": self._normalize_text_list(expected_outputs)
+                    or list(workshop.get("expected_outputs") or []),
                     "delegated_at": now_ts,
                     "updated_at": now_ts,
                 }
@@ -198,12 +201,15 @@ class TaskWorkerService:
             normalized_delivery_context = self._normalize_delivery_context(delivery_context)
             if normalized_delivery_context and not isinstance(metadata.get("delivery"), dict):
                 metadata["delivery"] = normalized_delivery_context
-            task = self.task_workspace_service.update_task(
-                task_id=str(task["task_id"]),
-                status="queued",
-                metadata=metadata,
-                timestamp=now_ts,
-            ) or task
+            task = (
+                self.task_workspace_service.update_task(
+                    task_id=str(task["task_id"]),
+                    status="queued",
+                    metadata=metadata,
+                    timestamp=now_ts,
+                )
+                or task
+            )
 
         task_id = str(task.get("task_id") or "").strip()
         self.task_workspace_service.append_event(
@@ -279,7 +285,9 @@ class TaskWorkerService:
         max_rounds = max(1, min(5, int(getattr(config, "MAX_TASK_WORKER_ROUNDS", 3) or 3)))
         allowed_handlers = self._allowed_handlers(agent)
         if not allowed_handlers:
-            self._block_task(task_id=task_id, agent=agent, message="后台工坊没有可用工具。", question="", timestamp=start_ts)
+            self._block_task(
+                task_id=task_id, agent=agent, message="后台工坊没有可用工具。", question="", timestamp=start_ts
+            )
             return WorkerRunSummary(task_id=task_id, assigned_agent=agent, status="blocked", rounds=0)
 
         for round_index in range(max_rounds):
@@ -323,7 +331,9 @@ class TaskWorkerService:
                     task_id=task_id,
                 )
                 if tool_result is None:
-                    blocked_message = f"{agent} 想调用一个不可用或参数不完整的工具：{self._describe_tool_call(tool_call)}"
+                    blocked_message = (
+                        f"{agent} 想调用一个不可用或参数不完整的工具：{self._describe_tool_call(tool_call)}"
+                    )
                     self._block_task(
                         task_id=task_id,
                         agent=agent,
@@ -341,7 +351,9 @@ class TaskWorkerService:
                 )
                 followup = str(tool_result.followup_context or "").strip()
                 if followup:
-                    tool_followups.append(f"第 {len(tool_followups) + 1} 次工具（{tool_result.tool_type}）结果：\n{followup}")
+                    tool_followups.append(
+                        f"第 {len(tool_followups) + 1} 次工具（{tool_result.tool_type}）结果：\n{followup}"
+                    )
                     summary.tool_results.append(followup[:240])
                 self.task_workspace_service.append_event(
                     task_id=task_id,
@@ -368,12 +380,16 @@ class TaskWorkerService:
                 )
                 self.task_workspace_service.complete_task(
                     task_id=task_id,
-                    artifacts=[dict(item) for item in list(final_task.get("artifacts") or []) if isinstance(item, dict)],
+                    artifacts=[
+                        dict(item) for item in list(final_task.get("artifacts") or []) if isinstance(item, dict)
+                    ],
                     message=message or f"{agent} 已完成后台任务。",
                     timestamp=int(time.time()),
                 )
                 post_complete_task = self.task_workspace_service.get_task(task_id) or final_task
-                self._update_workshop_status(post_complete_task, status="done", handoff=handoff, timestamp=int(time.time()))
+                self._update_workshop_status(
+                    post_complete_task, status="done", handoff=handoff, timestamp=int(time.time())
+                )
                 self.task_workspace_service.append_event(
                     task_id=task_id,
                     event_type="worker_completed",
@@ -481,6 +497,7 @@ class TaskWorkerService:
             "apply_style_to_existing_file",
             "convert_media_file",
             "separate_audio_stems",
+            "cover_song",
             "clean_voice_track",
             "transcribe_media",
             "prepare_voice_dataset",
@@ -594,8 +611,12 @@ class TaskWorkerService:
             "tool_call": dict(tool_call) if isinstance(tool_call, dict) else None,
             "steps": self._normalize_steps(data.get("steps")),
             "artifacts": self._normalize_artifacts(data.get("artifacts")),
-            "next_action": self._normalize_next_action(raw_handoff.get("next_action") or data.get("next_action") or data.get("delivery")),
-            "handoff_note": str(raw_handoff.get("summary") or raw_handoff.get("note") or data.get("handoff_note") or "").strip()[:500],
+            "next_action": self._normalize_next_action(
+                raw_handoff.get("next_action") or data.get("next_action") or data.get("delivery")
+            ),
+            "handoff_note": str(
+                raw_handoff.get("summary") or raw_handoff.get("note") or data.get("handoff_note") or ""
+            ).strip()[:500],
         }
 
     def _apply_worker_state(
@@ -726,10 +747,14 @@ class TaskWorkerService:
             has_artifacts=bool(artifact_summaries),
             has_question=bool(question),
         )
-        summary_text = handoff_note or message or self._default_handoff_summary(
-            status=status,
-            artifacts=artifact_summaries,
-            completed_steps=completed_steps,
+        summary_text = (
+            handoff_note
+            or message
+            or self._default_handoff_summary(
+                status=status,
+                artifacts=artifact_summaries,
+                completed_steps=completed_steps,
+            )
         )
         handoff = {
             "status": status,
@@ -767,7 +792,8 @@ class TaskWorkerService:
             artifact
             for artifact in candidates
             if bool(artifact.get("send_to_user"))
-            or str(artifact.get("delivery_role") or "").strip().lower() in {"requested_output", "final_output", "deliverable"}
+            or str(artifact.get("delivery_role") or "").strip().lower()
+            in {"requested_output", "final_output", "deliverable"}
             or bool(artifact.get("deliverable"))
         ]
         if explicit:
@@ -813,35 +839,54 @@ class TaskWorkerService:
         ]
         if not role_items:
             return []
-        wants_both = any(token in intent for token in ("人声伴奏", "人声和伴奏", "人声/伴奏", "两轨", "拆轨", "分离人声和伴奏"))
+        wants_both = any(
+            token in intent for token in ("人声伴奏", "人声和伴奏", "人声/伴奏", "两轨", "拆轨", "分离人声和伴奏")
+        )
         only_vocals = any(token in intent for token in ("只要人声", "只发人声", "只需要人声", "只保留人声", "只要干声"))
         only_instrumental = any(token in intent for token in ("只要伴奏", "只发伴奏", "只需要伴奏", "只保留伴奏"))
         wants_vocals = any(token in intent for token in ("只要人声", "人声", "vocals", "vocal", "干声", "歌声"))
-        wants_instrumental = any(token in intent for token in ("只要伴奏", "伴奏", "instrumental", "no vocals", "去人声"))
+        wants_instrumental = any(
+            token in intent for token in ("只要伴奏", "伴奏", "instrumental", "no vocals", "去人声")
+        )
         if only_vocals:
-            selected = [artifact for artifact in role_items if self._artifact_has_audio_role(artifact, {"vocals", "vocal", "人声", "干声", "歌声"})]
+            selected = [
+                artifact
+                for artifact in role_items
+                if self._artifact_has_audio_role(artifact, {"vocals", "vocal", "人声", "干声", "歌声"})
+            ]
             if selected:
                 return selected
         if only_instrumental:
-            selected = [artifact for artifact in role_items if self._artifact_has_audio_role(artifact, {"instrumental", "伴奏", "no_vocals", "accompaniment"})]
+            selected = [
+                artifact
+                for artifact in role_items
+                if self._artifact_has_audio_role(artifact, {"instrumental", "伴奏", "no_vocals", "accompaniment"})
+            ]
             if selected:
                 return selected
         if wants_both or (wants_vocals and wants_instrumental):
             return role_items
         if wants_vocals:
-            selected = [artifact for artifact in role_items if self._artifact_has_audio_role(artifact, {"vocals", "vocal", "人声", "干声", "歌声"})]
+            selected = [
+                artifact
+                for artifact in role_items
+                if self._artifact_has_audio_role(artifact, {"vocals", "vocal", "人声", "干声", "歌声"})
+            ]
             if selected:
                 return selected
         if wants_instrumental:
-            selected = [artifact for artifact in role_items if self._artifact_has_audio_role(artifact, {"instrumental", "伴奏", "no_vocals", "accompaniment"})]
+            selected = [
+                artifact
+                for artifact in role_items
+                if self._artifact_has_audio_role(artifact, {"instrumental", "伴奏", "no_vocals", "accompaniment"})
+            ]
             if selected:
                 return selected
         return []
 
     def _artifact_has_audio_role(self, artifact: dict[str, Any], roles: set[str]) -> bool:
         haystack = " ".join(
-            str(artifact.get(key) or "").strip().lower()
-            for key in ("stem_role", "title", "id", "generated_handle")
+            str(artifact.get(key) or "").strip().lower() for key in ("stem_role", "title", "id", "generated_handle")
         )
         return any(role.lower() in haystack for role in roles)
 
@@ -863,7 +908,10 @@ class TaskWorkerService:
             ]
             if selected:
                 return selected[-1:]
-        if any(token in intent for token in ("总结", "文档", "markdown", "md", "docx", "pdf", "表格", "字幕", "转写", "文字稿", "稿")):
+        if any(
+            token in intent
+            for token in ("总结", "文档", "markdown", "md", "docx", "pdf", "表格", "字幕", "转写", "文字稿", "稿")
+        ):
             selected = [
                 artifact
                 for artifact in artifacts
@@ -903,7 +951,9 @@ class TaskWorkerService:
         rendered: list[dict[str, str]] = []
         seen: set[str] = set()
         for artifact in artifacts:
-            artifact_id = str(artifact.get("id") or artifact.get("generated_handle") or artifact.get("attachment_handle") or "").strip()
+            artifact_id = str(
+                artifact.get("id") or artifact.get("generated_handle") or artifact.get("attachment_handle") or ""
+            ).strip()
             title = str(artifact.get("title") or "").strip()
             kind = str(artifact.get("kind") or artifact.get("format") or "").strip()
             stem_role = str(artifact.get("stem_role") or "").strip()
@@ -977,7 +1027,9 @@ class TaskWorkerService:
 
     def _handoff_instruction(self, *, status: str, next_action: str, has_artifacts: bool, has_question: bool) -> str:
         if next_action == "send_to_user":
-            return "用户已明确要结果时，前台助手可以用 send_file 精确发送这些 handle；发送后再询问是否需要清理任务工作区。"
+            return (
+                "用户已明确要结果时，前台助手可以用 send_file 精确发送这些 handle；发送后再询问是否需要清理任务工作区。"
+            )
         if next_action == "ask_confirmation":
             return "先请用户确认要不要发送、以及具体发送哪份结果；用户确认后再用 send_file 精确发送对应 handle。"
         if next_action == "ask_user" or has_question:
@@ -1014,7 +1066,9 @@ class TaskWorkerService:
             "group_id": self._coerce_positive_int(value.get("group_id")),
             "session_id": str(value.get("session_id") or "")[:120],
             "profile_user_id": str(value.get("profile_user_id") or "")[:120],
-            "character_pack_id": normalize_character_pack_id(value.get("character_pack_id") or value.get("characterPackId")),
+            "character_pack_id": normalize_character_pack_id(
+                value.get("character_pack_id") or value.get("characterPackId")
+            ),
             "clean_message": str(value.get("clean_message") or "")[:1000],
             "raw_message": str(value.get("raw_message") or "")[:1000],
             "sender_label": str(value.get("sender_label") or "")[:120],
@@ -1086,7 +1140,9 @@ class TaskWorkerService:
                 continue
             if status not in {"queued", "running", "done", "failed", "waiting_user"}:
                 status = "queued"
-            normalized.append({"id": f"worker_step_{index}", "title": title[:120], "status": status, "note": note[:200]})
+            normalized.append(
+                {"id": f"worker_step_{index}", "title": title[:120], "status": status, "note": note[:200]}
+            )
             if len(normalized) >= 12:
                 break
         return normalized
@@ -1099,7 +1155,9 @@ class TaskWorkerService:
         for item in value:
             if not isinstance(item, dict):
                 continue
-            artifact_id = str(item.get("id") or item.get("generated_handle") or item.get("attachment_handle") or "").strip()
+            artifact_id = str(
+                item.get("id") or item.get("generated_handle") or item.get("attachment_handle") or ""
+            ).strip()
             title = str(item.get("title") or "").strip()
             if not artifact_id and not title:
                 continue
@@ -1113,7 +1171,9 @@ class TaskWorkerService:
                     "kind": str(item.get("kind") or item.get("format") or "").strip()[:40],
                     "title": title[:120],
                     "source": str(item.get("source") or "task_worker").strip()[:60],
-                    "delivery_role": str(item.get("delivery_role") or item.get("role") or "workspace_material").strip()[:60],
+                    "delivery_role": str(item.get("delivery_role") or item.get("role") or "workspace_material").strip()[
+                        :60
+                    ],
                 }
             )
             if "deliverable" in item:
