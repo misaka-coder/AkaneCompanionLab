@@ -14,6 +14,8 @@ from ..capability_registry import (
     CapabilitySnapshot,
     is_document_attachment,
     is_document_generated_file,
+    is_image_attachment,
+    is_image_generated_file,
     is_media_attachment,
     is_media_generated_file,
 )
@@ -52,12 +54,16 @@ def describe_tool_call_for_prompt(tool_call: dict[str, Any]) -> str:
 
 def build_tool_working_stream_event(tool_call: dict[str, Any]) -> dict[str, Any]:
     tool_type = str((tool_call or {}).get("type") or "unknown").strip() or "unknown"
+    message = {
+        "generate_image": "我开始生成图片，可能需要一会儿。",
+        "load_material": "我重新看一下原图。",
+    }.get(tool_type, "我查一下。")
     return {
         "type": "assistant_working",
         "status": "running",
         "phase": "tool_call",
         "tool_type": tool_type,
-        "message": "我查一下。",
+        "message": message,
     }
 
 
@@ -249,7 +255,10 @@ def resolve_capability_selection(
         allowed_tool_names=(
             domain_profile.allowed_tool_names if domain_profile.id != DEFAULT_DOMAIN_PROFILE_ID else None
         ),
-        hidden_tool_names=domain_profile.hidden_tool_names,
+        hidden_tool_names=(
+            *domain_profile.hidden_tool_names,
+            *(() if "generate_image" in handlers else ("generate_image",)),
+        ),
     )
     if domain_profile.id != DEFAULT_DOMAIN_PROFILE_ID:
         domain_handler_names = tuple(
@@ -324,9 +333,11 @@ def build_capability_snapshot(
         has_any_attachment=bool(attachments),
         has_document_attachment=any(is_document_attachment(item) for item in attachments),
         has_media_attachment=any(is_media_attachment(item) for item in attachments),
+        has_image_attachment=any(is_image_attachment(item) for item in attachments),
         has_generated_file=bool(generated_files),
         has_document_generated_file=any(is_document_generated_file(item) for item in generated_files),
         has_media_generated_file=any(is_media_generated_file(item) for item in generated_files),
+        has_image_generated_file=any(is_image_generated_file(item) for item in generated_files),
         has_pending_gift=False,
     )
 

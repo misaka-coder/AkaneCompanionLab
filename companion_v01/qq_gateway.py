@@ -29,7 +29,7 @@ QQ_FILE_DELIVERY_DIRECT_RE = re.compile(
     re.IGNORECASE,
 )
 QQ_FILE_DELIVERY_TARGET_RE = re.compile(
-    r"(文件|附件|结果|成果|产物|文档|表格|图片|照片|音频|视频|字幕|歌词|压缩包|安装包|"
+    r"(文件|附件|结果|成果|产物|文档|表格|图片|照片|图像|海报|插画|封面|头像|壁纸|音频|视频|字幕|歌词|压缩包|安装包|"
     r"人声|伴奏|干声|歌声|音轨|声轨|"
     r"word|docx?|excel|xlsx?|pptx?|pdf|markdown|\bmd\b|zip|rar|7z|"
     r"mp3|wav|flac|m4a|aac|ogg|opus|vocals?|instrumental|stems?|"
@@ -37,7 +37,7 @@ QQ_FILE_DELIVERY_TARGET_RE = re.compile(
     re.IGNORECASE,
 )
 QQ_FILE_OUTPUT_REQUEST_RE = re.compile(
-    r"(做|生成|整理|导出|转成|转换|压缩|提取|分离|下载|转写|总结成|保存为|打包|制作)",
+    r"(做|生成|生图|画|绘制|改图|修图|融合|整理|导出|转成|转换|压缩|提取|分离|下载|转写|总结成|保存为|打包|制作)",
     re.IGNORECASE,
 )
 QQ_FILE_DELIVERY_NEGATIVE_RE = re.compile(
@@ -2595,6 +2595,8 @@ class NapCatQQGateway:
                         "source_type": "generated",
                         "path": path,
                         "name": f"{title}.{ext}" if ext and not title.lower().endswith(f".{ext.lower()}") else title,
+                        "is_image": ext.lower() in {"png", "jpg", "jpeg", "webp", "gif"}
+                        or str(generated.get("mime_type") or "").strip().lower().startswith("image/"),
                     }
                 )
         if not targets:
@@ -2776,11 +2778,18 @@ class NapCatQQGateway:
     ) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
         for target in targets:
-            result = self.send_file(
-                context,
-                file_path=str(target.get("path") or ""),
-                name=str(target.get("name") or ""),
-            )
+            if bool(target.get("is_image")):
+                result = self.send_image(
+                    context,
+                    image_path=str(target.get("path") or ""),
+                    name=str(target.get("name") or ""),
+                )
+            else:
+                result = self.send_file(
+                    context,
+                    file_path=str(target.get("path") or ""),
+                    name=str(target.get("name") or ""),
+                )
             result["generated_id"] = str(target.get("generated_id") or "")
             results.append(result)
         return {

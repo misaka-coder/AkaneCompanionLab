@@ -71,6 +71,27 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertNotIn("base64", context)
         self.assertNotIn("c3ludGhldGlj", context)
 
+    def test_engine_merges_internal_tool_images_without_exposing_them_in_tool_text(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        loaded = ToolExecutionResult(
+            tool_type="load_material",
+            followup_context="已加载 img_002。",
+            model_image_inputs=[
+                {
+                    "attachment_id": "attachment-2",
+                    "attachment_handle": "img_002",
+                    "title": "旧图",
+                    "data_url": "data:image/png;base64,b2xkLWltYWdl",
+                }
+            ],
+        )
+
+        merged = engine._merge_tool_model_image_inputs([], [loaded])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["attachment_handle"], "img_002")
+        self.assertNotIn("base64", loaded.followup_context)
+
     def test_native_web_search_schema_respects_global_disable(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
@@ -193,9 +214,10 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
             config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
 
-    def test_default_allowlist_includes_validated_read_only_tools(self) -> None:
-        # 5e/6b: the shipped default allowlist contains the low-risk read-only
-        # tools. Read the class field default (immune to .env / other tests).
+    def test_default_allowlist_includes_validated_native_tools(self) -> None:
+        # The shipped default allowlist contains validated read tools plus
+        # bounded session-material/image-generation artifact tools. Read the
+        # class field default (immune to .env / other tests).
         from config import Settings
 
         default = str(Settings.model_fields["NATIVE_TOOL_DECISION_ALLOWLIST"].default or "")
@@ -210,10 +232,12 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 "inspect_media_info",
                 "load_character_context",
                 "inspect_attachment",
+                "load_material",
                 "read_attachment_section",
                 "list_workspace",
                 "read_workspace",
                 "inspect_generated_file",
+                "generate_image",
                 "market_resolve_security",
                 "market_news_search",
                 "market_quote_snapshot",

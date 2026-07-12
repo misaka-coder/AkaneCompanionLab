@@ -48,10 +48,12 @@ TOOL_GROUPS: dict[str, str] = {
     "fetch_media_from_url": "media",
     "sync_attachment_workspace": "attachments",
     "inspect_attachment": "attachments",
+    "load_material": "attachments",
     "read_attachment_section": "documents",
     "retry_attachment": "attachments",
     "clear_attachment_focus": "attachments",
     "compose_file": "documents",
+    "generate_image": "image_generation",
     "revise_generated_file": "documents",
     "apply_style_to_existing_file": "documents",
     "inspect_media_info": "media",
@@ -73,6 +75,8 @@ TOOL_GROUPS: dict[str, str] = {
 
 TOOL_USED_BY: dict[str, list[str]] = {
     "load_character_context": ["agent", "desktop_pet", "qq_text"],
+    "load_material": ["agent", "desktop_pet", "qq_text"],
+    "generate_image": ["agent", "desktop_pet", "qq_text"],
     "call_npc": ["agent", "web_scene"],
     "check_inventory": ["agent", "web_scene"],
     "manage_gift": ["agent", "web_scene"],

@@ -1718,6 +1718,55 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["file"], "C:/tmp/akane.md")
         self.assertEqual(payload["name"], "Akane整理.md")
 
+    def test_send_generated_image_uses_onebot_image_message(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "generated-image-send-1",
+                "raw_message": "生成一张图片发给我",
+            }
+        )
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "generated.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic")
+            with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+                result = gateway.send_generated_files(
+                    context,
+                    [
+                        {
+                            "type": "generated_file_ready",
+                            "send_to_user": True,
+                            "generated_file": {
+                                "generated_id": "generated::image-1",
+                                "absolute_path": str(image_path),
+                                "output_title": "生成图片",
+                                "file_ext": "png",
+                                "mime_type": "image/png",
+                            },
+                        }
+                    ],
+                )
+
+        self.assertTrue(result["ok"])
+        mocked_post.assert_called_once()
+        url = mocked_post.call_args.args[0]
+        payload = mocked_post.call_args.kwargs["json"]
+        self.assertTrue(url.endswith("/send_private_msg"))
+        self.assertEqual(payload["user_id"], QQ_MASTER_FIXTURE_ID)
+        self.assertEqual(payload["message"][0]["type"], "image")
+
     @patch("companion_v01.qq_gateway.config.QQ_REQUIRE_FILE_DELIVERY_INTENT", True)
     def test_send_generated_files_blocks_without_current_delivery_intent(self) -> None:
         gateway = NapCatQQGateway()
@@ -1799,6 +1848,7 @@ class QQGatewayTests(unittest.TestCase):
         gateway = NapCatQQGateway()
 
         self.assertTrue(gateway.message_requests_file_delivery("把 gen_001 发我一下"))
+        self.assertTrue(gateway.message_requests_file_delivery("用这两张照片融合画一张新图"))
         self.assertFalse(gateway.message_requests_file_delivery("先别发文件，我只是问问进度"))
 
     def test_send_generated_files_accepts_generic_file_ready_event(self) -> None:

@@ -31,6 +31,8 @@ from .capability_registry import (
 from . import desktop_pet_engine
 from .embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
 from .generated_files import GeneratedFileService
+from .image_generation import ImageGenerationService, PinAIImageProvider
+from .image_materials import SessionImageMaterialResolver
 from . import gift_engine
 from .gift_system import GiftSystemService
 from . import media_bridge_engine
@@ -84,12 +86,14 @@ from .tool_runtime import (
     ConvertMediaFileToolHandler,
     FetchMediaFromUrlToolHandler,
     FocusWorkspaceToolHandler,
+    GenerateImageToolHandler,
     InspectAttachmentToolHandler,
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
     ListRemindersToolHandler,
     ListWorkspaceToolHandler,
     LoadCharacterContextToolHandler,
+    LoadMaterialToolHandler,
     ManageArtifactToolHandler,
     ManageGeneratedFileToolHandler,
     ManageGiftToolHandler,
@@ -1286,6 +1290,58 @@ class AkaneMemoryEngine:
         self.generated_file_service = service
         return service
 
+    def _get_image_material_resolver(self) -> SessionImageMaterialResolver | None:
+        resolver = getattr(self, "image_material_resolver", None)
+        if resolver is not None:
+            return resolver
+        attachment_service = self._get_attachment_inbox_service()
+        generated_file_service = self._get_generated_file_service()
+        if attachment_service is None or generated_file_service is None:
+            return None
+        resolver = SessionImageMaterialResolver(
+            attachment_service=attachment_service,
+            generated_file_service=generated_file_service,
+        )
+        self.image_material_resolver = resolver
+        return resolver
+
+    def _get_image_generation_service(self) -> ImageGenerationService | None:
+        service = getattr(self, "image_generation_service", None)
+        if service is not None:
+            return service
+        if not bool(getattr(config, "IMAGE_GENERATION_ENABLED", False)):
+            return None
+        resolver = self._get_image_material_resolver()
+        generated_file_service = self._get_generated_file_service()
+        if resolver is None or generated_file_service is None:
+            return None
+        image_api_key = str(getattr(config, "IMAGE_GENERATION_API_KEY", "") or "").strip()
+        current_chat_base = str(getattr(config, "CHAT_BASE_URL", "") or "").strip().lower()
+        if not image_api_key and any(marker in current_chat_base for marker in ("pinaic.com", "pinai-cn.com")):
+            image_api_key = str(getattr(config, "CHAT_API_KEY", "") or "").strip()
+        provider = PinAIImageProvider(
+            base_url=str(getattr(config, "IMAGE_GENERATION_BASE_URL", "") or ""),
+            api_key=image_api_key,
+            model=str(getattr(config, "IMAGE_GENERATION_MODEL", "gpt-image-2") or "gpt-image-2"),
+            timeout_seconds=float(getattr(config, "IMAGE_GENERATION_TIMEOUT_SECONDS", 300.0) or 300.0),
+            max_output_bytes=int(getattr(config, "IMAGE_GENERATION_MAX_OUTPUT_BYTES", 25 * 1024 * 1024) or 0),
+        )
+        if not provider.configured:
+            return None
+        service = ImageGenerationService(
+            provider=provider,
+            image_material_resolver=resolver,
+            generated_file_service=generated_file_service,
+            max_input_images=int(getattr(config, "IMAGE_GENERATION_MAX_INPUT_IMAGES", 5) or 5),
+            max_output_images=int(getattr(config, "IMAGE_GENERATION_MAX_OUTPUT_IMAGES", 4) or 4),
+            max_image_bytes=int(getattr(config, "IMAGE_GENERATION_MAX_IMAGE_BYTES", 8 * 1024 * 1024) or 0),
+            max_total_input_bytes=int(
+                getattr(config, "IMAGE_GENERATION_MAX_TOTAL_INPUT_BYTES", 20 * 1024 * 1024) or 0
+            ),
+        )
+        self.image_generation_service = service
+        return service
+
     def _get_desktop_music_timeline_service(self) -> DesktopMusicTimelineService | None:
         service = getattr(self, "desktop_music_timeline_service", None)
         if service is not None:
@@ -2458,6 +2514,7 @@ class AkaneMemoryEngine:
                 domain_profile_id=turn_domain_profile_id,
             )
             tool_result = batch_results[-1] if batch_results else None
+            turn_user_images = self._merge_tool_model_image_inputs(turn_user_images, batch_results)
 
             finance_no_progress = self._should_stop_for_finance_no_progress(tool_results)
             stop_after_tool = (
@@ -2940,6 +2997,7 @@ class AkaneMemoryEngine:
                 domain_profile_id=turn_domain_profile_id,
             )
             tool_result = batch_results[-1] if batch_results else None
+            turn_user_images = self._merge_tool_model_image_inputs(turn_user_images, batch_results)
             for stream_event in current_events:
                 yield stream_event
 
@@ -4131,6 +4189,38 @@ class AkaneMemoryEngine:
             recent_raw_for_turn.append(tool_record)
         return current_events, shaped_followup, workspace_followup
 
+    @staticmethod
+    def _merge_tool_model_image_inputs(
+        current_images: list[dict[str, Any]],
+        tool_results: list[ToolExecutionResult],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for raw in [
+            *list(current_images or []),
+            *[
+                item
+                for result in list(tool_results or [])
+                for item in list(getattr(result, "model_image_inputs", None) or [])
+            ],
+        ]:
+            if not isinstance(raw, dict):
+                continue
+            data_url = str(raw.get("data_url") or "")
+            if not data_url.startswith("data:image/"):
+                continue
+            source_id = str(raw.get("attachment_id") or "").strip()
+            handle = str(raw.get("attachment_handle") or "").strip()
+            identity = (source_id, handle)
+            if identity != ("", "") and identity in seen:
+                continue
+            if identity != ("", ""):
+                seen.add(identity)
+            merged.append(dict(raw))
+            if len(merged) >= 5:
+                break
+        return merged
+
     def _append_native_anthropic_tool_history_turns(
         self,
         *,
@@ -4715,6 +4805,7 @@ class AkaneMemoryEngine:
             "cancel_reminder": CancelReminderToolHandler(store=self.store),
             "check_inventory": CheckInventoryToolHandler(gift_service=self.gift_service),
             "inspect_attachment": InspectAttachmentToolHandler(attachment_service=self._get_attachment_inbox_service()),
+            "load_material": LoadMaterialToolHandler(image_material_resolver=self._get_image_material_resolver()),
             "read_attachment_section": ReadAttachmentSectionToolHandler(
                 attachment_service=self._get_attachment_inbox_service()
             ),
@@ -4795,6 +4886,11 @@ class AkaneMemoryEngine:
             "open_music_search": OpenMusicSearchToolHandler(),
             "browser_page": BrowserPageToolHandler(),
         }
+        image_generation_service = self._get_image_generation_service()
+        if image_generation_service is not None:
+            handlers["generate_image"] = GenerateImageToolHandler(
+                image_generation_service=image_generation_service,
+            )
         market_service = getattr(self, "market_data_tool_service", None)
         if market_service is not None:
             from .finance import build_market_tool_handlers

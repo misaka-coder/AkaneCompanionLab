@@ -46,6 +46,7 @@ DOCUMENT_ATTACHMENT_FORMATS = {
 
 DOCUMENT_GENERATED_FORMATS = {"txt", "md", "docx", "xlsx", "pdf", "json", "csv", "html"}
 MEDIA_FORMATS = {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "mp4", "mov", "mkv", "webm", "avi"}
+IMAGE_GENERATED_FORMATS = {"png", "jpg", "jpeg", "webp", "gif"}
 
 COMMON_CLIENT_MODES = (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D, ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
 WEB_SCENE_CLIENT_MODES = (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D)
@@ -89,6 +90,9 @@ ATTACHMENT_WORKSPACE_TOOL_NAMES = (
     "clear_attachment_focus",
 )
 
+IMAGE_MATERIAL_TOOL_NAMES = ("load_material",)
+IMAGE_GENERATION_TOOL_NAMES = ("generate_image",)
+
 DOCUMENT_WORKBENCH_TOOL_NAMES = (
     "read_attachment_section",
     "compose_file",
@@ -121,9 +125,11 @@ class CapabilitySnapshot:
     has_any_attachment: bool = False
     has_document_attachment: bool = False
     has_media_attachment: bool = False
+    has_image_attachment: bool = False
     has_generated_file: bool = False
     has_document_generated_file: bool = False
     has_media_generated_file: bool = False
+    has_image_generated_file: bool = False
     has_pending_gift: bool = False
 
 
@@ -162,6 +168,10 @@ def _has_document_context(snapshot: CapabilitySnapshot) -> bool:
 
 def _has_media_context(snapshot: CapabilitySnapshot) -> bool:
     return snapshot.has_media_attachment or snapshot.has_media_generated_file
+
+
+def _has_image_context(snapshot: CapabilitySnapshot) -> bool:
+    return snapshot.has_image_attachment or snapshot.has_image_generated_file
 
 
 def _has_generated_file(snapshot: CapabilitySnapshot) -> bool:
@@ -307,6 +317,22 @@ class CapabilityRegistry:
                 trigger=_has_any_attachment,
             ),
             CapabilityModule(
+                name="image_material_reload",
+                layer="shared_image_material",
+                modes=CHAT_FILE_CLIENT_MODES,
+                tools=IMAGE_MATERIAL_TOOL_NAMES,
+                light_hint="需要重新观察当前会话较早的原图或生成图时，可以按 handle 加载原始图片；当前轮已经带图或摘要足够时不必重复加载。",
+                trigger=_has_image_context,
+            ),
+            CapabilityModule(
+                name="image_generation",
+                layer="shared_image_generation",
+                modes=CHAT_FILE_CLIENT_MODES,
+                tools=IMAGE_GENERATION_TOOL_NAMES,
+                light_hint="用户明确要文生图、图生图、融合多张图片或继续修改生成图时，可以调用已配置的云端图片生成能力；使用当前会话 img_/gen_ handle，不填写路径或 URL。",
+                trigger=_always,
+            ),
+            CapabilityModule(
                 name="conversation_file_authoring",
                 layer="shared_file_authoring",
                 modes=CHAT_FILE_CLIENT_MODES,
@@ -393,6 +419,12 @@ def is_media_attachment(item: dict) -> bool:
     return bool(detail.get("media_info")) or file_kind in MEDIA_FORMATS or mime_type.startswith(("audio/", "video/"))
 
 
+def is_image_attachment(item: dict) -> bool:
+    kind = str(item.get("kind") or "").strip().lower()
+    mime_type = str(item.get("mime_type") or "").strip().lower()
+    return kind == "image" or mime_type.startswith("image/")
+
+
 def is_document_generated_file(item: dict) -> bool:
     output_format = str(item.get("output_format") or item.get("file_ext") or "").strip().lower().lstrip(".")
     return output_format in DOCUMENT_GENERATED_FORMATS
@@ -401,3 +433,9 @@ def is_document_generated_file(item: dict) -> bool:
 def is_media_generated_file(item: dict) -> bool:
     output_format = str(item.get("output_format") or item.get("file_ext") or "").strip().lower().lstrip(".")
     return output_format in MEDIA_FORMATS
+
+
+def is_image_generated_file(item: dict) -> bool:
+    output_format = str(item.get("output_format") or item.get("file_ext") or "").strip().lower().lstrip(".")
+    mime_type = str(item.get("mime_type") or "").strip().lower()
+    return output_format in IMAGE_GENERATED_FORMATS or mime_type.startswith("image/")

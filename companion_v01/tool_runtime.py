@@ -54,6 +54,9 @@ class ToolExecutionResult:
     stream_events: list[dict[str, Any]] = field(default_factory=list)
     followup_context: str = ""
     state_updates: dict[str, Any] = field(default_factory=dict)
+    # Internal-only provider image blocks. Never copy this field into prompt
+    # text, stream events, logs, memcore, or public final output.
+    model_image_inputs: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -290,6 +293,93 @@ INSPECT_ATTACHMENT_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+LOAD_MATERIAL_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Reload one to five original images from the current session's temporary "
+        "attachment/generated-file workspace into the next multimodal model round. "
+        "Use when an older image must be examined again; not needed when the current "
+        "turn already includes the image or when only its saved summary is enough."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "targets": {
+            "type": "array",
+            "items": {"type": "string", "maxLength": 120},
+            "minItems": 1,
+            "maxItems": 5,
+            "description": "Current-session image handles such as img_001 or gen_002.",
+        },
+        "purpose": {
+            "type": "string",
+            "maxLength": 240,
+            "description": "Short reason the original pixels are needed, e.g. compare details before editing.",
+        },
+    },
+    "required": ["targets"],
+}
+
+
+GENERATE_IMAGE_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Generate a new image or edit one to five current-session reference images. "
+        "The host resolves img_*/gen_* handles and calls the configured PinAI GPT Image provider. "
+        "Use only for an explicit image-generation/editing intent; never invent paths, URLs, or base64."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "Complete creative/edit instruction preserving the user's requested constraints.",
+        },
+        "reference_images": {
+            "type": "array",
+            "items": {"type": "string", "maxLength": 120},
+            "maxItems": 5,
+            "description": "Optional current-session img_*/gen_* handles. Omit for text-to-image.",
+        },
+        "mask_image": {
+            "type": "string",
+            "maxLength": 120,
+            "description": "Optional current-session mask image handle. Requires at least one reference image.",
+        },
+        "size": {
+            "type": "string",
+            "pattern": "^(auto|[0-9]{3,4}x[0-9]{3,4})$",
+            "description": "auto or WIDTHxHEIGHT; bounded by the host. Common: 1024x1024, 1536x1024, 1024x1536.",
+        },
+        "quality": {"type": "string", "enum": ["auto", "low", "medium", "high"]},
+        "background": {
+            "type": "string",
+            "enum": ["auto", "opaque"],
+            "description": "gpt-image-2 does not support transparent backgrounds.",
+        },
+        "output_format": {"type": "string", "enum": ["png", "jpeg", "webp"]},
+        "compression": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "JPEG/WebP output compression quality. Ignored for PNG.",
+        },
+        "input_fidelity": {
+            "type": "string",
+            "enum": ["auto", "low", "high"],
+            "description": "How strongly edits should preserve input details.",
+        },
+        "n": {"type": "integer", "minimum": 1, "maximum": 4},
+        "output_title": {"type": "string", "maxLength": 80},
+        "send_to_user": {
+            "type": "boolean",
+            "description": "Default true: deliver generated images through the current client.",
+        },
+    },
+    "required": ["prompt"],
+}
+
+
 READ_ATTACHMENT_SECTION_INPUT_SCHEMA: dict[str, Any] = {
     "description": (
         "Expand a specific page / line range / table / sheet of a long attachment in "
@@ -512,6 +602,21 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         risk="low",
         default_round_budget=3,
         input_schema=INSPECT_ATTACHMENT_INPUT_SCHEMA,
+    ),
+    "load_material": ToolMetadata(
+        family="file_workspace",
+        operation="read",
+        risk="low",
+        default_round_budget=4,
+        input_schema=LOAD_MATERIAL_INPUT_SCHEMA,
+    ),
+    "generate_image": ToolMetadata(
+        family="image_generation",
+        operation="external",
+        risk="medium",
+        default_round_budget=5,
+        background=True,
+        input_schema=GENERATE_IMAGE_INPUT_SCHEMA,
     ),
     "retry_attachment": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=3),
     "clear_attachment_focus": ToolMetadata(
@@ -1857,6 +1962,261 @@ class InspectAttachmentToolHandler(BaseToolHandler):
         if kind in {"any", "image", "file", "document", "audio"}:
             return kind
         return "any"
+
+
+class LoadMaterialToolHandler(BaseToolHandler):
+    tool_type = "load_material"
+
+    def __init__(self, *, image_material_resolver) -> None:
+        self.image_material_resolver = image_material_resolver
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- load_material：需要重新观察当前会话工作区里较早的原图或生成图时使用。"
+            '格式为 {"type":"load_material","targets":["img_001","gen_002"],'
+            '"purpose":"重新比较细节"}。'
+            "它会把原图通过模型原生多模态通道送入下一轮；当前消息已经带图、或摘要足够时不必调用。"
+            "只能填写工作区 handle，不能填写路径、URL 或 base64。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        raw_targets = value.get("targets")
+        if raw_targets is None:
+            raw_targets = value.get("target") or value.get("image_ids") or value.get("images")
+        if isinstance(raw_targets, str):
+            candidates = [part.strip() for part in raw_targets.replace("，", ",").replace("、", ",").split(",")]
+        elif isinstance(raw_targets, (list, tuple, set)):
+            candidates = [str(item or "").strip() for item in raw_targets]
+        else:
+            candidates = []
+        targets = list(dict.fromkeys(item[:120] for item in candidates if item))[:5]
+        if not targets:
+            return None
+        return {
+            "type": self.tool_type,
+            "targets": targets,
+            "purpose": str(value.get("purpose") or value.get("reason") or "").strip()[:240],
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        result = self.image_material_resolver.build_model_image_inputs(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            targets=list(call.get("targets") or []),
+            max_count=5,
+            max_bytes_per_image=int(getattr(config, "VISION_MAX_IMAGE_BYTES", 8 * 1024 * 1024) or 0),
+            max_total_bytes=20 * 1024 * 1024,
+        )
+        images = [dict(item) for item in list(result.get("images") or []) if isinstance(item, dict)]
+        handles = [str(item.get("attachment_handle") or "").strip() for item in images]
+        handles = [item for item in handles if item]
+        unresolved = [
+            {
+                "target": str(item.get("target") or "")[:120],
+                "reason": str(item.get("reason") or "unavailable")[:120],
+            }
+            for item in list(result.get("unresolved") or [])
+            if isinstance(item, dict)
+        ]
+        if not images:
+            unresolved_labels = ", ".join(item["target"] for item in unresolved if item["target"])
+            return ToolExecutionResult(
+                tool_type=self.tool_type,
+                stream_events=[
+                    {
+                        "type": "material_load_failed",
+                        "status": "unavailable",
+                        "targets": list(call.get("targets") or []),
+                    }
+                ],
+                followup_context=(
+                    "<tool_use_error>没有加载到可用原图。"
+                    f"未解析目标：{unresolved_labels or '未知'}。"
+                    "请基于已有摘要继续，或自然请用户重新发送图片；不要假装看到了原图。</tool_use_error>"
+                ),
+            )
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "material_images_loaded",
+                    "status": "ready" if not unresolved else "partial",
+                    "handles": handles,
+                    "image_count": len(images),
+                    "unresolved_count": len(unresolved),
+                }
+            ],
+            followup_context=(
+                f"已把当前会话材料 {', '.join(handles)} 的原始图片通过原生多模态通道加载到下一轮。"
+                "请直接观察图片完成用户任务；不要只复述旧摘要，也不要声称看到了未加载的材料。"
+            ),
+            model_image_inputs=images,
+        )
+
+
+class GenerateImageToolHandler(BaseToolHandler):
+    tool_type = "generate_image"
+
+    def __init__(self, *, image_generation_service) -> None:
+        self.image_generation_service = image_generation_service
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- generate_image：用户明确要文生图、图生图、改图、融合多张图片或继续修改生成图时使用。"
+            '格式为 {"type":"generate_image","prompt":"完整生成/编辑要求",'
+            '"reference_images":["img_001","gen_002"],"mask_image":"可选 img_003",'
+            '"size":"auto|1024x1024|1536x1024|1024x1536","quality":"auto|low|medium|high",'
+            '"background":"auto|opaque","output_format":"png|jpeg|webp","compression":90,'
+            '"input_fidelity":"auto|low|high","n":1,"output_title":"标题","send_to_user":true}。'
+            "没有 reference_images 时是文生图；有一到五张时是图生图/多图融合。"
+            "提示词由你根据用户意图完整组织，但不能填写路径、URL、base64 或 API key。"
+            "生成结果会成为 gen_001 一类当前会话生成文件，并可继续作为参考图。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        prompt = str(value.get("prompt") or value.get("instruction") or value.get("description") or "").strip()[
+            :4000
+        ]
+        if not prompt:
+            return None
+        raw_references = value.get("reference_images")
+        if raw_references is None:
+            raw_references = value.get("image_ids") or value.get("images") or value.get("references")
+        references = self._normalize_targets(raw_references, limit=5)
+        size = str(value.get("size") or "auto").strip().lower().replace("×", "x") or "auto"
+        quality = str(value.get("quality") or "auto").strip().lower()
+        background = str(value.get("background") or "auto").strip().lower()
+        output_format = str(value.get("output_format") or value.get("format") or "png").strip().lower().lstrip(".")
+        if output_format == "jpg":
+            output_format = "jpeg"
+        input_fidelity = str(value.get("input_fidelity") or "auto").strip().lower()
+        return {
+            "type": self.tool_type,
+            "prompt": prompt,
+            "reference_images": references,
+            "mask_image": str(value.get("mask_image") or value.get("mask") or "").strip()[:120],
+            "size": size,
+            "quality": quality if quality in {"auto", "low", "medium", "high"} else "auto",
+            "background": background if background in {"auto", "opaque"} else "auto",
+            "output_format": output_format if output_format in {"png", "jpeg", "webp"} else "png",
+            "compression": self._coerce_int(value.get("compression"), minimum=0, maximum=100, default=90),
+            "input_fidelity": input_fidelity if input_fidelity in {"auto", "low", "high"} else "auto",
+            "n": self._coerce_int(value.get("n"), minimum=1, maximum=4, default=1),
+            "output_title": str(value.get("output_title") or value.get("title") or "生成图片").strip()[:80]
+            or "生成图片",
+            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=True),
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        if self.image_generation_service is None:
+            return self._failure("image_generation_service_unavailable")
+        result = self.image_generation_service.generate(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            prompt=str(call.get("prompt") or ""),
+            reference_targets=list(call.get("reference_images") or []),
+            mask_target=str(call.get("mask_image") or ""),
+            size=str(call.get("size") or "auto"),
+            quality=str(call.get("quality") or "auto"),
+            background=str(call.get("background") or "auto"),
+            output_format=str(call.get("output_format") or "png"),
+            compression=int(call.get("compression") or 90),
+            input_fidelity=str(call.get("input_fidelity") or "auto"),
+            n=int(call.get("n") or 1),
+            output_title=str(call.get("output_title") or "生成图片"),
+            send_to_user=bool(call.get("send_to_user")),
+            timestamp=context.now_ts,
+        )
+        generated_items = [item for item in list(result.get("generated") or []) if isinstance(item, dict)]
+        if not bool(result.get("ok")) or not generated_items:
+            return ToolExecutionResult(
+                tool_type=self.tool_type,
+                stream_events=[
+                    {
+                        "type": "image_generation_failed",
+                        "status": "failed",
+                        "reason": str(result.get("reason") or "image_generation_failed")[:120],
+                        "retryable": bool(result.get("retryable")),
+                    }
+                ],
+                followup_context=str(result.get("followup_context") or ""),
+            )
+
+        events = [
+            {
+                "type": "generated_file_ready",
+                "generated_file": item,
+                "send_to_user": bool(result.get("send_to_user")),
+            }
+            for item in generated_items
+        ]
+        events.append(
+            {
+                "type": "image_generation_completed",
+                "status": "ready",
+                "handles": list(result.get("handles") or []),
+                "image_count": len(generated_items),
+                "reference_handles": list(result.get("reference_handles") or []),
+            }
+        )
+        preview_result = self.image_generation_service.image_material_resolver.build_model_image_inputs(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            targets=list(result.get("handles") or []),
+            max_count=4,
+            max_bytes_per_image=int(getattr(config, "VISION_MAX_IMAGE_BYTES", 8 * 1024 * 1024) or 0),
+            max_total_bytes=20 * 1024 * 1024,
+        )
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=events,
+            followup_context=str(result.get("followup_context") or ""),
+            state_updates={"generated_image_handles": list(result.get("handles") or [])},
+            model_image_inputs=[
+                dict(item) for item in list(preview_result.get("images") or []) if isinstance(item, dict)
+            ],
+        )
+
+    @staticmethod
+    def _normalize_targets(value: Any, *, limit: int) -> list[str]:
+        if isinstance(value, str):
+            raw = [part.strip() for part in value.replace("，", ",").replace("、", ",").split(",")]
+        elif isinstance(value, (list, tuple, set)):
+            raw = [str(item or "").strip() for item in value]
+        else:
+            raw = []
+        return list(dict.fromkeys(item[:120] for item in raw if item))[: max(1, int(limit))]
+
+    @staticmethod
+    def _coerce_int(value: Any, *, minimum: int, maximum: int, default: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = int(default)
+        return max(minimum, min(maximum, parsed))
+
+    @staticmethod
+    def _coerce_bool(value: Any, *, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on", "是", "开启"}
+
+    def _failure(self, reason: str) -> ToolExecutionResult:
+        safe_reason = str(reason or "image_generation_failed")[:120]
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[{"type": "image_generation_failed", "status": "unavailable", "reason": safe_reason}],
+            followup_context=(
+                f"<tool_use_error>图片生成能力当前不可用：{safe_reason}。"
+                "请自然告诉用户这次没有生成图片，不要编造结果。</tool_use_error>"
+            ),
+        )
 
 
 class ReadAttachmentSectionToolHandler(BaseToolHandler):

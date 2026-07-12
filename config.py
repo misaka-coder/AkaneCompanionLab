@@ -149,6 +149,18 @@ class Settings(BaseSettings):
     # 单张图片最大字节数（默认 8 MB）
     VISION_MAX_IMAGE_BYTES: int = 8 * 1024 * 1024
 
+    # === 云端图像生成 / 编辑 ===
+    IMAGE_GENERATION_ENABLED: bool = False
+    IMAGE_GENERATION_BASE_URL: str = "https://us.pinai-cn.com/v1"
+    IMAGE_GENERATION_API_KEY: str = ""
+    IMAGE_GENERATION_MODEL: str = "gpt-image-2"
+    IMAGE_GENERATION_TIMEOUT_SECONDS: float = 300.0
+    IMAGE_GENERATION_MAX_INPUT_IMAGES: int = 5
+    IMAGE_GENERATION_MAX_OUTPUT_IMAGES: int = 4
+    IMAGE_GENERATION_MAX_IMAGE_BYTES: int = 8 * 1024 * 1024
+    IMAGE_GENERATION_MAX_TOTAL_INPUT_BYTES: int = 20 * 1024 * 1024
+    IMAGE_GENERATION_MAX_OUTPUT_BYTES: int = 25 * 1024 * 1024
+
     # === 语音 (TTS) ===
     # Edge TTS 语音角色
     TTS_VOICE: str = "zh-CN-XiaoxiaoNeural"
@@ -201,18 +213,19 @@ class Settings(BaseSettings):
     # web_search（3d live gate）、retrieve_memory / read_memory_timeline（5d live gate）、
     # list_reminders / check_inventory / inspect_media_info（6b：确定性 dry-run 量尺，
     # native 链路已由 memory 5d 证明，未单独跑 live smoke）。
-    # load_character_context / inspect_attachment / read_attachment_section /
+    # load_character_context / inspect_attachment / load_material / read_attachment_section /
     # list_workspace / read_workspace / inspect_generated_file（7b：read-only、
     # 静态 schema、generic builder 已验证，未单独跑 live smoke）。
     # market_resolve_security / market_news_search / market_quote_snapshot / market_price_series（F5：金融档案专属、
-    # 只读静态 schema）；render_market_chart / compose_finance_report（F6/F7：低风险固定语法的受管产物工具，
+    # 只读静态 schema）；generate_image（会话内受管图片输入 + PinAI 受管输出）；
+    # render_market_chart / compose_finance_report（F6/F7：低风险固定语法的受管产物工具，
     # 由程序重读可信行情并写入 GeneratedFileStore，不接受代码、原始价格数组或任意路径）。
     # sync_attachment_workspace 虽是 operation="read" 但有文件同步副作用，暂不加入。
     # 注意：这只是"允许"，是否真的走 native 仍取决于总开关和 provider/model 能力档案。
     NATIVE_TOOL_DECISION_ALLOWLIST: str = (
         "web_search,retrieve_memory,read_memory_timeline,list_reminders,check_inventory,inspect_media_info,"
-        "load_character_context,inspect_attachment,read_attachment_section,"
-        "list_workspace,read_workspace,inspect_generated_file,"
+        "load_character_context,inspect_attachment,load_material,read_attachment_section,"
+        "list_workspace,read_workspace,inspect_generated_file,generate_image,"
         "market_resolve_security,market_news_search,market_quote_snapshot,market_price_series,"
         "render_market_chart,compose_finance_report"
     )
@@ -461,6 +474,9 @@ def _apply_settings(s: Settings) -> None:
     global LLM_THINKING_MODE
     global VISION_ENABLED, VISION_REQUEST_TIMEOUT, VISION_PROMPT_VERSION
     global VISION_AUTO_SCENE_OBSERVE, VISION_AUTO_GIFT_OBSERVE, VISION_AUTO_OUTFIT_OBSERVE, VISION_MAX_IMAGE_BYTES
+    global IMAGE_GENERATION_ENABLED, IMAGE_GENERATION_BASE_URL, IMAGE_GENERATION_API_KEY, IMAGE_GENERATION_MODEL
+    global IMAGE_GENERATION_TIMEOUT_SECONDS, IMAGE_GENERATION_MAX_INPUT_IMAGES, IMAGE_GENERATION_MAX_OUTPUT_IMAGES
+    global IMAGE_GENERATION_MAX_IMAGE_BYTES, IMAGE_GENERATION_MAX_TOTAL_INPUT_BYTES, IMAGE_GENERATION_MAX_OUTPUT_BYTES
     global TTS_VOICE, TTS_RATE, TTS_VOLUME, TTS_PITCH, STREAMING_TTS_ENABLED
     global GPT_SOVITS_TTS_TIMEOUT_SECONDS, GPT_SOVITS_TEXT_LANG, GPT_SOVITS_MEDIA_TYPE
     global GPT_SOVITS_STREAMING_MODE, GPT_SOVITS_PARALLEL_INFER, GPT_SOVITS_SPLIT_BUCKET
@@ -554,6 +570,27 @@ def _apply_settings(s: Settings) -> None:
     VISION_AUTO_GIFT_OBSERVE = bool(s.VISION_AUTO_GIFT_OBSERVE)
     VISION_AUTO_OUTFIT_OBSERVE = bool(s.VISION_AUTO_OUTFIT_OBSERVE)
     VISION_MAX_IMAGE_BYTES = max(128 * 1024, int(s.VISION_MAX_IMAGE_BYTES))
+    IMAGE_GENERATION_ENABLED = bool(s.IMAGE_GENERATION_ENABLED)
+    IMAGE_GENERATION_BASE_URL = (
+        str(s.IMAGE_GENERATION_BASE_URL or "https://us.pinai-cn.com/v1").strip().rstrip("/")
+        or "https://us.pinai-cn.com/v1"
+    )
+    pinai_chat_key = (
+        CHAT_API_KEY
+        if any(marker in str(CHAT_BASE_URL or "").lower() for marker in ("pinaic.com", "pinai-cn.com"))
+        else ""
+    )
+    IMAGE_GENERATION_API_KEY = str(s.IMAGE_GENERATION_API_KEY or pinai_chat_key or "").strip()
+    IMAGE_GENERATION_MODEL = str(s.IMAGE_GENERATION_MODEL or "gpt-image-2").strip() or "gpt-image-2"
+    IMAGE_GENERATION_TIMEOUT_SECONDS = max(30.0, min(600.0, float(s.IMAGE_GENERATION_TIMEOUT_SECONDS)))
+    IMAGE_GENERATION_MAX_INPUT_IMAGES = max(1, min(5, int(s.IMAGE_GENERATION_MAX_INPUT_IMAGES)))
+    IMAGE_GENERATION_MAX_OUTPUT_IMAGES = max(1, min(4, int(s.IMAGE_GENERATION_MAX_OUTPUT_IMAGES)))
+    IMAGE_GENERATION_MAX_IMAGE_BYTES = max(128 * 1024, int(s.IMAGE_GENERATION_MAX_IMAGE_BYTES))
+    IMAGE_GENERATION_MAX_TOTAL_INPUT_BYTES = max(
+        IMAGE_GENERATION_MAX_IMAGE_BYTES,
+        int(s.IMAGE_GENERATION_MAX_TOTAL_INPUT_BYTES),
+    )
+    IMAGE_GENERATION_MAX_OUTPUT_BYTES = max(512 * 1024, int(s.IMAGE_GENERATION_MAX_OUTPUT_BYTES))
 
     # === TTS / guard ===
     TTS_VOICE = s.TTS_VOICE or "zh-CN-XiaoxiaoNeural"
