@@ -5,6 +5,7 @@ import hashlib
 import re
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -165,6 +166,33 @@ def _with_qq_sender_context(attachments: list[dict[str, Any]] | None, context: A
             payload.setdefault("group_id", str(group_id))
         enriched.append(payload)
     return enriched
+
+
+def _merge_qq_attachments(*groups: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for group in groups:
+        for item in list(group or []):
+            if not isinstance(item, dict):
+                continue
+            locator = next(
+                (
+                    str(item.get(field) or "").strip()
+                    for field in ("file", "path", "url")
+                    if str(item.get(field) or "").strip()
+                ),
+                "",
+            )
+            identity = (
+                str(item.get("kind") or "").strip().lower(),
+                locator,
+            )
+            if locator and identity in seen:
+                continue
+            if locator:
+                seen.add(identity)
+            merged.append(dict(item))
+    return merged
 
 
 def _format_qq_timestamp(value: Any) -> str:
@@ -1857,6 +1885,30 @@ def build_qq_router(
                             "send_result": send_result,
                         }
                     )
+
+            quoted_result = await asyncio.to_thread(
+                qq_gateway.resolve_quoted_attachments,
+                event,
+                context=context,
+            )
+            quoted_payload = quoted_result if isinstance(quoted_result, dict) else {}
+            quoted_attachments = [
+                dict(item) for item in list(quoted_payload.get("attachments") or []) if isinstance(item, dict)
+            ]
+            if quoted_attachments:
+                context = replace(
+                    context,
+                    attachments=_merge_qq_attachments(context.attachments, quoted_attachments),
+                )
+            if str(quoted_payload.get("status") or "") != "not_quoted":
+                log_event(
+                    "qq_quoted_attachments_resolved",
+                    session_id=context.session_id,
+                    profile_user_id=context.profile_user_id,
+                    status=str(quoted_payload.get("status") or "unknown"),
+                    ok=bool(quoted_payload.get("ok")),
+                    attachment_count=len(quoted_attachments),
+                )
 
             attachments_registered = []
             if context.attachments:

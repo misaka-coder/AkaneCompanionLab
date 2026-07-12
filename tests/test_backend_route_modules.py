@@ -1088,6 +1088,223 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
         mocked_post.assert_called_once()
 
+    def test_qq_router_resolves_quoted_group_image_into_native_multimodal_chat(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        ingest_calls: list[dict[str, Any]] = []
+        process_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def ingest_qq_attachments(self, **kwargs):
+                ingest_calls.append(kwargs)
+                return [{"attachment_id": "img_quoted_1", "kind": "image"}]
+
+            def prepare_qq_native_image_inputs(self, **_kwargs):
+                return {
+                    "ok": True,
+                    "status": "ready",
+                    "images": [
+                        {
+                            "attachment_id": "img_quoted_1",
+                            "attachment_handle": "img_001",
+                            "title": "引用图片",
+                            "media_type": "image/png",
+                            "data_url": "data:image/png;base64,cXVvdGVk",
+                        }
+                    ],
+                    "skipped": [],
+                }
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "我看到你引用的图了。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def __init__(self, payload: dict[str, Any]):
+                self.payload = payload
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return self.payload
+
+        def fake_post(url: str, **_kwargs):
+            if url.endswith("/get_group_member_info"):
+                return FakeResponse(
+                    {
+                        "status": "ok",
+                        "retcode": 0,
+                        "data": {"nickname": "测试用户", "card": ""},
+                    }
+                )
+            if url.endswith("/get_msg"):
+                return FakeResponse(
+                    {
+                        "status": "ok",
+                        "retcode": 0,
+                        "data": {
+                            "message_id": "quoted-image-msg",
+                            "message_type": "group",
+                            "group_id": QQ_GROUP_FIXTURE_ID,
+                            "user_id": QQ_USER_FIXTURE_ID + 1,
+                            "sender": {
+                                "user_id": QQ_USER_FIXTURE_ID + 1,
+                                "nickname": "原图发送者",
+                            },
+                            "message": [
+                                {
+                                    "type": "image",
+                                    "data": {
+                                        "file": "quoted.png",
+                                        "url": "http://127.0.0.1:3001/private-quoted-image.png",
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                )
+            if url.endswith("/send_group_msg"):
+                return FakeResponse({"status": "ok", "retcode": 0, "data": {"message_id": 99}})
+            raise AssertionError(f"unexpected OneBot action: {url.rsplit('/', 1)[-1]}")
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_ATTACHMENT_READY_WAIT_SECONDS=0.01,
+                    VISION_REQUEST_TIMEOUT=1.0,
+                ),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with (
+            patch("companion_v01.qq_gateway.config.QQ_ATTACHMENT_DEBOUNCE_SECONDS", 0.0),
+            patch("companion_v01.qq_gateway.requests.post", side_effect=fake_post) as mocked_post,
+        ):
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "reply-event-1",
+                    "time": int(time.time()),
+                    "message": [
+                        {"type": "reply", "data": {"id": "quoted-image-msg"}},
+                        {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                        {"type": "text", "data": {"text": " 看看图"}},
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reason"], "group_mention", response.json())
+        self.assertEqual(len(ingest_calls), 1)
+        self.assertEqual(len(ingest_calls[0]["attachments"]), 1)
+        self.assertEqual(ingest_calls[0]["attachments"][0]["quoted_message_id"], "quoted-image-msg")
+        self.assertEqual(ingest_calls[0]["attachments"][0]["sender_id"], str(QQ_USER_FIXTURE_ID + 1))
+        self.assertEqual(ingest_calls[0]["attachments"][0]["sender_label"], "原图发送者")
+        self.assertEqual(len(process_calls), 1)
+        self.assertEqual(process_calls[0]["native_user_images"][0]["attachment_handle"], "img_001")
+        self.assertEqual(mocked_post.call_count, 3)
+        quoted_logs = [payload for name, payload in log_calls if name == "qq_quoted_attachments_resolved"]
+        self.assertEqual(
+            quoted_logs,
+            [
+                {
+                    "session_id": f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+                    "profile_user_id": f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+                    "status": "resolved",
+                    "ok": True,
+                    "attachment_count": 1,
+                }
+            ],
+        )
+        serialized_logs = json.dumps(log_calls, ensure_ascii=False)
+        serialized_response = response.text
+        self.assertNotIn("private-quoted-image.png", serialized_logs)
+        self.assertNotIn("private-quoted-image.png", serialized_response)
+        self.assertNotIn("cXVvdGVk", serialized_logs)
+        self.assertNotIn("cXVvdGVk", serialized_response)
+
+    def test_qq_gateway_quoted_attachment_lookup_rejects_other_group(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
+            "message_id": "reply-event-scope",
+            "message": [
+                {"type": "reply", "data": {"id": "quoted-other-group"}},
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                {"type": "text", "data": {"text": " 看看图"}},
+            ],
+        }
+        context = gateway.build_message_context(event)
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {
+                        "message_type": "group",
+                        "group_id": QQ_GROUP_FIXTURE_ID + 1,
+                        "message": [{"type": "image", "data": {"url": "https://example.invalid/image.png"}}],
+                    },
+                }
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()):
+            result = gateway.resolve_quoted_attachments(event, context=context)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "scope_mismatch")
+        self.assertEqual(result["attachments"], [])
+
+    def test_qq_gateway_quoted_attachment_lookup_failure_preserves_text_fallback(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "message_id": "reply-event-failed",
+            "raw_message": f"[CQ:reply,id=quoted-failed][CQ:at,qq={QQ_BOT_FIXTURE_ID}]看看图",
+        }
+        context = gateway.build_message_context(event)
+
+        with patch("companion_v01.qq_gateway.requests.post", side_effect=TimeoutError("offline")):
+            result = gateway.resolve_quoted_attachments(event, context=context)
+
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.clean_message, "看看图")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "lookup_failed")
+        self.assertEqual(result["attachments"], [])
+
     def test_qq_router_waits_for_image_vision_before_waking_llm(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()

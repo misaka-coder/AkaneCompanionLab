@@ -2153,6 +2153,130 @@ class NapCatQQGateway:
                 attachments.append(parsed)
         return attachments
 
+    def extract_reply_message_id(self, event: dict[str, Any]) -> str:
+        segments = event.get("message")
+        if isinstance(segments, list):
+            for item in segments:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("type") or "").strip().lower() != "reply":
+                    continue
+                data = item.get("data") if isinstance(item.get("data"), dict) else {}
+                reply_id = str(data.get("id") or data.get("message_id") or "").strip()
+                if reply_id:
+                    return reply_id
+
+        raw_message = str(event.get("raw_message") or "").strip()
+        match = re.search(r"\[CQ:reply,([^\]]+)\]", raw_message, flags=re.IGNORECASE)
+        if not match:
+            return ""
+        params = self._parse_cq_params(match.group(1))
+        return str(params.get("id") or params.get("message_id") or "").strip()
+
+    def resolve_quoted_attachments(
+        self,
+        event: dict[str, Any],
+        *,
+        context: QQMessageContext,
+    ) -> dict[str, Any]:
+        """Resolve direct attachments from a replied-to QQ message.
+
+        The returned attachment payload is internal input for the existing attachment
+        inbox. Callers must not log or expose it because it may contain private media
+        URLs or local paths.
+        """
+        reply_id = self.extract_reply_message_id(event)
+        if not reply_id:
+            return {"ok": True, "status": "not_quoted", "attachments": []}
+
+        try:
+            response = requests.post(
+                f"{self.onebot_http_url}/get_msg",
+                json={"message_id": reply_id},
+                timeout=5,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            return {"ok": False, "status": "lookup_failed", "attachments": []}
+
+        if not isinstance(payload, dict):
+            return {"ok": False, "status": "invalid_response", "attachments": []}
+        retcode = self._safe_int(payload.get("retcode"))
+        status = str(payload.get("status") or "").strip().lower()
+        if (status and status != "ok") or (payload.get("retcode") is not None and retcode != 0):
+            return {"ok": False, "status": "lookup_rejected", "attachments": []}
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return {"ok": False, "status": "message_missing", "attachments": []}
+
+        if not self._quoted_message_matches_context(data=data, event=event, context=context):
+            return {"ok": False, "status": "scope_mismatch", "attachments": []}
+
+        quoted_event = {
+            "message_id": str(data.get("message_id") or reply_id).strip(),
+            "time": data.get("time"),
+            "message": data.get("message"),
+            "raw_message": data.get("raw_message"),
+        }
+        attachments = self.extract_attachments(quoted_event)
+        sender = data.get("sender") if isinstance(data.get("sender"), dict) else {}
+        quoted_sender_id = self._safe_int(data.get("user_id") or sender.get("user_id"))
+        quoted_sender_label = str(sender.get("card") or sender.get("nickname") or "").strip()
+        for item in attachments:
+            item["quoted_message_id"] = reply_id
+            item["source_message_id"] = str(data.get("message_id") or reply_id).strip()
+            if quoted_sender_id:
+                item["sender_id"] = str(quoted_sender_id)
+            if quoted_sender_label:
+                item["sender_label"] = quoted_sender_label
+            if context.group_id:
+                item["group_id"] = str(context.group_id)
+        return {
+            "ok": True,
+            "status": "resolved" if attachments else "no_attachments",
+            "attachments": attachments,
+            "attachment_count": len(attachments),
+        }
+
+    def _quoted_message_matches_context(
+        self,
+        *,
+        data: dict[str, Any],
+        event: dict[str, Any],
+        context: QQMessageContext,
+    ) -> bool:
+        returned_group_id = self._safe_int(data.get("group_id"))
+        returned_type = str(data.get("message_type") or "").strip().lower()
+        if context.is_group:
+            return bool(context.group_id) and returned_group_id == int(context.group_id)
+        if returned_group_id or returned_type == "group":
+            return False
+
+        peer_id = int(context.user_id or 0)
+        bot_ids = {
+            value
+            for value in (
+                self._safe_int(event.get("self_id")),
+                self._safe_int(self.bot_qq),
+            )
+            if value
+        }
+        allowed_participants = ({peer_id} if peer_id else set()) | bot_ids
+        participant_values = {
+            self._safe_int(data.get("user_id")),
+            self._safe_int(data.get("target_id")),
+        }
+        sender = data.get("sender")
+        if isinstance(sender, dict):
+            participant_values.add(self._safe_int(sender.get("user_id")))
+        participant_values.discard(0)
+        if not participant_values:
+            return True
+        if not participant_values.issubset(allowed_participants):
+            return False
+        return peer_id in participant_values
+
     def _segment_to_attachment(self, *, seg_type: str, data: dict[str, Any]) -> dict[str, Any] | None:
         if seg_type == "image":
             file_value = str(data.get("file") or data.get("filename") or data.get("name") or "").strip()
