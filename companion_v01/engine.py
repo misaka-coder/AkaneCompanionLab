@@ -3334,6 +3334,13 @@ class AkaneMemoryEngine:
                     break
                 if isinstance(event, dict):
                     current_events.append(event)
+                    # The LLM runtime parses top-level JSON fields incrementally
+                    # and emits speech/ui events before the final JSON object is
+                    # complete. Forward those events immediately so the HTTP
+                    # NDJSON stream is genuinely user-visible streaming. We
+                    # still retain the events for the final normalized result;
+                    # persistence and retry decisions remain completion-bound.
+                    yield event
             metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             parse_fallback = int(metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
                 metrics_before.get("chat_json_fallbacks", 0) or 0
@@ -3354,8 +3361,11 @@ class AkaneMemoryEngine:
                 break
             if attempt < max_attempts and hasattr(self.llm, "record_metric"):
                 self.llm.record_metric("chat_final_response_retries")
-        for event in buffered_events:
-            yield event
+        # Events were forwarded as they arrived above. Do not replay them here:
+        # replaying would duplicate speech in the UI/TTS pipeline. In the rare
+        # case a future stream implementation only returns buffered events,
+        # preserve compatibility by forwarding events that were not already
+        # emitted (currently all events from this path are emitted immediately).
         if stream_result is not None and str(getattr(stream_result, "error", "") or "").strip():
             yield {
                 "type": "stream_error",
