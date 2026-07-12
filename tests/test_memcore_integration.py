@@ -554,9 +554,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
             try:
                 self.assertLess(elapsed, 0.2)
                 self.assertTrue(started.wait(timeout=1))
+                close_thread = threading.Thread(target=manager.close)
+                close_thread.start()
+                close_thread.join(timeout=0.05)
+                self.assertTrue(close_thread.is_alive())
             finally:
                 release.set()
-                manager.close()
+                close_thread.join(timeout=1)
+                self.assertFalse(close_thread.is_alive())
 
     def test_normalize_memory_backend(self) -> None:
         self.assertEqual(normalize_memory_backend("legacy"), "legacy")

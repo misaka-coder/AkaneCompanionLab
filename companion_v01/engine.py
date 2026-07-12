@@ -3286,6 +3286,7 @@ class AkaneMemoryEngine:
         normalized: dict[str, Any] = {}
         buffered_events: list[dict[str, Any]] = []
         stream_result: Any = None
+        streamed_speech_to_user = False
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             retry_note = ""
@@ -3341,6 +3342,10 @@ class AkaneMemoryEngine:
                     # still retain the events for the final normalized result;
                     # persistence and retry decisions remain completion-bound.
                     yield event
+                    if str(event.get("type") or "") in {"speech_chunk", "speech_segment"} and str(
+                        event.get("text") or ""
+                    ):
+                        streamed_speech_to_user = True
             metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             parse_fallback = int(metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
                 metrics_before.get("chat_json_fallbacks", 0) or 0
@@ -3358,6 +3363,12 @@ class AkaneMemoryEngine:
             )
             buffered_events = current_events
             if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
+                break
+            # Once speech has reached the UI/TTS pipeline, retrying the entire
+            # response would expose duplicate or contradictory text. Keep the
+            # partial normalized result and mark it as transient below instead
+            # of starting another user-visible generation attempt.
+            if streamed_speech_to_user:
                 break
             if attempt < max_attempts and hasattr(self.llm, "record_metric"):
                 self.llm.record_metric("chat_final_response_retries")

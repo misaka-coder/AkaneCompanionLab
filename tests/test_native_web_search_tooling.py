@@ -795,7 +795,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(captured["native_tools"], [schema])
         self.assertEqual(captured["native_tool_choice"], "auto")
 
-    def test_stream_final_response_discards_fallback_attempt_before_qq_delivery(self) -> None:
+    def test_stream_final_response_does_not_retry_after_speech_is_delivered(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         prompts = []
         metrics = []
@@ -858,13 +858,12 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             events,
             [
                 {"type": "turn_start", "speaker": "Akane"},
-                {"type": "speech_segment", "text": "这是重试后的完整答复。"},
+                {"type": "speech_segment", "text": "我在认真听你说，要不要再多告诉我一点？"},
             ],
         )
-        self.assertEqual(result["speech"], "这是重试后的完整答复。")
-        self.assertEqual(len(prompts), 2)
-        self.assertIn("最终答复修复重试", prompts[1])
-        self.assertEqual(metrics, ["chat_final_response_retries"])
+        self.assertEqual(result["speech"], "我在认真听你说，要不要再多告诉我一点？")
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(metrics, [])
 
     def test_tool_working_stream_event_is_in_progress_only(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)

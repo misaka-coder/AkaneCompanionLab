@@ -167,6 +167,10 @@ class MemcoreManager:
             self._store = None
             self._index = None
             warmup_executor = self._index_warmup_executor
+        # Let an already-running reindex finish while its MemorySystem/store are
+        # still valid. Pending namespace warmups are cancelled so shutdown does
+        # not start new database work.
+        warmup_executor.shutdown(wait=True, cancel_futures=True)
         for system in systems:
             try:
                 system.close()
@@ -177,7 +181,6 @@ class MemcoreManager:
                 store.close()
             except Exception as exc:
                 logger.debug("memcore store close failed: %s", exc)
-        warmup_executor.shutdown(wait=False, cancel_futures=True)
 
     def record_user_turn(
         self,
