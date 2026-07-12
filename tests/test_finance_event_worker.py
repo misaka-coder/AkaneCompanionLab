@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -155,6 +157,8 @@ class FinanceEventWorkerTests(unittest.TestCase):
         self.assertEqual(started["status"], "started")
         self.assertEqual(stopped["status"], "stopped")
         self.assertFalse(worker.status()["running"])
+        self.assertFalse(worker.status()["poll_running"])
+        self.assertFalse(worker.status()["delivery_running"])
         self.assertEqual(source.calls, 0)
 
     def test_worker_does_not_drain_bridge_without_enabled_push_subscription(self) -> None:
@@ -186,7 +190,7 @@ class FinanceEventWorkerTests(unittest.TestCase):
         self.assertEqual(source.calls, 0)
         self.assertIsNone(self.store.get_event("choice:no-sub"))
 
-    def test_worker_persists_entire_batch_before_running_ai(self) -> None:
+    def test_worker_persists_entire_batch_before_delivery_worker_runs_ai(self) -> None:
         self._subscription()
         first = _event("choice:worker-a", "合成公司披露季度经营数据")
         second = _event(
@@ -228,7 +232,11 @@ class FinanceEventWorkerTests(unittest.TestCase):
         self.assertEqual(result.status, "processed")
         self.assertEqual(result.polled_count, 2)
         self.assertEqual(result.persisted_count, 2)
-        self.assertEqual(result.delivered_count, 2)
+        self.assertEqual(result.scheduled_count, 2)
+        self.assertEqual(result.delivered_count, 0)
+        self.assertEqual(len(analysis.requests), 0)
+        delivered = worker.run_delivery_once(now_ts=1_752_153_600)
+        self.assertEqual(delivered.delivered_count, 2)
         self.assertEqual(len(analysis.requests), 2)
         self.assertEqual(len(delivery.deliveries), 2)
 
@@ -252,10 +260,13 @@ class FinanceEventWorkerTests(unittest.TestCase):
 
         first = worker.run_once(now_ts=1_752_153_600)
         second = worker.run_once(now_ts=1_752_153_700)
+        delivered = worker.run_delivery_once(now_ts=1_752_153_700)
 
         self.assertEqual(first.recovery_count, 1)
-        self.assertEqual(first.delivered_count, 1)
+        self.assertEqual(first.scheduled_count, 1)
+        self.assertEqual(first.delivered_count, 0)
         self.assertEqual(second.recovery_count, 0)
+        self.assertEqual(delivered.delivered_count, 1)
         self.assertEqual(len(analysis.requests), 1)
         self.assertEqual(len(delivery.deliveries), 1)
 
@@ -292,11 +303,13 @@ class FinanceEventWorkerTests(unittest.TestCase):
         )
 
         scheduled = worker.run_once(now_ts=1_752_153_600)
-        delivered = worker.run_once(now_ts=1_752_153_690)
+        early = worker.run_delivery_once(now_ts=1_752_153_689)
+        delivered = worker.run_delivery_once(now_ts=1_752_153_690)
 
         self.assertEqual(scheduled.scheduled_count, 1)
         self.assertEqual(scheduled.delivered_count, 0)
         self.assertEqual(scheduled.failed_count, 0)
+        self.assertEqual(early.delivered_count, 0)
         self.assertEqual(delivered.delivered_count, 1)
         self.assertEqual(len(analysis.requests), 1)
         self.assertEqual(len(delivery.deliveries), 1)
@@ -334,8 +347,10 @@ class FinanceEventWorkerTests(unittest.TestCase):
             recovery_max_age_seconds=3600,
         )
 
-        result = worker.run_once(now_ts=1_752_153_600)
+        scheduled = worker.run_once(now_ts=1_752_153_600)
+        result = worker.run_delivery_once(now_ts=1_752_153_600)
 
+        self.assertEqual(scheduled.retry_count, 0)
         self.assertEqual(result.retry_count, 1)
         self.assertEqual(len(analysis.requests), 1)
         self.assertEqual(len(delivery.deliveries), 1)
@@ -374,6 +389,142 @@ class FinanceEventWorkerTests(unittest.TestCase):
         self.assertEqual(result.status, "source_unavailable")
         self.assertEqual(result.reason, "bridge offline")
         self.assertEqual(self.store.list_events(), ())
+
+    def test_slow_analysis_does_not_block_following_source_poll(self) -> None:
+        self._subscription()
+        first = _event("choice:slow-a", "合成公司披露季度经营数据")
+        second = _event(
+            "choice:slow-b",
+            "合成公司宣布重大回购方案",
+            published_at=first.published_at + 60,
+        )
+        source = _FakeSource(
+            [
+                MarketEventPollResult(
+                    ok=True,
+                    status="ok",
+                    provider="mock_choice",
+                    source="Synthetic Worker Source",
+                    events=(first,),
+                ),
+                MarketEventPollResult(
+                    ok=True,
+                    status="ok",
+                    provider="mock_choice",
+                    source="Synthetic Worker Source",
+                    events=(second,),
+                ),
+            ]
+        )
+        analysis_started = threading.Event()
+        release_analysis = threading.Event()
+
+        def block_first_analysis(_request):
+            if not analysis_started.is_set():
+                analysis_started.set()
+                release_analysis.wait(timeout=3)
+
+        worker = FinanceEventWorker(
+            source=source,
+            orchestrator=FinanceEventOrchestrator(
+                store=self.store,
+                analysis_client=_FakeAnalysis(before_analyze=block_first_analysis),
+                delivery_adapter=_FakeDelivery(),
+            ),
+            enabled=True,
+            poll_interval_seconds=0.25,
+            delivery_interval_seconds=0.1,
+            recovery_max_age_seconds=3600,
+        )
+        self.addCleanup(lambda: worker.stop(timeout_seconds=3))
+        self.addCleanup(release_analysis.set)
+
+        worker.start()
+        self.assertTrue(analysis_started.wait(timeout=2), "delivery analysis did not start")
+        deadline = time.monotonic() + 2
+        while self.store.get_event(second.event_id) is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        self.assertIsNotNone(self.store.get_event(second.event_id))
+        self.assertGreaterEqual(source.calls, 2)
+        release_analysis.set()
+        stopped = worker.stop(timeout_seconds=3)
+        self.assertEqual(stopped["status"], "stopped")
+
+    def test_duplicate_polls_create_only_one_delivery_attempt(self) -> None:
+        self._subscription()
+        event = _event("choice:duplicate-poll", "合成公司披露季度经营数据")
+        batch = MarketEventPollResult(
+            ok=True,
+            status="ok",
+            provider="mock_choice",
+            source="Synthetic Worker Source",
+            events=(event,),
+        )
+        analysis = _FakeAnalysis()
+        delivery = _FakeDelivery()
+        worker = FinanceEventWorker(
+            source=_FakeSource([batch, batch]),
+            orchestrator=FinanceEventOrchestrator(
+                store=self.store,
+                analysis_client=analysis,
+                delivery_adapter=delivery,
+            ),
+            enabled=True,
+            recovery_max_age_seconds=3600,
+        )
+
+        worker.run_once(now_ts=1_752_153_600)
+        worker.run_once(now_ts=1_752_153_601)
+        delivered = worker.run_delivery_once(now_ts=1_752_153_602)
+
+        self.assertEqual(delivered.delivered_count, 1)
+        self.assertEqual(len(analysis.requests), 1)
+        self.assertEqual(len(delivery.deliveries), 1)
+
+    def test_pending_delivery_is_drained_by_restarted_worker(self) -> None:
+        self._subscription()
+        event = _event("choice:restart-pending", "合成公司披露季度经营数据")
+        producer = FinanceEventWorker(
+            source=_FakeSource(
+                [
+                    MarketEventPollResult(
+                        ok=True,
+                        status="ok",
+                        provider="mock_choice",
+                        source="Synthetic Worker Source",
+                        events=(event,),
+                    )
+                ]
+            ),
+            orchestrator=FinanceEventOrchestrator(
+                store=self.store,
+                analysis_client=_FakeAnalysis(),
+                delivery_adapter=_FakeDelivery(),
+            ),
+            enabled=True,
+            recovery_max_age_seconds=3600,
+        )
+        scheduled = producer.run_once(now_ts=1_752_153_600)
+
+        analysis = _FakeAnalysis()
+        delivery = _FakeDelivery()
+        restarted = FinanceEventWorker(
+            source=_FakeSource([]),
+            orchestrator=FinanceEventOrchestrator(
+                store=MarketEventStore(Path(self.temp_dir.name) / "worker.sqlite3"),
+                analysis_client=analysis,
+                delivery_adapter=delivery,
+            ),
+            enabled=True,
+            recovery_max_age_seconds=3600,
+        )
+        delivered = restarted.run_delivery_once(now_ts=1_752_153_601)
+
+        self.assertEqual(scheduled.scheduled_count, 1)
+        self.assertEqual(delivered.delivered_count, 1)
+        self.assertEqual(len(analysis.requests), 1)
+        self.assertEqual(len(delivery.deliveries), 1)
 
 
 if __name__ == "__main__":

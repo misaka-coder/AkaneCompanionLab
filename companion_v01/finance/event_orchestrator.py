@@ -115,6 +115,25 @@ class FinanceEventOrchestrator:
             retry_existing=retry_existing,
         )
 
+    def schedule_stored_event(
+        self,
+        event_id: str,
+        *,
+        upsert_status: str = "stored",
+        now_ts: int | None = None,
+    ) -> FinanceEventRunResult | None:
+        """Reserve matching deliveries without running analysis or sending to QQ."""
+        record = self.store.get_event(event_id)
+        if record is None:
+            return None
+        return self._process_record(
+            record=record,
+            upsert_status=upsert_status,
+            now_ts=self._now(now_ts),
+            retry_existing=False,
+            schedule_only=True,
+        )
+
     def _process_record(
         self,
         *,
@@ -122,6 +141,7 @@ class FinanceEventOrchestrator:
         upsert_status: str,
         now_ts: int,
         retry_existing: bool,
+        schedule_only: bool = False,
     ) -> FinanceEventRunResult:
         subscriptions = self.store.match_subscriptions(record)
         results = tuple(
@@ -130,6 +150,7 @@ class FinanceEventOrchestrator:
                 subscription=subscription,
                 now_ts=now_ts,
                 retry_existing=retry_existing,
+                schedule_only=schedule_only,
             )
             for subscription in subscriptions
         )
@@ -157,6 +178,7 @@ class FinanceEventOrchestrator:
         subscription: FinanceSubscription,
         now_ts: int,
         retry_existing: bool = True,
+        schedule_only: bool = False,
     ) -> FinanceDeliveryAttemptResult:
         event = record.event
         existing_delivery = self.store.get_delivery(
@@ -301,6 +323,14 @@ class FinanceEventOrchestrator:
                 attempt_count=existing_delivery.attempt_count,
                 delivery_mode=existing_delivery.delivery_mode,
                 available_at=existing_delivery.available_at,
+            )
+        if schedule_only:
+            return self._scheduled_result(
+                event_id=event.event_id,
+                subscription_id=subscription.subscription_id,
+                decision=decision,
+                delivery=existing_delivery,
+                reason=existing_delivery.reason or "queued_for_delivery",
             )
         if not retry_existing and delivery_preexisted:
             return FinanceDeliveryAttemptResult(
