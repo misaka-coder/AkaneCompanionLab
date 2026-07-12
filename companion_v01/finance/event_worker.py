@@ -84,6 +84,7 @@ class FinanceEventWorker:
         self._last_reason = ""
         self._last_delivery_status = "disabled" if not self.enabled else "idle"
         self._last_delivery_reason = ""
+        self._interrupted_recovery_count = 0
 
     def start(self) -> dict[str, Any]:
         if not self.enabled:
@@ -94,6 +95,15 @@ class FinanceEventWorker:
             if poll_alive and delivery_alive:
                 return {"ok": True, "status": "already_running"}
             self._stop_event.clear()
+            if not poll_alive and not delivery_alive:
+                try:
+                    self._interrupted_recovery_count = self.orchestrator.store.recover_interrupted_deliveries(
+                        now_ts=int(self._clock()),
+                    )
+                except Exception as exc:
+                    self._last_status = "failed"
+                    self._last_reason = f"interrupted_delivery_recovery_failed:{type(exc).__name__}"
+                    return {"ok": False, "status": "failed", "reason": self._last_reason}
             if not poll_alive:
                 self._poll_thread = threading.Thread(
                     target=self._run_poll_loop,
@@ -151,6 +161,7 @@ class FinanceEventWorker:
                 "delivery_interval_seconds": self.delivery_interval_seconds,
                 "poll_batch_size": self.poll_batch_size,
                 "recovery_complete": self._recovery_complete,
+                "interrupted_recovery_count": self._interrupted_recovery_count,
                 "push_governance": self.orchestrator.push_governance.to_public_dict(),
             }
 

@@ -2027,6 +2027,42 @@ class MarketEventStore:
             ).fetchall()
         return tuple(_row_to_delivery(row) for row in rows)
 
+    def recover_interrupted_deliveries(self, *, now_ts: int | None = None) -> int:
+        """Return deliveries left processing by a previous worker to the retry queue."""
+        now = self._now(now_ts)
+        reason = "delivery_interrupted_by_worker_restart"
+        with self._write_lock, self._connect(write=True) as connection:
+            interrupted = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM market_event_deliveries WHERE status = 'processing'"
+                ).fetchone()[0]
+            )
+            if not interrupted:
+                return 0
+            connection.execute(
+                """
+                UPDATE market_event_delivery_parts
+                SET status = 'failed', reason = ?, updated_at = ?
+                WHERE status = 'processing'
+                  AND EXISTS (
+                    SELECT 1 FROM market_event_deliveries AS d
+                    WHERE d.event_id = market_event_delivery_parts.event_id
+                      AND d.subscription_id = market_event_delivery_parts.subscription_id
+                      AND d.status = 'processing'
+                  )
+                """,
+                (reason, now),
+            )
+            connection.execute(
+                """
+                UPDATE market_event_deliveries
+                SET status = 'failed', reason = ?, updated_at = ?
+                WHERE status = 'processing'
+                """,
+                (reason, now),
+            )
+        return interrupted
+
     def has_delivered_cluster(
         self,
         *,

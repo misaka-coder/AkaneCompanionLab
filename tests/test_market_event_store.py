@@ -818,6 +818,52 @@ class MarketEventStoreTests(unittest.TestCase):
         self.assertEqual(second.delivery.attempt_count, 1)
         self.assertEqual(second.delivery.status, "processing")
 
+    def test_interrupted_processing_delivery_returns_to_retry_queue_after_restart(self) -> None:
+        self.store.upsert_event(self.event, now_ts=100)
+        self._subscription("sub-interrupted", "20001")
+        self.store.ensure_delivery(
+            event_id=self.event.event_id,
+            subscription_id="sub-interrupted",
+            now_ts=200,
+        )
+        self.store.claim_delivery_attempt(
+            event_id=self.event.event_id,
+            subscription_id="sub-interrupted",
+            now_ts=210,
+        )
+        self.store.ensure_delivery_parts(
+            event_id=self.event.event_id,
+            subscription_id="sub-interrupted",
+            analysis_id="analysis-interrupted",
+            parts=({"part_key": "text:000", "part_type": "text", "payload": {"message": "分析"}},),
+            now_ts=220,
+        )
+        self.store.claim_delivery_part(
+            event_id=self.event.event_id,
+            subscription_id="sub-interrupted",
+            part_key="text:000",
+            now_ts=230,
+        )
+
+        restarted = MarketEventStore(self.db_path, clock=lambda: 1_752_111_000)
+        recovered = restarted.recover_interrupted_deliveries(now_ts=300)
+        delivery = restarted.get_delivery(
+            event_id=self.event.event_id,
+            subscription_id="sub-interrupted",
+        )
+        parts = restarted.list_delivery_parts(
+            event_id=self.event.event_id,
+            subscription_id="sub-interrupted",
+        )
+        retryable = restarted.list_retryable_deliveries(now_ts=300)
+
+        self.assertEqual(recovered, 1)
+        self.assertEqual(delivery.status, "failed")
+        self.assertEqual(delivery.reason, "delivery_interrupted_by_worker_restart")
+        self.assertEqual(parts[0].status, "failed")
+        self.assertEqual(parts[0].reason, "delivery_interrupted_by_worker_restart")
+        self.assertEqual([item.event_id for item in retryable], [self.event.event_id])
+
     def test_scheduled_delivery_survives_restart_and_is_not_claimed_early(self) -> None:
         self.store.upsert_event(self.event, now_ts=100)
         self._subscription("sub-scheduled", "20001")
