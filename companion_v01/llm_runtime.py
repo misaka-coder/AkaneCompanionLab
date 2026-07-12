@@ -26,6 +26,7 @@ from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
 from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD
+from .tool_invocation import NATIVE_TOOL_CALLS_FIELD
 from .tool_invocation import TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
 from .tool_invocation import TOOL_SOURCE_FIELD
@@ -437,6 +438,7 @@ class LLMRuntime:
             "native_tool_provider_unsupported": 0,
             "native_tool_call_extracted": 0,
             "native_tool_calls_extra": 0,
+            "native_tool_calls_truncated": 0,
             "native_tool_no_call": 0,
             "native_tool_forced_json_suppressed": 0,
         }
@@ -636,10 +638,14 @@ class LLMRuntime:
                 ),
             )
             self._record_cache_metrics(response)
-            native_tool_call = self._extract_native_tool_call(response, native_tools=native_tools, bundle=bundle)
-            if native_tool_call is not None:
+            native_tool_calls = self._extract_native_tool_calls(response, native_tools=native_tools, bundle=bundle)
+            if native_tool_calls:
                 self._record_metric("native_tool_call_extracted")
-                return {NATIVE_TOOL_CALL_FIELD: native_tool_call, "tool_call": None}
+                return {
+                    NATIVE_TOOL_CALLS_FIELD: native_tool_calls,
+                    NATIVE_TOOL_CALL_FIELD: native_tool_calls[0],
+                    "tool_call": None,
+                }
             if native_requested:
                 self._record_metric("native_tool_no_call")
             self._note_truncation(response, phase="call_json")
@@ -823,14 +829,18 @@ class LLMRuntime:
             self._close_stream(response)
 
         raw_text = "".join(raw_parts)
-        native_tool_call = self._stream_native_tool_call_from_parts(
+        native_tool_calls = self._stream_native_tool_calls_from_parts(
             native_tool_parts,
             native_tools=native_tools,
             bundle=bundle,
         )
-        if native_tool_call is not None:
+        if native_tool_calls:
             self._record_metric("native_tool_call_extracted")
-            parsed = {NATIVE_TOOL_CALL_FIELD: native_tool_call, "tool_call": None}
+            parsed = {
+                NATIVE_TOOL_CALLS_FIELD: native_tool_calls,
+                NATIVE_TOOL_CALL_FIELD: native_tool_calls[0],
+                "tool_call": None,
+            }
         elif native_requested:
             self._record_metric("native_tool_no_call")
             parsed = self._extract_json(raw_text)
@@ -1410,6 +1420,16 @@ class LLMRuntime:
         native_tools: list[dict[str, Any]] | None = None,
         bundle: ModelBundle | None = None,
     ) -> dict[str, Any] | None:
+        calls = self._extract_native_tool_calls(response, native_tools=native_tools, bundle=bundle)
+        return calls[0] if calls else None
+
+    def _extract_native_tool_calls(
+        self,
+        response: Any,
+        *,
+        native_tools: list[dict[str, Any]] | None = None,
+        bundle: ModelBundle | None = None,
+    ) -> list[dict[str, Any]]:
         source = NATIVE_OPENAI
         if bundle is not None and self._is_anthropic_protocol(bundle):
             invocations = parse_anthropic_messages_tool_uses(self._chat_response_message(response))
@@ -1417,10 +1437,16 @@ class LLMRuntime:
         else:
             invocations = parse_openai_chat_tool_calls(response)
         if not invocations:
-            return None
+            return []
         if len(invocations) > 1:
             self._record_metric("native_tool_calls_extra", len(invocations) - 1)
-        return self._native_invocation_to_tool_call(invocations[0], native_tools=native_tools, source=source)
+        if len(invocations) > 4:
+            self._record_metric("native_tool_calls_truncated", len(invocations) - 4)
+        calls = [
+            self._native_invocation_to_tool_call(invocation, native_tools=native_tools, source=source)
+            for invocation in invocations[:4]
+        ]
+        return [call for call in calls if call is not None]
 
     def _collect_stream_native_tool_call_parts(
         self,
@@ -1441,6 +1467,16 @@ class LLMRuntime:
         native_tools: list[dict[str, Any]] | None = None,
         bundle: ModelBundle | None = None,
     ) -> dict[str, Any] | None:
+        calls = self._stream_native_tool_calls_from_parts(parts, native_tools=native_tools, bundle=bundle)
+        return calls[0] if calls else None
+
+    def _stream_native_tool_calls_from_parts(
+        self,
+        parts: dict[Any, dict[str, Any]],
+        *,
+        native_tools: list[dict[str, Any]] | None = None,
+        bundle: ModelBundle | None = None,
+    ) -> list[dict[str, Any]]:
         source = NATIVE_OPENAI
         if bundle is not None and self._is_anthropic_protocol(bundle):
             invocations = parse_anthropic_messages_stream_tool_uses(parts)
@@ -1448,10 +1484,16 @@ class LLMRuntime:
         else:
             invocations = parse_openai_chat_stream_tool_calls(parts)
         if not invocations:
-            return None
+            return []
         if len(invocations) > 1:
             self._record_metric("native_tool_calls_extra", len(invocations) - 1)
-        return self._native_invocation_to_tool_call(invocations[0], native_tools=native_tools, source=source)
+        if len(invocations) > 4:
+            self._record_metric("native_tool_calls_truncated", len(invocations) - 4)
+        calls = [
+            self._native_invocation_to_tool_call(invocation, native_tools=native_tools, source=source)
+            for invocation in invocations[:4]
+        ]
+        return [call for call in calls if call is not None]
 
     def _native_invocation_to_tool_call(
         self,

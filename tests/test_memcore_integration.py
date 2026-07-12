@@ -527,6 +527,51 @@ def _tool_context() -> ToolExecutionContext:
 
 
 class MemcoreIntegrationTests(unittest.TestCase):
+    def test_tool_exchange_is_visible_in_memcore_raw_on_next_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=False,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                user = manager.record_user_turn(
+                    {"source_id": "user-1", "content": "查一下北京天气", "timestamp": 100},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                trace = manager.record_tool_exchange(
+                    tool_name="web_search",
+                    tool_call_id="call_1",
+                    tool_input={"query": "北京天气"},
+                    result="北京今天晴，25°C。",
+                    source="anysearch",
+                    timestamp=101,
+                    source_id_prefix="trace-1",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                context = manager.build_prompt_context(
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                    current_user_record={"source_id": "user-2", "content": "刚才结果呢", "timestamp": 103},
+                )
+            finally:
+                manager.close()
+
+        self.assertTrue(user["ok"])
+        self.assertTrue(trace["ok"])
+        self.assertIn("assistant.tool_call web_search call_1", context["raw_text"])
+        self.assertIn("tool.web_search call_1", context["raw_text"])
+        self.assertIn("北京今天晴", context["raw_text"])
+
     def test_index_warmup_is_scheduled_without_blocking_first_turn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(

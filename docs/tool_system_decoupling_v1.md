@@ -112,6 +112,11 @@ OpenAI / Anthropic / 旧 JSON 三种来源，统一在 **adapter 层**转成 `To
 - 这条管线已有起点：`tool_orchestration_engine.classify_tool_call_rejection` + `engine._record_tool_call_rejection`（第三步已落地的结构化拒绝）。本设计是把它扩成完整契约。
 
 ### 6.1 多 tool call 规则（别留灰区）
+
+> 2026-07-12 更新：本节的“每轮只接受一个”属于历史阶段规则，已由
+> `docs/native_parallel_tool_execution_v1.md` 覆盖。当前实现方向是保留同轮全部合法 native calls，
+> 使用有界并行执行并按原调用顺序回填；legacy JSON 入口仍保持单调用兼容。
+
 INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多个 tool calls**。adapter 会把它们解析成**多个 `ToolInvocation`**，管线必须有明确处置，不留灰区：
 
 - **第二步 / 第三步（当前阶段）**：**每轮只接受一个**。收到多个时，**只执行第一个 `ToolInvocation`，其余结构化拒绝**：对被丢弃的那些发 `ToolResultEnvelope(status="error", model_feedback="本轮一次只能调用一个工具，已忽略其余 N 个：…；如需继续请下一轮再调用")`，并 `logger.warning` 记 reason。**不准静默吞掉多余调用。**

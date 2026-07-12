@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Generator
 
@@ -62,7 +65,7 @@ from .task_worker import TaskWorkerService
 from .task_worker_tool import DelegateTaskToolHandler
 from . import tool_orchestration_engine
 from .tool_invocation import NATIVE_ANTHROPIC
-from .tool_invocation import NATIVE_TOOL_CALL_FIELD
+from .tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
 from .tool_invocation import TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
 from .tool_invocation import TOOL_SOURCE_FIELD
@@ -2223,6 +2226,7 @@ class AkaneMemoryEngine:
         tool_followups: list[str] = []
         native_tool_history_turns: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
+        recorded_tool_call_ids: set[str] = set()
         max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
         tool_round_index = 0
         memory_exclude_source_ids = [
@@ -2231,7 +2235,7 @@ class AkaneMemoryEngine:
             if str(hit.get("source_id") or "").strip()
         ]
         while tool_round_index < max_tool_rounds:
-            final_output, tool_call, rejection = self._prepare_tool_round_decision(
+            final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
                 final_output=final_output,
                 user_message=user_message,
                 client_context=client_context,
@@ -2239,12 +2243,12 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 domain_profile_id=turn_domain_profile_id,
             )
-            if not tool_call:
-                if not rejection:
+            if not tool_calls:
+                if not rejections:
                     break
                 allow_retry = self._record_tool_call_rejection(
                     final_output=final_output,
-                    rejection=rejection,
+                    rejection="\n".join(rejections),
                     tool_followups=tool_followups,
                     session_id=session_id,
                     tool_round_index=tool_round_index,
@@ -2279,21 +2283,28 @@ class AkaneMemoryEngine:
                 if allow_retry:
                     continue
                 break
-            max_tool_rounds = self._resolve_tool_round_budget(
-                current_budget=max_tool_rounds,
-                tool_call=tool_call,
-                client_context=client_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                domain_profile_id=turn_domain_profile_id,
-            )
-
-            tool_signature = self._tool_call_signature(tool_call)
-            if tool_signature in seen_tool_calls:
-                tool_followups.append(
-                    f"系统刚刚拦截了一次重复工具调用：{self._describe_tool_call_for_prompt(tool_call)}。"
-                    "请基于已经拿到的工具结果自然回应，不要继续重复调用同一个工具。"
+            if rejections:
+                tool_followups.extend(rejections)
+            executable_calls: list[dict[str, Any]] = []
+            for tool_call in tool_calls:
+                max_tool_rounds = self._resolve_tool_round_budget(
+                    current_budget=max_tool_rounds,
+                    tool_call=tool_call,
+                    client_context=client_context,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    domain_profile_id=turn_domain_profile_id,
                 )
+                tool_signature = self._tool_call_signature(tool_call)
+                if tool_signature in seen_tool_calls:
+                    tool_followups.append(
+                        f"系统刚刚拦截了一次重复工具调用：{self._describe_tool_call_for_prompt(tool_call)}。"
+                        "请基于已经拿到的工具结果自然回应，不要继续重复调用同一个工具。"
+                    )
+                    continue
+                seen_tool_calls.add(tool_signature)
+                executable_calls.append(tool_call)
+            if not executable_calls:
                 final_output = self._build_final_response(
                     session_id=session_id,
                     profile_user_id=profile_user_id,
@@ -2320,10 +2331,9 @@ class AkaneMemoryEngine:
                     domain_profile_id=turn_domain_profile_id,
                 )
                 break
-            seen_tool_calls.add(tool_signature)
 
             self._record_assistant_preface_for_tool_call(
-                tool_call=tool_call,
+                tool_call=executable_calls[0],
                 final_output=final_output,
                 preface_turns=preface_turns,
                 recent_raw_for_turn=recent_raw_for_turn,
@@ -2334,8 +2344,8 @@ class AkaneMemoryEngine:
                 date_label=date_label,
                 time_of_day=time_of_day,
             )
-            tool_result, _current_events = self._execute_and_record_tool_round(
-                tool_call=tool_call,
+            batch_results, _current_events = self._execute_and_record_tool_batch(
+                tool_calls=executable_calls,
                 final_output=final_output,
                 tool_results=tool_results,
                 tool_events=tool_events,
@@ -2351,8 +2361,10 @@ class AkaneMemoryEngine:
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
                 native_tool_history_turns=native_tool_history_turns,
+                recorded_tool_call_ids=recorded_tool_call_ids,
                 domain_profile_id=turn_domain_profile_id,
             )
+            tool_result = batch_results[-1] if batch_results else None
 
             finance_no_progress = self._should_stop_for_finance_no_progress(tool_results)
             stop_after_tool = (
@@ -2670,6 +2682,7 @@ class AkaneMemoryEngine:
         tool_followups: list[str] = []
         native_tool_history_turns: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
+        recorded_tool_call_ids: set[str] = set()
         max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
         tool_round_index = 0
         memory_exclude_source_ids = [
@@ -2678,7 +2691,7 @@ class AkaneMemoryEngine:
             if str(hit.get("source_id") or "").strip()
         ]
         while tool_round_index < max_tool_rounds:
-            final_output, tool_call, rejection = self._prepare_tool_round_decision(
+            final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
                 final_output=final_output,
                 user_message=user_message,
                 client_context=client_context,
@@ -2688,16 +2701,18 @@ class AkaneMemoryEngine:
             )
             yield {
                 "type": "assistant_stage_decision",
-                "has_tool_call": bool(tool_call),
-                "tool_type": str((tool_call or {}).get("type") or ""),
-                "rejected_tool_call": bool(rejection),
+                "has_tool_call": bool(tool_calls),
+                "tool_type": str((tool_calls[0] if tool_calls else {}).get("type") or ""),
+                "tool_types": [str(call.get("type") or "") for call in tool_calls],
+                "tool_count": len(tool_calls),
+                "rejected_tool_call": bool(rejections),
             }
-            if not tool_call:
-                if not rejection:
+            if not tool_calls:
+                if not rejections:
                     break
                 allow_retry = self._record_tool_call_rejection(
                     final_output=final_output,
-                    rejection=rejection,
+                    rejection="\n".join(rejections),
                     tool_followups=tool_followups,
                     session_id=session_id,
                     tool_round_index=tool_round_index,
@@ -2732,21 +2747,28 @@ class AkaneMemoryEngine:
                 if allow_retry:
                     continue
                 break
-            max_tool_rounds = self._resolve_tool_round_budget(
-                current_budget=max_tool_rounds,
-                tool_call=tool_call,
-                client_context=client_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                domain_profile_id=turn_domain_profile_id,
-            )
-
-            tool_signature = self._tool_call_signature(tool_call)
-            if tool_signature in seen_tool_calls:
-                tool_followups.append(
-                    f"系统刚刚拦截了一次重复工具调用：{self._describe_tool_call_for_prompt(tool_call)}。"
-                    "请基于已经拿到的工具结果自然回应，不要继续重复调用同一个工具。"
+            if rejections:
+                tool_followups.extend(rejections)
+            executable_calls: list[dict[str, Any]] = []
+            for tool_call in tool_calls:
+                max_tool_rounds = self._resolve_tool_round_budget(
+                    current_budget=max_tool_rounds,
+                    tool_call=tool_call,
+                    client_context=client_context,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    domain_profile_id=turn_domain_profile_id,
                 )
+                tool_signature = self._tool_call_signature(tool_call)
+                if tool_signature in seen_tool_calls:
+                    tool_followups.append(
+                        f"系统刚刚拦截了一次重复工具调用：{self._describe_tool_call_for_prompt(tool_call)}。"
+                        "请基于已经拿到的工具结果自然回应，不要继续重复调用同一个工具。"
+                    )
+                    continue
+                seen_tool_calls.add(tool_signature)
+                executable_calls.append(tool_call)
+            if not executable_calls:
                 final_output = yield from self._stream_final_response(
                     session_id=session_id,
                     profile_user_id=profile_user_id,
@@ -2773,10 +2795,9 @@ class AkaneMemoryEngine:
                     domain_profile_id=turn_domain_profile_id,
                 )
                 break
-            seen_tool_calls.add(tool_signature)
 
             self._record_assistant_preface_for_tool_call(
-                tool_call=tool_call,
+                tool_call=executable_calls[0],
                 final_output=final_output,
                 preface_turns=preface_turns,
                 recent_raw_for_turn=recent_raw_for_turn,
@@ -2787,9 +2808,19 @@ class AkaneMemoryEngine:
                 date_label=date_label,
                 time_of_day=time_of_day,
             )
-            yield self._build_tool_working_stream_event(tool_call)
-            tool_result, current_events = self._execute_and_record_tool_round(
-                tool_call=tool_call,
+            working_event = self._build_tool_working_stream_event(executable_calls[0])
+            if len(executable_calls) > 1:
+                working_event.update(
+                    {
+                        "phase": "tool_batch",
+                        "tool_count": len(executable_calls),
+                        "tool_types": [str(call.get("type") or "") for call in executable_calls],
+                        "message": "我一起查一下。",
+                    }
+                )
+            yield working_event
+            batch_results, current_events = self._execute_and_record_tool_batch(
+                tool_calls=executable_calls,
                 final_output=final_output,
                 tool_results=tool_results,
                 tool_events=tool_events,
@@ -2805,8 +2836,10 @@ class AkaneMemoryEngine:
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
                 native_tool_history_turns=native_tool_history_turns,
+                recorded_tool_call_ids=recorded_tool_call_ids,
                 domain_profile_id=turn_domain_profile_id,
             )
+            tool_result = batch_results[-1] if batch_results else None
             for stream_event in current_events:
                 yield stream_event
 
@@ -3208,7 +3241,7 @@ class AkaneMemoryEngine:
     def _is_retryable_final_output(self, output: Any, *, parse_fallback: bool = False) -> bool:
         if not isinstance(output, dict):
             return True
-        if output.get("tool_call") or output.get(NATIVE_TOOL_CALL_FIELD):
+        if output.get("tool_call") or output.get(NATIVE_TOOL_CALL_FIELD) or output.get(NATIVE_TOOL_CALLS_FIELD):
             return False
         text = str(output.get("speech") or "").strip()
         compact = "".join(text.split())
@@ -3590,9 +3623,40 @@ class AkaneMemoryEngine:
         session_id: str,
         domain_profile_id: str = "",
     ) -> tuple[dict[str, Any], dict[str, Any] | None, str]:
+        final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
+            final_output=final_output,
+            user_message=user_message,
+            client_context=client_context,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            domain_profile_id=domain_profile_id,
+        )
+        return (
+            final_output,
+            tool_calls[0] if tool_calls else None,
+            rejections[0] if rejections else "",
+        )
+
+    def _prepare_tool_round_decisions(
+        self,
+        *,
+        final_output: dict[str, Any],
+        user_message: str,
+        client_context: ClientProtocolContext,
+        profile_user_id: str,
+        session_id: str,
+        domain_profile_id: str = "",
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+        native_tool_calls = final_output.pop(NATIVE_TOOL_CALLS_FIELD, None)
         native_tool_call = final_output.pop(NATIVE_TOOL_CALL_FIELD, None)
-        raw_tool_call = native_tool_call if isinstance(native_tool_call, dict) and native_tool_call else None
-        if raw_tool_call is None:
+        raw_tool_calls = (
+            [dict(call) for call in native_tool_calls if isinstance(call, dict) and call]
+            if isinstance(native_tool_calls, list)
+            else []
+        )
+        if not raw_tool_calls and isinstance(native_tool_call, dict) and native_tool_call:
+            raw_tool_calls = [native_tool_call]
+        if not raw_tool_calls:
             final_output = self._promote_narrated_tool_call(
                 final_output,
                 user_message=user_message,
@@ -3601,27 +3665,33 @@ class AkaneMemoryEngine:
                 session_id=session_id,
             )
             raw_tool_call = final_output.get("tool_call")
+            if isinstance(raw_tool_call, dict) and raw_tool_call:
+                raw_tool_calls = [raw_tool_call]
         else:
             final_output["tool_call"] = None
-        tool_call = self._normalize_tool_call(
-            raw_tool_call,
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            domain_profile_id=domain_profile_id,
-        )
-        rejection = (
-            self._describe_tool_call_rejection(
+        tool_calls: list[dict[str, Any]] = []
+        rejections: list[str] = []
+        for raw_tool_call in raw_tool_calls:
+            tool_call = self._normalize_tool_call(
                 raw_tool_call,
                 client_context=client_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 domain_profile_id=domain_profile_id,
             )
-            if raw_tool_call and not tool_call
-            else ""
-        )
-        return final_output, tool_call, rejection
+            if tool_call:
+                tool_calls.append(tool_call)
+                continue
+            rejection = self._describe_tool_call_rejection(
+                raw_tool_call,
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                domain_profile_id=domain_profile_id,
+            )
+            if rejection:
+                rejections.append(rejection)
+        return final_output, tool_calls, rejections
 
     def _record_tool_call_rejection(
         self,
@@ -3723,21 +3793,183 @@ class AkaneMemoryEngine:
         native_tool_history_turns: list[dict[str, Any]] | None = None,
         domain_profile_id: str = "",
     ) -> tuple[ToolExecutionResult | None, list[dict[str, Any]]]:
-        tool_result = self._execute_tool_call(
+        results, current_events = self._execute_and_record_tool_batch(
+            tool_calls=[tool_call],
+            final_output=final_output,
+            tool_results=tool_results,
+            tool_events=tool_events,
+            tool_followups=tool_followups,
+            tool_turns=tool_turns,
+            recent_raw_for_turn=recent_raw_for_turn,
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
-            tool_call=tool_call,
-            visual_payload=final_output,
             now_ts=now_ts,
             current_user_source_id=current_user_source_id,
             client_context=client_context,
             memory_exclude_source_ids=memory_exclude_source_ids,
             request_context=request_context,
+            native_tool_history_turns=native_tool_history_turns,
             domain_profile_id=domain_profile_id,
         )
-        if not tool_result:
-            return None, []
+        return (results[-1] if results else None), current_events
+
+    def _execute_and_record_tool_batch(
+        self,
+        *,
+        tool_calls: list[dict[str, Any]],
+        final_output: dict[str, Any],
+        tool_results: list[ToolExecutionResult],
+        tool_events: list[dict[str, Any]],
+        tool_followups: list[str],
+        tool_turns: list[dict[str, Any]],
+        recent_raw_for_turn: list[dict[str, Any]],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        now_ts: int,
+        current_user_source_id: str,
+        client_context: ClientProtocolContext,
+        memory_exclude_source_ids: list[str],
+        request_context: dict[str, Any],
+        native_tool_history_turns: list[dict[str, Any]] | None = None,
+        recorded_tool_call_ids: set[str] | None = None,
+        domain_profile_id: str = "",
+    ) -> tuple[list[ToolExecutionResult], list[dict[str, Any]]]:
+        calls = [dict(call) for call in tool_calls if isinstance(call, dict) and call]
+        if not calls:
+            return [], []
+
+        def execute(call: dict[str, Any]) -> ToolExecutionResult:
+            try:
+                result = self._execute_tool_call(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=character_pack_id,
+                    tool_call=call,
+                    visual_payload=final_output,
+                    now_ts=now_ts,
+                    current_user_source_id=current_user_source_id,
+                    client_context=client_context,
+                    memory_exclude_source_ids=memory_exclude_source_ids,
+                    request_context=request_context,
+                    domain_profile_id=domain_profile_id,
+                )
+            except Exception as exc:
+                tool_type = str(call.get("type") or "unknown").strip() or "unknown"
+                return ToolExecutionResult(
+                    tool_type=tool_type,
+                    stream_events=[
+                        {
+                            "type": "tool_execution_failed",
+                            "tool_type": tool_type,
+                            "status": "failed",
+                            "reason": f"tool_exception:{type(exc).__name__}",
+                        }
+                    ],
+                    followup_context=(
+                        f"<tool_use_error>工具 {tool_type} 执行失败（{type(exc).__name__}）；"
+                        "请结合本批其它结果继续处理，不要假设该工具已经成功。</tool_use_error>"
+                    ),
+                )
+            if result is not None:
+                return result
+            tool_type = str(call.get("type") or "unknown").strip() or "unknown"
+            return ToolExecutionResult(
+                tool_type=tool_type,
+                stream_events=[
+                    {
+                        "type": "tool_execution_failed",
+                        "tool_type": tool_type,
+                        "status": "failed",
+                        "reason": "empty_tool_result",
+                    }
+                ],
+                followup_context="<tool_use_error>工具执行没有返回结果。</tool_use_error>",
+            )
+
+        executed: list[ToolExecutionResult | None] = [None] * len(calls)
+        try:
+            handlers = self._resolve_tool_handlers(
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                domain_profile_id=domain_profile_id,
+            )
+        except Exception:
+            handlers = {}
+        parallel_indexes: list[int] = []
+        serial_indexes: list[int] = []
+        for index, call in enumerate(calls):
+            handler = handlers.get(str(call.get("type") or ""))
+            metadata_getter = getattr(handler, "tool_metadata", None)
+            try:
+                metadata = metadata_getter() if callable(metadata_getter) else None
+            except Exception:
+                metadata = None
+            if metadata is None or bool(getattr(metadata, "is_read_only", False)):
+                parallel_indexes.append(index)
+            else:
+                serial_indexes.append(index)
+        if len(parallel_indexes) == 1:
+            index = parallel_indexes[0]
+            executed[index] = execute(calls[index])
+        elif parallel_indexes:
+            with ThreadPoolExecutor(
+                max_workers=min(4, len(parallel_indexes)),
+                thread_name_prefix="akane-tool",
+            ) as executor:
+                futures = {index: executor.submit(execute, calls[index]) for index in parallel_indexes}
+                for index, future in futures.items():
+                    executed[index] = future.result()
+        for index in serial_indexes:
+            executed[index] = execute(calls[index])
+        completed = [result for result in executed if result is not None]
+
+        batch_events: list[dict[str, Any]] = []
+        history_items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]] = []
+        for call, result in zip(calls, executed):
+            assert result is not None
+            current_events, shaped_followup, workspace_followup = self._record_tool_round_result(
+                tool_call=call,
+                tool_result=result,
+                tool_results=tool_results,
+                tool_events=tool_events,
+                tool_followups=tool_followups,
+                tool_turns=tool_turns,
+                recent_raw_for_turn=recent_raw_for_turn,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                now_ts=now_ts,
+                current_user_source_id=current_user_source_id,
+                recorded_tool_call_ids=recorded_tool_call_ids,
+            )
+            batch_events.extend(current_events)
+            history_items.append((call, result, shaped_followup, workspace_followup))
+        self._append_native_anthropic_tool_history_batch(
+            native_tool_history_turns=native_tool_history_turns,
+            items=history_items,
+        )
+        return completed, batch_events
+
+    def _record_tool_round_result(
+        self,
+        *,
+        tool_call: dict[str, Any],
+        tool_result: ToolExecutionResult,
+        tool_results: list[ToolExecutionResult],
+        tool_events: list[dict[str, Any]],
+        tool_followups: list[str],
+        tool_turns: list[dict[str, Any]],
+        recent_raw_for_turn: list[dict[str, Any]],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        now_ts: int,
+        current_user_source_id: str,
+        recorded_tool_call_ids: set[str] | None,
+    ) -> tuple[list[dict[str, Any]], str, str]:
 
         tool_results.append(tool_result)
         current_events = list(tool_result.stream_events)
@@ -3753,15 +3985,25 @@ class AkaneMemoryEngine:
             tool_result.followup_context,
             tool_type=tool_result.tool_type,
         )
-        tool_followups.append(f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n{shaped_followup}")
-        if workspace_followup:
-            tool_followups.append(workspace_followup)
-        self._append_native_anthropic_tool_history_turns(
-            native_tool_history_turns=native_tool_history_turns,
+        if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() == NATIVE_ANTHROPIC:
+            tool_followups.append(
+                f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果已通过结构化 tool_result 提供。"
+            )
+        else:
+            tool_followups.append(f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n{shaped_followup}")
+            if workspace_followup:
+                tool_followups.append(workspace_followup)
+        self._record_memcore_tool_exchange(
             tool_call=tool_call,
             tool_result=tool_result,
             shaped_followup=shaped_followup,
             workspace_followup=workspace_followup,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            now_ts=now_ts,
+            current_user_source_id=current_user_source_id,
+            recorded_tool_call_ids=recorded_tool_call_ids,
         )
         current_tool_turns = list(tool_result.raw_turns)
         tool_turns.extend(current_tool_turns)
@@ -3787,7 +4029,7 @@ class AkaneMemoryEngine:
                     character_pack_id=character_pack_id,
                 )
             recent_raw_for_turn.append(tool_record)
-        return tool_result, current_events
+        return current_events, shaped_followup, workspace_followup
 
     def _append_native_anthropic_tool_history_turns(
         self,
@@ -3798,52 +4040,166 @@ class AkaneMemoryEngine:
         shaped_followup: str,
         workspace_followup: str = "",
     ) -> None:
+        self._append_native_anthropic_tool_history_batch(
+            native_tool_history_turns=native_tool_history_turns,
+            items=[(tool_call, tool_result, shaped_followup, workspace_followup)],
+        )
+
+    def _append_native_anthropic_tool_history_batch(
+        self,
+        *,
+        native_tool_history_turns: list[dict[str, Any]] | None,
+        items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
+    ) -> None:
         if native_tool_history_turns is None:
             return
-        if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() != NATIVE_ANTHROPIC:
-            return
-        tool_use_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
-        if not tool_use_id:
-            return
-        model_name = (
-            str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip()
-            or str(tool_call.get("type") or tool_result.tool_type or "").strip()
-        )
-        if not model_name:
-            return
-        tool_input = {
-            str(key): value for key, value in tool_call.items() if key != "type" and not str(key).startswith("_tool_")
-        }
-        feedback_parts = [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()]
-        feedback = "\n\n".join(part for part in feedback_parts if part).strip()
-        if not feedback:
-            feedback = tool_orchestration_engine.shape_tool_followup("", tool_type=tool_result.tool_type)
-        result_block: dict[str, Any] = {
-            "type": "tool_result",
-            "tool_use_id": tool_use_id,
-            "content": feedback,
-        }
-        if self._tool_result_is_error(tool_result):
-            result_block["is_error"] = True
-        native_tool_history_turns.extend(
-            [
+        use_blocks: list[dict[str, Any]] = []
+        result_blocks: list[dict[str, Any]] = []
+        for tool_call, tool_result, shaped_followup, workspace_followup in items:
+            if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() != NATIVE_ANTHROPIC:
+                continue
+            tool_use_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
+            if not tool_use_id:
+                continue
+            model_name = (
+                str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip()
+                or str(tool_call.get("type") or tool_result.tool_type or "").strip()
+            )
+            if not model_name:
+                continue
+            tool_input = {
+                str(key): value
+                for key, value in tool_call.items()
+                if key != "type" and not str(key).startswith("_tool_")
+            }
+            use_blocks.append(
                 {
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": tool_use_id,
-                            "name": model_name,
-                            "input": tool_input,
-                        }
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": [result_block],
-                },
-            ]
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": model_name,
+                    "input": tool_input,
+                }
+            )
+            feedback_parts = [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()]
+            feedback = "\n\n".join(part for part in feedback_parts if part).strip()
+            if not feedback:
+                feedback = tool_orchestration_engine.shape_tool_followup("", tool_type=tool_result.tool_type)
+            result_block: dict[str, Any] = {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": feedback,
+            }
+            if self._tool_result_is_error(tool_result):
+                result_block["is_error"] = True
+            result_blocks.append(result_block)
+        if use_blocks and result_blocks:
+            native_tool_history_turns.extend(
+                [
+                    {"role": "assistant", "content": use_blocks},
+                    {"role": "user", "content": result_blocks},
+                ]
+            )
+
+    def _record_memcore_tool_exchange(
+        self,
+        *,
+        tool_call: dict[str, Any],
+        tool_result: ToolExecutionResult,
+        shaped_followup: str,
+        workspace_followup: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        now_ts: int,
+        current_user_source_id: str,
+        recorded_tool_call_ids: set[str] | None,
+    ) -> None:
+        manager = getattr(self, "memcore_manager", None)
+        if manager is None or not getattr(manager, "enabled", False):
+            return
+        tool_type = str(tool_call.get("type") or tool_result.tool_type or "unknown").strip() or "unknown"
+        call_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
+        if not call_id:
+            call_id = "call_" + hashlib.sha256(self._tool_call_signature(tool_call).encode("utf-8")).hexdigest()[:16]
+        trace_key = f"{tool_type}:{call_id}"
+        if recorded_tool_call_ids is not None:
+            if trace_key in recorded_tool_call_ids:
+                return
+            recorded_tool_call_ids.add(trace_key)
+        tool_input = self._sanitize_tool_trace_value(
+            {str(key): value for key, value in tool_call.items() if key != "type" and not str(key).startswith("_tool_")}
         )
+        feedback = "\n\n".join(
+            part for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()] if part
+        )
+        feedback = self._sanitize_tool_trace_text(feedback)
+        source_material = f"{current_user_source_id}|{session_id}|{call_id}|{tool_type}"
+        source_id_prefix = "tooltrace:" + hashlib.sha256(source_material.encode("utf-8")).hexdigest()[:32]
+        try:
+            manager.record_tool_exchange(
+                tool_name=tool_type,
+                tool_call_id=call_id,
+                tool_input=tool_input,
+                result=feedback,
+                source=str(tool_call.get(TOOL_SOURCE_FIELD) or tool_result.tool_type or tool_type),
+                timestamp=max(now_ts, int(time.time())),
+                source_id_prefix=source_id_prefix,
+                keywords=[tool_type],
+                importance=0.25,
+                confidence=0.9 if not self._tool_result_is_error(tool_result) else 0.5,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+        except Exception as exc:
+            logger.warning("memcore tool trace record failed tool=%s reason=%s", tool_type, type(exc).__name__)
+
+    def _sanitize_tool_trace_value(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): self._sanitize_tool_trace_value(item)
+                for key, item in value.items()
+                if not self._is_sensitive_tool_trace_key(key)
+            }
+        if isinstance(value, list):
+            return [self._sanitize_tool_trace_value(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._sanitize_tool_trace_value(item) for item in value]
+        if isinstance(value, str):
+            return self._sanitize_tool_trace_text(value)
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return self._sanitize_tool_trace_text(str(value))
+
+    @staticmethod
+    def _is_sensitive_tool_trace_key(value: Any) -> bool:
+        key = re.sub(r"[^a-z0-9]", "", str(value or "").strip().lower())
+        if not key:
+            return False
+        if key in {"authorization", "password", "secret"}:
+            return True
+        if "apikey" in key or key.endswith("token") or key.endswith("secret") or key.endswith("password"):
+            return True
+        return key.endswith("path") and any(
+            marker in key for marker in ("absolute", "cache", "cached", "database", "db", "file", "local", "storage")
+        )
+
+    @staticmethod
+    def _sanitize_tool_trace_text(value: str) -> str:
+        text = str(value or "")
+        text = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text)
+        text = re.sub(
+            r"(?i)\b(api[_-]?key|password|secret|token|authorization)\s*[:=]\s*[^\s,;]+",
+            r"\1=[redacted]",
+            text,
+        )
+        text = re.sub(
+            r"(?P<quote>[\"'])(?:[A-Za-z]:[\\/]|\\\\)[^\"'\r\n]+(?P=quote)",
+            "[local_path]",
+            text,
+        )
+        text = re.sub(r"(?<![\w/])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n,;|<>]*", "[local_path]", text)
+        return text
 
     def _tool_result_is_error(self, tool_result: ToolExecutionResult) -> bool:
         feedback = str(getattr(tool_result, "followup_context", "") or "")

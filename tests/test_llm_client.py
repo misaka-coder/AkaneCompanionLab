@@ -15,6 +15,7 @@ from companion_v01.tool_invocation import (
     NATIVE_ANTHROPIC,
     NATIVE_OPENAI,
     NATIVE_TOOL_CALL_FIELD,
+    NATIVE_TOOL_CALLS_FIELD,
     TOOL_INVOCATION_ID_FIELD,
     TOOL_MODEL_NAME_FIELD,
     TOOL_SOURCE_FIELD,
@@ -711,6 +712,42 @@ class LLMClientConfigTests(unittest.TestCase):
             },
         )
 
+    def test_llm_runtime_preserves_multiple_anthropic_tool_uses(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=[
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_1",
+                                "name": "web_search",
+                                "input": {"query": "日经指数"},
+                            },
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_2",
+                                "name": "retrieve_memory",
+                                "input": {"query": "风险偏好"},
+                            },
+                        ]
+                    )
+                )
+            ]
+        )
+
+        calls = runtime._extract_native_tool_calls(response, native_tools=None, bundle=bundle)
+
+        self.assertEqual([call["type"] for call in calls], ["web_search", "retrieve_memory"])
+        self.assertEqual(
+            [call[TOOL_INVOCATION_ID_FIELD] for call in calls],
+            ["toolu_1", "toolu_2"],
+        )
+
     def test_llm_runtime_keeps_anthropic_model_tool_name_for_safe_name_mapping(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
@@ -759,12 +796,14 @@ class LLMClientConfigTests(unittest.TestCase):
         runtime._build_completion_kwargs = lambda **_kwargs: {}
         runtime._create_completion = lambda **_kwargs: object()
         runtime._record_cache_metrics = lambda _response: None
-        runtime._extract_native_tool_call = lambda _response, **_kwargs: {
-            "type": "web_search",
-            "query": "Akane",
-            TOOL_SOURCE_FIELD: NATIVE_OPENAI,
-            TOOL_INVOCATION_ID_FIELD: "call_native_1",
-        }
+        runtime._extract_native_tool_calls = lambda _response, **_kwargs: [
+            {
+                "type": "web_search",
+                "query": "Akane",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_native_1",
+            }
+        ]
 
         result = runtime._call_json(
             bundle=SimpleNamespace(),
@@ -778,9 +817,46 @@ class LLMClientConfigTests(unittest.TestCase):
         )
 
         self.assertIsNone(result["tool_call"])
+        self.assertEqual(len(result[NATIVE_TOOL_CALLS_FIELD]), 1)
         self.assertEqual(result[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
         self.assertEqual(result[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
         self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
+
+    def test_llm_runtime_preserves_all_native_tool_calls_in_provider_order(self) -> None:
+        runtime = LLMRuntime()
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_1",
+                                function=SimpleNamespace(
+                                    name="web_search",
+                                    arguments='{"action":"search","query":"日经指数"}',
+                                ),
+                            ),
+                            SimpleNamespace(
+                                id="call_2",
+                                function=SimpleNamespace(
+                                    name="retrieve_memory",
+                                    arguments='{"query":"风险偏好"}',
+                                ),
+                            ),
+                        ]
+                    )
+                )
+            ]
+        )
+
+        calls = runtime._extract_native_tool_calls(response)
+
+        self.assertEqual([call["type"] for call in calls], ["web_search", "retrieve_memory"])
+        self.assertEqual(
+            [call[TOOL_INVOCATION_ID_FIELD] for call in calls],
+            ["call_1", "call_2"],
+        )
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_calls_extra"], 1)
 
     def test_llm_runtime_stream_returns_native_tool_call_on_internal_carrier(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
@@ -831,6 +907,7 @@ class LLMClientConfigTests(unittest.TestCase):
                 break
 
         self.assertIsNone(result.parsed["tool_call"])
+        self.assertEqual(len(result.parsed[NATIVE_TOOL_CALLS_FIELD]), 1)
         self.assertEqual(result.parsed[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
         self.assertEqual(result.parsed[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
         self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
@@ -979,6 +1056,50 @@ class LLMClientConfigTests(unittest.TestCase):
                 TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
                 TOOL_INVOCATION_ID_FIELD: "toolu_stream_1",
             },
+        )
+
+    def test_llm_runtime_collects_multiple_anthropic_stream_tool_uses(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
+        parts: dict[object, dict[str, object]] = {}
+        chunks = [
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "toolu_1", "name": "web_search", "input": {}},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"query":"日经指数"}'},
+            },
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_2",
+                    "name": "retrieve_memory",
+                    "input": {},
+                },
+            },
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": '{"query":"风险偏好"}'},
+            },
+        ]
+        for chunk in chunks:
+            runtime._collect_stream_native_tool_call_parts(chunk, parts, bundle=bundle)
+
+        calls = runtime._stream_native_tool_calls_from_parts(parts, native_tools=None, bundle=bundle)
+
+        self.assertEqual([call["type"] for call in calls], ["web_search", "retrieve_memory"])
+        self.assertEqual(
+            [call[TOOL_INVOCATION_ID_FIELD] for call in calls],
+            ["toolu_1", "toolu_2"],
         )
 
     def test_llm_runtime_skips_prompt_cache_hints_for_non_openai_base_url_by_default(self) -> None:

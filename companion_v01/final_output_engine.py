@@ -5,7 +5,7 @@ from typing import Any
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
 from .persona_config import PERSONA
 from .text_utils import normalize_text, parse_joined_tags
-from .tool_invocation import NATIVE_TOOL_CALL_FIELD
+from .tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
 
 _MUSIC_FALLBACK_ACTIONS = (
     (["暂停", "停一下", "先停", "停一停"], "pause"),
@@ -104,11 +104,8 @@ _REPLY_MEDIUM_ALIASES = {
 def _strip_internal_tool_metadata(tool_call: Any) -> dict[str, Any] | None:
     if not isinstance(tool_call, dict):
         return None
-    return {
-        str(key): value
-        for key, value in tool_call.items()
-        if not str(key).startswith("_tool_")
-    }
+    return {str(key): value for key, value in tool_call.items() if not str(key).startswith("_tool_")}
+
 
 _MEMORY_MOOD_TAG_ALIASES = {
     "calm": "calm",
@@ -183,6 +180,15 @@ def normalize_final_output(
     raw_result = result if isinstance(result, dict) else {}
     normalized = dict(raw_result or {})
     native_tool_call = raw_result.get(NATIVE_TOOL_CALL_FIELD)
+    native_tool_calls = raw_result.get(NATIVE_TOOL_CALLS_FIELD)
+    if isinstance(native_tool_calls, list):
+        normalized_calls = [dict(call) for call in native_tool_calls if isinstance(call, dict) and call]
+        if normalized_calls:
+            normalized[NATIVE_TOOL_CALLS_FIELD] = normalized_calls
+        else:
+            normalized.pop(NATIVE_TOOL_CALLS_FIELD, None)
+    else:
+        normalized.pop(NATIVE_TOOL_CALLS_FIELD, None)
     if isinstance(native_tool_call, dict) and native_tool_call:
         normalized[NATIVE_TOOL_CALL_FIELD] = dict(native_tool_call)
     else:
@@ -212,11 +218,18 @@ def normalize_final_output(
         else None
     )
     normalized["tool_call"] = _strip_internal_tool_metadata(normalized_tool_call)
-    if client_context.effective_mode == ClientMode.DESKTOP_PET and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
+    if client_context.effective_mode == ClientMode.DESKTOP_PET and client_context.has_capability(
+        ClientCapability.AUDIO_PLAYBACK
+    ):
         normalized["activity"] = normalize_activity_action(normalized.get("activity"))
     else:
         normalized.pop("activity", None)
-    if normalized.get("activity") is None and client_context and client_context.effective_mode == ClientMode.DESKTOP_PET and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
+    if (
+        normalized.get("activity") is None
+        and client_context
+        and client_context.effective_mode == ClientMode.DESKTOP_PET
+        and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK)
+    ):
         user_text = str(user_message or "").strip().lower()
         if user_text and not any(negation in user_text for negation in _MUSIC_FALLBACK_NEGATIONS):
             for keywords, action in _MUSIC_FALLBACK_ACTIONS:
@@ -226,7 +239,11 @@ def normalize_final_output(
     speech, speech_segments = normalize_speech_payload(
         speech=normalized.get("speech"),
         speech_segments=normalized.get("speech_segments"),
-        fallback_to_default=not bool(normalized.get("tool_call") or normalized.get(NATIVE_TOOL_CALL_FIELD)),
+        fallback_to_default=not bool(
+            normalized.get("tool_call")
+            or normalized.get(NATIVE_TOOL_CALL_FIELD)
+            or normalized.get(NATIVE_TOOL_CALLS_FIELD)
+        ),
     )
     normalized["speech"] = speech
     normalized["speech_segments"] = speech_segments
@@ -373,11 +390,7 @@ def _collect_tag_inputs(*values: Any) -> list[str]:
             continue
         if isinstance(value, str):
             normalized = (
-                value.replace("，", ",")
-                .replace("、", ",")
-                .replace("；", ",")
-                .replace(";", ",")
-                .replace("|", ",")
+                value.replace("，", ",").replace("、", ",").replace("；", ",").replace(";", ",").replace("|", ",")
             )
             items.extend(parse_joined_tags(normalized))
             continue

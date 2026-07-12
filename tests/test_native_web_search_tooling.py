@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 import unittest
 from types import SimpleNamespace
 
@@ -13,6 +15,7 @@ from companion_v01.tool_invocation import (
     NATIVE_ANTHROPIC,
     NATIVE_OPENAI,
     NATIVE_TOOL_CALL_FIELD,
+    NATIVE_TOOL_CALLS_FIELD,
     TOOL_INVOCATION_ID_FIELD,
     TOOL_MODEL_NAME_FIELD,
     TOOL_SOURCE_FIELD,
@@ -423,6 +426,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         self.assertIn("web_search", instruction)
         self.assertIn("provider tool_calls", instruction)
+        self.assertIn("同一轮发出多个 native tool calls", instruction)
         self.assertIn("不要在 JSON 的 tool_call 字段里手写这些 native 工具", instruction)
         self.assertIn("legacy 工具", instruction)
         self.assertIn("tool_call 字段必须为 null", instruction)
@@ -534,6 +538,48 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(tool_call["type"], "web_search")
         self.assertEqual(tool_call["query"], "上海天气")
         self.assertEqual(tool_call[TOOL_SOURCE_FIELD], NATIVE_OPENAI)
+
+    def test_engine_tool_decision_preserves_native_tool_batch(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine._promote_narrated_tool_call = lambda final_output, **_kwargs: final_output
+        engine._normalize_tool_call = lambda value, **_kwargs: dict(value or {})
+        engine._describe_tool_call_rejection = lambda *_args, **_kwargs: "rejected"
+        client_context = ClientProtocolContext(
+            requested_mode=ClientMode.SCENE_STATIC,
+            effective_mode=ClientMode.SCENE_STATIC,
+        )
+
+        _final_output, tool_calls, rejections = engine._prepare_tool_round_decisions(
+            final_output={
+                "speech": "",
+                "tool_call": None,
+                NATIVE_TOOL_CALLS_FIELD: [
+                    {
+                        "type": "web_search",
+                        "query": "日经指数",
+                        TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                        TOOL_INVOCATION_ID_FIELD: "call_1",
+                    },
+                    {
+                        "type": "retrieve_memory",
+                        "query": "风险偏好",
+                        TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                        TOOL_INVOCATION_ID_FIELD: "call_2",
+                    },
+                ],
+            },
+            user_message="综合分析",
+            client_context=client_context,
+            profile_user_id="u",
+            session_id="s",
+        )
+
+        self.assertEqual([call["type"] for call in tool_calls], ["web_search", "retrieve_memory"])
+        self.assertEqual(
+            [call[TOOL_INVOCATION_ID_FIELD] for call in tool_calls],
+            ["call_1", "call_2"],
+        )
+        self.assertEqual(rejections, [])
 
     def test_public_final_tool_call_strips_internal_native_metadata(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -678,6 +724,212 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertIn("echo ok", tool_result["content"])
         self.assertIn("workspace artifact recorded", tool_result["content"])
         self.assertNotIn("is_error", tool_result)
+
+    def test_engine_parallel_batch_groups_anthropic_history_in_original_order(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        barrier = threading.Barrier(2)
+
+        def execute(**kwargs):
+            call = kwargs["tool_call"]
+            barrier.wait(timeout=2)
+            if call["type"] == "web_search":
+                time.sleep(0.04)
+            return ToolExecutionResult(
+                tool_type=call["type"],
+                followup_context=f"result:{call['type']}",
+                stream_events=[{"type": "tool_completed", "tool_type": call["type"], "status": "ok"}],
+            )
+
+        engine._execute_tool_call = execute
+        engine._record_tool_result_artifacts_in_task_workspace = lambda **_kwargs: ([], "")
+        client_context = ClientProtocolContext(
+            requested_mode=ClientMode.SCENE_STATIC,
+            effective_mode=ClientMode.SCENE_STATIC,
+        )
+        native_history: list[dict] = []
+        accumulated: list[ToolExecutionResult] = []
+        calls = [
+            {
+                "type": "web_search",
+                "query": "日经指数",
+                TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
+                TOOL_INVOCATION_ID_FIELD: "toolu_1",
+            },
+            {
+                "type": "retrieve_memory",
+                "query": "风险偏好",
+                TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
+                TOOL_INVOCATION_ID_FIELD: "toolu_2",
+            },
+        ]
+
+        results, _events = engine._execute_and_record_tool_batch(
+            tool_calls=calls,
+            final_output={"speech": "", "tool_call": None},
+            tool_results=accumulated,
+            tool_events=[],
+            tool_followups=[],
+            tool_turns=[],
+            recent_raw_for_turn=[],
+            profile_user_id="u",
+            session_id="s",
+            character_pack_id="",
+            now_ts=100,
+            current_user_source_id="user:1",
+            client_context=client_context,
+            memory_exclude_source_ids=[],
+            request_context={},
+            native_tool_history_turns=native_history,
+        )
+
+        self.assertEqual([result.tool_type for result in results], ["web_search", "retrieve_memory"])
+        self.assertEqual([result.tool_type for result in accumulated], ["web_search", "retrieve_memory"])
+        self.assertEqual([turn["role"] for turn in native_history], ["assistant", "user"])
+        self.assertEqual(
+            [block["id"] for block in native_history[0]["content"]],
+            ["toolu_1", "toolu_2"],
+        )
+        self.assertEqual(
+            [block["tool_use_id"] for block in native_history[1]["content"]],
+            ["toolu_1", "toolu_2"],
+        )
+
+    def test_engine_parallel_batch_isolates_one_tool_exception(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+
+        def execute(**kwargs):
+            call = kwargs["tool_call"]
+            if call["type"] == "broken_tool":
+                raise RuntimeError("boom")
+            return ToolExecutionResult(
+                tool_type=call["type"],
+                followup_context="ok",
+                stream_events=[{"type": "tool_completed", "status": "ok"}],
+            )
+
+        engine._execute_tool_call = execute
+        engine._record_tool_result_artifacts_in_task_workspace = lambda **_kwargs: ([], "")
+        client_context = ClientProtocolContext(
+            requested_mode=ClientMode.SCENE_STATIC,
+            effective_mode=ClientMode.SCENE_STATIC,
+        )
+
+        results, _events = engine._execute_and_record_tool_batch(
+            tool_calls=[{"type": "broken_tool"}, {"type": "working_tool"}],
+            final_output={"speech": "", "tool_call": None},
+            tool_results=[],
+            tool_events=[],
+            tool_followups=[],
+            tool_turns=[],
+            recent_raw_for_turn=[],
+            profile_user_id="u",
+            session_id="s",
+            character_pack_id="",
+            now_ts=100,
+            current_user_source_id="user:1",
+            client_context=client_context,
+            memory_exclude_source_ids=[],
+            request_context={},
+        )
+
+        self.assertEqual([result.tool_type for result in results], ["broken_tool", "working_tool"])
+        self.assertIn("<tool_use_error>", results[0].followup_context)
+        self.assertEqual(results[1].followup_context, "ok")
+
+    def test_engine_tool_batch_records_sanitized_memcore_trace_once_per_call(self) -> None:
+        class FakeMemcoreManager:
+            enabled = True
+
+            def __init__(self):
+                self.calls = []
+
+            def record_tool_exchange(self, **kwargs):
+                self.calls.append(kwargs)
+                return {"ok": True, "status": "recorded"}
+
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        manager = FakeMemcoreManager()
+        engine.memcore_manager = manager
+        engine._execute_tool_call = lambda **kwargs: ToolExecutionResult(
+            tool_type=kwargs["tool_call"]["type"],
+            followup_context="查询完成 Authorization: Bearer top-secret",
+        )
+        engine._record_tool_result_artifacts_in_task_workspace = lambda **_kwargs: ([], "")
+        client_context = ClientProtocolContext(
+            requested_mode=ClientMode.SCENE_STATIC,
+            effective_mode=ClientMode.SCENE_STATIC,
+        )
+        recorded_ids: set[str] = set()
+        call = {
+            "type": "web_search",
+            "query": "Akane",
+            "api_key": "do-not-store",
+            "access_token": "also-do-not-store",
+            "absolute_path": "F:/private folder/file.txt",
+            TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
+            TOOL_INVOCATION_ID_FIELD: "toolu_trace",
+        }
+
+        for _ in range(2):
+            engine._execute_and_record_tool_batch(
+                tool_calls=[call],
+                final_output={"speech": "", "tool_call": None},
+                tool_results=[],
+                tool_events=[],
+                tool_followups=[],
+                tool_turns=[],
+                recent_raw_for_turn=[],
+                profile_user_id="u",
+                session_id="s",
+                character_pack_id="reimu",
+                now_ts=100,
+                current_user_source_id="user:1",
+                client_context=client_context,
+                memory_exclude_source_ids=[],
+                request_context={},
+                recorded_tool_call_ids=recorded_ids,
+            )
+
+        self.assertEqual(len(manager.calls), 1)
+        stored = manager.calls[0]
+        self.assertEqual(stored["tool_call_id"], "toolu_trace")
+        self.assertEqual(stored["tool_input"], {"query": "Akane"})
+        self.assertEqual(stored["source"], NATIVE_ANTHROPIC)
+        self.assertNotIn("top-secret", stored["result"])
+        self.assertIn("[redacted]", stored["result"])
+
+    def test_final_output_preserves_internal_native_tool_batch(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.resource_manifest = None
+        engine._resolve_client_protocol_context = lambda _payload: ClientProtocolContext(
+            requested_mode=ClientMode.SCENE_STATIC,
+            effective_mode=ClientMode.SCENE_STATIC,
+        )
+        engine._normalize_tool_call = lambda value, **_kwargs: value
+
+        normalized = normalize_final_output(
+            engine,
+            result={
+                NATIVE_TOOL_CALLS_FIELD: [
+                    {"type": "web_search", "query": "A"},
+                    {"type": "web_search", "query": "B"},
+                ],
+                "tool_call": None,
+            },
+            visual_defaults={
+                "emotion": "normal",
+                "outfit": "default",
+                "major": "default",
+                "minor": "default",
+                "background": "default",
+                "bgm": "none",
+            },
+            allow_tool_call=True,
+            debug_enabled=False,
+        )
+
+        self.assertEqual(len(normalized[NATIVE_TOOL_CALLS_FIELD]), 2)
+        self.assertEqual(normalized["speech"], "")
 
     def test_engine_native_anthropic_tool_result_marks_errors(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)

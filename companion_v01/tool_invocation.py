@@ -29,6 +29,7 @@ TOOL_SOURCE_FIELD = "_tool_source"
 TOOL_INVOCATION_ID_FIELD = "_tool_invocation_id"
 TOOL_MODEL_NAME_FIELD = "_tool_model_name"
 NATIVE_TOOL_CALL_FIELD = "_native_tool_call"
+NATIVE_TOOL_CALLS_FIELD = "_native_tool_calls"
 
 
 @dataclass
