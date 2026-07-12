@@ -94,7 +94,7 @@ class FinanceNewsModerationClient:
                 system_prompt=(
                     "你是财经快讯转发前的内容审核器，只做分类，不改写、不总结、不调用工具。"
                     "若内容实质涉及中国国内高级政治人物、中共中央/党中央、中央政治局、政治局常委、"
-                    "总书记、国家主席、中央军委、党和国家领导人活动或同义改写，decision=block。"
+                    "总书记、国家主席、中央军委、干部、党和国家领导人活动或同义改写，decision=block。"
                     "国外政治人物与外国政府新闻本身允许，例如特朗普、高市早苗；但同一条同时涉及上述"
                     "中国国内敏感主体时仍 block。中央银行、欧洲中央银行、中央气象台等非政治语义本身不阻断。"
                     "不确定、信息不足、存在隐晦指代时 block。仅输出 JSON："
@@ -113,8 +113,7 @@ class FinanceNewsModerationClient:
             if error_type:
                 result = {
                     "decisions": [
-                        {**row, "reason": f"moderation_unavailable:{error_type}"}
-                        for row in fallback["decisions"]
+                        {**row, "reason": f"moderation_unavailable:{error_type}"} for row in fallback["decisions"]
                     ]
                 }
         rows = result.get("decisions") if isinstance(result, dict) else None

@@ -28,6 +28,7 @@ DEFAULT_BLOCKED_DOMESTIC_POLITICAL_TERMS = (
     "中央政治局",
     "政治局常委",
     "中央军委",
+    "干部",
 )
 DEFAULT_ALLOWED_CENTRAL_PHRASES = (
     "中央银行",

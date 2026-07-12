@@ -180,6 +180,22 @@ class FinancePublicNewsEventSourceTests(unittest.TestCase):
         self.assertEqual(rejection.stage, "news_policy")
         self.assertIn("blocked_domestic_political_term", rejection.reason)
 
+    def test_cadre_term_blocks_before_llm(self) -> None:
+        clock = [NOW]
+        adapter = SequenceNewsAdapter(((_item("old", "普通财经快讯"),), (_item("cadre", "某地发布干部任免消息"),)))
+        moderator = FakeModerator()
+        source = self._source(adapter, moderator, lambda: clock[0])
+
+        source.poll_market_events()
+        clock[0] += 10
+        result = source.poll_market_events()
+
+        self.assertEqual(result.events, ())
+        self.assertEqual(moderator.calls, [])
+        rejection = self.store.list_market_data_rejections(provider="public_market")[0]
+        self.assertEqual(rejection.stage, "news_policy")
+        self.assertIn("blocked_domestic_political_term:干部", rejection.reason)
+
     def test_missing_or_blocking_llm_decision_fails_closed(self) -> None:
         clock = [NOW]
         adapter = SequenceNewsAdapter(((_item("old", "普通财经快讯"),), (_item("review", "某重要领导活动消息"),)))
