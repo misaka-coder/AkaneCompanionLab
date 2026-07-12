@@ -1028,10 +1028,9 @@ class LLMRuntime:
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_content})
         for turn in post_user_turns or []:
-            role = str(turn.get("role", "") or "").strip().lower()
-            content = self._normalize_message_content_for_payload(turn.get("content"))
-            if content and role in {"user", "assistant"}:
-                messages.append({"role": role, "content": content})
+            normalized_turn = self._normalize_post_user_turn_for_payload(turn, bundle=bundle)
+            if normalized_turn is not None:
+                messages.append(normalized_turn)
         payload: dict[str, Any] = {
             "model": bundle.model,
             "temperature": temperature,
@@ -1092,6 +1091,66 @@ class LLMRuntime:
             blocks = [dict(item) for item in content if isinstance(item, dict)]
             return blocks if blocks else self._flatten_message_content(content).strip()
         return str(content or "").strip()
+
+    def _normalize_post_user_turn_for_payload(
+        self,
+        turn: Any,
+        *,
+        bundle: ModelBundle,
+    ) -> dict[str, Any] | None:
+        if not isinstance(turn, dict):
+            return None
+        role = str(turn.get("role", "") or "").strip().lower()
+        content = self._normalize_message_content_for_payload(turn.get("content"))
+        if not self._is_anthropic_protocol(bundle):
+            if role == "assistant":
+                tool_calls = self._normalize_openai_history_tool_calls(turn.get("tool_calls"))
+                if tool_calls:
+                    message: dict[str, Any] = {"role": "assistant", "tool_calls": tool_calls}
+                    if content:
+                        message["content"] = content
+                    return message
+            if role == "tool":
+                tool_call_id = str(turn.get("tool_call_id") or "").strip()
+                if tool_call_id:
+                    return {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": content if isinstance(content, str) else self._flatten_message_content(content),
+                    }
+        if content and role in {"user", "assistant"}:
+            return {"role": role, "content": content}
+        return None
+
+    @staticmethod
+    def _normalize_openai_history_tool_calls(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for raw in value[:4]:
+            if not isinstance(raw, dict):
+                continue
+            call_id = str(raw.get("id") or "").strip()
+            function = raw.get("function")
+            if not call_id or not isinstance(function, dict):
+                continue
+            name = str(function.get("name") or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+                continue
+            arguments = function.get("arguments", "")
+            if not isinstance(arguments, str):
+                try:
+                    arguments = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+                except (TypeError, ValueError):
+                    continue
+            normalized.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments},
+                }
+            )
+        return normalized
 
     def _normalize_system_extra_blocks(self, value: Any) -> list[str]:
         if not isinstance(value, list):
@@ -1518,7 +1577,7 @@ class LLMRuntime:
         call_id = self._native_invocation_provider_id(invocation, source=source)
         if call_id:
             result[TOOL_INVOCATION_ID_FIELD] = call_id
-        if source == NATIVE_ANTHROPIC and model_name != capability_id:
+        if model_name != capability_id:
             result[TOOL_MODEL_NAME_FIELD] = model_name
         return result
 

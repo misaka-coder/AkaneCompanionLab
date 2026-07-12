@@ -128,6 +128,42 @@ OpenAI 与 Anthropic 的非流式、流式解析都返回全部合法调用，�
 
 实际完成顺序可以不同，但模型历史、日志与 memcore 落库顺序必须按模型原始调用顺序保持确定性。
 
+### 3.4 当前轮 OpenAI-compatible 历史
+
+同一轮模型调用两个工具时，按 Chat Completions 标准先回填一个 assistant 消息：
+
+```json
+{
+  "role": "assistant",
+  "tool_calls": [
+    {
+      "id": "call_1",
+      "type": "function",
+      "function": {"name": "web_search", "arguments": "{\"query\":\"日经指数\"}"}
+    },
+    {
+      "id": "call_2",
+      "type": "function",
+      "function": {"name": "retrieve_memory", "arguments": "{\"query\":\"风险偏好\"}"}
+    }
+  ]
+}
+```
+
+随后按原调用顺序追加独立工具消息：
+
+```json
+{"role": "tool", "tool_call_id": "call_1", "content": "..."}
+{"role": "tool", "tool_call_id": "call_2", "content": "..."}
+```
+
+必须保留 provider 返回的原始调用 ID 和 provider-safe function name；Akane 内部 capability id 不能替代模型实际调用的 function name。完整结构化历史是当前轮权威结果通道，`extra_user_context` 只保留短状态提示。
+
+协议依据：
+
+- OpenAI Function calling guide：https://developers.openai.com/api/docs/guides/function-calling
+- OpenAI Chat Completions create reference：https://developers.openai.com/api/docs/api-reference/chat/create
+
 ## 4. 并行执行原则
 
 ### 4.1 默认并行
@@ -292,13 +328,14 @@ manager.record_tool_exchange(
 - 单项异常转结构化工具错误，不中断整批。
 - 主线程按原调用顺序提交副作用。
 
-### P4：Anthropic 成组历史与去重文本
+### P4：Provider 原生历史与去重文本
 
-状态：✅ 已完成。Anthropic 原生结果使用成组结构化历史，文本区只保留短状态提示。
+状态：✅ 已完成。Anthropic 与 OpenAI-compatible 原生结果均使用各自标准的结构化历史，文本区只保留短状态提示。
 
 - 同轮多个 `tool_use` 合并为一个 assistant content list。
 - 多个 `tool_result` 合并为一个 user content list。
-- 原生路径不再把完整结果重复塞入 `extra_user_context`；保留简短轮次状态即可。
+- OpenAI-compatible 同轮多个调用合并为一个 assistant `tool_calls` 数组，随后按原调用顺序追加多个带 `tool_call_id` 的 `role="tool"` 消息。
+- 两种原生路径都不再把完整结果重复塞入 `extra_user_context`；保留简短轮次状态即可。
 - legacy 路径继续使用文本 followup。
 
 ### P5：memcore 工具轨迹持久化
@@ -324,9 +361,9 @@ manager.record_tool_exchange(
 
 自动化验收基线（2026-07-12）：
 
-- 原生工具、Anthropic 历史、memcore 集成定向测试：125 项通过；
+- OpenAI/Anthropic 原生历史、memcore、工具 schema、金融行情与 QQ 网关宽回归：246 项通过；
 - `ruff check`、`ruff format --check`、`py_compile`、`git diff --check` 通过；
-- 全量测试共 1371 项，1364 项通过；其余 4 个 failure、3 个 error 位于礼物焦点、旧提示词断言和前端默认场景测试，涉及文件均不在本功能 diff 内，作为仓库既有问题隔离，不在本切片顺手修改。
+- 全量测试共 1375 项，1368 项通过；其余 4 个 failure、3 个 error 位于礼物焦点、旧提示词断言和前端默认场景测试，涉及文件均不在本功能 diff 内，作为仓库既有问题隔离，不在本切片顺手修改。
 
 ## 9. 必须覆盖的测试
 

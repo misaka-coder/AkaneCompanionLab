@@ -617,6 +617,55 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(anthropic_payload["messages"][1]["content"][0]["type"], "tool_use")
         self.assertEqual(anthropic_payload["messages"][2]["content"][0]["type"], "tool_result")
 
+    def test_llm_runtime_appends_standard_openai_parallel_tool_history(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="openai"), model="gpt-test")
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="current user prompt",
+            temperature=0.1,
+            post_user_turns=[
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": {"query": "日经指数"}},
+                        },
+                        {
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {"name": "retrieve_memory", "arguments": '{"query":"风险偏好"}'},
+                        },
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "market result"},
+                {"role": "tool", "tool_call_id": "call_2", "content": "memory result"},
+            ],
+        )
+
+        self.assertEqual(
+            [message["role"] for message in payload["messages"]],
+            ["system", "user", "assistant", "tool", "tool"],
+        )
+        assistant_message = payload["messages"][2]
+        self.assertNotIn("content", assistant_message)
+        self.assertEqual(
+            [call["id"] for call in assistant_message["tool_calls"]],
+            ["call_1", "call_2"],
+        )
+        self.assertEqual(
+            json.loads(assistant_message["tool_calls"][0]["function"]["arguments"]),
+            {"query": "日经指数"},
+        )
+        self.assertEqual(
+            [message["tool_call_id"] for message in payload["messages"][3:]],
+            ["call_1", "call_2"],
+        )
+
     def test_llm_runtime_extracts_native_tool_call_to_akane_shape(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         response = SimpleNamespace(
@@ -678,6 +727,7 @@ class LLMClientConfigTests(unittest.TestCase):
                 "text": "hi",
                 TOOL_SOURCE_FIELD: NATIVE_OPENAI,
                 TOOL_INVOCATION_ID_FIELD: "call_mapped_1",
+                TOOL_MODEL_NAME_FIELD: "mcp_demo_echo_abcd123456",
             },
         )
 
@@ -785,6 +835,48 @@ class LLMClientConfigTests(unittest.TestCase):
                 "text": "hi",
                 TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
                 TOOL_INVOCATION_ID_FIELD: "toolu_safe",
+                TOOL_MODEL_NAME_FIELD: "mcp_demo_echo_abcd123456",
+            },
+        )
+
+    def test_llm_runtime_keeps_openai_model_tool_name_for_safe_name_mapping(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="openai"), model="gpt-test")
+        native_tools = [
+            {
+                "type": "function",
+                NATIVE_TOOL_CAPABILITY_ID_FIELD: "mcp.demo.echo",
+                "function": {
+                    "name": "mcp_demo_echo_abcd123456",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_safe",
+                                function=SimpleNamespace(
+                                    name="mcp_demo_echo_abcd123456",
+                                    arguments='{"text":"hi"}',
+                                ),
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+
+        self.assertEqual(
+            runtime._extract_native_tool_call(response, native_tools=native_tools, bundle=bundle),
+            {
+                "type": "mcp.demo.echo",
+                "text": "hi",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_safe",
                 TOOL_MODEL_NAME_FIELD: "mcp_demo_echo_abcd123456",
             },
         )
@@ -1015,6 +1107,7 @@ class LLMClientConfigTests(unittest.TestCase):
                 "text": "hi",
                 TOOL_SOURCE_FIELD: NATIVE_OPENAI,
                 TOOL_INVOCATION_ID_FIELD: "call_stream_mapped",
+                TOOL_MODEL_NAME_FIELD: "mcp_demo_echo_abcd123456",
             },
         )
 

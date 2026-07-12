@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 import unittest
@@ -793,6 +794,75 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             [block["tool_use_id"] for block in native_history[1]["content"]],
             ["toolu_1", "toolu_2"],
         )
+
+    def test_engine_parallel_batch_builds_standard_openai_tool_history(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine._execute_tool_call = lambda **kwargs: ToolExecutionResult(
+            tool_type=kwargs["tool_call"]["type"],
+            followup_context=f"result:{kwargs['tool_call']['type']}",
+            stream_events=[{"type": "tool_completed", "status": "ok"}],
+        )
+        engine._record_tool_result_artifacts_in_task_workspace = lambda **_kwargs: ([], "")
+        client_context = ClientProtocolContext(
+            requested_mode=ClientMode.SCENE_STATIC,
+            effective_mode=ClientMode.SCENE_STATIC,
+        )
+        native_history: list[dict] = []
+        tool_followups: list[str] = []
+        calls = [
+            {
+                "type": "mcp.demo.echo",
+                "text": "hi",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_1",
+                TOOL_MODEL_NAME_FIELD: "mcp_demo_echo_abcd123456",
+            },
+            {
+                "type": "web_search",
+                "query": "日经指数",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_2",
+            },
+        ]
+
+        engine._execute_and_record_tool_batch(
+            tool_calls=calls,
+            final_output={"speech": "", "tool_call": None},
+            tool_results=[],
+            tool_events=[],
+            tool_followups=tool_followups,
+            tool_turns=[],
+            recent_raw_for_turn=[],
+            profile_user_id="u",
+            session_id="s",
+            character_pack_id="",
+            now_ts=100,
+            current_user_source_id="user:1",
+            client_context=client_context,
+            memory_exclude_source_ids=[],
+            request_context={},
+            native_tool_history_turns=native_history,
+        )
+
+        self.assertEqual([turn["role"] for turn in native_history], ["assistant", "tool", "tool"])
+        assistant_message = native_history[0]
+        self.assertEqual(
+            [call["id"] for call in assistant_message["tool_calls"]],
+            ["call_1", "call_2"],
+        )
+        self.assertEqual(
+            [call["function"]["name"] for call in assistant_message["tool_calls"]],
+            ["mcp_demo_echo_abcd123456", "web_search"],
+        )
+        self.assertEqual(
+            json.loads(assistant_message["tool_calls"][0]["function"]["arguments"]),
+            {"text": "hi"},
+        )
+        self.assertEqual(
+            [turn["tool_call_id"] for turn in native_history[1:]],
+            ["call_1", "call_2"],
+        )
+        self.assertTrue(all("result:" not in followup for followup in tool_followups))
 
     def test_engine_parallel_batch_isolates_one_tool_exception(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)

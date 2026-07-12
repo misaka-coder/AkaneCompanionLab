@@ -65,6 +65,7 @@ from .task_worker import TaskWorkerService
 from .task_worker_tool import DelegateTaskToolHandler
 from . import tool_orchestration_engine
 from .tool_invocation import NATIVE_ANTHROPIC
+from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
 from .tool_invocation import TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
@@ -3947,7 +3948,7 @@ class AkaneMemoryEngine:
             )
             batch_events.extend(current_events)
             history_items.append((call, result, shaped_followup, workspace_followup))
-        self._append_native_anthropic_tool_history_batch(
+        self._append_native_tool_history_batch(
             native_tool_history_turns=native_tool_history_turns,
             items=history_items,
         )
@@ -3985,7 +3986,7 @@ class AkaneMemoryEngine:
             tool_result.followup_context,
             tool_type=tool_result.tool_type,
         )
-        if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() == NATIVE_ANTHROPIC:
+        if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI}:
             tool_followups.append(
                 f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果已通过结构化 tool_result 提供。"
             )
@@ -4040,9 +4041,24 @@ class AkaneMemoryEngine:
         shaped_followup: str,
         workspace_followup: str = "",
     ) -> None:
-        self._append_native_anthropic_tool_history_batch(
+        self._append_native_tool_history_batch(
             native_tool_history_turns=native_tool_history_turns,
             items=[(tool_call, tool_result, shaped_followup, workspace_followup)],
+        )
+
+    def _append_native_tool_history_batch(
+        self,
+        *,
+        native_tool_history_turns: list[dict[str, Any]] | None,
+        items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
+    ) -> None:
+        self._append_native_anthropic_tool_history_batch(
+            native_tool_history_turns=native_tool_history_turns,
+            items=items,
+        )
+        self._append_native_openai_tool_history_batch(
+            native_tool_history_turns=native_tool_history_turns,
+            items=items,
         )
 
     def _append_native_anthropic_tool_history_batch(
@@ -4097,6 +4113,65 @@ class AkaneMemoryEngine:
                 [
                     {"role": "assistant", "content": use_blocks},
                     {"role": "user", "content": result_blocks},
+                ]
+            )
+
+    def _append_native_openai_tool_history_batch(
+        self,
+        *,
+        native_tool_history_turns: list[dict[str, Any]] | None,
+        items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
+    ) -> None:
+        if native_tool_history_turns is None:
+            return
+        tool_calls: list[dict[str, Any]] = []
+        tool_messages: list[dict[str, Any]] = []
+        for tool_call, tool_result, shaped_followup, workspace_followup in items:
+            if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() != NATIVE_OPENAI:
+                continue
+            call_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
+            if not call_id:
+                continue
+            model_name = (
+                str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip()
+                or str(tool_call.get("type") or tool_result.tool_type or "").strip()
+            )
+            if not model_name:
+                continue
+            tool_input = {
+                str(key): value
+                for key, value in tool_call.items()
+                if key != "type" and not str(key).startswith("_tool_")
+            }
+            try:
+                arguments = json.dumps(tool_input, ensure_ascii=False, separators=(",", ":"))
+            except (TypeError, ValueError):
+                arguments = json.dumps(
+                    self._sanitize_tool_trace_value(tool_input), ensure_ascii=False, separators=(",", ":")
+                )
+            tool_calls.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": model_name, "arguments": arguments},
+                }
+            )
+            feedback_parts = [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()]
+            feedback = "\n\n".join(part for part in feedback_parts if part).strip()
+            if not feedback:
+                feedback = tool_orchestration_engine.shape_tool_followup("", tool_type=tool_result.tool_type)
+            tool_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": feedback,
+                }
+            )
+        if tool_calls and len(tool_calls) == len(tool_messages):
+            native_tool_history_turns.extend(
+                [
+                    {"role": "assistant", "tool_calls": tool_calls},
+                    *tool_messages,
                 ]
             )
 
