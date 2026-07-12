@@ -9,6 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from companion_v01.attachment_inbox import AttachmentInboxService
+from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
+from companion_v01.client_protocol import ClientMode
+from companion_v01.domain_profiles import FINANCE_DOMAIN_PROFILE_ID, DomainProfileRegistry, filter_tool_names
 from companion_v01.cover_song import CoverSongService, RvcWebUiProvider
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
@@ -220,6 +223,18 @@ class CoverSongTests(unittest.TestCase):
         self.assertEqual(fake_service.kwargs["delivery"], "voice")
         self.assertEqual(result.stream_events[0]["delivery_mode"], "voice")
         self.assertEqual(result.stream_events[0]["delivery_scope"], "cover_song")
+
+    def test_cover_song_tool_is_visible_without_current_media_for_cached_requests(self) -> None:
+        selection = CapabilityRegistry().select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT))
+
+        self.assertIn("cover_song", selection.module_names)
+        self.assertIn("cover_song", selection.tool_names)
+        self.assertNotIn("media_workbench", selection.module_names)
+
+    def test_finance_mode_does_not_hide_explicit_cover_song_request(self) -> None:
+        profile = DomainProfileRegistry(finance_enabled=True).get(FINANCE_DOMAIN_PROFILE_ID)
+
+        self.assertEqual(filter_tool_names(("cover_song",), profile), ("cover_song",))
 
     def test_rvc_provider_discovers_model_choices_from_named_dependency(self) -> None:
         provider = RvcWebUiProvider(base_url="http://127.0.0.1:7899")

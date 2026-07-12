@@ -41,6 +41,7 @@ FINANCE_ALLOWED_TOOL_NAMES = (
     "read_attachment_section",
     "compose_file",
     "generate_image",
+    "cover_song",
     "inspect_generated_file",
     "manage_generated_file",
     "send_file",
@@ -78,6 +79,7 @@ FINANCE_CAPABILITY_HINTS = (
     "用户明确需要 K 线、成交量或均线图时使用 render_market_chart；只选择固定图表枚举和参数，不传价格数组、任意代码、样式或文件路径。",
     "用户明确需要证券简报、市场对比报告、PDF 或 XLSX 时使用 compose_finance_report；报告工具会重新读取可信行情，模型文字只进入明确标注的分析/风险章节。",
     "只有附件、既有生成物、明确的报告需求或长任务确实存在时，才展开对应文档、文件交付和后台任务工具。",
+    "金融模式不等于只能回答金融问题；用户明确提出本轮真正可用的通用能力（例如生成图片、整理文件或歌曲翻唱）时，正常调用对应工具，不要因为当前群启用了金融档案就否认能力。",
 )
 
 FINANCE_PROMPT_BLOCK_ID = "finance_v1.rules"

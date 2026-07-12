@@ -92,6 +92,7 @@ ATTACHMENT_WORKSPACE_TOOL_NAMES = (
 
 IMAGE_MATERIAL_TOOL_NAMES = ("load_material",)
 IMAGE_GENERATION_TOOL_NAMES = ("generate_image",)
+COVER_SONG_TOOL_NAMES = ("cover_song",)
 
 DOCUMENT_WORKBENCH_TOOL_NAMES = (
     "read_attachment_section",
@@ -379,6 +380,18 @@ class CapabilityRegistry:
                 tools=MEDIA_WORKBENCH_TOOL_NAMES,
                 light_hint="你可以处理音频/视频任务：转写、转码、降噪、分离人声、切片打包训练素材等。在 QQ 里这些媒体任务容易耗时，优先委派后台工坊；完成后再通知和交付。",
                 trigger=_has_media_context,
+            ),
+            CapabilityModule(
+                name="cover_song",
+                layer="shared_media",
+                modes=CHAT_FILE_CLIENT_MODES,
+                tools=COVER_SONG_TOOL_NAMES,
+                light_hint=(
+                    "你可以用本地角色音色翻唱用户提供的歌曲，并把转换后的人声与原伴奏重新混合成完整音频；"
+                    "没有歌曲材料时请自然请用户发送，已完成的歌曲可以按歌名从缓存再次交付。"
+                    "短任务直接调用工具完成；预计较久时可以委派后台工坊，不要否认已有能力。"
+                ),
+                trigger=_always,
             ),
             CapabilityModule(
                 name="generated_file_management",
