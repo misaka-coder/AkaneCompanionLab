@@ -692,7 +692,7 @@ class FinanceAnalysisClientTests(unittest.TestCase):
                 if len(self.payloads) == 1:
                     return {"speech": "航班取消量两小时内从1000架次跳到2800架次，涨了近三倍。"}
                 return {
-                    "speech": "新快讯称，国内航司计划取消明日进出港航班超过2800架次，具体统计口径和时点仍以原文为准。"
+                    "speech": "新快讯称，国内航司计划取消明日进出港航班超过2800架次，具体统计口径和时点仍以原文为准。周一开盘再观察市场反应。"
                 }
 
         engine = RetryEngine()

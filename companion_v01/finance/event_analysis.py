@@ -29,7 +29,6 @@ _ANALYSIS_REFUSAL_MARKERS = ("无法分析", "不能分析", "无法提供", "�
 _NEWS_OUTPUT_POLICY = FinanceNewsRelayPolicy()
 _SUCCESSFUL_EVIDENCE_EVENT_TYPES = {"web_search_completed", "finance_tool_completed"}
 _SUCCESSFUL_EVIDENCE_STATUSES = {"ok", "ready", "success", "completed", "available"}
-_MARKET_SCHEDULE_PATTERN = re.compile(r"(?:休市|开盘|收盘|交易时段|交易时间|下一交易日|下个交易日)")
 _PERCENTAGE_PATTERN = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s*%")
 _CHINESE_FRACTION_PATTERN = re.compile(r"[一二两三四五六七八九十百千万]+分之[一二两三四五六七八九十百千万]+")
 _MULTIPLE_CHANGE_PATTERN = re.compile(
@@ -462,9 +461,6 @@ def _unsupported_news_evidence_claim(
     normalized_evidence = "".join(evidence_text.split())
     normalized_output = "".join(str(text or "").split())
     issues: list[str] = []
-
-    if _MARKET_SCHEDULE_PATTERN.search(normalized_output) and not _MARKET_SCHEDULE_PATTERN.search(normalized_evidence):
-        issues.append("当前开盘、收盘或休市判断没有本次事件字段或成功工具结果支持")
 
     for sentence in re.split(r"[。！？!?；;\n]+", str(text or "")):
         compact_sentence = "".join(sentence.split())
