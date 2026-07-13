@@ -22,18 +22,18 @@ Akane backend already running
 ## Sources Checked
 
 - `docs/petdesk_release_runtime_starter_m50.md`
-- `F:\Akane\petdesk-runtime\docs\runtime_launch_env_m49.md`
+- `<workspace>\petdesk-runtime\docs\runtime_launch_env_m49.md`
 - `scripts/start_petdesk_runtime.ps1`
 - `start_akane_petdesk.ps1`
-- `F:\Akane\petdesk-runtime\.cargo\config.toml`
-- `F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe`
+- `<workspace>\petdesk-runtime\.cargo\config.toml`
+- `<cache-root>\cargo-target\petdesk-runtime\release\petdesk_runtime.exe`
 
 ## Important Freshness Check
 
 The currently discovered release exe is:
 
 ```text
-F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+<cache-root>\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
 ```
 
 At the start of M51 it was last written on `2026-07-03 18:19`, which is older
@@ -59,7 +59,7 @@ No-window checks:
 Release rebuild attempt:
 
 ```powershell
-cd F:\Akane\petdesk-runtime
+cd <workspace>\petdesk-runtime
 pnpm tauri:build
 ```
 
@@ -67,7 +67,7 @@ If the first Tauri build hits the local Windows linker `os error 5`, the
 working recovery path observed in M51 is:
 
 ```powershell
-cd F:\Akane\petdesk-runtime
+cd <workspace>\petdesk-runtime
 cargo build --manifest-path src-tauri\Cargo.toml --release -j 1
 pnpm tauri:build
 ```
@@ -75,7 +75,7 @@ pnpm tauri:build
 Manual window acceptance, only after a fresh release binary exists:
 
 ```powershell
-cd F:\Akane\AkaneCompanionLab
+cd <workspace>\AkaneCompanionLab
 .\start_akane_petdesk.ps1 -RuntimeMode Release -SkipBackend -BackendUrl http://127.0.0.1:9999
 ```
 
@@ -109,7 +109,7 @@ No-window release starter checks passed:
 ```text
 start_akane_petdesk.ps1 -RuntimeMode Release -CheckOnly
 -> OK
--> resolved F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+-> resolved <cache-root>\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
 -> no backend or runtime process launched
 ```
 
@@ -131,7 +131,7 @@ start_akane_petdesk.ps1 -RuntimeMode Release -SkipBackend -BackendUrl http://127
 The first fresh release build was attempted:
 
 ```powershell
-cd F:\Akane\petdesk-runtime
+cd <workspace>\petdesk-runtime
 pnpm tauri:build
 ```
 
@@ -148,7 +148,7 @@ crate at failure: serialize-to-javascript-impl
 Then the release build was recovered with a serial Cargo build:
 
 ```powershell
-cd F:\Akane\petdesk-runtime
+cd <workspace>\petdesk-runtime
 cargo build --manifest-path src-tauri\Cargo.toml --release -j 1
 ```
 
@@ -161,7 +161,7 @@ Finished `release` profile [optimized] target(s) in 1m 51s
 After that, the full Tauri release build passed:
 
 ```powershell
-cd F:\Akane\petdesk-runtime
+cd <workspace>\petdesk-runtime
 pnpm tauri:build
 ```
 
@@ -169,13 +169,13 @@ Result:
 
 ```text
 Finished `release` profile [optimized] target(s) in 28.83s
-Built application at: F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+Built application at: <cache-root>\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
 ```
 
 Fresh release binary:
 
 ```text
-F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+<cache-root>\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
 last write time: 2026-07-08 21:11:39
 size: 11829760 bytes
 ```
@@ -198,7 +198,7 @@ Runtime process:
 ```text
 petdesk_runtime.exe
 PID: 36052
-exe: F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+exe: <cache-root>\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
 ```
 
 Manual visual/audio acceptance:

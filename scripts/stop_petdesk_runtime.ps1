@@ -48,15 +48,19 @@ function Resolve-PetdeskRuntimeDir {
         [string]$RequestedRuntimeDir
     )
 
-    $candidate = if ($RequestedRuntimeDir) {
-        if ([System.IO.Path]::IsPathRooted($RequestedRuntimeDir)) {
-            $RequestedRuntimeDir
-        } else {
-            Join-Path $ProjectRoot $RequestedRuntimeDir
-        }
+    $configuredRuntimeDir = if ($RequestedRuntimeDir) {
+        $RequestedRuntimeDir
+    } elseif ($env:PETDESK_RUNTIME_ROOT) {
+        $env:PETDESK_RUNTIME_ROOT
     } else {
-        Join-Path $ProjectRoot "..\petdesk-runtime"
+        throw "petdesk_runtime_dir_required: pass -RuntimeDir or set PETDESK_RUNTIME_ROOT"
     }
+
+    $candidate = if ([System.IO.Path]::IsPathRooted($configuredRuntimeDir)) {
+            $configuredRuntimeDir
+        } else {
+            Join-Path $ProjectRoot $configuredRuntimeDir
+        }
 
     return [System.IO.Path]::GetFullPath($candidate)
 }

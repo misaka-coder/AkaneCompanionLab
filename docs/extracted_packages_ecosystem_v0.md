@@ -1,7 +1,7 @@
 # Akane Extracted Packages Ecosystem v0
 
 Status: release-state consolidation guide
-Date: 2026-07-02
+Date: 2026-07-13
 
 This document is the shared map for packages extracted from Akane. It is meant
 for humans and AI coding agents who need to build a new AI product from these
@@ -193,11 +193,21 @@ Every extracted package should have:
 
 Akane host integration should additionally keep:
 
-- sibling editable dependency list in `requirements.txt`;
-- Windows bootstrap source/import checks for every required sibling package;
-- a cross-package smoke command.
+- exact internal release pins in `requirements-packages.txt`;
+- a complete wheelhouse or explicitly configured package index;
+- no editable, sibling, `file:../`, `link:../`, or absolute source dependency;
+- a source-blind clean-environment install gate;
+- a cross-package smoke command;
 - a release-state metadata audit command:
   `.\.venv\Scripts\python.exe .\scripts\audit_extracted_packages_release.py`.
+
+The host independence gate is:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\build_extracted_package_wheelhouse.py
+.\.venv\Scripts\python.exe .\scripts\verify_extracted_package_independence.py
+.\.venv\Scripts\python.exe .\scripts\build_petdesk_package_artifacts.py
+```
 
 ## Cross-Package Smoke
 
@@ -248,17 +258,23 @@ Akane also keeps one lightweight release-state audit script:
 .\.venv\Scripts\python.exe .\scripts\audit_extracted_packages_release.py
 ```
 
-It verifies, without importing the packages or installing dependencies:
+It verifies the source release metadata without installing dependencies:
 
-- all 12 extracted sibling package directories exist;
+- all 12 extracted package source directories supplied to the maintainer audit exist;
 - each package is a git repository with a clean worktree;
 - each package has `README.md`, `AGENTS.md`, `LICENSE`, `MANIFEST.in`,
   `docs/`, `examples/`, `tests/`, and `pyproject.toml`;
 - each package's `project.name` and `project.version` match the 0.1 package
   map;
 - each `MANIFEST.in` includes AI/human integration docs, examples, and tests;
-- Akane's `requirements.txt` and Windows bootstrap source/import checks cover
-  the extracted packages Akane currently needs at runtime.
+- Akane has exact runtime package pins and an artifact-only bootstrap contract;
+- Python and petdesk package manifests contain no sibling source dependency;
+- runtime launch helpers require an explicit runtime root rather than guessing
+  a checkout location.
+
+The audit inspects source trees because it is a maintainer release gate. Akane's
+installed runtime does not discover or import those trees; that stronger claim
+belongs to `verify_extracted_package_independence.py`.
 
 Use `--allow-dirty` only while editing release metadata. A release-state pass
 should run without it.

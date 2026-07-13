@@ -105,7 +105,7 @@ Export and audit without acceptance:
 Explicit output:
 
 ```powershell
-.\scripts\release_petdesk_bundle.ps1 -OutputPath F:\Akane\petdesk-release-candidate
+.\scripts\release_petdesk_bundle.ps1 -OutputPath <workspace>\petdesk-release-candidate
 ```
 
 ## Output

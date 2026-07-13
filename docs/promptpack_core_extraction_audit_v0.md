@@ -517,7 +517,7 @@ git diff --check
 Directory:
 
 ```text
-F:\Akane\promptpack-core
+<workspace>\promptpack-core
 ```
 
 Files:
@@ -580,9 +580,10 @@ Start with a tiny internal use:
 Validation:
 
 ```bash
-uv run --with-editable ../promptpack-core --with-editable ../charpack-core --with-editable ../capcore --with-editable ../capcore-adapter-comfyui --with-editable ../capcore-adapter-mcp --with-editable ../capcore-adapter-python --with-editable ../capcore-adapter-speech --with-editable ../capcore-provider-native-tools --with-editable ../capcore-provider-openai --with-editable ../memcore python -m unittest tests.test_prompt_builder -v
-uv run --with-editable ../promptpack-core --with-editable ../charpack-core --with-editable ../capcore --with-editable ../capcore-adapter-comfyui --with-editable ../capcore-adapter-mcp --with-editable ../capcore-adapter-python --with-editable ../capcore-adapter-speech --with-editable ../capcore-provider-native-tools --with-editable ../capcore-provider-openai --with-editable ../memcore ruff check .
-uv run --with-editable ../promptpack-core --with-editable ../charpack-core --with-editable ../capcore --with-editable ../capcore-adapter-comfyui --with-editable ../capcore-adapter-mcp --with-editable ../capcore-adapter-python --with-editable ../capcore-adapter-speech --with-editable ../capcore-provider-native-tools --with-editable ../capcore-provider-openai --with-editable ../memcore ruff format --check .
+.venv/Scripts/python.exe -m unittest tests.test_prompt_builder -v
+.venv/Scripts/python.exe -m ruff check .
+.venv/Scripts/python.exe -m ruff format --check .
+.venv/Scripts/python.exe scripts/verify_extracted_package_independence.py
 git diff --check
 ```
 

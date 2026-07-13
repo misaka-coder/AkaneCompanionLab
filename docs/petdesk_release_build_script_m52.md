@@ -9,7 +9,7 @@ M51 proved that release-mode petdesk startup works, but the successful build
 path required remembering a local recovery sequence:
 
 ```powershell
-cd F:\Akane\petdesk-runtime
+cd <workspace>\petdesk-runtime
 cargo build --manifest-path src-tauri\Cargo.toml --release -j 1
 pnpm tauri:build
 ```
@@ -22,9 +22,9 @@ acceptance does not depend on memory or chat history.
 - `docs/petdesk_release_runtime_acceptance_m51.md`
 - `scripts/start_petdesk_runtime.ps1`
 - `start_akane_petdesk.ps1`
-- `F:\Akane\petdesk-runtime\.cargo\config.toml`
-- `F:\Akane\petdesk-runtime\src-tauri\Cargo.toml`
-- `F:\Akane\petdesk-runtime\package.json`
+- `<workspace>\petdesk-runtime\.cargo\config.toml`
+- `<workspace>\petdesk-runtime\src-tauri\Cargo.toml`
+- `<workspace>\petdesk-runtime\package.json`
 
 ## Decision
 
@@ -37,7 +37,7 @@ scripts/build_petdesk_runtime_release.ps1
 The script:
 
 - locates the Akane project root;
-- resolves sibling `..\petdesk-runtime` by default;
+- requires `-RuntimeDir` or `PETDESK_RUNTIME_ROOT`; it never guesses a sibling checkout;
 - verifies `src-tauri\Cargo.toml` and `package.json`;
 - verifies `cargo` and `pnpm` are available;
 - derives the expected `petdesk_runtime.exe` path from
@@ -61,25 +61,26 @@ pnpm tauri:build
 Normal release build:
 
 ```powershell
+$env:PETDESK_RUNTIME_ROOT='<path-to-petdesk-runtime>'
 .\scripts\build_petdesk_runtime_release.ps1
 ```
 
 Only verify paths/tools:
 
 ```powershell
-.\scripts\build_petdesk_runtime_release.ps1 -CheckOnly
+.\scripts\build_petdesk_runtime_release.ps1 -RuntimeDir <path-to-petdesk-runtime> -CheckOnly
 ```
 
 Print the exact steps without building:
 
 ```powershell
-.\scripts\build_petdesk_runtime_release.ps1 -DryRun
+.\scripts\build_petdesk_runtime_release.ps1 -RuntimeDir <path-to-petdesk-runtime> -DryRun
 ```
 
-Use a non-default runtime checkout:
+Use an explicit runtime checkout:
 
 ```powershell
-.\scripts\build_petdesk_runtime_release.ps1 -RuntimeDir ..\petdesk-runtime
+.\scripts\build_petdesk_runtime_release.ps1 -RuntimeDir <path-to-petdesk-runtime>
 ```
 
 Skip the serial warm-up only when intentionally testing whether the machine no
@@ -93,7 +94,7 @@ longer needs it:
 
 In scope:
 
-- Akane-side helper for building the sibling `petdesk-runtime` release exe;
+- Akane-side helper for building an explicitly configured `petdesk-runtime` release exe;
 - no-window validation commands;
 - test locks that the helper keeps the serial warm-up and final exe check.
 
@@ -154,6 +155,6 @@ Observed result:
 ```text
 serial cargo release warm-up: Finished in 6m 49s
 Tauri release build: Finished in 23.67s
-Built application at: F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+Built application at: <cache-root>\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
 petdesk_runtime.exe: 11829760 bytes, 2026-07-08 21:52:00
 ```

@@ -22,7 +22,7 @@ Akane launcher
   -> starts or reuses Akane FastAPI backend
   -> GET /pet/health
   -> whitelist runtimeEnv
-  -> spawn sibling petdesk-runtime with backend URL and profile env
+  -> spawn explicitly configured petdesk-runtime with backend URL and profile env
 ```
 
 This is a validation/starter path for the new runtime. It does not replace the
@@ -80,7 +80,7 @@ start_akane_petdesk.bat
 The starter:
 
 - locates the Akane project root;
-- resolves sibling `..\petdesk-runtime` by default;
+- requires `-RuntimeDir` or `PETDESK_RUNTIME_ROOT`; it never guesses a sibling checkout;
 - optionally starts the Akane backend through `start_akane_next.ps1 -SkipDesktop`;
 - fetches `/pet/health` with `Cache-Control: no-store`;
 - accepts only known runtime env keys;
@@ -121,6 +121,7 @@ Out of scope:
 From Akane root:
 
 ```powershell
+$env:PETDESK_RUNTIME_ROOT='<path-to-petdesk-runtime>'
 .\start_akane_petdesk.ps1
 ```
 
@@ -135,7 +136,7 @@ Useful options:
 ```powershell
 .\start_akane_petdesk.ps1 -BackendPort 10033
 .\start_akane_petdesk.ps1 -SkipBackend -BackendUrl http://127.0.0.1:10033
-.\start_akane_petdesk.ps1 -RuntimeDir ..\petdesk-runtime
+.\start_akane_petdesk.ps1 -RuntimeDir <path-to-petdesk-runtime>
 .\start_akane_petdesk.ps1 -CheckOnly
 .\start_akane_petdesk.ps1 -SkipBackend -BackendUrl http://127.0.0.1:10033 -DryRun
 ```

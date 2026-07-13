@@ -129,7 +129,7 @@ This is deliberately a startup hint, not a protocol field. A different host can 
 Runtime validation, already passed before the runtime commit:
 
 ```powershell
-cd ..\petdesk-runtime
+Set-Location <path-to-petdesk-runtime>
 pnpm verify
 cargo fmt --manifest-path src-tauri\Cargo.toml --check
 cargo check --manifest-path src-tauri\Cargo.toml
@@ -140,8 +140,8 @@ git diff --check
 Akane focused validation:
 
 ```powershell
-cd ..\AkaneCompanionLab
-uv run --with-editable ..\charpack-core --with-editable ..\promptpack-core --with-editable ..\memcore --with-editable ..\capcore --with-editable ..\capcore-adapter-mcp --with-editable ..\capcore-adapter-python --with-editable ..\capcore-adapter-speech --with-editable ..\capcore-adapter-comfyui --with-editable ..\capcore-provider-native-tools --with-editable ..\capcore-provider-openai python -m unittest tests.test_petdesk_bridge -v
+Set-Location <path-to-AkaneCompanionLab>
+.\.venv\Scripts\python.exe -m unittest tests.test_petdesk_bridge -v
 git diff --check -- docs\petdesk_akane_layout_profile_m35.md companion_v01\petdesk_bridge.py tests\test_petdesk_bridge.py
 ```
 

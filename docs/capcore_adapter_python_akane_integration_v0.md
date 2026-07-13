@@ -65,9 +65,9 @@ Python code supplied by the model.
 - `companion_v01/local_capability_catalog.py`
   - Adds public `python_tool` catalog rows.
 - `requirements.txt`
-  - Adds editable `../capcore-adapter-python`.
+  - Loads the exact package release set from `requirements-packages.txt`.
 - `scripts/bootstrap_akane_windows.ps1`
-  - Verifies the sibling package exists and imports.
+  - Verifies the installed package version and rejects source/editable installs.
 
 ## Validation
 

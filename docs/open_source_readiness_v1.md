@@ -76,18 +76,20 @@ Do not ship an exe that silently depends on a source checkout.
 document processing, media download, and lyrics support. Some modules such as
 the vector store and Edge TTS are imported at startup.
 
-The source Alpha also depends on extracted sibling core packages. `capcore`,
-`capcore-adapter-mcp`, and `memcore` are currently installed from sibling
-checkouts through editable requirements.
+The extracted core package path blocker is resolved. Akane now pins versioned
+package releases in `requirements-packages.txt`; the bootstrap consumes either
+a complete wheelhouse or an explicitly configured package index. A clean
+source-blind environment installs and runs the cross-package host-turn smoke
+without any sibling repository checkout.
 
 Required result:
 
 - make optional capabilities import-safe when their package is absent;
 - define a small core requirements file;
 - keep document/media/vector/local-ML extras explicit;
-- replace sibling editable core dependencies with versioned package dependencies
-  before a normal end-user release, or document a supported multi-repo source
-  checkout shape for source-only releases;
+- keep the release wheelhouse/index populated with every exact internal version
+  pinned by `requirements-packages.txt`;
+- keep `scripts/verify_extracted_package_independence.py` green in release CI;
 - test core-only startup in CI.
 
 ## P1 After Installer Blockers

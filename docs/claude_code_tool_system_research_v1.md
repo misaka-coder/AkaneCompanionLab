@@ -1,7 +1,7 @@
 # Claude Code 工具系统调研备忘录 v1
 
 > 性质：**只读调研，不改任何代码。** 为 AkaneCompanionLab 的工具系统解耦（见 `docs/tool_system_decoupling_v1.md`）提供可借鉴设计。
-> 源码位置：`F:/Akane/galgame/AkaneBrain/claude_code_annotated`（下文路径均相对此根）。
+> 源码位置：`<workspace>/galgame/AkaneBrain/claude_code_annotated`（下文路径均相对此根）。
 > 纪律：每条结论附 Claude Code 源码文件路径 + 函数/类名；行号为调研时所见，可能漂移，以函数名为准。
 
 ---

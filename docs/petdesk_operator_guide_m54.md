@@ -68,7 +68,7 @@ pnpm tauri:build
 Expected final exe:
 
 ```text
-F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+<cache-root>\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
 ```
 
 No-build checks:
@@ -323,7 +323,7 @@ Healthy release startup prints:
 
 ```text
 [INFO] Runtime mode: Release
-[INFO] petdesk-runtime exe: F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+[INFO] petdesk-runtime exe: <cache-root>\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
 [INFO] Running petdesk startup smoke...
 AKANE_PETDESK_STARTUP_SMOKE_OK
 [INFO] Starting petdesk-runtime release window...

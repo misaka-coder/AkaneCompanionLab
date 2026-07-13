@@ -1321,7 +1321,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             "mime_type": "image/jpeg",
             "status": "ready",
             "summary_title": "晚餐图片",
-            "storage_relpath": "C:/Users/Lenovo/secret/meal.jpg",
+            "storage_relpath": "C:/Users/ExampleUser/secret/meal.jpg",
             "detail": {
                 "character_pack_id": "akane_v1",
                 "summary": "盘子里有热汤。",

@@ -1,6 +1,6 @@
 # Core Dependency Strategy v0
 
-Updated: 2026-07-01
+Updated: 2026-07-13
 
 Akane 正在把可复用内核从宿主项目里拆出来：
 
@@ -13,29 +13,9 @@ Akane 正在把可复用内核从宿主项目里拆出来：
 
 ## 当前形态
 
-源码 Alpha 使用 sibling checkout，而不是 vendoring：
-
-```text
-Akane/
-  AkaneCompanionLab/
-  capcore/
-  capcore-adapter-mcp/
-  capcore-adapter-python/
-  capcore-adapter-speech/
-  capcore-adapter-comfyui/
-  memcore/
-```
-
-这些包已是 Akane 运行时依赖，`requirements.txt` 使用：
-
-```text
--e ../capcore
--e ../capcore-adapter-mcp
--e ../capcore-adapter-python
--e ../capcore-adapter-speech
--e ../capcore-adapter-comfyui
--e ../memcore
-```
+Akane 不 vendoring core，也不从 sibling checkout 导入。运行时包在
+`requirements-packages.txt` 中精确锁定为版本化发行物，由完整 wheelhouse 或
+显式配置的包索引提供。源码仓库的位置不属于安装和运行契约。
 
 `capcore-adapter-mcp` 先由 Akane 的兼容包装层接入；Akane 仍保留 profile
 配置、approval UX、prompt 暴露策略和 AnySearch dotenv hydration 等宿主逻辑。
@@ -56,18 +36,13 @@ Akane/
 
 ## 开源安装策略
 
-短期源码 Alpha：
+当前发行策略：
 
-- README 明确要求 sibling checkout。
-- Windows bootstrap 在安装依赖前检查 `../capcore/pyproject.toml` 和
-  `../capcore-adapter-mcp/pyproject.toml` 等 sibling 包。
-- `requirements.txt` 保留 editable path，方便本地联动开发。
-
-中期公开包：
-
-- 为 `capcore` / `capcore-adapter-mcp` / `capcore-adapter-speech` / `capcore-adapter-comfyui` / `memcore` 发布版本包。
-- Akane 把 editable path 替换为版本范围，例如 `capcore>=0.1,<0.2`。
-- 开发者仍可用 editable install 覆盖本地 core。
+- 为所有 extracted packages 构建独立 wheel；
+- Akane 对内部运行时包使用精确版本，不允许 editable/path override；
+- Windows bootstrap 只接受带完整 manifest 的 wheelhouse 或显式包索引；
+- clean-environment gate 在禁用 `PYTHONPATH` 和 user site 后离线安装并跑 smoke；
+- 联动开发也先构建本地版本化 artifact，不用 sibling path 覆盖消费者环境。
 
 长期产品化：
 

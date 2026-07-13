@@ -199,7 +199,7 @@ memcore, FastAPI, Tauri, or media packages.
 
 Phase 0: package skeleton
 
-1. Create `F:/Akane/charpack-core`.
+1. Create `<workspace>/charpack-core`.
 2. Add `pyproject.toml`, `README.md`, `AGENTS.md`, docs, examples, tests.
 3. Move/copy `resource_manifest.py` with minimal rename changes.
 4. Move/copy `character_context_library.py`.
@@ -294,5 +294,5 @@ interpreter for character packs and their prompt/resource projections.
 
 ## Recommended Next Action
 
-Start `F:/Akane/charpack-core` as a new package, copy the three focused modules
+Start `<workspace>/charpack-core` as a new package, copy the three focused modules
 and tests, and get package validation green before touching Akane imports.

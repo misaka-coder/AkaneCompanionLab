@@ -21,6 +21,8 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+package_wheels/
+package_artifacts/
 
 # Runtime data, memories, generated files, and local user assets
 users_data/

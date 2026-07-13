@@ -33,7 +33,7 @@ scripts/stop_petdesk_runtime.ps1
 
 Default behavior:
 
-- resolve the sibling `petdesk-runtime` release exe path;
+- resolve the explicitly configured `petdesk-runtime` release exe path;
 - find running `petdesk_runtime.exe` processes whose `Path` matches that exe;
 - try graceful `CloseMainWindow()`;
 - wait briefly;

@@ -5,7 +5,7 @@ Date: 2026-07-09
 
 ## Goal
 
-The `F:\Akane` workspace now contains product apps, reusable packages,
+The `<workspace>` workspace now contains product apps, reusable packages,
 provider/adapter packages, petdesk runtime packages, archived releases, caches,
 reference projects, and experiments in one flat directory. That made sense
 while extracting packages quickly, but it is now hard to scan.
@@ -70,42 +70,18 @@ _tmp_yuque_dania.html
 galgame.zip
 ```
 
-## Existing Hard Dependencies
+## Package Location Independence (M64 update)
 
-Do not physically move the extracted package repos yet. `AkaneCompanionLab`
-currently expects sibling package paths in active scripts and requirements:
+The hard sibling dependencies recorded by the original M62 inventory have been
+removed. `AkaneCompanionLab` now installs exact versioned wheels from a complete
+wheelhouse or configured package index. Petdesk package manifests use exact
+`0.1.0` releases, and runtime/operator scripts require `-RuntimeDir` or
+`PETDESK_RUNTIME_ROOT` instead of deriving `..\petdesk-runtime`.
 
-```text
-requirements.txt:
-  -e ../capcore
-  -e ../capcore-adapter-mcp
-  -e ../capcore-adapter-python
-  -e ../capcore-adapter-speech
-  -e ../capcore-adapter-comfyui
-  -e ../charpack-core
-  -e ../promptpack-core
-  -e ../capcore-provider-native-tools
-  -e ../capcore-provider-openai
-  -e ../memcore
-
-scripts/bootstrap_akane_windows.ps1:
-  ..\capcore
-  ..\capcore-adapter-mcp
-  ..\capcore-adapter-python
-  ..\capcore-adapter-speech
-  ..\capcore-adapter-comfyui
-  ..\capcore-provider-native-tools
-  ..\capcore-provider-openai
-  ..\charpack-core
-  ..\promptpack-core
-  ..\memcore
-
-petdesk release scripts:
-  ..\petdesk-runtime
-```
-
-Several docs also record these sibling paths. They should be updated only after
-the scripts support the new layout.
+The repositories may therefore be moved independently. The `packages/`
+junction catalog remains an optional source-navigation aid for maintainers; it
+is not part of installation, import resolution, runtime launch, or release
+acceptance. See `package_artifact_independence_m64.md` for the enforced gate.
 
 ## Classification
 
@@ -186,8 +162,9 @@ Recommended final home:
 packages/petdesk/
 ```
 
-`petdesk-runtime` is still resolved as a sibling of `AkaneCompanionLab` by the
-release scripts, so physical migration needs a compatibility pass first.
+`petdesk-runtime` is resolved only from an explicit parameter or environment
+configuration, so moving its source tree does not change Akane's dependency
+contract.
 
 ### Archives
 
@@ -257,12 +234,12 @@ IDE workspaces or scripts depending on the old paths.
 M62 creates a no-break package catalog under:
 
 ```text
-F:\Akane\packages\
+<workspace>\packages\
 ```
 
 The catalog uses Windows directory junctions to point to existing package
-repositories. No original repository is moved in this phase, so the current
-Akane sibling-path scripts keep working.
+repositories. It is a convenience view only; no Akane install or launch script
+may depend on these junctions.
 
 Catalog shape:
 
@@ -270,40 +247,39 @@ Catalog shape:
 packages/
   README.md
   core/
-    capcore -> F:\Akane\capcore
-    capcore-host-utils -> F:\Akane\capcore-host-utils
-    charpack-core -> F:\Akane\charpack-core
-    memcore -> F:\Akane\memcore
-    promptpack-core -> F:\Akane\promptpack-core
+    capcore -> <workspace>\capcore
+    capcore-host-utils -> <workspace>\capcore-host-utils
+    charpack-core -> <workspace>\charpack-core
+    memcore -> <workspace>\memcore
+    promptpack-core -> <workspace>\promptpack-core
   capcore/
-    capcore-adapter-comfyui -> F:\Akane\capcore-adapter-comfyui
-    capcore-adapter-mcp -> F:\Akane\capcore-adapter-mcp
-    capcore-adapter-python -> F:\Akane\capcore-adapter-python
-    capcore-adapter-speech -> F:\Akane\capcore-adapter-speech
-    capcore-provider-anthropic -> F:\Akane\capcore-provider-anthropic
-    capcore-provider-native-tools -> F:\Akane\capcore-provider-native-tools
-    capcore-provider-openai -> F:\Akane\capcore-provider-openai
+    capcore-adapter-comfyui -> <workspace>\capcore-adapter-comfyui
+    capcore-adapter-mcp -> <workspace>\capcore-adapter-mcp
+    capcore-adapter-python -> <workspace>\capcore-adapter-python
+    capcore-adapter-speech -> <workspace>\capcore-adapter-speech
+    capcore-provider-anthropic -> <workspace>\capcore-provider-anthropic
+    capcore-provider-native-tools -> <workspace>\capcore-provider-native-tools
+    capcore-provider-openai -> <workspace>\capcore-provider-openai
   petdesk/
-    petcore-protocol -> F:\Akane\petcore-protocol
-    petdesk-character-host -> F:\Akane\petdesk-character-host
-    petdesk-live2d-pixi-driver -> F:\Akane\petdesk-live2d-pixi-driver
-    petdesk-runtime -> F:\Akane\petdesk-runtime
+    petcore-protocol -> <workspace>\petcore-protocol
+    petdesk-character-host -> <workspace>\petdesk-character-host
+    petdesk-live2d-pixi-driver -> <workspace>\petdesk-live2d-pixi-driver
+    petdesk-runtime -> <workspace>\petdesk-runtime
 ```
 
 Important rule:
 
 ```text
-Do not run broad recursive format/test/build commands from F:\Akane\packages.
+Do not run broad recursive format/test/build commands from <workspace>\packages.
 It is a navigation catalog and will duplicate the same repos through junctions.
 Run tooling from each real repository path until physical migration is done.
 ```
 
 ## Physical Migration Plan
 
-### M63: path-compatible resolver
+### M63: path-compatible resolver (superseded)
 
-Add resolver support so `AkaneCompanionLab` can find dependencies in both
-places:
+The earlier plan proposed resolving package source from both locations:
 
 ```text
 ..\packages\core\memcore
@@ -315,7 +291,9 @@ places:
 ..\packages\petdesk\petdesk-runtime
 ```
 
-The old sibling paths should remain as fallback during the transition.
+M64 supersedes that plan. There is no source-path fallback: Python dependencies
+come from wheels/index releases, npm dependencies come from versioned package
+artifacts, and petdesk source/build roots are explicit operator inputs.
 
 ### M64: move low-risk archives and references
 
@@ -343,7 +321,7 @@ Validation for M62 should include:
 
 ```powershell
 git diff --check -- docs\akane_workspace_layout_m62.md
-Get-ChildItem F:\Akane\packages -Recurse -Attributes ReparsePoint
+Get-ChildItem <workspace>\packages -Recurse -Attributes ReparsePoint
 ```
 
 No runtime, backend, QQ bot, or package test process needs to be started for

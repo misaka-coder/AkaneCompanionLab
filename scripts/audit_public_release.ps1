@@ -28,9 +28,14 @@ $requiredFiles = @(
     "docs/productization_release_gate_v1.md",
     ".env.example",
     "requirements.txt",
+    "requirements-packages.txt",
+    "requirements-runtime.txt",
     "start_akane.bat",
     "启动_Akane.bat",
-    "scripts/bootstrap_akane_windows.ps1"
+    "scripts/bootstrap_akane_windows.ps1",
+    "scripts/build_extracted_package_wheelhouse.py",
+    "scripts/check_packaged_dependencies.py",
+    "scripts/verify_extracted_package_independence.py"
 )
 foreach ($relativePath in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $relativePath) -PathType Leaf)) {
@@ -177,8 +182,17 @@ $allowedPngPrefixes = @(
 )
 
 # The akane_v1 demo character pack ships real, ASSETS_LICENSE-documented portraits.
-# Every other png in the release must still be the single neutral placeholder.
-$realArtPngPrefix = "desktop_pet_creator_kit/characters/akane_v1/"
+# The listed control-center/scene assets are also explicitly shipped by the public
+# exporter. Every other png in the release must still be the neutral placeholder.
+$realArtPngPrefixes = @(
+    "desktop_pet_creator_kit/characters/akane_v1/",
+    "web/assets/stickers/akane_v1/"
+)
+$realArtPngPaths = @(
+    "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sakura-wide.png",
+    "desktop_pet_next/src/assets/control-center-lab/heroes/akane-sky-wide.png",
+    "web/assets/scenes/家/白天客厅.png"
+)
 
 $files = @(
     Get-ChildItem -LiteralPath $root -File -Recurse -Force |
@@ -196,6 +210,9 @@ foreach ($file in $files) {
     }
     if ($extension -eq ".png") {
         $allowed = $false
+        if ($realArtPngPaths -contains $relative.ToLowerInvariant()) {
+            $allowed = $true
+        }
         foreach ($prefix in $allowedPngPrefixes) {
             if ($relative.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
                 $allowed = $true
@@ -224,7 +241,14 @@ $pngFiles = @($files | Where-Object { $_.Extension.ToLowerInvariant() -eq ".png"
 $placeholderPngFiles = @(
     $pngFiles | Where-Object {
         $rel = $_.FullName.Substring($root.Length).TrimStart("\", "/").Replace("\", "/")
-        -not $rel.StartsWith($realArtPngPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+        $isRealArt = $realArtPngPaths -contains $rel.ToLowerInvariant()
+        foreach ($prefix in $realArtPngPrefixes) {
+            if ($rel.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $isRealArt = $true
+                break
+            }
+        }
+        -not $isRealArt
     }
 )
 $pngHashes = @(

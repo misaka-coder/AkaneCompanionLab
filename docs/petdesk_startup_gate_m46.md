@@ -70,7 +70,7 @@ Out of scope:
 
 ```powershell
 python -m unittest tests.test_petdesk_mvp_smoke tests.test_petdesk_runtime_starter -v
-$env:PYTHONPATH='F:\Akane\capcore;F:\Akane\capcore-adapter-mcp;F:\Akane\capcore-adapter-python;F:\Akane\capcore-adapter-speech;F:\Akane\capcore-adapter-comfyui;F:\Akane\charpack-core;F:\Akane\promptpack-core;F:\Akane\capcore-provider-native-tools;F:\Akane\capcore-provider-openai;F:\Akane\memcore'; python -m unittest tests.test_petdesk_bridge -v
+$env:PYTHONPATH='<workspace>\capcore;<workspace>\capcore-adapter-mcp;<workspace>\capcore-adapter-python;<workspace>\capcore-adapter-speech;<workspace>\capcore-adapter-comfyui;<workspace>\charpack-core;<workspace>\promptpack-core;<workspace>\capcore-provider-native-tools;<workspace>\capcore-provider-openai;<workspace>\memcore'; python -m unittest tests.test_petdesk_bridge -v
 python -m ruff check scripts\tools\run_petdesk_mvp_smoke.py tests\test_petdesk_mvp_smoke.py tests\test_petdesk_runtime_starter.py
 python -m ruff format --check scripts\tools\run_petdesk_mvp_smoke.py tests\test_petdesk_mvp_smoke.py tests\test_petdesk_runtime_starter.py
 python -m py_compile scripts\tools\run_petdesk_mvp_smoke.py tests\test_petdesk_mvp_smoke.py tests\test_petdesk_runtime_starter.py

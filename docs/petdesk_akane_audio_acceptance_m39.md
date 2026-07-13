@@ -34,7 +34,7 @@ cmd /c start_akane_petdesk.bat -CheckOnly
 Result:
 
 ```text
-all three starter entrypoints resolved the Akane project, sibling runtime, and
+all three starter entrypoints resolved the Akane project, explicitly configured runtime, and
 backend URL successfully.
 ```
 

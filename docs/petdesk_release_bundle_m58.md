@@ -89,7 +89,7 @@ Export to the default ignored `reports/` location:
 Export to an explicit directory:
 
 ```powershell
-.\scripts\export_petdesk_release_bundle.ps1 -OutputPath F:\Akane\petdesk-release-test
+.\scripts\export_petdesk_release_bundle.ps1 -OutputPath <workspace>\petdesk-release-test
 ```
 
 Start the exported runtime from inside the bundle:

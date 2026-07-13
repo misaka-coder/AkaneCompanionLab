@@ -4,12 +4,12 @@
 
 这篇文档用于在上下文压缩或换模型后继续接上 Akane → memcore 的迁移工作。它记录当前 Akane 记忆链路、memcore 对应能力、推荐切片顺序、要改的文件和验证口径。
 
-结论先写前面:Akane 的对话记忆主路已经切到 sibling repo `../memcore`。后续不要再把旧 retrieval/router/compaction 当成主线扩展；旧链路只保留为显式 `MEMORY_BACKEND=legacy|dual` 的兼容、迁移和对比工具，后续按切片清理。
+结论先写前面：Akane 的对话记忆主路已经切到版本化 `memcore` 包。后续不要再把旧 retrieval/router/compaction 当成主线扩展；旧链路只保留为显式 `MEMORY_BACKEND=legacy|dual` 的兼容、迁移和对比工具，后续按切片清理。
 
 ## 当前状态
 
 - Akane 工作区仍有一处 capcore handoff 文档改动: `docs/capability_adapter_v1_m1_handoff_prompt.md`。memcore 接入不要混入这条线。
-- `requirements.txt` 已加入 `-e ../memcore`。`MemcoreManager` 也有 sibling path fallback，方便本地未安装 editable 时仍可在 `MEMORY_BACKEND=dual|memcore` 下加载。
+- `requirements-packages.txt` 精确锁定 `memcore` 发行版。`MemcoreManager` 只做正常包导入；缺包时结构化报告 unavailable，不注入 sibling source path。
 - Slice 0 已完成:配置项、settings catalog、可选 manager bootstrap、空工具/诊断模块、基础测试。
 - Slice 1 已完成:同步/流式 turn 生命周期会在非 transient turn 下把 user raw、final assistant raw、user memory_metadata 写进 memcore；旧 Akane store 仍保留业务表和迁移来源。
 - Slice 2 已完成:`MEMCORE_SHADOW_COMPARE=true` 时，legacy `retrieve_memory` 工具返回后会额外跑 memcore 影子检索，只把结构化对比写入 debug/state，不改变 followup_context 或用户可见回复。
@@ -150,7 +150,7 @@ MEMCORE_SHADOW_COMPARE=false
 
 改动:
 
-- `requirements.txt` 加 `-e ../memcore`，注释说明和 capcore 一样是 sibling package。
+- 当时的源码依赖已在 M64 删除；当前由 `requirements-packages.txt` 和 wheelhouse/index 提供精确发行版。
 - 新增 `companion_v01/memcore_integration/` 空模块和 adapter 骨架。
 - 新增配置项与 settings catalog。
 - `engine.__init__` 在 `MEMORY_BACKEND != "legacy"` 时构造 `self.memcore_manager`，失败要结构化记录；`memcore` 主路不能静默切回旧记忆 prompt/tools。

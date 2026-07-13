@@ -46,7 +46,7 @@ Effective flow:
 start/reuse backend
 -> GET /pet/health and collect whitelisted runtimeEnv
 -> run scripts/tools/run_petdesk_mvp_smoke.py --startup-only
--> launch sibling petdesk-runtime
+-> launch explicitly configured petdesk-runtime
 ```
 
 The default preflight does not post `/pet/turn`, so it does not call the model

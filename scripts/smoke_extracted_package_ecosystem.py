@@ -2,36 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
-
-ROOT = Path(__file__).resolve().parents[1]
-AKANE_PARENT = ROOT.parent
-
-
-def _add_sibling_sources() -> None:
-    for name in (
-        "promptpack-core",
-        "charpack-core",
-        "memcore",
-        "capcore",
-        "capcore-adapter-python",
-        "capcore-adapter-mcp",
-        "capcore-provider-native-tools",
-        "capcore-provider-openai",
-        "capcore-provider-anthropic",
-    ):
-        path = AKANE_PARENT / name
-        if path.exists() and str(path) not in sys.path:
-            sys.path.insert(0, str(path))
-
-
-_add_sibling_sources()
 
 from capcore import ApprovalPolicy, CapabilityIOSlot, InvocationContext  # noqa: E402
 from capcore_adapter_mcp import (  # noqa: E402

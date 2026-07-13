@@ -50,9 +50,9 @@ Do not move Akane route/config/job/UI behavior into the package.
 ## Changed Files
 
 - `requirements.txt`
-  - Adds editable `../capcore-adapter-comfyui`.
+  - Loads the exact package release set from `requirements-packages.txt`.
 - `scripts/bootstrap_akane_windows.ps1`
-  - Verifies the sibling package exists and imports.
+  - Verifies the installed package version and rejects source/editable installs.
 - `companion_v01/capability_adapters/comfyui.py`
   - Compatibility re-export for the extracted adapter.
 - `companion_v01/local_workflow_execution.py`
@@ -65,7 +65,7 @@ Do not move Akane route/config/job/UI behavior into the package.
   - Re-exports ComfyUI client/workflow helper names used by older Akane tests
     and imports.
 - `README.md` and `docs/core_dependency_strategy_v0.md`
-  - Document the new sibling dependency.
+  - Document the versioned artifact dependency.
 - `tests/test_windows_bootstrap.py`
   - Covers the new bootstrap dependency checks.
 
@@ -82,11 +82,11 @@ ruff format --check companion_v01/capability_adapters/comfyui.py companion_v01/l
 git diff --check
 ```
 
-When running outside the bootstrapped Akane venv, include sibling packages on
-`PYTHONPATH`, at minimum:
+When running outside the bootstrapped Akane venv, install the same versioned
+release set from the wheelhouse:
 
 ```powershell
-$env:PYTHONPATH = 'F:\Akane\capcore-adapter-comfyui;F:\Akane\capcore-adapter-speech;F:\Akane\capcore;' + $env:PYTHONPATH
+python -m pip install --no-index --find-links .\package_wheels -r requirements-packages.txt
 ```
 
 ## Continuation Notes

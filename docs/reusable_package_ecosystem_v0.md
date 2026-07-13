@@ -129,13 +129,13 @@ The smoke lives outside Akane so it can validate the extracted stack without
 importing Akane runtime:
 
 ```text
-F:/Akane/package-smokes/companion_stack_smoke
+<workspace>/package-smokes/companion_stack_smoke
 ```
 
 Run it with:
 
 ```bash
-cd F:/Akane/package-smokes/companion_stack_smoke
+cd <workspace>/package-smokes/companion_stack_smoke
 uv run python companion_stack_smoke.py
 uv run --extra dev ruff check .
 uv run --extra dev ruff format --check .

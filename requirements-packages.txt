@@ -1,0 +1,13 @@
+# Akane-owned package release set. Keep exact pins so a host release cannot
+# silently combine incompatible 0.x package versions.
+capcore==0.1.0
+capcore-adapter-mcp==0.1.0
+capcore-adapter-python==0.1.0
+capcore-adapter-speech==0.1.0
+capcore-adapter-comfyui==0.1.0
+charpack-core==0.1.0
+promptpack-core==0.1.0
+capcore-provider-native-tools==0.1.0
+capcore-provider-openai==0.1.0
+capcore-provider-anthropic==0.1.0
+memcore==0.1.0

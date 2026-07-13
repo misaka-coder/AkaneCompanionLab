@@ -29,9 +29,9 @@ the default.
 - `start_akane_petdesk.bat`
 - `docs/petdesk_akane_starter_m36.md`
 - `docs/petdesk_startup_preflight_m48.md`
-- `F:\Akane\petdesk-runtime\docs\runtime_launch_env_m49.md`
-- `F:\Akane\petdesk-runtime\.cargo\config.toml`
-- `F:\Akane\petdesk-runtime\src-tauri\Cargo.toml`
+- `<workspace>\petdesk-runtime\docs\runtime_launch_env_m49.md`
+- `<workspace>\petdesk-runtime\.cargo\config.toml`
+- `<workspace>\petdesk-runtime\src-tauri\Cargo.toml`
 
 ## Decision
 
@@ -100,7 +100,7 @@ Release launch with auto-resolved exe:
 Release launch with explicit exe:
 
 ```powershell
-.\start_akane_petdesk.ps1 -RuntimeMode Release -RuntimeExe F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+.\start_akane_petdesk.ps1 -RuntimeMode Release -RuntimeExe <cache-root>\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
 ```
 
 Dry-run without opening a window:

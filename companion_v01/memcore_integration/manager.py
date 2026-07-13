@@ -11,7 +11,6 @@ from dataclasses import asdict, dataclass
 from concurrent.futures import ThreadPoolExecutor
 import logging
 from pathlib import Path
-import sys
 import threading
 import time
 from typing import Any, Callable
@@ -1084,32 +1083,9 @@ class MemcoreManager:
 
     @staticmethod
     def _import_memcore() -> Any:
-        try:
-            import memcore  # type: ignore
+        import memcore  # type: ignore
 
-            return memcore
-        except ModuleNotFoundError as exc:
-            missing_name = getattr(exc, "name", None)
-            if missing_name not in {None, "memcore"}:
-                raise
-            sibling = Path(__file__).resolve().parents[2].parent / "memcore"
-            if not sibling.exists():
-                raise
-            sibling_text = str(sibling)
-            inserted = sibling_text not in sys.path
-            if inserted:
-                sys.path.insert(0, sibling_text)
-            try:
-                import memcore  # type: ignore
-
-                return memcore
-            except Exception:
-                if inserted:
-                    try:
-                        sys.path.remove(sibling_text)
-                    except ValueError:
-                        pass
-                raise
+        return memcore
 
     def _build_memory_config(self, memcore: Any) -> Any:
         from ..domain_profiles import FINANCE_MEMORY_CATEGORIES

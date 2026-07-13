@@ -195,36 +195,19 @@ Ollama 等外部服务接入，速度和效果取决于用户选择的模型、�
 建议使用 Python 3.11。基础后端不要求 Rust、Node、QQ、CUDA 或本地
 Embedding 模型。
 
-### Core 源码依赖
+### 独立包依赖
 
-当前源码 Alpha 复用从 Akane 拆出的 core 包。`capcore`、`capcore-adapter-mcp`、
-`capcore-adapter-python`、`capcore-adapter-speech`、`capcore-adapter-comfyui`、
-`charpack-core`、`promptpack-core`、`capcore-provider-native-tools`、`capcore-provider-openai`
-和 `memcore` 是运行时依赖，
-需要和本仓库放在同一个父目录下：
+Akane 只依赖从项目拆出的包的版本化发行物，不依赖它们的源码位置。
+`requirements-packages.txt` 对运行时包使用精确版本；`requirements.txt` 不包含
+editable、`../` 或本机绝对路径。普通安装只需要满足以下任一发行源：
 
-```text
-Akane/
-  AkaneCompanionLab/
-  capcore/
-  capcore-adapter-mcp/
-  capcore-adapter-python/
-  capcore-adapter-speech/
-  capcore-adapter-comfyui/
-  charpack-core/
-  promptpack-core/
-  capcore-provider-native-tools/
-  capcore-provider-openai/
-  memcore/
-```
+- 随发行包提供、包含完整依赖闭包的 `package_wheels/`；
+- 通过 `AKANE_PACKAGE_WHEELHOUSE` 或 `-PackageWheelhouse` 指定的 wheelhouse；
+- 通过 `AKANE_PACKAGE_INDEX_URL` 或 `-PackageIndexUrl` 指定的包索引。
 
-`requirements.txt` 会以 editable 形式安装这些 sibling 包。如果你只 clone
-了 AkaneCompanionLab，依赖安装会失败；先 clone 这些 core 包到同级目录。
-`memcore` 是当前对话记忆主后端，旧 Akane 记忆链路仅保留为显式兼容/迁移模式。
-
-工作区分类和后续迁移计划见 `docs/akane_workspace_layout_m62.md`。当前
-`F:\Akane\packages\` 是无破坏 junction 导航目录，真实源码路径仍保持 sibling
-布局，避免打断 editable 依赖和 release 脚本。
+源码仓库可以放在任意位置，只有维护者构建发行物时才作为显式输入。`memcore`
+是当前对话记忆主后端，旧 Akane 记忆链路仅保留为显式兼容/迁移模式。完整的
+独立性契约和验证命令见 `docs/package_artifact_independence_m64.md`。
 
 抽包应用回 Akane 的规则见 `docs/package_reintegration_policy_m63.md`。核心原则是：
 回填包必须替代旧实现或压成薄 adapter，不允许长期新旧逻辑并行。
@@ -248,8 +231,8 @@ Akane/
 `docs/petdesk_runtime_architecture_v0.md`。新桌宠 runtime 计划使用
 TypeScript + Tauri v2，后端继续通过 Python/HTTP/SSE 组合现有 core 包。
 
-发布态元数据审计可以再跑一条，确认 sibling 包的 README、AGENTS、docs、
-examples、tests、MANIFEST 和 0.1 版本号仍然齐整：
+发布态元数据审计可以再跑一条，确认包元数据、版本依赖与宿主脚本中不存在
+源码路径依赖：
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\audit_extracted_packages_release.py
@@ -259,8 +242,15 @@ examples、tests、MANIFEST 和 0.1 版本号仍然齐整：
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\scripts\bootstrap_akane_windows.ps1 -PrepareOnly -PackageWheelhouse .\package_wheels
 Copy-Item .env.example .env
+```
+
+维护者可以构建并用源码不可见的临时环境验证完整 wheelhouse：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\build_extracted_package_wheelhouse.py
+.\.venv\Scripts\python.exe .\scripts\verify_extracted_package_independence.py
 ```
 
 服务器部署可以继续编辑 `.env` 设置 LLM；本地浏览器也可以打开设置面板完成
@@ -286,7 +276,7 @@ QQ_BRIDGE_ENABLED=false
 
 ```bash
 python3 -m venv .venv
-./.venv/bin/python -m pip install -r requirements.txt
+./.venv/bin/python -m pip install --no-index --find-links ./package_wheels -r requirements.txt
 cp .env.example .env
 ./.venv/bin/python launch_akane_memory_v01.py
 ```

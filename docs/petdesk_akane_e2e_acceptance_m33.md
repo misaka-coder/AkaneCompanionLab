@@ -48,7 +48,7 @@ continued runtime migration work. A red M33 means fix the bridge/runtime before 
 Akane source checkout layout:
 
 ```text
-F:\Akane\
+<workspace>\
   AkaneCompanionLab\
   capcore\
   capcore-adapter-mcp\
@@ -109,7 +109,7 @@ This verifies the contract from the runtime side, not just with ad hoc HTTP.
 Start Akane backend, then run:
 
 ```powershell
-cd F:\Akane\petdesk-runtime
+cd <workspace>\petdesk-runtime
 $env:VITE_PETDESK_BACKEND_URL='http://127.0.0.1:9999'
 pnpm tauri:dev
 ```
@@ -135,8 +135,8 @@ Expected signs:
 Start Akane backend:
 
 ```powershell
-cd F:\Akane\AkaneCompanionLab
-$env:PYTHONPATH='F:\Akane\capcore;F:\Akane\capcore-adapter-mcp;F:\Akane\capcore-adapter-python;F:\Akane\capcore-adapter-speech;F:\Akane\capcore-adapter-comfyui;F:\Akane\charpack-core;F:\Akane\promptpack-core;F:\Akane\capcore-provider-native-tools;F:\Akane\capcore-provider-openai;F:\Akane\memcore'
+cd <workspace>\AkaneCompanionLab
+$env:PYTHONPATH='<workspace>\capcore;<workspace>\capcore-adapter-mcp;<workspace>\capcore-adapter-python;<workspace>\capcore-adapter-speech;<workspace>\capcore-adapter-comfyui;<workspace>\charpack-core;<workspace>\promptpack-core;<workspace>\capcore-provider-native-tools;<workspace>\capcore-provider-openai;<workspace>\memcore'
 $env:COMPANION_HOST='127.0.0.1'
 $env:COMPANION_PORT='9999'
 python launch_akane_memory_v01.py
@@ -145,7 +145,7 @@ python launch_akane_memory_v01.py
 Runtime manual window:
 
 ```powershell
-cd F:\Akane\petdesk-runtime
+cd <workspace>\petdesk-runtime
 $env:VITE_PETDESK_BACKEND_URL='http://127.0.0.1:9999'
 pnpm tauri:dev
 ```

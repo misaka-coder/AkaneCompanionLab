@@ -59,7 +59,7 @@ again, not when running an existing release exe.
 .\scripts\check_petdesk_release.ps1
 .\scripts\check_petdesk_release.ps1 -SkipBackendHttp
 .\scripts\check_petdesk_release.ps1 -BackendUrl http://127.0.0.1:9999
-.\scripts\check_petdesk_release.ps1 -RuntimeExe F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+.\scripts\check_petdesk_release.ps1 -RuntimeExe <cache-root>\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
 .\scripts\check_petdesk_release.ps1 -All
 ```
 
@@ -149,7 +149,7 @@ git diff --check: OK
 The doctor reported the release exe at:
 
 ```text
-F:\Cache\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
+<cache-root>\cargo-target\petdesk-runtime\release\petdesk_runtime.exe
 ```
 
 No `petdesk_runtime.exe` process was running during validation. The backend HTTP

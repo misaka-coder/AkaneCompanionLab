@@ -4,8 +4,8 @@ Status: phases 1-5 mostly completed
 Date: 2026-06-30
 Repos:
 
-- `F:\Akane\capcore`
-- `F:\Akane\AkaneCompanionLab`
+- `<workspace>\capcore`
+- `<workspace>\AkaneCompanionLab`
 
 ## Purpose
 
@@ -98,7 +98,7 @@ Important: `companion_v01/capability_approval.py` is mostly host logic. It shoul
 
 Status: completed in capcore `169abc5` and hardened in `4000543`.
 
-Target repo: `F:\Akane\capcore`
+Target repo: `<workspace>\capcore`
 
 Files to inspect first:
 
@@ -168,7 +168,7 @@ Add permission preview sanitizer
 
 Status: completed in Akane `15f8372`.
 
-Target repo: `F:\Akane\AkaneCompanionLab`
+Target repo: `<workspace>\AkaneCompanionLab`
 
 Files to inspect first:
 
@@ -294,9 +294,9 @@ If context gets compressed, resume like this:
 1. Check both worktrees:
 
    ```bash
-   cd F:\Akane\AkaneCompanionLab
+   cd <workspace>\AkaneCompanionLab
    git status --short
-   cd F:\Akane\capcore
+   cd <workspace>\capcore
    git status --short
    ```
 
@@ -308,7 +308,7 @@ If context gets compressed, resume like this:
 
    Do not stage it unless the user explicitly asks.
 
-3. Start in `F:\Akane\capcore` with Phase 1.
+3. Start in `<workspace>\capcore` with Phase 1.
 
 4. After capcore commit, return to Akane Phase 2.
 

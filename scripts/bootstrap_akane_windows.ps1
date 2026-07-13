@@ -6,6 +6,8 @@ param(
     [switch]$PrepareOnly,
     [switch]$CheckOnly,
     [switch]$ForcePythonInstall,
+    [string]$PackageWheelhouse = "",
+    [string]$PackageIndexUrl = "",
     [switch]$KeepWindowOpen
 )
 
@@ -105,74 +107,98 @@ function Test-PythonImports {
     }
 }
 
-function Assert-CoreSourceDependencies {
+function Test-PackagedCoreDependencies {
+    param(
+        [string]$PythonPath,
+        [string]$Root,
+        [string[]]$PrefixArgs = @()
+    )
+
+    $checker = Join-Path $Root "scripts\check_packaged_dependencies.py"
+    $oldErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $PythonPath @PrefixArgs $checker 2>$null | Out-Null
+        return $LASTEXITCODE -eq 0
+    } finally {
+        $ErrorActionPreference = $oldErrorActionPreference
+    }
+}
+
+function Assert-PackageWheelhouse {
+    param(
+        [string]$Root,
+        [string]$Wheelhouse
+    )
+
+    $manifestPath = Join-Path $Wheelhouse "akane-package-wheelhouse.json"
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        throw "akane_package_wheelhouse_invalid: manifest_json_invalid"
+    }
+    if ($manifest.schema -ne "akane.package-wheelhouse.v1" -or $manifest.version -ne "0.1.0") {
+        throw "akane_package_wheelhouse_invalid: manifest_contract_mismatch"
+    }
+    if ($manifest.runtime_dependencies_downloaded -ne $true) {
+        throw "akane_package_wheelhouse_invalid: runtime_dependency_closure_missing"
+    }
+
+    $entries = @($manifest.internal_packages)
+    $requirementsPath = Join-Path $Root "requirements-packages.txt"
+    foreach ($rawLine in [System.IO.File]::ReadAllLines($requirementsPath)) {
+        $line = $rawLine.Split("#", 2)[0].Trim()
+        if (-not $line) {
+            continue
+        }
+        if ($line -notmatch '^([A-Za-z0-9_.-]+)==([A-Za-z0-9_.+-]+)$') {
+            throw "akane_package_wheelhouse_invalid: internal_requirement_not_exact"
+        }
+        $packageName = $Matches[1].ToLowerInvariant()
+        $packageVersion = $Matches[2]
+        $entry = @($entries | Where-Object { ([string]$_.name).ToLowerInvariant() -eq $packageName })
+        if ($entry.Count -ne 1 -or [string]$entry[0].version -ne $packageVersion) {
+            throw "akane_package_wheelhouse_invalid: internal_package_manifest_mismatch"
+        }
+        $artifactName = [string]$entry[0].file
+        if (-not $artifactName -or [System.IO.Path]::GetFileName($artifactName) -ne $artifactName) {
+            throw "akane_package_wheelhouse_invalid: unsafe_internal_artifact_name"
+        }
+        $artifactPath = Join-Path $Wheelhouse $artifactName
+        if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+            throw "akane_package_wheelhouse_invalid: internal_artifact_missing"
+        }
+        $expectedHash = ([string]$entry[0].sha256).ToLowerInvariant()
+        $actualHash = (Get-FileSha256 -Path $artifactPath).ToLowerInvariant()
+        if ($expectedHash -notmatch '^[0-9a-f]{64}$' -or $actualHash -ne $expectedHash) {
+            throw "akane_package_wheelhouse_invalid: internal_artifact_hash_mismatch"
+        }
+    }
+}
+
+function Resolve-PackageInstallSource {
     param([string]$Root)
 
-    $capcorePath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore"))
-    $capcorePyproject = Join-Path $capcorePath "pyproject.toml"
-    if (-not (Test-Path -LiteralPath $capcorePyproject -PathType Leaf)) {
-        throw "capcore source checkout was not found at '$capcorePath'. Clone capcore next to AkaneCompanionLab, or install a packaged capcore release and update requirements.txt."
+    $configuredWheelhouse = ([string]$PackageWheelhouse).Trim()
+    if (-not $configuredWheelhouse) {
+        $configuredWheelhouse = ([string]$env:AKANE_PACKAGE_WHEELHOUSE).Trim()
+    }
+    if (-not $configuredWheelhouse) {
+        $configuredWheelhouse = Join-Path $Root "package_wheels"
+    }
+    if (Test-Path -LiteralPath (Join-Path $configuredWheelhouse "akane-package-wheelhouse.json") -PathType Leaf) {
+        Assert-PackageWheelhouse -Root $Root -Wheelhouse $configuredWheelhouse
+        return [pscustomobject]@{ Kind = "wheelhouse"; Value = $configuredWheelhouse }
     }
 
-    $mcpAdapterPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore-adapter-mcp"))
-    $mcpAdapterPyproject = Join-Path $mcpAdapterPath "pyproject.toml"
-    if (-not (Test-Path -LiteralPath $mcpAdapterPyproject -PathType Leaf)) {
-        throw "capcore-adapter-mcp source checkout was not found at '$mcpAdapterPath'. Clone capcore-adapter-mcp next to AkaneCompanionLab, or install a packaged capcore-adapter-mcp release and update requirements.txt."
+    $configuredIndex = ([string]$PackageIndexUrl).Trim()
+    if (-not $configuredIndex) {
+        $configuredIndex = ([string]$env:AKANE_PACKAGE_INDEX_URL).Trim()
     }
-
-    $pythonAdapterPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore-adapter-python"))
-    $pythonAdapterPyproject = Join-Path $pythonAdapterPath "pyproject.toml"
-    if (-not (Test-Path -LiteralPath $pythonAdapterPyproject -PathType Leaf)) {
-        throw "capcore-adapter-python source checkout was not found at '$pythonAdapterPath'. Clone capcore-adapter-python next to AkaneCompanionLab, or install a packaged capcore-adapter-python release and update requirements.txt."
+    if ($configuredIndex) {
+        return [pscustomobject]@{ Kind = "index"; Value = $configuredIndex }
     }
-
-    $speechAdapterPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore-adapter-speech"))
-    $speechAdapterPyproject = Join-Path $speechAdapterPath "pyproject.toml"
-    if (-not (Test-Path -LiteralPath $speechAdapterPyproject -PathType Leaf)) {
-        throw "capcore-adapter-speech source checkout was not found at '$speechAdapterPath'. Clone capcore-adapter-speech next to AkaneCompanionLab, or install a packaged capcore-adapter-speech release and update requirements.txt."
-    }
-
-    $comfyuiAdapterPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore-adapter-comfyui"))
-    $comfyuiAdapterPyproject = Join-Path $comfyuiAdapterPath "pyproject.toml"
-    if (-not (Test-Path -LiteralPath $comfyuiAdapterPyproject -PathType Leaf)) {
-        throw "capcore-adapter-comfyui source checkout was not found at '$comfyuiAdapterPath'. Clone capcore-adapter-comfyui next to AkaneCompanionLab, or install a packaged capcore-adapter-comfyui release and update requirements.txt."
-    }
-
-    $nativeToolsProviderPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore-provider-native-tools"))
-    $nativeToolsProviderPyproject = Join-Path $nativeToolsProviderPath "pyproject.toml"
-    if (-not (Test-Path -LiteralPath $nativeToolsProviderPyproject -PathType Leaf)) {
-        throw "capcore-provider-native-tools source checkout was not found at '$nativeToolsProviderPath'. Clone capcore-provider-native-tools next to AkaneCompanionLab, or install a packaged capcore-provider-native-tools release and update requirements.txt."
-    }
-
-    $openaiProviderPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore-provider-openai"))
-    $openaiProviderPyproject = Join-Path $openaiProviderPath "pyproject.toml"
-    if (-not (Test-Path -LiteralPath $openaiProviderPyproject -PathType Leaf)) {
-        throw "capcore-provider-openai source checkout was not found at '$openaiProviderPath'. Clone capcore-provider-openai next to AkaneCompanionLab, or install a packaged capcore-provider-openai release and update requirements.txt."
-    }
-
-    $anthropicProviderPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\capcore-provider-anthropic"))
-    $anthropicProviderPyproject = Join-Path $anthropicProviderPath "pyproject.toml"
-    if (-not (Test-Path -LiteralPath $anthropicProviderPyproject -PathType Leaf)) {
-        throw "capcore-provider-anthropic source checkout was not found at '$anthropicProviderPath'. Clone capcore-provider-anthropic next to AkaneCompanionLab, or install a packaged capcore-provider-anthropic release and update requirements.txt."
-    }
-
-    $charpackPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\charpack-core"))
-    $charpackPyproject = Join-Path $charpackPath "pyproject.toml"
-    if (-not (Test-Path -LiteralPath $charpackPyproject -PathType Leaf)) {
-        throw "charpack-core source checkout was not found at '$charpackPath'. Clone charpack-core next to AkaneCompanionLab, or install a packaged charpack-core release and update requirements.txt."
-    }
-
-    $promptpackPath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\promptpack-core"))
-    $promptpackPyproject = Join-Path $promptpackPath "pyproject.toml"
-    if (-not (Test-Path -LiteralPath $promptpackPyproject -PathType Leaf)) {
-        throw "promptpack-core source checkout was not found at '$promptpackPath'. Clone promptpack-core next to AkaneCompanionLab, or install a packaged promptpack-core release and update requirements.txt."
-    }
-
-    $memcorePath = [System.IO.Path]::GetFullPath((Join-Path $Root "..\memcore"))
-    $memcorePyproject = Join-Path $memcorePath "pyproject.toml"
-    if (-not (Test-Path -LiteralPath $memcorePyproject -PathType Leaf)) {
-        throw "memcore source checkout was not found at '$memcorePath'. Clone memcore next to AkaneCompanionLab, or install a packaged memcore release and update requirements.txt."
-    }
+    return $null
 }
 
 function Get-FileSha256 {
@@ -197,9 +223,14 @@ function Ensure-PythonEnvironment {
 
     $venvPython = Join-Path $Root ".venv\Scripts\python.exe"
     $requirementsPath = Join-Path $Root "requirements.txt"
+    $packageRequirementsPath = Join-Path $Root "requirements-packages.txt"
+    $runtimeRequirementsPath = Join-Path $Root "requirements-runtime.txt"
     $stampPath = Join-Path $Root ".venv\.akane-requirements.sha256"
-    $requirementsHash = Get-FileSha256 -Path $requirementsPath
-    Assert-CoreSourceDependencies -Root $Root
+    $requirementsHash = @(
+        Get-FileSha256 -Path $requirementsPath
+        Get-FileSha256 -Path $packageRequirementsPath
+        Get-FileSha256 -Path $runtimeRequirementsPath
+    ) -join ":"
 
     if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
         $systemPython = Get-SystemPython
@@ -207,7 +238,10 @@ function Ensure-PythonEnvironment {
             throw "Python 3.11 or newer was not found. Install Python 3.11 from python.org, enable 'Add Python to PATH', then run this launcher again."
         }
         if ($ReadOnly) {
-            if (-not (Test-PythonImports -PythonPath $systemPython.Command -PrefixArgs $systemPython.Args)) {
+            if (
+                -not (Test-PythonImports -PythonPath $systemPython.Command -PrefixArgs $systemPython.Args) -or
+                -not (Test-PackagedCoreDependencies -PythonPath $systemPython.Command -Root $Root -PrefixArgs $systemPython.Args)
+            ) {
                 throw "Python is available, but Akane dependencies are not installed. Run 启动_Akane.bat once without -CheckOnly."
             }
             Write-AkaneStep "OK" ("{0} {1} is available; project .venv has not been created yet." -f $systemPython.Label, $systemPython.Version)
@@ -225,7 +259,10 @@ function Ensure-PythonEnvironment {
     if (Test-Path -LiteralPath $stampPath -PathType Leaf) {
         $installedHash = ([System.IO.File]::ReadAllText($stampPath)).Trim()
     }
-    $importsReady = Test-PythonImports -PythonPath $venvPython
+    $importsReady = (
+        (Test-PythonImports -PythonPath $venvPython) -and
+        (Test-PackagedCoreDependencies -PythonPath $venvPython -Root $Root)
+    )
     $requiresInstall = $ForcePythonInstall -or -not $importsReady -or $installedHash -ne $requirementsHash
 
     if ($ReadOnly) {
@@ -241,13 +278,28 @@ function Ensure-PythonEnvironment {
 
     if ($requiresInstall) {
         Write-AkaneStep "INFO" "Installing Python dependencies. The first run can take several minutes..."
-        & $venvPython -m pip install --disable-pip-version-check --upgrade pip
-        if ($LASTEXITCODE -ne 0) {
-            throw "pip_upgrade_failed"
+        $packageSource = Resolve-PackageInstallSource -Root $Root
+        if ($null -eq $packageSource) {
+            throw "akane_package_artifacts_unavailable: provide a complete package_wheels bundle or set AKANE_PACKAGE_INDEX_URL"
         }
-        & $venvPython -m pip install --disable-pip-version-check -r $requirementsPath
+        if ($packageSource.Kind -eq "wheelhouse") {
+            & $venvPython -m pip install --disable-pip-version-check --force-reinstall --no-deps --no-index --find-links $packageSource.Value -r $packageRequirementsPath
+            if ($LASTEXITCODE -ne 0) {
+                throw "packaged_core_install_failed"
+            }
+            & $venvPython -m pip install --disable-pip-version-check --no-index --find-links $packageSource.Value -r $requirementsPath
+        } else {
+            & $venvPython -m pip install --disable-pip-version-check --force-reinstall --no-deps --index-url $packageSource.Value -r $packageRequirementsPath
+            if ($LASTEXITCODE -ne 0) {
+                throw "packaged_core_install_failed"
+            }
+            & $venvPython -m pip install --disable-pip-version-check --index-url $packageSource.Value -r $requirementsPath
+        }
         if ($LASTEXITCODE -ne 0) {
             throw "python_dependency_install_failed"
+        }
+        if (-not (Test-PackagedCoreDependencies -PythonPath $venvPython -Root $Root)) {
+            throw "packaged_dependency_validation_failed"
         }
         [System.IO.File]::WriteAllText($stampPath, $requirementsHash)
         Write-AkaneStep "OK" "Python dependencies are ready."

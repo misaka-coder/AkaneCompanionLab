@@ -15,7 +15,7 @@ start_akane_petdesk.bat
   -> scripts/start_petdesk_runtime.ps1
   -> Akane backend /pet/health
   -> whitelisted runtimeEnv
-  -> sibling petdesk-runtime pnpm tauri:dev
+  -> explicitly configured petdesk-runtime pnpm tauri:dev
 ```
 
 This document records what was actually observed after that starter landed.

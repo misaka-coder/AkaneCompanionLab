@@ -1,52 +1,5 @@
-fastapi
-# Akane source-alpha uses capcore as an extracted sibling core package.
-# Clone capcore next to this repository:
-#   Akane/
-#     AkaneCompanionLab/
-#     capcore/
-# Future packaged releases can replace this with a normal versioned dependency.
--e ../capcore
-# MCP stdio capability adapter extracted from Akane/capcore integration.
--e ../capcore-adapter-mcp
-# Local Python callable capability adapter extracted from Akane/capcore integration.
--e ../capcore-adapter-python
-# Speech TTS/ASR capability adapter extracted from Akane voice integration.
--e ../capcore-adapter-speech
-# ComfyUI workflow capability adapter extracted from Akane local workflow integration.
--e ../capcore-adapter-comfyui
-# Character pack resource/runtime helpers extracted from Akane desktop pet integration.
--e ../charpack-core
-# Prompt block/profile/assembly primitives extracted from Akane prompt work.
--e ../promptpack-core
-# Shared native tool provider helpers used by OpenAI/Anthropic provider envelopes.
--e ../capcore-provider-native-tools
-# OpenAI native tool provider envelope extracted from Akane/capcore integration.
--e ../capcore-provider-openai
-# Anthropic Messages native tool provider envelope extracted from Akane/capcore integration.
--e ../capcore-provider-anthropic
-# Akane uses memcore as the primary dialogue memory backend.
-# Clone memcore next to this repository as another extracted sibling package.
--e ../memcore
-python-multipart
-uvicorn
-chromadb
-# chromadb pulls in `build` transitively. build 1.3+ raises its packaging
-# floor to >=24.0, which clashes with DeepFilterNet's metadata in
-# requirements-ml.txt. Pin to the last 1.2.x line — still inside chromadb's
-# accepted range — so opting into ML extras does not produce a noisy
-# pip dependency conflict warning on every bootstrap.
-build>=1.0.3,<1.3
-openai
-requests
-PyYAML
-pydantic-settings
-edge-tts
-python-docx
-openpyxl
-pypdf
-reportlab
-Pillow>=10,<13
-tzdata
-yt-dlp
-syncedlyrics
-json-repair
+# Extracted Akane libraries are normal versioned artifacts. The Windows
+# bootstrap installs them from a bundled wheelhouse or configured package
+# index; source checkout paths are forbidden in the runtime contract.
+-r requirements-packages.txt
+-r requirements-runtime.txt

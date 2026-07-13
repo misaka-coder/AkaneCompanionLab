@@ -63,8 +63,8 @@ Failure is acceptable only if structured:
 Temporary Akane backend:
 
 ```powershell
-cd F:\Akane\AkaneCompanionLab
-$env:PYTHONPATH='F:\Akane\capcore;F:\Akane\capcore-adapter-mcp;F:\Akane\capcore-adapter-python;F:\Akane\capcore-adapter-speech;F:\Akane\capcore-adapter-comfyui;F:\Akane\charpack-core;F:\Akane\promptpack-core;F:\Akane\capcore-provider-native-tools;F:\Akane\capcore-provider-openai;F:\Akane\memcore'
+cd <workspace>\AkaneCompanionLab
+$env:PYTHONPATH='<workspace>\capcore;<workspace>\capcore-adapter-mcp;<workspace>\capcore-adapter-python;<workspace>\capcore-adapter-speech;<workspace>\capcore-adapter-comfyui;<workspace>\charpack-core;<workspace>\promptpack-core;<workspace>\capcore-provider-native-tools;<workspace>\capcore-provider-openai;<workspace>\memcore'
 $env:COMPANION_HOST='127.0.0.1'
 $env:COMPANION_PORT='10033'
 .\.venv\Scripts\python.exe launch_akane_memory_v01.py
@@ -73,7 +73,7 @@ $env:COMPANION_PORT='10033'
 Runtime window:
 
 ```powershell
-cd F:\Akane\petdesk-runtime
+cd <workspace>\petdesk-runtime
 $env:VITE_PETDESK_BACKEND_URL='http://127.0.0.1:10033'
 pnpm tauri:dev
 ```
@@ -95,7 +95,7 @@ Attempt 2:
 
 - temporary Akane backend on `127.0.0.1:10033` started successfully;
 - `/pet/health` returned `ok: true`, `status: ready`, and the Akane character-pack manifest;
-- retried `pnpm tauri:dev` with `CARGO_TARGET_DIR=F:\Cache\cargo-target\petdesk-runtime-m34`;
+- retried `pnpm tauri:dev` with `CARGO_TARGET_DIR=<cache-root>\cargo-target\petdesk-runtime-m34`;
 - the previous `windows-sys` failure did not reproduce, but compilation later failed while linking `web_atoms`;
 - observed error: `could not exec the linker rust-lld.exe`, `拒绝访问。 (os error 5)`;
 - direct `rust-lld.exe --version` was executable, so the failure appears to be Cargo/build-time process execution or local security interference rather than a missing binary;

@@ -52,30 +52,11 @@ from companion_v01.capability_adapters import CapabilityDescriptor
 
 但该类型实际由 `capcore` 提供。
 
-## 源码 Alpha 依赖形态
+## 版本化依赖形态
 
-Akane 当前还没有依赖已发布的 `capcore` 包。源码 Alpha 默认使用 sibling checkout：
-
-```text
-Akane/
-  AkaneCompanionLab/
-  capcore/
-```
-
-Akane 的 `requirements.txt` 包含：
-
-```text
--e ../capcore
-```
-
-开发环境可以直接执行：
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-Windows bootstrap 会在安装依赖前检查 `../capcore/pyproject.toml`，缺失时给出结构化错误。
-未来公开包发布后，可把该行替换为普通版本依赖，例如 `capcore>=0.1,<0.2`。
+Akane 从 wheelhouse 或包索引安装 `requirements-packages.txt` 中精确锁定的
+`capcore` 发行版。Windows bootstrap 校验已安装 distribution 的版本与来源，
+拒绝 editable/source-directory 安装；不检查或导入 sibling checkout。
 
 `memcore` 采用相同的“可复用 core”方向，但当前 Akane 后端还未把 `memcore`
 作为运行时依赖强制安装；接入时应优先复用 `memcore.MemorySystem` 公共 API，而不是复制内部实现。

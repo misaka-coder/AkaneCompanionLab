@@ -305,7 +305,7 @@ python scripts/tools/run_native_web_search_acceptance.py --live-llm --smoke --re
 
 ## 11. 参考
 
-**Claude Code 源码**（`F:/Akane/galgame/AkaneBrain/claude_code_annotated`）
+**Claude Code 源码**（`<workspace>/galgame/AkaneBrain/claude_code_annotated`）
 - 调研备忘录：`docs/claude_code_tool_system_research_v1.md`
 - 工具契约：`src/Tool.ts`（`Tool` 接口、`ValidationResult`、`ToolResult`、`buildTool` + `TOOL_DEFAULTS` fail-closed 默认）
 - 执行管线：`src/services/tools/toolExecution.ts`（`runToolUse` → `checkPermissionsAndCallTool`：validate→permission→call→`mapToolResultToToolResultBlockParam`；校验失败 → `<tool_use_error>` 喂回）
