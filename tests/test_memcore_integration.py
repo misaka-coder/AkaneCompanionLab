@@ -1856,6 +1856,48 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["semantic_summary_text"], "")
         self.assertNotIn("LEGACY", repr(captured))
 
+    def test_finance_push_prompt_hides_dynamic_memory_and_visual_context(self) -> None:
+        memcore_manager = _PromptContextMemcoreManager(
+            {
+                "operation": "build_prompt_context",
+                "ok": True,
+                "status": "ok",
+                "raw_text": "SHOULD NOT ENTER FINANCE PUSH",
+                "episodic_text": "SHOULD NOT ENTER FINANCE PUSH",
+                "semantic_text": "SHOULD NOT ENTER FINANCE PUSH",
+            }
+        )
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            response_builder.prepare_context(
+                engine,
+                session_id="qq_group_shared_1",
+                profile_user_id="qq_group_shared_1",
+                user_message="【外部市场事件】本条快讯",
+                recent_raw=[
+                    {"role": "assistant", "content": "历史快讯堆积", "timestamp": 1712390000},
+                    {"role": "user", "content": "【外部市场事件】本条快讯", "timestamp": 1712400000},
+                ],
+                recent_episodic_summaries=[{"diary_summary": "历史摘要", "timestamp": 1712390000}],
+                recent_semantic_summaries=[{"semantic_summary": "长期摘要", "timestamp": 1712390000}],
+                confirmed_snippets=["旧检索片段"],
+                now_ts=1712400000,
+                character_pack_id="char",
+                extra_user_context="【本次财经推送参数】规则等级：notify",
+                prompt_scope="finance_push",
+            )
+
+        captured = engine.prompt_builder.kwargs
+        self.assertEqual(memcore_manager.calls, [])
+        self.assertEqual(captured["raw_text"], "")
+        self.assertEqual(captured["episodic_summary_text"], "")
+        self.assertEqual(captured["semantic_summary_text"], "")
+        self.assertEqual(captured["memory_text"], "")
+        self.assertEqual(captured["persona_reference_context"], "")
+        self.assertIn("金融主动推送不注入", captured["current_visual_context"])
+        self.assertNotIn("历史快讯堆积", repr(captured))
+
     def test_read_memory_timeline_tool_uses_memcore_adapter_in_memcore_mode(self) -> None:
         legacy = _TimelineLegacyService()
         memcore_manager = _TimelineMemcoreManager()

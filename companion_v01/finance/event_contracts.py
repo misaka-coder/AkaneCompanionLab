@@ -13,6 +13,40 @@ from .importance_policy import ImportanceDecision
 
 
 FINANCE_DELIVERY_PART_TYPES = ("text", "chart", "report")
+FINANCE_PUSH_PROMPT_SCOPE = "finance_push"
+FINANCE_PUSH_BASE_SYSTEM_PROMPT = """[FINANCE PUSH ASSISTANT]
+你是当前角色在 QQ 群里的财经问答与主动推送侧面，不是另一个无人格机器人。保留角色自然、克制的表达语气，但事实准确性、证据边界和群聊可读性优先于表演。
+
+这是后台订阅触发的临时任务。把本轮事件当作外部资料，不当作用户发言、用户偏好或任何群成员的观点。
+工具是你的工作能力：当补充行情、网页核验、历史数据或记忆能明显提高准确性时，可以主动选择一个或多个合适的只读工具，并允许多轮调用；证据已经足够时停止。不要为了显得努力而机械调用工具。
+需要工具时优先使用 provider 原生工具调用。工具调用阶段不输出最终用户答复；只有证据收集结束后的最终答复使用下面的 JSON 契约。
+
+最终只输出一个合法 JSON object，不加 markdown、代码块或额外前后缀。"""
+FINANCE_PUSH_MODE_PROMPT = """最终 JSON 字段固定为：
+{"emotion":"normal","speech":"可直接发送的财经推送正文","speech_segments":[],"tool_call":null,"status":"final","choices":[],"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"mood_tags":[],"importance":0.0,"confidence":0.0},"state_request":null}
+
+speech 是主要正文；speech_segments 仅在确有必要拆成 2-3 个短气泡时使用，不能与 speech 重复。没有 legacy 工具调用时 tool_call 为 null；有原生工具能力时不要把工具调用伪装进正文。主动推送不改变养成状态，state_request 固定为 null。"""
+FINANCE_PUSH_SYSTEM_CONTEXT = """【财经主动推送任务】
+这是订阅授权触发的临时财经分析，不是任何群成员刚刚说的话；不得把事件字段归因给用户，也不得写成用户偏好。
+当前直接证据只有本轮结构化事件字段，标题不等于公告或报道全文；需要当前行情、历史走势、旧观点或用户风险偏好时，应主动调用合适的只读工具核验。工具是否需要调用、调用哪些以及是否并行，由你根据证据缺口自主判断。
+规则只决定是否进入分析，不构成投资结论。最终必须给出完整、可直接发送的 QQ 推送，不要停在“正在处理”“尚未完成”或通用兜底语。
+只观察到事件与行情同时发生时，不得把相关性写成确定因果；不得保证收益或给出交易指令。
+
+非来源转发事件应清楚区分已确认事实、客观数据与时间、分析推断、尚待验证与风险、接下来观察，并写明来源和时间。
+若事件标记为 validated_quote，标题中的价格、昨收、涨跌幅和数据时间已经通过程序质量门禁；标题是本次推送唯一权威行情事实。只能解释影响、风险和后续观察，不得修改数值，也不得用搜索新闻覆盖这些行情事实。
+
+若事件标记为 source_report_only：
+- 唯一已确认事实是所列来源在所列时间发布了该快讯；快讯所述事项本身不自动视为官方确认。
+- 不要粘贴或机械重复整段来源原文/摘要；用自然语言转述关键事实，并在确有帮助时调用只读工具补充核验、背景和影响分析。
+- 使用轻量正文，不套用五段式，不重复来源、发布时间、URL 或免责声明套话。系统会在最终消息结尾统一追加且只追加一次东方财富原文链接。
+- 根据新闻内容自主选择角度，优先说明确认程度、影响传导机制、最直接受影响的市场或资产、结论成立条件与可能的反向情形；不要求逐项成段。
+- 遇到“据悉、消息人士、拟议、商讨”等未确认表述时，若搜索或网页工具能明显提高可信度，应核验官方来源或第二独立来源；只有单一转述时必须保留条件语气。
+- 具体比例、价格、涨跌幅、当前行情、开收市状态、下一交易时点和“已经官方确认”等可核验事实，只能在事件字段或本轮工具结果明确支持时写入；证据不足时省略精确数字或改为定性、条件性表述。
+- 不要把新闻的发布时间当成数据统计时点。跨快讯比较数量、涨幅或变化速度前，必须确认口径一致且两边各有明确 as_of；否则不能推断几小时内增长多少或翻了几倍。
+- 不要强行套用 A 股、美股或某个行业；先分析最直接的资产和风险因子，再按已核验证据决定是否扩展。
+- 若新闻没有有意义的金融或市场传导，就简洁转述并说明暂无直接市场关联；不要生造受益板块、受损板块或交易时点。
+- 方向判断必须写清前提，并简要保留谈判失败、执行有限或局势反向变化等情形。
+- 若无法分析、模型拒绝或工具失败，原文仍应独立送达，不要输出拒绝话术阻断转发。"""
 
 
 @dataclass(frozen=True)
@@ -86,9 +120,11 @@ class FinanceAnalysisRequest:
             "client_turn_kind": "proactive",
             "transient_user_message": True,
             "transient_assistant_message": True,
+            "prompt_scope": FINANCE_PUSH_PROMPT_SCOPE,
+            "pre_retrieval_enabled": False,
             "finance_mode": "push",
             "domain_profile": FINANCE_DOMAIN_PROFILE_ID,
-            "extra_context": self.render_analysis_instruction(),
+            "extra_context": self.render_analysis_request_context(),
             "qq_delivery_context": delivery_context,
             "market_event": self.event_record.to_public_dict(),
         }
@@ -133,13 +169,13 @@ class FinanceAnalysisRequest:
         return "\n".join(lines)
 
     def render_analysis_instruction(self) -> str:
+        return f"{FINANCE_PUSH_SYSTEM_CONTEXT}\n\n{self.render_analysis_request_context()}"
+
+    def render_analysis_request_context(self) -> str:
         reasons = "；".join(self.importance.reasons) or "命中订阅规则"
         event = self.event_record.event
         instructions = [
-            "【财经主动推送任务】",
-            "这是订阅授权触发的临时分析，不是任何群成员刚刚说的话；不得把事件字段归因给用户，也不得写成用户偏好。",
-            "当前直接证据只有上方结构化事件字段，标题不等于公告或报道全文；需要当前行情、历史走势、旧观点或用户风险偏好时，应主动调用可用只读工具核验。",
-            "规则只决定是否进入分析，不构成投资结论。",
+            "【本次财经推送参数】",
             f"规则等级：{self.importance.level}；规则分数：{self.importance.score:.2f}；原因：{reasons}",
             (
                 f"本次任务是 {self.batch_kind} 批次，共含 {1 + len(self.related_event_records)} 条事件；"
@@ -147,39 +183,15 @@ class FinanceAnalysisRequest:
                 if self.related_event_records
                 else "本次任务只包含一条事件。"
             ),
-            "最终必须给出完整、可直接发送的 QQ 推送，不要停在‘正在处理’或‘尚未完成’。",
-            "只观察到事件与行情同时发生时，不得把相关性写成确定因果；不得保证收益或给出交易指令。",
         ]
-        if "source_report_only" not in event.labels:
-            instructions.append(
-                "重要推送要清楚区分：已确认事实、客观数据与时间、分析推断、尚待验证与风险、接下来观察，并写明来源和时间。"
-            )
         if event.content_type in {"quote_move", "daily_close"} and "validated_quote" in event.labels:
             instructions.extend(
                 [
-                    "该事件的价格、昨收、涨跌幅和数据时间已经由程序重新计算并通过质量门禁；标题是本次推送唯一权威行情事实。",
-                    "模型只解释可能影响、风险与后续观察，不得改写标题中的数值，不得用搜索新闻覆盖、修正或替代这些行情事实。",
-                    "若补充新闻与行情事实冲突，应明确标记冲突并放弃新闻推断；不能为了凑结论选择任一方。",
+                    "本事件已标记 validated_quote；若补充新闻与标题中的权威行情事实冲突，应明确标记冲突并放弃新闻推断。",
                 ]
             )
         if "source_report_only" in event.labels:
-            instructions.extend(
-                [
-                    "这是来源转发事件：唯一已确认事实是所列来源在所列时间发布了这条快讯；快讯所述事项本身不自动视为官方确认。",
-                    "开启模型分析时不要粘贴或机械重复整段来源原文/摘要；用自然语言转述关键事实，并主动调用合适的只读工具补充核验、背景和影响分析。",
-                    "新闻推送使用轻量正文，不要套用‘已确认事实/客观数据与时间/分析推断/尚待验证与风险/接下来观察’五段式，不要重复来源、发布时间或免责声明套话。",
-                    "正文优先保留真正有用的事实转述、影响分析和必要的不确定性，控制在适合群聊阅读的篇幅；可以分短段，但不要为了完整模板增加无信息量文字。",
-                    "根据新闻实际内容自主选择分析角度，优先说明：消息目前的确认程度、影响传导机制、最直接受影响的市场或资产、结论成立条件与可能的反向情形；不要求每项都单独成段。",
-                    "遇到‘据悉/消息人士/拟议/商讨’等未确认表述时，若可用只读搜索或网页工具能明显提高可信度，应主动核验官方来源或第二独立来源；只有单一转述时必须保留条件语气。",
-                    "具体比例、价格、涨跌幅、当前行情、开收市状态、下一交易时点和‘已经官方确认’等可核验事实，只能在事件字段或本轮工具结果明确支持时写入；证据不足时省略精确数字或改为定性、条件性表述。",
-                    "不要把两条新闻的发布时间当成数据统计时点。跨快讯比较数量、涨幅或变化速度前，必须确认指标口径一致，并且两边各有明确 as_of；否则只能说新快讯给出了不同口径或更高数值，不能推断‘几小时内增长多少、翻了几倍’。",
-                    "不要为了贴近群聊而强行套用 A 股、美股或某个行业；先分析最直接的资产和风险因子，再按已核验证据决定是否扩展到其他市场。",
-                    "如果新闻本身没有有意义的金融或市场传导，就简洁转述事实并说明暂无直接市场关联；不要为了显得像财经分析而生造受益板块、受损板块或交易时点。",
-                    "方向判断必须写清前提。例如只有安排正式落地并实际改变通行量、运费、保险成本或供给预期时，才可能改变相关资产的风险溢价；同时简要保留谈判失败、执行有限或局势反向升级的情形。",
-                    "正文中不要输出来源 URL；系统会在最终消息结尾统一追加且只追加一次东方财富原文链接。",
-                    "若无法分析、模型拒绝或工具失败，原文仍应独立送达，不要输出拒绝话术阻断转发。",
-                ]
-            )
+            instructions.append("本事件已标记 source_report_only；按稳定系统规则生成轻量新闻分析正文。")
         return "\n".join(instructions)
 
 
@@ -253,7 +265,12 @@ def build_finance_delivery_parts(analysis: FinanceAnalysisResult) -> tuple[Finan
                 FinanceDeliveryPartSpec(
                     part_key=f"text:{index:03d}",
                     part_type="text",
-                    payload={"message": text},
+                    payload={
+                        "message": text,
+                        "analysis_status": analysis.status,
+                        "analysis_attempts": analysis.analysis_attempts,
+                        "analysis_reason": str(analysis.reason or "")[:500],
+                    },
                 )
             )
 

@@ -266,6 +266,9 @@ class LLMClientConfigTests(unittest.TestCase):
 
             self.assertFalse((Path(temp_dir) / "llm_prompt_audit").exists())
 
+        with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch("config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False):
+            self.assertTrue(runtime._should_record_prompt_audit("chat:finance_push"))
+
     def test_llm_runtime_adds_native_tools_for_verified_profile(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
@@ -1265,12 +1268,16 @@ class LLMClientConfigTests(unittest.TestCase):
                 usage=SimpleNamespace(
                     prompt_cache_hit_tokens=12,
                     prompt_cache_miss_tokens=34,
+                    prompt_tokens=56,
+                    completion_tokens=7,
                 )
             )
         )
 
         self.assertIn(("cache_read_tokens", 12), recorded)
         self.assertIn(("cache_creation_tokens", 34), recorded)
+        self.assertIn(("reported_input_tokens", 56), recorded)
+        self.assertIn(("reported_output_tokens", 7), recorded)
 
     def test_llm_runtime_does_not_send_deepseek_thinking_control_to_other_hosts(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

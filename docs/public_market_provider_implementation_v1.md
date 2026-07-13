@@ -991,6 +991,25 @@ QQ_FINANCE_PUSH_ENABLED=true
 - 当前配置的 LLM 审核对只涉及特朗普的样本返回 allow，对涉及中共中央政治局的样本返回 block；
 - 两个全局推送开关继续保持 false，尚未向真实群发送上述 smoke 数据。
 
+### 21.5 2026-07-13 金融推送 prompt/cache 专项修复
+
+真实运行中发现，新闻分析虽然标记为 transient turn，但仍通过普通聊天完整 prompt 构建器读取同一 QQ 群的 memcore 可见层。连续主动推送会把历史快讯再次注入下一条推送，单次 prompt 最终增长到约 13.5 万 tokens；当 JSON/上游失败时，内外两层重试还会重复提交该大 prompt，最后才回退原文。
+
+现改为独立 `finance_push` prompt scope：
+
+- `FinanceAnalysisRequest.to_turn_payload()` 固定携带 `prompt_scope=finance_push` 和 `pre_retrieval_enabled=false`；
+- 稳定财经规则进入可缓存 system extra，单条事件与本次 importance 参数留在动态尾部；
+- 主动推送不注入普通聊天 raw/summary/semantic、桌宠养成、关系、视觉、礼物、附件、生成文件和任务工作区；
+- 不删除历史记忆；需要旧观点、风险偏好或时间线时，模型仍可自主调用只读记忆工具；
+- 保留 finance domain 原生工具选择与并行调用，不新增按关键词硬路由；
+- finance push 内层 JSON 修复只运行一次，外层证据校验与重试最多三次；
+- 模型尝试耗尽仍按既有产品约定发送原文，但 delivery part 会保存脱敏的分析状态、尝试次数和原因，便于定位；
+- 专用 prompt audit key 为 `chat:finance_push`。运行指标新增 provider 上报的 input/output token 累计值，可与 cache read/create 一起核算真实成本。
+
+离线最终构建验收：主 system 约 1292 tokens，稳定财经/domain system extra 约 2497 tokens，动态 user 约 541 tokens；raw、summary、semantic 和 retrieval 均未进入 prompt。finance push 在原生 tools 可用时不再重复渲染 legacy 工具说明。该改动只改变金融主动推送的提示词投影，不改变普通 QQ 金融问答和陪伴聊天的记忆可见性。
+
+真实 PinAI 验证：连续四次 finance push 的 main system 与 system extra hash 完全一致，均在 5 分钟内，但 provider usage 仍为 cache creation、`cache_read=0`。因此 Akane 侧不再继续扩大 TTL 或填充 prompt；后续若要改善代理缓存，需要确认 PinAI 是否能为同一 key 提供稳定 upstream account/workspace 路由。
+
 ## 22. 上下文恢复后的精确下一步
 
 若接手者看到本文，F7d0-F7d4、名称解析 bootstrap、三次瞬时网络重试、免费行情质量门禁和东方财富 7×24 新闻源已经完成。下一步做显式本地验收，不要直接打开生产推送：

@@ -433,6 +433,8 @@ class LLMRuntime:
             "errors": 0,
             "cache_read_tokens": 0,
             "cache_creation_tokens": 0,
+            "reported_input_tokens": 0,
+            "reported_output_tokens": 0,
             "chat_json_fallbacks": 0,
             "native_tool_decision_sent": 0,
             "native_tool_provider_unsupported": 0,
@@ -1217,7 +1219,7 @@ class LLMRuntime:
         if not bool(getattr(config, "LLM_PROMPT_AUDIT_ENABLED", False)):
             return False
         key = str(prompt_cache_key or "").strip()
-        if key == "chat:final":
+        if key in {"chat:final", "chat:finance_push"}:
             return True
         return bool(getattr(config, "LLM_PROMPT_AUDIT_INCLUDE_AUX", False))
 
@@ -1323,6 +1325,16 @@ class LLMRuntime:
                 self._record_metric("cache_read_tokens", read)
             if creation:
                 self._record_metric("cache_creation_tokens", creation)
+            reported_input = self._usage_int(usage, "prompt_tokens")
+            if not reported_input:
+                reported_input = self._usage_int(usage, "input_tokens")
+            reported_output = self._usage_int(usage, "completion_tokens")
+            if not reported_output:
+                reported_output = self._usage_int(usage, "output_tokens")
+            if reported_input:
+                self._record_metric("reported_input_tokens", reported_input)
+            if reported_output:
+                self._record_metric("reported_output_tokens", reported_output)
         except Exception:
             pass
 

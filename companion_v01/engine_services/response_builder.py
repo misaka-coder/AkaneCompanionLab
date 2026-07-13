@@ -9,6 +9,12 @@ from typing import Any
 from ..client_protocol import ClientCapability, ClientMode, ClientProtocolContext
 import config as mod_config
 from ..domain_profiles import DomainProfileRegistry, build_domain_profile_prompt
+from ..finance.event_contracts import (
+    FINANCE_PUSH_BASE_SYSTEM_PROMPT,
+    FINANCE_PUSH_MODE_PROMPT,
+    FINANCE_PUSH_PROMPT_SCOPE,
+    FINANCE_PUSH_SYSTEM_CONTEXT,
+)
 from ..memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from ..prompt_profiles import PromptModule
 from ..resource_manifest import ResourceManifest
@@ -79,13 +85,19 @@ def prepare_context(
     chat_model_override: str = "",
     post_user_turns: list[dict[str, Any]] | None = None,
     domain_profile_id: str = "",
+    prompt_scope: str = "",
 ) -> dict[str, Any]:
     client_context = client_context or engine._resolve_client_protocol_context({})
+    finance_push_prompt = str(prompt_scope or "").strip().lower() == FINANCE_PUSH_PROMPT_SCOPE
     prompt_profile = engine._get_prompt_profile_registry().resolve(client_context)
     domain_profile = DomainProfileRegistry().get(
         domain_profile_id if prompt_profile.includes(PromptModule.DOMAIN_PROFILE) else ""
     )
     domain_profile_context = build_domain_profile_prompt(domain_profile)
+    if finance_push_prompt:
+        domain_profile_context = "\n\n".join(
+            part for part in (domain_profile_context, FINANCE_PUSH_SYSTEM_CONTEXT) if str(part or "").strip()
+        )
     effective_allow_tool_call = bool(
         allow_tool_call
         and prompt_profile.includes(PromptModule.TOOLS)
@@ -98,7 +110,7 @@ def prepare_context(
     if client_context.effective_mode != ClientMode.QQ_TEXT:
         resource_manifest = resource_manifest or engine.resource_manifest
     manifest = resource_manifest.refresh() if resource_manifest else None
-    runtime_projection = engine._get_user_runtime_projection(profile_user_id)
+    runtime_projection = {} if finance_push_prompt else engine._get_user_runtime_projection(profile_user_id)
     user_bgm_tracks = list(runtime_projection.get("extra_bgm_tracks") or [])
     user_scene_groups = list(runtime_projection.get("extra_scene_groups") or [])
     user_character_outfits = list(runtime_projection.get("extra_character_outfits") or [])
@@ -112,15 +124,23 @@ def prepare_context(
     current_message_text = engine._render_current_message_line(
         current_user_record=current_record,
     )
-    memcore_prompt_context = _build_memcore_prompt_context(
-        engine,
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        character_pack_id=character_pack_id,
-        current_user_record=current_record,
-        now_ts=now_ts,
+    memcore_prompt_context = (
+        None
+        if finance_push_prompt
+        else _build_memcore_prompt_context(
+            engine,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            current_user_record=current_record,
+            now_ts=now_ts,
+        )
     )
-    if memcore_prompt_context is not None:
+    if finance_push_prompt:
+        raw_text = ""
+        episodic_summary_text = ""
+        semantic_summary_text = ""
+    elif memcore_prompt_context is not None:
         raw_text = str(memcore_prompt_context.get("raw_text") or "")
         episodic_summary_text = str(memcore_prompt_context.get("episodic_text") or "")
         semantic_summary_text = str(memcore_prompt_context.get("semantic_text") or "")
@@ -134,7 +154,7 @@ def prepare_context(
             recent_semantic_summaries,
             store=engine.store,
         )
-    memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
+    memory_text = "" if finance_push_prompt else ("\n\n".join(confirmed_snippets) if confirmed_snippets else "")
     extra_context = str(extra_user_context or "").strip()
     attachment_service = engine._get_attachment_inbox_service()
     attachment_focus_context = (
@@ -144,6 +164,7 @@ def prepare_context(
         )
         if (
             attachment_service is not None
+            and not finance_push_prompt
             and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
             and client_context.effective_mode in {ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET}
         )
@@ -159,6 +180,7 @@ def prepare_context(
         )
         if (
             generated_file_service is not None
+            and not finance_push_prompt
             and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
             and client_context.effective_mode in {ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET}
             and include_generated_file_context
@@ -173,6 +195,7 @@ def prepare_context(
         )
         if (
             workspace_file_service is not None
+            and not finance_push_prompt
             and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
             and client_context.effective_mode == ClientMode.DESKTOP_PET
         )
@@ -185,7 +208,11 @@ def prepare_context(
             session_id=session_id,
             now_ts=now_ts,
         )
-        if (task_workspace_service is not None and prompt_profile.includes(PromptModule.EXTRA_CONTEXT))
+        if (
+            task_workspace_service is not None
+            and not finance_push_prompt
+            and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
+        )
         else ""
     )
     pending_gift_context = (
@@ -194,12 +221,16 @@ def prepare_context(
             session_id=session_id,
             limit=3,
         )
-        if prompt_profile.includes(PromptModule.PENDING_GIFTS)
+        if not finance_push_prompt and prompt_profile.includes(PromptModule.PENDING_GIFTS)
         else ""
     )
-    current_visual_context_payload = engine._resolve_current_visual_payload(
-        session_id=session_id,
-        current_visual_payload=current_visual_payload,
+    current_visual_context_payload = (
+        None
+        if finance_push_prompt
+        else engine._resolve_current_visual_payload(
+            session_id=session_id,
+            current_visual_payload=current_visual_payload,
+        )
     )
     current_character = (
         current_visual_context_payload.get("character")
@@ -216,6 +247,7 @@ def prepare_context(
             extra_character_outfits=user_character_outfits,
         )
         if engine.vision_service is not None
+        and not finance_push_prompt
         and prompt_profile.includes(PromptModule.SCENE_OBSERVATION)
         and not desktop_pet_character_only
         else ""
@@ -228,6 +260,7 @@ def prepare_context(
             extra_character_outfits=user_character_outfits,
         )
         if engine.vision_service is not None
+        and not finance_push_prompt
         and prompt_profile.includes(PromptModule.OUTFIT_OBSERVATION)
         and not desktop_pet_character_only
         else ""
@@ -238,7 +271,7 @@ def prepare_context(
             session_id=session_id,
             asset_id="",
         )
-        if prompt_profile.includes(PromptModule.FOCUSED_GIFT_OBSERVATION)
+        if not finance_push_prompt and prompt_profile.includes(PromptModule.FOCUSED_GIFT_OBSERVATION)
         else None
     )
     gift_observation_context = (
@@ -267,7 +300,7 @@ def prepare_context(
         if character_pack_persona_enabled and prompt_profile.includes(PromptModule.PERSONA)
         else {"system_context": "", "reference_context": "", "active_id": ""}
     )
-    if character_pack_persona_enabled and character_pack_id:
+    if character_pack_persona_enabled and character_pack_id and not finance_push_prompt:
         context_library_service = getattr(
             getattr(engine, "desktop_pet_character_resources", None),
             "context_libraries",
@@ -294,6 +327,9 @@ def prepare_context(
         character_pack_persona_context,
         persona_context,
     )
+    if finance_push_prompt:
+        persona_context = dict(persona_context)
+        persona_context["reference_context"] = ""
     visual_observation_sections = [
         text
         for text in [
@@ -302,37 +338,54 @@ def prepare_context(
         ]
         if text
     ]
-    extra_context_candidates = [
-        (
-            "client_mode",
-            engine._build_client_mode_prompt_context(client_context)
-            if prompt_profile.includes(PromptModule.CLIENT_MODE)
-            else "",
-        ),
-        (
-            "relationship",
-            engine._build_memory_relationship_context(
-                profile_user_id=profile_user_id,
-                character_pack_id=character_pack_id,
-                now_ts=now_ts,
+    if finance_push_prompt:
+        extra_context_candidates = [
+            (
+                "turn_extra_context",
+                extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",
+            )
+        ]
+    else:
+        extra_context_candidates = [
+            (
+                "client_mode",
+                engine._build_client_mode_prompt_context(client_context)
+                if prompt_profile.includes(PromptModule.CLIENT_MODE)
+                else "",
             ),
-        ),
-        ("task_workspace", task_workspace_context),
-        ("workspace_files", workspace_file_context),
-        ("attachment_focus", attachment_focus_context),
-        ("generated_files", generated_file_context),
-        ("pending_gifts", pending_gift_context),
-        ("gift_observation", gift_observation_context),
-        (
-            "turn_extra_context",
-            extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",
-        ),
-    ]
+            (
+                "relationship",
+                engine._build_memory_relationship_context(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    now_ts=now_ts,
+                ),
+            ),
+            ("task_workspace", task_workspace_context),
+            ("workspace_files", workspace_file_context),
+            ("attachment_focus", attachment_focus_context),
+            ("generated_files", generated_file_context),
+            ("pending_gifts", pending_gift_context),
+            ("gift_observation", gift_observation_context),
+            (
+                "turn_extra_context",
+                extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",
+            ),
+        ]
     extra_context_audit_sections = engine._build_extra_context_audit_sections(extra_context_candidates)
     extra_context_sections = [section["text"] for section in extra_context_audit_sections]
     merged_extra_context = "\n\n".join(extra_context_sections) if extra_context_sections else "(无额外上下文)"
     visual_defaults = (
-        resource_manifest.build_runtime_manifest(
+        {
+            "major": "default",
+            "minor": "default",
+            "background": "evening_classroom",
+            "bgm": "",
+            "outfit": "default",
+            "emotion": "normal",
+        }
+        if finance_push_prompt
+        else resource_manifest.build_runtime_manifest(
             extra_bgm_tracks=user_bgm_tracks,
             extra_scene_groups=user_scene_groups,
             extra_character_outfits=user_character_outfits,
@@ -347,7 +400,7 @@ def prepare_context(
             "emotion": "normal",
         }
     )
-    if resource_manifest and current_visual_context_payload:
+    if not finance_push_prompt and resource_manifest and current_visual_context_payload:
         try:
             current_visual_defaults = resource_manifest.normalize_visual_output(
                 json.loads(json.dumps(current_visual_context_payload)),
@@ -380,7 +433,9 @@ def prepare_context(
                 visual_defaults["emotion"] = str(current_visual_defaults.get("emotion") or visual_defaults["emotion"])
         except Exception as exc:
             logger.warning("current visual defaults failed: %s", exc)
-    if client_context.effective_mode == ClientMode.QQ_TEXT:
+    if finance_push_prompt:
+        resource_context = ""
+    elif client_context.effective_mode == ClientMode.QQ_TEXT:
         resource_context = (
             "QQ 端不渲染立绘；emotion 的可选值已由当前角色包表情图片清单约束。"
             if resource_manifest
@@ -404,7 +459,9 @@ def prepare_context(
             else "当前没有额外的视觉资源。"
         )
     current_visual_context = (
-        engine._build_current_visual_context(
+        "(金融主动推送不注入桌宠演出、养成、礼物或当前桌面状态。)"
+        if finance_push_prompt
+        else engine._build_current_visual_context(
             profile_user_id=profile_user_id,
             session_id=session_id,
             current_visual_payload=current_visual_payload,
@@ -416,9 +473,11 @@ def prepare_context(
         if prompt_profile.includes(PromptModule.CURRENT_VISUAL_STATE)
         else "(当前客户端模式不需要完整演出状态。)"
     )
-    if visual_observation_sections:
+    if visual_observation_sections and not finance_push_prompt:
         current_visual_context = "\n\n".join([current_visual_context, *visual_observation_sections])
     mode_prompt_override = prompt_profile.mode_prompt_override(debug_enabled=debug_enabled)
+    if finance_push_prompt:
+        mode_prompt_override = FINANCE_PUSH_MODE_PROMPT
     if resource_manifest and client_context.effective_mode in {
         ClientMode.DESKTOP_PET,
         ClientMode.QQ_TEXT,
@@ -464,6 +523,19 @@ def prepare_context(
             native_legacy_exclusions = native_plan.legacy_prompt_exclusions
         elif native_plan.status == "unsupported":
             engine.llm.record_metric("native_tool_provider_unsupported")
+    tool_prompt_context = (
+        "本轮具体工具已通过 provider 原生 tools schema 提供；按稳定财经规则自主选择，"
+        "不需要在正文里复述工具清单或伪造调用结果。"
+        if finance_push_prompt and native_tools
+        else engine._build_tool_prompt_context(
+            allow_tool_call=effective_allow_tool_call,
+            client_context=client_context,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            exclude_tool_types=native_legacy_exclusions,
+            domain_profile_id=domain_profile.id,
+        )
+    )
     generation_context = engine._get_prompt_builder().build_final_generation_context(
         now_ts=now_ts,
         raw_text=raw_text,
@@ -481,16 +553,11 @@ def prepare_context(
         domain_profile_context=domain_profile_context,
         visual_defaults=visual_defaults,
         allow_tool_call=effective_allow_tool_call,
-        tool_prompt_context=engine._build_tool_prompt_context(
-            allow_tool_call=effective_allow_tool_call,
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            exclude_tool_types=native_legacy_exclusions,
-            domain_profile_id=domain_profile.id,
-        ),
+        tool_prompt_context=tool_prompt_context,
         debug_enabled=debug_enabled,
-        system_prompt_override=prompt_profile.system_prompt_override,
+        system_prompt_override=(
+            FINANCE_PUSH_BASE_SYSTEM_PROMPT if finance_push_prompt else prompt_profile.system_prompt_override
+        ),
         mode_prompt_override=mode_prompt_override,
     )
     if desktop_pet_character_only and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):

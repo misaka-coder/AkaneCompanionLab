@@ -204,3 +204,37 @@ Akane 结构上支持“较高命中率”：现在已有 cache usage observabil
 原始对话、摘要和长期语义窗口可以调，但必须先 audit。扩大 raw 窗口可能降低压缩频率，也可能在稳定历史前缀里提高缓存；扩大 summary / semantic 常驻注入则更容易带来 attention 和 churn 成本。因为 Akane 是无缺口记忆，任何窗口调整都要明确边界：raw recent messages、episodic summaries、long-term semantic memory 各自覆盖不同范围或不同用途。
 
 下一步最稳的工程动作不是继续大改 prompt，而是做一个小型 benchmark / audit pass：看清楚哪些 section 稳定、哪些 section 每轮变化、每个 section 对 cache miss 贡献多少。
+
+## 2026-07-13 金融主动推送专项修复
+
+官方依据：Anthropic Prompt Caching 文档
+`https://platform.claude.com/docs/en/build-with-claude/prompt-caching`。
+
+本轮按官方规则重新审计后确认：缓存按 `tools -> system -> messages` 的完整前缀工作；断点之前任一 block 变化都会生成不同 hash。默认 `ephemeral` TTL 为 5 分钟，频率高于 5 分钟的调用应继续使用 5 分钟缓存；1 小时 TTL 的 cache write 价格更高，不适合在没有账单 A/B 证据时盲目开启。Claude Sonnet 5 的最小可缓存前缀为 1024 tokens；显式断点最多 4 个，前缀回看窗口为 20 blocks。
+
+修复前的真实运行审计暴露了专项问题：
+
+- 最近金融推送单次估算达到约 134675 input tokens；
+- 其中 raw timeline 约 108388 tokens，summary/semantic 约 11468 tokens，角色参考约 2620 tokens；
+- 金融推送复用了普通聊天完整 `engine.process_turn` prompt，把不断累积的历史快讯、普通聊天记忆、养成状态和角色参考全部放进动态 user 尾部；
+- 进程累计 `cache_creation_tokens=32903584`、`cache_read_tokens=2883326`，cache read 约占两者之和 8%；
+- 内层最终 JSON 修复最多 3 次，外层财经分析又最多 3 次，失败时可能形成 3×3 重复大请求；
+- 外层尝试耗尽后按产品要求回退原文，因此群里会突然从分析变回原文转发。
+
+专项修复采用独立 `prompt_scope=finance_push`：
+
+- 财经分析纪律进入稳定 system extra block，由 Anthropic 显式 `cache_control` 覆盖；
+- 当前新闻、规则分数、当前时间和工具结果留在动态 user 尾部；
+- 金融推送不自动注入普通聊天 raw timeline、阶段摘要、长期语义摘要、retrieval snippets、养成/关系、礼物、附件、工作台、当前视觉和自动角色参考；
+- 短角色 system identity 保留，模型仍是当前 Akane，而不是无人格的独立机器人；
+- 记忆没有删除，模型在确需旧观点或风险偏好时仍可自主调用记忆工具；
+- 财经域 15 个原生工具仍由模型自主选择和并行，不增加死板硬路由；
+- 内层最终回复修复在 finance push scope 固定为 1 次，外层财经证据门禁仍保留最多 3 次，因此最多 3 次模型分析，不再 3×3 放大；
+- prompt audit 使用独立 key `chat:finance_push`，并继续只记录长度/hash，不记录新闻原文、密钥或本地路径；
+- delivery part 保存 `analysis_status / analysis_attempts / analysis_reason`，以后能直接区分主动关闭、JSON fallback、证据门禁失败和正常分析，不再只看到最终原文而不知道原因。
+
+随后针对 PinAI 实测持续 `cache_read=0` 的现实增加第二层保护：finance push 使用专用最小 system/output contract，并在原生 tools 已提供时不再重复渲染 legacy 工具说明。离线最终构建结果为：主 system 约 1292 tokens，稳定 finance/domain system extra 约 2497 tokens，动态 user 约 541 tokens；raw/memory/retrieval 均为空，历史测试文本未进入 prompt。相对修复前约 13.5 万 tokens 的请求，文本 prompt 体积下降约 96.8%。原生 tools schema 仍会额外占用 input，但它们位于 system 断点之前；即使代理不复用缓存，单次 miss 的绝对体积也已显著降低。
+
+真实 PinAI 验证中，连续四次 `chat:finance_push` 的 main system hash 与 system extra hash 完全一致，间隔均在默认 5 分钟 TTL 内，但仍返回 `cache_read_tokens=0`。这说明当前请求结构已经满足官方一致前缀条件，剩余低命中更可能来自代理在不同上游账号、组织或 workspace 间调度；Anthropic 官方缓存本身按组织/workspace 隔离。当前不把 1 小时 TTL 当作修复，因为它不能跨隔离域复用，反而会提高 cache write 成本。
+
+当前不启用 1 小时 TTL，也不通过填充无用文本追求缓存数字。后续验收看四个指标：`reported_input_tokens`、`reported_output_tokens`、`cache_read_tokens`、`cache_creation_tokens`，同时检查分析质量、工具自主性和原文降级率。若要继续提高 PinAI 命中，应向代理提供方确认是否支持同一 API key 的 upstream account/workspace sticky routing，而不是继续改 Akane prompt。
