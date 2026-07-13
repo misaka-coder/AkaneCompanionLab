@@ -64,6 +64,49 @@ class FakeQQGateway:
 
 
 class QQVoiceDeliveryTests(unittest.TestCase):
+    def test_native_tool_preface_is_sent_but_system_working_status_is_not(self) -> None:
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "speech_segment", "text": "我先看看这张图。"}
+                yield {
+                    "type": "assistant_stage_decision",
+                    "has_tool_call": True,
+                    "tool_type": "image_understanding",
+                }
+                yield {"type": "assistant_working", "message": "系统正在处理图片。"}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "看好了，画面里是一只猫。",
+                        "speech_segments": ["看好了，画面里是一只猫。"],
+                        "tool_events": [],
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_1",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "看看这张图"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(gateway.text_sends, [["我先看看这张图。"], ["看好了，画面里是一只猫。"]])
+        self.assertNotIn("系统正在处理图片。", repr(gateway.text_sends))
+
     def test_streamed_segments_are_not_resent_as_one_final_bubble(self) -> None:
         streamed = [
             "第一段已经发出",
@@ -196,17 +239,22 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual(result["send_result"]["delivery"]["voice_reason"], "auto_voice_text_too_long")
         self.assertFalse(result["send_result"]["delivery"]["voice_enabled"])
 
-    def test_blocked_file_delivery_sends_truthful_feedback(self) -> None:
-        class BlockedGateway(FakeQQGateway):
+    def test_failed_file_delivery_sends_truthful_feedback(self) -> None:
+        class FailedGateway(FakeQQGateway):
+            def __init__(self) -> None:
+                super().__init__()
+                self.delivery_notes: list[str] = []
+
             def send_generated_files(self, context, tool_events):
                 return {
                     "ok": False,
-                    "status": "blocked",
-                    "count": 0,
-                    "blocked_count": 1,
-                    "reason": "missing_file_delivery_intent",
-                    "results": [],
+                    "status": "failed",
+                    "count": 1,
+                    "results": [{"ok": False, "reason": "onebot_upload_failed"}],
                 }
+
+            def add_delivery_note(self, session_id: str, note: str) -> None:
+                self.delivery_notes.append(note)
 
         class FakeEngine:
             def process_turn_stream(self, payload: dict):
@@ -220,7 +268,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                     },
                 }
 
-        gateway = BlockedGateway()
+        gateway = FailedGateway()
         result = _process_qq_turn_streaming(
             engine=FakeEngine(),
             qq_gateway=gateway,
@@ -240,8 +288,9 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(result["file_delivery_feedback_result"]["status"], "blocked_notice_sent")
-        self.assertTrue(any("文件这次没有发出" in message for batch in gateway.text_sends for message in batch))
+        self.assertEqual(result["file_delivery_feedback_result"]["status"], "failure_notice_sent")
+        self.assertTrue(any("文件这次发送失败" in message for batch in gateway.text_sends for message in batch))
+        self.assertTrue(any("文件发送失败" in note for note in gateway.delivery_notes))
 
 
 if __name__ == "__main__":

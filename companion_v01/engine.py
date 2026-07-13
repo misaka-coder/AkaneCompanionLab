@@ -2399,6 +2399,7 @@ class AkaneMemoryEngine:
                 actor_display_name=actor_display_name,
             )
 
+        prompt_exclude_source_ids: list[str] = []
         final_output = self._build_final_response(
             session_id=session_id,
             profile_user_id=profile_user_id,
@@ -2416,6 +2417,7 @@ class AkaneMemoryEngine:
             user_images=turn_user_images,
             final_debug_enabled=final_debug_enabled,
             chat_model_override=chat_model_override,
+            prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=turn_domain_profile_id,
             prompt_scope=prompt_scope,
         )
@@ -2479,6 +2481,7 @@ class AkaneMemoryEngine:
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
                     post_user_turns=native_tool_history_turns,
+                    prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
                 )
@@ -2531,12 +2534,13 @@ class AkaneMemoryEngine:
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
                     post_user_turns=native_tool_history_turns,
+                    prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
                 )
                 break
 
-            self._record_assistant_preface_for_tool_call(
+            preface_source_id = self._record_assistant_preface_for_tool_call(
                 tool_call=executable_calls[0],
                 final_output=final_output,
                 preface_turns=preface_turns,
@@ -2548,6 +2552,12 @@ class AkaneMemoryEngine:
                 date_label=date_label,
                 time_of_day=time_of_day,
             )
+            if (
+                preface_source_id
+                and self._tool_call_uses_native_history(executable_calls[0])
+                and preface_source_id not in prompt_exclude_source_ids
+            ):
+                prompt_exclude_source_ids.append(preface_source_id)
             batch_results, _current_events = self._execute_and_record_tool_batch(
                 tool_calls=executable_calls,
                 final_output=final_output,
@@ -2565,6 +2575,7 @@ class AkaneMemoryEngine:
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
                 native_tool_history_turns=native_tool_history_turns,
+                prompt_exclude_source_ids=prompt_exclude_source_ids,
                 recorded_tool_call_ids=recorded_tool_call_ids,
                 domain_profile_id=turn_domain_profile_id,
             )
@@ -2612,6 +2623,7 @@ class AkaneMemoryEngine:
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
                 post_user_turns=native_tool_history_turns,
+                prompt_exclude_source_ids=prompt_exclude_source_ids,
                 domain_profile_id=turn_domain_profile_id,
                 prompt_scope=prompt_scope,
             )
@@ -2876,6 +2888,7 @@ class AkaneMemoryEngine:
                 actor_display_name=actor_display_name,
             )
 
+        prompt_exclude_source_ids: list[str] = []
         final_output = yield from self._stream_final_response(
             session_id=session_id,
             profile_user_id=profile_user_id,
@@ -2893,6 +2906,7 @@ class AkaneMemoryEngine:
             user_images=turn_user_images,
             final_debug_enabled=final_debug_enabled,
             chat_model_override=chat_model_override,
+            prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=turn_domain_profile_id,
             prompt_scope=prompt_scope,
         )
@@ -2922,6 +2936,9 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 domain_profile_id=turn_domain_profile_id,
             )
+            native_preface_text = str(final_output.pop("_native_preface_text", "") or "").strip()
+            if native_preface_text and tool_calls and self._tool_call_allows_assistant_preface(tool_calls[0]):
+                yield {"type": "speech_segment", "index": 0, "text": native_preface_text}
             yield {
                 "type": "assistant_stage_decision",
                 "has_tool_call": bool(tool_calls),
@@ -2964,6 +2981,7 @@ class AkaneMemoryEngine:
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
                     post_user_turns=native_tool_history_turns,
+                    prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
                 )
@@ -3016,12 +3034,13 @@ class AkaneMemoryEngine:
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
                     post_user_turns=native_tool_history_turns,
+                    prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
                 )
                 break
 
-            self._record_assistant_preface_for_tool_call(
+            preface_source_id = self._record_assistant_preface_for_tool_call(
                 tool_call=executable_calls[0],
                 final_output=final_output,
                 preface_turns=preface_turns,
@@ -3033,6 +3052,12 @@ class AkaneMemoryEngine:
                 date_label=date_label,
                 time_of_day=time_of_day,
             )
+            if (
+                preface_source_id
+                and self._tool_call_uses_native_history(executable_calls[0])
+                and preface_source_id not in prompt_exclude_source_ids
+            ):
+                prompt_exclude_source_ids.append(preface_source_id)
             working_event = self._build_tool_working_stream_event(executable_calls[0])
             if len(executable_calls) > 1:
                 working_event.update(
@@ -3061,6 +3086,7 @@ class AkaneMemoryEngine:
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
                 native_tool_history_turns=native_tool_history_turns,
+                prompt_exclude_source_ids=prompt_exclude_source_ids,
                 recorded_tool_call_ids=recorded_tool_call_ids,
                 domain_profile_id=turn_domain_profile_id,
             )
@@ -3110,6 +3136,7 @@ class AkaneMemoryEngine:
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
                 post_user_turns=native_tool_history_turns,
+                prompt_exclude_source_ids=prompt_exclude_source_ids,
                 domain_profile_id=turn_domain_profile_id,
                 prompt_scope=prompt_scope,
             )
@@ -3393,6 +3420,7 @@ class AkaneMemoryEngine:
         final_debug_enabled: bool | None = None,
         chat_model_override: str = "",
         post_user_turns: list[dict[str, Any]] | None = None,
+        prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
         prompt_scope: str = "",
     ) -> dict[str, Any]:
@@ -3415,6 +3443,7 @@ class AkaneMemoryEngine:
             enable_native_tools=True,
             chat_model_override=chat_model_override,
             post_user_turns=post_user_turns,
+            prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
         )
@@ -3519,6 +3548,7 @@ class AkaneMemoryEngine:
         final_debug_enabled: bool | None = None,
         chat_model_override: str = "",
         post_user_turns: list[dict[str, Any]] | None = None,
+        prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
         prompt_scope: str = "",
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
@@ -3541,6 +3571,7 @@ class AkaneMemoryEngine:
             enable_native_tools=True,
             chat_model_override=chat_model_override,
             post_user_turns=post_user_turns,
+            prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
         )
@@ -3637,6 +3668,9 @@ class AkaneMemoryEngine:
                 allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
                 debug_enabled=bool(generation_context["debug_enabled"]),
             )
+            native_preface_text = str(getattr(stream_result, "native_preface_text", "") or "").strip()
+            if native_preface_text:
+                normalized["_native_preface_text"] = native_preface_text
             buffered_events = current_events
             if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
                 break
@@ -3687,6 +3721,7 @@ class AkaneMemoryEngine:
         enable_native_tools: bool = False,
         chat_model_override: str = "",
         post_user_turns: list[dict[str, Any]] | None = None,
+        prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
         prompt_scope: str = "",
     ) -> dict[str, Any]:
@@ -3712,6 +3747,7 @@ class AkaneMemoryEngine:
             enable_native_tools=enable_native_tools,
             chat_model_override=chat_model_override,
             post_user_turns=post_user_turns,
+            prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
         )
@@ -3973,6 +4009,21 @@ class AkaneMemoryEngine:
             ),
         )
 
+    @staticmethod
+    def _tool_call_allows_assistant_preface(tool_call: dict[str, Any]) -> bool:
+        return str(tool_call.get("type") or "") not in {
+            "retrieve_memory",
+            "read_memory_timeline",
+            "load_character_context",
+        }
+
+    @staticmethod
+    def _tool_call_uses_native_history(tool_call: dict[str, Any]) -> bool:
+        return str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() in {
+            NATIVE_ANTHROPIC,
+            NATIVE_OPENAI,
+        }
+
     def _record_assistant_preface_for_tool_call(
         self,
         *,
@@ -3986,15 +4037,14 @@ class AkaneMemoryEngine:
         now_ts: int,
         date_label: str,
         time_of_day: str,
-    ) -> None:
-        internal_read_tool = str(tool_call.get("type") or "") in {
-            "retrieve_memory",
-            "read_memory_timeline",
-            "load_character_context",
-        }
-        preface_turn = None if internal_read_tool else self._build_assistant_dialogue_turn(final_output.get("speech"))
+    ) -> str:
+        preface_turn = (
+            self._build_assistant_dialogue_turn(final_output.get("speech"))
+            if self._tool_call_allows_assistant_preface(tool_call)
+            else None
+        )
         if not preface_turn:
-            return
+            return ""
         preface_turns.append(preface_turn)
         preface_record = self.store.add_message(
             profile_user_id=profile_user_id,
@@ -4009,6 +4059,12 @@ class AkaneMemoryEngine:
             memory_metadata=self._build_assistant_timeline_metadata(final_output),
         )
         self._upsert_raw_record(preface_record)
+        self._record_memcore_assistant_turn(
+            assistant_record=preface_record,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
         if not self._memcore_owns_compaction():
             self._schedule_summary_cycle(
                 profile_user_id=profile_user_id,
@@ -4016,6 +4072,7 @@ class AkaneMemoryEngine:
                 character_pack_id=character_pack_id,
             )
         recent_raw_for_turn.append(preface_record)
+        return str(preface_record.get("source_id") or "").strip()
 
     def _execute_and_record_tool_round(
         self,
@@ -4036,6 +4093,7 @@ class AkaneMemoryEngine:
         memory_exclude_source_ids: list[str],
         request_context: dict[str, Any],
         native_tool_history_turns: list[dict[str, Any]] | None = None,
+        prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
     ) -> tuple[ToolExecutionResult | None, list[dict[str, Any]]]:
         results, current_events = self._execute_and_record_tool_batch(
@@ -4055,6 +4113,7 @@ class AkaneMemoryEngine:
             memory_exclude_source_ids=memory_exclude_source_ids,
             request_context=request_context,
             native_tool_history_turns=native_tool_history_turns,
+            prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
         )
         return (results[-1] if results else None), current_events
@@ -4078,6 +4137,7 @@ class AkaneMemoryEngine:
         memory_exclude_source_ids: list[str],
         request_context: dict[str, Any],
         native_tool_history_turns: list[dict[str, Any]] | None = None,
+        prompt_exclude_source_ids: list[str] | None = None,
         recorded_tool_call_ids: set[str] | None = None,
         domain_profile_id: str = "",
     ) -> tuple[list[ToolExecutionResult], list[dict[str, Any]]]:
@@ -4189,12 +4249,18 @@ class AkaneMemoryEngine:
                 now_ts=now_ts,
                 current_user_source_id=current_user_source_id,
                 recorded_tool_call_ids=recorded_tool_call_ids,
+                prompt_exclude_source_ids=prompt_exclude_source_ids,
             )
             batch_events.extend(current_events)
             history_items.append((call, result, shaped_followup, workspace_followup))
         self._append_native_tool_history_batch(
             native_tool_history_turns=native_tool_history_turns,
             items=history_items,
+            assistant_preface=(
+                str(final_output.get("speech") or "").strip()
+                if self._tool_call_allows_assistant_preface(calls[0])
+                else ""
+            ),
         )
         return completed, batch_events
 
@@ -4214,6 +4280,7 @@ class AkaneMemoryEngine:
         now_ts: int,
         current_user_source_id: str,
         recorded_tool_call_ids: set[str] | None,
+        prompt_exclude_source_ids: list[str] | None = None,
     ) -> tuple[list[dict[str, Any]], str, str]:
 
         tool_results.append(tool_result)
@@ -4238,7 +4305,7 @@ class AkaneMemoryEngine:
             tool_followups.append(f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n{shaped_followup}")
             if workspace_followup:
                 tool_followups.append(workspace_followup)
-        self._record_memcore_tool_exchange(
+        trace_source_ids = self._record_memcore_tool_exchange(
             tool_call=tool_call,
             tool_result=tool_result,
             shaped_followup=shaped_followup,
@@ -4250,6 +4317,10 @@ class AkaneMemoryEngine:
             current_user_source_id=current_user_source_id,
             recorded_tool_call_ids=recorded_tool_call_ids,
         )
+        if prompt_exclude_source_ids is not None:
+            for source_id in trace_source_ids:
+                if source_id not in prompt_exclude_source_ids:
+                    prompt_exclude_source_ids.append(source_id)
         current_tool_turns = list(tool_result.raw_turns)
         tool_turns.extend(current_tool_turns)
         for tool_turn in current_tool_turns:
@@ -4327,14 +4398,17 @@ class AkaneMemoryEngine:
         *,
         native_tool_history_turns: list[dict[str, Any]] | None,
         items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
+        assistant_preface: str = "",
     ) -> None:
         self._append_native_anthropic_tool_history_batch(
             native_tool_history_turns=native_tool_history_turns,
             items=items,
+            assistant_preface=assistant_preface,
         )
         self._append_native_openai_tool_history_batch(
             native_tool_history_turns=native_tool_history_turns,
             items=items,
+            assistant_preface=assistant_preface,
         )
 
     def _append_native_anthropic_tool_history_batch(
@@ -4342,6 +4416,7 @@ class AkaneMemoryEngine:
         *,
         native_tool_history_turns: list[dict[str, Any]] | None,
         items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
+        assistant_preface: str = "",
     ) -> None:
         if native_tool_history_turns is None:
             return
@@ -4385,9 +4460,13 @@ class AkaneMemoryEngine:
                 result_block["is_error"] = True
             result_blocks.append(result_block)
         if use_blocks and result_blocks:
+            assistant_content: list[dict[str, Any]] = []
+            if str(assistant_preface or "").strip():
+                assistant_content.append({"type": "text", "text": str(assistant_preface).strip()})
+            assistant_content.extend(use_blocks)
             native_tool_history_turns.extend(
                 [
-                    {"role": "assistant", "content": use_blocks},
+                    {"role": "assistant", "content": assistant_content},
                     {"role": "user", "content": result_blocks},
                 ]
             )
@@ -4397,6 +4476,7 @@ class AkaneMemoryEngine:
         *,
         native_tool_history_turns: list[dict[str, Any]] | None,
         items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
+        assistant_preface: str = "",
     ) -> None:
         if native_tool_history_turns is None:
             return
@@ -4444,9 +4524,12 @@ class AkaneMemoryEngine:
                 }
             )
         if tool_calls and len(tool_calls) == len(tool_messages):
+            assistant_turn: dict[str, Any] = {"role": "assistant", "tool_calls": tool_calls}
+            if str(assistant_preface or "").strip():
+                assistant_turn["content"] = str(assistant_preface).strip()
             native_tool_history_turns.extend(
                 [
-                    {"role": "assistant", "tool_calls": tool_calls},
+                    assistant_turn,
                     *tool_messages,
                 ]
             )
@@ -4464,10 +4547,10 @@ class AkaneMemoryEngine:
         now_ts: int,
         current_user_source_id: str,
         recorded_tool_call_ids: set[str] | None,
-    ) -> None:
+    ) -> list[str]:
         manager = getattr(self, "memcore_manager", None)
         if manager is None or not getattr(manager, "enabled", False):
-            return
+            return []
         tool_type = str(tool_call.get("type") or tool_result.tool_type or "unknown").strip() or "unknown"
         call_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
         if not call_id:
@@ -4475,7 +4558,7 @@ class AkaneMemoryEngine:
         trace_key = f"{tool_type}:{call_id}"
         if recorded_tool_call_ids is not None:
             if trace_key in recorded_tool_call_ids:
-                return
+                return []
             recorded_tool_call_ids.add(trace_key)
         tool_input = self._sanitize_tool_trace_value(
             {str(key): value for key, value in tool_call.items() if key != "type" and not str(key).startswith("_tool_")}
@@ -4487,7 +4570,7 @@ class AkaneMemoryEngine:
         source_material = f"{current_user_source_id}|{session_id}|{call_id}|{tool_type}"
         source_id_prefix = "tooltrace:" + hashlib.sha256(source_material.encode("utf-8")).hexdigest()[:32]
         try:
-            manager.record_tool_exchange(
+            recorded = manager.record_tool_exchange(
                 tool_name=tool_type,
                 tool_call_id=call_id,
                 tool_input=tool_input,
@@ -4502,8 +4585,17 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 character_pack_id=character_pack_id,
             )
+            return [
+                source_id
+                for source_id in (
+                    str((recorded or {}).get("tool_use_source_id") or "").strip(),
+                    str((recorded or {}).get("tool_result_source_id") or "").strip(),
+                )
+                if source_id
+            ]
         except Exception as exc:
             logger.warning("memcore tool trace record failed tool=%s reason=%s", tool_type, type(exc).__name__)
+            return []
 
     def _sanitize_tool_trace_value(self, value: Any) -> Any:
         if isinstance(value, dict):

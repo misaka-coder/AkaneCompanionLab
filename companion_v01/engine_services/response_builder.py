@@ -84,6 +84,7 @@ def prepare_context(
     enable_native_tools: bool = False,
     chat_model_override: str = "",
     post_user_turns: list[dict[str, Any]] | None = None,
+    prompt_exclude_source_ids: list[str] | None = None,
     domain_profile_id: str = "",
     prompt_scope: str = "",
 ) -> dict[str, Any]:
@@ -116,8 +117,16 @@ def prepare_context(
     user_character_outfits = list(runtime_projection.get("extra_character_outfits") or [])
     desktop_pet_character_only = client_context.effective_mode == ClientMode.DESKTOP_PET
     character_pack_persona_enabled = client_context.effective_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}
+    excluded_prompt_sources = {
+        str(source_id or "").strip()
+        for source_id in list(prompt_exclude_source_ids or [])
+        if str(source_id or "").strip()
+    }
+    visible_recent_raw = [
+        record for record in recent_raw if str(record.get("source_id") or "").strip() not in excluded_prompt_sources
+    ]
     _history_records, current_record = engine._split_history_records(
-        recent_raw=recent_raw,
+        recent_raw=visible_recent_raw,
         user_message=user_message,
         now_ts=now_ts,
     )
@@ -134,6 +143,7 @@ def prepare_context(
             character_pack_id=character_pack_id,
             current_user_record=current_record,
             now_ts=now_ts,
+            exclude_source_ids=list(excluded_prompt_sources),
         )
     )
     if finance_push_prompt:
@@ -145,7 +155,7 @@ def prepare_context(
         episodic_summary_text = str(memcore_prompt_context.get("episodic_text") or "")
         semantic_summary_text = str(memcore_prompt_context.get("semantic_text") or "")
     else:
-        raw_text = render_chat_timeline(recent_raw)
+        raw_text = render_chat_timeline(visible_recent_raw)
         episodic_summary_text = render_summary_timeline(
             recent_episodic_summaries,
             store=engine.store,
@@ -603,6 +613,7 @@ def _build_memcore_prompt_context(
     character_pack_id: str,
     current_user_record: dict[str, Any],
     now_ts: int,
+    exclude_source_ids: list[str] | None = None,
 ) -> dict[str, Any] | None:
     if _memory_backend() != "memcore":
         return None
@@ -617,6 +628,7 @@ def _build_memcore_prompt_context(
             character_pack_id=character_pack_id,
             current_user_record=current_user_record,
             now_ts=now_ts,
+            exclude_source_ids=exclude_source_ids,
         )
     except Exception as exc:
         logger.warning("memcore final prompt context failed: %s", str(exc) or exc.__class__.__name__)

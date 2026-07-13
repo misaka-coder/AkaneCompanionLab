@@ -24,26 +24,6 @@ QQ_TEXT_CAPABILITIES = (
     "tool_actions",
 )
 
-QQ_FILE_DELIVERY_DIRECT_RE = re.compile(
-    r"(发我|发给我|给我发|发一下|发下|发来|传给我|丢给我|再发|补发|交付|发送|send\s*me|deliver)",
-    re.IGNORECASE,
-)
-QQ_FILE_DELIVERY_TARGET_RE = re.compile(
-    r"(文件|附件|结果|成果|产物|文档|表格|图片|照片|图像|海报|插画|封面|头像|壁纸|音频|视频|字幕|歌词|压缩包|安装包|"
-    r"人声|伴奏|干声|歌声|音轨|声轨|"
-    r"word|docx?|excel|xlsx?|pptx?|pdf|markdown|\bmd\b|zip|rar|7z|"
-    r"mp3|wav|flac|m4a|aac|ogg|opus|vocals?|instrumental|stems?|"
-    r"gen_\d+|file_\d+|img_\d+|audio_\d+|video_\d+)",
-    re.IGNORECASE,
-)
-QQ_FILE_OUTPUT_REQUEST_RE = re.compile(
-    r"(做|生成|生图|画|绘制|改图|修图|融合|整理|导出|转成|转换|压缩|提取|分离|下载|转写|总结成|保存为|打包|制作)",
-    re.IGNORECASE,
-)
-QQ_FILE_DELIVERY_NEGATIVE_RE = re.compile(
-    r"(不要发|别发|先别发|不用发|不用发送|不要发送|不发送|别发送|别传|不用传)",
-    re.IGNORECASE,
-)
 QQ_CHARACTER_PACK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 QQ_CHARACTER_COMMAND_PREFIX_RE = re.compile(r"^[!/／]?(?:qq)?\s*", re.IGNORECASE)
 QQ_CHARACTER_LIST_COMMANDS = {
@@ -478,7 +458,6 @@ class NapCatQQGateway:
             "group_plaintext_enabled": bool(getattr(config, "QQ_GROUP_PLAINTEXT_ENABLED", False)),
             "event_max_age_seconds": int(getattr(config, "QQ_EVENT_MAX_AGE_SECONDS", 300) or 0),
             "allow_stale_events": bool(getattr(config, "QQ_ALLOW_STALE_EVENTS", False)),
-            "require_file_delivery_intent": bool(getattr(config, "QQ_REQUIRE_FILE_DELIVERY_INTENT", True)),
             "character_pack_id": self.character_pack_id,
             "default_character_pack_id": self.default_character_pack_id,
             "active_character_override_count": len(self.character_pack_overrides),
@@ -2606,24 +2585,11 @@ class NapCatQQGateway:
         if not targets:
             return {"ok": True, "count": 0, "results": []}
 
-        blocked_count = 0
-        if self._should_block_file_delivery(context):
-            authorized_targets = [
-                target for target in targets if str(target.get("delivery_scope") or "") == "cover_song"
-            ]
-            blocked_count = len(targets) - len(authorized_targets)
-            if not authorized_targets:
-                return {
-                    "ok": False,
-                    "status": "blocked",
-                    "count": 0,
-                    "blocked_count": len(targets),
-                    "reason": "missing_file_delivery_intent",
-                    "results": [],
-                }
-            targets = authorized_targets
-
-        return self._send_generated_file_targets(context, targets, blocked_count=blocked_count)
+        # The current turn's structured tool event is the delivery decision.
+        # The gateway validates transport-facing boundaries above, then sends
+        # exactly the files selected by the model instead of reinterpreting the
+        # user's natural-language message with another intent classifier.
+        return self._send_generated_file_targets(context, targets)
 
     def send_market_charts(
         self,
@@ -2784,8 +2750,6 @@ class NapCatQQGateway:
         self,
         context: QQMessageContext,
         targets: list[dict[str, Any]],
-        *,
-        blocked_count: int = 0,
     ) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
         for target in targets:
@@ -2843,25 +2807,11 @@ class NapCatQQGateway:
             "status": status,
             "count": len(results),
             "results": results,
-            **({"blocked_count": blocked_count} if blocked_count else {}),
         }
 
     def _event_allows_qq_file_delivery(self, event: dict[str, Any]) -> bool:
         event_mode = str(event.get("client_mode") or "").strip().lower()
         return not event_mode or event_mode == "qq_text"
-
-    def message_requests_file_delivery(self, text: str) -> bool:
-        clean_text = re.sub(r"\s+", " ", str(text or "")).strip()
-        if not clean_text:
-            return False
-        if QQ_FILE_DELIVERY_NEGATIVE_RE.search(clean_text):
-            return False
-        if QQ_FILE_DELIVERY_DIRECT_RE.search(clean_text):
-            return True
-        has_target = bool(QQ_FILE_DELIVERY_TARGET_RE.search(clean_text))
-        if not has_target:
-            return False
-        return bool(QQ_FILE_OUTPUT_REQUEST_RE.search(clean_text))
 
     def send_stickers(self, context: QQMessageContext, tool_events: list[dict[str, Any]] | None) -> dict[str, Any]:
         events = [event for event in tool_events or [] if isinstance(event, dict)]
@@ -3882,11 +3832,6 @@ class NapCatQQGateway:
         if event_ts > 10_000_000_000:
             event_ts = event_ts / 1000.0
         return event_ts if event_ts > 0 else 0.0
-
-    def _should_block_file_delivery(self, context: QQMessageContext) -> bool:
-        if not bool(getattr(config, "QQ_REQUIRE_FILE_DELIVERY_INTENT", True)):
-            return False
-        return not self.message_requests_file_delivery(context.clean_message or context.raw_message)
 
     def _is_duplicate_event(self, event: dict[str, Any], *, ttl_seconds: float = 300.0) -> bool:
         now_ts = time.time()

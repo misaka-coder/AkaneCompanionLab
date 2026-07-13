@@ -322,7 +322,6 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("QQ_REPLY_SEGMENT_DELAY_SECONDS", _QQ, SCOPE_RUNTIME, "多消息段发送间隔（秒）"),
     _s("QQ_EVENT_MAX_AGE_SECONDS", _QQ, SCOPE_RUNTIME, "事件最大有效时间（秒），超时丢弃"),
     _s("QQ_ALLOW_STALE_EVENTS", _QQ, SCOPE_RUNTIME, "允许处理过期事件"),
-    _s("QQ_REQUIRE_FILE_DELIVERY_INTENT", _QQ, SCOPE_RUNTIME, "仅对明确请求文件投递的消息才发文件"),
     _s("QQ_ATTACHMENT_DOWNLOAD_TIMEOUT", _QQ, SCOPE_RUNTIME, "附件下载超时（秒）"),
     _s("QQ_ATTACHMENT_MAX_BYTES", _QQ, SCOPE_RUNTIME, "附件下载最大字节数"),
     _s("QQ_TEXT_ATTACHMENT_MAX_READ_BYTES", _QQ, SCOPE_RUNTIME, "QQ 文本消息附件最大读取字节数"),

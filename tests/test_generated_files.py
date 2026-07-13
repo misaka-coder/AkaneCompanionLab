@@ -2026,6 +2026,14 @@ class GeneratedFileTests(unittest.TestCase):
         self.assertEqual(result.stream_events[1]["file"]["generated_id"], "generated::1")
         self.assertIn("send_file ok", result.followup_context)
 
+    def test_send_file_tool_instruction_explains_material_and_result_selection(self) -> None:
+        instruction = SendFileToolHandler(generated_file_service=object()).build_prompt_instruction()
+
+        self.assertIn("原始材料", instruction)
+        self.assertIn("gen_ 是工具生成的结果", instruction)
+        self.assertIn("用户只要结果时不要顺带发送原始材料", instruction)
+        self.assertIn("一次选择多个", instruction)
+
     def test_send_file_tool_handler_carries_desktop_delivery_action(self) -> None:
         class FakeGeneratedService:
             def send_file(self, **kwargs):

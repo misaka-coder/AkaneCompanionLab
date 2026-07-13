@@ -1357,7 +1357,7 @@ URL：
 
 主动推送依赖 finance_subscriptions 中的明确授权，不伪造“当前用户要求发送文件”的意图。
 
-QQ_REQUIRE_FILE_DELIVERY_INTENT 仍保护普通对话。金融 push 使用独立 subscription delivery policy。
+普通对话的文件投递由当前轮 `send_file` / 生成工具事件授权，网关不再二次解析用户原话。金融 push 没有当前聊天轮工具事件，因此继续使用独立的 subscription delivery policy。
 
 ### 14.2 Delivery context
 

@@ -155,6 +155,7 @@ class ChatJSONStreamResult:
     latest_emotion: str
     latest_speech: str
     latest_reply_medium: str
+    native_preface_text: str = ""
     stopped_early: bool = False
     early_tool_call: dict[str, Any] | None = None
 
@@ -643,11 +644,16 @@ class LLMRuntime:
             native_tool_calls = self._extract_native_tool_calls(response, native_tools=native_tools, bundle=bundle)
             if native_tool_calls:
                 self._record_metric("native_tool_call_extracted")
-                return {
+                parsed = {
                     NATIVE_TOOL_CALLS_FIELD: native_tool_calls,
                     NATIVE_TOOL_CALL_FIELD: native_tool_calls[0],
                     "tool_call": None,
                 }
+                native_preface_text = self._native_preface_text_from_content(self._extract_text(response))
+                if native_preface_text:
+                    parsed["speech"] = native_preface_text
+                    parsed["speech_segments"] = [native_preface_text]
+                return parsed
             if native_requested:
                 self._record_metric("native_tool_no_call")
             self._note_truncation(response, phase="call_json")
@@ -843,6 +849,10 @@ class LLMRuntime:
                 NATIVE_TOOL_CALL_FIELD: native_tool_calls[0],
                 "tool_call": None,
             }
+            native_preface_text = "" if tap.latest_speech else self._native_preface_text_from_content(raw_text)
+            if native_preface_text:
+                parsed["speech"] = native_preface_text
+                parsed["speech_segments"] = [native_preface_text]
         elif native_requested:
             self._record_metric("native_tool_no_call")
             parsed = self._extract_json(raw_text)
@@ -873,6 +883,7 @@ class LLMRuntime:
             latest_emotion=tap.latest_emotion,
             latest_speech=tap.latest_speech,
             latest_reply_medium=tap.latest_reply_medium,
+            native_preface_text=native_preface_text if native_tool_calls else "",
             stopped_early=stopped_early,
             early_tool_call=early_tool_call,
         )
@@ -970,6 +981,32 @@ class LLMRuntime:
             return self._flatten_message_content(response.choices[0].message.content).strip()
         except Exception:
             return ""
+
+    @staticmethod
+    def _native_preface_text_from_content(content: Any) -> str:
+        """Return only user-facing assistant text emitted before a native tool call."""
+
+        text = str(content or "").strip()
+        if not text:
+            return ""
+        candidate = text
+        if candidate.startswith("```") and candidate.endswith("```"):
+            lines = candidate.splitlines()
+            if len(lines) >= 3:
+                candidate = "\n".join(lines[1:-1]).strip()
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return text
+        if not isinstance(parsed, dict):
+            return ""
+        speech = str(parsed.get("speech") or "").strip()
+        if speech:
+            return speech
+        segments = parsed.get("speech_segments")
+        if isinstance(segments, list):
+            return "\n".join(str(item or "").strip() for item in segments if str(item or "").strip())
+        return ""
 
     def _flatten_message_content(self, content: Any) -> str:
         if isinstance(content, str):

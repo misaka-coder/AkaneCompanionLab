@@ -563,6 +563,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     character_pack_id="char",
                     current_user_record={"source_id": "user-2", "content": "刚才结果呢", "timestamp": 103},
                 )
+                current_round_context = manager.build_prompt_context(
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                    current_user_record={"source_id": "user-2", "content": "刚才结果呢", "timestamp": 103},
+                    exclude_source_ids=[trace["tool_use_source_id"], trace["tool_result_source_id"]],
+                )
             finally:
                 manager.close()
 
@@ -571,6 +578,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("assistant.tool_call web_search call_1", context["raw_text"])
         self.assertIn("tool.web_search call_1", context["raw_text"])
         self.assertIn("北京今天晴", context["raw_text"])
+        self.assertNotIn("assistant.tool_call web_search call_1", current_round_context["raw_text"])
+        self.assertNotIn("北京今天晴", current_round_context["raw_text"])
 
     def test_index_warmup_is_scheduled_without_blocking_first_turn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -589,12 +589,13 @@ class LLMClientConfigTests(unittest.TestCase):
                 {
                     "role": "assistant",
                     "content": [
+                        {"type": "text", "text": "我先查一下。"},
                         {
                             "type": "tool_use",
                             "id": "toolu_1",
                             "name": "web_search",
                             "input": {"query": "Akane"},
-                        }
+                        },
                     ],
                 },
                 {
@@ -612,12 +613,14 @@ class LLMClientConfigTests(unittest.TestCase):
 
         self.assertEqual([message["role"] for message in payload["messages"]], ["system", "user", "assistant", "user"])
         self.assertEqual(payload["messages"][1]["content"], "current user prompt")
-        self.assertEqual(payload["messages"][2]["content"][0]["type"], "tool_use")
+        self.assertEqual(payload["messages"][2]["content"][0], {"type": "text", "text": "我先查一下。"})
+        self.assertEqual(payload["messages"][2]["content"][1]["type"], "tool_use")
         self.assertEqual(payload["messages"][3]["content"][0]["type"], "tool_result")
 
         anthropic_payload = _build_anthropic_payload(payload)
         self.assertEqual([message["role"] for message in anthropic_payload["messages"]], ["user", "assistant", "user"])
-        self.assertEqual(anthropic_payload["messages"][1]["content"][0]["type"], "tool_use")
+        self.assertEqual(anthropic_payload["messages"][1]["content"][0], {"type": "text", "text": "我先查一下。"})
+        self.assertEqual(anthropic_payload["messages"][1]["content"][1]["type"], "tool_use")
         self.assertEqual(anthropic_payload["messages"][2]["content"][0]["type"], "tool_result")
 
     def test_llm_runtime_appends_standard_openai_parallel_tool_history(self) -> None:
@@ -632,6 +635,7 @@ class LLMClientConfigTests(unittest.TestCase):
             post_user_turns=[
                 {
                     "role": "assistant",
+                    "content": "我一起查一下。",
                     "tool_calls": [
                         {
                             "id": "call_1",
@@ -655,7 +659,7 @@ class LLMClientConfigTests(unittest.TestCase):
             ["system", "user", "assistant", "tool", "tool"],
         )
         assistant_message = payload["messages"][2]
-        self.assertNotIn("content", assistant_message)
+        self.assertEqual(assistant_message["content"], "我一起查一下。")
         self.assertEqual(
             [call["id"] for call in assistant_message["tool_calls"]],
             ["call_1", "call_2"],
@@ -891,6 +895,7 @@ class LLMClientConfigTests(unittest.TestCase):
         runtime._build_completion_kwargs = lambda **_kwargs: {}
         runtime._create_completion = lambda **_kwargs: object()
         runtime._record_cache_metrics = lambda _response: None
+        runtime._extract_text = lambda _response: "我先查一下。"
         runtime._extract_native_tool_calls = lambda _response, **_kwargs: [
             {
                 "type": "web_search",
@@ -915,6 +920,8 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(len(result[NATIVE_TOOL_CALLS_FIELD]), 1)
         self.assertEqual(result[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
         self.assertEqual(result[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
+        self.assertEqual(result["speech"], "我先查一下。")
+        self.assertEqual(result["speech_segments"], ["我先查一下。"])
         self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
 
     def test_llm_runtime_preserves_all_native_tool_calls_in_provider_order(self) -> None:
@@ -960,7 +967,7 @@ class LLMClientConfigTests(unittest.TestCase):
         runtime._build_completion_kwargs = lambda **_kwargs: {}
         runtime._record_cache_metrics = lambda _response: None
         runtime._close_stream = lambda _response: None
-        runtime._extract_stream_text = lambda _chunk: ""
+        runtime._extract_stream_text = lambda _chunk: "我先查一下。"
         runtime._create_completion = lambda **_kwargs: [
             SimpleNamespace(
                 choices=[
@@ -1005,6 +1012,8 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(len(result.parsed[NATIVE_TOOL_CALLS_FIELD]), 1)
         self.assertEqual(result.parsed[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
         self.assertEqual(result.parsed[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
+        self.assertEqual(result.parsed["speech"], "我先查一下。")
+        self.assertEqual(result.native_preface_text, "我先查一下。")
         self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
 
     def test_llm_runtime_collects_stream_native_tool_call_to_akane_shape(self) -> None:

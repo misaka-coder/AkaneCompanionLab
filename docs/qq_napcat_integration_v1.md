@@ -33,7 +33,6 @@ QQ_ATTACHMENT_READY_WAIT_SECONDS=8
 QQ_REPLY_SEGMENT_DELAY_SECONDS=0.8
 QQ_EVENT_MAX_AGE_SECONDS=300
 QQ_ALLOW_STALE_EVENTS=false
-QQ_REQUIRE_FILE_DELIVERY_INTENT=true
 ```
 
 字段说明：
@@ -51,7 +50,7 @@ QQ_REQUIRE_FILE_DELIVERY_INTENT=true
 - `QQ_REPLY_SEGMENT_DELAY_SECONDS`：`speech_segments` 分多条发到 QQ 时，每条之间的象征性停顿秒数，默认 `0.8`，最大 `3.0`。
 - `QQ_EVENT_MAX_AGE_SECONDS`：忽略超过该秒数的旧 QQ 事件，避免 NapCat / OneBot 重连后把历史消息重新灌进当前对话。设为 `0` 可关闭时间拦截。
 - `QQ_ALLOW_STALE_EVENTS`：是否允许处理旧事件，默认 `false`。只建议临时排查回放事件时打开。
-- `QQ_REQUIRE_FILE_DELIVERY_INTENT`：QQ 文件发送保护，默认 `true`。开启后，当前消息没有明确的文件/结果发送意图时，后端不会真正调用 OneBot 上传文件。
+- QQ 文件投递以当前轮结构化工具事件为准：模型通过 `send_file` 选择一个或多个工作台文件后，网关负责校验事件来源、会话内文件句柄和客户端类型，并执行真实投递；网关不再用关键词正则二次猜测用户意图。
 
 ## 3. NapCat 配置
 

@@ -761,7 +761,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 TOOL_INVOCATION_ID_FIELD: "toolu_1",
                 TOOL_MODEL_NAME_FIELD: "mcp_demo_echo_abcd123456",
             },
-            final_output={"speech": "", "tool_call": None},
+            final_output={"speech": "我先试一下这个工具。", "tool_call": None},
             tool_results=[],
             tool_events=[],
             tool_followups=[],
@@ -779,7 +779,11 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         )
 
         self.assertEqual([turn["role"] for turn in native_history], ["assistant", "user"])
-        tool_use = native_history[0]["content"][0]
+        self.assertEqual(
+            native_history[0]["content"][0],
+            {"type": "text", "text": "我先试一下这个工具。"},
+        )
+        tool_use = native_history[0]["content"][1]
         tool_result = native_history[1]["content"][0]
         self.assertEqual(
             tool_use,
@@ -795,6 +799,41 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertIn("echo ok", tool_result["content"])
         self.assertIn("workspace artifact recorded", tool_result["content"])
         self.assertNotIn("is_error", tool_result)
+
+    def test_engine_tool_preface_dual_writes_visible_assistant_turn(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        memcore_records: list[dict] = []
+
+        class FakeStore:
+            def add_message(self, **kwargs):
+                return {**kwargs, "source_id": "assistant-preface-1"}
+
+        engine.store = FakeStore()
+        engine._upsert_raw_record = lambda _record: None
+        engine._record_memcore_assistant_turn = lambda **kwargs: memcore_records.append(
+            dict(kwargs["assistant_record"])
+        )
+        engine._memcore_owns_compaction = lambda: True
+        preface_turns: list[dict[str, str]] = []
+        recent_raw: list[dict] = []
+
+        source_id = engine._record_assistant_preface_for_tool_call(
+            tool_call={"type": "web_search", TOOL_SOURCE_FIELD: NATIVE_OPENAI},
+            final_output={"speech": "我先查一下。"},
+            preface_turns=preface_turns,
+            recent_raw_for_turn=recent_raw,
+            profile_user_id="u",
+            session_id="s",
+            character_pack_id="reimu",
+            now_ts=100,
+            date_label="2026-07-13",
+            time_of_day="afternoon",
+        )
+
+        self.assertEqual(source_id, "assistant-preface-1")
+        self.assertEqual(preface_turns[0]["speech"], "我先查一下。")
+        self.assertEqual(recent_raw[0]["content"], "我先查一下。")
+        self.assertEqual(memcore_records[0]["source_id"], "assistant-preface-1")
 
     def test_engine_parallel_batch_groups_anthropic_history_in_original_order(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -897,7 +936,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         engine._execute_and_record_tool_batch(
             tool_calls=calls,
-            final_output={"speech": "", "tool_call": None},
+            final_output={"speech": "我一起查一下。", "tool_call": None},
             tool_results=[],
             tool_events=[],
             tool_followups=tool_followups,
@@ -916,6 +955,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         self.assertEqual([turn["role"] for turn in native_history], ["assistant", "tool", "tool"])
         assistant_message = native_history[0]
+        self.assertEqual(assistant_message["content"], "我一起查一下。")
         self.assertEqual(
             [call["id"] for call in assistant_message["tool_calls"]],
             ["call_1", "call_2"],
@@ -985,7 +1025,12 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
             def record_tool_exchange(self, **kwargs):
                 self.calls.append(kwargs)
-                return {"ok": True, "status": "recorded"}
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "tool_use_source_id": "trace-use-1",
+                    "tool_result_source_id": "trace-result-1",
+                }
 
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         manager = FakeMemcoreManager()
@@ -1000,6 +1045,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             effective_mode=ClientMode.SCENE_STATIC,
         )
         recorded_ids: set[str] = set()
+        prompt_exclusions: list[str] = []
         call = {
             "type": "web_search",
             "query": "Akane",
@@ -1027,10 +1073,12 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 client_context=client_context,
                 memory_exclude_source_ids=[],
                 request_context={},
+                prompt_exclude_source_ids=prompt_exclusions,
                 recorded_tool_call_ids=recorded_ids,
             )
 
         self.assertEqual(len(manager.calls), 1)
+        self.assertEqual(prompt_exclusions, ["trace-use-1", "trace-result-1"])
         stored = manager.calls[0]
         self.assertEqual(stored["tool_call_id"], "toolu_trace")
         self.assertEqual(stored["tool_input"], {"query": "Akane"})
@@ -1150,6 +1198,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 latest_emotion="",
                 latest_speech="",
                 latest_reply_medium="",
+                native_preface_text="我先查一下。",
             )
 
         engine.llm = SimpleNamespace(stream_chat_json=fake_stream_chat_json)
@@ -1183,7 +1232,10 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         )
 
         self.assertEqual(events, [{"type": "turn_start", "speaker": "Akane"}])
-        self.assertEqual(result, {"speech": "ok", "tool_call": None})
+        self.assertEqual(
+            result,
+            {"speech": "ok", "tool_call": None, "_native_preface_text": "我先查一下。"},
+        )
         self.assertEqual(captured["native_tools"], [schema])
         self.assertEqual(captured["native_tool_choice"], "auto")
 

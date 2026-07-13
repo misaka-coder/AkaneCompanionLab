@@ -1767,8 +1767,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["user_id"], QQ_MASTER_FIXTURE_ID)
         self.assertEqual(payload["message"][0]["type"], "image")
 
-    @patch("companion_v01.qq_gateway.config.QQ_REQUIRE_FILE_DELIVERY_INTENT", True)
-    def test_send_generated_files_blocks_without_current_delivery_intent(self) -> None:
+    def test_send_generated_files_trusts_current_structured_delivery_event(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
             {
@@ -1776,8 +1775,55 @@ class QQGatewayTests(unittest.TestCase):
                 "message_type": "private",
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_MASTER_FIXTURE_ID,
-                "message_id": "generated-block-1",
-                "raw_message": "在吗",
+                "message_id": "generated-structured-send-1",
+                "raw_message": "啊这，我图呢",
+            }
+        )
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "reimu.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic")
+            with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+                result = gateway.send_generated_files(
+                    context,
+                    [
+                        {
+                            "type": "generated_file_ready",
+                            "send_to_user": True,
+                            "client_mode": "qq_text",
+                            "generated_file": {
+                                "generated_id": "generated::current",
+                                "absolute_path": str(image_path),
+                                "output_title": "博丽灵梦_神社傍晚",
+                                "file_ext": "png",
+                                "mime_type": "image/png",
+                            },
+                        }
+                    ],
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["count"], 1)
+        mocked_post.assert_called_once()
+
+    def test_send_generated_files_requires_structured_send_flag(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "generated-no-send-1",
+                "raw_message": "把图发我",
             }
         )
 
@@ -1787,69 +1833,22 @@ class QQGatewayTests(unittest.TestCase):
                 [
                     {
                         "type": "generated_file_ready",
-                        "send_to_user": True,
+                        "send_to_user": False,
+                        "client_mode": "qq_text",
                         "generated_file": {
-                            "generated_id": "generated::old",
-                            "absolute_path": "C:/tmp/old.md",
-                            "output_title": "旧文件",
-                            "file_ext": "md",
+                            "generated_id": "generated::not-selected",
+                            "absolute_path": "C:/tmp/not-selected.png",
+                            "output_title": "未选择图片",
+                            "file_ext": "png",
+                            "mime_type": "image/png",
                         },
                     }
                 ],
             )
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["status"], "blocked")
+        self.assertTrue(result["ok"])
         self.assertEqual(result["count"], 0)
-        self.assertEqual(result["blocked_count"], 1)
-        self.assertEqual(result["reason"], "missing_file_delivery_intent")
         mocked_post.assert_not_called()
-
-    @patch("companion_v01.qq_gateway.config.QQ_REQUIRE_FILE_DELIVERY_INTENT", True)
-    def test_send_generated_files_does_not_bypass_intent_for_current_generated_file(self) -> None:
-        gateway = NapCatQQGateway()
-        context = gateway.build_message_context(
-            {
-                "post_type": "message",
-                "message_type": "private",
-                "self_id": QQ_BOT_FIXTURE_ID,
-                "user_id": QQ_MASTER_FIXTURE_ID,
-                "message_id": "generated-current-1",
-                "raw_message": "嗯？好了吗",
-            }
-        )
-
-        with patch("companion_v01.qq_gateway.requests.post") as mocked_post:
-            result = gateway.send_generated_files(
-                context,
-                [
-                    {
-                        "type": "generated_file_ready",
-                        "send_to_user": True,
-                        "generated_file": {
-                            "generated_id": "generated::1",
-                            "absolute_path": "C:/tmp/story.md",
-                            "output_title": "会说话的猫和它的室友",
-                            "file_ext": "md",
-                            "created_by_tool": "compose_file",
-                            "delivery_status": "pending",
-                        },
-                    }
-                ],
-            )
-
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["status"], "blocked")
-        self.assertEqual(result["count"], 0)
-        self.assertEqual(result["blocked_count"], 1)
-        mocked_post.assert_not_called()
-
-    def test_file_delivery_intent_respects_negative_request(self) -> None:
-        gateway = NapCatQQGateway()
-
-        self.assertTrue(gateway.message_requests_file_delivery("把 gen_001 发我一下"))
-        self.assertTrue(gateway.message_requests_file_delivery("用这两张照片融合画一张新图"))
-        self.assertFalse(gateway.message_requests_file_delivery("先别发文件，我只是问问进度"))
 
     def test_send_generated_files_accepts_generic_file_ready_event(self) -> None:
         gateway = NapCatQQGateway()

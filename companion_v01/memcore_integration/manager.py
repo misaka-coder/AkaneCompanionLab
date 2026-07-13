@@ -785,6 +785,7 @@ class MemcoreManager:
         character_pack_id: str = "",
         current_user_record: dict[str, Any] | None = None,
         now_ts: int | None = None,
+        exclude_source_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         system = self._get_system_or_none(
             operation="build_prompt_context",
@@ -809,7 +810,16 @@ class MemcoreManager:
             current["timestamp"] = int(now_ts or time.time())
         try:
             context = system.build_prompt_context(current=current)
-            raw = list(context.get("raw") or [])
+            excluded = {
+                str(source_id or "").strip()
+                for source_id in list(exclude_source_ids or [])
+                if str(source_id or "").strip()
+            }
+            raw = [
+                record
+                for record in list(context.get("raw") or [])
+                if str(record.get("source_id") or "").strip() not in excluded
+            ]
             episodic = list(context.get("episodic") or [])
             semantic = list(context.get("semantic") or [])
             raw_text, episodic_text, semantic_text = self._render_prompt_context_layers(
@@ -1226,7 +1236,9 @@ class MemcoreManager:
         detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
         profile = str(profile_user_id or item.get("profile_user_id") or "").strip()
         session = str(session_id or item.get("session_id") or "").strip()
-        character = str(character_pack_id or detail.get("character_pack_id") or item.get("character_pack_id") or "").strip()
+        character = str(
+            character_pack_id or detail.get("character_pack_id") or item.get("character_pack_id") or ""
+        ).strip()
         attachment_id = str(item.get("attachment_id") or "").strip()
         if not attachment_id:
             return self._status(operation, False, "invalid_record", reason="attachment_id_required")
@@ -1470,7 +1482,9 @@ class MemcoreManager:
         except Exception as exc:
             with self._lock:
                 self._warmed_index_keys.discard(hard_key)
-            logger.warning("memcore %s index warmup scheduling failed: %s", operation, str(exc) or exc.__class__.__name__)
+            logger.warning(
+                "memcore %s index warmup scheduling failed: %s", operation, str(exc) or exc.__class__.__name__
+            )
 
     def _run_index_warmup(
         self,

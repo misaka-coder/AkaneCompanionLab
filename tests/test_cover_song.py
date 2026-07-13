@@ -401,7 +401,6 @@ class CoverSongTests(unittest.TestCase):
             },
         }
         with (
-            patch.object(gateway, "_should_block_file_delivery", return_value=True),
             patch.object(gateway, "send_voice", return_value={"ok": True}) as send_voice,
             patch.object(gateway, "send_file", return_value={"ok": True}) as send_file,
         ):

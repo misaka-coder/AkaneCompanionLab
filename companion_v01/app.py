@@ -268,9 +268,7 @@ def _install_qq_task_completion_notifications() -> None:
             task_service.update_task(task_id=task_id, metadata=metadata, timestamp=int(time.time()))
 
         artifact_targets = _qq_completion_artifact_targets(current_task or task, handoff)
-        original_message = str(delivery.get("clean_message") or delivery.get("raw_message") or "")
         should_send = str((handoff or {}).get("next_action") or "").strip().lower() == "send_to_user"
-        should_send = should_send or qq_gateway.message_requests_file_delivery(original_message)
         if should_send and artifact_targets:
             sent_count = _send_qq_completion_files(
                 context=context,
