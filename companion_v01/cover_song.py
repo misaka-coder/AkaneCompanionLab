@@ -22,6 +22,7 @@ from .generated_files_media import build_generated_media_info_projection
 _AUDIO_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 _PROTECTED_MEDIA_EXTENSIONS = {"kgm", "mflac", "mgg", "ncm", "qmc", "qmc0", "qmc3", "tkm"}
 _PIPELINE_VERSION = "rvc-cover-v1"
+_STEM_CACHE_VERSION = "rvc-cover-stems-v1"
 
 
 class CoverSongError(RuntimeError):
@@ -66,15 +67,20 @@ class RvcWebUiProvider:
 
     def capability_status(self) -> dict[str, Any]:
         try:
-            models = self.list_voice_models()
+            models = self.list_voice_models(force=True, request_timeout_seconds=2.0)
         except Exception:
             return {"enabled": False, "status": "unavailable", "reason": "rvc_webui_unreachable"}
         if not models:
             return {"enabled": False, "status": "missing_model", "reason": "rvc_voice_models_missing"}
         return {"enabled": True, "status": "ready", "reason": ""}
 
-    def list_voice_models(self) -> list[str]:
-        config = self._load_config()
+    def list_voice_models(
+        self,
+        *,
+        force: bool = False,
+        request_timeout_seconds: float | None = None,
+    ) -> list[str]:
+        config = self._load_config(force=force, request_timeout_seconds=request_timeout_seconds)
         dependency = self._dependency(config, "infer_change_voice")
         components = self._components_by_id(config)
         for component_id in dependency.get("inputs") or []:
@@ -149,7 +155,10 @@ class RvcWebUiProvider:
                 directory.mkdir(parents=True, exist_ok=True)
             unique_stem = f"cover_{uuid.uuid4().hex[:12]}"
             staged_input = input_dir / f"{unique_stem}{source_path.suffix.lower() or '.wav'}"
-            shutil.copy2(source_path, staged_input)
+            try:
+                os.link(source_path, staged_input)
+            except OSError:
+                shutil.copy2(source_path, staged_input)
             config = self._load_config(force=True)
             data = self._build_api_inputs(
                 config,
@@ -197,7 +206,8 @@ class RvcWebUiProvider:
         rms_mix_rate: float,
         protect: float,
     ) -> dict[str, Any]:
-        config = self._load_config(force=True)
+        config = self._load_config()
+        model_selection_started = time.perf_counter()
         change_data = self._build_api_inputs(
             config,
             "infer_change_voice",
@@ -205,6 +215,7 @@ class RvcWebUiProvider:
         )
         change_response = self._post_predict(config, "infer_change_voice", change_data)
         index_path = self._extract_change_voice_index(config, change_response)
+        model_selection_seconds = time.perf_counter() - model_selection_started
         infer_data = self._build_api_inputs(
             config,
             "infer_convert",
@@ -222,7 +233,9 @@ class RvcWebUiProvider:
                 "protect": float(protect),
             },
         )
+        inference_started = time.perf_counter()
         response = self._post_predict(config, "infer_convert", infer_data)
+        inference_request_seconds = time.perf_counter() - inference_started
         payload = list(response.get("data") or [])
         info = str(payload[0] if payload else "")
         if "success" not in info.lower() or len(payload) < 2:
@@ -241,14 +254,27 @@ class RvcWebUiProvider:
             )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(result_path, output_path)
-        return {"index_path": index_path, "info": info}
+        timings = {
+            "model_selection": round(model_selection_seconds, 3),
+            "inference_request": round(inference_request_seconds, 3),
+        }
+        timings.update(self._parse_rvc_timings(info))
+        return {"index_path": index_path, "info": info, "timings": timings}
 
-    def _load_config(self, *, force: bool = False) -> dict[str, Any]:
+    def _load_config(
+        self,
+        *,
+        force: bool = False,
+        request_timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         now = time.time()
         if not force and self._config_cache is not None and now - self._config_cache[0] < 30.0:
             return self._config_cache[1]
+        timeout = min(20.0, self.timeout_seconds)
+        if request_timeout_seconds is not None:
+            timeout = max(0.25, min(timeout, float(request_timeout_seconds)))
         try:
-            response = requests.get(f"{self.base_url}/config", timeout=min(20.0, self.timeout_seconds))
+            response = requests.get(f"{self.base_url}/config", timeout=timeout)
             response.raise_for_status()
             payload = response.json()
         except Exception as exc:
@@ -408,6 +434,19 @@ class RvcWebUiProvider:
                 output.append(text)
         return output
 
+    def _parse_rvc_timings(self, value: str) -> dict[str, float]:
+        output: dict[str, float] = {}
+        labels = {
+            "npy": "feature_extraction",
+            "f0": "pitch_extraction",
+            "infer": "voice_synthesis",
+        }
+        for label, key in labels.items():
+            match = re.search(rf"(?:^|\s){label}\s*:\s*([0-9]+(?:\.[0-9]+)?)s", str(value or ""), re.IGNORECASE)
+            if match:
+                output[key] = round(float(match.group(1)), 3)
+        return output
+
     def _normalize_model_key(self, value: str) -> str:
         return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(value or "").lower())
 
@@ -455,6 +494,24 @@ class CoverSongService:
     def list_voice_models(self) -> list[str]:
         return self.provider.list_voice_models()
 
+    def has_cached_cover(self, *, profile_user_id: str, max_entries: int = 128) -> bool:
+        """Check for a reusable completed cover without reading source media."""
+
+        profile_dir = self._profile_cache_dir(profile_user_id)
+        if not profile_dir.exists():
+            return False
+        checked = 0
+        for manifest_path in profile_dir.glob("*/manifest.json"):
+            if checked >= max(1, min(1000, int(max_entries or 128))):
+                break
+            checked += 1
+            manifest = self._read_json(manifest_path)
+            output_format = self._normalize_output_format(manifest.get("output_format") or "")
+            output_path = manifest_path.parent / f"cover.{output_format}"
+            if output_path.exists() and output_path.is_file() and output_path.stat().st_size > 0:
+                return True
+        return False
+
     def cover_song(
         self,
         *,
@@ -476,6 +533,7 @@ class CoverSongService:
         force_rebuild: bool = False,
         timestamp: int | None = None,
     ) -> dict[str, Any]:
+        run_started = time.perf_counter()
         effective_ts = int(timestamp or time.time())
         normalized_format = self._normalize_output_format(output_format or self.default_output_format)
         normalized_delivery = self._normalize_delivery(delivery or self.default_delivery)
@@ -533,12 +591,17 @@ class CoverSongService:
 
         inferred_title = self._clean_label(str(source.get("title") or source_path.stem), 120)
         clean_title = clean_title or inferred_title or "未命名歌曲"
+        source_hash_started = time.perf_counter()
         source_hash = self._sha256_file(source_path)
+        source_hash_seconds = time.perf_counter() - source_hash_started
+        model_fingerprint_started = time.perf_counter()
+        model_fingerprint = self.provider.model_fingerprint(model_name)
+        model_fingerprint_seconds = time.perf_counter() - model_fingerprint_started
         cache_payload = {
             "pipeline": _PIPELINE_VERSION,
             "source_sha256": source_hash,
             "provider": self.provider.provider_id,
-            "model_fingerprint": self.provider.model_fingerprint(model_name),
+            "model_fingerprint": model_fingerprint,
             "separation_model": self.provider.separation_model,
             "voice_model": model_name,
             "params": params,
@@ -552,6 +615,14 @@ class CoverSongService:
         manifest_path = cache_dir / "manifest.json"
         if not force_rebuild and self._valid_cached_output(cached_output, manifest_path, cache_key):
             manifest = self._read_json(manifest_path)
+            processing = {
+                "cache_hit": True,
+                "seconds": {
+                    "source_hash": round(source_hash_seconds, 3),
+                    "model_fingerprint": round(model_fingerprint_seconds, 3),
+                    "total": round(time.perf_counter() - run_started, 3),
+                },
+            }
             return self._publish_generated(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -566,16 +637,68 @@ class CoverSongService:
                 cache_key=cache_key,
                 cache_hit=True,
                 timestamp=effective_ts,
+                processing=processing,
             )
 
+        stem_cache_payload = {
+            "pipeline": _STEM_CACHE_VERSION,
+            "source_sha256": source_hash,
+            "provider": self.provider.provider_id,
+            "separation_model": self.provider.separation_model,
+        }
+        stem_cache_key = hashlib.sha256(
+            json.dumps(stem_cache_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        stem_cache_dir = self._profile_cache_dir(profile_user_id) / "_stems" / stem_cache_key
+        cached_vocals = stem_cache_dir / "vocals.wav"
+        cached_instrumental = stem_cache_dir / "instrumental.wav"
+        stem_manifest_path = stem_cache_dir / "manifest.json"
+        stems_cache_hit = not force_rebuild and self._valid_cached_stems(
+            vocals=cached_vocals,
+            instrumental=cached_instrumental,
+            manifest=stem_manifest_path,
+            cache_key=stem_cache_key,
+        )
+        stems_cache_stored = False
+        timings: dict[str, float] = {
+            "source_hash": source_hash_seconds,
+            "model_fingerprint": model_fingerprint_seconds,
+        }
+        rvc_timings: dict[str, float] = {}
         job_dir = self.generated_file_service.work_dir / "_cover_song_tmp" / uuid.uuid4().hex
         try:
             job_dir.mkdir(parents=True, exist_ok=True)
             prepared = job_dir / "source.wav"
-            self._decode_source(source_path=source_path, output_path=prepared)
+            if not stems_cache_hit:
+                decode_started = time.perf_counter()
+                self._decode_source(source_path=source_path, output_path=prepared)
+                timings["decode"] = time.perf_counter() - decode_started
             converted_vocals = job_dir / "converted_vocals.wav"
             with self.provider.exclusive():
-                vocals, instrumental = self.provider.separate_vocals(source_path=prepared, work_dir=job_dir)
+                if not force_rebuild and self._valid_cached_stems(
+                    vocals=cached_vocals,
+                    instrumental=cached_instrumental,
+                    manifest=stem_manifest_path,
+                    cache_key=stem_cache_key,
+                ):
+                    vocals, instrumental = cached_vocals, cached_instrumental
+                    stems_cache_hit = True
+                else:
+                    separation_started = time.perf_counter()
+                    vocals, instrumental = self.provider.separate_vocals(source_path=prepared, work_dir=job_dir)
+                    timings["separation"] = time.perf_counter() - separation_started
+                    stem_cache_started = time.perf_counter()
+                    stems_cache_stored = self._store_stem_cache(
+                        vocals=vocals,
+                        instrumental=instrumental,
+                        cache_dir=stem_cache_dir,
+                        manifest_path=stem_manifest_path,
+                        cache_key=stem_cache_key,
+                        source_hash=source_hash,
+                        timestamp=effective_ts,
+                    )
+                    timings["stem_cache_write"] = time.perf_counter() - stem_cache_started
+                conversion_started = time.perf_counter()
                 conversion = self.provider.convert_voice(
                     source_path=vocals,
                     output_path=converted_vocals,
@@ -586,7 +709,14 @@ class CoverSongService:
                     rms_mix_rate=params["rms_mix_rate"],
                     protect=params["protect"],
                 )
+                timings["voice_conversion"] = time.perf_counter() - conversion_started
+                rvc_timings = {
+                    str(key): round(float(value), 3)
+                    for key, value in dict(conversion.get("timings") or {}).items()
+                    if isinstance(value, (int, float))
+                }
             mixed_output = job_dir / f"cover.{normalized_format}"
+            mix_started = time.perf_counter()
             self._mix_tracks(
                 converted_vocals=converted_vocals,
                 instrumental=instrumental,
@@ -595,12 +725,20 @@ class CoverSongService:
                 vocal_gain_db=params["vocal_gain_db"],
                 instrumental_gain_db=params["instrumental_gain_db"],
             )
+            timings["mix"] = time.perf_counter() - mix_started
             if not mixed_output.exists() or mixed_output.stat().st_size <= 0:
                 raise CoverSongError(
                     stage="mix",
                     reason="cover_output_missing",
                     public_message="翻唱混音流程结束了，但没有生成可用的成品音频。",
                 )
+            processing = {
+                "cache_hit": False,
+                "stems_cache_hit": bool(stems_cache_hit),
+                "stems_cache_stored": bool(stems_cache_stored),
+                "seconds": {str(key): round(float(value), 3) for key, value in timings.items()},
+                "rvc": rvc_timings,
+            }
             manifest = {
                 "cache_key": cache_key,
                 "pipeline": _PIPELINE_VERSION,
@@ -612,11 +750,19 @@ class CoverSongService:
                 "params": params,
                 "index_name": Path(str(conversion.get("index_path") or "")).name,
                 "created_at": effective_ts,
+                "processing": processing,
             }
+            cache_write_started = time.perf_counter()
             with self._cache_lock:
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 self._atomic_copy(mixed_output, cached_output)
+                processing["seconds"]["final_audio_cache_write"] = round(
+                    time.perf_counter() - cache_write_started,
+                    3,
+                )
+                processing["seconds"]["total"] = round(time.perf_counter() - run_started, 3)
                 self._atomic_write_json(manifest_path, manifest)
+            processing["seconds"]["total"] = round(time.perf_counter() - run_started, 3)
             return self._publish_generated(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -631,11 +777,35 @@ class CoverSongService:
                 cache_key=cache_key,
                 cache_hit=False,
                 timestamp=effective_ts,
+                processing=processing,
             )
         except CoverSongError as exc:
-            return self._failure(exc.stage, exc.reason, exc.public_message)
+            processing = {
+                "cache_hit": False,
+                "stems_cache_hit": bool(stems_cache_hit),
+                "seconds": {
+                    **{str(key): round(float(value), 3) for key, value in timings.items()},
+                    "total": round(time.perf_counter() - run_started, 3),
+                },
+                "rvc": rvc_timings,
+            }
+            return self._failure(exc.stage, exc.reason, exc.public_message, processing=processing)
         except Exception:
-            return self._failure("pipeline", "cover_song_failed", "翻唱流程遇到了未预期错误，输入和已有缓存仍然保留。")
+            processing = {
+                "cache_hit": False,
+                "stems_cache_hit": bool(stems_cache_hit),
+                "seconds": {
+                    **{str(key): round(float(value), 3) for key, value in timings.items()},
+                    "total": round(time.perf_counter() - run_started, 3),
+                },
+                "rvc": rvc_timings,
+            }
+            return self._failure(
+                "pipeline",
+                "cover_song_failed",
+                "翻唱流程遇到了未预期错误，输入和已有缓存仍然保留。",
+                processing=processing,
+            )
         finally:
             if job_dir.exists():
                 shutil.rmtree(job_dir, ignore_errors=True)
@@ -704,6 +874,7 @@ class CoverSongService:
             cache_key=str(manifest.get("cache_key") or cached_output.parent.name),
             cache_hit=True,
             timestamp=timestamp,
+            processing={"cache_hit": True, "seconds": {}},
         )
 
     def _publish_generated(
@@ -722,6 +893,7 @@ class CoverSongService:
         cache_key: str,
         cache_hit: bool,
         timestamp: int,
+        processing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         model_label = Path(model_name).stem
         title = self.generated_file_service._normalize_title(f"{song_title}_{model_label}_翻唱") or "Akane翻唱"
@@ -760,6 +932,7 @@ class CoverSongService:
                 "cache_key_prefix": cache_key[:12],
                 "pipeline_version": _PIPELINE_VERSION,
             },
+            "processing": dict(processing or {"cache_hit": bool(cache_hit)}),
         }
         content_card["media_info"] = build_generated_media_info_projection(
             self.generated_file_service,
@@ -791,6 +964,7 @@ class CoverSongService:
             "send_to_user": delivery != "none",
             "delivery_mode": delivery,
             "cache_hit": bool(cache_hit),
+            "processing": dict(processing or {"cache_hit": bool(cache_hit)}),
             "followup_context": (
                 f"你刚刚已经完成《{song_title}》的 RVC 翻唱，结果是 {generated.get('generated_handle')}。"
                 + ("这次命中了现成缓存，没有重复推理。" if cache_hit else "这次完成了人声分离、音色转换和重新混音。")
@@ -913,14 +1087,69 @@ class CoverSongService:
             return False
         return str(self._read_json(manifest).get("cache_key") or "") == cache_key
 
+    def _valid_cached_stems(
+        self,
+        *,
+        vocals: Path,
+        instrumental: Path,
+        manifest: Path,
+        cache_key: str,
+    ) -> bool:
+        for path in (vocals, instrumental, manifest):
+            if not path.exists() or not path.is_file() or path.stat().st_size <= 0:
+                return False
+        payload = self._read_json(manifest)
+        return (
+            str(payload.get("cache_key") or "") == cache_key
+            and str(payload.get("pipeline") or "") == _STEM_CACHE_VERSION
+        )
+
+    def _store_stem_cache(
+        self,
+        *,
+        vocals: Path,
+        instrumental: Path,
+        cache_dir: Path,
+        manifest_path: Path,
+        cache_key: str,
+        source_hash: str,
+        timestamp: int,
+    ) -> bool:
+        try:
+            with self._cache_lock:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                self._atomic_copy(vocals, cache_dir / "vocals.wav")
+                self._atomic_copy(instrumental, cache_dir / "instrumental.wav")
+                self._atomic_write_json(
+                    manifest_path,
+                    {
+                        "cache_key": cache_key,
+                        "pipeline": _STEM_CACHE_VERSION,
+                        "source_sha256": source_hash,
+                        "provider": self.provider.provider_id,
+                        "separation_model": self.provider.separation_model,
+                        "created_at": int(timestamp),
+                    },
+                )
+        except OSError:
+            return False
+        return True
+
     def _profile_cache_dir(self, profile_user_id: str) -> Path:
         safe_profile = self.generated_file_service._safe_filename(profile_user_id or "profile")[:80] or "profile"
         return self.cache_root / safe_profile
 
     def _atomic_copy(self, source: Path, destination: Path) -> None:
         temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-        shutil.copy2(source, temporary)
-        os.replace(temporary, destination)
+        try:
+            try:
+                os.link(source, temporary)
+            except OSError:
+                shutil.copy2(source, temporary)
+            os.replace(temporary, destination)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
     def _atomic_write_json(self, path: Path, payload: dict[str, Any]) -> None:
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -975,11 +1204,21 @@ class CoverSongService:
     def _normalize_lookup(self, value: Any) -> str:
         return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(value or "").lower())
 
-    def _failure(self, stage: str, reason: str, message: str) -> dict[str, Any]:
-        return {
+    def _failure(
+        self,
+        stage: str,
+        reason: str,
+        message: str,
+        *,
+        processing: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        result = {
             "ok": False,
             "generated": None,
             "stage": str(stage or "unknown"),
             "error": str(reason or "cover_song_failed"),
             "followup_context": f"这次翻唱没有完成：{message}请根据现有信息自然告诉用户，不要假装已生成文件。",
         }
+        if processing:
+            result["processing"] = dict(processing)
+        return result

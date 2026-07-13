@@ -251,13 +251,12 @@ system = "semantic reinforcement system"
             self.assertIn("debug mode", result["system_prompt"])
             self.assertIn("历史记忆与当前任务边界", result["system_prompt"])
             self.assertIn("历史状态不是当前待办", result["system_prompt"])
-            self.assertIn("- fake tool", result["system_prompt"])
+            self.assertNotIn("- fake tool", result["system_prompt"])
+            self.assertIn("本轮能力与工具上下文边界", result["system_prompt"])
+            self.assertIn("- fake tool", result["user_prompt"])
             self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", result["system_prompt"])
             self.assertIn("persona state", result["system_prompt"])
             self.assertLess(result["system_prompt"].index("debug mode"), result["system_prompt"].index("persona state"))
-            self.assertLess(
-                result["system_prompt"].index("- fake tool"), result["system_prompt"].index("persona state")
-            )
             self.assertEqual(
                 result["system_extra_blocks"],
                 [
@@ -295,10 +294,57 @@ system = "semantic reinforcement system"
             self.assertIn("user.raw_recent_timeline", audit_names)
             self.assertIn("user.retrieval_snippets", audit_names)
             self.assertIn("user.current_visual_context", audit_names)
+            self.assertIn("user.tool_context", audit_names)
             self.assertIn("user.current_message", audit_names)
             self.assertIn("user.extra_context.relationship", audit_names)
             self.assertIn("user.extra_context.turn_extra_context", audit_names)
             self.assertNotIn("user.extra_context.empty", audit_names)
+
+    def test_dynamic_tool_state_does_not_change_stable_system_prefix(self) -> None:
+        persona = load_persona_config()
+        builder = PromptBuilder(persona)
+        common = {
+            "now_ts": 1_712_400_000,
+            "raw_text": "User: 请处理这个文件",
+            "current_message_text": "User: 请处理这个文件",
+            "episodic_summary_text": "",
+            "semantic_summary_text": "",
+            "memory_text": "",
+            "current_visual_context": "",
+            "resource_context": "",
+            "extra_context": "",
+            "visual_defaults": {
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            "allow_tool_call": True,
+            "debug_enabled": False,
+        }
+
+        latent = builder.build_final_generation_context(
+            **common,
+            tool_prompt_context="【可按需激活的能力】\n- 上传音频后启用媒体处理。",
+        )
+        ready = builder.build_final_generation_context(
+            **common,
+            tool_prompt_context="【当前可用能力概览】\n- 已启用媒体处理。\n- transcribe_media：测试 schema。",
+        )
+
+        self.assertEqual(latent["system_prompt"], ready["system_prompt"])
+        self.assertNotEqual(latent["user_prompt"], ready["user_prompt"])
+        self.assertNotIn("上传音频后启用媒体处理", latent["system_prompt"])
+        self.assertLess(
+            latent["user_prompt"].index("当前会话中所有未总结的原始消息"),
+            latent["user_prompt"].index("【本轮系统能力与工具上下文】"),
+        )
+        self.assertLess(
+            latent["user_prompt"].index("【本轮系统能力与工具上下文】"),
+            latent["user_prompt"].index("用户原始消息"),
+        )
 
     def test_final_output_schema_places_tool_call_after_speech_segments(self) -> None:
         persona = load_persona_config()
@@ -355,7 +401,7 @@ system = "semantic reinforcement system"
 
         self.assertIn("desktop_pet 桌宠模式", prompt)
         self.assertIn("只能从本轮给你的角色包资源清单里选择，不要编造不存在的 emotion", prompt)
-        self.assertIn("当用户明确要求你生成、转换、发送或处理文件", prompt)
+        self.assertIn("用户说出「生成/转换/发送/处理/导出/提取/分析文件」", prompt)
         self.assertIn("activity 是给桌宠执行的请求", prompt)
         self.assertIn("affinity 是本轮好感度变化量", prompt)
         self.assertIn("不是当前总值", prompt)
@@ -368,7 +414,7 @@ system = "semantic reinforcement system"
         prompt = build_qq_text_system_prompt()
 
         self.assertIn("当前是 QQ 文字聊天模式", prompt)
-        self.assertIn("当用户明确要求你生成、转换、发送或处理文件", prompt)
+        self.assertIn("用户说出「生成/转换/发送/处理/导出/提取/分析文件」", prompt)
         self.assertIn("不要总拿上一轮或更早的事开头", prompt)
         self.assertIn("先回用户眼前这句话", prompt)
         self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", prompt)

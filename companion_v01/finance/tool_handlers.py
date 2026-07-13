@@ -167,6 +167,8 @@ COMPOSE_FINANCE_REPORT_SCHEMA: dict[str, Any] = {
 
 class _FinanceReadToolHandler(BaseToolHandler):
     input_schema: dict[str, Any] = {}
+    required_provider_capabilities: tuple[str, ...] = ()
+    require_provider_health = True
 
     def __init__(self, *, service: MarketDataToolService) -> None:
         self.service = service
@@ -174,12 +176,17 @@ class _FinanceReadToolHandler(BaseToolHandler):
     def tool_metadata(self) -> ToolMetadata:
         return ToolMetadata(**_FINANCE_METADATA, input_schema=self.input_schema)
 
+    def capability_status(self) -> dict[str, Any]:
+        return self.service.capability_status(
+            self.required_provider_capabilities,
+            require_provider_health=self.require_provider_health,
+        )
+
     def _result(self, payload: dict[str, Any]) -> ToolExecutionResult:
         status = str(payload.get("status") or "unavailable").strip().lower()
         followup = (
             "以下是金融工具返回的结构化证据。区分来源事实、程序计算与分析推断；"
-            "任何时效性结论都必须引用 as_of。\n"
-            + json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+            "任何时效性结论都必须引用 as_of。\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
         )
         evidence_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
         event_ids, source_urls, codes = _collect_evidence_identifiers(payload.get("data"))
@@ -230,10 +237,11 @@ class _FinanceReadToolHandler(BaseToolHandler):
 class MarketResolveSecurityToolHandler(_FinanceReadToolHandler):
     tool_type = "market_resolve_security"
     input_schema = MARKET_RESOLVE_SECURITY_SCHEMA
+    require_provider_health = False
 
     def build_prompt_instruction(self) -> str:
         return (
-            '- market_resolve_security：把用户给出的证券名称/别名解析成可信 provider code。格式为 '
+            "- market_resolve_security：把用户给出的证券名称/别名解析成可信 provider code。格式为 "
             '{"type":"market_resolve_security","query":"贵州茅台","limit":5}。'
             "query 只放用户原文里的证券名称/别名，不放整句任务，也不要把日经225改写成猜测的 ^N225 等 vendor symbol。"
             "用户没有直接给出完整 provider code 时，必须先用本工具；只有 resolved=true 才能直接继续查行情。"
@@ -299,6 +307,7 @@ class MarketResolveSecurityToolHandler(_FinanceReadToolHandler):
 class MarketNewsSearchToolHandler(_FinanceReadToolHandler):
     tool_type = "market_news_search"
     input_schema = MARKET_NEWS_SEARCH_SCHEMA
+    required_provider_capabilities = ("news_search",)
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -381,6 +390,7 @@ class MarketNewsSearchToolHandler(_FinanceReadToolHandler):
 class MarketQuoteSnapshotToolHandler(_FinanceReadToolHandler):
     tool_type = "market_quote_snapshot"
     input_schema = MARKET_QUOTE_SNAPSHOT_SCHEMA
+    required_provider_capabilities = ("quote_snapshot",)
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -424,6 +434,7 @@ class MarketQuoteSnapshotToolHandler(_FinanceReadToolHandler):
 class MarketPriceSeriesToolHandler(_FinanceReadToolHandler):
     tool_type = "market_price_series"
     input_schema = MARKET_PRICE_SERIES_SCHEMA
+    required_provider_capabilities = ("price_series",)
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -506,6 +517,7 @@ class MarketPriceSeriesToolHandler(_FinanceReadToolHandler):
 class RenderMarketChartToolHandler(_FinanceReadToolHandler):
     tool_type = "render_market_chart"
     input_schema = RENDER_MARKET_CHART_SCHEMA
+    required_provider_capabilities = ("price_series",)
 
     def __init__(
         self,
@@ -529,7 +541,7 @@ class RenderMarketChartToolHandler(_FinanceReadToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            '- render_market_chart：从可信行情源重新读取 OHLCV，并用本地固定模板生成 K 线+成交量 PNG。格式为 '
+            "- render_market_chart：从可信行情源重新读取 OHLCV，并用本地固定模板生成 K 线+成交量 PNG。格式为 "
             '{"type":"render_market_chart","code":"600519.SH","chart_type":"candlestick_volume",'
             '"interval":"1d","adjusted":"none","lookback":120,"moving_averages":[5,20],'
             '"title":"贵州茅台日线量价","send_to_user":true}。'
@@ -737,6 +749,7 @@ class RenderMarketChartToolHandler(_FinanceReadToolHandler):
 class ComposeFinanceReportToolHandler(_FinanceReadToolHandler):
     tool_type = "compose_finance_report"
     input_schema = COMPOSE_FINANCE_REPORT_SCHEMA
+    required_provider_capabilities = ("quote_snapshot", "price_series")
 
     def __init__(
         self,
@@ -760,7 +773,7 @@ class ComposeFinanceReportToolHandler(_FinanceReadToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            '- compose_finance_report：生成带可信行情、程序指标、来源、as_of 和免责声明的金融报告。格式为 '
+            "- compose_finance_report：生成带可信行情、程序指标、来源、as_of 和免责声明的金融报告。格式为 "
             '{"type":"compose_finance_report","report_type":"security_brief|market_comparison",'
             '"codes":["600519.SH"],"output_format":"md|pdf|xlsx","interval":"1d",'
             '"adjusted":"none","lookback":120,"chart_ids":["gen_001"],'
@@ -1103,13 +1116,7 @@ class ComposeFinanceReportToolHandler(_FinanceReadToolHandler):
         except (TypeError, ValueError):
             width = 0
             height = 0
-        if (
-            not as_of
-            or not source
-            or not re.fullmatch(r"[0-9a-f]{64}", series_sha256)
-            or width <= 0
-            or height <= 0
-        ):
+        if not as_of or not source or not re.fullmatch(r"[0-9a-f]{64}", series_sha256) or width <= 0 or height <= 0:
             raise MarketDataValidationError(
                 field="chart_ids",
                 reason="trusted chart metadata is incomplete",

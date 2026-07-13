@@ -1043,9 +1043,16 @@ class MemoryStore:
         return self._row_to_session({**dict(row), "display_title": normalized_title, "updated_at": effective_ts})
 
     def get_session(self, profile_user_id: str, session_id: str) -> dict[str, Any] | None:
-        from .sessions import get_session as _fn
-
-        return _fn(self, profile_user_id=profile_user_id, session_id=session_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM chat_sessions
+                WHERE profile_user_id = ? AND session_id = ?
+                LIMIT 1
+                """,
+                (str(profile_user_id), str(session_id)),
+            ).fetchone()
+        return self._row_to_session(dict(row)) if row else None
 
     def get_character_session(
         self,

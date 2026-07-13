@@ -5,6 +5,8 @@ import binascii
 import hashlib
 import json
 import re
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,6 +50,10 @@ class PinAIImageProvider:
         timeout_seconds: float = 300.0,
         max_output_bytes: int = 25 * 1024 * 1024,
         session: Any = None,
+        readiness_ready_ttl_seconds: float = 30 * 60,
+        readiness_failure_ttl_seconds: float = 5 * 60,
+        readiness_probe_in_background: bool = True,
+        readiness_clock=time.monotonic,
     ) -> None:
         self.base_url = self._normalize_base_url(base_url)
         self.api_key = str(api_key or "").strip()
@@ -55,10 +61,117 @@ class PinAIImageProvider:
         self.timeout_seconds = max(30.0, min(600.0, float(timeout_seconds or 300.0)))
         self.max_output_bytes = max(512 * 1024, int(max_output_bytes or 0))
         self.session = session or requests.Session()
+        self._readiness_ready_ttl_seconds = max(30.0, float(readiness_ready_ttl_seconds))
+        self._readiness_failure_ttl_seconds = max(30.0, float(readiness_failure_ttl_seconds))
+        self._readiness_probe_in_background = bool(readiness_probe_in_background)
+        self._readiness_clock = readiness_clock
+        self._readiness_cache: tuple[float, dict[str, Any]] | None = None
+        self._readiness_probe_inflight = False
+        self._readiness_lock = threading.RLock()
 
     @property
     def configured(self) -> bool:
         return bool(self.base_url and self.api_key and self.model)
+
+    def capability_status(self) -> dict[str, Any]:
+        if not self.configured:
+            return {"enabled": False, "status": "missing_config", "reason": "image_provider_not_configured"}
+        now = float(self._readiness_clock())
+        with self._readiness_lock:
+            if self._readiness_cache is not None and self._readiness_cache[0] > now:
+                return dict(self._readiness_cache[1])
+            if self._readiness_probe_in_background:
+                if not self._readiness_probe_inflight:
+                    self._readiness_probe_inflight = True
+                    threading.Thread(
+                        target=self._probe_capability_background,
+                        name="akane-image-generation-readiness",
+                        daemon=True,
+                    ).start()
+                return {
+                    "enabled": False,
+                    "status": "checking",
+                    "reason": "image_provider_probe_pending",
+                    "cache_ttl_seconds": 1.0,
+                }
+        return self._probe_capability()
+
+    def _probe_capability(self) -> dict[str, Any]:
+        try:
+            response = self.session.get(
+                f"{self.base_url}/models",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=(5.0, min(15.0, self.timeout_seconds)),
+            )
+            status_code = int(getattr(response, "status_code", 0) or 0)
+            error_text = self._response_error_text(response)
+            if "images api is not supported" in error_text:
+                status = {
+                    "enabled": False,
+                    "status": "unsupported",
+                    "reason": "image_key_not_bound_to_openai_platform",
+                }
+            elif status_code == 200:
+                model_ids = self._response_model_ids(response)
+                status = (
+                    {"enabled": True, "status": "ready", "reason": ""}
+                    if self.model in model_ids
+                    else {
+                        "enabled": False,
+                        "status": "unsupported",
+                        "reason": "image_model_not_available_for_key",
+                    }
+                )
+            elif status_code in {401, 403}:
+                status = {
+                    "enabled": False,
+                    "status": "permission_denied",
+                    "reason": "image_provider_auth_rejected",
+                }
+            elif status_code == 429:
+                status = {
+                    "enabled": False,
+                    "status": "rate_limited",
+                    "reason": "image_provider_rate_limited",
+                }
+            elif status_code == 404:
+                status = {
+                    "enabled": False,
+                    "status": "unsupported",
+                    "reason": "image_model_or_endpoint_not_found",
+                }
+            else:
+                status = {
+                    "enabled": False,
+                    "status": "unavailable",
+                    "reason": "image_provider_probe_failed",
+                }
+        except (requests.Timeout, TimeoutError):
+            status = {"enabled": False, "status": "unavailable", "reason": "image_provider_probe_timeout"}
+        except requests.RequestException:
+            status = {"enabled": False, "status": "unavailable", "reason": "image_provider_transport_error"}
+        except Exception as exc:
+            status = {
+                "enabled": False,
+                "status": "unavailable",
+                "reason": f"image_provider_probe_failed:{type(exc).__name__}",
+            }
+        self._remember_capability_status(status)
+        return dict(status)
+
+    def _probe_capability_background(self) -> None:
+        try:
+            self._probe_capability()
+        finally:
+            with self._readiness_lock:
+                self._readiness_probe_inflight = False
+
+    def _remember_capability_status(self, status: dict[str, Any]) -> None:
+        enabled = bool(status.get("enabled"))
+        ttl = self._readiness_ready_ttl_seconds if enabled else self._readiness_failure_ttl_seconds
+        normalized = {**status, "cache_ttl_seconds": min(300.0, ttl)}
+        with self._readiness_lock:
+            self._readiness_cache = (float(self._readiness_clock()) + ttl, normalized)
 
     def generate(
         self,
@@ -208,8 +321,13 @@ class PinAIImageProvider:
             raise ImageGenerationError("provider_transport_error", retryable=True) from exc
         status_code = int(getattr(response, "status_code", 0) or 0)
         if status_code >= 400:
+            error_text = self._response_error_text(response)
             raise ImageGenerationError(
-                "provider_auth_or_network_forbidden"
+                "provider_images_api_unsupported"
+                if "images api is not supported" in error_text
+                else "provider_files_api_unsupported"
+                if "files api is not supported" in error_text
+                else "provider_auth_or_network_forbidden"
                 if status_code in {401, 403}
                 else "provider_rate_limited"
                 if status_code == 429
@@ -219,6 +337,38 @@ class PinAIImageProvider:
                 retryable=status_code == 429 or status_code >= 500,
             )
         return response
+
+    @staticmethod
+    def _response_error_text(response: Any) -> str:
+        try:
+            payload = response.json()
+        except Exception:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        values = (
+            error.get("type"),
+            error.get("code"),
+            error.get("message"),
+            payload.get("message"),
+        )
+        return " ".join(str(value or "").strip().lower() for value in values if str(value or "").strip())[:500]
+
+    @staticmethod
+    def _response_model_ids(response: Any) -> set[str]:
+        try:
+            payload = response.json()
+        except Exception:
+            return set()
+        items = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            return set()
+        return {
+            str(item.get("id") or "").strip()
+            for item in items
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        }
 
     def _decode_response_images(self, response: Any, *, requested_count: int) -> list[GeneratedImageBytes]:
         content_type = str(getattr(response, "headers", {}).get("Content-Type") or "").lower()
@@ -397,6 +547,12 @@ class ImageGenerationService:
         self.max_output_images = max(1, min(4, int(max_output_images or 4)))
         self.max_image_bytes = max(128 * 1024, int(max_image_bytes or 0))
         self.max_total_input_bytes = max(self.max_image_bytes, int(max_total_input_bytes or 0))
+
+    def capability_status(self) -> dict[str, Any]:
+        status_fn = getattr(self.provider, "capability_status", None)
+        if not callable(status_fn):
+            return {"enabled": False, "status": "unavailable", "reason": "image_provider_status_missing"}
+        return dict(status_fn() or {})
 
     def generate(
         self,

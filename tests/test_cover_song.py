@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import unittest
@@ -65,7 +66,17 @@ class _FakeRvcProvider:
     def convert_voice(self, *, source_path: Path, output_path: Path, **kwargs):
         self.conversion_calls += 1
         shutil.copy2(source_path, output_path)
-        return {"index_path": "fake.index", "info": "Success."}
+        return {
+            "index_path": "fake.index",
+            "info": "Success.",
+            "timings": {
+                "model_selection": 0.12,
+                "inference_request": 0.34,
+                "feature_extraction": 0.1,
+                "pitch_extraction": 0.2,
+                "voice_synthesis": 0.04,
+            },
+        }
 
 
 class _TestCoverSongService(CoverSongService):
@@ -124,6 +135,7 @@ class CoverSongTests(unittest.TestCase):
     def test_cover_song_generates_and_reuses_content_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             service, provider, _generated = self._build_service(Path(temp_dir))
+            self.assertFalse(service.has_cached_cover(profile_user_id="user"))
             first = service.cover_song(
                 profile_user_id="user",
                 session_id="session",
@@ -146,6 +158,7 @@ class CoverSongTests(unittest.TestCase):
             )
 
             self.assertTrue(first["ok"])
+            self.assertTrue(service.has_cached_cover(profile_user_id="user"))
             self.assertFalse(first["cache_hit"])
             self.assertTrue(second["ok"])
             self.assertTrue(second["cache_hit"])
@@ -189,6 +202,87 @@ class CoverSongTests(unittest.TestCase):
             self.assertEqual(restored["generated"]["generated_handle"], "gen_001")
             self.assertEqual(restored["delivery_mode"], "file")
 
+    def test_cover_song_reuses_stems_when_voice_model_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service, provider, _generated = self._build_service(Path(temp_dir))
+            first = service.cover_song(
+                profile_user_id="user",
+                session_id="session",
+                source_target="audio_001",
+                song_title="测试歌曲",
+                voice_model="Akie-test.pth",
+                output_format="wav",
+                delivery="none",
+                timestamp=200,
+            )
+            second = service.cover_song(
+                profile_user_id="user",
+                session_id="session",
+                source_target="audio_001",
+                song_title="测试歌曲",
+                voice_model="mi-test.pth",
+                output_format="wav",
+                delivery="none",
+                timestamp=300,
+            )
+
+            self.assertTrue(first["ok"])
+            self.assertTrue(second["ok"])
+            self.assertEqual(provider.separation_calls, 1)
+            self.assertEqual(provider.conversion_calls, 2)
+            self.assertFalse(first["processing"]["stems_cache_hit"])
+            self.assertTrue(first["processing"]["stems_cache_stored"])
+            self.assertTrue(second["processing"]["stems_cache_hit"])
+            self.assertNotIn("separation", second["processing"]["seconds"])
+            self.assertEqual(second["processing"]["rvc"]["pitch_extraction"], 0.2)
+            self.assertNotIn(str(Path(temp_dir)), json.dumps(second["processing"], ensure_ascii=False))
+
+    def test_cover_song_force_rebuild_bypasses_stem_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service, provider, _generated = self._build_service(Path(temp_dir))
+            first = service.cover_song(
+                profile_user_id="user",
+                session_id="session",
+                source_target="audio_001",
+                voice_model="auto",
+                output_format="wav",
+                delivery="none",
+                timestamp=200,
+            )
+            rebuilt = service.cover_song(
+                profile_user_id="user",
+                session_id="session",
+                source_target="audio_001",
+                voice_model="auto",
+                output_format="wav",
+                delivery="none",
+                force_rebuild=True,
+                timestamp=300,
+            )
+
+            self.assertTrue(first["ok"])
+            self.assertTrue(rebuilt["ok"])
+            self.assertEqual(provider.separation_calls, 2)
+            self.assertEqual(provider.conversion_calls, 2)
+            self.assertFalse(rebuilt["processing"]["stems_cache_hit"])
+
+    def test_rvc_provider_extracts_safe_stage_timings(self) -> None:
+        provider = RvcWebUiProvider(base_url="http://127.0.0.1:7899")
+
+        timings = provider._parse_rvc_timings(
+            "Success.\nIndex:\nC:/private/model.index.\nTime:\nnpy: 1.25s, f0: 2.50s, infer: 3.75s."
+        )
+
+        self.assertEqual(
+            timings,
+            {
+                "feature_extraction": 1.25,
+                "pitch_extraction": 2.5,
+                "voice_synthesis": 3.75,
+            },
+        )
+        self.assertNotIn("private", json.dumps(timings))
+
     def test_cover_song_tool_auto_delivery_becomes_qq_voice(self) -> None:
         class FakeService:
             def capability_status(self):
@@ -224,8 +318,20 @@ class CoverSongTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["delivery_mode"], "voice")
         self.assertEqual(result.stream_events[0]["delivery_scope"], "cover_song")
 
-    def test_cover_song_tool_is_visible_without_current_media_for_cached_requests(self) -> None:
+    def test_cover_song_tool_is_latent_without_media_or_cache(self) -> None:
         selection = CapabilityRegistry().select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT))
+
+        self.assertNotIn("cover_song", selection.module_names)
+        self.assertNotIn("cover_song", selection.tool_names)
+        self.assertNotIn("media_workbench", selection.module_names)
+        disclosure = next(item for item in selection.disclosures if item.capability_id == "cover_song")
+        self.assertEqual(disclosure.state, "latent")
+        self.assertIn("上传一首歌", disclosure.activation)
+
+    def test_cover_song_tool_is_visible_for_cached_requests(self) -> None:
+        selection = CapabilityRegistry().select(
+            CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT, has_cover_song_cache=True)
+        )
 
         self.assertIn("cover_song", selection.module_names)
         self.assertIn("cover_song", selection.tool_names)
@@ -247,6 +353,28 @@ class CoverSongTests(unittest.TestCase):
         with patch.object(provider, "_load_config", return_value=config):
             self.assertEqual(provider.list_voice_models(), ["A.pth", "B.pth"])
             self.assertEqual(provider.resolve_voice_model("b", default_model=""), "B.pth")
+
+    def test_rvc_capability_probe_uses_short_forced_timeout(self) -> None:
+        provider = RvcWebUiProvider(base_url="http://127.0.0.1:7899")
+        config = {
+            "components": [
+                {"id": 6, "type": "dropdown", "props": {"label": "推理音色", "choices": ["A.pth"]}},
+            ],
+            "dependencies": [{"api_name": "infer_change_voice", "inputs": [6], "outputs": []}],
+        }
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return config
+
+        with patch("companion_v01.cover_song.requests.get", return_value=FakeResponse()) as request:
+            status = provider.capability_status()
+
+        self.assertTrue(status["enabled"])
+        self.assertEqual(request.call_args.kwargs["timeout"], 2.0)
 
     def test_qq_cover_delivery_scope_can_send_voice_without_generic_file_wording(self) -> None:
         gateway = NapCatQQGateway()

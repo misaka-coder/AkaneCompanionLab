@@ -444,9 +444,9 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             native_names = [tool["function"]["name"] for tool in context["native_tools"]]
             self.assertEqual(native_names, ["retrieve_memory"])
             self.assertEqual(context["native_tool_choice"], "auto")
-            self.assertIn("retrieve_memory", context["system_prompt"])
+            self.assertNotIn("retrieve_memory", context["system_prompt"])
+            self.assertIn("retrieve_memory", context["tool_prompt_context"])
             self.assertNotIn("web_search", context["system_prompt"])
-            self.assertNotIn("retrieve_memory", context["tool_prompt_context"])
             self.assertIn("send_file", context["tool_prompt_context"])
             self.assertNotIn("web_search", context["tool_prompt_context"])
         finally:

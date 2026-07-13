@@ -212,7 +212,7 @@ class PublicMarketProviderTests(unittest.TestCase):
 
     def test_health_reflects_enabled_optional_dependencies_without_network(self) -> None:
         ready = PublicMarketProvider(dependency_probe=lambda _name: True, clock=lambda: 100)
-        degraded = PublicMarketProvider(dependency_probe=lambda name: name == "yfinance", clock=lambda: 100)
+        degraded = PublicMarketProvider(dependency_probe=lambda name: name == "requests", clock=lambda: 100)
         disconnected = PublicMarketProvider(dependency_probe=lambda _name: False, clock=lambda: 100)
         self.assertEqual(ready.health().status, "ready")
         self.assertEqual(degraded.health().status, "degraded")

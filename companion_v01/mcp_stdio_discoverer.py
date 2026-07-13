@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -61,9 +62,7 @@ class McpStdioToolDiscoverer:
             return await asyncio.wait_for(self._discover(process), timeout=self.timeout_seconds)
         except asyncio.TimeoutError as exc:
             stderr_text = await _read_stderr(process)
-            raise McpStdioDiscoveryError(
-                f"mcp_discovery_timeout{': ' + stderr_text if stderr_text else ''}"
-            ) from exc
+            raise McpStdioDiscoveryError(f"mcp_discovery_timeout{': ' + stderr_text if stderr_text else ''}") from exc
         except McpStdioDiscoveryError as exc:
             stderr_text = await _read_stderr(process)
             if stderr_text and not str(exc).endswith(stderr_text):
@@ -149,22 +148,7 @@ class McpStdioToolDiscoverer:
         raise McpStdioDiscoveryError("mcp_response_not_found")
 
     async def _stop_process(self, process: asyncio.subprocess.Process) -> None:
-        if process.stdin is not None:
-            try:
-                process.stdin.close()
-            except Exception:
-                pass
-        if process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=1.5)
-            except Exception:
-                if process.returncode is None:
-                    process.kill()
-                    try:
-                        await asyncio.wait_for(process.wait(), timeout=1.5)
-                    except Exception:
-                        pass
+        await _stop_stdio_process(process)
 
 
 class McpStdioToolCaller:
@@ -295,30 +279,11 @@ class McpStdioToolCaller:
         raise McpStdioDiscoveryError("mcp_response_not_found")
 
     async def _stop_process(self, process: asyncio.subprocess.Process) -> None:
-        if process.stdin is not None:
-            try:
-                process.stdin.close()
-            except Exception:
-                pass
-        if process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=1.5)
-            except Exception:
-                if process.returncode is None:
-                    process.kill()
-                    try:
-                        await asyncio.wait_for(process.wait(), timeout=1.5)
-                    except Exception:
-                        pass
+        await _stop_stdio_process(process)
 
 
 def _hydrate_env_placeholders(env: dict[str, str], *, args: list[str], cwd: str | None = None) -> None:
-    wanted = {
-        match.group(1)
-        for arg in args
-        for match in _ENV_PLACEHOLDER_RE.finditer(str(arg or ""))
-    }
+    wanted = {match.group(1) for arg in args for match in _ENV_PLACEHOLDER_RE.finditer(str(arg or ""))}
     missing = {key for key in wanted if key not in env or env.get(key) == ""}
     if not missing:
         return
@@ -369,6 +334,66 @@ async def _read_stderr(process: asyncio.subprocess.Process, *, max_bytes: int = 
         return raw.decode("utf-8", errors="replace").strip()
     except Exception:
         return ""
+
+
+async def _stop_stdio_process(process: asyncio.subprocess.Process) -> None:
+    if process.stdin is not None:
+        try:
+            process.stdin.close()
+            await process.stdin.wait_closed()
+        except Exception:
+            pass
+    if process.returncode is None:
+        await _terminate_stdio_process_tree(process)
+    try:
+        await asyncio.wait_for(process.communicate(), timeout=1.0)
+        return
+    except Exception:
+        pass
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(process.communicate(), timeout=1.0)
+    except Exception:
+        pass
+    finally:
+        transport = getattr(process, "_transport", None)
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
+        await asyncio.sleep(0)
+
+
+async def _terminate_stdio_process_tree(process: asyncio.subprocess.Process) -> None:
+    if sys.platform != "win32":
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+        return
+    try:
+        killer = await asyncio.create_subprocess_exec(
+            "taskkill",
+            "/PID",
+            str(process.pid),
+            "/T",
+            "/F",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        await asyncio.wait_for(killer.communicate(), timeout=2.0)
+    except Exception:
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
 
 
 def _candidate_env_files(cwd: str | None) -> list[Path]:

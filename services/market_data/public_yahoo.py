@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import date, datetime, time as datetime_time, timedelta
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 import math
 import time
 from typing import Any
 from zoneinfo import ZoneInfo
+
+import requests
 
 from .provider import MarketQuoteRequest, MarketSeriesRequest
 from .public_cache import TTLMarketDataCache
@@ -33,6 +35,10 @@ class YahooFinanceSchemaError(ValueError):
     pass
 
 
+class YahooFinanceRateLimitError(RuntimeError):
+    pass
+
+
 class YahooFinanceAdapter:
     provider_id = "public_market"
     source_name = "Yahoo Finance"
@@ -56,7 +62,7 @@ class YahooFinanceAdapter:
         clock=time.time,
     ) -> None:
         self.registry = registry or build_default_public_instrument_registry()
-        self._downloader = downloader or _default_yahoo_downloader
+        self._downloader = downloader or _default_yahoo_chart_downloader
         self._searcher = searcher or _default_yahoo_searcher
         self.timeout_seconds = max(1.0, min(60.0, float(timeout_seconds)))
         self.cache = cache if cache is not None else TTLMarketDataCache(max_entries=cache_max_entries)
@@ -142,6 +148,16 @@ class YahooFinanceAdapter:
             return self._cache_response(
                 cache_key,
                 self._failure("unavailable", "optional_dependency_missing:yfinance", instrument=instrument),
+                success_ttl=self.series_ttl_seconds,
+            )
+        except YahooFinanceSchemaError as exc:
+            return self._cache_response(
+                cache_key,
+                self._failure(
+                    "unavailable",
+                    f"upstream_schema_changed:yahoo_chart_v1:{str(exc)}",
+                    instrument=instrument,
+                ),
                 success_ttl=self.series_ttl_seconds,
             )
         except Exception as exc:
@@ -549,6 +565,91 @@ def _default_yahoo_downloader(**kwargs: Any) -> Any:
         keepna=False,
         raise_errors=True,
     )
+
+
+class _YahooChartFrame:
+    columns = ("Date", "Open", "High", "Low", "Close", "Volume")
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+        self.empty = not rows
+
+    def reset_index(self) -> "_YahooChartFrame":
+        return self
+
+    def to_dict(self, *, orient: str) -> list[dict[str, Any]]:
+        if orient != "records":
+            raise ValueError("Yahoo chart frame only supports records orientation")
+        return [dict(row) for row in self._rows]
+
+
+def _default_yahoo_chart_downloader(**kwargs: Any) -> _YahooChartFrame:
+    symbol = str(kwargs.get("tickers") or "").strip()
+    if not symbol:
+        raise YahooFinanceSchemaError("missing_symbol")
+    try:
+        start_date = date.fromisoformat(str(kwargs.get("start") or ""))
+        end_date = date.fromisoformat(str(kwargs.get("end") or ""))
+    except ValueError as exc:
+        raise YahooFinanceSchemaError("invalid_date_range") from exc
+    timeout_seconds = max(1.0, min(60.0, float(kwargs.get("timeout") or 8.0)))
+    response = requests.get(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{requests.utils.quote(symbol, safe='')}",
+        params={
+            "period1": int(datetime.combine(start_date, datetime_time.min, tzinfo=timezone.utc).timestamp()),
+            "period2": int(datetime.combine(end_date, datetime_time.min, tzinfo=timezone.utc).timestamp()),
+            "interval": "1d",
+            "events": "history",
+        },
+        headers={"User-Agent": "AkaneCompanionLab/1.0 market-readiness"},
+        timeout=timeout_seconds,
+    )
+    if response.status_code == 429:
+        raise YahooFinanceRateLimitError("Yahoo chart API rate limited the request")
+    response.raise_for_status()
+    payload = response.json()
+    chart = payload.get("chart") if isinstance(payload, Mapping) else None
+    error = chart.get("error") if isinstance(chart, Mapping) else None
+    results = chart.get("result") if isinstance(chart, Mapping) else None
+    if error:
+        raise YahooFinanceSchemaError("chart_error")
+    if not isinstance(results, list) or not results or not isinstance(results[0], Mapping):
+        raise YahooFinanceSchemaError("missing_chart_result")
+    result = results[0]
+    timestamps = result.get("timestamp")
+    indicators = result.get("indicators")
+    quote_items = indicators.get("quote") if isinstance(indicators, Mapping) else None
+    quote = quote_items[0] if isinstance(quote_items, list) and quote_items else None
+    if not isinstance(timestamps, list) or not isinstance(quote, Mapping):
+        raise YahooFinanceSchemaError("missing_chart_observations")
+    exchange_timezone = str((result.get("meta") or {}).get("exchangeTimezoneName") or "UTC")
+    try:
+        zone = ZoneInfo(exchange_timezone)
+    except Exception:
+        zone = ZoneInfo("UTC")
+    rows: list[dict[str, Any]] = []
+    for index, raw_timestamp in enumerate(timestamps):
+        values = {
+            "Open": _sequence_item(quote.get("open"), index),
+            "High": _sequence_item(quote.get("high"), index),
+            "Low": _sequence_item(quote.get("low"), index),
+            "Close": _sequence_item(quote.get("close"), index),
+            "Volume": _sequence_item(quote.get("volume"), index),
+        }
+        if any(values[name] is None for name in ("Open", "High", "Low", "Close")):
+            continue
+        try:
+            trading_date = datetime.fromtimestamp(int(raw_timestamp), tz=zone).date().isoformat()
+        except (TypeError, ValueError, OSError, OverflowError):
+            continue
+        rows.append({"Date": trading_date, **values})
+    return _YahooChartFrame(rows)
+
+
+def _sequence_item(value: Any, index: int) -> Any:
+    if not isinstance(value, (list, tuple)) or index >= len(value):
+        return None
+    return value[index]
 
 
 def _default_yahoo_searcher(**kwargs: Any) -> Any:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 import importlib.util
@@ -51,6 +52,8 @@ TEXT_EXTENSIONS = {
 }
 DOCUMENT_EXTENSIONS = {"docx", "xlsx", "pdf"}
 ARCHIVE_EXTENSIONS = {"zip"}
+MEDIA_EXTENSIONS = {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "mp4", "mov", "mkv", "webm", "avi"}
+IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff"}
 WORKSPACE_LAYER_NAMES = ("Inbox", "Outputs", "Archive")
 
 
@@ -106,6 +109,59 @@ class WorkspaceFileService:
             folder.mkdir(exist_ok=True)
             layers[folder_name] = folder
         return layers
+
+    def capability_inventory(self, *, max_files: int = 1024) -> dict[str, Any]:
+        """Return a bounded, content-free inventory for per-turn tool disclosure."""
+
+        file_limit = max(1, min(10000, int(max_files or 1024)))
+        pending_dirs = deque([self.root_dir])
+        files_scanned = 0
+        has_document = False
+        has_media = False
+        has_image = False
+        truncated = False
+
+        while pending_dirs:
+            current = pending_dirs.popleft()
+            try:
+                children = sorted(current.iterdir(), key=lambda item: item.name.casefold())
+            except OSError:
+                continue
+            for child in children:
+                try:
+                    resolved = child.resolve(strict=False)
+                    resolved.relative_to(self.root_dir)
+                    if child.is_symlink():
+                        continue
+                    if child.is_dir():
+                        pending_dirs.append(child)
+                        continue
+                    if not child.is_file():
+                        continue
+                except (OSError, ValueError):
+                    continue
+
+                files_scanned += 1
+                suffix = child.suffix.lower().lstrip(".")
+                mime_type = (mimetypes.guess_type(child.name)[0] or "").lower()
+                has_document = (
+                    has_document or suffix in TEXT_EXTENSIONS | DOCUMENT_EXTENSIONS or mime_type.startswith("text/")
+                )
+                has_media = has_media or suffix in MEDIA_EXTENSIONS or mime_type.startswith(("audio/", "video/"))
+                has_image = has_image or suffix in IMAGE_EXTENSIONS or mime_type.startswith("image/")
+                if files_scanned >= file_limit:
+                    truncated = bool(pending_dirs) or child != children[-1]
+                    pending_dirs.clear()
+                    break
+
+        return {
+            "has_any_file": files_scanned > 0,
+            "has_document_file": has_document,
+            "has_media_file": has_media,
+            "has_image_file": has_image,
+            "files_scanned": files_scanned,
+            "truncated": truncated,
+        }
 
     def layer_dir(self, layer_name: str) -> Path:
         normalized = str(layer_name or "").strip().lower()

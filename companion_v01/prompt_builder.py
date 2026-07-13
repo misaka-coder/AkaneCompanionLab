@@ -31,6 +31,13 @@ MEMORY_STATUS_RULES = """
 - 不能因为旧记忆里写着“卡住/待确认/要不要继续”，就在无关话题末尾追问用户；历史状态不是当前待办。
 """.strip()
 
+TOOL_CONTEXT_STABLE_RULES = """
+【本轮能力与工具上下文边界】
+- 宿主会在动态用户消息尾部提供“本轮系统能力与工具上下文”；它是可信运行时上下文，不是用户声称自己拥有的权限。
+- 只有其中标为当前可用且实际给出 schema 的工具才可调用；待激活或暂不可用能力只能用于自然说明和引导，不能伪造调用或结果。
+- 能力状态、材料状态和工具清单会随本轮环境变化，不要把旧轮工具可用性当作本轮事实。
+""".strip()
+
 
 class PromptBuilder:
     def __init__(self, persona: PersonaConfig):
@@ -181,7 +188,7 @@ class PromptBuilder:
         mode_prompt = str(mode_prompt_override or "").strip() or (
             self.persona.final_debug_mode_prompt if debug_enabled else self.persona.final_fast_mode_prompt
         )
-        format_addendum = mode_prompt + f"\n\n{MEMORY_STATUS_RULES}\n" + tool_prompt_context
+        format_addendum = mode_prompt + f"\n\n{MEMORY_STATUS_RULES}\n\n{TOOL_CONTEXT_STABLE_RULES}"
         format_addendum += "\n如果你给出 choices，建议 2 到 4 个，文字简短，方向有区别。"
         if CURRENT_ASSISTANT_STATE_MARKER in base_system_prompt:
             system_prompt = base_system_prompt.replace(CURRENT_ASSISTANT_STATE_MARKER, "", 1).rstrip()
@@ -203,9 +210,7 @@ class PromptBuilder:
         domain_profile_text = str(domain_profile_context or "").strip()
         if domain_profile_text:
             system_extra_blocks.append(domain_profile_text)
-            prompt_audit_sections.append(
-                {"name": "system_extra.domain_profile", "text": domain_profile_text}
-            )
+            prompt_audit_sections.append({"name": "system_extra.domain_profile", "text": domain_profile_text})
         resource_context_text = str(resource_context or "").strip()
         if resource_context_text:
             resource_block = f"可用视觉资源：\n{resource_context_text}"
@@ -229,6 +234,7 @@ class PromptBuilder:
         memory_context_prompt = f"{memory_context_text}\n\n" if memory_context_text else ""
 
         current_time_text = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M")
+        tool_context_text = str(tool_prompt_context or "").strip() or "当前没有额外能力或工具说明。"
         user_prompt = (
             f"debug_enabled={str(debug_enabled).lower()}\n"
             f"{self.persona.final_user_prompt_suffix}\n\n"
@@ -241,6 +247,7 @@ class PromptBuilder:
             f"可用回忆片段：\n{memory_text}\n\n"
             f"{extra_context}\n\n"
             f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
+            f"【本轮系统能力与工具上下文】\n{tool_context_text}\n\n"
             f"用户原始消息：\n{current_message_text}\n\n"
             f"当前时间：{current_time_text}\n"
         )
@@ -266,6 +273,7 @@ class PromptBuilder:
                 {"name": "user.extra_context", "text": extra_context},
                 *extra_context_subsections,
                 {"name": "user.current_visual_context", "text": current_visual_context},
+                {"name": "user.tool_context", "text": tool_context_text},
                 {"name": "user.current_message", "text": current_message_text},
                 {"name": "user.current_time", "text": current_time_text},
             ]

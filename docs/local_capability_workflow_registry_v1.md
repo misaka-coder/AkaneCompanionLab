@@ -13,6 +13,19 @@ context compaction.
 
 ## 0. Implementation Status
 
+2026-07-13 adds model-facing capability disclosure as a separate layer from
+callable schemas. Prompt-time modules now describe `ready`, `latent`, and
+`unavailable` states: ready tools keep their full schema; latent document,
+media, image-material, and RVC abilities expose only a short reason plus the
+smallest user action that activates them; runtime readiness failures keep the
+tool hidden while giving the model a safe recovery explanation. The model is
+explicitly told to answer capability questions in character rather than dump
+internal tool names or status codes. Desktop workspace inventory is scanned in
+a bounded, metadata-only pass, so an existing document/audio/image enables its
+matching workbench without asking the user to upload the same material again.
+The dynamic disclosure and tool instructions are placed in the user-side
+per-turn tail; the system prefix contains only byte-stable interpretation rules.
+
 Phase 1 first backend slice is implemented. Phase 1B frontend dashboard wiring
 is implemented as a narrow slice: the control center reads `/capabilities` as
 optional enhancement data and translates raw tool/provider entries into
@@ -2895,9 +2908,21 @@ Implemented Phase 7E managed browser read V1:
 - Stream events include only action/status/title/URL metadata. Page body text
   appears only in bounded followup context for the model continuation and is
   sanitized for common secret/header/local-path patterns.
-- The capability catalog reads `capability_status()` from tool handlers when
-  available, so `browser_page` can appear as `missing_executor` until the local
-  browser runner is installed.
+- The capability catalog and the prompt-time `ToolReadinessGate` both read
+  `capability_status()` from tool handlers. An unavailable handler is removed
+  from legacy prompt instructions, provider-native tool schemas, and the
+  execution allowlist together; `browser_page` therefore appears as
+  `missing_executor` in diagnostics and is not exposed to the model until its
+  runner is installed. Status checks are TTL-cached so repeated prompt builds
+  in one turn do not repeatedly probe external processes.
+- AnySearch starts a bounded real search probe in a daemon worker before first
+  exposure, stays hidden while the probe is pending, caches success, and opens
+  a short failure circuit after timeout or MCP `isError`; prompt construction
+  does not wait for the external MCP process.
+  RVC performs a forced `/config` probe with a two-second timeout. Finance tools
+  are gated per provider capability and health: unsupported public-market news
+  is omitted, while quote/series failures temporarily open a capability circuit
+  and are retried after cooldown instead of becoming permanently disabled.
 - `python scripts/probe_browser_page.py` probes the current runtime. Without
   Playwright installed it exits successfully with `missing_executor` metadata;
   add `--require-ready` when a real browser read must be treated as mandatory.

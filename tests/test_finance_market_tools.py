@@ -27,6 +27,7 @@ from companion_v01.finance import (
 )
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
 from companion_v01.tool_orchestration_engine import build_multi_tool_followup_context
+from companion_v01.tool_readiness import ToolReadinessGate
 from companion_v01.tool_runtime import ToolExecutionContext
 from services.emquant_bridge import EmQuantBridgeRuntime, FakeEmQuantSDK, create_emquant_bridge_app
 from services.llm_client import _convert_openai_tools_to_anthropic_tools
@@ -35,8 +36,10 @@ from services.market_data import (
     MarketDataValidationError,
     MarketEventStore,
     MarketQuoteRequest,
+    MarketDataResponse,
     MarketSeriesRequest,
     MockMarketDataProvider,
+    PublicMarketProvider,
 )
 
 
@@ -252,6 +255,40 @@ class FinanceMarketToolTests(unittest.TestCase):
             self.assertEqual(metadata.operation, "read")
             self.assertEqual(metadata.default_round_budget, 12)
 
+    def test_public_provider_hides_unsupported_news_but_keeps_quote_and_series(self) -> None:
+        service = MarketDataToolService(
+            provider=PublicMarketProvider(dependency_probe=lambda _name: True, clock=lambda: 1_752_153_600),
+            event_store=self.service.event_store,
+            clock=lambda: 1_752_153_600,
+        )
+        handlers = build_market_tool_handlers(service)
+
+        visible = ToolReadinessGate().filter_handlers(handlers)
+
+        self.assertNotIn("market_news_search", visible)
+        self.assertIn("market_quote_snapshot", visible)
+        self.assertIn("market_price_series", visible)
+        self.assertIn("market_resolve_security", visible)
+
+    def test_unavailable_provider_result_temporarily_opens_capability_circuit(self) -> None:
+        unavailable = MarketDataResponse(
+            ok=False,
+            status="unavailable",
+            provider=self.provider.id,
+            source=self.provider.source,
+            as_of=None,
+            reason="upstream_timeout:test_provider",
+            data=(),
+        )
+        with patch.object(self.provider, "get_quote_snapshots", return_value=unavailable):
+            self.service.quote_snapshots_response(MarketQuoteRequest(codes=("000000.TEST",)))
+
+        status = self.handlers["market_quote_snapshot"].capability_status()
+
+        self.assertFalse(status["enabled"])
+        self.assertEqual(status["status"], "unavailable")
+        self.assertEqual(status["reason"], "upstream_timeout:test_provider")
+
     def test_resolver_requires_unique_exact_match_before_trusting_code(self) -> None:
         resolver = self.handlers["market_resolve_security"]
         context = ToolExecutionContext(
@@ -377,30 +414,18 @@ class FinanceMarketToolTests(unittest.TestCase):
             )
         )
         self.assertIsNone(
-            series.normalize_call(
-                {"type": "market_price_series", "code": "000000.TEST", "interval": "5m"}
-            )
+            series.normalize_call({"type": "market_price_series", "code": "000000.TEST", "interval": "5m"})
         )
         self.assertIsNone(
-            series.normalize_call(
-                {"type": "market_price_series", "code": "000000.TEST", "interval": "1w"}
-            )
+            series.normalize_call({"type": "market_price_series", "code": "000000.TEST", "interval": "1w"})
         )
         self.assertIsNone(
-            series.normalize_call(
-                {"type": "market_price_series", "code": "000000.TEST", "adjusted": "forward"}
-            )
+            series.normalize_call({"type": "market_price_series", "code": "000000.TEST", "adjusted": "forward"})
         )
-        self.assertIsNone(
-            series.normalize_call(
-                {"type": "market_price_series", "code": "000000.TEST", "limit": 9999}
-            )
-        )
+        self.assertIsNone(series.normalize_call({"type": "market_price_series", "code": "000000.TEST", "limit": 9999}))
 
     def test_program_metrics_are_deterministic(self) -> None:
-        response = self.provider.get_price_series(
-            MarketSeriesRequest(code="000000.TEST", interval="1d", limit=3)
-        )
+        response = self.provider.get_price_series(MarketSeriesRequest(code="000000.TEST", interval="1d", limit=3))
         metrics = compute_series_metrics(response.data)
 
         self.assertEqual(metrics["observation_count"], 3)
@@ -496,9 +521,11 @@ class FinanceMarketToolTests(unittest.TestCase):
         self.assertNotIn("market_quote_snapshot", default_handlers)
 
     def test_finance_round_budget_and_stop_handoff_are_explicit(self) -> None:
-        with patch.object(config, "FINANCE_ASSISTANT_ENABLED", True), patch.object(
-            config, "FINANCE_TOOL_ROUND_BUDGET", 12
-        ), patch.object(config, "FINANCE_TOOL_ROUND_HARD_LIMIT", 16):
+        with (
+            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True),
+            patch.object(config, "FINANCE_TOOL_ROUND_BUDGET", 12),
+            patch.object(config, "FINANCE_TOOL_ROUND_HARD_LIMIT", 16),
+        ):
             self.assertEqual(max_tool_rounds(domain_profile_id=FINANCE_DOMAIN_PROFILE_ID), 12)
 
         prompt = build_multi_tool_followup_context(

@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+import hashlib
 import ipaddress
 import inspect
 import json
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import quote_plus, urlparse
@@ -2114,6 +2116,12 @@ class GenerateImageToolHandler(BaseToolHandler):
     def __init__(self, *, image_generation_service) -> None:
         self.image_generation_service = image_generation_service
 
+    def capability_status(self) -> dict[str, Any]:
+        status_fn = getattr(self.image_generation_service, "capability_status", None)
+        if not callable(status_fn):
+            return {"enabled": False, "status": "unavailable", "reason": "image_generation_service_missing"}
+        return dict(status_fn() or {})
+
     def build_prompt_instruction(self) -> str:
         return (
             "- generate_image：用户明确要文生图、图生图、改图、融合多张图片或继续修改生成图时使用。"
@@ -3893,12 +3901,109 @@ class WebSearchToolHandler(BaseToolHandler):
         config_base_dir: Path | str | None = None,
         server_id: str = "anysearch",
         mcp_tool_caller: Any = None,
+        readiness_mcp_tool_caller: Any = None,
+        readiness_ready_ttl_seconds: float = 30 * 60,
+        readiness_failure_ttl_seconds: float = 60.0,
+        readiness_probe_in_background: bool = True,
+        readiness_clock=time.monotonic,
     ) -> None:
         self.config_base_dir = config_base_dir if config_base_dir is not None else getattr(config, "DATA_DIR", None)
         self.server_id = str(server_id or "anysearch").strip() or "anysearch"
         self.mcp_tool_caller = mcp_tool_caller or McpStdioToolCaller(
             timeout_seconds=float(getattr(config, "WEB_SEARCH_MCP_TIMEOUT_SECONDS", 35.0) or 35.0)
         )
+        self.readiness_mcp_tool_caller = readiness_mcp_tool_caller or (
+            mcp_tool_caller if mcp_tool_caller is not None else McpStdioToolCaller(timeout_seconds=5.0)
+        )
+        self._readiness_ready_ttl_seconds = max(30.0, float(readiness_ready_ttl_seconds))
+        self._readiness_failure_ttl_seconds = max(5.0, float(readiness_failure_ttl_seconds))
+        self._readiness_probe_in_background = bool(readiness_probe_in_background)
+        self._readiness_clock = readiness_clock
+        self._readiness_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+        self._readiness_probes_inflight: set[tuple[str, str]] = set()
+        self._readiness_lock = threading.RLock()
+
+    def capability_status(
+        self,
+        *,
+        profile_user_id: str = "",
+        session_id: str = "",
+        client_mode: str = "",
+    ) -> dict[str, Any]:
+        del session_id
+        runtime_profile_user_id = self._resolve_runtime_profile_user_id_values(
+            profile_user_id=profile_user_id,
+            client_mode=client_mode,
+        )
+        server = get_mcp_server_runtime_config(
+            base_dir=self.config_base_dir,
+            profile_user_id=runtime_profile_user_id,
+            server_id=self.server_id,
+        )
+        if not server:
+            return {"enabled": False, "status": "missing_config", "reason": "anysearch_config_missing"}
+        if not bool(server.get("enabled")):
+            return {"enabled": False, "status": "disabled", "reason": "anysearch_disabled"}
+        if not str(server.get("command") or "").strip():
+            return {"enabled": False, "status": "missing_command", "reason": "anysearch_command_missing"}
+
+        fingerprint = self._server_readiness_fingerprint(server)
+        cache_key = (runtime_profile_user_id, fingerprint)
+        now = float(self._readiness_clock())
+        with self._readiness_lock:
+            cached = self._readiness_cache.get(cache_key)
+            if cached is not None and cached[0] > now:
+                return dict(cached[1])
+            if self._readiness_probe_in_background:
+                if cache_key not in self._readiness_probes_inflight:
+                    self._readiness_probes_inflight.add(cache_key)
+                    threading.Thread(
+                        target=self._probe_readiness_background,
+                        kwargs={"cache_key": cache_key, "server": dict(server)},
+                        name="akane-anysearch-readiness",
+                        daemon=True,
+                    ).start()
+                return {
+                    "enabled": False,
+                    "status": "checking",
+                    "reason": "anysearch_probe_pending",
+                    "cache_ttl_seconds": 1.0,
+                }
+        return self._probe_readiness(cache_key=cache_key, server=server)
+
+    def _probe_readiness(
+        self,
+        *,
+        cache_key: tuple[str, str],
+        server: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            result = self._run_coro_blocking(
+                self._call_readiness_mcp(
+                    server=server,
+                    tool_name="search",
+                    arguments={"query": "OpenAI", "max_results": 1},
+                )
+            )
+            if self._mcp_result_is_error(result):
+                status = {"enabled": False, "status": "unavailable", "reason": "anysearch_probe_error"}
+            else:
+                status = {"enabled": True, "status": "ready", "reason": "", "cache_ttl_seconds": 5.0}
+        except Exception as exc:
+            status = {
+                "enabled": False,
+                "status": "unavailable",
+                "reason": f"anysearch_probe_failed:{type(exc).__name__}",
+            }
+        self._remember_readiness(cache_key, status)
+        return status
+
+    def _probe_readiness_background(self, *, cache_key: tuple[str, str], server: Mapping[str, Any]) -> None:
+        try:
+            self._probe_readiness(cache_key=cache_key, server=server)
+        finally:
+            with self._readiness_lock:
+                self._readiness_probes_inflight.discard(cache_key)
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -3989,9 +4094,15 @@ class WebSearchToolHandler(BaseToolHandler):
         try:
             result = self._run_coro_blocking(self._call_mcp(server=server, tool_name=action, arguments=arguments))
         except McpStdioDiscoveryError as exc:
+            self._remember_server_failure(runtime_profile_user_id, server, reason=str(exc) or "mcp_call_failed")
             return self._failure(str(exc) or "mcp_call_failed", "AnySearch MCP 调用失败或超时。")
         except Exception:
+            self._remember_server_failure(runtime_profile_user_id, server, reason="mcp_call_failed")
             return self._failure("mcp_call_failed", "AnySearch MCP 调用失败。")
+        if self._mcp_result_is_error(result):
+            self._remember_server_failure(runtime_profile_user_id, server, reason="mcp_result_error")
+            return self._failure("mcp_result_error", "AnySearch MCP 返回了错误状态。")
+        self._remember_server_ready(runtime_profile_user_id, server)
 
         followup = self._format_followup(
             action=action,
@@ -4022,13 +4133,19 @@ class WebSearchToolHandler(BaseToolHandler):
         )
 
     def _resolve_runtime_profile_user_id(self, context: ToolExecutionContext) -> str:
-        if str(context.client_mode or "").strip().lower() != "qq_text":
-            return str(context.profile_user_id or "").strip() or "master"
+        return self._resolve_runtime_profile_user_id_values(
+            profile_user_id=context.profile_user_id,
+            client_mode=context.client_mode,
+        )
+
+    def _resolve_runtime_profile_user_id_values(self, *, profile_user_id: str, client_mode: str) -> str:
+        if str(client_mode or "").strip().lower() != "qq_text":
+            return str(profile_user_id or "").strip() or "master"
         raw_value = str(getattr(config, "QQ_WEB_SEARCH_PROFILE_USER_ID", "") or "").strip()
         if not raw_value:
             raw_value = str(getattr(config, "WEB_OWNER_PROFILE_USER_ID", "") or "master").strip()
         if raw_value.lower() in {"conversation", "context", "current"}:
-            raw_value = str(context.profile_user_id or "").strip()
+            raw_value = str(profile_user_id or "").strip()
         if not raw_value or not re.fullmatch(r"[A-Za-z0-9_.-]+", raw_value):
             return "master"
         return raw_value
@@ -4044,6 +4161,53 @@ class WebSearchToolHandler(BaseToolHandler):
         if inspect.isawaitable(result):
             result = await result
         return result if isinstance(result, dict) else {}
+
+    async def _call_readiness_mcp(
+        self,
+        *,
+        server: Mapping[str, Any],
+        tool_name: str,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        result = self.readiness_mcp_tool_caller(server=server, tool_name=tool_name, arguments=arguments)
+        if inspect.isawaitable(result):
+            result = await result
+        return result if isinstance(result, dict) else {}
+
+    @staticmethod
+    def _mcp_result_is_error(result: Any) -> bool:
+        return isinstance(result, Mapping) and bool(result.get("isError") or result.get("is_error"))
+
+    @staticmethod
+    def _server_readiness_fingerprint(server: Mapping[str, Any]) -> str:
+        stable = {
+            "enabled": bool(server.get("enabled")),
+            "command": str(server.get("command") or ""),
+            "args": [str(item or "") for item in server.get("args") or []],
+            "cwd": str(server.get("cwd") or ""),
+        }
+        serialized = json.dumps(stable, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def _remember_readiness(self, cache_key: tuple[str, str], status: Mapping[str, Any]) -> None:
+        ttl = self._readiness_ready_ttl_seconds if bool(status.get("enabled")) else self._readiness_failure_ttl_seconds
+        with self._readiness_lock:
+            self._readiness_cache[cache_key] = (float(self._readiness_clock()) + ttl, dict(status))
+            if len(self._readiness_cache) > 32:
+                now = float(self._readiness_clock())
+                self._readiness_cache = {key: value for key, value in self._readiness_cache.items() if value[0] > now}
+
+    def _remember_server_ready(self, profile_user_id: str, server: Mapping[str, Any]) -> None:
+        self._remember_readiness(
+            (profile_user_id, self._server_readiness_fingerprint(server)),
+            {"enabled": True, "status": "ready", "reason": "", "cache_ttl_seconds": 5.0},
+        )
+
+    def _remember_server_failure(self, profile_user_id: str, server: Mapping[str, Any], *, reason: str) -> None:
+        self._remember_readiness(
+            (profile_user_id, self._server_readiness_fingerprint(server)),
+            {"enabled": False, "status": "unavailable", "reason": str(reason or "mcp_call_failed")[:120]},
+        )
 
     def _build_mcp_arguments(self, call: Mapping[str, Any]) -> dict[str, Any]:
         action = str(call.get("action") or "search")
@@ -4289,7 +4453,7 @@ class WebSearchToolHandler(BaseToolHandler):
 
     def _failure(self, status: str, message: str) -> ToolExecutionResult:
         reason = str(status or "unavailable").strip()[:120]
-        transient = reason in {"mcp_tool_call_timeout", "mcp_call_failed"}
+        transient = reason in {"mcp_tool_call_timeout", "mcp_call_failed", "mcp_result_error"}
         next_step = (
             "如果仍有工具预算和其它安全的只读路径，可以换查询词、拆小批次、换公开来源或改用其它检索工具继续核验；"
             "如果没有可用路径，再基于现有证据降级回答。"

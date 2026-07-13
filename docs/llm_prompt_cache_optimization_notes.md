@@ -205,6 +205,18 @@ Akane 结构上支持“较高命中率”：现在已有 cache usage observabil
 
 下一步最稳的工程动作不是继续大改 prompt，而是做一个小型 benchmark / audit pass：看清楚哪些 section 稳定、哪些 section 每轮变化、每个 section 对 cache miss 贡献多少。
 
+## 2026-07-13 动态能力暴露的缓存护栏
+
+文档、音频、RVC 和外部服务现在会按 `ready / latent / unavailable` 动态暴露。为避免材料上传或健康探测结果改变整个 system prefix，本轮同时调整了工具上下文位置：
+
+- system prompt 只保留固定的能力解释与调用边界，内容不含附件状态、工作区扫描结果、探测原因或本轮工具清单；
+- 完整 legacy 工具说明、潜在能力激活提示、暂不可用原因和 native 工具轮说明统一放到动态 user 尾部，位于原始时间线、检索、额外上下文和当前演出状态之后，当前用户消息之前；
+- prompt audit 新增 `user.tool_context`，便于单独观察这部分 token 与 churn；
+- 回归测试要求：仅切换 latent/ready 工具状态时，`system_prompt` 必须逐字相同，变化只能出现在动态 `user_prompt`；
+- provider native tools 位于 provider 的 tools 前缀，真实可用工具集合变化时仍会形成不同缓存变体，这是“不向模型暴露死工具”的必要成本。工具顺序与 schema 保持确定性，让常见能力集合可以分别复用缓存，而不是每轮产生随机前缀。
+
+这条护栏的目标不是保证任何状态切换都零 cache miss，而是把高频动态状态限制在尾部，并把不可避免的 native toolset 变化收敛为少量、稳定、可复用的前缀变体。
+
 ## 2026-07-13 金融主动推送专项修复
 
 官方依据：Anthropic Prompt Caching 文档

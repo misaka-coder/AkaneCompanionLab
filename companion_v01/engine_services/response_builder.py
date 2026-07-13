@@ -536,6 +536,15 @@ def prepare_context(
             domain_profile_id=domain_profile.id,
         )
     )
+    if native_tools:
+        tool_prompt_context = "\n\n".join(
+            part
+            for part in [
+                str(tool_prompt_context or "").strip(),
+                engine._build_native_tool_round_instruction(native_tools),
+            ]
+            if part
+        )
     generation_context = engine._get_prompt_builder().build_final_generation_context(
         now_ts=now_ts,
         raw_text=raw_text,
@@ -564,16 +573,6 @@ def prepare_context(
         fallback_payload = generation_context.get("fallback")
         if isinstance(fallback_payload, dict):
             fallback_payload["activity"] = None
-    if native_tools:
-        native_tool_round_instruction = engine._build_native_tool_round_instruction(native_tools)
-        generation_context["system_prompt"] = "\n\n".join(
-            part
-            for part in [
-                str(generation_context.get("system_prompt") or "").strip(),
-                native_tool_round_instruction,
-            ]
-            if part
-        )
     generation_context["allow_tool_call"] = effective_allow_tool_call
     generation_context["native_tools"] = native_tools
     generation_context["native_tool_choice"] = "auto" if native_tools else ""

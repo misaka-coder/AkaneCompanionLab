@@ -28,6 +28,7 @@ from ..domain_profiles import (
 )
 from .. import tool_orchestration_engine
 from ..local_capability_config import load_capability_config
+from ..tool_readiness import ToolReadinessGate
 
 
 # ── Group A: Pure helpers ────────────────────────────────────────
@@ -198,18 +199,32 @@ def resolve_tool_handlers(
         }
     if client_context is None:
         allowed_names = filter_tool_names(tuple(all_handlers.keys()), domain_profile)
-        return {name: all_handlers[name] for name in allowed_names if name in all_handlers}
+        selected_handlers = {name: all_handlers[name] for name in allowed_names if name in all_handlers}
+    else:
+        selected_names = list(
+            resolve_capability_selection(
+                engine,
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                domain_profile_id=domain_profile_id,
+            ).tool_names
+        )
+        selected_handlers = {
+            tool_name: all_handlers[tool_name] for tool_name in selected_names if tool_name in all_handlers
+        }
 
-    selected_names = list(
-        resolve_capability_selection(
-            engine,
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            domain_profile_id=domain_profile_id,
-        ).tool_names
+    gate = getattr(engine, "_tool_readiness_gate", None)
+    if not isinstance(gate, ToolReadinessGate):
+        gate = ToolReadinessGate()
+        setattr(engine, "_tool_readiness_gate", gate)
+    client_mode = getattr(getattr(client_context, "effective_mode", ""), "value", "")
+    return gate.filter_handlers(
+        selected_handlers,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        client_mode=str(client_mode or ""),
     )
-    return {tool_name: all_handlers[tool_name] for tool_name in selected_names if tool_name in all_handlers}
 
 
 def resolve_capability_selection(
@@ -271,6 +286,7 @@ def resolve_capability_selection(
             tool_names=(*selection.tool_names, *domain_handler_names),
             module_names=selection.module_names,
             layer_names=selection.layer_names,
+            disclosures=selection.disclosures,
         )
     dynamic_handlers = build_adapter_tool_handlers(
         engine,
@@ -294,6 +310,7 @@ def resolve_capability_selection(
         tool_names=(*selection.tool_names, *dynamic_tool_names),
         module_names=(*selection.module_names, "adapter_tools"),
         layer_names=(*selection.layer_names, "adapter"),
+        disclosures=selection.disclosures,
     )
 
 
@@ -328,6 +345,24 @@ def build_capability_snapshot(
         statuses=["ready", "failed"],
         limit=40,
     )
+    workspace_inventory: dict[str, Any] = {}
+    if client_context.effective_mode == ClientMode.DESKTOP_PET:
+        workspace_service = getattr(engine, "workspace_file_service", None)
+        inventory_fn = getattr(workspace_service, "capability_inventory", None)
+        if callable(inventory_fn):
+            try:
+                workspace_inventory = dict(inventory_fn() or {})
+            except Exception:
+                workspace_inventory = {}
+    has_cover_song_cache = False
+    cover_song_handler = (getattr(engine, "tool_handlers", {}) or {}).get("cover_song")
+    cover_song_service = getattr(cover_song_handler, "cover_song_service", None)
+    cache_status_fn = getattr(cover_song_service, "has_cached_cover", None)
+    if callable(cache_status_fn):
+        try:
+            has_cover_song_cache = bool(cache_status_fn(profile_user_id=profile_user_id))
+        except Exception:
+            has_cover_song_cache = False
     return CapabilitySnapshot(
         client_mode=client_context.effective_mode,
         has_any_attachment=bool(attachments),
@@ -338,6 +373,11 @@ def build_capability_snapshot(
         has_document_generated_file=any(is_document_generated_file(item) for item in generated_files),
         has_media_generated_file=any(is_media_generated_file(item) for item in generated_files),
         has_image_generated_file=any(is_image_generated_file(item) for item in generated_files),
+        has_workspace_file=bool(workspace_inventory.get("has_any_file")),
+        has_document_workspace_file=bool(workspace_inventory.get("has_document_file")),
+        has_media_workspace_file=bool(workspace_inventory.get("has_media_file")),
+        has_image_workspace_file=bool(workspace_inventory.get("has_image_file")),
+        has_cover_song_cache=has_cover_song_cache,
         has_pending_gift=False,
     )
 

@@ -77,7 +77,7 @@ creative prompt, reference selection, aspect ratio, quality, and output intent.
 
 ```env
 IMAGE_GENERATION_ENABLED=false
-IMAGE_GENERATION_BASE_URL=https://us.pinai-cn.com/v1
+IMAGE_GENERATION_BASE_URL=https://api.pinaic.com/v1
 IMAGE_GENERATION_API_KEY=
 IMAGE_GENERATION_MODEL=gpt-image-2
 IMAGE_GENERATION_TIMEOUT_SECONDS=300
@@ -87,6 +87,8 @@ IMAGE_GENERATION_MAX_IMAGE_BYTES=8388608
 IMAGE_GENERATION_MAX_TOTAL_INPUT_BYTES=20971520
 IMAGE_GENERATION_MAX_OUTPUT_BYTES=26214400
 ```
+
+PinAI 的 API key 按平台分组。`IMAGE_GENERATION_API_KEY` 必须显式配置为绑定 OpenAI 平台的 key；即使聊天接口也使用 PinAI，也不要自动复用聊天 key。运行时会通过 `/models` 检查当前 key 是否能看到配置的图片模型；平台分组不匹配、鉴权失败、模型缺失或端点不可用时会隐藏工具，不产生图片费用。
 
 The image key is separate from chat/vision configuration. A deployment may use
 the same PinAI key value, but code must not silently send an unrelated chat

@@ -32,6 +32,8 @@ class MarketDataToolService:
         event_store: MarketEventStore,
         clock=time.time,
         resolved_code_ttl_seconds: int = 10 * 60,
+        readiness_health_ttl_seconds: float = 15.0,
+        readiness_failure_ttl_seconds: float = 60.0,
     ) -> None:
         self.provider = provider
         self.event_store = event_store
@@ -39,6 +41,79 @@ class MarketDataToolService:
         self._resolved_code_ttl_seconds = max(30, min(60 * 60, int(resolved_code_ttl_seconds)))
         self._resolved_codes: dict[tuple[str, str, str], int] = {}
         self._resolved_codes_lock = threading.RLock()
+        self._readiness_health_ttl_seconds = max(1.0, float(readiness_health_ttl_seconds))
+        self._readiness_failure_ttl_seconds = max(5.0, float(readiness_failure_ttl_seconds))
+        self._readiness_lock = threading.RLock()
+        self._provider_health_cache: tuple[float, Any] | None = None
+        self._capability_failures: dict[str, tuple[float, str]] = {}
+
+    def capability_status(
+        self,
+        capabilities: str | tuple[str, ...],
+        *,
+        require_provider_health: bool = True,
+    ) -> dict[str, Any]:
+        required = (capabilities,) if isinstance(capabilities, str) else tuple(capabilities)
+        unsupported = [name for name in required if not self.provider.supports(name)]
+        if unsupported:
+            return {
+                "enabled": False,
+                "status": "unsupported",
+                "reason": "provider_capability_missing:" + ",".join(unsupported),
+                "cache_ttl_seconds": 30.0,
+            }
+
+        now = float(self._clock())
+        with self._readiness_lock:
+            for name in required:
+                failure = self._capability_failures.get(name)
+                if failure is not None and failure[0] > now:
+                    return {
+                        "enabled": False,
+                        "status": "unavailable",
+                        "reason": failure[1],
+                        "cache_ttl_seconds": 5.0,
+                    }
+        if not require_provider_health:
+            return {"enabled": True, "status": "ready", "reason": "", "cache_ttl_seconds": 15.0}
+
+        try:
+            health = self._cached_provider_health(now)
+        except Exception as exc:
+            return {
+                "enabled": False,
+                "status": "unavailable",
+                "reason": f"provider_health_failed:{type(exc).__name__}",
+                "cache_ttl_seconds": 5.0,
+            }
+        return {
+            "enabled": bool(health.ok),
+            "status": str(health.status or "unavailable"),
+            "reason": str(health.last_error_reason or ""),
+            "cache_ttl_seconds": 5.0,
+        }
+
+    def _cached_provider_health(self, now: float) -> Any:
+        with self._readiness_lock:
+            cached = self._provider_health_cache
+            if cached is not None and cached[0] > now:
+                return cached[1]
+        health = self.provider.health()
+        with self._readiness_lock:
+            self._provider_health_cache = (now + self._readiness_health_ttl_seconds, health)
+        return health
+
+    def _record_provider_result(self, capability: str, response: MarketDataResponse[Any]) -> None:
+        status = str(response.status or "").strip().lower()
+        with self._readiness_lock:
+            if response.ok or status == "empty":
+                self._capability_failures.pop(capability, None)
+                return
+            if status in {"permission_denied", "rate_limited", "unavailable"}:
+                self._capability_failures[capability] = (
+                    float(self._clock()) + self._readiness_failure_ttl_seconds,
+                    str(response.reason or f"provider_{status}")[:240],
+                )
 
     def resolve_security(
         self,
@@ -269,6 +344,7 @@ class MarketDataToolService:
         provider_reason = ""
         if request.codes and request.content_types:
             upstream = self.provider.search_news(request)
+            self._record_provider_result("news_search", upstream)
             provider_status = upstream.status
             provider_reason = upstream.reason
             if upstream.ok:
@@ -328,7 +404,9 @@ class MarketDataToolService:
         request: MarketQuoteRequest,
     ) -> MarketDataResponse[tuple[MarketQuoteSnapshot, ...]]:
         """Return normalized quote objects for deterministic downstream artifacts."""
-        return self.provider.get_quote_snapshots(request)
+        response = self.provider.get_quote_snapshots(request)
+        self._record_provider_result("quote_snapshot", response)
+        return response
 
     def price_series(self, request: MarketSeriesRequest) -> dict[str, Any]:
         response = self.price_series_response(request)
@@ -360,7 +438,9 @@ class MarketDataToolService:
 
     def price_series_response(self, request: MarketSeriesRequest) -> MarketDataResponse[MarketSeries | None]:
         """Return the normalized provider object for deterministic downstream renderers."""
-        return self.provider.get_price_series(request)
+        response = self.provider.get_price_series(request)
+        self._record_provider_result("price_series", response)
+        return response
 
 
 def compute_quote_metrics(quote: MarketQuoteSnapshot) -> dict[str, float | None]:

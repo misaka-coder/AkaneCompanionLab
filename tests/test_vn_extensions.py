@@ -23,7 +23,18 @@ from companion_v01.store import MemoryStore
 from companion_v01.text_utils import render_chat_line, render_chat_timeline, resolve_speaker_name
 from companion_v01.artifact_system import ArtifactContainerService
 from companion_v01.gift_system import GiftSystemService
-from companion_v01.tool_runtime import CancelReminderToolHandler, CheckInventoryToolHandler, ListRemindersToolHandler, ManageArtifactToolHandler, ManageGiftToolHandler, SetReminderToolHandler, ToolExecutionContext, ToolExecutionResult, ToolMetadata
+from companion_v01.tool_runtime import (
+    CancelReminderToolHandler,
+    CheckInventoryToolHandler,
+    ListRemindersToolHandler,
+    ManageArtifactToolHandler,
+    ManageGiftToolHandler,
+    SetReminderToolHandler,
+    ToolExecutionContext,
+    ToolExecutionResult,
+    ToolMetadata,
+)
+from companion_v01.workspace_files import WorkspaceFileService
 
 
 class TextUtilsSpeakerTests(unittest.TestCase):
@@ -99,7 +110,9 @@ class EngineExtensionTests(unittest.TestCase):
             def _extract_time_hint(self, *, user_message: str, now_ts: int) -> dict[str, object]:
                 return {"date_label": None, "time_of_day": "night", "relative_time": None}
 
-            def _build_shortcut_timing(self, *, stage: str, branch: str, ready_event_type: str | None) -> dict[str, object]:
+            def _build_shortcut_timing(
+                self, *, stage: str, branch: str, ready_event_type: str | None
+            ) -> dict[str, object]:
                 return {
                     "stage": stage,
                     "branch": branch,
@@ -125,9 +138,11 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertEqual(pipeline.confirmed_snippets, [])
 
     def test_build_embedding_provider_falls_back_to_hashed_when_huggingface_unavailable(self) -> None:
-        with patch.object(config, "EMBEDDING_PROVIDER", "huggingface"), patch.object(
-            config, "EMBEDDING_CACHE_SIZE", 0
-        ), patch("companion_v01.engine.HuggingFaceEmbeddingProvider", side_effect=RuntimeError("missing deps")):
+        with (
+            patch.object(config, "EMBEDDING_PROVIDER", "huggingface"),
+            patch.object(config, "EMBEDDING_CACHE_SIZE", 0),
+            patch("companion_v01.engine.HuggingFaceEmbeddingProvider", side_effect=RuntimeError("missing deps")),
+        ):
             provider = self.engine._build_embedding_provider()
 
         self.assertIsInstance(provider, HashedEmbeddingProvider)
@@ -144,13 +159,15 @@ class EngineExtensionTests(unittest.TestCase):
                 return [1.0, 0.0, 0.0, 0.0]
 
         stub_provider = StubHFProvider()
-        with patch.object(config, "EMBEDDING_PROVIDER", "auto"), patch.object(
-            config, "EMBEDDING_CACHE_SIZE", 32
-        ), patch.object(config, "EMBEDDING_MODEL_NAME", "BAAI/bge-m3"), patch.object(
-            config, "EMBEDDING_DEVICE", ""
-        ), patch.object(config, "EMBEDDING_LOCAL_FILES_ONLY", True), patch.object(
-            config, "EMBEDDING_CACHE_FOLDER", "models/cache"
-        ), patch("companion_v01.engine.HuggingFaceEmbeddingProvider", return_value=stub_provider) as provider_cls:
+        with (
+            patch.object(config, "EMBEDDING_PROVIDER", "auto"),
+            patch.object(config, "EMBEDDING_CACHE_SIZE", 32),
+            patch.object(config, "EMBEDDING_MODEL_NAME", "BAAI/bge-m3"),
+            patch.object(config, "EMBEDDING_DEVICE", ""),
+            patch.object(config, "EMBEDDING_LOCAL_FILES_ONLY", True),
+            patch.object(config, "EMBEDDING_CACHE_FOLDER", "models/cache"),
+            patch("companion_v01.engine.HuggingFaceEmbeddingProvider", return_value=stub_provider) as provider_cls,
+        ):
             provider = self.engine._build_embedding_provider()
 
         self.assertIsInstance(provider, CachedEmbeddingProvider)
@@ -287,7 +304,7 @@ class EngineExtensionTests(unittest.TestCase):
             result={
                 "emotion": "normal",
                 "speech": "我把示例写给你看。",
-                "code_snippet": "```java\nSystem.out.println(\"hi\");\n```",
+                "code_snippet": '```java\nSystem.out.println("hi");\n```',
                 "memory_tags": "",
                 "status": "final",
                 "score": 0.0,
@@ -605,9 +622,15 @@ class EngineExtensionTests(unittest.TestCase):
                 return self._metadata
 
         self.engine.tool_handlers = {
-            "fake_search": StubTool(ToolMetadata(family="web_research", operation="read", risk="low", default_round_budget=8)),
-            "fake_browser": StubTool(ToolMetadata(family="browser_control", operation="mixed", risk="medium", default_round_budget=10)),
-            "fake_plain": StubTool(ToolMetadata(family="general", operation="mixed", risk="medium", default_round_budget=3)),
+            "fake_search": StubTool(
+                ToolMetadata(family="web_research", operation="read", risk="low", default_round_budget=8)
+            ),
+            "fake_browser": StubTool(
+                ToolMetadata(family="browser_control", operation="mixed", risk="medium", default_round_budget=10)
+            ),
+            "fake_plain": StubTool(
+                ToolMetadata(family="general", operation="mixed", risk="medium", default_round_budget=3)
+            ),
         }
 
         with (
@@ -1022,6 +1045,10 @@ class EngineExtensionTests(unittest.TestCase):
             )
 
             self.assertIn("可用能力概览", prompt)
+            self.assertIn("可按需激活的能力", prompt)
+            self.assertIn("当前会话和可见工作区里还没有可处理的文档材料", prompt)
+            self.assertIn("用户上传音频/视频、提供可下载的公开媒体链接", prompt)
+            self.assertIn("用户问“你会什么/能做什么”时", prompt)
             self.assertIn("短任务直接调用工具完成", prompt)
             self.assertIn("文档", prompt)
             self.assertIn("音频/视频", prompt)
@@ -1042,6 +1069,113 @@ class EngineExtensionTests(unittest.TestCase):
                     session_id="qq_pri_1",
                 )
             )
+
+    def test_desktop_workspace_materials_expand_matching_tools_without_upload(self) -> None:
+        class StubTool:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def build_prompt_instruction(self) -> str:
+                return f"- {self.name}：测试用工具。"
+
+            def normalize_call(self, value):
+                return dict(value) if value.get("type") == self.name else None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_dir = Path(temp_dir)
+            self.engine.store = MemoryStore(base_dir / "data")
+            self.engine.workspace_file_service = WorkspaceFileService(
+                root_dir=base_dir / "Akane Workspace",
+                store=self.engine.store,
+            )
+            (self.engine.workspace_file_service.root_dir / "Inbox" / "brief.pdf").write_bytes(b"pdf")
+            (self.engine.workspace_file_service.root_dir / "Inbox" / "song.wav").write_bytes(b"wav")
+            self.engine.capability_registry = CapabilityRegistry()
+            self.engine.tool_handlers = {
+                name: StubTool(name)
+                for name in [
+                    "list_workspace",
+                    "register_workspace_items",
+                    "read_attachment_section",
+                    "inspect_media_info",
+                    "transcribe_media",
+                ]
+            }
+            desktop_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "desktop_pet"})
+
+            prompt = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=desktop_context,
+                profile_user_id="master",
+                session_id="desktop_workspace_materials",
+            )
+
+            self.assertIn("\n- read_attachment_section", prompt)
+            self.assertIn("\n- inspect_media_info", prompt)
+            self.assertIn("\n- transcribe_media", prompt)
+            self.assertNotIn("还没有可处理的文档材料", prompt)
+            self.assertNotIn("还没有可处理的音频或视频", prompt)
+            self.assertIn("当前会话或工作区已经有对应材料，就不要让用户重复上传", prompt)
+
+            qq_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "qq_text"})
+            qq_prompt = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=qq_context,
+                profile_user_id="master",
+                session_id="desktop_workspace_materials",
+            )
+            self.assertNotIn("\n- read_attachment_section", qq_prompt)
+            self.assertNotIn("\n- transcribe_media", qq_prompt)
+
+    def test_ready_material_keeps_unhealthy_rvc_hidden_but_explains_recovery(self) -> None:
+        class StubTool:
+            def __init__(self, name: str, *, ready: bool = True) -> None:
+                self.name = name
+                self.ready = ready
+
+            def capability_status(self):
+                if self.ready:
+                    return {"enabled": True, "status": "ready"}
+                return {"enabled": False, "status": "unavailable", "reason": "rvc_webui_unreachable"}
+
+            def build_prompt_instruction(self) -> str:
+                return f"- {self.name}：测试用工具。"
+
+            def normalize_call(self, value):
+                return dict(value) if value.get("type") == self.name else None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.engine.store = MemoryStore(Path(temp_dir))
+            self.engine.capability_registry = CapabilityRegistry()
+            self.engine.tool_handlers = {
+                "inspect_media_info": StubTool("inspect_media_info"),
+                "cover_song": StubTool("cover_song", ready=False),
+            }
+            self.engine.store.add_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="rvc_unavailable",
+                source="qq",
+                kind="audio",
+                status="ready",
+                origin_name="song.wav",
+                file_ext=".wav",
+                detail={"media_info": {"audio": {"codec": "pcm"}}},
+                timestamp=100,
+            )
+            qq_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "qq_text"})
+
+            prompt = self.engine._build_tool_prompt_context(
+                allow_tool_call=True,
+                client_context=qq_context,
+                profile_user_id="master",
+                session_id="rvc_unavailable",
+            )
+
+            self.assertIn("\n- inspect_media_info", prompt)
+            self.assertNotIn("\n- cover_song：测试用工具", prompt)
+            self.assertIn("暂不可用的能力", prompt)
+            self.assertIn("本机 RVC 服务、FFmpeg 或可用音色模型当前没有通过检查", prompt)
+            self.assertIn("歌曲材料若已经存在，不需要再次上传", prompt)
 
     def test_capability_registry_expands_media_document_and_generated_tools(self) -> None:
         class StubTool:
@@ -1290,8 +1424,14 @@ class EngineExtensionTests(unittest.TestCase):
     def test_web_scene_excludes_all_media_workbench_tools(self) -> None:
         registry = CapabilityRegistry()
         scene_tools = registry.tool_names_for_mode(ClientMode.SCENE_STATIC)
-        for tool in {"inspect_media_info", "separate_audio_stems", "clean_voice_track",
-                      "transcribe_media", "prepare_voice_dataset", "convert_media_file"}:
+        for tool in {
+            "inspect_media_info",
+            "separate_audio_stems",
+            "clean_voice_track",
+            "transcribe_media",
+            "prepare_voice_dataset",
+            "convert_media_file",
+        }:
             self.assertNotIn(tool, scene_tools, f"{tool} should not be available in web scene mode")
 
     def test_web_scene_prompt_excludes_media_preset_routing(self) -> None:

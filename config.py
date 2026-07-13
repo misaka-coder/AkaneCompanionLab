@@ -151,7 +151,7 @@ class Settings(BaseSettings):
 
     # === 云端图像生成 / 编辑 ===
     IMAGE_GENERATION_ENABLED: bool = False
-    IMAGE_GENERATION_BASE_URL: str = "https://us.pinai-cn.com/v1"
+    IMAGE_GENERATION_BASE_URL: str = "https://api.pinaic.com/v1"
     IMAGE_GENERATION_API_KEY: str = ""
     IMAGE_GENERATION_MODEL: str = "gpt-image-2"
     IMAGE_GENERATION_TIMEOUT_SECONDS: float = 300.0
@@ -587,15 +587,13 @@ def _apply_settings(s: Settings) -> None:
     VISION_MAX_IMAGE_BYTES = max(128 * 1024, int(s.VISION_MAX_IMAGE_BYTES))
     IMAGE_GENERATION_ENABLED = bool(s.IMAGE_GENERATION_ENABLED)
     IMAGE_GENERATION_BASE_URL = (
-        str(s.IMAGE_GENERATION_BASE_URL or "https://us.pinai-cn.com/v1").strip().rstrip("/")
-        or "https://us.pinai-cn.com/v1"
+        str(s.IMAGE_GENERATION_BASE_URL or "https://api.pinaic.com/v1").strip().rstrip("/")
+        or "https://api.pinaic.com/v1"
     )
-    pinai_chat_key = (
-        CHAT_API_KEY
-        if any(marker in str(CHAT_BASE_URL or "").lower() for marker in ("pinaic.com", "pinai-cn.com"))
-        else ""
-    )
-    IMAGE_GENERATION_API_KEY = str(s.IMAGE_GENERATION_API_KEY or pinai_chat_key or "").strip()
+    # PinAI keys are platform-group scoped. A chat key that works for Claude/Responses
+    # may still receive "Images API is not supported for this platform", so image
+    # generation must use an explicitly configured OpenAI-group key.
+    IMAGE_GENERATION_API_KEY = str(s.IMAGE_GENERATION_API_KEY or "").strip()
     IMAGE_GENERATION_MODEL = str(s.IMAGE_GENERATION_MODEL or "gpt-image-2").strip() or "gpt-image-2"
     IMAGE_GENERATION_TIMEOUT_SECONDS = max(30.0, min(600.0, float(s.IMAGE_GENERATION_TIMEOUT_SECONDS)))
     IMAGE_GENERATION_MAX_INPUT_IMAGES = max(1, min(5, int(s.IMAGE_GENERATION_MAX_INPUT_IMAGES)))

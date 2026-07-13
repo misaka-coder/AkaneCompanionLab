@@ -55,7 +55,7 @@ class PublicMarketProvider(MarketDataProvider):
 
     def health(self) -> MarketProviderHealth:
         routes = {
-            "yahoo": {"enabled": self.yahoo_enabled, "dependency": "yfinance"},
+            "yahoo": {"enabled": self.yahoo_enabled, "dependency": "requests"},
             "akshare_etf": {"enabled": self.akshare_enabled, "dependency": "akshare"},
         }
         enabled = [name for name, item in routes.items() if item["enabled"]]

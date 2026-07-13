@@ -94,6 +94,15 @@ V1 实现：
 - `RvcWebUiProvider.convert_voice()`：使用 RVC v2 + RMVPE。
 - `CoverSongService._mix_tracks()`：FFmpeg `amix normalize=0` + limiter。
 
+当前 RVC 的单次 `infer_convert` 已在内部处理长音频切段：超过窗口阈值后，它会在约 60 秒目标点附近寻找局部最低能量位置，在该位置切段推理并按顺序拼回。宿主不要再把每个静音段拆成多次 `infer_convert` 请求；当前 RVC 会在每次请求中重新读取 FAISS index，外层重复切段会放大 index I/O、请求开销和音轨累计对齐误差。若未来要升级为严格的静音区间切点，应在 RVC 单次推理内部完成，并保持 padding、总时长和顺序拼接语义。
+
+本机 RVC 运行时带有两项热路径优化：
+
+- `get_vc` 记录当前实际加载的模型。重复选择同一模型时直接复用权重、HubERT、Pipeline 和已预热的 RMVPE；真正切换到其他模型时仍执行完整加载并更新当前模型状态。
+- 当前 Pipeline 按 index 的规范路径、文件大小和纳秒修改时间缓存一个 FAISS index；文件发生变化或模型切换后自动失效。`IndexIVFFlat` 使用 direct map 仅重建本次搜索命中的向量，不再为 240 MB index 常驻一份完整 `reconstruct_n` 副本。
+
+这两项属于外部 RVC runtime 的本机补丁，不是 Akane Provider 私自假定全局模型状态。重新安装或整体覆盖 RVC runtime 后需要重新核对；宿主即使没有该补丁仍保持正确，只是会恢复为每次模型选择和 index 重载的慢路径。
+
 V2 可替换：
 
 - Separation：audio-separator / MelBand-RoFormer / BS-RoFormer / Demucs。
@@ -116,6 +125,15 @@ V2 可替换：
 ```
 
 缓存位于 Akane 受管工作区，不暴露绝对路径。缓存索引使用原子写入。生成文件被用户清理时不能删除共享缓存本体；命中缓存后复制或硬链接到当前会话 Outputs，再建立新的 `gen_*` 记录。
+
+缓存分两层：
+
+- 分轨缓存：仅由源文件内容指纹、Separation Provider 和分离模型决定，保存 `vocals.wav` / `instrumental.wav`。同一来源更换 RVC 音色、升降调、检索比例、混音增益或最终格式时复用分轨，不重复跑 UVR。
+- 成品缓存：继续包含音色模型指纹、RVC 参数、混音参数和输出格式；完全相同的请求直接复用成品。
+
+`force_rebuild=true` 同时绕过成品缓存和分轨缓存。缓存文件优先使用同卷硬链接写入，无法硬链接时退回原子复制。
+
+非缓存推理会返回安全的 `processing` 摘要，包括宿主侧 source hash、模型指纹、解码、分离、RVC、混音和缓存写入耗时，以及 RVC 返回的 feature extraction、pitch extraction、voice synthesis 耗时。该摘要只保留布尔值和秒数，不保留 RVC index 路径、工作目录或服务器临时路径。
 
 ## 7. 安全与正确性
 

@@ -408,6 +408,13 @@ F7d2 再实现 `quote_snapshot`。优先使用带真实观察时间的上游字�
 - 不能把 `fetched_at` 当 `as_of`；
 - 无法确认时间时返回 `unavailable`，不猜。
 
+### 10.5 2026-07-13 节点稳定性修订
+
+- 默认日线下载从 `yfinance.Ticker.history()` 改为 Yahoo Chart HTTP，继续复用相同的规范化、provenance、缓存和结构化失败契约；请求带显式硬超时。
+- `_default_yahoo_downloader()` 仍作为兼容和确定性测试路径保留；`yfinance.Search` 继续用于运行时证券发现，但不再阻塞已知 canonical code 的日线查询。
+- 当前节点实测 `SP500.INDEX` 返回三条真实 Yahoo 日线；偶发 SSL/超时仍按 `unavailable` 返回并进入金融能力短时熔断，不会被误报为 `empty` 或成功。
+- `PublicMarketProvider.health()` 的 Yahoo 本地依赖检查改为基础 `requests`；实际调用失败由结果熔断补充，不能再把“安装了 yfinance”当成上游可达证明。
+
 ## 11. AkShareETFAdapter
 
 ### 11.1 边界
@@ -763,14 +770,14 @@ feat(finance): add public market instrument registry
 - `MarketDataProvenance` 保存 source、vendor symbol、fetched_at、exchange timezone、currency、session、delay 和 data quality；
 - `MarketBar` 向后兼容增加 `trading_date/time_semantics`，日线使用交易所本地日期排序锚点并明确标记为 `trading_date`；
 - `YahooFinanceAdapter` 只接受 registry 中 route 为 Yahoo 的 canonical code；
-- 默认 downloader 延迟导入 yfinance，模块导入和基础测试不要求公开行情依赖；
-- 默认 downloader 使用能抛出上游错误的单标的 history 路径；批量 download 吞错返回的空表不能作为生产失败判断依据；
-- 生产调用参数显式锁定 `auto_adjust=False / multi_level_index=False / threads=False / progress=False`；
+- 默认 downloader 走带硬超时的 Yahoo Chart HTTP；兼容 downloader 仍延迟导入 yfinance，模块导入和基础测试不要求公开行情依赖；
+- 兼容 yfinance downloader 使用能抛出上游错误的单标的 history 路径；批量 download 吞错返回的空表不能作为生产失败判断依据；
+- 兼容 yfinance 调用参数显式锁定 `auto_adjust=False / multi_level_index=False / threads=False / progress=False`；
 - 只支持 `1d + adjusted=none`，请求区间按交易所本地 trading date 解释；
 - 空数据返回 `empty`，缺依赖、超时、限流和 schema 变化返回结构化失败；
 - adapter 兼容上游意外返回 MultiIndex 列，但不把 vendor symbol 当业务 code；
-- 本切片没有修改 factory/config，没有启用网络或 QQ 推送。
-- 使用临时可选依赖环境执行一次真实失败 smoke：当前网络仍无法连接 Yahoo，但 adapter 正确返回 `unavailable / upstream_timeout:yahoo`，没有误报 `empty`，也没有产生 fixture/Mock 数据。
+- 本切片没有启用 QQ 推送；只有用户主动查询或显式 readiness smoke 才访问公开行情。
+- 2026-07-13 的真实 smoke 已由 Yahoo Chart HTTP 成功返回 SP500 三条日线；失败场景仍返回结构化 `unavailable`，没有产生 fixture/Mock 数据。
 
 建议提交：
 

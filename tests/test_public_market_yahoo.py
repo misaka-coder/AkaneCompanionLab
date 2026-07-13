@@ -104,6 +104,61 @@ class YahooFinanceAdapterTests(unittest.TestCase):
             },
         )
 
+    def test_default_chart_downloader_uses_bounded_http_and_normalizes_daily_rows(self) -> None:
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {
+                    "chart": {
+                        "error": None,
+                        "result": [
+                            {
+                                "meta": {"exchangeTimezoneName": "Asia/Tokyo"},
+                                "timestamp": [
+                                    int(datetime(2026, 7, 8, 0, 0, tzinfo=TOKYO).timestamp()),
+                                    int(datetime(2026, 7, 9, 0, 0, tzinfo=TOKYO).timestamp()),
+                                ],
+                                "indicators": {
+                                    "quote": [
+                                        {
+                                            "open": [50000, 50400],
+                                            "high": [50500, 50900],
+                                            "low": [49800, 50300],
+                                            "close": [50400, 50800],
+                                            "volume": [0, 0],
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                }
+
+        def fake_get(url, **kwargs):
+            calls.append((url, kwargs))
+            return FakeResponse()
+
+        with patch.object(public_yahoo.requests, "get", side_effect=fake_get):
+            frame = public_yahoo._default_yahoo_chart_downloader(
+                tickers="^N225",
+                start="2026-07-01",
+                end="2026-07-11",
+                interval="1d",
+                timeout=4.0,
+            )
+
+        rows = frame.reset_index().to_dict(orient="records")
+        self.assertIn("%5EN225", calls[0][0])
+        self.assertEqual(calls[0][1]["timeout"], 4.0)
+        self.assertEqual(rows[0]["Date"], "2026-07-08")
+        self.assertEqual(rows[-1]["Close"], 50800)
+
     def test_search_quotes_returns_bounded_mapping_results(self) -> None:
         calls = []
 

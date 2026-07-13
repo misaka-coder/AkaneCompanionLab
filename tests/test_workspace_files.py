@@ -53,6 +53,20 @@ class WorkspaceFileServiceTests(unittest.TestCase):
         self.assertEqual(uris, ["workspace:/Inbox/one.md", "workspace:/Outputs/two.txt"])
         self.assertNotIn(str(self.root), str(result))
 
+    def test_capability_inventory_detects_materials_without_reading_contents(self) -> None:
+        (self.root / "Inbox" / "notes.md").write_text("private text", encoding="utf-8")
+        (self.root / "Inbox" / "song.flac").write_bytes(b"not-real-audio")
+        (self.root / "Outputs" / "cover.webp").write_bytes(b"not-real-image")
+
+        inventory = self.service.capability_inventory()
+
+        self.assertTrue(inventory["has_any_file"])
+        self.assertTrue(inventory["has_document_file"])
+        self.assertTrue(inventory["has_media_file"])
+        self.assertTrue(inventory["has_image_file"])
+        self.assertEqual(inventory["files_scanned"], 3)
+        self.assertNotIn("private text", str(inventory))
+
     def test_prompt_context_always_exposes_workspace_overview_and_recent_files(self) -> None:
         note = self.root / "Inbox" / "note.md"
         note.write_text("recent", encoding="utf-8")

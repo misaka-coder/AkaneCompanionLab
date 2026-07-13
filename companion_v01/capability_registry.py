@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from .client_protocol import ClientMode
@@ -131,6 +131,11 @@ class CapabilitySnapshot:
     has_document_generated_file: bool = False
     has_media_generated_file: bool = False
     has_image_generated_file: bool = False
+    has_workspace_file: bool = False
+    has_document_workspace_file: bool = False
+    has_media_workspace_file: bool = False
+    has_image_workspace_file: bool = False
+    has_cover_song_cache: bool = False
     has_pending_gift: bool = False
 
 
@@ -142,6 +147,10 @@ class CapabilityModule:
     tools: tuple[str, ...]
     light_hint: str
     trigger: Callable[[CapabilitySnapshot], bool]
+    latent_reason: str = ""
+    activation_hint: str = ""
+    unavailable_reason: str = ""
+    recovery_hint: str = ""
 
     def applies_to_mode(self, mode: ClientMode) -> bool:
         return mode in self.modes
@@ -153,6 +162,47 @@ class CapabilitySelection:
     tool_names: tuple[str, ...]
     module_names: tuple[str, ...]
     layer_names: tuple[str, ...] = ()
+    disclosures: tuple[CapabilityDisclosure, ...] = ()
+
+
+@dataclass(frozen=True)
+class CapabilityDisclosure:
+    """Small model-visible capability fact, separate from callable tool schemas."""
+
+    capability_id: str
+    state: str
+    summary: str
+    reason: str = ""
+    activation: str = ""
+    tool_names: tuple[str, ...] = ()
+    unavailable_reason: str = ""
+    recovery_hint: str = ""
+
+
+def resolve_capability_disclosures(
+    selection: CapabilitySelection,
+    *,
+    available_tool_names: tuple[str, ...] | list[str] | set[str],
+) -> tuple[CapabilityDisclosure, ...]:
+    """Apply runtime readiness results without exposing a hidden tool schema."""
+
+    available = {str(name or "").strip() for name in available_tool_names if str(name or "").strip()}
+    selected = set(selection.tool_names)
+    resolved: list[CapabilityDisclosure] = []
+    for disclosure in selection.disclosures:
+        active_tools = selected.intersection(disclosure.tool_names)
+        if disclosure.state != "ready" or not active_tools or active_tools.intersection(available):
+            resolved.append(disclosure)
+            continue
+        resolved.append(
+            replace(
+                disclosure,
+                state="unavailable",
+                reason=(disclosure.unavailable_reason or "这项能力依赖的本地组件或外部服务当前没有通过可用性检查。"),
+                activation=(disclosure.recovery_hint or "依赖恢复并通过下一次检查后，系统会自动重新开放对应工具。"),
+            )
+        )
+    return tuple(resolved)
 
 
 def _always(_: CapabilitySnapshot) -> bool:
@@ -164,15 +214,21 @@ def _has_any_attachment(snapshot: CapabilitySnapshot) -> bool:
 
 
 def _has_document_context(snapshot: CapabilitySnapshot) -> bool:
-    return snapshot.has_document_attachment or snapshot.has_document_generated_file
+    return (
+        snapshot.has_document_attachment or snapshot.has_document_generated_file or snapshot.has_document_workspace_file
+    )
 
 
 def _has_media_context(snapshot: CapabilitySnapshot) -> bool:
-    return snapshot.has_media_attachment or snapshot.has_media_generated_file
+    return snapshot.has_media_attachment or snapshot.has_media_generated_file or snapshot.has_media_workspace_file
+
+
+def _has_cover_song_context(snapshot: CapabilitySnapshot) -> bool:
+    return _has_media_context(snapshot) or snapshot.has_cover_song_cache
 
 
 def _has_image_context(snapshot: CapabilitySnapshot) -> bool:
-    return snapshot.has_image_attachment or snapshot.has_image_generated_file
+    return snapshot.has_image_attachment or snapshot.has_image_generated_file or snapshot.has_image_workspace_file
 
 
 def _has_generated_file(snapshot: CapabilitySnapshot) -> bool:
@@ -204,6 +260,7 @@ class CapabilityRegistry:
         tools: list[str] = []
         module_names: list[str] = []
         layer_names: list[str] = []
+        disclosures: list[CapabilityDisclosure] = []
         seen_tools: set[str] = set()
         seen_hints: set[str] = set()
         seen_layers: set[str] = set()
@@ -221,13 +278,27 @@ class CapabilityRegistry:
                 for tool_name in module.tools
                 if tool_name not in hidden and (allowed is None or tool_name in allowed)
             )
-            if allowed is not None and not module_tools:
+            if not module_tools:
                 continue
             hint = module.light_hint.strip()
             if hint and hint not in seen_hints:
                 seen_hints.add(hint)
                 hints.append(hint)
-            if not module.trigger(snapshot):
+            is_ready = module.trigger(snapshot)
+            if hint and (is_ready or module.activation_hint.strip()):
+                disclosures.append(
+                    CapabilityDisclosure(
+                        capability_id=module.name,
+                        state="ready" if is_ready else "latent",
+                        summary=hint,
+                        reason="" if is_ready else module.latent_reason.strip(),
+                        activation="" if is_ready else module.activation_hint.strip(),
+                        tool_names=module_tools,
+                        unavailable_reason=module.unavailable_reason.strip(),
+                        recovery_hint=module.recovery_hint.strip(),
+                    )
+                )
+            if not is_ready:
                 continue
             module_names.append(module.name)
             layer = str(module.layer or "").strip()
@@ -244,6 +315,7 @@ class CapabilityRegistry:
             tool_names=tuple(tools),
             module_names=tuple(module_names),
             layer_names=tuple(layer_names),
+            disclosures=tuple(disclosures),
         )
 
     def tool_names_for_mode(self, mode: ClientMode) -> tuple[str, ...]:
@@ -276,6 +348,8 @@ class CapabilityRegistry:
                 tools=WEB_SEARCH_TOOL_NAMES,
                 light_hint="需要当前/最新/实时/近期的公开信息时用 web_search，不必等用户说“搜索”；例：日经指数、七月新番、最新模型价格。稳定常识和闲聊直接回复。不要访问私密、内网或登录内容。",
                 trigger=_always,
+                unavailable_reason="联网搜索服务当前正在检测，或没有通过所在网络节点的可用性检查。",
+                recovery_hint="网络或搜索服务恢复后会自动重新开放；当前不要假装已经查到实时结果。",
             ),
             CapabilityModule(
                 name="desktop_browser_open",
@@ -324,6 +398,8 @@ class CapabilityRegistry:
                 tools=IMAGE_MATERIAL_TOOL_NAMES,
                 light_hint="需要重新观察当前会话较早的原图或生成图时，可以按 handle 加载原始图片；当前轮已经带图或摘要足够时不必重复加载。",
                 trigger=_has_image_context,
+                latent_reason="当前会话还没有可重新加载的图片材料。",
+                activation_hint="用户上传图片或生成一张图片后，这项材料读取能力会自动开放。",
             ),
             CapabilityModule(
                 name="image_generation",
@@ -332,6 +408,8 @@ class CapabilityRegistry:
                 tools=IMAGE_GENERATION_TOOL_NAMES,
                 light_hint="用户明确要文生图、图生图、融合多张图片或继续修改生成图时，可以调用已配置的云端图片生成能力；使用当前会话 img_/gen_ handle，不填写路径或 URL。",
                 trigger=_always,
+                unavailable_reason="当前配置的图片中转没有通过 Images API 可用性检查，因此没有暴露生图工具。",
+                recovery_hint="中转恢复 Images API 或切换到支持生图的 provider 后，系统会自动重新开放；当前不要声称已经生成图片。",
             ),
             CapabilityModule(
                 name="conversation_file_authoring",
@@ -372,6 +450,10 @@ class CapabilityRegistry:
                 tools=DOCUMENT_WORKBENCH_TOOL_NAMES,
                 light_hint="你可以阅读、整理、转换和样式加工文本、Office、PDF 等文档。",
                 trigger=_has_document_context,
+                latent_reason="当前会话和可见工作区里还没有可处理的文档材料，因此没有展开文档读取与修改工具。",
+                activation_hint="用户上传文档，或在桌宠的 Akane 工作区放入文档后会自动开放；若工作区文件尚无 handle，先登记再继续处理。当前对话内容仍可直接生成新文档。",
+                unavailable_reason="文档处理组件当前没有通过可用性检查。",
+                recovery_hint="文档组件恢复后会自动重新开放；已有材料无需重复上传。",
             ),
             CapabilityModule(
                 name="media_workbench",
@@ -380,6 +462,10 @@ class CapabilityRegistry:
                 tools=MEDIA_WORKBENCH_TOOL_NAMES,
                 light_hint="你可以处理音频/视频任务：转写、转码、降噪、分离人声、切片打包训练素材等。在 QQ 里这些媒体任务容易耗时，优先委派后台工坊；完成后再通知和交付。",
                 trigger=_has_media_context,
+                latent_reason="当前会话和可见工作区里还没有可处理的音频或视频，因此没有展开媒体处理工具。",
+                activation_hint="用户上传音频/视频、提供可下载的公开媒体链接，或在桌宠的 Akane 工作区放入媒体文件后会自动开放；工作区文件可先登记为 handle。",
+                unavailable_reason="媒体处理所需的本地组件当前没有通过可用性检查。",
+                recovery_hint="媒体组件恢复后会自动重新开放；已有材料无需重复上传。",
             ),
             CapabilityModule(
                 name="cover_song",
@@ -391,7 +477,11 @@ class CapabilityRegistry:
                     "没有歌曲材料时请自然请用户发送，已完成的歌曲可以按歌名从缓存再次交付。"
                     "短任务直接调用工具完成；预计较久时可以委派后台工坊，不要否认已有能力。"
                 ),
-                trigger=_always,
+                trigger=_has_cover_song_context,
+                latent_reason="当前还没有歌曲音频、视频或可复用的媒体结果，因此暂不展开翻唱工具。",
+                activation_hint="用户上传一首歌、提供可下载的公开歌曲链接，或把歌曲放进桌宠的 Akane 工作区后即可触发；同时需要本机 RVC 服务和至少一个可用音色模型。",
+                unavailable_reason="本机 RVC 服务、FFmpeg 或可用音色模型当前没有通过检查。",
+                recovery_hint="启动本机 RVC 服务并准备可用音色模型后会自动重新开放；歌曲材料若已经存在，不需要再次上传。",
             ),
             CapabilityModule(
                 name="generated_file_management",

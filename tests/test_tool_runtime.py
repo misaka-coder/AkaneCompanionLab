@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -308,6 +310,117 @@ class WebSearchToolHandlerTests(unittest.TestCase):
         self.assertEqual(metadata.operation, "read")
         self.assertEqual(metadata.risk, "low")
         self.assertGreaterEqual(metadata.default_round_budget, 6)
+
+    def test_capability_status_hides_missing_config_without_starting_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            handler = WebSearchToolHandler(config_base_dir=temp_dir, mcp_tool_caller=object())
+
+            status = handler.capability_status(profile_user_id="master", client_mode="desktop_pet")
+
+            self.assertFalse(status["enabled"])
+            self.assertEqual(status["status"], "missing_config")
+
+    def test_capability_status_actively_probes_anysearch_and_caches_success(self) -> None:
+        class FakeCaller:
+            def __init__(self) -> None:
+                self.calls = []
+
+            async def __call__(self, *, server: dict, tool_name: str, arguments: dict) -> dict:
+                self.calls.append((tool_name, arguments))
+                return {"content": [{"type": "text", "text": '{"results": []}'}]}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            saved = save_mcp_server_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                server_id="anysearch",
+                payload={
+                    "enabled": True,
+                    "displayName": "AnySearch",
+                    "command": "fake-anysearch",
+                    "args": [],
+                    "cwd": temp_dir,
+                },
+            )
+            self.assertTrue(saved["ok"])
+            caller = FakeCaller()
+            handler = WebSearchToolHandler(
+                config_base_dir=temp_dir,
+                mcp_tool_caller=caller,
+                readiness_probe_in_background=False,
+            )
+
+            first = handler.capability_status(profile_user_id="master", client_mode="desktop_pet")
+            second = handler.capability_status(profile_user_id="master", client_mode="desktop_pet")
+
+            self.assertTrue(first["enabled"])
+            self.assertEqual(second["status"], "ready")
+            self.assertEqual(caller.calls, [("search", {"query": "OpenAI", "max_results": 1})])
+
+    def test_default_capability_probe_stays_hidden_while_background_check_runs(self) -> None:
+        completed = threading.Event()
+
+        class FakeCaller:
+            async def __call__(self, *, server: dict, tool_name: str, arguments: dict) -> dict:
+                completed.set()
+                return {"content": [{"type": "text", "text": '{"results": []}'}]}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_mcp_server_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                server_id="anysearch",
+                payload={
+                    "enabled": True,
+                    "displayName": "AnySearch",
+                    "command": "fake-anysearch",
+                    "args": [],
+                    "cwd": temp_dir,
+                },
+            )
+            handler = WebSearchToolHandler(config_base_dir=temp_dir, mcp_tool_caller=FakeCaller())
+
+            pending = handler.capability_status(profile_user_id="master", client_mode="desktop_pet")
+            self.assertTrue(completed.wait(timeout=1.0))
+            ready = pending
+            for _ in range(100):
+                ready = handler.capability_status(profile_user_id="master", client_mode="desktop_pet")
+                if ready["enabled"]:
+                    break
+                time.sleep(0.01)
+
+            self.assertFalse(pending["enabled"])
+            self.assertEqual(pending["status"], "checking")
+            self.assertTrue(ready["enabled"])
+
+    def test_execute_treats_mcp_error_result_as_unavailable_and_opens_circuit(self) -> None:
+        class ErrorCaller:
+            async def __call__(self, *, server: dict, tool_name: str, arguments: dict) -> dict:
+                return {"isError": True, "content": [{"type": "text", "text": "upstream unavailable"}]}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_mcp_server_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                server_id="anysearch",
+                payload={
+                    "enabled": True,
+                    "displayName": "AnySearch",
+                    "command": "fake-anysearch",
+                    "args": [],
+                    "cwd": temp_dir,
+                },
+            )
+            handler = WebSearchToolHandler(config_base_dir=temp_dir, mcp_tool_caller=ErrorCaller())
+            call = handler.normalize_call({"type": "web_search", "query": "今天新闻"})
+            assert call is not None
+
+            result = handler.execute(call=call, context=self._context())
+            status = handler.capability_status(profile_user_id="master", client_mode="desktop_pet")
+
+            self.assertEqual(result.state_updates["web_search_status"], "unavailable")
+            self.assertEqual(result.state_updates["web_search_reason"], "mcp_result_error")
+            self.assertFalse(status["enabled"])
 
     def test_prompt_instruction_searches_current_public_facts_without_explicit_search_word(self) -> None:
         handler = WebSearchToolHandler(config_base_dir="unused", mcp_tool_caller=object())

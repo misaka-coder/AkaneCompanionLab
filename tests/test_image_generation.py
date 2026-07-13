@@ -49,6 +49,12 @@ class FakeSession:
             raise AssertionError("unexpected provider request")
         return self.responses.pop(0)
 
+    def get(self, url: str, **kwargs):
+        self.calls.append({"url": url, **kwargs})
+        if not self.responses:
+            raise AssertionError("unexpected provider request")
+        return self.responses.pop(0)
+
 
 class ImageGenerationTests(unittest.TestCase):
     def _services(self, root: Path):
@@ -223,6 +229,88 @@ class ImageGenerationTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "provider_auth_or_network_forbidden")
         self.assertNotIn("secret-key", str(raised.exception))
         self.assertNotIn("must-not-leak", str(raised.exception))
+
+    def test_pinai_images_api_unsupported_is_specific_and_non_retryable(self) -> None:
+        session = FakeSession(
+            [
+                FakeResponse(
+                    {"error": {"type": "not_found_error", "message": "Images API is not supported for this platform"}},
+                    status_code=404,
+                )
+            ]
+        )
+        provider = PinAIImageProvider(
+            base_url="https://api.pinaic.com/v1",
+            api_key="secret-key",
+            session=session,
+        )
+
+        with self.assertRaises(ImageGenerationError) as raised:
+            provider.generate(
+                prompt="测试",
+                size="1024x1024",
+                quality="low",
+                background="auto",
+                output_format="png",
+                compression=90,
+                n=1,
+            )
+
+        self.assertEqual(raised.exception.code, "provider_images_api_unsupported")
+        self.assertFalse(raised.exception.retryable)
+
+    def test_pinai_readiness_probe_hides_unsupported_platform_without_generating(self) -> None:
+        unsupported = FakeSession(
+            [
+                FakeResponse(
+                    {"error": {"type": "not_found_error", "message": "Images API is not supported for this platform"}},
+                    status_code=404,
+                )
+            ]
+        )
+        provider = PinAIImageProvider(
+            base_url="https://api.pinaic.com/v1",
+            api_key="secret-key",
+            session=unsupported,
+            readiness_probe_in_background=False,
+        )
+
+        status = provider.capability_status()
+
+        self.assertFalse(status["enabled"])
+        self.assertEqual(status["status"], "unsupported")
+        self.assertEqual(status["reason"], "image_key_not_bound_to_openai_platform")
+        self.assertTrue(unsupported.calls[0]["url"].endswith("/models"))
+        self.assertNotIn("json", unsupported.calls[0])
+
+    def test_pinai_readiness_probe_accepts_available_image_model(self) -> None:
+        supported = FakeSession([FakeResponse({"data": [{"id": "gpt-image-2"}]})])
+        provider = PinAIImageProvider(
+            base_url="https://images.example.com/v1",
+            api_key="secret-key",
+            session=supported,
+            readiness_probe_in_background=False,
+        )
+
+        status = provider.capability_status()
+
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["status"], "ready")
+
+    def test_pinai_readiness_probe_hides_key_without_image_model(self) -> None:
+        unsupported = FakeSession([FakeResponse({"data": [{"id": "claude-sonnet-4-5"}]})])
+        provider = PinAIImageProvider(
+            base_url="https://images.example.com/v1",
+            api_key="secret-key",
+            session=unsupported,
+            readiness_probe_in_background=False,
+        )
+
+        status = provider.capability_status()
+
+        self.assertFalse(status["enabled"])
+        self.assertEqual(status["status"], "unsupported")
+        self.assertEqual(status["reason"], "image_model_not_available_for_key")
 
     def test_pinai_multi_image_edit_uses_repeated_image_array_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

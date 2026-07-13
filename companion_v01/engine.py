@@ -27,6 +27,7 @@ from .capability_registry import (
     is_document_generated_file,
     is_media_attachment,
     is_media_generated_file,
+    resolve_capability_disclosures,
 )
 from . import desktop_pet_engine
 from .embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
@@ -1329,9 +1330,6 @@ class AkaneMemoryEngine:
         if resolver is None or generated_file_service is None:
             return None
         image_api_key = str(getattr(config, "IMAGE_GENERATION_API_KEY", "") or "").strip()
-        current_chat_base = str(getattr(config, "CHAT_BASE_URL", "") or "").strip().lower()
-        if not image_api_key and any(marker in current_chat_base for marker in ("pinaic.com", "pinai-cn.com")):
-            image_api_key = str(getattr(config, "CHAT_API_KEY", "") or "").strip()
         provider = PinAIImageProvider(
             base_url=str(getattr(config, "IMAGE_GENERATION_BASE_URL", "") or ""),
             api_key=image_api_key,
@@ -5110,6 +5108,11 @@ class AkaneMemoryEngine:
             session_id=session_id,
             domain_profile_id=domain_profile_id,
         )
+        ready_tool_names = tuple(handlers)
+        raw_disclosures = tuple(getattr(selection, "disclosures", ()) or ())
+        disclosures = (
+            resolve_capability_disclosures(selection, available_tool_names=ready_tool_names) if raw_disclosures else ()
+        )
         excluded = {str(item).strip() for item in (exclude_tool_types or set()) if str(item).strip()}
         if excluded:
             handlers = {tool_type: handler for tool_type, handler in handlers.items() if str(tool_type) not in excluded}
@@ -5117,25 +5120,64 @@ class AkaneMemoryEngine:
         if "media_workbench" in selection.module_names:
             media_routing = [*MEDIA_PRESET_ROUTING, ""]
 
+        def append_capability_context(parts: list[str]) -> None:
+            ready = [item for item in disclosures if item.state == "ready"]
+            latent = [item for item in disclosures if item.state == "latent"]
+            unavailable = [item for item in disclosures if item.state == "unavailable"]
+            disclosed_summaries = {item.summary for item in disclosures}
+            extra_ready_hints = [hint for hint in selection.light_hints if hint and hint not in disclosed_summaries]
+            if ready or extra_ready_hints:
+                parts.append("【当前可用能力概览】")
+                parts.extend(f"- {item.summary}" for item in ready)
+                parts.extend(f"- {hint}" for hint in extra_ready_hints)
+                parts.append("")
+            elif not disclosures and selection.light_hints:
+                parts.append("【能力概览】")
+                parts.extend(f"- {hint}" for hint in selection.light_hints if hint)
+                parts.append("")
+            if latent:
+                parts.append("【可按需激活的能力】")
+                for item in latent:
+                    detail = item.summary
+                    if item.reason:
+                        detail += f" 当前没有展开具体工具，因为：{item.reason}"
+                    if item.activation:
+                        detail += f" 激活方式：{item.activation}"
+                    parts.append(f"- {detail}")
+                parts.append("")
+            if unavailable:
+                parts.append("【暂不可用的能力】")
+                for item in unavailable:
+                    detail = item.summary
+                    if item.reason:
+                        detail += f" 当前没有暴露具体工具，因为：{item.reason}"
+                    if item.activation:
+                        detail += f" 恢复条件：{item.activation}"
+                    parts.append(f"- {detail}")
+                parts.append("")
+            if disclosures:
+                parts.extend(
+                    [
+                        "【能力认知与自然引导】",
+                        "- 上述状态是本轮事实边界：只有“当前可调用”能力才有完整工具；待激活和暂不可用能力不能尝试调用，也不能假装已经完成。",
+                        "- 用户问“你会什么/能做什么”时，结合当前人设自然概括能力与所需材料，不要背诵内部工具名、schema、状态码或系统分层。",
+                        "- 用户表达待激活能力的意图时，直接说明最短激活方式；如果当前会话或工作区已经有对应材料，就不要让用户重复上传。",
+                        "- 暂不可用能力只在用户请求相关任务或询问能力状态时说明原因与恢复条件，不要在无关聊天里主动播报故障。",
+                        "",
+                    ]
+                )
+
         if not handlers:
-            hints = [hint for hint in selection.light_hints if hint]
-            if not hints and not media_routing:
+            if not disclosures and not selection.light_hints and not media_routing:
                 return "当前没有可用工具，tool_call 固定为 null。"
             parts: list[str] = []
-            if hints:
-                parts.append("【可用能力概览】")
-                parts.extend(f"- {hint}" for hint in hints)
-                parts.append("")
+            append_capability_context(parts)
             parts.extend(media_routing)
             parts.append("当前没有需要展开的具体工具，tool_call 固定为 null。")
             return "\n".join(parts)
 
         lines: list[str] = []
-        if selection.light_hints:
-            lines.append("【可用能力概览】")
-            for hint in selection.light_hints:
-                lines.append(f"- {hint}")
-            lines.append("")
+        append_capability_context(lines)
         if (
             client_context
             and client_context.effective_mode == ClientMode.DESKTOP_PET
