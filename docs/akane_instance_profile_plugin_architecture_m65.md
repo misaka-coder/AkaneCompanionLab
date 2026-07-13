@@ -1,6 +1,6 @@
 # Akane Instance Profile and Plugin Architecture M65
 
-Status: approved for M65-A; implementation not started
+Status: M65-A implemented; M65-B not started
 
 Date: 2026-07-13
 
@@ -175,8 +175,16 @@ The runtime-selected instance is identified explicitly, for example through
 AKANE_DATA_ROOT/instances/<instance_id>/instance.toml
 ```
 
-The exact selector and storage API will be finalized in M65-A tests before
-being advertised as public configuration.
+M65-A finalizes `AKANE_INSTANCE_ID` as a restart-only deployment selector. An
+empty value synthesizes `local-default`; a non-empty value must be a safe id
+whose manifest exists at the path above. The selector is intentionally absent
+from the control-center settings catalog and cannot be changed as a live
+runtime override.
+
+M65-A resolves `features.care` into an immutable snapshot but does not yet use
+that value to start or stop the care runtime. That behavior belongs to M65-B.
+Until then the snapshot is host-internal and must not be presented in UI or
+prompts as though care switching were already active.
 
 ## Instance Context
 
@@ -570,6 +578,8 @@ Required negative tests eventually include:
 
 ### M65-A — Instance identity and feature profile
 
+Implementation status: complete.
+
 Scope:
 
 - define and validate the minimal `InstanceManifest`;
@@ -664,10 +674,7 @@ complete.
 
 ## Immediate Next Action
 
-Implement M65-A only.
-
-The first code pass should locate current character/client/config selection,
-define the minimal manifest and resolved feature snapshot, then prove that an
-unconfigured developer environment behaves exactly as it did before M65.
-Finance, care behavior changes, UI, storage migration, and cloud deployment
-remain untouched in that pass.
+Keep M65-A as the committed compatibility boundary, then implement M65-B as a
+separate slice: make the existing care runtime obey the resolved snapshot
+without changing default behavior. Finance, plugin loading, UI, storage
+migration, and cloud deployment remain untouched until their own slices.

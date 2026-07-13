@@ -34,6 +34,7 @@ from .finance import (
     QQFinanceDeliveryAdapter,
 )
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
+from .instance_profile import resolve_instance_context
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
 from .model_service_config import ModelServiceConfigStore, load_and_apply_saved_model_service
@@ -122,10 +123,16 @@ load_and_apply_saved_overrides(
     settings_override_store,
     on_error=lambda exc: logger.warning("Settings override ignored: %s", exc),
 )
+instance_context = resolve_instance_context(
+    data_root=Path(config.DATA_ROOT),
+    selected_instance_id=getattr(config, "AKANE_INSTANCE_ID", ""),
+)
+app.state.akane_instance_context = instance_context
 engine = AkaneMemoryEngine(
     Path(config.DATA_DIR) / "akane_memory_v01",
     resource_manifest=resources,
     desktop_pet_character_resources=desktop_pet_character_resources,
+    instance_context=instance_context,
 )
 USER_ASSETS_DIR = engine.gift_assets.base_dir
 tts_client = EdgeTTSClient(

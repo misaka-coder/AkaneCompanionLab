@@ -34,9 +34,11 @@ VALID_SCOPES = frozenset({SCOPE_RUNTIME, SCOPE_RESTART, SCOPE_RESTART_CLIENT})
 MANAGED_MODEL_SERVICE = "model-service"
 MANAGED_CAPABILITIES = "capabilities"
 
-# Settings fields intentionally NOT catalogued (none today). Listing a field
+# Settings fields intentionally NOT catalogued. Listing a field
 # here is the explicit, reviewable way to keep it out of the drift guard.
-EXCLUDED_KEYS: frozenset[str] = frozenset()
+# AKANE_INSTANCE_ID is deployment composition selected before the host starts;
+# it must not become a control-center setting or a live runtime override.
+EXCLUDED_KEYS: frozenset[str] = frozenset({"AKANE_INSTANCE_ID"})
 
 
 @dataclass(frozen=True)

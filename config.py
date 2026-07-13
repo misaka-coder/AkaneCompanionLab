@@ -22,6 +22,8 @@ DEFAULT_EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
 class Settings(BaseSettings):
     # === 运行模式 & 人设 ===
     RUN_MODE: str = "CLOUD"
+    # 启动级实例选择器；留空保持 M65 前的 local-default 行为
+    AKANE_INSTANCE_ID: str = ""
     # 自定义人设 TOML 文件路径（留空=内置默认）
     PERSONA_CONFIG_PATH: str = ""
     # 人设文件中的 variant 名（对应 TOML [variants.xxx]）
@@ -536,7 +538,7 @@ def _apply_settings(s: Settings) -> None:
     global REMOTE_MEDIA_YTDLP_COOKIEFILE, REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER
     global REMOTE_MEDIA_YTDLP_USER_AGENT, REMOTE_MEDIA_YTDLP_REFERER
     global WEB_IDENTITY_MODE, WEB_OWNER_PROFILE_USER_ID
-    global RUN_MODE, PERSONA_CONFIG_PATH, PERSONA_VARIANT
+    global RUN_MODE, AKANE_INSTANCE_ID, PERSONA_CONFIG_PATH, PERSONA_VARIANT
     global \
         EMBEDDING_PROVIDER, \
         EMBEDDING_MODEL_NAME, \
@@ -816,6 +818,7 @@ def _apply_settings(s: Settings) -> None:
 
     # === persona / embedding / memory ===
     RUN_MODE = s.RUN_MODE
+    AKANE_INSTANCE_ID = str(s.AKANE_INSTANCE_ID or "")
     PERSONA_CONFIG_PATH = s.PERSONA_CONFIG_PATH or ""
     PERSONA_VARIANT = str(s.PERSONA_VARIANT or "default").strip() or "default"
     EMBEDDING_PROVIDER = str(s.EMBEDDING_PROVIDER or "auto").strip().lower() or "auto"

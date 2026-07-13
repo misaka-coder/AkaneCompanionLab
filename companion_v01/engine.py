@@ -37,6 +37,7 @@ from .image_generation import ImageGenerationService, PinAIImageProvider
 from .image_materials import SessionImageMaterialResolver
 from . import gift_engine
 from .gift_system import GiftSystemService
+from .instance_profile import InstanceContext, build_local_default_instance_context
 from . import media_bridge_engine
 from .huggingface_provider import HuggingFaceEmbeddingProvider
 from .llm_runtime import LLMRuntime
@@ -177,9 +178,11 @@ class AkaneMemoryEngine:
         base_dir: Path,
         resource_manifest: ResourceManifest | None = None,
         desktop_pet_character_resources: Any = None,
+        instance_context: InstanceContext | None = None,
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.instance_context = instance_context or build_local_default_instance_context()
         self.resource_manifest = resource_manifest
         self.desktop_pet_character_resources = desktop_pet_character_resources
         self.care_runtime = CareRuntimeStore(self.base_dir / "care_runtime.json")
