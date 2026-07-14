@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from capcore import InvocationContext
+
 from companion_v01.instance_profile import PluginSelection
 from companion_v01.plugin_contribution_policy import M65CDiagnosticContributionPolicy
 from companion_v01.plugin_host import PluginHost
@@ -70,7 +72,11 @@ class InstalledPluginArtifactSmokeTests(unittest.IsolatedAsyncioTestCase):
                     contribution_policy=M65CDiagnosticContributionPolicy(),
                 )
                 status = await host.start()
-                result = await host.invoke(CAPABILITY_ID, {})
+                result = await host.invoke(
+                    CAPABILITY_ID,
+                    {},
+                    context=InvocationContext(client_mode="artifact_smoke"),
+                )
                 await host.stop()
             finally:
                 sys.path.remove(str(install_root))

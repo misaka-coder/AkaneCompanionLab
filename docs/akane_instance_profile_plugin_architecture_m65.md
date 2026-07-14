@@ -655,8 +655,11 @@ use a separate `required`/dependency contract and must never be inferred from
   must equal `1`;
 - capcore remains the authority for descriptor types, argument validation,
   invocation context, health, results, and adapter shutdown;
-- M65-C capability invocation receives an empty `InvocationContext` and never
-  enters Engine, ordinary Prompt, QQ, Care, finance, or desktop paths.
+- every host consumer must supply an explicit immutable `InvocationContext`;
+  the M65-C admin diagnostic route supplies only
+  `client_mode="plugin_admin"` and never invents a user or session identity;
+- M65-C capabilities still never enter Engine, ordinary Prompt, QQ, Care,
+  finance, or desktop paths.
 
 The diagnostic surface is limited to:
 
@@ -690,6 +693,28 @@ Policy rejection is projected as the stable public pair
 `reason=contribution_policy_rejected` plus a bounded `stage`; policy-internal
 Python shape details are not promoted into permanent public error codes.
 
+### M65-D1 host-consumer foundation
+
+The first M65-D1 public slice does not enable a finance plugin or change the
+current Engine tool catalog. It adds only the generic host contract needed by
+a later Engine bridge:
+
+- `PluginHost.capability_descriptors` returns an immutable point-in-time
+  mapping of copied capcore descriptors and never exposes raw adapters;
+- `PluginHost.invoke()` requires the caller's `InvocationContext` and passes
+  its profile, session, and client dimensions unchanged to the adapter;
+- all host consumers share one bounded result projector before plugin content
+  leaves the host boundary;
+- safe plugin business failures retain their structured `status`, `reason`,
+  and content; invalid status codes are normalized, while paths,
+  secret-bearing fields, non-JSON values, and oversized values become a
+  generic structured failure.
+
+This slice deliberately does not add Prompt, profile, route, command, job,
+storage, configuration, secret, or event registries. The Engine consumer and
+the private installed finance artifact remain later, separately reversible
+M65-D1 slices.
+
 The installed-wheel acceptance fixture registers only
 `akane.test.diagnostic.ping.v1`. Its module import and invocation do not read
 configuration or user data, write files or databases, start threads, call the
@@ -701,8 +726,8 @@ M65-C validation:
 ```powershell
 python -m unittest tests.test_instance_profile tests.test_plugin_host tests.test_plugin_artifact_smoke -v
 python -m unittest tests.test_package_independence tests.test_package_reintegration_policy -v
-python -m py_compile companion_v01\plugin_api.py companion_v01\plugin_contribution_policy.py companion_v01\distribution_artifacts.py companion_v01\plugin_host.py companion_v01\routes\plugins.py
-python -m ruff check companion_v01\plugin_api.py companion_v01\plugin_contribution_policy.py companion_v01\distribution_artifacts.py companion_v01\plugin_host.py companion_v01\routes\plugins.py tests\test_plugin_host.py tests\test_plugin_artifact_smoke.py
+python -m py_compile companion_v01\plugin_api.py companion_v01\plugin_contribution_policy.py companion_v01\plugin_result_projection.py companion_v01\distribution_artifacts.py companion_v01\plugin_host.py companion_v01\routes\plugins.py
+python -m ruff check companion_v01\plugin_api.py companion_v01\plugin_contribution_policy.py companion_v01\plugin_result_projection.py companion_v01\distribution_artifacts.py companion_v01\plugin_host.py companion_v01\routes\plugins.py tests\test_plugin_host.py tests\test_plugin_artifact_smoke.py
 git diff --check
 ```
 
@@ -807,6 +832,10 @@ capability slice.
 - keep source-path and editable dependency gates enforced.
 
 ### M65-D — Private finance extraction
+
+Implementation status: the generic host-consumer foundation is complete;
+Engine tool bridging, the private installed artifact, and finance cutover are
+not yet implemented.
 
 - checkpoint the current finance branch as migration source;
 - return genuinely generic host fixes to public Akane in focused commits;

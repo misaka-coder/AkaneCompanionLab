@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import httpx
-from capcore import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult, HealthStatus
+from capcore import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult, HealthStatus, InvocationContext
 from fastapi import FastAPI
 
 from companion_v01.distribution_artifacts import audit_distribution_artifact
@@ -81,6 +81,7 @@ class FakeAdapter:
         self.invoke_gate = invoke_gate
         self.close_count = 0
         self.invoke_count = 0
+        self.invocation_contexts: list[InvocationContext] = []
 
     async def health(self) -> HealthStatus:
         return HealthStatus(ok=True, status="ready")
@@ -90,6 +91,7 @@ class FakeAdapter:
 
     async def invoke(self, capability_id: str, args: dict[str, Any], ctx: Any) -> CapabilityResult:
         self.invoke_count += 1
+        self.invocation_contexts.append(ctx)
         if self.invoke_gate is not None:
             await self.invoke_gate.wait()
         return self.result
@@ -274,21 +276,41 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
 
         first = await host.start()
         second = await host.start()
-        invalid = await host.invoke(CAPABILITY_ID, {})
-        valid = await host.invoke(CAPABILITY_ID, {"probe": "ready"})
+        descriptor_snapshot = host.capability_descriptors
+        descriptor.raw["plugin_mutation"] = True  # type: ignore[index]
+        descriptor_snapshot[CAPABILITY_ID].raw["consumer_mutation"] = True  # type: ignore[index]
+        current_descriptor = host.capability_descriptors[CAPABILITY_ID]
+        context = InvocationContext(
+            profile_user_id="user-42",
+            session_id="session-7",
+            client_mode="qq",
+        )
+        invalid_context = await host.invoke(CAPABILITY_ID, {"probe": "ready"}, context=None)  # type: ignore[arg-type]
+        invalid = await host.invoke(CAPABILITY_ID, {}, context=context)
+        valid = await host.invoke(CAPABILITY_ID, {"probe": "ready"}, context=context)
         stopped = await host.stop()
         stopped_again = await host.stop()
-        after_stop = await host.invoke(CAPABILITY_ID, {"probe": "ready"})
+        after_stop = await host.invoke(CAPABILITY_ID, {"probe": "ready"}, context=context)
 
         self.assertEqual(first["status"], "active")
         self.assertEqual(second, first)
         self.assertEqual(provider_calls, 1)
         self.assertEqual(entry_point.load_count, 1)
+        self.assertEqual(tuple(descriptor_snapshot), (CAPABILITY_ID,))
+        self.assertIsNot(descriptor_snapshot[CAPABILITY_ID], descriptor)
+        with self.assertRaises(TypeError):
+            descriptor_snapshot["akane.test.forbidden"] = descriptor  # type: ignore[index]
+        self.assertNotIn("plugin_mutation", current_descriptor.raw)
+        self.assertNotIn("consumer_mutation", current_descriptor.raw)
+        self.assertEqual(invalid_context.reason, "invalid_invocation_context")
         self.assertEqual(host.capability_ids, ())
+        self.assertEqual(host.capability_descriptors, {})
         self.assertEqual(invalid.status, "validation_error")
         self.assertEqual(invalid.reason, "missing_required")
         self.assertFalse(valid.is_error)
         self.assertEqual(adapter.invoke_count, 1)
+        self.assertEqual(adapter.invocation_contexts, [context])
+        self.assertEqual(tuple(descriptor_snapshot), (CAPABILITY_ID,))
         self.assertEqual(stopped["status"], "stopped")
         self.assertEqual(stopped_again, stopped)
         self.assertEqual(adapter.close_count, 1)
@@ -304,12 +326,50 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
         )
 
         status = await host.start()
-        result = await host.invoke(CAPABILITY_ID, {})
+        result = await host.invoke(CAPABILITY_ID, {}, context=InvocationContext(client_mode="test"))
 
         self.assertEqual(status["status"], "degraded")
         self.assertEqual(status["plugin_count"], 1)
         self.assertEqual(status["plugins"][1]["reason"], "plugin_not_installed")
         self.assertFalse(result.is_error)
+
+    async def test_host_preserves_safe_business_error_and_rejects_unsafe_result(self) -> None:
+        adapter = FakeAdapter(
+            result=CapabilityResult(
+                is_error=True,
+                status="unavailable",
+                reason="provider_unavailable",
+                content={"provider": "public_market", "retryable": True},
+            )
+        )
+        host = _host(
+            (PluginSelection(PLUGIN_ID, True),),
+            entry_points_provider=lambda: (_entry_point_for(FakePlugin((adapter,))),),
+        )
+        context = InvocationContext(
+            profile_user_id="user-42",
+            session_id="session-7",
+            client_mode="web",
+        )
+        await host.start()
+
+        reported = await host.invoke(CAPABILITY_ID, {}, context=context)
+        adapter.result = CapabilityResult(
+            is_error=True,
+            status="error",
+            reason="provider_unavailable",
+            content={"storage_path": "C:\\private\\market.sqlite3"},
+        )
+        unsafe = await host.invoke(CAPABILITY_ID, {}, context=context)
+        await host.stop()
+
+        self.assertTrue(reported.is_error)
+        self.assertEqual(reported.status, "unavailable")
+        self.assertEqual(reported.reason, "provider_unavailable")
+        self.assertEqual(reported.content, {"provider": "public_market", "retryable": True})
+        self.assertEqual(unsafe.status, "error")
+        self.assertEqual(unsafe.reason, "plugin_result_not_safe")
+        self.assertIsNone(unsafe.content)
 
     async def test_artifact_audit_happens_before_entry_point_load(self) -> None:
         direct_url = json.dumps({"url": "file:///private/source", "dir_info": {"editable": True}})
@@ -491,13 +551,14 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
             invoke_timeout_seconds=1.0,
         )
         await host.start()
-        inflight = asyncio.create_task(host.invoke(CAPABILITY_ID, {}))
+        context = InvocationContext(client_mode="test")
+        inflight = asyncio.create_task(host.invoke(CAPABILITY_ID, {}, context=context))
         await asyncio.sleep(0)
         stopping = asyncio.create_task(host.stop())
         while host.state != "stopping":
             await asyncio.sleep(0)
 
-        rejected = await host.invoke(CAPABILITY_ID, {})
+        rejected = await host.invoke(CAPABILITY_ID, {}, context=context)
         gate.set()
         completed = await inflight
         await stopping
@@ -538,6 +599,10 @@ class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status.json()["capability_count"], 1)
         self.assertEqual(invoked.status_code, 200)
         self.assertEqual(invoked.json()["content"]["diagnostic"], "ready")
+        self.assertEqual(
+            self.adapter.invocation_contexts,
+            [InvocationContext(client_mode="plugin_admin")],
+        )
         self.assertEqual(unknown.status_code, 404)
         self.assertFalse(unknown.json()["ok"])
         self.assertEqual(unknown.json()["reason"], "unknown_capability")
@@ -602,7 +667,7 @@ class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
             reported = await client.post(f"/admin/plugins/capabilities/{CAPABILITY_ID}/invoke", json={})
 
         self.assertEqual(reported.status_code, 502)
-        self.assertEqual(reported.json()["reason"], "plugin_reported_error")
+        self.assertEqual(reported.json()["reason"], "plugin_result_not_safe")
         self.assertIsNone(reported.json()["content"])
         self.assertNotIn("private", reported.text)
         self.assertNotIn("must-not-leak", reported.text)

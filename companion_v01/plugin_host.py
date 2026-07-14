@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from importlib import metadata as importlib_metadata
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping
@@ -31,6 +32,7 @@ from .plugin_api import (
     is_valid_permission_id,
     is_valid_plugin_id,
 )
+from .plugin_result_projection import sanitize_capability_result
 
 
 _SAFE_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$")
@@ -169,6 +171,17 @@ class PluginHost:
     def capability_ids(self) -> tuple[str, ...]:
         return tuple(self._capabilities)
 
+    @property
+    def capability_descriptors(self) -> Mapping[str, CapabilityDescriptor]:
+        """Return an immutable point-in-time view without exposing adapters."""
+
+        return MappingProxyType(
+            {
+                capability_id: _copy_descriptor_snapshot(registration.descriptor)
+                for capability_id, registration in self._capabilities.items()
+            }
+        )
+
     def status_snapshot(self) -> dict[str, Any]:
         reason = ""
         if self._state == "degraded":
@@ -280,7 +293,13 @@ class PluginHost:
             self._state = "stopped"
             return self.status_snapshot()
 
-    async def invoke(self, capability_id: str, args: Mapping[str, Any]) -> CapabilityResult:
+    async def invoke(
+        self,
+        capability_id: str,
+        args: Mapping[str, Any],
+        *,
+        context: InvocationContext,
+    ) -> CapabilityResult:
         async with self._invoke_lock:
             if self._state not in _HOST_AVAILABLE_STATES:
                 return CapabilityResult(
@@ -294,6 +313,12 @@ class PluginHost:
                     is_error=True,
                     status="not_found",
                     reason="unknown_capability",
+                )
+            if not isinstance(context, InvocationContext):
+                return CapabilityResult(
+                    is_error=True,
+                    status="validation_error",
+                    reason="invalid_invocation_context",
                 )
             self._inflight_count += 1
             self._inflight_zero.clear()
@@ -313,7 +338,7 @@ class PluginHost:
                     registration.adapter.invoke(
                         registration.descriptor.id,
                         validation.normalized_args,
-                        InvocationContext(),
+                        context,
                     ),
                     timeout=self._invoke_timeout_seconds,
                 )
@@ -343,18 +368,7 @@ class PluginHost:
                     status="error",
                     reason="plugin_invoke_invalid_result",
                 )
-            if result.is_error:
-                return CapabilityResult(
-                    is_error=True,
-                    status="error",
-                    reason="plugin_reported_error",
-                )
-            return CapabilityResult(
-                is_error=False,
-                status="ok",
-                reason="",
-                content=result.content,
-            )
+            return sanitize_capability_result(result)
         finally:
             async with self._invoke_lock:
                 self._inflight_count = max(0, self._inflight_count - 1)
@@ -464,7 +478,8 @@ class PluginHost:
                         ),
                         stage="capability_contributions",
                     )
-                    capability_id = descriptor.id
+                    descriptor_snapshot = _copy_descriptor_snapshot(descriptor)
+                    capability_id = descriptor_snapshot.id
                     if capability_id in local_capability_ids:
                         raise _ActivationFailure("duplicate_plugin_capability")
                     if capability_id in reserved_capability_ids:
@@ -474,7 +489,7 @@ class PluginHost:
                         _CapabilityRegistration(
                             plugin_id=selection.plugin_id,
                             adapter=adapter,
-                            descriptor=descriptor,
+                            descriptor=descriptor_snapshot,
                         )
                     )
                     if len(registrations) > _MAX_CAPABILITIES_PER_PLUGIN:
@@ -601,6 +616,39 @@ def _validate_descriptor_contract(descriptor: Any, *, plugin_id: str) -> None:
         raise _ActivationFailure("invalid_capability_id")
     if not descriptor.id.startswith(f"{plugin_id}."):
         raise _ActivationFailure("capability_prefix_mismatch")
+
+
+def _copy_descriptor_snapshot(descriptor: CapabilityDescriptor) -> CapabilityDescriptor:
+    try:
+        copied_trigger = (
+            replace(descriptor.trigger, raw=_copy_descriptor_value(descriptor.trigger.raw))
+            if descriptor.trigger is not None
+            else None
+        )
+        copied_inputs = tuple(replace(slot, raw=_copy_descriptor_value(slot.raw)) for slot in descriptor.inputs)
+        copied_outputs = tuple(replace(slot, raw=_copy_descriptor_value(slot.raw)) for slot in descriptor.outputs)
+        copied = replace(
+            descriptor,
+            trigger=copied_trigger,
+            inputs=copied_inputs,
+            outputs=copied_outputs,
+            raw=_copy_descriptor_value(descriptor.raw),
+        )
+    except Exception:
+        raise _ActivationFailure("invalid_capability_descriptor_snapshot") from None
+    if not isinstance(copied, CapabilityDescriptor):
+        raise _ActivationFailure("invalid_capability_descriptor_snapshot")
+    return copied
+
+
+def _copy_descriptor_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {deepcopy(raw_key): _copy_descriptor_value(raw_value) for raw_key, raw_value in value.items()}
+    if isinstance(value, list):
+        return [_copy_descriptor_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_descriptor_value(item) for item in value)
+    return deepcopy(value)
 
 
 def _require_policy_acceptance(evaluate: Callable[[], Any], *, stage: str) -> None:
