@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from companion_v01.instance_profile import PluginSelection
+from companion_v01.plugin_contribution_policy import M65CDiagnosticContributionPolicy
 from companion_v01.plugin_host import PluginHost
 
 
@@ -64,7 +65,10 @@ class InstalledPluginArtifactSmokeTests(unittest.IsolatedAsyncioTestCase):
             sys.path.insert(0, str(install_root))
             importlib.invalidate_caches()
             try:
-                host = PluginHost((PluginSelection(PLUGIN_ID, True),))
+                host = PluginHost(
+                    (PluginSelection(PLUGIN_ID, True),),
+                    contribution_policy=M65CDiagnosticContributionPolicy(),
+                )
                 status = await host.start()
                 result = await host.invoke(CAPABILITY_ID, {})
                 await host.stop()

@@ -19,9 +19,11 @@ AKANE_PLUGIN_ENTRYPOINT_GROUP = "akane.plugins.v1"
 DIAGNOSTICS_INVOKE_PERMISSION = "diagnostics.invoke"
 MAX_PLUGIN_ID_LENGTH = 64
 MAX_CAPABILITY_ID_LENGTH = 128
+MAX_PERMISSION_ID_LENGTH = 64
 
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _CAPABILITY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_PERMISSION_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 def is_valid_plugin_id(value: object) -> bool:
@@ -37,6 +39,14 @@ def is_valid_capability_id(value: object) -> bool:
         isinstance(value, str)
         and len(value) <= MAX_CAPABILITY_ID_LENGTH
         and _CAPABILITY_ID_PATTERN.fullmatch(value) is not None
+    )
+
+
+def is_valid_permission_id(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) <= MAX_PERMISSION_ID_LENGTH
+        and _PERMISSION_ID_PATTERN.fullmatch(value) is not None
     )
 
 
@@ -66,5 +76,6 @@ __all__ = [
     "PluginManifest",
     "PluginRegistrar",
     "is_valid_capability_id",
+    "is_valid_permission_id",
     "is_valid_plugin_id",
 ]

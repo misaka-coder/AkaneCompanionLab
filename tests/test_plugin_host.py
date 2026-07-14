@@ -12,6 +12,10 @@ from fastapi import FastAPI
 
 from companion_v01.distribution_artifacts import audit_distribution_artifact
 from companion_v01.instance_profile import PluginSelection
+from companion_v01.plugin_contribution_policy import (
+    ContributionPolicyDecision,
+    M65CDiagnosticContributionPolicy,
+)
 from companion_v01.plugin_api import AKANE_PLUGIN_API_VERSION, PluginManifest
 from companion_v01.plugin_host import PluginHost
 from companion_v01.routes.plugins import MAX_PLUGIN_REQUEST_BYTES, build_plugins_router
@@ -148,6 +152,17 @@ def _entry_point_for(plugin: FakePlugin, *, distribution: Any | None = None) -> 
     return FakeEntryPoint(PLUGIN_ID, factory, distribution=distribution)
 
 
+def _host(
+    selections: tuple[PluginSelection, ...],
+    **kwargs: Any,
+) -> PluginHost:
+    return PluginHost(
+        selections,
+        contribution_policy=M65CDiagnosticContributionPolicy(),
+        **kwargs,
+    )
+
+
 class DistributionArtifactAuditTests(unittest.TestCase):
     def test_wheel_and_archive_metadata_are_allowed(self) -> None:
         installed_wheel = audit_distribution_artifact(FakeDistribution())
@@ -170,6 +185,49 @@ class DistributionArtifactAuditTests(unittest.TestCase):
 
 
 class PluginHostTests(unittest.IsolatedAsyncioTestCase):
+    async def test_host_mechanics_do_not_hardcode_m65c_descriptor_policy(self) -> None:
+        class BroaderCapabilityPolicy:
+            policy_id = "test.broader-capability.v1"
+
+            def validate_manifest(self, manifest: PluginManifest) -> ContributionPolicyDecision:
+                return ContributionPolicyDecision.allow()
+
+            def validate_capability(
+                self,
+                *,
+                plugin_id: str,
+                descriptor: CapabilityDescriptor,
+            ) -> ContributionPolicyDecision:
+                return ContributionPolicyDecision.allow()
+
+        adapter = FakeAdapter(
+            _descriptor(
+                prompt_exposed=True,
+                risk="high",
+                confirm="always",
+                effects=("network",),
+            )
+        )
+        plugin = FakePlugin((adapter,))
+        plugin.manifest = PluginManifest(
+            plugin_id=PLUGIN_ID,
+            plugin_version="0.1.0",
+            plugin_api_version=AKANE_PLUGIN_API_VERSION,
+            permissions=("finance.invoke",),
+        )
+        host = PluginHost(
+            (PluginSelection(PLUGIN_ID, True),),
+            contribution_policy=BroaderCapabilityPolicy(),
+            entry_points_provider=lambda: (_entry_point_for(plugin),),
+        )
+
+        status = await host.start()
+        await host.stop()
+
+        self.assertEqual(status["status"], "active")
+        self.assertEqual(status["contribution_policy"], "test.broader-capability.v1")
+        self.assertEqual(status["capability_count"], 1)
+
     async def test_init_is_inert_and_disabled_selection_never_discovers_or_loads(self) -> None:
         provider_calls = 0
         entry_point = _entry_point_for(FakePlugin((FakeAdapter(),)))
@@ -179,7 +237,7 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
             provider_calls += 1
             return (entry_point,)
 
-        host = PluginHost((PluginSelection(PLUGIN_ID, False),), entry_points_provider=provider)
+        host = _host((PluginSelection(PLUGIN_ID, False),), entry_points_provider=provider)
 
         self.assertEqual(host.state, "created")
         self.assertEqual(provider_calls, 0)
@@ -212,7 +270,7 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
             provider_calls += 1
             return (entry_point,)
 
-        host = PluginHost((PluginSelection(PLUGIN_ID, True),), entry_points_provider=provider)
+        host = _host((PluginSelection(PLUGIN_ID, True),), entry_points_provider=provider)
 
         first = await host.start()
         second = await host.start()
@@ -240,7 +298,7 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
         active_id = PLUGIN_ID
         missing_id = "akane.test.missing"
         adapter = FakeAdapter()
-        host = PluginHost(
+        host = _host(
             (PluginSelection(active_id, True), PluginSelection(missing_id, True)),
             entry_points_provider=lambda: (_entry_point_for(FakePlugin((adapter,))),),
         )
@@ -259,7 +317,7 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
             FakePlugin((FakeAdapter(),)),
             distribution=FakeDistribution(direct_url=direct_url),
         )
-        host = PluginHost((PluginSelection(PLUGIN_ID, True),), entry_points_provider=lambda: (entry_point,))
+        host = _host((PluginSelection(PLUGIN_ID, True),), entry_points_provider=lambda: (entry_point,))
 
         status = await host.start()
 
@@ -283,17 +341,17 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
 
         duplicate_a = _entry_point_for(FakePlugin((FakeAdapter(),)))
         duplicate_b = _entry_point_for(FakePlugin((FakeAdapter(),)))
-        duplicate_host = PluginHost(
+        duplicate_host = _host(
             (PluginSelection(PLUGIN_ID, True),),
             entry_points_provider=lambda: (duplicate_a, duplicate_b),
         )
         missing_metadata = _entry_point_for(FakePlugin((FakeAdapter(),)), distribution=object())
-        metadata_host = PluginHost(
+        metadata_host = _host(
             (PluginSelection(PLUGIN_ID, True),),
             entry_points_provider=lambda: (missing_metadata,),
         )
         broken_distribution = BrokenDistributionEntryPoint()
-        broken_host = PluginHost(
+        broken_host = _host(
             (PluginSelection(PLUGIN_ID, True),),
             entry_points_provider=lambda: (broken_distribution,),
         )
@@ -322,39 +380,59 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
             plugin_api_version=AKANE_PLUGIN_API_VERSION + 1,
             permissions=("diagnostics.invoke",),
         )
+        broader_permission_plugin = FakePlugin((FakeAdapter(),))
+        broader_permission_plugin.manifest = PluginManifest(
+            plugin_id=PLUGIN_ID,
+            plugin_version="0.1.0",
+            plugin_api_version=AKANE_PLUGIN_API_VERSION,
+            permissions=("finance.invoke",),
+        )
         forbidden_adapter = FakeAdapter(_descriptor(prompt_exposed=True))
 
         cases = (
             (
-                PluginHost(
+                _host(
                     (PluginSelection(PLUGIN_ID, True),),
                     entry_points_provider=lambda: (invalid_factory,),
                 ),
                 "plugin_factory_must_be_zero_parameter",
+                "",
                 None,
             ),
             (
-                PluginHost(
+                _host(
                     (PluginSelection(PLUGIN_ID, True),),
                     entry_points_provider=lambda: (_entry_point_for(bad_manifest_plugin),),
                 ),
                 "plugin_api_version_mismatch",
+                "",
                 None,
             ),
             (
-                PluginHost(
+                _host(
+                    (PluginSelection(PLUGIN_ID, True),),
+                    entry_points_provider=lambda: (_entry_point_for(broader_permission_plugin),),
+                ),
+                "contribution_policy_rejected",
+                "manifest_contributions",
+                None,
+            ),
+            (
+                _host(
                     (PluginSelection(PLUGIN_ID, True),),
                     entry_points_provider=lambda: (_entry_point_for(FakePlugin((forbidden_adapter,))),),
                 ),
-                "prompt_exposed_capability_forbidden",
+                "contribution_policy_rejected",
+                "capability_contributions",
                 forbidden_adapter,
             ),
         )
-        for host, expected_reason, adapter in cases:
+        for host, expected_reason, expected_stage, adapter in cases:
             with self.subTest(expected_reason=expected_reason):
                 status = await host.start()
                 self.assertEqual(status["status"], "degraded")
                 self.assertEqual(status["plugins"][0]["reason"], expected_reason)
+                self.assertEqual(status["plugins"][0].get("stage", ""), expected_stage)
                 self.assertEqual(status["capability_count"], 0)
                 if adapter is not None:
                     self.assertEqual(adapter.close_count, 1)
@@ -364,7 +442,7 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
         first = FakeAdapter(close_order=close_order, close_name="first", close_fails=True)
         second = FakeAdapter(close_order=close_order, close_name="second")
         plugin = FakePlugin((first, second), fail_after_register=True)
-        host = PluginHost(
+        host = _host(
             (PluginSelection(PLUGIN_ID, True),),
             entry_points_provider=lambda: (_entry_point_for(plugin),),
         )
@@ -386,7 +464,7 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(10)
 
         adapter = HangingCloseAdapter()
-        host = PluginHost(
+        host = _host(
             (PluginSelection(PLUGIN_ID, True),),
             entry_points_provider=lambda: (_entry_point_for(FakePlugin((adapter,), fail_after_register=True)),),
             close_timeout_seconds=0.1,
@@ -407,7 +485,7 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
         first = FakeAdapter(close_order=close_order, close_name="first", invoke_gate=gate)
         second_descriptor = _descriptor(f"{PLUGIN_ID}.second.v1")
         second = FakeAdapter(second_descriptor, close_order=close_order, close_name="second")
-        host = PluginHost(
+        host = _host(
             (PluginSelection(PLUGIN_ID, True),),
             entry_points_provider=lambda: (_entry_point_for(FakePlugin((first, second))),),
             invoke_timeout_seconds=1.0,
@@ -434,7 +512,7 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
 class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.adapter = FakeAdapter()
-        self.host = PluginHost(
+        self.host = _host(
             (PluginSelection(PLUGIN_ID, True),),
             entry_points_provider=lambda: (_entry_point_for(FakePlugin((self.adapter,))),),
         )

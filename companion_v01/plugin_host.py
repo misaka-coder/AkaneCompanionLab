@@ -21,13 +21,14 @@ from capcore import (
 
 from .distribution_artifacts import audit_distribution_artifact
 from .instance_profile import PluginSelection
+from .plugin_contribution_policy import ContributionPolicyDecision, PluginContributionPolicy
 from .plugin_api import (
     AKANE_PLUGIN_API_VERSION,
     AKANE_PLUGIN_ENTRYPOINT_GROUP,
-    DIAGNOSTICS_INVOKE_PERMISSION,
     PluginManifest,
     PluginRegistrar,
     is_valid_capability_id,
+    is_valid_permission_id,
     is_valid_plugin_id,
 )
 
@@ -45,6 +46,7 @@ class PluginStatus:
     status: str
     reason: str = ""
     plugin_version: str = ""
+    stage: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -55,6 +57,8 @@ class PluginStatus:
         }
         if self.plugin_version:
             payload["plugin_version"] = self.plugin_version
+        if self.stage:
+            payload["stage"] = self.stage
         return payload
 
 
@@ -73,9 +77,10 @@ class _ActivePlugin:
 
 
 class _ActivationFailure(RuntimeError):
-    def __init__(self, reason: str, *, status: str = "failed") -> None:
+    def __init__(self, reason: str, *, status: str = "failed", stage: str = "") -> None:
         self.reason = reason
         self.status = status
+        self.stage = stage
         super().__init__(reason)
 
 
@@ -109,6 +114,7 @@ class PluginHost:
         self,
         selections: tuple[PluginSelection, ...],
         *,
+        contribution_policy: PluginContributionPolicy,
         entry_points_provider: Callable[[], Iterable[Any]] | None = None,
         activation_timeout_seconds: float = 5.0,
         invoke_timeout_seconds: float = 5.0,
@@ -118,7 +124,16 @@ class PluginHost:
             not isinstance(selection, PluginSelection) for selection in selections
         ):
             raise TypeError("plugin_selections_must_be_snapshot")
+        contribution_policy_id = str(getattr(contribution_policy, "policy_id", "") or "").strip()
+        if (
+            not is_valid_capability_id(contribution_policy_id)
+            or not callable(getattr(contribution_policy, "validate_manifest", None))
+            or not callable(getattr(contribution_policy, "validate_capability", None))
+        ):
+            raise TypeError("invalid_plugin_contribution_policy")
         self._selections = selections
+        self._contribution_policy = contribution_policy
+        self._contribution_policy_id = contribution_policy_id
         self._entry_points_provider = entry_points_provider or _installed_plugin_entry_points
         self._activation_timeout_seconds = max(0.1, float(activation_timeout_seconds))
         self._invoke_timeout_seconds = max(0.1, float(invoke_timeout_seconds))
@@ -164,6 +179,7 @@ class PluginHost:
             "ok": self._state == "active",
             "status": self._state,
             "reason": reason,
+            "contribution_policy": self._contribution_policy_id,
             "plugin_count": len(self._active_plugins),
             "capability_count": len(self._capabilities),
             "close_failure_count": self._close_failure_count,
@@ -390,6 +406,10 @@ class PluginHost:
                 expected_plugin_id=selection.plugin_id,
                 artifact_version=artifact_version,
             )
+            _require_policy_acceptance(
+                lambda: self._contribution_policy.validate_manifest(manifest),
+                stage="manifest_contributions",
+            )
             register = getattr(plugin, "register", None)
             if not callable(register):
                 raise _ActivationFailure("invalid_plugin_contract")
@@ -436,7 +456,14 @@ class PluginHost:
                 if not isinstance(descriptors, tuple):
                     raise _ActivationFailure("invalid_capability_enumeration_result")
                 for descriptor in descriptors:
-                    _validate_descriptor(descriptor, plugin_id=selection.plugin_id)
+                    _validate_descriptor_contract(descriptor, plugin_id=selection.plugin_id)
+                    _require_policy_acceptance(
+                        lambda: self._contribution_policy.validate_capability(
+                            plugin_id=selection.plugin_id,
+                            descriptor=descriptor,
+                        ),
+                        stage="capability_contributions",
+                    )
                     capability_id = descriptor.id
                     if capability_id in local_capability_ids:
                         raise _ActivationFailure("duplicate_plugin_capability")
@@ -480,6 +507,7 @@ class PluginHost:
                     status=exc.status,
                     reason=exc.reason,
                     plugin_version=artifact_version if _is_safe_version(artifact_version) else "",
+                    stage=exc.stage,
                 ),
                 None,
                 (),
@@ -549,8 +577,13 @@ def _validate_manifest(manifest: Any, *, expected_plugin_id: str, artifact_versi
         raise _ActivationFailure("invalid_plugin_version")
     if manifest.plugin_version != artifact_version:
         raise _ActivationFailure("plugin_version_mismatch")
-    if manifest.permissions != (DIAGNOSTICS_INVOKE_PERMISSION,):
-        raise _ActivationFailure("unsupported_plugin_permissions")
+    if (
+        not isinstance(manifest.permissions, tuple)
+        or len(manifest.permissions) > 32
+        or len(set(manifest.permissions)) != len(manifest.permissions)
+        or any(not is_valid_permission_id(permission) for permission in manifest.permissions)
+    ):
+        raise _ActivationFailure("invalid_plugin_manifest")
 
 
 def _validate_adapter_contract(adapter: Any) -> None:
@@ -561,21 +594,24 @@ def _validate_adapter_contract(adapter: Any) -> None:
             raise _ActivationFailure("invalid_capability_adapter")
 
 
-def _validate_descriptor(descriptor: Any, *, plugin_id: str) -> None:
+def _validate_descriptor_contract(descriptor: Any, *, plugin_id: str) -> None:
     if not isinstance(descriptor, CapabilityDescriptor):
         raise _ActivationFailure("invalid_capability_descriptor")
     if not is_valid_capability_id(descriptor.id):
         raise _ActivationFailure("invalid_capability_id")
     if not descriptor.id.startswith(f"{plugin_id}."):
         raise _ActivationFailure("capability_prefix_mismatch")
-    if descriptor.prompt_exposed:
-        raise _ActivationFailure("prompt_exposed_capability_forbidden")
-    if descriptor.risk != "low":
-        raise _ActivationFailure("non_low_risk_capability_forbidden")
-    if descriptor.confirm != "never":
-        raise _ActivationFailure("capability_confirmation_forbidden")
-    if descriptor.effects:
-        raise _ActivationFailure("capability_effects_forbidden")
+
+
+def _require_policy_acceptance(evaluate: Callable[[], Any], *, stage: str) -> None:
+    try:
+        decision = evaluate()
+    except Exception:
+        raise _ActivationFailure("contribution_policy_failed", stage=stage) from None
+    if not isinstance(decision, ContributionPolicyDecision):
+        raise _ActivationFailure("contribution_policy_failed", stage=stage)
+    if not decision.accepted:
+        raise _ActivationFailure("contribution_policy_rejected", stage=stage)
 
 
 async def _bounded_adapter_call(awaitable: Any, *, timeout_seconds: float, failure_reason: str) -> Any:

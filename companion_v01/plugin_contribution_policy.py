@@ -1,0 +1,78 @@
+"""Host-owned policies for plugin contributions.
+
+PluginHost owns lifecycle and transactional publication.  A contribution
+policy owns the surfaces currently allowed by one host composition.  Keeping
+these concerns separate prevents the deliberately narrow M65-C diagnostic
+rules from becoming permanent PluginHost behavior.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Protocol
+
+from capcore import CapabilityDescriptor
+
+from .plugin_api import DIAGNOSTICS_INVOKE_PERMISSION, PluginManifest
+
+
+@dataclass(frozen=True, slots=True)
+class ContributionPolicyDecision:
+    accepted: bool
+
+    @classmethod
+    def allow(cls) -> "ContributionPolicyDecision":
+        return cls(accepted=True)
+
+    @classmethod
+    def reject(cls) -> "ContributionPolicyDecision":
+        return cls(accepted=False)
+
+
+class PluginContributionPolicy(Protocol):
+    policy_id: str
+
+    def validate_manifest(self, manifest: PluginManifest) -> ContributionPolicyDecision: ...
+
+    def validate_capability(
+        self,
+        *,
+        plugin_id: str,
+        descriptor: CapabilityDescriptor,
+    ) -> ContributionPolicyDecision: ...
+
+
+@dataclass(frozen=True, slots=True)
+class M65CDiagnosticContributionPolicy:
+    """Temporary M65-C policy: side-effect-free local diagnostic capabilities."""
+
+    policy_id: str = field(default="m65c.diagnostic-capability.v1", init=False)
+
+    def validate_manifest(self, manifest: PluginManifest) -> ContributionPolicyDecision:
+        if manifest.permissions != (DIAGNOSTICS_INVOKE_PERMISSION,):
+            return ContributionPolicyDecision.reject()
+        return ContributionPolicyDecision.allow()
+
+    def validate_capability(
+        self,
+        *,
+        plugin_id: str,
+        descriptor: CapabilityDescriptor,
+    ) -> ContributionPolicyDecision:
+        del plugin_id
+        if descriptor.prompt_exposed:
+            return ContributionPolicyDecision.reject()
+        if descriptor.risk != "low":
+            return ContributionPolicyDecision.reject()
+        if descriptor.confirm != "never":
+            return ContributionPolicyDecision.reject()
+        if descriptor.effects:
+            return ContributionPolicyDecision.reject()
+        return ContributionPolicyDecision.allow()
+
+
+__all__ = [
+    "ContributionPolicyDecision",
+    "M65CDiagnosticContributionPolicy",
+    "PluginContributionPolicy",
+]

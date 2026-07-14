@@ -560,6 +560,34 @@ a capcore `CapabilityAdapter` whose capabilities are non-Prompt, low-risk,
 never-confirm, and side-effect-free. Config, secrets, storage, prompts, routes,
 jobs, events, QQ commands, and hot mutation remain outside this slice.
 
+These are composition-policy decisions, not permanent `PluginHost` mechanics.
+The host owns discovery, identity, lifecycle, transactional publication,
+immutable invocation snapshots, and cleanup. The app composition root supplies
+`M65CDiagnosticContributionPolicy`, which owns the currently allowed
+permissions and descriptor shape. Consequently:
+
+- adding another diagnostic plugin does not modify `PluginHost`;
+- a later capability policy may admit other permissions, risk levels,
+  confirmation modes, effects, or Prompt visibility without plugin-id branches
+  in `PluginHost`;
+- a genuinely new contribution surface such as prompts, routes, jobs, or
+  service ports must receive its own host-owned registry when a real M65-D
+  requirement exists; it must not be faked through `CapabilityAdapter` or by
+  continually expanding one giant registrar;
+- the current exact `plugin_api_version == 1` check is the initial compatibility
+  strategy, not a promise that all future host API versions require exact
+  equality;
+- packaged-only artifact loading is the M65-C production policy. A future
+  development policy may explicitly admit editable artifacts and must mark the
+  host non-production; no automatic editable fallback is allowed;
+- the empty service context and absence of plugin routes are M65-C scope
+  limits, not claims that useful future plugins can never receive scoped host
+  services or constrained route groups.
+
+The rule is: strict identity, lifecycle, transaction, and sensitive-data
+boundaries; replaceable policy for the contribution surfaces deliberately
+opened by one composition.
+
 ### Trust and transaction boundary
 
 M65-C plugins are trusted in-process extensions selected by an explicit
@@ -658,6 +686,10 @@ entry-point module paths, and obvious secret-bearing fields are never returned.
   enters Prompt, Engine, QQ, Care, finance, or desktop runtime paths;
 - public Akane starts and passes acceptance without private plugins installed.
 
+Policy rejection is projected as the stable public pair
+`reason=contribution_policy_rejected` plus a bounded `stage`; policy-internal
+Python shape details are not promoted into permanent public error codes.
+
 The installed-wheel acceptance fixture registers only
 `akane.test.diagnostic.ping.v1`. Its module import and invocation do not read
 configuration or user data, write files or databases, start threads, call the
@@ -669,8 +701,8 @@ M65-C validation:
 ```powershell
 python -m unittest tests.test_instance_profile tests.test_plugin_host tests.test_plugin_artifact_smoke -v
 python -m unittest tests.test_package_independence tests.test_package_reintegration_policy -v
-python -m py_compile companion_v01\plugin_api.py companion_v01\distribution_artifacts.py companion_v01\plugin_host.py companion_v01\routes\plugins.py
-python -m ruff check companion_v01\plugin_api.py companion_v01\distribution_artifacts.py companion_v01\plugin_host.py companion_v01\routes\plugins.py tests\test_plugin_host.py tests\test_plugin_artifact_smoke.py
+python -m py_compile companion_v01\plugin_api.py companion_v01\plugin_contribution_policy.py companion_v01\distribution_artifacts.py companion_v01\plugin_host.py companion_v01\routes\plugins.py
+python -m ruff check companion_v01\plugin_api.py companion_v01\plugin_contribution_policy.py companion_v01\distribution_artifacts.py companion_v01\plugin_host.py companion_v01\routes\plugins.py tests\test_plugin_host.py tests\test_plugin_artifact_smoke.py
 git diff --check
 ```
 

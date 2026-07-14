@@ -38,6 +38,7 @@ from .instance_profile import resolve_instance_context
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
 from .model_service_config import ModelServiceConfigStore, load_and_apply_saved_model_service
+from .plugin_contribution_policy import M65CDiagnosticContributionPolicy
 from .plugin_host import PluginHost
 from .settings_overrides import SettingsOverrideStore, load_and_apply_saved_overrides
 from .public_guard import PublicThinkGuard
@@ -130,7 +131,10 @@ instance_context = resolve_instance_context(
     selected_instance_id=getattr(config, "AKANE_INSTANCE_ID", ""),
 )
 app.state.akane_instance_context = instance_context
-plugin_host = PluginHost(instance_context.plugins)
+plugin_host = PluginHost(
+    instance_context.plugins,
+    contribution_policy=M65CDiagnosticContributionPolicy(),
+)
 app.state.akane_plugin_host = plugin_host
 engine = AkaneMemoryEngine(
     Path(config.DATA_DIR) / "akane_memory_v01",
