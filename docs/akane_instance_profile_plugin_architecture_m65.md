@@ -905,9 +905,14 @@ complete.
 
 ## Immediate Next Action
 
-Close the M65-D1 legacy read migration window: verify the installed private
-artifact through the real Engine bridge, then delete the three core finance
-read handlers and their Engine construction path in one focused cutover. Do
-not begin cloud deployment in the same change. The enabled desktop Care
-compatibility window must still be closed before M65-E or any multi-instance
-hosted deployment.
+The M65-D1 read cutover and the M65-D2/D3 finance chart/report cutover are
+closed. The installed private artifact now owns five active capabilities;
+public Akane retains only generic plugin, result-experience, managed-artifact,
+Engine-event, and client-delivery boundaries.
+
+Before migrating finance news, subscriptions, proactive jobs, or EmQuant,
+perform a new ownership probe for storage, job, scoped config/secret, command,
+and notification contracts. Do not reactivate the frozen public finance path
+or begin cloud deployment in the same migration change. The enabled desktop
+Care compatibility window must still be closed before M65-E or any
+multi-instance hosted deployment.

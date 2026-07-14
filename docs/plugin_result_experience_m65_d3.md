@@ -1,6 +1,6 @@
 # Plugin Result Experience Projection M65-D3
 
-Status: generic result projection implemented; private finance capabilities have not yet adopted it.
+Status: generic result projection implemented and adopted by all active private finance capabilities.
 
 ## Ownership Rule
 
@@ -115,9 +115,10 @@ model/render/delivery chain do not satisfy this gate.
 - suggested actions are not automatic commands;
 - M65-D3 does not claim the semantic truth of trusted plugin data—only its
   shape, safety, provenance boundary, and presentation discipline;
-- this slice does not migrate finance charts, reports, news, jobs, or subscriptions;
-- this slice does not claim a live user-facing finance improvement until the
-  private wheel adopts the contract and passes its real end-to-end acceptance.
+- finance charts and reports now use this contract together with M65-D2;
+- news, jobs, subscriptions, and EmQuant remain outside this slice;
+- live upstream availability still belongs to deployment acceptance and is not
+  inferred from deterministic provider fixtures.
 
 ## Validation
 

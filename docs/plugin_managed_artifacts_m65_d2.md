@@ -1,6 +1,6 @@
 # Plugin Managed Artifacts M65-D2
 
-Status: generic host port implemented; finance chart/report migration not yet performed.
+Status: generic host port implemented; finance chart/report migration completed by the private artifact.
 
 Model-facing interpretation of artifact results is owned by the later M65-D3
 experience projection; see `plugin_result_experience_m65_d3.md`.
@@ -94,17 +94,27 @@ capabilities can opt into this port. Multiple artifacts, background jobs, or
 new delivery channels should be added as new generic contracts only when a
 real capability needs them.
 
-## Migration State
+## Finance Migration State
 
-No finance chart/report implementation was moved in this slice. Frozen public
-finance chart/report source remains without a runtime entry point under the
-M65-D1 migration-window rules. The next slice may:
+The private `akane.finance` artifact now owns two real managed-artifact
+capabilities:
 
-1. implement chart/report capabilities in the private plugin using this API;
-2. return the M65-D3 structured result experience instead of plugin-authored prompt text;
-3. verify real wheel activation, storage, model feedback, Engine event projection, and QQ delivery;
-4. delete the corresponding public implementations and inactive tests in the
-   same cutover window.
+- `akane.finance.render_market_chart.v1` produces a deterministic PNG from
+  freshly fetched bounded public OHLCV evidence;
+- `akane.finance.compose_finance_report.v1` produces Markdown, PDF, or XLSX
+  from complete freshly fetched evidence and embeds a same-evidence chart in
+  PDF/XLSX.
+
+Both return path-free in-memory drafts plus M65-D3 structured result
+experience. Source-blind installed-wheel acceptance covers real activation,
+provider parsing, rendering, host storage, model feedback, safe Engine events,
+QQ handle hydration, image/file routing, and explicit delivery truth. The
+public frozen chart/report providers, handlers, exports, and tests were deleted
+in the same cutover, so Akane has no second finance artifact implementation.
+
+The remaining public finance migration window covers news, subscriptions,
+event jobs, and EmQuant only. Those surfaces must not reuse this artifact port
+as a substitute for their missing storage/job/config contracts.
 
 ## Validation
 

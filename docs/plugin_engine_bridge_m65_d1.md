@@ -87,7 +87,6 @@ migration, but has no composition-root, Engine, prompt, settings, or QQ route
 entry point:
 
 - market news search and event ingestion;
-- deterministic chart/report providers and handlers;
 - finance subscription, orchestration, delivery, and worker classes;
 - `QQMessageContext.finance_mode` and frozen delivery/event contracts still
   referenced only by inactive finance source tests;
@@ -115,6 +114,12 @@ Remaining exit conditions:
 3. delete the transferred public source and compatibility fields in the same
    change window;
 4. keep public Akane tests independent of the private wheel.
+
+The chart/report portion of this window is closed: M65-D2/D3 supplied the
+generic host boundaries, the private artifact now owns both capabilities, and
+the transferred public providers, handlers, exports, and tests have been
+deleted. The conditions above now apply only to the remaining news,
+subscription, event-job, delivery, storage, and EmQuant source.
 
 No database, user asset, instance data, or private artifact content is modified
 by the read cutover. Existing finance databases are left untouched but are no
