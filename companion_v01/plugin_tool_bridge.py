@@ -9,7 +9,12 @@ from capcore import CapabilityResult, InvocationContext, filter_capabilities
 
 from .client_protocol import ClientMode, ClientProtocolContext
 from .plugin_host import PluginHost
-from .tool_runtime import AdapterCapabilityToolHandler, ToolMetadata
+from .tool_runtime import (
+    AdapterCapabilityToolHandler,
+    ToolExecutionContext,
+    ToolExecutionResult,
+    ToolMetadata,
+)
 
 
 class PluginCapabilitySource(Protocol):
@@ -59,6 +64,56 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
             input_schema=base.input_schema,
             requires_confirmation=False,
         )
+
+    def _finalize_execution_result(
+        self,
+        execution_result: ToolExecutionResult,
+        *,
+        capability_result: Any,
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
+        del context
+        content = getattr(capability_result, "content", None)
+        if bool(getattr(capability_result, "is_error", False)) or not isinstance(content, Mapping):
+            return execution_result
+        artifacts = content.get("managed_artifacts")
+        if not isinstance(artifacts, list) or len(artifacts) != 1:
+            return execution_result
+        artifact = artifacts[0]
+        if not isinstance(artifact, Mapping):
+            return execution_result
+        generated_id = str(artifact.get("generated_id") or "").strip()
+        generated_handle = str(artifact.get("generated_handle") or "").strip()
+        if (
+            not generated_id.startswith("generated::")
+            or not generated_handle
+            or str(artifact.get("created_by_tool") or "").strip() != self.tool_type
+            or not isinstance(artifact.get("send_to_user"), bool)
+        ):
+            return execution_result
+        generated_file = {
+            key: artifact[key]
+            for key in (
+                "generated_id",
+                "generated_handle",
+                "output_title",
+                "output_format",
+                "mime_type",
+                "file_size",
+                "created_by_tool",
+            )
+            if key in artifact
+        }
+        execution_result.stream_events.append(
+            {
+                "type": "generated_file_ready",
+                "generated_file": generated_file,
+                "send_to_user": bool(artifact.get("send_to_user")),
+                "delivery_scope": "plugin_managed_artifact",
+            }
+        )
+        execution_result.state_updates["plugin_managed_artifact_count"] = 1
+        return execution_result
 
 
 class PluginCapabilityToolBridge:

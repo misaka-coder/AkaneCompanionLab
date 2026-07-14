@@ -1089,10 +1089,27 @@ def _process_qq_turn_streaming(
             "reason": "main_delivery_failed",
         }
 
+    delivery_events, artifact_resolution_failures = _hydrate_plugin_managed_artifact_events(
+        engine=engine,
+        context=context,
+        tool_events=list(frame.get("tool_events") or []),
+    )
     file_send_result = qq_gateway.send_generated_files(
         context,
-        list(frame.get("tool_events") or []),
+        delivery_events,
     )
+    if artifact_resolution_failures:
+        delivery_results = [
+            *list(file_send_result.get("results") or []),
+            *artifact_resolution_failures,
+        ]
+        any_sent = any(bool(item.get("ok")) for item in delivery_results)
+        file_send_result = {
+            "ok": False,
+            "status": "partial" if any_sent else "failed",
+            "count": len(delivery_results),
+            "results": delivery_results,
+        }
     file_delivery_feedback_result = {"ok": True, "status": "skipped", "reason": "no_delivery_issue"}
     file_delivery_status = str(file_send_result.get("status") or "").strip().lower()
     _sid = str(getattr(context, "session_id", "") or "")
@@ -1131,6 +1148,59 @@ def _process_qq_turn_streaming(
         "file_delivery_feedback_result": file_delivery_feedback_result,
         "sticker_send_result": sticker_send_result,
     }
+
+
+def _hydrate_plugin_managed_artifact_events(
+    *,
+    engine: Any,
+    context: Any,
+    tool_events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Resolve safe plugin handles to local paths only at the QQ transport edge."""
+
+    service_getter = getattr(engine, "_get_generated_file_service", None)
+    service = service_getter() if callable(service_getter) else None
+    hydrated: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for raw_event in tool_events:
+        if not isinstance(raw_event, dict):
+            continue
+        event = dict(raw_event)
+        generated = event.get("generated_file")
+        if (
+            event.get("type") != "generated_file_ready"
+            or str(event.get("delivery_scope") or "").strip().lower() != "plugin_managed_artifact"
+            or not bool(event.get("send_to_user"))
+            or not isinstance(generated, dict)
+            or str(generated.get("absolute_path") or "").strip()
+        ):
+            hydrated.append(event)
+            continue
+        generated_id = str(generated.get("generated_id") or "").strip()
+        generated_handle = str(generated.get("generated_handle") or "").strip()
+        resolved = None
+        if service is not None and callable(getattr(service, "resolve_generated_artifact", None)):
+            target = generated_id or generated_handle
+            try:
+                resolved = service.resolve_generated_artifact(
+                    profile_user_id=str(getattr(context, "profile_user_id", "") or ""),
+                    session_id=str(getattr(context, "session_id", "") or ""),
+                    target=target,
+                )
+            except Exception:
+                resolved = None
+        if isinstance(resolved, dict) and str(resolved.get("absolute_path") or "").strip():
+            event["generated_file"] = resolved
+        else:
+            failures.append(
+                {
+                    "ok": False,
+                    "reason": "managed_artifact_unavailable",
+                    "generated_id": generated_id,
+                }
+            )
+        hydrated.append(event)
+    return hydrated, failures
 
 
 def build_qq_router(

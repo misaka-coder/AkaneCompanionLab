@@ -16,6 +16,7 @@ from capcore import CapabilityDescriptor
 from .plugin_api import (
     CAPABILITY_PROMPT_INVOKE_PERMISSION,
     DIAGNOSTICS_INVOKE_PERMISSION,
+    MANAGED_ARTIFACT_WRITE_PERMISSION,
     NETWORK_READ_PERMISSION,
     PluginManifest,
 )
@@ -78,15 +79,22 @@ class M65CDiagnosticContributionPolicy:
 
 @dataclass(frozen=True, slots=True)
 class TrustedReadNetworkContributionPolicy:
-    """Prompt-visible, low-risk capabilities backed only by public network reads."""
+    """Prompt-visible trusted reads, optionally producing one managed artifact."""
 
     policy_id: str = field(default="trusted.read-network-capability.v1", init=False)
 
     def validate_manifest(self, manifest: PluginManifest) -> ContributionPolicyDecision:
-        if manifest.permissions != (
-            CAPABILITY_PROMPT_INVOKE_PERMISSION,
-            NETWORK_READ_PERMISSION,
-        ):
+        if manifest.permissions not in {
+            (
+                CAPABILITY_PROMPT_INVOKE_PERMISSION,
+                NETWORK_READ_PERMISSION,
+            ),
+            (
+                CAPABILITY_PROMPT_INVOKE_PERMISSION,
+                NETWORK_READ_PERMISSION,
+                MANAGED_ARTIFACT_WRITE_PERMISSION,
+            ),
+        }:
             return ContributionPolicyDecision.reject()
         return ContributionPolicyDecision.allow()
 
@@ -103,7 +111,9 @@ class TrustedReadNetworkContributionPolicy:
             return ContributionPolicyDecision.reject()
         if descriptor.confirm != "never":
             return ContributionPolicyDecision.reject()
-        if descriptor.effects != ("network",):
+        artifact_outputs = tuple(output for output in descriptor.outputs if output.delivery == "generated_file")
+        expected_effects = ("network", "filesystem") if artifact_outputs else ("network",)
+        if descriptor.effects != expected_effects:
             return ContributionPolicyDecision.reject()
         return ContributionPolicyDecision.allow()
 

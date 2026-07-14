@@ -17,10 +17,12 @@ PluginHost immutable descriptor snapshot
 
 The bridge does not receive or expose a plugin's raw adapter. It has no plugin
 id branches, finance imports, provider configuration, routes, jobs, storage,
-or delivery objects. The host contribution policy accepts only the exact
-`capability.prompt.invoke` plus `network.read` permission profile and
-prompt-visible, low-risk, never-confirm capabilities whose only declared
-effect is `network`.
+or delivery objects. The host contribution policy accepts prompt-visible,
+low-risk, never-confirm trusted reads. Read-only capabilities declare the exact
+`capability.prompt.invoke` plus `network.read` permission profile and a
+`network` effect. Capabilities using the later M65-D2 managed-artifact port
+also declare `artifact.write`, a `filesystem` effect, and one bounded
+`generated_file` output; see `plugin_managed_artifacts_m65_d2.md`.
 
 Plugin capabilities are dynamic Engine handlers. A disabled, missing, failed,
 not-yet-started, stopping, or stopped plugin contributes no handler, Prompt

@@ -27,6 +27,7 @@ from .mcp_stdio_discoverer import McpStdioToolDiscoverer
 from .model_service_config import ModelServiceConfigStore, load_and_apply_saved_model_service
 from .plugin_contribution_policy import TrustedReadNetworkContributionPolicy
 from .plugin_host import PluginHost
+from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from .plugin_tool_bridge import PluginCapabilityToolBridge
 from .settings_overrides import SettingsOverrideStore, load_and_apply_saved_overrides
 from .public_guard import PublicThinkGuard
@@ -135,6 +136,11 @@ engine = AkaneMemoryEngine(
     instance_context=instance_context,
     plugin_capability_source=plugin_capability_source,
 )
+generated_file_service = engine._get_generated_file_service()
+if generated_file_service is not None:
+    plugin_host.bind_managed_artifact_sink(
+        GeneratedFileManagedArtifactSink(generated_file_service)
+    )
 USER_ASSETS_DIR = engine.gift_assets.base_dir
 tts_client = EdgeTTSClient(
     voice=getattr(config, "TTS_VOICE", "zh-CN-XiaoxiaoNeural"),

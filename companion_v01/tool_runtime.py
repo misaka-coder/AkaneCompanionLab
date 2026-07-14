@@ -902,12 +902,27 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         if reason:
             event["reason"] = reason
             state_updates["adapter_capability_reason"] = reason
-        return ToolExecutionResult(
+        execution_result = ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=[event],
             followup_context=followup,
             state_updates=state_updates,
         )
+        return self._finalize_execution_result(
+            execution_result,
+            capability_result=result,
+            context=context,
+        )
+
+    def _finalize_execution_result(
+        self,
+        execution_result: ToolExecutionResult,
+        *,
+        capability_result: Any,
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
+        del capability_result, context
+        return execution_result
 
     def _approval_required(self, *, decision: Any, context: ToolExecutionContext) -> ToolExecutionResult:
         event = capcore_approval_required_event(

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from capcore import CapabilityAdapter
 
@@ -19,6 +19,8 @@ AKANE_PLUGIN_ENTRYPOINT_GROUP = "akane.plugins.v1"
 DIAGNOSTICS_INVOKE_PERMISSION = "diagnostics.invoke"
 CAPABILITY_PROMPT_INVOKE_PERMISSION = "capability.prompt.invoke"
 NETWORK_READ_PERMISSION = "network.read"
+MANAGED_ARTIFACT_WRITE_PERMISSION = "artifact.write"
+MAX_MANAGED_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_PLUGIN_ID_LENGTH = 64
 MAX_CAPABILITY_ID_LENGTH = 128
 MAX_PERMISSION_ID_LENGTH = 64
@@ -60,6 +62,26 @@ class PluginManifest:
     permissions: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ManagedArtifactDraft:
+    """Path-free bytes proposed by a trusted plugin for host-owned storage."""
+
+    data: bytes
+    title: str
+    output_format: str
+    mime_type: str
+    summary: str = ""
+    send_to_user: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedArtifactPayload:
+    """Capability content plus at most one artifact committed by PluginHost."""
+
+    content: Any
+    artifact: ManagedArtifactDraft
+
+
 class PluginRegistrar(Protocol):
     def add_capability_adapter(self, adapter: CapabilityAdapter) -> None: ...
 
@@ -75,8 +97,12 @@ __all__ = [
     "AKANE_PLUGIN_ENTRYPOINT_GROUP",
     "CAPABILITY_PROMPT_INVOKE_PERMISSION",
     "DIAGNOSTICS_INVOKE_PERMISSION",
+    "MANAGED_ARTIFACT_WRITE_PERMISSION",
+    "MAX_MANAGED_ARTIFACT_BYTES",
     "NETWORK_READ_PERMISSION",
     "AkanePlugin",
+    "ManagedArtifactDraft",
+    "ManagedArtifactPayload",
     "PluginManifest",
     "PluginRegistrar",
     "is_valid_capability_id",

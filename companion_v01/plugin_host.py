@@ -26,12 +26,16 @@ from .plugin_contribution_policy import ContributionPolicyDecision, PluginContri
 from .plugin_api import (
     AKANE_PLUGIN_API_VERSION,
     AKANE_PLUGIN_ENTRYPOINT_GROUP,
+    MANAGED_ARTIFACT_WRITE_PERMISSION,
+    MAX_MANAGED_ARTIFACT_BYTES,
+    ManagedArtifactPayload,
     PluginManifest,
     PluginRegistrar,
     is_valid_capability_id,
     is_valid_permission_id,
     is_valid_plugin_id,
 )
+from .plugin_managed_artifacts import ManagedArtifactError, ManagedArtifactSink
 from .plugin_result_projection import sanitize_capability_result
 
 
@@ -69,6 +73,7 @@ class _CapabilityRegistration:
     plugin_id: str
     adapter: CapabilityAdapter
     descriptor: CapabilityDescriptor
+    permissions: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +125,7 @@ class PluginHost:
         entry_points_provider: Callable[[], Iterable[Any]] | None = None,
         activation_timeout_seconds: float = 5.0,
         invoke_timeout_seconds: float = 5.0,
+        managed_artifact_timeout_seconds: float = 5.0,
         close_timeout_seconds: float = 2.0,
     ) -> None:
         if not isinstance(selections, tuple) or any(
@@ -139,6 +145,7 @@ class PluginHost:
         self._entry_points_provider = entry_points_provider or _installed_plugin_entry_points
         self._activation_timeout_seconds = max(0.1, float(activation_timeout_seconds))
         self._invoke_timeout_seconds = max(0.1, float(invoke_timeout_seconds))
+        self._managed_artifact_timeout_seconds = max(0.1, float(managed_artifact_timeout_seconds))
         self._close_timeout_seconds = max(0.1, float(close_timeout_seconds))
 
         self._state = "created"
@@ -157,6 +164,7 @@ class PluginHost:
         self._closed_adapters: list[CapabilityAdapter] = []
         self._close_failure_count = 0
         self._runtime_loop: asyncio.AbstractEventLoop | None = None
+        self._managed_artifact_sink: ManagedArtifactSink | None = None
 
         self._lifecycle_lock = asyncio.Lock()
         self._invoke_lock = asyncio.Lock()
@@ -199,6 +207,15 @@ class PluginHost:
             "close_failure_count": self._close_failure_count,
             "plugins": [status.as_dict() for status in self._plugin_statuses],
         }
+
+    def bind_managed_artifact_sink(self, sink: ManagedArtifactSink) -> None:
+        """Bind the host-owned artifact sink before restart-only startup."""
+
+        if self._state != "created":
+            raise RuntimeError("plugin_host_already_started")
+        if not callable(getattr(sink, "materialize", None)):
+            raise TypeError("invalid_managed_artifact_sink")
+        self._managed_artifact_sink = sink
 
     async def start(self) -> dict[str, Any]:
         async with self._lifecycle_lock:
@@ -283,7 +300,7 @@ class PluginHost:
             try:
                 await asyncio.wait_for(
                     self._inflight_zero.wait(),
-                    timeout=self._invoke_timeout_seconds + 0.5,
+                    timeout=self._invoke_timeout_seconds + self._managed_artifact_timeout_seconds + 0.5,
                 )
             except (TimeoutError, asyncio.TimeoutError):
                 pass
@@ -335,7 +352,7 @@ class PluginHost:
         try:
             return await asyncio.wait_for(
                 asyncio.wrap_future(concurrent_future),
-                timeout=self._invoke_timeout_seconds + 0.5,
+                timeout=self._invoke_timeout_seconds + self._managed_artifact_timeout_seconds + 0.5,
             )
         except asyncio.CancelledError:
             concurrent_future.cancel()
@@ -429,12 +446,97 @@ class PluginHost:
                     status="error",
                     reason="plugin_invoke_invalid_result",
                 )
-            return sanitize_capability_result(result)
+            return await self._finalize_capability_result(
+                result,
+                registration=registration,
+                context=context,
+            )
         finally:
             async with self._invoke_lock:
                 self._inflight_count = max(0, self._inflight_count - 1)
                 if self._inflight_count == 0:
                     self._inflight_zero.set()
+
+    async def _finalize_capability_result(
+        self,
+        result: CapabilityResult,
+        *,
+        registration: _CapabilityRegistration,
+        context: InvocationContext,
+    ) -> CapabilityResult:
+        payload = result.content
+        if not isinstance(payload, ManagedArtifactPayload):
+            if isinstance(payload, Mapping) and "managed_artifacts" in payload:
+                return _managed_artifact_failure("plugin_result_reserved_key")
+            return sanitize_capability_result(result)
+
+        if result.is_error:
+            return _managed_artifact_failure("managed_artifact_on_error")
+        artifact_output = _managed_artifact_output(registration.descriptor)
+        if artifact_output is None:
+            return _managed_artifact_failure("managed_artifact_not_declared")
+        if MANAGED_ARTIFACT_WRITE_PERMISSION not in registration.permissions:
+            return _managed_artifact_failure("managed_artifact_permission_required")
+        if self._managed_artifact_sink is None:
+            return _managed_artifact_failure("managed_artifact_sink_unavailable")
+
+        public_result = sanitize_capability_result(
+            CapabilityResult(
+                is_error=False,
+                status=result.status,
+                reason=result.reason,
+                content=payload.content,
+            )
+        )
+        if public_result.is_error:
+            return public_result
+        if isinstance(public_result.content, Mapping) and "managed_artifacts" in public_result.content:
+            return _managed_artifact_failure("plugin_result_reserved_key")
+
+        data = getattr(payload.artifact, "data", None)
+        declared_max_bytes = int(artifact_output.max_bytes or 0)
+        if not isinstance(data, bytes) or len(data) > declared_max_bytes:
+            return _managed_artifact_failure("managed_artifact_too_large")
+        try:
+            artifact_ref = await asyncio.wait_for(
+                self._managed_artifact_sink.materialize(
+                    payload.artifact,
+                    context=context,
+                    capability_id=registration.descriptor.id,
+                ),
+                timeout=self._managed_artifact_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            if _current_task_is_cancelling():
+                raise
+            return _managed_artifact_failure("managed_artifact_write_failed")
+        except (TimeoutError, asyncio.TimeoutError):
+            return _managed_artifact_failure("managed_artifact_write_timeout")
+        except ManagedArtifactError as exc:
+            return _managed_artifact_failure(exc.reason)
+        except Exception:
+            return _managed_artifact_failure("managed_artifact_write_failed")
+        normalized_artifact_ref = _normalize_managed_artifact_reference(
+            artifact_ref,
+            payload=payload,
+            capability_id=registration.descriptor.id,
+        )
+        if normalized_artifact_ref is None:
+            return _managed_artifact_failure("managed_artifact_invalid_reference")
+
+        if isinstance(public_result.content, Mapping):
+            combined_content: dict[str, Any] = dict(public_result.content)
+        else:
+            combined_content = {"result": public_result.content}
+        combined_content["managed_artifacts"] = [normalized_artifact_ref]
+        return sanitize_capability_result(
+            CapabilityResult(
+                is_error=False,
+                status=public_result.status,
+                reason=public_result.reason,
+                content=combined_content,
+            )
+        )
 
     async def _activate_plugin(
         self,
@@ -532,6 +634,7 @@ class PluginHost:
                     raise _ActivationFailure("invalid_capability_enumeration_result")
                 for descriptor in descriptors:
                     _validate_descriptor_contract(descriptor, plugin_id=selection.plugin_id)
+                    _validate_managed_artifact_descriptor_contract(descriptor, manifest=manifest)
                     _require_policy_acceptance(
                         lambda: self._contribution_policy.validate_capability(
                             plugin_id=selection.plugin_id,
@@ -551,6 +654,7 @@ class PluginHost:
                             plugin_id=selection.plugin_id,
                             adapter=adapter,
                             descriptor=descriptor_snapshot,
+                            permissions=manifest.permissions,
                         )
                     )
                     if len(registrations) > _MAX_CAPABILITIES_PER_PLUGIN:
@@ -677,6 +781,92 @@ def _validate_descriptor_contract(descriptor: Any, *, plugin_id: str) -> None:
         raise _ActivationFailure("invalid_capability_id")
     if not descriptor.id.startswith(f"{plugin_id}."):
         raise _ActivationFailure("capability_prefix_mismatch")
+
+
+def _validate_managed_artifact_descriptor_contract(
+    descriptor: CapabilityDescriptor,
+    *,
+    manifest: PluginManifest,
+) -> None:
+    artifact_outputs = tuple(
+        output for output in descriptor.outputs if output.delivery == "generated_file"
+    )
+    if not artifact_outputs:
+        return
+    if len(artifact_outputs) != 1:
+        raise _ActivationFailure("managed_artifact_output_count_invalid")
+    if MANAGED_ARTIFACT_WRITE_PERMISSION not in manifest.permissions:
+        raise _ActivationFailure("managed_artifact_permission_required")
+    output = artifact_outputs[0]
+    if output.kind != "file" or not output.required:
+        raise _ActivationFailure("managed_artifact_output_invalid")
+    if (
+        isinstance(output.max_bytes, bool)
+        or not isinstance(output.max_bytes, int)
+        or output.max_bytes <= 0
+        or output.max_bytes > MAX_MANAGED_ARTIFACT_BYTES
+    ):
+        raise _ActivationFailure("managed_artifact_size_limit_invalid")
+    if "filesystem" not in descriptor.effects:
+        raise _ActivationFailure("managed_artifact_effect_required")
+
+
+def _managed_artifact_output(descriptor: CapabilityDescriptor) -> Any | None:
+    outputs = tuple(output for output in descriptor.outputs if output.delivery == "generated_file")
+    return outputs[0] if len(outputs) == 1 else None
+
+
+def _managed_artifact_failure(reason: str) -> CapabilityResult:
+    return CapabilityResult(
+        is_error=True,
+        status="error",
+        reason=str(reason or "managed_artifact_failed"),
+    )
+
+
+def _normalize_managed_artifact_reference(
+    value: Any,
+    *,
+    payload: ManagedArtifactPayload,
+    capability_id: str,
+) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    generated_id = str(value.get("generated_id") or "").strip()
+    generated_handle = str(value.get("generated_handle") or "").strip()
+    output_title = str(value.get("output_title") or "").strip()
+    output_format = str(value.get("output_format") or "").strip().lower().lstrip(".")
+    mime_type = str(value.get("mime_type") or "").strip().lower()
+    created_by_tool = str(value.get("created_by_tool") or "").strip()
+    file_size = value.get("file_size")
+    send_to_user = value.get("send_to_user")
+    draft = payload.artifact
+    if (
+        not generated_id.startswith("generated::")
+        or len(generated_id) > 128
+        or not generated_handle
+        or len(generated_handle) > 64
+        or output_title != str(draft.title or "").strip()
+        or output_format != str(draft.output_format or "").strip().lower().lstrip(".")
+        or mime_type != str(draft.mime_type or "").strip().lower()
+        or created_by_tool != capability_id
+        or isinstance(file_size, bool)
+        or not isinstance(file_size, int)
+        or file_size != len(draft.data)
+        or not isinstance(send_to_user, bool)
+        or send_to_user is not draft.send_to_user
+    ):
+        return None
+    return {
+        "generated_id": generated_id,
+        "generated_handle": generated_handle,
+        "output_title": output_title,
+        "output_format": output_format,
+        "mime_type": mime_type,
+        "file_size": file_size,
+        "created_by_tool": created_by_tool,
+        "send_to_user": send_to_user,
+    }
 
 
 def _copy_descriptor_snapshot(descriptor: CapabilityDescriptor) -> CapabilityDescriptor:
