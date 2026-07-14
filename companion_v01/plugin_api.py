@@ -63,6 +63,26 @@ class PluginManifest:
 
 
 @dataclass(frozen=True, slots=True)
+class PluginResultExperience:
+    """Domain semantics for Akane to project; never a free-form prompt."""
+
+    summary: str
+    facts: tuple[str, ...] = ()
+    as_of: str = ""
+    warnings: tuple[str, ...] = ()
+    interpretation_notes: tuple[str, ...] = ()
+    suggested_next_actions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PluginResultPayload:
+    """Public capability data plus bounded domain semantics for Akane."""
+
+    content: Any
+    experience: PluginResultExperience
+
+
+@dataclass(frozen=True, slots=True)
 class ManagedArtifactDraft:
     """Path-free bytes proposed by a trusted plugin for host-owned storage."""
 
@@ -105,6 +125,8 @@ __all__ = [
     "ManagedArtifactPayload",
     "PluginManifest",
     "PluginRegistrar",
+    "PluginResultExperience",
+    "PluginResultPayload",
     "is_valid_capability_id",
     "is_valid_permission_id",
     "is_valid_plugin_id",

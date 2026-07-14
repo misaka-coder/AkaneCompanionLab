@@ -2,6 +2,9 @@
 
 Status: generic host port implemented; finance chart/report migration not yet performed.
 
+Model-facing interpretation of artifact results is owned by the later M65-D3
+experience projection; see `plugin_result_experience_m65_d3.md`.
+
 ## Outcome
 
 An allowlisted trusted plugin can now return one bounded, path-free artifact
@@ -98,8 +101,9 @@ finance chart/report source remains without a runtime entry point under the
 M65-D1 migration-window rules. The next slice may:
 
 1. implement chart/report capabilities in the private plugin using this API;
-2. verify real wheel activation, storage, Engine event projection, and QQ delivery;
-3. delete the corresponding public implementations and inactive tests in the
+2. return the M65-D3 structured result experience instead of plugin-authored prompt text;
+3. verify real wheel activation, storage, model feedback, Engine event projection, and QQ delivery;
+4. delete the corresponding public implementations and inactive tests in the
    same cutover window.
 
 ## Validation

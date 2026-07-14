@@ -31,12 +31,18 @@ from .plugin_api import (
     ManagedArtifactPayload,
     PluginManifest,
     PluginRegistrar,
+    PluginResultPayload,
     is_valid_capability_id,
     is_valid_permission_id,
     is_valid_plugin_id,
 )
 from .plugin_managed_artifacts import ManagedArtifactError, ManagedArtifactSink
 from .plugin_result_projection import sanitize_capability_result
+from .plugin_result_experience import (
+    PluginResultExperienceError,
+    has_reserved_plugin_result_key,
+    project_plugin_result_payload,
+)
 
 
 _SAFE_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$")
@@ -466,9 +472,7 @@ class PluginHost:
     ) -> CapabilityResult:
         payload = result.content
         if not isinstance(payload, ManagedArtifactPayload):
-            if isinstance(payload, Mapping) and "managed_artifacts" in payload:
-                return _managed_artifact_failure("plugin_result_reserved_key")
-            return sanitize_capability_result(result)
+            return _project_public_plugin_result(result, content=payload)
 
         if result.is_error:
             return _managed_artifact_failure("managed_artifact_on_error")
@@ -480,18 +484,12 @@ class PluginHost:
         if self._managed_artifact_sink is None:
             return _managed_artifact_failure("managed_artifact_sink_unavailable")
 
-        public_result = sanitize_capability_result(
-            CapabilityResult(
-                is_error=False,
-                status=result.status,
-                reason=result.reason,
-                content=payload.content,
-            )
+        public_result = _project_public_plugin_result(
+            result,
+            content=payload.content,
         )
         if public_result.is_error:
             return public_result
-        if isinstance(public_result.content, Mapping) and "managed_artifacts" in public_result.content:
-            return _managed_artifact_failure("plugin_result_reserved_key")
 
         data = getattr(payload.artifact, "data", None)
         declared_max_bytes = int(artifact_output.max_bytes or 0)
@@ -821,6 +819,32 @@ def _managed_artifact_failure(reason: str) -> CapabilityResult:
         is_error=True,
         status="error",
         reason=str(reason or "managed_artifact_failed"),
+    )
+
+
+def _project_public_plugin_result(
+    result: CapabilityResult,
+    *,
+    content: Any,
+) -> CapabilityResult:
+    if isinstance(content, PluginResultPayload):
+        if result.is_error:
+            return _managed_artifact_failure("plugin_result_experience_on_error")
+        try:
+            projected_content = project_plugin_result_payload(content)
+        except PluginResultExperienceError as exc:
+            return _managed_artifact_failure(exc.reason)
+    else:
+        if has_reserved_plugin_result_key(content):
+            return _managed_artifact_failure("plugin_result_reserved_key")
+        projected_content = content
+    return sanitize_capability_result(
+        CapabilityResult(
+            is_error=result.is_error,
+            status=result.status,
+            reason=result.reason,
+            content=projected_content,
+        )
     )
 
 

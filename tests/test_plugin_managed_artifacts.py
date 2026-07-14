@@ -19,6 +19,8 @@ from companion_v01.plugin_api import (
     ManagedArtifactDraft,
     ManagedArtifactPayload,
     PluginManifest,
+    PluginResultExperience,
+    PluginResultPayload,
 )
 from companion_v01.plugin_contribution_policy import TrustedReadNetworkContributionPolicy
 from companion_v01.plugin_host import PluginHost
@@ -177,7 +179,21 @@ class PluginManagedArtifactTests(unittest.IsolatedAsyncioTestCase):
                 store=store,
                 attachment_service=AttachmentInboxService(store=store, base_dir=root / "attachments"),
             )
-            adapter = ArtifactAdapter(descriptor=_descriptor(), result=_artifact_result())
+            adapter = ArtifactAdapter(
+                descriptor=_descriptor(),
+                result=_artifact_result(
+                    content=PluginResultPayload(
+                        content={"chart": "ready"},
+                        experience=PluginResultExperience(
+                            summary="测试图表已经生成。",
+                            facts=("图表包含最近二十个交易日。",),
+                            as_of="2026-07-14 15:00:00 Asia/Shanghai",
+                            warnings=("图表只代表历史数据。",),
+                            interpretation_notes=("价格采用后复权口径。",),
+                        ),
+                    )
+                ),
+            )
             host = _host_for(ArtifactPlugin(adapter))
             host.bind_managed_artifact_sink(GeneratedFileManagedArtifactSink(service))
             started = await host.start()
@@ -206,6 +222,8 @@ class PluginManagedArtifactTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(Path(resolved["absolute_path"]).read_bytes(), b"test-png-bytes")
 
                 handler = PluginCapabilityToolBridge(host).build_tool_handlers()[CAPABILITY_ID]
+                metadata = handler.tool_metadata()
+                model_feedback = handler._format_capability_result(result)
                 projected = handler._finalize_execution_result(
                     ToolExecutionResult(tool_type=CAPABILITY_ID),
                     capability_result=result,
@@ -221,6 +239,12 @@ class PluginManagedArtifactTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(event["type"], "generated_file_ready")
                 self.assertEqual(event["delivery_scope"], "plugin_managed_artifact")
                 self.assertNotIn("absolute_path", event["generated_file"])
+                self.assertIn("Akane 已登记", model_feedback)
+                self.assertIn("此工具结果尚不代表投递成功", model_feedback)
+                self.assertIn("不要把产物已登记说成已发送成功", model_feedback)
+                self.assertEqual(metadata.family, "plugin_artifact")
+                self.assertEqual(metadata.operation, "mixed")
+                self.assertFalse(metadata.is_read_only)
             finally:
                 await host.stop()
 
