@@ -6,7 +6,12 @@ import importlib.metadata
 import json
 import sys
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from companion_v01.distribution_artifacts import audit_distribution_artifact
 
 
 EXPECTED_VERSION = "0.1.0"
@@ -33,17 +38,6 @@ PACKAGES: tuple[PackageSpec, ...] = (
 )
 
 
-def _direct_url_payload(dist: importlib.metadata.Distribution) -> dict[str, Any]:
-    raw = dist.read_text("direct_url.json")
-    if not raw:
-        return {}
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"invalid": True}
-    return payload if isinstance(payload, dict) else {"invalid": True}
-
-
 def audit_installed_packages() -> tuple[list[dict[str, str]], list[str]]:
     installed: list[dict[str, str]] = []
     errors: list[str] = []
@@ -55,19 +49,12 @@ def audit_installed_packages() -> tuple[list[dict[str, str]], list[str]]:
             errors.append(f"{spec.distribution}:not_installed")
             continue
 
-        version = str(dist.version or "")
+        artifact = audit_distribution_artifact(dist)
+        version = artifact.version
         if version != EXPECTED_VERSION:
             errors.append(f"{spec.distribution}:version_mismatch:{version}")
-
-        direct_url = _direct_url_payload(dist)
-        dir_info = direct_url.get("dir_info")
-        if isinstance(dir_info, dict):
-            if bool(dir_info.get("editable")):
-                errors.append(f"{spec.distribution}:editable_install_forbidden")
-            else:
-                errors.append(f"{spec.distribution}:source_directory_install_forbidden")
-        if direct_url.get("invalid"):
-            errors.append(f"{spec.distribution}:invalid_direct_url_metadata")
+        if not artifact.ok:
+            errors.append(f"{spec.distribution}:{artifact.reason}")
 
         try:
             module = importlib.import_module(spec.import_name)

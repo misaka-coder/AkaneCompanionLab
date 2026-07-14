@@ -40,6 +40,7 @@ class InstanceProfileTests(unittest.TestCase):
             self.assertEqual(context.instance_id, "local-default")
             self.assertEqual(context.character_pack_id, "")
             self.assertTrue(context.features.care)
+            self.assertEqual(context.plugins, ())
             self.assertTrue(context.is_compatibility_default)
             self.assertFalse((root / "instances").exists())
 
@@ -96,15 +97,62 @@ class InstanceProfileTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.reason, "selected_instance_id_mismatch")
 
-    def test_future_plugin_field_is_rejected_in_m65_a(self) -> None:
+    def test_explicit_plugin_allowlist_resolves_to_immutable_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            self._write_manifest(root, VALID_MANIFEST + '\n[[plugins]]\nid = "akane.finance"\nenabled = true\n')
+            self._write_manifest(
+                root,
+                VALID_MANIFEST
+                + '\n[[plugins]]\nid = "akane.test.diagnostic"\nenabled = true\n'
+                + '\n[[plugins]]\nid = "akane.optional.disabled"\nenabled = false\n',
+            )
+            context = resolve_instance_context(data_root=root, selected_instance_id="akane-personal")
+
+        self.assertEqual(
+            [(selection.plugin_id, selection.enabled) for selection in context.plugins],
+            [("akane.test.diagnostic", True), ("akane.optional.disabled", False)],
+        )
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            context.plugins[0].enabled = False  # type: ignore[misc]
+
+    def test_duplicate_plugin_id_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_manifest(
+                root,
+                VALID_MANIFEST
+                + '\n[[plugins]]\nid = "akane.test.diagnostic"\nenabled = true\n'
+                + '\n[[plugins]]\nid = "akane.test.diagnostic"\nenabled = false\n',
+            )
             with self.assertRaises(InstanceProfileError) as raised:
                 resolve_instance_context(data_root=root, selected_instance_id="akane-personal")
 
-        self.assertEqual(raised.exception.reason, "unsupported_manifest_field")
-        self.assertEqual(raised.exception.field, "plugins")
+        self.assertEqual(raised.exception.reason, "duplicate_plugin_id")
+        self.assertEqual(raised.exception.field, "plugins.1.id")
+
+    def test_plugin_entry_rejects_unknown_field_and_invalid_enabled_type(self) -> None:
+        cases = (
+            (
+                '\n[[plugins]]\nid = "akane.test.diagnostic"\nenabled = true\npath = "plugin.py"\n',
+                "unsupported_manifest_field",
+                "plugins.0.path",
+            ),
+            (
+                '\n[[plugins]]\nid = "akane.test.diagnostic"\nenabled = "yes"\n',
+                "plugin_enabled_must_be_boolean",
+                "plugins.0.enabled",
+            ),
+            ('\n[[plugins]]\nid = "Akane.Test"\nenabled = true\n', "invalid_plugin_id", "plugins.0.id"),
+        )
+        for plugin_toml, expected_reason, expected_field in cases:
+            with self.subTest(expected_reason=expected_reason):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    root = Path(temp_dir)
+                    self._write_manifest(root, VALID_MANIFEST + plugin_toml)
+                    with self.assertRaises(InstanceProfileError) as raised:
+                        resolve_instance_context(data_root=root, selected_instance_id="akane-personal")
+                self.assertEqual(raised.exception.reason, expected_reason)
+                self.assertEqual(raised.exception.field, expected_field)
 
     def test_unknown_feature_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -130,6 +178,7 @@ class InstanceProfileTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["instance_id"], "local-default")
+        self.assertNotIn("plugins", response.json())
         self.assertNotIn(temp_dir, response.text)
 
     def test_unbound_request_context_fails_structurally(self) -> None:

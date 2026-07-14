@@ -13,12 +13,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from .plugin_api import is_valid_plugin_id
+
 
 INSTANCE_MANIFEST_SCHEMA_VERSION = 1
 LOCAL_DEFAULT_INSTANCE_ID = "local-default"
 _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-_ROOT_FIELDS = frozenset({"schema_version", "instance_id", "character_pack_id", "features"})
+_ROOT_FIELDS = frozenset({"schema_version", "instance_id", "character_pack_id", "features", "plugins"})
 _FEATURE_FIELDS = frozenset({"care"})
+_PLUGIN_FIELDS = frozenset({"id", "enabled"})
+_MAX_PLUGIN_SELECTIONS = 32
 
 
 class InstanceProfileError(ValueError):
@@ -52,11 +56,23 @@ class FeatureSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class PluginSelection:
+    """One restart-only plugin decision from the instance allowlist."""
+
+    plugin_id: str
+    enabled: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"id": self.plugin_id, "enabled": self.enabled}
+
+
+@dataclass(frozen=True, slots=True)
 class InstanceManifest:
     schema_version: int
     instance_id: str
     character_pack_id: str
     features: FeatureSnapshot
+    plugins: tuple[PluginSelection, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +93,10 @@ class InstanceContext:
     @property
     def features(self) -> FeatureSnapshot:
         return self.manifest.features
+
+    @property
+    def plugins(self) -> tuple[PluginSelection, ...]:
+        return self.manifest.plugins
 
     @property
     def is_compatibility_default(self) -> bool:
@@ -101,6 +121,7 @@ def build_local_default_instance_context() -> InstanceContext:
             instance_id=LOCAL_DEFAULT_INSTANCE_ID,
             character_pack_id="",
             features=FeatureSnapshot(care=True),
+            plugins=(),
         ),
         source="compatibility_default",
     )
@@ -117,6 +138,12 @@ def _require_safe_id(value: Any, *, field: str) -> str:
     if normalized != value or not _SAFE_ID_PATTERN.fullmatch(normalized):
         _fail("invalid_safe_id", field=field)
     return normalized
+
+
+def _require_plugin_id(value: Any, *, field: str) -> str:
+    if not is_valid_plugin_id(value):
+        _fail("invalid_plugin_id", field=field)
+    return value
 
 
 def _reject_unknown_fields(payload: Mapping[str, Any], allowed: frozenset[str], *, field: str) -> None:
@@ -153,11 +180,33 @@ def parse_instance_manifest(payload: Any, *, selected_instance_id: str) -> Insta
     if not isinstance(care, bool):
         _fail("feature_must_be_boolean", field="features.care")
 
+    plugins_payload = payload.get("plugins", [])
+    if not isinstance(plugins_payload, list):
+        _fail("plugins_must_be_array", field="plugins")
+    if len(plugins_payload) > _MAX_PLUGIN_SELECTIONS:
+        _fail("too_many_plugins", field="plugins")
+    plugins: list[PluginSelection] = []
+    seen_plugin_ids: set[str] = set()
+    for index, raw_plugin in enumerate(plugins_payload):
+        field_prefix = f"plugins.{index}"
+        if not isinstance(raw_plugin, Mapping):
+            _fail("plugin_must_be_table", field=field_prefix)
+        _reject_unknown_fields(raw_plugin, _PLUGIN_FIELDS, field=field_prefix)
+        plugin_id = _require_plugin_id(raw_plugin.get("id"), field=f"{field_prefix}.id")
+        enabled = raw_plugin.get("enabled")
+        if not isinstance(enabled, bool):
+            _fail("plugin_enabled_must_be_boolean", field=f"{field_prefix}.enabled")
+        if plugin_id in seen_plugin_ids:
+            _fail("duplicate_plugin_id", field=f"{field_prefix}.id")
+        seen_plugin_ids.add(plugin_id)
+        plugins.append(PluginSelection(plugin_id=plugin_id, enabled=enabled))
+
     return InstanceManifest(
         schema_version=schema_version,
         instance_id=manifest_instance_id,
         character_pack_id=character_pack_id,
         features=FeatureSnapshot(care=care),
+        plugins=tuple(plugins),
     )
 
 

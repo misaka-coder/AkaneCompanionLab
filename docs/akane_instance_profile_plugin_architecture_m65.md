@@ -1,8 +1,8 @@
 # Akane Instance Profile and Plugin Architecture M65
 
-Status: M65-A implemented; M65-B activation and true-disable slice implemented
+Status: M65-A, M65-B, and M65-C implemented
 
-Date: 2026-07-13
+Date: 2026-07-14
 
 ## Decision
 
@@ -54,7 +54,7 @@ domain is applied to the public core.
 | Character pack | Persona, resources, and character-owned content | No |
 | Feature profile | Explicit selection of bundled optional core modules | No, but instance-scoped |
 | Core module | Bundled Akane behavior such as `care` | Runs inside the host |
-| External plugin | Separately installed domain capability such as finance | Instance-scoped and permission-scoped |
+| External plugin | Separately installed domain capability such as finance | No code sandbox; activation is instance-scoped and permission-scoped |
 | Channel binding | QQ, Web, or desktop identity attached to an instance | Yes for credentials and delivery |
 | External user | A QQ/Web user interacting with an instance | Yes for memory and relationship state |
 
@@ -157,16 +157,19 @@ Rules:
 
 - `instance_id` is a stable safe id, not a display name;
 - the manifest contains secret references, never secret values;
-- an external plugin entry is rejected unless a compatible installed artifact
-  provides that exact plugin id;
+- an external plugin selection is validated before startup and its exact id is
+  resolved only from installed artifact metadata;
 - installed plugins are not activated implicitly;
-- unknown features and plugins produce a structured validation error;
+- unknown feature fields and unknown plugin-entry fields produce a structured
+  validation error; syntactically valid but uninstalled plugin ids degrade the
+  optional host at startup;
 - paths are derived below the selected data root and are not accepted from the
   public manifest;
-- M65-A implements only the fields required for instance identity, character
-  selection, and the `care` feature decision;
-- plugin loading in the example is a later M65 slice and must not be exposed as
-  working before its real runtime path exists.
+- M65-C accepts only `id` and `enabled` in each `[[plugins]]` entry and rejects
+  duplicate ids, invalid identifiers, unknown fields, and invalid types;
+- `enabled=true` requests activation but does not make an optional plugin a
+  hard dependency: a missing or failed artifact degrades `PluginHost` while
+  Akane core continues to start.
 
 The runtime-selected instance is identified explicitly, for example through
 `AKANE_INSTANCE_ID`. Its private manifest is resolved below:
@@ -542,39 +545,140 @@ surface:
 
 ## External Plugin Contract
 
-External plugin loading is deliberately deferred until the instance and core
-module contracts are proven. The target contract includes:
+M65-C implements a deliberately narrow installed-artifact plugin contract. It
+includes:
 
 ```text
 plugin_id
 plugin_version
 plugin_api_version
-compatible_core_versions
 permissions
-config_schema
-secret_fields
-storage_schema_version
-supported_surfaces
 ```
 
-Lifecycle:
+The only M65-C permission is `diagnostics.invoke`, and the only contribution is
+a capcore `CapabilityAdapter` whose capabilities are non-Prompt, low-risk,
+never-confirm, and side-effect-free. Config, secrets, storage, prompts, routes,
+jobs, events, QQ commands, and hot mutation remain outside this slice.
+
+### Trust and transaction boundary
+
+M65-C plugins are trusted in-process extensions selected by an explicit
+instance allowlist. Wheel installation, artifact audit, and allowlisting do
+not provide a Python sandbox or prevent arbitrary behavior by a trusted
+artifact.
+
+`entry_point.load()` imports Python code. Import-created threads, globals,
+filesystem changes, or network effects cannot be rolled back. Therefore:
+
+- plugin module import must have no external side effects;
+- the entry point must load a zero-parameter factory callable;
+- the factory must return an object with a valid `PluginManifest` and
+  synchronous `register(registrar)` implementation;
+- transactional activation means only that failed staged adapters are never
+  committed to the active plugin and capability snapshots;
+- transactional activation does not unload an imported Python module;
+- activation failure closes every staged adapter in reverse order with a
+  bounded, best-effort `aclose()`;
+- close failure never prevents later adapters from closing and never replaces
+  the original activation failure reason.
+
+Artifact audit is completed before `entry_point.load()`. If reliable
+distribution metadata is unavailable, activation fails with
+`distribution_metadata_unavailable`; the host does not import the plugin,
+read module `__file__`, or scan a source directory as a fallback. Editable and
+source-directory installations are rejected by the same
+`distribution_artifacts.py` authority used by the packaged dependency check.
+
+### Restart-only lifecycle
+
+`PluginHost.__init__` only captures immutable selections and callables. It
+does not discover distributions, audit artifacts, import modules, construct
+plugins, register adapters, call health, or enumerate capabilities. Those
+operations occur only in asynchronous FastAPI startup through
+`PluginHost.start()`:
 
 ```text
-discover -> validate -> register -> startup -> health -> shutdown
+created
+  -> starting
+  -> active / degraded
+  -> stopping
+  -> stopped
 ```
 
-Rules:
+`start()` and `stop()` are idempotent. The host does not support live install,
+registration, enable/disable, or capability-map mutation. Startup publishes
+immutable active-plugin and capability snapshots. Once stopping begins, new
+invocations return `host_unavailable`; active adapters close at most once in
+reverse activation order.
+
+An enabled but missing or failed optional plugin yields aggregate `degraded`
+status without preventing Akane core startup. A future hard dependency must
+use a separate `required`/dependency contract and must never be inferred from
+`enabled`.
+
+### Identity and invocation rules
+
+- plugin ids are lowercase safe ids of at most 64 characters;
+- entry point name, instance selection id, and `PluginManifest.plugin_id` must
+  match exactly;
+- capability ids are safe ids of at most 128 characters and must start with
+  the complete `<plugin_id>.` prefix;
+- manifest version must match installed distribution version and API version
+  must equal `1`;
+- capcore remains the authority for descriptor types, argument validation,
+  invocation context, health, results, and adapter shutdown;
+- M65-C capability invocation receives an empty `InvocationContext` and never
+  enters Engine, ordinary Prompt, QQ, Care, finance, or desktop paths.
+
+The diagnostic surface is limited to:
+
+```text
+GET  /admin/plugins/status
+POST /admin/plugins/capabilities/<capability_id>/invoke
+```
+
+It trusts only the actual ASGI socket peer and ignores forwarded headers.
+Only loopback IP peers are accepted. Invoke bodies must be bounded JSON
+objects; results are recursively projected to bounded JSON-safe values.
+Tracebacks, raw exception messages, local absolute paths, distribution paths,
+entry-point module paths, and obvious secret-bearing fields are never returned.
+
+### Implemented M65-C rules
 
 - discovery uses installed versioned artifacts, never sibling source paths;
 - activation requires an explicit instance allowlist;
 - registration is transactional: a failed plugin is not partially visible;
 - plugin failures return `status/reason` and do not claim success;
-- a plugin cannot import host application singletons or reach another
-  instance's storage;
-- a plugin receives only declared services and permission-scoped operations;
-- removing a plugin removes its prompt, tools, routes, jobs, and status surface;
-- data migration is owned and versioned by the plugin;
+- the M65-C registrar exposes only diagnostic capability adapters and provides
+  no host singleton, config, instance storage, user identity, or secret port;
+- the host cannot prevent trusted Python code from importing other modules or
+  performing arbitrary side effects; artifact review and plugin policy remain
+  mandatory;
+- a disabled, missing, or failed plugin contributes no capability and never
+  enters Prompt, Engine, QQ, Care, finance, or desktop runtime paths;
 - public Akane starts and passes acceptance without private plugins installed.
+
+The installed-wheel acceptance fixture registers only
+`akane.test.diagnostic.ping.v1`. Its module import and invocation do not read
+configuration or user data, write files or databases, start threads, call the
+network, or mutate Akane state. It is a dev/acceptance artifact and is not a
+runtime dependency.
+
+M65-C validation:
+
+```powershell
+python -m unittest tests.test_instance_profile tests.test_plugin_host tests.test_plugin_artifact_smoke -v
+python -m unittest tests.test_package_independence tests.test_package_reintegration_policy -v
+python -m py_compile companion_v01\plugin_api.py companion_v01\distribution_artifacts.py companion_v01\plugin_host.py companion_v01\routes\plugins.py
+python -m ruff check companion_v01\plugin_api.py companion_v01\distribution_artifacts.py companion_v01\plugin_host.py companion_v01\routes\plugins.py tests\test_plugin_host.py tests\test_plugin_artifact_smoke.py
+git diff --check
+```
+
+`python scripts\check_packaged_dependencies.py --json` remains the release
+artifact gate. It intentionally reports `editable_install_forbidden` in a
+developer checkout whose extracted packages are installed editable; the
+installed-wheel plugin smoke separately proves the M65-C accepted artifact
+path without weakening that release rule.
 
 The first finance artifact remains private but is not a separate product. It
 depends on a released Akane plugin API and can be enabled by any authorized
@@ -661,6 +765,9 @@ window above.
 
 ### M65-C — External plugin host
 
+Implementation status: complete for the trusted, restart-only diagnostic
+capability slice.
+
 - define manifest, compatibility, permissions, lifecycle, and structured
   status;
 - load one test plugin from an installed artifact;
@@ -727,7 +834,8 @@ complete.
 
 ## Immediate Next Action
 
-Commit M65-B as a separate verified slice, then begin M65-C with a test plugin
-only. Do not extract finance or begin cloud deployment in the same change. The
-enabled desktop Care compatibility window must be closed before M65-E or any
+Commit M65-C as a separate verified slice. Then begin M65-D with a read-only
+finance ownership/call-chain pass before moving one private artifact seam at a
+time. Do not begin cloud deployment in the same change. The enabled desktop
+Care compatibility window must still be closed before M65-E or any
 multi-instance hosted deployment.

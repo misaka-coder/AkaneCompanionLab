@@ -38,6 +38,7 @@ from .instance_profile import resolve_instance_context
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
 from .model_service_config import ModelServiceConfigStore, load_and_apply_saved_model_service
+from .plugin_host import PluginHost
 from .settings_overrides import SettingsOverrideStore, load_and_apply_saved_overrides
 from .public_guard import PublicThinkGuard
 from .qq_gateway import NapCatQQGateway
@@ -49,6 +50,7 @@ from .routes.desktop_pet import build_desktop_pet_router
 from .routes.gifts import build_gifts_router
 from .routes.model_services import build_model_services_router
 from .routes.petdesk import build_petdesk_router
+from .routes.plugins import build_plugins_router
 from .routes.qq import build_qq_router
 from .routes.reminders import build_reminders_router
 from .routes.sessions import build_sessions_router
@@ -128,6 +130,8 @@ instance_context = resolve_instance_context(
     selected_instance_id=getattr(config, "AKANE_INSTANCE_ID", ""),
 )
 app.state.akane_instance_context = instance_context
+plugin_host = PluginHost(instance_context.plugins)
+app.state.akane_plugin_host = plugin_host
 engine = AkaneMemoryEngine(
     Path(config.DATA_DIR) / "akane_memory_v01",
     resource_manifest=resources,
@@ -386,6 +390,12 @@ if qq_gateway is not None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    plugin_status = await plugin_host.start()
+    if plugin_status.get("status") == "degraded":
+        logger.warning(
+            "Plugin host degraded: %s",
+            json.dumps(plugin_status, ensure_ascii=False, sort_keys=True),
+        )
     if finance_event_worker is not None:
         finance_event_worker.start()
 
@@ -411,6 +421,12 @@ if USER_ASSETS_DIR.exists():
 async def shutdown_event() -> None:
     if finance_event_worker is not None:
         finance_event_worker.stop(timeout_seconds=5.0)
+    plugin_status = await plugin_host.stop()
+    if int(plugin_status.get("close_failure_count") or 0) > 0:
+        logger.warning(
+            "Plugin host adapter close failures: %s",
+            json.dumps(plugin_status, ensure_ascii=False, sort_keys=True),
+        )
     engine.close()
 
 
@@ -559,6 +575,7 @@ app.include_router(
         workflow_runner=ComfyUiWorkflowRunner(config_base_dir=Path(config.DATA_DIR)),
     )
 )
+app.include_router(build_plugins_router(plugin_host=plugin_host))
 app.include_router(
     build_web_static_router(
         web_dir=WEB_DIR,
