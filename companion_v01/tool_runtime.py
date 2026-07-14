@@ -886,21 +886,27 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         except Exception:
             return self._failure("adapter_invoke_failed")
         followup = self._format_capability_result(result)
-        status = "error" if bool(getattr(result, "is_error", False)) else "ok"
+        is_error = bool(getattr(result, "is_error", False))
+        status = self._safe_public_text(getattr(result, "status", ""), limit=80) if is_error else "ok"
+        status = status or ("error" if is_error else "ok")
+        reason = self._safe_public_text(getattr(result, "reason", ""), limit=120) if is_error else ""
+        event = {
+            "type": "adapter_capability_completed",
+            "capabilityId": self.tool_type,
+            "status": status,
+        }
+        state_updates = {
+            "adapter_capability_status": status,
+            "adapter_capability_id": self.tool_type,
+        }
+        if reason:
+            event["reason"] = reason
+            state_updates["adapter_capability_reason"] = reason
         return ToolExecutionResult(
             tool_type=self.tool_type,
-            stream_events=[
-                {
-                    "type": "adapter_capability_completed",
-                    "capabilityId": self.tool_type,
-                    "status": status,
-                }
-            ],
+            stream_events=[event],
             followup_context=followup,
-            state_updates={
-                "adapter_capability_status": status,
-                "adapter_capability_id": self.tool_type,
-            },
+            state_updates=state_updates,
         )
 
     def _approval_required(self, *, decision: Any, context: ToolExecutionContext) -> ToolExecutionResult:
@@ -1006,7 +1012,10 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         if not body:
             body = f"({self._source_label()}没有返回可读内容。)"
         if bool(getattr(result, "is_error", False)):
-            return f"{self._source_label()}返回业务错误：\n{body[: self.MAX_FOLLOWUP_CHARS]}"
+            status = self._safe_public_text(getattr(result, "status", ""), limit=80) or "error"
+            reason = self._safe_public_text(getattr(result, "reason", ""), limit=120)
+            label = f"{status}/{reason}" if reason else status
+            return f"{self._source_label()}返回业务错误（{label}）：\n{body[: self.MAX_FOLLOWUP_CHARS]}"
         return f"{self._source_label()}返回：\n{body[: self.MAX_FOLLOWUP_CHARS]}"
 
     def _source_label(self) -> str:
@@ -1020,6 +1029,8 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             return "本地 Python 能力"
         if "mcp" in adapter_name:
             return "本地 MCP 工具"
+        if adapter_name == "plugin":
+            return "已安装插件能力"
         return "本地 adapter 能力"
 
     def _schema_prompt_text(self) -> str:

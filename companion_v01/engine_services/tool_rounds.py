@@ -6,6 +6,7 @@ Group B — module-level functions that take engine as first param.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from ..capability_registry import (
@@ -23,12 +24,16 @@ from ..client_protocol import ClientMode, ClientProtocolContext
 from ..domain_profiles import (
     DEFAULT_DOMAIN_PROFILE_ID,
     FINANCE_DOMAIN_PROFILE_ID,
+    DomainProfile,
     DomainProfileRegistry,
     filter_tool_names,
 )
 from .. import tool_orchestration_engine
 from ..local_capability_config import load_capability_config
 from ..tool_readiness import ToolReadinessGate
+
+
+logger = logging.getLogger("akane.tool_rounds")
 
 
 # ── Group A: Pure helpers ────────────────────────────────────────
@@ -198,7 +203,11 @@ def resolve_tool_handlers(
             name: handler for name, handler in all_handlers.items() if not _is_finance_only_handler(handler)
         }
     if client_context is None:
-        allowed_names = filter_tool_names(tuple(all_handlers.keys()), domain_profile)
+        allowed_names = _filter_tool_names_with_policy_extensions(
+            tuple(all_handlers.keys()),
+            domain_profile,
+            handlers=all_handlers,
+        )
         selected_handlers = {name: all_handlers[name] for name in allowed_names if name in all_handlers}
     else:
         selected_names = list(
@@ -297,7 +306,11 @@ def resolve_capability_selection(
         return selection
     dynamic_tool_names = tuple(
         name
-        for name in filter_tool_names(tuple(dynamic_handlers.keys()), domain_profile)
+        for name in _filter_tool_names_with_policy_extensions(
+            tuple(dynamic_handlers.keys()),
+            domain_profile,
+            handlers=dynamic_handlers,
+        )
         if name not in selection.tool_names
     )
     if not dynamic_tool_names:
@@ -305,11 +318,11 @@ def resolve_capability_selection(
     return CapabilitySelection(
         light_hints=(
             *selection.light_hints,
-            "当前 profile 有已显式暴露给 prompt 的本地 adapter 能力；调用失败时不要假装完成，涉及高风险动作会先请求确认。",
+            "当前 profile 有已显式暴露给 prompt 的扩展能力；调用失败时不要假装完成，涉及高风险动作会先请求确认。",
         ),
         tool_names=(*selection.tool_names, *dynamic_tool_names),
-        module_names=(*selection.module_names, "adapter_tools"),
-        layer_names=(*selection.layer_names, "adapter"),
+        module_names=(*selection.module_names, "extension_tools"),
+        layer_names=(*selection.layer_names, "extension"),
         disclosures=selection.disclosures,
     )
 
@@ -323,6 +336,21 @@ def _is_finance_only_handler(handler: Any) -> bool:
     except Exception:
         return False
     return str(getattr(metadata, "family", "") or "").strip() in {"finance_read", "finance_artifact"}
+
+
+def _filter_tool_names_with_policy_extensions(
+    tool_names: tuple[str, ...] | list[str],
+    profile: DomainProfile | None,
+    *,
+    handlers: dict[str, Any],
+) -> tuple[str, ...]:
+    normally_allowed = set(filter_tool_names(tool_names, profile))
+    return tuple(
+        name
+        for name in tool_names
+        if name in normally_allowed
+        or bool(getattr(handlers.get(name), "policy_accepted_plugin_capability", False))
+    )
 
 
 def build_capability_snapshot(
@@ -407,6 +435,7 @@ def build_adapter_tool_handlers(
     client_context: ClientProtocolContext | None = None,
 ) -> dict[str, Any]:
     handlers: dict[str, Any] = {}
+    handlers.update(build_plugin_capability_tool_handlers(engine, client_context=client_context))
     handlers.update(
         build_mcp_adapter_tool_handlers(
             engine,
@@ -421,6 +450,35 @@ def build_adapter_tool_handlers(
             client_context=client_context,
         )
     )
+    return handlers
+
+
+def build_plugin_capability_tool_handlers(
+    engine: Any,
+    *,
+    client_context: ClientProtocolContext | None = None,
+) -> dict[str, Any]:
+    source = getattr(engine, "plugin_capability_source", None)
+    builder = getattr(source, "build_tool_handlers", None)
+    if not callable(builder):
+        return {}
+    try:
+        raw_handlers = builder(client_context=client_context)
+    except Exception as exc:
+        logger.warning("plugin capability bridge unavailable: reason=%s", type(exc).__name__)
+        return {}
+    if not isinstance(raw_handlers, dict):
+        try:
+            raw_handlers = dict(raw_handlers or {})
+        except Exception:
+            logger.warning("plugin capability bridge returned invalid handler mapping")
+            return {}
+    handlers: dict[str, Any] = {}
+    for raw_name, handler in raw_handlers.items():
+        name = str(raw_name or "").strip()
+        if not name or handler is None or str(getattr(handler, "tool_type", "") or "").strip() != name:
+            continue
+        handlers[name] = handler
     return handlers
 
 

@@ -17,6 +17,8 @@ from capcore import CapabilityAdapter
 AKANE_PLUGIN_API_VERSION = 1
 AKANE_PLUGIN_ENTRYPOINT_GROUP = "akane.plugins.v1"
 DIAGNOSTICS_INVOKE_PERMISSION = "diagnostics.invoke"
+CAPABILITY_PROMPT_INVOKE_PERMISSION = "capability.prompt.invoke"
+NETWORK_READ_PERMISSION = "network.read"
 MAX_PLUGIN_ID_LENGTH = 64
 MAX_CAPABILITY_ID_LENGTH = 128
 MAX_PERMISSION_ID_LENGTH = 64
@@ -71,7 +73,9 @@ class AkanePlugin(Protocol):
 __all__ = [
     "AKANE_PLUGIN_API_VERSION",
     "AKANE_PLUGIN_ENTRYPOINT_GROUP",
+    "CAPABILITY_PROMPT_INVOKE_PERMISSION",
     "DIAGNOSTICS_INVOKE_PERMISSION",
+    "NETWORK_READ_PERMISSION",
     "AkanePlugin",
     "PluginManifest",
     "PluginRegistrar",

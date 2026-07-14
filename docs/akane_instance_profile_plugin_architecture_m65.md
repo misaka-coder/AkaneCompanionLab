@@ -1,6 +1,6 @@
 # Akane Instance Profile and Plugin Architecture M65
 
-Status: M65-A, M65-B, and M65-C implemented
+Status: M65-A, M65-B, M65-C, and the generic M65-D1 Engine bridge implemented
 
 Date: 2026-07-14
 
@@ -833,9 +833,19 @@ capability slice.
 
 ### M65-D — Private finance extraction
 
-Implementation status: the generic host-consumer foundation is complete;
-Engine tool bridging, the private installed artifact, and finance cutover are
-not yet implemented.
+Implementation status: the generic host-consumer foundation and Engine tool
+bridge are complete. The first private installed artifact is implemented in
+its private repository. Legacy finance read cutover and the remaining finance
+surfaces are not yet implemented.
+
+The M65-D1 bridge consumes only the immutable capability descriptor snapshot
+and `PluginHost.invoke_from_consumer()`. It does not expose raw adapters to the
+Engine. Policy-accepted prompt capabilities enter the existing dynamic handler,
+legacy Prompt, provider-native schema, and tool execution paths. Invocation is
+scheduled onto the PluginHost lifecycle loop so plugin async resources are not
+used from an Engine worker's temporary event loop. See
+`docs/plugin_engine_bridge_m65_d1.md` for the bounded legacy finance migration
+window.
 
 - checkpoint the current finance branch as migration source;
 - return genuinely generic host fixes to public Akane in focused commits;
@@ -895,8 +905,9 @@ complete.
 
 ## Immediate Next Action
 
-Commit M65-C as a separate verified slice. Then begin M65-D with a read-only
-finance ownership/call-chain pass before moving one private artifact seam at a
-time. Do not begin cloud deployment in the same change. The enabled desktop
-Care compatibility window must still be closed before M65-E or any
-multi-instance hosted deployment.
+Close the M65-D1 legacy read migration window: verify the installed private
+artifact through the real Engine bridge, then delete the three core finance
+read handlers and their Engine construction path in one focused cutover. Do
+not begin cloud deployment in the same change. The enabled desktop Care
+compatibility window must still be closed before M65-E or any multi-instance
+hosted deployment.

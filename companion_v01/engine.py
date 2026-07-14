@@ -179,10 +179,12 @@ class AkaneMemoryEngine:
         resource_manifest: ResourceManifest | None = None,
         desktop_pet_character_resources: Any = None,
         instance_context: InstanceContext | None = None,
+        plugin_capability_source: Any = None,
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.instance_context = instance_context or build_local_default_instance_context()
+        self.plugin_capability_source = plugin_capability_source
         self.resource_manifest = resource_manifest
         self.desktop_pet_character_resources = desktop_pet_character_resources
         self.care_module = CareModulePort.from_feature(

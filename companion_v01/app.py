@@ -38,8 +38,9 @@ from .instance_profile import resolve_instance_context
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
 from .model_service_config import ModelServiceConfigStore, load_and_apply_saved_model_service
-from .plugin_contribution_policy import M65CDiagnosticContributionPolicy
+from .plugin_contribution_policy import TrustedReadNetworkContributionPolicy
 from .plugin_host import PluginHost
+from .plugin_tool_bridge import PluginCapabilityToolBridge
 from .settings_overrides import SettingsOverrideStore, load_and_apply_saved_overrides
 from .public_guard import PublicThinkGuard
 from .qq_gateway import NapCatQQGateway
@@ -133,14 +134,19 @@ instance_context = resolve_instance_context(
 app.state.akane_instance_context = instance_context
 plugin_host = PluginHost(
     instance_context.plugins,
-    contribution_policy=M65CDiagnosticContributionPolicy(),
+    contribution_policy=TrustedReadNetworkContributionPolicy(),
 )
 app.state.akane_plugin_host = plugin_host
+plugin_capability_source = PluginCapabilityToolBridge(
+    plugin_host,
+    config_base_dir=Path(config.DATA_DIR),
+)
 engine = AkaneMemoryEngine(
     Path(config.DATA_DIR) / "akane_memory_v01",
     resource_manifest=resources,
     desktop_pet_character_resources=desktop_pet_character_resources,
     instance_context=instance_context,
+    plugin_capability_source=plugin_capability_source,
 )
 USER_ASSETS_DIR = engine.gift_assets.base_dir
 tts_client = EdgeTTSClient(

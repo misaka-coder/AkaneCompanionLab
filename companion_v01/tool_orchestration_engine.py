@@ -408,7 +408,7 @@ def build_native_tool_schemas(
         return []
     if not isinstance(handlers, Mapping):
         return []
-    candidate_names = _native_tool_candidate_names(allowed_tool_names=allowed_tool_names)
+    candidate_names = _native_tool_candidate_names(handlers=handlers, allowed_tool_names=allowed_tool_names)
     schemas: list[dict[str, Any]] = []
     for tool_name in candidate_names:
         handler = handlers.get(tool_name)
@@ -441,7 +441,7 @@ def build_native_tool_decision_plan(
             tools=[],
             legacy_prompt_exclusions=set(),
         )
-    candidate_names = _native_tool_candidate_names(allowed_tool_names=allowed_tool_names)
+    candidate_names = _native_tool_candidate_names(handlers=handlers, allowed_tool_names=allowed_tool_names)
     if allowed_tool_names is not None and not candidate_names:
         return NativeToolDecisionPlan(
             status="disabled",
@@ -484,12 +484,23 @@ def build_native_tool_decision_plan(
     )
 
 
-def _native_tool_candidate_names(*, allowed_tool_names: Iterable[str] | None = None) -> list[str]:
+def _native_tool_candidate_names(
+    *,
+    handlers: Mapping[str, Any],
+    allowed_tool_names: Iterable[str] | None = None,
+) -> list[str]:
     allowlist = _native_tool_decision_allowlist_items()
-    if allowed_tool_names is None:
-        return allowlist
-    allowed = {str(item or "").strip() for item in allowed_tool_names if str(item or "").strip()}
-    return [name for name in allowlist if name in allowed]
+    allowed = {str(item or "").strip() for item in (allowed_tool_names or ()) if str(item or "").strip()}
+    candidates = allowlist if allowed_tool_names is None else [name for name in allowlist if name in allowed]
+    for raw_name, handler in handlers.items():
+        name = str(raw_name or "").strip()
+        if not name or name in candidates:
+            continue
+        if allowed_tool_names is not None and name not in allowed:
+            continue
+        if bool(getattr(handler, "policy_accepted_native_tool", False)):
+            candidates.append(name)
+    return candidates
 
 
 def _native_tool_schema_for_handler(tool_name: str, handler: Any) -> dict[str, Any] | None:

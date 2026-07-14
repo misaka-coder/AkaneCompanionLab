@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -181,7 +182,7 @@ def build_think_router(
             )
             raise HTTPException(status_code=429, detail=guard_decision.message)
         try:
-            frame = engine.process_turn(payload)
+            frame = await asyncio.to_thread(engine.process_turn, payload)
         except Exception as exc:
             duration_ms = (time.perf_counter() - started_at) * 1000
             runtime_metrics.observe_request("think_once", duration_ms=duration_ms, ok=False)

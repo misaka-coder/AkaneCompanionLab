@@ -156,6 +156,7 @@ class PluginHost:
         self._activation_order: tuple[CapabilityAdapter, ...] = ()
         self._closed_adapters: list[CapabilityAdapter] = []
         self._close_failure_count = 0
+        self._runtime_loop: asyncio.AbstractEventLoop | None = None
 
         self._lifecycle_lock = asyncio.Lock()
         self._invoke_lock = asyncio.Lock()
@@ -204,6 +205,7 @@ class PluginHost:
             if self._state in _HOST_AVAILABLE_STATES or self._state in {"starting", "stopping", "stopped"}:
                 return self.status_snapshot()
 
+            self._runtime_loop = asyncio.get_running_loop()
             self._state = "starting"
             working_plugins: dict[str, _ActivePlugin] = {}
             working_capabilities: dict[str, _CapabilityRegistration] = {}
@@ -291,7 +293,66 @@ class PluginHost:
             self._capabilities = MappingProxyType({})
             self._activation_order = ()
             self._state = "stopped"
+            self._runtime_loop = None
             return self.status_snapshot()
+
+    async def invoke_from_consumer(
+        self,
+        capability_id: str,
+        args: Mapping[str, Any],
+        *,
+        context: InvocationContext,
+    ) -> CapabilityResult:
+        """Run an invocation on the lifecycle loop from a synchronous Engine worker.
+
+        Plugin adapters are activated on the FastAPI lifecycle loop and may own
+        loop-bound async resources. Engine tool execution is synchronous and
+        normally runs in a worker thread, so executing ``invoke`` through a new
+        per-thread event loop would violate that ownership boundary.
+        """
+
+        runtime_loop = self._runtime_loop
+        if runtime_loop is None or runtime_loop.is_closed() or not runtime_loop.is_running():
+            return CapabilityResult(
+                is_error=True,
+                status="host_unavailable",
+                reason="host_unavailable",
+            )
+        current_loop = asyncio.get_running_loop()
+        if current_loop is runtime_loop:
+            return await self.invoke(capability_id, args, context=context)
+        try:
+            concurrent_future = asyncio.run_coroutine_threadsafe(
+                self.invoke(capability_id, args, context=context),
+                runtime_loop,
+            )
+        except RuntimeError:
+            return CapabilityResult(
+                is_error=True,
+                status="host_unavailable",
+                reason="host_unavailable",
+            )
+        try:
+            return await asyncio.wait_for(
+                asyncio.wrap_future(concurrent_future),
+                timeout=self._invoke_timeout_seconds + 0.5,
+            )
+        except asyncio.CancelledError:
+            concurrent_future.cancel()
+            raise
+        except (TimeoutError, asyncio.TimeoutError):
+            concurrent_future.cancel()
+            return CapabilityResult(
+                is_error=True,
+                status="error",
+                reason="plugin_invoke_timeout",
+            )
+        except Exception:
+            return CapabilityResult(
+                is_error=True,
+                status="error",
+                reason="plugin_invoke_failed",
+            )
 
     async def invoke(
         self,

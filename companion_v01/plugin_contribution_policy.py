@@ -13,7 +13,12 @@ from typing import Protocol
 
 from capcore import CapabilityDescriptor
 
-from .plugin_api import DIAGNOSTICS_INVOKE_PERMISSION, PluginManifest
+from .plugin_api import (
+    CAPABILITY_PROMPT_INVOKE_PERMISSION,
+    DIAGNOSTICS_INVOKE_PERMISSION,
+    NETWORK_READ_PERMISSION,
+    PluginManifest,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,8 +76,41 @@ class M65CDiagnosticContributionPolicy:
         return ContributionPolicyDecision.allow()
 
 
+@dataclass(frozen=True, slots=True)
+class TrustedReadNetworkContributionPolicy:
+    """Prompt-visible, low-risk capabilities backed only by public network reads."""
+
+    policy_id: str = field(default="trusted.read-network-capability.v1", init=False)
+
+    def validate_manifest(self, manifest: PluginManifest) -> ContributionPolicyDecision:
+        if manifest.permissions != (
+            CAPABILITY_PROMPT_INVOKE_PERMISSION,
+            NETWORK_READ_PERMISSION,
+        ):
+            return ContributionPolicyDecision.reject()
+        return ContributionPolicyDecision.allow()
+
+    def validate_capability(
+        self,
+        *,
+        plugin_id: str,
+        descriptor: CapabilityDescriptor,
+    ) -> ContributionPolicyDecision:
+        del plugin_id
+        if not descriptor.prompt_exposed:
+            return ContributionPolicyDecision.reject()
+        if descriptor.risk != "low":
+            return ContributionPolicyDecision.reject()
+        if descriptor.confirm != "never":
+            return ContributionPolicyDecision.reject()
+        if descriptor.effects != ("network",):
+            return ContributionPolicyDecision.reject()
+        return ContributionPolicyDecision.allow()
+
+
 __all__ = [
     "ContributionPolicyDecision",
     "M65CDiagnosticContributionPolicy",
     "PluginContributionPolicy",
+    "TrustedReadNetworkContributionPolicy",
 ]
