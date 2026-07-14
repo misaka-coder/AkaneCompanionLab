@@ -5,7 +5,11 @@ import unittest
 from pathlib import Path
 
 from companion_v01.persona_config import load_persona_config
-from companion_v01.prompt_blocks import build_desktop_pet_system_prompt, build_qq_text_system_prompt
+from companion_v01.prompt_blocks import (
+    build_desktop_pet_system_prompt,
+    build_qq_text_system_prompt,
+    strip_care_prompt_contract,
+)
 from companion_v01.prompt_builder import PromptBuilder
 from companion_v01.prompt_profiles import PromptProfileRegistry
 from companion_v01.client_protocol import ClientMode
@@ -494,6 +498,67 @@ system = "semantic reinforcement system"
         self.assertNotIn("memory_tags", result["fallback"])
         self.assertNotIn("scene.major 表示场景大类", result["system_prompt"])
         self.assertNotIn("像 galgame 选项", result["system_prompt"])
+
+    def test_care_disabled_profiles_remove_state_contract_without_losing_schema(self) -> None:
+        registry = PromptProfileRegistry()
+        for mode in (ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT, ClientMode.SCENE_STATIC):
+            profile = registry.get(mode, care_enabled=False)
+            combined = "\n".join(
+                [profile.system_prompt_override, profile.fast_mode_prompt, profile.debug_mode_prompt]
+            )
+            self.assertNotIn("state_request", combined)
+            self.assertNotIn("state_request", profile.system_block_ids)
+
+        desktop = registry.get(ClientMode.DESKTOP_PET, care_enabled=False)
+        self.assertIn("emotion", desktop.fast_mode_prompt)
+        self.assertIn("speech_segments", desktop.fast_mode_prompt)
+        self.assertIn("tool_call", desktop.fast_mode_prompt)
+        self.assertIn("memory_metadata", desktop.fast_mode_prompt)
+
+    def test_strip_care_prompt_contract_preserves_non_care_json_fields(self) -> None:
+        source = (
+            "字段固定为 emotion, speech, state_request，禁止输出 scene。\n"
+            '{"emotion":"normal","speech":"hi","memory_metadata":{},"state_request":null}\n'
+            "state_request 用于修改养成状态。"
+        )
+        stripped = strip_care_prompt_contract(source)
+        self.assertNotIn("state_request", stripped)
+        self.assertIn('"emotion":"normal"', stripped)
+        self.assertIn('"memory_metadata":{}', stripped)
+
+    def test_care_disabled_profile_reaches_real_final_system_prompt(self) -> None:
+        builder = PromptBuilder(load_persona_config())
+        profile = PromptProfileRegistry().get(ClientMode.DESKTOP_PET, care_enabled=False)
+
+        result = builder.build_final_generation_context(
+            now_ts=1712400000,
+            raw_text="User: hi",
+            current_message_text="User: hi",
+            episodic_summary_text="",
+            semantic_summary_text="",
+            memory_text="",
+            current_visual_context="服装: default；表情: normal",
+            resource_context="可用服装与表情：normal",
+            extra_context="",
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=False,
+            tool_prompt_context="",
+            debug_enabled=False,
+            system_prompt_override=profile.system_prompt_override,
+            mode_prompt_override=profile.mode_prompt_override(debug_enabled=False),
+        )
+
+        self.assertNotIn("state_request", result["system_prompt"])
+        self.assertNotIn("affinity", result["system_prompt"])
+        self.assertIn("speech_segments", result["system_prompt"])
+        self.assertIn("memory_metadata", result["system_prompt"])
 
 
 if __name__ == "__main__":

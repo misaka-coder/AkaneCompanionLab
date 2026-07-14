@@ -45,7 +45,7 @@ from .memory_compaction_service import MemoryCompactionService
 from .memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from .memory_timeline import MemoryTimelineService
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
-from .care_runtime import CareRuntimeStore
+from .care_runtime import CareModulePort
 from .desktop_music_timeline import DesktopMusicTimelineService
 from .desktop_screen_vision import DesktopScreenVisionWorkspace
 from . import desktop_context_engine
@@ -185,7 +185,11 @@ class AkaneMemoryEngine:
         self.instance_context = instance_context or build_local_default_instance_context()
         self.resource_manifest = resource_manifest
         self.desktop_pet_character_resources = desktop_pet_character_resources
-        self.care_runtime = CareRuntimeStore(self.base_dir / "care_runtime.json")
+        self.care_module = CareModulePort.from_feature(
+            enabled=bool(self.instance_context.features.care),
+            storage_path=self.base_dir / "care_runtime.json",
+            reset_baseline_on_start=not self.instance_context.is_compatibility_default,
+        )
         self.store = MemoryStore(self.base_dir)
         self.embedding_provider = self._build_embedding_provider()
         self.vector_store = VectorStore(
@@ -1488,6 +1492,13 @@ class AkaneMemoryEngine:
 
         return _fn(value)
 
+    def get_care_module(self) -> CareModulePort:
+        module = getattr(self, "care_module", None)
+        return module if isinstance(module, CareModulePort) else CareModulePort.disabled("not_configured")
+
+    def care_feature_status(self) -> dict[str, Any]:
+        return self.get_care_module().status_payload()
+
     def _prepare_care_context_for_turn(
         self,
         payload: dict[str, Any],
@@ -1499,9 +1510,13 @@ class AkaneMemoryEngine:
     ) -> dict[str, Any]:
         if not isinstance(payload, dict):
             return payload
-        care_runtime = getattr(self, "care_runtime", None)
+        care_module = self.get_care_module()
+        care_runtime = care_module.runtime
         if care_runtime is None:
-            return payload
+            sanitized_payload = dict(payload)
+            sanitized_payload.pop("desktop_care", None)
+            sanitized_payload.pop("care_state", None)
+            return sanitized_payload
         client_mode = client_context.effective_mode.value if client_context is not None else ""
         relation_user_id = self._resolve_care_relation_user_id(
             payload,
@@ -1582,10 +1597,21 @@ class AkaneMemoryEngine:
         payload: dict[str, Any] | None = None,
         now_ts: int,
     ) -> None:
+        if not isinstance(final_output, dict):
+            return
+        care_module = self.get_care_module()
+        if not care_module.enabled:
+            final_output.pop("state_request", None)
+            final_output.pop("care_state", None)
+            return
         if client_context is None or client_context.effective_mode != ClientMode.QQ_TEXT:
             return
-        care_runtime = getattr(self, "care_runtime", None)
-        if care_runtime is None or not isinstance(final_output, dict):
+        if str((payload or {}).get("prompt_scope") or "").strip().lower() == "finance_push":
+            final_output.pop("state_request", None)
+            final_output.pop("care_state", None)
+            return
+        care_runtime = care_module.runtime
+        if care_runtime is None:
             return
         try:
             relation_user_id = self._resolve_care_relation_user_id(

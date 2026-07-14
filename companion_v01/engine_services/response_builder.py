@@ -16,6 +16,7 @@ from ..finance.event_contracts import (
     FINANCE_PUSH_SYSTEM_CONTEXT,
 )
 from ..memory_rendering import render_semantic_summary_timeline, render_summary_timeline
+from ..prompt_blocks import strip_care_prompt_contract
 from ..prompt_profiles import PromptModule
 from ..resource_manifest import ResourceManifest
 from ..text_utils import render_chat_timeline
@@ -90,7 +91,11 @@ def prepare_context(
 ) -> dict[str, Any]:
     client_context = client_context or engine._resolve_client_protocol_context({})
     finance_push_prompt = str(prompt_scope or "").strip().lower() == FINANCE_PUSH_PROMPT_SCOPE
-    prompt_profile = engine._get_prompt_profile_registry().resolve(client_context)
+    care_status_getter = getattr(engine, "care_feature_status", None)
+    care_status = care_status_getter() if callable(care_status_getter) else {"enabled": True}
+    care_enabled = bool(care_status.get("enabled", True))
+    prompt_builder = engine._get_prompt_builder()
+    prompt_profile = engine._get_prompt_profile_registry().resolve(client_context, care_enabled=care_enabled)
     domain_profile = DomainProfileRegistry().get(
         domain_profile_id if prompt_profile.includes(PromptModule.DOMAIN_PROFILE) else ""
     )
@@ -488,6 +493,14 @@ def prepare_context(
     mode_prompt_override = prompt_profile.mode_prompt_override(debug_enabled=debug_enabled)
     if finance_push_prompt:
         mode_prompt_override = FINANCE_PUSH_MODE_PROMPT
+    elif not care_enabled and not mode_prompt_override:
+        mode_prompt_override = strip_care_prompt_contract(
+            prompt_builder.persona.final_debug_mode_prompt
+            if debug_enabled
+            else prompt_builder.persona.final_fast_mode_prompt
+        )
+    if not care_enabled:
+        mode_prompt_override = strip_care_prompt_contract(mode_prompt_override)
     if resource_manifest and client_context.effective_mode in {
         ClientMode.DESKTOP_PET,
         ClientMode.QQ_TEXT,
@@ -555,7 +568,12 @@ def prepare_context(
             ]
             if part
         )
-    generation_context = engine._get_prompt_builder().build_final_generation_context(
+    system_prompt_override = FINANCE_PUSH_BASE_SYSTEM_PROMPT if finance_push_prompt else prompt_profile.system_prompt_override
+    if not care_enabled and not system_prompt_override:
+        system_prompt_override = prompt_builder.persona.final_system_prompt
+    if not care_enabled:
+        system_prompt_override = strip_care_prompt_contract(system_prompt_override)
+    generation_context = prompt_builder.build_final_generation_context(
         now_ts=now_ts,
         raw_text=raw_text,
         current_message_text=current_message_text,
@@ -574,11 +592,13 @@ def prepare_context(
         allow_tool_call=effective_allow_tool_call,
         tool_prompt_context=tool_prompt_context,
         debug_enabled=debug_enabled,
-        system_prompt_override=(
-            FINANCE_PUSH_BASE_SYSTEM_PROMPT if finance_push_prompt else prompt_profile.system_prompt_override
-        ),
+        system_prompt_override=system_prompt_override,
         mode_prompt_override=mode_prompt_override,
     )
+    if not care_enabled:
+        fallback_payload = generation_context.get("fallback")
+        if isinstance(fallback_payload, dict):
+            fallback_payload.pop("state_request", None)
     if desktop_pet_character_only and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
         fallback_payload = generation_context.get("fallback")
         if isinstance(fallback_payload, dict):

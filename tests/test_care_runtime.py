@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
-from companion_v01.care_runtime import CareRuntimeStore
+from companion_v01.care_runtime import CareModulePort, CareRuntimeStore
 from companion_v01.engine import AkaneMemoryEngine
 
 
@@ -87,12 +87,13 @@ class CareRuntimeStoreTests(unittest.TestCase):
     def test_engine_uses_qq_sender_id_for_group_affection(self) -> None:
         with TemporaryDirectory() as tmp:
             engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-            engine.care_runtime = CareRuntimeStore(Path(tmp) / "care_runtime.json")
+            care_runtime = CareRuntimeStore(Path(tmp) / "care_runtime.json")
+            engine.care_module = CareModulePort(enabled=True, _runtime=care_runtime)
             qq_context = ClientProtocolContext(
                 requested_mode=ClientMode.QQ_TEXT,
                 effective_mode=ClientMode.QQ_TEXT,
             )
-            engine.care_runtime.sync_from_client(
+            care_runtime.sync_from_client(
                 profile_user_id="master",
                 character_pack_id="reimu_demo",
                 client_mode="desktop_pet",
@@ -154,6 +155,105 @@ class CareRuntimeStoreTests(unittest.TestCase):
             )
             self.assertEqual(second_payload["desktop_care"]["hunger"], 44)
             self.assertEqual(second_payload["desktop_care"]["affection"], 10)
+
+
+class CareActivationBoundaryTests(unittest.TestCase):
+    def test_disabled_module_does_not_construct_store_or_touch_existing_data(self) -> None:
+        with TemporaryDirectory() as tmp:
+            storage_path = Path(tmp) / "care_runtime.json"
+            original = b'{"keep":"unchanged"}\n'
+            storage_path.write_bytes(original)
+
+            module = CareModulePort.from_feature(enabled=False, storage_path=storage_path)
+
+            self.assertFalse(module.enabled)
+            self.assertIsNone(module.runtime)
+            self.assertEqual(module.status_payload()["reason"], "feature_disabled")
+            self.assertEqual(storage_path.read_bytes(), original)
+
+    def test_disabled_engine_strips_care_input_and_output(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.care_module = CareModulePort.disabled()
+        desktop_context = ClientProtocolContext(
+            requested_mode=ClientMode.DESKTOP_PET,
+            effective_mode=ClientMode.DESKTOP_PET,
+        )
+        prepared = engine._prepare_care_context_for_turn(
+            {
+                "message": "hello",
+                "desktop_care": {"enabled": True, "hunger": 1},
+                "care_state": {"affection": 99},
+            },
+            desktop_context,
+            profile_user_id="master",
+            now_ts=1716192000,
+        )
+        self.assertEqual(prepared, {"message": "hello"})
+
+        final_output = {
+            "speech": "hello",
+            "state_request": {"affinity": 5},
+            "care_state": {"affection": 99},
+        }
+        engine._apply_care_state_request(
+            final_output,
+            desktop_context,
+            profile_user_id="master",
+            now_ts=1716192000,
+        )
+        self.assertEqual(final_output, {"speech": "hello"})
+
+    def test_explicit_activation_resets_server_decay_baseline_without_changing_values(self) -> None:
+        with TemporaryDirectory() as tmp:
+            storage_path = Path(tmp) / "care_runtime.json"
+            seed = CareRuntimeStore(storage_path)
+            seed.sync_from_client(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                client_mode="desktop_pet",
+                care_payload={"enabled": True, "hunger": 80, "energy": 40},
+                now_ms=1_000,
+            )
+
+            module = CareModulePort.from_feature(
+                enabled=True,
+                storage_path=storage_path,
+                reset_baseline_on_start=True,
+            )
+            snapshot = module.runtime.snapshot_for_client(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                client_mode="qq_text",
+                relation_user_id="qq:111",
+                now_ms=86_401_000,
+            )
+
+            self.assertEqual(snapshot["hunger"], 80)
+            self.assertEqual(snapshot["energy"], 40)
+
+    def test_finance_push_never_mutates_or_returns_care_state(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = CareRuntimeStore(Path(tmp) / "care_runtime.json")
+            engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+            engine.care_module = CareModulePort(enabled=True, _runtime=store)
+            qq_context = ClientProtocolContext(
+                requested_mode=ClientMode.QQ_TEXT,
+                effective_mode=ClientMode.QQ_TEXT,
+            )
+            before_bytes = Path(tmp, "care_runtime.json").read_bytes() if Path(tmp, "care_runtime.json").exists() else None
+            final_output = {"speech": "push", "state_request": {"affinity": 5}}
+
+            engine._apply_care_state_request(
+                final_output,
+                qq_context,
+                profile_user_id="finance",
+                payload={"prompt_scope": "finance_push"},
+                now_ts=1716192000,
+            )
+
+            after_path = Path(tmp, "care_runtime.json")
+            self.assertEqual(final_output, {"speech": "push"})
+            self.assertEqual(after_path.read_bytes() if after_path.exists() else None, before_bytes)
 
 
 class CareRuntimeEconomyTests(unittest.TestCase):

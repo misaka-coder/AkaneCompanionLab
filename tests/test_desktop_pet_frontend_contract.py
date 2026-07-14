@@ -882,9 +882,29 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("stableRuntimePatchSignature", control_center_source)
         self.assertIn('state.activePage === "music" && changed.music', control_center_source)
         self.assertIn("characterRuntimeKey: getCharacterRuntimeKey(state.characterPackId)", main_source)
-        self.assertIn("characters: { ...ensureCharacterRuntimeMap() }", main_source)
+        self.assertIn("characters: buildCharacterRuntimeSnapshot()", main_source)
         self.assertIn("characters: HashMap<String, CharacterRuntimeState>", tauri_source)
         self.assertIn("for runtime in state.characters.values_mut()", tauri_source)
+
+    def test_next_care_feature_gate_controls_request_timers_and_shop_projection(self) -> None:
+        main_source = _read("desktop_pet_next/src/main.js")
+        shop_source = _read("desktop_pet_next/src/shop.js")
+        feature_source = _read("desktop_pet_next/src/care-feature.js")
+
+        self.assertIn("care: createUnresolvedCareFeature()", main_source)
+        self.assertIn("applyCareFeatureStatus(resolveCareFeatureFromHealth(data))", main_source)
+        self.assertIn("function stopCareRuntime()", main_source)
+        self.assertIn("window.clearTimeout(carePassiveTimer)", main_source)
+        self.assertIn("window.clearTimeout(careWorkTimer)", main_source)
+        self.assertIn("if (!isCareRuntimeActive()) return false;", main_source)
+        self.assertIn("attachDesktopCareContext({", main_source)
+        self.assertIn("care: isCareRuntimeActive() ? normalizeCareState", main_source)
+        self.assertIn("care: isCareRuntimeActive() ? normalizeCareState(state.care", main_source)
+        self.assertIn('const message = "养成模块未启用。";', main_source)
+        self.assertIn('els.summary.textContent = "养成模块未启用";', shop_source)
+        self.assertIn('els.coins.textContent = "—";', shop_source)
+        self.assertIn("delete result.desktop_care", feature_source)
+        self.assertIn("resetCareEvaluationBaseline", feature_source)
 
     def test_next_pet_window_geometry_does_not_persist_stale_pixel_size(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")

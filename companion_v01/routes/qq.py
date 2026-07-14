@@ -1836,16 +1836,20 @@ def build_qq_router(
                         }
                     )
 
-            _care_runtime = getattr(engine, "care_runtime", None)
+            _care_module_getter = getattr(engine, "get_care_module", None)
+            _care_module = _care_module_getter() if callable(_care_module_getter) else None
             _char_resources = getattr(engine, "desktop_pet_character_resources", None)
             _shop_items = (
                 _char_resources.load_care_shop_items(context.character_pack_id)
-                if _char_resources and context.character_pack_id
+                if _care_module is not None
+                and _care_module.enabled
+                and _char_resources
+                and context.character_pack_id
                 else None
             )
             economy_command_result = qq_gateway.handle_economy_command(
                 context,
-                care_runtime=_care_runtime,
+                care_module=_care_module,
                 shop_items=_shop_items,
                 now_ms=int(time.time() * 1000),
             )

@@ -21,6 +21,14 @@ import {
   selectCharacterPack,
   setRuntimeCharacterPacks
 } from "./character-profile.js";
+import {
+  attachDesktopCareContext,
+  cloneCareState,
+  createUnresolvedCareFeature,
+  isCareFeatureEnabled,
+  resetCareEvaluationBaseline,
+  resolveCareFeatureFromHealth
+} from "./care-feature.js";
 import { createVisualRenderer } from "./visual-renderer.js";
 import "./styles.css";
 
@@ -218,6 +226,9 @@ const resourceState = {
     endpoint: "/asr",
     uploadField: "file"
   },
+  features: {
+    care: createUnresolvedCareFeature()
+  },
   manifest: null,
   outfit: getDefaultLocalOutfit(),
   source: getLocalResourceSource(),
@@ -237,6 +248,69 @@ const playState = {
 
 function getProfileUserId() {
   return state.profileUserId || PROFILE_USER_ID;
+}
+
+function getCareFeatureStatus() {
+  return resourceState.features?.care || createUnresolvedCareFeature();
+}
+
+function isCareRuntimeActive() {
+  return isCareFeatureEnabled(getCareFeatureStatus()) && Boolean(getProfileCareConfig()?.enabled);
+}
+
+function buildCharacterRuntimeSnapshot() {
+  const entries = Object.entries(ensureCharacterRuntimeMap()).map(([key, runtime]) => [
+    key,
+    runtime && typeof runtime === "object"
+      ? { ...runtime, care: isCareRuntimeActive() ? cloneCareState(runtime.care) : null }
+      : runtime
+  ]);
+  return Object.fromEntries(entries);
+}
+
+function applyCareFeatureStatus(feature) {
+  const previousEnabled = isCareFeatureEnabled(getCareFeatureStatus());
+  resourceState.features = {
+    ...(resourceState.features || {}),
+    care: feature && typeof feature === "object" ? { ...feature } : createUnresolvedCareFeature()
+  };
+
+  if (!isCareFeatureEnabled(getCareFeatureStatus())) {
+    stopCareRuntime();
+    scheduleSettingsSnapshot(0);
+    return;
+  }
+
+  const config = getProfileCareConfig();
+  if (config.enabled) {
+    state.care = normalizeCareState(state.care, config);
+    if (!previousEnabled && getCareFeatureStatus().resetBaselineOnStart) {
+      state.care = resetCareEvaluationBaseline(state.care, Date.now());
+    }
+    settleCarePassiveState({ persist: false });
+    scheduleCareWorkCompletion();
+    scheduleCarePassiveTick();
+    persistCurrentCharacterRuntimeState();
+  } else {
+    stopCareRuntime();
+  }
+  scheduleSettingsSnapshot(0);
+}
+
+function stopCareRuntime() {
+  window.clearTimeout(carePassiveTimer);
+  window.clearTimeout(careWorkTimer);
+  carePassiveTimer = 0;
+  careWorkTimer = 0;
+  if (els?.stage) els.stage.classList.remove("is-away");
+  void setCareAwayClickThrough(false);
+}
+
+function rejectDisabledCareAction() {
+  const message = "养成模块未启用。";
+  setStatus(message, { durationMs: 2200 });
+  notifyShopStatus(message, "disabled");
+  return false;
 }
 
 function buildBackendCharacterContext() {
@@ -278,7 +352,9 @@ function persistCurrentCharacterRuntimeState(packId = state.characterPackId || g
     height: null,
     scale: clamp(Number(state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
     opacity: clamp(Number(state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
-    care: normalizeCareState(state.care, getProfileCareConfig()),
+    care: isCareRuntimeActive()
+      ? normalizeCareState(state.care, getProfileCareConfig())
+      : cloneCareState(state.care),
     updatedAt: Date.now()
   };
   return map[getCharacterRuntimeKey(normalizedPackId)];
@@ -305,7 +381,9 @@ function createCharacterRuntimeState(packId, profile, { seedFromCurrent = false 
     height: null,
     scale: clamp(Number(state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
     opacity: clamp(Number(state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
-    care: seedFromCurrent ? normalizeCareState(state.care, getProfileCareConfig()) : createCareState(profile?.care),
+    care: isCareRuntimeActive()
+      ? (seedFromCurrent ? normalizeCareState(state.care, getProfileCareConfig()) : createCareState(profile?.care))
+      : (seedFromCurrent ? cloneCareState(state.care) : null),
     updatedAt: Date.now()
   };
 }
@@ -329,9 +407,15 @@ function applyCharacterRuntimeState(packId, profile, options = {}) {
   state.height = null;
   state.scale = clamp(Number(runtime.scale ?? state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX);
   state.opacity = clamp(Number(runtime.opacity ?? state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1);
-  state.care = normalizeCareState(runtime.care, profile?.care);
-  scheduleCareWorkCompletion();
-  scheduleCarePassiveTick();
+  state.care = isCareRuntimeActive()
+    ? normalizeCareState(runtime.care, profile?.care)
+    : cloneCareState(runtime.care);
+  if (isCareRuntimeActive()) {
+    scheduleCareWorkCompletion();
+    scheduleCarePassiveTick();
+  } else {
+    stopCareRuntime();
+  }
 
   map[key] = persistCurrentCharacterRuntimeState(normalizedPackId);
   return runtime;
@@ -566,10 +650,9 @@ async function boot() {
   try {
     scheduleTauriRuntimeBridges();
     await loadAndApplyPersistedCharacterState();
-    settleCarePassiveState({ persist: false });
-    scheduleSave(0);
     await reloadCharacterResources({ startup: true });
     scheduleNativeWindowStateApply({ forceHitTest: true });
+    scheduleSave(0);
     void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
     scheduleDesktopContextPoll();
     scheduleSystemMediaPoll({ immediate: true });
@@ -1685,7 +1768,7 @@ async function broadcastSettingsSnapshot() {
 }
 
 function buildSettingsSnapshot() {
-  settleCarePassiveState({ persist: false });
+  if (isCareRuntimeActive()) settleCarePassiveState({ persist: false });
   const activeOutfit = getActiveOutfit();
   const emotions = getActiveEmotions();
   const issues = buildResourceIssues(activeOutfit, emotions);
@@ -1700,8 +1783,8 @@ function buildSettingsSnapshot() {
       profileUserId: state.profileUserId,
       characterPackId: state.characterPackId,
       characterRuntimeKey: getCharacterRuntimeKey(state.characterPackId),
-      characters: { ...ensureCharacterRuntimeMap() },
-      care: normalizeCareState(state.care, getProfileCareConfig()),
+      characters: buildCharacterRuntimeSnapshot(),
+      care: isCareRuntimeActive() ? normalizeCareState(state.care, getProfileCareConfig()) : null,
       sessionId: state.sessionId,
       outfit: state.outfit,
       currentEmotion: state.currentEmotion,
@@ -1736,6 +1819,9 @@ function buildSettingsSnapshot() {
       endpoints: { ...(resourceState.endpoints || {}) },
       tts: { ...(resourceState.tts || {}) },
       asr: { ...(resourceState.asr || {}) },
+      features: {
+        care: { ...getCareFeatureStatus() }
+      },
       source: resourceState.source,
       activeOutfit: activeOutfit.id || getProfileDefaultOutfit(),
       activeOutfitName: activeOutfit.name || activeOutfit.id || getProfileDefaultOutfit(),
@@ -1847,7 +1933,7 @@ function normalizeState(value) {
     ),
     hitTestEnabled: Boolean(incoming.hitTestEnabled ?? DEFAULT_STATE.hitTestEnabled),
     hitboxOverlay: Boolean(incoming.hitboxOverlay ?? DEFAULT_STATE.hitboxOverlay),
-    care: normalizeCareState(incoming.care, getProfileCareConfig()),
+    care: cloneCareState(incoming.care),
     voiceSpeed: String(incoming.voiceSpeed ?? DEFAULT_STATE.voiceSpeed).trim() || DEFAULT_STATE.voiceSpeed,
     wakeWord: String(incoming.wakeWord ?? DEFAULT_STATE.wakeWord).trim() || DEFAULT_STATE.wakeWord,
     wakeSensitivity: String(incoming.wakeSensitivity ?? DEFAULT_STATE.wakeSensitivity).trim() || DEFAULT_STATE.wakeSensitivity,
@@ -1886,7 +1972,7 @@ function normalizeCharacterRuntimeState(value) {
     height: null,
     scale: clamp(Number(value.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
     opacity: clamp(Number(value.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
-    care: normalizeCareState(value.care, getProfileCareConfig()),
+    care: cloneCareState(value.care),
     updatedAt: Math.max(0, Math.round(Number(value.updatedAt || value.updated_at || 0)))
   };
 }
@@ -3059,7 +3145,7 @@ function scheduleSave(delay = 500) {
 async function saveNow() {
   if (!isTauriRuntime) return;
   try {
-    settleCarePassiveState({ persist: false });
+    if (isCareRuntimeActive()) settleCarePassiveState({ persist: false });
     const geometry = await invoke("get_window_geometry");
     applyWindowGeometryToState(geometry);
     persistCurrentCharacterRuntimeState();
@@ -3286,6 +3372,10 @@ async function openWorkspaceWindow() {
 
 async function openShopWindow() {
   closeMenu();
+  if (!isCareFeatureEnabled(getCareFeatureStatus())) {
+    rejectDisabledCareAction();
+    return;
+  }
   const careConfig = getProfileCareConfig();
   if (!careConfig.enabled || !careConfig.shopItems.length) {
     setStatus("这个角色还没有配置商店。", { durationMs: 2200 });
@@ -3643,6 +3733,7 @@ function applyBackendHealthPayload(payload, { endpoint, contractSource } = {}) {
     endpoint: String(asr.endpoint || resourceState.endpoints.asr || "/asr"),
     uploadField: String(asr.upload_field || asr.uploadField || "file")
   };
+  applyCareFeatureStatus(resolveCareFeatureFromHealth(data));
 }
 
 function scheduleBackendRetry(delay = BACKEND_RETRY_MS) {
@@ -5135,27 +5226,29 @@ async function* sendThinkStream(message, turnToken, options = {}) {
     markTurnLatency("lyrics-hydration-background");
   }
   if (!isTurnActive(turnToken)) return;
-  settleCarePassiveState();
-  applyCareTurnCost(options.turnKind);
+  if (isCareRuntimeActive()) {
+    settleCarePassiveState();
+    applyCareTurnCost(options.turnKind);
+  }
+  const requestPayload = attachDesktopCareContext({
+    user_id: state.sessionId,
+    real_user_id: getProfileUserId(),
+    message,
+    turn_kind: String(options.turnKind || ""),
+    transient_user_message: Boolean(options.transientUserMessage),
+    client_mode: CLIENT_MODE,
+    character_pack_id: getCurrentCharacterPackId(),
+    client_capabilities: buildClientCapabilities(),
+    current_visual: buildCurrentVisual(),
+    desktop_context: desktopContext,
+    desktop_screen_frames: Array.isArray(options.desktopScreenFrames) ? options.desktopScreenFrames : [],
+    desktop_activity: buildDesktopMusicActivity()
+  }, buildDesktopCareContext(), getCareFeatureStatus());
   const requestInit = {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
-    body: JSON.stringify({
-      user_id: state.sessionId,
-      real_user_id: getProfileUserId(),
-      message,
-      turn_kind: String(options.turnKind || ""),
-      transient_user_message: Boolean(options.transientUserMessage),
-      client_mode: CLIENT_MODE,
-      character_pack_id: getCurrentCharacterPackId(),
-      client_capabilities: buildClientCapabilities(),
-      current_visual: buildCurrentVisual(),
-      desktop_care: buildDesktopCareContext(),
-      desktop_context: desktopContext,
-      desktop_screen_frames: Array.isArray(options.desktopScreenFrames) ? options.desktopScreenFrames : [],
-      desktop_activity: buildDesktopMusicActivity()
-    })
+    body: JSON.stringify(requestPayload)
   };
 
   if (isTauriRuntime) {
@@ -5323,6 +5416,7 @@ function applyPayloadEmotion(payload, { persist = true } = {}) {
 
 function applyPayloadStateRequest(payload, { source = "live" } = {}) {
   if (source !== "live") return false;
+  if (!isCareRuntimeActive()) return false;
   const request = payload?.state_request || payload?.stateRequest;
   if (!request || typeof request !== "object" || Array.isArray(request)) return false;
   const rawAffinity = request.affinity ?? request.affection_delta ?? request.affectionDelta;
@@ -7322,6 +7416,7 @@ function createCareState(config = getProfileCareConfig()) {
 }
 
 function settleCarePassiveState({ persist = true, now = Date.now() } = {}) {
+  if (!isCareRuntimeActive()) return cloneCareState(state.care);
   const config = getProfileCareConfig();
   if (!config.enabled) return normalizeCareState(state.care, config);
   const care = normalizeCareState(state.care, config);
@@ -7348,6 +7443,7 @@ function settleCarePassiveState({ persist = true, now = Date.now() } = {}) {
 }
 
 function applyCareTurnCost(turnKind = "") {
+  if (!isCareRuntimeActive()) return cloneCareState(state.care);
   const config = getProfileCareConfig();
   if (!config.enabled) return normalizeCareState(state.care, config);
   const kind = String(turnKind || "").trim().toLowerCase();
@@ -7366,6 +7462,8 @@ function applyCareTurnCost(turnKind = "") {
 
 function scheduleCarePassiveTick() {
   window.clearTimeout(carePassiveTimer);
+  carePassiveTimer = 0;
+  if (!isCareRuntimeActive()) return;
   const config = getProfileCareConfig();
   if (!config.enabled) return;
   carePassiveTimer = window.setTimeout(() => {
@@ -7374,6 +7472,7 @@ function scheduleCarePassiveTick() {
 }
 
 function buildDesktopCareContext() {
+  if (!isCareRuntimeActive()) return null;
   const config = getProfileCareConfig();
   if (!config.enabled) return null;
   const care = normalizeCareState(state.care, config);
@@ -7397,6 +7496,7 @@ function buildDesktopCareContext() {
 }
 
 function buyShopItem(itemId) {
+  if (!isCareRuntimeActive()) return rejectDisabledCareAction();
   const item = findCareShopItem(itemId);
   if (!item) {
     notifyShopStatus("这个商品暂时买不了。", "error");
@@ -7419,6 +7519,7 @@ function buyShopItem(itemId) {
 }
 
 function feedInventoryItem(itemId) {
+  if (!isCareRuntimeActive()) return rejectDisabledCareAction();
   const item = findCareShopItem(itemId);
   const care = normalizeCareState(state.care, getProfileCareConfig());
   const count = Math.max(0, Math.round(Number(care.inventory[item?.id || itemId]) || 0));
@@ -7444,6 +7545,7 @@ function feedInventoryItem(itemId) {
 }
 
 async function sendCareFeedReply({ item, care, hungerDelta, energyDelta, affectionDelta }) {
+  if (!isCareRuntimeActive()) return;
   if (sending || ttsActive || replyDisplayActive) return;
   const itemName = String(item?.name || "").trim();
   if (!itemName) return;
@@ -7500,6 +7602,7 @@ function formatSignedCareDelta(value) {
 }
 
 function startCareWork() {
+  if (!isCareRuntimeActive()) return rejectDisabledCareAction();
   const config = getProfileCareConfig();
   if (!config.enabled || !config.work.enabled) {
     notifyShopStatus("这个角色还没有配置外出。", "error");
@@ -7550,6 +7653,7 @@ function startCareWork() {
 }
 
 function claimCareAllowance() {
+  if (!isCareRuntimeActive()) return rejectDisabledCareAction();
   const config = getProfileCareConfig();
   const allowance = config.allowance;
   if (!config.enabled || !allowance.enabled) {
@@ -7592,6 +7696,7 @@ function claimCareAllowance() {
 }
 
 function settleCareWorkIfDue({ force = false } = {}) {
+  if (!isCareRuntimeActive()) return false;
   const config = getProfileCareConfig();
   const care = normalizeCareState(state.care, config);
   const task = care.workTask;
@@ -7623,6 +7728,11 @@ function settleCareWorkIfDue({ force = false } = {}) {
 
 function scheduleCareWorkCompletion() {
   window.clearTimeout(careWorkTimer);
+  careWorkTimer = 0;
+  if (!isCareRuntimeActive()) {
+    stopCareRuntime();
+    return;
+  }
   const care = normalizeCareState(state.care, getProfileCareConfig());
   const task = care.workTask;
   syncCareAwayVisualState(care);
@@ -7634,6 +7744,11 @@ function scheduleCareWorkCompletion() {
 }
 
 function syncCareAwayVisualState(care = normalizeCareState(state.care, getProfileCareConfig())) {
+  if (!isCareRuntimeActive()) {
+    if (els?.stage) els.stage.classList.remove("is-away");
+    void setCareAwayClickThrough(false);
+    return;
+  }
   const away = Boolean(care.workTask);
   els.stage.classList.toggle("is-away", away);
   void setCareAwayClickThrough(away);
@@ -7682,9 +7797,11 @@ function formatCareFeedbackText(text, replacements = {}) {
 }
 
 function persistCareRuntimeChange() {
+  if (!isCareRuntimeActive()) return false;
   persistCurrentCharacterRuntimeState();
   scheduleSave(0);
   scheduleSettingsSnapshot(0);
+  return true;
 }
 
 function notifyShopStatus(message, tone = "info") {
@@ -7692,6 +7809,7 @@ function notifyShopStatus(message, tone = "info") {
 }
 
 function findCareShopItem(itemId) {
+  if (!isCareRuntimeActive()) return null;
   const id = String(itemId || "").trim();
   return getProfileCareConfig().shopItems.find((item) => item.id === id) || null;
 }

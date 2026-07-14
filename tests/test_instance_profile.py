@@ -57,6 +57,16 @@ class InstanceProfileTests(unittest.TestCase):
             with self.assertRaises(dataclasses.FrozenInstanceError):
                 context.features.care = False  # type: ignore[misc]
 
+    def test_explicit_manifest_can_disable_care(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_manifest(root, VALID_MANIFEST.replace("care = true", "care = false"))
+
+            context = resolve_instance_context(data_root=root, selected_instance_id="akane-personal")
+
+            self.assertFalse(context.features.care)
+            self.assertFalse(context.is_compatibility_default)
+
     def test_explicit_missing_manifest_is_not_silently_downgraded(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             with self.assertRaises(InstanceProfileError) as raised:

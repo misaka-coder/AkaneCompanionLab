@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from companion_v01.care_runtime import CareRuntimeStore
+from companion_v01.care_runtime import CareModulePort, CareRuntimeStore
 from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 
 
@@ -15,6 +15,10 @@ CHAR_ID = "reimu_demo"
 
 def _store(tmp: str) -> CareRuntimeStore:
     return CareRuntimeStore(Path(tmp) / "care_runtime.json")
+
+
+def _module(store: CareRuntimeStore) -> CareModulePort:
+    return CareModulePort(enabled=True, _runtime=store)
 
 
 def _checkin(store: CareRuntimeStore, relation_user_id: str, coins: int = 20) -> None:
@@ -47,6 +51,33 @@ class OfferingFreeTests(unittest.TestCase):
             self.assertEqual(result["affection_granted"], 3)
             snap = result["snapshot"]
             self.assertEqual(snap["affection"], 13)
+
+    def test_disabled_care_module_rejects_economy_command_without_storage(self) -> None:
+        with TemporaryDirectory() as tmp:
+            gateway = NapCatQQGateway(state_path=Path(tmp) / "qq_gateway_state.json")
+            context = QQMessageContext(
+                should_respond=True,
+                reason="direct_command",
+                is_group=True,
+                target_id=10001,
+                user_id=111,
+                group_id=10001,
+                session_id=PROFILE,
+                profile_user_id=PROFILE,
+                clean_message="状态",
+                character_pack_id=CHAR_ID,
+            )
+
+            result = gateway.handle_economy_command(
+                context,
+                care_module=CareModulePort.disabled(),
+                now_ms=1000,
+            )
+
+            self.assertEqual(result["status"], "disabled")
+            self.assertEqual(result["reason"], "feature_disabled")
+            self.assertEqual(result["reply"], "养成模块未启用。")
+            self.assertFalse((Path(tmp) / "care_runtime.json").exists())
 
     def test_repeat_free_offering_grants_zero_affection(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -197,7 +228,7 @@ class OfferingItemTests(unittest.TestCase):
             )
             result = gateway.handle_economy_command(
                 context,
-                care_runtime=store,
+                care_module=_module(store),
                 shop_items=[
                     {
                         "id": "sanshoku_dango",
@@ -243,7 +274,7 @@ class QQShopMergeTests(unittest.TestCase):
             )
             result = gateway.handle_economy_command(
                 context,
-                care_runtime=store,
+                care_module=_module(store),
                 shop_items=[
                     {
                         "id": "custom_cookie",
@@ -291,7 +322,7 @@ class QQStatusDisplayTests(unittest.TestCase):
             )
             result = gateway.handle_economy_command(
                 context,
-                care_runtime=store,
+                care_module=_module(store),
                 shop_items=[],
                 now_ms=2000,
             )
@@ -326,7 +357,7 @@ class QQStatusDisplayTests(unittest.TestCase):
             )
             result = gateway.handle_economy_command(
                 context,
-                care_runtime=store,
+                care_module=_module(store),
                 shop_items=[],
                 now_ms=2000,
             )
@@ -364,7 +395,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 clean_message="购买 逆转卡",
                 character_pack_id=CHAR_ID,
             )
-            buy_result = gateway.handle_economy_command(buy_context, care_runtime=store, shop_items=[], now_ms=2000)
+            buy_result = gateway.handle_economy_command(buy_context, care_module=_module(store), shop_items=[], now_ms=2000)
             self.assertIsInstance(buy_result, dict)
             self.assertEqual(buy_result["status"], "ok")
 
@@ -381,7 +412,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 sender_label="休比",
                 character_pack_id=CHAR_ID,
             )
-            feed_result = gateway.handle_economy_command(feed_context, care_runtime=store, shop_items=[], now_ms=3000)
+            feed_result = gateway.handle_economy_command(feed_context, care_module=_module(store), shop_items=[], now_ms=3000)
             self.assertIsInstance(feed_result, dict)
             self.assertTrue(feed_result["_llm_passthrough"])
             self.assertEqual(feed_result["turn_message"], "刚才发生的互动：休比投喂了你「逆转卡」。")
@@ -416,7 +447,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 clean_message="购买 精力满格符",
                 character_pack_id=CHAR_ID,
             )
-            buy_result = gateway.handle_economy_command(buy_context, care_runtime=store, shop_items=[], now_ms=2000)
+            buy_result = gateway.handle_economy_command(buy_context, care_module=_module(store), shop_items=[], now_ms=2000)
             self.assertIsInstance(buy_result, dict)
             self.assertEqual(buy_result["status"], "ok")
 
@@ -432,7 +463,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 clean_message="投喂 精力满格符",
                 character_pack_id=CHAR_ID,
             )
-            feed_result = gateway.handle_economy_command(feed_context, care_runtime=store, shop_items=[], now_ms=3000)
+            feed_result = gateway.handle_economy_command(feed_context, care_module=_module(store), shop_items=[], now_ms=3000)
             self.assertIsInstance(feed_result, dict)
             self.assertTrue(feed_result["_llm_passthrough"])
             note = feed_result["qq_action_note"]
@@ -467,7 +498,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 clean_message="购买 饥饿置零卡",
                 character_pack_id=CHAR_ID,
             )
-            buy_result = gateway.handle_economy_command(buy_context, care_runtime=store, shop_items=[], now_ms=2000)
+            buy_result = gateway.handle_economy_command(buy_context, care_module=_module(store), shop_items=[], now_ms=2000)
             self.assertIsInstance(buy_result, dict)
             self.assertEqual(buy_result["status"], "ok")
 
@@ -483,7 +514,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 clean_message="投喂 饥饿置零卡",
                 character_pack_id=CHAR_ID,
             )
-            feed_result = gateway.handle_economy_command(feed_context, care_runtime=store, shop_items=[], now_ms=3000)
+            feed_result = gateway.handle_economy_command(feed_context, care_module=_module(store), shop_items=[], now_ms=3000)
             self.assertIsInstance(feed_result, dict)
             self.assertTrue(feed_result["_llm_passthrough"])
             note = feed_result["qq_action_note"]

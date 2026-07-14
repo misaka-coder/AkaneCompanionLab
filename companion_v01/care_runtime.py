@@ -6,6 +6,7 @@ import random
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 from datetime import datetime, timedelta
@@ -393,10 +394,11 @@ def _detect_and_store_tier_event(relation: dict, aff_before: int, aff_after: int
 class CareRuntimeStore:
     """JSON store for one character body plus per-client relationships."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, reset_baseline_on_first_load: bool = False):
         self.path = Path(path)
         self._lock = threading.RLock()
         self._state: dict[str, Any] | None = None
+        self._reset_baseline_on_first_load = bool(reset_baseline_on_first_load)
 
     def sync_from_client(
         self,
@@ -1381,6 +1383,12 @@ class CareRuntimeStore:
             state["characters"] = {}
         if not isinstance(state.get("relations"), dict):
             state["relations"] = {}
+        if self._reset_baseline_on_first_load:
+            baseline_ms = int(time.time() * 1000)
+            for body in state["characters"].values():
+                if isinstance(body, dict):
+                    body["vitals_updated_at_ms"] = baseline_ms
+            self._reset_baseline_on_first_load = False
         self._state = state
         return state
 
@@ -1392,6 +1400,64 @@ class CareRuntimeStore:
             encoding="utf-8",
         )
         tmp_path.replace(self.path)
+
+
+@dataclass(frozen=True, slots=True)
+class CareModulePort:
+    """Host-owned activation boundary around the existing Care authority.
+
+    A disabled port never constructs or reads a ``CareRuntimeStore``.  Callers
+    must branch on ``enabled`` and return the structured disabled result rather
+    than inventing default vitals or silently accepting a mutation.
+    """
+
+    enabled: bool
+    _runtime: CareRuntimeStore | None = None
+    reason: str = ""
+    reset_baseline_on_start: bool = False
+
+    @classmethod
+    def from_feature(
+        cls,
+        *,
+        enabled: bool,
+        storage_path: Path,
+        reset_baseline_on_start: bool = False,
+    ) -> "CareModulePort":
+        if not enabled:
+            return cls(enabled=False, reason="feature_disabled")
+        return cls(
+            enabled=True,
+            _runtime=CareRuntimeStore(
+                storage_path,
+                reset_baseline_on_first_load=bool(reset_baseline_on_start),
+            ),
+            reset_baseline_on_start=bool(reset_baseline_on_start),
+        )
+
+    @classmethod
+    def disabled(cls, reason: str = "feature_disabled") -> "CareModulePort":
+        return cls(enabled=False, reason=str(reason or "feature_disabled"))
+
+    @property
+    def runtime(self) -> CareRuntimeStore | None:
+        return self._runtime if self.enabled else None
+
+    def status_payload(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "status": "enabled" if self.enabled else "disabled",
+            "reason": "" if self.enabled else (self.reason or "feature_disabled"),
+            "reset_baseline_on_start": bool(self.enabled and self.reset_baseline_on_start),
+        }
+
+    def disabled_result(self, *, reply: str = "养成模块未启用。") -> dict[str, Any]:
+        return {
+            "ok": False,
+            "status": "disabled",
+            "reason": self.reason or "feature_disabled",
+            "reply": str(reply),
+        }
 
 
 def _is_qq_mode(client_mode: str) -> bool:

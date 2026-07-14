@@ -19,6 +19,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from companion_v01.background_tasks import BackgroundTaskRunner
+from companion_v01.care_runtime import CareModulePort
 from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
 from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config
 from companion_v01.local_workflow_execution import WorkflowExecutionAsset, WorkflowExecutionRequest
@@ -228,6 +229,37 @@ def write_valid_cutout_workflow(base_dir: str | Path, profile_user_id: str = "ma
 
 
 class BackendRouteModuleTests(unittest.TestCase):
+    def test_desktop_pet_health_uses_host_care_feature_status(self) -> None:
+        engine = SimpleNamespace(
+            care_feature_status=lambda: {
+                "enabled": False,
+                "status": "disabled",
+                "reason": "feature_disabled",
+                "reset_baseline_on_start": False,
+            }
+        )
+        app = FastAPI()
+        app.include_router(
+            build_core_router(
+                engine=engine,
+                config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                resolve_identity_from_query=resolve_query,
+            )
+        )
+
+        response = TestClient(app).get("/desktop-pet/health?user_id=desktop&real_user_id=master")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["features"]["care"],
+            {
+                "enabled": False,
+                "status": "disabled",
+                "reason": "feature_disabled",
+                "reset_baseline_on_start": False,
+            },
+        )
+
     def test_core_router_decorates_resource_manifest_for_desktop_pet(self) -> None:
         captured: dict[str, Any] = {}
 
@@ -657,6 +689,60 @@ class BackendRouteModuleTests(unittest.TestCase):
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
         self.assertIn("已切换本 QQ 会话角色为", sent_payload["message"])
+
+    def test_qq_router_returns_structured_disabled_for_care_command(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+
+        class FakeEngine:
+            def get_care_module(self):
+                return CareModulePort.disabled()
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "should not run"}}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-care-disabled-1",
+                    "raw_message": "状态",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_economy_command")
+        self.assertEqual(payload["command_status"], "disabled")
+        self.assertFalse(payload["command_ok"])
+        self.assertEqual(process_calls, [])
+        mocked_post.assert_called_once()
+        self.assertIn("养成模块未启用", mocked_post.call_args.kwargs["json"]["message"])
 
     def test_qq_router_finance_command_switches_without_llm_turn(self) -> None:
         runtime = FakeRuntimeMetrics()

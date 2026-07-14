@@ -108,6 +108,30 @@ class DesktopPetBackendContractTests(unittest.TestCase):
         self.assertEqual(payload["endpoints"]["think"], "/think")
         self.assertEqual(payload["endpoints"]["session_ensure"], "/sessions/ensure")
         self.assertEqual(payload["tts"]["response_media_type"], "audio/mpeg")
+        self.assertTrue(payload["features"]["care"]["enabled"])
+
+    def test_health_payload_exposes_safe_disabled_care_status(self) -> None:
+        payload = build_desktop_pet_health_payload(
+            care_feature={
+                "enabled": False,
+                "reason": "feature_disabled",
+                "reset_baseline_on_start": True,
+                "storage_path": "must-not-leak-storage-path",
+                "instance_id": "finance-private",
+            }
+        )
+
+        self.assertEqual(
+            payload["features"]["care"],
+            {
+                "enabled": False,
+                "status": "disabled",
+                "reason": "feature_disabled",
+                "reset_baseline_on_start": False,
+            },
+        )
+        self.assertNotIn("must-not-leak-storage-path", str(payload["features"]))
+        self.assertNotIn("finance-private", str(payload["features"]))
 
     def test_resource_manifest_decoration_adds_desktop_pet_projection(self) -> None:
         manifest = {

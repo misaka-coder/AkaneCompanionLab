@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
@@ -12,6 +12,7 @@ from .prompt_blocks import (
     SCENE_STATIC_SYSTEM_BLOCKS,
     build_desktop_pet_system_prompt,
     build_qq_text_system_prompt,
+    strip_care_prompt_contract,
 )
 
 
@@ -161,12 +162,25 @@ class PromptProfileRegistry:
             ),
         }
 
-    def resolve(self, client_context: ClientProtocolContext | None) -> PromptProfile:
+        self._care_disabled_profiles = {
+            mode: replace(
+                profile,
+                system_block_ids=tuple(block_id for block_id in profile.system_block_ids if block_id != "state_request"),
+                system_prompt_override=strip_care_prompt_contract(profile.system_prompt_override),
+                fast_mode_prompt=strip_care_prompt_contract(profile.fast_mode_prompt),
+                debug_mode_prompt=strip_care_prompt_contract(profile.debug_mode_prompt),
+            )
+            for mode, profile in self._profiles.items()
+        }
+
+    def resolve(self, client_context: ClientProtocolContext | None, *, care_enabled: bool = True) -> PromptProfile:
         mode = ClientMode.SCENE_STATIC
         if client_context is not None:
             mode = client_context.effective_mode
-        return self._profiles.get(mode) or self._profiles[ClientMode.SCENE_STATIC]
+        profiles = self._profiles if care_enabled else self._care_disabled_profiles
+        return profiles.get(mode) or profiles[ClientMode.SCENE_STATIC]
 
-    def get(self, mode: ClientMode | str) -> PromptProfile:
+    def get(self, mode: ClientMode | str, *, care_enabled: bool = True) -> PromptProfile:
         key = mode if isinstance(mode, ClientMode) else normalize_client_mode(mode)
-        return self._profiles.get(key) or self._profiles[ClientMode.SCENE_STATIC]
+        profiles = self._profiles if care_enabled else self._care_disabled_profiles
+        return profiles.get(key) or profiles[ClientMode.SCENE_STATIC]

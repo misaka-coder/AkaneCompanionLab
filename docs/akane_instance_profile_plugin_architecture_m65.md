@@ -1,6 +1,6 @@
 # Akane Instance Profile and Plugin Architecture M65
 
-Status: M65-A implemented; M65-B not started
+Status: M65-A implemented; M65-B activation and true-disable slice implemented
 
 Date: 2026-07-13
 
@@ -491,6 +491,55 @@ If care is later re-enabled, the activation path resets the module's evaluation
 baseline before applying time-based change. A long disabled interval must not
 produce an immediate accumulated hunger/energy jump.
 
+### M65-B implementation record
+
+M65-B routes Care activation through the host-owned `CareModulePort`:
+
+- `care=true` delegates to the existing `CareRuntimeStore` and preserves the
+  `local-default` behavior;
+- `care=false` does not construct or read the store and returns stable
+  `status=disabled`, `reason=feature_disabled` results for Care commands;
+- disabled turns remove client-supplied Care context, Care prompt contracts,
+  `state_request`, and Care output state;
+- QQ economy routes no longer obtain the concrete store directly, and finance
+  push turns cannot update Care state;
+- `/desktop-pet/health` exposes only a safe Care feature projection; it does
+  not expose instance identity, paths, secrets, or storage configuration;
+- the desktop runtime waits for that projection before starting Care timers.
+  Disabled instances omit `desktop_care`, reject Care actions, stop passive and
+  work timers, clear the away presentation, and show no invented Care values;
+- existing persisted Care data is preserved while disabled. Explicit instance
+  activation resets server and desktop evaluation baselines without changing
+  hunger, energy, affection, coins, inventory, or work-task values.
+
+#### Enabled desktop state compatibility window
+
+The enabled desktop experience still has legacy Care calculations in
+`desktop_pet_next/src/main.js` because `pet_state.json` currently owns shop,
+inventory, work-task, and offline desktop presentation state that the backend
+does not yet fully serve back to the client. Replacing that state in M65-B
+would combine activation work with a data migration and offline behavior
+rewrite.
+
+This coexistence is a documented migration window, not a second expansion
+surface:
+
+- host activation authority is `CareModulePort`; the desktop mirror cannot
+  activate itself and is inert while the host feature is unknown or disabled;
+- no new Care formulas, actions, or state fields may be added to the desktop
+  mirror;
+- the removal target is before M65-E or any multi-instance hosted deployment;
+- the removal pass must make `CareRuntimeStore` the state authority, replace
+  desktop mutations with service operations/snapshots, and collapse the Care
+  fields in `pet_state.json` to a documented migration input or delete them;
+- the existing desktop functions to collapse include passive decay, turn
+  energy cost, affinity mutation, shop/inventory mutations, allowance, and
+  work-task settlement;
+- the window is guarded by `tests.test_care_runtime`,
+  `tests.test_character_pack_qq_mode`,
+  `tests.test_desktop_pet_backend_contract`,
+  `npm run smoke:care-feature`, and `npm run build`.
+
 ## External Plugin Contract
 
 External plugin loading is deliberately deferred until the instance and core
@@ -599,6 +648,10 @@ Explicitly out of scope:
 
 ### M65-B — Optional `care` module
 
+Implementation status: activation and true-disabled semantics complete;
+enabled desktop data convergence remains in the documented compatibility
+window above.
+
 - route care prompt/tool/job registration through the resolved feature
   snapshot;
 - implement true disabled semantics;
@@ -674,7 +727,7 @@ complete.
 
 ## Immediate Next Action
 
-Keep M65-A as the committed compatibility boundary, then implement M65-B as a
-separate slice: make the existing care runtime obey the resolved snapshot
-without changing default behavior. Finance, plugin loading, UI, storage
-migration, and cloud deployment remain untouched until their own slices.
+Commit M65-B as a separate verified slice, then begin M65-C with a test plugin
+only. Do not extract finance or begin cloud deployment in the same change. The
+enabled desktop Care compatibility window must be closed before M65-E or any
+multi-instance hosted deployment.

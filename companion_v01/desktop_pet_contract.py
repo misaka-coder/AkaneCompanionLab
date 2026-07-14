@@ -145,6 +145,7 @@ def build_desktop_pet_health_payload(
     streaming_tts_enabled: bool = True,
     yt_dlp_available: bool = False,
     resource_manifest: dict[str, Any] | None = None,
+    care_feature: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     resource_summary: dict[str, Any] = {
         "endpoint": DESKTOP_PET_ENDPOINTS["resource_manifest"],
@@ -164,6 +165,17 @@ def build_desktop_pet_health_payload(
                 "default_emotion": str(desktop.get("default_emotion") or defaults.get("emotion") or ""),
             }
         )
+
+    care_source = care_feature if isinstance(care_feature, dict) else {"enabled": True}
+    care_enabled = bool(care_source.get("enabled", True))
+    care_status = {
+        "enabled": care_enabled,
+        "status": "enabled" if care_enabled else "disabled",
+        "reason": "" if care_enabled else str(care_source.get("reason") or "feature_disabled"),
+        "reset_baseline_on_start": bool(
+            care_enabled and care_source.get("reset_baseline_on_start", False)
+        ),
+    }
 
     return {
         "status": "ok",
@@ -197,6 +209,9 @@ def build_desktop_pet_health_payload(
         },
         "dependencies": {
             "yt_dlp": bool(yt_dlp_available),
+        },
+        "features": {
+            "care": care_status,
         },
     }
 

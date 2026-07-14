@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import re
+
 from promptpack_core import PromptBlock
 from promptpack_core import PromptBlockRegistry as CorePromptBlockRegistry
 
 
 CURRENT_ASSISTANT_STATE_MARKER = "[CURRENT ASSISTANT STATE - EMBODY THIS]"
+
+_CARE_ONLY_PROMPT_LINE_MARKERS = (
+    "state_request 用于",
+    "affinity 是",
+    "根据当前角色的性格判断方向",
+    "普通闲聊、工具调用、日常问答输出 null",
+    "特别时刻：如果角色在饥饿/疲惫临界",
+    "好感显著上升的时刻",
+    "不改变养成状态",
+)
 
 
 COMMON_RESPONSE_BLOCKS = (
@@ -197,6 +209,20 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
 
 def build_system_prompt(*block_ids: str) -> str:
     return PromptBlockRegistry().compose(*block_ids)
+
+
+def strip_care_prompt_contract(value: str) -> str:
+    """Remove Care-only schema/rules while preserving the surrounding mode contract."""
+
+    cleaned_lines: list[str] = []
+    for raw_line in str(value or "").splitlines():
+        line = re.sub(r",\s*state_request(?=[，。])", "", raw_line)
+        line = re.sub(r"state_request\s*,\s*", "", line)
+        line = re.sub(r',\s*"state_request"\s*:\s*null(?=\s*})', "", line)
+        if any(marker in line for marker in _CARE_ONLY_PROMPT_LINE_MARKERS):
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines).strip()
 
 
 def build_scene_static_system_prompt() -> str:

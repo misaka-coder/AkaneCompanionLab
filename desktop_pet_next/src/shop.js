@@ -51,10 +51,18 @@ function bindActions() {
     void closeWindow();
   });
   els.startWork?.addEventListener("click", () => {
+    if (!isCareFeatureAvailable()) {
+      showCareDisabled();
+      return;
+    }
     setStatus("准备出门");
     void sendCommand("startCareWork");
   });
   els.claimAllowance?.addEventListener("click", () => {
+    if (!isCareFeatureAvailable()) {
+      showCareDisabled();
+      return;
+    }
     setStatus("领取补给");
     void sendCommand("claimCareAllowance");
   });
@@ -78,6 +86,23 @@ async function bindStateSync() {
 
 function render() {
   const character = snapshot?.character || {};
+  if (!isCareFeatureAvailable()) {
+    window.clearTimeout(workCountdownTimer);
+    window.clearTimeout(allowanceCountdownTimer);
+    els.coins.textContent = "—";
+    els.hunger.textContent = "—";
+    els.energy.textContent = "—";
+    els.affection.textContent = "—";
+    els.character.textContent = `Character: ${character.name || character.packId || "-"}`;
+    els.summary.textContent = "养成模块未启用";
+    els.shopCount.textContent = "0 件商品";
+    els.inventoryCount.textContent = "0 件物品";
+    els.workPanel.hidden = true;
+    els.allowancePanel.hidden = true;
+    els.shopItems.innerHTML = `<div class="empty-state">当前实例未启用养成模块。</div>`;
+    els.inventoryItems.innerHTML = `<div class="empty-state">养成模块启用后可查看背包。</div>`;
+    return;
+  }
   const careConfig = normalizeCareConfig(character.care);
   const care = normalizeCareState(snapshot?.state?.care, careConfig);
   const items = careConfig.enabled ? careConfig.shopItems : [];
@@ -96,6 +121,16 @@ function render() {
   renderAllowance(careConfig, care);
   renderShopItems(items, care);
   renderInventory(items, care);
+}
+
+function isCareFeatureAvailable() {
+  const feature = snapshot?.resource?.features?.care;
+  return Boolean(feature && feature.enabled === true && feature.status === "enabled");
+}
+
+function showCareDisabled() {
+  showAlert("养成模块未启用。", "disabled");
+  setStatus("养成模块未启用");
 }
 
 function renderWork(config, care) {
@@ -183,6 +218,10 @@ function createShopItem(item, care) {
   buyButton.textContent = "购买";
   buyButton.disabled = !canBuy;
   buyButton.addEventListener("click", () => {
+    if (!isCareFeatureAvailable()) {
+      showCareDisabled();
+      return;
+    }
     setStatus(`购买 ${item.name}`);
     void sendCommand("buyShopItem", item.id);
   });
@@ -225,6 +264,10 @@ function createInventoryItem(item, count) {
   feedButton.className = "primary-button";
   feedButton.textContent = "投喂";
   feedButton.addEventListener("click", () => {
+    if (!isCareFeatureAvailable()) {
+      showCareDisabled();
+      return;
+    }
     setStatus(`投喂 ${item.name}`);
     void sendCommand("feedInventoryItem", item.id);
   });

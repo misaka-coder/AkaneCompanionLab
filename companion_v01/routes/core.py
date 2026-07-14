@@ -53,12 +53,15 @@ def build_core_router(
     @router.get("/desktop-pet/health")
     async def desktop_pet_health(request: Request) -> JSONResponse:
         session_id, profile_user_id = resolve_identity_from_query(request)
+        care_status_getter = getattr(engine, "care_feature_status", None)
+        care_feature = care_status_getter() if callable(care_status_getter) else {"enabled": True}
         return JSONResponse(
             build_desktop_pet_health_payload(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 streaming_tts_enabled=bool(getattr(config_module, "STREAMING_TTS_ENABLED", True)),
                 yt_dlp_available=importlib.util.find_spec("yt_dlp") is not None,
+                care_feature=care_feature,
             ),
             headers={"Cache-Control": "no-store"},
         )

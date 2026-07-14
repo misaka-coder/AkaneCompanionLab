@@ -13,7 +13,7 @@ from typing import Any
 import requests
 
 import config
-from .care_runtime import DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECKIN_COINS, get_seasonal_shop_items
+from .care_runtime import CareModulePort, DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECKIN_COINS, get_seasonal_shop_items
 from .domain_profiles import FINANCE_DOMAIN_PROFILE_ID, FINANCE_MODES, normalize_finance_mode
 
 
@@ -2902,7 +2902,7 @@ class NapCatQQGateway:
         self,
         context: "QQMessageContext",
         *,
-        care_runtime: Any = None,
+        care_module: CareModulePort | None = None,
         shop_items: list[dict[str, Any]] | None = None,
         checkin_coins: int = DEFAULT_CHECKIN_COINS,
         now_ms: int | None = None,
@@ -2912,8 +2912,11 @@ class NapCatQQGateway:
         if parsed is None:
             return None
 
+        if care_module is None:
+            care_module = CareModulePort.disabled("not_configured")
+        care_runtime = care_module.runtime
         if care_runtime is None:
-            return {"ok": False, "reply": "养成系统未启用。", "status": "not_configured"}
+            return care_module.disabled_result()
 
         items = _merge_shop_items(DEFAULT_CARE_SHOP_ITEMS, shop_items or [])
         items = _merge_shop_items(items, get_seasonal_shop_items())
