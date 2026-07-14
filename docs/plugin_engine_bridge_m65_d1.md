@@ -1,6 +1,6 @@
 # Plugin Engine Bridge M65-D1
 
-Status: generic bridge implemented; legacy finance read cutover pending.
+Status: generic bridge implemented; legacy finance read cutover complete.
 
 ## Boundary
 
@@ -28,55 +28,78 @@ instruction, or native schema. Plugin invocations are scheduled back onto the
 FastAPI lifecycle loop where adapters were activated; synchronous Engine work
 must run outside that loop.
 
-## Documented Migration Window
+## Read Capability Cutover
 
 Owner: Akane project maintainer.
 
-Start milestone: the M65-D1 bridge commit carrying this document.
+Start milestone: `fc14a12` (generic PluginHost → Engine bridge).
 
-Temporary legacy authority paths:
+Completed in the focused cutover after the bridge acceptance:
 
-- `AkaneMemoryEngine._build_market_data_tool_service()`;
-- the finance branch in `AkaneMemoryEngine._build_tool_handlers()`;
-- `market_resolve_security`, `market_quote_snapshot`, and
-  `market_price_series` in `companion_v01.finance.tool_handlers`;
-- the matching static finance domain-profile tool names and tests.
+- deleted `AkaneMemoryEngine._build_market_data_tool_service()` and its
+  provider/store construction;
+- deleted the static finance branch in
+  `AkaneMemoryEngine._build_tool_handlers()`;
+- deleted public-host handlers for `market_resolve_security`,
+  `market_quote_snapshot`, and `market_price_series`;
+- removed the finance prompt/profile/static allowlist and the unimplemented
+  `market_macro_series` claim from runtime;
+- removed FastAPI finance provider/store/worker composition and lifecycle;
+- removed finance command/subscription interception from the public QQ route;
+- removed finance categories from the default memcore configuration;
+- hid legacy finance settings from the public control-center catalog;
+- added disabled, missing, and failed plugin tests proving ordinary Akane tools
+  remain available without finance descriptors.
 
-Reason for temporary coexistence:
+The three read capabilities now have one runtime authority: the explicitly
+allowlisted private installed plugin. They are absent when that artifact is
+disabled, missing, rejected, or fails activation. Akane still starts and its
+ordinary tools continue to resolve in each case.
 
-- public Akane tests must not require the private artifact;
-- the private installed wheel must first pass the real Engine bridge and one
-  controlled public-market acceptance turn;
-- deletion and absence semantics need one focused cutover with a reversible
-  checkpoint.
+## Remaining Source Migration Window
+
+The following public source remains temporarily for later private-plugin
+migration, but has no composition-root, Engine, prompt, settings, or QQ route
+entry point:
+
+- market news search and event ingestion;
+- deterministic chart/report providers and handlers;
+- finance subscription, orchestration, delivery, and worker classes;
+- legacy finance config fields and QQ gateway compatibility state/methods;
+- `services.market_data` and EmQuant bridge source.
+
+Reason:
+
+- these capabilities need future plugin contracts for storage, jobs, commands,
+  notifications, and managed file delivery;
+- deleting source before those contracts exist would discard tested behavior,
+  while reactivating it in the host would recreate two authorities.
 
 Window rule:
 
-- do not add features, providers, fields, Prompt claims, or new callers to the
-  three legacy read handlers;
-- fixes required for migration may only reduce or freeze that path;
-- all new read capability work belongs to the private installed artifact.
+- do not add public runtime callers, settings, prompts, routes, providers, or
+  feature work to the frozen finance source;
+- fixes may only preserve tests, remove coupling, or support transfer into the
+  private artifact;
+- new finance behavior belongs to the private plugin repository.
 
-Exit conditions:
+Remaining exit conditions:
 
-1. the private wheel is discovered from an installed, audited artifact;
-2. resolve, quote, and series capabilities traverse Prompt/native/execution
-   through `PluginCapabilityToolBridge`;
-3. disabled, missing, and failed artifact tests show no finance tool in the
-   real Engine handler set;
-4. the three legacy read handlers and their Engine construction path are
-   deleted, with old tests migrated or removed;
-5. ordinary Akane, QQ chat, Care, memory, TTS, and desktop behavior still pass
-   their focused regressions.
+1. define generic plugin ports for each capability actually being migrated;
+2. move the corresponding implementation and tests into the private artifact;
+3. delete the transferred public source and compatibility fields in the same
+   change window;
+4. keep public Akane tests independent of the private wheel.
 
-Rollback before cutover is to disable the instance plugin and revert the
-generic bridge slice. No database, user asset, instance data, or private
-artifact content is modified by this bridge.
+No database, user asset, instance data, or private artifact content is modified
+by the read cutover. Existing finance databases are left untouched but are no
+longer opened by public Akane startup.
 
 ## Validation
 
 ```powershell
 python -m unittest tests.test_plugin_engine_bridge -v
+python -m unittest tests.test_finance_plugin_absence tests.test_finance_domain_profile -v
 python -m unittest tests.test_plugin_host tests.test_plugin_artifact_smoke -v
 python -m unittest tests.test_tool_runtime tests.test_tool_readiness -v
 python -m unittest tests.test_backend_route_modules.BackendRouteModuleTests.test_think_router_handles_once_and_stream_contract_with_fake_engine -v

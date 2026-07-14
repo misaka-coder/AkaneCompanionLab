@@ -3,109 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import config
-
 
 DEFAULT_DOMAIN_PROFILE_ID = "default"
+
+# Compatibility identifiers for finance source files that remain in the
+# documented M65 migration window. They no longer register a runtime profile.
 FINANCE_DOMAIN_PROFILE_ID = "finance_v1"
 FINANCE_MODES = ("off", "qa", "push")
 
-FINANCE_MEMORY_CATEGORIES = (
-    "finance_question",
-    "watchlist",
-    "portfolio_context",
-    "risk_preference",
-    "investment_goal",
-    "market_thesis",
-    "alert_preference",
-    "market_event",
-    "market_analysis",
-)
-
-FINANCE_ALLOWED_TOOL_NAMES = (
-    "retrieve_memory",
-    "read_memory_timeline",
-    "web_search",
-    "market_resolve_security",
-    "market_news_search",
-    "market_quote_snapshot",
-    "market_price_series",
-    "market_macro_series",
-    "render_market_chart",
-    "compose_finance_report",
-    "sync_attachment_workspace",
-    "inspect_attachment",
-    "load_material",
-    "retry_attachment",
-    "clear_attachment_focus",
-    "read_attachment_section",
-    "compose_file",
-    "generate_image",
-    "cover_song",
-    "inspect_generated_file",
-    "manage_generated_file",
-    "send_file",
-    "set_reminder",
-    "list_reminders",
-    "cancel_reminder",
-    "manage_task_workspace",
-    "delegate_task",
-)
-
-FINANCE_HIDDEN_TOOL_NAMES = (
-    "call_npc",
-    "check_inventory",
-    "manage_gift",
-    "manage_artifact",
-    "manage_persona",
-    "send_sticker",
-    "fetch_media_from_url",
-    "inspect_media_info",
-    "convert_media_file",
-    "separate_audio_stems",
-    "clean_voice_track",
-    "transcribe_media",
-    "prepare_voice_dataset",
-    "open_browser",
-    "open_music_search",
-    "browser_page",
-)
-
-FINANCE_CAPABILITY_HINTS = (
-    "金融问题依赖旧观点、关注标的、风险偏好或历史承诺时使用 retrieve_memory；依赖具体日期、时段和原始发言时使用 read_memory_timeline。",
-    "先理解用户要的是行情数字、新闻背景、网页原文还是综合分析，再自主选择行情工具、web_search、网页提取或多步组合；用户点名某个可用工具时通常尊重，但不要把关键词机械映射成工具调用。",
-    "涉及当前、最新、实时、价格、涨跌、公告、新闻或宏观数据时主动使用可用只读工具核验；当前尚未接通的市场数据能力必须明确说明不可用，不能编造。",
-    "用户只给证券名称或别名时先用 market_resolve_security；只有唯一精确解析或用户原文中的完整 provider code 才能继续查行情，不得自行拼交易所后缀。",
-    "用户明确需要 K 线、成交量或均线图时使用 render_market_chart；只选择固定图表枚举和参数，不传价格数组、任意代码、样式或文件路径。",
-    "用户明确需要证券简报、市场对比报告、PDF 或 XLSX 时使用 compose_finance_report；报告工具会重新读取可信行情，模型文字只进入明确标注的分析/风险章节。",
-    "只有附件、既有生成物、明确的报告需求或长任务确实存在时，才展开对应文档、文件交付和后台任务工具。",
-    "金融模式不等于只能回答金融问题；用户明确提出本轮真正可用的通用能力（例如生成图片、整理文件或歌曲翻唱）时，正常调用对应工具，不要因为当前群启用了金融档案就否认能力。",
-)
-
-FINANCE_PROMPT_BLOCK_ID = "finance_v1.rules"
-FINANCE_PROMPT_BLOCK = """【金融领域档案 finance_v1】
-- 你仍是当前角色，保留当前角色的身份、称呼和表达风格；不要自称另一个金融机器人。
-- 涉及当前、最新、实时、价格、涨跌、公告、新闻或宏观数据时，主动使用本轮真正可用的只读工具核验。一次结果不足时可以继续查询，直到证据足够或确认能力不可用。
-- 先理解用户真正要核对的是行情数字、新闻背景、网页原文还是综合分析，再自主选择行情工具、web_search、网页提取或多工具组合。用户明确要求使用基础网络搜索时通常优先尊重；这是选择倾向，不是按关键词机械触发的硬路由。
-- 用户只给证券名称或别名时先调用 market_resolve_security。只有 resolved=true、当前会话 watchlist 已保存的代码，或用户原文直接给出的完整 provider code 才能继续查行情；候选不唯一时先澄清，不得自行拼 .SH/.SZ/.BJ。
-- market_resolve_security 的 not_found 只说明本次查询词没有匹配，不能据此声称行情源不支持该证券。先用用户原文中的纯证券名称/别名重试一次；只有 provider_capabilities 明确缺少对应能力时，才能判断 provider 不支持。
-- 名称解析仍未命中时，可以主动用 web_search 查找公开证券代码与上市市场，再把候选完整代码交给 market_resolve_security 做行情源验证。验证成功后该代码会成为本会话可信映射，可以继续报价、序列和画图；搜索摘要本身不能直接绕过验证。A/H/美股等存在多个可信候选时自然询问用户选哪个，不要把需要澄清说成“不能做”。
-- 工具返回 invalid_arguments、not_found 或需要代码 provenance 时，优先在当前工具轮预算内修正参数、解析代码并继续原任务；不要口头承诺“下一条消息开始”后停住。只有缺少的用户选择会实质改变报告对象或结论时，才简短澄清。
-- “A股、美股、日股”等是市场范围，不是唯一证券。做市场对比时可以在语义明确的情况下选用常见基准并显式说明代理口径，例如用沪深300代表 A 股大盘；若可能的基准会明显改变结论，则先询问用户，不得静默编造代码。
-- 明确区分来源事实、程序计算和分析推断。当前消息时间和本轮检索时间只表示对话或查询何时发生，不等于网页内容、行情数据或事件本身的 as_of。
-- 输出价格、涨跌、收盘、盘中状态等时效性结论前，先核对来源内容实际对应的日期、交易所时区、当天是否交易日及当时是否处于交易时段。周末或休市时，只能把有明确日期支持的数据称为“最近一个已完成交易日”或“来源最近一次观察”，不能称为“今天盘中”或“今天收盘”。
-- 搜索摘要是发现线索，不是规范化行情快照。摘要中的数据日期不清楚、只有时分没有日期、或不同来源相互冲突时，继续提取正文或交叉核验；仍无法确认就降低置信度，并避免输出带“当前/今天”含义的行情结论。只有标题而没有正文时，不要据此下过深结论。
-- 最近一周、时间范围或新闻汇总类问题，单次 web_search 只覆盖一个日期或单一来源时通常不足。优先用 batch_search 拆分日期、语言和来源，再对关键结果 extract；market_news_search、某个网页或一次搜索失败时，只要仍有其它只读路径和工具预算，就换查询词或来源继续核验，不要轻易宣布整个任务失败。
-- 过去观点不是当前事实。引用历史判断时，要说明新证据是强化、削弱还是尚未改变旧判断。
-- 不保证收益，不编造价格、公告、财务数据、来源或工具结果，不执行交易、下单或资金动作。
-- 数据或权限不可用时结构化降级并降低结论置信度；不要用人格亲近感替代证据。
-- 只有当前实际 Provider 是 Choice/EmQuant 且工具结果证明可用时，才可以建议使用 Choice；公开行情或搜索失败时应说明真实失败原因并建议稍后重试，不能把尚未获得的 Choice 权限当成现成兜底。
-- 需要 K 线、成交量或均线图时调用 render_market_chart，由程序重新读取可信行情、校验数值、计算均线并本地渲染；不得生成或执行绘图代码，也不得把云端生图当作真实行情图。
-- 需要证券简报、市场对比报告、PDF 或 XLSX 时调用 compose_finance_report。报告的事实表、原始 OHLCV、来源、as_of 和证据指纹由程序生成；你提供的解读必须留在“模型分析/风险与观察”章节，不得伪装成行情事实。
-- QQ 回复默认短而有信息密度。只有图表、文件或长报告确实提升理解且已经真实生成时，才说明并交付产物；普通新闻不自动生成文件。"""
-
 
 def normalize_finance_mode(value: Any, *, default: str = "off") -> str:
+    """Normalize frozen finance migration data without activating a profile."""
+
     fallback = str(default or "off").strip().lower()
     if fallback not in FINANCE_MODES:
         fallback = "off"
@@ -139,6 +48,13 @@ class DomainProfile:
 
 
 class DomainProfileRegistry:
+    """Runtime domain profiles.
+
+    Finance capabilities are contributed by installed plugins and stay usable
+    in the current character/profile. The former finance-specific prompt and
+    static tool allowlist are intentionally not runtime profiles anymore.
+    """
+
     def __init__(
         self,
         *,
@@ -147,102 +63,33 @@ class DomainProfileRegistry:
         finance_tool_round_hard_limit: int | None = None,
         finance_push_enabled: bool | None = None,
     ) -> None:
-        enabled = bool(
-            getattr(config, "FINANCE_ASSISTANT_ENABLED", False) if finance_enabled is None else finance_enabled
+        del (
+            finance_enabled,
+            finance_tool_round_budget,
+            finance_tool_round_hard_limit,
+            finance_push_enabled,
         )
-        hard_limit = _bounded_int(
-            getattr(config, "FINANCE_TOOL_ROUND_HARD_LIMIT", 16)
-            if finance_tool_round_hard_limit is None
-            else finance_tool_round_hard_limit,
-            default=16,
-            lower=1,
-            upper=16,
-        )
-        round_budget = _bounded_int(
-            getattr(config, "FINANCE_TOOL_ROUND_BUDGET", 12)
-            if finance_tool_round_budget is None
-            else finance_tool_round_budget,
-            default=12,
-            lower=1,
-            upper=hard_limit,
-        )
-        push_enabled = bool(
-            getattr(config, "QQ_FINANCE_PUSH_ENABLED", False) if finance_push_enabled is None else finance_push_enabled
-        )
-        self._profiles = {
-            DEFAULT_DOMAIN_PROFILE_ID: DomainProfile(
-                id=DEFAULT_DOMAIN_PROFILE_ID,
-                enabled=True,
-            ),
-            FINANCE_DOMAIN_PROFILE_ID: DomainProfile(
-                id=FINANCE_DOMAIN_PROFILE_ID,
-                enabled=enabled,
-                prompt_block_ids=(FINANCE_PROMPT_BLOCK_ID,),
-                allowed_tool_names=FINANCE_ALLOWED_TOOL_NAMES,
-                hidden_tool_names=FINANCE_HIDDEN_TOOL_NAMES,
-                capability_hints=FINANCE_CAPABILITY_HINTS,
-                default_tool_round_budget=round_budget,
-                hard_tool_round_limit=hard_limit,
-                proactive_delivery_enabled=push_enabled,
-            ),
-        }
+        self._default = DomainProfile(id=DEFAULT_DOMAIN_PROFILE_ID, enabled=True)
 
     def get(self, profile_id: Any) -> DomainProfile:
-        key = str(profile_id or "").strip().lower()
-        profile = self._profiles.get(key)
-        if profile is None or not profile.enabled:
-            return self._profiles[DEFAULT_DOMAIN_PROFILE_ID]
-        return profile
+        del profile_id
+        return self._default
 
     def resolve(self, *, profile_id: Any = "", finance_mode: Any = "off") -> DomainProfile:
-        mode = normalize_finance_mode(finance_mode)
-        requested = str(profile_id or "").strip().lower()
-        if mode not in {"qa", "push"}:
-            return self._profiles[DEFAULT_DOMAIN_PROFILE_ID]
-        if requested and requested != FINANCE_DOMAIN_PROFILE_ID:
-            return self._profiles[DEFAULT_DOMAIN_PROFILE_ID]
-        return self.get(FINANCE_DOMAIN_PROFILE_ID)
+        del profile_id, finance_mode
+        return self._default
 
 
 def resolve_turn_domain_context(payload: dict[str, Any] | None) -> tuple[DomainProfile, str]:
-    source = payload if isinstance(payload, dict) else {}
-    mode = normalize_finance_mode(source.get("finance_mode"))
-    profile = DomainProfileRegistry().resolve(
-        profile_id=source.get("domain_profile"),
-        finance_mode=mode,
-    )
-    if profile.id != FINANCE_DOMAIN_PROFILE_ID:
-        return profile, "off"
-    if mode == "push" and not profile.proactive_delivery_enabled:
-        mode = "qa"
-    return profile, mode
+    del payload
+    return DomainProfileRegistry().get(DEFAULT_DOMAIN_PROFILE_ID), "off"
 
 
 def build_domain_profile_prompt(profile: DomainProfile | None) -> str:
-    if profile is None or not profile.enabled or profile.id == DEFAULT_DOMAIN_PROFILE_ID:
-        return ""
-    blocks = {
-        FINANCE_PROMPT_BLOCK_ID: FINANCE_PROMPT_BLOCK,
-    }
-    return "\n\n".join(
-        blocks[block_id]
-        for block_id in profile.prompt_block_ids
-        if block_id in blocks and str(blocks[block_id]).strip()
-    )
+    del profile
+    return ""
 
 
 def filter_tool_names(tool_names: tuple[str, ...] | list[str], profile: DomainProfile | None) -> tuple[str, ...]:
-    names = tuple(str(name or "").strip() for name in tool_names if str(name or "").strip())
-    if profile is None or profile.id == DEFAULT_DOMAIN_PROFILE_ID:
-        return names
-    allowed = set(profile.allowed_tool_names)
-    hidden = set(profile.hidden_tool_names)
-    return tuple(name for name in names if name in allowed and name not in hidden)
-
-
-def _bounded_int(value: Any, *, default: int, lower: int, upper: int) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        number = default
-    return max(lower, min(upper, number))
+    del profile
+    return tuple(str(name or "").strip() for name in tool_names if str(name or "").strip())

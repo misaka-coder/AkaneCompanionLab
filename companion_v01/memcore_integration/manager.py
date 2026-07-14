@@ -1088,10 +1088,7 @@ class MemcoreManager:
         return memcore
 
     def _build_memory_config(self, memcore: Any) -> Any:
-        from ..domain_profiles import FINANCE_MEMORY_CATEGORIES
-
         base_categories = tuple(getattr(memcore, "DEFAULT_CATEGORIES", ()))
-        categories = tuple(dict.fromkeys((*base_categories, *FINANCE_MEMORY_CATEGORIES)))
         return memcore.MemoryConfig(
             raw_trigger_count=max(1, int(getattr(config, "SUMMARY_TRIGGER_COUNT", 30) or 30)),
             summary_batch_size=max(1, int(getattr(config, "SUMMARY_BATCH_SIZE", 20) or 20)),
@@ -1125,7 +1122,7 @@ class MemcoreManager:
             ),
             visible_memory_scope=self.visible_scope,
             enable_flavor=self.enable_flavor,
-            categories=categories,
+            categories=base_categories,
         )
 
     def _record_turn(

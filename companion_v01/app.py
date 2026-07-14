@@ -18,21 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 import config
-from services.market_data import EastmoneyFastNewsAdapter
 from services.tts_client import EdgeTTSClient
 from .engine import AkaneMemoryEngine
-from .finance import (
-    AkaneFinanceAnalysisClient,
-    FinanceCompositeEventSource,
-    FinanceEventOrchestrator,
-    FinanceEventWorker,
-    FinanceNewsModerationClient,
-    FinancePublicNewsEventSource,
-    FinancePublicQuoteEventSource,
-    FinancePushGovernancePolicy,
-    FinanceSubscriptionService,
-    QQFinanceDeliveryAdapter,
-)
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .instance_profile import resolve_instance_context
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
@@ -169,92 +156,6 @@ if getattr(config, "QQ_BRIDGE_ENABLED", False):
     )
 else:
     qq_gateway = None
-
-finance_event_orchestrator: FinanceEventOrchestrator | None = None
-market_data_tool_service = getattr(engine, "market_data_tool_service", None)
-market_event_store = getattr(market_data_tool_service, "event_store", None)
-market_event_provider = getattr(market_data_tool_service, "provider", None)
-finance_subscription_service: FinanceSubscriptionService | None = None
-finance_event_worker: FinanceEventWorker | None = None
-if market_event_store is not None:
-    finance_subscription_service = FinanceSubscriptionService(
-        store=market_event_store,
-        provider_id=str(getattr(market_event_provider, "id", "choice_emquant") or "choice_emquant"),
-    )
-if qq_gateway is not None and market_event_store is not None:
-    finance_event_orchestrator = FinanceEventOrchestrator(
-        store=market_event_store,
-        analysis_client=AkaneFinanceAnalysisClient(engine),
-        delivery_adapter=QQFinanceDeliveryAdapter(qq_gateway),
-        push_governance=FinancePushGovernancePolicy(
-            enabled=bool(getattr(config, "FINANCE_PUSH_GOVERNANCE_ENABLED", True)),
-            cluster_coalesce_seconds=int(getattr(config, "FINANCE_PUSH_CLUSTER_COALESCE_SECONDS", 90)),
-            cluster_max_wait_seconds=int(getattr(config, "FINANCE_PUSH_CLUSTER_MAX_WAIT_SECONDS", 180)),
-            digest_enabled=bool(getattr(config, "FINANCE_PUSH_DIGEST_ENABLED", True)),
-            digest_interval_seconds=int(getattr(config, "FINANCE_PUSH_DIGEST_INTERVAL_SECONDS", 30 * 60)),
-            min_interval_seconds=int(getattr(config, "FINANCE_PUSH_MIN_INTERVAL_SECONDS", 20)),
-            rate_window_seconds=int(getattr(config, "FINANCE_PUSH_RATE_WINDOW_SECONDS", 5 * 60)),
-            max_notifications_per_window=int(getattr(config, "FINANCE_PUSH_MAX_PER_WINDOW", 6)),
-            quiet_hours_enabled=bool(getattr(config, "FINANCE_PUSH_QUIET_HOURS_ENABLED", False)),
-            quiet_start=str(getattr(config, "FINANCE_PUSH_QUIET_START", "23:00")),
-            quiet_end=str(getattr(config, "FINANCE_PUSH_QUIET_END", "07:00")),
-        ),
-    )
-    finance_event_source = None
-    if str(getattr(market_event_provider, "id", "") or "").strip() == "public_market":
-        try:
-            public_event_sources = [
-                FinancePublicQuoteEventSource(
-                    provider=market_event_provider,
-                    store=market_event_store,
-                )
-            ]
-            if bool(getattr(config, "FINANCE_PUBLIC_NEWS_ENABLED", True)):
-                public_event_sources.append(
-                    FinancePublicNewsEventSource(
-                        store=market_event_store,
-                        adapters=(
-                            EastmoneyFastNewsAdapter(
-                                timeout_seconds=float(
-                                    getattr(config, "FINANCE_PUBLIC_NEWS_TIMEOUT_SECONDS", 6.0)
-                                ),
-                            ),
-                        ),
-                        minimum_poll_interval_seconds=int(
-                            getattr(config, "FINANCE_PUBLIC_NEWS_POLL_INTERVAL_SECONDS", 15)
-                        ),
-                        moderator=FinanceNewsModerationClient(engine.llm),
-                        require_llm_moderation=bool(
-                            getattr(config, "FINANCE_PUBLIC_NEWS_REQUIRE_LLM_MODERATION", True)
-                        ),
-                    )
-                )
-            finance_event_source = FinanceCompositeEventSource(
-                sources=tuple(public_event_sources),
-            )
-        except (TypeError, ValueError):
-            finance_event_source = None
-    elif bool(
-        callable(getattr(market_event_provider, "supports", None))
-        and market_event_provider.supports("event_poll")
-        and callable(getattr(market_event_provider, "poll_market_events", None))
-    ):
-        event_source_factory = getattr(market_event_provider, "clone", None)
-        finance_event_source = event_source_factory() if callable(event_source_factory) else market_event_provider
-    if finance_event_source is not None:
-        finance_event_worker = FinanceEventWorker(
-            source=finance_event_source,
-            orchestrator=finance_event_orchestrator,
-            enabled=bool(getattr(config, "FINANCE_EVENT_INGESTION_ENABLED", False))
-            and bool(getattr(config, "FINANCE_ASSISTANT_ENABLED", False))
-            and bool(getattr(config, "QQ_FINANCE_PUSH_ENABLED", False))
-            and bool(getattr(config, "QQ_BRIDGE_ENABLED", False)),
-            poll_interval_seconds=float(getattr(config, "FINANCE_EVENT_POLL_INTERVAL_SECONDS", 2.0)),
-            poll_batch_size=int(getattr(config, "FINANCE_EVENT_POLL_BATCH_SIZE", 20)),
-            recovery_max_age_seconds=int(getattr(config, "FINANCE_EVENT_RECOVERY_MAX_AGE_SECONDS", 6 * 60 * 60)),
-            log_event=lambda event, **fields: _log_event(event, **fields),
-        )
-
 
 def _install_qq_task_completion_notifications() -> None:
     task_worker = getattr(engine, "task_worker_service", None)
@@ -406,8 +307,6 @@ async def startup_event() -> None:
             "Plugin host degraded: %s",
             json.dumps(plugin_status, ensure_ascii=False, sort_keys=True),
         )
-    if finance_event_worker is not None:
-        finance_event_worker.start()
 
 
 if ASSETS_DIR.exists():
@@ -429,8 +328,6 @@ if USER_ASSETS_DIR.exists():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    if finance_event_worker is not None:
-        finance_event_worker.stop(timeout_seconds=5.0)
     plugin_status = await plugin_host.stop()
     if int(plugin_status.get("close_failure_count") or 0) > 0:
         logger.warning(
@@ -526,8 +423,6 @@ if qq_gateway is not None:
             logger=logger,
             log_event=_log_event,
             tts_client=tts_client,
-            finance_subscription_service=finance_subscription_service,
-            finance_event_worker=finance_event_worker,
         )
     )
 app.include_router(

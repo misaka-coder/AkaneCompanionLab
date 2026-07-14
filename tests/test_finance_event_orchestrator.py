@@ -1066,7 +1066,7 @@ class FinanceAnalysisClientTests(unittest.TestCase):
         self.assertEqual(result["tool_use_source_id"], "trace:tool_use")
         self.assertEqual(result["tool_result_source_id"], "trace:tool_result")
 
-    def test_memcore_config_accepts_fixed_finance_categories(self) -> None:
+    def test_memcore_config_does_not_gain_finance_categories_without_plugin_contract(self) -> None:
         class FakeMemoryConfig:
             def __init__(self, **kwargs):
                 self.categories = tuple(kwargs["categories"])
@@ -1081,9 +1081,9 @@ class FinanceAnalysisClientTests(unittest.TestCase):
 
         memory_config = manager._build_memory_config(FakeMemcore)
 
-        self.assertIn("market_event", memory_config.categories)
-        self.assertIn("market_analysis", memory_config.categories)
-        self.assertEqual(len(memory_config.categories), len(set(memory_config.categories)))
+        self.assertEqual(memory_config.categories, FakeMemcore.DEFAULT_CATEGORIES)
+        self.assertNotIn("market_event", memory_config.categories)
+        self.assertNotIn("market_analysis", memory_config.categories)
 
 
 if __name__ == "__main__":

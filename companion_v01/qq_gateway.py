@@ -272,10 +272,6 @@ class QQMessageContext:
         chat_model_override = _safe_chat_model_id(self.chat_model_override)
         if chat_model_override:
             payload["chat_model_override"] = chat_model_override
-        finance_mode = normalize_finance_mode(self.finance_mode)
-        payload["finance_mode"] = finance_mode
-        if finance_mode in {"qa", "push"}:
-            payload["domain_profile"] = FINANCE_DOMAIN_PROFILE_ID
         return payload
 
     def to_delivery_context(self) -> dict[str, Any]:
@@ -303,10 +299,6 @@ class QQMessageContext:
         chat_model_override = _safe_chat_model_id(self.chat_model_override)
         if chat_model_override:
             payload["chat_model_override"] = chat_model_override
-        finance_mode = normalize_finance_mode(self.finance_mode)
-        payload["finance_mode"] = finance_mode
-        if finance_mode in {"qa", "push"}:
-            payload["domain_profile"] = FINANCE_DOMAIN_PROFILE_ID
         return payload
 
 
@@ -463,10 +455,6 @@ class NapCatQQGateway:
             "active_character_override_count": len(self.character_pack_overrides),
             "active_outfit_override_count": len(self.outfit_overrides),
             "active_chat_model_override_count": len(self.chat_model_overrides),
-            "active_finance_mode_override_count": len(self.finance_mode_overrides),
-            "finance_assistant_enabled": bool(getattr(config, "FINANCE_ASSISTANT_ENABLED", False)),
-            "finance_default_mode": self.default_finance_mode,
-            "finance_push_enabled": bool(getattr(config, "QQ_FINANCE_PUSH_ENABLED", False)),
             "state_persistence_enabled": self._state_path is not None,
             "state_status": "error"
             if self._state_error
@@ -664,7 +652,6 @@ class NapCatQQGateway:
         character_pack_id = self.resolve_character_pack_id(session_id)
         reply_mode = self.resolve_reply_mode(session_id)
         chat_model_override = self.resolve_chat_model_override(session_id)
-        finance_mode = self.resolve_finance_mode(session_id)
 
         if is_group:
             if mentions_bot or mentions_wake_word:
@@ -692,7 +679,6 @@ class NapCatQQGateway:
                     character_pack_id=character_pack_id,
                     reply_mode=reply_mode,
                     chat_model_override=chat_model_override,
-                    finance_mode=finance_mode,
                     attachments=attachments,
                 )
 
@@ -717,7 +703,6 @@ class NapCatQQGateway:
             character_pack_id=character_pack_id,
             reply_mode=reply_mode,
             chat_model_override=chat_model_override,
-            finance_mode=finance_mode,
             attachments=attachments,
             extra_context=self.build_extra_context(
                 event=event,
@@ -758,7 +743,6 @@ class NapCatQQGateway:
         character_pack_id = self.resolve_character_pack_id(session_id)
         reply_mode = self.resolve_reply_mode(session_id)
         chat_model_override = self.resolve_chat_model_override(session_id)
-        finance_mode = self.resolve_finance_mode(session_id)
         actor_label = "我" if not is_group else (sender_label or (f"QQ {user_id}" if user_id else "这位 QQ 用户"))
         clean_message = f"刚才发生的互动：{actor_label}在 QQ 里戳了戳你的头像。"
         return QQMessageContext(
@@ -776,7 +760,6 @@ class NapCatQQGateway:
             character_pack_id=character_pack_id,
             reply_mode=reply_mode,
             chat_model_override=chat_model_override,
-            finance_mode=finance_mode,
             attachments=[],
             extra_context=self.build_extra_context(
                 event=event,

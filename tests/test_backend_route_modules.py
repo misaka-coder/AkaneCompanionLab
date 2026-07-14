@@ -744,15 +744,23 @@ class BackendRouteModuleTests(unittest.TestCase):
         mocked_post.assert_called_once()
         self.assertIn("养成模块未启用", mocked_post.call_args.kwargs["json"]["message"])
 
-    def test_qq_router_finance_command_switches_without_llm_turn(self) -> None:
+    def test_qq_router_does_not_intercept_retired_finance_mode_command(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()
         process_calls: list[dict[str, Any]] = []
 
         class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
             def process_turn_stream(self, payload: dict):
                 process_calls.append(payload)
-                yield {"type": "final_ui", "payload": {"speech": "should not run"}}
+                yield {"type": "final_ui", "payload": {"speech": "普通对话继续运行"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
 
         class FakeResponse:
             def raise_for_status(self) -> None:
@@ -801,15 +809,14 @@ class BackendRouteModuleTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["reason"], "qq_finance_mode_command")
-        self.assertEqual(payload["command_status"], "switched")
-        self.assertEqual(payload["finance_mode"], "qa")
-        self.assertEqual(payload["domain_profile"], "finance_v1")
-        self.assertEqual(gateway.finance_mode_overrides[f"qq_pri_{QQ_USER_FIXTURE_ID}"], "qa")
-        self.assertEqual(process_calls, [])
+        self.assertNotEqual(payload["reason"], "qq_finance_mode_command")
+        self.assertEqual(len(process_calls), 1, payload)
+        self.assertNotIn("finance_mode", process_calls[0])
+        self.assertNotIn("domain_profile", process_calls[0])
+        self.assertNotIn(f"qq_pri_{QQ_USER_FIXTURE_ID}", gateway.finance_mode_overrides)
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
-        self.assertIn("金融问答模式", sent_payload["message"])
+        self.assertIn("普通对话继续运行", sent_payload["message"])
 
     def test_qq_router_passively_records_group_message_without_llm_turn(self) -> None:
         runtime = FakeRuntimeMetrics()

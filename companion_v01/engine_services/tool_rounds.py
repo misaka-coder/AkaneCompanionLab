@@ -23,7 +23,6 @@ from ..capability_registry import (
 from ..client_protocol import ClientMode, ClientProtocolContext
 from ..domain_profiles import (
     DEFAULT_DOMAIN_PROFILE_ID,
-    FINANCE_DOMAIN_PROFILE_ID,
     DomainProfile,
     DomainProfileRegistry,
     filter_tool_names,
@@ -40,14 +39,8 @@ logger = logging.getLogger("akane.tool_rounds")
 
 
 def max_tool_rounds(*, domain_profile_id: str = "") -> int:
-    base_budget = tool_orchestration_engine.max_tool_rounds()
-    profile = DomainProfileRegistry().get(domain_profile_id)
-    if profile.id != FINANCE_DOMAIN_PROFILE_ID:
-        return base_budget
-    return min(
-        int(profile.hard_tool_round_limit),
-        max(base_budget, int(profile.default_tool_round_budget)),
-    )
+    del domain_profile_id
+    return tool_orchestration_engine.max_tool_rounds()
 
 
 def tool_call_signature(tool_call: dict[str, Any]) -> str:
@@ -91,10 +84,6 @@ def should_stop_after_tool_events(
             continue
         status = str(event.get("status") or "").strip().lower()
         reason = str(event.get("reason") or "").strip().lower()
-        if str(domain_profile_id or "").strip() == FINANCE_DOMAIN_PROFILE_ID:
-            if status == "permission_denied":
-                return True
-            continue
         if (
             str(event.get("type") or "").strip() == "web_search_completed"
             and status in {"unavailable", "error", "failed", "failure"}
@@ -104,30 +93,6 @@ def should_stop_after_tool_events(
         if status in blocking_statuses:
             return True
     return False
-
-
-def should_stop_for_finance_no_progress(tool_results: list[Any]) -> bool:
-    evidence: list[dict[str, Any]] = []
-    for result in tool_results or []:
-        state_updates = getattr(result, "state_updates", None)
-        item = state_updates.get("finance_evidence") if isinstance(state_updates, dict) else None
-        if isinstance(item, dict):
-            evidence.append(item)
-    if len(evidence) < 2:
-        return False
-    previous, current = evidence[-2:]
-    previous_status = str(previous.get("status") or "").strip().lower()
-    current_status = str(current.get("status") or "").strip().lower()
-    if previous_status in {"empty", "unavailable", "permission_denied", "rate_limited"} and current_status in {
-        "empty",
-        "unavailable",
-        "permission_denied",
-        "rate_limited",
-    }:
-        return True
-    previous_hash = str(previous.get("result_hash") or "").strip()
-    current_hash = str(current.get("result_hash") or "").strip()
-    return bool(previous_hash and previous_hash == current_hash)
 
 
 def build_native_tool_round_instruction(native_tools: list[dict[str, Any]] | None) -> str:
@@ -176,9 +141,6 @@ def resolve_tool_round_budget(
         tool_call,
         current_budget=current_budget,
     )
-    profile = DomainProfileRegistry().get(domain_profile_id)
-    if profile.id == FINANCE_DOMAIN_PROFILE_ID:
-        return min(int(profile.hard_tool_round_limit), max(int(profile.default_tool_round_budget), budget))
     return budget
 
 
@@ -198,10 +160,6 @@ def resolve_tool_handlers(
     )
     all_handlers = {**dict(handlers), **dynamic_handlers}
     domain_profile = DomainProfileRegistry().get(domain_profile_id)
-    if domain_profile.id == DEFAULT_DOMAIN_PROFILE_ID:
-        all_handlers = {
-            name: handler for name, handler in all_handlers.items() if not _is_finance_only_handler(handler)
-        }
     if client_context is None:
         allowed_names = _filter_tool_names_with_policy_extensions(
             tuple(all_handlers.keys()),
@@ -325,17 +283,6 @@ def resolve_capability_selection(
         layer_names=(*selection.layer_names, "extension"),
         disclosures=selection.disclosures,
     )
-
-
-def _is_finance_only_handler(handler: Any) -> bool:
-    tool_metadata = getattr(handler, "tool_metadata", None)
-    if not callable(tool_metadata):
-        return False
-    try:
-        metadata = tool_metadata()
-    except Exception:
-        return False
-    return str(getattr(metadata, "family", "") or "").strip() in {"finance_read", "finance_artifact"}
 
 
 def _filter_tool_names_with_policy_extensions(

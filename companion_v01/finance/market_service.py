@@ -269,7 +269,7 @@ class MarketDataToolService:
             raise MarketDataValidationError(
                 field="codes",
                 reason=(
-                    "provider code provenance is missing; call market_resolve_security first, "
+                    "provider code provenance is missing; use an installed trusted security resolver first, "
                     "use a current-session watchlist/master-data code, or quote the full code in the user message"
                 ),
                 code="untrusted_provider_code",

@@ -35,23 +35,6 @@ _FINANCE_METADATA = {
     "default_round_budget": 12,
 }
 
-MARKET_RESOLVE_SECURITY_SCHEMA: dict[str, Any] = {
-    "description": (
-        "Resolve a user-provided security name or alias to a trusted provider code using the local security master "
-        "and the current session watchlist. Call this before quote/news/series tools when the user did not provide "
-        "a complete provider code. The query should be the literal security name or alias copied from the user's "
-        "message, not the full task sentence and not a guessed vendor ticker such as ^N225. Never manufacture "
-        ".SH/.SZ/.BJ suffixes."
-    ),
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "query": {"type": "string", "minLength": 1, "maxLength": 120},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 10},
-    },
-    "required": ["query"],
-}
-
 MARKET_NEWS_SEARCH_SCHEMA: dict[str, Any] = {
     "description": (
         "Search stored and provider-backed market news using explicit provider security codes. "
@@ -68,38 +51,6 @@ MARKET_NEWS_SEARCH_SCHEMA: dict[str, Any] = {
         "date_to": {"type": "string", "description": "Optional YYYY-MM-DD upper bound."},
         "limit": {"type": "integer", "minimum": 1, "maximum": 50},
     },
-}
-
-MARKET_QUOTE_SNAPSHOT_SCHEMA: dict[str, Any] = {
-    "description": (
-        "Read current quote snapshots for explicit provider security codes. "
-        "Returns provider, source, as-of time, raw quote fields, and program-computed change/range metrics."
-    ),
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "codes": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 20},
-    },
-    "required": ["codes"],
-}
-
-MARKET_PRICE_SERIES_SCHEMA: dict[str, Any] = {
-    "description": (
-        "Read a historical OHLCV price series for one explicit provider security code. "
-        "Returns source/as-of evidence plus deterministic return, range, volatility, moving-average, "
-        "drawdown, breakout, and relative-volume metrics."
-    ),
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "code": {"type": "string", "minLength": 1, "maxLength": 40},
-        "interval": {"type": "string", "enum": ["1d"]},
-        "adjusted": {"type": "string", "enum": ["none"]},
-        "date_from": {"type": "string", "description": "Optional YYYY-MM-DD lower bound."},
-        "date_to": {"type": "string", "description": "Optional YYYY-MM-DD upper bound."},
-        "limit": {"type": "integer", "minimum": 2, "maximum": 500},
-    },
-    "required": ["code"],
 }
 
 RENDER_MARKET_CHART_SCHEMA: dict[str, Any] = {
@@ -234,76 +185,6 @@ class _FinanceReadToolHandler(BaseToolHandler):
         return self._result(payload)
 
 
-class MarketResolveSecurityToolHandler(_FinanceReadToolHandler):
-    tool_type = "market_resolve_security"
-    input_schema = MARKET_RESOLVE_SECURITY_SCHEMA
-    require_provider_health = False
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            "- market_resolve_security：把用户给出的证券名称/别名解析成可信 provider code。格式为 "
-            '{"type":"market_resolve_security","query":"贵州茅台","limit":5}。'
-            "query 只放用户原文里的证券名称/别名，不放整句任务，也不要把日经225改写成猜测的 ^N225 等 vendor symbol。"
-            "用户没有直接给出完整 provider code 时，必须先用本工具；只有 resolved=true 才能直接继续查行情。"
-            "not_found 只表示本次查询词没匹配，不代表 provider 不支持；先用用户原文中的纯证券名重试一次。"
-            "ambiguous/needs_confirmation 时向用户澄清，不要自行拼 .SH/.SZ/.BJ。"
-        )
-
-    def normalize_call(self, value: Any) -> dict[str, Any] | None:
-        if not _is_tool_call(value, self.tool_type):
-            return None
-        if not _has_only_keys(value, {"type", "query", "limit"}):
-            return None
-        query = str(value.get("query") or "").strip()
-        limit = _bounded_int(value.get("limit"), default=5, lower=1, upper=10)
-        if not query or len(query) > 120 or limit is None:
-            return None
-        return {"type": self.tool_type, "query": query, "limit": limit}
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        try:
-            query = str(call.get("query") or "")
-            limit = int(call.get("limit") or 5)
-            payload = self.service.resolve_security(
-                query,
-                profile_user_id=context.profile_user_id,
-                session_id=context.session_id,
-                limit=limit,
-            )
-            resolution_status = str(payload.get("resolution_status") or "").strip()
-            request_text = "\n".join(
-                str(context.request_context.get(key) or "").strip()
-                for key in ("message", "raw_message", "clean_message")
-                if str(context.request_context.get(key) or "").strip()
-            )
-            if (
-                not bool(payload.get("resolved"))
-                and resolution_status in {"not_found", "needs_confirmation"}
-                and request_text
-                and request_text.strip() != query.strip()
-            ):
-                recovered = self.service.resolve_security(
-                    request_text,
-                    profile_user_id=context.profile_user_id,
-                    session_id=context.session_id,
-                    limit=limit,
-                )
-                if bool(recovered.get("resolved")):
-                    recovered["reason"] = (
-                        "model query did not uniquely match; recovered a unique trusted alias from the current "
-                        "user message"
-                    )
-                    recovered["resolution_recovery"] = {
-                        "used": True,
-                        "source": "current_user_message",
-                        "model_query": query,
-                    }
-                    payload = recovered
-            return self._result(payload)
-        except Exception as exc:
-            return self._failure(exc)
-
-
 class MarketNewsSearchToolHandler(_FinanceReadToolHandler):
     tool_type = "market_news_search"
     input_schema = MARKET_NEWS_SEARCH_SCHEMA
@@ -315,7 +196,7 @@ class MarketNewsSearchToolHandler(_FinanceReadToolHandler):
             '"codes":["provider代码"],"content_types":["companynews"],"date_from":"YYYY-MM-DD",'
             '"date_to":"YYYY-MM-DD","limit":10}。证券代码必须来自可信来源，不要自行拼接交易所后缀；'
             "缺少显式 codes/content_types 时只查本地事件库，不会广播查询全市场。"
-            "用户只给名称/别名时先调用 market_resolve_security。"
+            "用户只给名称/别名时，必须先通过已安装的可信证券解析能力取得完整代码。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -387,133 +268,6 @@ class MarketNewsSearchToolHandler(_FinanceReadToolHandler):
             return self._failure(exc)
 
 
-class MarketQuoteSnapshotToolHandler(_FinanceReadToolHandler):
-    tool_type = "market_quote_snapshot"
-    input_schema = MARKET_QUOTE_SNAPSHOT_SCHEMA
-    required_provider_capabilities = ("quote_snapshot",)
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            '- market_quote_snapshot：查询当前行情快照。格式为 {"type":"market_quote_snapshot",'
-            '"codes":["600519.SH"]}。用户只给名称/别名时先调用 market_resolve_security；'
-            "代码必须来自用户原文、resolver、当前会话 watchlist 或可信主数据；返回值含 as_of 和程序计算指标。"
-        )
-
-    def normalize_call(self, value: Any) -> dict[str, Any] | None:
-        if not _is_tool_call(value, self.tool_type):
-            return None
-        if not _has_only_keys(value, {"type", "codes", "code"}):
-            return None
-        codes = _string_list(value.get("codes") or value.get("code"), limit=20, max_length=40, uppercase=True)
-        if codes is None:
-            return None
-        try:
-            request = MarketQuoteRequest(codes=tuple(codes))
-        except MarketDataValidationError:
-            return None
-        return {"type": self.tool_type, "codes": list(request.codes)}
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        try:
-            codes = self.service.canonicalize_trusted_codes(
-                tuple(call.get("codes") or ()),
-                profile_user_id=context.profile_user_id,
-                session_id=context.session_id,
-            )
-            self.service.ensure_trusted_codes(
-                codes,
-                profile_user_id=context.profile_user_id,
-                session_id=context.session_id,
-                request_context=context.request_context,
-            )
-            return self._result(self.service.quote_snapshots(MarketQuoteRequest(codes=codes)))
-        except Exception as exc:
-            return self._failure(exc)
-
-
-class MarketPriceSeriesToolHandler(_FinanceReadToolHandler):
-    tool_type = "market_price_series"
-    input_schema = MARKET_PRICE_SERIES_SCHEMA
-    required_provider_capabilities = ("price_series",)
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            '- market_price_series：查询单个标的历史 OHLCV 与程序计算指标。格式为 {"type":"market_price_series",'
-            '"code":"600519.SH","interval":"1d","adjusted":"none","date_from":"YYYY-MM-DD",'
-            '"date_to":"YYYY-MM-DD","limit":120}。用户只给名称/别名时先调用 market_resolve_security；'
-            "模型负责解释，不要自行重算或编造价格。"
-        )
-
-    def normalize_call(self, value: Any) -> dict[str, Any] | None:
-        if not _is_tool_call(value, self.tool_type):
-            return None
-        if not _has_only_keys(
-            value,
-            {"type", "code", "interval", "adjusted", "date_from", "date_to", "limit"},
-        ):
-            return None
-        code = str(value.get("code") or "").strip().upper()
-        interval = str(value.get("interval") or "1d").strip().lower()
-        adjusted = str(value.get("adjusted") or "none").strip().lower()
-        if interval != "1d" or adjusted != "none":
-            return None
-        limit = _bounded_int(value.get("limit"), default=120, lower=2, upper=500)
-        if limit is None:
-            return None
-        date_from = _date_to_timestamp(value.get("date_from"), end_of_day=False)
-        date_to = _date_to_timestamp(value.get("date_to"), end_of_day=True)
-        if value.get("date_from") and date_from is None:
-            return None
-        if value.get("date_to") and date_to is None:
-            return None
-        try:
-            request = MarketSeriesRequest(
-                code=code,
-                interval=interval,
-                adjusted=adjusted,
-                date_from=date_from,
-                date_to=date_to,
-                limit=limit,
-            )
-        except MarketDataValidationError:
-            return None
-        return {
-            "type": self.tool_type,
-            "code": request.code,
-            "interval": request.interval,
-            "adjusted": request.adjusted,
-            "date_from": request.date_from,
-            "date_to": request.date_to,
-            "limit": request.limit,
-        }
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        try:
-            codes = self.service.canonicalize_trusted_codes(
-                (str(call.get("code") or ""),),
-                profile_user_id=context.profile_user_id,
-                session_id=context.session_id,
-            )
-            code = codes[0] if codes else ""
-            self.service.ensure_trusted_codes(
-                (code,),
-                profile_user_id=context.profile_user_id,
-                session_id=context.session_id,
-                request_context=context.request_context,
-            )
-            request = MarketSeriesRequest(
-                code=code,
-                interval=str(call.get("interval") or "1d"),
-                adjusted=str(call.get("adjusted") or "none"),
-                date_from=call.get("date_from"),
-                date_to=call.get("date_to"),
-                limit=call.get("limit", 120),
-            )
-            return self._result(self.service.price_series(request))
-        except Exception as exc:
-            return self._failure(exc)
-
-
 class RenderMarketChartToolHandler(_FinanceReadToolHandler):
     tool_type = "render_market_chart"
     input_schema = RENDER_MARKET_CHART_SCHEMA
@@ -545,7 +299,8 @@ class RenderMarketChartToolHandler(_FinanceReadToolHandler):
             '{"type":"render_market_chart","code":"600519.SH","chart_type":"candlestick_volume",'
             '"interval":"1d","adjusted":"none","lookback":120,"moving_averages":[5,20],'
             '"title":"贵州茅台日线量价","send_to_user":true}。'
-            "用户只给名称/别名时先调用 market_resolve_security；不得传价格数组、任意样式、文件路径或绘图代码。"
+            "用户只给名称/别名时先通过已安装的可信证券解析能力取得完整代码；"
+            "不得传价格数组、任意样式、文件路径或绘图代码。"
             "工具会校验数据、计算均线、写入 GeneratedFileStore，并返回来源、区间和 as_of。"
         )
 
@@ -1147,37 +902,6 @@ class ComposeFinanceReportToolHandler(_FinanceReadToolHandler):
         return self._failure(exc)
 
 
-def build_market_tool_handlers(
-    service: MarketDataToolService,
-    *,
-    generated_file_service: Any | None = None,
-    chart_provider: LocalChartProvider | None = None,
-    report_provider: FinanceReportProvider | None = None,
-) -> dict[str, BaseToolHandler]:
-    handlers: list[BaseToolHandler] = [
-        MarketResolveSecurityToolHandler(service=service),
-        MarketNewsSearchToolHandler(service=service),
-        MarketQuoteSnapshotToolHandler(service=service),
-        MarketPriceSeriesToolHandler(service=service),
-    ]
-    if generated_file_service is not None:
-        handlers.append(
-            RenderMarketChartToolHandler(
-                service=service,
-                generated_file_service=generated_file_service,
-                chart_provider=chart_provider,
-            )
-        )
-        handlers.append(
-            ComposeFinanceReportToolHandler(
-                service=service,
-                generated_file_service=generated_file_service,
-                report_provider=report_provider,
-            )
-        )
-    return {handler.tool_type: handler for handler in handlers}
-
-
 def _is_tool_call(value: Any, tool_type: str) -> bool:
     return isinstance(value, dict) and str(value.get("type") or "").strip() == tool_type
 
@@ -1318,15 +1042,8 @@ def _collect_evidence_identifiers(value: Any) -> tuple[list[str], list[str], lis
 __all__ = [
     "MARKET_NEWS_SEARCH_SCHEMA",
     "COMPOSE_FINANCE_REPORT_SCHEMA",
-    "MARKET_PRICE_SERIES_SCHEMA",
-    "MARKET_QUOTE_SNAPSHOT_SCHEMA",
-    "MARKET_RESOLVE_SECURITY_SCHEMA",
     "RENDER_MARKET_CHART_SCHEMA",
     "MarketNewsSearchToolHandler",
     "ComposeFinanceReportToolHandler",
-    "MarketPriceSeriesToolHandler",
-    "MarketQuoteSnapshotToolHandler",
-    "MarketResolveSecurityToolHandler",
     "RenderMarketChartToolHandler",
-    "build_market_tool_handlers",
 ]

@@ -19,7 +19,8 @@ from companion_v01.finance import (
     FinanceReportRequest,
     MarketDataToolService,
     QQFinanceDeliveryAdapter,
-    build_market_tool_handlers,
+    ComposeFinanceReportToolHandler,
+    RenderMarketChartToolHandler,
 )
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
@@ -83,10 +84,17 @@ class ComposeFinanceReportToolTests(unittest.TestCase):
             event_store=MarketEventStore(self.root / "events.sqlite3"),
             clock=lambda: NOW_TS,
         )
-        self.handlers = build_market_tool_handlers(
-            self.market_service,
-            generated_file_service=self.generated_service,
+        handlers = (
+            RenderMarketChartToolHandler(
+                service=self.market_service,
+                generated_file_service=self.generated_service,
+            ),
+            ComposeFinanceReportToolHandler(
+                service=self.market_service,
+                generated_file_service=self.generated_service,
+            ),
         )
+        self.handlers = {handler.tool_type: handler for handler in handlers}
         self.context = ToolExecutionContext(
             profile_user_id="owner",
             session_id="session",

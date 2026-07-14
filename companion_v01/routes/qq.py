@@ -1187,8 +1187,6 @@ def build_qq_router(
     log_event: LogEvent,
     tts_client: Any = None,
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
-    finance_subscription_service: Any = None,
-    finance_event_worker: Any = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -1366,8 +1364,6 @@ def build_qq_router(
     @router.get("/api/qq/napcat/status")
     async def qq_napcat_status() -> JSONResponse:
         data = dict(qq_gateway.status())
-        if finance_event_worker is not None and callable(getattr(finance_event_worker, "status", None)):
-            data["finance_event_worker"] = finance_event_worker.status()
         return JSONResponse({"status": "ok", "data": data})
 
     @router.post("/api/qq/self-check")
@@ -1555,103 +1551,6 @@ def build_qq_router(
                         profile_user_id=context.profile_user_id,
                         session_id=context.session_id,
                     )
-
-            if finance_subscription_service is not None:
-                finance_watchlist_command = finance_subscription_service.parse_watchlist_command(context.clean_message)
-                if isinstance(finance_watchlist_command, dict):
-                    finance_watchlist_result = await asyncio.to_thread(
-                        finance_subscription_service.handle_watchlist_command,
-                        context,
-                        authorized=qq_gateway.can_manage_finance_subscription(context, event=event),
-                    )
-                    watchlist_payload = (
-                        dict(finance_watchlist_result) if isinstance(finance_watchlist_result, dict) else {}
-                    )
-                    reply = str(watchlist_payload.get("reply") or "").strip()
-                    send_result = (
-                        qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
-                    )
-                    duration_ms = (time.perf_counter() - started_at) * 1000
-                    runtime_metrics.observe_request(
-                        "qq_napcat_event",
-                        duration_ms=duration_ms,
-                        ok=bool(send_result.get("ok")) and bool(watchlist_payload.get("ok")),
-                    )
-                    log_event(
-                        "qq_finance_watchlist_command",
-                        session_id=context.session_id,
-                        profile_user_id=context.profile_user_id,
-                        command_action=str(finance_watchlist_command.get("action") or ""),
-                        command_status=str(watchlist_payload.get("status") or ""),
-                        command_ok=bool(watchlist_payload.get("ok")),
-                        subscription_id=str(watchlist_payload.get("subscription_id") or ""),
-                        code=str(watchlist_payload.get("code") or ""),
-                        watchlist_count=int(watchlist_payload.get("watchlist_count") or 0),
-                        sent=bool(send_result.get("ok")),
-                        duration_ms=round(duration_ms, 1),
-                    )
-                    return JSONResponse(
-                        {
-                            "status": "ok" if send_result.get("ok") else "send_failed",
-                            "reason": "qq_finance_watchlist_command",
-                            "command_action": str(finance_watchlist_command.get("action") or ""),
-                            "command_status": str(watchlist_payload.get("status") or ""),
-                            "command_ok": bool(watchlist_payload.get("ok")),
-                            "session_id": context.session_id,
-                            "profile_user_id": context.profile_user_id,
-                            "subscription_id": str(watchlist_payload.get("subscription_id") or ""),
-                            "code": str(watchlist_payload.get("code") or ""),
-                            "watchlist_count": int(watchlist_payload.get("watchlist_count") or 0),
-                            "send_result": send_result,
-                        }
-                    )
-
-            finance_mode_command_result = await asyncio.to_thread(
-                qq_gateway.handle_finance_mode_command,
-                context,
-                event=event,
-                subscription_service=finance_subscription_service,
-            )
-            if isinstance(finance_mode_command_result, dict):
-                reply = str(finance_mode_command_result.get("reply") or "").strip()
-                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
-                duration_ms = (time.perf_counter() - started_at) * 1000
-                runtime_metrics.observe_request(
-                    "qq_napcat_event",
-                    duration_ms=duration_ms,
-                    ok=bool(send_result.get("ok")) and bool(finance_mode_command_result.get("ok")),
-                )
-                log_event(
-                    "qq_finance_mode_command",
-                    session_id=context.session_id,
-                    profile_user_id=context.profile_user_id,
-                    command_status=str(finance_mode_command_result.get("status") or ""),
-                    command_ok=bool(finance_mode_command_result.get("ok")),
-                    finance_mode=str(finance_mode_command_result.get("finance_mode") or ""),
-                    state_persisted=finance_mode_command_result.get("state_persisted"),
-                    subscription_id=str(finance_mode_command_result.get("subscription_id") or ""),
-                    subscription_status=str(finance_mode_command_result.get("subscription_status") or ""),
-                    watchlist_count=int(finance_mode_command_result.get("watchlist_count") or 0),
-                    sent=bool(send_result.get("ok")),
-                    duration_ms=round(duration_ms, 1),
-                )
-                return JSONResponse(
-                    {
-                        "status": "ok" if send_result.get("ok") else "send_failed",
-                        "reason": "qq_finance_mode_command",
-                        "command_status": str(finance_mode_command_result.get("status") or ""),
-                        "command_ok": bool(finance_mode_command_result.get("ok")),
-                        "session_id": context.session_id,
-                        "profile_user_id": context.profile_user_id,
-                        "finance_mode": str(finance_mode_command_result.get("finance_mode") or ""),
-                        "domain_profile": str(finance_mode_command_result.get("domain_profile") or ""),
-                        "state_persisted": finance_mode_command_result.get("state_persisted"),
-                        "subscription_id": str(finance_mode_command_result.get("subscription_id") or ""),
-                        "subscription_status": str(finance_mode_command_result.get("subscription_status") or ""),
-                        "watchlist_count": int(finance_mode_command_result.get("watchlist_count") or 0),
-                        "send_result": send_result,
-                    }
-                )
 
             character_command_result = qq_gateway.handle_character_command(
                 context,

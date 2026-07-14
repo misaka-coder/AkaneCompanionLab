@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-import tempfile
 import unittest
-from unittest.mock import patch
 
-import config
-from companion_v01.engine import AkaneMemoryEngine
 from services.market_data import (
     DisabledMarketDataProvider,
     EmQuantBridgeMarketDataProvider,
@@ -137,67 +133,6 @@ class MarketDataProviderRegistryTests(unittest.TestCase):
 
         self.assertIsInstance(provider, DisabledMarketDataProvider)
         self.assertEqual(registry.provider_ids(), ("future_feed",))
-
-    def test_engine_uses_selected_provider_factory_and_keeps_local_store(self) -> None:
-        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        with (
-            tempfile.TemporaryDirectory() as temp_dir,
-            patch.object(
-                config,
-                "FINANCE_ASSISTANT_ENABLED",
-                True,
-            ),
-            patch.object(config, "FINANCE_MARKET_PROVIDER", "disabled", create=True),
-            patch.object(
-                config,
-                "FINANCE_EVENT_DB_PATH",
-                str(Path(temp_dir) / "market.sqlite3"),
-            ),
-        ):
-            service = engine._build_market_data_tool_service()
-
-        self.assertIsNotNone(service)
-        self.assertIsInstance(service.provider, DisabledMarketDataProvider)
-        self.assertEqual(engine.market_data_provider_registry.provider_ids(), ("disabled", "emquant", "public_market"))
-
-    def test_engine_constructs_public_market_without_importing_optional_dependencies(self) -> None:
-        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        with (
-            tempfile.TemporaryDirectory() as temp_dir,
-            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True),
-            patch.object(config, "FINANCE_MARKET_PROVIDER", "public_market", create=True),
-            patch.object(config, "FINANCE_EVENT_DB_PATH", str(Path(temp_dir) / "market.sqlite3")),
-        ):
-            service = engine._build_market_data_tool_service()
-            self.assertIsNotNone(service)
-            self.assertIsInstance(service.provider, PublicMarketProvider)
-            resolved = service.resolve_security(
-                "日经225",
-                profile_user_id="owner",
-                session_id="session",
-            )
-            self.assertTrue(resolved["resolved"])
-            self.assertEqual(resolved["resolved_code"], "NIKKEI225.INDEX")
-
-    def test_engine_rejects_unknown_provider_without_constructing_mock(self) -> None:
-        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        with (
-            tempfile.TemporaryDirectory() as temp_dir,
-            patch.object(
-                config,
-                "FINANCE_ASSISTANT_ENABLED",
-                True,
-            ),
-            patch.object(config, "FINANCE_MARKET_PROVIDER", "unknown", create=True),
-            patch.object(
-                config,
-                "FINANCE_EVENT_DB_PATH",
-                str(Path(temp_dir) / "market.sqlite3"),
-            ),
-        ):
-            service = engine._build_market_data_tool_service()
-
-        self.assertIsNone(service)
 
 
 if __name__ == "__main__":

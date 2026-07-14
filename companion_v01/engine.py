@@ -336,7 +336,6 @@ class AkaneMemoryEngine:
             generated_context_builder=self._build_task_worker_generated_context,
             record_tool_artifacts=self._record_tool_result_artifacts_in_task_workspace,
         )
-        self.market_data_tool_service = self._build_market_data_tool_service()
         self.tool_handlers = self._build_tool_handlers()
         self.capability_registry = CapabilityRegistry()
         self._embedding_reindex_lock = threading.RLock()
@@ -2613,13 +2612,11 @@ class AkaneMemoryEngine:
             tool_result = batch_results[-1] if batch_results else None
             turn_user_images = self._merge_tool_model_image_inputs(turn_user_images, batch_results)
 
-            finance_no_progress = self._should_stop_for_finance_no_progress(tool_results)
             stop_after_tool = (
                 self._should_stop_after_tool_events(
                     _current_events,
                     domain_profile_id=turn_domain_profile_id,
                 )
-                or finance_no_progress
             )
             allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = self._build_final_response(
@@ -2637,9 +2634,7 @@ class AkaneMemoryEngine:
                     tool_followups=tool_followups,
                     allow_more=allow_more_tools,
                     stop_reason=(
-                        "finance_no_progress"
-                        if finance_no_progress
-                        else "tool_unavailable"
+                        "tool_unavailable"
                         if stop_after_tool
                         else "tool_budget_exhausted"
                         if not allow_more_tools
@@ -3126,13 +3121,11 @@ class AkaneMemoryEngine:
             for stream_event in current_events:
                 yield stream_event
 
-            finance_no_progress = self._should_stop_for_finance_no_progress(tool_results)
             stop_after_tool = (
                 self._should_stop_after_tool_events(
                     current_events,
                     domain_profile_id=turn_domain_profile_id,
                 )
-                or finance_no_progress
             )
             allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = yield from self._stream_final_response(
@@ -3150,9 +3143,7 @@ class AkaneMemoryEngine:
                     tool_followups=tool_followups,
                     allow_more=allow_more_tools,
                     stop_reason=(
-                        "finance_no_progress"
-                        if finance_no_progress
-                        else "tool_unavailable"
+                        "tool_unavailable"
                         if stop_after_tool
                         else "tool_budget_exhausted"
                         if not allow_more_tools
@@ -3872,11 +3863,6 @@ class AkaneMemoryEngine:
         from .engine_services.tool_rounds import max_tool_rounds as _fn
 
         return _fn(domain_profile_id=domain_profile_id)
-
-    def _should_stop_for_finance_no_progress(self, tool_results: list[ToolExecutionResult]) -> bool:
-        from .engine_services.tool_rounds import should_stop_for_finance_no_progress as _fn
-
-        return _fn(tool_results)
 
     def _resolve_tool_round_budget(
         self,
@@ -4918,78 +4904,6 @@ class AkaneMemoryEngine:
             logger.warning("memcore timeline tool adapter disabled: %s", exc)
             return getattr(self, "memory_timeline_service", None)
 
-    def _build_market_data_tool_service(self) -> Any:
-        if not bool(getattr(config, "FINANCE_ASSISTANT_ENABLED", False)):
-            return None
-        try:
-            from services.market_data import (
-                MarketDataProviderSettings,
-                MarketDataValidationError,
-                MarketEventStore,
-                build_default_market_data_provider_registry,
-            )
-
-            from .finance import MarketDataToolService
-
-            raw_db_path = str(getattr(config, "FINANCE_EVENT_DB_PATH", "") or "").strip()
-            db_path = (
-                Path(raw_db_path).expanduser() if raw_db_path else Path(config.STATE_DIR) / "market_events.sqlite3"
-            )
-            provider_registry = build_default_market_data_provider_registry()
-            self.market_data_provider_registry = provider_registry
-            provider = provider_registry.create(
-                MarketDataProviderSettings(
-                    provider=str(getattr(config, "FINANCE_MARKET_PROVIDER", "disabled") or "disabled"),
-                    emquant_bridge_url=str(getattr(config, "EMQUANT_BRIDGE_URL", "http://127.0.0.1:9910") or ""),
-                    emquant_bridge_token=str(getattr(config, "EMQUANT_BRIDGE_TOKEN", "") or ""),
-                    emquant_timeout_seconds=float(getattr(config, "EMQUANT_HTTP_TIMEOUT_SECONDS", 15.0) or 15.0),
-                    public_yahoo_enabled=bool(getattr(config, "FINANCE_PUBLIC_MARKET_YAHOO_ENABLED", True)),
-                    public_akshare_enabled=bool(getattr(config, "FINANCE_PUBLIC_MARKET_AKSHARE_ENABLED", True)),
-                    public_timeout_seconds=float(getattr(config, "FINANCE_PUBLIC_MARKET_TIMEOUT_SECONDS", 8.0) or 8.0),
-                    public_cache_max_entries=int(
-                        getattr(config, "FINANCE_PUBLIC_MARKET_CACHE_MAX_ENTRIES", 256) or 256
-                    ),
-                    public_yahoo_series_ttl_seconds=float(
-                        getattr(config, "FINANCE_PUBLIC_MARKET_YAHOO_SERIES_TTL_SECONDS", 900.0) or 900.0
-                    ),
-                    public_yahoo_quote_ttl_seconds=float(
-                        getattr(config, "FINANCE_PUBLIC_MARKET_YAHOO_QUOTE_TTL_SECONDS", 60.0) or 60.0
-                    ),
-                    public_akshare_series_ttl_seconds=float(
-                        getattr(config, "FINANCE_PUBLIC_MARKET_AKSHARE_SERIES_TTL_SECONDS", 300.0) or 300.0
-                    ),
-                    public_akshare_quote_ttl_seconds=float(
-                        getattr(config, "FINANCE_PUBLIC_MARKET_AKSHARE_QUOTE_TTL_SECONDS", 15.0) or 15.0
-                    ),
-                    public_failure_ttl_seconds=float(
-                        getattr(config, "FINANCE_PUBLIC_MARKET_FAILURE_TTL_SECONDS", 15.0) or 15.0
-                    ),
-                )
-            )
-            event_store = MarketEventStore(db_path)
-            seed_security_master = getattr(provider, "seed_security_master", None)
-            if callable(seed_security_master):
-                try:
-                    seed_security_master(event_store)
-                except Exception as exc:
-                    logger.warning(
-                        "finance provider security master seed failed: provider=%s reason=%s",
-                        str(getattr(provider, "id", "") or ""),
-                        type(exc).__name__,
-                    )
-            return MarketDataToolService(provider=provider, event_store=event_store)
-        except MarketDataValidationError as exc:
-            logger.warning(
-                "finance market data provider rejected: field=%s code=%s provider=%s",
-                exc.field,
-                exc.code,
-                exc.provider,
-            )
-            return None
-        except Exception as exc:
-            logger.warning("finance market data tools disabled: %s", type(exc).__name__)
-            return None
-
     def _build_tool_handlers(self) -> dict[str, BaseToolHandler]:
         handlers: dict[str, BaseToolHandler] = {
             "retrieve_memory": RetrieveMemoryToolHandler(
@@ -5104,16 +5018,6 @@ class AkaneMemoryEngine:
         cover_song_service = self._get_cover_song_service()
         if cover_song_service is not None:
             handlers["cover_song"] = CoverSongToolHandler(cover_song_service=cover_song_service)
-        market_service = getattr(self, "market_data_tool_service", None)
-        if market_service is not None:
-            from .finance import build_market_tool_handlers
-
-            handlers.update(
-                build_market_tool_handlers(
-                    market_service,
-                    generated_file_service=self._get_generated_file_service(),
-                )
-            )
         return handlers
 
     def _resolve_tool_handlers(

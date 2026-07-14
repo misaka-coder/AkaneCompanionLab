@@ -2,17 +2,12 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
-
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 import config
 from companion_v01.finance import FinanceSubscriptionService
 from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
-from companion_v01.routes.qq import build_qq_router
 from services.market_data import MarketEventStore
 
 
@@ -179,102 +174,6 @@ class FinanceSubscriptionServiceTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "subscription_sync_failed")
         self.assertEqual(gateway.resolve_finance_mode(self.context.session_id), active_mode)
-
-
-class FinanceSubscriptionRouteTests(unittest.TestCase):
-    def test_group_admin_command_persists_subscription_and_watchlist_without_llm(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MarketEventStore(Path(temp_dir) / "route_subscriptions.sqlite3")
-            store.upsert_security(
-                provider="mock_choice",
-                code="000000.TEST",
-                display_name="合成测试公司",
-                aliases=("测试公司",),
-                source="Synthetic Security Master",
-                as_of=1_752_153_600,
-                now_ts=100,
-            )
-            service = FinanceSubscriptionService(store=store, provider_id="mock_choice")
-            gateway = NapCatQQGateway()
-            process_calls = []
-
-            class FakeEngine:
-                def process_turn_stream(self, payload):
-                    process_calls.append(payload)
-                    yield {"type": "final_ui", "payload": {"speech": "should not run"}}
-
-            class FakeMetrics:
-                def observe_request(self, *_args, **_kwargs):
-                    return None
-
-            class FakeResponse:
-                def raise_for_status(self):
-                    return None
-
-                def json(self):
-                    return {"status": "ok"}
-
-            class FakeWorker:
-                def status(self):
-                    return {"enabled": False, "running": False, "status": "disabled"}
-
-            app = FastAPI()
-            app.include_router(
-                build_qq_router(
-                    engine=FakeEngine(),
-                    config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
-                    qq_gateway=gateway,
-                    runtime_metrics=FakeMetrics(),
-                    logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
-                    log_event=lambda *_args, **_kwargs: None,
-                    finance_subscription_service=service,
-                    finance_event_worker=FakeWorker(),
-                )
-            )
-            with (
-                patch.object(config, "FINANCE_ASSISTANT_ENABLED", True),
-                patch.object(config, "QQ_FINANCE_MODE_COMMANDS_ENABLED", True),
-                patch.object(config, "QQ_FINANCE_PUSH_ENABLED", True),
-                patch.object(config, "QQ_BRIDGE_ENABLED", True),
-                patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()),
-            ):
-                enabled = TestClient(app).post(
-                    "/api/qq/napcat/event",
-                    json={
-                        "post_type": "message",
-                        "message_type": "group",
-                        "self_id": 90001,
-                        "user_id": 10001,
-                        "group_id": 20001,
-                        "message_id": "finance-sub-enable",
-                        "raw_message": "Akane 开启财经推送",
-                        "sender": {"nickname": "管理员", "role": "admin"},
-                    },
-                )
-                added = TestClient(app).post(
-                    "/api/qq/napcat/event",
-                    json={
-                        "post_type": "message",
-                        "message_type": "group",
-                        "self_id": 90001,
-                        "user_id": 10001,
-                        "group_id": 20001,
-                        "message_id": "finance-watch-add",
-                        "raw_message": "Akane 关注 测试公司",
-                        "sender": {"nickname": "管理员", "role": "admin"},
-                    },
-                )
-                status = TestClient(app).get("/api/qq/napcat/status")
-
-            enabled_payload = enabled.json()
-            added_payload = added.json()
-            self.assertEqual(enabled_payload["reason"], "qq_finance_mode_command")
-            self.assertTrue(enabled_payload["subscription_id"])
-            self.assertEqual(added_payload["reason"], "qq_finance_watchlist_command")
-            self.assertEqual(added_payload["code"], "000000.TEST")
-            self.assertEqual(added_payload["watchlist_count"], 1)
-            self.assertEqual(status.json()["data"]["finance_event_worker"]["status"], "disabled")
-            self.assertEqual(process_calls, [])
 
 
 if __name__ == "__main__":

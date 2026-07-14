@@ -18,7 +18,7 @@ from companion_v01.finance import (
     LocalChartProvider,
     MarketDataToolService,
     QQFinanceDeliveryAdapter,
-    build_market_tool_handlers,
+    RenderMarketChartToolHandler,
 )
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
@@ -145,10 +145,11 @@ class RenderMarketChartToolTests(unittest.TestCase):
             event_store=MarketEventStore(self.root / "events.sqlite3"),
             clock=lambda: 1_752_153_600,
         )
-        self.handlers = build_market_tool_handlers(
-            self.market_service,
+        handler = RenderMarketChartToolHandler(
+            service=self.market_service,
             generated_file_service=self.generated_service,
         )
+        self.handlers = {handler.tool_type: handler}
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()

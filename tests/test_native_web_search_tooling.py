@@ -238,12 +238,6 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 "read_workspace",
                 "inspect_generated_file",
                 "generate_image",
-                "market_resolve_security",
-                "market_news_search",
-                "market_quote_snapshot",
-                "market_price_series",
-                "render_market_chart",
-                "compose_finance_report",
             },
         )
 
