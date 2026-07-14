@@ -86,7 +86,7 @@ The following public source remains temporarily for later private-plugin
 migration, but has no composition-root, Engine, prompt, settings, or QQ route
 entry point:
 
-- market news search and event ingestion;
+- proactive market-news event ingestion;
 - finance subscription, orchestration, delivery, and worker classes;
 - `QQMessageContext.finance_mode` and frozen delivery/event contracts still
   referenced only by inactive finance source tests;
@@ -118,8 +118,10 @@ Remaining exit conditions:
 The chart/report portion of this window is closed: M65-D2/D3 supplied the
 generic host boundaries, the private artifact now owns both capabilities, and
 the transferred public providers, handlers, exports, and tests have been
-deleted. The conditions above now apply only to the remaining news,
-subscription, event-job, delivery, storage, and EmQuant source.
+deleted. M65-D5 also moved on-demand market-news search into the private wheel
+and deleted the public handler/read service. The conditions above now apply
+only to proactive news ingestion, subscription, event-job, delivery, storage,
+and EmQuant source.
 
 No database, user asset, instance data, or private artifact content is modified
 by the read cutover. Existing finance databases are left untouched but are no

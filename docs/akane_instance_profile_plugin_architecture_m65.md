@@ -834,9 +834,9 @@ capability slice.
 ### M65-D — Private finance extraction
 
 Implementation status: the generic host-consumer foundation and Engine tool
-bridge are complete. The first private installed artifact is implemented in
-its private repository. Legacy finance read cutover and the remaining finance
-surfaces are not yet implemented.
+bridge are complete. The private installed artifact owns read-only market data,
+on-demand news, charts, and reports. Stateful subscriptions, proactive jobs,
+notifications, and EmQuant remain in a closed migration window.
 
 The M65-D1 bridge consumes only the immutable capability descriptor snapshot
 and `PluginHost.invoke_from_consumer()`. It does not expose raw adapters to the
@@ -905,14 +905,15 @@ complete.
 
 ## Immediate Next Action
 
-The M65-D1 read cutover and the M65-D2/D3 finance chart/report cutover are
-closed. The installed private artifact now owns five active capabilities;
+The M65-D1 read cutover, M65-D2/D3 finance chart/report cutover, and M65-D5
+on-demand news cutover are closed. The installed private artifact now owns six active capabilities;
 public Akane retains only generic plugin, result-experience, managed-artifact,
 Engine-event, and client-delivery boundaries.
 
-Before migrating finance news, subscriptions, proactive jobs, or EmQuant,
-perform a new ownership probe for storage, job, scoped config/secret, command,
-and notification contracts. Do not reactivate the frozen public finance path
-or begin cloud deployment in the same migration change. The enabled desktop
-Care compatibility window must still be closed before M65-E or any
-multi-instance hosted deployment.
+The ownership probe is recorded in `docs/plugin_market_news_m65_d5.md`.
+Before migrating subscriptions, proactive jobs, notifications, or EmQuant,
+implement the scoped storage/job/command/notification/config contracts in the
+order driven by their first real consumer. Do not reactivate the frozen public
+finance path or begin cloud deployment in the same migration change. The
+enabled desktop Care compatibility window must still be closed before M65-E
+or any multi-instance hosted deployment.

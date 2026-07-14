@@ -112,9 +112,10 @@ QQ handle hydration, image/file routing, and explicit delivery truth. The
 public frozen chart/report providers, handlers, exports, and tests were deleted
 in the same cutover, so Akane has no second finance artifact implementation.
 
-The remaining public finance migration window covers news, subscriptions,
-event jobs, and EmQuant only. Those surfaces must not reuse this artifact port
-as a substitute for their missing storage/job/config contracts.
+The remaining public finance migration window covers proactive news ingestion,
+subscriptions, event jobs, and EmQuant only. On-demand news moved in M65-D5
+without using this artifact port. The remaining surfaces must not reuse the
+artifact port as a substitute for their missing storage/job/config contracts.
 
 ## Validation
 

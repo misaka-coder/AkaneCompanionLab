@@ -4,7 +4,6 @@ import unittest
 from pathlib import Path
 import tempfile
 
-from companion_v01.finance.market_service import MarketDataToolService
 from services.market_data import (
     MarketBar,
     MarketDataResponse,
@@ -122,12 +121,6 @@ class PublicMarketProviderTests(unittest.TestCase):
             csi300 = store.resolve_security("000300", provider="public_market")
             byd = store.resolve_security("比亚迪", provider="public_market")
             vendor = store.resolve_security("^N225", provider="public_market")
-            service = MarketDataToolService(provider=provider, event_store=store)
-            canonical_pair = service.canonicalize_trusted_codes(
-                ("513000", "000300"),
-                profile_user_id="qq_group_shared_123",
-                session_id="qq_group_shared_123",
-            )
 
         self.assertEqual(len(first), 11)
         self.assertEqual(len(second), 11)
@@ -140,11 +133,10 @@ class PublicMarketProviderTests(unittest.TestCase):
         self.assertEqual(etf_code[0]["match_type"], "exact")
         self.assertEqual(csi300[0]["code"], "CSI300.INDEX")
         self.assertEqual(csi300[0]["match_type"], "exact")
-        self.assertEqual(canonical_pair, ("513000.SH", "CSI300.INDEX"))
         self.assertEqual({item["code"] for item in byd}, {"002594.SZ", "1211.HK"})
         self.assertEqual(vendor, ())
 
-    def test_runtime_symbol_discovery_verifies_and_seeds_unknown_code(self) -> None:
+    def test_runtime_symbol_discovery_verifies_unknown_code(self) -> None:
         yahoo = StubAdapter(source="Yahoo", timezone="Asia/Shanghai")
         yahoo.search_results = [
             {
@@ -156,20 +148,11 @@ class PublicMarketProviderTests(unittest.TestCase):
             }
         ]
         provider = PublicMarketProvider(yahoo=yahoo, dependency_probe=lambda _name: True)
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MarketEventStore(Path(temp_dir) / "market.sqlite3")
-            provider.seed_security_master(store, now_ts=200)
-            service = MarketDataToolService(provider=provider, event_store=store, clock=lambda: 300)
+        result = provider.discover_securities("TSLA", limit=10)
 
-            result = service.resolve_security(
-                "TSLA",
-                profile_user_id="qq_group_shared_123",
-                session_id="qq_group_shared_123",
-            )
-
-        self.assertTrue(result["resolved"])
-        self.assertEqual(result["resolved_code"], "TSLA.US")
-        self.assertIn("Yahoo Finance Search", result["data"][0]["source"])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].canonical_code, "TSLA.US")
+        self.assertEqual(result[0].display_name, "Tesla, Inc.")
 
     def test_series_routes_by_canonical_instrument(self) -> None:
         yahoo = StubAdapter(source="Yahoo", timezone="Asia/Tokyo")

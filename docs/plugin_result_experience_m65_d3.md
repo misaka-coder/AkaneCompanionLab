@@ -115,8 +115,9 @@ model/render/delivery chain do not satisfy this gate.
 - suggested actions are not automatic commands;
 - M65-D3 does not claim the semantic truth of trusted plugin data—only its
   shape, safety, provenance boundary, and presentation discipline;
-- finance charts and reports now use this contract together with M65-D2;
-- news, jobs, subscriptions, and EmQuant remain outside this slice;
+- finance charts and reports use this contract together with M65-D2;
+- M65-D5 on-demand finance news also uses this contract;
+- proactive jobs, subscriptions, notifications, and EmQuant remain outside this slice;
 - live upstream availability still belongs to deployment acceptance and is not
   inferred from deterministic provider fixtures.
 
