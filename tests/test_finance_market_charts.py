@@ -10,23 +10,18 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image
 
-import config
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.finance import (
     ChartRequest,
-    FinanceAnalysisResult,
     LocalChartProvider,
     MarketDataToolService,
-    QQFinanceDeliveryAdapter,
     RenderMarketChartToolHandler,
 )
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 from companion_v01.store import MemoryStore
 from companion_v01.tool_runtime import ToolExecutionContext
 from services.market_data import (
-    FinanceSubscription,
     MarketBar,
     MarketDataResponse,
     MarketDataValidationError,
@@ -250,135 +245,6 @@ class RenderMarketChartToolTests(unittest.TestCase):
             self.memory_store.list_generated_files(profile_user_id="owner", session_id="session"),
             [],
         )
-
-
-class FinanceChartQQDeliveryTests(unittest.TestCase):
-    def _event(self, path: Path) -> dict:
-        return {
-            "type": "market_chart_ready",
-            "delivery_scope": "finance_market_chart",
-            "send_to_user": True,
-            "generated_file": {
-                "generated_id": "generated::chart",
-                "absolute_path": str(path),
-                "output_title": "市场图表",
-                "output_format": "png",
-                "file_ext": "png",
-                "mime_type": "image/png",
-                "created_by_tool": "render_market_chart",
-            },
-        }
-
-    def test_subscription_authorization_sends_image_without_current_text_intent(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            chart_path = Path(temp_dir) / "chart.png"
-            chart_path.write_bytes(b"not-empty")
-            gateway = NapCatQQGateway()
-            context = QQMessageContext(
-                should_respond=True,
-                reason="finance_subscription_push",
-                is_group=True,
-                target_id=20001,
-                group_id=20001,
-                session_id="qq_group_shared_20001",
-                profile_user_id="qq_group_shared_20001",
-                finance_mode="push",
-                clean_message="",
-                raw_message="",
-            )
-
-            class FakeResponse:
-                def raise_for_status(self) -> None:
-                    return None
-
-                def json(self):
-                    return {"status": "ok"}
-
-            with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as post:
-                result = gateway.send_market_charts(
-                    context,
-                    [self._event(chart_path)],
-                    authorization="finance_subscription_push",
-                )
-
-            self.assertTrue(result["ok"])
-            payload = post.call_args.kwargs["json"]
-            self.assertEqual(payload["group_id"], 20001)
-            self.assertEqual(payload["message"][0]["type"], "image")
-
-    def test_chart_delivery_does_not_bypass_finance_authorization(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            chart_path = Path(temp_dir) / "chart.png"
-            chart_path.write_bytes(b"not-empty")
-            gateway = NapCatQQGateway()
-            context = QQMessageContext(
-                should_respond=True,
-                reason="private_message",
-                target_id=10001,
-                user_id=10001,
-                session_id="qq_10001",
-                profile_user_id="qq_10001",
-                finance_mode="off",
-                clean_message="发图",
-                raw_message="发图",
-            )
-
-            with patch("companion_v01.qq_gateway.requests.post") as post:
-                result = gateway.send_market_charts(
-                    context,
-                    [self._event(chart_path)],
-                    authorization="finance_tool_result",
-                )
-
-            self.assertFalse(result["ok"])
-            self.assertEqual(result["status"], "blocked")
-            post.assert_not_called()
-
-    def test_proactive_adapter_passes_subscription_authorization_to_chart_delivery(self) -> None:
-        calls = []
-
-        class FakeGateway:
-            def send_replies(self, context, messages):
-                return {"ok": True, "count": len(messages), "results": [{"ok": True}]}
-
-            def send_market_charts(self, context, events, *, authorization):
-                calls.append((context, events, authorization))
-                return {"ok": True, "status": "sent", "count": 1, "results": [{"ok": True}]}
-
-        subscription = FinanceSubscription(
-            subscription_id="sub-chart",
-            client="qq",
-            target_id="20001",
-            is_group=True,
-            session_id="qq_group_shared_20001",
-            profile_user_id="qq_group_shared_20001",
-            character_pack_id="akane_default",
-            finance_mode="push",
-            enabled=True,
-            filters={"codes": ["000000.TEST"]},
-            delivery_policy={"level": "alert"},
-        )
-        analysis = FinanceAnalysisResult(
-            ok=True,
-            status="analyzed",
-            analysis_id="market_analysis:chart",
-            messages=("市场快讯",),
-            frame={"tool_events": [{"type": "market_chart_ready", "send_to_user": True}]},
-        )
-
-        with (
-            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True),
-            patch.object(config, "QQ_FINANCE_PUSH_ENABLED", True),
-            patch.object(config, "QQ_BRIDGE_ENABLED", True),
-        ):
-            result = QQFinanceDeliveryAdapter(FakeGateway()).deliver(
-                subscription=subscription,
-                analysis=analysis,
-            )
-
-        self.assertTrue(result.ok)
-        self.assertEqual(calls[0][2], "finance_subscription_push")
-        self.assertEqual(calls[0][0].reason, "finance_subscription_push")
 
 
 if __name__ == "__main__":

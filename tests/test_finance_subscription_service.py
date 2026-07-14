@@ -3,11 +3,9 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 import unittest
-from unittest.mock import patch
 
-import config
 from companion_v01.finance import FinanceSubscriptionService
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
+from companion_v01.qq_gateway import QQMessageContext
 from services.market_data import MarketEventStore
 
 
@@ -152,29 +150,6 @@ class FinanceSubscriptionServiceTests(unittest.TestCase):
         )
         enabled = self.store.list_subscriptions(enabled=True, client="qq", target_id="20001")
         self.assertEqual(len(enabled), 1)
-
-    def test_gateway_mode_switch_fails_closed_when_subscription_write_fails(self) -> None:
-        gateway = NapCatQQGateway()
-
-        class FailingSubscriptionService:
-            def sync_mode(self, _context, _mode):
-                return {"ok": False, "status": "subscription_failed", "reason": "synthetic"}
-
-        with (
-            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True),
-            patch.object(config, "QQ_FINANCE_MODE_COMMANDS_ENABLED", True),
-            patch.object(config, "QQ_FINANCE_PUSH_ENABLED", True),
-        ):
-            active_mode = gateway.resolve_finance_mode(self.context.session_id)
-            result = gateway.handle_finance_mode_command(
-                self.context,
-                event={"sender": {"role": "admin"}},
-                subscription_service=FailingSubscriptionService(),
-            )
-
-        self.assertEqual(result["status"], "subscription_sync_failed")
-        self.assertEqual(gateway.resolve_finance_mode(self.context.session_id), active_mode)
-
 
 if __name__ == "__main__":
     unittest.main()

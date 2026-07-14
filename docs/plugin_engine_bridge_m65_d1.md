@@ -1,6 +1,6 @@
 # Plugin Engine Bridge M65-D1
 
-Status: generic bridge implemented; legacy finance read cutover complete.
+Status: generic bridge implemented; legacy finance read cutover and public-host surface cleanup complete.
 
 ## Boundary
 
@@ -56,6 +56,28 @@ allowlisted private installed plugin. They are absent when that artifact is
 disabled, missing, rejected, or fails activation. Akane still starts and its
 ordinary tools continue to resolve in each case.
 
+## Public-host Surface Cleanup
+
+The follow-up cleanup removes finance controls that remained visible in the
+public host after their runtime callers had already been disconnected:
+
+- removed all finance, market-provider, event-worker, push-governance, EmQuant
+  client, and QQ finance switches from `config.Settings` and module globals;
+- removed QQ finance-mode commands, per-session overrides, state persistence,
+  and background-delivery context hydration;
+- removed the finance-only chart/report delivery branches from the QQ route and
+  gateway; future plugin artifacts must use a generic, bounded managed-artifact
+  port rather than regain access to the concrete QQ gateway;
+- collapsed emotion-delivery suppression back to generic generated-file events
+  instead of recognizing retired finance event types.
+
+Existing QQ state files are read safely: a legacy `finance_mode_overrides`
+member is ignored and omitted on the next ordinary state save. Existing
+finance databases and files remain untouched. Legacy finance keys in `.env`
+are ignored by pydantic-settings and reported explicitly as retired
+public-host configuration; they no longer imply that an inactive host
+implementation can be enabled.
+
 ## Remaining Source Migration Window
 
 The following public source remains temporarily for later private-plugin
@@ -65,7 +87,8 @@ entry point:
 - market news search and event ingestion;
 - deterministic chart/report providers and handlers;
 - finance subscription, orchestration, delivery, and worker classes;
-- legacy finance config fields and QQ gateway compatibility state/methods;
+- `QQMessageContext.finance_mode` and frozen delivery/event contracts still
+  referenced only by inactive finance source tests;
 - `services.market_data` and EmQuant bridge source.
 
 Reason:

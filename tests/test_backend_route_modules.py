@@ -781,20 +781,10 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with (
-            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True, create=True),
-            patch.object(
-                config,
-                "QQ_FINANCE_MODE_COMMANDS_ENABLED",
-                True,
-                create=True,
-            ),
-            patch.object(config, "QQ_FINANCE_PUSH_ENABLED", False, create=True),
-            patch(
-                "companion_v01.qq_gateway.requests.post",
-                return_value=FakeResponse(),
-            ) as mocked_post,
-        ):
+        with patch(
+            "companion_v01.qq_gateway.requests.post",
+            return_value=FakeResponse(),
+        ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -813,7 +803,9 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(len(process_calls), 1, payload)
         self.assertNotIn("finance_mode", process_calls[0])
         self.assertNotIn("domain_profile", process_calls[0])
-        self.assertNotIn(f"qq_pri_{QQ_USER_FIXTURE_ID}", gateway.finance_mode_overrides)
+        self.assertFalse(hasattr(gateway, "finance_mode_overrides"))
+        self.assertFalse(hasattr(gateway, "send_market_charts"))
+        self.assertFalse(hasattr(gateway, "send_finance_reports"))
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
         self.assertIn("普通对话继续运行", sent_payload["message"])

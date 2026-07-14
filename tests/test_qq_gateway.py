@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -708,6 +709,32 @@ class QQGatewayTests(unittest.TestCase):
             )
             self.assertEqual(restored_context.character_pack_id, "reimu")
             self.assertEqual(restored_context.to_turn_payload()["character_pack_id"], "reimu")
+
+    def test_legacy_finance_mode_state_is_ignored_and_dropped_on_next_save(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "qq_gateway_state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "akane.qq_gateway_state.v1",
+                        "character_pack_overrides": {},
+                        "finance_mode_overrides": {f"qq_pri_{QQ_USER_FIXTURE_ID}": "push"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            gateway = NapCatQQGateway(state_path=state_path)
+            saved = gateway.set_session_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}", "reimu")
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+
+            self.assertTrue(saved)
+            self.assertFalse(hasattr(gateway, "finance_mode_overrides"))
+            self.assertNotIn("finance_mode_overrides", persisted)
+            self.assertEqual(
+                persisted["character_pack_overrides"][f"qq_pri_{QQ_USER_FIXTURE_ID}"],
+                "reimu",
+            )
 
     @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "mika_sample")
     def test_builtin_character_override_persists_across_restart(self) -> None:
@@ -1422,7 +1449,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["group_id"], QQ_GROUP_FIXTURE_ID)
         self.assertEqual(payload["message"][0]["type"], "image")
 
-    def test_emotion_images_are_suppressed_during_finance_artifact_delivery(self) -> None:
+    def test_emotion_images_are_suppressed_during_generated_file_delivery(self) -> None:
         gateway = NapCatQQGateway()
         context = QQMessageContext(
             should_respond=True,
@@ -1434,32 +1461,20 @@ class QQGatewayTests(unittest.TestCase):
             profile_user_id=f"qq_{QQ_USER_FIXTURE_ID}",
         )
 
-        chart_frame = {
+        artifact_frame = {
             "emotion": "happy",
-            "tool_events": [{"type": "market_chart_ready", "send_to_user": True}],
-        }
-        failed_chart_frame = {
-            "emotion": "thinking",
-            "tool_events": [
-                {
-                    "type": "finance_tool_completed",
-                    "tool_type": "render_market_chart",
-                    "status": "unavailable",
-                }
-            ],
+            "tool_events": [{"type": "generated_file_ready", "send_to_user": True}],
         }
 
         mface_result = gateway.send_emotion_mface(
             context,
-            chart_frame,
+            artifact_frame,
             qq_delivery_config={"emotion_mface": {"enabled": True}},
         )
-        image_result = gateway.send_emotion_image(context, chart_frame, image={})
-        failed_image_result = gateway.send_emotion_image(context, failed_chart_frame, image={})
+        image_result = gateway.send_emotion_image(context, artifact_frame, image={})
 
         self.assertEqual(mface_result["reason"], "artifact_delivery_turn")
         self.assertEqual(image_result["reason"], "artifact_delivery_turn")
-        self.assertEqual(failed_image_result["reason"], "artifact_delivery_turn")
 
     def test_current_outfit_id_is_read_from_turn_payload_for_emotion_image_fallback(self) -> None:
         self.assertEqual(

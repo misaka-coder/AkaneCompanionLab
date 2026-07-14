@@ -259,60 +259,6 @@ class Settings(BaseSettings):
     # 单个工作区文件允许直接读取的最大字节数（技术保护，不是 prompt 预算）
     AKANE_WORKSPACE_MAX_READ_BYTES: int = 64 * 1024 * 1024
 
-    # === 金融领域档案 ===
-    # 金融问答领域总开关；关闭时所有会话强制回到 off
-    FINANCE_ASSISTANT_ENABLED: bool = False
-    # 新 QQ 会话没有覆盖值时的默认模式：off/qa/push
-    FINANCE_DEFAULT_MODE: str = "off"
-    # 金融研究建议工具轮次预算与全局硬上限
-    FINANCE_TOOL_ROUND_BUDGET: int = 12
-    FINANCE_TOOL_ROUND_HARD_LIMIT: int = 16
-    # 主动金融分析遇到空回复、进度占位或人设兜底语时的进程内重试
-    FINANCE_ANALYSIS_MAX_ATTEMPTS: int = 3
-    FINANCE_ANALYSIS_RETRY_BACKOFF_SECONDS: float = 0.5
-    # 行情供应商显式选择；disabled 不联网、不回退 Mock，emquant 走 Bridge，public_market 走可选公开依赖
-    FINANCE_MARKET_PROVIDER: str = "disabled"
-    FINANCE_PUBLIC_MARKET_YAHOO_ENABLED: bool = True
-    FINANCE_PUBLIC_MARKET_AKSHARE_ENABLED: bool = True
-    FINANCE_PUBLIC_MARKET_TIMEOUT_SECONDS: float = 8.0
-    FINANCE_PUBLIC_MARKET_CACHE_MAX_ENTRIES: int = 256
-    FINANCE_PUBLIC_MARKET_YAHOO_SERIES_TTL_SECONDS: float = 900.0
-    FINANCE_PUBLIC_MARKET_YAHOO_QUOTE_TTL_SECONDS: float = 60.0
-    FINANCE_PUBLIC_MARKET_AKSHARE_SERIES_TTL_SECONDS: float = 300.0
-    FINANCE_PUBLIC_MARKET_AKSHARE_QUOTE_TTL_SECONDS: float = 15.0
-    FINANCE_PUBLIC_MARKET_FAILURE_TTL_SECONDS: float = 15.0
-    # 免费新闻事件源；原文转发与模型分析分离，审核失败时 fail closed
-    FINANCE_PUBLIC_NEWS_ENABLED: bool = True
-    FINANCE_PUBLIC_NEWS_POLL_INTERVAL_SECONDS: int = 15
-    FINANCE_PUBLIC_NEWS_TIMEOUT_SECONDS: float = 6.0
-    FINANCE_PUBLIC_NEWS_REQUIRE_LLM_MODERATION: bool = True
-    FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED: bool = True
-    # 金融事件真相源与独立 EmQuant Bridge（Bridge 必须是 loopback HTTP）
-    FINANCE_EVENT_DB_PATH: str = ""
-    EMQUANT_BRIDGE_URL: str = "http://127.0.0.1:9910"
-    EMQUANT_BRIDGE_TOKEN: str = ""
-    EMQUANT_HTTP_TIMEOUT_SECONDS: float = 15.0
-    # 主进程事件 worker；默认关闭，启用后只轮询 loopback Bridge 的已标准化 callback 队列
-    FINANCE_EVENT_INGESTION_ENABLED: bool = False
-    FINANCE_EVENT_POLL_INTERVAL_SECONDS: float = 2.0
-    FINANCE_EVENT_POLL_BATCH_SIZE: int = 20
-    FINANCE_EVENT_RECOVERY_MAX_AGE_SECONDS: int = 6 * 60 * 60
-    # 主动推送治理只影响 QQ 发送时机，不影响事件采集和用户主动查询；alert 永远绕过
-    FINANCE_PUSH_GOVERNANCE_ENABLED: bool = True
-    FINANCE_PUSH_CLUSTER_COALESCE_SECONDS: int = 90
-    FINANCE_PUSH_CLUSTER_MAX_WAIT_SECONDS: int = 180
-    FINANCE_PUSH_DIGEST_ENABLED: bool = True
-    FINANCE_PUSH_DIGEST_INTERVAL_SECONDS: int = 30 * 60
-    FINANCE_PUSH_MIN_INTERVAL_SECONDS: int = 20
-    FINANCE_PUSH_RATE_WINDOW_SECONDS: int = 5 * 60
-    FINANCE_PUSH_MAX_PER_WINDOW: int = 6
-    FINANCE_PUSH_QUIET_HOURS_ENABLED: bool = False
-    FINANCE_PUSH_QUIET_START: str = "23:00"
-    FINANCE_PUSH_QUIET_END: str = "07:00"
-    # QQ 金融模式命令与主动推送授权开关
-    QQ_FINANCE_MODE_COMMANDS_ENABLED: bool = True
-    QQ_FINANCE_PUSH_ENABLED: bool = False
-
     # === QQ / NapCat 桥接 ===
     # 总开关
     QQ_BRIDGE_ENABLED: bool = False
@@ -429,6 +375,14 @@ _KNOWN_EXTERNAL_ENV_KEYS: set[str] = {
 }
 
 
+def _is_retired_finance_env_key(key: str) -> bool:
+    return key.startswith(("FINANCE_", "QQ_FINANCE_")) or key in {
+        "EMQUANT_BRIDGE_URL",
+        "EMQUANT_BRIDGE_TOKEN",
+        "EMQUANT_HTTP_TIMEOUT_SECONDS",
+    }
+
+
 def _warn_unknown_env_keys(settings_obj: Settings) -> None:
     """Warn about .env keys that don't match any Settings field.
 
@@ -443,6 +397,7 @@ def _warn_unknown_env_keys(settings_obj: Settings) -> None:
 
     known = set(settings_obj.model_fields.keys()) | _KNOWN_EXTERNAL_ENV_KEYS
 
+    retired_finance: list[str] = []
     unknown: list[str] = []
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
@@ -452,11 +407,21 @@ def _warn_unknown_env_keys(settings_obj: Settings) -> None:
             m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
             if m:
                 key = m.group(1)
-                if key not in known:
+                if key in known:
+                    continue
+                if _is_retired_finance_env_key(key):
+                    retired_finance.append(key)
+                else:
                     unknown.append(key)
     except OSError:
         return
 
+    if retired_finance:
+        logger.warning(
+            "Retired public-host finance keys in %s are ignored: %s",
+            env_file,
+            ", ".join(sorted(retired_finance)),
+        )
     if unknown:
         logger.warning(
             "Unrecognized keys in %s (typo?): %s — these are ignored by pydantic-settings.",
@@ -499,26 +464,6 @@ def _apply_settings(s: Settings) -> None:
     global WEB_SEARCH_MCP_TIMEOUT_SECONDS, CHAT_FINAL_RESPONSE_MAX_ATTEMPTS
     global MAX_BROWSER_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
     global AKANE_WORKSPACE_ROOT, AKANE_WORKSPACE_MAX_READ_BYTES
-    global FINANCE_ASSISTANT_ENABLED, FINANCE_DEFAULT_MODE, FINANCE_MARKET_PROVIDER
-    global FINANCE_PUBLIC_MARKET_YAHOO_ENABLED, FINANCE_PUBLIC_MARKET_AKSHARE_ENABLED
-    global FINANCE_PUBLIC_MARKET_TIMEOUT_SECONDS, FINANCE_PUBLIC_MARKET_CACHE_MAX_ENTRIES
-    global FINANCE_PUBLIC_MARKET_YAHOO_SERIES_TTL_SECONDS, FINANCE_PUBLIC_MARKET_YAHOO_QUOTE_TTL_SECONDS
-    global FINANCE_PUBLIC_MARKET_AKSHARE_SERIES_TTL_SECONDS, FINANCE_PUBLIC_MARKET_AKSHARE_QUOTE_TTL_SECONDS
-    global FINANCE_PUBLIC_MARKET_FAILURE_TTL_SECONDS
-    global FINANCE_PUBLIC_NEWS_ENABLED, FINANCE_PUBLIC_NEWS_POLL_INTERVAL_SECONDS
-    global FINANCE_PUBLIC_NEWS_TIMEOUT_SECONDS, FINANCE_PUBLIC_NEWS_REQUIRE_LLM_MODERATION
-    global FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED
-    global FINANCE_TOOL_ROUND_BUDGET, FINANCE_TOOL_ROUND_HARD_LIMIT
-    global FINANCE_ANALYSIS_MAX_ATTEMPTS, FINANCE_ANALYSIS_RETRY_BACKOFF_SECONDS
-    global FINANCE_EVENT_DB_PATH, EMQUANT_BRIDGE_URL, EMQUANT_BRIDGE_TOKEN, EMQUANT_HTTP_TIMEOUT_SECONDS
-    global FINANCE_EVENT_INGESTION_ENABLED, FINANCE_EVENT_POLL_INTERVAL_SECONDS
-    global FINANCE_EVENT_POLL_BATCH_SIZE, FINANCE_EVENT_RECOVERY_MAX_AGE_SECONDS
-    global FINANCE_PUSH_GOVERNANCE_ENABLED, FINANCE_PUSH_CLUSTER_COALESCE_SECONDS
-    global FINANCE_PUSH_CLUSTER_MAX_WAIT_SECONDS, FINANCE_PUSH_DIGEST_ENABLED
-    global FINANCE_PUSH_DIGEST_INTERVAL_SECONDS, FINANCE_PUSH_MIN_INTERVAL_SECONDS
-    global FINANCE_PUSH_RATE_WINDOW_SECONDS, FINANCE_PUSH_MAX_PER_WINDOW
-    global FINANCE_PUSH_QUIET_HOURS_ENABLED, FINANCE_PUSH_QUIET_START, FINANCE_PUSH_QUIET_END
-    global QQ_FINANCE_MODE_COMMANDS_ENABLED, QQ_FINANCE_PUSH_ENABLED
     global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ, QQ_CHARACTER_PACK_ID
     global \
         QQ_REPLY_MODE, \
@@ -664,88 +609,6 @@ def _apply_settings(s: Settings) -> None:
     MAX_TASK_WORKER_ROUNDS = max(1, min(5, int(s.MAX_TASK_WORKER_ROUNDS)))
     AKANE_WORKSPACE_ROOT = str(s.AKANE_WORKSPACE_ROOT or "").strip()
     AKANE_WORKSPACE_MAX_READ_BYTES = max(1024, int(s.AKANE_WORKSPACE_MAX_READ_BYTES))
-
-    # === Finance domain ===
-    FINANCE_ASSISTANT_ENABLED = bool(s.FINANCE_ASSISTANT_ENABLED)
-    raw_finance_default_mode = str(s.FINANCE_DEFAULT_MODE or "off").strip().lower()
-    FINANCE_DEFAULT_MODE = raw_finance_default_mode if raw_finance_default_mode in {"off", "qa", "push"} else "off"
-    FINANCE_TOOL_ROUND_HARD_LIMIT = max(1, min(16, int(s.FINANCE_TOOL_ROUND_HARD_LIMIT)))
-    FINANCE_TOOL_ROUND_BUDGET = max(
-        1,
-        min(FINANCE_TOOL_ROUND_HARD_LIMIT, int(s.FINANCE_TOOL_ROUND_BUDGET)),
-    )
-    FINANCE_ANALYSIS_MAX_ATTEMPTS = max(1, min(5, int(s.FINANCE_ANALYSIS_MAX_ATTEMPTS)))
-    FINANCE_ANALYSIS_RETRY_BACKOFF_SECONDS = max(
-        0.0,
-        min(5.0, float(s.FINANCE_ANALYSIS_RETRY_BACKOFF_SECONDS)),
-    )
-    FINANCE_MARKET_PROVIDER = str(s.FINANCE_MARKET_PROVIDER or "disabled").strip().lower() or "disabled"
-    FINANCE_PUBLIC_MARKET_YAHOO_ENABLED = bool(s.FINANCE_PUBLIC_MARKET_YAHOO_ENABLED)
-    FINANCE_PUBLIC_MARKET_AKSHARE_ENABLED = bool(s.FINANCE_PUBLIC_MARKET_AKSHARE_ENABLED)
-    FINANCE_PUBLIC_MARKET_TIMEOUT_SECONDS = max(1.0, min(60.0, float(s.FINANCE_PUBLIC_MARKET_TIMEOUT_SECONDS)))
-    FINANCE_PUBLIC_MARKET_CACHE_MAX_ENTRIES = max(1, min(4096, int(s.FINANCE_PUBLIC_MARKET_CACHE_MAX_ENTRIES)))
-    FINANCE_PUBLIC_MARKET_YAHOO_SERIES_TTL_SECONDS = max(
-        1.0, min(86400.0, float(s.FINANCE_PUBLIC_MARKET_YAHOO_SERIES_TTL_SECONDS))
-    )
-    FINANCE_PUBLIC_MARKET_YAHOO_QUOTE_TTL_SECONDS = max(
-        1.0, min(86400.0, float(s.FINANCE_PUBLIC_MARKET_YAHOO_QUOTE_TTL_SECONDS))
-    )
-    FINANCE_PUBLIC_MARKET_AKSHARE_SERIES_TTL_SECONDS = max(
-        1.0, min(86400.0, float(s.FINANCE_PUBLIC_MARKET_AKSHARE_SERIES_TTL_SECONDS))
-    )
-    FINANCE_PUBLIC_MARKET_AKSHARE_QUOTE_TTL_SECONDS = max(
-        1.0, min(86400.0, float(s.FINANCE_PUBLIC_MARKET_AKSHARE_QUOTE_TTL_SECONDS))
-    )
-    FINANCE_PUBLIC_MARKET_FAILURE_TTL_SECONDS = max(
-        1.0, min(86400.0, float(s.FINANCE_PUBLIC_MARKET_FAILURE_TTL_SECONDS))
-    )
-    FINANCE_PUBLIC_NEWS_ENABLED = bool(s.FINANCE_PUBLIC_NEWS_ENABLED)
-    FINANCE_PUBLIC_NEWS_POLL_INTERVAL_SECONDS = max(5, min(10 * 60, int(s.FINANCE_PUBLIC_NEWS_POLL_INTERVAL_SECONDS)))
-    FINANCE_PUBLIC_NEWS_TIMEOUT_SECONDS = max(1.0, min(20.0, float(s.FINANCE_PUBLIC_NEWS_TIMEOUT_SECONDS)))
-    FINANCE_PUBLIC_NEWS_REQUIRE_LLM_MODERATION = bool(s.FINANCE_PUBLIC_NEWS_REQUIRE_LLM_MODERATION)
-    FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED = bool(s.FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED)
-    FINANCE_EVENT_DB_PATH = str(s.FINANCE_EVENT_DB_PATH or "").strip()
-    EMQUANT_BRIDGE_URL = str(s.EMQUANT_BRIDGE_URL or "http://127.0.0.1:9910").strip()
-    EMQUANT_BRIDGE_TOKEN = str(s.EMQUANT_BRIDGE_TOKEN or "").strip()
-    EMQUANT_HTTP_TIMEOUT_SECONDS = max(1.0, min(60.0, float(s.EMQUANT_HTTP_TIMEOUT_SECONDS)))
-    FINANCE_EVENT_INGESTION_ENABLED = bool(s.FINANCE_EVENT_INGESTION_ENABLED)
-    FINANCE_EVENT_POLL_INTERVAL_SECONDS = max(
-        0.25,
-        min(60.0, float(s.FINANCE_EVENT_POLL_INTERVAL_SECONDS)),
-    )
-    FINANCE_EVENT_POLL_BATCH_SIZE = max(1, min(1000, int(s.FINANCE_EVENT_POLL_BATCH_SIZE)))
-    FINANCE_EVENT_RECOVERY_MAX_AGE_SECONDS = max(
-        60,
-        min(7 * 24 * 60 * 60, int(s.FINANCE_EVENT_RECOVERY_MAX_AGE_SECONDS)),
-    )
-    FINANCE_PUSH_GOVERNANCE_ENABLED = bool(s.FINANCE_PUSH_GOVERNANCE_ENABLED)
-    FINANCE_PUSH_CLUSTER_COALESCE_SECONDS = max(
-        0,
-        min(30 * 60, int(s.FINANCE_PUSH_CLUSTER_COALESCE_SECONDS)),
-    )
-    FINANCE_PUSH_CLUSTER_MAX_WAIT_SECONDS = max(
-        FINANCE_PUSH_CLUSTER_COALESCE_SECONDS,
-        min(2 * 60 * 60, int(s.FINANCE_PUSH_CLUSTER_MAX_WAIT_SECONDS)),
-    )
-    FINANCE_PUSH_DIGEST_ENABLED = bool(s.FINANCE_PUSH_DIGEST_ENABLED)
-    FINANCE_PUSH_DIGEST_INTERVAL_SECONDS = max(
-        5 * 60,
-        min(24 * 60 * 60, int(s.FINANCE_PUSH_DIGEST_INTERVAL_SECONDS)),
-    )
-    FINANCE_PUSH_MIN_INTERVAL_SECONDS = max(
-        0,
-        min(60 * 60, int(s.FINANCE_PUSH_MIN_INTERVAL_SECONDS)),
-    )
-    FINANCE_PUSH_RATE_WINDOW_SECONDS = max(
-        60,
-        min(24 * 60 * 60, int(s.FINANCE_PUSH_RATE_WINDOW_SECONDS)),
-    )
-    FINANCE_PUSH_MAX_PER_WINDOW = max(0, min(1000, int(s.FINANCE_PUSH_MAX_PER_WINDOW)))
-    FINANCE_PUSH_QUIET_HOURS_ENABLED = bool(s.FINANCE_PUSH_QUIET_HOURS_ENABLED)
-    FINANCE_PUSH_QUIET_START = str(s.FINANCE_PUSH_QUIET_START or "23:00").strip() or "23:00"
-    FINANCE_PUSH_QUIET_END = str(s.FINANCE_PUSH_QUIET_END or "07:00").strip() or "07:00"
-    QQ_FINANCE_MODE_COMMANDS_ENABLED = bool(s.QQ_FINANCE_MODE_COMMANDS_ENABLED)
-    QQ_FINANCE_PUSH_ENABLED = bool(s.QQ_FINANCE_PUSH_ENABLED)
 
     # === QQ / NapCat ===
     QQ_BRIDGE_ENABLED = bool(s.QQ_BRIDGE_ENABLED)

@@ -905,7 +905,7 @@ class FinanceAnalysisClientTests(unittest.TestCase):
             def process_turn(self, _payload):
                 raise AssertionError("engine must not be called when optional analysis is disabled")
 
-        with patch.object(config, "FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED", False):
+        with patch.object(config, "FINANCE_PUBLIC_NEWS_MODEL_ANALYSIS_ENABLED", False, create=True):
             result = AkaneFinanceAnalysisClient(UnexpectedEngine()).analyze(request)
 
         self.assertTrue(result.ok)

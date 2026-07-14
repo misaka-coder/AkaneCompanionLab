@@ -48,8 +48,8 @@ class QQFinanceDeliveryAdapterTests(unittest.TestCase):
         ):
             with (
                 self.subTest(expected=expected),
-                patch.object(config, "FINANCE_ASSISTANT_ENABLED", finance_enabled),
-                patch.object(config, "QQ_FINANCE_PUSH_ENABLED", push_enabled),
+                patch.object(config, "FINANCE_ASSISTANT_ENABLED", finance_enabled, create=True),
+                patch.object(config, "QQ_FINANCE_PUSH_ENABLED", push_enabled, create=True),
                 patch.object(config, "QQ_BRIDGE_ENABLED", bridge_enabled),
             ):
                 authorization = adapter.authorize(_subscription())
@@ -57,8 +57,8 @@ class QQFinanceDeliveryAdapterTests(unittest.TestCase):
                 self.assertEqual(authorization.reason, expected)
 
         with (
-            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True),
-            patch.object(config, "QQ_FINANCE_PUSH_ENABLED", True),
+            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True, create=True),
+            patch.object(config, "QQ_FINANCE_PUSH_ENABLED", True, create=True),
             patch.object(config, "QQ_BRIDGE_ENABLED", True),
         ):
             self.assertEqual(adapter.authorize(_subscription(enabled=False)).reason, "subscription_disabled")
@@ -77,8 +77,8 @@ class QQFinanceDeliveryAdapterTests(unittest.TestCase):
         )
 
         with (
-            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True),
-            patch.object(config, "QQ_FINANCE_PUSH_ENABLED", True),
+            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True, create=True),
+            patch.object(config, "QQ_FINANCE_PUSH_ENABLED", True, create=True),
             patch.object(config, "QQ_BRIDGE_ENABLED", True),
         ):
             result = adapter.deliver(subscription=_subscription(), analysis=analysis)
@@ -103,8 +103,8 @@ class QQFinanceDeliveryAdapterTests(unittest.TestCase):
         )
 
         with (
-            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True),
-            patch.object(config, "QQ_FINANCE_PUSH_ENABLED", True),
+            patch.object(config, "FINANCE_ASSISTANT_ENABLED", True, create=True),
+            patch.object(config, "QQ_FINANCE_PUSH_ENABLED", True, create=True),
             patch.object(config, "QQ_BRIDGE_ENABLED", True),
         ):
             result = adapter.deliver(subscription=_subscription(), analysis=analysis)

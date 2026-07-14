@@ -215,17 +215,13 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-        original_finance_enabled = getattr(config, "FINANCE_ASSISTANT_ENABLED", False)
-        try:
-            config.FINANCE_ASSISTANT_ENABLED = True
-            finance_handlers = self.engine._resolve_tool_handlers(
-                profile_user_id="user-42",
-                session_id="session-7",
-                domain_profile_id="finance_v1",
-            )
-        finally:
-            config.FINANCE_ASSISTANT_ENABLED = original_finance_enabled
-        self.assertIn(CAPABILITY_ID, finance_handlers)
+        self.assertNotIn("FINANCE_ASSISTANT_ENABLED", config.Settings.model_fields)
+        handlers_with_legacy_profile = self.engine._resolve_tool_handlers(
+            profile_user_id="user-42",
+            session_id="session-7",
+            domain_profile_id="finance_v1",
+        )
+        self.assertIn(CAPABILITY_ID, handlers_with_legacy_profile)
 
     async def test_stopped_host_removes_plugin_from_real_handler_resolution(self) -> None:
         self.assertIn(CAPABILITY_ID, self.engine._resolve_tool_handlers())
