@@ -17,8 +17,11 @@ class SceneFrontendContractTests(unittest.TestCase):
         index_source = _read("web/index.html")
 
         for source in (app_source, index_source):
-            self.assertIn("/assets/scenes/街道/黄昏街道.png", source)
-            self.assertIn("/assets/characters/猫娘/正常.png", source)
+            self.assertIn("/assets/scenes/家/白天客厅.png", source)
+            self.assertIn(
+                "/desktop-pet-character-packs/akane_v1/assets/characters/default/normal.png",
+                source,
+            )
             self.assertNotIn("/assets/backgrounds/evening.png", source)
             self.assertNotIn("%E6%B0%B4%E6%89%8B%E6%9C%8D/normal.png", source)
 
