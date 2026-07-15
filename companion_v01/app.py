@@ -25,9 +25,11 @@ from .instance_profile import resolve_instance_context
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
 from .model_service_config import ModelServiceConfigStore, load_and_apply_saved_model_service
-from .plugin_contribution_policy import TrustedReadNetworkContributionPolicy
+from .plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
 from .plugin_host import PluginHost
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
+from .plugin_storage import InstancePluginStorageService
+from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
 from .plugin_tool_bridge import PluginCapabilityToolBridge
 from .settings_overrides import SettingsOverrideStore, load_and_apply_saved_overrides
 from .public_guard import PublicThinkGuard
@@ -122,7 +124,7 @@ instance_context = resolve_instance_context(
 app.state.akane_instance_context = instance_context
 plugin_host = PluginHost(
     instance_context.plugins,
-    contribution_policy=TrustedReadNetworkContributionPolicy(),
+    contribution_policy=TrustedStatefulPluginContributionPolicy(),
 )
 app.state.akane_plugin_host = plugin_host
 plugin_capability_source = PluginCapabilityToolBridge(
@@ -141,6 +143,12 @@ if generated_file_service is not None:
     plugin_host.bind_managed_artifact_sink(
         GeneratedFileManagedArtifactSink(generated_file_service)
     )
+plugin_host.bind_plugin_storage_service(
+    InstancePluginStorageService(
+        data_root=Path(config.DATA_ROOT),
+        instance_id=instance_context.instance_id,
+    )
+)
 USER_ASSETS_DIR = engine.gift_assets.base_dir
 tts_client = EdgeTTSClient(
     voice=getattr(config, "TTS_VOICE", "zh-CN-XiaoxiaoNeural"),
@@ -304,6 +312,11 @@ def _send_qq_completion_files(
 if qq_gateway is not None:
     _install_qq_task_completion_notifications()
 
+if qq_gateway is not None:
+    plugin_host.bind_notification_port(QQTextNotificationPort(qq_gateway))
+else:
+    plugin_host.bind_notification_port(NullNotificationPort())
+
 
 @app.on_event("startup")
 async def startup_event() -> None:
@@ -313,6 +326,8 @@ async def startup_event() -> None:
             "Plugin host degraded: %s",
             json.dumps(plugin_status, ensure_ascii=False, sort_keys=True),
         )
+    # Build the plugin QQ command broker from activated command registrations
+    app.state.akane_plugin_command_broker = plugin_host.build_qq_command_broker()
 
 
 if ASSETS_DIR.exists():
@@ -340,6 +355,7 @@ async def shutdown_event() -> None:
             "Plugin host adapter close failures: %s",
             json.dumps(plugin_status, ensure_ascii=False, sort_keys=True),
         )
+    app.state.akane_plugin_command_broker = None
     engine.close()
 
 

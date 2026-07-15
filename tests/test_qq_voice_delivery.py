@@ -64,6 +64,146 @@ class FakeQQGateway:
 
 
 class QQVoiceDeliveryTests(unittest.TestCase):
+    def test_auto_mode_sends_native_tool_preface_without_waiting_for_delivery_hint(self) -> None:
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "speech_segment", "text": "我先看看这张图。"}
+                yield {"type": "assistant_stage_decision", "has_tool_call": True, "tool_type": "generate_image"}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "图片好了。",
+                        "speech_segments": ["图片好了。"],
+                        "tool_events": [],
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_1",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="auto",
+            ),
+            turn_payload={"message": "生图"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(gateway.text_sends, [["我先看看这张图。"], ["图片好了。"]])
+
+    def test_streamed_generated_file_event_survives_empty_final_model_reply(self) -> None:
+        class DeliveryGateway(FakeQQGateway):
+            def __init__(self) -> None:
+                super().__init__()
+                self.delivery_events: list[dict] = []
+
+            def add_delivery_note(self, session_id: str, note: str) -> None:
+                return None
+
+            def send_generated_files(self, context, tool_events):
+                self.delivery_events = list(tool_events or [])
+                return {
+                    "ok": True,
+                    "status": "sent",
+                    "count": 1,
+                    "results": [{"ok": True, "generated_id": "generated::image-1"}],
+                }
+
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "assistant_stage_decision", "has_tool_call": True, "tool_type": "generate_image"}
+                yield {
+                    "type": "generated_file_ready",
+                    "send_to_user": True,
+                    "generated_file": {
+                        "generated_id": "generated::image-1",
+                        "generated_handle": "gen_001",
+                        "absolute_path": "C:/managed/gen_001.png",
+                        "file_ext": "png",
+                    },
+                }
+                yield {"type": "final_ui", "payload": {"speech": "", "tool_events": []}}
+
+        gateway = DeliveryGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_1",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "生成图片"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(
+            len([item for item in gateway.delivery_events if item.get("type") == "generated_file_ready"]),
+            1,
+        )
+        self.assertEqual(result["final_reply_fallback_result"]["status"], "generated_result_notice_sent")
+        self.assertIn("结果已经生成", repr(gateway.text_sends))
+
+    def test_non_file_tool_event_is_not_duplicated_when_stream_events_are_merged(self) -> None:
+        class DeliveryGateway(FakeQQGateway):
+            def __init__(self) -> None:
+                super().__init__()
+                self.tool_events: list[dict] = []
+
+            def send_stickers(self, context, tool_events):
+                self.tool_events = list(tool_events or [])
+                return {"ok": True, "count": 0, "results": []}
+
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "speech": "完成。",
+                        "speech_segments": ["完成。"],
+                        "tool_events": [{"type": "state_update", "value": "ready"}],
+                    },
+                }
+
+        gateway = DeliveryGateway()
+        _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_1",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "更新状态"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(gateway.tool_events, [{"type": "state_update", "value": "ready"}])
+
     def test_native_tool_preface_is_sent_but_system_working_status_is_not(self) -> None:
         class FakeEngine:
             def process_turn_stream(self, payload: dict):

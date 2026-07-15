@@ -628,6 +628,19 @@ def _streaming_allows_text(reply_mode: str, delivery_hint: str) -> bool:
     return mode in {"text", "both"}
 
 
+def _streaming_allows_tool_preface(reply_mode: str, delivery_hint: str) -> bool:
+    """Allow a native-tool preface unless QQ has explicitly selected voice-only."""
+
+    mode = _normalize_reply_medium(reply_mode) or "auto"
+    hint = _normalize_reply_medium(delivery_hint)
+    if mode == "auto":
+        # The final reply_medium is not necessarily known when the tool-call
+        # stage arrives.  An empty hint must not swallow the preface; only an
+        # explicit voice hint means that this text should stay out of QQ.
+        return hint != "voice"
+    return mode in {"text", "both"}
+
+
 def _frame_reply_medium(frame: dict[str, Any], *, delivery_hint: str = "") -> str:
     return _normalize_reply_medium(frame.get("reply_medium")) or _normalize_reply_medium(delivery_hint)
 
@@ -966,6 +979,7 @@ def _process_qq_turn_streaming(
     pending_stage_messages: list[str] = []
     streamed_messages: list[str] = []
     stream_send_results: list[dict[str, Any]] = []
+    streamed_delivery_events: list[dict[str, Any]] = []
     frame: dict[str, Any] = {}
     delivery_hint = ""
     active_reply_mode = (
@@ -989,6 +1003,8 @@ def _process_qq_turn_streaming(
         if not isinstance(stream_event, dict):
             continue
         event_type = str(stream_event.get("type") or "").strip()
+        if event_type in {"generated_file_ready", "file_ready"}:
+            streamed_delivery_events.append(dict(stream_event))
         if event_type == "delivery_hint":
             delivery_hint = _normalize_reply_medium(stream_event.get("medium")) or delivery_hint
             continue
@@ -1004,7 +1020,11 @@ def _process_qq_turn_streaming(
         if (
             event_type == "assistant_stage_decision"
             and pending_stage_messages
-            and _streaming_allows_text(active_reply_mode, delivery_hint)
+            and (
+                _streaming_allows_tool_preface(active_reply_mode, delivery_hint)
+                if bool(stream_event.get("has_tool_call"))
+                else _streaming_allows_text(active_reply_mode, delivery_hint)
+            )
         ):
             pending_stage_messages = _send_pending_stage_messages(
                 qq_gateway=qq_gateway,
@@ -1036,7 +1056,38 @@ def _process_qq_turn_streaming(
     if not frame and not streamed_messages:
         frame = engine.process_turn(turn_payload)
 
-    reply_messages = qq_gateway.render_reply_messages(frame)
+    frame_delivery_events = frame.get("tool_events") if isinstance(frame.get("tool_events"), list) else []
+    retained_frame_events = [
+        dict(event)
+        for event in frame_delivery_events
+        if isinstance(event, dict)
+        and str(event.get("type") or "").strip() not in {"generated_file_ready", "file_ready"}
+    ]
+    merged_file_events: list[dict[str, Any]] = []
+    seen_delivery_events: set[tuple[str, str, str]] = set()
+    for raw_event in [*streamed_delivery_events, *frame_delivery_events]:
+        if not isinstance(raw_event, dict):
+            continue
+        event = dict(raw_event)
+        event_type = str(event.get("type") or "").strip()
+        if event_type not in {"generated_file_ready", "file_ready"}:
+            continue
+        generated = event.get("generated_file") if isinstance(event.get("generated_file"), dict) else {}
+        identity = (
+            event_type,
+            str(generated.get("generated_id") or generated.get("generated_handle") or "").strip(),
+            str((event.get("file") if isinstance(event.get("file"), dict) else {}).get("generated_id") or "").strip(),
+        )
+        if identity[1] or identity[2]:
+            if identity in seen_delivery_events:
+                continue
+            seen_delivery_events.add(identity)
+        merged_file_events.append(event)
+    if merged_file_events:
+        frame["tool_events"] = [*retained_frame_events, *merged_file_events]
+
+    final_reply_messages = qq_gateway.render_reply_messages(frame)
+    reply_messages = final_reply_messages
     unsent_reply_messages = _filter_unsent_reply_messages(reply_messages, streamed_messages)
     send_result = _send_qq_delivery(
         engine=engine,
@@ -1110,6 +1161,32 @@ def _process_qq_turn_streaming(
             "count": len(delivery_results),
             "results": delivery_results,
         }
+    final_reply_fallback_result = {"ok": True, "status": "skipped", "reason": "final_reply_present"}
+    if not final_reply_messages and int(file_send_result.get("count") or 0) > 0:
+        if bool(file_send_result.get("ok")):
+            fallback_text = "结果已经生成，我发给你了。"
+            final_reply_fallback_result = qq_gateway.send_reply(context, fallback_text)
+            final_reply_fallback_result["status"] = "generated_result_notice_sent"
+            if final_reply_fallback_result.get("ok"):
+                reply_messages.append(fallback_text)
+                send_result = dict(send_result)
+                send_result_results = [
+                    *list(send_result.get("results") or []),
+                    dict(final_reply_fallback_result),
+                ]
+                send_result.update(
+                    {
+                        "ok": all(bool(item.get("ok")) for item in send_result_results),
+                        "count": len(send_result_results),
+                        "results": send_result_results,
+                    }
+                )
+        else:
+            final_reply_fallback_result = {
+                "ok": True,
+                "status": "skipped",
+                "reason": "delivery_failure_notice_will_be_sent",
+            }
     file_delivery_feedback_result = {"ok": True, "status": "skipped", "reason": "no_delivery_issue"}
     file_delivery_status = str(file_send_result.get("status") or "").strip().lower()
     _sid = str(getattr(context, "session_id", "") or "")
@@ -1145,6 +1222,7 @@ def _process_qq_turn_streaming(
         "emotion_mface_result": emotion_mface_result,
         "emotion_image_result": emotion_image_result,
         "file_send_result": file_send_result,
+        "final_reply_fallback_result": final_reply_fallback_result,
         "file_delivery_feedback_result": file_delivery_feedback_result,
         "sticker_send_result": sticker_send_result,
     }
@@ -1815,6 +1893,70 @@ def build_qq_router(
                             "send_result": send_result,
                         }
                     )
+
+            # Plugin QQ command dispatch — checked after all built-in commands
+            _plugin_command_broker = getattr(request.app.state, "akane_plugin_command_broker", None)
+            if _plugin_command_broker is not None and context.clean_message.startswith("/"):
+                _cmd_text = context.clean_message.strip()
+                _cmd_token, _, _cmd_args = _cmd_text.partition(" ")
+                if _plugin_command_broker.handles(_cmd_token):
+                    _source_event_id = str(event.get("message_id") or "").strip()
+                    if not _source_event_id:
+                        _source_event_id = ":".join(
+                            (
+                                str(event.get("time") or ""),
+                                str(context.user_id or 0),
+                                str(context.group_id or 0),
+                                _cmd_token,
+                            )
+                        )
+                    _cmd_result = await _plugin_command_broker.dispatch(
+                        command=_cmd_token,
+                        args=_cmd_args,
+                        qq_number=int(context.user_id or 0),
+                        group_id=int(context.group_id or 0),
+                        is_group=bool(context.is_group),
+                        idempotency_key=_source_event_id,
+                    )
+                    if _cmd_result.handled:
+                        if _cmd_result.reply_text:
+                            send_result = qq_gateway.send_replies(context, [_cmd_result.reply_text])
+                        else:
+                            send_result = {
+                                "ok": True,
+                                "status": "no_reply",
+                                "reason": "plugin_requested_no_reply",
+                                "count": 0,
+                                "results": [],
+                            }
+                        command_ok = not bool(_cmd_result.reason)
+                        duration_ms = (time.perf_counter() - started_at) * 1000
+                        runtime_metrics.observe_request(
+                            "qq_napcat_event",
+                            duration_ms=duration_ms,
+                            ok=bool(send_result.get("ok")) and command_ok,
+                        )
+                        log_event(
+                            "qq_plugin_command",
+                            session_id=context.session_id,
+                            profile_user_id=context.profile_user_id,
+                            command=_cmd_token,
+                            command_ok=command_ok,
+                            command_status=str(_cmd_result.reason or "ok"),
+                            sent=bool(send_result.get("ok")) and bool(_cmd_result.reply_text),
+                            duration_ms=round(duration_ms, 1),
+                        )
+                        return JSONResponse(
+                            {
+                                "status": "ok" if send_result.get("ok") else "send_failed",
+                                "reason": "qq_plugin_command",
+                                "command_status": str(_cmd_result.reason or "ok"),
+                                "command_ok": command_ok,
+                                "session_id": context.session_id,
+                                "profile_user_id": context.profile_user_id,
+                                "send_result": send_result,
+                            }
+                        )
 
             quoted_result = await asyncio.to_thread(
                 qq_gateway.resolve_quoted_attachments,

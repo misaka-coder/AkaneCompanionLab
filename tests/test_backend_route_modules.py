@@ -25,6 +25,7 @@ from companion_v01.local_capability_config import save_provider_config, save_voi
 from companion_v01.local_workflow_execution import WorkflowExecutionAsset, WorkflowExecutionRequest
 from companion_v01.mcp_stdio_discoverer import McpStdioToolCaller, McpStdioToolDiscoverer
 from companion_v01.music_lyrics import parse_lrc_segments
+from companion_v01.plugin_api import PluginQQCommandResult
 from companion_v01.routes.capabilities import build_capabilities_router
 from companion_v01.routes.control_center import (
     build_control_center_router,
@@ -809,6 +810,72 @@ class BackendRouteModuleTests(unittest.TestCase):
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
         self.assertIn("普通对话继续运行", sent_payload["message"])
+
+    def test_qq_router_dispatches_plugin_command_without_llm_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        dispatch_calls: list[dict[str, Any]] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "should not run"}}
+
+        class FakeBroker:
+            @staticmethod
+            def handles(command: str) -> bool:
+                return command == "/finance"
+
+            @staticmethod
+            async def dispatch(**kwargs: Any) -> PluginQQCommandResult:
+                dispatch_calls.append(dict(kwargs))
+                return PluginQQCommandResult(handled=True, reply_text="财经命令已处理。")
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.state.akane_plugin_command_broker = FakeBroker()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "plugin-command-1",
+                    "raw_message": "/finance subscribe 000001",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_plugin_command")
+        self.assertTrue(payload["command_ok"])
+        self.assertEqual(process_calls, [])
+        self.assertEqual(dispatch_calls[0]["idempotency_key"], "plugin-command-1")
+        self.assertEqual(dispatch_calls[0]["args"], "subscribe 000001")
+        mocked_post.assert_called_once()
+        self.assertIn("财经命令已处理", mocked_post.call_args.kwargs["json"]["message"])
 
     def test_qq_router_passively_records_group_message_without_llm_turn(self) -> None:
         runtime = FakeRuntimeMetrics()

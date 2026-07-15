@@ -8,6 +8,7 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from importlib import metadata as importlib_metadata
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping
 
@@ -26,8 +27,12 @@ from .plugin_contribution_policy import ContributionPolicyDecision, PluginContri
 from .plugin_api import (
     AKANE_PLUGIN_API_VERSION,
     AKANE_PLUGIN_ENTRYPOINT_GROUP,
+    BACKGROUND_JOB_PERMISSION,
     MANAGED_ARTIFACT_WRITE_PERMISSION,
     MAX_MANAGED_ARTIFACT_BYTES,
+    NOTIFICATION_SEND_PERMISSION,
+    PLUGIN_QQ_COMMAND_PERMISSION,
+    PLUGIN_STORAGE_WRITE_PERMISSION,
     ManagedArtifactPayload,
     PluginManifest,
     PluginRegistrar,
@@ -36,7 +41,11 @@ from .plugin_api import (
     is_valid_permission_id,
     is_valid_plugin_id,
 )
+from .plugin_jobs import _HostJobController, run_supervised_job
 from .plugin_managed_artifacts import ManagedArtifactError, ManagedArtifactSink
+from .plugin_notifications import _NotificationDeliveryLedger, _PluginScopedNotificationPort
+from .plugin_qq_commands import PluginQQCommandBroker, _PluginCommandRegistration
+from .plugin_storage import PluginStorageService
 from .plugin_result_projection import sanitize_capability_result
 from .plugin_result_experience import (
     PluginResultExperienceError,
@@ -49,6 +58,9 @@ _SAFE_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$")
 _HOST_AVAILABLE_STATES = frozenset({"active", "degraded"})
 _MAX_ADAPTERS_PER_PLUGIN = 16
 _MAX_CAPABILITIES_PER_PLUGIN = 64
+_MAX_QQ_COMMANDS_PER_PLUGIN = 32
+_MAX_QQ_COMMAND_LENGTH = 64
+_QQ_COMMAND_PATTERN = re.compile(r"^/[^\s/]{1,63}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +99,8 @@ class _ActivePlugin:
     plugin: Any
     adapters: tuple[CapabilityAdapter, ...]
     capability_ids: tuple[str, ...]
+    job: Any  # PluginBackgroundJob | None
+    qq_command_registrations: tuple[_PluginCommandRegistration, ...] = ()
 
 
 class _ActivationFailure(RuntimeError):
@@ -101,15 +115,90 @@ class _StagedRegistrar(PluginRegistrar):
     def __init__(self) -> None:
         self._adapters: list[CapabilityAdapter] = []
         self._sealed = False
+        self._storage_dir: Path | None = None
+        self._job: Any = None  # PluginBackgroundJob | None
+        self._job_permission: bool = False
+        self._notification_port: Any = None  # NotificationPort | None
+        self._notification_permission: bool = False
+        self._qq_commands: list[_PluginCommandRegistration] = []
+        self._qq_command_permission: bool = False
 
     @property
     def adapters(self) -> tuple[CapabilityAdapter, ...]:
         return tuple(self._adapters)
 
+    @property
+    def job(self) -> Any:
+        return self._job
+
     def add_capability_adapter(self, adapter: CapabilityAdapter) -> None:
         if self._sealed:
             raise RuntimeError("plugin_registrar_sealed")
         self._adapters.append(adapter)
+
+    def add_background_job(self, job: Any) -> None:
+        if self._sealed:
+            raise RuntimeError("plugin_registrar_sealed")
+        if not self._job_permission:
+            raise RuntimeError("job_permission_required")
+        if self._job is not None:
+            raise RuntimeError("duplicate_plugin_job")
+        if not callable(getattr(job, "start", None)) or not callable(getattr(job, "stop", None)):
+            raise RuntimeError("invalid_plugin_job")
+        self._job = job
+
+    def get_storage_dir(self) -> Path:
+        if self._sealed:
+            raise RuntimeError("plugin_registrar_sealed")
+        if self._storage_dir is None:
+            raise RuntimeError("storage_permission_required")
+        return self._storage_dir
+
+    def get_notification_port(self) -> Any:
+        if self._sealed:
+            raise RuntimeError("plugin_registrar_sealed")
+        if not self._notification_permission or self._notification_port is None:
+            raise RuntimeError("notification_permission_required")
+        return self._notification_port
+
+    def add_qq_command(self, command: str, handler: Any) -> None:
+        if self._sealed:
+            raise RuntimeError("plugin_registrar_sealed")
+        if not self._qq_command_permission:
+            raise RuntimeError("qq_command_permission_required")
+        cmd = str(command or "").strip()
+        if len(cmd) > _MAX_QQ_COMMAND_LENGTH or _QQ_COMMAND_PATTERN.fullmatch(cmd) is None:
+            raise RuntimeError("invalid_qq_command")
+        if not callable(getattr(handler, "handle", None)):
+            raise RuntimeError("invalid_qq_command_handler")
+        normalized = cmd.lower()
+        if any(reg.command == normalized for reg in self._qq_commands):
+            raise RuntimeError("duplicate_plugin_qq_command")
+        if len(self._qq_commands) >= _MAX_QQ_COMMANDS_PER_PLUGIN:
+            raise RuntimeError("too_many_plugin_qq_commands")
+        self._qq_commands.append(_PluginCommandRegistration(
+            plugin_id="",  # will be filled in by host after seal
+            command=normalized,
+            handler=handler,
+        ))
+
+    @property
+    def qq_commands(self) -> tuple[Any, ...]:
+        return tuple(self._qq_commands)
+
+    def _set_storage_dir(self, path: Path) -> None:
+        """Called by PluginHost after manifest validation; not part of the plugin API."""
+        self._storage_dir = path
+
+    def _set_job_permission(self, allowed: bool) -> None:
+        self._job_permission = allowed
+
+    def _set_notification_port(self, port: Any) -> None:
+        self._notification_port = port
+        self._notification_permission = port is not None
+
+    def _set_qq_command_permission(self, allowed: bool) -> None:
+        self._qq_command_permission = allowed
 
     def seal(self) -> None:
         self._sealed = True
@@ -171,6 +260,13 @@ class PluginHost:
         self._close_failure_count = 0
         self._runtime_loop: asyncio.AbstractEventLoop | None = None
         self._managed_artifact_sink: ManagedArtifactSink | None = None
+        self._storage_service: PluginStorageService | None = None
+        self._notification_port: Any = None  # NotificationPort | None
+        self._notification_ledger = _NotificationDeliveryLedger()
+        self._job_tasks: dict[str, tuple[Any, _HostJobController, asyncio.Task]] = {}
+        self._job_statuses: dict[str, dict[str, str]] = {}
+        self._job_stop_timeout_seconds: float = 10.0
+        self._job_stop_failure_count = 0
 
         self._lifecycle_lock = asyncio.Lock()
         self._invoke_lock = asyncio.Lock()
@@ -200,9 +296,21 @@ class PluginHost:
     def status_snapshot(self) -> dict[str, Any]:
         reason = ""
         if self._state == "degraded":
-            reason = "plugin_activation_failed"
+            reason = (
+                "plugin_runtime_failed"
+                if any(item.get("status") == "failed" for item in self._job_statuses.values())
+                else "plugin_activation_failed"
+            )
         elif self._state not in _HOST_AVAILABLE_STATES:
             reason = "host_unavailable"
+        job_statuses = [
+            {
+                "plugin_id": _public_plugin_id(plugin_id),
+                "status": item.get("status", "unknown"),
+                "reason": item.get("reason", ""),
+            }
+            for plugin_id, item in self._job_statuses.items()
+        ]
         return {
             "ok": self._state == "active",
             "status": self._state,
@@ -210,6 +318,12 @@ class PluginHost:
             "contribution_policy": self._contribution_policy_id,
             "plugin_count": len(self._active_plugins),
             "capability_count": len(self._capabilities),
+            "job_count": len(self._job_tasks),
+            "running_job_count": sum(
+                1 for item in self._job_statuses.values() if item.get("status") == "running"
+            ),
+            "job_stop_failure_count": self._job_stop_failure_count,
+            "jobs": job_statuses,
             "close_failure_count": self._close_failure_count,
             "plugins": [status.as_dict() for status in self._plugin_statuses],
         }
@@ -223,6 +337,47 @@ class PluginHost:
             raise TypeError("invalid_managed_artifact_sink")
         self._managed_artifact_sink = sink
 
+    def bind_plugin_storage_service(self, storage_service: PluginStorageService) -> None:
+        """Bind the host-owned scoped storage service before restart-only startup.
+
+        Must be called before :meth:`start`.  Plugins that declare
+        ``storage.write`` permission may call ``registrar.get_storage_dir()``
+        during registration to receive their scoped data directory.
+        """
+        if self._state != "created":
+            raise RuntimeError("plugin_host_already_started")
+        if not callable(getattr(storage_service, "get_plugin_data_dir", None)):
+            raise TypeError("invalid_plugin_storage_service")
+        self._storage_service = storage_service
+
+    def bind_notification_port(self, port: Any) -> None:
+        """Bind the host-owned notification port before restart-only startup.
+
+        Must be called before :meth:`start`.  Plugins that declare
+        ``notification.send`` permission receive this port via
+        ``registrar.get_notification_port()`` during registration.
+        """
+        if self._state != "created":
+            raise RuntimeError("plugin_host_already_started")
+        if not callable(getattr(port, "send", None)):
+            raise TypeError("invalid_notification_port")
+        self._notification_port = port
+
+    def build_qq_command_broker(self) -> PluginQQCommandBroker:
+        """Build an immutable command broker from all activated plugin QQ commands.
+
+        Call after :meth:`start`.  Registrations do not mutate at runtime, and
+        the returned broker rejects dispatch once the host begins stopping.
+        """
+        registrations: list[_PluginCommandRegistration] = []
+        for active in self._active_plugins.values():
+            for reg in active.qq_command_registrations:
+                registrations.append(reg)
+        return PluginQQCommandBroker(
+            tuple(registrations),
+            availability_provider=lambda: self._state in _HOST_AVAILABLE_STATES,
+        )
+
     async def start(self) -> dict[str, Any]:
         async with self._lifecycle_lock:
             if self._state in _HOST_AVAILABLE_STATES or self._state in {"starting", "stopping", "stopped"}:
@@ -232,6 +387,7 @@ class PluginHost:
             self._state = "starting"
             working_plugins: dict[str, _ActivePlugin] = {}
             working_capabilities: dict[str, _CapabilityRegistration] = {}
+            working_qq_commands: set[str] = set()
             activation_order: list[CapabilityAdapter] = []
             statuses: list[PluginStatus] = []
 
@@ -274,6 +430,7 @@ class PluginHost:
                     selection,
                     entry_points_by_name.get(selection.plugin_id, []),
                     reserved_capability_ids=frozenset(working_capabilities),
+                    reserved_qq_commands=frozenset(working_qq_commands),
                 )
                 statuses.append(status)
                 if active is None:
@@ -281,15 +438,40 @@ class PluginHost:
                 working_plugins[selection.plugin_id] = active
                 for registration in registrations:
                     working_capabilities[registration.descriptor.id] = registration
+                working_qq_commands.update(
+                    registration.command for registration in active.qq_command_registrations
+                )
                 activation_order.extend(active.adapters)
 
             self._plugin_statuses = tuple(statuses)
             self._active_plugins = MappingProxyType(dict(working_plugins))
             self._capabilities = MappingProxyType(dict(working_capabilities))
             self._activation_order = tuple(activation_order)
+            # Start supervised job tasks for every successfully activated plugin with a job
+            job_tasks: dict[str, tuple[Any, _HostJobController, asyncio.Task]] = {}
+            self._job_statuses = {}
+            for plugin_id, active_plugin in working_plugins.items():
+                if active_plugin.job is None:
+                    continue
+                controller = _HostJobController()
+                controller._arm()
+                task = asyncio.create_task(run_supervised_job(active_plugin.job, controller))
+                self._job_statuses[plugin_id] = {"status": "running", "reason": ""}
+                task.add_done_callback(
+                    lambda done, pid=plugin_id, ctl=controller: self._on_job_task_done(pid, ctl, done)
+                )
+                job_tasks[plugin_id] = (active_plugin.job, controller, task)
+            self._job_tasks = job_tasks
             enabled_failures = any(status.enabled and status.status != "active" for status in statuses)
             async with self._invoke_lock:
                 self._state = "degraded" if enabled_failures else "active"
+            if job_tasks:
+                # Give every job one scheduling opportunity so an immediate exit
+                # is reflected in the startup snapshot instead of fake readiness.
+                await asyncio.sleep(0)
+                for plugin_id, (_job, controller, task) in job_tasks.items():
+                    if task.done() and self._job_statuses.get(plugin_id, {}).get("status") == "running":
+                        self._on_job_task_done(plugin_id, controller, task)
             return self.status_snapshot()
 
     async def stop(self) -> dict[str, Any]:
@@ -311,10 +493,14 @@ class PluginHost:
             except (TimeoutError, asyncio.TimeoutError):
                 pass
 
+            # Stop supervised job tasks before closing capability adapters
+            await self._stop_job_tasks()
+
             await self._close_adapters(reversed(self._activation_order))
             self._active_plugins = MappingProxyType({})
             self._capabilities = MappingProxyType({})
             self._activation_order = ()
+            self._job_tasks = {}
             self._state = "stopped"
             self._runtime_loop = None
             return self.status_snapshot()
@@ -542,6 +728,7 @@ class PluginHost:
         entry_points: list[Any],
         *,
         reserved_capability_ids: frozenset[str],
+        reserved_qq_commands: frozenset[str],
     ) -> tuple[PluginStatus, _ActivePlugin | None, tuple[_CapabilityRegistration, ...]]:
         registrar = _StagedRegistrar()
         artifact_version = ""
@@ -585,6 +772,37 @@ class PluginHost:
                 lambda: self._contribution_policy.validate_manifest(manifest),
                 stage="manifest_contributions",
             )
+            # If the plugin declares storage.write, resolve its scoped data dir
+            # and inject it into the registrar BEFORE register() is called, so
+            # the plugin can capture the path to initialise adapters with it.
+            if PLUGIN_STORAGE_WRITE_PERMISSION in manifest.permissions:
+                if self._storage_service is None:
+                    raise _ActivationFailure("storage_service_unavailable")
+                try:
+                    plugin_data_dir = self._storage_service.get_plugin_data_dir(
+                        selection.plugin_id
+                    )
+                except (ValueError, OSError):
+                    raise _ActivationFailure("storage_dir_creation_failed") from None
+                registrar._set_storage_dir(plugin_data_dir)
+            # Inject job permission flag if declared
+            if BACKGROUND_JOB_PERMISSION in manifest.permissions:
+                registrar._set_job_permission(True)
+            # Inject notification port if declared and bound
+            if NOTIFICATION_SEND_PERMISSION in manifest.permissions:
+                if self._notification_port is None:
+                    raise _ActivationFailure("notification_port_unavailable")
+                registrar._set_notification_port(
+                    _PluginScopedNotificationPort(
+                        plugin_id=selection.plugin_id,
+                        delegate=self._notification_port,
+                        ledger=self._notification_ledger,
+                        availability_provider=lambda: self._state in _HOST_AVAILABLE_STATES,
+                    )
+                )
+            # Inject QQ command permission flag if declared
+            if PLUGIN_QQ_COMMAND_PERMISSION in manifest.permissions:
+                registrar._set_qq_command_permission(True)
             register = getattr(plugin, "register", None)
             if not callable(register):
                 raise _ActivationFailure("invalid_plugin_contract")
@@ -603,6 +821,8 @@ class PluginHost:
                 raise _ActivationFailure("invalid_plugin_registration_result")
             if register_result is not None:
                 raise _ActivationFailure("invalid_plugin_registration_result")
+            if any(reg.command in reserved_qq_commands for reg in registrar.qq_commands):
+                raise _ActivationFailure("qq_command_conflict")
             if not registrar.adapters:
                 raise _ActivationFailure("plugin_registered_no_adapters")
             if len(registrar.adapters) > _MAX_ADAPTERS_PER_PLUGIN:
@@ -664,6 +884,15 @@ class PluginHost:
                 plugin=plugin,
                 adapters=registrar.adapters,
                 capability_ids=tuple(registration.descriptor.id for registration in registrations),
+                job=registrar.job,
+                qq_command_registrations=tuple(
+                    _PluginCommandRegistration(
+                        plugin_id=selection.plugin_id,
+                        command=reg.command,
+                        handler=reg.handler,
+                    )
+                    for reg in registrar.qq_commands
+                ),
             )
             return (
                 PluginStatus(
@@ -703,6 +932,66 @@ class PluginHost:
                 None,
                 (),
             )
+
+    def _on_job_task_done(
+        self,
+        plugin_id: str,
+        controller: _HostJobController,
+        task: asyncio.Task,
+    ) -> None:
+        """Record a background job outcome without exposing its exception text."""
+
+        if controller.shutdown_requested or self._state in {"stopping", "stopped"}:
+            try:
+                task.exception()
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._job_statuses[plugin_id] = {"status": "stopped", "reason": ""}
+            return
+
+        if task.cancelled():
+            reason = "job_cancelled"
+        else:
+            try:
+                exception = task.exception()
+            except asyncio.CancelledError:
+                exception = None
+                reason = "job_cancelled"
+            else:
+                reason = "job_failed" if exception is not None else "job_exited"
+        self._job_statuses[plugin_id] = {"status": "failed", "reason": reason}
+        if self._state in _HOST_AVAILABLE_STATES:
+            self._state = "degraded"
+
+    async def _stop_job_tasks(self) -> None:
+        """Signal all supervised job tasks to stop and await their completion."""
+        if not self._job_tasks:
+            return
+        # Signal shutdown on all controllers
+        for _job, controller, _task in self._job_tasks.values():
+            controller.signal_shutdown()
+        # Secondary stop signal
+        for _job, controller, _task in reversed(tuple(self._job_tasks.values())):
+            try:
+                await asyncio.wait_for(_job.stop(), timeout=self._close_timeout_seconds)
+            except asyncio.CancelledError:
+                if _current_task_is_cancelling():
+                    raise
+                self._job_stop_failure_count += 1
+            except Exception:
+                self._job_stop_failure_count += 1
+        # Await all tasks with bounded timeout
+        active_tasks = [task for _, _, task in self._job_tasks.values() if not task.done()]
+        if active_tasks:
+            _done, pending = await asyncio.wait(
+                active_tasks,
+                timeout=self._job_stop_timeout_seconds,
+            )
+            if pending:
+                self._job_stop_failure_count += len(pending)
+                for task in pending:
+                    task.cancel()
+                await asyncio.wait(pending, timeout=self._close_timeout_seconds)
 
     async def _close_adapters(self, adapters: Iterable[CapabilityAdapter]) -> None:
         for adapter in adapters:
