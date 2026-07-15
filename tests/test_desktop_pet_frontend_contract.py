@@ -935,7 +935,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("const activePackId = getCurrentCharacterPackId();", main_source)
         self.assertIn("buildCharacterPackOutfits(activePackId)", main_source)
         self.assertIn("fn saved_window_position_visible", tauri_source)
-        self.assertIn("normalize_pet_state(&mut state);", tauri_source)
+        self.assertIn("normalize_pet_state(&mut state)?;", tauri_source)
         self.assertIn("state.width = None;", tauri_source)
         self.assertIn("runtime.width = None;", tauri_source)
 

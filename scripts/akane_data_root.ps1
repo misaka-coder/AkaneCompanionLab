@@ -1,9 +1,21 @@
 Set-StrictMode -Version Latest
 
 function Resolve-AkaneDataRoot {
+    param(
+        [string]$InstanceId = "local-default",
+        [string]$DataRoot = ""
+    )
+
+    if ($DataRoot.Trim()) {
+        return [System.IO.Path]::GetFullPath($DataRoot.Trim())
+    }
     $explicit = [string]$env:AKANE_DATA_ROOT
     if ($explicit.Trim()) {
         return [System.IO.Path]::GetFullPath($explicit.Trim())
+    }
+
+    if ($InstanceId -ne "local-default") {
+        throw "named_instance_requires_data_root"
     }
 
     $base = [string]$env:LOCALAPPDATA
@@ -72,14 +84,19 @@ function Initialize-AkaneDataRoot {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ProjectRoot,
+        [string]$InstanceId = "local-default",
+        [string]$DataRoot = "",
         [switch]$ReadOnly
     )
 
-    $root = Resolve-AkaneDataRoot
+    $root = Resolve-AkaneDataRoot -InstanceId $InstanceId -DataRoot $DataRoot
     $usersData = Join-Path $root "users_data"
     $characters = Join-Path $root "characters"
     $state = Join-Path $root "state"
     $logs = Join-Path $root "logs"
+    $workspace = Join-Path $root "workspace"
+    $cache = Join-Path $root "cache"
+    $run = Join-Path $root "run"
 
     if ($ReadOnly) {
         return [pscustomobject]@{
@@ -88,14 +105,33 @@ function Initialize-AkaneDataRoot {
             Characters = $characters
             State = $state
             Logs = $logs
+            Workspace = $workspace
+            Cache = $cache
+            Run = $run
             Copied = 0
             Skipped = 0
             Failed = 0
         }
     }
 
-    foreach ($directory in @($root, $usersData, $characters, $state, $logs)) {
+    foreach ($directory in @($root, $usersData, $characters, $state, $logs, $workspace, $cache, $run)) {
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
+    }
+
+    if ($InstanceId -ne "local-default") {
+        return [pscustomobject]@{
+            Root = $root
+            UsersData = $usersData
+            Characters = $characters
+            State = $state
+            Logs = $logs
+            Workspace = $workspace
+            Cache = $cache
+            Run = $run
+            Copied = 0
+            Skipped = 0
+            Failed = 0
+        }
     }
 
     $legacyUsersData = Join-Path $ProjectRoot "users_data"
@@ -109,6 +145,9 @@ function Initialize-AkaneDataRoot {
         Characters = $characters
         State = $state
         Logs = $logs
+        Workspace = $workspace
+        Cache = $cache
+        Run = $run
         Copied = $userResult.Copied + $characterResult.Copied
         Skipped = $userResult.Skipped + $characterResult.Skipped
         Failed = $userResult.Failed + $characterResult.Failed

@@ -38,6 +38,10 @@ import {
   CONTROL_CENTER_SOURCE_KIND,
   createControlCenterDataSource
 } from "./control-center/data-sources.js";
+import {
+  bindInstanceStorage,
+  getInstanceStorageItem
+} from "./instance-storage.js";
 import "./control-center-lab.css";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
@@ -206,16 +210,19 @@ function createControlCenterDataSourceOptions(overrides = {}) {
   const params = new URLSearchParams(window.location.search);
   const source = String(params.get("source") || "").trim().toLowerCase();
   const petState = overrides.petState && typeof overrides.petState === "object" ? overrides.petState : {};
+  const instanceId = String(petState.instanceId || "").trim();
+  if (instanceId) bindInstanceStorage(instanceId);
   if (source === CONTROL_CENTER_SOURCE_KIND.mock) {
     return { kind: CONTROL_CENTER_SOURCE_KIND.mock };
   }
   return {
     kind: CONTROL_CENTER_SOURCE_KIND.backend,
-    baseUrl: params.get("backend") || params.get("backend_url") || petState.backendUrl || localStorage.getItem("akane.controlCenter.backendUrl") || DEFAULT_BACKEND_URL,
-    fetchImpl: isTauriRuntime ? tauriFetch : typeof window.fetch === "function" ? window.fetch.bind(window) : undefined,
-    sessionId: params.get("session_id") || params.get("user_id") || petState.sessionId || localStorage.getItem("akane.controlCenter.sessionId") || "control-center-lab",
-    profileUserId: params.get("real_user_id") || params.get("profile_user_id") || petState.profileUserId || localStorage.getItem("akane.controlCenter.profileUserId") || "master",
-    characterPackId: params.get("character_pack_id") || params.get("characterPackId") || petState.characterPackId || localStorage.getItem("akane.controlCenter.characterPackId") || "",
+    baseUrl: (isTauriRuntime ? petState.backendUrl : params.get("backend") || params.get("backend_url")) || getInstanceStorageItem("controlCenter.backendUrl", { legacyKey: "akane.controlCenter.backendUrl" }) || DEFAULT_BACKEND_URL,
+    expectedInstanceId: instanceId,
+    fetchImpl: isTauriRuntime ? instanceBoundFetch : typeof window.fetch === "function" ? window.fetch.bind(window) : undefined,
+    sessionId: (isTauriRuntime ? petState.sessionId : params.get("session_id") || params.get("user_id")) || getInstanceStorageItem("controlCenter.sessionId", { legacyKey: "akane.controlCenter.sessionId" }) || "control-center-lab",
+    profileUserId: (isTauriRuntime ? petState.profileUserId : params.get("real_user_id") || params.get("profile_user_id")) || getInstanceStorageItem("controlCenter.profileUserId", { legacyKey: "akane.controlCenter.profileUserId" }) || "master",
+    characterPackId: (isTauriRuntime ? petState.characterPackId : params.get("character_pack_id") || params.get("characterPackId")) || getInstanceStorageItem("controlCenter.characterPackId", { legacyKey: "akane.controlCenter.characterPackId" }) || "",
     outfit: params.get("outfit") || petState.outfit || "",
     emotion: params.get("emotion") || petState.currentEmotion || "",
     musicSnapshot: overrides.musicSnapshot || latestRuntimeSnapshot?.music || null,
@@ -228,6 +235,25 @@ function createControlCenterDataSourceOptions(overrides = {}) {
         }
       : undefined
   };
+}
+
+async function instanceBoundFetch(input, init = {}) {
+  const method = String(init?.method || "GET").trim().toUpperCase();
+  if (method !== "POST") {
+    return tauriFetch(input, init);
+  }
+  const url = typeof input === "string" ? input : String(input?.url || input || "");
+  const body = typeof init?.body === "string" ? init.body : "{}";
+  const result = await invoke("backend_admin_request", {
+    request: { url, body }
+  });
+  return new Response(String(result?.body || ""), {
+    status: Number(result?.httpStatus || 502),
+    headers: {
+      "Content-Type": String(result?.contentType || "application/json"),
+      "Cache-Control": "no-store"
+    }
+  });
 }
 
 async function hydrateControlCenterSnapshot() {
@@ -328,7 +354,20 @@ async function saveSetting(key, rawValue) {
 async function createRuntimeDataSourceOptions() {
   if (!isTauriRuntime) return null;
   try {
-    const petState = await invoke("load_pet_state");
+    const [persistedState, launchBinding] = await Promise.all([
+      invoke("load_pet_state"),
+      invoke("get_client_launch_binding")
+    ]);
+    const petState = {
+      ...persistedState,
+      backendUrl: launchBinding?.hasBackendOverride
+        ? launchBinding.backendUrl
+        : persistedState?.backendUrl
+    };
+    if (String(launchBinding?.instanceId || "") !== String(petState.instanceId || "")) {
+      throw new Error("client_instance_binding_mismatch");
+    }
+    bindInstanceStorage(petState.instanceId);
     let availableCharacterPacks = [];
     try {
       availableCharacterPacks = await invoke("list_character_packs");
@@ -4815,6 +4854,9 @@ async function emitSettingsCommand(payload) {
 
 function applySettingsSnapshotPatch(runtimeSnapshot) {
   if (!runtimeSnapshot || typeof runtimeSnapshot !== "object") return;
+  const snapshotInstanceId = String(runtimeSnapshot?.state?.instanceId || "").trim();
+  const currentInstanceId = String(dataSource?.instanceId || "").trim();
+  if (snapshotInstanceId && currentInstanceId && snapshotInstanceId !== currentInstanceId) return;
 
   const musicRuntime = buildMusicRuntimePatch({
     musicSnapshot: runtimeSnapshot.music,

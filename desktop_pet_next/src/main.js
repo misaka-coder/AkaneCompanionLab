@@ -21,6 +21,7 @@ import {
   selectCharacterPack,
   setRuntimeCharacterPacks
 } from "./character-profile.js";
+import { bindInstanceStorage } from "./instance-storage.js";
 import {
   attachDesktopCareContext,
   cloneCareState,
@@ -43,11 +44,12 @@ const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
 const appWindow = isTauriRuntime ? getCurrentWindow() : null;
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
+const LOCAL_DEFAULT_INSTANCE_ID = "local-default";
 const PROFILE_USER_ID = "master";
 const CLIENT_MODE = "desktop_pet";
 
 const DESKTOP_HEALTH_PATH = "/desktop-pet/health";
-const LEGACY_HEALTH_PATH = "/health";
+const PUBLIC_HEALTH_PATH = "/health";
 const BASE_CAPABILITIES = ["speech_segments", "tts", "file_drop", "tool_actions"];
 const AUDIO_PLAYBACK_CAPABILITY = "audio_playback";
 const THINK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -164,6 +166,7 @@ const PET_HIT_POLYGON = [
 ];
 
 const DEFAULT_STATE = {
+  instanceId: LOCAL_DEFAULT_INSTANCE_ID,
   x: null,
   y: null,
   width: null,
@@ -210,7 +213,7 @@ let localOutfits = buildLocalOutfits();
 const resourceState = {
   health: "unknown",
   healthMessage: "Not checked",
-  healthEndpoint: LEGACY_HEALTH_PATH,
+  healthEndpoint: PUBLIC_HEALTH_PATH,
   contractVersion: "",
   contractSource: "unknown",
   capabilities: [],
@@ -716,6 +719,8 @@ let screenVisionStatus = "off";
 let screenVisionError = "";
 let screenVisionActiveClipId = "";
 let backendRetryTimer = 0;
+let backendSwitchToken = 0;
+let backendSwitchPending = false;
 let workspaceTaskPollTimer = 0;
 let workspaceTaskWatchPrimed = false;
 let workspaceTaskStatusCache = new Map();
@@ -795,6 +800,9 @@ boot();
 
 async function boot() {
   bindUi();
+  if (!isTauriRuntime) {
+    bindInstanceStorage(LOCAL_DEFAULT_INSTANCE_ID);
+  }
   applyCharacterChrome();
   applyVisualState();
   updateConnectionStatus();
@@ -812,10 +820,12 @@ async function boot() {
   try {
     scheduleTauriRuntimeBridges();
     await loadAndApplyPersistedCharacterState();
-    await reloadCharacterResources({ startup: true });
+    const backendReady = await reloadCharacterResources({ startup: true });
     scheduleNativeWindowStateApply({ forceHitTest: true });
-    scheduleSave(0);
-    void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
+    if (backendReady) {
+      scheduleSave(0);
+      void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
+    }
     scheduleDesktopContextPoll();
     scheduleSystemMediaPoll({ immediate: true });
     scheduleScreenVisionCapture({ immediate: true });
@@ -848,7 +858,21 @@ function startTauriRuntimeBridges() {
 }
 
 async function loadAndApplyPersistedCharacterState({ expectedPackId = "" } = {}) {
-  const loaded = await invoke("load_pet_state");
+  const [persistedState, launchBinding] = await Promise.all([
+    invoke("load_pet_state"),
+    invoke("get_client_launch_binding")
+  ]);
+  const loaded = {
+    ...persistedState,
+    backendUrl: launchBinding?.hasBackendOverride
+      ? launchBinding.backendUrl
+      : persistedState?.backendUrl
+  };
+  const instanceId = String(loaded?.instanceId || "").trim();
+  if (String(launchBinding?.instanceId || "").trim() !== instanceId) {
+    throw new Error("桌面客户端实例绑定与状态文件不一致。");
+  }
+  bindInstanceStorage(instanceId);
   const persistedPackId = String(loaded?.characterPackId || "").trim();
   await refreshRuntimeCharacterPacks({ silent: true, scheduleSnapshot: false });
   Object.assign(state, normalizeState(loaded));
@@ -1936,6 +1960,7 @@ function buildSettingsSnapshot() {
   return {
     character: buildCharacterSnapshot(),
     state: {
+      instanceId: state.instanceId,
       scale: state.scale,
       opacity: state.opacity,
       skipTaskbar: state.skipTaskbar,
@@ -2058,6 +2083,7 @@ function normalizeState(value) {
   return {
     ...DEFAULT_STATE,
     ...incoming,
+    instanceId: String(incoming.instanceId || "").trim() || LOCAL_DEFAULT_INSTANCE_ID,
     width: null,
     height: null,
     scale,
@@ -3373,6 +3399,8 @@ function buildPanelStatePayload() {
   const media = systemMedia || {};
   const playing = media.playbackStatus === "playing";
   return {
+    instanceId: state.instanceId,
+    backendUrl: state.backendUrl,
     characterName: getProfileIdentityText("name", CHARACTER_NAME),
     emotion: state.currentEmotion || getProfileDefaultEmotion(),
     avatarSrc: els.petImage?.src || "",
@@ -3576,13 +3604,67 @@ async function updateBackendUrlFromInput() {
 }
 
 async function updateBackendUrl(value) {
-  state.backendUrl = normalizeBackendUrl(value);
-  els.backendUrl.value = state.backendUrl;
+  const candidateUrl = normalizeBackendUrl(value);
+  const previousUrl = state.backendUrl;
+  if (backendSwitchPending) {
+    setStatus("正在验证另一个后端地址，请稍候。", { durationMs: 1800 });
+    els.backendUrl.value = previousUrl;
+    return false;
+  }
+
+  const switchToken = ++backendSwitchToken;
+  backendSwitchPending = true;
+  els.backendSave.disabled = true;
+  els.backendUrl.disabled = true;
+  setStatus(`正在验证实例 ${state.instanceId}。`, { durationMs: 2200 });
+  try {
+    const binding = await verifyBackendInstance(candidateUrl);
+    if (switchToken !== backendSwitchToken) return false;
+    await resetInstanceBoundRuntimeForBackendSwitch();
+    state.backendUrl = candidateUrl;
+    els.backendUrl.value = candidateUrl;
+    clearBackendRetry();
+    scheduleSave(0);
+    setStatus(`已连接实例 ${binding.instanceId}，正在加载资源。`, { durationMs: 2200 });
+    const healthy = await reloadCharacterResources({ userTriggered: true });
+    if (healthy) void ensureBackendSession();
+    return healthy;
+  } catch (error) {
+    if (switchToken === backendSwitchToken) {
+      state.backendUrl = previousUrl;
+      els.backendUrl.value = previousUrl;
+      setStatus(`拒绝切换后端：${friendlyBackendBindingError(error)}`, { mode: "error", durationMs: 4200 });
+    }
+    return false;
+  } finally {
+    if (switchToken === backendSwitchToken) {
+      backendSwitchPending = false;
+      els.backendSave.disabled = false;
+      els.backendUrl.disabled = false;
+    }
+  }
+}
+
+async function resetInstanceBoundRuntimeForBackendSwitch() {
+  interruptReply({ announce: false });
+  await cancelVoiceRecording();
   clearBackendRetry();
-  scheduleSave(0);
-  setStatus("后端地址已保存，正在检查连接。", { durationMs: 1800 });
-  await reloadCharacterResources({ userTriggered: true });
-  void ensureBackendSession();
+  window.clearTimeout(workspaceTaskPollTimer);
+  workspaceTaskPollTimer = 0;
+  workspaceTaskWatchPrimed = false;
+  workspaceTaskStatusCache = new Map();
+  workspaceTaskWatchKey = "";
+  workspaceTaskAnnounced.clear();
+  desktopFileDeliveryHandled.clear();
+  resourceState.manifest = null;
+  resourceState.health = "checking";
+  resourceState.healthMessage = "Verifying instance";
+  resourceState.contractVersion = "";
+  resourceState.contractSource = "unknown";
+  resourceState.capabilities = [];
+  resourceState.endpoints = {};
+  markCareAuthorityUnavailable("backend_switch");
+  updateConnectionStatus();
 }
 
 async function updateOutfitFromInput() {
@@ -3827,7 +3909,73 @@ async function reloadCharacterResources({ startup = false, userTriggered = false
   }
 }
 
+async function verifyBackendInstance(backendUrl) {
+  const normalizedUrl = normalizeBackendUrl(backendUrl);
+  if (isTauriRuntime) {
+    const result = await invoke("verify_backend_instance", { backendUrl: normalizedUrl });
+    if (!result?.ok) {
+      const error = new Error(String(result?.reason || result?.status || "instance_verification_failed"));
+      error.bindingStatus = String(result?.status || "rejected");
+      error.bindingReason = String(result?.reason || "instance_verification_failed");
+      error.actualInstanceId = String(result?.actualInstanceId || "");
+      throw error;
+    }
+    return result;
+  }
+
+  const response = await window.fetch(`${normalizedUrl}${PUBLIC_HEALTH_PATH}`, {
+    method: "GET",
+    cache: "no-store"
+  });
+  if (!response.ok) throw new Error(`health_http_${response.status}`);
+  const payload = await response.json();
+  const actualInstanceId = String(payload?.instance_id || "").trim();
+  if (
+    String(payload?.status || "") !== "ok" ||
+    String(payload?.root_binding || "") !== "valid" ||
+    actualInstanceId !== state.instanceId
+  ) {
+    const error = new Error("instance_id_mismatch");
+    error.bindingStatus = "rejected";
+    error.bindingReason = "instance_id_mismatch";
+    error.actualInstanceId = actualInstanceId;
+    throw error;
+  }
+  return { ok: true, status: "verified", reason: "", instanceId: actualInstanceId };
+}
+
+function friendlyBackendBindingError(error) {
+  const reason = String(error?.bindingReason || formatError(error) || "").trim();
+  const actual = String(error?.actualInstanceId || "").trim();
+  if (reason === "instance_id_mismatch") {
+    return actual
+      ? `目标是实例 ${actual}，当前客户端只允许 ${state.instanceId}`
+      : `后端实例身份与 ${state.instanceId} 不匹配`;
+  }
+  if (reason === "missing_admin_token") return "命名实例缺少管理凭据";
+  if (reason.includes("health") || reason.includes("connect") || reason.includes("request")) {
+    return "无法通过公开 health 验证实例身份";
+  }
+  return reason || "实例验证失败";
+}
+
 async function checkBackendHealth() {
+  try {
+    await verifyBackendInstance(state.backendUrl);
+  } catch (error) {
+    resourceState.health = "offline";
+    resourceState.healthMessage = friendlyBackendBindingError(error);
+    resourceState.healthEndpoint = PUBLIC_HEALTH_PATH;
+    resourceState.contractSource = "instance_rejected";
+    if (String(error?.bindingReason || "") === "instance_id_mismatch") {
+      clearBackendRetry();
+    } else {
+      scheduleBackendRetry();
+    }
+    updateConnectionStatus();
+    return false;
+  }
+
   const query = new URLSearchParams({
     user_id: state.sessionId || "desktop_pet_next_health",
     real_user_id: getProfileUserId(),
@@ -3850,32 +3998,8 @@ async function checkBackendHealth() {
     updateConnectionStatus();
     return true;
   } catch (error) {
-    return checkLegacyBackendHealth(error);
-  }
-}
-
-async function checkLegacyBackendHealth(primaryError) {
-  try {
-    const query = new URLSearchParams({
-      ...buildBackendCharacterContext(),
-      t: String(Date.now())
-    });
-    const response = await backendFetch(`${state.backendUrl}${LEGACY_HEALTH_PATH}?${query.toString()}`, {
-      method: "GET",
-      cache: "no-store",
-      connectTimeout: 3500
-    });
-    if (!response.ok) throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
-    const payload = await readJsonResponse(response);
-    applyBackendHealthPayload(payload, { endpoint: LEGACY_HEALTH_PATH, contractSource: "legacy" });
-    resourceState.health = "online";
-    resourceState.healthMessage = "Connected (legacy health)";
-    clearBackendRetry();
-    updateConnectionStatus();
-    return true;
-  } catch (legacyError) {
     resourceState.health = "offline";
-    resourceState.healthMessage = formatError(primaryError || legacyError);
+    resourceState.healthMessage = formatError(error);
     resourceState.healthEndpoint = DESKTOP_HEALTH_PATH;
     resourceState.contractSource = "unavailable";
     scheduleBackendRetry();
@@ -3888,7 +4012,7 @@ function applyBackendHealthPayload(payload, { endpoint, contractSource } = {}) {
   const data = payload && typeof payload === "object" ? payload : {};
   const tts = data.tts && typeof data.tts === "object" ? data.tts : {};
   const asr = data.asr && typeof data.asr === "object" ? data.asr : {};
-  resourceState.healthEndpoint = endpoint || LEGACY_HEALTH_PATH;
+  resourceState.healthEndpoint = endpoint || DESKTOP_HEALTH_PATH;
   resourceState.contractVersion = String(data.contract_version || data.contractVersion || "");
   resourceState.contractSource = contractSource || (resourceState.contractVersion ? "desktop_pet" : "legacy");
   resourceState.capabilities = Array.isArray(data.capabilities)
@@ -3914,6 +4038,7 @@ function scheduleBackendRetry(delay = BACKEND_RETRY_MS) {
     backendRetryTimer = 0;
     const recovered = await reloadCharacterResources({ silent: true });
     if (recovered) {
+      scheduleSave(0);
       void ensureBackendSession();
       if (!isReplyActive() && els.chatForm.hidden) {
         showBubbleText("后端已经连回来了。", { transient: true, durationMs: 2200 });

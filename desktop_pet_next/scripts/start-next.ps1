@@ -1,4 +1,8 @@
 param(
+  [string]$InstanceId = "",
+  [string]$DataRoot = "",
+  [int]$BackendPort = 9999,
+  [string]$EnvFile = "",
   [switch]$BuildIfMissing,
   [switch]$NoBuild,
   [switch]$Rebuild,
@@ -108,6 +112,43 @@ function Stop-AkaneDesktopProcesses {
 }
 
 $Root = Split-Path -Parent $PSScriptRoot
+$ProjectRoot = Split-Path -Parent $Root
+$instanceIdWasBound = $PSBoundParameters.ContainsKey("InstanceId")
+$dataRootWasBound = $PSBoundParameters.ContainsKey("DataRoot")
+$backendPortWasBound = $PSBoundParameters.ContainsKey("BackendPort")
+. (Join-Path $ProjectRoot "scripts\akane_data_root.ps1")
+. (Join-Path $ProjectRoot "scripts\akane_instance_launcher.ps1")
+if ($PSBoundParameters.ContainsKey("EnvFile") -and -not [string]::IsNullOrWhiteSpace($EnvFile)) {
+  $envPath = if ([System.IO.Path]::IsPathRooted($EnvFile)) {
+    [System.IO.Path]::GetFullPath($EnvFile)
+  } else {
+    [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot $EnvFile))
+  }
+  $null = Import-AkaneEnvFile -Path $envPath
+  $env:AKANE_ENV_FILE = $envPath
+}
+$resolvedInstanceId = if ($instanceIdWasBound -and -not [string]::IsNullOrWhiteSpace($InstanceId)) {
+  $InstanceId.Trim()
+} elseif (-not [string]::IsNullOrWhiteSpace([string]$env:AKANE_INSTANCE_ID)) {
+  ([string]$env:AKANE_INSTANCE_ID).Trim()
+} else {
+  "local-default"
+}
+if (-not (Test-AkaneSafeInstanceId -InstanceId $resolvedInstanceId)) { throw "invalid_instance_id" }
+if (-not $backendPortWasBound -and -not [string]::IsNullOrWhiteSpace([string]$env:COMPANION_PORT)) {
+  $BackendPort = [int]$env:COMPANION_PORT
+}
+$resolvedDataRoot = if ($dataRootWasBound -and -not [string]::IsNullOrWhiteSpace($DataRoot)) {
+  $DataRoot.Trim()
+} else {
+  ([string]$env:AKANE_DATA_ROOT).Trim()
+}
+$dataStatus = Initialize-AkaneDataRoot -ProjectRoot $ProjectRoot -InstanceId $resolvedInstanceId -DataRoot $resolvedDataRoot
+$env:AKANE_INSTANCE_ID = $resolvedInstanceId
+$env:AKANE_DATA_ROOT = $dataStatus.Root
+$env:AKANE_DATA_ROOT_READY = "1"
+$env:COMPANION_PORT = "$BackendPort"
+$env:AKANE_BACKEND_URL = "http://127.0.0.1:$BackendPort"
 $ExePath = Join-Path $Root "src-tauri\target\release\akane_desktop_pet_next.exe"
 
 Set-Location $Root

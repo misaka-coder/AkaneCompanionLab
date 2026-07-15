@@ -32,6 +32,8 @@ let state = null;
 let music = null;
 let loading = false;
 let refreshTimer = 0;
+let verifiedBindingKey = "";
+let verifiedBindingAt = 0;
 const itemMap = new Map();
 
 boot();
@@ -124,6 +126,10 @@ async function bindStateSync() {
 
 function applySettingsSnapshot(snapshot) {
   if (!snapshot?.state) return;
+  if (state?.instanceId && snapshot.state.instanceId && state.instanceId !== snapshot.state.instanceId) {
+    setAlert(`已忽略来自实例 ${snapshot.state.instanceId} 的旧窗口状态。`, "error");
+    return;
+  }
   const previousKey = stateIdentityKey(state);
   state = { ...(state || {}), ...snapshot.state };
   updateIdentityUi();
@@ -141,6 +147,7 @@ function applySettingsSnapshot(snapshot) {
 function stateIdentityKey(value) {
   if (!value) return "";
   return [
+    String(value.instanceId || ""),
     normalizeBackendUrl(value.backendUrl || DEFAULT_BACKEND_URL),
     String(value.profileUserId || PROFILE_USER_ID),
     String(value.sessionId || "")
@@ -157,7 +164,19 @@ function scheduleWorkspaceRefresh(delay = 220) {
 
 async function reloadState() {
   try {
-    state = await invoke("load_pet_state");
+    const [persistedState, launchBinding] = await Promise.all([
+      invoke("load_pet_state"),
+      invoke("get_client_launch_binding")
+    ]);
+    state = {
+      ...persistedState,
+      backendUrl: launchBinding?.hasBackendOverride
+        ? launchBinding.backendUrl
+        : persistedState?.backendUrl
+    };
+    if (String(launchBinding?.instanceId || "") !== String(state.instanceId || "")) {
+      throw new Error("client_instance_binding_mismatch");
+    }
   } catch (error) {
     state = {};
     setAlert(`读取设置失败：${formatError(error)}`, "error");
@@ -210,7 +229,7 @@ async function fetchWorkspaceSummary({ backendUrl, profileUserId, sessionId }) {
     limit: String(SUMMARY_LIMIT),
     t: String(Date.now())
   });
-  const response = await tauriFetch(`${normalizeBackendUrl(backendUrl)}/desktop-pet/workspace/summary?${query}`, {
+  const response = await workspaceFetch(`${normalizeBackendUrl(backendUrl)}/desktop-pet/workspace/summary?${query}`, {
     method: "GET",
     cache: "no-store",
     connectTimeout: 5000
@@ -613,7 +632,7 @@ async function resolveWorkspaceItemPath(item) {
     real_user_id: String(state?.profileUserId || PROFILE_USER_ID),
     t: String(Date.now())
   });
-  const response = await tauriFetch(
+  const response = await workspaceFetch(
     `${normalizeBackendUrl(state?.backendUrl || DEFAULT_BACKEND_URL)}/desktop-pet/workspace/${routeType}/${encodeURIComponent(handle)}/location?${query}`,
     {
       method: "GET",
@@ -697,7 +716,7 @@ async function clearWorkspaceFiles() {
 async function postWorkspaceAction(payload) {
   const sessionId = String(state?.sessionId || "").trim();
   if (!sessionId) throw new Error("会话还没准备好");
-  const response = await tauriFetch(`${normalizeBackendUrl(state?.backendUrl || DEFAULT_BACKEND_URL)}/desktop-pet/workspace/action`, {
+  const response = await workspaceFetch(`${normalizeBackendUrl(state?.backendUrl || DEFAULT_BACKEND_URL)}/desktop-pet/workspace/action`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
@@ -814,6 +833,26 @@ async function closeWindow() {
 
 function normalizeBackendUrl(url) {
   return String(url || "").trim().replace(/\/+$/, "") || DEFAULT_BACKEND_URL;
+}
+
+async function workspaceFetch(input, init = {}) {
+  const backendUrl = normalizeBackendUrl(state?.backendUrl || DEFAULT_BACKEND_URL);
+  const instanceId = String(state?.instanceId || "").trim();
+  const bindingKey = `${instanceId}|${backendUrl}`;
+  if (verifiedBindingKey !== bindingKey || Date.now() - verifiedBindingAt >= 3000) {
+    const binding = await invoke("verify_backend_instance", { backendUrl });
+    if (!binding?.ok || String(binding.instanceId || "") !== instanceId) {
+      verifiedBindingKey = "";
+      verifiedBindingAt = 0;
+      const actual = String(binding?.actualInstanceId || "").trim();
+      throw new Error(actual
+        ? `后端实例不匹配：当前 ${instanceId}，目标 ${actual}`
+        : `无法验证实例 ${instanceId} 的后端身份`);
+    }
+    verifiedBindingKey = bindingKey;
+    verifiedBindingAt = Date.now();
+  }
+  return tauriFetch(input, init);
 }
 
 function buildText(tagName, text) {

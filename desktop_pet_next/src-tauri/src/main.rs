@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Mutex, OnceLock},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -39,7 +40,11 @@ use windows::Win32::{
 
 const STATE_FILE: &str = "pet_state.json";
 const DATA_ROOT_ENV: &str = "AKANE_DATA_ROOT";
+const INSTANCE_ID_ENV: &str = "AKANE_INSTANCE_ID";
+const ADMIN_TOKEN_ENV: &str = "AKANE_ADMIN_TOKEN";
+const BACKEND_URL_ENV: &str = "AKANE_BACKEND_URL";
 const APP_DIRECTORY_NAME: &str = "Akane";
+const LOCAL_DEFAULT_INSTANCE_ID: &str = "local-default";
 const CHARACTER_PACK_TEMPLATE_JSON: &str =
     include_str!("../../../desktop_pet_creator_kit/templates/character_pack/character.json");
 const BASE_WIDTH: f64 = 340.0;
@@ -58,6 +63,7 @@ const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "webm",
 ];
 const SUPPORTED_PORTRAIT_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
+static VERIFIED_BACKEND_URL: OnceLock<Mutex<String>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -102,6 +108,7 @@ impl Default for CharacterRuntimeState {
 #[serde(default)]
 #[serde(rename_all = "camelCase")]
 struct PetState {
+    instance_id: String,
     x: Option<i32>,
     y: Option<i32>,
     width: Option<u32>,
@@ -152,6 +159,7 @@ struct PetState {
 impl Default for PetState {
     fn default() -> Self {
         Self {
+            instance_id: LOCAL_DEFAULT_INSTANCE_ID.to_string(),
             x: None,
             y: None,
             width: None,
@@ -184,6 +192,43 @@ impl Default for PetState {
             hitbox_overlay: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendInstanceVerification {
+    ok: bool,
+    status: String,
+    reason: String,
+    instance_id: String,
+    actual_instance_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientLaunchBinding {
+    instance_id: String,
+    backend_url: String,
+    has_backend_override: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendAdminRequest {
+    url: String,
+    #[serde(default)]
+    body: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendAdminResponse {
+    ok: bool,
+    status: String,
+    reason: String,
+    http_status: u16,
+    content_type: String,
+    body: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -473,24 +518,149 @@ impl HitRegion {
 fn load_pet_state(app: AppHandle) -> Result<PetState, String> {
     let path = state_path(&app)?;
     if !path.exists() {
-        return Ok(PetState::default());
+        return default_pet_state();
     }
 
     let raw = fs::read_to_string(&path).map_err(|error| error.to_string())?;
     let mut state: PetState = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
-    normalize_pet_state(&mut state);
+    normalize_pet_state(&mut state)?;
     Ok(state)
 }
 
 #[tauri::command]
-fn save_pet_state(app: AppHandle, state: PetState) -> Result<(), String> {
+fn get_client_launch_binding() -> Result<ClientLaunchBinding, String> {
+    Ok(ClientLaunchBinding {
+        instance_id: runtime_instance_id()?,
+        backend_url: runtime_backend_url(),
+        has_backend_override: std::env::var_os(BACKEND_URL_ENV).is_some(),
+    })
+}
+
+#[tauri::command]
+async fn save_pet_state(app: AppHandle, state: PetState) -> Result<(), String> {
     let path = state_path(&app)?;
 
     let mut normalized = state;
-    normalize_pet_state(&mut normalized);
+    normalize_pet_state(&mut normalized)?;
+
+    if path.is_file() {
+        let previous_backend_url = fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<PetState>(&raw).ok())
+            .map(|state| normalize_backend_url(&state.backend_url))
+            .unwrap_or_default();
+        if !previous_backend_url.is_empty() && previous_backend_url != normalized.backend_url {
+            let binding = verify_backend_instance_url(&normalized.backend_url).await;
+            if !binding.ok {
+                return Err("backend_instance_verification_failed".to_string());
+            }
+            set_verified_backend_url(&normalized.backend_url);
+        }
+    }
 
     let raw = serde_json::to_string_pretty(&normalized).map_err(|error| error.to_string())?;
     write_text_atomic(&path, &raw)
+}
+
+#[tauri::command]
+async fn verify_backend_instance(backend_url: String) -> BackendInstanceVerification {
+    let result = verify_backend_instance_url(&backend_url).await;
+    if result.ok {
+        set_verified_backend_url(&backend_url);
+    }
+    result
+}
+
+#[tauri::command]
+async fn backend_admin_request(
+    app: AppHandle,
+    request: BackendAdminRequest,
+) -> BackendAdminResponse {
+    let runtime_instance_id = match runtime_instance_id() {
+        Ok(value) => value,
+        Err(_) => return admin_failure("invalid_runtime_binding", "invalid_instance_id", 400),
+    };
+    let state = match load_pet_state(app) {
+        Ok(value) => value,
+        Err(_) => return admin_failure("state_unavailable", "client_state_unavailable", 503),
+    };
+    if state.instance_id != runtime_instance_id {
+        return admin_failure("instance_mismatch", "client_state_instance_mismatch", 409);
+    }
+
+    let target = match reqwest::Url::parse(request.url.trim()) {
+        Ok(value) => value,
+        Err(_) => return admin_failure("invalid_request", "invalid_admin_url", 400),
+    };
+    let bound_backend_url = current_bound_backend_url(&state);
+    let backend = match reqwest::Url::parse(&bound_backend_url) {
+        Ok(value) => value,
+        Err(_) => return admin_failure("invalid_binding", "invalid_backend_url", 409),
+    };
+    if !same_backend_origin(&target, &backend) || !is_allowed_admin_path(target.path()) {
+        return admin_failure("rejected", "admin_target_not_allowed", 403);
+    }
+
+    let binding = verify_backend_instance_url(&bound_backend_url).await;
+    if !binding.ok {
+        return admin_failure(&binding.status, &binding.reason, 409);
+    }
+    set_verified_backend_url(&bound_backend_url);
+
+    let configured_admin_token = std::env::var(ADMIN_TOKEN_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let admin_token = match resolve_admin_token(&runtime_instance_id, configured_admin_token) {
+        Ok(value) => value,
+        Err(reason) => return admin_failure("unauthorized", reason, 401),
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(45))
+        .build()
+    {
+        Ok(value) => value,
+        Err(_) => return admin_failure("unavailable", "http_client_unavailable", 503),
+    };
+    let mut builder = client
+        .post(target)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(request.body);
+    if let Some(token) = admin_token {
+        builder = builder.bearer_auth(token);
+    }
+
+    let response = match builder.send().await {
+        Ok(value) => value,
+        Err(_) => return admin_failure("request_failed", "admin_request_failed", 502),
+    };
+    let http_status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    let body = match response.bytes().await {
+        Ok(value) if value.len() <= 4 * 1024 * 1024 => String::from_utf8_lossy(&value).to_string(),
+        Ok(_) => return admin_failure("bad_response", "admin_response_too_large", 502),
+        Err(_) => return admin_failure("bad_response", "admin_response_unreadable", 502),
+    };
+
+    BackendAdminResponse {
+        ok: (200..300).contains(&http_status),
+        status: if (200..300).contains(&http_status) {
+            "completed".to_string()
+        } else {
+            format!("http-{http_status}")
+        },
+        reason: String::new(),
+        http_status,
+        content_type,
+        body,
+    }
 }
 
 #[tauri::command]
@@ -519,9 +689,9 @@ fn activate_character_pack(
     let original = fs::read_to_string(&path).ok();
     let mut state = match original.as_deref() {
         Some(raw) => serde_json::from_str::<PetState>(raw).map_err(|error| error.to_string())?,
-        None => PetState::default(),
+        None => default_pet_state()?,
     };
-    normalize_pet_state(&mut state);
+    normalize_pet_state(&mut state)?;
     state.character_pack_id = pack_id.clone();
     let raw_state = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
     write_text_atomic(&path, &raw_state)?;
@@ -561,19 +731,16 @@ async fn control_system_media(action: String) -> SystemMediaControlResult {
 
 #[tauri::command]
 async fn prepare_audio_asset(
-    app: AppHandle,
+    _app: AppHandle,
     path: String,
     lyric_path: Option<String>,
 ) -> Result<PreparedAudioAsset, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        prepare_audio_asset_blocking(app, path, lyric_path)
-    })
-    .await
-    .map_err(|error| format!("音频准备任务失败：{error}"))?
+    tauri::async_runtime::spawn_blocking(move || prepare_audio_asset_blocking(path, lyric_path))
+        .await
+        .map_err(|error| format!("音频准备任务失败：{error}"))?
 }
 
 fn prepare_audio_asset_blocking(
-    app: AppHandle,
     path: String,
     lyric_path: Option<String>,
 ) -> Result<PreparedAudioAsset, String> {
@@ -600,11 +767,7 @@ fn prepare_audio_asset_blocking(
         return Err("音频文件有点太大了，先控制在 300MB 以内吧。".to_string());
     }
 
-    let cache_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|error| error.to_string())?
-        .join("audio");
+    let cache_dir = desktop_runtime_cache_dir("attachments/audio")?;
     fs::create_dir_all(&cache_dir).map_err(|error| error.to_string())?;
 
     let cached_file_name = format!("track_{}.{}", current_time_millis(), extension);
@@ -637,19 +800,18 @@ fn prepare_audio_asset_blocking(
 
 #[tauri::command]
 async fn install_character_pack_zip_file(
-    app: AppHandle,
+    _app: AppHandle,
     path: String,
     overwrite: bool,
 ) -> Result<CharacterPackInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        install_character_pack_zip_file_blocking(app, path, overwrite)
+        install_character_pack_zip_file_blocking(path, overwrite)
     })
     .await
     .map_err(|error| format!("角色包导入任务失败：{error}"))?
 }
 
 fn install_character_pack_zip_file_blocking(
-    app: AppHandle,
     path: String,
     overwrite: bool,
 ) -> Result<CharacterPackInstallResult, String> {
@@ -674,25 +836,24 @@ fn install_character_pack_zip_file_blocking(
     }
 
     let bytes = fs::read(&zip_path).map_err(|error| error.to_string())?;
-    install_character_pack_zip(app, bytes, overwrite)
+    install_character_pack_zip(bytes, overwrite)
 }
 
 #[tauri::command]
 async fn install_character_pack_zip_bytes(
-    app: AppHandle,
+    _app: AppHandle,
     file_name: String,
     bytes: Vec<u8>,
     overwrite: bool,
 ) -> Result<CharacterPackInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        install_character_pack_zip_bytes_blocking(app, file_name, bytes, overwrite)
+        install_character_pack_zip_bytes_blocking(file_name, bytes, overwrite)
     })
     .await
     .map_err(|error| format!("角色包导入任务失败：{error}"))?
 }
 
 fn install_character_pack_zip_bytes_blocking(
-    app: AppHandle,
     file_name: String,
     bytes: Vec<u8>,
     overwrite: bool,
@@ -707,7 +868,7 @@ fn install_character_pack_zip_bytes_blocking(
         return Err("角色包 zip 暂时请控制在 300MB 以内。".to_string());
     }
 
-    install_character_pack_zip(app, bytes, overwrite)
+    install_character_pack_zip(bytes, overwrite)
 }
 
 #[tauri::command]
@@ -762,7 +923,11 @@ fn export_file_to_desktop_blocking(
     fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
     let file_name = workspace_export_file_name(&source_path, &file_name);
     let target_path = unique_child_file_path(&export_dir, &file_name);
-    fs::copy(&source_path, &target_path).map_err(|error| error.to_string())?;
+    let staging_dir = desktop_runtime_cache_dir("export_staging")?;
+    fs::create_dir_all(&staging_dir).map_err(|error| error.to_string())?;
+    let staged_path = unique_child_file_path(&staging_dir, &file_name);
+    fs::copy(&source_path, &staged_path).map_err(|error| error.to_string())?;
+    publish_staged_export(&staged_path, &target_path)?;
 
     Ok(ExportedWorkspaceFile {
         ok: true,
@@ -1717,8 +1882,11 @@ fn export_character_pack_blocking(
     let export_dir = resolve_desktop_export_dir(&app)?;
     fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
     let target_path = unique_child_file_path(&export_dir, &zip_name);
+    let staging_dir = desktop_runtime_cache_dir("export_staging")?;
+    fs::create_dir_all(&staging_dir).map_err(|error| error.to_string())?;
+    let staged_path = unique_child_file_path(&staging_dir, &zip_name);
 
-    let file = fs::File::create(&target_path).map_err(|error| error.to_string())?;
+    let file = fs::File::create(&staged_path).map_err(|error| error.to_string())?;
     let mut writer = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -1770,6 +1938,8 @@ fn export_character_pack_blocking(
 
     let file = writer.finish().map_err(|e| e.to_string())?;
     let metadata = file.metadata().map_err(|e| e.to_string())?;
+    drop(file);
+    publish_staged_export(&staged_path, &target_path)?;
 
     Ok(ExportedWorkspaceFile {
         ok: true,
@@ -2183,7 +2353,6 @@ fn read_lyric_asset(audio_path: &PathBuf, explicit_path: Option<&str>) -> Option
 }
 
 fn install_character_pack_zip(
-    app: AppHandle,
     bytes: Vec<u8>,
     overwrite: bool,
 ) -> Result<CharacterPackInstallResult, String> {
@@ -2199,11 +2368,8 @@ fn install_character_pack_zip(
         return Err("角色包 zip 缺少有效的包名。".to_string());
     }
 
-    let temp_root = app
-        .path()
-        .app_cache_dir()
-        .map_err(|error| error.to_string())?
-        .join(format!("character_pack_import_{}", current_time_millis()));
+    let temp_root = desktop_runtime_cache_dir("character_import")?
+        .join(format!("import_{}", current_time_millis()));
     let temp_pack_dir = temp_root.join(&pack_id);
     let characters_dir = creator_kit_characters_dir()?;
     let destination = safe_child_path(&characters_dir, &pack_id)?;
@@ -2618,9 +2784,30 @@ fn creator_kit_characters_dir() -> Result<PathBuf, String> {
     Ok(characters_dir)
 }
 
+fn desktop_runtime_cache_dir(category: &str) -> Result<PathBuf, String> {
+    let path = desktop_runtime_cache_path(&akane_data_root()?, category)?;
+    fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+fn desktop_runtime_cache_path(data_root: &Path, category: &str) -> Result<PathBuf, String> {
+    let relative = match category {
+        "attachments/audio" => PathBuf::from("attachments").join("audio"),
+        "character_import" => PathBuf::from("character_import"),
+        "export_staging" => PathBuf::from("export_staging"),
+        _ => return Err("invalid_desktop_cache_category".to_string()),
+    };
+    Ok(data_root.join("cache").join("desktop_pet").join(relative))
+}
+
 fn akane_data_root() -> Result<PathBuf, String> {
+    let instance_id = runtime_instance_id()?;
     if let Some(explicit) = std::env::var_os(DATA_ROOT_ENV).filter(|value| !value.is_empty()) {
         return absolute_path(PathBuf::from(explicit));
+    }
+
+    if instance_id != LOCAL_DEFAULT_INSTANCE_ID {
+        return Err("named_instance_requires_data_root".to_string());
     }
 
     #[cfg(windows)]
@@ -2944,6 +3131,25 @@ fn unique_child_file_path(directory: &Path, file_name: &str) -> PathBuf {
     directory.join(format!("{}_{}", current_time_millis(), file_name))
 }
 
+fn publish_staged_export(staged_path: &Path, target_path: &Path) -> Result<(), String> {
+    let target_parent = target_path
+        .parent()
+        .ok_or_else(|| "invalid_export_target".to_string())?;
+    fs::create_dir_all(target_parent).map_err(|error| error.to_string())?;
+    let file_name = target_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "invalid_export_target".to_string())?;
+    let partial = target_parent.join(format!(".{file_name}.partial_{}", current_time_millis()));
+    let publish_result = (|| {
+        fs::copy(staged_path, &partial).map_err(|error| error.to_string())?;
+        fs::rename(&partial, target_path).map_err(|error| error.to_string())
+    })();
+    let _ = fs::remove_file(&partial);
+    let _ = fs::remove_file(staged_path);
+    publish_result
+}
+
 fn require_text(value: &str, label: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         Err(format!("{label} 不能为空。"))
@@ -3158,7 +3364,7 @@ fn find_adjacent_lyric_path(audio_path: &PathBuf) -> Option<PathBuf> {
 
 #[tauri::command]
 fn apply_window_state(window: Window, mut state: PetState) -> Result<WindowGeometry, String> {
-    normalize_pet_state(&mut state);
+    normalize_pet_state(&mut state)?;
     window
         .set_always_on_top(state.always_on_top)
         .map_err(|error| error.to_string())?;
@@ -3559,7 +3765,7 @@ fn saved_window_position_visible(window: &Window, x: i32, y: i32) -> bool {
 
 fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
     let path = akane_data_root()?.join("state").join(STATE_FILE);
-    if !path.exists() {
+    if !path.exists() && runtime_instance_id()? == LOCAL_DEFAULT_INSTANCE_ID {
         let legacy_path = app
             .path()
             .app_config_dir()
@@ -3983,7 +4189,22 @@ fn build_system_media_track_key(
         .join("::")
 }
 
-fn normalize_pet_state(state: &mut PetState) {
+fn default_pet_state() -> Result<PetState, String> {
+    let mut state = PetState::default();
+    state.instance_id = runtime_instance_id()?;
+    state.backend_url = runtime_backend_url();
+    normalize_pet_state(&mut state)?;
+    Ok(state)
+}
+
+fn normalize_pet_state(state: &mut PetState) -> Result<(), String> {
+    let runtime_instance_id = runtime_instance_id()?;
+    if state.instance_id.trim().is_empty() && runtime_instance_id == LOCAL_DEFAULT_INSTANCE_ID {
+        state.instance_id = runtime_instance_id.clone();
+    }
+    if state.instance_id != runtime_instance_id {
+        return Err("client_state_instance_mismatch".to_string());
+    }
     state.width = None;
     state.height = None;
     state.scale = clamp(state.scale, 0.75, 1.45);
@@ -4008,6 +4229,7 @@ fn normalize_pet_state(state: &mut PetState) {
     for runtime in state.characters.values_mut() {
         normalize_character_runtime_state(runtime);
     }
+    Ok(())
 }
 
 fn normalize_character_runtime_state(runtime: &mut CharacterRuntimeState) {
@@ -4178,6 +4400,237 @@ fn normalize_backend_url(value: &str) -> String {
     } else {
         trimmed
     }
+}
+
+fn runtime_instance_id() -> Result<String, String> {
+    let value = std::env::var(INSTANCE_ID_ENV).unwrap_or_default();
+    let instance_id = if value.trim().is_empty() {
+        LOCAL_DEFAULT_INSTANCE_ID.to_string()
+    } else {
+        value.trim().to_string()
+    };
+    if !is_safe_instance_id(&instance_id) {
+        return Err("invalid_instance_id".to_string());
+    }
+    Ok(instance_id)
+}
+
+fn runtime_backend_url() -> String {
+    std::env::var(BACKEND_URL_ENV)
+        .ok()
+        .map(|value| normalize_backend_url(&value))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_BACKEND_URL.to_string())
+}
+
+fn verified_backend_store() -> &'static Mutex<String> {
+    VERIFIED_BACKEND_URL.get_or_init(|| Mutex::new(String::new()))
+}
+
+fn set_verified_backend_url(value: &str) {
+    if let Ok(mut current) = verified_backend_store().lock() {
+        *current = normalize_backend_url(value);
+    }
+}
+
+fn current_bound_backend_url(state: &PetState) -> String {
+    if let Ok(current) = verified_backend_store().lock() {
+        if !current.trim().is_empty() {
+            return current.clone();
+        }
+    }
+    if std::env::var_os(BACKEND_URL_ENV).is_some() {
+        runtime_backend_url()
+    } else {
+        normalize_backend_url(&state.backend_url)
+    }
+}
+
+fn is_safe_instance_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphanumeric() || value.len() > 64 {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
+}
+
+async fn verify_backend_instance_url(backend_url: &str) -> BackendInstanceVerification {
+    let instance_id = match runtime_instance_id() {
+        Ok(value) => value,
+        Err(reason) => return backend_verification_failure("invalid_binding", &reason, "", ""),
+    };
+    let backend = match reqwest::Url::parse(&normalize_backend_url(backend_url)) {
+        Ok(value)
+            if matches!(value.scheme(), "http" | "https")
+                && value.username().is_empty()
+                && value.password().is_none() =>
+        {
+            value
+        }
+        _ => {
+            return backend_verification_failure(
+                "invalid_backend_url",
+                "invalid_backend_url",
+                &instance_id,
+                "",
+            )
+        }
+    };
+    let health_url = match backend.join("/health") {
+        Ok(value) => value,
+        Err(_) => {
+            return backend_verification_failure(
+                "invalid_backend_url",
+                "invalid_backend_url",
+                &instance_id,
+                "",
+            )
+        }
+    };
+    let client = match reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(6))
+        .build()
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return backend_verification_failure(
+                "unavailable",
+                "http_client_unavailable",
+                &instance_id,
+                "",
+            )
+        }
+    };
+    let response = match client
+        .get(health_url)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return backend_verification_failure(
+                "unavailable",
+                "health_request_failed",
+                &instance_id,
+                "",
+            )
+        }
+    };
+    if !response.status().is_success() {
+        return backend_verification_failure("unavailable", "health_http_error", &instance_id, "");
+    }
+    let payload: serde_json::Value = match response.json().await {
+        Ok(value) => value,
+        Err(_) => {
+            return backend_verification_failure(
+                "unavailable",
+                "health_invalid_json",
+                &instance_id,
+                "",
+            )
+        }
+    };
+    let (valid, actual_instance_id) = health_payload_matches_instance(&payload, &instance_id);
+    if !valid {
+        return backend_verification_failure(
+            "rejected",
+            "instance_id_mismatch",
+            &instance_id,
+            &actual_instance_id,
+        );
+    }
+    BackendInstanceVerification {
+        ok: true,
+        status: "verified".to_string(),
+        reason: String::new(),
+        instance_id,
+        actual_instance_id,
+    }
+}
+
+fn health_payload_matches_instance(payload: &serde_json::Value, expected: &str) -> (bool, String) {
+    let actual_instance_id = payload
+        .get("instance_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let valid = payload.get("status").and_then(serde_json::Value::as_str) == Some("ok")
+        && payload
+            .get("root_binding")
+            .and_then(serde_json::Value::as_str)
+            == Some("valid")
+        && actual_instance_id == expected;
+    (valid, actual_instance_id)
+}
+
+fn backend_verification_failure(
+    status: &str,
+    reason: &str,
+    instance_id: &str,
+    actual_instance_id: &str,
+) -> BackendInstanceVerification {
+    BackendInstanceVerification {
+        ok: false,
+        status: status.to_string(),
+        reason: reason.to_string(),
+        instance_id: instance_id.to_string(),
+        actual_instance_id: actual_instance_id.to_string(),
+    }
+}
+
+fn admin_failure(status: &str, reason: &str, http_status: u16) -> BackendAdminResponse {
+    let body = serde_json::json!({
+        "ok": false,
+        "status": status,
+        "reason": reason,
+    })
+    .to_string();
+    BackendAdminResponse {
+        ok: false,
+        status: status.to_string(),
+        reason: reason.to_string(),
+        http_status,
+        content_type: "application/json".to_string(),
+        body,
+    }
+}
+
+fn resolve_admin_token(
+    instance_id: &str,
+    configured_token: Option<String>,
+) -> Result<Option<String>, &'static str> {
+    if instance_id != LOCAL_DEFAULT_INSTANCE_ID && configured_token.is_none() {
+        return Err("missing_admin_token");
+    }
+    Ok(configured_token)
+}
+
+fn same_backend_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+        && left.username().is_empty()
+        && left.password().is_none()
+}
+
+fn is_allowed_admin_path(path: &str) -> bool {
+    [
+        "/control-center/",
+        "/capabilities/",
+        "/api/capabilities/",
+        "/api/qq/",
+        "/admin/",
+        "/plugins/",
+        "/memcore/",
+    ]
+    .iter()
+    .any(|prefix| path.starts_with(prefix))
 }
 
 fn point_in_polygon(points: &[HitPoint], x: i32, y: i32) -> bool {
@@ -4383,7 +4836,10 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             load_pet_state,
+            get_client_launch_binding,
             save_pet_state,
+            verify_backend_instance,
+            backend_admin_request,
             activate_character_pack,
             get_desktop_context_snapshot,
             get_current_system_media,
@@ -4436,4 +4892,94 @@ fn main() {
         .plugin(tauri_plugin_http::init())
         .run(tauri::generate_context!())
         .expect("error while running Akane Desktop Pet Next");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_binding_rejects_another_instance() {
+        let payload = serde_json::json!({
+            "status": "ok",
+            "instance_id": "instance-b",
+            "root_binding": "valid",
+        });
+        let (matches, actual) = health_payload_matches_instance(&payload, "instance-a");
+        assert!(!matches);
+        assert_eq!(actual, "instance-b");
+    }
+
+    #[test]
+    fn health_binding_accepts_exact_instance_only() {
+        let payload = serde_json::json!({
+            "status": "ok",
+            "instance_id": "instance-a",
+            "root_binding": "valid",
+        });
+        assert_eq!(
+            health_payload_matches_instance(&payload, "instance-a"),
+            (true, "instance-a".to_string())
+        );
+    }
+
+    #[test]
+    fn admin_proxy_rejects_external_or_non_admin_targets() {
+        let backend = reqwest::Url::parse("http://127.0.0.1:9999").unwrap();
+        let external =
+            reqwest::Url::parse("http://127.0.0.1:9998/control-center/model-service").unwrap();
+        assert!(!same_backend_origin(&backend, &external));
+        assert!(is_allowed_admin_path("/control-center/model-service"));
+        assert!(is_allowed_admin_path("/api/qq/self-check"));
+        assert!(!is_allowed_admin_path("/think"));
+    }
+
+    #[test]
+    fn named_admin_requests_require_and_attach_the_process_token() {
+        assert_eq!(
+            resolve_admin_token("instance-a", None),
+            Err("missing_admin_token")
+        );
+        assert_eq!(
+            resolve_admin_token(LOCAL_DEFAULT_INSTANCE_ID, None),
+            Ok(None)
+        );
+
+        let token = resolve_admin_token("instance-a", Some("secret-value".to_string()))
+            .unwrap()
+            .unwrap();
+        let request = reqwest::Client::new()
+            .post("http://127.0.0.1:9999/control-center/model-service")
+            .bearer_auth(token)
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer secret-value")
+        );
+    }
+
+    #[test]
+    fn instance_ids_use_the_backend_safe_grammar() {
+        assert!(is_safe_instance_id("local-default"));
+        assert!(is_safe_instance_id("finance.prod_1"));
+        assert!(!is_safe_instance_id("../finance"));
+        assert!(!is_safe_instance_id(""));
+    }
+
+    #[test]
+    fn mutable_desktop_artifacts_resolve_below_the_instance_root() {
+        let root_a = Path::new("instance-a-root");
+        let root_b = Path::new("instance-b-root");
+        for category in ["attachments/audio", "character_import", "export_staging"] {
+            let path_a = desktop_runtime_cache_path(root_a, category).unwrap();
+            let path_b = desktop_runtime_cache_path(root_b, category).unwrap();
+            assert!(path_a.starts_with(root_a));
+            assert!(path_b.starts_with(root_b));
+            assert_ne!(path_a, path_b);
+        }
+    }
 }

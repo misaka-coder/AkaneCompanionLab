@@ -2,6 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  bindInstanceStorage,
+  getInstanceStorageItem,
+  removeInstanceStorageItem,
+  setInstanceStorageItem
+} from "./instance-storage.js";
 
 import "./workshop.css";
 
@@ -157,6 +163,7 @@ const els = {
 /* ------------------------------------------------------------------ */
 
 const view = {
+  instanceId: "",
   packs: [],
   activePackId: "",
   activeSessionId: "",
@@ -190,6 +197,8 @@ const view = {
 };
 
 let lastWorkshopSnapshotSignature = "";
+let verifiedWorkshopBindingKey = "";
+let verifiedWorkshopBindingAt = 0;
 
 const fieldIds = [
   "field-name",
@@ -676,7 +685,7 @@ function autoSaveDraftSync(packId) {
 /* ------------------------------------------------------------------ */
 
 function draftKey(packId) {
-  return `${DRAFT_STORAGE_PREFIX}${packId}`;
+  return `workshop.draft:${String(packId || "").trim()}`;
 }
 
 function persistDraft(packId, data) {
@@ -688,8 +697,7 @@ function persistDraft(packId, data) {
       persona_form: data.persona_form,
       dialogue: data.dialogue,
     };
-    localStorage.setItem(draftKey(packId), JSON.stringify(payload));
-    return true;
+    return setInstanceStorageItem(draftKey(packId), JSON.stringify(payload));
   } catch {
     return false;
   }
@@ -697,7 +705,9 @@ function persistDraft(packId, data) {
 
 function loadDraft(packId) {
   try {
-    const raw = localStorage.getItem(draftKey(packId));
+    const raw = getInstanceStorageItem(draftKey(packId), {
+      legacyKey: `${DRAFT_STORAGE_PREFIX}${packId}`
+    });
     if (!raw) return null;
     return JSON.parse(raw);
   } catch {
@@ -707,7 +717,7 @@ function loadDraft(packId) {
 
 function clearDraft(packId) {
   try {
-    localStorage.removeItem(draftKey(packId));
+    removeInstanceStorageItem(draftKey(packId));
   } catch {
     /* ignore */
   }
@@ -798,10 +808,22 @@ async function refreshPacks() {
   if (!isTauriRuntime) return;
   setStatus("正在刷新角色包。");
   try {
-    const [packs, petState] = await Promise.all([
+    const [packs, persistedState, launchBinding] = await Promise.all([
       invoke("list_character_packs"),
       invoke("load_pet_state"),
+      invoke("get_client_launch_binding"),
     ]);
+    const petState = {
+      ...persistedState,
+      backendUrl: launchBinding?.hasBackendOverride
+        ? launchBinding.backendUrl
+        : persistedState?.backendUrl
+    };
+    if (String(launchBinding?.instanceId || "") !== String(petState.instanceId || "")) {
+      throw new Error("桌面客户端实例绑定与状态文件不一致。");
+    }
+    view.instanceId = String(petState?.instanceId || "").trim();
+    bindInstanceStorage(view.instanceId);
     view.packs = normalizePacks(packs);
     view.activePackId = String(petState?.characterPackId || view.activePackId || "").trim();
     ensureWorkspacePack();
@@ -821,6 +843,15 @@ function applySnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return;
   const state = snapshot.state || {};
   const character = snapshot.character || {};
+  const snapshotInstanceId = String(state.instanceId || "").trim();
+  if (view.instanceId && snapshotInstanceId && snapshotInstanceId !== view.instanceId) {
+    setStatus(`已忽略来自实例 ${snapshotInstanceId} 的旧窗口状态。`);
+    return;
+  }
+  if (snapshotInstanceId && !view.instanceId) {
+    view.instanceId = snapshotInstanceId;
+    bindInstanceStorage(snapshotInstanceId);
+  }
   const signature = buildWorkshopSnapshotSignature(state, character);
   if (signature === lastWorkshopSnapshotSignature) {
     return;
@@ -847,6 +878,7 @@ function applySnapshot(snapshot) {
 function buildWorkshopSnapshotSignature(state, character) {
   const packs = Array.isArray(character.availablePacks) ? character.availablePacks : [];
   return stableSignature({
+    instanceId: String(state.instanceId || view.instanceId || "").trim(),
     activePackId: String(state.characterPackId || character.packId || "").trim(),
     sessionId: String(state.sessionId || "").trim(),
     backendUrl: normalizeBackendUrl(state.backendUrl || view.backendUrl),
@@ -3457,11 +3489,43 @@ function pulsePackCard(packId) {
   flashElement(card, "switch-flash");
 }
 
-function backendFetch(input, init) {
-  if (isTauriRuntime) {
-    return tauriFetch(input, init);
+async function backendFetch(input, init = {}) {
+  if (!isTauriRuntime) return window.fetch(input, init);
+  await ensureWorkshopBackendBinding();
+  const url = typeof input === "string" ? input : String(input?.url || input || "");
+  const method = String(init?.method || "GET").trim().toUpperCase();
+  const target = new URL(url);
+  if (method === "POST" && target.pathname.startsWith("/capabilities/")) {
+    const result = await invoke("backend_admin_request", {
+      request: {
+        url,
+        body: typeof init?.body === "string" ? init.body : "{}"
+      }
+    });
+    return new Response(String(result?.body || ""), {
+      status: Number(result?.httpStatus || 502),
+      headers: { "Content-Type": String(result?.contentType || "application/json") }
+    });
   }
-  return window.fetch(input, init);
+  return tauriFetch(input, init);
+}
+
+async function ensureWorkshopBackendBinding() {
+  const key = `${view.instanceId}|${normalizeBackendUrl(view.backendUrl)}`;
+  if (verifiedWorkshopBindingKey === key && Date.now() - verifiedWorkshopBindingAt < 3000) return;
+  const result = await invoke("verify_backend_instance", {
+    backendUrl: normalizeBackendUrl(view.backendUrl)
+  });
+  if (!result?.ok || String(result.instanceId || "") !== view.instanceId) {
+    verifiedWorkshopBindingKey = "";
+    verifiedWorkshopBindingAt = 0;
+    const actual = String(result?.actualInstanceId || "").trim();
+    throw new Error(actual
+      ? `后端实例不匹配：当前 ${view.instanceId}，目标 ${actual}`
+      : `无法验证实例 ${view.instanceId} 的后端身份`);
+  }
+  verifiedWorkshopBindingKey = key;
+  verifiedWorkshopBindingAt = Date.now();
 }
 
 function buildBackendUrl(path, params = null) {

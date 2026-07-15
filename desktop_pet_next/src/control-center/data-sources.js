@@ -223,6 +223,7 @@ export function createTauriControlCenterSource(options = {}) {
 export function createBackendControlCenterSource(options = {}) {
   const baseUrl = normalizeBackendBaseUrl(options.baseUrl || options.endpoint || DEFAULT_BACKEND_URL);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const expectedInstanceId = String(options.expectedInstanceId || "").trim();
   const sessionId = options.sessionId || "control-center-lab";
   const profileUserId = options.profileUserId || "master";
   const client = options.client || "desktop_pet";
@@ -233,14 +234,50 @@ export function createBackendControlCenterSource(options = {}) {
   const availableCharacterPacks = Array.isArray(options.availableCharacterPacks) ? options.availableCharacterPacks : [];
   const musicSnapshot = options.musicSnapshot && typeof options.musicSnapshot === "object" ? options.musicSnapshot : null;
   let lastFallbackReason = null;
+  let verifiedHealth = null;
+  let verifiedHealthAt = 0;
+  let healthVerificationPromise = null;
 
   function setFallbackReason(reason) {
     lastFallbackReason = reason;
   }
 
+  async function ensureVerifiedBackend({ force = false } = {}) {
+    if (!force && verifiedHealth && Date.now() - verifiedHealthAt < 2500) return verifiedHealth;
+    if (healthVerificationPromise) return healthVerificationPromise;
+    healthVerificationPromise = (async () => {
+      const health = await fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/health", { t: String(Date.now()) }));
+      const payload = health?.data && typeof health.data === "object" ? health.data : {};
+      const actualInstanceId = String(payload.instance_id || "").trim();
+      if (
+        !health.ok ||
+        String(payload.status || "") !== "ok" ||
+        String(payload.root_binding || "") !== "valid" ||
+        !actualInstanceId ||
+        (expectedInstanceId && actualInstanceId !== expectedInstanceId)
+      ) {
+        verifiedHealth = null;
+        verifiedHealthAt = 0;
+        setFallbackReason(expectedInstanceId && actualInstanceId && actualInstanceId !== expectedInstanceId
+          ? "instance-id-mismatch"
+          : "instance-health-unavailable");
+        return null;
+      }
+      verifiedHealth = health;
+      verifiedHealthAt = Date.now();
+      return health;
+    })();
+    try {
+      return await healthVerificationPromise;
+    } finally {
+      healthVerificationPromise = null;
+    }
+  }
+
   const source = {
     kind: CONTROL_CENTER_SOURCE_KIND.backend,
     backendUrl: baseUrl,
+    instanceId: expectedInstanceId,
     get fallbackReason() {
       return lastFallbackReason;
     },
@@ -263,6 +300,9 @@ export function createBackendControlCenterSource(options = {}) {
         t: String(Date.now())
       };
 
+      const health = await ensureVerifiedBackend({ force: true });
+      if (!health) return null;
+
       // Try unified snapshot endpoint first
       const snapshotResult = await tryReadUnifiedSnapshot(fetchImpl, baseUrl, {
         requestParams: commonParams,
@@ -279,8 +319,7 @@ export function createBackendControlCenterSource(options = {}) {
       }
 
       setFallbackReason("unified-snapshot-unavailable");
-      const [health, diagnostics, workspace, resourceManifest, metrics, capabilitiesCatalog, voiceProfilesCatalog, approvalRequestsCatalog] = await Promise.all([
-        fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/health", { t: commonParams.t })),
+      const [diagnostics, workspace, resourceManifest, metrics, capabilitiesCatalog, voiceProfilesCatalog, approvalRequestsCatalog] = await Promise.all([
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/desktop-pet/diagnostics", commonParams)),
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/desktop-pet/workspace/summary", commonParams)),
         fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/resource-manifest", commonParams)),
@@ -367,6 +406,7 @@ export function createBackendControlCenterSource(options = {}) {
     },
     async readModelService() {
       if (typeof fetchImpl !== "function") return null;
+      if (!(await ensureVerifiedBackend())) return null;
       const result = await fetchJson(
         fetchImpl,
         buildBackendUrl(baseUrl, "/control-center/model-service", { t: String(Date.now()) })
@@ -375,6 +415,7 @@ export function createBackendControlCenterSource(options = {}) {
     },
     async readSettingsCatalog() {
       if (typeof fetchImpl !== "function") return null;
+      if (!(await ensureVerifiedBackend())) return null;
       const result = await fetchJson(
         fetchImpl,
         buildBackendUrl(baseUrl, "/control-center/settings-catalog", { t: String(Date.now()) })

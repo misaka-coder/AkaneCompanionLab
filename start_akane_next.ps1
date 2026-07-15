@@ -1,5 +1,8 @@
 param(
+    [string]$InstanceId = "",
+    [string]$DataRoot = "",
     [int]$BackendPort = 9999,
+    [string]$EnvFile = "",
     [switch]$SkipBackend,
     [switch]$ReuseBackend,
     [switch]$SkipDesktop,
@@ -298,28 +301,66 @@ $projectDir = Find-ProjectRoot -StartDir $scriptDir
 $desktopDir = Join-Path $projectDir "desktop_pet_next"
 $releaseExe = Join-Path $desktopDir "src-tauri\target\release\akane_desktop_pet_next.exe"
 . (Join-Path $projectDir "scripts\akane_data_root.ps1")
-if ([string]$env:AKANE_DATA_ROOT_READY -eq "1" -and [string]$env:AKANE_DATA_ROOT) {
-    $dataRoot = [System.IO.Path]::GetFullPath([string]$env:AKANE_DATA_ROOT)
-} else {
-    $dataStatus = Initialize-AkaneDataRoot -ProjectRoot $projectDir
-    $dataRoot = $dataStatus.Root
-    $env:AKANE_DATA_ROOT_READY = "1"
-    if ($dataStatus.Failed -gt 0) {
-        Write-Host "[WARN] User data root is ready, but $($dataStatus.Failed) legacy files could not be copied."
-    } elseif ($dataStatus.Copied -gt 0) {
-        Write-Host "[INFO] Migrated $($dataStatus.Copied) legacy files without overwriting existing data."
+. (Join-Path $projectDir "scripts\akane_instance_launcher.ps1")
+
+$instanceIdWasBound = $PSBoundParameters.ContainsKey("InstanceId")
+$dataRootWasBound = $PSBoundParameters.ContainsKey("DataRoot")
+$backendPortWasBound = $PSBoundParameters.ContainsKey("BackendPort")
+$envFileWasBound = $PSBoundParameters.ContainsKey("EnvFile")
+
+if ($envFileWasBound -and -not [string]::IsNullOrWhiteSpace($EnvFile)) {
+    $envFilePath = if ([System.IO.Path]::IsPathRooted($EnvFile)) {
+        [System.IO.Path]::GetFullPath($EnvFile)
+    } else {
+        [System.IO.Path]::GetFullPath((Join-Path $projectDir $EnvFile))
     }
+    $null = Import-AkaneEnvFile -Path $envFilePath
+    $env:AKANE_ENV_FILE = $envFilePath
+}
+
+$expectedInstanceId = if ($instanceIdWasBound -and -not [string]::IsNullOrWhiteSpace($InstanceId)) {
+    $InstanceId.Trim()
+} elseif (-not [string]::IsNullOrWhiteSpace([string]$env:AKANE_INSTANCE_ID)) {
+    ([string]$env:AKANE_INSTANCE_ID).Trim()
+} else {
+    "local-default"
+}
+if (-not (Test-AkaneSafeInstanceId -InstanceId $expectedInstanceId)) {
+    throw "invalid_instance_id"
+}
+
+if (-not $backendPortWasBound -and -not [string]::IsNullOrWhiteSpace([string]$env:COMPANION_PORT)) {
+    $configuredPort = 0
+    if (-not [int]::TryParse(([string]$env:COMPANION_PORT).Trim(), [ref]$configuredPort) -or $configuredPort -lt 1 -or $configuredPort -gt 65535) {
+        throw "invalid_backend_port"
+    }
+    $BackendPort = $configuredPort
+}
+
+$requestedDataRoot = if ($dataRootWasBound -and -not [string]::IsNullOrWhiteSpace($DataRoot)) {
+    $DataRoot.Trim()
+} else {
+    ([string]$env:AKANE_DATA_ROOT).Trim()
+}
+$dataStatus = Initialize-AkaneDataRoot `
+    -ProjectRoot $projectDir `
+    -InstanceId $expectedInstanceId `
+    -DataRoot $requestedDataRoot
+$dataRoot = $dataStatus.Root
+$env:AKANE_DATA_ROOT_READY = "1"
+if ($dataStatus.Failed -gt 0) {
+    Write-Host "[WARN] User data root is ready, but $($dataStatus.Failed) legacy files could not be copied."
+} elseif ($dataStatus.Copied -gt 0) {
+    Write-Host "[INFO] Migrated $($dataStatus.Copied) legacy files without overwriting existing data."
 }
 $env:AKANE_DATA_ROOT = $dataRoot
-$expectedInstanceId = [string]$env:AKANE_INSTANCE_ID
-if ([string]::IsNullOrWhiteSpace($expectedInstanceId)) {
-    $expectedInstanceId = "local-default"
-} else {
-    $expectedInstanceId = $expectedInstanceId.Trim()
-}
+$env:AKANE_INSTANCE_ID = $expectedInstanceId
+$env:COMPANION_PORT = "$BackendPort"
+$env:AKANE_BACKEND_URL = "http://127.0.0.1:$BackendPort"
+$safeInstanceId = Get-AkaneSafeInstanceLogId -InstanceId $expectedInstanceId
 $runtimeLogDir = Join-Path $dataRoot "logs"
-$backendLog = Join-Path $runtimeLogDir "akane_backend.log"
-$backendErrLog = Join-Path $runtimeLogDir "akane_backend.err.log"
+$backendLog = Join-Path $runtimeLogDir "akane_backend.$safeInstanceId.log"
+$backendErrLog = Join-Path $runtimeLogDir "akane_backend.$safeInstanceId.err.log"
 
 New-Item -ItemType Directory -Force -Path $runtimeLogDir | Out-Null
 
@@ -340,37 +381,36 @@ if ($OpenSettings) {
 if (-not $SkipBackend) {
     if (Test-TcpPort -HostName "127.0.0.1" -Port $BackendPort) {
         $health = Get-BackendHealth -HostName "127.0.0.1" -Port $BackendPort
-        $healthMatchesInstance = Test-AkaneBackendHealth -Health $health -ExpectedInstanceId $expectedInstanceId
-        if ($ReuseBackend) {
-            if (-not $healthMatchesInstance) {
-                throw "Port $BackendPort is not serving the expected Akane instance '$expectedInstanceId'; refusing -ReuseBackend."
-            }
+        $healthPid = Get-BackendListeningProcessId -Port $BackendPort
+        $managedProcess = Test-AkaneBackendProcess -ProcessId $healthPid
+        $decision = Get-AkaneBackendPortDecision `
+            -PortInUse $true `
+            -Health $health `
+            -ExpectedInstanceId $expectedInstanceId `
+            -ReuseBackend ([bool]$ReuseBackend) `
+            -ManagedProcess $managedProcess
+        if ($decision -eq "reuse") {
             Write-Host "[INFO] Matching Akane instance '$expectedInstanceId' is already listening on port $BackendPort. Reusing it."
+        } elseif ($decision -eq "stop") {
+            Write-Host "[INFO] Backend instance '$expectedInstanceId' is listening on port $BackendPort. Restarting it for fresh code."
+            Stop-AkaneBackendProcess -ProcessId $healthPid -Port $BackendPort
         } else {
-            $healthPid = Get-BackendListeningProcessId -Port $BackendPort
-
-            if ($healthMatchesInstance -and (Test-AkaneBackendProcess -ProcessId $healthPid)) {
-                Write-Host "[INFO] Backend already listening on port $BackendPort. Restarting Akane backend for fresh code."
-                Stop-AkaneBackendProcess -ProcessId $healthPid -Port $BackendPort
-            } else {
-                Write-Host "[WARN] Port $BackendPort is already in use, but it is not the expected managed Akane instance '$expectedInstanceId'."
-                Write-Host "[WARN] Keeping the existing service. Use -SkipBackend or free the port if this is unexpected."
-            }
+            throw "Port $BackendPort is not a stoppable or reusable backend for instance '$expectedInstanceId'."
         }
     }
 
     if (-not (Test-TcpPort -HostName "127.0.0.1" -Port $BackendPort)) {
         $python = Resolve-Python -ProjectDir $projectDir
-        $env:COMPANION_PORT = "$BackendPort"
         Write-Host "[INFO] Starting backend with: $python"
         Write-Host "[INFO] Backend log: $backendLog"
-        Start-Process `
+        $backendProcess = Start-Process `
             -FilePath $python `
             -ArgumentList @("launch_akane_memory_v01.py") `
             -WorkingDirectory $projectDir `
             -WindowStyle Hidden `
             -RedirectStandardOutput $backendLog `
-            -RedirectStandardError $backendErrLog | Out-Null
+            -RedirectStandardError $backendErrLog `
+            -PassThru
 
         $ready = $false
         for ($i = 0; $i -lt 8; $i++) {
@@ -382,7 +422,12 @@ if (-not $SkipBackend) {
         }
 
         if ($ready) {
-            Write-Host "[INFO] Backend is already accepting connections."
+            $startedHealth = Get-BackendHealth -HostName "127.0.0.1" -Port $BackendPort
+            if ($null -ne $startedHealth -and -not (Test-AkaneInstanceHealth -Health $startedHealth -ExpectedInstanceId $expectedInstanceId)) {
+                Stop-Process -Id $backendProcess.Id -Force -ErrorAction SilentlyContinue
+                throw "Started backend health did not match instance '$expectedInstanceId'."
+            }
+            Write-Host "[INFO] Backend is accepting connections for instance '$expectedInstanceId'."
         } else {
             Write-Host "[INFO] Backend is still warming up; launching the desktop pet first."
             Write-Host "[INFO] 后端服务仍在启动 (首次启动可能需要几十秒加载配置)。"

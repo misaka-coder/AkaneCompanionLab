@@ -1,3 +1,8 @@
+import {
+  getInstanceStorageItem,
+  setInstanceStorageItem
+} from "./instance-storage.js";
+
 const characterProfileModules = import.meta.glob(
   "../../desktop_pet_creator_kit/characters/*/character.json",
   {
@@ -150,7 +155,7 @@ const FALLBACK_PROFILE = {
 
 const staticCharacterPacks = buildCharacterPackRegistry();
 let characterPacks = [...staticCharacterPacks];
-let activeCharacterPackId = resolveInitialCharacterPackId();
+let activeCharacterPackId = resolveCharacterPack("").packId;
 
 export const CHARACTER_PROFILE_SOURCE = getActiveCharacterPack().source;
 export const CHARACTER_PROFILE = getActiveCharacterProfile();
@@ -245,7 +250,7 @@ export function setRuntimeCharacterPacks(items) {
   for (const pack of staticCharacterPacks) merged.set(pack.packId, pack);
   for (const pack of runtimePacks) merged.set(pack.packId, pack);
   characterPacks = sortCharacterPacks([...merged.values()]);
-  activeCharacterPackId = resolveCharacterPack(activeCharacterPackId || readStoredCharacterPackId()).packId;
+  activeCharacterPackId = resolveCharacterPack(readStoredCharacterPackId() || activeCharacterPackId).packId;
   return listCharacterPacks();
 }
 
@@ -313,11 +318,6 @@ function buildCharacterPackRegistry() {
   return sortCharacterPacks(entries);
 }
 
-function resolveInitialCharacterPackId() {
-  const stored = readStoredCharacterPackId();
-  return resolveCharacterPack(stored).packId;
-}
-
 function resolveCharacterPack(value) {
   const raw = String(value || "").trim();
   const normalized = normalizePackKey(raw);
@@ -359,7 +359,9 @@ function sortCharacterPacks(packs) {
 
 function readStoredCharacterPackId() {
   try {
-    return window.localStorage.getItem(CHARACTER_PACK_STORAGE_KEY) || "";
+    return getInstanceStorageItem("character.activePackId", {
+      legacyKey: CHARACTER_PACK_STORAGE_KEY
+    }) || "";
   } catch {
     return "";
   }
@@ -367,7 +369,7 @@ function readStoredCharacterPackId() {
 
 function writeStoredCharacterPackId(value) {
   try {
-    window.localStorage.setItem(CHARACTER_PACK_STORAGE_KEY, String(value || ""));
+    setInstanceStorageItem("character.activePackId", String(value || ""));
   } catch {
     // Local storage can be unavailable in restrictive browser contexts.
   }

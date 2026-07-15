@@ -10,6 +10,7 @@
     "doctor": "node ./scripts/doctor.mjs",
     "build": "vite build",
     "smoke:care-feature": "node ./scripts/care-feature-smoke.mjs",
+    "smoke:instance-storage": "node ./scripts/instance-storage-smoke.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 1421",
     "start:release": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-next.ps1",
     "smoke:control-center-actions": "node ./scripts/control-center-action-bridge-smoke.mjs",

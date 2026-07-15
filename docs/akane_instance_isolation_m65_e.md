@@ -1,6 +1,6 @@
 # Akane Instance Isolation M65-E
 
-Status: E1 through E3 implemented; E4 and E5 pending.
+Status: E1 through E4 implemented; E5 pending.
 
 ## Fixed deployment decisions
 
@@ -164,12 +164,66 @@ contract. Akane does not create a cross-process global Bot registry: if shared
 Bot routing is ever required, it must be a separate authenticated upstream
 router with a new contract, not two hosts directly consuming one NapCat feed.
 
+## E4 implemented boundary
+
+`desktop_pet_next` now binds one desktop process to the instance selected by its
+process environment and persisted `PetState.instanceId`:
+
+- the client accepts a backend only after public `/health` returns `status=ok`,
+  `root_binding=valid`, and an exact `instance_id` match;
+- a backend URL edit remains pending until verification succeeds, repeated edits
+  are coalesced, and a mismatch leaves the previous binding unchanged;
+- startup, panel, workspace, workshop, and control-center reads all verify the
+  same instance before consuming backend state;
+- switching a verified backend aborts reply/TTS/voice work and clears resource,
+  Care, workspace-task, and delivery caches before the new connection is used;
+- a desktop process cannot change to another instance id. Switching instances
+  requires a process launched with the other instance id and data root.
+
+Browser storage uses `akane.instance.<instance_id>.*` keys. The active character
+and workshop drafts are instance-scoped, and legacy unscoped values are imported
+only for `local-default`. Backend URL, session, profile, and character state use
+the instance-owned `pet_state.json`; control-center compatibility reads are also
+scoped by the verified instance id. Equal session, profile, and character ids in
+two instances therefore do not select the same client state.
+
+Tauri mutable artifacts now stay below the instance root:
+
+```text
+<data_root>/cache/desktop_pet/attachments/audio
+<data_root>/cache/desktop_pet/character_import
+<data_root>/cache/desktop_pet/export_staging
+```
+
+Character packs remain below `<data_root>/characters` and desktop state remains
+below `<data_root>/state`. Read-only Embedding, Whisper, RVC, and similar model
+binary caches are not moved into this desktop cache and may still be shared by
+deployment policy.
+
+Named-instance control-center and workshop management POSTs use a narrow Tauri
+proxy. The proxy reads `AKANE_ADMIN_TOKEN` only from the desktop process
+environment, verifies the persisted backend instance again, restricts requests
+to the bound backend origin and management route prefixes, and adds the Bearer
+header inside Rust. The token is never returned to JavaScript or written to
+localStorage, logs, prompts, snapshots, or public health. Missing named-instance
+tokens and mismatched backend identities return structured failures.
+
+Windows launchers accept and propagate `-InstanceId`, `-DataRoot`,
+`-BackendPort`, and `-EnvFile`. Named instances fail closed without an explicit
+data root from the argument, instance env file, or process environment. They do
+not copy `local-default` legacy state. Backend reuse/restart decisions require an
+exact health identity match; a different instance on the requested port is not
+reused or stopped. Backend log file names contain the validated safe instance
+id.
+
+E4 validation covers equal A/B client ids with different localStorage values,
+health identity rejection, launcher port ownership decisions, instance-root
+desktop cache paths, local-default legacy behavior, secure management token
+delivery, and the unchanged three-field public health contract. The real smoke
+starts two named backends concurrently, checks authenticated management writes,
+reuses the matching instance, and confirms an A launcher cannot reuse or stop B.
+
 ## Remaining gates
-
-### E4 — desktop and launcher isolation
-
-Namespace Tauri cache and browser state by verified backend instance id. A
-desktop client still connects to only one instance at a time.
 
 ### E5 — two-instance acceptance
 

@@ -15,6 +15,8 @@ const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 
 // ── Runtime state ─────────────────────────────────────────────────────────────
 const state = {
+  instanceId: "",
+  backendUrl: DEFAULT_BACKEND_URL,
   online: false,
   characterName: "Akane",
   emotion: "正常",
@@ -278,7 +280,11 @@ function renderSliders() {
 // ── Health poll ───────────────────────────────────────────────────────────────
 async function pollHealth() {
   try {
-    const res = await tauriFetch(`${DEFAULT_BACKEND_URL}/desktop-pet/health`, {
+    const binding = await invoke("verify_backend_instance", { backendUrl: state.backendUrl });
+    if (!binding?.ok || String(binding.instanceId || "") !== state.instanceId) {
+      throw new Error("instance_binding_rejected");
+    }
+    const res = await tauriFetch(`${state.backendUrl}/desktop-pet/health`, {
       method: "GET",
       connectTimeout: 3000,
     });
@@ -305,7 +311,11 @@ async function setupEventBridge() {
 
   await listen("panel:state-update", (event) => {
     const s = event.payload || {};
+    if (state.instanceId && s.instanceId && s.instanceId !== state.instanceId) return;
     let changed = false;
+
+    if (s.instanceId) state.instanceId = String(s.instanceId);
+    if (s.backendUrl) state.backendUrl = String(s.backendUrl).replace(/\/+$/, "");
 
     if (s.characterName !== undefined && s.characterName !== state.characterName) {
       state.characterName = s.characterName;
@@ -466,6 +476,21 @@ async function init() {
   await setupEventBridge();
 
   if (isTauri) {
+    const [persistedState, launchBinding] = await Promise.all([
+      invoke("load_pet_state"),
+      invoke("get_client_launch_binding")
+    ]);
+    const petState = {
+      ...persistedState,
+      backendUrl: launchBinding?.hasBackendOverride
+        ? launchBinding.backendUrl
+        : persistedState?.backendUrl
+    };
+    if (String(launchBinding?.instanceId || "") !== String(petState.instanceId || "")) {
+      throw new Error("client_instance_binding_mismatch");
+    }
+    state.instanceId = String(petState?.instanceId || "");
+    state.backendUrl = String(petState?.backendUrl || DEFAULT_BACKEND_URL).replace(/\/+$/, "");
     pollHealth();
     setInterval(pollHealth, 10_000);
     // Signal to main window that panel is ready for a state push

@@ -2,7 +2,10 @@
 param(
     [ValidateSet("Auto", "Desktop", "Web")]
     [string]$Mode = "Auto",
+    [string]$InstanceId = "",
+    [string]$DataRoot = "",
     [int]$BackendPort = 9999,
+    [string]$EnvFile = "",
     [switch]$PrepareOnly,
     [switch]$CheckOnly,
     [switch]$ForcePythonInstall,
@@ -14,6 +17,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "akane_data_root.ps1")
+. (Join-Path $PSScriptRoot "akane_instance_launcher.ps1")
 
 function Write-AkaneStep {
     param(
@@ -354,15 +358,21 @@ function Ensure-EnvironmentFile {
     param(
         [string]$Root,
         [string]$DataRoot,
+        [string]$EnvironmentPath = "",
+        [switch]$AllowCreate,
         [switch]$ReadOnly
     )
 
-    $envPath = Join-Path $Root ".env"
+    $envPath = if ($EnvironmentPath.Trim()) {
+        [System.IO.Path]::GetFullPath($EnvironmentPath.Trim())
+    } else {
+        Join-Path $Root ".env"
+    }
     $examplePath = Join-Path $Root ".env.example"
     $created = $false
     if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
-        if ($ReadOnly) {
-            Write-AkaneStep "WARN" ".env does not exist yet; a normal launch will create it from .env.example."
+        if ($ReadOnly -or -not $AllowCreate) {
+            Write-AkaneStep "WARN" "No instance environment file is available; using process environment and saved model settings."
             return [pscustomobject]@{ Path = $envPath; Created = $false; LlmConfigured = $false }
         }
         Copy-Item -LiteralPath $examplePath -Destination $envPath
@@ -371,11 +381,21 @@ function Ensure-EnvironmentFile {
     }
 
     $textKey = Get-EnvValue -Path $envPath -Name "TEXT_API_KEY"
+    if (-not $textKey) { $textKey = [string]$env:TEXT_API_KEY }
     $chatKey = Get-EnvValue -Path $envPath -Name "CHAT_API_KEY"
-    $textProtocol = (Get-EnvValue -Path $envPath -Name "TEXT_API_PROTOCOL").ToLowerInvariant()
-    $chatProtocol = (Get-EnvValue -Path $envPath -Name "CHAT_API_PROTOCOL").ToLowerInvariant()
-    $textBaseUrl = (Get-EnvValue -Path $envPath -Name "TEXT_BASE_URL").ToLowerInvariant()
-    $chatBaseUrl = (Get-EnvValue -Path $envPath -Name "CHAT_BASE_URL").ToLowerInvariant()
+    if (-not $chatKey) { $chatKey = [string]$env:CHAT_API_KEY }
+    $textProtocol = Get-EnvValue -Path $envPath -Name "TEXT_API_PROTOCOL"
+    if (-not $textProtocol) { $textProtocol = [string]$env:TEXT_API_PROTOCOL }
+    $textProtocol = ([string]$textProtocol).ToLowerInvariant()
+    $chatProtocol = Get-EnvValue -Path $envPath -Name "CHAT_API_PROTOCOL"
+    if (-not $chatProtocol) { $chatProtocol = [string]$env:CHAT_API_PROTOCOL }
+    $chatProtocol = ([string]$chatProtocol).ToLowerInvariant()
+    $textBaseUrl = Get-EnvValue -Path $envPath -Name "TEXT_BASE_URL"
+    if (-not $textBaseUrl) { $textBaseUrl = [string]$env:TEXT_BASE_URL }
+    $textBaseUrl = ([string]$textBaseUrl).ToLowerInvariant()
+    $chatBaseUrl = Get-EnvValue -Path $envPath -Name "CHAT_BASE_URL"
+    if (-not $chatBaseUrl) { $chatBaseUrl = [string]$env:CHAT_BASE_URL }
+    $chatBaseUrl = ([string]$chatBaseUrl).ToLowerInvariant()
     $ollamaConfigured = (
         $textProtocol -eq "ollama" -or
         $chatProtocol -eq "ollama" -or
@@ -433,6 +453,7 @@ function Resolve-LaunchMode {
 function Wait-BackendReady {
     param(
         [int]$Port,
+        [string]$ExpectedInstanceId,
         [int]$TimeoutSeconds = 120
     )
 
@@ -441,7 +462,7 @@ function Wait-BackendReady {
     while ([DateTime]::UtcNow -lt $deadline) {
         try {
             $health = Invoke-RestMethod -Uri $url -TimeoutSec 2
-            if ([string]$health.status -eq "ok") {
+            if (Test-AkaneInstanceHealth -Health $health -ExpectedInstanceId $ExpectedInstanceId) {
                 return $true
             }
         } catch {
@@ -455,13 +476,17 @@ function Start-WebMode {
     param(
         [string]$Root,
         [int]$Port,
+        [string]$InstanceId,
+        [string]$DataRoot,
+        [string]$EnvFile,
         [switch]$OpenModelSettings
     )
 
-    & (Join-Path $Root "start_akane_next.ps1") -BackendPort $Port -SkipDesktop
-    if (-not (Wait-BackendReady -Port $Port)) {
+    & (Join-Path $Root "start_akane_next.ps1") -InstanceId $InstanceId -DataRoot $DataRoot -BackendPort $Port -EnvFile $EnvFile -SkipDesktop
+    if (-not (Wait-BackendReady -Port $Port -ExpectedInstanceId $InstanceId)) {
         $dataRoot = if ($env:AKANE_DATA_ROOT) { $env:AKANE_DATA_ROOT } else { Join-Path $env:LOCALAPPDATA "Akane" }
-        $errLog = Join-Path $dataRoot "logs\akane_backend.err.log"
+        $safeInstanceId = Get-AkaneSafeInstanceLogId -InstanceId $InstanceId
+        $errLog = Join-Path $dataRoot "logs\akane_backend.$safeInstanceId.err.log"
         Write-Host ""
         Write-Host "[FAIL] Backend did not become healthy within 120 seconds." -ForegroundColor Red
         if (Test-Path -LiteralPath $errLog) {
@@ -485,6 +510,9 @@ function Start-DesktopMode {
     param(
         [string]$Root,
         [int]$Port,
+        [string]$InstanceId,
+        [string]$DataRoot,
+        [string]$EnvFile,
         [switch]$OpenModelSettings
     )
 
@@ -493,11 +521,47 @@ function Start-DesktopMode {
     if (-not (Test-Path -LiteralPath $releaseExe -PathType Leaf) -and -not $toolchain.Ready) {
         throw ("Desktop mode needs a prebuilt release or Node.js + Rust. Missing: {0}" -f ($toolchain.Missing -join ", "))
     }
-    & (Join-Path $Root "start_akane_next.ps1") -BackendPort $Port -OpenSettings:$OpenModelSettings
+    & (Join-Path $Root "start_akane_next.ps1") -InstanceId $InstanceId -DataRoot $DataRoot -BackendPort $Port -EnvFile $EnvFile -OpenSettings:$OpenModelSettings
     Write-AkaneStep "OK" "Desktop pet launch requested."
 }
 
 $projectRoot = Get-ProjectRoot
+$instanceIdWasBound = $PSBoundParameters.ContainsKey("InstanceId")
+$dataRootWasBound = $PSBoundParameters.ContainsKey("DataRoot")
+$backendPortWasBound = $PSBoundParameters.ContainsKey("BackendPort")
+$envFileWasBound = $PSBoundParameters.ContainsKey("EnvFile")
+$resolvedEnvFile = ""
+if ($envFileWasBound -and -not [string]::IsNullOrWhiteSpace($EnvFile)) {
+    $resolvedEnvFile = if ([System.IO.Path]::IsPathRooted($EnvFile)) {
+        [System.IO.Path]::GetFullPath($EnvFile)
+    } else {
+        [System.IO.Path]::GetFullPath((Join-Path $projectRoot $EnvFile))
+    }
+    $null = Import-AkaneEnvFile -Path $resolvedEnvFile
+    $env:AKANE_ENV_FILE = $resolvedEnvFile
+}
+$resolvedInstanceId = if ($instanceIdWasBound -and -not [string]::IsNullOrWhiteSpace($InstanceId)) {
+    $InstanceId.Trim()
+} elseif (-not [string]::IsNullOrWhiteSpace([string]$env:AKANE_INSTANCE_ID)) {
+    ([string]$env:AKANE_INSTANCE_ID).Trim()
+} else {
+    "local-default"
+}
+if (-not (Test-AkaneSafeInstanceId -InstanceId $resolvedInstanceId)) {
+    throw "invalid_instance_id"
+}
+if (-not $backendPortWasBound -and -not [string]::IsNullOrWhiteSpace([string]$env:COMPANION_PORT)) {
+    $configuredPort = 0
+    if (-not [int]::TryParse(([string]$env:COMPANION_PORT).Trim(), [ref]$configuredPort) -or $configuredPort -lt 1 -or $configuredPort -gt 65535) {
+        throw "invalid_backend_port"
+    }
+    $BackendPort = $configuredPort
+}
+$resolvedDataRoot = if ($dataRootWasBound -and -not [string]::IsNullOrWhiteSpace($DataRoot)) {
+    $DataRoot.Trim()
+} else {
+    ([string]$env:AKANE_DATA_ROOT).Trim()
+}
 Write-Host ""
 Write-Host "AkaneCompanionLab Windows Bootstrap" -ForegroundColor Magenta
 Write-Host ("Project: {0}" -f $projectRoot)
@@ -505,9 +569,16 @@ Write-Host ""
 
 $exitCode = 0
 try {
-    $dataStatus = Initialize-AkaneDataRoot -ProjectRoot $projectRoot -ReadOnly:$CheckOnly
+    $dataStatus = Initialize-AkaneDataRoot `
+        -ProjectRoot $projectRoot `
+        -InstanceId $resolvedInstanceId `
+        -DataRoot $resolvedDataRoot `
+        -ReadOnly:$CheckOnly
     $env:AKANE_DATA_ROOT = $dataStatus.Root
     $env:AKANE_DATA_ROOT_READY = "1"
+    $env:AKANE_INSTANCE_ID = $resolvedInstanceId
+    $env:COMPANION_PORT = "$BackendPort"
+    $env:AKANE_BACKEND_URL = "http://127.0.0.1:$BackendPort"
     if (-not $CheckOnly) {
         if ($dataStatus.Failed -gt 0) {
             Write-AkaneStep "WARN" ("User data root is ready, but {0} legacy files could not be copied." -f $dataStatus.Failed)
@@ -518,7 +589,12 @@ try {
         }
     }
     $null = Ensure-PythonEnvironment -Root $projectRoot -ReadOnly:$CheckOnly
-    $envStatus = Ensure-EnvironmentFile -Root $projectRoot -DataRoot $dataStatus.Root -ReadOnly:$CheckOnly
+    $envStatus = Ensure-EnvironmentFile `
+        -Root $projectRoot `
+        -DataRoot $dataStatus.Root `
+        -EnvironmentPath $resolvedEnvFile `
+        -AllowCreate:($resolvedInstanceId -eq "local-default" -and -not $resolvedEnvFile) `
+        -ReadOnly:$CheckOnly
     $launchMode = Resolve-LaunchMode -RequestedMode $Mode -Root $projectRoot
     Write-AkaneStep "INFO" ("Selected client: {0}" -f $launchMode)
 
@@ -537,16 +613,16 @@ try {
         Write-AkaneStep "OK" "Preparation completed. Nothing was launched."
     } elseif ($launchMode -eq "Desktop") {
         try {
-            Start-DesktopMode -Root $projectRoot -Port $BackendPort -OpenModelSettings:(-not $envStatus.LlmConfigured)
+            Start-DesktopMode -Root $projectRoot -Port $BackendPort -InstanceId $resolvedInstanceId -DataRoot $dataStatus.Root -EnvFile $resolvedEnvFile -OpenModelSettings:(-not $envStatus.LlmConfigured)
         } catch {
             if ($Mode -ne "Auto") {
                 throw
             }
             Write-AkaneStep "WARN" ("Desktop launch failed; falling back to Web. {0}" -f $_.Exception.Message)
-            Start-WebMode -Root $projectRoot -Port $BackendPort -OpenModelSettings:(-not $envStatus.LlmConfigured)
+            Start-WebMode -Root $projectRoot -Port $BackendPort -InstanceId $resolvedInstanceId -DataRoot $dataStatus.Root -EnvFile $resolvedEnvFile -OpenModelSettings:(-not $envStatus.LlmConfigured)
         }
     } else {
-        Start-WebMode -Root $projectRoot -Port $BackendPort -OpenModelSettings:(-not $envStatus.LlmConfigured)
+        Start-WebMode -Root $projectRoot -Port $BackendPort -InstanceId $resolvedInstanceId -DataRoot $dataStatus.Root -EnvFile $resolvedEnvFile -OpenModelSettings:(-not $envStatus.LlmConfigured)
     }
 
 } catch {
