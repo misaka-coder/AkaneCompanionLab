@@ -528,6 +528,14 @@ def _is_similar_reply(left: str, right: str) -> bool:
     return bool(shared_objects and shared_actions)
 
 
+def _qq_sender_role(event: object) -> str:
+    if not isinstance(event, dict):
+        return ""
+    sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
+    role = str(sender.get("role") or "").strip().lower()
+    return role if role in {"owner", "admin", "member"} else ""
+
+
 def _filter_unsent_reply_messages(messages: list[str], sent_messages: list[str]) -> list[str]:
     sent_normalized = {_normalize_reply_text(item) for item in sent_messages if _normalize_reply_text(item)}
     sent_joined = "".join(str(item or "").strip() for item in sent_messages if str(item or "").strip()).strip()
@@ -1917,6 +1925,7 @@ def build_qq_router(
                         group_id=int(context.group_id or 0),
                         is_group=bool(context.is_group),
                         idempotency_key=_source_event_id,
+                        sender_role=_qq_sender_role(event),
                     )
                     if _cmd_result.handled:
                         if _cmd_result.reply_text:

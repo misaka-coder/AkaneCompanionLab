@@ -232,6 +232,11 @@ class PluginQQCommandRequest:
         Group ID; 0 for private messages.
     is_group:
         True for group messages, False for private.
+    sender_role:
+        Host-normalized group role: "owner", "admin", "member", or empty
+        when unavailable/not a group message. Plugins must fail closed when a
+        group mutation requires administrator authority and this field is not
+        owner/admin.
     idempotency_key:
         Per-delivery deduplication key set by the broker.
     """
@@ -242,6 +247,7 @@ class PluginQQCommandRequest:
     group_id: int
     is_group: bool
     idempotency_key: str = ""
+    sender_role: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -864,6 +864,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "user_id": QQ_USER_FIXTURE_ID,
                     "message_id": "plugin-command-1",
                     "raw_message": "/finance subscribe 000001",
+                    "sender": {"role": "admin"},
                 },
             )
 
@@ -874,6 +875,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(process_calls, [])
         self.assertEqual(dispatch_calls[0]["idempotency_key"], "plugin-command-1")
         self.assertEqual(dispatch_calls[0]["args"], "subscribe 000001")
+        self.assertEqual(dispatch_calls[0]["sender_role"], "admin")
         mocked_post.assert_called_once()
         self.assertIn("财经命令已处理", mocked_post.call_args.kwargs["json"]["message"])
 

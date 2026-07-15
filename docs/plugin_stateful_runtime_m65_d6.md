@@ -62,9 +62,10 @@ recipient; the trusted host port is not an authorization database.
 commands within a plugin or across active plugins fail activation instead of
 silently choosing a winner. Built-in Akane commands keep precedence.
 
-The broker passes sender QQ number, group identity, arguments, and a stable
-source-event idempotency key. The private handler owns subscription authorization
-and domain validation. Timeout, exception, invalid result, and host shutdown
+The broker passes sender QQ number, group identity, a normalized group role,
+arguments, and a stable source-event idempotency key. The private handler owns
+subscription authorization and domain validation; group mutations must fail
+closed when owner/admin authority is unavailable. Timeout, exception, invalid result, and host shutdown
 produce safe structured reasons and a user-visible retry message; traceback and
 raw exception text never enter QQ.
 

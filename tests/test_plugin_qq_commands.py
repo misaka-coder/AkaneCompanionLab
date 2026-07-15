@@ -206,6 +206,7 @@ class BrokerDispatchTests(unittest.IsolatedAsyncioTestCase):
             qq_number=100,
             group_id=200,
             is_group=True,
+            sender_role="ADMIN",
         )
 
         self.assertTrue(result.handled)
@@ -217,6 +218,7 @@ class BrokerDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(req.qq_number, 100)
         self.assertEqual(req.group_id, 200)
         self.assertTrue(req.is_group)
+        self.assertEqual(req.sender_role, "admin")
         self.assertEqual(len(req.idempotency_key), 32)
 
     # 3. handler exception → handled=True, reason="handler_exception"

@@ -32,6 +32,7 @@ MAX_COMMAND_ARGS_CHARS = 2000
 DEFAULT_HANDLER_TIMEOUT_SECONDS = 10.0
 COMMAND_FAILURE_REPLY = "这个命令暂时没有执行成功，请稍后再试。"
 _SAFE_REASON_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_GROUP_SENDER_ROLES = frozenset({"owner", "admin", "member"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +81,7 @@ class PluginQQCommandBroker:
         group_id: int,
         is_group: bool,
         idempotency_key: str = "",
+        sender_role: str = "",
     ) -> PluginQQCommandResult:
         """Dispatch to the first matching plugin handler.
 
@@ -123,6 +125,11 @@ class PluginQQCommandBroker:
                 reply_text=COMMAND_FAILURE_REPLY,
                 reason="invalid_command_context",
             )
+        normalized_sender_role = str(sender_role or "").strip().lower()
+        if normalized_sender_role not in _GROUP_SENDER_ROLES:
+            normalized_sender_role = ""
+        if not is_group:
+            normalized_sender_role = ""
 
         request = PluginQQCommandRequest(
             command=command,
@@ -136,6 +143,7 @@ class PluginQQCommandBroker:
                 normalized_group_id,
                 source_key=idempotency_key,
             ),
+            sender_role=normalized_sender_role,
         )
         try:
             result = await asyncio.wait_for(

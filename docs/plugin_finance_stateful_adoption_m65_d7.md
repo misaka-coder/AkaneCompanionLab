@@ -33,11 +33,13 @@ bot project, finance branch, or concrete QQ gateway dependency.
 /财经推送帮助
 ```
 
-The sender QQ number owns every subscription. A command issued in a group may
-target that group, but another member cannot list or cancel the original
-sender's subscriptions. Invalid identity, recipient, query, ambiguous security
-name, and storage failures return bounded actionable text rather than falling
-through to an LLM turn.
+The sender QQ number owns every subscription. Private-message users manage
+their own recipient directly. A command issued in a group may target that
+group only when NapCat identifies the sender as group owner or administrator;
+missing/ordinary-member roles fail closed. Another administrator still cannot
+list or cancel the original sender's subscriptions. Invalid identity,
+recipient, query, ambiguous security name, authorization, and storage failures
+return bounded actionable text rather than falling through to an LLM turn.
 
 ## Delivery Semantics
 
