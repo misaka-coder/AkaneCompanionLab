@@ -1,7 +1,7 @@
-"""Validated, immutable Akane instance identity for host composition.
+"""Validated, immutable Akane instance composition metadata.
 
-M65-A intentionally stops at read-only composition metadata.  It does not
-change storage roots, activate feature switches, or load plugins.
+The manifest selects safe ids, feature flags, channel profile references, and
+plugin allowlist entries. It never contains secrets or absolute paths.
 """
 
 from __future__ import annotations
@@ -19,8 +19,12 @@ from .plugin_api import is_valid_plugin_id
 INSTANCE_MANIFEST_SCHEMA_VERSION = 1
 LOCAL_DEFAULT_INSTANCE_ID = "local-default"
 _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-_ROOT_FIELDS = frozenset({"schema_version", "instance_id", "character_pack_id", "features", "plugins"})
+_ROOT_FIELDS = frozenset(
+    {"schema_version", "instance_id", "character_pack_id", "features", "channels", "plugins"}
+)
 _FEATURE_FIELDS = frozenset({"care"})
+_CHANNEL_FIELDS = frozenset({"qq"})
+_QQ_CHANNEL_FIELDS = frozenset({"enabled", "profile_ref"})
 _PLUGIN_FIELDS = frozenset({"id", "enabled"})
 _MAX_PLUGIN_SELECTIONS = 32
 
@@ -67,11 +71,31 @@ class PluginSelection:
 
 
 @dataclass(frozen=True, slots=True)
+class QQChannelSelection:
+    """Restart-only QQ channel reference without deployment secrets."""
+
+    enabled: bool
+    profile_ref: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"enabled": self.enabled, "profile_ref": self.profile_ref}
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelSnapshot:
+    qq: QQChannelSelection
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"qq": self.qq.as_dict()}
+
+
+@dataclass(frozen=True, slots=True)
 class InstanceManifest:
     schema_version: int
     instance_id: str
     character_pack_id: str
     features: FeatureSnapshot
+    channels: ChannelSnapshot
     plugins: tuple[PluginSelection, ...]
 
 
@@ -99,6 +123,10 @@ class InstanceContext:
         return self.manifest.plugins
 
     @property
+    def channels(self) -> ChannelSnapshot:
+        return self.manifest.channels
+
+    @property
     def is_compatibility_default(self) -> bool:
         return self.source == "compatibility_default"
 
@@ -108,6 +136,7 @@ class InstanceContext:
             "instance_id": self.instance_id,
             "character_pack_id": self.character_pack_id,
             "features": self.features.as_dict(),
+            "channels": self.channels.as_dict(),
             "source": self.source,
         }
 
@@ -121,6 +150,7 @@ def build_local_default_instance_context() -> InstanceContext:
             instance_id=LOCAL_DEFAULT_INSTANCE_ID,
             character_pack_id="",
             features=FeatureSnapshot(care=True),
+            channels=ChannelSnapshot(qq=QQChannelSelection(enabled=False, profile_ref="")),
             plugins=(),
         ),
         source="compatibility_default",
@@ -155,7 +185,7 @@ def _reject_unknown_fields(payload: Mapping[str, Any], allowed: frozenset[str], 
 
 
 def parse_instance_manifest(payload: Any, *, selected_instance_id: str) -> InstanceManifest:
-    """Validate the M65-A subset and reject future-only manifest fields."""
+    """Validate one immutable instance manifest without reading secrets."""
 
     if not isinstance(payload, Mapping):
         _fail("manifest_root_must_be_table")
@@ -179,6 +209,28 @@ def parse_instance_manifest(payload: Any, *, selected_instance_id: str) -> Insta
     care = features_payload.get("care")
     if not isinstance(care, bool):
         _fail("feature_must_be_boolean", field="features.care")
+
+    channels_payload = payload.get("channels", {})
+    if not isinstance(channels_payload, Mapping):
+        _fail("channels_must_be_table", field="channels")
+    _reject_unknown_fields(channels_payload, _CHANNEL_FIELDS, field="channels")
+    qq_payload = channels_payload.get("qq", {})
+    if not isinstance(qq_payload, Mapping):
+        _fail("qq_channel_must_be_table", field="channels.qq")
+    _reject_unknown_fields(qq_payload, _QQ_CHANNEL_FIELDS, field="channels.qq")
+    qq_enabled = qq_payload.get("enabled", False)
+    if not isinstance(qq_enabled, bool):
+        _fail("channel_enabled_must_be_boolean", field="channels.qq.enabled")
+    raw_profile_ref = qq_payload.get("profile_ref", "")
+    if not isinstance(raw_profile_ref, str):
+        _fail("channel_profile_ref_must_be_string", field="channels.qq.profile_ref")
+    qq_profile_ref = raw_profile_ref.strip()
+    if qq_profile_ref != raw_profile_ref:
+        _fail("invalid_safe_id", field="channels.qq.profile_ref")
+    if qq_profile_ref:
+        qq_profile_ref = _require_safe_id(qq_profile_ref, field="channels.qq.profile_ref")
+    elif qq_enabled:
+        _fail("channel_profile_ref_required", field="channels.qq.profile_ref")
 
     plugins_payload = payload.get("plugins", [])
     if not isinstance(plugins_payload, list):
@@ -206,6 +258,9 @@ def parse_instance_manifest(payload: Any, *, selected_instance_id: str) -> Insta
         instance_id=manifest_instance_id,
         character_pack_id=character_pack_id,
         features=FeatureSnapshot(care=care),
+        channels=ChannelSnapshot(
+            qq=QQChannelSelection(enabled=qq_enabled, profile_ref=qq_profile_ref)
+        ),
         plugins=tuple(plugins),
     )
 

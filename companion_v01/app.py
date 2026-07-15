@@ -22,6 +22,7 @@ from services.tts_client import EdgeTTSClient
 from .engine import AkaneMemoryEngine
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .instance_profile import resolve_instance_context
+from .instance_runtime import bind_instance_runtime
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
 from .model_service_config import ModelServiceConfigStore, load_and_apply_saved_model_service
@@ -101,6 +102,17 @@ ASSETS_DIR = WEB_DIR / "assets"
 CREATOR_KIT_CHARACTERS_DIR = Path(config.CHARACTERS_DIR)
 MODULES_DIR = WEB_DIR / "modules"
 VENDOR_DIR = WEB_DIR / "vendor"
+instance_context = resolve_instance_context(
+    data_root=Path(config.DATA_ROOT),
+    selected_instance_id=getattr(config, "AKANE_INSTANCE_ID", ""),
+)
+instance_runtime = bind_instance_runtime(
+    instance_context,
+    data_root=Path(config.DATA_ROOT),
+    explicit_data_root=bool(getattr(config, "AKANE_DATA_ROOT_EXPLICIT", False)),
+)
+app.state.akane_instance_context = instance_context
+app.state.akane_instance_runtime = instance_runtime
 resources = ResourceManifest(ASSETS_DIR)
 desktop_pet_character_resources = DesktopPetCharacterResourceService(
     characters_dir=CREATOR_KIT_CHARACTERS_DIR,
@@ -117,11 +129,6 @@ load_and_apply_saved_overrides(
     settings_override_store,
     on_error=lambda exc: logger.warning("Settings override ignored: %s", exc),
 )
-instance_context = resolve_instance_context(
-    data_root=Path(config.DATA_ROOT),
-    selected_instance_id=getattr(config, "AKANE_INSTANCE_ID", ""),
-)
-app.state.akane_instance_context = instance_context
 plugin_host = PluginHost(
     instance_context.plugins,
     contribution_policy=TrustedStatefulPluginContributionPolicy(),
@@ -349,14 +356,19 @@ if USER_ASSETS_DIR.exists():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    plugin_status = await plugin_host.stop()
-    if int(plugin_status.get("close_failure_count") or 0) > 0:
-        logger.warning(
-            "Plugin host adapter close failures: %s",
-            json.dumps(plugin_status, ensure_ascii=False, sort_keys=True),
-        )
-    app.state.akane_plugin_command_broker = None
-    engine.close()
+    try:
+        plugin_status = await plugin_host.stop()
+        if int(plugin_status.get("close_failure_count") or 0) > 0:
+            logger.warning(
+                "Plugin host adapter close failures: %s",
+                json.dumps(plugin_status, ensure_ascii=False, sort_keys=True),
+            )
+    finally:
+        app.state.akane_plugin_command_broker = None
+        engine.close()
+    # Keep the root lease until process exit. Some legacy stores still release
+    # native handles only when the interpreter exits; dropping the lock here
+    # would let a replacement process overlap those final writers/handles.
 
 
 def _log_event(event: str, **fields: object) -> None:
@@ -384,6 +396,7 @@ app.include_router(
     build_core_router(
         engine=engine,
         config_module=config,
+        instance_runtime=instance_runtime,
         resolve_identity_from_query=_resolve_identity_from_query,
         runtime_metrics=runtime_metrics,
         public_guard=public_guard,

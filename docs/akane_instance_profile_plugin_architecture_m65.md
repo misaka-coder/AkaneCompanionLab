@@ -1,6 +1,6 @@
 # Akane Instance Profile and Plugin Architecture M65
 
-Status: M65-A/B/C and M65-D1 through M65-D8 implemented; public finance prototype retired
+Status: M65-A/B/C, M65-D1 through M65-D8, and M65-E1 implemented
 
 Date: 2026-07-15
 
@@ -156,7 +156,7 @@ profile_ref = "qq.personal"
 Rules:
 
 - `instance_id` is a stable safe id, not a display name;
-- the manifest contains secret references, never secret values;
+- the manifest contains deployment profile references, never secret values;
 - an external plugin selection is validated before startup and its exact id is
   resolved only from installed artifact metadata;
 - installed plugins are not activated implicitly;
@@ -165,6 +165,8 @@ Rules:
   optional host at startup;
 - paths are derived below the selected data root and are not accepted from the
   public manifest;
+- `[channels.qq]` accepts only `enabled` and `profile_ref`; an enabled channel
+  requires a safe non-secret profile reference;
 - M65-C accepts only `id` and `enabled` in each `[[plugins]]` entry and rejects
   duplicate ids, invalid identifiers, unknown fields, and invalid types;
 - `enabled=true` requests activation but does not make an optional plugin a
@@ -815,9 +817,8 @@ Explicitly out of scope:
 
 ### M65-B — Optional `care` module
 
-Implementation status: activation and true-disabled semantics complete;
-enabled desktop data convergence remains in the documented compatibility
-window above.
+Implementation status: complete; the enabled desktop compatibility window is
+closed by the host-owned Care authority recorded above.
 
 - route care prompt/tool/job registration through the resolved feature
   snapshot;
@@ -862,6 +863,9 @@ window.
 - prove personal Akane may enable the same plugin without a product fork.
 
 ### M65-E — Two isolated bot instances
+
+Implementation status: E1 fail-closed instance root complete; E2 through E5
+remain pending. See `docs/akane_instance_isolation_m65_e.md`.
 
 - run personal Akane and a finance-oriented Akane from one core release;
 - use separate channel profiles, secrets, data roots, databases, quotas, and
@@ -937,7 +941,9 @@ analysis/moderation/governance prototype and shared market-data store were
 deleted instead of becoming a second authority. The standalone EmQuant bridge
 now owns its small validation contract but is not connected to Akane startup.
 
-The next gate is not more finance-tree cleanup. Complete the enabled desktop
-Care compatibility acceptance, then design M65-E instance profiles and cloud
-deployment. EmQuant plugin configuration/secrets must remain a separate,
-explicitly audited slice; do not smuggle them into M65-E.
+M65-E1 now binds an instance id permanently to one explicit data root and holds
+an exclusive process lock before root-owned saved settings or databases load.
+The next gate is E2: move every remaining mutable workspace, memory mirror,
+Memcore override, log, and background-writer path behind that runtime layout,
+then add an offline one-instance migration tool. EmQuant plugin configuration
+and secrets remain a separate audited slice and must not enter M65-E.

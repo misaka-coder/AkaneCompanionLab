@@ -230,6 +230,34 @@ def write_valid_cutout_workflow(base_dir: str | Path, profile_user_id: str = "ma
 
 
 class BackendRouteModuleTests(unittest.TestCase):
+    def test_public_health_exposes_only_safe_instance_binding_identity(self) -> None:
+        instance_runtime = SimpleNamespace(
+            public_health_snapshot=lambda: {
+                "status": "ok",
+                "instance_id": "finance-prod",
+                "root_binding": "valid",
+                "profile_ref": "qq.finance",
+                "local_path": "D:/private",
+            }
+        )
+        app = FastAPI()
+        app.include_router(
+            build_core_router(
+                engine=SimpleNamespace(),
+                config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                resolve_identity_from_query=resolve_query,
+                instance_runtime=instance_runtime,
+            )
+        )
+
+        response = TestClient(app).get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {"status": "ok", "instance_id": "finance-prod", "root_binding": "valid"},
+        )
+
     def test_desktop_pet_health_uses_host_care_feature_status(self) -> None:
         engine = SimpleNamespace(
             care_feature_status=lambda: {

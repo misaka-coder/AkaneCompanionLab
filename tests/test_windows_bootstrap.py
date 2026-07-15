@@ -57,6 +57,15 @@ class WindowsBootstrapContractTests(unittest.TestCase):
         self.assertNotIn("Get-FileHash", source)
         self.assertIn("[System.Security.Cryptography.SHA256]::Create()", source)
 
+    def test_desktop_launcher_matches_minimal_instance_health(self) -> None:
+        source = (ROOT / "start_akane_next.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("$Health.instance_id", source)
+        self.assertIn("$Health.root_binding", source)
+        self.assertIn("Get-BackendListeningProcessId", source)
+        self.assertIn("ExpectedInstanceId", source)
+        self.assertNotIn("$health.pid", source)
+
     def test_shared_data_root_script_is_copy_only(self) -> None:
         source = (ROOT / "scripts" / "akane_data_root.ps1").read_text(encoding="utf-8")
 

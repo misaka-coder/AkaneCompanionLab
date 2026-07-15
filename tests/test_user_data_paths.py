@@ -9,11 +9,16 @@ from akane_paths import (
     ensure_akane_data_paths,
     get_akane_data_paths,
     migrate_legacy_data,
+    has_explicit_akane_data_root,
     resolve_akane_data_root,
 )
 
 
 class UserDataPathTests(unittest.TestCase):
+    def test_explicit_root_detection_uses_process_environment_only(self) -> None:
+        self.assertTrue(has_explicit_akane_data_root(environ={"AKANE_DATA_ROOT": "D:/Akane-A"}))
+        self.assertFalse(has_explicit_akane_data_root(environ={"AKANE_DATA_ROOT": "  "}))
+
     def test_explicit_root_has_priority_and_keeps_stable_subdirectories(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "custom-akane"

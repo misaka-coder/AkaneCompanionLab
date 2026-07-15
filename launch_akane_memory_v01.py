@@ -98,17 +98,21 @@ def _collect_ipv4_candidates() -> list[str]:
 
 
 if __name__ == "__main__":
-    migration = migrate_legacy_data(Path(__file__).resolve().parent, paths=config.AKANE_DATA_PATHS)
-    if migration.failed:
-        logger.warning(
-            "User data root is ready, but %s legacy files could not be copied.",
-            migration.failed,
-        )
-    elif migration.copied:
-        logger.info(
-            "Migrated %s legacy files without overwriting existing data.",
-            migration.copied,
-        )
+    selected_instance_id = str(getattr(config, "AKANE_INSTANCE_ID", "") or "").strip()
+    if selected_instance_id:
+        logger.info("Named instance selected; automatic legacy data migration is disabled.")
+    else:
+        migration = migrate_legacy_data(Path(__file__).resolve().parent, paths=config.AKANE_DATA_PATHS)
+        if migration.failed:
+            logger.warning(
+                "User data root is ready, but %s legacy files could not be copied.",
+                migration.failed,
+            )
+        elif migration.copied:
+            logger.info(
+                "Migrated %s legacy files without overwriting existing data.",
+                migration.copied,
+            )
 
     host, port = _preflight()
 

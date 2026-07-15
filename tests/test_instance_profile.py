@@ -40,6 +40,8 @@ class InstanceProfileTests(unittest.TestCase):
             self.assertEqual(context.instance_id, "local-default")
             self.assertEqual(context.character_pack_id, "")
             self.assertTrue(context.features.care)
+            self.assertFalse(context.channels.qq.enabled)
+            self.assertEqual(context.channels.qq.profile_ref, "")
             self.assertEqual(context.plugins, ())
             self.assertTrue(context.is_compatibility_default)
             self.assertFalse((root / "instances").exists())
@@ -67,6 +69,46 @@ class InstanceProfileTests(unittest.TestCase):
 
             self.assertFalse(context.features.care)
             self.assertFalse(context.is_compatibility_default)
+
+    def test_explicit_manifest_resolves_minimal_qq_channel_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_manifest(
+                root,
+                VALID_MANIFEST
+                + '\n[channels.qq]\nenabled = true\nprofile_ref = "qq.personal"\n',
+            )
+
+            context = resolve_instance_context(data_root=root, selected_instance_id="akane-personal")
+
+        self.assertTrue(context.channels.qq.enabled)
+        self.assertEqual(context.channels.qq.profile_ref, "qq.personal")
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            context.channels.qq.enabled = False  # type: ignore[misc]
+
+    def test_enabled_qq_channel_requires_safe_profile_reference(self) -> None:
+        cases = (
+            ('\n[channels.qq]\nenabled = true\n', "channel_profile_ref_required", "channels.qq.profile_ref"),
+            (
+                '\n[channels.qq]\nenabled = true\nprofile_ref = "../secret"\n',
+                "invalid_safe_id",
+                "channels.qq.profile_ref",
+            ),
+            (
+                '\n[channels.qq]\nenabled = true\nprofile_ref = "qq.personal"\ntoken = "secret"\n',
+                "unsupported_manifest_field",
+                "channels.qq.token",
+            ),
+        )
+        for channel_toml, reason, field in cases:
+            with self.subTest(reason=reason):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    root = Path(temp_dir)
+                    self._write_manifest(root, VALID_MANIFEST + channel_toml)
+                    with self.assertRaises(InstanceProfileError) as raised:
+                        resolve_instance_context(data_root=root, selected_instance_id="akane-personal")
+                self.assertEqual(raised.exception.reason, reason)
+                self.assertEqual(raised.exception.field, field)
 
     def test_explicit_missing_manifest_is_not_silently_downgraded(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

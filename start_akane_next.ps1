@@ -70,23 +70,40 @@ function Get-BackendHealth {
 }
 
 function Test-AkaneBackendHealth {
-    param([object]$Health)
+    param(
+        [object]$Health,
+        [string]$ExpectedInstanceId
+    )
 
     if ($null -eq $Health) {
         return $false
     }
 
     $status = [string]($Health.status)
-    $pidValue = 0
-    try {
-        $pidValue = [int]($Health.pid)
-    } catch {
-        $pidValue = 0
-    }
+    $instanceId = [string]($Health.instance_id)
+    $rootBinding = [string]($Health.root_binding)
+    return (
+        $status -eq "ok" -and
+        $rootBinding -eq "valid" -and
+        $instanceId -eq $ExpectedInstanceId
+    )
+}
 
-    $contracts = $Health.contracts
-    $desktopPetContract = if ($null -ne $contracts) { $contracts.desktop_pet } else { $null }
-    return ($status -eq "ok" -and $pidValue -gt 0 -and $null -ne $desktopPetContract)
+function Get-BackendListeningProcessId {
+    param([int]$Port)
+
+    try {
+        $connections = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop)
+        foreach ($connection in $connections) {
+            $owningProcess = [int]($connection.OwningProcess)
+            if ($owningProcess -gt 0) {
+                return $owningProcess
+            }
+        }
+    } catch {
+        return 0
+    }
+    return 0
 }
 
 function Test-AkaneBackendProcess {
@@ -294,6 +311,12 @@ if ([string]$env:AKANE_DATA_ROOT_READY -eq "1" -and [string]$env:AKANE_DATA_ROOT
     }
 }
 $env:AKANE_DATA_ROOT = $dataRoot
+$expectedInstanceId = [string]$env:AKANE_INSTANCE_ID
+if ([string]::IsNullOrWhiteSpace($expectedInstanceId)) {
+    $expectedInstanceId = "local-default"
+} else {
+    $expectedInstanceId = $expectedInstanceId.Trim()
+}
 $runtimeLogDir = Join-Path $dataRoot "logs"
 $backendLog = Join-Path $runtimeLogDir "akane_backend.log"
 $backendErrLog = Join-Path $runtimeLogDir "akane_backend.err.log"
@@ -316,22 +339,21 @@ if ($OpenSettings) {
 
 if (-not $SkipBackend) {
     if (Test-TcpPort -HostName "127.0.0.1" -Port $BackendPort) {
+        $health = Get-BackendHealth -HostName "127.0.0.1" -Port $BackendPort
+        $healthMatchesInstance = Test-AkaneBackendHealth -Health $health -ExpectedInstanceId $expectedInstanceId
         if ($ReuseBackend) {
-            Write-Host "[INFO] Backend already listening on port $BackendPort. Reusing it because -ReuseBackend was set."
-        } else {
-            $health = Get-BackendHealth -HostName "127.0.0.1" -Port $BackendPort
-            $healthPid = 0
-            try {
-                $healthPid = [int]($health.pid)
-            } catch {
-                $healthPid = 0
+            if (-not $healthMatchesInstance) {
+                throw "Port $BackendPort is not serving the expected Akane instance '$expectedInstanceId'; refusing -ReuseBackend."
             }
+            Write-Host "[INFO] Matching Akane instance '$expectedInstanceId' is already listening on port $BackendPort. Reusing it."
+        } else {
+            $healthPid = Get-BackendListeningProcessId -Port $BackendPort
 
-            if ((Test-AkaneBackendHealth -Health $health) -and (Test-AkaneBackendProcess -ProcessId $healthPid)) {
+            if ($healthMatchesInstance -and (Test-AkaneBackendProcess -ProcessId $healthPid)) {
                 Write-Host "[INFO] Backend already listening on port $BackendPort. Restarting Akane backend for fresh code."
                 Stop-AkaneBackendProcess -ProcessId $healthPid -Port $BackendPort
             } else {
-                Write-Host "[WARN] Port $BackendPort is already in use, but it was not recognized as a managed Akane backend."
+                Write-Host "[WARN] Port $BackendPort is already in use, but it is not the expected managed Akane instance '$expectedInstanceId'."
                 Write-Host "[WARN] Keeping the existing service. Use -SkipBackend or free the port if this is unexpected."
             }
         }

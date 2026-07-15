@@ -5,11 +5,12 @@ import re
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
-from akane_paths import ensure_akane_data_paths
+from akane_paths import ensure_akane_data_paths, has_explicit_akane_data_root
 
 logger = logging.getLogger("akane.config")
 
 BASE_DIR = Path(__file__).resolve().parent
+AKANE_DATA_ROOT_EXPLICIT = has_explicit_akane_data_root()
 AKANE_DATA_PATHS = ensure_akane_data_paths()
 DATA_ROOT = str(AKANE_DATA_PATHS.root)
 DATA_DIR = str(AKANE_DATA_PATHS.users_data)

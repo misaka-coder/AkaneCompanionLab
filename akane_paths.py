@@ -63,6 +63,19 @@ def resolve_akane_data_root(
     return base / APP_DIRECTORY_NAME
 
 
+def has_explicit_akane_data_root(*, environ: Mapping[str, str] | None = None) -> bool:
+    """Return whether the process environment explicitly selected a data root.
+
+    This intentionally does not consult pydantic ``.env`` loading. Named Akane
+    instances must bind their root before application-owned configuration is
+    loaded, so deployment code has to export ``AKANE_DATA_ROOT`` before Python
+    starts.
+    """
+
+    values = os.environ if environ is None else environ
+    return bool(str(values.get(DATA_ROOT_ENV, "") or "").strip())
+
+
 def get_akane_data_paths(**kwargs: object) -> AkaneDataPaths:
     root = resolve_akane_data_root(**kwargs)
     return AkaneDataPaths(

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import os
-import sys
 from typing import Any, Callable
 
 from fastapi import APIRouter, Request
@@ -26,6 +24,7 @@ def build_core_router(
     engine: Any,
     config_module: Any,
     resolve_identity_from_query: ResolveIdentity,
+    instance_runtime: Any = None,
     runtime_metrics: Any = None,
     public_guard: Any = None,
 ) -> APIRouter:
@@ -33,21 +32,18 @@ def build_core_router(
 
     @router.get("/health")
     async def health() -> dict[str, object]:
-        yt_dlp_available = importlib.util.find_spec("yt_dlp") is not None
+        snapshot_getter = getattr(instance_runtime, "public_health_snapshot", None)
+        if not callable(snapshot_getter):
+            return {
+                "status": "unavailable",
+                "instance_id": "unbound",
+                "root_binding": "unavailable",
+            }
+        snapshot = snapshot_getter()
         return {
-            "status": "ok",
-            "pid": os.getpid(),
-            "python": sys.executable,
-            "yt_dlp": yt_dlp_available,
-            "contracts": {
-                "desktop_pet": {
-                    "version": DESKTOP_PET_CONTRACT_VERSION,
-                    "health": "/desktop-pet/health",
-                    "resource_manifest": "/resource-manifest",
-                    "think": "/think",
-                    "tts": "/tts",
-                }
-            },
+            "status": str(snapshot.get("status") or "unavailable"),
+            "instance_id": str(snapshot.get("instance_id") or "unbound"),
+            "root_binding": str(snapshot.get("root_binding") or "unavailable"),
         }
 
     @router.get("/desktop-pet/health")
