@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -11,6 +10,7 @@ from capcore import InvocationContext
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..deployment_security import AdminWriteAuth
 from ..plugin_host import PluginHost
 from ..plugin_result_projection import MAX_PLUGIN_RESPONSE_BYTES, project_capability_result
 
@@ -18,24 +18,31 @@ from ..plugin_result_projection import MAX_PLUGIN_RESPONSE_BYTES, project_capabi
 MAX_PLUGIN_REQUEST_BYTES = 16 * 1024
 
 
-def build_plugins_router(*, plugin_host: PluginHost) -> APIRouter:
+def build_plugins_router(
+    *,
+    plugin_host: PluginHost,
+    admin_auth: AdminWriteAuth | None = None,
+) -> APIRouter:
     router = APIRouter()
+    management_auth = admin_auth or AdminWriteAuth.local_compatibility()
 
     @router.get("/admin/plugins/status")
     async def read_plugin_status(request: Request) -> JSONResponse:
-        if not _is_loopback_socket_peer(request):
+        authorization = management_auth.authorize(request)
+        if not authorization.ok:
             return _response(
-                {"ok": False, "status": "forbidden", "reason": "local_request_required"},
-                status_code=403,
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
             )
         return _response(plugin_host.status_snapshot())
 
     @router.post("/admin/plugins/capabilities/{capability_id:path}/invoke")
     async def invoke_plugin_capability(capability_id: str, request: Request) -> JSONResponse:
-        if not _is_loopback_socket_peer(request):
+        authorization = management_auth.authorize(request)
+        if not authorization.ok:
             return _response(
-                {"ok": False, "status": "forbidden", "reason": "local_request_required"},
-                status_code=403,
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
             )
         payload, error = await _read_bounded_json_object(request)
         if error is not None:
@@ -51,14 +58,6 @@ def build_plugins_router(*, plugin_host: PluginHost) -> APIRouter:
         return _response(projected, status_code=status_code)
 
     return router
-
-
-def _is_loopback_socket_peer(request: Request) -> bool:
-    host = str(getattr(getattr(request, "client", None), "host", "") or "").strip()
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
 
 
 async def _read_bounded_json_object(request: Request) -> tuple[dict[str, Any], dict[str, Any] | None]:

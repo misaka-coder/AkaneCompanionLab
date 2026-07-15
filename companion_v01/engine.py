@@ -49,6 +49,7 @@ from .care_runtime import CareModulePort, normalize_desktop_care_config
 from .desktop_pet_character_resources import load_character_care_config
 from .desktop_music_timeline import DesktopMusicTimelineService
 from .desktop_screen_vision import DesktopScreenVisionWorkspace
+from .deployment_security import QQChannelRuntimeConfig
 from . import desktop_context_engine
 from .mode_profiles import ModeProfileRegistry
 from .npc_runtime import GenericNPCRuntime
@@ -219,6 +220,7 @@ class AkaneMemoryEngine:
         instance_context: InstanceContext | None = None,
         runtime_layout: InstanceRuntimeLayout | None = None,
         plugin_capability_source: Any = None,
+        qq_channel_config: QQChannelRuntimeConfig | None = None,
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -248,6 +250,7 @@ class AkaneMemoryEngine:
             engine_dir=self.base_dir,
         )
         self.plugin_capability_source = plugin_capability_source
+        self.qq_channel_config = qq_channel_config
         self.resource_manifest = resource_manifest
         self.desktop_pet_character_resources = desktop_pet_character_resources
         self.care_module = CareModulePort.from_feature(
@@ -366,6 +369,7 @@ class AkaneMemoryEngine:
             legacy_base_dirs=[self.base_dir / "attachment_inbox_files"],
             ensure_storage_ready=self.workspace_file_service.ensure_layout,
             workspace_uri_resolver=self.workspace_file_service.resolve_file_uri,
+            qq_channel_config=self.qq_channel_config,
         )
         self.prompt_builder = PromptBuilder(PERSONA)
         self.mode_profile_registry = ModeProfileRegistry()
@@ -1401,6 +1405,7 @@ class AkaneMemoryEngine:
             legacy_base_dirs=[self.base_dir / "attachment_inbox_files"],
             ensure_storage_ready=workspace_service.ensure_layout if workspace_service is not None else None,
             workspace_uri_resolver=workspace_service.resolve_file_uri if workspace_service is not None else None,
+            qq_channel_config=getattr(self, "qq_channel_config", None),
         )
         self.attachment_ingest_service = service
         return service

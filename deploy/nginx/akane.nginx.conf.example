@@ -1,33 +1,102 @@
+# Copy one server/upstream pair per Akane instance. Keep the upstream name,
+# loopback port, server_name, and access log unique for that instance.
+upstream akane_finance_prod {
+    server 127.0.0.1:10001;
+    keepalive 16;
+}
+
 server {
     listen 80;
-    server_name _;
+    server_name finance-akane.example.com;
 
+    access_log /var/log/nginx/akane-finance-prod.access.log;
+    error_log  /var/log/nginx/akane-finance-prod.error.log;
     client_max_body_size 8m;
 
-    location / {
-        proxy_pass http://127.0.0.1:9999;
+    # QQ/NapCat ingress is a separate surface. The application still requires
+    # its per-instance Bearer secret and exact self_id. Expand the allowlist
+    # only to the real NapCat source address; never expose it indiscriminately.
+    location = /api/qq/napcat/event {
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+
+        proxy_pass http://akane_finance_prod;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Akane-Webhook-Secret $http_x_akane_webhook_secret;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
     }
 
-    # Akane relies on NDJSON streaming for live speech / scene / choices updates.
-    # If nginx buffers this endpoint, some UI state can look "stuck" until refresh.
+    # Management and QQ diagnostics are local-only at the proxy boundary.
+    # Use an SSH tunnel or an authenticated private admin proxy when remote
+    # management is required; application writes still require ADMIN token.
+    location ^~ /control-center/ {
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+
+        proxy_pass http://akane_finance_prod;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Akane-Admin-Token $http_x_akane_admin_token;
+    }
+
+    location ^~ /admin/ {
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+
+        proxy_pass http://akane_finance_prod;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Akane-Admin-Token $http_x_akane_admin_token;
+    }
+
+    location = /api/qq/napcat/status {
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+        proxy_pass http://akane_finance_prod;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Akane-Admin-Token $http_x_akane_admin_token;
+    }
+
+    location = /api/qq/self-check {
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+        proxy_pass http://akane_finance_prod;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Akane-Admin-Token $http_x_akane_admin_token;
+    }
+
+    # Akane relies on NDJSON streaming for live speech/scene/choices updates.
     location /think {
-        proxy_pass http://127.0.0.1:9999/think;
+        proxy_pass http://akane_finance_prod/think;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_cache off;
+    }
+
+    location / {
+        proxy_pass http://akane_finance_prod;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
 }

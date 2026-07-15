@@ -14,6 +14,7 @@ import requests
 
 import config
 from .care_runtime import CareModulePort, DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECKIN_COINS, get_seasonal_shop_items
+from .deployment_security import QQChannelRuntimeConfig
 
 
 QQ_TEXT_CAPABILITIES = (
@@ -271,7 +272,13 @@ class QQMessageContext:
 
 
 class NapCatQQGateway:
-    def __init__(self, *, state_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        state_path: str | Path | None = None,
+        channel_config: QQChannelRuntimeConfig | None = None,
+    ) -> None:
+        self._channel_config = channel_config
         self.group_follow_state: dict[str, dict[str, Any]] = {}
         self.recent_event_fingerprints: dict[str, float] = {}
         self.sender_label_cache: dict[str, str] = {}
@@ -391,7 +398,7 @@ class NapCatQQGateway:
 
     def status(self) -> dict[str, Any]:
         return {
-            "enabled": bool(getattr(config, "QQ_BRIDGE_ENABLED", False)),
+            "enabled": self.bridge_enabled,
             "onebot_http_url": self.onebot_http_url,
             "master_qq": str(getattr(config, "MASTER_QQ", "") or ""),
             "bot_qq": self.bot_qq,
@@ -428,7 +435,7 @@ class NapCatQQGateway:
 
         不暴露 token、cookie 或本地绝对路径。
         """
-        enabled = bool(getattr(config, "QQ_BRIDGE_ENABLED", False))
+        enabled = self.bridge_enabled
         if not enabled:
             return {
                 "ok": False,
@@ -447,7 +454,11 @@ class NapCatQQGateway:
             }
 
         try:
-            response = requests.get(f"{url}/get_login_info", timeout=5)
+            response = requests.get(
+                f"{url}/get_login_info",
+                headers=self.onebot_headers,
+                timeout=5,
+            )
         except requests.exceptions.ConnectionError:
             return {
                 "ok": False,
@@ -525,6 +536,8 @@ class NapCatQQGateway:
 
     @property
     def onebot_http_url(self) -> str:
+        if self._channel_config is not None:
+            return self._channel_config.onebot_http_url
         return (
             str(getattr(config, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001") or "").strip().rstrip("/")
             or "http://127.0.0.1:3001"
@@ -532,7 +545,21 @@ class NapCatQQGateway:
 
     @property
     def bot_qq(self) -> str:
+        if self._channel_config is not None:
+            return self._channel_config.bot_id
         return str(getattr(config, "QQ_BOT_QQ", "") or "").strip()
+
+    @property
+    def bridge_enabled(self) -> bool:
+        if self._channel_config is not None:
+            return self._channel_config.enabled
+        return bool(getattr(config, "QQ_BRIDGE_ENABLED", False))
+
+    @property
+    def onebot_headers(self) -> dict[str, str]:
+        if self._channel_config is None:
+            return {}
+        return self._channel_config.onebot_headers()
 
     @property
     def character_pack_id(self) -> str:
@@ -1899,6 +1926,7 @@ class NapCatQQGateway:
             response = requests.post(
                 f"{self.onebot_http_url}/get_msg",
                 json={"message_id": reply_id},
+                headers=self.onebot_headers,
                 timeout=5,
             )
             response.raise_for_status()
@@ -2118,7 +2146,12 @@ class NapCatQQGateway:
             return ""
         payload = {"group_id": group_id, "user_id": user_id, "no_cache": False}
         try:
-            response = requests.post(f"{self.onebot_http_url}/get_group_member_info", json=payload, timeout=3)
+            response = requests.post(
+                f"{self.onebot_http_url}/get_group_member_info",
+                json=payload,
+                headers=self.onebot_headers,
+                timeout=3,
+            )
             response.raise_for_status()
             data = response.json()
         except Exception:
@@ -2985,7 +3018,12 @@ class NapCatQQGateway:
             else {"user_id": context.target_id, "message": clean_message}
         )
         try:
-            response = requests.post(f"{self.onebot_http_url}/{action}", json=payload, timeout=8)
+            response = requests.post(
+                f"{self.onebot_http_url}/{action}",
+                json=payload,
+                headers=self.onebot_headers,
+                timeout=8,
+            )
             response.raise_for_status()
             data = response.json()
             return {"ok": True, "action": action, "data": data}
@@ -3013,7 +3051,12 @@ class NapCatQQGateway:
             }
         )
         try:
-            response = requests.post(f"{self.onebot_http_url}/{action}", json=payload, timeout=8)
+            response = requests.post(
+                f"{self.onebot_http_url}/{action}",
+                json=payload,
+                headers=self.onebot_headers,
+                timeout=8,
+            )
             response.raise_for_status()
             return {"ok": True, "action": action, "data": response.json(), "mface": data}
         except Exception as exc:
@@ -3174,7 +3217,12 @@ class NapCatQQGateway:
                 ],
             }
             try:
-                response = requests.post(f"{self.onebot_http_url}/{action}", json=payload, timeout=20)
+                response = requests.post(
+                    f"{self.onebot_http_url}/{action}",
+                    json=payload,
+                    headers=self.onebot_headers,
+                    timeout=20,
+                )
                 response.raise_for_status()
                 data = response.json()
                 return {"ok": True, "action": action, "data": data, "file": clean_path}
@@ -3209,7 +3257,12 @@ class NapCatQQGateway:
                 ],
             }
             try:
-                response = requests.post(f"{self.onebot_http_url}/{action}", json=payload, timeout=30)
+                response = requests.post(
+                    f"{self.onebot_http_url}/{action}",
+                    json=payload,
+                    headers=self.onebot_headers,
+                    timeout=30,
+                )
                 response.raise_for_status()
                 data = response.json()
                 return {"ok": True, "action": action, "data": data, "file": clean_path}
@@ -3229,7 +3282,12 @@ class NapCatQQGateway:
             else {"user_id": context.target_id, "file": clean_path, "name": name or Path(clean_path).name}
         )
         try:
-            response = requests.post(f"{self.onebot_http_url}/{action}", json=payload, timeout=20)
+            response = requests.post(
+                f"{self.onebot_http_url}/{action}",
+                json=payload,
+                headers=self.onebot_headers,
+                timeout=20,
+            )
             response.raise_for_status()
             data = response.json()
             return {"ok": True, "action": action, "data": data}

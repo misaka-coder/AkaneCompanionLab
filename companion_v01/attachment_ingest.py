@@ -19,6 +19,7 @@ import config
 
 from .attachment_inbox import AttachmentInboxService
 from .background_tasks import BackgroundTaskRunner
+from .deployment_security import QQChannelRuntimeConfig
 from .store import MemoryStore
 from .vision_service import VisionObservationService
 
@@ -142,12 +143,14 @@ class AttachmentIngestService:
         legacy_base_dirs: list[Path] | tuple[Path, ...] | None = None,
         ensure_storage_ready: Callable[[], Any] | None = None,
         workspace_uri_resolver: Callable[[str], Path | None] | None = None,
+        qq_channel_config: QQChannelRuntimeConfig | None = None,
     ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.legacy_base_dirs = [Path(item) for item in list(legacy_base_dirs or []) if Path(item) != self.base_dir]
         self.ensure_storage_ready = ensure_storage_ready
         self.workspace_uri_resolver = workspace_uri_resolver
+        self.qq_channel_config = qq_channel_config
         self.store = store
         self.attachment_service = attachment_service
         self.vision_service = vision_service
@@ -1279,14 +1282,26 @@ class AttachmentIngestService:
         kind = self._normalize_kind(item.get("kind") or payload.get("kind"))
         endpoints = ["/get_image"] if kind == "image" else []
         endpoints.append("/get_file")
-        base_url = str(getattr(config, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001") or "").strip().rstrip("/")
+        if self.qq_channel_config is not None:
+            base_url = self.qq_channel_config.onebot_http_url
+            onebot_headers = self.qq_channel_config.onebot_headers()
+        else:
+            base_url = str(
+                getattr(config, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001") or ""
+            ).strip().rstrip("/")
+            onebot_headers = {}
         if not base_url:
             return None
 
         timeout = float(getattr(config, "QQ_ATTACHMENT_DOWNLOAD_TIMEOUT", 20.0) or 20.0)
         for endpoint in endpoints:
             try:
-                response = requests.post(f"{base_url}{endpoint}", json={"file": file_token}, timeout=timeout)
+                response = requests.post(
+                    f"{base_url}{endpoint}",
+                    json={"file": file_token},
+                    headers=onebot_headers,
+                    timeout=timeout,
+                )
                 response.raise_for_status()
                 payload_data = response.json()
             except Exception:

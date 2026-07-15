@@ -1,0 +1,36 @@
+[Unit]
+Description=Akane Companion Lab instance %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=akane
+Group=akane
+WorkingDirectory=/opt/akane/AkaneCompanionLab
+
+# One file per instance, for example:
+#   /etc/akane/instances/finance-prod.env
+# It must define AKANE_INSTANCE_ID, AKANE_DATA_ROOT, HOST, PORT and
+# AKANE_ADMIN_TOKEN. QQ-enabled manifests additionally require the four QQ
+# binding values documented in deploy/env/.env.vps.example.
+EnvironmentFile=/etc/akane/instances/%i.env
+# The unit instance name is the final selector authority even if an operator
+# accidentally copied an environment file with a stale AKANE_INSTANCE_ID.
+Environment=AKANE_INSTANCE_ID=%i
+
+ExecStart=/opt/akane/AkaneCompanionLab/.venv/bin/python /opt/akane/AkaneCompanionLab/launch_akane_memory_v01.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+KillSignal=SIGTERM
+SyslogIdentifier=akane-%i
+StandardOutput=journal
+StandardError=journal
+
+# Do not place two instance names on the same AKANE_DATA_ROOT or PORT.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

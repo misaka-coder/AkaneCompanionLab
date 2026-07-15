@@ -268,8 +268,14 @@ class Settings(BaseSettings):
     QQ_BRIDGE_ENABLED: bool = False
     # OneBot HTTP 服务地址
     QQ_ONEBOT_HTTP_URL: str = "http://127.0.0.1:3001"
+    # 部署侧通道引用；named instance 必须与 manifest 完全一致
+    QQ_CHANNEL_PROFILE_REF: str = ""
     # Bot 自己的 QQ 号；留空时仍可使用事件里的 self_id
     QQ_BOT_QQ: str = ""
+    # NapCat 反向 HTTP webhook secret（Authorization: Bearer）
+    QQ_WEBHOOK_SECRET: str = ""
+    # Akane 调用 OneBot HTTP API 的 access token
+    QQ_ONEBOT_ACCESS_TOKEN: str = ""
     # QQ 文字聊天默认使用的 Creator Kit 角色包 id（留空=Akane 默认人设）
     QQ_CHARACTER_PACK_ID: str = ""
     # QQ 回复投递模式：text=只文字 voice=只语音 both=文字+语音 auto=模型用 reply_medium 决定
@@ -339,6 +345,9 @@ class Settings(BaseSettings):
 
     # 主人 QQ 号；留空时私聊使用独立 QQ 身份
     MASTER_QQ: str = ""
+
+    # named instance 的管理写接口 token；不得与 QQ token 复用
+    AKANE_ADMIN_TOKEN: str = ""
 
     # 监听地址 & 端口
     HOST: str = "0.0.0.0"
@@ -468,7 +477,8 @@ def _apply_settings(s: Settings) -> None:
     global WEB_SEARCH_MCP_TIMEOUT_SECONDS, CHAT_FINAL_RESPONSE_MAX_ATTEMPTS
     global MAX_BROWSER_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
     global AKANE_WORKSPACE_ROOT, AKANE_WORKSPACE_MAX_READ_BYTES
-    global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_BOT_QQ, QQ_CHARACTER_PACK_ID
+    global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_CHANNEL_PROFILE_REF, QQ_BOT_QQ
+    global QQ_WEBHOOK_SECRET, QQ_ONEBOT_ACCESS_TOKEN, QQ_CHARACTER_PACK_ID
     global \
         QQ_REPLY_MODE, \
         QQ_TTS_PROFILE_USER_ID, \
@@ -500,7 +510,7 @@ def _apply_settings(s: Settings) -> None:
     global SEMANTIC_REINFORCEMENT_LOOKBACK, SEMANTIC_REINFORCEMENT_MIN_OVERLAP
     global MEMORY_BACKEND, MEMCORE_STORAGE_PATH, MEMCORE_VISIBLE_SCOPE, MEMCORE_ENABLE_FLAVOR, MEMCORE_SHADOW_COMPARE
     global WHISPER_CACHE_DIR
-    global MASTER_QQ, PORT, HOST
+    global MASTER_QQ, AKANE_ADMIN_TOKEN, PORT, HOST
 
     # === LLM / API keys ===
     TEXT_API_KEY = s.TEXT_API_KEY or ""
@@ -619,8 +629,11 @@ def _apply_settings(s: Settings) -> None:
     QQ_ONEBOT_HTTP_URL = (
         str(s.QQ_ONEBOT_HTTP_URL or "http://127.0.0.1:3001").strip().rstrip("/") or "http://127.0.0.1:3001"
     )
+    QQ_CHANNEL_PROFILE_REF = str(s.QQ_CHANNEL_PROFILE_REF or "").strip()
     raw_qq_bot_qq = str(s.QQ_BOT_QQ or "").strip()
     QQ_BOT_QQ = raw_qq_bot_qq if raw_qq_bot_qq.isdigit() else ""
+    QQ_WEBHOOK_SECRET = str(s.QQ_WEBHOOK_SECRET or "").strip()
+    QQ_ONEBOT_ACCESS_TOKEN = str(s.QQ_ONEBOT_ACCESS_TOKEN or "").strip()
     raw_qq_character_pack_id = str(s.QQ_CHARACTER_PACK_ID or "").strip()
     QQ_CHARACTER_PACK_ID = (
         raw_qq_character_pack_id
@@ -730,6 +743,7 @@ def _apply_settings(s: Settings) -> None:
     # === host / port / qq ===
     raw_master_qq = str(s.MASTER_QQ or "").strip()
     MASTER_QQ = raw_master_qq if raw_master_qq.isdigit() else ""
+    AKANE_ADMIN_TOKEN = str(s.AKANE_ADMIN_TOKEN or "").strip()
     PORT = s.PORT
     HOST = s.HOST
 

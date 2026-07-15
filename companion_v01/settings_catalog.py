@@ -33,6 +33,7 @@ VALID_SCOPES = frozenset({SCOPE_RUNTIME, SCOPE_RESTART, SCOPE_RESTART_CLIENT})
 # Another surface already edits this — don't double-expose it as editable later.
 MANAGED_MODEL_SERVICE = "model-service"
 MANAGED_CAPABILITIES = "capabilities"
+MANAGED_DEPLOYMENT = "deployment"
 
 # Settings fields intentionally NOT catalogued. Listing a field
 # here is the explicit, reviewable way to keep it out of the drift guard.
@@ -260,12 +261,59 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("MAX_WEB_RESEARCH_TOOL_ROUNDS", _TOOL, SCOPE_RUNTIME, "联网搜索/网页提取同轮扩展预算"),
     _s("MAX_BROWSER_TOOL_ROUNDS", _TOOL, SCOPE_RUNTIME, "托管浏览器同轮扩展预算"),
     _s("MAX_TASK_WORKER_ROUNDS", _TOOL, SCOPE_RUNTIME, "后台 Workshop Worker 最大循环轮次"),
-    _s("AKANE_WORKSPACE_ROOT", _TOOL, SCOPE_RESTART_CLIENT, "单一文件工作区路径（留空=桌面/默认）"),
+    _s(
+        "AKANE_WORKSPACE_ROOT",
+        _TOOL,
+        SCOPE_RESTART_CLIENT,
+        "单一文件工作区路径（named instance 必须位于实例根）",
+        managed_in=MANAGED_DEPLOYMENT,
+    ),
     _s("AKANE_WORKSPACE_MAX_READ_BYTES", _TOOL, SCOPE_RESTART_CLIENT, "单个工作区文件最大直接读取字节数"),
     # QQ / NapCat 桥接
-    _s("QQ_BRIDGE_ENABLED", _QQ, SCOPE_RESTART, "QQ 桥总开关（启动时决定是否构造 gateway）"),
-    _s("QQ_ONEBOT_HTTP_URL", _QQ, SCOPE_RUNTIME, "OneBot HTTP 服务地址"),
-    _s("QQ_BOT_QQ", _QQ, SCOPE_RUNTIME, "Bot 自己的 QQ 号"),
+    _s(
+        "QQ_BRIDGE_ENABLED",
+        _QQ,
+        SCOPE_RESTART,
+        "QQ 桥总开关（local-default 使用；named instance 由 manifest 决定）",
+        managed_in=MANAGED_DEPLOYMENT,
+    ),
+    _s(
+        "QQ_ONEBOT_HTTP_URL",
+        _QQ,
+        SCOPE_RESTART,
+        "当前实例的 OneBot HTTP 服务地址",
+        managed_in=MANAGED_DEPLOYMENT,
+    ),
+    _s(
+        "QQ_CHANNEL_PROFILE_REF",
+        _QQ,
+        SCOPE_RESTART,
+        "部署侧 QQ profile 引用（必须匹配 manifest）",
+        managed_in=MANAGED_DEPLOYMENT,
+    ),
+    _s(
+        "QQ_BOT_QQ",
+        _QQ,
+        SCOPE_RESTART,
+        "当前实例独占绑定的 Bot QQ",
+        managed_in=MANAGED_DEPLOYMENT,
+    ),
+    _s(
+        "QQ_WEBHOOK_SECRET",
+        _QQ,
+        SCOPE_RESTART,
+        "QQ webhook Bearer secret",
+        sensitive=True,
+        managed_in=MANAGED_DEPLOYMENT,
+    ),
+    _s(
+        "QQ_ONEBOT_ACCESS_TOKEN",
+        _QQ,
+        SCOPE_RESTART,
+        "OneBot HTTP access token",
+        sensitive=True,
+        managed_in=MANAGED_DEPLOYMENT,
+    ),
     _s("QQ_CHARACTER_PACK_ID", _QQ, SCOPE_RUNTIME, "QQ 文字聊天默认角色包 id"),
     _s("QQ_REPLY_MODE", _QQ, SCOPE_RUNTIME, "QQ 回复投递模式：text/voice/both/auto"),
     _s("QQ_TTS_PROFILE_USER_ID", _QQ, SCOPE_RUNTIME, "QQ 语音合成读取的本地能力 profile"),
@@ -302,8 +350,16 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("WEB_OWNER_PROFILE_USER_ID", _WEB, SCOPE_RUNTIME, "owner 模式使用的 profile 标识"),
     _s("MASTER_QQ", _WEB, SCOPE_RUNTIME, "主人 QQ 号（留空=私聊独立身份）"),
     # 服务监听（启动脚本读取）
-    _s("HOST", _SRV, SCOPE_RESTART, "监听地址"),
-    _s("PORT", _SRV, SCOPE_RESTART, "监听端口"),
+    _s(
+        "AKANE_ADMIN_TOKEN",
+        _SRV,
+        SCOPE_RESTART,
+        "named instance 管理写接口 Bearer token",
+        sensitive=True,
+        managed_in=MANAGED_DEPLOYMENT,
+    ),
+    _s("HOST", _SRV, SCOPE_RESTART, "监听地址", managed_in=MANAGED_DEPLOYMENT),
+    _s("PORT", _SRV, SCOPE_RESTART, "监听端口", managed_in=MANAGED_DEPLOYMENT),
 )
 
 

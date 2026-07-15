@@ -22,6 +22,7 @@ from services.tts_client import EdgeTTSClient
 from .async_task_supervisor import AsyncTaskSupervisor
 from .engine import AkaneMemoryEngine
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
+from .deployment_security import resolve_instance_deployment_security
 from .instance_profile import resolve_instance_context
 from .instance_runtime import bind_instance_runtime
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
@@ -131,6 +132,13 @@ load_and_apply_saved_overrides(
     settings_override_store,
     on_error=lambda exc: logger.warning("Settings override ignored: %s", exc),
 )
+# Bind deployment-owned channel/account secrets before Engine opens any mutable
+# database.  Named instances fail closed here on an incomplete or mismatched
+# QQ/admin profile; local-default preserves the legacy loopback behavior.
+deployment_security = resolve_instance_deployment_security(instance_context, config)
+app.state.akane_deployment_security = deployment_security
+qq_channel_config = deployment_security.qq
+admin_write_auth = deployment_security.admin
 plugin_host = PluginHost(
     instance_context.plugins,
     contribution_policy=TrustedStatefulPluginContributionPolicy(),
@@ -147,6 +155,7 @@ engine = AkaneMemoryEngine(
     instance_context=instance_context,
     runtime_layout=runtime_layout,
     plugin_capability_source=plugin_capability_source,
+    qq_channel_config=qq_channel_config,
 )
 generated_file_service = engine._get_generated_file_service()
 if generated_file_service is not None:
@@ -174,9 +183,10 @@ public_guard = PublicThinkGuard(
     busy_message=str(getattr(config, "PUBLIC_BUSY_MESSAGE", "当前体验人数较多，请稍后再试。")),
     daily_limit_message=str(getattr(config, "PUBLIC_DAILY_LIMIT_MESSAGE", "今日体验名额已满，明天再来看看吧。")),
 )
-if getattr(config, "QQ_BRIDGE_ENABLED", False):
+if qq_channel_config.enabled:
     qq_gateway: NapCatQQGateway | None = NapCatQQGateway(
         state_path=runtime_layout.state_dir / "qq_gateway_state.json",
+        channel_config=qq_channel_config,
     )
     qq_followup_tasks: AsyncTaskSupervisor | None = AsyncTaskSupervisor(name="qq-followups")
 else:
@@ -419,6 +429,7 @@ app.include_router(
         runtime_metrics=runtime_metrics,
         public_guard=public_guard,
         log_event=_log_event,
+        admin_auth=admin_write_auth,
     )
 )
 app.include_router(
@@ -471,6 +482,8 @@ if qq_gateway is not None:
             log_event=_log_event,
             tts_client=tts_client,
             async_task_supervisor=qq_followup_tasks,
+            channel_config=qq_channel_config,
+            admin_auth=admin_write_auth,
         )
     )
 app.include_router(
@@ -505,6 +518,7 @@ app.include_router(
         ),
         settings_override_store=settings_override_store,
         config_module=config,
+        admin_auth=admin_write_auth,
     )
 )
 app.include_router(
@@ -514,6 +528,7 @@ app.include_router(
         engine=engine,
         runtime_metrics=runtime_metrics,
         log_event=_log_event,
+        admin_auth=admin_write_auth,
     )
 )
 app.include_router(
@@ -530,7 +545,9 @@ app.include_router(
         workflow_runner=ComfyUiWorkflowRunner(config_base_dir=runtime_layout.users_data_dir),
     )
 )
-app.include_router(build_plugins_router(plugin_host=plugin_host))
+app.include_router(
+    build_plugins_router(plugin_host=plugin_host, admin_auth=admin_write_auth)
+)
 app.include_router(
     build_web_static_router(
         web_dir=WEB_DIR,

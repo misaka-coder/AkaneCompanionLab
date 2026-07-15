@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..deployment_security import AdminWriteAuth, QQChannelRuntimeConfig
 from ..model_service_config import effective_settings_from_config, probe_model_ids, redact_provider_error
 from .voice import (
     GPT_SOVITS_PROVIDER_ID,
@@ -1300,8 +1301,11 @@ def build_qq_router(
     tts_client: Any = None,
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
     async_task_supervisor: Any = None,
+    channel_config: QQChannelRuntimeConfig | None = None,
+    admin_auth: AdminWriteAuth | None = None,
 ) -> APIRouter:
     router = APIRouter()
+    diagnostic_auth = admin_auth or AdminWriteAuth.local_compatibility()
 
     def schedule_followup(coroutine: Any) -> Any:
         if async_task_supervisor is not None:
@@ -1480,13 +1484,25 @@ def build_qq_router(
             )
 
     @router.get("/api/qq/napcat/status")
-    async def qq_napcat_status() -> JSONResponse:
+    async def qq_napcat_status(request: Request) -> JSONResponse:
+        authorization = diagnostic_auth.authorize(request)
+        if not authorization.ok:
+            return JSONResponse(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
+            )
         data = dict(qq_gateway.status())
         return JSONResponse({"status": "ok", "data": data})
 
     @router.post("/api/qq/self-check")
-    async def qq_self_check() -> JSONResponse:
+    async def qq_self_check(request: Request) -> JSONResponse:
         """QQ / NapCat 连通性自检。主动测试 OneBot HTTP API 可达性和鉴权，返回结构化诊断。"""
+        authorization = diagnostic_auth.authorize(request)
+        if not authorization.ok:
+            return JSONResponse(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
+            )
         result = qq_gateway.self_check()
         return JSONResponse({"status": "ok", "data": result})
 
@@ -1495,15 +1511,58 @@ def build_qq_router(
         started_at = time.perf_counter()
         event: dict = {}
         context = None
-        try:
-            event = await request.json()
-            if not bool(getattr(config_module, "QQ_BRIDGE_ENABLED", False)):
+
+        if channel_config is not None:
+            auth = channel_config.authorize_webhook(request)
+            if not auth.ok:
                 runtime_metrics.observe_request(
                     "qq_napcat_event",
                     duration_ms=(time.perf_counter() - started_at) * 1000,
-                    ok=True,
+                    ok=False,
                 )
-                return JSONResponse({"status": "disabled", "message": "QQ bridge is disabled"})
+                return JSONResponse(
+                    {"ok": False, "status": "forbidden", "reason": auth.reason},
+                    status_code=auth.status_code,
+                )
+
+        bridge_enabled = (
+            channel_config.enabled
+            if channel_config is not None
+            else bool(getattr(config_module, "QQ_BRIDGE_ENABLED", False))
+        )
+        if not bridge_enabled:
+            runtime_metrics.observe_request(
+                "qq_napcat_event",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=True,
+            )
+            return JSONResponse({"status": "disabled", "message": "QQ bridge is disabled"})
+
+        try:
+            event = await request.json()
+            if not isinstance(event, dict):
+                runtime_metrics.observe_request(
+                    "qq_napcat_event",
+                    duration_ms=(time.perf_counter() - started_at) * 1000,
+                    ok=False,
+                )
+                return JSONResponse(
+                    {"ok": False, "status": "invalid_event", "reason": "qq_event_must_be_object"},
+                    status_code=400,
+                )
+
+            if channel_config is not None:
+                identity = channel_config.authorize_event_identity(event)
+                if not identity.ok:
+                    runtime_metrics.observe_request(
+                        "qq_napcat_event",
+                        duration_ms=(time.perf_counter() - started_at) * 1000,
+                        ok=False,
+                    )
+                    return JSONResponse(
+                        {"ok": False, "status": "forbidden", "reason": identity.reason},
+                        status_code=identity.status_code,
+                    )
 
             context = qq_gateway.build_message_context(event)
             if not context.should_respond:

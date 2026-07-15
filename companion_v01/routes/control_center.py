@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..deployment_security import AdminWriteAuth
 from ..desktop_pet_contract import (
     DESKTOP_PET_CONTRACT_VERSION,
     DESKTOP_PET_DEFAULT_EMOTION,
@@ -35,9 +36,11 @@ def build_control_center_router(
     snapshot_runtime_providers: Mapping[str, Callable[..., Any]] | None = None,
     settings_override_store: Any = None,
     config_module: Any = None,
+    admin_auth: AdminWriteAuth | None = None,
 ) -> APIRouter:
     router = APIRouter()
     runtime_providers = dict(snapshot_runtime_providers or {})
+    write_auth = admin_auth or AdminWriteAuth.local_compatibility()
 
     @router.get("/control-center/actions")
     async def describe_control_center_actions() -> JSONResponse:
@@ -59,6 +62,13 @@ def build_control_center_router(
 
     @router.post("/control-center/actions/{action_id}")
     async def run_control_center_action(action_id: str, request: Request) -> JSONResponse:
+        authorization = write_auth.authorize(request)
+        if not authorization.ok:
+            return JSONResponse(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
+                headers={"Cache-Control": "no-store"},
+            )
         try:
             payload = await request.json()
         except Exception:
@@ -153,11 +163,12 @@ def build_control_center_router(
     @router.post("/control-center/settings-catalog/{key}")
     async def update_setting(key: str, request: Request) -> JSONResponse:
         started_at = time.perf_counter()
-        if not _is_local_request(request):
+        authorization = write_auth.authorize(request)
+        if not authorization.ok:
             _observe_request(runtime_metrics, "control_center.settings_update", started_at, False)
             return JSONResponse(
-                {"ok": False, "status": "forbidden", "reason": "local_request_required"},
-                status_code=403,
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
                 headers={"Cache-Control": "no-store"},
             )
         if settings_override_store is None or config_module is None:

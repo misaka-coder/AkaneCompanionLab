@@ -1,6 +1,6 @@
 # Akane Instance Isolation M65-E
 
-Status: E1 and E2 implemented; E3 through E5 pending.
+Status: E1 through E3 implemented; E4 and E5 pending.
 
 ## Fixed deployment decisions
 
@@ -106,13 +106,65 @@ character `_local`, locks, caches, logs, or saved model-service secrets. The
 source is never modified. A mid-copy failure leaves a safe incomplete marker;
 rollback means continuing to use the unchanged source root.
 
+## E3 implemented boundary
+
+`companion_v01.deployment_security` now binds the instance manifest to one
+immutable deployment security snapshot before `AkaneMemoryEngine` is
+constructed:
+
+- `local-default` preserves the legacy `QQ_BRIDGE_ENABLED` and loopback-only
+  management behavior when no secrets are configured;
+- a named instance always requires its own `AKANE_ADMIN_TOKEN`;
+- a named instance with `channels.qq.enabled = true` requires
+  `QQ_CHANNEL_PROFILE_REF`, `QQ_BOT_QQ`, `QQ_WEBHOOK_SECRET`, and
+  `QQ_ONEBOT_ACCESS_TOKEN`;
+- the deployment profile ref must match the manifest exactly; missing or
+  mismatched bindings fail startup before Engine databases open;
+- the manifest remains authoritative for named-instance QQ enablement, so a
+  stale global `QQ_BRIDGE_ENABLED` cannot silently attach another Bot;
+- secret fields use hidden dataclass representations and are never projected
+  into public health or settings values.
+
+QQ ingress now authenticates the Bearer webhook secret before parsing the JSON
+body. It then requires exact `self_id == QQ_BOT_QQ` before calling any Gateway,
+Engine, recorder, cache, duplicate tracker, or follow-up path. Missing/wrong
+credentials and wrong/missing `self_id` return structured failures. Every
+OneBot GET/POST path uses the immutable endpoint and adds the configured
+`Authorization: Bearer <access-token>` header. Plugin notifications continue
+through the single Gateway already bound to this host; no second notification
+authority was introduced.
+
+All control-center/model-service POST routes, plugin administration routes,
+and the Memcore backfill route use the same instance-bound admin policy. Named
+instances require the admin Bearer token even when the real socket peer is
+loopback, so a reverse proxy cannot turn a remote write into a trusted local
+write. QQ status/self-check diagnostics use the same policy. Read-only public
+`/health` remains exactly:
+
+```json
+{
+  "status": "ok",
+  "instance_id": "finance-prod",
+  "root_binding": "valid"
+}
+```
+
+The settings catalog marks instance channel endpoints, Bot id, workspace,
+listen port, and management/channel secrets as deployment-owned. Secrets show
+only `isSet`; they cannot be written through runtime overrides.
+
+Deployment templates now use `akane@.service` plus one
+`/etc/akane/instances/<instance>.env` per process. Nginx examples give every
+instance a distinct upstream, port, server name, and access log; QQ ingress,
+management routes, and QQ diagnostics have separate allowlists. Application
+authentication remains mandatory even behind those proxy restrictions.
+
+One Bot account binding to two instances remains prohibited by the deployment
+contract. Akane does not create a cross-process global Bot registry: if shared
+Bot routing is ever required, it must be a separate authenticated upstream
+router with a new contract, not two hosts directly consuming one NapCat feed.
+
 ## Remaining gates
-
-### E3 — QQ and administration isolation
-
-Bind the immutable QQ profile to deployment secrets, authenticate ingress,
-require matching `self_id`, add the OneBot token, protect management writes,
-and instantiate systemd/Nginx/environment templates.
 
 ### E4 — desktop and launcher isolation
 

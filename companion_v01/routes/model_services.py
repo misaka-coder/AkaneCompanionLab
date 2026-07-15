@@ -7,6 +7,7 @@ from typing import Any, Callable
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..deployment_security import AdminWriteAuth
 from ..model_service_config import (
     ModelServiceConfigStore,
     effective_settings_from_config,
@@ -28,8 +29,10 @@ def build_model_services_router(
     log_event: Callable[..., Any] | None = None,
     model_probe: Callable[..., list[str]] = probe_model_ids,
     connection_tester: Callable[..., str] = test_model_service,
+    admin_auth: AdminWriteAuth | None = None,
 ) -> APIRouter:
     router = APIRouter()
+    write_auth = admin_auth or AdminWriteAuth.local_compatibility()
 
     @router.get("/control-center/model-service")
     async def read_model_service() -> JSONResponse:
@@ -47,9 +50,13 @@ def build_model_services_router(
     @router.post("/control-center/model-service")
     async def save_model_service(request: Request) -> JSONResponse:
         started_at = time.perf_counter()
-        if not _is_local_request(request):
+        authorization = write_auth.authorize(request)
+        if not authorization.ok:
             _observe(runtime_metrics, "model_service.save", started_at, False)
-            return _json({"ok": False, "status": "forbidden", "reason": "local_request_required"}, 403)
+            return _json(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                authorization.status_code,
+            )
         payload = await _request_mapping(request)
         existing = _load_existing_secret(store, config_module, payload)
         try:
@@ -102,6 +109,7 @@ def build_model_services_router(
                 "models": list(result or []),
                 "count": len(list(result or [])),
             },
+            admin_auth=write_auth,
         )
 
     @router.post("/control-center/model-service/test")
@@ -120,6 +128,7 @@ def build_model_services_router(
                 "status": "connected",
                 "message": str(result or "OK")[:120],
             },
+            admin_auth=write_auth,
         )
 
     return router
@@ -136,11 +145,16 @@ async def _run_candidate_action(
     runner: Callable[..., Any],
     require_model: bool,
     result_builder: Callable[[Any], dict[str, Any]],
+    admin_auth: AdminWriteAuth,
 ) -> JSONResponse:
     started_at = time.perf_counter()
-    if not _is_local_request(request):
+    authorization = admin_auth.authorize(request)
+    if not authorization.ok:
         _observe(runtime_metrics, action_name, started_at, False)
-        return _json({"ok": False, "status": "forbidden", "reason": "local_request_required"}, 403)
+        return _json(
+            {"ok": False, "status": "forbidden", "reason": authorization.reason},
+            authorization.status_code,
+        )
     payload = await _request_mapping(request)
     existing = _load_existing_secret(store, config_module, payload)
     try:
@@ -201,11 +215,6 @@ def _load_existing_secret(
     if requested_provider_id != existing.provider_id:
         return ""
     return existing.api_key
-
-
-def _is_local_request(request: Request) -> bool:
-    host = str(getattr(getattr(request, "client", None), "host", "") or "").strip().lower()
-    return host in {"127.0.0.1", "::1", "localhost", "testclient"}
 
 
 async def _request_mapping(request: Request) -> dict[str, Any]:

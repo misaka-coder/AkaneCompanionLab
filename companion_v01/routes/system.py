@@ -4,8 +4,10 @@ import time
 import tracemalloc
 from typing import Any, Callable
 
-from fastapi import APIRouter, Query
-from fastapi.responses import Response
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse, Response
+
+from ..deployment_security import AdminWriteAuth
 
 
 LogEvent = Callable[..., None]
@@ -17,8 +19,10 @@ def build_system_router(
     runtime_metrics: Any,
     public_guard: Any,
     log_event: LogEvent,
+    admin_auth: AdminWriteAuth | None = None,
 ) -> APIRouter:
     router = APIRouter()
+    management_auth = admin_auth or AdminWriteAuth.local_compatibility()
 
     @router.get("/metrics")
     async def metrics() -> Response:
@@ -59,12 +63,24 @@ def build_system_router(
 
     @router.post("/admin/memcore/backfill")
     async def backfill_memcore(
+        request: Request,
         profile_user_id: str = "",
         character_pack_id: str | None = None,
         batch_size: int = 64,
         limit: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """将 legacy SQLite 中的历史记忆导入 memcore（幂等，已存在的不重复导入）。"""
+        authorization = management_auth.authorize(request)
+        if not authorization.ok:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "status": "forbidden",
+                    "reason": authorization.reason,
+                },
+                status_code=authorization.status_code,
+                headers={"Cache-Control": "no-store"},
+            )
         started_at = time.perf_counter()
         result = engine.backfill_memcore_from_legacy_memory(
             profile_user_id=profile_user_id,
