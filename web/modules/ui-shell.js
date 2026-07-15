@@ -207,12 +207,14 @@ export function createUiShellHelpers({
     }
   }
 
+  function stripDisplayPunct(s) { return s.replace(/。/g, ""); }
+
   function normalizeDialogueTurns(payload) {
     const turns = Array.isArray(payload?.dialogue_turns) ? payload.dialogue_turns : [];
     const normalized = turns
       .map((turn) => ({
         speaker: String(turn?.speaker || "").trim(),
-        speech: String(turn?.speech || "").trim(),
+        speech: stripDisplayPunct(String(turn?.speech || "").trim()),
         codeSnippet: String(turn?.code_snippet || turn?.codeSnippet || "").trim(),
       }))
       .filter((turn) => turn.speaker && turn.speech);
@@ -226,7 +228,7 @@ export function createUiShellHelpers({
     }
 
     const speechSegments = Array.isArray(payload?.speech_segments)
-      ? payload.speech_segments.map((segment) => String(segment || "").trim()).filter(Boolean).slice(0, 3)
+      ? payload.speech_segments.map((segment) => stripDisplayPunct(String(segment || "").trim())).filter(Boolean).slice(0, 3)
       : [];
     if (speechSegments.length) {
       const codeSnippet = String(payload?.code_snippet || "").trim();
@@ -237,7 +239,7 @@ export function createUiShellHelpers({
       }));
     }
 
-    const speech = String(payload?.speech || "").trim();
+    const speech = stripDisplayPunct(String(payload?.speech || "").trim());
     const codeSnippet = String(payload?.code_snippet || "").trim();
     return speech ? [{ speaker: DEFAULT_SPEAKER, speech, codeSnippet }] : [];
   }
