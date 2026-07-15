@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Generator
 
 import config
-from akane_paths import get_akane_data_paths
 
 from .artifact_system import ArtifactContainerService
 from .attachment_inbox import AttachmentInboxService
@@ -38,6 +37,7 @@ from .image_materials import SessionImageMaterialResolver
 from . import gift_engine
 from .gift_system import GiftSystemService
 from .instance_profile import InstanceContext, build_local_default_instance_context
+from .instance_runtime import InstanceRuntimeLayout, require_instance_owned_path
 from . import media_bridge_engine
 from .huggingface_provider import HuggingFaceEmbeddingProvider
 from .llm_runtime import LLMRuntime
@@ -173,6 +173,43 @@ MEDIA_PRESET_ROUTING = [
 ]
 
 
+def resolve_engine_workspace_root(
+    *,
+    instance_context: InstanceContext,
+    runtime_layout: InstanceRuntimeLayout | None,
+    configured_root: str,
+) -> str | Path:
+    configured = str(configured_root or "").strip()
+    if runtime_layout is None or instance_context.is_compatibility_default:
+        return configured
+    if configured:
+        return require_instance_owned_path(
+            runtime_layout,
+            configured,
+            reason="workspace_path_outside_instance_root",
+        )
+    return runtime_layout.workspace_dir
+
+
+def resolve_engine_memcore_storage_path(
+    *,
+    instance_context: InstanceContext,
+    runtime_layout: InstanceRuntimeLayout | None,
+    configured_path: str,
+    engine_dir: Path,
+) -> Path:
+    configured = str(configured_path or "").strip()
+    if runtime_layout is not None and not instance_context.is_compatibility_default:
+        if configured:
+            return require_instance_owned_path(
+                runtime_layout,
+                configured,
+                reason="memcore_path_outside_instance_root",
+            )
+        return Path(engine_dir) / "memcore_v01.db"
+    return Path(configured) if configured else Path(engine_dir) / "memcore_v01.db"
+
+
 class AkaneMemoryEngine:
     def __init__(
         self,
@@ -180,11 +217,36 @@ class AkaneMemoryEngine:
         resource_manifest: ResourceManifest | None = None,
         desktop_pet_character_resources: Any = None,
         instance_context: InstanceContext | None = None,
+        runtime_layout: InstanceRuntimeLayout | None = None,
         plugin_capability_source: Any = None,
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.instance_context = instance_context or build_local_default_instance_context()
+        self.runtime_layout = runtime_layout
+        self.capability_config_base_dir = (
+            runtime_layout.users_data_dir
+            if runtime_layout is not None
+            else Path(getattr(config, "DATA_DIR", "users_data") or "users_data")
+        )
+        self.logs_dir = (
+            runtime_layout.logs_dir
+            if runtime_layout is not None
+            else Path(getattr(config, "LOG_DIR", "logs") or "logs")
+        )
+        configured_workspace = str(getattr(config, "AKANE_WORKSPACE_ROOT", "") or "").strip()
+        self.workspace_root = resolve_engine_workspace_root(
+            instance_context=self.instance_context,
+            runtime_layout=runtime_layout,
+            configured_root=configured_workspace,
+        )
+        configured_memcore = str(getattr(config, "MEMCORE_STORAGE_PATH", "") or "").strip()
+        self.memcore_storage_path = resolve_engine_memcore_storage_path(
+            instance_context=self.instance_context,
+            runtime_layout=runtime_layout,
+            configured_path=configured_memcore,
+            engine_dir=self.base_dir,
+        )
         self.plugin_capability_source = plugin_capability_source
         self.resource_manifest = resource_manifest
         self.desktop_pet_character_resources = desktop_pet_character_resources
@@ -199,7 +261,10 @@ class AkaneMemoryEngine:
             self.base_dir / "chroma",
             embedding_provider=self.embedding_provider,
         )
-        self.llm = LLMRuntime()
+        self.llm = LLMRuntime(
+            log_dir=self.logs_dir,
+            instance_id=self.instance_context.instance_id,
+        )
         self.memcore_manager = self._build_memcore_manager()
         self.gift_service = GiftSystemService(
             self.base_dir / "user_assets",
@@ -218,17 +283,12 @@ class AkaneMemoryEngine:
             self.memory_timeline_service = MemoryTimelineService(
                 store=self.store,
                 root_dir=self.base_dir / "memory",
-                characters_dir=getattr(
-                    self.desktop_pet_character_resources,
-                    "characters_dir",
-                    None,
-                ),
                 background_tasks=self.background_tasks,
             )
             self.store.set_message_write_callback(self.memory_timeline_service.handle_message_write)
             self.memory_timeline_service.schedule_existing_backfill()
         self.workspace_file_service = WorkspaceFileService(
-            root_dir=getattr(config, "AKANE_WORKSPACE_ROOT", ""),
+            root_dir=self.workspace_root,
             store=self.store,
             max_read_bytes=int(
                 getattr(config, "AKANE_WORKSPACE_MAX_READ_BYTES", 64 * 1024 * 1024) or (64 * 1024 * 1024)
@@ -340,7 +400,11 @@ class AkaneMemoryEngine:
         self.tool_handlers = self._build_tool_handlers()
         self.capability_registry = CapabilityRegistry()
         self._embedding_reindex_lock = threading.RLock()
+        self._embedding_reindex_stop = threading.Event()
         self._embedding_reindex_thread: threading.Thread | None = None
+        self._close_lock = threading.RLock()
+        self._closed = False
+        self._close_status: dict[str, Any] | None = None
         self._embedding_reindex_status = {
             "state": "idle",
             "processed": 0,
@@ -360,8 +424,8 @@ class AkaneMemoryEngine:
     def _resolve_profile_capability_manifests_dir(self) -> Path:
         profile_user_id = str(getattr(self, "profile_user_id", "") or "").strip()
         if not profile_user_id:
-            return get_akane_data_paths().users_data / ".no_active_profile" / "capability_manifests"
-        return get_akane_data_paths().users_data / profile_user_id / "capability_manifests"
+            return self.capability_config_base_dir / ".no_active_profile" / "capability_manifests"
+        return self.capability_config_base_dir / profile_user_id / "capability_manifests"
 
     def reset(self) -> None:
         compaction_service = getattr(self, "compaction_service", None)
@@ -515,16 +579,74 @@ class AkaneMemoryEngine:
             limit=limit,
         )
 
-    def close(self) -> None:
-        compaction_service = getattr(self, "compaction_service", None)
-        if compaction_service is not None:
-            compaction_service.close()
-        memcore_manager = getattr(self, "memcore_manager", None)
-        if memcore_manager is not None:
-            memcore_manager.close()
+    def close(self) -> dict[str, Any]:
+        """Stop all known writers before the process can be replaced/migrated."""
+
+        with self._close_lock:
+            if self._closed:
+                return dict(
+                    self._close_status
+                    or {
+                        "status": "degraded",
+                        "reason": "writer_shutdown_in_progress",
+                        "failures": ["shutdown_in_progress"],
+                    }
+                )
+            self._closed = True
+            self._embedding_reindex_stop.set()
+
+        failures: list[str] = []
+
         background_tasks = getattr(self, "background_tasks", None)
         if background_tasks is not None:
-            background_tasks.close()
+            try:
+                if not background_tasks.close(timeout=10.0):
+                    failures.append("background_tasks_timeout")
+            except Exception:
+                failures.append("background_tasks_close_failed")
+
+        for name in ("desktop_screen_vision", "vision_service"):
+            service = getattr(self, name, None)
+            close = getattr(service, "close", None)
+            if callable(close):
+                try:
+                    if close(timeout=10.0) is False:
+                        failures.append(f"{name}_timeout")
+                except Exception:
+                    failures.append(f"{name}_close_failed")
+
+        thread = getattr(self, "_embedding_reindex_thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=10.0)
+        if thread is not None and thread.is_alive():
+            failures.append("embedding_reindex_timeout")
+
+        compaction_service = getattr(self, "compaction_service", None)
+        if compaction_service is not None:
+            try:
+                compaction_service.close()
+            except Exception:
+                failures.append("compaction_close_failed")
+        memcore_manager = getattr(self, "memcore_manager", None)
+        if memcore_manager is not None:
+            try:
+                memcore_manager.close()
+            except Exception:
+                failures.append("memcore_close_failed")
+        vector_store = getattr(self, "vector_store", None)
+        if vector_store is not None and "embedding_reindex_timeout" not in failures:
+            try:
+                vector_store.close()
+            except Exception:
+                failures.append("vector_store_close_failed")
+        result = {
+            "status": "stopped" if not failures else "degraded",
+            "reason": "closed" if not failures else "writer_shutdown_incomplete",
+            "failures": failures,
+        }
+        with self._close_lock:
+            self._close_status = dict(result)
+        return result
 
     def _build_memcore_manager(self):
         try:
@@ -897,7 +1019,7 @@ class AkaneMemoryEngine:
             self._embedding_reindex_thread = threading.Thread(
                 target=self._run_embedding_reindex,
                 name="akane-embedding-reindex",
-                daemon=True,
+                daemon=False,
             )
             self._embedding_reindex_thread.start()
         logger.info(
@@ -919,6 +1041,7 @@ class AkaneMemoryEngine:
             return
         batch_size = max(1, int(getattr(config, "EMBEDDING_REINDEX_BATCH_SIZE", 64) or 64))
         processed = 0
+        stop_event = getattr(self, "_embedding_reindex_stop", None)
         try:
             batch_iterators = (
                 (self.store.iter_messages_for_vector_reindex(batch_size), build_raw_vector_entry),
@@ -930,9 +1053,31 @@ class AkaneMemoryEngine:
             )
             for batches, entry_builder in batch_iterators:
                 for record_batch in batches:
+                    if stop_event is not None and stop_event.is_set():
+                        with self._embedding_reindex_lock:
+                            self._embedding_reindex_status.update(
+                                {
+                                    "state": "stopped",
+                                    "processed": int(processed),
+                                    "finished_at": time.time(),
+                                    "error": "shutdown_requested",
+                                }
+                            )
+                        return
                     entries = [entry_builder(record) for record in record_batch]
                     if not entries:
                         continue
+                    if stop_event is not None and stop_event.is_set():
+                        with self._embedding_reindex_lock:
+                            self._embedding_reindex_status.update(
+                                {
+                                    "state": "stopped",
+                                    "processed": int(processed),
+                                    "finished_at": time.time(),
+                                    "error": "shutdown_requested",
+                                }
+                            )
+                        return
                     self.vector_store.upsert_entries(entries)
                     processed += len(entries)
                     with self._embedding_reindex_lock:
@@ -1268,7 +1413,7 @@ class AkaneMemoryEngine:
         if store is None:
             return None
         service = WorkspaceFileService(
-            root_dir=getattr(config, "AKANE_WORKSPACE_ROOT", ""),
+            root_dir=self.workspace_root,
             store=store,
             max_read_bytes=int(
                 getattr(config, "AKANE_WORKSPACE_MAX_READ_BYTES", 64 * 1024 * 1024) or (64 * 1024 * 1024)
@@ -5091,7 +5236,7 @@ class AkaneMemoryEngine:
                 task_worker_service=self._get_task_worker_service(),
             ),
             "web_search": WebSearchToolHandler(
-                config_base_dir=Path(getattr(config, "DATA_DIR", "users_data") or "users_data"),
+                config_base_dir=self.capability_config_base_dir,
             ),
             "open_browser": OpenBrowserToolHandler(),
             "open_music_search": OpenMusicSearchToolHandler(),

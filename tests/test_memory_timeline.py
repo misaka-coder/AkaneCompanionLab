@@ -16,7 +16,7 @@ def _ts(year: int, month: int, day: int, hour: int, minute: int = 0) -> int:
 
 
 class MemoryTimelineServiceTests(unittest.TestCase):
-    def test_character_pack_memory_lives_under_private_local_folder(self) -> None:
+    def test_character_pack_memory_lives_under_instance_mirror_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             characters_dir = root / "characters"
@@ -35,14 +35,6 @@ class MemoryTimelineServiceTests(unittest.TestCase):
                 root_dir=root / "memory",
                 characters_dir=characters_dir,
             )
-            legacy_path = service._legacy_day_file_path(
-                profile_user_id="master",
-                character_pack_id="reimu",
-                date_label="2026-06-13",
-            )
-            legacy_path.parent.mkdir(parents=True, exist_ok=True)
-            legacy_path.write_text("旧镜像", encoding="utf-8")
-
             result = service.backfill_existing()
             day_path = service.day_file_path(
                 profile_user_id="master",
@@ -53,20 +45,19 @@ class MemoryTimelineServiceTests(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertEqual(
                 day_path,
-                characters_dir
-                / "reimu"
-                / "_local"
+                root
                 / "memory"
                 / "profiles"
                 / "master"
+                / "characters"
+                / "reimu"
                 / "days"
                 / "2026"
                 / "06"
                 / "2026-06-13.md",
             )
             self.assertTrue(day_path.is_file())
-            self.assertFalse(legacy_path.exists())
-            self.assertTrue((characters_dir / "reimu" / "_local" / "README.md").is_file())
+            self.assertFalse((characters_dir / "reimu" / "_local").exists())
 
     def test_exact_read_uses_actual_message_time_and_character_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

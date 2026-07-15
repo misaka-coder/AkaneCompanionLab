@@ -1,6 +1,6 @@
 # Akane Instance Profile and Plugin Architecture M65
 
-Status: M65-A/B/C, M65-D1 through M65-D8, and M65-E1 implemented
+Status: M65-A/B/C, M65-D1 through M65-D8, and M65-E1/E2 implemented
 
 Date: 2026-07-15
 
@@ -864,7 +864,7 @@ window.
 
 ### M65-E — Two isolated bot instances
 
-Implementation status: E1 fail-closed instance root complete; E2 through E5
+Implementation status: E1 fail-closed instance root and E2 instance-owned paths complete; E3 through E5
 remain pending. See `docs/akane_instance_isolation_m65_e.md`.
 
 - run personal Akane and a finance-oriented Akane from one core release;
@@ -941,9 +941,13 @@ analysis/moderation/governance prototype and shared market-data store were
 deleted instead of becoming a second authority. The standalone EmQuant bridge
 now owns its small validation contract but is not connected to Akane startup.
 
-M65-E1 now binds an instance id permanently to one explicit data root and holds
-an exclusive process lock before root-owned saved settings or databases load.
-The next gate is E2: move every remaining mutable workspace, memory mirror,
-Memcore override, log, and background-writer path behind that runtime layout,
-then add an offline one-instance migration tool. EmQuant plugin configuration
-and secrets remain a separate audited slice and must not enter M65-E.
+M65-E1 binds an instance id permanently to one explicit data root and holds an
+exclusive process lock before root-owned saved settings or databases load.
+M65-E2 moves the named-instance workspace, memory mirror, constrained Memcore
+override, prompt audit, capability configuration, and background-writer
+lifecycle behind that runtime layout. It also provides the fail-closed offline
+one-instance migration tool documented in
+`docs/akane_instance_isolation_m65_e.md`. The next gate is E3: QQ account,
+ingress secret, OneBot access token, management authentication, and deployment
+template isolation. EmQuant plugin configuration and secrets remain a separate
+audited slice and must not enter M65-E.

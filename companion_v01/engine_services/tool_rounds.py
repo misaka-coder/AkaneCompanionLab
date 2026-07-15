@@ -435,15 +435,14 @@ def build_mcp_adapter_tool_handlers(
     profile_user_id: str = "",
     client_context: ClientProtocolContext | None = None,
 ) -> dict[str, Any]:
-    import config as _cfg
-    from pathlib import Path
-
     from ..capability_adapters import McpStdioCapabilityAdapter
     from ..tool_runtime import AdapterCapabilityToolHandler
 
     if not str(profile_user_id or "").strip():
         return {}
-    config_base_dir = Path(getattr(_cfg, "DATA_DIR", "users_data") or "users_data")
+    config_base_dir = getattr(engine, "capability_config_base_dir", None)
+    if config_base_dir is None:
+        return {}
     try:
         config_payload = load_capability_config(
             base_dir=config_base_dir,
@@ -486,16 +485,16 @@ def build_python_adapter_tool_handlers(
     profile_user_id: str = "",
     client_context: ClientProtocolContext | None = None,
 ) -> dict[str, Any]:
-    del engine, client_context
-    import config as _cfg
-    from pathlib import Path
+    del client_context
 
     from ..capability_adapters import AkanePythonCapabilityAdapter
     from ..tool_runtime import AdapterCapabilityToolHandler
 
     if not str(profile_user_id or "").strip():
         return {}
-    config_base_dir = Path(getattr(_cfg, "DATA_DIR", "users_data") or "users_data")
+    config_base_dir = getattr(engine, "capability_config_base_dir", None)
+    if config_base_dir is None:
+        return {}
     adapter = AkanePythonCapabilityAdapter()
     handlers: dict[str, Any] = {}
     for descriptor in adapter.list_capabilities_sync():

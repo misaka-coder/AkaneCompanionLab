@@ -50,9 +50,9 @@ class _TaskLane:
             raise RuntimeError(f"后台任务队列 {self.name} 已关闭。")
         self.queue.put(task)
 
-    def close(self, *, timeout: float) -> None:
+    def close(self, *, timeout: float) -> bool:
         if self.closed.is_set():
-            return
+            return not any(thread.is_alive() for thread in self.threads)
         self.closed.set()
         for _ in self.threads:
             self.queue.put(None)
@@ -60,6 +60,7 @@ class _TaskLane:
         for thread in self.threads:
             remaining = max(0.1, deadline - time.time())
             thread.join(timeout=remaining)
+        return not any(thread.is_alive() for thread in self.threads)
 
     def wait_idle(self, *, timeout: float) -> bool:
         deadline = time.time() + max(0.1, float(timeout))
@@ -137,14 +138,21 @@ class BackgroundTaskRunner:
         self._get_lane(lane_name).submit(task)
         return handle
 
-    def close(self, *, timeout: float = 2.0) -> None:
+    def close(self, *, timeout: float = 2.0) -> bool:
         if self._closed.is_set():
-            return
+            with self._lock:
+                return not any(
+                    thread.is_alive()
+                    for lane in self._lanes.values()
+                    for thread in lane.threads
+                )
         self._closed.set()
         with self._lock:
             lanes = list(self._lanes.values())
+        stopped = True
         for lane in lanes:
-            lane.close(timeout=timeout)
+            stopped = lane.close(timeout=timeout) and stopped
+        return stopped
 
     def wait_idle(self, *, lane: str | None = None, timeout: float = 2.0) -> bool:
         with self._lock:

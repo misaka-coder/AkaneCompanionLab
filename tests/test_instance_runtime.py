@@ -8,7 +8,15 @@ import unittest
 from pathlib import Path
 
 from companion_v01.instance_profile import resolve_instance_context
-from companion_v01.instance_runtime import InstanceRuntimeError, bind_instance_runtime
+from companion_v01.engine import (
+    resolve_engine_memcore_storage_path,
+    resolve_engine_workspace_root,
+)
+from companion_v01.instance_runtime import (
+    InstanceRuntimeError,
+    bind_instance_runtime,
+    require_instance_owned_path,
+)
 
 
 MANIFEST = """\
@@ -71,11 +79,89 @@ class InstanceRuntimeTests(unittest.TestCase):
                 )
                 self.assertNotIn(str(root), json.dumps(binding))
                 self.assertNotIn("profile_ref", binding)
+                layout = lease.layout
+                self.assertEqual(layout.workspace_dir, root.resolve() / "workspace")
+                self.assertEqual(layout.engine_dir, root.resolve() / "users_data" / "akane_memory_v01")
+                self.assertEqual(layout.logs_dir, root.resolve() / "logs")
+                self.assertEqual(layout.config_dir, root.resolve() / "users_data" / "_local")
             finally:
                 lease.release()
 
             self.assertEqual(lease.root_binding_status, "released")
             lease.release()
+
+    def test_incomplete_migration_marker_blocks_startup_before_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            context = self._context(root)
+            (root / "migration-incomplete.json").write_text("{}", encoding="utf-8")
+
+            with self.assertRaises(InstanceRuntimeError) as raised:
+                bind_instance_runtime(context, data_root=root, explicit_data_root=True)
+
+            self.assertEqual(raised.exception.reason, "instance_migration_incomplete")
+            self.assertFalse((root / "instance-binding.json").exists())
+
+    def test_owned_path_rejects_root_escape_without_leaking_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            lease = bind_instance_runtime(
+                self._context(root),
+                data_root=root,
+                explicit_data_root=True,
+            )
+            try:
+                self.assertEqual(
+                    require_instance_owned_path(lease.layout, "workspace/files"),
+                    root.resolve() / "workspace" / "files",
+                )
+                with self.assertRaises(InstanceRuntimeError) as raised:
+                    require_instance_owned_path(lease.layout, root.parent / "outside")
+                self.assertEqual(raised.exception.reason, "instance_path_outside_root")
+                self.assertNotIn(str(root), str(raised.exception))
+            finally:
+                lease.release()
+
+    def test_named_engine_writable_paths_are_root_owned(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            context = self._context(root)
+            lease = bind_instance_runtime(context, data_root=root, explicit_data_root=True)
+            try:
+                self.assertEqual(
+                    resolve_engine_workspace_root(
+                        instance_context=context,
+                        runtime_layout=lease.layout,
+                        configured_root="",
+                    ),
+                    root.resolve() / "workspace",
+                )
+                self.assertEqual(
+                    resolve_engine_memcore_storage_path(
+                        instance_context=context,
+                        runtime_layout=lease.layout,
+                        configured_path="users_data/custom-memcore.db",
+                        engine_dir=lease.layout.engine_dir,
+                    ),
+                    root.resolve() / "users_data" / "custom-memcore.db",
+                )
+                with self.assertRaises(InstanceRuntimeError) as raised:
+                    resolve_engine_workspace_root(
+                        instance_context=context,
+                        runtime_layout=lease.layout,
+                        configured_root=str(root.parent / "shared-workspace"),
+                    )
+                self.assertEqual(raised.exception.reason, "workspace_path_outside_instance_root")
+                with self.assertRaises(InstanceRuntimeError) as raised:
+                    resolve_engine_memcore_storage_path(
+                        instance_context=context,
+                        runtime_layout=lease.layout,
+                        configured_path=str(root.parent / "shared-memcore.db"),
+                        engine_dir=lease.layout.engine_dir,
+                    )
+                self.assertEqual(raised.exception.reason, "memcore_path_outside_instance_root")
+            finally:
+                lease.release()
 
     def test_same_root_cannot_be_leased_twice_in_one_process(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

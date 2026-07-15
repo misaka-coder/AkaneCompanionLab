@@ -55,6 +55,8 @@ class VisionObservationService:
         self.resource_manifest = resource_manifest
         self._lock = threading.RLock()
         self._jobs_in_flight: set[str] = set()
+        self._threads: set[threading.Thread] = set()
+        self._closing = threading.Event()
         self._analyze_image_fn = analyze_image_fn or self._analyze_with_remote_model
         self._on_observation_ready = on_observation_ready
         self._client = self._build_client()
@@ -62,6 +64,16 @@ class VisionObservationService:
     def reset(self) -> None:
         with self._lock:
             self._jobs_in_flight.clear()
+
+    def close(self, *, timeout: float = 10.0) -> bool:
+        self._closing.set()
+        deadline = time.time() + max(0.1, float(timeout))
+        with self._lock:
+            threads = list(self._threads)
+        for thread in threads:
+            thread.join(timeout=max(0.0, deadline - time.time()))
+        with self._lock:
+            return not any(thread.is_alive() for thread in self._threads)
 
     def reload_client(self) -> dict[str, Any]:
         client = self._build_client()
@@ -406,6 +418,8 @@ class VisionObservationService:
         )
         job_key = self._job_key(target)
         with self._lock:
+            if self._closing.is_set():
+                return pending
             if job_key in self._jobs_in_flight:
                 return pending
             self._jobs_in_flight.add(job_key)
@@ -414,8 +428,10 @@ class VisionObservationService:
             target=self._run_observation_job,
             args=(target, job_key),
             name=f"akane-vision-{target.observation_type}",
-            daemon=True,
+            daemon=False,
         )
+        with self._lock:
+            self._threads.add(thread)
         thread.start()
         return pending
 
@@ -482,8 +498,11 @@ class VisionObservationService:
         finally:
             with self._lock:
                 self._jobs_in_flight.discard(job_key)
+                self._threads.discard(threading.current_thread())
 
     def _observe_target(self, target: VisionTarget) -> dict[str, Any] | None:
+        if self._closing.is_set():
+            return None
         try:
             self._save_observation(
                 target=target,

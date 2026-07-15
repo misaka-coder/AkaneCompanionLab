@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import gc
 import threading
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -29,6 +30,38 @@ class VectorStore:
             name=self.collection_name,
             metadata=self._build_collection_metadata(),
         )
+        self._closed = False
+
+    def close(self) -> None:
+        """Stop Chroma's persistent system so SQLite handles are released."""
+
+        with self._lock:
+            if self._closed:
+                return
+            client = self.client
+            system = getattr(client, "_system", None)
+            stop = getattr(system, "stop", None)
+            if callable(stop):
+                stop()
+            identifier = str(getattr(client, "_identifier", "") or "")
+            if identifier:
+                try:
+                    from chromadb.api.shared_system_client import SharedSystemClient
+
+                    SharedSystemClient._identifier_to_system.pop(identifier, None)
+                except (AttributeError, ImportError):
+                    pass
+            self.collection = None
+            self.client = None
+            for attribute in ("_server", "_admin_client"):
+                try:
+                    setattr(client, attribute, None)
+                except AttributeError:
+                    pass
+            self._closed = True
+        del system
+        del client
+        gc.collect()
 
     def reset(self) -> None:
         with self._lock:

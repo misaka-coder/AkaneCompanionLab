@@ -32,6 +32,9 @@ class UserDataPathTests(unittest.TestCase):
             self.assertEqual(root / "characters", paths.characters)
             self.assertEqual(root / "state", paths.state)
             self.assertEqual(root / "logs", paths.logs)
+            self.assertEqual(root / "workspace", paths.workspace)
+            self.assertEqual(root / "cache", paths.cache)
+            self.assertEqual(root / "run", paths.run)
 
     def test_windows_default_uses_local_app_data(self) -> None:
         root = resolve_akane_data_root(
@@ -51,12 +54,24 @@ class UserDataPathTests(unittest.TestCase):
                 characters=root / "characters",
                 state=root / "state",
                 logs=root / "logs",
+                workspace=root / "workspace",
+                cache=root / "cache",
+                run=root / "run",
             )
 
             ensured = ensure_akane_data_paths(paths)
 
             self.assertEqual(paths, ensured)
-            for directory in (root, paths.users_data, paths.characters, paths.state, paths.logs):
+            for directory in (
+                root,
+                paths.users_data,
+                paths.characters,
+                paths.state,
+                paths.logs,
+                paths.workspace,
+                paths.cache,
+                paths.run,
+            ):
                 self.assertTrue(directory.is_dir())
 
     def test_legacy_migration_copies_missing_files_without_overwriting(self) -> None:
@@ -70,6 +85,9 @@ class UserDataPathTests(unittest.TestCase):
                 characters=root / "characters",
                 state=root / "state",
                 logs=root / "logs",
+                workspace=root / "workspace",
+                cache=root / "cache",
+                run=root / "run",
             )
             legacy_memory = project / "users_data" / "master" / "memory.txt"
             legacy_character = project / "desktop_pet_creator_kit" / "characters" / "demo" / "character.json"

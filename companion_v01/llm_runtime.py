@@ -421,7 +421,18 @@ class _TopLevelJSONStreamTap:
 
 
 class LLMRuntime:
-    def __init__(self):
+    def __init__(self, *, log_dir: Path | str | None = None, instance_id: str = ""):
+        self.log_dir = (
+            Path(log_dir)
+            if log_dir is not None
+            else Path(str(getattr(config, "LOG_DIR", "") or "logs"))
+        )
+        safe_instance_id = str(instance_id or "local-default").strip()
+        self.instance_id = (
+            safe_instance_id
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", safe_instance_id)
+            else "unknown"
+        )
         self._bundle_lock = threading.RLock()
         self.aux = self._build_aux_bundle()
         self.chat = self._build_chat_bundle()
@@ -1232,6 +1243,7 @@ class LLMRuntime:
             )
             record = {
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "instance_id": str(getattr(self, "instance_id", "local-default") or "local-default"),
                 "prompt_cache_key": str(prompt_cache_key or ""),
                 "model": str(getattr(bundle, "model", "") or ""),
                 "protocol": str(
@@ -1334,8 +1346,9 @@ class LLMRuntime:
         }
 
     def _append_prompt_audit_record(self, record: dict[str, Any]) -> None:
-        log_root = Path(str(getattr(config, "LOG_DIR", "") or "logs"))
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        log_dir = getattr(self, "log_dir", None)
+        log_root = Path(log_dir) if log_dir is not None else Path(str(getattr(config, "LOG_DIR", "") or "logs"))
         path = log_root / "llm_prompt_audit" / f"{day}.jsonl"
         line = json.dumps(record, ensure_ascii=False, sort_keys=True)
         with PROMPT_AUDIT_LOCK:

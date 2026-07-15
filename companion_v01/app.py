@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 from services.tts_client import EdgeTTSClient
+from .async_task_supervisor import AsyncTaskSupervisor
 from .engine import AkaneMemoryEngine
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .instance_profile import resolve_instance_context
@@ -99,7 +100,6 @@ PROJECT_DIR = APP_DIR.parent
 
 WEB_DIR = PROJECT_DIR / "web"
 ASSETS_DIR = WEB_DIR / "assets"
-CREATOR_KIT_CHARACTERS_DIR = Path(config.CHARACTERS_DIR)
 MODULES_DIR = WEB_DIR / "modules"
 VENDOR_DIR = WEB_DIR / "vendor"
 instance_context = resolve_instance_context(
@@ -113,17 +113,19 @@ instance_runtime = bind_instance_runtime(
 )
 app.state.akane_instance_context = instance_context
 app.state.akane_instance_runtime = instance_runtime
+runtime_layout = instance_runtime.layout
+CREATOR_KIT_CHARACTERS_DIR = runtime_layout.characters_dir
 resources = ResourceManifest(ASSETS_DIR)
 desktop_pet_character_resources = DesktopPetCharacterResourceService(
     characters_dir=CREATOR_KIT_CHARACTERS_DIR,
 )
-model_service_config_store = ModelServiceConfigStore(Path(config.DATA_DIR) / "_local" / "model_service.json")
+model_service_config_store = ModelServiceConfigStore(runtime_layout.config_dir / "model_service.json")
 load_and_apply_saved_model_service(
     store=model_service_config_store,
     config_module=config,
     on_error=lambda exc: logger.warning("Model service config ignored: %s", exc),
 )
-settings_override_store = SettingsOverrideStore(Path(config.DATA_DIR) / "_local" / "settings_overrides.json")
+settings_override_store = SettingsOverrideStore(runtime_layout.config_dir / "settings_overrides.json")
 load_and_apply_saved_overrides(
     config,
     settings_override_store,
@@ -136,13 +138,14 @@ plugin_host = PluginHost(
 app.state.akane_plugin_host = plugin_host
 plugin_capability_source = PluginCapabilityToolBridge(
     plugin_host,
-    config_base_dir=Path(config.DATA_DIR),
+    config_base_dir=runtime_layout.users_data_dir,
 )
 engine = AkaneMemoryEngine(
-    Path(config.DATA_DIR) / "akane_memory_v01",
+    runtime_layout.engine_dir,
     resource_manifest=resources,
     desktop_pet_character_resources=desktop_pet_character_resources,
     instance_context=instance_context,
+    runtime_layout=runtime_layout,
     plugin_capability_source=plugin_capability_source,
 )
 generated_file_service = engine._get_generated_file_service()
@@ -152,7 +155,7 @@ if generated_file_service is not None:
     )
 plugin_host.bind_plugin_storage_service(
     InstancePluginStorageService(
-        data_root=Path(config.DATA_ROOT),
+        data_root=runtime_layout.data_root,
         instance_id=instance_context.instance_id,
     )
 )
@@ -173,10 +176,12 @@ public_guard = PublicThinkGuard(
 )
 if getattr(config, "QQ_BRIDGE_ENABLED", False):
     qq_gateway: NapCatQQGateway | None = NapCatQQGateway(
-        state_path=Path(config.STATE_DIR) / "qq_gateway_state.json",
+        state_path=runtime_layout.state_dir / "qq_gateway_state.json",
     )
+    qq_followup_tasks: AsyncTaskSupervisor | None = AsyncTaskSupervisor(name="qq-followups")
 else:
     qq_gateway = None
+    qq_followup_tasks = None
 
 def _install_qq_task_completion_notifications() -> None:
     task_worker = getattr(engine, "task_worker_service", None)
@@ -357,6 +362,10 @@ if USER_ASSETS_DIR.exists():
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     try:
+        if qq_followup_tasks is not None:
+            followup_status = await qq_followup_tasks.close(timeout=10.0)
+            if followup_status.get("status") != "stopped":
+                logger.warning("QQ follow-up shutdown incomplete: %s", followup_status)
         plugin_status = await plugin_host.stop()
         if int(plugin_status.get("close_failure_count") or 0) > 0:
             logger.warning(
@@ -365,7 +374,9 @@ async def shutdown_event() -> None:
             )
     finally:
         app.state.akane_plugin_command_broker = None
-        engine.close()
+        engine_status = engine.close()
+        if engine_status.get("status") != "stopped":
+            logger.warning("Engine writer shutdown incomplete: %s", engine_status)
     # Keep the root lease until process exit. Some legacy stores still release
     # native handles only when the interpreter exits; dropping the lock here
     # would let a replacement process overlap those final writers/handles.
@@ -437,6 +448,7 @@ app.include_router(
         runtime_metrics=runtime_metrics,
         public_guard=public_guard,
         log_event=_log_event,
+        capability_config_base_dir=runtime_layout.users_data_dir,
     )
 )
 app.include_router(
@@ -458,6 +470,7 @@ if qq_gateway is not None:
             logger=logger,
             log_event=_log_event,
             tts_client=tts_client,
+            async_task_supervisor=qq_followup_tasks,
         )
     )
 app.include_router(
@@ -476,6 +489,7 @@ app.include_router(
         tts_client=tts_client,
         runtime_metrics=runtime_metrics,
         log_event=_log_event,
+        capability_config_base_dir=runtime_layout.users_data_dir,
     )
 )
 app.include_router(
@@ -512,7 +526,8 @@ app.include_router(
         resolve_identity_from_query=_resolve_identity_from_query,
         background_tasks=getattr(engine, "background_tasks", None),
         mcp_tool_discoverer=McpStdioToolDiscoverer(),
-        workflow_runner=ComfyUiWorkflowRunner(config_base_dir=Path(config.DATA_DIR)),
+        capability_config_base_dir=runtime_layout.users_data_dir,
+        workflow_runner=ComfyUiWorkflowRunner(config_base_dir=runtime_layout.users_data_dir),
     )
 )
 app.include_router(build_plugins_router(plugin_host=plugin_host))

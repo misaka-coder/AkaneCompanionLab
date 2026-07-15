@@ -1,6 +1,6 @@
 # Akane Instance Isolation M65-E
 
-Status: E1 fail-closed instance root implemented; E2 through E5 pending.
+Status: E1 and E2 implemented; E3 through E5 pending.
 
 ## Fixed deployment decisions
 
@@ -55,13 +55,58 @@ references, secret-field rejection, same-process and cross-process lock
 conflicts, permanent binding conflicts, safe health projection, and idempotent
 release.
 
+## E2 implemented boundary
+
+`InstanceRuntimeLayout` now owns the writable roots used by one process:
+
+```text
+<data_root>/users_data
+<data_root>/characters
+<data_root>/state
+<data_root>/logs
+<data_root>/workspace
+<data_root>/cache
+<data_root>/run
+```
+
+- Named instances default to `<data_root>/workspace`; a configured workspace or
+  Memcore path is accepted only when its resolved path remains inside the bound
+  root. `local-default` keeps its legacy desktop-workspace compatibility.
+- Engine, routes, adapters, workflow runners, plugin storage, QQ state, model
+  settings, and prompt audit receive paths from the same immutable layout.
+- Prompt audit records include only the safe instance id and structural prompt
+  metrics; they do not contain prompt text, credentials, or absolute paths.
+- Markdown memory mirrors live below the instance Engine memory directory.
+  Character-pack `_local/memory` is no longer written or cleared by runtime.
+- Embedding reindex has a stop signal and is joined before Chroma closes.
+  Background lanes, vision jobs, screen-vision jobs, Memcore, and Chroma have
+  explicit close paths. QQ image follow-up tasks are supervised and cancelled
+  during FastAPI shutdown.
+- `<data_root>/migration-incomplete.json` blocks startup. A failed offline
+  migration cannot be mistaken for a complete instance root.
+
+### Offline migration
+
+The migration command is deliberately one-way and offline:
+
+```powershell
+python scripts/migrate_akane_instance.py `
+  --source-root C:\AkaneLegacyData `
+  --target-root D:\AkaneInstances\finance-prod `
+  --instance-id finance-prod `
+  --character-pack-id akane_v1
+```
+
+If the old workspace used the legacy desktop location, pass it explicitly with
+`--source-workspace`. The target must not already exist. The tool validates the
+source SQLite files before copying and validates the target copies afterwards.
+It copies the main database, Memcore, Care, QQ state, workspace layers, plugin
+state, character content, user assets, and NPC memory. It does not copy Chroma,
+character `_local`, locks, caches, logs, or saved model-service secrets. The
+source is never modified. A mid-copy failure leaves a safe incomplete marker;
+rollback means continuing to use the unchanged source root.
+
 ## Remaining gates
-
-### E2 — instance-owned mutable paths and shutdown
-
-Move the workspace, memory mirror, constrained Memcore path, logs, and remaining
-runtime path reads behind the instance layout. Stop or join writers before the
-lease is released. Add the offline one-instance migration tool.
 
 ### E3 — QQ and administration isolation
 

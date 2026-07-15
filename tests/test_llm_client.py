@@ -206,8 +206,10 @@ class LLMClientConfigTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
+            runtime.log_dir = Path(temp_dir)
+            runtime.instance_id = "finance-prod"
             with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch("config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False):
-                with patch("config.LOG_DIR", temp_dir):
+                with patch("config.LOG_DIR", str(Path(temp_dir) / "wrong-global-log-root")):
                     runtime._build_completion_kwargs(
                         bundle=bundle,
                         system_prompt="system private prompt",
@@ -232,6 +234,7 @@ class LLMClientConfigTests(unittest.TestCase):
             record = json.loads(files[0].read_text(encoding="utf-8").strip())
 
         self.assertEqual(record["prompt_cache_key"], "chat:final")
+        self.assertEqual(record["instance_id"], "finance-prod")
         self.assertEqual(record["model"], "deepseek-v4-flash")
         self.assertTrue(record["stream"])
         self.assertEqual(record["history_turn_count"], 2)

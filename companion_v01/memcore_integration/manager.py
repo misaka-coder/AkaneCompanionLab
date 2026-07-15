@@ -124,8 +124,9 @@ class MemcoreManager:
 
     @classmethod
     def from_engine(cls, engine: Any) -> "MemcoreManager":
-        raw_path = str(getattr(config, "MEMCORE_STORAGE_PATH", "") or "").strip()
-        storage_path = Path(raw_path) if raw_path else Path(engine.base_dir) / "memcore_v01.db"
+        storage_path = Path(
+            getattr(engine, "memcore_storage_path", Path(engine.base_dir) / "memcore_v01.db")
+        )
         return cls(
             backend=getattr(config, "MEMORY_BACKEND", "memcore"),
             storage_path=storage_path,

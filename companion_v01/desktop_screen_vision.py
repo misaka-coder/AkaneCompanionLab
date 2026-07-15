@@ -21,11 +21,23 @@ class DesktopScreenVisionWorkspace:
         self._lock = threading.RLock()
         self._records: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         self._jobs_in_flight: set[str] = set()
+        self._threads: set[threading.Thread] = set()
+        self._closing = threading.Event()
 
     def reset(self) -> None:
         with self._lock:
             self._records.clear()
             self._jobs_in_flight.clear()
+
+    def close(self, *, timeout: float = 10.0) -> bool:
+        self._closing.set()
+        deadline = time.time() + max(0.1, float(timeout))
+        with self._lock:
+            threads = list(self._threads)
+        for thread in threads:
+            thread.join(timeout=max(0.0, deadline - time.time()))
+        with self._lock:
+            return not any(thread.is_alive() for thread in self._threads)
 
     def submit_clip(
         self,
@@ -41,6 +53,8 @@ class DesktopScreenVisionWorkspace:
         normalized_frames = self._normalize_frames(frames)
         if not normalized_frames:
             raise ValueError("screen vision clip requires at least one frame")
+        if self._closing.is_set():
+            raise RuntimeError("screen vision workspace is stopping")
 
         now_ts = int(time.time())
         key = self._key(profile_user_id, session_id)
@@ -71,8 +85,10 @@ class DesktopScreenVisionWorkspace:
             target=self._run_clip_job,
             args=(key, clip_id, normalized_frames, dict(record)),
             name=f"akane-screen-vision-{clip_id}",
-            daemon=True,
+            daemon=False,
         )
+        with self._lock:
+            self._threads.add(thread)
         thread.start()
         return self._public_record(record, now_ts=now_ts)
 
@@ -241,6 +257,7 @@ class DesktopScreenVisionWorkspace:
         finally:
             with self._lock:
                 self._jobs_in_flight.discard(clip_id)
+                self._threads.discard(threading.current_thread())
 
     def _update_record(self, *, key: tuple[str, str], clip_id: str, patch: dict[str, Any]) -> None:
         with self._lock:

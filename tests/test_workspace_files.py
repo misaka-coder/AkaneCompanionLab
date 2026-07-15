@@ -608,12 +608,12 @@ class WorkspaceEngineWiringTests(unittest.TestCase):
             engine.store = MemoryStore(engine.base_dir)
             engine.vision_service = object()
             engine.background_tasks = None
+            engine.workspace_root = configured_root
 
-            with patch.object(config, "AKANE_WORKSPACE_ROOT", str(configured_root)):
-                workspace = engine._get_workspace_file_service()
-                inbox = engine._get_attachment_inbox_service()
-                ingest = engine._get_attachment_ingest_service()
-                generated = engine._get_generated_file_service()
+            workspace = engine._get_workspace_file_service()
+            inbox = engine._get_attachment_inbox_service()
+            ingest = engine._get_attachment_ingest_service()
+            generated = engine._get_generated_file_service()
 
             self.assertIsNotNone(workspace)
             self.assertIsNotNone(inbox)

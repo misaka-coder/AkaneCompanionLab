@@ -19,6 +19,9 @@ class AkaneDataPaths:
     characters: Path
     state: Path
     logs: Path
+    workspace: Path
+    cache: Path
+    run: Path
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,9 @@ def get_akane_data_paths(**kwargs: object) -> AkaneDataPaths:
         characters=root / "characters",
         state=root / "state",
         logs=root / "logs",
+        workspace=root / "workspace",
+        cache=root / "cache",
+        run=root / "run",
     )
 
 
@@ -95,6 +101,9 @@ def ensure_akane_data_paths(paths: AkaneDataPaths | None = None) -> AkaneDataPat
         resolved.characters,
         resolved.state,
         resolved.logs,
+        resolved.workspace,
+        resolved.cache,
+        resolved.run,
     ):
         directory.mkdir(parents=True, exist_ok=True)
     return resolved

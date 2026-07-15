@@ -17,6 +17,7 @@ from .instance_profile import InstanceContext, LOCAL_DEFAULT_INSTANCE_ID
 INSTANCE_BINDING_SCHEMA_VERSION = 1
 INSTANCE_BINDING_FILENAME = "instance-binding.json"
 INSTANCE_LOCK_FILENAME = "instance.lock"
+INSTANCE_MIGRATION_INCOMPLETE_FILENAME = "migration-incomplete.json"
 
 _ACTIVE_PROCESS_LOCKS: set[Path] = set()
 _ACTIVE_PROCESS_LOCKS_GUARD = threading.RLock()
@@ -40,7 +41,16 @@ class InstanceRuntimeLayout:
 
     instance_id: str
     data_root: Path
+    users_data_dir: Path
+    characters_dir: Path
+    state_dir: Path
+    logs_dir: Path
+    workspace_dir: Path
+    cache_dir: Path
+    config_dir: Path
+    engine_dir: Path
     binding_path: Path
+    migration_incomplete_path: Path
     run_dir: Path
     lock_path: Path
     explicit_data_root: bool
@@ -116,12 +126,35 @@ def bind_instance_runtime(
 
     try:
         resolved_root = Path(data_root).expanduser().resolve()
+        users_data_dir = (resolved_root / "users_data").resolve()
+        characters_dir = (resolved_root / "characters").resolve()
+        state_dir = (resolved_root / "state").resolve()
+        logs_dir = (resolved_root / "logs").resolve()
+        workspace_dir = (resolved_root / "workspace").resolve()
+        cache_dir = (resolved_root / "cache").resolve()
+        config_dir = (users_data_dir / "_local").resolve()
+        engine_dir = (users_data_dir / "akane_memory_v01").resolve()
         run_dir = (resolved_root / "run").resolve()
         binding_path = (resolved_root / INSTANCE_BINDING_FILENAME).resolve()
+        migration_incomplete_path = (
+            resolved_root / INSTANCE_MIGRATION_INCOMPLETE_FILENAME
+        ).resolve()
         lock_path = (run_dir / INSTANCE_LOCK_FILENAME).resolve()
-        run_dir.relative_to(resolved_root)
-        binding_path.relative_to(resolved_root)
-        lock_path.relative_to(resolved_root)
+        for owned_path in (
+            users_data_dir,
+            characters_dir,
+            state_dir,
+            logs_dir,
+            workspace_dir,
+            cache_dir,
+            config_dir,
+            engine_dir,
+            run_dir,
+            binding_path,
+            migration_incomplete_path,
+            lock_path,
+        ):
+            owned_path.relative_to(resolved_root)
         run_dir.mkdir(parents=True, exist_ok=True)
     except (OSError, ValueError):
         _fail("instance_root_unavailable")
@@ -129,11 +162,22 @@ def bind_instance_runtime(
     layout = InstanceRuntimeLayout(
         instance_id=instance_id,
         data_root=resolved_root,
+        users_data_dir=users_data_dir,
+        characters_dir=characters_dir,
+        state_dir=state_dir,
+        logs_dir=logs_dir,
+        workspace_dir=workspace_dir,
+        cache_dir=cache_dir,
+        config_dir=config_dir,
+        engine_dir=engine_dir,
         binding_path=binding_path,
+        migration_incomplete_path=migration_incomplete_path,
         run_dir=run_dir,
         lock_path=lock_path,
         explicit_data_root=bool(explicit_data_root),
     )
+    if layout.migration_incomplete_path.exists():
+        _fail("instance_migration_incomplete", status="unavailable")
     lock_fd, lock_kind = _acquire_exclusive_lock(lock_path)
     try:
         _verify_or_create_binding(layout)
@@ -242,12 +286,33 @@ def _fail(reason: str, *, status: str = "unavailable") -> None:
     raise InstanceRuntimeError(status=status, reason=reason)
 
 
+def require_instance_owned_path(
+    layout: InstanceRuntimeLayout,
+    value: Path | str,
+    *,
+    reason: str = "instance_path_outside_root",
+) -> Path:
+    """Resolve one configured writable path and require it to stay in the root."""
+
+    try:
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = layout.data_root / candidate
+        resolved = candidate.resolve()
+        resolved.relative_to(layout.data_root)
+    except (OSError, ValueError):
+        _fail(reason, status="invalid_config")
+    return resolved
+
+
 __all__ = [
     "INSTANCE_BINDING_FILENAME",
     "INSTANCE_BINDING_SCHEMA_VERSION",
     "INSTANCE_LOCK_FILENAME",
+    "INSTANCE_MIGRATION_INCOMPLETE_FILENAME",
     "InstanceRuntimeError",
     "InstanceRuntimeLayout",
     "InstanceRuntimeLease",
     "bind_instance_runtime",
+    "require_instance_owned_path",
 ]

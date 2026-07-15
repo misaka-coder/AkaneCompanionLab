@@ -1299,8 +1299,14 @@ def build_qq_router(
     log_event: LogEvent,
     tts_client: Any = None,
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
+    async_task_supervisor: Any = None,
 ) -> APIRouter:
     router = APIRouter()
+
+    def schedule_followup(coroutine: Any) -> Any:
+        if async_task_supervisor is not None:
+            return async_task_supervisor.create_task(coroutine)
+        return asyncio.create_task(coroutine)
 
     def _prepare_qq_turn_payload(
         *,
@@ -2076,7 +2082,7 @@ def build_qq_router(
                                 native_status=str(native_result.get("status") or "ready"),
                             )
                         else:
-                            asyncio.create_task(
+                            schedule_followup(
                                 _run_qq_image_vision_followup(
                                     context=context,
                                     event=dict(event),
@@ -2120,7 +2126,7 @@ def build_qq_router(
                         )
                         pending_image_ids = _qq_pending_image_attachment_ids([], attachment_wait_result)
                         if pending_image_ids:
-                            asyncio.create_task(
+                            schedule_followup(
                                 _run_qq_image_vision_followup(
                                     context=context,
                                     event=dict(event),

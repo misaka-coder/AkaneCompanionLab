@@ -72,10 +72,11 @@ def write_profile_config(root: Path, profile: str, *, prompt_exposed: bool, risk
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-def build_engine() -> AkaneMemoryEngine:
+def build_engine(config_base_dir: Path) -> AkaneMemoryEngine:
     engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
     engine.tool_handlers = {"web_search": StubWebSearchHandler()}
     engine.store = StubStore()
+    engine.capability_config_base_dir = Path(config_base_dir)
     return engine
 
 
@@ -83,7 +84,7 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
     def test_no_prompt_exposed_mcp_tools_keeps_old_handlers_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
             write_profile_config(Path(temp_dir), "alice", prompt_exposed=False)
-            handlers = build_engine()._resolve_tool_handlers(
+            handlers = build_engine(Path(temp_dir))._resolve_tool_handlers(
                 client_context=context(),
                 profile_user_id="alice",
                 session_id="s1",
@@ -95,7 +96,7 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
             write_profile_config(Path(temp_dir), "alice", prompt_exposed=True, allowlist=["echo"])
             write_profile_config(Path(temp_dir), "bob", prompt_exposed=False, allowlist=["echo"])
-            engine = build_engine()
+            engine = build_engine(Path(temp_dir))
             alice = engine._resolve_tool_handlers(client_context=context(), profile_user_id="alice", session_id="s1")
             bob = engine._resolve_tool_handlers(client_context=context(), profile_user_id="bob", session_id="s1")
             self.assertIn("mcp.demo.echo", alice)
@@ -136,7 +137,7 @@ mcpServers:
 """.lstrip(),
                 encoding="utf-8",
             )
-            handlers = build_engine()._resolve_tool_handlers(
+            handlers = build_engine(Path(temp_dir))._resolve_tool_handlers(
                 client_context=context(),
                 profile_user_id="alice",
                 session_id="s1",
@@ -146,7 +147,7 @@ mcpServers:
     def test_high_risk_mcp_tool_requires_approval_without_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
             write_profile_config(Path(temp_dir), "alice", prompt_exposed=True, risk="high")
-            handler = build_engine()._resolve_tool_handlers(
+            handler = build_engine(Path(temp_dir))._resolve_tool_handlers(
                 client_context=context(),
                 profile_user_id="alice",
                 session_id="s1",
@@ -166,7 +167,7 @@ mcpServers:
     def test_prompt_instruction_redacts_secret_and_local_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
             write_profile_config(Path(temp_dir), "alice", prompt_exposed=True, allowlist=["echo"])
-            prompt = build_engine()._build_tool_prompt_context(
+            prompt = build_engine(Path(temp_dir))._build_tool_prompt_context(
                 allow_tool_call=True,
                 client_context=context(),
                 profile_user_id="alice",

@@ -280,7 +280,6 @@ class MemoryTimelineService:
         content = self._render_day_markdown(result)
         with self._write_lock:
             path.parent.mkdir(parents=True, exist_ok=True)
-            self._ensure_local_readme(character_pack_id)
             temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
             try:
                 temp_path.write_text(content, encoding="utf-8", newline="\n")
@@ -306,20 +305,6 @@ class MemoryTimelineService:
         parsed = self._parse_date(date_label)
         if parsed is None:
             raise ValueError("date_label must use YYYY-MM-DD")
-        profile_segment = self._safe_segment(profile_user_id, fallback="default_user")
-        pack_dir = self._character_pack_dir(character_pack_id)
-        if pack_dir is not None:
-            return (
-                pack_dir
-                / "_local"
-                / "memory"
-                / "profiles"
-                / profile_segment
-                / "days"
-                / f"{parsed.year:04d}"
-                / f"{parsed.month:02d}"
-                / f"{parsed.isoformat()}.md"
-            )
         return self._legacy_day_file_path(
             profile_user_id=profile_user_id,
             character_pack_id=character_pack_id,
@@ -357,15 +342,6 @@ class MemoryTimelineService:
         root = self.root_dir.resolve()
         if root.exists() and root.name == "memory":
             shutil.rmtree(root)
-        characters_dir = self.characters_dir
-        if characters_dir is None or not characters_dir.is_dir():
-            return
-        for pack_dir in characters_dir.iterdir():
-            if not pack_dir.is_dir():
-                continue
-            memory_dir = pack_dir / "_local" / "memory"
-            if memory_dir.is_dir():
-                shutil.rmtree(memory_dir)
 
     @staticmethod
     def normalize_time_periods(values: Iterable[str] | None) -> list[str]:
@@ -497,26 +473,6 @@ class MemoryTimelineService:
         if candidate.parent != base or not candidate.is_dir():
             return None
         return candidate
-
-    def _ensure_local_readme(self, character_pack_id: Any) -> None:
-        pack_dir = self._character_pack_dir(character_pack_id)
-        if pack_dir is None:
-            return
-        local_dir = pack_dir / "_local"
-        readme_path = local_dir / "README.md"
-        if readme_path.exists():
-            return
-        local_dir.mkdir(parents=True, exist_ok=True)
-        readme_path.write_text(
-            "# 本机角色数据\n\n"
-            "这里存放该角色在本机运行时产生的私密数据，例如按日期生成的聊天记忆镜像。\n\n"
-            "- 不属于可分享的角色设定。\n"
-            "- 导出角色包时不会包含此目录。\n"
-            "- 覆盖更新角色包时会保留此目录。\n"
-            "- SQLite 数据库仍是记忆的真实来源，Markdown 文件可以重新生成。\n",
-            encoding="utf-8",
-            newline="\n",
-        )
 
     def _remove_legacy_day_file(
         self,
