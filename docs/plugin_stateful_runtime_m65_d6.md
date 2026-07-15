@@ -1,6 +1,6 @@
 # Plugin Stateful Runtime Foundation M65-D6
 
-Status: public host contracts implemented; private finance state migration not yet started.
+Status: public host contracts implemented; first private finance consumer adopted in M65-D7.
 
 ## Boundary
 
@@ -103,7 +103,8 @@ python -m ruff check companion_v01 tests
 git diff --check
 ```
 
-The next slice is private-plugin adoption: create the finance-owned subscription
-schema in the scoped directory, expose authorized QQ commands, then attach one
-cooperative supervised job and idempotent notification flow. EmQuant remains a
-later, separate contract.
+The private finance artifact adopted these contracts in M65-D7 with a
+finance-owned subscription/outbox schema, owner-scoped QQ commands, one
+cooperative public-news job, and idempotent proactive text delivery. See
+`docs/plugin_finance_stateful_adoption_m65_d7.md`. EmQuant remains a later,
+separate contract.

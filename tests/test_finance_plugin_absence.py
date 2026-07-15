@@ -5,11 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+
 from companion_v01.capability_registry import CapabilityRegistry
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.engine_services.tool_rounds import resolve_tool_handlers
 from companion_v01.instance_profile import PluginSelection
-from companion_v01.plugin_contribution_policy import TrustedReadNetworkContributionPolicy
+from companion_v01.plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
 from companion_v01.plugin_host import PluginHost
 from companion_v01.plugin_tool_bridge import PluginCapabilityToolBridge
 
@@ -74,7 +75,7 @@ class FinancePluginAbsenceTests(unittest.IsolatedAsyncioTestCase):
         status = await self._assert_absent(
             PluginHost(
                 (PluginSelection(FINANCE_PLUGIN_ID, False),),
-                contribution_policy=TrustedReadNetworkContributionPolicy(),
+                contribution_policy=TrustedStatefulPluginContributionPolicy(),
                 entry_points_provider=lambda: (),
             )
         )
@@ -85,7 +86,7 @@ class FinancePluginAbsenceTests(unittest.IsolatedAsyncioTestCase):
         status = await self._assert_absent(
             PluginHost(
                 (PluginSelection(FINANCE_PLUGIN_ID, True),),
-                contribution_policy=TrustedReadNetworkContributionPolicy(),
+                contribution_policy=TrustedStatefulPluginContributionPolicy(),
                 entry_points_provider=lambda: (),
             )
         )
@@ -98,7 +99,7 @@ class FinancePluginAbsenceTests(unittest.IsolatedAsyncioTestCase):
         status = await self._assert_absent(
             PluginHost(
                 (PluginSelection(FINANCE_PLUGIN_ID, True),),
-                contribution_policy=TrustedReadNetworkContributionPolicy(),
+                contribution_policy=TrustedStatefulPluginContributionPolicy(),
                 entry_points_provider=lambda: (_FailingEntryPoint(),),
             )
         )
@@ -109,6 +110,11 @@ class FinancePluginAbsenceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CoreFinanceCutoverTests(unittest.TestCase):
+    def test_public_stateful_subscription_and_direct_qq_authorities_are_deleted(self) -> None:
+        finance_root = Path(__file__).resolve().parents[1] / "companion_v01" / "finance"
+        self.assertFalse((finance_root / "subscription_service.py").exists())
+        self.assertFalse((finance_root / "qq_delivery.py").exists())
+
     def test_engine_never_builds_legacy_finance_runtime_even_if_old_switch_is_true(self) -> None:
         self.assertFalse(hasattr(AkaneMemoryEngine, "_build_market_data_tool_service"))
         source = inspect.getsource(AkaneMemoryEngine._build_tool_handlers)

@@ -1,6 +1,6 @@
 # Akane Instance Profile and Plugin Architecture M65
 
-Status: M65-A/B/C, the generic M65-D1 Engine bridge, and M65-D6 stateful host contracts implemented
+Status: M65-A/B/C, the generic M65-D1 Engine bridge, M65-D6 host contracts, and M65-D7 private adoption implemented
 
 Date: 2026-07-14
 
@@ -914,9 +914,15 @@ The ownership probe is recorded in `docs/plugin_market_news_m65_d5.md`. The
 public scoped storage, supervised job, notification, and QQ command contracts
 are recorded in `docs/plugin_stateful_runtime_m65_d6.md`.
 
-The next slice adopts those contracts in the private finance artifact: private
-subscription/outbox schema first, then authorized commands, a cooperative job,
-and idempotent notification delivery. Config/secrets and EmQuant remain closed.
-Do not reactivate the frozen public finance path or begin cloud deployment in
-the same migration change. The enabled desktop Care compatibility window must
-still be closed before M65-E or any multi-instance hosted deployment.
+M65-D7 adopts those contracts in the private finance artifact. Subscription,
+seen-event, and delivery-outbox state now lives below the host-provided plugin
+storage root. Five owner-scoped QQ commands, one cooperative public-news job,
+and idempotent proactive text delivery are covered by source-blind installed
+wheel acceptance. The cutover record is
+`docs/plugin_finance_stateful_adoption_m65_d7.md`.
+
+The next ownership probe must separate the still-frozen quote-event/LLM
+analysis/governance stack from the now-replaced public-news subscription path.
+Config/secrets and EmQuant remain closed. Do not reactivate the frozen public
+finance path or begin cloud deployment before that ownership cleanup and the
+enabled desktop Care compatibility gate are complete.
