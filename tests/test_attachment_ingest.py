@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import tempfile
 import time
 import unittest
@@ -278,6 +279,94 @@ class AttachmentIngestTests(unittest.TestCase):
             saved_path = root / "attachments" / item["storage_relpath"]
             self.assertEqual(saved_path.read_bytes(), b"cached image payload")
             self.assertEqual(item["summary_title"], "窗边小猫")
+
+    def test_image_materializes_authenticated_onebot_base64_without_shared_cache_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload_bytes = b"instance-owned image payload"
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store)
+            fake_vision = FakeVisionService(store)
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=fake_vision,  # type: ignore[arg-type]
+            )
+
+            class FakeResponse:
+                def raise_for_status(self) -> None:
+                    return None
+
+                def json(self) -> dict[str, Any]:
+                    return {
+                        "status": "ok",
+                        "retcode": 0,
+                        "data": {
+                            "file": "/app/.config/QQ/instance-private-cache/cat.jpg",
+                            "url": "/app/.config/QQ/instance-private-cache/cat.jpg",
+                            "base64": base64.b64encode(payload_bytes).decode("ascii"),
+                        },
+                    }
+
+            with patch("companion_v01.attachment_ingest.requests.post", return_value=FakeResponse()) as post_mock:
+                with patch("companion_v01.attachment_ingest.requests.get") as get_mock:
+                    created = service.ingest_qq_attachments(
+                        profile_user_id="master",
+                        session_id="qq_pri_1",
+                        attachments=[{"kind": "image", "file": "cat.jpg", "origin_name": "cat.jpg"}],
+                        timestamp=100,
+                    )
+
+                    self.assertEqual(len(created), 1)
+                    item = self._wait_for_status(
+                        store,
+                        profile_user_id="master",
+                        session_id="qq_pri_1",
+                        status="ready",
+                    )
+
+            post_mock.assert_called()
+            get_mock.assert_not_called()
+            saved_path = root / "attachments" / item["storage_relpath"]
+            self.assertEqual(saved_path.read_bytes(), payload_bytes)
+            self.assertNotIn("/app/", str(saved_path).replace("\\", "/"))
+
+    def test_onebot_base64_over_attachment_limit_is_rejected_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store)
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+            )
+            target_path = root / "attachments" / "rejected.bin"
+
+            class FakeResponse:
+                def raise_for_status(self) -> None:
+                    return None
+
+                def json(self) -> dict[str, Any]:
+                    return {
+                        "status": "ok",
+                        "retcode": 0,
+                        "data": {"base64": base64.b64encode(b"too large").decode("ascii")},
+                    }
+
+            with patch("companion_v01.attachment_ingest.config.QQ_ATTACHMENT_MAX_BYTES", 4):
+                with patch("companion_v01.attachment_ingest.requests.post", return_value=FakeResponse()):
+                    result = service._copy_from_onebot_cache(
+                        item={"kind": "file", "origin_name": "rejected.bin"},
+                        payload={"file": "rejected.bin"},
+                        target_path=target_path,
+                        origin_name="rejected.bin",
+                    )
+
+            self.assertIsNone(result)
+            self.assertFalse(target_path.exists())
 
     def test_retry_failed_image_reuses_original_handle(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

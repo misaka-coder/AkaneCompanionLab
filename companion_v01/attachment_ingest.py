@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import csv
 from dataclasses import dataclass
 import importlib.util
@@ -1315,6 +1317,18 @@ class AttachmentIngestService:
             ):
                 continue
             data = payload_data.get("data") if isinstance(payload_data.get("data"), dict) else {}
+            encoded_file = data.get("base64")
+            if isinstance(encoded_file, str) and encoded_file:
+                max_bytes = int(getattr(config, "QQ_ATTACHMENT_MAX_BYTES", 20 * 1024 * 1024) or 0)
+                max_encoded_bytes = ((max_bytes + 2) // 3) * 4 if max_bytes > 0 else 0
+                if max_encoded_bytes <= 0 or len(encoded_file) <= max_encoded_bytes:
+                    try:
+                        decoded_file = base64.b64decode(encoded_file, validate=True)
+                    except (ValueError, binascii.Error):
+                        decoded_file = b""
+                    if decoded_file and (max_bytes <= 0 or len(decoded_file) <= max_bytes):
+                        target_path.write_bytes(decoded_file)
+                        return target_path
             for key in ("path", "local_path", "file"):
                 cached_path = str(data.get(key) or "").strip()
                 if not cached_path:
