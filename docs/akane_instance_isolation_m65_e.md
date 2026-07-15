@@ -1,6 +1,6 @@
 # Akane Instance Isolation M65-E
 
-Status: E1 through E4 implemented; E5 pending.
+Status: E1 through E5 implemented; M65-E complete.
 
 ## Fixed deployment decisions
 
@@ -223,11 +223,51 @@ delivery, and the unchanged three-field public health contract. The real smoke
 starts two named backends concurrently, checks authenticated management writes,
 reuses the matching instance, and confirms an A launcher cannot reuse or stop B.
 
-## Remaining gates
+## E5 implemented boundary
 
-### E5 — two-instance acceptance
+The final acceptance runs two named processes concurrently with deliberately
+equal profile, session, character-pack, attachment-handle, plugin, notification
+idempotency, and client-storage ids. Their roots, backend ports, Bot accounts,
+QQ profile references, webhook secrets, OneBot access tokens, model-service
+credentials, and logs are distinct.
 
-Run personal and finance-oriented processes together with deliberately equal
-user, session, character, and plugin ids but different roots, Bot accounts,
-secrets, ports, and logs. No memory, Care, file, plugin, notification, model
-configuration, client-cache, or lifecycle state may cross the boundary.
+The real smoke verifies the complete mutable boundary:
+
+- both processes expose the exact three-field public health response;
+- a memory turn written through `/think_once` is visible only through the same
+  instance's session API, even though both instances use the same session,
+  profile, and character ids;
+- a Care purchase mutates only the selected instance's authoritative
+  `care_runtime.json` and snapshot;
+- importing same-named files produces equal attachment handles backed by
+  different instance workspace content, and an A-only handle is initially 404
+  from B;
+- the same installed stateful plugin id receives a different host-owned storage
+  directory in each process and preserves different values across invocation;
+- the same plugin notification idempotency key delivers once through each
+  instance's own QQ gateway, with the correct OneBot token, while duplicates
+  are suppressed only inside that process;
+- model-service settings are saved, reloaded, used for a real local
+  OpenAI-compatible completion, and read back from only the owning instance;
+- equal browser session, profile, character, and draft ids remain separated by
+  the E4 client-storage namespace;
+- a second process cannot bind A's live root, stopping or restarting A does not
+  disturb B, and A's memory, Care, files, plugin state, and model settings remain
+  present after restart;
+- backend logs live below separate roots with safe instance ids and contain none
+  of the admin, QQ, or model-service secrets used by the acceptance.
+
+The smoke also crosses the QQ boundaries deliberately: B's webhook secret is
+rejected by A, and A rejects an authenticated event carrying B's Bot id before
+any gateway, Engine, plugin, recorder, cache, or follow-up work runs.
+
+Run the final acceptance with:
+
+```powershell
+python scripts/smoke_m65_e5_two_instance.py
+```
+
+M65-E has no remaining implementation gate. Operations work such as persistent
+public quota, shared read-only model-cache policy, or a separate upstream
+multi-Bot router remains outside this milestone and does not weaken the
+one-process/one-root/one-Bot isolation contract.
