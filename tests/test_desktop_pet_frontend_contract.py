@@ -888,6 +888,8 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
 
     def test_next_care_feature_gate_controls_request_timers_and_shop_projection(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")
+        panel_html = _read("desktop_pet_next/panel.html")
+        panel_source = _read("desktop_pet_next/src/panel.js")
         shop_source = _read("desktop_pet_next/src/shop.js")
         feature_source = _read("desktop_pet_next/src/care-feature.js")
 
@@ -901,6 +903,14 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("care: isCareRuntimeActive() ? normalizeCareState", main_source)
         self.assertIn("care: isCareRuntimeActive() ? normalizeCareState(state.care", main_source)
         self.assertIn('const message = "养成模块未启用。";', main_source)
+        self.assertIn("careFeature: { ...getCareFeatureStatus() }", main_source)
+        self.assertIn("shopAvailable: isCareRuntimeActive() && getProfileCareConfig().shopItems.length > 0", main_source)
+        self.assertIn('id="btn-shop" type="button" hidden', panel_html)
+        self.assertIn("function renderShopAvailability()", panel_source)
+        self.assertIn("els.btnShop.hidden = !available;", panel_source)
+        self.assertIn('if (typeof s.shopAvailable === "boolean") state.shopAvailable = s.shopAvailable;', panel_source)
+        self.assertIn('await emitPanelAction({ action: "open-shop" });', panel_source)
+        self.assertNotIn('openPanelOwnedWindow("open_shop_window", "open-shop")', panel_source)
         self.assertIn('els.summary.textContent = "养成模块未启用";', shop_source)
         self.assertIn('els.coins.textContent = "—";', shop_source)
         self.assertIn("delete result.desktop_care", feature_source)

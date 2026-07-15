@@ -511,6 +511,10 @@ M65-B routes Care activation through the host-owned `CareModulePort`:
 - the desktop runtime waits for that projection before starting Care timers.
   Disabled instances omit `desktop_care`, reject Care actions, stop passive and
   work timers, clear the away presentation, and show no invented Care values;
+- the primary desktop control panel keeps the shop action hidden until both the
+  host Care feature and the active character's real shop configuration are
+  available. The panel delegates opening to the main runtime gate instead of
+  invoking the Tauri shop window directly;
 - existing persisted Care data is preserved while disabled. Explicit instance
   activation resets server and desktop evaluation baselines without changing
   hunger, energy, affection, coins, inventory, or work-task values.

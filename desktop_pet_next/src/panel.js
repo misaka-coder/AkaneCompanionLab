@@ -2,6 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  createUnresolvedCareFeature,
+  isCareFeatureEnabled,
+  resolveCareFeatureFromHealth,
+} from "./care-feature.js";
 import "./panel.css";
 
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
@@ -24,6 +29,8 @@ const state = {
   muted: false,
   scale: 1,
   opacity: 1,
+  careFeature: createUnresolvedCareFeature(),
+  shopAvailable: false,
 };
 
 // Local interpolation for smooth progress bar without event spam
@@ -244,6 +251,12 @@ function renderMute() {
   els.btnMute.title = state.muted ? "取消静音" : "静音";
 }
 
+function renderShopAvailability() {
+  const available = isCareFeatureEnabled(state.careFeature) && state.shopAvailable;
+  els.btnShop.hidden = !available;
+  els.btnShop.disabled = !available;
+}
+
 function updateControllerBadge(controller) {
   const normalized = controller === "user" ? "user" : "model";
   state.musicController = normalized;
@@ -271,6 +284,12 @@ async function pollHealth() {
     });
     const wasOnline = state.online;
     state.online = res.ok;
+    if (res.ok) {
+      const payload = await res.json();
+      state.careFeature = resolveCareFeatureFromHealth(payload);
+      if (!isCareFeatureEnabled(state.careFeature)) state.shopAvailable = false;
+      renderShopAvailability();
+    }
     if (state.online !== wasOnline) renderStatus();
   } catch {
     if (state.online) {
@@ -321,6 +340,11 @@ async function setupEventBridge() {
       state.opacity = s.opacity;
       renderSliders();
     }
+    if (s.careFeature && typeof s.careFeature === "object") {
+      state.careFeature = { ...s.careFeature };
+    }
+    if (typeof s.shopAvailable === "boolean") state.shopAvailable = s.shopAvailable;
+    renderShopAvailability();
 
     if (changed) renderStatus();
     renderMusic();
@@ -369,7 +393,8 @@ function wireButtons() {
   });
 
   els.btnShop.addEventListener("click", async () => {
-    await openPanelOwnedWindow("open_shop_window", "open-shop");
+    if (!isCareFeatureEnabled(state.careFeature) || !state.shopAvailable) return;
+    await emitPanelAction({ action: "open-shop" });
   });
 
   els.btnMute.addEventListener("click", async () => {
@@ -434,6 +459,7 @@ async function init() {
   renderStatus();
   renderMusic();
   renderMute();
+  renderShopAvailability();
   updateControllerBadge(state.musicController);
   renderSliders();
   wireButtons();

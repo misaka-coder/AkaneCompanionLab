@@ -278,6 +278,7 @@ function applyCareFeatureStatus(feature) {
   if (!isCareFeatureEnabled(getCareFeatureStatus())) {
     stopCareRuntime();
     scheduleSettingsSnapshot(0);
+    schedulePanelStateSync(0);
     return;
   }
 
@@ -295,6 +296,7 @@ function applyCareFeatureStatus(feature) {
     stopCareRuntime();
   }
   scheduleSettingsSnapshot(0);
+  schedulePanelStateSync(0);
 }
 
 function stopCareRuntime() {
@@ -3220,6 +3222,8 @@ function buildPanelStatePayload() {
     muted: !state.voiceEnabled,
     scale: state.scale,
     opacity: state.opacity,
+    careFeature: { ...getCareFeatureStatus() },
+    shopAvailable: isCareRuntimeActive() && getProfileCareConfig().shopItems.length > 0,
   };
 }
 
