@@ -886,7 +886,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("characters: HashMap<String, CharacterRuntimeState>", tauri_source)
         self.assertIn("for runtime in state.characters.values_mut()", tauri_source)
 
-    def test_next_care_feature_gate_controls_request_timers_and_shop_projection(self) -> None:
+    def test_next_care_runtime_uses_backend_authority_and_gates_shop_projection(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")
         panel_html = _read("desktop_pet_next/panel.html")
         panel_source = _read("desktop_pet_next/src/panel.js")
@@ -900,9 +900,17 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("window.clearTimeout(careWorkTimer)", main_source)
         self.assertIn("if (!isCareRuntimeActive()) return false;", main_source)
         self.assertIn("attachDesktopCareContext({", main_source)
-        self.assertIn("care: isCareRuntimeActive() ? normalizeCareState", main_source)
         self.assertIn("care: isCareRuntimeActive() ? normalizeCareState(state.care", main_source)
-        self.assertIn('const message = "养成模块未启用。";', main_source)
+        self.assertIn('buildBackendEndpointUrl("care_snapshot", "/desktop-pet/care/snapshot"', main_source)
+        self.assertIn('buildBackendEndpointUrl("care_action", "/desktop-pet/care/action"', main_source)
+        self.assertIn("function applyAuthoritativeCareSnapshot", main_source)
+        self.assertIn("legacy_state: isTauriRuntime ? legacyState : null", main_source)
+        self.assertIn("careAuthorityImportedKeys", main_source)
+        self.assertIn("care: null,", main_source)
+        self.assertNotIn("function settleCarePassiveState", main_source)
+        self.assertNotIn("function applyCareTurnCost", main_source)
+        self.assertNotIn("function persistCareRuntimeChange", main_source)
+        self.assertNotIn("function randomCareReward", main_source)
         self.assertIn("careFeature: { ...getCareFeatureStatus() }", main_source)
         self.assertIn("shopAvailable: isCareRuntimeActive() && getProfileCareConfig().shopItems.length > 0", main_source)
         self.assertIn('id="btn-shop" type="button" hidden', panel_html)

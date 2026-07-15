@@ -7,6 +7,7 @@ from pathlib import Path
 
 from companion_v01.desktop_pet_character_resources import (
     DesktopPetCharacterResourceService,
+    load_character_care_config,
     sanitize_character_pack_id,
 )
 
@@ -51,6 +52,27 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         prompt_context = manifest.build_character_prompt_context() if manifest is not None else ""
         self.assertIn("开心", prompt_context)
         self.assertIn("害羞", prompt_context)
+
+    def test_load_character_care_config_is_safe_and_declarative(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        characters_dir = Path(temp_dir.name) / "characters"
+        service = DesktopPetCharacterResourceService(characters_dir=characters_dir)
+        care = {
+            "enabled": True,
+            "initial_coins": 12,
+            "shop_items": [{"id": "tea", "price": 3}],
+        }
+        write_json(
+            characters_dir / "mika_pack" / "character.json",
+            {"identity": {"id": "mika_pack"}, "care": care},
+        )
+
+        self.assertEqual(load_character_care_config(service, "mika_pack"), care)
+        self.assertEqual(load_character_care_config(service, "../web"), {})
+        (characters_dir / "broken" / "character.json").parent.mkdir(parents=True)
+        (characters_dir / "broken" / "character.json").write_text("{bad", encoding="utf-8")
+        self.assertEqual(load_character_care_config(service, "broken"), {})
 
     def test_list_character_packs_returns_safe_display_metadata(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()

@@ -508,43 +508,45 @@ M65-B routes Care activation through the host-owned `CareModulePort`:
   push turns cannot update Care state;
 - `/desktop-pet/health` exposes only a safe Care feature projection; it does
   not expose instance identity, paths, secrets, or storage configuration;
-- the desktop runtime waits for that projection before starting Care timers.
-  Disabled instances omit `desktop_care`, reject Care actions, stop passive and
-  work timers, clear the away presentation, and show no invented Care values;
+- the desktop runtime waits for that projection and an authoritative backend
+  snapshot before exposing Care. Disabled or unavailable instances omit
+  `desktop_care`, reject Care actions, stop refresh and work-presentation
+  timers, clear the away presentation, and show no invented Care values;
 - the primary desktop control panel keeps the shop action hidden until both the
   host Care feature and the active character's real shop configuration are
   available. The panel delegates opening to the main runtime gate instead of
   invoking the Tauri shop window directly;
-- existing persisted Care data is preserved while disabled. Explicit instance
-  activation resets server and desktop evaluation baselines without changing
-  hunger, energy, affection, coins, inventory, or work-task values.
+- existing pre-migration Care data is preserved while disabled. Explicit
+  instance activation initializes the server evaluation baseline without
+  changing hunger, energy, affection, coins, inventory, or work-task values.
 
-#### Enabled desktop state compatibility window
+#### Enabled desktop state compatibility window (closed)
 
-The enabled desktop experience still has legacy Care calculations in
-`desktop_pet_next/src/main.js` because `pet_state.json` currently owns shop,
-inventory, work-task, and offline desktop presentation state that the backend
-does not yet fully serve back to the client. Replacing that state in M65-B
-would combine activation work with a data migration and offline behavior
-rewrite.
+The compatibility window is closed. `CareRuntimeStore` is now the single state
+authority for enabled desktop Care. It owns hunger decay, turn energy cost,
+affinity, coins, inventory, allowance, and work-task settlement. The desktop
+runtime only renders authoritative snapshots and submits validated actions
+through `/desktop-pet/care/snapshot` and `/desktop-pet/care/action`.
 
-This coexistence is a documented migration window, not a second expansion
-surface:
+Migration and failure semantics are:
 
-- host activation authority is `CareModulePort`; the desktop mirror cannot
-  activate itself and is inert while the host feature is unknown or disabled;
-- no new Care formulas, actions, or state fields may be added to the desktop
-  mirror;
-- the removal target is before M65-E or any multi-instance hosted deployment;
-- the removal pass must make `CareRuntimeStore` the state authority, replace
-  desktop mutations with service operations/snapshots, and collapse the Care
-  fields in `pet_state.json` to a documented migration input or delete them;
-- the existing desktop functions to collapse include passive decay, turn
-  energy cost, affinity mutation, shop/inventory mutations, allowance, and
-  work-task settlement;
-- the window is guarded by `tests.test_care_runtime`,
+- the first successful snapshot may import the active character's legacy Care
+  block from `pet_state.json`. A persisted server-side authority marker makes
+  this import one-shot; later client payloads cannot overwrite server state;
+- after successful import, the active character's Care block is written as
+  `null` in `pet_state.json`. Unvisited character blocks remain available as
+  migration input until each character is activated once;
+- `pet_state.json` is not an offline Care authority. When the backend is
+  unavailable the shop is unavailable, actions fail visibly, and the client
+  does not calculate or persist substitute results;
+- model `state_request` is interpreted by the backend. The client accepts only
+  the final `care_state` snapshot and never applies affinity locally;
+- work timers are presentation timers only: they ask the backend to settle a
+  due task and cannot grant coins themselves;
+- the closed window is guarded by `tests.test_care_runtime`,
   `tests.test_character_pack_qq_mode`,
   `tests.test_desktop_pet_backend_contract`,
+  `tests.test_desktop_pet_frontend_contract`,
   `npm run smoke:care-feature`, and `npm run build`.
 
 ## External Plugin Contract

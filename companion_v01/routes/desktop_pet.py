@@ -30,6 +30,101 @@ def build_desktop_pet_router(
 ) -> APIRouter:
     router = APIRouter()
 
+    @router.post("/desktop-pet/care/snapshot")
+    async def desktop_pet_care_snapshot(request: Request):
+        started_at = time.perf_counter()
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Payload must be an object")
+
+        session_id, profile_user_id = resolve_identity_from_payload(payload)
+        character_pack_id = resolve_character_pack_id_from_payload(payload)
+        legacy_state = payload.get("legacy_state", payload.get("legacyState"))
+        try:
+            result = await asyncio.to_thread(
+                engine.build_desktop_care_snapshot,
+                profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                legacy_state=legacy_state,
+                now_ms=int(time.time() * 1000),
+            )
+        except Exception:
+            runtime_metrics.observe_request(
+                "desktop_pet_care_snapshot",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            log_event(
+                "desktop_pet_care_snapshot_error",
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                reason="care_runtime_failed",
+            )
+            return JSONResponse(
+                {"ok": False, "status": "unavailable", "reason": "care_runtime_failed"},
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        runtime_metrics.observe_request(
+            "desktop_pet_care_snapshot",
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+            ok=bool(result.get("ok")),
+        )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @router.post("/desktop-pet/care/action")
+    async def desktop_pet_care_action(request: Request):
+        started_at = time.perf_counter()
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Payload must be an object")
+
+        session_id, profile_user_id = resolve_identity_from_payload(payload)
+        character_pack_id = resolve_character_pack_id_from_payload(payload)
+        action = str(payload.get("action") or "").strip()[:40]
+        item_id = str(payload.get("item_id") or payload.get("itemId") or "").strip()[:120]
+        try:
+            result = await asyncio.to_thread(
+                engine.manage_desktop_care_action,
+                profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                action=action,
+                item_id=item_id,
+                now_ms=int(time.time() * 1000),
+            )
+        except Exception:
+            runtime_metrics.observe_request(
+                "desktop_pet_care_action",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            log_event(
+                "desktop_pet_care_action_error",
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                action=action,
+                reason="care_runtime_failed",
+            )
+            return JSONResponse(
+                {"ok": False, "status": "unavailable", "reason": "care_runtime_failed"},
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        runtime_metrics.observe_request(
+            "desktop_pet_care_action",
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+            ok=bool(result.get("ok")),
+        )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
     @router.get("/task-workspace/status")
     async def task_workspace_status(request: Request):
         started_at = time.perf_counter()

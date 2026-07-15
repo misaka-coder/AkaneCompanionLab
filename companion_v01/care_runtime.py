@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "akane.care_runtime.v1"
+SCHEMA_VERSION = "akane.care_runtime.v2"
+DESKTOP_AUTHORITY_VERSION = 1
+MAX_DESKTOP_INVENTORY_ITEMS = 128
 
 DEFAULT_CHECKIN_COINS = 10
 # Passive energy recovery per hour (server-side, QQ mode only): 30/h = 1 point per 2 minutes
@@ -423,6 +425,17 @@ class CareRuntimeStore:
         with self._lock:
             state = self._load()
             body = self._body_entry(state, character_pack_id=character_pack_id)
+            if (
+                not _is_qq_mode(client_mode)
+                and int(body.get("desktop_authority_version") or 0) >= DESKTOP_AUTHORITY_VERSION
+            ):
+                return self._snapshot(
+                    state,
+                    character_pack_id=character_pack_id,
+                    client_mode=client_mode,
+                    relation_user_id=relation_user_id or profile_user_id,
+                    now_ms=now_ms,
+                )
             vitals_written = False
             for key in ("hunger", "energy"):
                 if key in care_payload:
@@ -515,6 +528,109 @@ class CareRuntimeStore:
                 snap["pending_tier_event"] = pending_tier_event
             return snap
 
+    def snapshot_for_desktop(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+        care_config: Any = None,
+        legacy_state: Any = None,
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Return the desktop authority snapshot and import legacy state once."""
+
+        now_ms = _coerce_positive_int(now_ms, fallback=int(time.time() * 1000))
+        config = normalize_desktop_care_config(care_config)
+        with self._lock:
+            state = self._load()
+            character_key = _safe_key(character_pack_id or "default_character")
+            existing_body = isinstance((state.get("characters") or {}).get(character_key), dict)
+            body = self._body_entry(state, character_pack_id=character_pack_id)
+            migration = self._ensure_desktop_authority(
+                body,
+                config=config,
+                legacy_state=legacy_state,
+                had_existing_body=existing_body,
+                now_ms=now_ms,
+            )
+            self._apply_desktop_hunger_decay(
+                body,
+                now_ms,
+                hunger_per_hour=float(config["decay"]["hunger_per_hour"]),
+            )
+            self._save(state)
+            return {
+                "ok": True,
+                "status": "ok",
+                "reason": "",
+                "migration": migration,
+                "snapshot": self._snapshot(
+                    state,
+                    character_pack_id=character_pack_id,
+                    client_mode="desktop_pet",
+                    relation_user_id=profile_user_id,
+                    now_ms=now_ms,
+                ),
+            }
+
+    def perform_desktop_action(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+        care_config: Any = None,
+        action: str,
+        item_id: str = "",
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Apply one validated desktop Care operation to the authority store."""
+
+        now_ms = _coerce_positive_int(now_ms, fallback=int(time.time() * 1000))
+        config = normalize_desktop_care_config(care_config)
+        normalized_action = str(action or "").strip().lower()
+        with self._lock:
+            state = self._load()
+            character_key = _safe_key(character_pack_id or "default_character")
+            existing_body = isinstance((state.get("characters") or {}).get(character_key), dict)
+            body = self._body_entry(state, character_pack_id=character_pack_id)
+            self._ensure_desktop_authority(
+                body,
+                config=config,
+                legacy_state=None,
+                had_existing_body=existing_body,
+                now_ms=now_ms,
+            )
+            self._apply_desktop_hunger_decay(
+                body,
+                now_ms,
+                hunger_per_hour=float(config["decay"]["hunger_per_hour"]),
+            )
+
+            if normalized_action == "buy":
+                result = self._desktop_buy(body, config=config, item_id=item_id, now_ms=now_ms)
+            elif normalized_action == "feed":
+                result = self._desktop_feed(body, config=config, item_id=item_id, now_ms=now_ms)
+            elif normalized_action == "start_work":
+                result = self._desktop_start_work(body, config=config, now_ms=now_ms)
+            elif normalized_action == "settle_work":
+                result = self._desktop_settle_work(body, config=config, now_ms=now_ms)
+            elif normalized_action == "claim_allowance":
+                result = self._desktop_claim_allowance(body, config=config, now_ms=now_ms)
+            elif normalized_action == "refresh":
+                result = {"ok": True, "status": "ok", "reason": "snapshot_refreshed"}
+            else:
+                result = {"ok": False, "status": "invalid_action", "reason": "unsupported_care_action"}
+
+            self._save(state)
+            result["snapshot"] = self._snapshot(
+                state,
+                character_pack_id=character_pack_id,
+                client_mode="desktop_pet",
+                relation_user_id=profile_user_id,
+                now_ms=now_ms,
+            )
+            return result
+
     def apply_affinity_delta(
         self,
         *,
@@ -594,13 +710,17 @@ class CareRuntimeStore:
             affection_scope = "desktop_pet"
             coins = _bounded_int(body.get("coins"), 0, 999999, fallback=20)
             last_offering_date = ""
-            inventory = {}
+            inventory = {
+                str(item_id): _bounded_int(count, 0, 999, fallback=0)
+                for item_id, count in (body.get("desktop_inventory") or {}).items()
+                if str(item_id).strip() and _bounded_int(count, 0, 999, fallback=0) > 0
+            }
             checkin_streak = 0
             desktop_rel = self._relation_entry(
                 state, character_pack_id=character_pack_id, relation_user_id=relation_user_id
             )
             relation_anchors = dict(desktop_rel.get("anchors") or {})
-        return {
+        snapshot = {
             "enabled": True,
             "source": "care_runtime",
             "shared_vitals": True,
@@ -615,6 +735,257 @@ class CareRuntimeStore:
             "inventory": inventory,
             "thresholds": dict(DEFAULT_THRESHOLDS),
             "anchors": relation_anchors,
+        }
+        if not _is_qq_mode(client_mode):
+            snapshot.update(
+                {
+                    "authority": "care_runtime",
+                    "work_task": _normalize_work_task(body.get("desktop_work_task")),
+                    "last_allowance_at": max(0, int(body.get("desktop_last_allowance_at_ms") or 0)),
+                    "last_decay_at": max(0, int(body.get("vitals_updated_at_ms") or 0)),
+                    "updated_at": max(0, int(body.get("updated_at") or 0)),
+                }
+            )
+        return snapshot
+
+    def _ensure_desktop_authority(
+        self,
+        body: dict[str, Any],
+        *,
+        config: dict[str, Any],
+        legacy_state: Any,
+        had_existing_body: bool,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        if int(body.get("desktop_authority_version") or 0) >= DESKTOP_AUTHORITY_VERSION:
+            return {"status": "already_authoritative", "imported": False}
+
+        legacy = normalize_desktop_legacy_state(legacy_state, config=config)
+        had_desktop_sync = int(body.get("last_client_sync_at") or 0) > 0
+        migration_source = "character_defaults"
+        if legacy is not None:
+            migration_source = "legacy_pet_state"
+        elif had_existing_body:
+            migration_source = "care_runtime_v1"
+
+        if not had_existing_body:
+            source = legacy or _initial_desktop_state(config)
+            body["hunger"] = source["hunger"]
+            body["energy"] = source["energy"]
+        if not had_desktop_sync:
+            source = legacy or _initial_desktop_state(config)
+            body["coins"] = source["coins"]
+            body["desktop_affection"] = source["affection"]
+
+        migration_state = legacy or _initial_desktop_state(config)
+        body["desktop_inventory"] = dict(migration_state["inventory"])
+        body["desktop_work_task"] = _normalize_work_task(migration_state.get("work_task"))
+        body["desktop_last_allowance_at_ms"] = max(
+            0,
+            int(migration_state.get("last_allowance_at") or 0),
+        )
+        body["desktop_authority_version"] = DESKTOP_AUTHORITY_VERSION
+        body["desktop_authority_initialized_at_ms"] = now_ms
+        body["desktop_authority_migration_source"] = migration_source
+        body["vitals_updated_at_ms"] = now_ms
+        body["updated_at"] = now_ms
+        return {
+            "status": "imported" if legacy is not None else "initialized",
+            "imported": legacy is not None,
+            "source": migration_source,
+        }
+
+    @staticmethod
+    def _desktop_item(config: dict[str, Any], item_id: str) -> dict[str, Any] | None:
+        target = str(item_id or "").strip()
+        if not target:
+            return None
+        return next((item for item in config["shop_items"] if item["id"] == target), None)
+
+    def _desktop_buy(
+        self,
+        body: dict[str, Any],
+        *,
+        config: dict[str, Any],
+        item_id: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        item = self._desktop_item(config, item_id)
+        if item is None:
+            return {"ok": False, "status": "invalid_item", "reason": "item_not_available"}
+        coins = _bounded_int(body.get("coins"), 0, 999999, fallback=config["initial_coins"])
+        if coins < item["price"]:
+            return {
+                "ok": False,
+                "status": "insufficient_coins",
+                "reason": "insufficient_coins",
+                "coins_needed": item["price"],
+            }
+        inventory = body.setdefault("desktop_inventory", {})
+        current = _bounded_int(inventory.get(item["id"]), 0, 999, fallback=0)
+        body["coins"] = coins - item["price"]
+        inventory[item["id"]] = min(999, current + 1)
+        body["updated_at"] = now_ms
+        return {
+            "ok": True,
+            "status": "ok",
+            "reason": "item_purchased",
+            "item_id": item["id"],
+            "item_name": item["name"],
+        }
+
+    def _desktop_feed(
+        self,
+        body: dict[str, Any],
+        *,
+        config: dict[str, Any],
+        item_id: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        item = self._desktop_item(config, item_id)
+        inventory = body.setdefault("desktop_inventory", {})
+        count = _bounded_int(inventory.get(str(item_id or "").strip()), 0, 999, fallback=0)
+        if item is None or count <= 0:
+            return {"ok": False, "status": "not_in_inventory", "reason": "item_not_in_inventory"}
+
+        before = {
+            "hunger": _bounded_int(body.get("hunger"), 0, 100, fallback=config["initial_hunger"]),
+            "energy": _bounded_int(body.get("energy"), 0, 100, fallback=config["initial_energy"]),
+            "affection": _bounded_int(
+                body.get("desktop_affection"),
+                0,
+                100,
+                fallback=config["initial_affection"],
+            ),
+        }
+        inventory[item["id"]] = count - 1
+        if inventory[item["id"]] <= 0:
+            inventory.pop(item["id"], None)
+        effects = item["effects"]
+        body["hunger"] = _bounded_int(before["hunger"] + effects["hunger"], 0, 100, fallback=before["hunger"])
+        body["energy"] = _bounded_int(before["energy"] + effects["energy"], 0, 100, fallback=before["energy"])
+        body["desktop_affection"] = _bounded_int(
+            before["affection"] + effects["affection"],
+            0,
+            100,
+            fallback=before["affection"],
+        )
+        body["vitals_updated_at_ms"] = now_ms
+        body["updated_at"] = now_ms
+        applied = {
+            key: int(body["desktop_affection"] if key == "affection" else body[key]) - value
+            for key, value in before.items()
+        }
+        return {
+            "ok": True,
+            "status": "ok",
+            "reason": "item_used",
+            "item_id": item["id"],
+            "item_name": item["name"],
+            "effects_applied": applied,
+        }
+
+    def _desktop_start_work(
+        self,
+        body: dict[str, Any],
+        *,
+        config: dict[str, Any],
+        now_ms: int,
+    ) -> dict[str, Any]:
+        work = config["work"]
+        if not work["enabled"]:
+            return {"ok": False, "status": "disabled", "reason": "work_not_configured"}
+        if _normalize_work_task(body.get("desktop_work_task")) is not None:
+            return {"ok": False, "status": "work_active", "reason": "work_already_active"}
+        hunger = _bounded_int(body.get("hunger"), 0, 100, fallback=config["initial_hunger"])
+        energy = _bounded_int(body.get("energy"), 0, 100, fallback=config["initial_energy"])
+        if hunger < work["min_hunger"]:
+            return {"ok": False, "status": "blocked", "reason": "hunger_too_low"}
+        if energy < work["min_energy"]:
+            return {"ok": False, "status": "blocked", "reason": "energy_too_low"}
+        reward = random.randint(work["reward_coins_min"], work["reward_coins_max"])
+        body["hunger"] = max(0, hunger - work["hunger_cost"])
+        body["energy"] = max(0, energy - work["energy_cost"])
+        body["desktop_work_task"] = {
+            "status": "active",
+            "started_at": now_ms,
+            "complete_at": now_ms + work["duration_seconds"] * 1000,
+            "reward_coins": reward,
+        }
+        body["vitals_updated_at_ms"] = now_ms
+        body["updated_at"] = now_ms
+        return {"ok": True, "status": "ok", "reason": "work_started"}
+
+    def _desktop_settle_work(
+        self,
+        body: dict[str, Any],
+        *,
+        config: dict[str, Any],
+        now_ms: int,
+    ) -> dict[str, Any]:
+        task = _normalize_work_task(body.get("desktop_work_task"))
+        if task is None:
+            return {"ok": False, "status": "not_active", "reason": "work_not_active"}
+        if now_ms < task["complete_at"]:
+            return {
+                "ok": False,
+                "status": "not_due",
+                "reason": "work_not_due",
+                "remaining_ms": task["complete_at"] - now_ms,
+            }
+        work = config["work"]
+        reward = _bounded_int(
+            task["reward_coins"],
+            work["reward_coins_min"],
+            work["reward_coins_max"],
+            fallback=work["reward_coins_min"],
+        )
+        body["coins"] = _bounded_int(
+            int(body.get("coins") or 0) + reward,
+            0,
+            999999,
+            fallback=0,
+        )
+        body["desktop_work_task"] = None
+        body["updated_at"] = now_ms
+        return {
+            "ok": True,
+            "status": "ok",
+            "reason": "work_completed",
+            "reward_coins": reward,
+        }
+
+    def _desktop_claim_allowance(
+        self,
+        body: dict[str, Any],
+        *,
+        config: dict[str, Any],
+        now_ms: int,
+    ) -> dict[str, Any]:
+        allowance = config["allowance"]
+        if not allowance["enabled"]:
+            return {"ok": False, "status": "disabled", "reason": "allowance_not_configured"}
+        coins = _bounded_int(body.get("coins"), 0, 999999, fallback=config["initial_coins"])
+        if coins >= allowance["max_coins"]:
+            return {"ok": False, "status": "blocked", "reason": "coins_not_low_enough"}
+        last_at = max(0, int(body.get("desktop_last_allowance_at_ms") or 0))
+        next_at = last_at + allowance["cooldown_seconds"] * 1000
+        if now_ms < next_at:
+            return {
+                "ok": False,
+                "status": "cooldown",
+                "reason": "allowance_cooldown",
+                "remaining_ms": next_at - now_ms,
+            }
+        grant = min(allowance["coins"], allowance["max_coins"] - coins)
+        body["coins"] = min(999999, coins + grant)
+        body["desktop_last_allowance_at_ms"] = now_ms
+        body["updated_at"] = now_ms
+        return {
+            "ok": True,
+            "status": "ok",
+            "reason": "allowance_claimed",
+            "coins_granted": grant,
         }
 
     def _body_entry(self, state: dict[str, Any], *, character_pack_id: str) -> dict[str, Any]:
@@ -649,11 +1020,7 @@ class CareRuntimeStore:
         hunger_per_hour: float = 8.0,
         energy_recovery_per_hour: float = DEFAULT_ENERGY_RECOVERY_PER_HOUR,
     ) -> None:
-        """Apply time-elapsed hunger decay and passive energy recovery to body.
-
-        Only used in QQ mode — desktop pet handles its own decay client-side.
-        Called inside an existing lock; does not acquire _lock itself.
-        """
+        """Apply time-elapsed vitals change inside the authority lock."""
         last_ms = int(body.get("vitals_updated_at_ms") or 0)
         if last_ms <= 0:
             body["vitals_updated_at_ms"] = now_ms
@@ -676,6 +1043,32 @@ class CareRuntimeStore:
         body["energy"] = int(new_energy)
         body["hunger_frac"] = new_hunger - int(new_hunger)
         body["energy_frac"] = new_energy - int(new_energy)
+        body["vitals_updated_at_ms"] = now_ms
+        body["updated_at"] = now_ms
+
+    def _apply_desktop_hunger_decay(
+        self,
+        body: dict[str, Any],
+        now_ms: int,
+        *,
+        hunger_per_hour: float,
+    ) -> None:
+        last_ms = int(body.get("vitals_updated_at_ms") or 0)
+        if last_ms <= 0:
+            body["vitals_updated_at_ms"] = now_ms
+            return
+        elapsed_ms = now_ms - last_ms
+        if elapsed_ms <= 0:
+            return
+        elapsed_hours = min(elapsed_ms / 3_600_000, 48.0)
+        accumulated = max(0.0, float(body.get("desktop_hunger_decay_fraction") or 0.0))
+        accumulated += max(0.0, float(hunger_per_hour)) * elapsed_hours
+        decay = int(accumulated)
+        body["desktop_hunger_decay_fraction"] = accumulated - decay
+        if decay > 0:
+            hunger = _bounded_int(body.get("hunger"), 0, 100, fallback=55)
+            body["hunger"] = max(0, hunger - decay)
+            body["updated_at"] = now_ms
         body["vitals_updated_at_ms"] = now_ms
 
     def record_turn(
@@ -1485,3 +1878,214 @@ def _bounded_int(value: Any, minimum: int, maximum: int, *, fallback: int = 0) -
     except (TypeError, ValueError):
         number = fallback
     return min(maximum, max(minimum, number))
+
+
+def normalize_desktop_care_config(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    decay_source = source.get("decay") if isinstance(source.get("decay"), dict) else {}
+    work_source = source.get("work") if isinstance(source.get("work"), dict) else {}
+    allowance_source = source.get("allowance") if isinstance(source.get("allowance"), dict) else {}
+
+    reward_min = _bounded_int(
+        work_source.get("reward_coins_min", work_source.get("rewardCoinsMin")),
+        0,
+        999999,
+        fallback=5,
+    )
+    reward_max = _bounded_int(
+        work_source.get("reward_coins_max", work_source.get("rewardCoinsMax")),
+        0,
+        999999,
+        fallback=reward_min,
+    )
+
+    shop_items: list[dict[str, Any]] = []
+    raw_items = source.get("shop_items", source.get("shopItems"))
+    if isinstance(raw_items, list):
+        for raw_item in raw_items[:MAX_DESKTOP_INVENTORY_ITEMS]:
+            if not isinstance(raw_item, dict):
+                continue
+            item_id = str(raw_item.get("id") or "").strip()[:120]
+            item_name = str(raw_item.get("name") or item_id).strip()[:160]
+            usable_in = raw_item.get("usable_in", raw_item.get("usableIn"))
+            usable_modes = (
+                [str(item).strip().lower() for item in usable_in if str(item).strip()]
+                if isinstance(usable_in, list)
+                else []
+            )
+            if not item_id or (usable_modes and "desktop_pet" not in usable_modes):
+                continue
+            effects_source = raw_item.get("effects") if isinstance(raw_item.get("effects"), dict) else {}
+            shop_items.append(
+                {
+                    "id": item_id,
+                    "name": item_name or item_id,
+                    "price": _bounded_int(raw_item.get("price"), 0, 999999, fallback=0),
+                    "effects": {
+                        "hunger": _bounded_int(effects_source.get("hunger"), -100, 100, fallback=0),
+                        "energy": _bounded_int(effects_source.get("energy"), -100, 100, fallback=0),
+                        "affection": _bounded_int(effects_source.get("affection"), -100, 100, fallback=0),
+                    },
+                }
+            )
+
+    return {
+        "enabled": bool(source.get("enabled")),
+        "initial_coins": _bounded_int(
+            source.get("initial_coins", source.get("initialCoins")),
+            0,
+            999999,
+            fallback=20,
+        ),
+        "initial_hunger": _bounded_int(
+            source.get("initial_hunger", source.get("initialHunger")),
+            0,
+            100,
+            fallback=55,
+        ),
+        "initial_energy": _bounded_int(
+            source.get("initial_energy", source.get("initialEnergy")),
+            0,
+            100,
+            fallback=70,
+        ),
+        "initial_affection": _bounded_int(
+            source.get("initial_affection", source.get("initialAffection")),
+            0,
+            100,
+            fallback=10,
+        ),
+        "decay": {
+            "hunger_per_hour": _bounded_int(
+                decay_source.get("hunger_per_hour", decay_source.get("hungerPerHour")),
+                0,
+                100,
+                fallback=4,
+            ),
+            "energy_per_reply": _bounded_int(
+                decay_source.get("energy_per_reply", decay_source.get("energyPerReply")),
+                0,
+                20,
+                fallback=1,
+            ),
+            "energy_per_proactive": _bounded_int(
+                decay_source.get("energy_per_proactive", decay_source.get("energyPerProactive")),
+                0,
+                20,
+                fallback=0,
+            ),
+        },
+        "work": {
+            "enabled": bool(work_source.get("enabled")),
+            "duration_seconds": _bounded_int(
+                work_source.get("duration_seconds", work_source.get("durationSeconds")),
+                1,
+                3600,
+                fallback=20,
+            ),
+            "reward_coins_min": min(reward_min, reward_max),
+            "reward_coins_max": max(reward_min, reward_max),
+            "min_hunger": _bounded_int(
+                work_source.get("min_hunger", work_source.get("minHunger")),
+                0,
+                100,
+                fallback=20,
+            ),
+            "min_energy": _bounded_int(
+                work_source.get("min_energy", work_source.get("minEnergy")),
+                0,
+                100,
+                fallback=25,
+            ),
+            "hunger_cost": _bounded_int(
+                work_source.get("hunger_cost", work_source.get("hungerCost")),
+                0,
+                100,
+                fallback=12,
+            ),
+            "energy_cost": _bounded_int(
+                work_source.get("energy_cost", work_source.get("energyCost")),
+                0,
+                100,
+                fallback=25,
+            ),
+        },
+        "allowance": {
+            "enabled": bool(allowance_source.get("enabled")),
+            "coins": _bounded_int(allowance_source.get("coins"), 1, 999999, fallback=4),
+            "cooldown_seconds": _bounded_int(
+                allowance_source.get("cooldown_seconds", allowance_source.get("cooldownSeconds")),
+                0,
+                86400,
+                fallback=300,
+            ),
+            "max_coins": _bounded_int(
+                allowance_source.get("max_coins", allowance_source.get("maxCoins")),
+                1,
+                999999,
+                fallback=6,
+            ),
+        },
+        "shop_items": shop_items,
+    }
+
+
+def normalize_desktop_legacy_state(value: Any, *, config: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    inventory_source = value.get("inventory") if isinstance(value.get("inventory"), dict) else {}
+    inventory: dict[str, int] = {}
+    allowed_item_ids = {item["id"] for item in config["shop_items"]}
+    for raw_id, raw_count in list(inventory_source.items())[:MAX_DESKTOP_INVENTORY_ITEMS]:
+        item_id = str(raw_id or "").strip()
+        count = _bounded_int(raw_count, 0, 999, fallback=0)
+        if item_id in allowed_item_ids and count > 0:
+            inventory[item_id] = count
+    return {
+        "coins": _bounded_int(value.get("coins"), 0, 999999, fallback=config["initial_coins"]),
+        "hunger": _bounded_int(value.get("hunger"), 0, 100, fallback=config["initial_hunger"]),
+        "energy": _bounded_int(value.get("energy"), 0, 100, fallback=config["initial_energy"]),
+        "affection": _bounded_int(
+            value.get("affection"),
+            0,
+            100,
+            fallback=config["initial_affection"],
+        ),
+        "inventory": inventory,
+        "work_task": _normalize_work_task(value.get("work_task", value.get("workTask"))),
+        "last_allowance_at": max(
+            0,
+            int(value.get("last_allowance_at", value.get("lastAllowanceAt")) or 0),
+        ),
+    }
+
+
+def _initial_desktop_state(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "coins": config["initial_coins"],
+        "hunger": config["initial_hunger"],
+        "energy": config["initial_energy"],
+        "affection": config["initial_affection"],
+        "inventory": {},
+        "work_task": None,
+        "last_allowance_at": 0,
+    }
+
+
+def _normalize_work_task(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    complete_at = max(0, int(value.get("complete_at", value.get("completeAt")) or 0))
+    if complete_at <= 0:
+        return None
+    return {
+        "status": "active",
+        "started_at": max(0, int(value.get("started_at", value.get("startedAt")) or 0)),
+        "complete_at": complete_at,
+        "reward_coins": _bounded_int(
+            value.get("reward_coins", value.get("rewardCoins")),
+            0,
+            999999,
+            fallback=0,
+        ),
+    }

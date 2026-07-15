@@ -1506,6 +1506,7 @@ def build_native_context_engine(*, selected_tool_names: tuple[str, ...]) -> Akan
     engine.store = SimpleNamespace()
     engine.vision_service = None
     engine.care_feature_status = lambda: {"enabled": True}
+    engine.care_enabled_for_context = lambda **_kwargs: True
     engine.gift_service = SimpleNamespace(
         build_pending_prompt_context=lambda **_kwargs: "",
         resolve_focus_asset=lambda **_kwargs: None,

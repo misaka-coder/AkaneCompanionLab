@@ -140,13 +140,14 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("好感阶段", prompt)
         self.assertIn("还不太了解这个人", prompt)
 
-    def test_desktop_pet_frontend_consumes_state_request_affinity(self) -> None:
+    def test_desktop_pet_frontend_consumes_authoritative_care_snapshot(self) -> None:
         source = Path("desktop_pet_next/src/main.js").read_text(encoding="utf-8")
 
-        self.assertIn("function applyPayloadStateRequest", source)
-        self.assertIn("payload?.state_request", source)
-        self.assertIn("care.affection + affinityDelta", source)
-        self.assertIn("persistCareRuntimeChange()", source)
+        self.assertIn("function applyPayloadCareSnapshot", source)
+        self.assertIn("payload?.care_state", source)
+        self.assertIn("applyAuthoritativeCareSnapshot(snapshot)", source)
+        self.assertNotIn("function applyPayloadStateRequest", source)
+        self.assertNotIn("care.affection + affinityDelta", source)
 
     def test_desktop_pet_shop_has_allowance_safety_valve(self) -> None:
         main_source = Path("desktop_pet_next/src/main.js").read_text(encoding="utf-8")
@@ -158,8 +159,9 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
 
         self.assertIn("function claimCareAllowance", main_source)
         self.assertIn('case "claimCareAllowance"', main_source)
-        self.assertIn("care.lastAllowanceAt = now", main_source)
-        self.assertIn("persistCareRuntimeChange()", main_source)
+        self.assertIn('performDesktopCareAction("claim_allowance")', main_source)
+        self.assertNotIn("care.lastAllowanceAt = now", main_source)
+        self.assertNotIn("function persistCareRuntimeChange", main_source)
         self.assertIn("claimCareAllowance", shop_source)
         self.assertIn("renderAllowance", shop_source)
         self.assertIn('id="allowance-panel"', shop_html)

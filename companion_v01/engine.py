@@ -45,7 +45,8 @@ from .memory_compaction_service import MemoryCompactionService
 from .memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from .memory_timeline import MemoryTimelineService
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
-from .care_runtime import CareModulePort
+from .care_runtime import CareModulePort, normalize_desktop_care_config
+from .desktop_pet_character_resources import load_character_care_config
 from .desktop_music_timeline import DesktopMusicTimelineService
 from .desktop_screen_vision import DesktopScreenVisionWorkspace
 from . import desktop_context_engine
@@ -1491,6 +1492,86 @@ class AkaneMemoryEngine:
     def care_feature_status(self) -> dict[str, Any]:
         return self.get_care_module().status_payload()
 
+    def _load_desktop_care_config(self, character_pack_id: str) -> dict[str, Any]:
+        return load_character_care_config(
+            getattr(self, "desktop_pet_character_resources", None),
+            character_pack_id,
+        )
+
+    def care_enabled_for_context(
+        self,
+        *,
+        character_pack_id: str,
+        client_context: ClientProtocolContext | None,
+    ) -> bool:
+        if not self.get_care_module().enabled:
+            return False
+        if client_context is not None and client_context.effective_mode == ClientMode.DESKTOP_PET:
+            return bool(
+                normalize_desktop_care_config(
+                    self._load_desktop_care_config(character_pack_id)
+                )["enabled"]
+            )
+        return True
+
+    def build_desktop_care_snapshot(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str,
+        legacy_state: Any = None,
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        module = self.get_care_module()
+        runtime = module.runtime
+        if runtime is None:
+            return module.disabled_result()
+        raw_config = self._load_desktop_care_config(character_pack_id)
+        config = normalize_desktop_care_config(raw_config)
+        if not config["enabled"]:
+            return {
+                "ok": False,
+                "status": "disabled",
+                "reason": "character_care_disabled",
+            }
+        return runtime.snapshot_for_desktop(
+            profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
+            care_config=raw_config,
+            legacy_state=legacy_state,
+            now_ms=now_ms,
+        )
+
+    def manage_desktop_care_action(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str,
+        action: str,
+        item_id: str = "",
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        module = self.get_care_module()
+        runtime = module.runtime
+        if runtime is None:
+            return module.disabled_result()
+        raw_config = self._load_desktop_care_config(character_pack_id)
+        config = normalize_desktop_care_config(raw_config)
+        if not config["enabled"]:
+            return {
+                "ok": False,
+                "status": "disabled",
+                "reason": "character_care_disabled",
+            }
+        return runtime.perform_desktop_action(
+            profile_user_id=profile_user_id,
+            character_pack_id=character_pack_id,
+            care_config=raw_config,
+            action=action,
+            item_id=item_id,
+            now_ms=now_ms,
+        )
+
     def _prepare_care_context_for_turn(
         self,
         payload: dict[str, Any],
@@ -1518,20 +1599,25 @@ class AkaneMemoryEngine:
         now_ms = int(max(1, now_ts) * 1000)
         desktop_care = payload.get("desktop_care")
         try:
+            is_desktop = client_context is not None and client_context.effective_mode == ClientMode.DESKTOP_PET
+            if is_desktop:
+                result = self.build_desktop_care_snapshot(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    legacy_state=desktop_care,
+                    now_ms=now_ms,
+                )
+                snapshot = result.get("snapshot") if isinstance(result, dict) else None
+                if isinstance(snapshot, dict):
+                    enriched_payload = dict(payload)
+                    enriched_payload["desktop_care"] = snapshot
+                    return enriched_payload
+                sanitized_payload = dict(payload)
+                sanitized_payload.pop("desktop_care", None)
+                sanitized_payload.pop("care_state", None)
+                return sanitized_payload
             if isinstance(desktop_care, dict):
-                is_desktop = client_context is not None and client_context.effective_mode == ClientMode.DESKTOP_PET
-                if is_desktop:
-                    # Record turn before sync so the snapshot already includes this turn's count
-                    try:
-                        care_runtime.record_turn(
-                            profile_user_id=profile_user_id,
-                            character_pack_id=character_pack_id,
-                            relation_user_id=profile_user_id,
-                            now_ms=now_ms,
-                        )
-                    except Exception as exc:
-                        logger.warning("desktop care record_turn failed: %s", exc)
-                sync_result = care_runtime.sync_from_client(
+                care_runtime.sync_from_client(
                     profile_user_id=profile_user_id,
                     character_pack_id=character_pack_id,
                     client_mode=client_mode,
@@ -1539,16 +1625,6 @@ class AkaneMemoryEngine:
                     relation_user_id=relation_user_id,
                     now_ms=now_ms,
                 )
-                if is_desktop:
-                    # Enrich desktop_care with tier event and anchors from sync
-                    merged_care = dict(desktop_care)
-                    if sync_result.get("pending_tier_event"):
-                        merged_care["pending_tier_event"] = sync_result["pending_tier_event"]
-                    if sync_result.get("anchors"):
-                        merged_care["anchors"] = sync_result["anchors"]
-                    enriched_payload = dict(payload)
-                    enriched_payload["desktop_care"] = merged_care
-                    return enriched_payload
             if client_context is not None and client_context.effective_mode == ClientMode.QQ_TEXT:
                 enriched_payload = dict(payload)
                 enriched_payload["desktop_care"] = care_runtime.snapshot_for_client(
@@ -1596,11 +1672,23 @@ class AkaneMemoryEngine:
             final_output.pop("state_request", None)
             final_output.pop("care_state", None)
             return
-        if client_context is None or client_context.effective_mode != ClientMode.QQ_TEXT:
+        if client_context is None or client_context.effective_mode not in {
+            ClientMode.DESKTOP_PET,
+            ClientMode.QQ_TEXT,
+        }:
+            return
+        is_desktop = client_context.effective_mode == ClientMode.DESKTOP_PET
+        if is_desktop and not self.care_enabled_for_context(
+            character_pack_id=character_pack_id,
+            client_context=client_context,
+        ):
+            final_output.pop("state_request", None)
+            final_output.pop("care_state", None)
             return
         care_runtime = care_module.runtime
         if care_runtime is None:
             return
+        now_ms = int(max(1, now_ts) * 1000)
         try:
             relation_user_id = self._resolve_care_relation_user_id(
                 payload or {},
@@ -1610,15 +1698,33 @@ class AkaneMemoryEngine:
         except Exception as exc:
             logger.warning("care runtime relation_user_id resolve failed: %s", exc)
             relation_user_id = ""
-        # Per-reply effect: always fire for every QQ response
+        raw_config = self._load_desktop_care_config(character_pack_id) if is_desktop else {}
+        desktop_config = normalize_desktop_care_config(raw_config) if is_desktop else {}
+        turn_kind = str((payload or {}).get("turn_kind") or "").strip().lower()
+        if is_desktop:
+            energy_cost = (
+                0
+                if turn_kind == "desktop_pet_care_feed"
+                else int(
+                    desktop_config["decay"][
+                        "energy_per_proactive"
+                        if turn_kind == "desktop_pet_proactive"
+                        else "energy_per_reply"
+                    ]
+                )
+            )
+            coin_reward = 0
+        else:
+            energy_cost = 1
+            coin_reward = 1
         try:
             care_runtime.apply_energy_cost(
                 profile_user_id=profile_user_id,
                 character_pack_id=character_pack_id,
                 relation_user_id=relation_user_id,
-                energy_cost=1,
-                coin_reward=1,
-                now_ms=int(max(1, now_ts) * 1000),
+                energy_cost=energy_cost,
+                coin_reward=coin_reward,
+                now_ms=now_ms,
             )
         except Exception as exc:
             logger.warning("care runtime energy cost failed: %s", exc)
@@ -1627,34 +1733,52 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 character_pack_id=character_pack_id,
                 relation_user_id=relation_user_id,
-                now_ms=int(max(1, now_ts) * 1000),
+                now_ms=now_ms,
             )
         except Exception as exc:
             logger.warning("care runtime record_turn failed: %s", exc)
-        # Affinity update: only when LLM signals a non-zero delta
+        snapshot: dict[str, Any] | None = None
         state_request = final_output.get("state_request")
-        if not isinstance(state_request, dict):
-            return
-        affinity_delta = state_request.get("affinity")
-        try:
-            delta = max(-5, min(5, int(affinity_delta)))
-        except (TypeError, ValueError):
-            return
-        if delta == 0:
-            return
-        try:
-            snapshot = care_runtime.apply_affinity_delta(
-                profile_user_id=profile_user_id,
-                character_pack_id=character_pack_id,
-                client_mode=ClientMode.QQ_TEXT.value,
-                relation_user_id=relation_user_id,
-                delta=delta,
-                now_ms=int(max(1, now_ts) * 1000),
-            )
-        except Exception as exc:
-            logger.warning("care runtime affinity update failed: %s", exc)
-            return
-        final_output["care_state"] = snapshot
+        if isinstance(state_request, dict):
+            affinity_delta = state_request.get("affinity")
+            try:
+                delta = max(-5, min(5, int(affinity_delta)))
+            except (TypeError, ValueError):
+                delta = 0
+            if delta:
+                try:
+                    snapshot = care_runtime.apply_affinity_delta(
+                        profile_user_id=profile_user_id,
+                        character_pack_id=character_pack_id,
+                        client_mode=client_context.effective_mode.value,
+                        relation_user_id=relation_user_id,
+                        delta=delta,
+                        now_ms=now_ms,
+                    )
+                except Exception as exc:
+                    logger.warning("care runtime affinity update failed: %s", exc)
+        if snapshot is None:
+            try:
+                if is_desktop:
+                    snapshot_result = care_runtime.snapshot_for_desktop(
+                        profile_user_id=profile_user_id,
+                        character_pack_id=character_pack_id,
+                        care_config=raw_config,
+                        now_ms=now_ms,
+                    )
+                    snapshot = snapshot_result.get("snapshot")
+                else:
+                    snapshot = care_runtime.snapshot_for_client(
+                        profile_user_id=profile_user_id,
+                        character_pack_id=character_pack_id,
+                        client_mode=ClientMode.QQ_TEXT.value,
+                        relation_user_id=relation_user_id,
+                        now_ms=now_ms,
+                    )
+            except Exception as exc:
+                logger.warning("care runtime response snapshot failed: %s", exc)
+        if isinstance(snapshot, dict):
+            final_output["care_state"] = snapshot
 
     def _resolve_pre_retrieval_enabled(self, *, payload: dict[str, Any]) -> bool:
         return retrieval_engine.resolve_pre_retrieval_enabled(self, payload=payload)

@@ -27,6 +27,8 @@ DESKTOP_PET_CAPABILITIES = (
     "sessions",
     "asr",
     "workspace_summary",
+    "care_runtime",
+    "care_runtime",
 )
 
 DESKTOP_PET_ENDPOINTS = {
@@ -38,6 +40,10 @@ DESKTOP_PET_ENDPOINTS = {
     "tts": "/tts",
     "asr": "/asr",
     "workspace_summary": "/desktop-pet/workspace/summary",
+    "care_snapshot": "/desktop-pet/care/snapshot",
+    "care_action": "/desktop-pet/care/action",
+    "care_snapshot": "/desktop-pet/care/snapshot",
+    "care_action": "/desktop-pet/care/action",
     "screen_vision_clip": "/desktop-pet/vision/clip",
     "screen_vision_latest": "/desktop-pet/vision/latest",
     "screen_vision_reaction": "/desktop-pet/vision/reaction",

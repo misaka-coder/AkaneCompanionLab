@@ -157,6 +157,275 @@ class CareRuntimeStoreTests(unittest.TestCase):
             self.assertEqual(second_payload["desktop_care"]["affection"], 10)
 
 
+class DesktopCareAuthorityTests(unittest.TestCase):
+    CONFIG = {
+        "enabled": True,
+        "initial_coins": 10,
+        "initial_hunger": 50,
+        "initial_energy": 80,
+        "initial_affection": 15,
+        "decay": {"hunger_per_hour": 4, "energy_per_reply": 1},
+        "shop_items": [
+            {
+                "id": "dango",
+                "name": "团子",
+                "price": 4,
+                "usable_in": ["desktop_pet"],
+                "effects": {"hunger": 20, "energy": 3, "affection": 2},
+            }
+        ],
+        "work": {
+            "enabled": True,
+            "duration_seconds": 10,
+            "reward_coins_min": 7,
+            "reward_coins_max": 7,
+            "min_hunger": 20,
+            "min_energy": 25,
+            "hunger_cost": 12,
+            "energy_cost": 25,
+        },
+        "allowance": {"enabled": True, "coins": 4, "cooldown_seconds": 300, "max_coins": 6},
+    }
+
+    def test_legacy_import_is_one_shot_and_survives_reopen(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "care_runtime.json"
+            store = CareRuntimeStore(path)
+            first = store.snapshot_for_desktop(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                legacy_state={
+                    "coins": 9,
+                    "hunger": 42,
+                    "energy": 61,
+                    "affection": 33,
+                    "inventory": {"dango": 2, "unknown": 99},
+                    "lastAllowanceAt": 800,
+                },
+                now_ms=1_000,
+            )
+            self.assertTrue(first["migration"]["imported"])
+            self.assertEqual(first["snapshot"]["inventory"], {"dango": 2})
+            self.assertEqual(first["snapshot"]["hunger"], 42)
+
+            ignored = store.snapshot_for_desktop(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                legacy_state={"coins": 999, "hunger": 100, "inventory": {"dango": 99}},
+                now_ms=1_001,
+            )
+            self.assertFalse(ignored["migration"]["imported"])
+            self.assertEqual(ignored["snapshot"]["coins"], 9)
+            self.assertEqual(ignored["snapshot"]["inventory"], {"dango": 2})
+
+            store.sync_from_client(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                client_mode="desktop_pet",
+                care_payload={"coins": 777, "hunger": 99, "affection": 99},
+                now_ms=1_002,
+            )
+            reopened = CareRuntimeStore(path).snapshot_for_desktop(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                now_ms=1_003,
+            )
+            self.assertEqual(reopened["snapshot"]["coins"], 9)
+            self.assertEqual(reopened["snapshot"]["hunger"], 42)
+            self.assertEqual(reopened["snapshot"]["affection"], 33)
+
+    def test_desktop_snapshot_applies_server_side_hunger_decay(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = CareRuntimeStore(Path(tmp) / "care_runtime.json")
+            store.snapshot_for_desktop(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                legacy_state={"hunger": 50, "energy": 80},
+                now_ms=1_000,
+            )
+            decayed = store.snapshot_for_desktop(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                now_ms=3_601_000,
+            )
+            self.assertEqual(decayed["snapshot"]["hunger"], 46)
+            self.assertEqual(decayed["snapshot"]["energy"], 80)
+
+    def test_desktop_actions_are_validated_and_return_authoritative_snapshots(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = CareRuntimeStore(Path(tmp) / "care_runtime.json")
+            store.snapshot_for_desktop(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                legacy_state={"coins": 10, "hunger": 40, "energy": 80, "affection": 15},
+                now_ms=1_000,
+            )
+            buy = store.perform_desktop_action(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                action="buy",
+                item_id="dango",
+                now_ms=2_000,
+            )
+            self.assertTrue(buy["ok"])
+            self.assertEqual(buy["snapshot"]["coins"], 6)
+            self.assertEqual(buy["snapshot"]["inventory"], {"dango": 1})
+
+            feed = store.perform_desktop_action(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                action="feed",
+                item_id="dango",
+                now_ms=3_000,
+            )
+            self.assertEqual(feed["effects_applied"], {"hunger": 20, "energy": 3, "affection": 2})
+            self.assertEqual(feed["snapshot"]["inventory"], {})
+            self.assertEqual(feed["snapshot"]["hunger"], 60)
+
+            missing = store.perform_desktop_action(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                action="feed",
+                item_id="dango",
+                now_ms=3_001,
+            )
+            self.assertFalse(missing["ok"])
+            self.assertEqual(missing["reason"], "item_not_in_inventory")
+
+            with mock.patch("companion_v01.care_runtime.random.randint", return_value=7):
+                started = store.perform_desktop_action(
+                    profile_user_id="master",
+                    character_pack_id="reimu_demo",
+                    care_config=self.CONFIG,
+                    action="start_work",
+                    now_ms=4_000,
+                )
+            self.assertTrue(started["ok"])
+            self.assertIsNotNone(started["snapshot"]["work_task"])
+            not_due = store.perform_desktop_action(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                action="settle_work",
+                now_ms=13_999,
+            )
+            self.assertEqual(not_due["reason"], "work_not_due")
+            completed = store.perform_desktop_action(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                action="settle_work",
+                now_ms=14_000,
+            )
+            self.assertEqual(completed["reward_coins"], 7)
+            self.assertIsNone(completed["snapshot"]["work_task"])
+
+    def test_desktop_allowance_enforces_balance_and_cooldown(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = CareRuntimeStore(Path(tmp) / "care_runtime.json")
+            store.snapshot_for_desktop(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                legacy_state={"coins": 0},
+                now_ms=1_000,
+            )
+            claimed = store.perform_desktop_action(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                action="claim_allowance",
+                now_ms=301_000,
+            )
+            self.assertEqual(claimed["coins_granted"], 4)
+            cooldown = store.perform_desktop_action(
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                care_config=self.CONFIG,
+                action="claim_allowance",
+                now_ms=301_001,
+            )
+            self.assertEqual(cooldown["reason"], "allowance_cooldown")
+
+    def test_engine_desktop_turn_uses_store_for_input_cost_and_affinity(self) -> None:
+        with TemporaryDirectory() as tmp:
+            engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+            runtime = CareRuntimeStore(Path(tmp) / "care_runtime.json")
+            engine.care_module = CareModulePort(enabled=True, _runtime=runtime)
+            engine._load_desktop_care_config = mock.Mock(return_value=self.CONFIG)
+            desktop_context = ClientProtocolContext(
+                requested_mode=ClientMode.DESKTOP_PET,
+                effective_mode=ClientMode.DESKTOP_PET,
+            )
+            prepared = engine._prepare_care_context_for_turn(
+                {
+                    "message": "hello",
+                    "turn_kind": "desktop_pet_chat",
+                    "desktop_care": {"coins": 9, "hunger": 44, "energy": 70, "affection": 20},
+                },
+                desktop_context,
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                now_ts=1_000,
+            )
+            self.assertEqual(prepared["desktop_care"]["authority"], "care_runtime")
+            self.assertEqual(prepared["desktop_care"]["coins"], 9)
+
+            final_output = {"speech": "hi", "state_request": {"affinity": 3}}
+            engine._apply_care_state_request(
+                final_output,
+                desktop_context,
+                profile_user_id="master",
+                character_pack_id="reimu_demo",
+                payload=prepared,
+                now_ts=1_001,
+            )
+            self.assertEqual(final_output["care_state"]["energy"], 69)
+            self.assertEqual(final_output["care_state"]["affection"], 23)
+            self.assertEqual(final_output["care_state"]["authority"], "care_runtime")
+
+    def test_engine_desktop_character_gate_rejects_disabled_care(self) -> None:
+        with TemporaryDirectory() as tmp:
+            engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+            engine.care_module = CareModulePort(
+                enabled=True,
+                _runtime=CareRuntimeStore(Path(tmp) / "care_runtime.json"),
+            )
+            engine._load_desktop_care_config = mock.Mock(return_value={"enabled": False})
+            desktop_context = ClientProtocolContext(
+                requested_mode=ClientMode.DESKTOP_PET,
+                effective_mode=ClientMode.DESKTOP_PET,
+            )
+            prepared = engine._prepare_care_context_for_turn(
+                {"message": "hello", "desktop_care": {"coins": 999}},
+                desktop_context,
+                profile_user_id="master",
+                character_pack_id="plain_character",
+                now_ts=1_000,
+            )
+            self.assertEqual(prepared, {"message": "hello"})
+
+            final_output = {"speech": "hi", "state_request": {"affinity": 5}}
+            engine._apply_care_state_request(
+                final_output,
+                desktop_context,
+                profile_user_id="master",
+                character_pack_id="plain_character",
+                payload=prepared,
+                now_ts=1_001,
+            )
+            self.assertEqual(final_output, {"speech": "hi"})
+
+
 class CareActivationBoundaryTests(unittest.TestCase):
     def test_disabled_module_does_not_construct_store_or_touch_existing_data(self) -> None:
         with TemporaryDirectory() as tmp:

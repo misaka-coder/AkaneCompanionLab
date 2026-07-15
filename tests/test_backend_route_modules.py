@@ -371,6 +371,68 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(store.sessions[("master", "desktop")]["character_pack_id"], "reimu")
         self.assertIn(("sessions_ensure", False), runtime.observed)
 
+    def test_desktop_pet_care_routes_preserve_identity_and_return_snapshots(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        captured: list[tuple[str, dict[str, Any]]] = []
+
+        def snapshot(**kwargs):
+            captured.append(("snapshot", kwargs))
+            return {"ok": True, "status": "ok", "snapshot": {"authority": "care_runtime", "coins": 9}}
+
+        def action(**kwargs):
+            captured.append(("action", kwargs))
+            return {
+                "ok": True,
+                "status": "ok",
+                "reason": "item_purchased",
+                "snapshot": {"authority": "care_runtime", "coins": 6},
+            }
+
+        app = FastAPI()
+        app.include_router(
+            build_desktop_pet_router(
+                engine=SimpleNamespace(
+                    build_desktop_care_snapshot=snapshot,
+                    manage_desktop_care_action=action,
+                ),
+                config_module=SimpleNamespace(DESKTOP_PET_AUDIO_UPLOAD_MAX_BYTES=1024),
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+                resolve_identity_from_query=resolve_query,
+                resolve_identity_from_payload=resolve_payload,
+            )
+        )
+        client = TestClient(app)
+        snapshot_response = client.post(
+            "/desktop-pet/care/snapshot",
+            json={
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "character_pack_id": "reimu_demo",
+                "legacy_state": {"coins": 9},
+            },
+        )
+        action_response = client.post(
+            "/desktop-pet/care/action",
+            json={
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "character_pack_id": "reimu_demo",
+                "action": "buy",
+                "item_id": "dango",
+            },
+        )
+
+        self.assertEqual(snapshot_response.status_code, 200)
+        self.assertEqual(snapshot_response.json()["snapshot"]["coins"], 9)
+        self.assertEqual(action_response.json()["snapshot"]["coins"], 6)
+        self.assertEqual(captured[0][1]["profile_user_id"], "master")
+        self.assertEqual(captured[0][1]["legacy_state"], {"coins": 9})
+        self.assertEqual(captured[1][1]["action"], "buy")
+        self.assertEqual(captured[1][1]["item_id"], "dango")
+        self.assertIn(("desktop_pet_care_snapshot", True), runtime.observed)
+        self.assertIn(("desktop_pet_care_action", True), runtime.observed)
+
     def test_desktop_pet_router_adds_workspace_file_urls(self) -> None:
         runtime = FakeRuntimeMetrics()
 

@@ -26,7 +26,6 @@ import {
   cloneCareState,
   createUnresolvedCareFeature,
   isCareFeatureEnabled,
-  resetCareEvaluationBaseline,
   resolveCareFeatureFromHealth
 } from "./care-feature.js";
 import { createVisualRenderer } from "./visual-renderer.js";
@@ -236,6 +235,12 @@ const resourceState = {
 };
 
 const state = { ...DEFAULT_STATE, characters: {} };
+const careAuthority = {
+  status: "unresolved",
+  characterPackId: "",
+  reason: ""
+};
+const careAuthorityImportedKeys = new Set();
 const playState = {
   mode: "idle",
   vx: 0,
@@ -254,28 +259,36 @@ function getCareFeatureStatus() {
   return resourceState.features?.care || createUnresolvedCareFeature();
 }
 
-function isCareRuntimeActive() {
+function isCareConfiguredForCurrentCharacter() {
   return isCareFeatureEnabled(getCareFeatureStatus()) && Boolean(getProfileCareConfig()?.enabled);
+}
+
+function isCareRuntimeActive() {
+  return isCareConfiguredForCurrentCharacter()
+    && careAuthority.status === "ready"
+    && careAuthority.characterPackId === getCurrentCharacterPackId();
 }
 
 function buildCharacterRuntimeSnapshot() {
   const entries = Object.entries(ensureCharacterRuntimeMap()).map(([key, runtime]) => [
     key,
     runtime && typeof runtime === "object"
-      ? { ...runtime, care: isCareRuntimeActive() ? cloneCareState(runtime.care) : null }
+      ? { ...runtime, care: cloneCareState(runtime.care) }
       : runtime
   ]);
   return Object.fromEntries(entries);
 }
 
 function applyCareFeatureStatus(feature) {
-  const previousEnabled = isCareFeatureEnabled(getCareFeatureStatus());
   resourceState.features = {
     ...(resourceState.features || {}),
     care: feature && typeof feature === "object" ? { ...feature } : createUnresolvedCareFeature()
   };
 
   if (!isCareFeatureEnabled(getCareFeatureStatus())) {
+    careAuthority.status = "disabled";
+    careAuthority.characterPackId = getCurrentCharacterPackId();
+    careAuthority.reason = "feature_disabled";
     stopCareRuntime();
     scheduleSettingsSnapshot(0);
     schedulePanelStateSync(0);
@@ -284,15 +297,15 @@ function applyCareFeatureStatus(feature) {
 
   const config = getProfileCareConfig();
   if (config.enabled) {
-    state.care = normalizeCareState(state.care, config);
-    if (!previousEnabled && getCareFeatureStatus().resetBaselineOnStart) {
-      state.care = resetCareEvaluationBaseline(state.care, Date.now());
+    if (careAuthority.characterPackId !== getCurrentCharacterPackId() || careAuthority.status === "disabled") {
+      careAuthority.status = "unresolved";
+      careAuthority.characterPackId = getCurrentCharacterPackId();
+      careAuthority.reason = "awaiting_snapshot";
     }
-    settleCarePassiveState({ persist: false });
-    scheduleCareWorkCompletion();
-    scheduleCarePassiveTick();
-    persistCurrentCharacterRuntimeState();
   } else {
+    careAuthority.status = "disabled";
+    careAuthority.characterPackId = getCurrentCharacterPackId();
+    careAuthority.reason = "character_care_disabled";
     stopCareRuntime();
   }
   scheduleSettingsSnapshot(0);
@@ -309,10 +322,160 @@ function stopCareRuntime() {
 }
 
 function rejectDisabledCareAction() {
-  const message = "养成模块未启用。";
+  const message = careAuthority.status === "unavailable"
+    ? "养成服务暂时不可用。"
+    : "养成模块未启用。";
   setStatus(message, { durationMs: 2200 });
   notifyShopStatus(message, "disabled");
   return false;
+}
+
+function markCareAuthorityUnavailable(reason = "care_runtime_unavailable") {
+  if (!isCareFeatureEnabled(getCareFeatureStatus()) || !getProfileCareConfig()?.enabled) {
+    careAuthority.status = "disabled";
+  } else {
+    careAuthority.status = "unavailable";
+  }
+  careAuthority.characterPackId = getCurrentCharacterPackId();
+  careAuthority.reason = String(reason || "care_runtime_unavailable");
+  stopCareRuntime();
+  scheduleSettingsSnapshot(0);
+  schedulePanelStateSync(0);
+}
+
+function applyAuthoritativeCareSnapshot(snapshot, { characterPackId = getCurrentCharacterPackId() } = {}) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return false;
+  if (String(snapshot.authority || snapshot.source || "") !== "care_runtime") return false;
+  if (characterPackId !== getCurrentCharacterPackId()) return false;
+  const snapshotUpdatedAt = Math.max(0, Number(snapshot.updated_at || snapshot.updatedAt || 0));
+  const currentUpdatedAt = Math.max(0, Number(state.care?.updatedAt || state.care?.updated_at || 0));
+  if (isCareRuntimeActive() && snapshotUpdatedAt && currentUpdatedAt > snapshotUpdatedAt) {
+    return true;
+  }
+  state.care = normalizeCareState(snapshot, getProfileCareConfig());
+  careAuthority.status = "ready";
+  careAuthority.characterPackId = characterPackId;
+  careAuthority.reason = "";
+  careAuthorityImportedKeys.add(getCharacterRuntimeKey(characterPackId));
+  persistCurrentCharacterRuntimeState(characterPackId);
+  syncCareAwayVisualState();
+  scheduleCareWorkCompletion();
+  scheduleCarePassiveTick();
+  scheduleSave(0);
+  scheduleSettingsSnapshot(0);
+  schedulePanelStateSync(0);
+  return true;
+}
+
+function buildCareAuthorityRequest(extra = {}) {
+  return {
+    ...buildBackendCharacterContext(),
+    ...extra
+  };
+}
+
+async function refreshDesktopCareState({ importLegacy = false, silent = false } = {}) {
+  if (!isCareFeatureEnabled(getCareFeatureStatus()) || !getProfileCareConfig()?.enabled) {
+    careAuthority.status = "disabled";
+    careAuthority.characterPackId = getCurrentCharacterPackId();
+    careAuthority.reason = "care_disabled";
+    stopCareRuntime();
+    return false;
+  }
+
+  const requestedCharacterPackId = getCurrentCharacterPackId();
+  const legacyState = importLegacy && !careAuthorityImportedKeys.has(getCharacterRuntimeKey(requestedCharacterPackId))
+    ? cloneCareState(state.care)
+    : null;
+  try {
+    const response = await backendFetch(
+      buildBackendEndpointUrl("care_snapshot", "/desktop-pet/care/snapshot", { t: Date.now() }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify(buildCareAuthorityRequest({
+          legacy_state: isTauriRuntime ? legacyState : null
+        }))
+      }
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await readJsonResponse(response);
+    if (requestedCharacterPackId !== getCurrentCharacterPackId()) return false;
+    if (!payload?.ok || !applyAuthoritativeCareSnapshot(payload.snapshot, { characterPackId: requestedCharacterPackId })) {
+      markCareAuthorityUnavailable(payload?.reason || "invalid_care_snapshot");
+      if (!silent) rejectDisabledCareAction();
+      return false;
+    }
+    return true;
+  } catch {
+    if (requestedCharacterPackId !== getCurrentCharacterPackId()) return false;
+    markCareAuthorityUnavailable("care_snapshot_failed");
+    if (!silent) rejectDisabledCareAction();
+    return false;
+  }
+}
+
+async function performDesktopCareAction(action, { itemId = "", silent = false } = {}) {
+  if (!isCareRuntimeActive()) {
+    const refreshed = await refreshDesktopCareState({ importLegacy: true, silent: true });
+    if (!refreshed) {
+      if (!silent) rejectDisabledCareAction();
+      return null;
+    }
+  }
+  const requestedCharacterPackId = getCurrentCharacterPackId();
+  try {
+    const response = await backendFetch(
+      buildBackendEndpointUrl("care_action", "/desktop-pet/care/action", { t: Date.now() }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify(buildCareAuthorityRequest({
+          action: String(action || "").trim(),
+          item_id: String(itemId || "").trim()
+        }))
+      }
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await readJsonResponse(response);
+    if (requestedCharacterPackId !== getCurrentCharacterPackId()) return null;
+    if (payload?.snapshot) {
+      applyAuthoritativeCareSnapshot(payload.snapshot, { characterPackId: requestedCharacterPackId });
+    }
+    return payload && typeof payload === "object" ? payload : null;
+  } catch {
+    if (requestedCharacterPackId !== getCurrentCharacterPackId()) return null;
+    markCareAuthorityUnavailable("care_action_failed");
+    if (!silent) rejectDisabledCareAction();
+    return null;
+  }
+}
+
+function describeCareActionFailure(result) {
+  const reason = String(result?.reason || result?.status || "").trim();
+  if (reason === "insufficient_coins") return "钱不够啦。";
+  if (reason === "item_not_in_inventory") return "背包里没有这个。";
+  if (reason === "hunger_too_low") return "她有点饿，先喂点东西吧。";
+  if (reason === "energy_too_low") return "她现在没什么精神，先休息或投喂一下吧。";
+  if (reason === "work_already_active") return "她已经出门啦。";
+  if (reason === "work_not_due") {
+    const seconds = Math.max(1, Math.ceil(Number(result?.remaining_ms || 0) / 1000));
+    return `还要约 ${seconds} 秒才回来。`;
+  }
+  if (reason === "coins_not_low_enough") {
+    return `金币低于 ${getProfileCareConfig().allowance.maxCoins} 时才能领取补给。`;
+  }
+  if (reason === "allowance_cooldown") {
+    const seconds = Math.max(1, Math.ceil(Number(result?.remaining_ms || 0) / 1000));
+    return `补给还在冷却，约 ${seconds} 秒后可以领取。`;
+  }
+  if (reason === "work_not_configured") return "这个角色还没有配置外出。";
+  if (reason === "allowance_not_configured") return "这个角色还没有配置补给。";
+  if (reason === "work_not_active") return "她现在没有外出。";
+  if (reason === "item_not_available") return "这个商品暂时买不了。";
+  return "养成操作暂时没有完成。";
 }
 
 function buildBackendCharacterContext() {
@@ -354,8 +517,8 @@ function persistCurrentCharacterRuntimeState(packId = state.characterPackId || g
     height: null,
     scale: clamp(Number(state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
     opacity: clamp(Number(state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
-    care: isCareRuntimeActive()
-      ? normalizeCareState(state.care, getProfileCareConfig())
+    care: careAuthorityImportedKeys.has(getCharacterRuntimeKey(normalizedPackId))
+      ? null
       : cloneCareState(state.care),
     updatedAt: Date.now()
   };
@@ -383,9 +546,7 @@ function createCharacterRuntimeState(packId, profile, { seedFromCurrent = false 
     height: null,
     scale: clamp(Number(state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
     opacity: clamp(Number(state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
-    care: isCareRuntimeActive()
-      ? (seedFromCurrent ? normalizeCareState(state.care, getProfileCareConfig()) : createCareState(profile?.care))
-      : (seedFromCurrent ? cloneCareState(state.care) : null),
+    care: seedFromCurrent ? cloneCareState(state.care) : null,
     updatedAt: Date.now()
   };
 }
@@ -394,11 +555,18 @@ function applyCharacterRuntimeState(packId, profile, options = {}) {
   const normalizedPackId = normalizeCharacterPackId(packId) || getActiveCharacterPackId();
   const map = ensureCharacterRuntimeMap();
   const key = getCharacterRuntimeKey(normalizedPackId);
-  const runtime = findCharacterRuntimeState(normalizedPackId) ||
-    createCharacterRuntimeState(normalizedPackId, profile, options);
+  const persistedRuntime = findCharacterRuntimeState(normalizedPackId);
+  const runtime = persistedRuntime || createCharacterRuntimeState(normalizedPackId, profile, options);
+  if (!persistedRuntime && state.care) {
+    runtime.care = cloneCareState(state.care);
+  }
   const appearance = profile?.appearance || {};
   const defaultOutfit = String(appearance.defaultOutfit || getProfileDefaultOutfit()).trim() || getProfileDefaultOutfit();
   const defaultEmotion = String(appearance.defaultEmotion || getProfileDefaultEmotion()).trim() || getProfileDefaultEmotion();
+
+  careAuthority.status = "unresolved";
+  careAuthority.characterPackId = normalizedPackId;
+  careAuthority.reason = "character_changed";
 
   state.sessionId = String(runtime.sessionId || "").trim() || generateSessionId();
   state.outfit = normalizeOutfitName(runtime.outfit || defaultOutfit) || defaultOutfit;
@@ -409,15 +577,8 @@ function applyCharacterRuntimeState(packId, profile, options = {}) {
   state.height = null;
   state.scale = clamp(Number(runtime.scale ?? state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX);
   state.opacity = clamp(Number(runtime.opacity ?? state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1);
-  state.care = isCareRuntimeActive()
-    ? normalizeCareState(runtime.care, profile?.care)
-    : cloneCareState(runtime.care);
-  if (isCareRuntimeActive()) {
-    scheduleCareWorkCompletion();
-    scheduleCarePassiveTick();
-  } else {
-    stopCareRuntime();
-  }
+  state.care = cloneCareState(runtime.care);
+  stopCareRuntime();
 
   map[key] = persistCurrentCharacterRuntimeState(normalizedPackId);
   return runtime;
@@ -441,7 +602,6 @@ let replyDisplayActive = false;
 let segmentTimer = 0;
 let lastTurnSignature = "";
 let lastTurnTextKey = "";
-let lastStateRequestSignature = "";
 let firstSpeechSegmentShown = false;
 let lastActivityActionSignature = "";
 let motionTimer = 0;
@@ -1633,16 +1793,16 @@ async function handleSettingsCommand(payload) {
       await removeMusicTrackBySourceId(payload.value);
       break;
     case "buyShopItem":
-      buyShopItem(payload.value);
+      await buyShopItem(payload.value);
       break;
     case "feedInventoryItem":
-      feedInventoryItem(payload.value);
+      await feedInventoryItem(payload.value);
       break;
     case "startCareWork":
-      startCareWork();
+      await startCareWork();
       break;
     case "claimCareAllowance":
-      claimCareAllowance();
+      await claimCareAllowance();
       break;
     case "toggleMusic":
       await toggleMusicPlayback();
@@ -1770,7 +1930,6 @@ async function broadcastSettingsSnapshot() {
 }
 
 function buildSettingsSnapshot() {
-  if (isCareRuntimeActive()) settleCarePassiveState({ persist: false });
   const activeOutfit = getActiveOutfit();
   const emotions = getActiveEmotions();
   const issues = buildResourceIssues(activeOutfit, emotions);
@@ -3147,11 +3306,16 @@ function scheduleSave(delay = 500) {
 async function saveNow() {
   if (!isTauriRuntime) return;
   try {
-    if (isCareRuntimeActive()) settleCarePassiveState({ persist: false });
     const geometry = await invoke("get_window_geometry");
     applyWindowGeometryToState(geometry);
     persistCurrentCharacterRuntimeState();
-    await invoke("save_pet_state", { state });
+    await invoke("save_pet_state", {
+      state: {
+        ...state,
+        care: null,
+        characters: buildCharacterRuntimeSnapshot()
+      }
+    });
   } catch (error) {
     setStatus(`Save failed: ${formatError(error)}`);
   }
@@ -3389,7 +3553,8 @@ async function openShopWindow() {
     setStatus("商店窗口仅 Tauri 可用");
     return;
   }
-  settleCarePassiveState();
+  if (!isCareRuntimeActive() && !(await refreshDesktopCareState({ importLegacy: true }))) return;
+  await refreshDesktopCareState({ silent: true });
   await saveNow();
   await tauriCall("open_shop_window", {});
   scheduleSettingsSnapshot(120);
@@ -3614,6 +3779,7 @@ async function reloadCharacterResources({ startup = false, userTriggered = false
 
   const healthy = await checkBackendHealth();
   if (!healthy) {
+    markCareAuthorityUnavailable("backend_offline");
     useBundledResources();
     if (canRenderCurrentLocalResources()) {
       setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { force: true });
@@ -3631,6 +3797,7 @@ async function reloadCharacterResources({ startup = false, userTriggered = false
     clearBackendRetry();
     const manifest = await fetchResourceManifest();
     applyResourceManifest(manifest);
+    await refreshDesktopCareState({ importLegacy: true, silent });
     setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { force: true });
     const count = getActiveEmotions().length;
     const message = `资源已加载：${getActiveOutfit().id} / ${count}`;
@@ -3643,6 +3810,7 @@ async function reloadCharacterResources({ startup = false, userTriggered = false
     }
     return true;
   } catch (error) {
+    markCareAuthorityUnavailable("resource_reload_failed");
     resourceState.healthMessage = formatError(error);
     useBundledResources();
     if (canRenderCurrentLocalResources()) {
@@ -5230,10 +5398,6 @@ async function* sendThinkStream(message, turnToken, options = {}) {
     markTurnLatency("lyrics-hydration-background");
   }
   if (!isTurnActive(turnToken)) return;
-  if (isCareRuntimeActive()) {
-    settleCarePassiveState();
-    applyCareTurnCost(options.turnKind);
-  }
   const requestPayload = attachDesktopCareContext({
     user_id: state.sessionId,
     real_user_id: getProfileUserId(),
@@ -5366,6 +5530,7 @@ function renderPayload(
   { source = "live", speaking = source === "live", persistEmotion = true, force = false } = {}
 ) {
   if (!payload || typeof payload !== "object") return false;
+  applyPayloadCareSnapshot(payload, { source });
   applyPayloadEmotion(payload, { persist: persistEmotion });
   applyPayloadActivity(payload);
   applyPayloadFileDeliveries(payload);
@@ -5378,7 +5543,6 @@ function renderPayload(
     if (!force && (signature === lastTurnSignature || (textKey && textKey === lastTurnTextKey))) return false;
     lastTurnSignature = signature;
     lastTurnTextKey = textKey;
-    applyPayloadStateRequest(payload, { source });
     if (source === "live" && streamingReplyText) {
       queueLiveReplyPayloadItems(segments, { speaking });
     } else {
@@ -5398,7 +5562,6 @@ function renderPayload(
   if (!force && (signature === lastTurnSignature || (textKey && textKey === lastTurnTextKey))) return false;
   lastTurnSignature = signature;
   lastTurnTextKey = textKey;
-  applyPayloadStateRequest(payload, { source });
   if (source === "live" && streamingReplyText) {
     queueLiveReplyPayloadItems(displaySegments.length ? displaySegments : [speech], { speaking });
   } else if (displaySegments.length) {
@@ -5418,33 +5581,10 @@ function applyPayloadEmotion(payload, { persist = true } = {}) {
   if (emotion) setPetEmotion(emotion, { persist });
 }
 
-function applyPayloadStateRequest(payload, { source = "live" } = {}) {
+function applyPayloadCareSnapshot(payload, { source = "live" } = {}) {
   if (source !== "live") return false;
-  if (!isCareRuntimeActive()) return false;
-  const request = payload?.state_request || payload?.stateRequest;
-  if (!request || typeof request !== "object" || Array.isArray(request)) return false;
-  const rawAffinity = request.affinity ?? request.affection_delta ?? request.affectionDelta;
-  if (rawAffinity === undefined || rawAffinity === null || rawAffinity === "") return false;
-  const numericAffinity = Number(rawAffinity);
-  if (!Number.isFinite(numericAffinity)) return false;
-  const affinityDelta = Math.min(5, Math.max(-5, Math.round(numericAffinity)));
-  if (!affinityDelta) return false;
-  const signature = `affinity:${affinityDelta}:${lastTurnSignature || lastTurnTextKey || activeTurnToken}`;
-  if (signature === lastStateRequestSignature) return false;
-  const config = getProfileCareConfig();
-  if (!config.enabled) return false;
-  const care = normalizeCareState(state.care, config);
-  const nextAffection = clampCareValue(care.affection + affinityDelta, 0, 100);
-  if (nextAffection === care.affection) {
-    lastStateRequestSignature = signature;
-    return false;
-  }
-  care.affection = nextAffection;
-  care.updatedAt = Date.now();
-  state.care = care;
-  lastStateRequestSignature = signature;
-  persistCareRuntimeChange();
-  return true;
+  const snapshot = payload?.care_state || payload?.careState;
+  return applyAuthoritativeCareSnapshot(snapshot);
 }
 
 function isSystemMediaControlAction(action) {
@@ -7411,67 +7551,12 @@ function normalizeCareWorkTask(value) {
   };
 }
 
-function createCareState(config = getProfileCareConfig()) {
-  const care = normalizeCareState({}, config);
-  const now = Date.now();
-  care.lastDecayAt = now;
-  care.updatedAt = now;
-  return care;
-}
-
-function settleCarePassiveState({ persist = true, now = Date.now() } = {}) {
-  if (!isCareRuntimeActive()) return cloneCareState(state.care);
-  const config = getProfileCareConfig();
-  if (!config.enabled) return normalizeCareState(state.care, config);
-  const care = normalizeCareState(state.care, config);
-  const previousDecayAt = care.lastDecayAt || care.updatedAt || now;
-  const elapsedMs = Math.max(0, now - previousDecayAt);
-  const hungerDecay = Math.floor((elapsedMs / 3600000) * config.decay.hungerPerHour);
-  if (hungerDecay <= 0) {
-    if (!care.lastDecayAt) {
-      care.lastDecayAt = now;
-      state.care = care;
-      if (persist) persistCareRuntimeChange();
-    }
-    scheduleCarePassiveTick();
-    return care;
-  }
-
-  care.hunger = clampCareValue(care.hunger - hungerDecay, 0, 100);
-  care.lastDecayAt = now;
-  care.updatedAt = now;
-  state.care = care;
-  scheduleCarePassiveTick();
-  if (persist) persistCareRuntimeChange();
-  return care;
-}
-
-function applyCareTurnCost(turnKind = "") {
-  if (!isCareRuntimeActive()) return cloneCareState(state.care);
-  const config = getProfileCareConfig();
-  if (!config.enabled) return normalizeCareState(state.care, config);
-  const kind = String(turnKind || "").trim().toLowerCase();
-  if (kind === "desktop_pet_care_feed") return normalizeCareState(state.care, config);
-  const energyCost = kind === "desktop_pet_proactive"
-    ? config.decay.energyPerProactive
-    : config.decay.energyPerReply;
-  if (energyCost <= 0) return normalizeCareState(state.care, config);
-  const care = normalizeCareState(state.care, config);
-  care.energy = clampCareValue(care.energy - energyCost, 0, 100);
-  care.updatedAt = Date.now();
-  state.care = care;
-  persistCareRuntimeChange();
-  return care;
-}
-
 function scheduleCarePassiveTick() {
   window.clearTimeout(carePassiveTimer);
   carePassiveTimer = 0;
   if (!isCareRuntimeActive()) return;
-  const config = getProfileCareConfig();
-  if (!config.enabled) return;
-  carePassiveTimer = window.setTimeout(() => {
-    settleCarePassiveState();
+  carePassiveTimer = window.setTimeout(async () => {
+    await refreshDesktopCareState({ silent: true });
   }, CARE_PASSIVE_TICK_MS);
 }
 
@@ -7499,50 +7584,47 @@ function buildDesktopCareContext() {
   };
 }
 
-function buyShopItem(itemId) {
-  if (!isCareRuntimeActive()) return rejectDisabledCareAction();
+async function buyShopItem(itemId) {
+  if (!isCareConfiguredForCurrentCharacter()) return rejectDisabledCareAction();
   const item = findCareShopItem(itemId);
   if (!item) {
     notifyShopStatus("这个商品暂时买不了。", "error");
     return false;
   }
-  const care = normalizeCareState(state.care, getProfileCareConfig());
-  if (care.coins < item.price) {
-    notifyShopStatus("钱不够啦。", "warn");
-    showBubbleText("钱不够啦。", { transient: true, durationMs: 1600, kind: "shop" });
+  const result = await performDesktopCareAction("buy", { itemId: item.id });
+  if (!result?.ok) {
+    const message = describeCareActionFailure(result);
+    notifyShopStatus(message, "warn");
+    showBubbleText(message, { transient: true, durationMs: 1600, kind: "shop" });
     return false;
   }
-  care.coins -= item.price;
-  care.inventory[item.id] = (care.inventory[item.id] || 0) + 1;
-  care.updatedAt = Date.now();
-  state.care = care;
-  persistCareRuntimeChange();
   notifyShopStatus(`买到了：${item.name}`, "ok");
   showBubbleText(`买到了 ${item.name}。`, { transient: true, durationMs: 1600, kind: "shop" });
   return true;
 }
 
-function feedInventoryItem(itemId) {
-  if (!isCareRuntimeActive()) return rejectDisabledCareAction();
+async function feedInventoryItem(itemId) {
+  if (!isCareConfiguredForCurrentCharacter()) return rejectDisabledCareAction();
   const item = findCareShopItem(itemId);
-  const care = normalizeCareState(state.care, getProfileCareConfig());
-  const count = Math.max(0, Math.round(Number(care.inventory[item?.id || itemId]) || 0));
-  if (!item || count <= 0) {
-    notifyShopStatus("背包里没有这个。", "error");
+  if (!item) {
+    notifyShopStatus("这个商品暂时不能使用。", "error");
     return false;
   }
-  care.inventory[item.id] = count - 1;
-  if (care.inventory[item.id] <= 0) delete care.inventory[item.id];
-  const hungerDelta = Number(item.effects?.hunger || 0);
-  const affectionDelta = Number(item.effects?.affection || 0);
-  const energyDelta = Number(item.effects?.energy || 0);
-  care.hunger = clampCareValue(care.hunger + hungerDelta, 0, 100);
-  care.affection = clampCareValue(care.affection + affectionDelta, 0, 100);
-  care.energy = clampCareValue(care.energy + energyDelta, 0, 100);
-  care.updatedAt = Date.now();
-  state.care = care;
+  const result = await performDesktopCareAction("feed", { itemId: item.id });
+  if (!result?.ok) {
+    const message = describeCareActionFailure(result);
+    notifyShopStatus(message, "warn");
+    showBubbleText(message, { transient: true, durationMs: 1600, kind: "shop" });
+    return false;
+  }
+  const care = normalizeCareState(result.snapshot, getProfileCareConfig());
+  const effects = result.effects_applied && typeof result.effects_applied === "object"
+    ? result.effects_applied
+    : {};
+  const hungerDelta = Number(effects.hunger || 0);
+  const affectionDelta = Number(effects.affection || 0);
+  const energyDelta = Number(effects.energy || 0);
   applyCareFeedback(item);
-  persistCareRuntimeChange();
   notifyShopStatus(`投喂了：${item.name}`, "ok");
   void sendCareFeedReply({ item, care, hungerDelta, energyDelta, affectionDelta });
   return true;
@@ -7605,119 +7687,72 @@ function formatSignedCareDelta(value) {
   return number > 0 ? `+${number}` : String(number);
 }
 
-function startCareWork() {
-  if (!isCareRuntimeActive()) return rejectDisabledCareAction();
+async function startCareWork() {
+  if (!isCareConfiguredForCurrentCharacter()) return rejectDisabledCareAction();
   const config = getProfileCareConfig();
   if (!config.enabled || !config.work.enabled) {
     notifyShopStatus("这个角色还没有配置外出。", "error");
     return false;
   }
-  const care = normalizeCareState(state.care, config);
-  if (care.workTask) {
-    settleCareWorkIfDue();
-    if (normalizeCareState(state.care, config).workTask) {
-      notifyShopStatus("她已经出门啦。", "warn");
-      return false;
-    }
-  }
-  if (care.hunger < config.work.minHunger) {
-    const message = "她有点饿，先喂点东西吧。";
-    notifyShopStatus(message, "warn");
-    showBubbleText(message, { transient: true, durationMs: 1800, kind: "work" });
-    return false;
-  }
-  if (care.energy < config.work.minEnergy) {
-    const message = "她现在没什么精神，先休息或投喂一下吧。";
+  const result = await performDesktopCareAction("start_work");
+  if (!result?.ok) {
+    const message = describeCareActionFailure(result);
     notifyShopStatus(message, "warn");
     showBubbleText(message, { transient: true, durationMs: 2000, kind: "work" });
     return false;
   }
-  const startedAt = Date.now();
-  const rewardCoins = randomCareReward(config.work.rewardCoinsMin, config.work.rewardCoinsMax);
-  care.hunger = clampCareValue(care.hunger - config.work.hungerCost, 0, 100);
-  care.energy = clampCareValue(care.energy - config.work.energyCost, 0, 100);
-  care.workTask = {
-    status: "active",
-    startedAt,
-    completeAt: startedAt + config.work.durationSeconds * 1000,
-    rewardCoins
-  };
-  care.updatedAt = startedAt;
-  state.care = care;
   applyCareFeedback(config.work.startFeedback, {
     fallbackText: "我出去转一圈，很快回来。",
     kind: "work",
     durationMs: 1800
   });
-  persistCareRuntimeChange();
   syncCareAwayVisualState();
   scheduleCareWorkCompletion();
   notifyShopStatus("她出门啦，等一会儿就回来。", "ok");
   return true;
 }
 
-function claimCareAllowance() {
-  if (!isCareRuntimeActive()) return rejectDisabledCareAction();
+async function claimCareAllowance() {
+  if (!isCareConfiguredForCurrentCharacter()) return rejectDisabledCareAction();
   const config = getProfileCareConfig();
   const allowance = config.allowance;
   if (!config.enabled || !allowance.enabled) {
     notifyShopStatus("这个角色还没有配置补给。", "error");
     return false;
   }
-  const care = normalizeCareState(state.care, config);
-  const now = Date.now();
-  const cooldownMs = allowance.cooldownSeconds * 1000;
-  const nextAt = care.lastAllowanceAt + cooldownMs;
-  if (care.coins >= allowance.maxCoins) {
-    const message = `金币低于 ${allowance.maxCoins} 时才能领取补给。`;
+  const result = await performDesktopCareAction("claim_allowance");
+  if (!result?.ok) {
+    const message = describeCareActionFailure(result);
     notifyShopStatus(message, "warn");
     showBubbleText(message, { transient: true, durationMs: 1800, kind: "shop" });
     return false;
   }
-  if (now < nextAt) {
-    const remainSeconds = Math.ceil((nextAt - now) / 1000);
-    const message = `补给还在冷却，约 ${remainSeconds} 秒后可以领取。`;
-    notifyShopStatus(message, "warn");
-    showBubbleText(message, { transient: true, durationMs: 1800, kind: "shop" });
-    return false;
-  }
-
-  const grant = Math.min(allowance.coins, allowance.maxCoins - care.coins);
-  if (grant <= 0) return false;
-  care.coins = clampCareValue(care.coins + grant, 0, 999999);
-  care.lastAllowanceAt = now;
-  care.updatedAt = now;
-  state.care = care;
+  const grant = Math.max(0, Math.round(Number(result.coins_granted || 0)));
   applyCareFeedback(allowance.feedback, {
     fallbackText: `拿到 ${grant} 枚应急金币。`,
     replacements: { coins: grant },
     kind: "shop",
     durationMs: 1800
   });
-  persistCareRuntimeChange();
   notifyShopStatus(`领取补给：+${grant} 金币`, "ok");
   return true;
 }
 
-function settleCareWorkIfDue({ force = false } = {}) {
+async function settleCareWorkIfDue({ silent = false } = {}) {
   if (!isCareRuntimeActive()) return false;
   const config = getProfileCareConfig();
   const care = normalizeCareState(state.care, config);
-  const task = care.workTask;
-  if (!task) {
+  if (!care.workTask) {
     scheduleCareWorkCompletion();
     return false;
   }
-  const now = Date.now();
-  if (!force && now < task.completeAt) {
-    scheduleCareWorkCompletion();
+  const result = await performDesktopCareAction("settle_work", { silent: true });
+  if (!result?.ok) {
+    if (result?.reason === "work_not_due") scheduleCareWorkCompletion();
+    else if (!silent) notifyShopStatus(describeCareActionFailure(result), "warn");
     return false;
   }
-  const reward = clampCareValue(task.rewardCoins, config.work.rewardCoinsMin, config.work.rewardCoinsMax);
-  care.coins = clampCareValue(care.coins + reward, 0, 999999);
-  care.workTask = null;
-  care.updatedAt = now;
-  state.care = care;
+  const reward = Math.max(0, Math.round(Number(result.reward_coins || 0)));
   syncCareAwayVisualState();
   applyCareFeedback(config.work.completeFeedback, {
     fallbackText: `我回来啦，带回 ${reward} 枚金币。`,
@@ -7725,7 +7760,6 @@ function settleCareWorkIfDue({ force = false } = {}) {
     kind: "work",
     durationMs: 2200
   });
-  persistCareRuntimeChange();
   notifyShopStatus(`外出完成：+${reward} 金币`, "ok");
   return true;
 }
@@ -7743,7 +7777,7 @@ function scheduleCareWorkCompletion() {
   if (!task) return;
   const delay = Math.max(0, task.completeAt - Date.now());
   careWorkTimer = window.setTimeout(() => {
-    settleCareWorkIfDue({ force: true });
+    void settleCareWorkIfDue();
   }, Math.min(delay, 2147483647));
 }
 
@@ -7776,12 +7810,6 @@ async function setCareAwayClickThrough(enabled) {
   }
 }
 
-function randomCareReward(min, max) {
-  const low = clampCareValue(min, 0, 999999);
-  const high = clampCareValue(max, low, 999999);
-  return low + Math.floor(Math.random() * (high - low + 1));
-}
-
 function applyCareFeedback(item) {
   const feedback = item?.feedback || item || {};
   if (feedback.emotion) {
@@ -7800,20 +7828,12 @@ function formatCareFeedbackText(text, replacements = {}) {
     .replace(/\{coins\}/g, String(replacements.coins ?? ""));
 }
 
-function persistCareRuntimeChange() {
-  if (!isCareRuntimeActive()) return false;
-  persistCurrentCharacterRuntimeState();
-  scheduleSave(0);
-  scheduleSettingsSnapshot(0);
-  return true;
-}
-
 function notifyShopStatus(message, tone = "info") {
   void emitTo("shop", SHOP_STATUS_EVENT, { message, tone, t: Date.now() }).catch(() => {});
 }
 
 function findCareShopItem(itemId) {
-  if (!isCareRuntimeActive()) return null;
+  if (!isCareConfiguredForCurrentCharacter()) return null;
   const id = String(itemId || "").trim();
   return getProfileCareConfig().shopItems.find((item) => item.id === id) || null;
 }
@@ -8212,7 +8232,6 @@ function resetStreamingReplyState(turnToken = 0) {
   streamedReplyLastShownAt = 0;
   streamedReplyLastShownText = "";
   streamedReplyQueue = [];
-  lastStateRequestSignature = "";
   streamingReplySegmentKeys.clear();
 }
 

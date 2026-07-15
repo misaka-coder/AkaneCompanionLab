@@ -88,6 +88,14 @@ def prepare_context(
     care_status_getter = getattr(engine, "care_feature_status", None)
     care_status = care_status_getter() if callable(care_status_getter) else {"enabled": True}
     care_enabled = bool(care_status.get("enabled", True))
+    care_context_resolver = getattr(engine, "care_enabled_for_context", None)
+    if care_enabled and callable(care_context_resolver):
+        care_enabled = bool(
+            care_context_resolver(
+                character_pack_id=character_pack_id,
+                client_context=client_context,
+            )
+        )
     prompt_builder = engine._get_prompt_builder()
     prompt_profile = engine._get_prompt_profile_registry().resolve(client_context, care_enabled=care_enabled)
     domain_profile = DomainProfileRegistry().get(
