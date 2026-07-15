@@ -1256,7 +1256,7 @@ class LLMRuntime:
         if not bool(getattr(config, "LLM_PROMPT_AUDIT_ENABLED", False)):
             return False
         key = str(prompt_cache_key or "").strip()
-        if key in {"chat:final", "chat:finance_push"}:
+        if key == "chat:final":
             return True
         return bool(getattr(config, "LLM_PROMPT_AUDIT_INCLUDE_AUX", False))
 

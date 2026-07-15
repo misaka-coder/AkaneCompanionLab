@@ -211,7 +211,6 @@ class QQMessageContext:
     character_pack_id: str = ""
     reply_mode: str = ""
     chat_model_override: str = ""
-    finance_mode: str = "off"
     attachments: list[dict[str, Any]] | None = None
 
     def to_turn_payload(self) -> dict[str, Any]:

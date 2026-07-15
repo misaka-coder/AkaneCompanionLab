@@ -1043,19 +1043,10 @@ class AkaneMemoryEngine:
         return _fn(payload)
 
     @staticmethod
-    def _resolve_turn_domain_profile(payload: dict[str, Any]) -> tuple[str, str]:
-        from .domain_profiles import resolve_turn_domain_context
+    def _resolve_turn_domain_profile(payload: dict[str, Any]) -> str:
+        from .domain_profiles import DomainProfileRegistry
 
-        profile, finance_mode = resolve_turn_domain_context(payload)
-        return profile.id, finance_mode
-
-    @staticmethod
-    def _resolve_turn_prompt_scope(payload: dict[str, Any], *, finance_mode: str) -> str:
-        requested = str(payload.get("prompt_scope") or "").strip().lower()
-        turn_kind = str(payload.get("turn_kind") or "").strip().lower()
-        if requested == "finance_push" and finance_mode == "push" and turn_kind == "market_event":
-            return "finance_push"
-        return ""
+        return DomainProfileRegistry().get(payload.get("domain_profile")).id
 
     def _resolve_turn_speaker_identity(
         self,
@@ -1606,10 +1597,6 @@ class AkaneMemoryEngine:
             final_output.pop("care_state", None)
             return
         if client_context is None or client_context.effective_mode != ClientMode.QQ_TEXT:
-            return
-        if str((payload or {}).get("prompt_scope") or "").strip().lower() == "finance_push":
-            final_output.pop("state_request", None)
-            final_output.pop("care_state", None)
             return
         care_runtime = care_module.runtime
         if care_runtime is None:
@@ -2308,12 +2295,12 @@ class AkaneMemoryEngine:
         client_context = self._resolve_client_protocol_context(payload)
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
-        turn_domain_profile_id, finance_mode = self._resolve_turn_domain_profile(payload)
+        turn_domain_profile_id = self._resolve_turn_domain_profile(payload)
         payload = dict(payload)
-        payload["finance_mode"] = finance_mode
+        payload.pop("finance_mode", None)
+        payload.pop("prompt_scope", None)
         payload["domain_profile"] = turn_domain_profile_id
-        prompt_scope = self._resolve_turn_prompt_scope(payload, finance_mode=finance_mode)
-        payload["prompt_scope"] = prompt_scope
+        prompt_scope = ""
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
@@ -2321,14 +2308,13 @@ class AkaneMemoryEngine:
         profile_user_id = str(payload.get("real_user_id") or session_id)
         user_message = str(payload.get("message") or "").strip()
         now_ts = int(payload.get("timestamp") or time.time())
-        if prompt_scope != "finance_push":
-            payload = self._prepare_care_context_for_turn(
-                payload,
-                client_context,
-                profile_user_id=profile_user_id,
-                character_pack_id=turn_character_pack_id,
-                now_ts=now_ts,
-            )
+        payload = self._prepare_care_context_for_turn(
+            payload,
+            client_context,
+            profile_user_id=profile_user_id,
+            character_pack_id=turn_character_pack_id,
+            now_ts=now_ts,
+        )
         date_label = timestamp_to_date_label(now_ts)
         time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
         turn_extra_user_context = self._build_turn_extra_user_context(payload, client_context)
@@ -2348,13 +2334,12 @@ class AkaneMemoryEngine:
         transient_user_turn = self._is_transient_user_turn(payload)
         persist_assistant_turn = self._should_persist_assistant_turn(payload)
 
-        if prompt_scope != "finance_push":
-            self.consume_due_reminders(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                now_ts=now_ts,
-                current_visual_payload=payload.get("current_visual"),
-            )
+        self.consume_due_reminders(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            now_ts=now_ts,
+            current_visual_payload=payload.get("current_visual"),
+        )
 
         if transient_user_turn:
             user_record = self._build_transient_user_record(
@@ -2389,11 +2374,6 @@ class AkaneMemoryEngine:
             user_record=user_record,
             include_transient_user_record=transient_user_turn,
         )
-        if prompt_scope == "finance_push":
-            recent_raw = [user_record]
-            recent_episodic_summaries = []
-            recent_semantic_summaries = []
-            payload["pre_retrieval_enabled"] = False
         verifier_debug_enabled = self._coerce_bool(payload.get("verifier_debug"))
         final_debug_enabled = self._coerce_bool(payload.get("final_debug"))
         retrieval_pipeline = self._run_pre_retrieval_pipeline(
@@ -2793,12 +2773,12 @@ class AkaneMemoryEngine:
         client_context = self._resolve_client_protocol_context(payload)
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
-        turn_domain_profile_id, finance_mode = self._resolve_turn_domain_profile(payload)
+        turn_domain_profile_id = self._resolve_turn_domain_profile(payload)
         payload = dict(payload)
-        payload["finance_mode"] = finance_mode
+        payload.pop("finance_mode", None)
+        payload.pop("prompt_scope", None)
         payload["domain_profile"] = turn_domain_profile_id
-        prompt_scope = self._resolve_turn_prompt_scope(payload, finance_mode=finance_mode)
-        payload["prompt_scope"] = prompt_scope
+        prompt_scope = ""
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
@@ -2806,14 +2786,13 @@ class AkaneMemoryEngine:
         profile_user_id = str(payload.get("real_user_id") or session_id)
         user_message = str(payload.get("message") or "").strip()
         now_ts = int(payload.get("timestamp") or time.time())
-        if prompt_scope != "finance_push":
-            payload = self._prepare_care_context_for_turn(
-                payload,
-                client_context,
-                profile_user_id=profile_user_id,
-                character_pack_id=turn_character_pack_id,
-                now_ts=now_ts,
-            )
+        payload = self._prepare_care_context_for_turn(
+            payload,
+            client_context,
+            profile_user_id=profile_user_id,
+            character_pack_id=turn_character_pack_id,
+            now_ts=now_ts,
+        )
         date_label = timestamp_to_date_label(now_ts)
         time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
         turn_extra_user_context = self._build_turn_extra_user_context(payload, client_context)
@@ -2833,13 +2812,12 @@ class AkaneMemoryEngine:
         transient_user_turn = self._is_transient_user_turn(payload)
         persist_assistant_turn = self._should_persist_assistant_turn(payload)
 
-        if prompt_scope != "finance_push":
-            self.consume_due_reminders(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                now_ts=now_ts,
-                current_visual_payload=payload.get("current_visual"),
-            )
+        self.consume_due_reminders(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            now_ts=now_ts,
+            current_visual_payload=payload.get("current_visual"),
+        )
 
         if transient_user_turn:
             user_record = self._build_transient_user_record(
@@ -2874,11 +2852,6 @@ class AkaneMemoryEngine:
             user_record=user_record,
             include_transient_user_record=transient_user_turn,
         )
-        if prompt_scope == "finance_push":
-            recent_raw = [user_record]
-            recent_episodic_summaries = []
-            recent_semantic_summaries = []
-            payload["pre_retrieval_enabled"] = False
         verifier_debug_enabled = self._coerce_bool(payload.get("verifier_debug"))
         final_debug_enabled = self._coerce_bool(payload.get("final_debug"))
         retrieval_pipeline = self._run_pre_retrieval_pipeline(
@@ -3469,13 +3442,8 @@ class AkaneMemoryEngine:
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
         )
-        finance_push_prompt = str(prompt_scope or "").strip().lower() == "finance_push"
-        max_attempts = (
-            1
-            if finance_push_prompt
-            else max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
-        )
-        prompt_cache_key = "chat:finance_push" if finance_push_prompt else "chat:final"
+        max_attempts = max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
+        prompt_cache_key = "chat:final"
         normalized: dict[str, Any] = {}
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
@@ -3605,13 +3573,8 @@ class AkaneMemoryEngine:
             "type": "turn_start",
             "speaker": speaker_identity["assistant_name"],
         }
-        finance_push_prompt = str(prompt_scope or "").strip().lower() == "finance_push"
-        max_attempts = (
-            1
-            if finance_push_prompt
-            else max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
-        )
-        prompt_cache_key = "chat:finance_push" if finance_push_prompt else "chat:final"
+        max_attempts = max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
+        prompt_cache_key = "chat:final"
         normalized: dict[str, Any] = {}
         buffered_events: list[dict[str, Any]] = []
         stream_result: Any = None

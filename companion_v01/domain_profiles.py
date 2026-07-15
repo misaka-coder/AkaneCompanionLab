@@ -6,21 +6,6 @@ from typing import Any
 
 DEFAULT_DOMAIN_PROFILE_ID = "default"
 
-# Compatibility identifiers for finance source files that remain in the
-# documented M65 migration window. They no longer register a runtime profile.
-FINANCE_DOMAIN_PROFILE_ID = "finance_v1"
-FINANCE_MODES = ("off", "qa", "push")
-
-
-def normalize_finance_mode(value: Any, *, default: str = "off") -> str:
-    """Normalize frozen finance migration data without activating a profile."""
-
-    fallback = str(default or "off").strip().lower()
-    if fallback not in FINANCE_MODES:
-        fallback = "off"
-    mode = str(value or "").strip().lower()
-    return mode if mode in FINANCE_MODES else fallback
-
 
 @dataclass(frozen=True)
 class DomainProfile:
@@ -48,41 +33,17 @@ class DomainProfile:
 
 
 class DomainProfileRegistry:
-    """Runtime domain profiles.
+    """Runtime domain profiles owned by the Akane host."""
 
-    Finance capabilities are contributed by installed plugins and stay usable
-    in the current character/profile. The former finance-specific prompt and
-    static tool allowlist are intentionally not runtime profiles anymore.
-    """
-
-    def __init__(
-        self,
-        *,
-        finance_enabled: bool | None = None,
-        finance_tool_round_budget: int | None = None,
-        finance_tool_round_hard_limit: int | None = None,
-        finance_push_enabled: bool | None = None,
-    ) -> None:
-        del (
-            finance_enabled,
-            finance_tool_round_budget,
-            finance_tool_round_hard_limit,
-            finance_push_enabled,
-        )
+    def __init__(self) -> None:
         self._default = DomainProfile(id=DEFAULT_DOMAIN_PROFILE_ID, enabled=True)
 
     def get(self, profile_id: Any) -> DomainProfile:
         del profile_id
         return self._default
 
-    def resolve(self, *, profile_id: Any = "", finance_mode: Any = "off") -> DomainProfile:
-        del profile_id, finance_mode
-        return self._default
-
-
-def resolve_turn_domain_context(payload: dict[str, Any] | None) -> tuple[DomainProfile, str]:
-    del payload
-    return DomainProfileRegistry().get(DEFAULT_DOMAIN_PROFILE_ID), "off"
+    def resolve(self, *, profile_id: Any = "") -> DomainProfile:
+        return self.get(profile_id)
 
 
 def build_domain_profile_prompt(profile: DomainProfile | None) -> str:

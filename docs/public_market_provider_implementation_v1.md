@@ -1,5 +1,7 @@
 # Akane 免费公开行情 Provider 实施细案 V1
 
+> 历史归档（2026-07-15）：本文记录 M65 抽取前的公开行情实现。`services/market_data` 和 `requirements-finance-public.txt` 已在 M65-D8 删除；公开行情能力、依赖与测试现由私有 `akane.finance` wheel 独立拥有。本文路径和命令不再用于当前 Akane 运行时。
+
 状态：F7d0-F7d4、public security master bootstrap 与瞬时网络重试已完成；公开源 live smoke 部分通过且确认上游波动会 fail closed；public_market 默认 disabled
 更新时间：2026-07-11
 适用仓库：AkaneCompanionLab

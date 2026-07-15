@@ -1,8 +1,8 @@
 # Akane Instance Profile and Plugin Architecture M65
 
-Status: M65-A/B/C, the generic M65-D1 Engine bridge, M65-D6 host contracts, and M65-D7 private adoption implemented
+Status: M65-A/B/C and M65-D1 through M65-D8 implemented; public finance prototype retired
 
-Date: 2026-07-14
+Date: 2026-07-15
 
 ## Decision
 
@@ -835,8 +835,10 @@ capability slice.
 
 Implementation status: the generic host-consumer foundation and Engine tool
 bridge are complete. The private installed artifact owns read-only market data,
-on-demand news, charts, and reports. Stateful subscriptions, proactive jobs,
-notifications, and EmQuant remain in a closed migration window.
+on-demand news, charts, reports, owner-scoped subscriptions, proactive jobs,
+durable delivery state, and notifications. M65-D8 deleted the dormant public
+finance event/analysis/store/provider stack. Only the standalone local EmQuant
+bridge remains a separate future adoption window.
 
 The M65-D1 bridge consumes only the immutable capability descriptor snapshot
 and `PluginHost.invoke_from_consumer()`. It does not expose raw adapters to the
@@ -905,10 +907,12 @@ complete.
 
 ## Immediate Next Action
 
-The M65-D1 read cutover, M65-D2/D3 finance chart/report cutover, and M65-D5
-on-demand news cutover are closed. The installed private artifact now owns six active capabilities;
-public Akane retains only generic plugin, result-experience, managed-artifact,
-Engine-event, and client-delivery boundaries.
+The M65-D1 through M65-D8 finance extraction is closed. The installed private
+artifact owns six active capabilities plus its stateful subscription,
+public-news job, durable outbox, QQ command, and proactive notification path.
+Public Akane retains only generic plugin, result-experience, managed-artifact,
+storage, supervised-job, notification, command, Engine-event, and
+client-delivery boundaries.
 
 The ownership probe is recorded in `docs/plugin_market_news_m65_d5.md`. The
 public scoped storage, supervised job, notification, and QQ command contracts
@@ -921,8 +925,13 @@ and idempotent proactive text delivery are covered by source-blind installed
 wheel acceptance. The cutover record is
 `docs/plugin_finance_stateful_adoption_m65_d7.md`.
 
-The next ownership probe must separate the still-frozen quote-event/LLM
-analysis/governance stack from the now-replaced public-news subscription path.
-Config/secrets and EmQuant remain closed. Do not reactivate the frozen public
-finance path or begin cloud deployment before that ownership cleanup and the
-enabled desktop Care compatibility gate are complete.
+M65-D8 records the final ownership decision in
+`docs/plugin_finance_public_retirement_m65_d8.md`: the inactive quote-event/LLM
+analysis/moderation/governance prototype and shared market-data store were
+deleted instead of becoming a second authority. The standalone EmQuant bridge
+now owns its small validation contract but is not connected to Akane startup.
+
+The next gate is not more finance-tree cleanup. Complete the enabled desktop
+Care compatibility acceptance, then design M65-E instance profiles and cloud
+deployment. EmQuant plugin configuration/secrets must remain a separate,
+explicitly audited slice; do not smuggle them into M65-E.

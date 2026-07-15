@@ -16,7 +16,7 @@ from services.emquant_bridge import (
     FakeEmQuantSDK,
     create_emquant_bridge_app,
 )
-from services.market_data import MarketDataValidationError
+from services.emquant_bridge.validation import EmQuantValidationError
 
 
 SYNTHETIC_NEWS_ROWS = [
@@ -343,7 +343,7 @@ class EmQuantBridgeRuntimeTests(unittest.TestCase):
     def test_sensitive_subscription_options_are_rejected(self) -> None:
         runtime = self._runtime(FakeEmQuantSDK())
 
-        with self.assertRaises(MarketDataValidationError) as raised:
+        with self.assertRaises(EmQuantValidationError) as raised:
             runtime.register_subscription(
                 subscription_id="bad-options",
                 kind="news",

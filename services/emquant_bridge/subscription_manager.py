@@ -7,12 +7,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from services.market_data.normalizers import normalize_market_code
-from services.market_data.types import MarketDataValidationError
-
 from .error_codes import classify_error_code
 from .normalizers import result_error_code, result_error_reason, result_serial_id
 from .types import BridgeSubscriptionSpec, BridgeSubscriptionState
+from .validation import EmQuantValidationError, normalize_emquant_code
 
 
 SUBSCRIPTION_STATE_SCHEMA = "akane.emquant_bridge.subscriptions.v1"
@@ -376,7 +374,7 @@ class EmQuantSubscriptionManager:
                     ),
                     status=state.status,
                 )
-            except (MarketDataValidationError, TypeError, ValueError):
+            except (EmQuantValidationError, TypeError, ValueError):
                 continue
         self._persist()
 
@@ -416,7 +414,7 @@ def _normalize_codes(values: Iterable[Any]) -> tuple[str, ...]:
     codes: list[str] = []
     seen: set[str] = set()
     for value in raw_values:
-        code = normalize_market_code(
+        code = normalize_emquant_code(
             value,
             field="codes",
             status="invalid_arguments",
@@ -475,8 +473,8 @@ def _safe_id(value: Any, *, field: str) -> str:
     return text
 
 
-def _invalid_argument(field: str, reason: str) -> MarketDataValidationError:
-    return MarketDataValidationError(
+def _invalid_argument(field: str, reason: str) -> EmQuantValidationError:
+    return EmQuantValidationError(
         field=field,
         reason=reason,
         code="invalid_arguments",

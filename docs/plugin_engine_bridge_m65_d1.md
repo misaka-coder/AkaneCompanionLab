@@ -80,48 +80,19 @@ are ignored by pydantic-settings and reported explicitly as retired
 public-host configuration; they no longer imply that an inactive host
 implementation can be enabled.
 
-## Remaining Source Migration Window
+## Source Migration Window Closed
 
-The following public source remains temporarily for later private-plugin
-migration, but has no composition-root, Engine, prompt, settings, or QQ route
-entry point:
+M65-D2/D3 moved chart/report artifacts, M65-D5 moved on-demand news, M65-D7
+adopted storage/jobs/notifications/QQ commands in the private artifact, and
+M65-D8 retired the remaining runtime-disconnected public finance prototype.
+`QQMessageContext.finance_mode`, the finance-only Engine prompt scope, and
+`services.market_data` are deleted. Public tests remain independent of the
+private wheel.
 
-- proactive market-news event ingestion;
-- finance subscription, orchestration, delivery, and worker classes;
-- `QQMessageContext.finance_mode` and frozen delivery/event contracts still
-  referenced only by inactive finance source tests;
-- `services.market_data` and EmQuant bridge source.
-
-Reason:
-
-- these capabilities need future plugin contracts for storage, jobs, commands,
-  notifications, and managed file delivery;
-- deleting source before those contracts exist would discard tested behavior,
-  while reactivating it in the host would recreate two authorities.
-
-Window rule:
-
-- do not add public runtime callers, settings, prompts, routes, providers, or
-  feature work to the frozen finance source;
-- fixes may only preserve tests, remove coupling, or support transfer into the
-  private artifact;
-- new finance behavior belongs to the private plugin repository.
-
-Remaining exit conditions:
-
-1. define generic plugin ports for each capability actually being migrated;
-2. move the corresponding implementation and tests into the private artifact;
-3. delete the transferred public source and compatibility fields in the same
-   change window;
-4. keep public Akane tests independent of the private wheel.
-
-The chart/report portion of this window is closed: M65-D2/D3 supplied the
-generic host boundaries, the private artifact now owns both capabilities, and
-the transferred public providers, handlers, exports, and tests have been
-deleted. M65-D5 also moved on-demand market-news search into the private wheel
-and deleted the public handler/read service. The conditions above now apply
-only to proactive news ingestion, subscription, event-job, delivery, storage,
-and EmQuant source.
+Only the standalone `services.emquant_bridge` local SDK process remains as a
+separate, explicitly owned migration window. It does not import Akane Engine or
+the deleted market-data/finance packages. See
+`docs/plugin_finance_public_retirement_m65_d8.md`.
 
 No database, user asset, instance data, or private artifact content is modified
 by the read cutover. Existing finance databases are left untouched but are no
@@ -131,7 +102,7 @@ longer opened by public Akane startup.
 
 ```powershell
 python -m unittest tests.test_plugin_engine_bridge -v
-python -m unittest tests.test_finance_plugin_absence tests.test_finance_domain_profile -v
+python -m unittest tests.test_finance_plugin_absence -v
 python -m unittest tests.test_plugin_host tests.test_plugin_artifact_smoke -v
 python -m unittest tests.test_tool_runtime tests.test_tool_readiness -v
 python -m unittest tests.test_backend_route_modules.BackendRouteModuleTests.test_think_router_handles_once_and_stream_contract_with_fake_engine -v

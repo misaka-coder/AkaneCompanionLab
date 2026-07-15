@@ -1,5 +1,7 @@
 # Akane QQ 金融助手与 EmQuant 接入实施细案 V1
 
+> 历史归档（2026-07-15）：本文记录 M65 抽取前的公开仓库实现，不再是当前运行时施工单。`companion_v01/finance` 与 `services/market_data` 已在 M65-D8 删除；当前金融权威实现是私有 `akane.finance` wheel，公共宿主只保留通用插件端口。需要追溯旧行为时可参考本文和 Git 历史，不得按本文路径恢复第二套实现。
+
 状态：设计锁定；F0-F7d4、public security master bootstrap、公开源瞬时网络重试与 F9a-F9b 已完成；免费 public_market 已注册但默认 disabled；真实 Yahoo 日线与 AkShare ETF 快照成功路径已观察，重复查询仍受免费上游波动影响；下一步为稳定窗口下的真实产物与 QQ 问答 smoke
 更新时间：2026-07-11
 适用仓库：AkaneCompanionLab

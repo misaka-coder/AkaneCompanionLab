@@ -110,10 +110,10 @@ class FinancePluginAbsenceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CoreFinanceCutoverTests(unittest.TestCase):
-    def test_public_stateful_subscription_and_direct_qq_authorities_are_deleted(self) -> None:
-        finance_root = Path(__file__).resolve().parents[1] / "companion_v01" / "finance"
-        self.assertFalse((finance_root / "subscription_service.py").exists())
-        self.assertFalse((finance_root / "qq_delivery.py").exists())
+    def test_public_finance_runtime_and_market_data_authorities_are_deleted(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        self.assertEqual(list((repository_root / "companion_v01" / "finance").glob("*.py")), [])
+        self.assertEqual(list((repository_root / "services" / "market_data").glob("*.py")), [])
 
     def test_engine_never_builds_legacy_finance_runtime_even_if_old_switch_is_true(self) -> None:
         self.assertFalse(hasattr(AkaneMemoryEngine, "_build_market_data_tool_service"))
@@ -125,7 +125,7 @@ class CoreFinanceCutoverTests(unittest.TestCase):
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         self.assertEqual(
             engine._resolve_turn_domain_profile({"finance_mode": "push", "domain_profile": "finance_v1"}),
-            ("default", "off"),
+            "default",
         )
 
 

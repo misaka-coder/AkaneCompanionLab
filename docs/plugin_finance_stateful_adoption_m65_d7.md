@@ -101,19 +101,15 @@ source tree, and then uses the real public host to:
 7. keep all six existing on-demand capability and managed-file paths working;
 8. stop the job and adapters through the real host lifecycle.
 
-## Remaining Migration Window
+## Migration Window Closure
 
-M65-D7 replaces the active subscription/public-news-push use case, but the
-frozen public source tree still contains the earlier broad finance event
-prototype: quote event polling, LLM analysis, moderation, governance, EmQuant
-types, and their shared store. It remains runtime-disconnected and must not
-receive new features.
+M65-D8 completed the required file-by-file ownership probe and deleted the
+runtime-disconnected public quote/news event, LLM analysis, moderation,
+governance, shared finance store, and public-provider prototypes. The private
+M65-D7 path remains the only active subscription/public-news-push authority.
 
-Before deleting that tree, the next probe must classify each file as:
-
-- deleted because the M65-D7 private path now owns its behavior;
-- moved into a later private quote/analysis slice;
-- retained only as a generic EmQuant bridge contract with an explicit owner.
-
-EmQuant secrets/configuration, arbitrary plugin routes, hot lifecycle, cloud
-multi-instance deployment, and trading actions remain out of scope.
+The standalone EmQuant bridge keeps only its local SDK process and now owns its
+validation contract directly. EmQuant plugin secrets/configuration, arbitrary
+plugin routes, hot lifecycle, cloud multi-instance deployment, and trading
+actions remain out of scope. See
+`docs/plugin_finance_public_retirement_m65_d8.md`.

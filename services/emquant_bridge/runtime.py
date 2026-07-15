@@ -6,9 +6,6 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from services.market_data.normalizers import normalize_market_code
-from services.market_data.types import MarketDataValidationError
-
 from .error_codes import classify_error_code
 from .normalizers import (
     extract_choice_news_records,
@@ -28,6 +25,7 @@ from .types import (
     BridgeResult,
     BridgeSubscriptionState,
 )
+from .validation import EmQuantValidationError, normalize_emquant_code
 
 
 class EmQuantBridgeRuntime:
@@ -591,7 +589,7 @@ def _normalize_codes(values: Iterable[Any]) -> tuple[str, ...]:
     codes: list[str] = []
     seen: set[str] = set()
     for value in raw_values:
-        code = normalize_market_code(
+        code = normalize_emquant_code(
             value,
             field="codes",
             status="invalid_arguments",
@@ -655,8 +653,8 @@ def _normalize_iso_date(value: Any, *, field: str) -> str:
     return parsed.isoformat()
 
 
-def _invalid_argument(field: str, reason: str) -> MarketDataValidationError:
-    return MarketDataValidationError(
+def _invalid_argument(field: str, reason: str) -> EmQuantValidationError:
+    return EmQuantValidationError(
         field=field,
         reason=reason,
         code="invalid_arguments",

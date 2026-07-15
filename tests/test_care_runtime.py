@@ -231,31 +231,6 @@ class CareActivationBoundaryTests(unittest.TestCase):
             self.assertEqual(snapshot["hunger"], 80)
             self.assertEqual(snapshot["energy"], 40)
 
-    def test_finance_push_never_mutates_or_returns_care_state(self) -> None:
-        with TemporaryDirectory() as tmp:
-            store = CareRuntimeStore(Path(tmp) / "care_runtime.json")
-            engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-            engine.care_module = CareModulePort(enabled=True, _runtime=store)
-            qq_context = ClientProtocolContext(
-                requested_mode=ClientMode.QQ_TEXT,
-                effective_mode=ClientMode.QQ_TEXT,
-            )
-            before_bytes = Path(tmp, "care_runtime.json").read_bytes() if Path(tmp, "care_runtime.json").exists() else None
-            final_output = {"speech": "push", "state_request": {"affinity": 5}}
-
-            engine._apply_care_state_request(
-                final_output,
-                qq_context,
-                profile_user_id="finance",
-                payload={"prompt_scope": "finance_push"},
-                now_ts=1716192000,
-            )
-
-            after_path = Path(tmp, "care_runtime.json")
-            self.assertEqual(final_output, {"speech": "push"})
-            self.assertEqual(after_path.read_bytes() if after_path.exists() else None, before_bytes)
-
-
 class CareRuntimeEconomyTests(unittest.TestCase):
     """Per-user QQ economy: coins isolated per relation_user_id."""
 

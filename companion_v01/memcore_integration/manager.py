@@ -1429,7 +1429,7 @@ class MemcoreManager:
             return None
         extra_semantic = (
             "stable_facts 只保留用户反复确认过的偏好、身份、关系和长期计划；"
-            "单次工具操作的执行结果和系统配置字段（finance_mode、reply_mode 等）不应出现在 stable_facts 里。"
+            "单次工具操作的执行结果和系统配置字段（reply_mode 等）不应出现在 stable_facts 里。"
         )
         return PromptOverrides(
             persona_text=persona_text,

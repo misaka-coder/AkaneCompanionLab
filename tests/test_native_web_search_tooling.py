@@ -1505,6 +1505,7 @@ def build_native_context_engine(*, selected_tool_names: tuple[str, ...]) -> Akan
     engine.resource_manifest = None
     engine.store = SimpleNamespace()
     engine.vision_service = None
+    engine.care_feature_status = lambda: {"enabled": True}
     engine.gift_service = SimpleNamespace(
         build_pending_prompt_context=lambda **_kwargs: "",
         resolve_focus_asset=lambda **_kwargs: None,
@@ -1513,7 +1514,9 @@ def build_native_context_engine(*, selected_tool_names: tuple[str, ...]) -> Akan
         chat_supports_native_tools=lambda: True,
         record_metric=lambda _name: None,
     )
-    engine._get_prompt_profile_registry = lambda: SimpleNamespace(resolve=lambda _client_context: FakePromptProfile())
+    engine._get_prompt_profile_registry = lambda: SimpleNamespace(
+        resolve=lambda _client_context, **_kwargs: FakePromptProfile()
+    )
     engine._get_prompt_builder = lambda: FakePromptBuilder()
     engine._get_user_runtime_projection = lambda _profile_user_id: {
         "extra_bgm_tracks": [],

@@ -267,7 +267,7 @@ class LLMClientConfigTests(unittest.TestCase):
             self.assertFalse((Path(temp_dir) / "llm_prompt_audit").exists())
 
         with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch("config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False):
-            self.assertTrue(runtime._should_record_prompt_audit("chat:finance_push"))
+            self.assertFalse(runtime._should_record_prompt_audit("chat:finance_push"))
 
     def test_llm_runtime_adds_native_tools_for_verified_profile(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

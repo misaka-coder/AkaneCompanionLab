@@ -8,9 +8,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from services.market_data.types import MarketDataValidationError
-
 from .runtime import EmQuantBridgeRuntime
+from .validation import EmQuantValidationError
 
 
 LOOPBACK_CLIENT_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
@@ -89,8 +88,8 @@ def create_emquant_bridge_app(
                 )
         return await call_next(request)
 
-    @app.exception_handler(MarketDataValidationError)
-    async def handle_validation_error(_request: Request, exc: MarketDataValidationError) -> JSONResponse:
+    @app.exception_handler(EmQuantValidationError)
+    async def handle_validation_error(_request: Request, exc: EmQuantValidationError) -> JSONResponse:
         return JSONResponse(exc.to_public_dict(), status_code=400)
 
     @app.get("/health")
