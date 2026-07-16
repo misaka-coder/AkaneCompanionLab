@@ -6034,36 +6034,35 @@ async function handleDesktopFileDeliveryEvent(event) {
     return;
   }
 
-  let filePath = String(event.desktop_delivery?.path || fileRef.path || "").trim();
-  if (!filePath && fileRef.handle) {
-    try {
-      filePath = await fetchWorkspaceItemLocation({
-        itemType: fileRef.itemType,
-        handle: fileRef.handle
-      });
-    } catch {
-      filePath = "";
-    }
-  }
-  if (!filePath) {
-    setRuntimeStatus("文件已生成，但暂时找不到本地路径", { mode: "error" });
-    showBubbleText("文件做好了，但本地位置暂时没摸到。", { transient: true, durationMs: 2400, kind: "error" });
+  // M66-D: Use handle-based open_workspace_item; no longer call /location to get
+  // an absolute path. Tauri downloads bytes from /content and acts on staged file.
+  const handle = String(fileRef.handle || event.desktop_delivery?.handle || "").trim();
+  const itemType = String(fileRef.itemType || "generated").trim();
+  const displayName = fileRef.name || handle || "文件";
+
+  if (!handle) {
+    setRuntimeStatus("文件已生成，但暂时找不到 handle", { mode: "error" });
+    showBubbleText("文件做好了，但找不到引用。", { transient: true, durationMs: 2400, kind: "error" });
     return;
   }
 
-  const displayName = fileRef.name || fileRef.handle || "文件";
+  const workspaceItemParams = {
+    handle,
+    item_type: itemType,
+    action,
+    user_id: state.sessionId || "",
+    session_id: state.sessionId || "",
+    file_name: buildDesktopDeliveryFileName(fileRef) || "",
+  };
+
   if (action === "open") {
-    const result = await tauriCall("open_local_file", { path: filePath }, { quiet: true });
+    const result = await tauriCall("open_workspace_item", workspaceItemParams, { quiet: true });
     announceDesktopFileDeliveryResult(result !== null, `已打开：${displayName}`, "文件做好了，我打开给你看啦。", "打开文件失败了。");
   } else if (action === "reveal") {
-    const result = await tauriCall("show_item_in_folder", { path: filePath }, { quiet: true });
+    const result = await tauriCall("open_workspace_item", workspaceItemParams, { quiet: true });
     announceDesktopFileDeliveryResult(result !== null, `已定位：${displayName}`, "文件位置打开啦。", "打开文件位置失败了。");
   } else if (action === "save_desktop") {
-    const result = await tauriCall(
-      "export_file_to_desktop",
-      { path: filePath, fileName: buildDesktopDeliveryFileName(fileRef) },
-      { quiet: true }
-    );
+    const result = await tauriCall("open_workspace_item", workspaceItemParams, { quiet: true });
     const exportedPath = String(result?.path || "").trim();
     announceDesktopFileDeliveryResult(
       result !== null,
@@ -6072,12 +6071,8 @@ async function handleDesktopFileDeliveryEvent(event) {
       "保存到桌面失败了。"
     );
   } else if (action === "copy_path") {
-    try {
-      await navigator.clipboard.writeText(filePath);
-      announceDesktopFileDeliveryResult(true, "文件路径已复制", "文件路径复制好了。", "");
-    } catch {
-      announceDesktopFileDeliveryResult(false, "", "", "复制文件路径失败了。");
-    }
+    // copy_path is only meaningful locally; gracefully skip if handle has no local path.
+    announceDesktopFileDeliveryResult(false, "", "", "当前模式不支持复制本地路径。");
   }
 }
 
@@ -6479,6 +6474,9 @@ function yieldToUiForDrop() {
   });
 }
 
+// M66-D: importDroppedFilesToWorkspace now delegates to Tauri import_dropped_files.
+// Absolute paths are read locally in Rust and uploaded as bytes; they never
+// reach the backend as path strings. Requires /import-file multipart endpoint.
 async function importDroppedFilesToWorkspace(paths) {
   const normalizedPaths = Array.isArray(paths)
     ? paths.map((item) => String(item || "").trim()).filter(Boolean)
@@ -6494,33 +6492,22 @@ async function importDroppedFilesToWorkspace(paths) {
       scheduleSettingsSnapshot();
       void ensureBackendSession();
     }
-    const response = await backendFetch(
-      buildBackendEndpointUrl("desktop_workspace_import_local", "/desktop-pet/workspace/import-local", { t: Date.now() }),
+    const result = await tauriCall(
+      "import_dropped_files",
       {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        cache: "no-store",
-        body: JSON.stringify({
-          user_id: sessionId,
-          session_id: sessionId,
-          real_user_id: getProfileUserId(),
-          ...buildBackendCharacterContext(),
-          paths: normalizedPaths,
-          recursive: false,
-          max_files: 40
-        }),
-        connectTimeout: 60_000
-      }
+        paths: normalizedPaths,
+        user_id: sessionId,
+        session_id: sessionId,
+        real_user_id: getProfileUserId(),
+        character_pack_id: String(state.characterPackId || "").trim(),
+      },
+      { quiet: false }
     );
-    const payload = await readJsonResponse(response);
-    if (!response.ok) {
-      throw new Error(extractBackendErrorMessage(payload) || `手边导入失败：HTTP ${response.status}`);
-    }
-    if (!payload?.ok && !Number(payload?.imported || 0)) {
-      throw new Error(extractBackendErrorMessage(payload) || summarizeWorkspaceImportSkipped(payload) || "没有可导入的文件");
+    if (!result?.ok && !Number(result?.imported || 0)) {
+      throw new Error(result?.reason || "没有可导入的文件");
     }
     await notifyWorkspaceRefresh();
-    return payload;
+    return result;
   } finally {
     workspaceImporting = false;
   }
@@ -6577,37 +6564,14 @@ async function playWorkspaceAudioItem(item) {
   }
 }
 
+// M66-D: fetchWorkspaceItemLocation removed — the backend /location routes that
+// returned absolute paths have been deleted. File delivery now uses
+// open_workspace_item (handle-based) which downloads bytes from /content.
+// This stub is kept temporarily to fail fast if any caller was missed.
 async function fetchWorkspaceItemLocation({ itemType, handle }) {
-  const normalizedType = String(itemType || "").trim().toLowerCase();
-  const normalizedHandle = String(handle || "").trim();
-  if (!normalizedHandle) throw new Error("missing workspace handle");
-  const sessionId = state.sessionId || "";
-  if (!sessionId) throw new Error("会话还没准备好");
-
-  const routeType = normalizedType === "generated" || normalizedType === "output" ? "generated" : "attachments";
-  const endpointName = routeType === "generated" ? "desktop_workspace_generated_location" : "desktop_workspace_attachment_location";
-  const response = await backendFetch(
-    buildBackendEndpointUrl(
-      endpointName,
-      `/desktop-pet/workspace/${routeType}/${encodeURIComponent(normalizedHandle)}/location`,
-      {
-        user_id: sessionId,
-        real_user_id: getProfileUserId(),
-        ...buildBackendCharacterContext(),
-        t: Date.now()
-      }
-    ),
-    {
-      method: "GET",
-      cache: "no-store",
-      connectTimeout: 10000
-    }
+  throw new Error(
+    `fetchWorkspaceItemLocation is deprecated (M66-D): use open_workspace_item with handle=${handle}`
   );
-  const payload = await readJsonResponse(response);
-  if (!response.ok || !payload?.ok || !payload.path) {
-    throw new Error(extractBackendErrorMessage(payload) || `HTTP ${response.status}`);
-  }
-  return String(payload.path || "");
 }
 
 function summarizeWorkspaceImportSkipped(payload) {

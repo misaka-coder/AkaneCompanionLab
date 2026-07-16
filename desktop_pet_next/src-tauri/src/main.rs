@@ -981,6 +981,165 @@ fn export_file_to_desktop_blocking(
     })
 }
 
+// M66-D: Handle-based workspace item open/reveal/export.
+// JS passes handle + item_type; Tauri downloads bytes from the backend
+// /content route, caches locally, then performs the requested action.
+#[tauri::command]
+async fn open_workspace_item(
+    app: AppHandle,
+    handle: String,
+    item_type: String,
+    action: String,
+    user_id: String,
+    session_id: String,
+    file_name: String,
+) -> Result<serde_json::Value, String> {
+    let handle = handle.trim().to_string();
+    let route_type = match item_type.trim() {
+        "generated" | "output" => "generated",
+        _ => "attachments",
+    };
+    let action = action.trim().to_string();
+    let file_name = file_name.trim().to_string();
+    if handle.is_empty() {
+        return Err("missing_handle".to_string());
+    }
+    let backend = runtime_backend_url();
+    let content_url = format!(
+        "{}/desktop-pet/workspace/{}/{}/content?user_id={}&session_id={}",
+        backend.trim_end_matches('/'),
+        route_type,
+        handle,
+        user_id,
+        session_id,
+    );
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("reqwest_build: {}", e))?;
+    let response = client
+        .get(&content_url)
+        .send()
+        .await
+        .map_err(|e| format!("content_fetch: {}", e))?;
+    if !response.status().is_success() {
+        return Err(format!("content_not_found: HTTP {}", response.status()));
+    }
+    let actual_name = if !file_name.is_empty() {
+        file_name
+    } else {
+        _extract_content_disposition_filename(&response).unwrap_or_else(|| handle.clone())
+    };
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("content_read: {}", e))?;
+    let cache_dir = desktop_runtime_cache_dir("workspace_items")?;
+    let safe_seg = handle.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+    let item_dir = cache_dir.join(&safe_seg);
+    fs::create_dir_all(&item_dir).map_err(|e| e.to_string())?;
+    let staged_path = item_dir.join(&actual_name);
+    fs::write(&staged_path, &bytes).map_err(|e| e.to_string())?;
+    match action.as_str() {
+        "open" => {
+            open_path_with_system(&staged_path)?;
+            Ok(serde_json::json!({"ok": true, "action": "open"}))
+        }
+        "reveal" => {
+            reveal_path_in_file_manager(&staged_path)?;
+            Ok(serde_json::json!({"ok": true, "action": "reveal"}))
+        }
+        "save_desktop" => {
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                export_file_to_desktop_blocking(
+                    app,
+                    staged_path.to_string_lossy().to_string(),
+                    actual_name,
+                )
+            })
+            .await
+            .map_err(|e| format!("export_task: {}", e))??;
+            Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+        }
+        _ => Err("unknown_workspace_action".to_string()),
+    }
+}
+
+fn _extract_content_disposition_filename(response: &reqwest::Response) -> Option<String> {
+    let header = response.headers().get("content-disposition")?.to_str().ok()?;
+    for part in header.split(';') {
+        let part = part.trim();
+        if let Some(v) = part.strip_prefix("filename=\"").and_then(|s| s.strip_suffix('"')) {
+            if !v.is_empty() { return Some(v.to_string()); }
+        }
+        if let Some(v) = part.strip_prefix("filename=") {
+            let v = v.trim_matches('"').trim();
+            if !v.is_empty() { return Some(v.to_string()); }
+        }
+    }
+    None
+}
+
+// M66-D: Import dropped files by reading bytes locally and uploading to the
+// backend via multipart POST. Absolute paths never leave the Tauri process.
+#[tauri::command]
+async fn import_dropped_files(
+    paths: Vec<String>,
+    user_id: String,
+    session_id: String,
+    real_user_id: String,
+    character_pack_id: String,
+) -> Result<serde_json::Value, String> {
+    if paths.is_empty() {
+        return Ok(serde_json::json!({"ok": false, "reason": "no_paths"}));
+    }
+    let backend = runtime_backend_url();
+    let import_url = format!(
+        "{}/desktop-pet/workspace/import-file",
+        backend.trim_end_matches('/')
+    );
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("reqwest_build: {}", e))?;
+    let mut form = reqwest::multipart::Form::new()
+        .text("user_id", user_id)
+        .text("session_id", session_id.clone())
+        .text("real_user_id", real_user_id)
+        .text("character_pack_id", character_pack_id);
+    let mut skipped = 0usize;
+    for raw_path in &paths {
+        let path = canonical_existing_path(raw_path).unwrap_or_default();
+        if path.as_os_str().is_empty() || !path.is_file() {
+            skipped += 1;
+            continue;
+        }
+        let bytes = fs::read(&path).map_err(|e| format!("read_file: {}", e))?;
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
+        form = form.part("files", part);
+    }
+    if paths.len() == skipped {
+        return Ok(serde_json::json!({"ok": false, "reason": "all_paths_invalid"}));
+    }
+    let response = client
+        .post(&import_url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("upload_failed: {}", e))?;
+    let status = response.status();
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .unwrap_or_else(|_| serde_json::json!({"ok": false, "status": status.as_u16()}));
+    Ok(body)
+}
+
 #[tauri::command]
 fn list_character_packs() -> Result<Vec<CharacterPackRegistryItem>, String> {
     let characters_dir = creator_kit_characters_dir()?;
@@ -2835,6 +2994,8 @@ fn desktop_runtime_cache_path(data_root: &Path, category: &str) -> Result<PathBu
         "attachments/audio" => PathBuf::from("attachments").join("audio"),
         "character_import" => PathBuf::from("character_import"),
         "export_staging" => PathBuf::from("export_staging"),
+        // M66-D: workspace item staging for handle-based open/reveal/export
+        "workspace_items" => PathBuf::from("workspace_items"),
         _ => return Err("invalid_desktop_cache_category".to_string()),
     };
     Ok(data_root.join("cache").join("desktop_pet").join(relative))
@@ -5247,6 +5408,8 @@ fn main() {
             show_item_in_folder,
             open_external_url,
             export_file_to_desktop,
+            open_workspace_item,
+            import_dropped_files,
             apply_window_state,
             set_visual_scale,
             set_always_on_top,

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 
@@ -240,6 +240,69 @@ def build_desktop_pet_router(
             ok=bool(result.get("ok")),
         )
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    # M66-D: /import-file — multipart byte upload from Tauri.
+    # Absolute paths never reach the server; Tauri reads bytes locally and POSTs them here.
+    @router.post("/desktop-pet/workspace/import-file")
+    async def desktop_pet_workspace_import_file(
+        request: Request,
+        files: list[UploadFile] = File(default=[]),
+        user_id: str = Form(default=""),
+        session_id: str = Form(default=""),
+        real_user_id: str = Form(default=""),
+        character_pack_id: str = Form(default=""),
+    ):
+        started_at = time.perf_counter()
+        resolved_user_id = str(user_id or "").strip() or str(session_id or "").strip()
+        resolved_session_id = str(session_id or "").strip() or resolved_user_id
+        profile_user_id = str(real_user_id or "").strip() or resolved_user_id
+        if not resolved_user_id:
+            raise HTTPException(status_code=400, detail="Missing user_id")
+        if not files:
+            return JSONResponse({"ok": False, "reason": "no_files"})
+        imported_items = []
+        for upload in files:
+            file_bytes = await upload.read()
+            if not file_bytes:
+                continue
+            file_name = str(upload.filename or "").strip() or "file"
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=f"_{file_name}",
+                dir=tempfile.gettempdir(),
+            ) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+            try:
+                result = await asyncio.to_thread(
+                    engine.import_desktop_pet_local_paths,
+                    profile_user_id=profile_user_id,
+                    session_id=resolved_session_id,
+                    paths=[tmp_path],
+                    recursive=False,
+                    max_files=1,
+                    character_pack_id=str(character_pack_id or "").strip(),
+                    timestamp=int(time.time()),
+                )
+                for item in list(result.get("items") or []):
+                    if isinstance(item, dict):
+                        item.pop("absolute_path", None)
+                        imported_items.append(item)
+            finally:
+                import os
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        runtime_metrics.observe_request(
+            "desktop_pet_workspace_import_file",
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+            ok=bool(imported_items),
+        )
+        return JSONResponse(
+            {"ok": bool(imported_items), "imported": len(imported_items), "items": imported_items},
+            headers={"Cache-Control": "no-store"},
+        )
 
     @router.post("/desktop-pet/workspace/import-local")
     async def desktop_pet_workspace_import_local(request: Request):
