@@ -28,7 +28,12 @@ from .capcore_runtime import (
     resolve_permission_for_profile as capcore_resolve_permission_for_profile,
 )
 from .capability_adapters import CapabilityProtocolError, InvocationContext
-from .capability_registry import OPEN_BROWSER_TOOL_SPEC
+from .capability_registry import (
+    OPEN_BROWSER_TOOL_SPEC,
+    READ_MEMORY_TIMELINE_TOOL_SPEC,
+    RETRIEVE_MEMORY_TOOL_SPEC,
+    WEB_SEARCH_TOOL_SPEC,
+)
 from .local_capability_config import get_mcp_server_runtime_config
 from .mcp_stdio_discoverer import McpStdioDiscoveryError, McpStdioToolCaller
 from .npc_runtime import GenericNPCRuntime
@@ -1140,6 +1145,9 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
     ) -> None:
         self.retrieve_fn = retrieve_fn
 
+    def tool_spec(self):  # M66-B: canonical ToolSpec authority
+        return RETRIEVE_MEMORY_TOOL_SPEC
+
     def build_prompt_instruction(self) -> str:
         return (
             "- retrieve_memory：当前上下文没有可靠答案，且问题依赖旧事实、共同经历、偏好、称呼、约定、计划、项目或过去材料时使用。"
@@ -1329,6 +1337,9 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
 
     def __init__(self, *, timeline_service: Any) -> None:
         self.timeline_service = timeline_service
+
+    def tool_spec(self):  # M66-B: canonical ToolSpec authority
+        return READ_MEMORY_TIMELINE_TOOL_SPEC
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -3910,6 +3921,9 @@ class WebSearchToolHandler(BaseToolHandler):
     MAX_RESULTS = 10
     MAX_FOLLOWUP_CHARS = 6000
     MAX_EXTRACT_CHARS = 5000
+
+    def tool_spec(self):  # M66-B: canonical ToolSpec authority
+        return WEB_SEARCH_TOOL_SPEC
 
     def __init__(
         self,

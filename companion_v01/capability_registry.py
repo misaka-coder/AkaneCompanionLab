@@ -175,6 +175,223 @@ OPEN_BROWSER_TOOL_SPEC = CapabilityToolSpec(
 )
 
 
+# ── M66-B: Canonical read-only ToolSpecs ────────────────────────────────────
+# These are the single semantic/schema authority for the migrated tool family.
+# Native schema generation, legacy prompt projection, normalize, validate, and
+# execute all derive from these specs; the old hand-authored prose/metadata
+# rows in TOOL_METADATA_BY_TYPE are superseded for these tools.
+
+WEB_SEARCH_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="web_search",
+    display_name="Web search",
+    description=(
+        "Search public web pages or extract public URL content when the user asks for current, "
+        "online, volatile, or verifiable public information. Use it before guessing about current "
+        "external state even if the user did not explicitly say search. Do not use it for localhost, "
+        "intranet, file paths, login pages, paid pages, or private links."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["search", "batch_search", "extract", "get_sub_domains"],
+                "description": "Use search for one query, batch_search for multiple queries, extract for one public URL.",
+            },
+            "query": {
+                "type": "string",
+                "description": "Search query for action=search, or a single query when action=batch_search is unnecessary.",
+            },
+            "queries": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 4,
+                "description": "Multiple search queries for action=batch_search.",
+            },
+            "url": {
+                "type": "string",
+                "description": "Public URL to extract when action=extract.",
+            },
+            "max_results": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": "Maximum search results to return.",
+            },
+            "max_chars": {
+                "type": "integer",
+                "minimum": 500,
+                "maximum": 5000,
+                "description": "Maximum extracted characters for action=extract.",
+            },
+            "domain": {
+                "type": "string",
+                "description": "Optional domain filter for search.",
+            },
+            "sub_domain": {
+                "type": "string",
+                "description": "Optional sub-domain filter for search.",
+            },
+            "domains": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 4,
+                "description": "Domains for action=get_sub_domains.",
+            },
+        },
+        "required": ["action"],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq", "web"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=32768,
+)
+
+RETRIEVE_MEMORY_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="retrieve_memory",
+    display_name="Retrieve memory",
+    description=(
+        "Search Akane's long-term memory before guessing when visible context is not enough "
+        "to answer anything that depends on shared history, identity, relationships, preferences, "
+        "agreements, plans, projects, or past events."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Concrete memory search phrase with names, topics, places, events, or preferences.",
+                "minLength": 1,
+                "maxLength": 200,
+            },
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 8,
+                "description": "Optional short keywords that should help recall matching memories.",
+            },
+            "time_hint": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "date_label": {"type": "string", "description": "Optional YYYY-MM-DD date hint."},
+                    "time_of_day": {
+                        "type": "string",
+                        "enum": ["morning", "afternoon", "night", "midnight"],
+                        "description": "Optional coarse time-of-day hint.",
+                    },
+                    "relative_time": {"type": "string", "description": "Optional natural-language relative time hint."},
+                    "start_ts": {"type": "integer", "description": "Optional inclusive Unix timestamp lower bound."},
+                    "end_ts": {"type": "integer", "description": "Optional inclusive Unix timestamp upper bound."},
+                },
+            },
+            "source_layers": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["raw", "summary", "semantic_summary"]},
+                "maxItems": 3,
+                "description": "Optional memory layers to search. Omit when unsure.",
+            },
+            "subject_scopes": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["user", "assistant", "other"]},
+                "maxItems": 3,
+                "description": "Optional subject scopes. Multiple values are OR matches.",
+            },
+            "categories": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "casual",
+                        "preference",
+                        "personal_profile",
+                        "plan_goal",
+                        "project_work",
+                        "relationship",
+                        "emotion_state",
+                        "life_event",
+                        "memory_query",
+                        "system_meta",
+                    ],
+                },
+                "maxItems": 4,
+                "description": "Optional memory categories. Multiple values are OR matches.",
+            },
+            "importance_min": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Optional minimum importance score.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 12,
+                "description": "Optional maximum number of memory snippets.",
+            },
+        },
+        "required": ["query"],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq", "web"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=16384,
+)
+
+READ_MEMORY_TIMELINE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="read_memory_timeline",
+    display_name="Read memory timeline",
+    description=(
+        "Read raw conversation records for an explicit date, date range, or time period. "
+        "Use this only when the user asks to inspect or recall the original timeline."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "date_from": {
+                "type": "string",
+                "description": "Start date in YYYY-MM-DD format. For a single day, use the same value as date_to.",
+            },
+            "date_to": {
+                "type": "string",
+                "description": "End date in YYYY-MM-DD format. For a single day, use the same value as date_from.",
+            },
+            "time_periods": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["morning", "afternoon", "night", "midnight"]},
+                "maxItems": 4,
+                "description": "Optional coarse periods within the selected dates. Omit for full-day reads.",
+            },
+        },
+        "required": ["date_from", "date_to"],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq", "web"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=16384,
+)
+
+# ── End M66-B canonical read-only ToolSpecs ──────────────────────────────────
+
+
 @dataclass(frozen=True)
 class ExecutionReceipt:
     instance_id: str

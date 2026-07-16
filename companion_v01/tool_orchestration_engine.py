@@ -349,73 +349,6 @@ def _native_tool_decision_allowlist_items() -> list[str]:
     return allowed or ["web_search"]
 
 
-def native_web_search_tool_schema() -> dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": (
-                "Search public web pages or extract public URL content when the user asks for current, "
-                "online, volatile, or verifiable public information. Use it before guessing about current "
-                "external state even if the user did not explicitly say search. Do not use it for localhost, "
-                "intranet, file paths, login pages, paid pages, or private links."
-            ),
-            "parameters": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["search", "batch_search", "extract", "get_sub_domains"],
-                        "description": "Use search for one query, batch_search for multiple queries, extract for one public URL.",
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "Search query for action=search, or a single query when action=batch_search is unnecessary.",
-                    },
-                    "queries": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "maxItems": 4,
-                        "description": "Multiple search queries for action=batch_search.",
-                    },
-                    "url": {
-                        "type": "string",
-                        "description": "Public URL to extract when action=extract.",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 10,
-                        "description": "Maximum search results to return.",
-                    },
-                    "max_chars": {
-                        "type": "integer",
-                        "minimum": 500,
-                        "maximum": 5000,
-                        "description": "Maximum extracted characters for action=extract.",
-                    },
-                    "domain": {
-                        "type": "string",
-                        "description": "Optional domain filter for search.",
-                    },
-                    "sub_domain": {
-                        "type": "string",
-                        "description": "Optional sub-domain filter for search.",
-                    },
-                    "domains": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "maxItems": 4,
-                        "description": "Domains for action=get_sub_domains.",
-                    },
-                },
-                "required": ["action"],
-            },
-        },
-    }
-
-
 def build_native_tool_schemas(
     handlers: Mapping[str, Any],
     *,
@@ -522,9 +455,8 @@ def _native_tool_candidate_names(
 
 
 def _native_tool_schema_for_handler(tool_name: str, handler: Any) -> dict[str, Any] | None:
+    # M66-B: web_search uses its canonical ToolSpec via handler.tool_spec() like every other tool.
     normalized_name = str(tool_name or "").strip()
-    if normalized_name == "web_search":
-        return native_web_search_tool_schema()
     specs = build_openai_native_tool_specs({normalized_name: handler}, allowed_tool_names={normalized_name})
     if not specs:
         return None

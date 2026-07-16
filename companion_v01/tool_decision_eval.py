@@ -6,7 +6,6 @@ from typing import Any, Callable, Iterable, Sequence
 from .native_tool_schema import build_openai_native_tool_specs
 from .tool_invocation import LEGACY_JSON, NATIVE_OPENAI, NATIVE_TOOL_CALL_FIELD, TOOL_INVOCATION_ID_FIELD, TOOL_SOURCE_FIELD
 from .tool_invocation import invocation_to_legacy_tool_call
-from .tool_orchestration_engine import native_web_search_tool_schema
 from .tool_orchestration_engine import execute_tool_invocation, normalize_tool_invocation
 from .tool_orchestration_engine import validate_legacy_tool_call, validate_tool_invocation
 from .llm_runtime import LLMRuntime
@@ -650,11 +649,10 @@ def _build_live_tool_decision_handlers(toolset: str) -> dict[str, Any]:
 
 
 def _build_live_native_tool_specs(handlers: dict[str, Any]) -> list[dict[str, Any]]:
+    # M66-B: all handlers now project via tool_spec() / build_openai_native_tool_specs;
+    # the old web_search hard-coded special case has been deleted.
     specs: list[dict[str, Any]] = []
     for tool_name, handler in handlers.items():
-        if tool_name == "web_search":
-            specs.append(native_web_search_tool_schema())
-            continue
         generated = build_openai_native_tool_specs({tool_name: handler}, allowed_tool_names={tool_name})
         if generated:
             specs.append(generated[0])
