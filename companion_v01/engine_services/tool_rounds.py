@@ -29,7 +29,8 @@ from ..domain_profiles import (
 )
 from .. import tool_orchestration_engine
 from ..local_capability_config import load_capability_config
-from ..tool_readiness import ToolReadinessGate
+# M66-E: ToolReadinessGate deleted; readiness is now gated via
+# ServerLocalOfferIndex inside CapabilityRegistry.select().
 
 
 logger = logging.getLogger("akane.tool_rounds")
@@ -181,17 +182,10 @@ def resolve_tool_handlers(
             tool_name: all_handlers[tool_name] for tool_name in selected_names if tool_name in all_handlers
         }
 
-    gate = getattr(engine, "_tool_readiness_gate", None)
-    if not isinstance(gate, ToolReadinessGate):
-        gate = ToolReadinessGate()
-        setattr(engine, "_tool_readiness_gate", gate)
-    client_mode = getattr(getattr(client_context, "effective_mode", ""), "value", "")
-    return gate.filter_handlers(
-        selected_handlers,
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        client_mode=str(client_mode or ""),
-    )
+    # M66-E: ToolReadinessGate removed. Readiness is now gated by
+    # ServerLocalOfferIndex inside CapabilityRegistry.select() before this
+    # function is called. selected_handlers are already offer-filtered.
+    return selected_handlers
 
 
 def resolve_capability_selection(

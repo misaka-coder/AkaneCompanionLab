@@ -1748,6 +1748,111 @@ def _requests_external_browser_open(value: str) -> bool:
     return any(marker in text for marker in open_markers) and any(marker in text for marker in target_markers)
 
 
+# ── M66-E: Server-local offer index ─────────────────────────────────────────
+# Replaces ToolReadinessGate for server-local tools. Each registered handler
+# is probed via capability_status() with TTL caching. Tools absent from the
+# index are not gated (default behaviour is unchanged for ungated tools).
+
+_SERVER_OFFER_READY_TTL: float = 15.0
+_SERVER_OFFER_UNAVAILABLE_TTL: float = 5.0
+_SERVER_OFFER_READY_STATUSES: frozenset[str] = frozenset(
+    {"available", "degraded", "ok", "ready"}
+)
+
+class ServerLocalOfferIndex:
+    """Lightweight per-process offer index backed by capability_status() probes.
+
+    Handlers are registered by tool_id. is_offered() returns True only when the
+    most recent probe returned an enabled/ready status. Results are cached with
+    separate TTLs for ready (15 s) and unavailable (5 s) outcomes.
+    """
+
+    def __init__(
+        self,
+        *,
+        ready_ttl_seconds: float = _SERVER_OFFER_READY_TTL,
+        unavailable_ttl_seconds: float = _SERVER_OFFER_UNAVAILABLE_TTL,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._handlers: dict[str, Any] = {}
+        self._cache: dict[str, tuple[float, bool]] = {}  # tool_id → (expiry, offered)
+        self._lock = threading.RLock()
+        self._ready_ttl = max(1.0, float(ready_ttl_seconds))
+        self._unavailable_ttl = max(1.0, float(unavailable_ttl_seconds))
+        self._clock = clock
+
+    def register(self, tool_id: str, handler: Any) -> None:
+        tool_id = str(tool_id or "").strip()
+        if not tool_id or not callable(getattr(handler, "capability_status", None)):
+            return
+        with self._lock:
+            self._handlers[tool_id] = handler
+            self._cache.pop(tool_id, None)
+
+    def is_offered(
+        self,
+        tool_id: str,
+        *,
+        profile_user_id: str = "",
+        session_id: str = "",
+        client_mode: str = "",
+    ) -> bool:
+        tool_id = str(tool_id or "").strip()
+        if not tool_id:
+            return False
+        with self._lock:
+            handler = self._handlers.get(tool_id)
+            if handler is None:
+                return True  # ungated — not registered, treat as offered
+            now = self._clock()
+            cached = self._cache.get(tool_id)
+            if cached is not None and cached[0] > now:
+                return cached[1]
+        # Probe outside the lock to avoid blocking other callers.
+        offered = self._probe(handler, profile_user_id=profile_user_id, session_id=session_id, client_mode=client_mode)
+        ttl = self._ready_ttl if offered else self._unavailable_ttl
+        with self._lock:
+            self._cache[tool_id] = (self._clock() + ttl, offered)
+        return offered
+
+    def _probe(
+        self,
+        handler: Any,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        client_mode: str,
+    ) -> bool:
+        fn = getattr(handler, "capability_status", None)
+        if not callable(fn):
+            return True
+        try:
+            import inspect
+            sig = inspect.signature(fn)
+            params = set(sig.parameters)
+            kwargs: dict[str, Any] = {}
+            if "profile_user_id" in params:
+                kwargs["profile_user_id"] = profile_user_id
+            if "session_id" in params:
+                kwargs["session_id"] = session_id
+            if "client_mode" in params:
+                kwargs["client_mode"] = client_mode
+            result = fn(**kwargs)
+        except Exception:
+            return False
+        if isinstance(result, bool):
+            return result
+        if isinstance(result, Mapping):
+            if not bool(result.get("enabled", True)):
+                return False
+            status = str(result.get("status") or "ready").strip().lower()
+            return status in _SERVER_OFFER_READY_STATUSES
+        return bool(result)
+
+
+# ── End M66-E ServerLocalOfferIndex ─────────────────────────────────────────
+
+
 class CapabilityRegistry:
     """Select lightweight ability hints and full tool instructions per turn."""
 
@@ -1756,9 +1861,12 @@ class CapabilityRegistry:
         modules: tuple[CapabilityModule, ...] | None = None,
         *,
         offer_source: CapabilityOfferSource | None = None,
+        server_offer_index: "ServerLocalOfferIndex | None" = None,
     ) -> None:
         self.modules = modules or self._default_modules()
         self.offer_source = offer_source
+        # M66-E: server-local offer index for tools backed by capability_status() probes
+        self.server_offer_index: ServerLocalOfferIndex | None = server_offer_index
 
     def select(
         self,
@@ -1820,6 +1928,26 @@ class CapabilityRegistry:
             for tool_name in module_tools:
                 if tool_name in seen_tools:
                     continue
+                # M66-E: server-local offer gate. If the tool is registered in the
+                # offer index its capability_status() probe must pass. Unregistered
+                # tools (not in index) are always allowed through.
+                if self.server_offer_index is not None:
+                    client_mode_val = str(
+                        getattr(getattr(snapshot, "client_mode", ""), "value", snapshot.client_mode) or ""
+                    )
+                    if not self.server_offer_index.is_offered(tool_name, client_mode=client_mode_val):
+                        # Emit a disclosure so the model knows the capability is
+                        # temporarily unavailable, without exposing provider details.
+                        disclosures.append(
+                            CapabilityDisclosure(
+                                capability_id=tool_name,
+                                state="unavailable",
+                                summary=f"这项能力（{tool_name}）依赖的本地服务当前不可用。",
+                                reason="server_local_offer_unavailable",
+                                tool_names=(tool_name,),
+                            )
+                        )
+                        continue
                 seen_tools.add(tool_name)
                 tools.append(tool_name)
         tool_specs: list[CapabilityToolSpec] = []
@@ -1861,6 +1989,36 @@ class CapabilityRegistry:
                         tool_names=("open_browser",),
                     )
                 )
+            # M66-E: browser_page also requires an active satellite connection.
+            # When the satellite is online (open_browser receipt valid), the managed
+            # browser on the PC is reachable. When offline, browser_page must not
+            # appear in the schema — the cloud loopback cannot reach the user's PC.
+            bp_allowed = (
+                snapshot.client_mode == ClientMode.DESKTOP_PET
+                and "browser_page" not in hidden
+                and (allowed is None or "browser_page" in allowed)
+                and "browser_page" not in seen_tools
+            )
+            bp_satellite_receipt = receipt if receipt is not None else self._resolve_offer_receipt(OPEN_BROWSER_TOOL_SPEC)
+            if bp_allowed:
+                if bp_satellite_receipt is not None:
+                    tools.append("browser_page")
+                    seen_tools.add("browser_page")
+                    tool_specs.append(BROWSER_PAGE_TOOL_SPEC)
+                    if "desktop_managed_browser_satellite" not in module_names:
+                        module_names.append("desktop_managed_browser_satellite")
+                else:
+                    # Satellite offline — suppress browser_page from schema.
+                    disclosures.append(
+                        CapabilityDisclosure(
+                            capability_id="desktop_managed_browser_satellite",
+                            state="unavailable",
+                            summary="托管浏览器窗口操作需要桌面客户端在线。",
+                            reason="当前没有在线且已授权的桌面执行器。",
+                            activation="桌面客户端重新连接后，这项能力会自动恢复。",
+                            tool_names=("browser_page",),
+                        )
+                    )
         return CapabilitySelection(
             light_hints=tuple(hints),
             tool_names=tuple(tools),
@@ -1919,7 +2077,10 @@ class CapabilityRegistry:
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=DESKTOP_BROWSER_TOOL_NAMES,
                 light_hint="桌宠模式下，browser_page 会打开并操作 Akane 可见托管浏览器窗口，用于读取、滚动、按可见候选序号打开链接，以及经授权的点击/输入。不要接管用户手动打开的浏览器标签页，不要登录、下载、上传或访问私密/内网内容。",
-                trigger=_always,
+                # M66-E: trigger=_never so this module never fires through the static path.
+                # browser_page is now gated behind a satellite offer check in select();
+                # the module is kept for its light_hint and disclosure text only.
+                trigger=lambda _: False,
             ),
             CapabilityModule(
                 name="desktop_music_request",

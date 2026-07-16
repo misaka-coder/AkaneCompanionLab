@@ -23,6 +23,7 @@ from .capability_registry import (
     CapabilitySelection,
     CapabilitySnapshot,
     ExecutorBroker,
+    ServerLocalOfferIndex,
     is_document_attachment,
     is_document_generated_file,
     is_media_attachment,
@@ -406,7 +407,17 @@ class AkaneMemoryEngine:
             record_tool_artifacts=self._record_tool_result_artifacts_in_task_workspace,
         )
         self.tool_handlers = self._build_tool_handlers()
-        self.capability_registry = CapabilityRegistry(offer_source=capability_offer_source)
+        # M66-E: server-local offer index for tools with capability_status() probes.
+        # Replaces ToolReadinessGate for web_search, generate_image, and cover_song.
+        _server_offer_index = ServerLocalOfferIndex()
+        for _tool_id in ("web_search", "generate_image", "cover_song"):
+            _handler = self.tool_handlers.get(_tool_id)
+            if _handler is not None:
+                _server_offer_index.register(_tool_id, _handler)
+        self.capability_registry = CapabilityRegistry(
+            offer_source=capability_offer_source,
+            server_offer_index=_server_offer_index,
+        )
         self.executor_broker = ExecutorBroker(capability_offer_source)
         self._embedding_reindex_lock = threading.RLock()
         self._embedding_reindex_stop = threading.Event()
