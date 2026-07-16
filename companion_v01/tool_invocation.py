@@ -32,6 +32,10 @@ NATIVE_TOOL_CALL_FIELD = "_native_tool_call"
 NATIVE_TOOL_CALLS_FIELD = "_native_tool_calls"
 TOOL_EXECUTION_RECEIPT_FIELD = "_tool_execution_receipt"
 TOOL_EXECUTION_RECEIPTS_FIELD = "_tool_execution_receipts"
+# M66-C: Frozen round — carry the per-turn CapabilitySelection from prepare_context
+# through _prepare_tool_round_decisions so normalize/validate/execute do not
+# re-resolve tool handlers a second time for the same round.
+TOOL_CAPABILITY_SELECTION_FIELD = "_tool_capability_selection"
 
 
 @dataclass

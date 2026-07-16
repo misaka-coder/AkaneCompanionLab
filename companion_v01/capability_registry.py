@@ -389,7 +389,1065 @@ READ_MEMORY_TIMELINE_TOOL_SPEC = CapabilityToolSpec(
     max_result_bytes=16384,
 )
 
-# ── End M66-B canonical read-only ToolSpecs ──────────────────────────────────
+# ── M66-C: Canonical ToolSpecs for remaining built-in families ──────────────
+# Each family below removes the corresponding TOOL_METADATA_BY_TYPE input_schema
+# and build_prompt_instruction() as semantic authorities for that tool.
+
+LOAD_CHARACTER_CONTEXT_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="load_character_context",
+    display_name="Load character context",
+    description=(
+        "Load specific entries from the active character pack's context libraries by their target names. "
+        "Read-only; does not modify anything."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "targets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 20,
+                "description": "Target names to load, taken from the character pack's listed libraries/entries.",
+            },
+        },
+        "required": ["targets"],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq", "web"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=32768,
+)
+
+SET_REMINDER_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="set_reminder",
+    display_name="Set reminder",
+    description="Create a reminder to notify the user at a specified time. Use only when the user explicitly asks to be reminded later.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "content": {"type": "string", "maxLength": 120, "description": "What to remind the user about."},
+            "time_text": {"type": "string", "maxLength": 60, "description": "Original time expression from the user."},
+            "date_label": {"type": "string", "maxLength": 10, "description": "YYYY-MM-DD date, if known."},
+            "time_of_day": {"type": "string", "enum": ["morning", "afternoon", "night", "midnight"]},
+            "hour": {"type": "integer", "minimum": 0, "maximum": 23, "description": "Hour (0-23)."},
+            "minute": {"type": "integer", "minimum": 0, "maximum": 59, "description": "Minute (0-59)."},
+            "offset_minutes": {"type": "integer", "minimum": 1, "description": "Relative offset in minutes from now."},
+        },
+        "required": ["content"],
+    },
+    risk="low",
+    confirm="never",
+    effects=("reminder_create",),
+    visible_in=("desktop", "qq", "web"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=4096,
+)
+
+LIST_REMINDERS_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="list_reminders",
+    display_name="List reminders",
+    description="List the user's reminders. Use it when the user asks what reminders they currently have.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "status": {"type": "string", "enum": ["pending", "done", "all"], "description": "Which reminders to list. Default pending."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Maximum reminders to return. Default 5."},
+        },
+        "required": [],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq", "web"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=8192,
+)
+
+CANCEL_REMINDER_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="cancel_reminder",
+    display_name="Cancel reminder",
+    description="Cancel an existing pending reminder. Use only when the user explicitly asks to cancel a specific reminder.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "reminder_id": {"type": "string", "description": "Exact reminder ID, if known."},
+            "target_text": {"type": "string", "maxLength": 80, "description": "Text hint identifying the reminder to cancel."},
+            "target_index": {"type": "integer", "description": "1-based index from list_reminders output."},
+        },
+        "required": [],
+    },
+    risk="low",
+    confirm="never",
+    effects=("reminder_cancel",),
+    visible_in=("desktop", "qq", "web"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=4096,
+)
+CALL_NPC_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="call_npc",
+    display_name="Call NPC",
+    description="Interact with an NPC in the web scene world. Sends a message or action to the specified NPC.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "npc_id": {"type": "string", "description": "NPC identifier."},
+            "message": {"type": "string", "maxLength": 500, "description": "Message or action to send to the NPC."},
+            "action": {"type": "string", "description": "Optional action type."},
+        },
+        "required": [],
+    },
+    risk="low",
+    confirm="never",
+    effects=("npc_interaction",),
+    visible_in=("web",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+
+CHECK_INVENTORY_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="check_inventory",
+    display_name="Check inventory",
+    description="Check gift inventory. Use it when the user asks about gifts on hand or in the gift box.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "scope": {"type": "string", "enum": ["pending_recent", "pending_all", "kept", "internalized"], "description": "Inventory scope. Prefer pending_recent for what's on hand."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Maximum items. Default 3 for pending_recent, else 5."},
+        },
+        "required": [],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("web",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=8192,
+)
+
+MANAGE_GIFT_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="manage_gift",
+    display_name="Manage gift",
+    description="Manage gifts in the scene world: accept, keep, internalize, or return a gift item.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "action": {"type": "string", "enum": ["accept", "keep", "internalize", "return", "inspect"], "description": "Gift action."},
+            "gift_id": {"type": "string", "description": "Gift identifier."},
+            "reason": {"type": "string", "maxLength": 200, "description": "Optional reason or reaction."},
+        },
+        "required": ["action"],
+    },
+    risk="low",
+    confirm="never",
+    effects=("gift_state_change",),
+    visible_in=("web",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=4096,
+)
+MANAGE_ARTIFACT_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="manage_artifact",
+    display_name="Manage artifact",
+    description="Manage artifacts in the scene world: inspect, equip, use, or store an artifact item.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "action": {"type": "string", "enum": ["inspect", "equip", "use", "store", "list"], "description": "Artifact action."},
+            "artifact_id": {"type": "string", "description": "Artifact identifier."},
+            "reason": {"type": "string", "maxLength": 200, "description": "Optional reason."},
+        },
+        "required": ["action"],
+    },
+    risk="low",
+    confirm="never",
+    effects=("artifact_state_change",),
+    visible_in=("web",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=4096,
+)
+
+MANAGE_PERSONA_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="manage_persona",
+    display_name="Manage persona",
+    description=(
+        "Create, update, or inspect expression facets (persona cards) that shape how Akane communicates. "
+        "Use to remember or adjust tone, style, nickname, or recurring expression preferences."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "action": {"type": "string", "enum": ["create", "update", "inspect", "list", "delete", "activate", "deactivate"], "description": "Persona action."},
+            "persona_id": {"type": "string", "maxLength": 80, "description": "Persona identifier; omit for create."},
+            "name": {"type": "string", "maxLength": 80, "description": "Persona name for create/update."},
+            "description": {"type": "string", "maxLength": 500, "description": "Persona description or instruction."},
+            "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 8, "description": "Optional tags."},
+        },
+        "required": ["action"],
+    },
+    risk="medium",
+    confirm="never",
+    effects=("persona_change",),
+    visible_in=("desktop", "qq", "web"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+MANAGE_TASK_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="manage_task_workspace",
+    display_name="Manage task workspace",
+    description=(
+        "Create or update a task whiteboard to track multi-step work: record goals, steps, "
+        "artifacts, and progress. Use only for tasks that genuinely need tracking."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "action": {"type": "string", "enum": ["create", "update_steps", "add_artifact", "ask_user", "complete", "cleanup", "inspect"], "description": "Task action."},
+            "task_id": {"type": "string", "maxLength": 96, "description": "Existing task ID; omit to act on the most recent open task."},
+            "goal": {"type": "string", "maxLength": 400, "description": "Task goal for create action."},
+            "steps": {"type": "array", "items": {"type": "object"}, "description": "Step list for update_steps."},
+            "artifacts": {"type": "array", "items": {"type": "object"}, "description": "Artifact list for add_artifact."},
+            "question": {"type": "string", "maxLength": 300, "description": "Question for ask_user action."},
+            "reason": {"type": "string", "maxLength": 300, "description": "Optional reason or note."},
+        },
+        "required": ["action"],
+    },
+    risk="medium",
+    confirm="never",
+    effects=("task_workspace_change",),
+    visible_in=("desktop", "qq", "web"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+
+DELEGATE_TASK_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="delegate_task",
+    display_name="Delegate task",
+    description="Delegate a sub-task to a background worker agent. Use for work that runs independently and reports back.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "task": {"type": "string", "maxLength": 500, "description": "Task description for the background worker."},
+            "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 8, "description": "Allowed tool names for the worker."},
+            "context": {"type": "string", "maxLength": 1000, "description": "Additional context for the worker."},
+            "task_id": {"type": "string", "maxLength": 80, "description": "Optional task workspace ID to update on completion."},
+        },
+        "required": ["task"],
+    },
+    risk="medium",
+    confirm="never",
+    effects=("background_task_spawn",),
+    visible_in=("desktop", "qq", "web"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="long_task",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+BROWSER_PAGE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="browser_page",
+    display_name="Browser page",
+    description=(
+        "Open and operate an Akane-managed visible browser window: read, scroll, click numbered candidates, "
+        "or submit authorized forms. Does not log in, download, upload, or access private/intranet content."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "action": {"type": "string", "enum": ["open", "read", "scroll", "click", "input", "submit", "close", "status"], "description": "Browser action."},
+            "url": {"type": "string", "maxLength": 1600, "description": "Public URL for open action."},
+            "target": {"type": "string", "maxLength": 200, "description": "Element target for click/input/scroll."},
+            "text": {"type": "string", "maxLength": 500, "description": "Text to input."},
+            "reason": {"type": "string", "maxLength": 120, "description": "Why this action is needed."},
+        },
+        "required": ["action"],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("browser_action",),
+    visible_in=("desktop",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=32768,
+)
+
+OPEN_MUSIC_SEARCH_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="open_music_search",
+    display_name="Open music search",
+    description=(
+        "Open a public music platform search page on the desktop browser for the user to find a song. "
+        "Does not auto-play, log in, or download."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "title": {"type": "string", "maxLength": 120, "description": "Song title to search for."},
+            "artist": {"type": "string", "maxLength": 80, "description": "Optional artist name."},
+            "platform": {"type": "string", "enum": ["qq_music", "netease_music", "bilibili", "youtube"], "description": "Music platform. Default qq_music."},
+        },
+        "required": ["title"],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("browser_open",),
+    visible_in=("desktop",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=4096,
+)
+FETCH_MEDIA_FROM_URL_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="fetch_media_from_url",
+    display_name="Fetch media from URL",
+    description=(
+        "Download a public video or audio URL into the current workspace so it can be inspected, "
+        "transcribed, converted, or sent. Does not handle login-required, paid, or DRM-protected links."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "url": {"type": "string", "maxLength": 1600, "description": "Public media URL to download."},
+            "urls": {"type": "array", "items": {"type": "string", "maxLength": 1600}, "maxItems": 5, "description": "Multiple public URLs for batch download."},
+            "preferred_title": {"type": "string", "maxLength": 120, "description": "Optional title for the downloaded item."},
+        },
+        "required": [],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("file_download",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="idempotent",
+    max_result_bytes=8192,
+)
+
+SYNC_ATTACHMENT_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="sync_attachment_workspace",
+    display_name="Sync attachment workspace",
+    description=(
+        "Reorganize the attachment workspace: keep the final set of materials to focus on and collapse the rest. "
+        "Submit the final list once; do not toggle items one by one."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "focus_targets": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 30, "description": "Final workspace list after reorg: ids / '第2张图' / descriptive names."},
+            "kind": {"type": "string", "enum": ["any", "image", "file", "document", "audio"], "description": "Optional kind filter. Default any."},
+            "reason": {"type": "string", "maxLength": 160, "description": "Why these materials are needed."},
+        },
+        "required": [],
+    },
+    risk="low",
+    confirm="never",
+    effects=("workspace_reorg",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="idempotent",
+    max_result_bytes=8192,
+)
+INSPECT_ATTACHMENT_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="inspect_attachment",
+    display_name="Inspect attachment",
+    description=(
+        "Open and inspect a single image or file in the current attachment workspace. "
+        "To compare multiple materials, prefer sync_attachment_workspace."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "target": {"type": "string", "maxLength": 120, "description": "Attachment id / title / filename, or 'latest'. Defaults to latest."},
+            "kind": {"type": "string", "enum": ["any", "image", "file", "document", "audio"], "description": "Optional kind filter. Default any."},
+        },
+        "required": [],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=16384,
+)
+
+LOAD_MATERIAL_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="load_material",
+    display_name="Load material",
+    description=(
+        "Reload one to five original images from the current session's workspace into the next multimodal model round. "
+        "Use when an older image must be examined again."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "targets": {"type": "array", "items": {"type": "string", "maxLength": 120}, "minItems": 1, "maxItems": 5, "description": "Current-session image handles such as img_001 or gen_002."},
+            "purpose": {"type": "string", "maxLength": 240, "description": "Short reason the original pixels are needed."},
+        },
+        "required": ["targets"],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=8192,
+)
+RETRY_ATTACHMENT_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="retry_attachment",
+    display_name="Retry attachment",
+    description="Retry processing a failed or pending attachment in the workspace.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "target": {"type": "string", "maxLength": 120, "description": "Attachment id / title / filename, or 'latest'."},
+            "kind": {"type": "string", "enum": ["any", "image", "file", "document", "audio"], "description": "Optional kind filter."},
+        },
+        "required": [],
+    },
+    risk="low",
+    confirm="never",
+    effects=("attachment_retry",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="idempotent",
+    max_result_bytes=4096,
+)
+
+CLEAR_ATTACHMENT_FOCUS_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="clear_attachment_focus",
+    display_name="Clear attachment focus",
+    description=(
+        "Remove materials from the current workspace context when finished. "
+        "Only deletes storage when the user explicitly asks."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "target": {"type": "string", "maxLength": 120, "description": "current | latest | all | attachment id/title/filename."},
+            "targets": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 30, "description": "Multiple specific materials to clear."},
+            "kind": {"type": "string", "enum": ["any", "image", "file", "document", "audio"], "description": "Optional kind filter. Default any."},
+            "delete_storage": {"type": "boolean", "description": "Delete original file bytes. Default false."},
+            "reason": {"type": "string", "maxLength": 160, "description": "Optional reason."},
+        },
+        "required": [],
+    },
+    risk="low",
+    confirm="never",
+    effects=("workspace_clear",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="idempotent",
+    max_result_bytes=4096,
+)
+READ_ATTACHMENT_SECTION_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="read_attachment_section",
+    display_name="Read attachment section",
+    description=(
+        "Expand a specific page, line range, table, or sheet of a long attachment. "
+        "Only reveals already-parsed text; reports when no text layer exists."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "target": {"type": "string", "maxLength": 120, "description": "file id / title / filename / 'latest'."},
+            "section": {"type": "string", "maxLength": 120, "description": "e.g. '第2页' / '第10-30行' / '第1个表' / 'Sheet1'."},
+            "kind": {"type": "string", "enum": ["any", "file", "document"], "description": "Optional. Default document."},
+        },
+        "required": [],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=32768,
+)
+
+LIST_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="list_workspace",
+    display_name="List workspace",
+    description="List one or more directories in Akane's accessible workspace folder. Use it first to see what materials exist.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "paths": {"type": "array", "items": {"type": "string"}, "maxItems": 50, "description": "workspace:/ relative directories. Omit to list the workspace root."},
+            "depth": {"type": "integer", "minimum": 0, "maximum": 8, "description": "1 lists direct children; larger expands subdirectories. Default 1."},
+            "max_entries": {"type": "integer", "minimum": 1, "maximum": 50000, "description": "Maximum entries to return. Default 10000."},
+        },
+        "required": [],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=65536,
+)
+READ_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="read_workspace",
+    display_name="Read workspace",
+    description="Read one or more files from the workspace by their workspace:/ relative paths. Supports text/Word/Excel/PDF and ZIP listings.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "targets": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200, "description": "workspace:/ relative file paths from list_workspace."},
+            "max_chars": {"type": "integer", "minimum": 1000, "maximum": 4000000, "description": "Maximum characters to read. Default 1000000."},
+        },
+        "required": ["targets"],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=65536,
+)
+
+FOCUS_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="focus_workspace",
+    display_name="Focus workspace",
+    description="Mark one or more workspace items as focused for the current session context.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "targets": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 20, "description": "workspace:/ relative paths or item handles to focus."},
+            "reason": {"type": "string", "maxLength": 200, "description": "Optional reason for focusing these items."},
+        },
+        "required": ["targets"],
+    },
+    risk="low",
+    confirm="never",
+    effects=("workspace_focus",),
+    visible_in=("desktop",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="idempotent",
+    max_result_bytes=4096,
+)
+
+REGISTER_WORKSPACE_ITEMS_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="register_workspace_items",
+    display_name="Register workspace items",
+    description="Register workspace items as artifacts in the task workspace for tracking and delivery.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "items": {"type": "array", "items": {"type": "object"}, "minItems": 1, "maxItems": 20, "description": "Items to register, each with id and optional kind/title."},
+            "task_id": {"type": "string", "maxLength": 80, "description": "Optional task workspace ID to associate with."},
+        },
+        "required": ["items"],
+    },
+    risk="low",
+    confirm="never",
+    effects=("workspace_register",),
+    visible_in=("desktop",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="idempotent",
+    max_result_bytes=4096,
+)
+COMPOSE_FILE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="compose_file",
+    display_name="Compose file",
+    description=(
+        "Create a new document, spreadsheet, subtitle, or text file from scratch or from conversation context. "
+        "Use for explicit file-creation requests; do not use for in-chat text responses."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "title": {"type": "string", "maxLength": 120, "description": "Output file title."},
+            "format": {"type": "string", "enum": ["md", "txt", "docx", "xlsx", "csv", "json", "html", "srt", "lrc", "vtt", "pdf"], "description": "Output file format."},
+            "content": {"type": "string", "maxLength": 100000, "description": "Full file content to write."},
+            "sources": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 10, "description": "Optional source handles (file_*, gen_*) to include in composition."},
+            "instructions": {"type": "string", "maxLength": 2000, "description": "Additional composition instructions."},
+        },
+        "required": ["title", "format"],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("file_create",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+
+REVISE_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="revise_generated_file",
+    display_name="Revise generated file",
+    description="Edit or revise a previously generated file based on the user's feedback or new instructions.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "target": {"type": "string", "maxLength": 120, "description": "Generated file handle (gen_*) or 'latest'."},
+            "instructions": {"type": "string", "maxLength": 2000, "description": "Revision instructions."},
+            "content": {"type": "string", "maxLength": 100000, "description": "Full revised content, if replacing entirely."},
+        },
+        "required": ["target", "instructions"],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("file_revise",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="apply_style_to_existing_file",
+    display_name="Apply style to existing file",
+    description="Apply a formatting or style transformation to an existing generated file without changing its core content.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "target": {"type": "string", "maxLength": 120, "description": "Generated file handle (gen_*) or 'latest'."},
+            "style": {"type": "string", "maxLength": 200, "description": "Style or format transformation to apply."},
+            "output_format": {"type": "string", "enum": ["md", "txt", "docx", "pdf", "html"], "description": "Optional output format override."},
+        },
+        "required": ["target", "style"],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("file_style",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+
+INSPECT_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="inspect_generated_file",
+    display_name="Inspect generated file",
+    description=(
+        "Re-read a file you generated: its body, head/tail, zip file list, or manifest. "
+        "Read-only — does not send, modify, or delete."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "target": {"type": "string", "maxLength": 120, "description": "Generated id / 'latest' / file title. Default latest."},
+            "section": {"type": "string", "maxLength": 260, "description": "content | head | tail | summary | file_list | manifest | file:<name>. Default content."},
+            "max_chars": {"type": "integer", "minimum": 500, "maximum": 40000, "description": "Maximum characters. Default 12000."},
+        },
+        "required": [],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=65536,
+)
+MANAGE_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="manage_generated_file",
+    display_name="Manage generated file",
+    description="Manage a previously generated file: archive, delete, rename, or change its delivery status.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "action": {"type": "string", "enum": ["archive", "delete", "rename", "inspect_status", "list"], "description": "Management action."},
+            "target": {"type": "string", "maxLength": 120, "description": "Generated file handle or 'latest'."},
+            "new_title": {"type": "string", "maxLength": 120, "description": "New title for rename action."},
+        },
+        "required": ["action"],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("file_manage",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=4096,
+)
+
+GENERATE_IMAGE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="generate_image",
+    display_name="Generate image",
+    description=(
+        "Generate a new image or edit one to five current-session reference images using the configured image provider. "
+        "Use only for explicit image-generation/editing intent."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "prompt": {"type": "string", "minLength": 1, "maxLength": 4000, "description": "Complete creative/edit instruction."},
+            "reference_images": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 5, "description": "Optional current-session img_*/gen_* handles."},
+            "mask_image": {"type": "string", "maxLength": 120, "description": "Optional mask image handle."},
+            "size": {"type": "string", "pattern": "^(auto|[0-9]{3,4}x[0-9]{3,4})$", "description": "auto or WIDTHxHEIGHT. Common: 1024x1024, 1536x1024."},
+            "quality": {"type": "string", "enum": ["auto", "low", "medium", "high"]},
+            "n": {"type": "integer", "minimum": 1, "maximum": 4},
+            "output_title": {"type": "string", "maxLength": 80},
+        },
+        "required": ["prompt"],
+    },
+    risk="medium",
+    confirm="never",
+    effects=("image_generation",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="long_task",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+SEND_FILE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="send_file",
+    display_name="Send file",
+    description=(
+        "Send an existing workspace material or generated file to the user. "
+        "Handles file_*, img_*, audio_*, and gen_* references."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "target": {"type": "string", "maxLength": 120, "description": "Single file handle or 'latest'."},
+            "targets": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 10, "description": "Multiple file handles."},
+        },
+        "required": [],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("file_delivery",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=4096,
+)
+
+SEND_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="send_generated_file",
+    display_name="Send generated file",
+    description="Send a previously generated file to the user. Alias for send_file focused on gen_* handles.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "target": {"type": "string", "maxLength": 120, "description": "Generated file handle (gen_*) or 'latest'."},
+            "targets": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 10, "description": "Multiple generated file handles."},
+        },
+        "required": [],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("file_delivery",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=4096,
+)
+
+SEND_STICKER_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="send_sticker",
+    display_name="Send sticker",
+    description="Send a static sticker in QQ chat when the atmosphere calls for it.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "emotion": {"type": "string", "maxLength": 40, "description": "Emotion or mood for the sticker selection."},
+            "sticker_id": {"type": "string", "maxLength": 80, "description": "Optional specific sticker identifier."},
+        },
+        "required": [],
+    },
+    risk="low",
+    confirm="never",
+    effects=("sticker_delivery",),
+    visible_in=("qq",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=2048,
+)
+INSPECT_MEDIA_INFO_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="inspect_media_info",
+    display_name="Inspect media info",
+    description="Read media specs (duration, codec, sample rate, channels, bitrate, resolution, fps) of an existing file. Read-only.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "source_id": {"type": "string", "maxLength": 120, "description": "Handle of an existing media item, e.g. file_001 / audio_001 / gen_001."},
+        },
+        "required": ["source_id"],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=4096,
+)
+
+SEPARATE_AUDIO_STEMS_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="separate_audio_stems",
+    display_name="Separate audio stems",
+    description="Separate a music file into vocal and instrumental stems using Demucs. Produces separate audio files.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "source_id": {"type": "string", "maxLength": 120, "description": "Source audio/video handle (audio_*, file_*, gen_*)."},
+            "model": {"type": "string", "description": "Optional Demucs model name. Default: configured default."},
+            "stems": {"type": "array", "items": {"type": "string"}, "description": "Stems to extract: vocals, drums, bass, other. Default: vocals + no_vocals."},
+            "output_format": {"type": "string", "enum": ["wav", "mp3", "flac"], "description": "Output format. Default wav."},
+        },
+        "required": ["source_id"],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("file_create",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="long_task",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+CLEAN_VOICE_TRACK_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="clean_voice_track",
+    display_name="Clean voice track",
+    description="Remove background noise from a voice recording using DeepFilterNet or FFmpeg. Produces a cleaned audio file.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "source_id": {"type": "string", "maxLength": 120, "description": "Source audio handle (audio_*, file_*, gen_*)."},
+            "mode": {"type": "string", "enum": ["auto", "ai", "ffmpeg"], "description": "Cleaning mode. Default auto."},
+            "output_format": {"type": "string", "enum": ["wav", "mp3", "flac"], "description": "Output format. Default wav."},
+        },
+        "required": ["source_id"],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("file_create",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="long_task",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+
+TRANSCRIBE_MEDIA_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="transcribe_media",
+    display_name="Transcribe media",
+    description="Transcribe speech from an audio or video file to text using faster-whisper. Produces a transcript file.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "source_id": {"type": "string", "maxLength": 120, "description": "Source media handle (audio_*, file_*, gen_*)."},
+            "language": {"type": "string", "maxLength": 10, "description": "Optional language code, e.g. zh, en, ja. Default: auto-detect."},
+            "output_format": {"type": "string", "enum": ["txt", "srt", "vtt", "lrc", "json"], "description": "Transcript format. Default txt."},
+            "model": {"type": "string", "description": "Optional Whisper model size: tiny, base, small, medium, large-v2, large-v3."},
+        },
+        "required": ["source_id"],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("file_create",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="long_task",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+PREPARE_VOICE_DATASET_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="prepare_voice_dataset",
+    display_name="Prepare voice dataset",
+    description="Slice, label, and package audio clips into a voice training dataset for RVC or similar tools.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "source_id": {"type": "string", "maxLength": 120, "description": "Source audio handle (audio_*, file_*, gen_*)."},
+            "speaker_name": {"type": "string", "maxLength": 80, "description": "Speaker name for dataset labeling."},
+            "min_duration": {"type": "number", "minimum": 0.5, "maximum": 30.0, "description": "Minimum clip duration in seconds."},
+            "max_duration": {"type": "number", "minimum": 1.0, "maximum": 60.0, "description": "Maximum clip duration in seconds."},
+            "output_format": {"type": "string", "enum": ["wav", "flac"], "description": "Output audio format. Default wav."},
+        },
+        "required": ["source_id"],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("file_create",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="long_task",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+
+CONVERT_MEDIA_FILE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="convert_media_file",
+    display_name="Convert media file",
+    description="Convert or re-encode a media file to a different format or codec using FFmpeg.",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "source_id": {"type": "string", "maxLength": 120, "description": "Source media handle (audio_*, file_*, gen_*)."},
+            "output_format": {"type": "string", "enum": ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "mp4", "webm", "mkv"], "description": "Target output format."},
+            "bitrate": {"type": "string", "maxLength": 20, "description": "Optional output bitrate, e.g. 192k."},
+            "sample_rate": {"type": "integer", "description": "Optional output sample rate in Hz, e.g. 44100."},
+            "channels": {"type": "integer", "minimum": 1, "maximum": 8, "description": "Optional output channel count."},
+        },
+        "required": ["source_id", "output_format"],
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("file_create",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="long_task",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+COVER_SONG_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="cover_song",
+    display_name="Cover song",
+    description=(
+        "Create an AI cover from a current-session audio/video material using a local RVC voice model. "
+        "Separates vocals, converts the lead vocal, mixes with instrumental, and stores as a generated artifact."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "source_id": {"type": "string", "maxLength": 120, "description": "Optional source audio/video/generated handle."},
+            "song_title": {"type": "string", "maxLength": 120, "description": "Song title. Required when restoring a cached cover without source_id."},
+            "artist": {"type": "string", "maxLength": 80, "description": "Optional original artist for cache disambiguation."},
+            "voice_model": {"type": "string", "maxLength": 120, "description": "Target local RVC model name, or auto for the configured default."},
+            "pitch_shift": {"type": "integer", "minimum": -24, "maximum": 24},
+            "output_format": {"type": "string", "enum": ["mp3", "flac", "wav"]},
+            "delivery": {"type": "string", "enum": ["auto", "voice", "file", "both", "none"]},
+            "force_rebuild": {"type": "boolean"},
+        },
+        "required": [],
+    },
+    risk="medium",
+    confirm="never",
+    effects=("file_create", "audio_delivery"),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="long_task",
+    idempotency="effectful",
+    max_result_bytes=8192,
+)
+
+# ── End M66-C canonical ToolSpecs ───────────────────────────────────────────
 
 
 @dataclass(frozen=True)

@@ -29,9 +29,49 @@ from .capcore_runtime import (
 )
 from .capability_adapters import CapabilityProtocolError, InvocationContext
 from .capability_registry import (
+    APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC,
+    BROWSER_PAGE_TOOL_SPEC,
+    CALL_NPC_TOOL_SPEC,
+    CANCEL_REMINDER_TOOL_SPEC,
+    CHECK_INVENTORY_TOOL_SPEC,
+    CLEAR_ATTACHMENT_FOCUS_TOOL_SPEC,
+    COMPOSE_FILE_TOOL_SPEC,
+    CONVERT_MEDIA_FILE_TOOL_SPEC,
+    COVER_SONG_TOOL_SPEC,
+    CLEAN_VOICE_TRACK_TOOL_SPEC,
+    DELEGATE_TASK_TOOL_SPEC,
+    FETCH_MEDIA_FROM_URL_TOOL_SPEC,
+    FOCUS_WORKSPACE_TOOL_SPEC,
+    GENERATE_IMAGE_TOOL_SPEC,
+    INSPECT_ATTACHMENT_TOOL_SPEC,
+    INSPECT_GENERATED_FILE_TOOL_SPEC,
+    INSPECT_MEDIA_INFO_TOOL_SPEC,
+    LIST_REMINDERS_TOOL_SPEC,
+    LIST_WORKSPACE_TOOL_SPEC,
+    LOAD_CHARACTER_CONTEXT_TOOL_SPEC,
+    LOAD_MATERIAL_TOOL_SPEC,
+    MANAGE_ARTIFACT_TOOL_SPEC,
+    MANAGE_GENERATED_FILE_TOOL_SPEC,
+    MANAGE_GIFT_TOOL_SPEC,
+    MANAGE_PERSONA_TOOL_SPEC,
+    MANAGE_TASK_WORKSPACE_TOOL_SPEC,
     OPEN_BROWSER_TOOL_SPEC,
+    OPEN_MUSIC_SEARCH_TOOL_SPEC,
+    PREPARE_VOICE_DATASET_TOOL_SPEC,
+    READ_ATTACHMENT_SECTION_TOOL_SPEC,
     READ_MEMORY_TIMELINE_TOOL_SPEC,
+    READ_WORKSPACE_TOOL_SPEC,
+    REGISTER_WORKSPACE_ITEMS_TOOL_SPEC,
     RETRIEVE_MEMORY_TOOL_SPEC,
+    RETRY_ATTACHMENT_TOOL_SPEC,
+    REVISE_GENERATED_FILE_TOOL_SPEC,
+    SEND_FILE_TOOL_SPEC,
+    SEND_GENERATED_FILE_TOOL_SPEC,
+    SEND_STICKER_TOOL_SPEC,
+    SEPARATE_AUDIO_STEMS_TOOL_SPEC,
+    SET_REMINDER_TOOL_SPEC,
+    SYNC_ATTACHMENT_WORKSPACE_TOOL_SPEC,
+    TRANSCRIBE_MEDIA_TOOL_SPEC,
     WEB_SEARCH_TOOL_SPEC,
 )
 from .local_capability_config import get_mcp_server_runtime_config
@@ -780,8 +820,63 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
 }
 
 
+# M66-C: Single canonical ToolSpec lookup for all built-in tools.
+# BaseToolHandler.tool_spec() uses this by default. Handlers that define their
+# own explicit tool_spec() override this lookup — identical result, more explicit.
+TOOL_SPEC_BY_TYPE: dict[str, Any] = {
+    "retrieve_memory": RETRIEVE_MEMORY_TOOL_SPEC,
+    "read_memory_timeline": READ_MEMORY_TIMELINE_TOOL_SPEC,
+    "load_character_context": LOAD_CHARACTER_CONTEXT_TOOL_SPEC,
+    "set_reminder": SET_REMINDER_TOOL_SPEC,
+    "list_reminders": LIST_REMINDERS_TOOL_SPEC,
+    "cancel_reminder": CANCEL_REMINDER_TOOL_SPEC,
+    "call_npc": CALL_NPC_TOOL_SPEC,
+    "check_inventory": CHECK_INVENTORY_TOOL_SPEC,
+    "manage_gift": MANAGE_GIFT_TOOL_SPEC,
+    "manage_artifact": MANAGE_ARTIFACT_TOOL_SPEC,
+    "manage_persona": MANAGE_PERSONA_TOOL_SPEC,
+    "manage_task_workspace": MANAGE_TASK_WORKSPACE_TOOL_SPEC,
+    "delegate_task": DELEGATE_TASK_TOOL_SPEC,
+    "web_search": WEB_SEARCH_TOOL_SPEC,
+    "browser_page": BROWSER_PAGE_TOOL_SPEC,
+    "open_music_search": OPEN_MUSIC_SEARCH_TOOL_SPEC,
+    "fetch_media_from_url": FETCH_MEDIA_FROM_URL_TOOL_SPEC,
+    "sync_attachment_workspace": SYNC_ATTACHMENT_WORKSPACE_TOOL_SPEC,
+    "inspect_attachment": INSPECT_ATTACHMENT_TOOL_SPEC,
+    "load_material": LOAD_MATERIAL_TOOL_SPEC,
+    "generate_image": GENERATE_IMAGE_TOOL_SPEC,
+    "retry_attachment": RETRY_ATTACHMENT_TOOL_SPEC,
+    "clear_attachment_focus": CLEAR_ATTACHMENT_FOCUS_TOOL_SPEC,
+    "read_attachment_section": READ_ATTACHMENT_SECTION_TOOL_SPEC,
+    "list_workspace": LIST_WORKSPACE_TOOL_SPEC,
+    "read_workspace": READ_WORKSPACE_TOOL_SPEC,
+    "focus_workspace": FOCUS_WORKSPACE_TOOL_SPEC,
+    "register_workspace_items": REGISTER_WORKSPACE_ITEMS_TOOL_SPEC,
+    "compose_file": COMPOSE_FILE_TOOL_SPEC,
+    "revise_generated_file": REVISE_GENERATED_FILE_TOOL_SPEC,
+    "apply_style_to_existing_file": APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC,
+    "inspect_generated_file": INSPECT_GENERATED_FILE_TOOL_SPEC,
+    "manage_generated_file": MANAGE_GENERATED_FILE_TOOL_SPEC,
+    "send_file": SEND_FILE_TOOL_SPEC,
+    "send_generated_file": SEND_GENERATED_FILE_TOOL_SPEC,
+    "send_sticker": SEND_STICKER_TOOL_SPEC,
+    "inspect_media_info": INSPECT_MEDIA_INFO_TOOL_SPEC,
+    "separate_audio_stems": SEPARATE_AUDIO_STEMS_TOOL_SPEC,
+    "clean_voice_track": CLEAN_VOICE_TRACK_TOOL_SPEC,
+    "transcribe_media": TRANSCRIBE_MEDIA_TOOL_SPEC,
+    "prepare_voice_dataset": PREPARE_VOICE_DATASET_TOOL_SPEC,
+    "convert_media_file": CONVERT_MEDIA_FILE_TOOL_SPEC,
+    "cover_song": COVER_SONG_TOOL_SPEC,
+}
+
+
 class BaseToolHandler:
     tool_type: str = ""
+
+    def tool_spec(self):
+        """M66-C: Return the canonical ToolSpec for this tool. Handlers with an
+        explicit override take precedence; all others resolve via TOOL_SPEC_BY_TYPE."""
+        return TOOL_SPEC_BY_TYPE.get(str(self.tool_type or "").strip())
 
     def tool_metadata(self) -> ToolMetadata:
         metadata = TOOL_METADATA_BY_TYPE.get(str(self.tool_type or "").strip())
@@ -1423,6 +1518,9 @@ class LoadCharacterContextToolHandler(BaseToolHandler):
     def __init__(self, *, context_library_service: Any) -> None:
         self.context_library_service = context_library_service
 
+    def tool_spec(self):  # M66-C
+        return LOAD_CHARACTER_CONTEXT_TOOL_SPEC
+
     def build_prompt_instruction(self) -> str:
         # The active character pack renders its exact libraries and targets.
         return ""
@@ -1508,16 +1606,13 @@ class LoadCharacterContextToolHandler(BaseToolHandler):
 class CallNPCToolHandler(BaseToolHandler):
     tool_type = "call_npc"
 
-    def __init__(
-        self,
-        *,
-        npc_runtime: GenericNPCRuntime,
-        describe_scene: Callable[[dict[str, Any]], str],
-        build_followup_context: Callable[[dict[str, Any]], str],
-    ) -> None:
+    def __init__(self, *, npc_runtime: GenericNPCRuntime, describe_scene, build_followup_context) -> None:
         self.npc_runtime = npc_runtime
         self.describe_scene = describe_scene
         self.build_followup_context = build_followup_context
+
+    def tool_spec(self):  # M66-C
+        return CALL_NPC_TOOL_SPEC
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -1577,6 +1672,9 @@ class SetReminderToolHandler(BaseToolHandler):
 
     def __init__(self, *, store: MemoryStore) -> None:
         self.store = store
+
+    def tool_spec(self):  # M66-C
+        return SET_REMINDER_TOOL_SPEC
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -1679,6 +1777,9 @@ class ListRemindersToolHandler(BaseToolHandler):
     def __init__(self, *, store: MemoryStore) -> None:
         self.store = store
 
+    def tool_spec(self):  # M66-C
+        return LIST_REMINDERS_TOOL_SPEC
+
     def build_prompt_instruction(self) -> str:
         return (
             "- list_reminders：当用户想查看自己现在有哪些提醒时使用。"
@@ -1752,6 +1853,9 @@ class CancelReminderToolHandler(BaseToolHandler):
 
     def __init__(self, *, store: MemoryStore) -> None:
         self.store = store
+
+    def tool_spec(self):  # M66-C
+        return CANCEL_REMINDER_TOOL_SPEC
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -1915,6 +2019,9 @@ class CheckInventoryToolHandler(BaseToolHandler):
     def __init__(self, *, gift_service) -> None:
         self.gift_service = gift_service
 
+    def tool_spec(self):  # M66-C
+        return CHECK_INVENTORY_TOOL_SPEC
+
     def build_prompt_instruction(self) -> str:
         return (
             "- check_inventory：当你需要查看手边礼物或自己的礼物库存时使用。"
@@ -1996,6 +2103,9 @@ class InspectAttachmentToolHandler(BaseToolHandler):
     def __init__(self, *, attachment_service) -> None:
         self.attachment_service = attachment_service
 
+    def tool_spec(self):  # M66-C
+        return INSPECT_ATTACHMENT_TOOL_SPEC
+
     def build_prompt_instruction(self) -> str:
         return (
             "- inspect_attachment：当你需要展开查看当前材料工作台里的图片或文件时使用。"
@@ -2058,6 +2168,9 @@ class LoadMaterialToolHandler(BaseToolHandler):
 
     def __init__(self, *, image_material_resolver) -> None:
         self.image_material_resolver = image_material_resolver
+
+    def tool_spec(self):  # M66-C
+        return LOAD_MATERIAL_TOOL_SPEC
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -2156,6 +2269,9 @@ class GenerateImageToolHandler(BaseToolHandler):
         if not callable(status_fn):
             return {"enabled": False, "status": "unavailable", "reason": "image_generation_service_missing"}
         return dict(status_fn() or {})
+
+    def tool_spec(self):  # M66-C
+        return GENERATE_IMAGE_TOOL_SPEC
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -2318,6 +2434,9 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
     def __init__(self, *, attachment_service) -> None:
         self.attachment_service = attachment_service
 
+    def tool_spec(self):  # M66-C
+        return READ_ATTACHMENT_SECTION_TOOL_SPEC
+
     def build_prompt_instruction(self) -> str:
         return (
             "- read_attachment_section：当工作台材料较长、你需要展开某一页/某几行/某个表/某个 sheet 的内容时使用。"
@@ -2382,6 +2501,9 @@ class SyncAttachmentWorkspaceToolHandler(BaseToolHandler):
 
     def __init__(self, *, attachment_service) -> None:
         self.attachment_service = attachment_service
+
+    def tool_spec(self):  # M66-C
+        return SYNC_ATTACHMENT_WORKSPACE_TOOL_SPEC
 
     def build_prompt_instruction(self) -> str:
         return (

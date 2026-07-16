@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .capability_registry import DELEGATE_TASK_TOOL_SPEC
 from .task_worker import TaskWorkerService
 from .tool_runtime import BaseToolHandler, ToolExecutionContext, ToolExecutionResult
 
@@ -11,6 +12,9 @@ class DelegateTaskToolHandler(BaseToolHandler):
 
     def __init__(self, *, task_worker_service: TaskWorkerService) -> None:
         self.task_worker_service = task_worker_service
+
+    def tool_spec(self):  # M66-C: canonical ToolSpec authority
+        return DELEGATE_TASK_TOOL_SPEC
 
     def build_prompt_instruction(self) -> str:
         return (

@@ -77,7 +77,7 @@ from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
 from .tool_invocation import TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
-from .tool_invocation import TOOL_EXECUTION_RECEIPT_FIELD, TOOL_EXECUTION_RECEIPTS_FIELD
+from .tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, TOOL_EXECUTION_RECEIPT_FIELD, TOOL_EXECUTION_RECEIPTS_FIELD
 from .tool_invocation import TOOL_SOURCE_FIELD
 from .tool_runtime import (
     AdapterCapabilityToolHandler,
@@ -4208,6 +4208,9 @@ class AkaneMemoryEngine:
         domain_profile_id: str = "",
     ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
         execution_receipts = final_output.pop(TOOL_EXECUTION_RECEIPTS_FIELD, None)
+        # M66-C frozen round: retrieve the CapabilitySelection resolved in
+        # prepare_context() so normalize does not re-resolve handlers.
+        frozen_capability_selection = final_output.pop(TOOL_CAPABILITY_SELECTION_FIELD, None)
         native_tool_calls = final_output.pop(NATIVE_TOOL_CALLS_FIELD, None)
         native_tool_call = final_output.pop(NATIVE_TOOL_CALL_FIELD, None)
         raw_tool_calls = (
@@ -4247,6 +4250,7 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 domain_profile_id=domain_profile_id,
+                capability_selection=frozen_capability_selection,
             )
             if tool_call:
                 tool_calls.append(tool_call)
@@ -5635,6 +5639,7 @@ class AkaneMemoryEngine:
         profile_user_id: str = "",
         session_id: str = "",
         domain_profile_id: str = "",
+        capability_selection: Any = None,
     ) -> dict[str, Any] | None:
         return tool_orchestration_engine.normalize_tool_call(
             self,
@@ -5643,6 +5648,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             domain_profile_id=domain_profile_id,
+            capability_selection=capability_selection,
         )
 
     def _describe_tool_call_rejection(

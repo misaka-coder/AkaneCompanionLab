@@ -249,6 +249,7 @@ def normalize_tool_call(
     profile_user_id: str = "",
     session_id: str = "",
     domain_profile_id: str = "",
+    capability_selection: Any = None,
 ) -> dict[str, Any] | None:
     invocation = normalize_tool_invocation(
         engine,
@@ -257,6 +258,7 @@ def normalize_tool_call(
         profile_user_id=profile_user_id,
         session_id=session_id,
         domain_profile_id=domain_profile_id,
+        capability_selection=capability_selection,
     )
     if invocation is None:
         return None
@@ -271,6 +273,7 @@ def normalize_tool_invocation(
     profile_user_id: str = "",
     session_id: str = "",
     domain_profile_id: str = "",
+    capability_selection: Any = None,
 ) -> ToolInvocation | None:
     if not isinstance(value, dict):
         return None
@@ -297,11 +300,14 @@ def normalize_tool_invocation(
             invocation_id=invocation_id,
         )
 
+    # M66-C frozen round: when capability_selection is carried from prepare_context,
+    # pass it through to avoid a redundant handler re-resolution for this round.
     handlers = engine._resolve_tool_handlers(
         client_context=client_context,
         profile_user_id=profile_user_id,
         session_id=session_id,
         domain_profile_id=domain_profile_id,
+        capability_selection=capability_selection,
     )
     delegated_media_call = _maybe_delegate_qq_media_tool(
         value,

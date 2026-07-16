@@ -14,7 +14,7 @@ from ..prompt_blocks import strip_care_prompt_contract
 from ..prompt_profiles import PromptModule
 from ..resource_manifest import ResourceManifest
 from ..text_utils import render_chat_timeline
-from ..tool_invocation import TOOL_EXECUTION_RECEIPTS_FIELD
+from ..tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, TOOL_EXECUTION_RECEIPTS_FIELD
 
 logger = logging.getLogger("akane.response_builder")
 
@@ -573,6 +573,11 @@ def prepare_context(
             for name, receipt in execution_receipts.items()
             if isinstance(receipt, dict)
         }
+    # M66-C frozen round: carry the resolved CapabilitySelection into the
+    # invocation phase so _prepare_tool_round_decisions can pass it to
+    # normalize/validate without re-resolving handlers a second time.
+    if capability_selection is not None:
+        generation_context[TOOL_CAPABILITY_SELECTION_FIELD] = capability_selection
     if client_context.effective_mode == ClientMode.QQ_TEXT:
         fallback_payload = generation_context.get("fallback")
         if isinstance(fallback_payload, dict):
