@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Callable
+import threading
+import time
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable, Mapping, Protocol
+
+from capcore import CapabilityToolSpec
 
 from .client_protocol import ClientMode
 
@@ -65,7 +69,7 @@ COMMON_TOOL_NAMES = (
 )
 
 WEB_SEARCH_TOOL_NAMES = ("web_search",)
-DESKTOP_BROWSER_TOOL_NAMES = ("open_browser", "browser_page")
+DESKTOP_BROWSER_TOOL_NAMES = ("browser_page",)
 DESKTOP_MUSIC_REQUEST_TOOL_NAMES = ("open_music_search",)
 DESKTOP_WORKSPACE_TOOL_NAMES = (
     "list_workspace",
@@ -120,6 +124,221 @@ CONVERSATION_FILE_AUTHORING_TOOL_NAMES = ("compose_file",)
 QQ_STICKER_TOOL_NAMES = ("send_sticker",)
 
 
+OPEN_BROWSER_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="open_browser",
+    display_name="Open public page",
+    description=(
+        "当用户明确要求在自己的电脑上打开一个公开 HTTP(S) 网页时使用。"
+        "这项能力只负责交给系统浏览器打开，不读取页面，不代表页面内容已被查看。"
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 1600,
+                "description": "要交给用户系统浏览器打开的公开 HTTP(S) URL。",
+            },
+            "label": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "可选的页面简称，仅用于自然说明。",
+            },
+            "reason": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "为什么需要按用户要求打开该页面。",
+            },
+        },
+        "required": ["url"],
+        "additionalProperties": False,
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "enum": ["succeeded", "failed", "unavailable"]},
+            "reason": {"type": "string"},
+        },
+        "required": ["status"],
+        "additionalProperties": False,
+    },
+    risk="medium",
+    confirm="first_time",
+    effects=("external_url_open",),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=4096,
+)
+
+
+@dataclass(frozen=True)
+class ExecutionReceipt:
+    instance_id: str
+    tool_id: str
+    offer_id: str
+    lease_epoch: str
+    offer_expires_at: float
+    spec_version: str
+    schema_version: int
+    schema_hash: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "instance_id": self.instance_id,
+            "tool_id": self.tool_id,
+            "offer_id": self.offer_id,
+            "lease_epoch": self.lease_epoch,
+            "offer_expires_at": self.offer_expires_at,
+            "spec_version": self.spec_version,
+            "schema_version": self.schema_version,
+            "schema_hash": self.schema_hash,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | None) -> "ExecutionReceipt | None":
+        if not isinstance(value, Mapping):
+            return None
+        try:
+            receipt = cls(
+                instance_id=str(value.get("instance_id") or "").strip(),
+                tool_id=str(value.get("tool_id") or "").strip(),
+                offer_id=str(value.get("offer_id") or "").strip(),
+                lease_epoch=str(value.get("lease_epoch") or "").strip(),
+                offer_expires_at=float(value.get("offer_expires_at") or 0),
+                spec_version=str(value.get("spec_version") or "").strip(),
+                schema_version=int(value.get("schema_version") or 0),
+                schema_hash=str(value.get("schema_hash") or "").strip().lower(),
+            )
+        except (TypeError, ValueError):
+            return None
+        if not all(
+            (
+                receipt.instance_id,
+                receipt.tool_id,
+                receipt.offer_id,
+                receipt.lease_epoch,
+                receipt.spec_version,
+                receipt.schema_hash,
+            )
+        ):
+            return None
+        return receipt
+
+
+@dataclass(frozen=True)
+class BrokerExecutionResult:
+    status: str
+    reason: str = ""
+    model_feedback: str = ""
+    data: Mapping[str, Any] = field(default_factory=dict)
+
+
+class CapabilityOfferSource(Protocol):
+    instance_id: str
+
+    def resolve_receipt(self, spec: CapabilityToolSpec) -> ExecutionReceipt | None: ...
+
+    def validate_receipt(self, spec: CapabilityToolSpec, receipt: ExecutionReceipt) -> str: ...
+
+    def dispatch(
+        self,
+        *,
+        spec: CapabilityToolSpec,
+        receipt: ExecutionReceipt,
+        invocation_id: str,
+        arguments: Mapping[str, Any],
+        timeout_seconds: float,
+    ) -> BrokerExecutionResult: ...
+
+
+class ExecutorBroker:
+    """Minimal instance-owned broker for the first effectful satellite tool."""
+
+    def __init__(self, offer_source: CapabilityOfferSource | None, *, clock=time.time) -> None:
+        self.offer_source = offer_source
+        self._clock = clock
+        self._lock = threading.RLock()
+        self._ledger: dict[str, BrokerExecutionResult | None] = {}
+
+    def execute(
+        self,
+        *,
+        spec: CapabilityToolSpec,
+        receipt_value: Mapping[str, Any] | None,
+        invocation_id: str,
+        arguments: Mapping[str, Any],
+        timeout_seconds: float = 15.0,
+    ) -> BrokerExecutionResult:
+        receipt = ExecutionReceipt.from_mapping(receipt_value)
+        if receipt is None:
+            return BrokerExecutionResult(
+                status="rejected",
+                reason="missing_execution_receipt",
+                model_feedback="当前桌面动作没有有效的执行凭据，不能执行。",
+            )
+        if receipt.offer_expires_at <= float(self._clock()):
+            return BrokerExecutionResult(
+                status="unavailable_before_dispatch",
+                reason="offer_expired",
+                model_feedback="当前无法连接桌面执行器，请直接说明这次暂时不能打开网页。",
+            )
+        clean_invocation_id = str(invocation_id or "").strip()
+        if not clean_invocation_id:
+            return BrokerExecutionResult(status="rejected", reason="missing_invocation_id")
+        with self._lock:
+            if clean_invocation_id in self._ledger:
+                existing = self._ledger[clean_invocation_id]
+                if existing is None:
+                    return BrokerExecutionResult(
+                        status="running",
+                        reason="duplicate_invocation_in_progress",
+                        model_feedback="同一桌面动作已经在处理中，不会重复执行。",
+                    )
+                return existing
+            self._ledger[clean_invocation_id] = None
+            if len(self._ledger) > 512:
+                terminal = [(key, value) for key, value in self._ledger.items() if value is not None]
+                self._ledger = dict(terminal[-384:])
+                self._ledger[clean_invocation_id] = None
+        source = self.offer_source
+        if source is None:
+            result = BrokerExecutionResult(
+                status="unavailable_before_dispatch",
+                reason="executor_unavailable",
+                model_feedback="当前无法连接桌面执行器，请直接说明这次暂时不能打开网页。",
+            )
+        else:
+            reason = source.validate_receipt(spec, receipt)
+            if reason:
+                result = BrokerExecutionResult(
+                    status="unavailable_before_dispatch",
+                    reason=reason,
+                    model_feedback="当前无法连接桌面执行器，请直接说明这次暂时不能打开网页。",
+                )
+            else:
+                try:
+                    result = source.dispatch(
+                        spec=spec,
+                        receipt=receipt,
+                        invocation_id=clean_invocation_id,
+                        arguments=dict(arguments),
+                        timeout_seconds=max(1.0, min(30.0, float(timeout_seconds))),
+                    )
+                except Exception:
+                    result = BrokerExecutionResult(
+                        status="execution_unknown",
+                        reason="executor_dispatch_failed",
+                        model_feedback="桌面动作的执行结果暂时无法确认，请不要声称网页已经打开。",
+                    )
+        with self._lock:
+            self._ledger[clean_invocation_id] = result
+        return result
+
+
 @dataclass(frozen=True)
 class CapabilitySnapshot:
     client_mode: ClientMode
@@ -163,6 +382,8 @@ class CapabilitySelection:
     module_names: tuple[str, ...]
     layer_names: tuple[str, ...] = ()
     disclosures: tuple[CapabilityDisclosure, ...] = ()
+    tool_specs: tuple[CapabilityToolSpec, ...] = ()
+    execution_receipts: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -243,11 +464,26 @@ def _is_web_scene(snapshot: CapabilitySnapshot) -> bool:
     return snapshot.client_mode in {ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D}
 
 
+def _requests_external_browser_open(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    open_markers = ("打开", "浏览器", "open", "launch", "给我看", "跳转")
+    target_markers = ("http://", "https://", "网页", "网站", "链接", "页面", "url")
+    return any(marker in text for marker in open_markers) and any(marker in text for marker in target_markers)
+
+
 class CapabilityRegistry:
     """Select lightweight ability hints and full tool instructions per turn."""
 
-    def __init__(self, modules: tuple[CapabilityModule, ...] | None = None) -> None:
+    def __init__(
+        self,
+        modules: tuple[CapabilityModule, ...] | None = None,
+        *,
+        offer_source: CapabilityOfferSource | None = None,
+    ) -> None:
         self.modules = modules or self._default_modules()
+        self.offer_source = offer_source
 
     def select(
         self,
@@ -255,6 +491,7 @@ class CapabilityRegistry:
         *,
         allowed_tool_names: tuple[str, ...] | None = None,
         hidden_tool_names: tuple[str, ...] = (),
+        intent_text: str = "",
     ) -> CapabilitySelection:
         hints: list[str] = []
         tools: list[str] = []
@@ -310,13 +547,63 @@ class CapabilityRegistry:
                     continue
                 seen_tools.add(tool_name)
                 tools.append(tool_name)
+        tool_specs: list[CapabilityToolSpec] = []
+        execution_receipts: dict[str, Mapping[str, Any]] = {}
+        if snapshot.client_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}:
+            receipt = self._resolve_offer_receipt(OPEN_BROWSER_TOOL_SPEC)
+            browser_allowed = "open_browser" not in hidden and (allowed is None or "open_browser" in allowed)
+            if receipt is not None and browser_allowed:
+                if "open_browser" not in seen_tools:
+                    tools.append("open_browser")
+                    seen_tools.add("open_browser")
+                if "desktop_browser_open" not in module_names:
+                    module_names.append("desktop_browser_open")
+                if "desktop_browser" not in seen_layers:
+                    layer_names.append("desktop_browser")
+                    seen_layers.add("desktop_browser")
+                hint = OPEN_BROWSER_TOOL_SPEC.description
+                if hint not in seen_hints:
+                    hints.append(hint)
+                    seen_hints.add(hint)
+                disclosures.append(
+                    CapabilityDisclosure(
+                        capability_id="desktop_browser_open",
+                        state="ready",
+                        summary=hint,
+                        tool_names=("open_browser",),
+                    )
+                )
+                tool_specs.append(OPEN_BROWSER_TOOL_SPEC)
+                execution_receipts["open_browser"] = receipt.as_dict()
+            elif browser_allowed and _requests_external_browser_open(intent_text):
+                disclosures.append(
+                    CapabilityDisclosure(
+                        capability_id="desktop_browser_open",
+                        state="unavailable",
+                        summary="可以按用户要求把公开网页交给其电脑上的系统浏览器打开。",
+                        reason="当前没有在线且已授权的桌面执行器。",
+                        activation="桌面客户端重新连接后，这项能力会自动恢复。",
+                        tool_names=("open_browser",),
+                    )
+                )
         return CapabilitySelection(
             light_hints=tuple(hints),
             tool_names=tuple(tools),
             module_names=tuple(module_names),
             layer_names=tuple(layer_names),
             disclosures=tuple(disclosures),
+            tool_specs=tuple(tool_specs),
+            execution_receipts=execution_receipts,
         )
+
+    def _resolve_offer_receipt(self, spec: CapabilityToolSpec) -> ExecutionReceipt | None:
+        source = self.offer_source
+        if source is None:
+            return None
+        try:
+            return source.resolve_receipt(spec)
+        except Exception:
+            return None
 
     def tool_names_for_mode(self, mode: ClientMode) -> tuple[str, ...]:
         selected: list[str] = []
@@ -352,11 +639,11 @@ class CapabilityRegistry:
                 recovery_hint="网络或搜索服务恢复后会自动重新开放；当前不要假装已经查到实时结果。",
             ),
             CapabilityModule(
-                name="desktop_browser_open",
+                name="desktop_managed_browser",
                 layer="desktop_browser",
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=DESKTOP_BROWSER_TOOL_NAMES,
-                light_hint="桌宠模式下，open_browser 只把公开网页交给用户的系统浏览器打开；browser_page 会打开并操作 Akane 可见托管浏览器窗口，用于读取、滚动、按可见候选序号打开链接，以及经授权的点击/输入。不要接管用户手动打开的浏览器标签页，不要登录、下载、上传或访问私密/内网内容。",
+                light_hint="桌宠模式下，browser_page 会打开并操作 Akane 可见托管浏览器窗口，用于读取、滚动、按可见候选序号打开链接，以及经授权的点击/输入。不要接管用户手动打开的浏览器标签页，不要登录、下载、上传或访问私密/内网内容。",
                 trigger=_always,
             ),
             CapabilityModule(

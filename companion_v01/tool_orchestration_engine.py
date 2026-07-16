@@ -12,6 +12,7 @@ from .tool_invocation import LEGACY_JSON
 from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
+from .tool_invocation import TOOL_EXECUTION_RECEIPT_FIELD
 from .tool_invocation import TOOL_SOURCE_FIELD
 from .tool_invocation import ToolInvocation
 from .tool_invocation import ToolResultEnvelope
@@ -19,7 +20,8 @@ from .tool_invocation import ValidationResult
 from .tool_invocation import invocation_to_legacy_tool_call
 from .tool_invocation import legacy_tool_call_to_invocation
 from .native_tool_schema import build_openai_native_tool_specs
-from .tool_runtime import ToolExecutionContext
+from .tool_runtime import ToolExecutionContext, ToolExecutionResult
+from .capability_registry import OPEN_BROWSER_TOOL_SPEC
 
 
 @dataclass(frozen=True)
@@ -278,6 +280,22 @@ def normalize_tool_invocation(
         return None
     source = _normalize_invocation_source(value.get(TOOL_SOURCE_FIELD))
     invocation_id = str(value.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
+
+    if tool_type == OPEN_BROWSER_TOOL_SPEC.capability_id:
+        handler = (getattr(engine, "tool_handlers", {}) or {}).get(tool_type)
+        if handler is None:
+            return None
+        normalized = handler.normalize_call(value)
+        if normalized is None:
+            return None
+        receipt = value.get(TOOL_EXECUTION_RECEIPT_FIELD)
+        if isinstance(receipt, dict):
+            normalized[TOOL_EXECUTION_RECEIPT_FIELD] = dict(receipt)
+        return legacy_tool_call_to_invocation(
+            normalized,
+            source=source,
+            invocation_id=invocation_id,
+        )
 
     handlers = engine._resolve_tool_handlers(
         client_context=client_context,
@@ -543,6 +561,20 @@ def validate_tool_invocation(
     tool_type = str(invocation.name or "").strip()
     if not tool_type:
         return ValidationResult.fail("missing_tool_type", "工具调用缺少 type 字段。")
+
+    if tool_type == OPEN_BROWSER_TOOL_SPEC.capability_id:
+        handler = (getattr(engine, "tool_handlers", {}) or {}).get(tool_type)
+        if handler is None:
+            return ValidationResult.fail("unknown_tool", "当前没有可用的桌面网页打开工具。")
+        candidate_call = raw_tool_call if isinstance(raw_tool_call, dict) else invocation_to_legacy_tool_call(invocation)
+        if handler.normalize_call(candidate_call) is None:
+            return ValidationResult.fail("bad_args", "打开网页的 URL 或参数不符合公开网页安全约束。")
+        if not invocation.execution_receipt:
+            return ValidationResult.fail(
+                "missing_execution_receipt",
+                "这次桌面动作没有本轮实例签发的执行凭据，不能执行。",
+            )
+        return ValidationResult.success()
 
     handlers = engine._resolve_tool_handlers(
         client_context=client_context,
@@ -832,6 +864,8 @@ def execute_tool_invocation(
         return None, validation_result_to_envelope(invocation=invocation, validation=validation)
 
     normalized_call = invocation_to_legacy_tool_call(invocation)
+    if invocation.name == OPEN_BROWSER_TOOL_SPEC.capability_id:
+        return _execute_open_browser_with_broker(engine, invocation=invocation)
     handlers = engine._resolve_tool_handlers(
         client_context=client_context,
         profile_user_id=profile_user_id,
@@ -868,6 +902,63 @@ def execute_tool_invocation(
         ),
     )
     return result, tool_execution_result_to_envelope(invocation=invocation, result=result)
+
+
+def _execute_open_browser_with_broker(
+    engine: Any,
+    *,
+    invocation: ToolInvocation,
+) -> tuple[ToolExecutionResult, ToolResultEnvelope]:
+    broker = getattr(engine, "executor_broker", None)
+    if broker is None:
+        broker_result = None
+    else:
+        broker_result = broker.execute(
+            spec=OPEN_BROWSER_TOOL_SPEC,
+            receipt_value=invocation.execution_receipt,
+            invocation_id=invocation.id,
+            arguments=invocation.arguments,
+        )
+    status = str(getattr(broker_result, "status", "unavailable_before_dispatch") or "").strip()
+    reason = str(getattr(broker_result, "reason", "executor_broker_unavailable") or "").strip()
+    model_feedback = str(getattr(broker_result, "model_feedback", "") or "").strip()
+    if not model_feedback:
+        model_feedback = (
+            "当前没有可用的桌面执行器，请直接说明这次没有打开网页。"
+            if status != "succeeded"
+            else "已在用户绑定的电脑上真实打开公开网页；不要声称读取了页面内容。"
+        )
+    event = {
+        "type": "capability_execution_result",
+        "tool_type": OPEN_BROWSER_TOOL_SPEC.capability_id,
+        "status": status,
+    }
+    if reason:
+        event["reason"] = reason
+    result = ToolExecutionResult(
+        tool_type=OPEN_BROWSER_TOOL_SPEC.capability_id,
+        stream_events=[event],
+        followup_context=model_feedback,
+        state_updates={
+            "capability_execution": {
+                "tool_type": OPEN_BROWSER_TOOL_SPEC.capability_id,
+                "status": status,
+                "reason": reason,
+            }
+        },
+    )
+    envelope = ToolResultEnvelope(
+        invocation_id=invocation.id,
+        status="ok" if status == "succeeded" else "error",
+        model_feedback=model_feedback,
+        data={
+            "code": reason or status,
+            "tool": OPEN_BROWSER_TOOL_SPEC.capability_id,
+            "status": status,
+        },
+        events=[event],
+    )
+    return result, envelope
 
 
 def validation_result_to_envelope(

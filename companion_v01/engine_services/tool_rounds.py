@@ -151,6 +151,7 @@ def resolve_tool_handlers(
     profile_user_id: str = "",
     session_id: str = "",
     domain_profile_id: str = "",
+    capability_selection: CapabilitySelection | None = None,
 ) -> dict[str, Any]:
     handlers = getattr(engine, "tool_handlers", {}) or {}
     dynamic_handlers = build_adapter_tool_handlers(
@@ -168,15 +169,14 @@ def resolve_tool_handlers(
         )
         selected_handlers = {name: all_handlers[name] for name in allowed_names if name in all_handlers}
     else:
-        selected_names = list(
-            resolve_capability_selection(
-                engine,
-                client_context=client_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                domain_profile_id=domain_profile_id,
-            ).tool_names
+        selection = capability_selection or resolve_capability_selection(
+            engine,
+            client_context=client_context,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            domain_profile_id=domain_profile_id,
         )
+        selected_names = list(selection.tool_names)
         selected_handlers = {
             tool_name: all_handlers[tool_name] for tool_name in selected_names if tool_name in all_handlers
         }
@@ -201,6 +201,7 @@ def resolve_capability_selection(
     profile_user_id: str = "",
     session_id: str = "",
     domain_profile_id: str = "",
+    intent_text: str = "",
 ) -> CapabilitySelection:
     from ..capability_registry import CapabilityRegistry
 
@@ -241,6 +242,7 @@ def resolve_capability_selection(
             *domain_profile.hidden_tool_names,
             *(() if "generate_image" in handlers else ("generate_image",)),
         ),
+        intent_text=intent_text,
     )
     if domain_profile.id != DEFAULT_DOMAIN_PROFILE_ID:
         domain_handler_names = tuple(
@@ -254,6 +256,8 @@ def resolve_capability_selection(
             module_names=selection.module_names,
             layer_names=selection.layer_names,
             disclosures=selection.disclosures,
+            tool_specs=selection.tool_specs,
+            execution_receipts=selection.execution_receipts,
         )
     dynamic_handlers = build_adapter_tool_handlers(
         engine,
@@ -282,6 +286,8 @@ def resolve_capability_selection(
         module_names=(*selection.module_names, "extension_tools"),
         layer_names=(*selection.layer_names, "extension"),
         disclosures=selection.disclosures,
+        tool_specs=selection.tool_specs,
+        execution_receipts=selection.execution_receipts,
     )
 
 

@@ -22,6 +22,7 @@ from services.tts_client import EdgeTTSClient
 from .async_task_supervisor import AsyncTaskSupervisor
 from .engine import AkaneMemoryEngine
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
+from .desktop_satellite import DesktopSatelliteService
 from .deployment_security import resolve_instance_deployment_security
 from .instance_profile import resolve_instance_context
 from .instance_runtime import bind_instance_runtime
@@ -49,6 +50,7 @@ from .routes.plugins import build_plugins_router
 from .routes.qq import build_qq_router
 from .routes.reminders import build_reminders_router
 from .routes.sessions import build_sessions_router
+from .routes.satellite import build_satellite_router
 from .routes.system import build_system_router
 from .routes.think import build_think_router
 from .routes.voice import build_voice_router
@@ -139,6 +141,11 @@ deployment_security = resolve_instance_deployment_security(instance_context, con
 app.state.akane_deployment_security = deployment_security
 qq_channel_config = deployment_security.qq
 admin_write_auth = deployment_security.admin
+desktop_satellite_service = DesktopSatelliteService(
+    instance_id=instance_context.instance_id,
+    token=deployment_security.satellite.token,
+)
+app.state.akane_desktop_satellite = desktop_satellite_service
 plugin_host = PluginHost(
     instance_context.plugins,
     contribution_policy=TrustedStatefulPluginContributionPolicy(),
@@ -156,6 +163,7 @@ engine = AkaneMemoryEngine(
     runtime_layout=runtime_layout,
     plugin_capability_source=plugin_capability_source,
     qq_channel_config=qq_channel_config,
+    capability_offer_source=desktop_satellite_service,
 )
 generated_file_service = engine._get_generated_file_service()
 if generated_file_service is not None:
@@ -547,6 +555,12 @@ app.include_router(
 )
 app.include_router(
     build_plugins_router(plugin_host=plugin_host, admin_auth=admin_write_auth)
+)
+app.include_router(
+    build_satellite_router(
+        satellite_service=desktop_satellite_service,
+        admin_auth=admin_write_auth,
+    )
 )
 app.include_router(
     build_web_static_router(

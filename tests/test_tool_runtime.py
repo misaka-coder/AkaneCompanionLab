@@ -675,12 +675,13 @@ class OpenBrowserToolHandlerTests(unittest.TestCase):
         )
 
     def test_prompt_instruction_distinguishes_user_visible_open_from_page_read(self) -> None:
-        instruction = OpenBrowserToolHandler().build_prompt_instruction()
+        handler = OpenBrowserToolHandler()
+        instruction = handler.build_prompt_instruction()
 
-        self.assertIn("打开给我看", instruction)
-        self.assertIn("优先使用 open_browser", instruction)
-        self.assertIn("Akane 托管浏览器窗口", instruction)
-        self.assertIn("不读取网页", instruction)
+        self.assertEqual(handler.tool_spec().capability_id, "open_browser")
+        self.assertIn("用户明确要求", instruction)
+        self.assertIn('"required": ["url"]', instruction)
+        self.assertIn("不读取页面", instruction)
 
     def test_browser_tools_expose_browser_control_metadata(self) -> None:
         open_metadata = OpenBrowserToolHandler().tool_metadata()
@@ -716,19 +717,14 @@ class OpenBrowserToolHandlerTests(unittest.TestCase):
         ):
             self.assertIsNone(handler.normalize_call({"type": "open_browser", "url": url}), url)
 
-    def test_execute_only_emits_browser_open_request_event(self) -> None:
+    def test_execute_requires_executor_broker_instead_of_fire_and_forget(self) -> None:
         handler = OpenBrowserToolHandler()
         call = handler.normalize_call({"type": "open_browser", "url": "https://example.com", "label": "Example"})
         self.assertIsNotNone(call)
         assert call is not None
 
-        result = handler.execute(call=call, context=self._context())
-
-        self.assertEqual(result.tool_type, "open_browser")
-        self.assertEqual(result.stream_events[0]["type"], "browser_open_requested")
-        self.assertEqual(result.stream_events[0]["url"], "https://example.com")
-        self.assertFalse(result.stream_events[0]["requires_confirmation"])
-        self.assertIn("不要声称你已经读取了网页内容", result.followup_context)
+        with self.assertRaisesRegex(RuntimeError, "open_browser_requires_executor_broker"):
+            handler.execute(call=call, context=self._context())
 
 
 class OpenMusicSearchToolHandlerTests(unittest.TestCase):

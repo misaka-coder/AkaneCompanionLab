@@ -170,7 +170,7 @@ class OpenAICompatASRRouteTests(unittest.TestCase):
 
 
 class CapabilityAdapterRegistryReloadRouteTests(unittest.TestCase):
-    def test_reload_endpoint_returns_redacted_registry_summary(self) -> None:
+    def test_dormant_registry_reload_endpoint_is_deleted(self) -> None:
         class FakeRegistry:
             def __init__(self) -> None:
                 self.reload_calls: list[str] = []
@@ -208,17 +208,8 @@ class CapabilityAdapterRegistryReloadRouteTests(unittest.TestCase):
                 json={"providerId": "provider.demo"},
             )
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertTrue(payload["ok"])
-        self.assertEqual(registry.reload_calls, ["provider.demo"])
-        self.assertEqual(payload["validCount"], 1)
-        self.assertEqual(payload["invalidCount"], 1)
-        self.assertEqual(payload["invalid"][0]["source"], "bad.yaml")
-        serialized = json.dumps(payload, ensure_ascii=False).lower()
-        self.assertNotIn("exampleuser", serialized)
-        self.assertNotIn("real-secret", serialized)
-        self.assertNotIn(r"c:\users", serialized)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(registry.reload_calls, [])
 
 
 if __name__ == "__main__":

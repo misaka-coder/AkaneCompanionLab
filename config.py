@@ -348,6 +348,8 @@ class Settings(BaseSettings):
 
     # named instance 的管理写接口 token；不得与 QQ token 复用
     AKANE_ADMIN_TOKEN: str = ""
+    # Desktop Satellite 的实例级设备凭据；不得与管理/QQ/模型 token 复用
+    AKANE_DESKTOP_SATELLITE_TOKEN: str = ""
 
     # 监听地址 & 端口
     HOST: str = "0.0.0.0"
@@ -510,7 +512,7 @@ def _apply_settings(s: Settings) -> None:
     global SEMANTIC_REINFORCEMENT_LOOKBACK, SEMANTIC_REINFORCEMENT_MIN_OVERLAP
     global MEMORY_BACKEND, MEMCORE_STORAGE_PATH, MEMCORE_VISIBLE_SCOPE, MEMCORE_ENABLE_FLAVOR, MEMCORE_SHADOW_COMPARE
     global WHISPER_CACHE_DIR
-    global MASTER_QQ, AKANE_ADMIN_TOKEN, PORT, HOST
+    global MASTER_QQ, AKANE_ADMIN_TOKEN, AKANE_DESKTOP_SATELLITE_TOKEN, PORT, HOST
 
     # === LLM / API keys ===
     TEXT_API_KEY = s.TEXT_API_KEY or ""
@@ -744,6 +746,7 @@ def _apply_settings(s: Settings) -> None:
     raw_master_qq = str(s.MASTER_QQ or "").strip()
     MASTER_QQ = raw_master_qq if raw_master_qq.isdigit() else ""
     AKANE_ADMIN_TOKEN = str(s.AKANE_ADMIN_TOKEN or "").strip()
+    AKANE_DESKTOP_SATELLITE_TOKEN = str(s.AKANE_DESKTOP_SATELLITE_TOKEN or "").strip()
     PORT = s.PORT
     HOST = s.HOST
 

@@ -980,61 +980,6 @@ def build_capabilities_router(
                 headers={"Cache-Control": "no-store"},
             )
 
-    @router.post("/capabilities/adapter-registry/reload")
-    async def reload_capability_adapter_registry(request: Request) -> JSONResponse:
-        started_at = time.perf_counter()
-        payload = await _read_json_object(request)
-        provider_id = _safe_adapter_registry_provider_id(payload.get("providerId") or payload.get("provider_id"))
-        registry = getattr(engine, "capability_adapter_registry", None)
-        reload_fn = getattr(registry, "reload", None)
-        if not callable(reload_fn):
-            _observe_request(runtime_metrics, "capabilities.adapter_registry_reload", started_at, False)
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "status": "not_available",
-                    "reason": "capability_adapter_registry_unavailable",
-                    "refresh": False,
-                },
-                status_code=503,
-                headers={"Cache-Control": "no-store"},
-            )
-        try:
-            await asyncio.to_thread(reload_fn, provider_id)
-            manifests = list(getattr(registry, "list_manifests")())
-            invalid = list(getattr(registry, "list_invalid")())
-        except Exception:
-            _observe_request(runtime_metrics, "capabilities.adapter_registry_reload", started_at, False)
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "status": "reload_failed",
-                    "reason": "capability_adapter_registry_reload_failed",
-                    "refresh": False,
-                },
-                status_code=500,
-                headers={"Cache-Control": "no-store"},
-            )
-        result = {
-            "ok": True,
-            "status": "reloaded",
-            "providerId": provider_id,
-            "validCount": len(manifests),
-            "invalidCount": len(invalid),
-            "providers": sorted(str(item.provider_id or "") for item in manifests if str(item.provider_id or "")),
-            "invalid": [_safe_invalid_manifest_summary(item) for item in invalid],
-            "refresh": True,
-        }
-        _observe_request(runtime_metrics, "capabilities.adapter_registry_reload", started_at, True)
-        _log_best_effort(
-            log_event,
-            "capabilities_adapter_registry_reload",
-            providerId=provider_id,
-            validCount=result["validCount"],
-            invalidCount=result["invalidCount"],
-        )
-        return JSONResponse(result, headers={"Cache-Control": "no-store"})
-
     return router
 
 
@@ -1094,36 +1039,6 @@ async def _discover_mcp_server_tools(
         server_id=safe_server_id,
         payload=payload,
     )
-
-
-def _safe_adapter_registry_provider_id(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", text):
-        return ""
-    return text
-
-
-def _safe_invalid_manifest_summary(item: Any) -> dict[str, str]:
-    source_name = ""
-    source_path = getattr(item, "source_path", None)
-    if source_path is not None:
-        source_name = Path(str(source_path)).name[:120]
-    return {
-        "source": source_name,
-        "sourceLayer": str(getattr(item, "source_layer", "") or "")[:40],
-        "providerId": _safe_adapter_registry_provider_id(getattr(item, "provider_id", "")),
-        "reason": _safe_adapter_registry_text(getattr(item, "reason", ""), limit=120),
-        "detail": _safe_adapter_registry_text(getattr(item, "detail", ""), limit=160),
-    }
-
-
-def _safe_adapter_registry_text(value: Any, *, limit: int) -> str:
-    text = str(value or "").strip()
-    text = re.sub(r"(?i)(token|secret|password|api[_-]?key)=([^\s&]+)", r"\1=redacted", text)
-    text = re.sub(r"[A-Za-z]:[\\/][^\s]+", "[local_path]", text)
-    return text[:limit]
 
 
 async def _run_provider_tts_test(

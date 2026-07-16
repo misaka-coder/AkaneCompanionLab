@@ -17,11 +17,12 @@ from .artifact_system import ArtifactContainerService
 from .attachment_inbox import AttachmentInboxService
 from .attachment_ingest import AttachmentIngestService
 from .background_tasks import BackgroundTaskRunner
-from .capability_adapters import CapabilityAdapterRegistry, McpStdioCapabilityAdapter
+from .capability_adapters import McpStdioCapabilityAdapter
 from .capability_registry import (
     CapabilityRegistry,
     CapabilitySelection,
     CapabilitySnapshot,
+    ExecutorBroker,
     is_document_attachment,
     is_document_generated_file,
     is_media_attachment,
@@ -76,6 +77,7 @@ from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
 from .tool_invocation import TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
+from .tool_invocation import TOOL_EXECUTION_RECEIPT_FIELD, TOOL_EXECUTION_RECEIPTS_FIELD
 from .tool_invocation import TOOL_SOURCE_FIELD
 from .tool_runtime import (
     AdapterCapabilityToolHandler,
@@ -221,6 +223,7 @@ class AkaneMemoryEngine:
         runtime_layout: InstanceRuntimeLayout | None = None,
         plugin_capability_source: Any = None,
         qq_channel_config: QQChannelRuntimeConfig | None = None,
+        capability_offer_source: Any = None,
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -251,6 +254,7 @@ class AkaneMemoryEngine:
         )
         self.plugin_capability_source = plugin_capability_source
         self.qq_channel_config = qq_channel_config
+        self.capability_offer_source = capability_offer_source
         self.resource_manifest = resource_manifest
         self.desktop_pet_character_resources = desktop_pet_character_resources
         self.care_module = CareModulePort.from_feature(
@@ -402,7 +406,8 @@ class AkaneMemoryEngine:
             record_tool_artifacts=self._record_tool_result_artifacts_in_task_workspace,
         )
         self.tool_handlers = self._build_tool_handlers()
-        self.capability_registry = CapabilityRegistry()
+        self.capability_registry = CapabilityRegistry(offer_source=capability_offer_source)
+        self.executor_broker = ExecutorBroker(capability_offer_source)
         self._embedding_reindex_lock = threading.RLock()
         self._embedding_reindex_stop = threading.Event()
         self._embedding_reindex_thread: threading.Thread | None = None
@@ -418,18 +423,7 @@ class AkaneMemoryEngine:
             "error": "",
             "collection_name": str(self.vector_store.collection_name),
         }
-        self.capability_adapter_registry = CapabilityAdapterRegistry(
-            builtin_dir=Path(__file__).parent / "builtin_capability_manifests",
-            profile_dir_provider=self._resolve_profile_capability_manifests_dir,
-        )
-        self.capability_adapter_registry.scan()
         self._maybe_start_embedding_reindex()
-
-    def _resolve_profile_capability_manifests_dir(self) -> Path:
-        profile_user_id = str(getattr(self, "profile_user_id", "") or "").strip()
-        if not profile_user_id:
-            return self.capability_config_base_dir / ".no_active_profile" / "capability_manifests"
-        return self.capability_config_base_dir / profile_user_id / "capability_manifests"
 
     def reset(self) -> None:
         compaction_service = getattr(self, "compaction_service", None)
@@ -3759,6 +3753,7 @@ class AkaneMemoryEngine:
                 debug_enabled=bool(generation_context["debug_enabled"]),
                 user_message=user_message,
             )
+            self._attach_tool_execution_receipts(normalized, generation_context)
             if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
                 return normalized
             if attempt < max_attempts and hasattr(self.llm, "record_metric"):
@@ -3880,7 +3875,7 @@ class AkaneMemoryEngine:
                 early_tool_call_validator=(
                     lambda call: (
                         self._normalize_tool_call(
-                            call,
+                            self._with_tool_execution_receipt(call, generation_context),
                             client_context=client_context,
                             profile_user_id=profile_user_id,
                             session_id=session_id,
@@ -3927,6 +3922,7 @@ class AkaneMemoryEngine:
                 allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
                 debug_enabled=bool(generation_context["debug_enabled"]),
             )
+            self._attach_tool_execution_receipts(normalized, generation_context)
             native_preface_text = str(getattr(stream_result, "native_preface_text", "") or "").strip()
             if native_preface_text:
                 normalized["_native_preface_text"] = native_preface_text
@@ -4010,6 +4006,35 @@ class AkaneMemoryEngine:
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
         )
+
+    @staticmethod
+    def _attach_tool_execution_receipts(
+        output: dict[str, Any],
+        generation_context: dict[str, Any],
+    ) -> None:
+        receipts = generation_context.get(TOOL_EXECUTION_RECEIPTS_FIELD)
+        if not isinstance(receipts, dict) or not receipts:
+            return
+        output[TOOL_EXECUTION_RECEIPTS_FIELD] = {
+            str(name): dict(receipt)
+            for name, receipt in receipts.items()
+            if isinstance(receipt, dict)
+        }
+
+    @staticmethod
+    def _with_tool_execution_receipt(
+        call: Any,
+        generation_context: dict[str, Any],
+    ) -> Any:
+        if not isinstance(call, dict):
+            return call
+        receipts = generation_context.get(TOOL_EXECUTION_RECEIPTS_FIELD)
+        receipt = receipts.get(str(call.get("type") or "").strip()) if isinstance(receipts, dict) else None
+        if not isinstance(receipt, dict):
+            return call
+        enriched = dict(call)
+        enriched[TOOL_EXECUTION_RECEIPT_FIELD] = dict(receipt)
+        return enriched
 
     def _normalize_final_output(
         self,
@@ -4182,6 +4207,7 @@ class AkaneMemoryEngine:
         session_id: str,
         domain_profile_id: str = "",
     ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+        execution_receipts = final_output.pop(TOOL_EXECUTION_RECEIPTS_FIELD, None)
         native_tool_calls = final_output.pop(NATIVE_TOOL_CALLS_FIELD, None)
         native_tool_call = final_output.pop(NATIVE_TOOL_CALL_FIELD, None)
         raw_tool_calls = (
@@ -4207,6 +4233,14 @@ class AkaneMemoryEngine:
         tool_calls: list[dict[str, Any]] = []
         rejections: list[str] = []
         for raw_tool_call in raw_tool_calls:
+            receipt = (
+                execution_receipts.get(str(raw_tool_call.get("type") or "").strip())
+                if isinstance(execution_receipts, dict)
+                else None
+            )
+            if isinstance(receipt, dict):
+                raw_tool_call = dict(raw_tool_call)
+                raw_tool_call[TOOL_EXECUTION_RECEIPT_FIELD] = dict(receipt)
             tool_call = self._normalize_tool_call(
                 raw_tool_call,
                 client_context=client_context,
@@ -4906,7 +4940,18 @@ class AkaneMemoryEngine:
             if not isinstance(event, dict):
                 continue
             status = str(event.get("status") or event.get("state") or "").strip().lower()
-            if status in {"error", "failed", "failure", "unavailable", "denied", "blocked"}:
+            if status in {
+                "error",
+                "failed",
+                "failure",
+                "unavailable",
+                "unavailable_before_dispatch",
+                "execution_unknown",
+                "rejected",
+                "running",
+                "denied",
+                "blocked",
+            }:
                 return True
         return False
 
@@ -5264,6 +5309,7 @@ class AkaneMemoryEngine:
         profile_user_id: str = "",
         session_id: str = "",
         domain_profile_id: str = "",
+        capability_selection: CapabilitySelection | None = None,
     ) -> dict[str, BaseToolHandler]:
         from .engine_services.tool_rounds import resolve_tool_handlers as _fn
 
@@ -5273,6 +5319,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             domain_profile_id=domain_profile_id,
+            capability_selection=capability_selection,
         )
 
     def _resolve_capability_selection(
@@ -5282,6 +5329,7 @@ class AkaneMemoryEngine:
         profile_user_id: str = "",
         session_id: str = "",
         domain_profile_id: str = "",
+        intent_text: str = "",
     ) -> CapabilitySelection:
         from .engine_services.tool_rounds import resolve_capability_selection as _fn
 
@@ -5291,6 +5339,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             domain_profile_id=domain_profile_id,
+            intent_text=intent_text,
         )
 
     def _build_mcp_adapter_tool_handlers(
@@ -5356,11 +5405,12 @@ class AkaneMemoryEngine:
         session_id: str = "",
         exclude_tool_types: set[str] | None = None,
         domain_profile_id: str = "",
+        capability_selection: CapabilitySelection | None = None,
     ) -> str:
         if not allow_tool_call:
             return "本轮不要调用任何工具，tool_call 固定为 null。"
 
-        selection = self._resolve_capability_selection(
+        selection = capability_selection or self._resolve_capability_selection(
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -5371,6 +5421,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             domain_profile_id=domain_profile_id,
+            capability_selection=selection,
         )
         ready_tool_names = tuple(handlers)
         raw_disclosures = tuple(getattr(selection, "disclosures", ()) or ())

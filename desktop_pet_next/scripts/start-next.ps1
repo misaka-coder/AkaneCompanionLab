@@ -3,6 +3,8 @@ param(
   [string]$DataRoot = "",
   [int]$BackendPort = 9999,
   [string]$EnvFile = "",
+  [switch]$CloudSatellite,
+  [string]$BackendUrl = "",
   [switch]$BuildIfMissing,
   [switch]$NoBuild,
   [switch]$Rebuild,
@@ -148,7 +150,43 @@ $env:AKANE_INSTANCE_ID = $resolvedInstanceId
 $env:AKANE_DATA_ROOT = $dataStatus.Root
 $env:AKANE_DATA_ROOT_READY = "1"
 $env:COMPANION_PORT = "$BackendPort"
-$env:AKANE_BACKEND_URL = "http://127.0.0.1:$BackendPort"
+if ($CloudSatellite) {
+  if ($resolvedInstanceId -eq "local-default") { throw "cloud_satellite_requires_named_instance" }
+  if (-not $PSBoundParameters.ContainsKey("BackendUrl") -or [string]::IsNullOrWhiteSpace($BackendUrl)) {
+    throw "cloud_satellite_backend_url_required"
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$env:AKANE_DESKTOP_SATELLITE_TOKEN)) {
+    throw "cloud_satellite_token_required"
+  }
+  $resolvedBackendUrl = $BackendUrl.Trim().TrimEnd('/')
+  try { $backendUri = [System.Uri]::new($resolvedBackendUrl) } catch { throw "invalid_cloud_satellite_backend_url" }
+  $loopback = $backendUri.IsLoopback -or $backendUri.Host -eq "localhost"
+  if (
+    -not $backendUri.IsAbsoluteUri -or
+    $backendUri.UserInfo -or
+    $backendUri.AbsolutePath -ne "/" -or
+    $backendUri.Query -or
+    $backendUri.Fragment -or
+    ($backendUri.Scheme -ne "https" -and -not ($backendUri.Scheme -eq "http" -and $loopback))
+  ) {
+    throw "cloud_satellite_requires_https"
+  }
+  try {
+    $health = Invoke-RestMethod -Uri ($resolvedBackendUrl + "/health") -TimeoutSec 6
+  } catch {
+    throw "cloud_satellite_health_unavailable"
+  }
+  if (
+    [string]$health.status -ne "ok" -or
+    [string]$health.root_binding -ne "valid" -or
+    [string]$health.instance_id -ne $resolvedInstanceId
+  ) {
+    throw "cloud_satellite_instance_verification_failed"
+  }
+  $env:AKANE_BACKEND_URL = $resolvedBackendUrl
+} else {
+  $env:AKANE_BACKEND_URL = "http://127.0.0.1:$BackendPort"
+}
 $ExePath = Join-Path $Root "src-tauri\target\release\akane_desktop_pet_next.exe"
 
 Set-Location $Root

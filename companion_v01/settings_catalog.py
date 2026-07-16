@@ -358,6 +358,14 @@ _SPECS: tuple[SettingSpec, ...] = (
         sensitive=True,
         managed_in=MANAGED_DEPLOYMENT,
     ),
+    _s(
+        "AKANE_DESKTOP_SATELLITE_TOKEN",
+        _SRV,
+        SCOPE_RESTART,
+        "Desktop Satellite 实例级设备凭据",
+        sensitive=True,
+        managed_in=MANAGED_DEPLOYMENT,
+    ),
     _s("HOST", _SRV, SCOPE_RESTART, "监听地址", managed_in=MANAGED_DEPLOYMENT),
     _s("PORT", _SRV, SCOPE_RESTART, "监听端口", managed_in=MANAGED_DEPLOYMENT),
 )

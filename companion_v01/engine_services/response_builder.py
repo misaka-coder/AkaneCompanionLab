@@ -14,6 +14,7 @@ from ..prompt_blocks import strip_care_prompt_contract
 from ..prompt_profiles import PromptModule
 from ..resource_manifest import ResourceManifest
 from ..text_utils import render_chat_timeline
+from ..tool_invocation import TOOL_EXECUTION_RECEIPTS_FIELD
 
 logger = logging.getLogger("akane.response_builder")
 
@@ -469,13 +470,18 @@ def prepare_context(
         )
     native_tools: list[dict[str, Any]] = []
     native_legacy_exclusions: set[str] = set()
-    if enable_native_tools:
-        native_capability_selection = engine._resolve_capability_selection(
+    capability_selection = (
+        engine._resolve_capability_selection(
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
             domain_profile_id=domain_profile.id,
+            intent_text=user_message,
         )
+        if effective_allow_tool_call
+        else None
+    )
+    if enable_native_tools:
         from .. import tool_orchestration_engine as _toe
 
         try:
@@ -490,10 +496,11 @@ def prepare_context(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 domain_profile_id=domain_profile.id,
+                capability_selection=capability_selection,
             ),
             allow_tool_call=effective_allow_tool_call,
             provider_supports_native_tools=provider_supports_native_tools,
-            allowed_tool_names=native_capability_selection.tool_names,
+            allowed_tool_names=(capability_selection.tool_names if capability_selection is not None else ()),
         )
         if native_plan.enabled:
             native_tools = native_plan.tools
@@ -507,6 +514,7 @@ def prepare_context(
         session_id=session_id,
         exclude_tool_types=native_legacy_exclusions,
         domain_profile_id=domain_profile.id,
+        capability_selection=capability_selection,
     )
     if native_tools:
         tool_prompt_context = "\n\n".join(
@@ -558,6 +566,13 @@ def prepare_context(
     generation_context["post_user_turns"] = list(post_user_turns) if post_user_turns else []
     generation_context["prompt_profile"] = prompt_profile.to_public_dict()
     generation_context["domain_profile"] = domain_profile.to_public_dict()
+    execution_receipts = getattr(capability_selection, "execution_receipts", {})
+    if isinstance(execution_receipts, dict) and execution_receipts:
+        generation_context[TOOL_EXECUTION_RECEIPTS_FIELD] = {
+            str(name): dict(receipt)
+            for name, receipt in execution_receipts.items()
+            if isinstance(receipt, dict)
+        }
     if client_context.effective_mode == ClientMode.QQ_TEXT:
         fallback_payload = generation_context.get("fallback")
         if isinstance(fallback_payload, dict):

@@ -6,6 +6,8 @@ param(
     [string]$DataRoot = "",
     [int]$BackendPort = 9999,
     [string]$EnvFile = "",
+    [switch]$CloudSatellite,
+    [string]$BackendUrl = "",
     [switch]$PrepareOnly,
     [switch]$CheckOnly,
     [switch]$ForcePythonInstall,
@@ -513,6 +515,8 @@ function Start-DesktopMode {
         [string]$InstanceId,
         [string]$DataRoot,
         [string]$EnvFile,
+        [switch]$CloudSatellite,
+        [string]$BackendUrl,
         [switch]$OpenModelSettings
     )
 
@@ -521,7 +525,18 @@ function Start-DesktopMode {
     if (-not (Test-Path -LiteralPath $releaseExe -PathType Leaf) -and -not $toolchain.Ready) {
         throw ("Desktop mode needs a prebuilt release or Node.js + Rust. Missing: {0}" -f ($toolchain.Missing -join ", "))
     }
-    & (Join-Path $Root "start_akane_next.ps1") -InstanceId $InstanceId -DataRoot $DataRoot -BackendPort $Port -EnvFile $EnvFile -OpenSettings:$OpenModelSettings
+    $launchParameters = @{
+        InstanceId = $InstanceId
+        DataRoot = $DataRoot
+        BackendPort = $Port
+        EnvFile = $EnvFile
+        OpenSettings = [bool]$OpenModelSettings
+    }
+    if ($CloudSatellite) {
+        $launchParameters.CloudSatellite = $true
+        $launchParameters.BackendUrl = $BackendUrl
+    }
+    & (Join-Path $Root "start_akane_next.ps1") @launchParameters
     Write-AkaneStep "OK" "Desktop pet launch requested."
 }
 
@@ -562,6 +577,16 @@ $resolvedDataRoot = if ($dataRootWasBound -and -not [string]::IsNullOrWhiteSpace
 } else {
     ([string]$env:AKANE_DATA_ROOT).Trim()
 }
+if ($CloudSatellite) {
+    if ($resolvedInstanceId -eq "local-default") { throw "cloud_satellite_requires_named_instance" }
+    if (-not $PSBoundParameters.ContainsKey("BackendUrl") -or [string]::IsNullOrWhiteSpace($BackendUrl)) {
+        throw "cloud_satellite_backend_url_required"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$env:AKANE_DESKTOP_SATELLITE_TOKEN)) {
+        throw "cloud_satellite_token_required"
+    }
+    if ($Mode -eq "Web") { throw "cloud_satellite_requires_desktop_mode" }
+}
 Write-Host ""
 Write-Host "AkaneCompanionLab Windows Bootstrap" -ForegroundColor Magenta
 Write-Host ("Project: {0}" -f $projectRoot)
@@ -578,7 +603,7 @@ try {
     $env:AKANE_DATA_ROOT_READY = "1"
     $env:AKANE_INSTANCE_ID = $resolvedInstanceId
     $env:COMPANION_PORT = "$BackendPort"
-    $env:AKANE_BACKEND_URL = "http://127.0.0.1:$BackendPort"
+    $env:AKANE_BACKEND_URL = if ($CloudSatellite) { $BackendUrl.Trim().TrimEnd('/') } else { "http://127.0.0.1:$BackendPort" }
     if (-not $CheckOnly) {
         if ($dataStatus.Failed -gt 0) {
             Write-AkaneStep "WARN" ("User data root is ready, but {0} legacy files could not be copied." -f $dataStatus.Failed)
@@ -588,14 +613,22 @@ try {
             Write-AkaneStep "OK" "User data root is ready."
         }
     }
-    $null = Ensure-PythonEnvironment -Root $projectRoot -ReadOnly:$CheckOnly
-    $envStatus = Ensure-EnvironmentFile `
-        -Root $projectRoot `
-        -DataRoot $dataStatus.Root `
-        -EnvironmentPath $resolvedEnvFile `
-        -AllowCreate:($resolvedInstanceId -eq "local-default" -and -not $resolvedEnvFile) `
-        -ReadOnly:$CheckOnly
+    if ($CloudSatellite) {
+        $envStatus = [pscustomobject]@{ Path = $resolvedEnvFile; Created = $false; LlmConfigured = $true }
+        Write-AkaneStep "OK" "Cloud Satellite mode uses the verified remote backend; local Python setup is not required."
+    } else {
+        $null = Ensure-PythonEnvironment -Root $projectRoot -ReadOnly:$CheckOnly
+        $envStatus = Ensure-EnvironmentFile `
+            -Root $projectRoot `
+            -DataRoot $dataStatus.Root `
+            -EnvironmentPath $resolvedEnvFile `
+            -AllowCreate:($resolvedInstanceId -eq "local-default" -and -not $resolvedEnvFile) `
+            -ReadOnly:$CheckOnly
+    }
     $launchMode = Resolve-LaunchMode -RequestedMode $Mode -Root $projectRoot
+    if ($CloudSatellite -and $launchMode -ne "Desktop") {
+        throw "cloud_satellite_requires_desktop_mode"
+    }
     Write-AkaneStep "INFO" ("Selected client: {0}" -f $launchMode)
 
     if ($CheckOnly) {
@@ -613,9 +646,9 @@ try {
         Write-AkaneStep "OK" "Preparation completed. Nothing was launched."
     } elseif ($launchMode -eq "Desktop") {
         try {
-            Start-DesktopMode -Root $projectRoot -Port $BackendPort -InstanceId $resolvedInstanceId -DataRoot $dataStatus.Root -EnvFile $resolvedEnvFile -OpenModelSettings:(-not $envStatus.LlmConfigured)
+            Start-DesktopMode -Root $projectRoot -Port $BackendPort -InstanceId $resolvedInstanceId -DataRoot $dataStatus.Root -EnvFile $resolvedEnvFile -CloudSatellite:$CloudSatellite -BackendUrl $BackendUrl -OpenModelSettings:(-not $envStatus.LlmConfigured)
         } catch {
-            if ($Mode -ne "Auto") {
+            if ($Mode -ne "Auto" -or $CloudSatellite) {
                 throw
             }
             Write-AkaneStep "WARN" ("Desktop launch failed; falling back to Web. {0}" -f $_.Exception.Message)

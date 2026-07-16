@@ -30,6 +30,8 @@ TOOL_INVOCATION_ID_FIELD = "_tool_invocation_id"
 TOOL_MODEL_NAME_FIELD = "_tool_model_name"
 NATIVE_TOOL_CALL_FIELD = "_native_tool_call"
 NATIVE_TOOL_CALLS_FIELD = "_native_tool_calls"
+TOOL_EXECUTION_RECEIPT_FIELD = "_tool_execution_receipt"
+TOOL_EXECUTION_RECEIPTS_FIELD = "_tool_execution_receipts"
 
 
 @dataclass
@@ -40,6 +42,7 @@ class ToolInvocation:
     arguments: dict[str, Any] = field(default_factory=dict)
     source: str = LEGACY_JSON
     id: str = ""
+    execution_receipt: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -104,12 +107,14 @@ def legacy_tool_call_to_invocation(
         return None
     embedded_source = str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip()
     embedded_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
+    embedded_receipt = tool_call.get(TOOL_EXECUTION_RECEIPT_FIELD)
     arguments = {key: value for key, value in tool_call.items() if key != "type" and not str(key).startswith("_tool_")}
     return ToolInvocation(
         name=name,
         arguments=arguments,
         source=embedded_source or source,
         id=embedded_id or invocation_id,
+        execution_receipt=dict(embedded_receipt) if isinstance(embedded_receipt, dict) else {},
     )
 
 
@@ -128,6 +133,8 @@ def invocation_to_legacy_tool_call(
     if include_metadata and str(invocation.source or LEGACY_JSON) != LEGACY_JSON:
         tool_call[TOOL_SOURCE_FIELD] = str(invocation.source or "")
         tool_call[TOOL_INVOCATION_ID_FIELD] = str(invocation.id or "")
+    if include_metadata and invocation.execution_receipt:
+        tool_call[TOOL_EXECUTION_RECEIPT_FIELD] = dict(invocation.execution_receipt)
     return tool_call
 
 

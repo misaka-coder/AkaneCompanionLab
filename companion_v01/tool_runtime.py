@@ -28,6 +28,7 @@ from .capcore_runtime import (
     resolve_permission_for_profile as capcore_resolve_permission_for_profile,
 )
 from .capability_adapters import CapabilityProtocolError, InvocationContext
+from .capability_registry import OPEN_BROWSER_TOOL_SPEC
 from .local_capability_config import get_mcp_server_runtime_config
 from .mcp_stdio_discoverer import McpStdioDiscoveryError, McpStdioToolCaller
 from .npc_runtime import GenericNPCRuntime
@@ -623,9 +624,6 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         family="background_task", operation="background", risk="medium", default_round_budget=3, background=True
     ),
     "web_search": ToolMetadata(family="web_research", operation="read", risk="low", default_round_budget=8),
-    "open_browser": ToolMetadata(
-        family="browser_control", operation="control", risk="medium", default_round_budget=6, requires_confirmation=True
-    ),
     "browser_page": ToolMetadata(
         family="browser_control", operation="mixed", risk="medium", default_round_budget=10, requires_confirmation=True
     ),
@@ -3095,16 +3093,27 @@ class FetchMediaFromUrlToolHandler(BaseToolHandler):
 
 class OpenBrowserToolHandler(BaseToolHandler):
     tool_type = "open_browser"
+    policy_accepted_native_tool = True
+
+    def tool_spec(self):
+        return OPEN_BROWSER_TOOL_SPEC
+
+    def tool_metadata(self) -> ToolMetadata:
+        spec = self.tool_spec()
+        return ToolMetadata(
+            family="browser_control",
+            operation="control",
+            risk=spec.risk,
+            default_round_budget=6,
+            input_schema=spec.input_schema,
+            requires_confirmation=spec.confirm != "never",
+        )
 
     def build_prompt_instruction(self) -> str:
+        spec = self.tool_spec()
         return (
-            "- open_browser：仅当用户明确要求你打开一个公开网页 URL 时使用。"
-            '格式为 {"type":"open_browser","url":"https://...","reason":"为什么打开"}。'
-            "它只会向桌宠前端请求打开系统浏览器，不读取网页、不点击、不下载、不填写表单。"
-            "当用户说“打开给我看”“用浏览器打开”“打开这个链接/页面”时，优先使用 open_browser；"
-            "如果还要你自己读取、滚动或操作页面，则用 browser_page 打开 Akane 托管浏览器窗口。"
-            "不要用它打开 localhost、内网地址、file 路径、登录页、付费页、用户私密链接或不确定的网址；"
-            "如果用户只是要你查资料，优先用 web_search，而不是直接打开浏览器。"
+            f"- {spec.capability_id}：{spec.description}"
+            f"调用参数遵循：{json.dumps(spec.input_schema, ensure_ascii=False, sort_keys=True)}"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -3125,27 +3134,8 @@ class OpenBrowserToolHandler(BaseToolHandler):
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        url = str(call.get("url") or "").strip()
-        label = str(call.get("label") or "").strip()[:80]
-        return ToolExecutionResult(
-            tool_type=self.tool_type,
-            stream_events=[
-                {
-                    "type": "browser_open_requested",
-                    "url": url,
-                    "label": label,
-                    "reason": str(call.get("reason") or "").strip()[:120],
-                    "client_mode": context.client_mode,
-                    "requires_confirmation": False,
-                }
-            ],
-            followup_context=(
-                f"你刚刚请求桌宠打开这个公开网页：{url}。"
-                "如果桌宠端可用，它会交给系统浏览器打开；不要声称你已经读取了网页内容。"
-                "如果接下来还需要你自己读取页面正文，请另外调用 browser_page。"
-            ),
-            state_updates={"browser_open_requested": True},
-        )
+        del call, context
+        raise RuntimeError("open_browser_requires_executor_broker")
 
     def _normalize_public_url(self, value: Any) -> str:
         url = str(value or "").strip()

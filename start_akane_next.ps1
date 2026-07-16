@@ -3,6 +3,8 @@ param(
     [string]$DataRoot = "",
     [int]$BackendPort = 9999,
     [string]$EnvFile = "",
+    [switch]$CloudSatellite,
+    [string]$BackendUrl = "",
     [switch]$SkipBackend,
     [switch]$ReuseBackend,
     [switch]$SkipDesktop,
@@ -70,6 +72,44 @@ function Get-BackendHealth {
     } catch {
         return $null
     }
+}
+
+function Get-BackendHealthUrl {
+    param([string]$BackendUrl)
+
+    try {
+        $healthUrl = ([System.Uri]::new($BackendUrl.TrimEnd('/') + "/health")).AbsoluteUri
+        return Invoke-RestMethod -Uri $healthUrl -TimeoutSec 6
+    } catch {
+        return $null
+    }
+}
+
+function Resolve-AkaneSatelliteBackendUrl {
+    param([string]$Value)
+
+    $candidate = $Value.Trim().TrimEnd('/')
+    if (-not $candidate) { throw "cloud_satellite_backend_url_required" }
+    try { $uri = [System.Uri]::new($candidate) } catch { throw "invalid_cloud_satellite_backend_url" }
+    if (
+        -not $uri.IsAbsoluteUri -or
+        $uri.UserInfo -or
+        $uri.AbsolutePath -ne "/" -or
+        $uri.Query -or
+        $uri.Fragment
+    ) { throw "invalid_cloud_satellite_backend_url" }
+    $loopback = $uri.IsLoopback -or $uri.Host -eq "localhost"
+    if ($uri.Scheme -ne "https" -and -not ($uri.Scheme -eq "http" -and $loopback)) {
+        throw "cloud_satellite_requires_https"
+    }
+    return $candidate
+}
+
+function New-AkaneSatelliteToken {
+    $bytes = New-Object byte[] 32
+    $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $random.GetBytes($bytes) } finally { $random.Dispose() }
+    return [Convert]::ToBase64String($bytes)
 }
 
 function Test-AkaneBackendHealth {
@@ -356,7 +396,31 @@ if ($dataStatus.Failed -gt 0) {
 $env:AKANE_DATA_ROOT = $dataRoot
 $env:AKANE_INSTANCE_ID = $expectedInstanceId
 $env:COMPANION_PORT = "$BackendPort"
-$env:AKANE_BACKEND_URL = "http://127.0.0.1:$BackendPort"
+$generatedSatelliteToken = $false
+if ($CloudSatellite) {
+    if ($expectedInstanceId -eq "local-default") { throw "cloud_satellite_requires_named_instance" }
+    if (-not $PSBoundParameters.ContainsKey("BackendUrl")) { throw "cloud_satellite_backend_url_required" }
+    $resolvedBackendUrl = Resolve-AkaneSatelliteBackendUrl -Value $BackendUrl
+    if ([string]::IsNullOrWhiteSpace([string]$env:AKANE_DESKTOP_SATELLITE_TOKEN)) {
+        throw "cloud_satellite_token_required"
+    }
+    $remoteHealth = Get-BackendHealthUrl -BackendUrl $resolvedBackendUrl
+    if (-not (Test-AkaneBackendHealth -Health $remoteHealth -ExpectedInstanceId $expectedInstanceId)) {
+        throw "cloud_satellite_instance_verification_failed"
+    }
+    $env:AKANE_BACKEND_URL = $resolvedBackendUrl
+} else {
+    $resolvedBackendUrl = "http://127.0.0.1:$BackendPort"
+    $env:AKANE_BACKEND_URL = $resolvedBackendUrl
+    if (
+        $expectedInstanceId -eq "local-default" -and
+        -not $SkipBackend -and
+        [string]::IsNullOrWhiteSpace([string]$env:AKANE_DESKTOP_SATELLITE_TOKEN)
+    ) {
+        $env:AKANE_DESKTOP_SATELLITE_TOKEN = New-AkaneSatelliteToken
+        $generatedSatelliteToken = $true
+    }
+}
 $safeInstanceId = Get-AkaneSafeInstanceLogId -InstanceId $expectedInstanceId
 $runtimeLogDir = Join-Path $dataRoot "logs"
 $backendLog = Join-Path $runtimeLogDir "akane_backend.$safeInstanceId.log"
@@ -366,7 +430,7 @@ New-Item -ItemType Directory -Force -Path $runtimeLogDir | Out-Null
 
 Write-Host "[INFO] Akane Next one-click launcher"
 Write-Host "[INFO] Project: $projectDir"
-Write-Host "[INFO] Backend: http://127.0.0.1:$BackendPort/"
+Write-Host "[INFO] Backend: $resolvedBackendUrl/"
 
 Write-Host "[INFO] Settings center: control-center-lab.html"
 
@@ -378,7 +442,7 @@ if ($OpenSettings) {
     Remove-Item Env:\AKANE_OPEN_MODEL_SETTINGS -ErrorAction SilentlyContinue
 }
 
-if (-not $SkipBackend) {
+if (-not $CloudSatellite -and -not $SkipBackend) {
     if (Test-TcpPort -HostName "127.0.0.1" -Port $BackendPort) {
         $health = Get-BackendHealth -HostName "127.0.0.1" -Port $BackendPort
         $healthPid = Get-BackendListeningProcessId -Port $BackendPort
@@ -387,7 +451,7 @@ if (-not $SkipBackend) {
             -PortInUse $true `
             -Health $health `
             -ExpectedInstanceId $expectedInstanceId `
-            -ReuseBackend ([bool]$ReuseBackend) `
+            -ReuseBackend ([bool]$ReuseBackend -and -not $generatedSatelliteToken) `
             -ManagedProcess $managedProcess
         if ($decision -eq "reuse") {
             Write-Host "[INFO] Matching Akane instance '$expectedInstanceId' is already listening on port $BackendPort. Reusing it."

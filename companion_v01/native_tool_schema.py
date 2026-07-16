@@ -64,6 +64,17 @@ def build_openai_native_tool_specs(
 
 
 def _provider_tool_for_handler(tool_name: str, handler: Any) -> dict[str, Any] | None:
+    canonical_spec = _handler_tool_spec(handler)
+    if canonical_spec is not None:
+        try:
+            tool_set = build_openai_chat_tool_set(tool_specs=(canonical_spec,))
+        except Exception:
+            return None
+        if not tool_set.tools:
+            return None
+        tool = dict(tool_set.tools[0])
+        tool[NATIVE_TOOL_CAPABILITY_ID_FIELD] = canonical_spec.capability_id
+        return tool
     description = _metadata_schema_description(handler)
     parameters = _metadata_schema_parameters(handler)
     if not description:
@@ -92,6 +103,17 @@ def _provider_tool_for_handler(tool_name: str, handler: Any) -> dict[str, Any] |
     tool = dict(tool_set.tools[0])
     tool[NATIVE_TOOL_CAPABILITY_ID_FIELD] = tool_name
     return tool
+
+
+def _handler_tool_spec(handler: Any) -> CapabilityToolSpec | None:
+    getter = getattr(handler, "tool_spec", None)
+    if not callable(getter):
+        return None
+    try:
+        spec = getter()
+    except Exception:
+        return None
+    return spec if isinstance(spec, CapabilityToolSpec) else None
 
 
 def _handler_description(handler: Any, *, tool_name: str) -> str:

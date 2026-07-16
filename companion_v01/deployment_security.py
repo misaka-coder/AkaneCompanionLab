@@ -111,9 +111,21 @@ class AdminWriteAuth:
 
 
 @dataclass(frozen=True, slots=True)
+class DesktopSatelliteAuth:
+    """Restart-only device credential, deliberately separate from admin auth."""
+
+    token: str = field(repr=False)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.token)
+
+
+@dataclass(frozen=True, slots=True)
 class InstanceDeploymentSecurity:
     qq: QQChannelRuntimeConfig
     admin: AdminWriteAuth
+    satellite: DesktopSatelliteAuth
 
 
 def resolve_instance_deployment_security(
@@ -130,6 +142,9 @@ def resolve_instance_deployment_security(
         token=admin_token,
         require_token=bool(admin_token),
         allow_loopback_without_token=compatibility and not admin_token,
+    )
+    satellite = DesktopSatelliteAuth(
+        token=_clean(getattr(config_module, "AKANE_DESKTOP_SATELLITE_TOKEN", ""))
     )
 
     manifest_qq = instance_context.channels.qq
@@ -186,6 +201,7 @@ def resolve_instance_deployment_security(
             require_self_id=enabled and bool(bot_id),
         ),
         admin=admin,
+        satellite=satellite,
     )
 
 
