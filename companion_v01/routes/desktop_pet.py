@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -257,28 +258,76 @@ def build_desktop_pet_router(
         resolved_session_id = str(session_id or "").strip() or resolved_user_id
         profile_user_id = str(real_user_id or "").strip() or resolved_user_id
         if not resolved_user_id:
+            for upload in files:
+                await upload.close()
             raise HTTPException(status_code=400, detail="Missing user_id")
         if not files:
             return JSONResponse({"ok": False, "reason": "no_files"})
+        max_files = max(1, int(getattr(config_module, "DESKTOP_PET_WORKSPACE_UPLOAD_MAX_FILES", 24) or 24))
+        max_file_bytes = max(
+            1,
+            int(
+                getattr(config_module, "DESKTOP_PET_WORKSPACE_UPLOAD_MAX_BYTES", 300 * 1024 * 1024)
+                or (300 * 1024 * 1024)
+            ),
+        )
+        max_total_bytes = max(
+            max_file_bytes,
+            int(
+                getattr(config_module, "DESKTOP_PET_WORKSPACE_UPLOAD_MAX_TOTAL_BYTES", 600 * 1024 * 1024)
+                or (600 * 1024 * 1024)
+            ),
+        )
+        if len(files) > max_files:
+            for upload in files:
+                await upload.close()
+            return JSONResponse(
+                {"ok": False, "reason": "too_many_files", "max_files": max_files},
+                status_code=413,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        request_dir: Path | None = None
         imported_items = []
-        for upload in files:
-            file_bytes = await upload.read()
-            if not file_bytes:
-                continue
-            file_name = str(upload.filename or "").strip() or "file"
-            with tempfile.NamedTemporaryFile(
-                delete=False,
-                suffix=f"_{file_name}",
-                dir=tempfile.gettempdir(),
-            ) as tmp:
-                tmp.write(file_bytes)
-                tmp_path = tmp.name
-            try:
+        skipped_items = []
+        total_bytes = 0
+        try:
+            staging_root = desktop_workspace_import_staging_root(engine)
+            request_dir = Path(tempfile.mkdtemp(prefix="import_", dir=staging_root))
+            for index, upload in enumerate(files):
+                file_name = safe_workspace_upload_filename(upload.filename)
+                tmp_path = request_dir / f"{index:03d}_{file_name}"
+                file_bytes = 0
+                rejected_reason = ""
+                with tmp_path.open("xb") as tmp:
+                    while True:
+                        chunk = await upload.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        file_bytes += len(chunk)
+                        total_bytes += len(chunk)
+                        if file_bytes > max_file_bytes:
+                            rejected_reason = "file_too_large"
+                            break
+                        if total_bytes > max_total_bytes:
+                            rejected_reason = "total_too_large"
+                            break
+                        tmp.write(chunk)
+                if rejected_reason:
+                    tmp_path.unlink(missing_ok=True)
+                    skipped_items.append({"file_name": file_name, "reason": rejected_reason})
+                    if rejected_reason == "total_too_large":
+                        break
+                    continue
+                if file_bytes <= 0:
+                    tmp_path.unlink(missing_ok=True)
+                    skipped_items.append({"file_name": file_name, "reason": "empty_file"})
+                    continue
                 result = await asyncio.to_thread(
                     engine.import_desktop_pet_local_paths,
                     profile_user_id=profile_user_id,
                     session_id=resolved_session_id,
-                    paths=[tmp_path],
+                    paths=[str(tmp_path)],
                     recursive=False,
                     max_files=1,
                     character_pack_id=str(character_pack_id or "").strip(),
@@ -288,95 +337,26 @@ def build_desktop_pet_router(
                     if isinstance(item, dict):
                         item.pop("absolute_path", None)
                         imported_items.append(item)
-            finally:
-                import os
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
+        finally:
+            for upload in files:
+                await upload.close()
+            if request_dir is not None:
+                shutil.rmtree(request_dir, ignore_errors=True)
         runtime_metrics.observe_request(
             "desktop_pet_workspace_import_file",
             duration_ms=(time.perf_counter() - started_at) * 1000,
             ok=bool(imported_items),
         )
         return JSONResponse(
-            {"ok": bool(imported_items), "imported": len(imported_items), "items": imported_items},
+            {
+                "ok": bool(imported_items),
+                "reason": "" if imported_items else (skipped_items[0]["reason"] if skipped_items else "no_files"),
+                "imported": len(imported_items),
+                "items": imported_items,
+                "skipped": skipped_items,
+            },
             headers={"Cache-Control": "no-store"},
         )
-
-    @router.post("/desktop-pet/workspace/import-local")
-    async def desktop_pet_workspace_import_local(request: Request):
-        started_at = time.perf_counter()
-        try:
-            payload = await request.json()
-        except Exception as exc:
-            runtime_metrics.observe_request(
-                "desktop_pet_workspace_import_local",
-                duration_ms=(time.perf_counter() - started_at) * 1000,
-                ok=False,
-            )
-            raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {exc}") from exc
-
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="Payload must be an object")
-
-        session_id, profile_user_id = resolve_identity_from_payload(payload)
-        character_pack_id = resolve_character_pack_id_from_payload(payload)
-        raw_paths = payload.get("paths")
-        if raw_paths is None and payload.get("path") is not None:
-            raw_paths = [payload.get("path")]
-        recursive = str(payload.get("recursive") or "").strip().lower() in {"1", "true", "yes"}
-        max_files = coerce_optional_int(payload.get("max_files") or payload.get("limit")) or 40
-
-        try:
-            result = await asyncio.to_thread(
-                engine.import_desktop_pet_local_paths,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                paths=raw_paths,
-                recursive=recursive,
-                max_files=max_files,
-                character_pack_id=character_pack_id,
-                timestamp=int(time.time()),
-            )
-            decorate_desktop_workspace_attachment_urls(
-                list(result.get("items") or []),
-                session_id=session_id,
-                profile_user_id=profile_user_id,
-            )
-        except ValueError as exc:
-            runtime_metrics.observe_request(
-                "desktop_pet_workspace_import_local",
-                duration_ms=(time.perf_counter() - started_at) * 1000,
-                ok=False,
-            )
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:
-            duration_ms = (time.perf_counter() - started_at) * 1000
-            runtime_metrics.observe_request("desktop_pet_workspace_import_local", duration_ms=duration_ms, ok=False)
-            log_event(
-                "desktop_pet_workspace_import_local_error",
-                session_id=session_id,
-                profile_user_id=profile_user_id,
-                message=str(exc),
-            )
-            raise HTTPException(status_code=500, detail=f"Workspace import failed: {exc}") from exc
-
-        duration_ms = (time.perf_counter() - started_at) * 1000
-        runtime_metrics.observe_request(
-            "desktop_pet_workspace_import_local",
-            duration_ms=duration_ms,
-            ok=bool(result.get("ok")),
-        )
-        log_event(
-            "desktop_pet_workspace_import_local",
-            session_id=session_id,
-            profile_user_id=profile_user_id,
-            imported=int(result.get("imported") or 0),
-            skipped=int(result.get("skipped_count") or 0),
-            duration_ms=round(duration_ms, 1),
-        )
-        return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @router.post("/desktop-pet/attachments/audio")
     async def desktop_pet_upload_audio(request: Request):
@@ -411,43 +391,49 @@ def build_desktop_pet_router(
                 duration_ms=(time.perf_counter() - started_at) * 1000,
                 ok=False,
             )
+            await upload.close()
             raise HTTPException(status_code=400, detail="Only audio files are supported")
 
-        audio_bytes = await upload.read()
         max_bytes = int(
             getattr(config_module, "DESKTOP_PET_AUDIO_UPLOAD_MAX_BYTES", 200 * 1024 * 1024)
             or (200 * 1024 * 1024)
         )
-        if not audio_bytes:
-            runtime_metrics.observe_request(
-                "desktop_pet_audio_upload",
-                duration_ms=(time.perf_counter() - started_at) * 1000,
-                ok=False,
-            )
-            raise HTTPException(status_code=400, detail="Audio file is empty")
-        if len(audio_bytes) > max_bytes:
-            runtime_metrics.observe_request(
-                "desktop_pet_audio_upload",
-                duration_ms=(time.perf_counter() - started_at) * 1000,
-                ok=False,
-            )
-            raise HTTPException(status_code=413, detail=f"Audio file is too large, limit is {max_bytes} bytes")
-
-        tmp_path = ""
+        staging_root = desktop_workspace_import_staging_root(engine) / "audio"
+        staging_root.mkdir(parents=True, exist_ok=True)
+        tmp_path = staging_root / f"upload_{time.time_ns()}{suffix or '.audio'}"
+        audio_size = 0
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".audio") as tmp:
-                tmp.write(audio_bytes)
-                tmp_path = tmp.name
+            with tmp_path.open("xb") as tmp:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    audio_size += len(chunk)
+                    if audio_size > max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Audio file is too large, limit is {max_bytes} bytes",
+                        )
+                    tmp.write(chunk)
+            if audio_size <= 0:
+                raise HTTPException(status_code=400, detail="Audio file is empty")
             item = await asyncio.to_thread(
                 engine.ingest_desktop_pet_audio_attachment,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
-                source_path=tmp_path,
+                source_path=str(tmp_path),
                 origin_name=filename,
                 mime_type=content_type,
                 character_pack_id=character_pack_id,
                 timestamp=int(time.time()),
             )
+        except HTTPException:
+            runtime_metrics.observe_request(
+                "desktop_pet_audio_upload",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            raise
         except Exception as exc:
             runtime_metrics.observe_request(
                 "desktop_pet_audio_upload",
@@ -462,11 +448,11 @@ def build_desktop_pet_router(
             )
             raise HTTPException(status_code=500, detail=f"Audio upload failed: {exc}") from exc
         finally:
-            if tmp_path:
-                try:
-                    Path(tmp_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
+            await upload.close()
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         duration_ms = (time.perf_counter() - started_at) * 1000
         runtime_metrics.observe_request("desktop_pet_audio_upload", duration_ms=duration_ms, ok=True)
@@ -476,7 +462,7 @@ def build_desktop_pet_router(
             profile_user_id=profile_user_id,
             handle=str(item.get("attachment_handle") or ""),
             filename=filename,
-            size=len(audio_bytes),
+            size=audio_size,
             duration_ms=round(duration_ms, 1),
         )
         return JSONResponse(
@@ -502,11 +488,14 @@ def build_desktop_pet_router(
             raise HTTPException(status_code=404, detail="Audio attachment not found")
         item, path = resolved
         media_type = str(item.get("mime_type") or mimetypes.guess_type(str(path))[0] or "application/octet-stream")
-        return FileResponse(
-            path,
+        return await desktop_artifact_file_response(
+            engine=engine,
+            kind="attachment",
+            handle=attachment_handle,
+            item=item,
+            path=path,
             media_type=media_type,
-            filename=str(item.get("origin_name") or item.get("summary_title") or path.name),
-            headers={"Cache-Control": "no-store"},
+            file_name=str(item.get("origin_name") or item.get("summary_title") or path.name),
         )
 
     @router.get("/desktop-pet/generated/{generated_handle}/content")
@@ -521,11 +510,14 @@ def build_desktop_pet_router(
             raise HTTPException(status_code=404, detail="Generated audio not found")
         item, path = resolved
         media_type = str(item.get("mime_type") or mimetypes.guess_type(str(path))[0] or "application/octet-stream")
-        return FileResponse(
-            path,
+        return await desktop_artifact_file_response(
+            engine=engine,
+            kind="generated",
+            handle=generated_handle,
+            item=item,
+            path=path,
             media_type=media_type,
-            filename=str(item.get("output_title") or item.get("generated_handle") or path.name),
-            headers={"Cache-Control": "no-store"},
+            file_name=str(item.get("output_title") or item.get("generated_handle") or path.name),
         )
 
     @router.get("/desktop-pet/workspace/attachments/{attachment_handle}/content")
@@ -540,11 +532,14 @@ def build_desktop_pet_router(
             raise HTTPException(status_code=404, detail="Attachment not found")
         item, path = resolved
         media_type = str(item.get("mime_type") or mimetypes.guess_type(str(path))[0] or "application/octet-stream")
-        return FileResponse(
-            path,
+        return await desktop_artifact_file_response(
+            engine=engine,
+            kind="attachment",
+            handle=attachment_handle,
+            item=item,
+            path=path,
             media_type=media_type,
-            filename=str(item.get("origin_name") or item.get("summary_title") or path.name),
-            headers={"Cache-Control": "no-store"},
+            file_name=str(item.get("origin_name") or item.get("summary_title") or path.name),
         )
 
     # M66-D: /attachments/.../location and /generated/.../location routes removed.
@@ -567,11 +562,14 @@ def build_desktop_pet_router(
         file_ext = str(item.get("file_ext") or item.get("output_format") or path.suffix.lstrip(".")).strip().lstrip(".")
         if file_ext and not filename.lower().endswith(f".{file_ext.lower()}"):
             filename = f"{filename}.{file_ext}"
-        return FileResponse(
-            path,
+        return await desktop_artifact_file_response(
+            engine=engine,
+            kind="generated",
+            handle=generated_handle,
+            item=item,
+            path=path,
             media_type=media_type,
-            filename=filename,
-            headers={"Cache-Control": "no-store"},
+            file_name=filename,
         )
 
     @router.post("/desktop-pet/music-timeline/prepare")
@@ -846,6 +844,61 @@ def safe_upload_filename(value: str) -> str:
         return "akane_audio.mp3"
     cleaned = "".join(ch for ch in name if ch not in {"\x00", "\r", "\n"}).strip()
     return cleaned[:180] or "akane_audio.mp3"
+
+
+def safe_workspace_upload_filename(value: str | None) -> str:
+    name = Path(str(value or "").replace("\\", "/")).name.strip().strip(".")
+    cleaned = "".join(
+        "_" if ch in {'<', '>', ':', '"', '/', "\\", '|', '?', '*'} or ord(ch) < 32 else ch
+        for ch in name
+    ).strip().strip(".")
+    return cleaned[:180] or "file"
+
+
+def desktop_workspace_import_staging_root(engine: Any) -> Path:
+    runtime_layout = getattr(engine, "runtime_layout", None)
+    if runtime_layout is not None:
+        cache_root = Path(runtime_layout.cache_dir)
+    else:
+        cache_root = Path(getattr(engine, "base_dir", "users_data")).resolve().parent / "cache"
+    staging_root = (cache_root / "desktop_pet" / "workspace_import").resolve()
+    staging_root.mkdir(parents=True, exist_ok=True)
+    return staging_root
+
+
+async def desktop_artifact_file_response(
+    *,
+    engine: Any,
+    kind: str,
+    handle: str,
+    item: dict,
+    path: Path,
+    media_type: str,
+    file_name: str,
+) -> FileResponse:
+    broker = getattr(engine, "artifact_broker", None)
+    if broker is None:
+        raise HTTPException(status_code=503, detail="Artifact broker unavailable")
+    try:
+        record = await asyncio.to_thread(
+            broker.record,
+            handle=handle,
+            kind=kind,
+            path=path,
+            file_name=file_name,
+            media_type=media_type,
+            item=item,
+        )
+    except (OSError, ValueError) as exc:
+        reason = str(exc or "artifact_unavailable")
+        status_code = 404 if reason in {"artifact_file_missing", "artifact_file_empty"} else 409
+        raise HTTPException(status_code=status_code, detail="Artifact unavailable") from exc
+    return FileResponse(
+        record.path,
+        media_type=record.media_type,
+        filename=record.file_name,
+        headers=record.transfer_headers(),
+    )
 
 
 def coerce_optional_int(value) -> int | None:

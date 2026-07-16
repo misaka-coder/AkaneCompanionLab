@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot
+from companion_v01.capability_registry import RETRIEVE_MEMORY_TOOL_SPEC
 from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_native_tool_specs
 from companion_v01.tool_runtime import AdapterCapabilityToolHandler, TOOL_METADATA_BY_TYPE
 
@@ -50,6 +51,9 @@ class NativeToolSchemaTests(unittest.TestCase):
     def test_build_openai_native_tool_specs_prefers_metadata_input_schema(self) -> None:
         class MemoryHandler:
             tool_type = "retrieve_memory"
+
+            def tool_spec(self):
+                return RETRIEVE_MEMORY_TOOL_SPEC
 
             def tool_metadata(self):
                 return TOOL_METADATA_BY_TYPE["retrieve_memory"]

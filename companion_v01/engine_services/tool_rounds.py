@@ -6,13 +6,18 @@ Group B — module-level functions that take engine as first param.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from typing import Any
+from dataclasses import replace
+from types import MappingProxyType
+from typing import Any, Mapping
 
 from ..capability_registry import (
     CapabilityRegistry,
     CapabilitySelection,
     CapabilitySnapshot,
+    ServerLocalOfferIndex,
     is_document_attachment,
     is_document_generated_file,
     is_image_attachment,
@@ -131,6 +136,7 @@ def resolve_tool_round_budget(
     session_id: str = "",
     domain_profile_id: str = "",
 ) -> int:
+    capability_selection = tool_call.get("_tool_capability_selection") if isinstance(tool_call, dict) else None
     budget = tool_orchestration_engine.resolve_tool_round_budget(
         resolve_tool_handlers(
             engine,
@@ -138,6 +144,7 @@ def resolve_tool_round_budget(
             profile_user_id=profile_user_id,
             session_id=session_id,
             domain_profile_id=domain_profile_id,
+            capability_selection=capability_selection,
         ),
         tool_call,
         current_budget=current_budget,
@@ -154,6 +161,26 @@ def resolve_tool_handlers(
     domain_profile_id: str = "",
     capability_selection: CapabilitySelection | None = None,
 ) -> dict[str, Any]:
+    frozen_handlers = getattr(capability_selection, "resolved_handlers", None)
+    if capability_selection is not None and isinstance(frozen_handlers, Mapping):
+        return {
+            name: frozen_handlers[name]
+            for name in capability_selection.tool_names
+            if name in frozen_handlers
+        }
+    if client_context is None:
+        selection = resolve_capability_selection(
+            engine,
+            client_context=None,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            domain_profile_id=domain_profile_id,
+        )
+        return {
+            name: selection.resolved_handlers[name]
+            for name in selection.tool_names
+            if name in selection.resolved_handlers
+        }
     handlers = getattr(engine, "tool_handlers", {}) or {}
     dynamic_handlers = build_adapter_tool_handlers(
         engine,
@@ -162,25 +189,17 @@ def resolve_tool_handlers(
     )
     all_handlers = {**dict(handlers), **dynamic_handlers}
     domain_profile = DomainProfileRegistry().get(domain_profile_id)
-    if client_context is None:
-        allowed_names = _filter_tool_names_with_policy_extensions(
-            tuple(all_handlers.keys()),
-            domain_profile,
-            handlers=all_handlers,
-        )
-        selected_handlers = {name: all_handlers[name] for name in allowed_names if name in all_handlers}
-    else:
-        selection = capability_selection or resolve_capability_selection(
-            engine,
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            domain_profile_id=domain_profile_id,
-        )
-        selected_names = list(selection.tool_names)
-        selected_handlers = {
-            tool_name: all_handlers[tool_name] for tool_name in selected_names if tool_name in all_handlers
-        }
+    selection = capability_selection or resolve_capability_selection(
+        engine,
+        client_context=client_context,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        domain_profile_id=domain_profile_id,
+    )
+    selected_names = list(selection.tool_names)
+    selected_handlers = {
+        tool_name: all_handlers[tool_name] for tool_name in selected_names if tool_name in all_handlers
+    }
 
     # M66-E: ToolReadinessGate removed. Readiness is now gated by
     # ServerLocalOfferIndex inside CapabilityRegistry.select() before this
@@ -202,24 +221,70 @@ def resolve_capability_selection(
     handlers = getattr(engine, "tool_handlers", {}) or {}
     domain_profile = DomainProfileRegistry().get(domain_profile_id)
     if client_context is None:
-        tool_names = filter_tool_names(tuple(handlers.keys()), domain_profile)
-        return CapabilitySelection(
-            light_hints=(),
-            tool_names=tool_names,
-            module_names=("all_tools",),
+        registry = getattr(engine, "capability_registry", None) or CapabilityRegistry()
+        server_offer_index = getattr(registry, "server_offer_index", None) or ServerLocalOfferIndex()
+        registry.server_offer_index = server_offer_index
+        try:
+            setattr(engine, "capability_registry", registry)
+        except Exception:
+            pass
+        server_offer_index.replace_handlers(handlers)
+        # No-client-context resolution is a compatibility/admin path rather
+        # than a model-facing turn.  Keep the host's in-process handlers here
+        # so a missing/failed optional plugin cannot remove ordinary Akane
+        # tools.  Frontstage and worker selections carry an explicit context
+        # and continue to use the strict ServerLocalOfferIndex below.
+        static_handlers = dict(handlers)
+        dynamic_handlers = _filter_live_dynamic_handlers(
+            build_adapter_tool_handlers(
+                engine,
+                profile_user_id=profile_user_id,
+                client_context=None,
+            )
+        )
+        all_handlers = {**dict(static_handlers), **dynamic_handlers}
+        tool_names = _filter_tool_names_with_policy_extensions(
+            tuple(all_handlers.keys()),
+            domain_profile,
+            handlers=all_handlers,
+        )
+        return _freeze_capability_selection(
+            CapabilitySelection(
+                light_hints=(),
+                tool_names=tool_names,
+                module_names=("all_tools",),
+            ),
+            all_handlers,
         )
     if not str(profile_user_id or "").strip() or not str(session_id or "").strip():
-        return CapabilitySelection(
+        registry = getattr(engine, "capability_registry", None) or CapabilityRegistry()
+        server_offer_index = getattr(registry, "server_offer_index", None) or ServerLocalOfferIndex()
+        registry.server_offer_index = server_offer_index
+        try:
+            setattr(engine, "capability_registry", registry)
+        except Exception:
+            pass
+        server_offer_index.replace_handlers(handlers)
+        client_mode_value = str(
+            getattr(client_context.effective_mode, "value", client_context.effective_mode) or ""
+        )
+        selection = CapabilitySelection(
             light_hints=(),
             tool_names=tuple(
-                legacy_mode_tool_names(
-                    engine,
-                    client_context,
-                    domain_profile_id=domain_profile_id,
+                name
+                for name in legacy_mode_tool_names(
+                    engine, client_context, domain_profile_id=domain_profile_id
+                )
+                if server_offer_index.is_offered(
+                    name,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    client_mode=client_mode_value,
                 )
             ),
             module_names=("legacy_mode_pack",),
         )
+        return _freeze_capability_selection(selection, handlers)
     snapshot = build_capability_snapshot(
         engine,
         client_context=client_context,
@@ -227,22 +292,53 @@ def resolve_capability_selection(
         session_id=session_id,
     )
     registry = getattr(engine, "capability_registry", None) or CapabilityRegistry()
+    server_offer_index = getattr(registry, "server_offer_index", None)
+    if server_offer_index is None:
+        server_offer_index = ServerLocalOfferIndex()
+        registry.server_offer_index = server_offer_index
+        try:
+            setattr(engine, "capability_registry", registry)
+        except Exception:
+            pass
+    replace_handlers = getattr(server_offer_index, "replace_handlers", None)
+    if callable(replace_handlers):
+        replace_handlers(handlers)
     selection = registry.select(
         snapshot,
         allowed_tool_names=(
-            domain_profile.allowed_tool_names if domain_profile.id != DEFAULT_DOMAIN_PROFILE_ID else None
+            domain_profile.allowed_tool_names
+            if domain_profile.id != DEFAULT_DOMAIN_PROFILE_ID
+            else tuple(handlers.keys())
         ),
         hidden_tool_names=(
             *domain_profile.hidden_tool_names,
             *(() if "generate_image" in handlers else ("generate_image",)),
         ),
         intent_text=intent_text,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
     )
     if domain_profile.id != DEFAULT_DOMAIN_PROFILE_ID:
+        client_mode_value = str(
+            getattr(client_context.effective_mode, "value", client_context.effective_mode) or ""
+        )
+
+        def domain_handler_is_offered(name: str) -> bool:
+            if server_offer_index is None:
+                return True
+            return server_offer_index.is_offered(
+                name,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_mode=client_mode_value,
+            )
+
         domain_handler_names = tuple(
             name
             for name in filter_tool_names(tuple(handlers.keys()), domain_profile)
-            if name in handlers and name not in selection.tool_names
+            if name in handlers
+            and name not in selection.tool_names
+            and domain_handler_is_offered(name)
         )
         selection = CapabilitySelection(
             light_hints=domain_profile.capability_hints,
@@ -258,33 +354,9 @@ def resolve_capability_selection(
         profile_user_id=profile_user_id,
         client_context=client_context,
     )
-    if not dynamic_handlers:
-        return selection
-    # M66-F: Filter dynamic (MCP/plugin/python adapter) handlers through their
-    # capability_status() probe. Handlers with no capability_status() auto-pass.
-    # This gates MCP tools when the session is disconnected and plugin tools
-    # when the plugin is unhealthy — without relying on ToolReadinessGate.
-    live_dynamic_handlers: dict[str, Any] = {}
-    for _name, _handler in dynamic_handlers.items():
-        _status_fn = getattr(_handler, "capability_status", None)
-        if not callable(_status_fn):
-            live_dynamic_handlers[_name] = _handler
-            continue
-        try:
-            _status = _status_fn()
-        except Exception:
-            continue  # probe threw → treat as unavailable
-        if isinstance(_status, bool):
-            if _status:
-                live_dynamic_handlers[_name] = _handler
-        elif isinstance(_status, dict):
-            if bool(_status.get("enabled", True)):
-                live_dynamic_handlers[_name] = _handler
-        else:
-            live_dynamic_handlers[_name] = _handler
-    dynamic_handlers = live_dynamic_handlers
-    if not dynamic_handlers:
-        return selection
+    # Dynamic providers must publish an explicit, ready status. Missing or
+    # malformed liveness data fails closed and never enters the model schema.
+    dynamic_handlers = _filter_live_dynamic_handlers(dynamic_handlers)
     dynamic_tool_names = tuple(
         name
         for name in _filter_tool_names_with_policy_extensions(
@@ -294,20 +366,52 @@ def resolve_capability_selection(
         )
         if name not in selection.tool_names
     )
-    if not dynamic_tool_names:
-        return selection
-    return CapabilitySelection(
-        light_hints=(
-            *selection.light_hints,
-            "当前 profile 有已显式暴露给 prompt 的扩展能力；调用失败时不要假装完成，涉及高风险动作会先请求确认。",
-        ),
-        tool_names=(*selection.tool_names, *dynamic_tool_names),
-        module_names=(*selection.module_names, "extension_tools"),
-        layer_names=(*selection.layer_names, "extension"),
-        disclosures=selection.disclosures,
-        tool_specs=selection.tool_specs,
-        execution_receipts=selection.execution_receipts,
-    )
+    if dynamic_tool_names:
+        selection = CapabilitySelection(
+            light_hints=(
+                *selection.light_hints,
+                "当前 profile 有已显式暴露给 prompt 的扩展能力；调用失败时不要假装完成，涉及高风险动作会先请求确认。",
+            ),
+            tool_names=(*selection.tool_names, *dynamic_tool_names),
+            module_names=(*selection.module_names, "extension_tools"),
+            layer_names=(*selection.layer_names, "extension"),
+            disclosures=selection.disclosures,
+            tool_specs=selection.tool_specs,
+            execution_receipts=selection.execution_receipts,
+        )
+    return _freeze_capability_selection(selection, {**dict(handlers), **dynamic_handlers})
+
+
+def _filter_live_dynamic_handlers(dynamic_handlers: Mapping[str, Any]) -> dict[str, Any]:
+    live_dynamic_handlers: dict[str, Any] = {}
+    for _name, _handler in dynamic_handlers.items():
+        _status_fn = getattr(_handler, "capability_status", None)
+        if not callable(_status_fn):
+            continue
+        try:
+            _status = _status_fn()
+        except Exception:
+            continue  # probe threw → treat as unavailable
+        if isinstance(_status, bool):
+            if _status:
+                live_dynamic_handlers[_name] = _handler
+        elif isinstance(_status, Mapping):
+            _state = str(_status.get("status") or "").strip().lower()
+            if bool(_status.get("enabled", False)) and _state in {"available", "degraded", "ok", "ready"}:
+                live_dynamic_handlers[_name] = _handler
+    return live_dynamic_handlers
+
+
+def _freeze_capability_selection(
+    selection: CapabilitySelection,
+    handlers: dict[str, Any] | Mapping[str, Any],
+) -> CapabilitySelection:
+    resolved = {
+        name: handlers[name]
+        for name in selection.tool_names
+        if name in handlers
+    }
+    return replace(selection, resolved_handlers=MappingProxyType(resolved))
 
 
 def _filter_tool_names_with_policy_extensions(
@@ -476,6 +580,8 @@ def build_mcp_adapter_tool_handlers(
     except Exception:
         return {}
     servers = config_payload.get("mcpServers") if isinstance(config_payload.get("mcpServers"), dict) else {}
+    raw_cache = getattr(engine, "_mcp_capability_adapter_cache", None)
+    adapter_cache: dict[tuple[str, str, str], Any] = raw_cache if isinstance(raw_cache, dict) else {}
     handlers: dict[str, Any] = {}
     for server_id, server_config in sorted(servers.items(), key=lambda item: str(item[0])):
         if not isinstance(server_config, dict) or not bool(server_config.get("enabled")):
@@ -486,12 +592,23 @@ def build_mcp_adapter_tool_handlers(
         prompt_tools = [tool for tool in tools if bool(tool.get("promptExposed") or tool.get("prompt_exposed"))]
         if not prompt_tools:
             continue
-        adapter = McpStdioCapabilityAdapter(
-            provider_id=f"provider.mcp.{server_id}",
-            server_id=str(server_id),
-            server_config={**server_config, "serverId": str(server_id)},
-            tool_configs=tuple(prompt_tools),
-        )
+        adapter_config = {**server_config, "serverId": str(server_id)}
+        fingerprint = hashlib.sha256(
+            json.dumps(adapter_config, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        cache_key = (str(profile_user_id), str(server_id), fingerprint)
+        adapter = adapter_cache.get(cache_key)
+        if adapter is None:
+            adapter = McpStdioCapabilityAdapter(
+                provider_id=f"provider.mcp.{server_id}",
+                server_id=str(server_id),
+                server_config=adapter_config,
+                tool_configs=tuple(prompt_tools),
+                liveness_probe=getattr(engine, "mcp_liveness_probe", None),
+            )
+            if len(adapter_cache) >= 64:
+                adapter_cache.clear()
+            adapter_cache[cache_key] = adapter
         for tool in prompt_tools:
             descriptor = adapter.descriptor_for_tool(tool)
             if descriptor.id and descriptor.prompt_exposed:
@@ -501,6 +618,10 @@ def build_mcp_adapter_tool_handlers(
                     descriptor=descriptor,
                     config_base_dir=config_base_dir,
                 )
+    try:
+        setattr(engine, "_mcp_capability_adapter_cache", adapter_cache)
+    except Exception:
+        pass
     return handlers
 
 

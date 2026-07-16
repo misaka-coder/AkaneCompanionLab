@@ -15,6 +15,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from ..capability_approval import CapabilityApprovalStore
+from ..capability_registry import ExecutorBroker
 from ..local_capability_config import (
     check_provider_health,
     get_approval_policy_config,
@@ -81,6 +82,13 @@ def build_capabilities_router(
     lyrics_searcher: LyricsSearchFunc | None = None,
 ) -> APIRouter:
     router = APIRouter()
+    executor_broker = getattr(engine, "executor_broker", None)
+    if executor_broker is None:
+        executor_broker = ExecutorBroker(None)
+        try:
+            setattr(engine, "executor_broker", executor_broker)
+        except Exception:
+            pass
     workflow_jobs: dict[str, dict[str, Any]] = {}
     workflow_jobs_lock = threading.RLock()
     approval_store = CapabilityApprovalStore()
@@ -118,6 +126,7 @@ def build_capabilities_router(
             payload,
             workflow_runner=workflow_runner,
             background_tasks=background_tasks,
+            executor_broker=executor_broker,
             base_dir=provider_config_base_dir,
             profile_user_id=profile_user_id,
         )
@@ -570,6 +579,7 @@ def build_capabilities_router(
             payload,
             workflow_runner=workflow_runner,
             background_tasks=background_tasks,
+            executor_broker=executor_broker,
             base_dir=provider_config_base_dir,
             profile_user_id=profile_user_id,
         )
@@ -660,6 +670,7 @@ def build_capabilities_router(
             result,
             workflow_runner=workflow_runner,
             background_tasks=background_tasks,
+            executor_broker=executor_broker,
         )
         _observe_request(runtime_metrics, "capabilities.workflow_preflight", started_at, bool(result.get("ok")))
         _log_best_effort(
@@ -686,6 +697,7 @@ def build_capabilities_router(
             result,
             workflow_runner=workflow_runner,
             background_tasks=background_tasks,
+            executor_broker=executor_broker,
         )
         if result.get("ok") and result.get("status") == "ready":
             result = _start_bound_workflow_job(
@@ -694,25 +706,11 @@ def build_capabilities_router(
                 session_id=session_id,
                 workflow_runner=workflow_runner,
                 background_tasks=background_tasks,
+                executor_broker=executor_broker,
                 payload=payload,
                 workflow_jobs=workflow_jobs,
                 workflow_jobs_lock=workflow_jobs_lock,
             )
-        elif result.get("status") == "not-implemented" and result.get("reason") == "workflow_runner_not_bound":
-            job = _build_inert_workflow_job(
-                preflight=result,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            )
-            with workflow_jobs_lock:
-                workflow_jobs[job["jobId"]] = job
-            public_job = _public_workflow_job(job)
-            result = {
-                **result,
-                "jobId": job["jobId"],
-                "jobStatus": job["status"],
-                "job": public_job,
-            }
         _observe_request(runtime_metrics, "capabilities.workflow_job_start", started_at, bool(result.get("ok")))
         _log_best_effort(
             log_event,
@@ -1477,57 +1475,6 @@ def _resolve_provider_config_base_dir(
     return None
 
 
-def _build_inert_workflow_job(
-    *,
-    preflight: dict[str, Any],
-    profile_user_id: str,
-    session_id: str,
-) -> dict[str, Any]:
-    now = _now_iso()
-    accepted_inputs = preflight.get("acceptedInputs") if isinstance(preflight.get("acceptedInputs"), dict) else {}
-    checks = preflight.get("checks") if isinstance(preflight.get("checks"), dict) else {}
-    return {
-        "_profileUserId": str(profile_user_id or ""),
-        "_sessionId": str(session_id or ""),
-        "_workflow": copy.deepcopy(preflight.get("workflow")) if isinstance(preflight.get("workflow"), dict) else {},
-        "jobId": f"workflowjob_{uuid.uuid4().hex}",
-        "kind": "workflow_job",
-        "workflowId": str(preflight.get("workflowId") or ""),
-        "capabilityId": str(preflight.get("capabilityId") or ""),
-        "status": "queued-but-inert",
-        "reason": str(preflight.get("reason") or "workflow_runner_not_bound")[:160],
-        "executionReady": False,
-        "canRun": False,
-        "createdAt": now,
-        "updatedAt": now,
-        "inputs": {
-            "inputImageHandle": str(accepted_inputs.get("inputImageHandle") or ""),
-            "outputImageHandle": str(accepted_inputs.get("outputImageHandle") or ""),
-        },
-        "checks": {
-            "providerConfigured": bool(checks.get("providerConfigured")),
-            "workflowConfigured": bool(checks.get("workflowConfigured")),
-            "inputImageHandle": bool(checks.get("inputImageHandle")),
-            "outputImageHandle": bool(checks.get("outputImageHandle")),
-            "runnerBound": False,
-        },
-        "runner": {
-            "bound": False,
-            "lane": "workflow",
-            "backgroundTaskId": "",
-            "reason": "workflow_runner_not_bound",
-        },
-        "outputs": [],
-        "events": [
-            {
-                "status": "blocked",
-                "reason": "workflow_runner_not_bound",
-                "createdAt": now,
-            }
-        ],
-    }
-
-
 def _start_bound_workflow_job(
     *,
     preflight: dict[str, Any],
@@ -1535,6 +1482,7 @@ def _start_bound_workflow_job(
     session_id: str,
     workflow_runner: Any,
     background_tasks: Any,
+    executor_broker: ExecutorBroker,
     payload: dict[str, Any],
     workflow_jobs: dict[str, dict[str, Any]],
     workflow_jobs_lock: threading.RLock,
@@ -1562,7 +1510,13 @@ def _start_bound_workflow_job(
             lane="workflow",
             name="capability-workflow",
             fn=_run_bound_workflow_job,
-            args=(job["jobId"], workflow_runner, workflow_jobs, workflow_jobs_lock),
+            args=(
+                job["jobId"],
+                workflow_runner,
+                executor_broker,
+                workflow_jobs,
+                workflow_jobs_lock,
+            ),
         )
     except Exception:
         _update_workflow_job(
@@ -1662,9 +1616,16 @@ def _build_bound_workflow_job(
 def _run_bound_workflow_job(
     job_id: str,
     workflow_runner: Any,
+    executor_broker: ExecutorBroker,
     workflow_jobs: dict[str, dict[str, Any]],
     workflow_jobs_lock: threading.RLock,
 ) -> None:
+    with workflow_jobs_lock:
+        existing = workflow_jobs.get(job_id)
+        if not isinstance(existing, dict):
+            return
+        if str(existing.get("status") or "") in {"completed", "failed", "cancelled"}:
+            return
     _update_workflow_job(
         job_id,
         workflow_jobs=workflow_jobs,
@@ -1688,13 +1649,30 @@ def _run_bound_workflow_job(
         input_assets=dict(job.get("_inputAssets") or {}),
         workflow=copy.deepcopy(job.get("_workflow")) if isinstance(job.get("_workflow"), dict) else {},
     )
-    try:
-        runner_result = call_workflow_execution_runner(workflow_runner, request)
-    except Exception:
+    broker_result = executor_broker.execute_server_local(
+        tool_id=str(request.capability_id or request.workflow_id or "workflow"),
+        invocation_id=job_id,
+        dispatch=lambda: call_workflow_execution_runner(workflow_runner, request),
+        retain_result=False,
+        ledger_scope=f"{request.profile_user_id}\x1f{request.session_id}",
+        request_data={
+            "workflow_id": request.workflow_id,
+            "capability_id": request.capability_id,
+            "inputs": dict(request.inputs or {}),
+        },
+    )
+    if broker_result.status == "succeeded" and broker_result.result is None:
+        return
+    if broker_result.status == "succeeded" and isinstance(broker_result.result, Mapping):
+        runner_result = dict(broker_result.result)
+    else:
+        failure_reason = str(broker_result.reason or "workflow_broker_failed")
+        if failure_reason == "server_local_dispatch_failed":
+            failure_reason = "workflow_runner_failed"
         runner_result = {
             "ok": False,
             "status": "failed",
-            "reason": "workflow_runner_failed",
+            "reason": failure_reason,
             "outputs": [],
         }
 
@@ -1757,9 +1735,11 @@ def _with_bound_workflow_runner(
     *,
     workflow_runner: Any,
     background_tasks: Any,
+    executor_broker: Any,
 ) -> dict[str, Any]:
     if (
         workflow_runner is None
+        or not callable(getattr(executor_broker, "execute_server_local", None))
         or result.get("status") != "not-implemented"
         or result.get("reason") != "workflow_runner_not_bound"
     ):
@@ -1812,10 +1792,16 @@ def _mark_workflows_execution_ready(
     *,
     workflow_runner: Any,
     background_tasks: Any,
+    executor_broker: Any,
     base_dir: Path | None,
     profile_user_id: str,
 ) -> None:
-    if workflow_runner is None or background_tasks is None or not hasattr(background_tasks, "submit"):
+    if (
+        workflow_runner is None
+        or background_tasks is None
+        or not hasattr(background_tasks, "submit")
+        or not callable(getattr(executor_broker, "execute_server_local", None))
+    ):
         return
     workflows = _payload_workflow_entries(payload)
     for workflow in workflows:

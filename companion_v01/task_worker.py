@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Callable
 
 import config
 
 from .background_tasks import BackgroundTaskRunner
+from .capability_registry import CapabilitySelection, ExecutorBroker, ServerLocalOfferIndex
 from .llm_runtime import LLMRuntime
 from .store import normalize_character_pack_id
 from .task_workspace import TaskWorkspaceService
-from .tool_runtime import BaseToolHandler, ToolExecutionContext, ToolExecutionResult
+from .tool_runtime import BaseToolHandler, ToolExecutionResult
 
 
 logger = logging.getLogger("akane.task_worker")
@@ -98,6 +101,21 @@ class WorkerRunSummary:
     tool_results: list[str] = field(default_factory=list)
 
 
+class _StandaloneWorkerEngine:
+    """Minimal compatibility host that still routes through ExecutorBroker."""
+
+    def __init__(self, *, handlers: dict[str, BaseToolHandler], executor_broker: ExecutorBroker) -> None:
+        self.tool_handlers = dict(handlers)
+        self.executor_broker = executor_broker
+
+    def _resolve_tool_handlers(self, **kwargs: Any) -> dict[str, BaseToolHandler]:
+        selection = kwargs.get("capability_selection")
+        frozen = getattr(selection, "resolved_handlers", None)
+        if frozen:
+            return dict(frozen)
+        return dict(self.tool_handlers)
+
+
 class TaskWorkerService:
     """Run constrained background specialists against task workspaces.
 
@@ -130,6 +148,8 @@ class TaskWorkerService:
         # M66-F: engine reference for routing worker tool calls through
         # execute_tool_invocation() instead of the direct normalize+execute path.
         self._engine_ref = engine_ref
+        self._standalone_executor_broker = ExecutorBroker(None)
+        self._worker_offer_index = ServerLocalOfferIndex()
 
     def delegate_task(
         self,
@@ -287,7 +307,11 @@ class TaskWorkerService:
 
         tool_followups: list[str] = []
         max_rounds = max(1, min(5, int(getattr(config, "MAX_TASK_WORKER_ROUNDS", 3) or 3)))
-        allowed_handlers = self._allowed_handlers(agent)
+        allowed_handlers = self._allowed_handlers(
+            agent,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+        )
         if not allowed_handlers:
             self._block_task(
                 task_id=task_id, agent=agent, message="后台工坊没有可用工具。", question="", timestamp=start_ts
@@ -474,12 +498,48 @@ class TaskWorkerService:
         summary.status = "paused"
         return summary
 
-    def _allowed_handlers(self, agent: str) -> dict[str, BaseToolHandler]:
+    def _allowed_handlers(
+        self,
+        agent: str,
+        *,
+        profile_user_id: str,
+        session_id: str,
+    ) -> dict[str, BaseToolHandler]:
         all_handlers = dict(self.tool_handlers_provider() or {})
         allowed = set(AGENT_ALLOWED_TOOLS.get(agent) or set())
         if not allowed:
             allowed = set().union(*AGENT_ALLOWED_TOOLS.values())
-        return {name: handler for name, handler in all_handlers.items() if name in allowed}
+        candidates = {
+            name: handler
+            for name, handler in all_handlers.items()
+            if name in allowed and self._worker_tool_spec(handler) is not None
+        }
+        self._worker_offer_index.replace_handlers(candidates)
+        return {
+            name: handler
+            for name, handler in candidates.items()
+            if self._worker_offer_index.is_offered(
+                name,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_mode="worker",
+            )
+        }
+
+    @staticmethod
+    def _worker_tool_spec(handler: BaseToolHandler) -> Any | None:
+        getter = getattr(handler, "tool_spec", None)
+        if not callable(getter):
+            return None
+        try:
+            spec = getter()
+        except Exception:
+            return None
+        if not str(getattr(spec, "capability_id", "") or "").strip():
+            return None
+        if not isinstance(getattr(spec, "input_schema", None), dict):
+            return None
+        return spec
 
     def _execute_worker_tool(
         self,
@@ -508,51 +568,60 @@ class TaskWorkerService:
         }:
             safe_tool_call["send_to_user"] = False
 
-        # M66-F: Route through execute_tool_invocation() when engine_ref is available,
-        # so worker calls share the same validation, policy, and broker path as
-        # frontstage calls. Falls back to direct execute() when engine_ref is absent.
-        engine = self._engine_ref
-        if engine is not None:
-            try:
-                from .tool_invocation import ToolInvocation, legacy_tool_call_to_invocation
-                from . import tool_orchestration_engine as _toe
-                import uuid
-
-                normalized_call = handler.normalize_call(safe_tool_call)
-                if not normalized_call:
-                    return None
-                invocation = ToolInvocation(
-                    name=tool_type,
-                    arguments={k: v for k, v in normalized_call.items() if k != "type"},
-                    source="worker",
-                    id=f"worker_{task_id}_{tool_type}_{uuid.uuid4().hex[:8]}",
-                )
-                _result, envelope = _toe.execute_tool_invocation(
-                    engine,
-                    invocation=invocation,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    visual_payload={"_task_worker": True, "_task_id": task_id},
-                    now_ts=int(time.time()),
-                )
-                return _result
-            except Exception as exc:
-                logger.warning("worker_broker_execute_failed tool=%s: %s", tool_type, exc)
-                # Fall through to direct path on unexpected error.
-
-        # Direct execution path (local-default without engine_ref, or fallback).
-        normalized = handler.normalize_call(safe_tool_call)
-        if not normalized:
+        normalized_call = handler.normalize_call(safe_tool_call)
+        if not normalized_call:
             return None
-        return handler.execute(
-            call=normalized,
-            context=ToolExecutionContext(
+        selection = CapabilitySelection(
+            light_hints=(),
+            tool_names=(tool_type,),
+            module_names=("worker",),
+            resolved_handlers=MappingProxyType({tool_type: handler}),
+        )
+        engine = self._engine_ref or _StandaloneWorkerEngine(
+            handlers={tool_type: handler},
+            executor_broker=self._standalone_executor_broker,
+        )
+        try:
+            from . import tool_orchestration_engine as _toe
+            from .tool_invocation import ToolInvocation
+
+            invocation = ToolInvocation(
+                name=tool_type,
+                arguments={k: v for k, v in normalized_call.items() if k != "type"},
+                source="worker",
+                id=f"worker_{task_id}_{tool_type}_{uuid.uuid4().hex[:8]}",
+                capability_selection=selection,
+            )
+            result, _envelope = _toe.execute_tool_invocation(
+                engine,
+                invocation=invocation,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
-                now_ts=int(time.time()),
                 visual_payload={"_task_worker": True, "_task_id": task_id},
-            ),
-        )
+                now_ts=int(time.time()),
+            )
+            return result
+        except Exception:
+            logger.warning("worker_broker_execute_failed tool=%s", tool_type)
+            return ToolExecutionResult(
+                tool_type=tool_type,
+                stream_events=[
+                    {
+                        "type": "worker_tool_execution_failed",
+                        "tool_type": tool_type,
+                        "status": "execution_unknown",
+                        "reason": "worker_broker_failed",
+                    }
+                ],
+                followup_context=(
+                    "<tool_use_error>后台工具执行结果无法确认；不要声称已经完成，也不要自动重试可能产生副作用的动作。"
+                    "</tool_use_error>"
+                ),
+                state_updates={
+                    "worker_tool_status": "execution_unknown",
+                    "worker_tool_reason": "worker_broker_failed",
+                },
+            )
 
     def _build_worker_system_prompt(self, *, agent: str, handlers: dict[str, BaseToolHandler]) -> str:
         lines = [
@@ -575,18 +644,11 @@ class TaskWorkerService:
             "",
             "【你当前可用的受限工具】",
         ]
-        for tool_id, handler in handlers.items():
-            # M66-F: Use canonical ToolSpec description; fall back to build_prompt_instruction()
-            # only when no spec is available (backward compat during migration window).
-            spec_getter = getattr(handler, "tool_spec", None)
-            spec = spec_getter() if callable(spec_getter) else None
-            if spec is not None and getattr(spec, "capability_id", None) and getattr(spec, "description", None):
-                lines.append(f"- {spec.capability_id}：{spec.description}")
-            else:
-                try:
-                    lines.append(handler.build_prompt_instruction())
-                except Exception:
-                    lines.append(f"- {tool_id}")
+        for _tool_id, handler in handlers.items():
+            spec = self._worker_tool_spec(handler)
+            if spec is None:
+                continue
+            lines.append(f"- {spec.capability_id}：{spec.description}")
         lines.append("一次只调用一个工具；不要调用未列出的工具。")
         return "\n".join(lines)
 

@@ -77,6 +77,12 @@ def build_engine(config_base_dir: Path) -> AkaneMemoryEngine:
     engine.tool_handlers = {"web_search": StubWebSearchHandler()}
     engine.store = StubStore()
     engine.capability_config_base_dir = Path(config_base_dir)
+
+    async def live_mcp_probe(*, server):
+        del server
+        return {"tools": [{"name": "echo"}]}
+
+    engine.mcp_liveness_probe = live_mcp_probe
     return engine
 
 

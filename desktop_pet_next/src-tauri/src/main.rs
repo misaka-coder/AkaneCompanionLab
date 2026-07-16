@@ -13,6 +13,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{
     AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
     WebviewWindowBuilder, Window,
@@ -60,6 +61,9 @@ const MAX_AUDIO_FILE_BYTES: u64 = 300 * 1024 * 1024;
 const MAX_LYRIC_FILE_BYTES: u64 = 512 * 1024;
 const MAX_CHARACTER_PACK_ZIP_BYTES: usize = 300 * 1024 * 1024;
 const MAX_PORTRAIT_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+const MAX_WORKSPACE_FILE_BYTES: u64 = 300 * 1024 * 1024;
+const MAX_WORKSPACE_IMPORT_TOTAL_BYTES: u64 = 600 * 1024 * 1024;
+const MAX_WORKSPACE_IMPORT_FILES: usize = 24;
 const PRIVATE_LOCAL_DIRECTORY: &str = "_local";
 const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "webm",
@@ -992,6 +996,7 @@ async fn open_workspace_item(
     action: String,
     user_id: String,
     session_id: String,
+    real_user_id: String,
     file_name: String,
 ) -> Result<serde_json::Value, String> {
     let handle = handle.trim().to_string();
@@ -1001,45 +1006,122 @@ async fn open_workspace_item(
     };
     let action = action.trim().to_string();
     let file_name = file_name.trim().to_string();
-    if handle.is_empty() {
-        return Err("missing_handle".to_string());
+    if !is_safe_artifact_handle(&handle) {
+        return Err("invalid_artifact_handle".to_string());
+    }
+    if !matches!(
+        action.as_str(),
+        "open" | "reveal" | "save_desktop" | "stage" | "copy_path"
+    ) {
+        return Err("unknown_workspace_action".to_string());
     }
     let backend = runtime_backend_url();
-    let content_url = format!(
-        "{}/desktop-pet/workspace/{}/{}/content?user_id={}&session_id={}",
-        backend.trim_end_matches('/'),
-        route_type,
-        handle,
-        user_id,
-        session_id,
-    );
+    let mut content_url =
+        reqwest::Url::parse(&backend).map_err(|_| "backend_url_invalid".to_string())?;
+    {
+        let mut segments = content_url
+            .path_segments_mut()
+            .map_err(|_| "backend_url_invalid".to_string())?;
+        segments.pop_if_empty();
+        segments.extend([
+            "desktop-pet",
+            "workspace",
+            route_type,
+            handle.as_str(),
+            "content",
+        ]);
+    }
+    content_url
+        .query_pairs_mut()
+        .append_pair("user_id", &user_id)
+        .append_pair("session_id", &session_id)
+        .append_pair("real_user_id", &real_user_id);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|e| format!("reqwest_build: {}", e))?;
     let response = client
-        .get(&content_url)
+        .get(content_url)
         .send()
         .await
         .map_err(|e| format!("content_fetch: {}", e))?;
     if !response.status().is_success() {
         return Err(format!("content_not_found: HTTP {}", response.status()));
     }
-    let actual_name = if !file_name.is_empty() {
-        file_name
-    } else {
-        _extract_content_disposition_filename(&response).unwrap_or_else(|| handle.clone())
-    };
+    let expected_instance = response
+        .headers()
+        .get("x-akane-artifact-instance")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if expected_instance != runtime_instance_id()? {
+        return Err("artifact_instance_mismatch".to_string());
+    }
+    let expected_size = response
+        .headers()
+        .get("x-akane-artifact-size")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| "artifact_size_missing".to_string())?;
+    if expected_size == 0 || expected_size > MAX_WORKSPACE_FILE_BYTES {
+        return Err("artifact_size_rejected".to_string());
+    }
+    let expected_hash = response
+        .headers()
+        .get("x-akane-artifact-sha256")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if expected_hash.len() != 64 || !expected_hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err("artifact_hash_missing".to_string());
+    }
+    let expected_mime = response
+        .headers()
+        .get("x-akane-artifact-mime")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let response_mime = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if expected_mime.is_empty() || expected_mime != response_mime {
+        return Err("artifact_mime_mismatch".to_string());
+    }
+    let actual_name = sanitize_file_name(
+        if !file_name.is_empty() {
+            file_name
+        } else {
+            _extract_content_disposition_filename(&response).unwrap_or_else(|| handle.clone())
+        }
+        .as_str(),
+    );
     let bytes = response
         .bytes()
         .await
         .map_err(|e| format!("content_read: {}", e))?;
+    if bytes.len() as u64 != expected_size || bytes.len() as u64 > MAX_WORKSPACE_FILE_BYTES {
+        return Err("artifact_size_mismatch".to_string());
+    }
+    let actual_hash = format!("{:x}", Sha256::digest(&bytes));
+    if actual_hash != expected_hash {
+        return Err("artifact_hash_mismatch".to_string());
+    }
     let cache_dir = desktop_runtime_cache_dir("workspace_items")?;
-    let safe_seg = handle.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+    let safe_seg = sanitize_file_name(&handle);
     let item_dir = cache_dir.join(&safe_seg);
     fs::create_dir_all(&item_dir).map_err(|e| e.to_string())?;
     let staged_path = item_dir.join(&actual_name);
-    fs::write(&staged_path, &bytes).map_err(|e| e.to_string())?;
+    write_bytes_atomic_with_cleanup(&staged_path, &bytes, &[])?;
     match action.as_str() {
         "open" => {
             open_path_with_system(&staged_path)?;
@@ -1061,20 +1143,52 @@ async fn open_workspace_item(
             .map_err(|e| format!("export_task: {}", e))??;
             Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
         }
+        "stage" => Ok(serde_json::json!({
+            "ok": true,
+            "action": "stage",
+            "local_path": staged_path.to_string_lossy().to_string(),
+        })),
+        "copy_path" => Ok(serde_json::json!({
+            "ok": true,
+            "action": "copy_path",
+            "local_path": staged_path.to_string_lossy().to_string(),
+        })),
         _ => Err("unknown_workspace_action".to_string()),
     }
 }
 
+fn is_safe_artifact_handle(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && value.len() <= 128
+        && value != "."
+        && value != ".."
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+}
+
 fn _extract_content_disposition_filename(response: &reqwest::Response) -> Option<String> {
-    let header = response.headers().get("content-disposition")?.to_str().ok()?;
+    let header = response
+        .headers()
+        .get("content-disposition")?
+        .to_str()
+        .ok()?;
     for part in header.split(';') {
         let part = part.trim();
-        if let Some(v) = part.strip_prefix("filename=\"").and_then(|s| s.strip_suffix('"')) {
-            if !v.is_empty() { return Some(v.to_string()); }
+        if let Some(v) = part
+            .strip_prefix("filename=\"")
+            .and_then(|s| s.strip_suffix('"'))
+        {
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
         }
         if let Some(v) = part.strip_prefix("filename=") {
             let v = v.trim_matches('"').trim();
-            if !v.is_empty() { return Some(v.to_string()); }
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
         }
     }
     None
@@ -1093,6 +1207,9 @@ async fn import_dropped_files(
     if paths.is_empty() {
         return Ok(serde_json::json!({"ok": false, "reason": "no_paths"}));
     }
+    if paths.len() > MAX_WORKSPACE_IMPORT_FILES {
+        return Ok(serde_json::json!({"ok": false, "reason": "too_many_files"}));
+    }
     let backend = runtime_backend_url();
     let import_url = format!(
         "{}/desktop-pet/workspace/import-file",
@@ -1102,18 +1219,27 @@ async fn import_dropped_files(
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| format!("reqwest_build: {}", e))?;
-    let mut form = reqwest::multipart::Form::new()
-        .text("user_id", user_id)
-        .text("session_id", session_id.clone())
-        .text("real_user_id", real_user_id)
-        .text("character_pack_id", character_pack_id);
-    let mut skipped = 0usize;
+    let mut imported_items: Vec<serde_json::Value> = Vec::new();
+    let mut skipped_items: Vec<serde_json::Value> = Vec::new();
+    let mut total_bytes = 0u64;
     for raw_path in &paths {
         let path = canonical_existing_path(raw_path).unwrap_or_default();
         if path.as_os_str().is_empty() || !path.is_file() {
-            skipped += 1;
+            skipped_items.push(serde_json::json!({"reason": "not_found"}));
             continue;
         }
+        let metadata = fs::metadata(&path).map_err(|e| format!("file_metadata: {}", e))?;
+        if metadata.len() == 0 {
+            skipped_items.push(serde_json::json!({"reason": "empty_file"}));
+            continue;
+        }
+        if metadata.len() > MAX_WORKSPACE_FILE_BYTES
+            || total_bytes.saturating_add(metadata.len()) > MAX_WORKSPACE_IMPORT_TOTAL_BYTES
+        {
+            skipped_items.push(serde_json::json!({"reason": "file_too_large"}));
+            continue;
+        }
+        total_bytes = total_bytes.saturating_add(metadata.len());
         let bytes = fs::read(&path).map_err(|e| format!("read_file: {}", e))?;
         let file_name = path
             .file_name()
@@ -1121,23 +1247,45 @@ async fn import_dropped_files(
             .unwrap_or("file")
             .to_string();
         let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
-        form = form.part("files", part);
+        let form = reqwest::multipart::Form::new()
+            .text("user_id", user_id.clone())
+            .text("session_id", session_id.clone())
+            .text("real_user_id", real_user_id.clone())
+            .text("character_pack_id", character_pack_id.clone())
+            .part("files", part);
+        let response = client
+            .post(&import_url)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| format!("upload_failed: {}", e))?;
+        let status = response.status();
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .unwrap_or_else(|_| serde_json::json!({"ok": false, "status": status.as_u16()}));
+        if !status.is_success()
+            || !body
+                .get("ok")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        {
+            skipped_items.push(serde_json::json!({
+                "reason": body.get("reason").and_then(serde_json::Value::as_str).unwrap_or("upload_rejected")
+            }));
+            continue;
+        }
+        if let Some(items) = body.get("items").and_then(serde_json::Value::as_array) {
+            imported_items.extend(items.iter().cloned());
+        }
     }
-    if paths.len() == skipped {
-        return Ok(serde_json::json!({"ok": false, "reason": "all_paths_invalid"}));
-    }
-    let response = client
-        .post(&import_url)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| format!("upload_failed: {}", e))?;
-    let status = response.status();
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .unwrap_or_else(|_| serde_json::json!({"ok": false, "status": status.as_u16()}));
-    Ok(body)
+    Ok(serde_json::json!({
+        "ok": !imported_items.is_empty(),
+        "reason": if imported_items.is_empty() { "all_paths_invalid" } else { "" },
+        "imported": imported_items.len(),
+        "items": imported_items,
+        "skipped": skipped_items,
+    }))
 }
 
 #[tauri::command]
@@ -5531,13 +5679,27 @@ mod tests {
     fn mutable_desktop_artifacts_resolve_below_the_instance_root() {
         let root_a = Path::new("instance-a-root");
         let root_b = Path::new("instance-b-root");
-        for category in ["attachments/audio", "character_import", "export_staging"] {
+        for category in [
+            "attachments/audio",
+            "character_import",
+            "export_staging",
+            "workspace_items",
+        ] {
             let path_a = desktop_runtime_cache_path(root_a, category).unwrap();
             let path_b = desktop_runtime_cache_path(root_b, category).unwrap();
             assert!(path_a.starts_with(root_a));
             assert!(path_b.starts_with(root_b));
             assert_ne!(path_a, path_b);
         }
+    }
+
+    #[test]
+    fn workspace_artifact_handles_reject_path_or_query_injection() {
+        assert!(is_safe_artifact_handle("file_001"));
+        assert!(is_safe_artifact_handle("gen-001.preview"));
+        assert!(!is_safe_artifact_handle("../../secret"));
+        assert!(!is_safe_artifact_handle("file_001?token=secret"));
+        assert!(!is_safe_artifact_handle(""));
     }
 
     #[test]

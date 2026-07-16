@@ -14,6 +14,7 @@ from typing import Any, Generator
 import config
 
 from .artifact_system import ArtifactContainerService
+from .artifact_broker import ArtifactBroker
 from .attachment_inbox import AttachmentInboxService
 from .attachment_ingest import AttachmentIngestService
 from .background_tasks import BackgroundTaskRunner
@@ -230,6 +231,15 @@ class AkaneMemoryEngine:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.instance_context = instance_context or build_local_default_instance_context()
         self.runtime_layout = runtime_layout
+        artifact_data_root = (
+            runtime_layout.data_root
+            if runtime_layout is not None
+            else self.base_dir.resolve().parent
+        )
+        self.artifact_broker = ArtifactBroker(
+            instance_id=self.instance_context.instance_id,
+            data_root=artifact_data_root,
+        )
         self.capability_config_base_dir = (
             runtime_layout.users_data_dir
             if runtime_layout is not None
@@ -408,13 +418,10 @@ class AkaneMemoryEngine:
             engine_ref=self,  # M66-F: route worker tool calls through execute_tool_invocation
         )
         self.tool_handlers = self._build_tool_handlers()
-        # M66-E: server-local offer index for tools with capability_status() probes.
-        # Replaces ToolReadinessGate for web_search, generate_image, and cover_song.
+        # Server-local offer index for all concrete in-process handlers. Static
+        # handlers are always ready; handlers with capability_status() are probed.
         _server_offer_index = ServerLocalOfferIndex()
-        for _tool_id in ("web_search", "generate_image", "cover_song"):
-            _handler = self.tool_handlers.get(_tool_id)
-            if _handler is not None:
-                _server_offer_index.register(_tool_id, _handler)
+        _server_offer_index.replace_handlers(self.tool_handlers)
         self.capability_registry = CapabilityRegistry(
             offer_source=capability_offer_source,
             server_offer_index=_server_offer_index,
@@ -4499,11 +4506,13 @@ class AkaneMemoryEngine:
 
         executed: list[ToolExecutionResult | None] = [None] * len(calls)
         try:
+            frozen_selection = calls[0].get(TOOL_CAPABILITY_SELECTION_FIELD) if calls else None
             handlers = self._resolve_tool_handlers(
                 client_context=client_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 domain_profile_id=domain_profile_id,
+                capability_selection=frozen_selection,
             )
         except Exception:
             handlers = {}

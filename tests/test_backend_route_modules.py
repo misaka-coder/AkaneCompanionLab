@@ -494,24 +494,11 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertIn("/desktop-pet/workspace/generated/gen-1/content", payload["sections"]["outputs"][0]["url"])
         self.assertIn(("desktop_pet_workspace_summary", True), runtime.observed)
 
-    def test_desktop_pet_router_imports_local_paths_with_workspace_urls(self) -> None:
+    def test_desktop_pet_router_rejects_shared_filesystem_import_route(self) -> None:
         runtime = FakeRuntimeMetrics()
         captured: dict[str, Any] = {}
 
-        def import_local(**kwargs):
-            captured.update(kwargs)
-            return {
-                "ok": True,
-                "source": "desktop_pet",
-                "mode": "explicit_local_paths",
-                "imported": 1,
-                "skipped_count": 0,
-                "items": [{"id": "file_001", "handle": "file_001", "can_open": True}],
-                "attachments": [],
-                "skipped": [],
-            }
-
-        engine = SimpleNamespace(import_desktop_pet_local_paths=import_local)
+        engine = SimpleNamespace()
         app = FastAPI()
         app.include_router(
             build_desktop_pet_router(
@@ -535,15 +522,8 @@ class BackendRouteModuleTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(captured["profile_user_id"], "master")
-        self.assertEqual(captured["session_id"], "desktop")
-        self.assertEqual(captured["paths"], ["C:/tmp/note.md"])
-        self.assertTrue(captured["recursive"])
-        self.assertEqual(captured["max_files"], 2)
-        payload = response.json()
-        self.assertIn("/desktop-pet/workspace/attachments/file_001/content", payload["items"][0]["url"])
-        self.assertIn(("desktop_pet_workspace_import_local", True), runtime.observed)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(captured, {})
 
     def test_desktop_pet_router_handles_screen_vision_workspace(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -4246,30 +4226,9 @@ for line in sys.stdin:
             self.assertEqual(inert_payload["reason"], "workflow_runner_not_bound")
             self.assertFalse(inert_payload["executionReady"])
             self.assertFalse(inert_payload["canRun"])
-            self.assertEqual(inert_payload["jobStatus"], "queued-but-inert")
-            self.assertNotEqual(inert_payload["job"]["status"], "completed")
-            self.assertFalse(inert_payload["job"]["runner"]["bound"])
-            job_id = inert_payload["jobId"]
-            self.assertTrue(job_id.startswith("workflowjob_"))
-
-            status_response = client.get(f"/capabilities/workflow-jobs/{job_id}?user_id=desktop&real_user_id=master")
-            self.assertEqual(status_response.status_code, 200)
-            status_payload = status_response.json()
-            self.assertTrue(status_payload["ok"])
-            self.assertEqual(status_payload["status"], "queued-but-inert")
-            self.assertEqual(status_payload["reason"], "workflow_runner_not_bound")
-            self.assertFalse(status_payload["executionReady"])
-            self.assertFalse(status_payload["canRun"])
-            self.assertEqual(status_payload["job"]["outputs"], [])
-            self.assertNotEqual(status_payload["job"]["status"], "completed")
-            self.assertNotIn("_profileUserId", status_payload["job"])
-            self.assertNotIn("_sessionId", status_payload["job"])
-
-            wrong_profile = client.get(
-                f"/capabilities/workflow-jobs/{job_id}?user_id=desktop&real_user_id=other_profile"
-            )
-            self.assertEqual(wrong_profile.status_code, 404)
-            self.assertEqual(wrong_profile.json()["status"], "unknown_workflow_job")
+            self.assertNotIn("jobId", inert_payload)
+            self.assertNotIn("jobStatus", inert_payload)
+            self.assertNotIn("job", inert_payload)
 
             unknown_job = client.get("/capabilities/workflow-jobs/token_secret?user_id=desktop&real_user_id=master")
             self.assertEqual(unknown_job.status_code, 404)
@@ -4281,8 +4240,6 @@ for line in sys.stdin:
                     unknown.json(),
                     rejected_payload,
                     inert_payload,
-                    status_payload,
-                    wrong_profile.json(),
                     unknown_job.json(),
                 ],
                 ensure_ascii=False,
@@ -4297,7 +4254,6 @@ for line in sys.stdin:
             ):
                 self.assertNotIn(forbidden, combined_text)
             self.assertIn(("capabilities.workflow_job_start", False), runtime.observed)
-            self.assertIn(("capabilities.workflow_job_status", True), runtime.observed)
             self.assertIn(("capabilities.workflow_job_status", False), runtime.observed)
 
     def test_capabilities_workflow_job_routes_use_bound_background_runner(self) -> None:

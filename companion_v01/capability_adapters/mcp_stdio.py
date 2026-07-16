@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import re
+import threading
+import time
 from dataclasses import replace
 from typing import Any, Mapping
 
@@ -16,7 +19,11 @@ from capcore_adapter_mcp import (
 )
 
 from companion_v01.local_capability_config import capability_approval_mode
-from companion_v01.mcp_stdio_discoverer import McpStdioDiscoveryError, McpStdioToolCaller
+from companion_v01.mcp_stdio_discoverer import (
+    McpStdioDiscoveryError,
+    McpStdioToolCaller,
+    McpStdioToolDiscoverer,
+)
 
 from .types import CapabilityDescriptor, CapabilityProtocolError, CapabilityResult, HealthStatus, InvocationContext
 
@@ -44,12 +51,23 @@ class McpStdioCapabilityAdapter:
         tool_configs: tuple[Mapping[str, Any], ...],
         caller: Any | None = None,
         client: McpClientProtocol | None = None,
+        liveness_probe: Any | None = None,
+        liveness_clock: Any = time.monotonic,
     ) -> None:
         self.provider_id = _safe_token(provider_id) or f"provider.mcp.{_safe_token(server_id)}"
         self.server_id = _safe_token(server_id)
         self.server_config = dict(server_config)
         self.tool_configs = tuple(dict(item) for item in tool_configs if isinstance(item, Mapping))
         self.caller = caller or McpStdioToolCaller(timeout_seconds=20)
+        self._liveness_probe = liveness_probe or McpStdioToolDiscoverer(
+            timeout_seconds=3.0,
+            max_pages=1,
+            max_messages=40,
+        )
+        self._liveness_clock = liveness_clock
+        self._liveness_lock = threading.RLock()
+        self._liveness_cache: tuple[float, frozenset[str]] | None = None
+        self._capability_tool_names: dict[str, str] = {}
         self._client = client or _AkaneMcpClient(
             server_config=self.server_config,
             tool_configs=self.tool_configs,
@@ -85,22 +103,76 @@ class McpStdioCapabilityAdapter:
 
     def descriptor_for_tool(self, tool: Mapping[str, Any]) -> CapabilityDescriptor:
         descriptor = self._core.descriptor_for_tool(_tool_record(tool))
+        tool_name = str(tool.get("name") or "").strip()
+        if descriptor.id and tool_name:
+            self._capability_tool_names[str(descriptor.id)] = tool_name
         return _with_akane_raw_metadata(descriptor, self.server_config)
 
-    def is_live(self) -> bool:
-        """M66-F: Return True when the MCP server is configured and considered reachable.
-        Uses a lightweight sync check: command must be present and server enabled.
-        The WebSearchToolHandler uses a deeper background probe for web_search;
-        for general MCP adapters this covers the common 'server disabled/removed' case.
-        """
+    def is_live(self, capability_id: str = "") -> bool:
+        """Probe a real initialize/tools-list exchange and cache only its lease."""
         if not bool(self.server_config.get("enabled")):
             return False
         command = str(self.server_config.get("command") or "").strip()
-        return bool(command)
+        if not command:
+            return False
+        now = float(self._liveness_clock())
+        with self._liveness_lock:
+            cached = self._liveness_cache
+            if cached is not None and cached[0] > now:
+                return self._capability_is_present(capability_id, cached[1])
+        try:
+            result = self._liveness_probe(server=self.server_config)
+            if inspect.isawaitable(result):
+                result = _run_awaitable_blocking(result)
+            raw_tools = result.get("tools") if isinstance(result, Mapping) else None
+            if not isinstance(raw_tools, list):
+                raise McpStdioDiscoveryError("mcp_liveness_invalid_response")
+            live_tool_names = frozenset(
+                str(tool.get("name") or "").strip()
+                for tool in raw_tools
+                if isinstance(tool, Mapping) and str(tool.get("name") or "").strip()
+            )
+            expires_at = float(self._liveness_clock()) + 15.0
+        except Exception:
+            live_tool_names = frozenset()
+            expires_at = float(self._liveness_clock()) + 5.0
+        with self._liveness_lock:
+            self._liveness_cache = (expires_at, live_tool_names)
+        return self._capability_is_present(capability_id, live_tool_names)
+
+    def _capability_is_present(self, capability_id: str, live_tool_names: frozenset[str]) -> bool:
+        clean_capability_id = str(capability_id or "").strip()
+        if not clean_capability_id:
+            return bool(live_tool_names)
+        tool_name = self._capability_tool_names.get(clean_capability_id, "")
+        return bool(tool_name and tool_name in live_tool_names)
 
     def _risk_and_confirm(self, tool: Mapping[str, Any]) -> tuple[str, str]:
         override = _tool_override(self.server_config, tool)
         return override.risk or "medium", override.confirm or "first_time"
+
+
+def _run_awaitable_blocking(awaitable: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable)
+
+    result: dict[str, Any] = {}
+    failure: list[BaseException] = []
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(awaitable)
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            failure.append(exc)
+
+    thread = threading.Thread(target=runner, name="akane-mcp-liveness", daemon=True)
+    thread.start()
+    thread.join()
+    if failure:
+        raise failure[0]
+    return result.get("value")
 
 
 class _AkaneMcpClient:

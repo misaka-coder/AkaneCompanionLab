@@ -570,9 +570,8 @@ async function copyItemId(item) {
 
 async function openWorkspaceItem(item) {
   try {
-    const filePath = await resolveWorkspaceItemPath(item);
     setStatus("正在打开文件");
-    await invoke("open_local_file", { path: filePath });
+    await invokeWorkspaceItemAction(item, "open");
     setStatus("已打开文件");
   } catch (error) {
     setStatus(`打开失败：${formatError(error)}`);
@@ -582,9 +581,8 @@ async function openWorkspaceItem(item) {
 
 async function revealWorkspaceItem(item) {
   try {
-    const filePath = await resolveWorkspaceItemPath(item);
     setStatus("正在打开位置");
-    await invoke("show_item_in_folder", { path: filePath });
+    await invokeWorkspaceItemAction(item, "reveal");
     setStatus("已打开所在位置");
   } catch (error) {
     setStatus(`打开位置失败：${formatError(error)}`);
@@ -594,8 +592,10 @@ async function revealWorkspaceItem(item) {
 
 async function copyWorkspaceItemPath(item) {
   try {
-    const filePath = await resolveWorkspaceItemPath(item);
-    await navigator.clipboard.writeText(filePath);
+    const result = await invokeWorkspaceItemAction(item, "copy_path");
+    const localPath = String(result?.local_path || "").trim();
+    if (!localPath) throw new Error("没有可复制的本地暂存路径");
+    await navigator.clipboard.writeText(localPath);
     setStatus("文件路径已复制");
   } catch (error) {
     setStatus(`复制路径失败：${formatError(error)}`);
@@ -605,12 +605,8 @@ async function copyWorkspaceItemPath(item) {
 
 async function exportWorkspaceItemToDesktop(item) {
   try {
-    const filePath = await resolveWorkspaceItemPath(item);
     setStatus("正在保存到桌面");
-    const result = await invoke("export_file_to_desktop", {
-      path: filePath,
-      fileName: buildWorkspaceExportFileName(item)
-    });
+    const result = await invokeWorkspaceItemAction(item, "save_desktop");
     const exportedPath = String(result?.path || "").trim();
     setStatus(exportedPath ? "已保存到桌面" : "已保存");
     if (exportedPath) setAlert(`已保存到桌面：${exportedPath}`, "info");
@@ -620,31 +616,20 @@ async function exportWorkspaceItemToDesktop(item) {
   }
 }
 
-async function resolveWorkspaceItemPath(item) {
+async function invokeWorkspaceItemAction(item, action) {
   const handle = String(item?.handle || item?.id || "").trim();
   if (!handle) throw new Error("没有可定位的编号");
   const sessionId = String(state?.sessionId || "").trim();
   if (!sessionId) throw new Error("会话还没准备好");
-
-  const routeType = workspaceRouteType(item);
-  const query = new URLSearchParams({
+  return invoke("open_workspace_item", {
+    handle,
+    item_type: workspaceRouteType(item),
+    action: String(action || "").trim(),
     user_id: sessionId,
+    session_id: sessionId,
     real_user_id: String(state?.profileUserId || PROFILE_USER_ID),
-    t: String(Date.now())
+    file_name: buildWorkspaceExportFileName(item)
   });
-  const response = await workspaceFetch(
-    `${normalizeBackendUrl(state?.backendUrl || DEFAULT_BACKEND_URL)}/desktop-pet/workspace/${routeType}/${encodeURIComponent(handle)}/location?${query}`,
-    {
-      method: "GET",
-      cache: "no-store",
-      connectTimeout: 5000
-    }
-  );
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || !payload?.ok || !payload?.path) {
-    throw new Error(extractWorkspaceError(payload) || `HTTP ${response.status}`);
-  }
-  return String(payload.path);
 }
 
 function workspaceRouteType(item) {

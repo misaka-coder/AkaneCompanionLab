@@ -9,9 +9,11 @@ from unittest.mock import patch
 
 import config
 from companion_v01 import tool_orchestration_engine
+from companion_v01.capability_registry import WEB_SEARCH_TOOL_SPEC
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.final_output_engine import normalize_final_output
 from companion_v01.llm_runtime import LLMRuntime, ModelBundle
+from companion_v01.native_tool_schema import build_openai_native_tool_from_spec
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.tool_invocation import (
     NATIVE_ANTHROPIC,
@@ -486,7 +488,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
     def test_native_tool_round_instruction_keeps_native_out_of_json_tool_call(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         instruction = engine._build_native_tool_round_instruction(
-            [tool_orchestration_engine.native_web_search_tool_schema()]
+            [build_openai_native_tool_from_spec(WEB_SEARCH_TOOL_SPEC)]
         )
 
         self.assertIn("web_search", instruction)
@@ -501,7 +503,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         bundle = ModelBundle(
             client=FakeClient("openai", base_url="https://api.deepseek.com/v1"), model="deepseek-v4-flash"
         )
-        schema = tool_orchestration_engine.native_web_search_tool_schema()
+        schema = build_openai_native_tool_from_spec(WEB_SEARCH_TOOL_SPEC)
 
         payload = runtime._build_completion_kwargs(
             bundle=bundle,
@@ -522,7 +524,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
     def test_unsupported_provider_does_not_send_native_tools(self) -> None:
         runtime = LLMRuntime()
         bundle = ModelBundle(client=FakeClient("ollama"), model="fake-model")
-        schema = tool_orchestration_engine.native_web_search_tool_schema()
+        schema = build_openai_native_tool_from_spec(WEB_SEARCH_TOOL_SPEC)
 
         payload = runtime._build_completion_kwargs(
             bundle=bundle,
@@ -1179,7 +1181,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
     def test_stream_final_response_passes_native_tools_to_runtime(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        schema = tool_orchestration_engine.native_web_search_tool_schema()
+        schema = build_openai_native_tool_from_spec(WEB_SEARCH_TOOL_SPEC)
         captured: dict[str, object] = {}
 
         def fake_stream_chat_json(**kwargs):
@@ -1424,8 +1426,7 @@ class NativeDescriptionSanitizationTests(unittest.TestCase):
             self.assertNotIn("格式为", desc)
             self.assertNotIn("tool_call", desc)
             self.assertNotIn('{"type"', desc)
-            # Generic fallback parameters stay permissive (no precise schema yet).
-            self.assertEqual(spec["function"]["parameters"]["additionalProperties"], True)
+            self.assertEqual(spec["function"]["parameters"]["additionalProperties"], False)
 
 
 class FakePromptHandler:

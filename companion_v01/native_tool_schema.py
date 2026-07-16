@@ -63,18 +63,25 @@ def build_openai_native_tool_specs(
     return specs
 
 
+def build_openai_native_tool_from_spec(spec: CapabilityToolSpec) -> dict[str, Any]:
+    """Project one canonical ToolSpec without introducing a handler authority."""
+    if not isinstance(spec, CapabilityToolSpec):
+        raise TypeError("canonical_tool_spec_required")
+    tool_set = build_openai_chat_tool_set(tool_specs=(spec,))
+    if not tool_set.tools:
+        raise ValueError("canonical_tool_spec_not_projectable")
+    tool = dict(tool_set.tools[0])
+    tool[NATIVE_TOOL_CAPABILITY_ID_FIELD] = spec.capability_id
+    return tool
+
+
 def _provider_tool_for_handler(tool_name: str, handler: Any) -> dict[str, Any] | None:
     canonical_spec = _handler_tool_spec(handler)
     if canonical_spec is not None:
         try:
-            tool_set = build_openai_chat_tool_set(tool_specs=(canonical_spec,))
+            return build_openai_native_tool_from_spec(canonical_spec)
         except Exception:
             return None
-        if not tool_set.tools:
-            return None
-        tool = dict(tool_set.tools[0])
-        tool[NATIVE_TOOL_CAPABILITY_ID_FIELD] = canonical_spec.capability_id
-        return tool
     description = _metadata_schema_description(handler)
     parameters = _metadata_schema_parameters(handler)
     if not description:

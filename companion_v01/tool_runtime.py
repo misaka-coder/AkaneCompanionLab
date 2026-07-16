@@ -870,6 +870,27 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
 }
 
 
+def _project_tool_metadata_from_spec(tool_type: str, spec: Any) -> ToolMetadata:
+    legacy = TOOL_METADATA_BY_TYPE.get(tool_type) or ToolMetadata()
+    return ToolMetadata(
+        family=legacy.family,
+        operation=legacy.operation,
+        risk=str(getattr(spec, "risk", "") or legacy.risk),
+        default_round_budget=legacy.default_round_budget,
+        background=legacy.background,
+        aliases=legacy.aliases,
+        input_schema=getattr(spec, "input_schema", None),
+        requires_confirmation=str(getattr(spec, "confirm", "never") or "never") != "never",
+    )
+
+
+# Compatibility projection only: capcore ToolSpec is the semantic/schema authority.
+TOOL_METADATA_BY_TYPE = {
+    tool_type: _project_tool_metadata_from_spec(tool_type, spec)
+    for tool_type, spec in TOOL_SPEC_BY_TYPE.items()
+}
+
+
 class BaseToolHandler:
     tool_type: str = ""
 
@@ -910,14 +931,22 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         self.descriptor = descriptor
         self.config_base_dir = config_base_dir
 
+    def tool_spec(self):
+        """Project reviewed adapter descriptors through capcore's canonical contract."""
+        try:
+            return capcore_build_tool_spec(self.descriptor)
+        except Exception:
+            return None
+
     def capability_status(self) -> dict[str, Any]:
-        """M66-F: Gate MCP/plugin adapter tools via live session check.
-        Delegates to adapter.is_live() when available; falls back to enabled.
-        """
+        """Expose adapter tools only after an explicit live-provider check."""
         is_live_fn = getattr(self.adapter, "is_live", None)
         if callable(is_live_fn):
             try:
-                live = bool(is_live_fn())
+                try:
+                    live = bool(is_live_fn(self.tool_type))
+                except TypeError:
+                    live = bool(is_live_fn())
             except Exception:
                 return {"enabled": False, "status": "unavailable", "reason": "adapter_liveness_check_failed"}
             return {
@@ -925,8 +954,9 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                 "status": "ready" if live else "unavailable",
                 "reason": "" if live else "mcp_session_not_live",
             }
-        # Adapter has no liveness check — assume it's ready (backward compat).
-        return {"enabled": True, "status": "ready", "reason": "no_liveness_check"}
+        return {"enabled": False, "status": "unavailable", "reason": "adapter_liveness_check_missing"}
+
+    def tool_metadata(self) -> ToolMetadata:
         risk = str(getattr(self.descriptor, "risk", "") or "medium").strip() or "medium"
         return ToolMetadata(
             family="adapter_capability",
@@ -934,6 +964,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             risk=risk,
             default_round_budget=3,
             input_schema=self._input_schema(),
+            requires_confirmation=str(getattr(self.descriptor, "confirm", "never") or "never") != "never",
         )
 
     def build_prompt_instruction(self) -> str:

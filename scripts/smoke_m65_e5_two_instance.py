@@ -215,6 +215,57 @@ def request_bytes(url: str, *, timeout: float = 12.0) -> tuple[int, bytes]:
         return error.code, error.read()
 
 
+def request_multipart_file(
+    url: str,
+    *,
+    path: Path,
+    timeout: float = 12.0,
+) -> tuple[int, dict[str, Any]]:
+    boundary = f"akane-smoke-{time.time_ns()}"
+    fields = {
+        "user_id": SHARED_SESSION_ID,
+        "session_id": SHARED_SESSION_ID,
+        "real_user_id": SHARED_PROFILE_ID,
+        "character_pack_id": SHARED_CHARACTER_ID,
+    }
+    body = bytearray()
+    for name, value in fields.items():
+        body.extend(f"--{boundary}\r\n".encode("ascii"))
+        body.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("ascii"))
+        body.extend(str(value).encode("utf-8"))
+        body.extend(b"\r\n")
+    body.extend(f"--{boundary}\r\n".encode("ascii"))
+    body.extend(
+        (
+            f'Content-Disposition: form-data; name="files"; filename="{path.name}"\r\n'
+            "Content-Type: text/plain\r\n\r\n"
+        ).encode("utf-8")
+    )
+    body.extend(path.read_bytes())
+    body.extend(f"\r\n--{boundary}--\r\n".encode("ascii"))
+    request = urllib.request.Request(
+        url,
+        data=bytes(body),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            payload = json.loads(raw) if raw else {}
+            return response.status, payload if isinstance(payload, dict) else {"value": payload}
+    except urllib.error.HTTPError as error:
+        raw = error.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            payload = {"raw": raw[:500]}
+        return error.code, payload if isinstance(payload, dict) else {"value": payload}
+
+
 def backend_url(spec: InstanceSpec, path: str) -> str:
     return f"http://127.0.0.1:{spec.backend_port}{path}"
 
@@ -727,9 +778,9 @@ def assert_file_isolation(a: InstanceSpec, b: InstanceSpec, temp_root: Path) -> 
     source_a.write_text("file-a-only", encoding="utf-8")
     source_b.write_text("file-b-only", encoding="utf-8")
 
-    status, imported_a = request_json(
-        backend_url(a, "/desktop-pet/workspace/import-local"),
-        body=identity_payload(paths=[str(source_a)], max_files=1),
+    status, imported_a = request_multipart_file(
+        backend_url(a, "/desktop-pet/workspace/import-file"),
+        path=source_a,
     )
     assert status == 200 and imported_a.get("imported") == 1, imported_a
     handle_a = str(imported_a.get("items", [{}])[0].get("handle") or "")
@@ -739,9 +790,9 @@ def assert_file_isolation(a: InstanceSpec, b: InstanceSpec, temp_root: Path) -> 
     )
     assert missing_status == 404
 
-    status, imported_b = request_json(
-        backend_url(b, "/desktop-pet/workspace/import-local"),
-        body=identity_payload(paths=[str(source_b)], max_files=1),
+    status, imported_b = request_multipart_file(
+        backend_url(b, "/desktop-pet/workspace/import-file"),
+        path=source_b,
     )
     assert status == 200 and imported_b.get("imported") == 1, imported_b
     handle_b = str(imported_b.get("items", [{}])[0].get("handle") or "")

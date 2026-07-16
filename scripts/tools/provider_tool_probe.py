@@ -13,7 +13,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import config  # noqa: E402
-from companion_v01.tool_orchestration_engine import native_web_search_tool_schema  # noqa: E402
+from companion_v01.capability_registry import WEB_SEARCH_TOOL_SPEC  # noqa: E402
+from companion_v01.native_tool_schema import build_openai_native_tool_from_spec  # noqa: E402
 from services.llm_client import build_llm_client  # noqa: E402
 
 
@@ -208,7 +209,7 @@ def run_probe_case(*, client: Any, model: str, temperature: float, case: dict[st
         ],
     }
     if case.get("tools"):
-        payload["tools"] = [native_web_search_tool_schema()]
+        payload["tools"] = [build_openai_native_tool_from_spec(WEB_SEARCH_TOOL_SPEC)]
         payload["tool_choice"] = "auto"
     if case.get("forced_json"):
         payload["response_format"] = {"type": "json_object"}

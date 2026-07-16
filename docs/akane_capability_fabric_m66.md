@@ -1,6 +1,6 @@
 # Akane Capability Fabric M66
 
-Status: **M66-A implemented / M66-B through M66-G pending**
+Status: **M66-A through M66-D implemented / M66-E and M66-F in progress / M66-G pending**
 
 Branch audited: `feature/qq-finance-assistant-emquant`
 
@@ -8,7 +8,7 @@ Repository: `AkaneCompanionLab`
 
 Discovery date: 2026-07-16
 
-Original scope: read-only architecture discovery and an implementation-ready design. The same branch subsequently implemented and verified the bounded M66-A `open_browser` vertical slice described below.
+Original scope: read-only architecture discovery and an implementation-ready design. The same branch subsequently implemented M66-A through the bounded desktop ArtifactBroker slice in M66-D. A 2026-07-16 repair audit rejected the earlier claim that M66-E/F were complete; their honest remaining boundaries are recorded below.
 
 ## 0. Implementation closeout — M66-A
 
@@ -25,7 +25,28 @@ Implemented on 2026-07-16:
 
 Verification covers authenticated registration, A/B instance rejection, schema/version/hash mismatch, online/offline desktop and QQ projection, frozen receipt privacy, lease expiry, pre/post-ACK disconnect semantics, duplicate invocation, unsafe URL rejection before OS open, minimal public `/health`, launcher isolation, local-default compatibility, Rust/Tauri tests, frontend build, and the full Python suite. No production backend, QQ account, credential, or server was touched during implementation.
 
-Remaining M66 work begins at M66-B: migrate read-only tools to the canonical schema/frozen-round path, then continue with ArtifactBroker, long tasks, remaining provider families, and real Skill/Orchestrator consumption. Those phases must keep deleting prior authorities family by family.
+### 0.1 Implementation closeout — M66-B through M66-D
+
+Implemented and regression-covered:
+
+- Every built-in model tool projects native schema, risk, confirmation, and validation metadata from its canonical `CapabilityToolSpec`. The legacy `TOOL_METADATA_BY_TYPE` table is now only a compatibility projection for family/budget/operation fields. The provider probe also projects `WEB_SEARCH_TOOL_SPEC` directly instead of restoring a second web-search schema function.
+- A selected round freezes the actual handler objects together with the selection. Normalize, validate, budget resolution, sequential execution, and parallel execution consume that same frozen selection even if the live handler map changes before dispatch.
+- `ServerLocalOfferIndex` owns built-in readiness. It synchronizes the current handler map before selection, treats handlers without a probe as static in-process offers, fails closed for unknown/probe-failed tools, and partitions its TTL cache by tool/profile/session/client mode. Domain-profile additions go through the same gate.
+- `browser_page` is a real server-local offer only when its own `ManagedBrowserPageRunner` passes readiness. An `open_browser` satellite lease no longer falsely advertises `browser_page`.
+- Desktop workspace/audio/generated transfers now pass through the instance-owned `ArtifactBroker`. The server rejects paths outside the instance data root and emits instance/size/SHA-256/MIME transfer metadata; Tauri checks all four before publishing an atomic instance-root staging copy.
+- Tauri file imports upload bytes with bounded file/count/total limits and preserve profile/session identity. Server upload, audio, workspace-item, character-import, and export staging live below the instance data root. The raw-path `/desktop-pet/workspace/import-local` and workspace `/location` contracts are deleted.
+- Existing attachment handles with `arc_`/`aud_`/`doc_`/`img_`/`unk_`/`vid_` prefixes remain a thin input translator until M66-G cleanup. They resolve only through the instance-owned stores and broker; they never re-enable raw paths. Remove this translator after all persisted pre-M66-D attachment records have either aged out or been migrated.
+
+### 0.2 Repair state — M66-E and M66-F remain open
+
+The repair pass completed shared foundations but does **not** close these phases:
+
+- All frontstage and worker Python handlers now dispatch through `ExecutorBroker`; duplicate invocation IDs are idempotent and a broker exception returns structured `execution_unknown` without direct-handler fallback.
+- Bound control-center workflows also execute through the broker. A missing runner returns structured unavailable state and no longer creates a fake `queued-but-inert` job.
+- MCP prompt exposure requires a real `initialize` + `tools/list` probe with a bounded lease, rather than enabled/configured flags. Plugin exposure checks the live PluginHost state and registered capability ID. Missing liveness fails closed.
+- Worker tool descriptions come only from canonical ToolSpecs, and worker readiness uses the same instance/profile-scoped offer semantics.
+
+M66-E still needs real Desktop Satellite executors for the selected browser/media/voice families and durable broker long-job cancellation/uncertainty semantics. M66-F still needs plugin/workflow output bytes to converge fully on ArtifactBroker records and deletion of the remaining route-owned workflow job store. Those are real implementation tasks, not model-visible placeholders. M66-G starts only after both close.
 
 ## 1. Decision summary
 
@@ -855,7 +876,7 @@ Revert the M66-A capcore/Akane/Tauri release together. Enrollment records are ad
 
 When the PC is online, asking Akane from QQ or the desktop to open an approved public page opens it on the bound PC with a real success/failure acknowledgment. When the PC is offline, Akane no longer claims it asked a nonexistent desktop to open something; the tool is absent and Akane explains the temporary limitation only when relevant.
 
-### M66-B — Canonical schema projection and frozen round for read-only tools
+### M66-B — Implemented: canonical schema projection and frozen round for read-only tools
 
 **Outcome**
 
@@ -890,7 +911,7 @@ Revert the ToolSpec package and host release as a unit. Specs are code/versioned
 
 Read-only tools behave the same when available, but unavailable search/providers stop lingering in the prompt and mid-round loss produces a concise honest failure.
 
-### M66-C — Complete built-in resolver/readiness convergence
+### M66-C — Implemented: built-in resolver/readiness convergence
 
 **Outcome**
 
@@ -925,7 +946,7 @@ Each family is a revertable commit/release with no concurrent semantic implement
 
 Akane stops offering tools whose actual dependency is missing. Users see fewer “called it, then discovered it is not installed” failures and receive short actionable semantic degradation instead.
 
-### M66-D — ArtifactBroker and removal of shared-filesystem assumptions
+### M66-D — Implemented: desktop ArtifactBroker and removal of shared-filesystem assumptions
 
 **Outcome**
 
@@ -963,7 +984,7 @@ Artifact records are additive and existing file bytes remain in their stores. Ro
 
 Dragging a file into a cloud-connected pet actually uploads it, and a cloud-generated file can be downloaded and opened on the PC. Users no longer receive server paths that cannot exist locally.
 
-### M66-E — Local browser/media/voice execution and long tasks
+### M66-E — In progress: local browser/media/voice execution and long tasks
 
 **Outcome**
 
@@ -999,7 +1020,7 @@ Revert each executor family as a coordinated server/satellite release. Preserve 
 
 Cloud Akane can use the user's actual local RVC/Whisper/TTS/media/browser capabilities when the PC is online, without moving Akane's memory or persona to the PC. Long tasks report real progress and do not fake completion on timeout.
 
-### M66-F — MCP, plugin, workflow, and background-worker convergence
+### M66-F — In progress: MCP, plugin, workflow, and background-worker convergence
 
 **Outcome**
 

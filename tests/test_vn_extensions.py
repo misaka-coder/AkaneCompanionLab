@@ -1049,7 +1049,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("当前会话和可见工作区里还没有可处理的文档材料", prompt)
             self.assertIn("用户上传音频/视频、提供可下载的公开媒体链接", prompt)
             self.assertIn("用户问“你会什么/能做什么”时", prompt)
-            self.assertIn("短任务直接调用工具完成", prompt)
+            self.assertNotIn("短任务直接调用工具完成", prompt)
             self.assertIn("文档", prompt)
             self.assertIn("音频/视频", prompt)
             self.assertIn("如果用户只要原视频/原音频，下载后直接交付原文件", prompt)
@@ -1357,10 +1357,28 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertNotIn("\n- manage_generated_file", prompt_after_clear)
 
     def test_media_preset_routing_appears_in_prompt_for_chat_clients(self) -> None:
+        class StubMediaTool:
+            def __init__(self, name: str) -> None:
+                self.tool_type = name
+
+            def build_prompt_instruction(self) -> str:
+                return f"- {self.tool_type}：测试用工具。"
+
+            def normalize_call(self, value):
+                return dict(value) if value.get("type") == self.tool_type else None
+
         with tempfile.TemporaryDirectory() as temp_dir:
             self.engine.store = MemoryStore(Path(temp_dir))
             self.engine.capability_registry = CapabilityRegistry()
-            self.engine.tool_handlers = {}
+            media_tools = (
+                "inspect_media_info",
+                "separate_audio_stems",
+                "clean_voice_track",
+                "transcribe_media",
+                "prepare_voice_dataset",
+                "convert_media_file",
+            )
+            self.engine.tool_handlers = {name: StubMediaTool(name) for name in media_tools}
             self.engine.store.add_attachment_inbox_item(
                 profile_user_id="master",
                 session_id="session",

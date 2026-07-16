@@ -12,6 +12,7 @@ from .tool_invocation import LEGACY_JSON
 from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
+from .tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD
 from .tool_invocation import TOOL_EXECUTION_RECEIPT_FIELD
 from .tool_invocation import TOOL_SOURCE_FIELD
 from .tool_invocation import ToolInvocation
@@ -21,7 +22,7 @@ from .tool_invocation import invocation_to_legacy_tool_call
 from .tool_invocation import legacy_tool_call_to_invocation
 from .native_tool_schema import build_openai_native_tool_specs
 from .tool_runtime import ToolExecutionContext, ToolExecutionResult
-from .capability_registry import OPEN_BROWSER_TOOL_SPEC
+from .capability_registry import ExecutorBroker, OPEN_BROWSER_TOOL_SPEC
 
 
 @dataclass(frozen=True)
@@ -283,9 +284,10 @@ def normalize_tool_invocation(
         return None
     source = _normalize_invocation_source(value.get(TOOL_SOURCE_FIELD))
     invocation_id = str(value.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
+    frozen_selection = capability_selection or value.get(TOOL_CAPABILITY_SELECTION_FIELD)
 
     if tool_type == OPEN_BROWSER_TOOL_SPEC.capability_id:
-        handler = (getattr(engine, "tool_handlers", {}) or {}).get(tool_type)
+        handler = _resolved_handler_for_round(engine, tool_type, frozen_selection)
         if handler is None:
             return None
         normalized = handler.normalize_call(value)
@@ -298,6 +300,7 @@ def normalize_tool_invocation(
             normalized,
             source=source,
             invocation_id=invocation_id,
+            capability_selection=frozen_selection,
         )
 
     # M66-C frozen round: when capability_selection is carried from prepare_context,
@@ -307,7 +310,7 @@ def normalize_tool_invocation(
         profile_user_id=profile_user_id,
         session_id=session_id,
         domain_profile_id=domain_profile_id,
-        capability_selection=capability_selection,
+        capability_selection=frozen_selection,
     )
     delegated_media_call = _maybe_delegate_qq_media_tool(
         value,
@@ -320,6 +323,7 @@ def normalize_tool_invocation(
             delegated_media_call,
             source=source,
             invocation_id=invocation_id,
+            capability_selection=frozen_selection,
         )
     handler = handlers.get(tool_type)
     if handler is None:
@@ -328,7 +332,16 @@ def normalize_tool_invocation(
         handler.normalize_call(value),
         source=source,
         invocation_id=invocation_id,
+        capability_selection=frozen_selection,
     )
+
+
+def _resolved_handler_for_round(engine: Any, tool_type: str, capability_selection: Any) -> Any:
+    if capability_selection is not None:
+        frozen_handlers = getattr(capability_selection, "resolved_handlers", None)
+        if isinstance(frozen_handlers, Mapping):
+            return frozen_handlers.get(tool_type)
+    return (getattr(engine, "tool_handlers", {}) or {}).get(tool_type)
 
 
 def _normalize_invocation_source(value: Any) -> str:
@@ -501,7 +514,7 @@ def validate_tool_invocation(
         return ValidationResult.fail("missing_tool_type", "工具调用缺少 type 字段。")
 
     if tool_type == OPEN_BROWSER_TOOL_SPEC.capability_id:
-        handler = (getattr(engine, "tool_handlers", {}) or {}).get(tool_type)
+        handler = _resolved_handler_for_round(engine, tool_type, invocation.capability_selection)
         if handler is None:
             return ValidationResult.fail("unknown_tool", "当前没有可用的桌面网页打开工具。")
         candidate_call = raw_tool_call if isinstance(raw_tool_call, dict) else invocation_to_legacy_tool_call(invocation)
@@ -519,6 +532,7 @@ def validate_tool_invocation(
         profile_user_id=profile_user_id,
         session_id=session_id,
         domain_profile_id=domain_profile_id,
+        capability_selection=invocation.capability_selection,
     )
     handler = handlers.get(tool_type)
     if handler is None:
@@ -566,6 +580,7 @@ def validate_legacy_tool_call(
         profile_user_id=profile_user_id,
         session_id=session_id,
         domain_profile_id=domain_profile_id,
+        capability_selection=value.get(TOOL_CAPABILITY_SELECTION_FIELD),
     )
     delegated_media_call = _maybe_delegate_qq_media_tool(
         value,
@@ -576,7 +591,10 @@ def validate_legacy_tool_call(
     if delegated_media_call is not None:
         return validate_tool_invocation(
             engine,
-            legacy_tool_call_to_invocation(delegated_media_call),
+            legacy_tool_call_to_invocation(
+                delegated_media_call,
+                capability_selection=value.get(TOOL_CAPABILITY_SELECTION_FIELD),
+            ),
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -803,12 +821,18 @@ def execute_tool_invocation(
 
     normalized_call = invocation_to_legacy_tool_call(invocation)
     if invocation.name == OPEN_BROWSER_TOOL_SPEC.capability_id:
-        return _execute_open_browser_with_broker(engine, invocation=invocation)
+        return _execute_open_browser_with_broker(
+            engine,
+            invocation=invocation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+        )
     handlers = engine._resolve_tool_handlers(
         client_context=client_context,
         profile_user_id=profile_user_id,
         session_id=session_id,
         domain_profile_id=domain_profile_id,
+        capability_selection=invocation.capability_selection,
     )
     handler = handlers.get(str(normalized_call.get("type") or ""))
     if handler is None:
@@ -826,9 +850,7 @@ def execute_tool_invocation(
     client_mode = ""
     if client_context is not None:
         client_mode = str(getattr(client_context.effective_mode, "value", client_context.effective_mode) or "")
-    result = handler.execute(
-        call=normalized_call,
-        context=ToolExecutionContext(
+    execution_context = ToolExecutionContext(
             profile_user_id=profile_user_id,
             session_id=session_id,
             now_ts=now_ts,
@@ -837,8 +859,56 @@ def execute_tool_invocation(
             current_user_source_id=current_user_source_id,
             client_mode=client_mode,
             request_context=dict(request_context or {}),
+        )
+    broker = getattr(engine, "executor_broker", None)
+    if broker is None:
+        broker = ExecutorBroker(None)
+        try:
+            setattr(engine, "executor_broker", broker)
+        except Exception:
+            pass
+    broker_result = broker.execute_server_local(
+        tool_id=invocation.name,
+        invocation_id=invocation.id,
+        dispatch=lambda: handler.execute(
+            call=normalized_call,
+            context=execution_context,
         ),
+        ledger_scope=f"{profile_user_id}\x1f{session_id}",
+        request_data={"arguments": normalized_call},
     )
+    result = broker_result.result
+    if broker_result.status != "succeeded" or result is None:
+        reason = str(broker_result.reason or broker_result.status or "server_local_execution_failed")
+        feedback = (
+            f"<tool_use_error>工具执行没有得到可确认的结果（{reason}）。"
+            "请明确说明这次没有完成，不要重试可能产生重复副作用的动作。</tool_use_error>"
+        )
+        event = {
+            "type": "capability_execution_result",
+            "tool_type": invocation.name,
+            "status": broker_result.status,
+            "reason": reason,
+        }
+        failure_result = ToolExecutionResult(
+            tool_type=invocation.name,
+            stream_events=[event],
+            followup_context=feedback,
+            state_updates={
+                "capability_execution": {
+                    "tool_type": invocation.name,
+                    "status": broker_result.status,
+                    "reason": reason,
+                }
+            },
+        )
+        return failure_result, ToolResultEnvelope(
+            invocation_id=invocation.id,
+            status="error",
+            model_feedback=feedback,
+            data={"code": reason, "tool": invocation.name, "status": broker_result.status},
+            events=[event],
+        )
     return result, tool_execution_result_to_envelope(invocation=invocation, result=result)
 
 
@@ -846,6 +916,8 @@ def _execute_open_browser_with_broker(
     engine: Any,
     *,
     invocation: ToolInvocation,
+    profile_user_id: str,
+    session_id: str,
 ) -> tuple[ToolExecutionResult, ToolResultEnvelope]:
     broker = getattr(engine, "executor_broker", None)
     if broker is None:
@@ -856,6 +928,7 @@ def _execute_open_browser_with_broker(
             receipt_value=invocation.execution_receipt,
             invocation_id=invocation.id,
             arguments=invocation.arguments,
+            ledger_scope=f"{profile_user_id}\x1f{session_id}",
         )
     status = str(getattr(broker_result, "status", "unavailable_before_dispatch") or "").strip()
     reason = str(getattr(broker_result, "reason", "executor_broker_unavailable") or "").strip()

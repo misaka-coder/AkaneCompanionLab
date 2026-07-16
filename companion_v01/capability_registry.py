@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -1174,8 +1176,13 @@ GENERATE_IMAGE_TOOL_SPEC = CapabilityToolSpec(
             "mask_image": {"type": "string", "maxLength": 120, "description": "Optional mask image handle."},
             "size": {"type": "string", "pattern": "^(auto|[0-9]{3,4}x[0-9]{3,4})$", "description": "auto or WIDTHxHEIGHT. Common: 1024x1024, 1536x1024."},
             "quality": {"type": "string", "enum": ["auto", "low", "medium", "high"]},
+            "background": {"type": "string", "enum": ["auto", "opaque"]},
+            "output_format": {"type": "string", "enum": ["png", "jpeg", "webp"]},
+            "compression": {"type": "integer", "minimum": 0, "maximum": 100},
+            "input_fidelity": {"type": "string", "enum": ["auto", "low", "high"]},
             "n": {"type": "integer", "minimum": 1, "maximum": 4},
             "output_title": {"type": "string", "maxLength": 80},
+            "send_to_user": {"type": "boolean"},
         },
         "required": ["prompt"],
     },
@@ -1430,6 +1437,12 @@ COVER_SONG_TOOL_SPEC = CapabilityToolSpec(
             "artist": {"type": "string", "maxLength": 80, "description": "Optional original artist for cache disambiguation."},
             "voice_model": {"type": "string", "maxLength": 120, "description": "Target local RVC model name, or auto for the configured default."},
             "pitch_shift": {"type": "integer", "minimum": -24, "maximum": 24},
+            "index_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "filter_radius": {"type": "integer", "minimum": 0, "maximum": 7},
+            "rms_mix_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "protect": {"type": "number", "minimum": 0.0, "maximum": 0.5},
+            "vocal_gain_db": {"type": "number", "minimum": -12.0, "maximum": 12.0},
+            "instrumental_gain_db": {"type": "number", "minimum": -12.0, "maximum": 6.0},
             "output_format": {"type": "string", "enum": ["mp3", "flac", "wav"]},
             "delivery": {"type": "string", "enum": ["auto", "voice", "file", "both", "none"]},
             "force_rebuild": {"type": "boolean"},
@@ -1512,6 +1525,13 @@ class BrokerExecutionResult:
     data: Mapping[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ServerLocalBrokerResult:
+    status: str
+    reason: str = ""
+    result: Any = None
+
+
 class CapabilityOfferSource(Protocol):
     instance_id: str
 
@@ -1531,13 +1551,115 @@ class CapabilityOfferSource(Protocol):
 
 
 class ExecutorBroker:
-    """Minimal instance-owned broker for the first effectful satellite tool."""
+    """Instance-owned dispatch and idempotency boundary for every executor."""
 
     def __init__(self, offer_source: CapabilityOfferSource | None, *, clock=time.time) -> None:
         self.offer_source = offer_source
         self._clock = clock
         self._lock = threading.RLock()
-        self._ledger: dict[str, BrokerExecutionResult | None] = {}
+        self._ledger: dict[
+            tuple[str, str],
+            tuple[str, BrokerExecutionResult | None],
+        ] = {}
+        self._server_local_ledger: dict[
+            tuple[str, str],
+            tuple[str, str, ServerLocalBrokerResult | None],
+        ] = {}
+
+    def execute_server_local(
+        self,
+        *,
+        tool_id: str,
+        invocation_id: str,
+        dispatch: Callable[[], Any],
+        retain_result: bool = True,
+        ledger_scope: str = "",
+        request_data: Mapping[str, Any] | None = None,
+    ) -> ServerLocalBrokerResult:
+        clean_tool_id = str(tool_id or "").strip()
+        clean_invocation_id = str(invocation_id or "").strip()
+        if not clean_tool_id:
+            return ServerLocalBrokerResult(status="rejected", reason="missing_tool_id")
+        if not clean_invocation_id:
+            return ServerLocalBrokerResult(status="rejected", reason="missing_invocation_id")
+        if not callable(dispatch):
+            return ServerLocalBrokerResult(status="rejected", reason="invalid_server_local_dispatch")
+        ledger_key = (str(ledger_scope or "").strip(), clean_invocation_id)
+        request_fingerprint = _broker_request_fingerprint(
+            {"tool_id": clean_tool_id, "request": dict(request_data or {})}
+        )
+
+        with self._lock:
+            if ledger_key in self._ledger:
+                return ServerLocalBrokerResult(
+                    status="rejected",
+                    reason="invocation_id_executor_conflict",
+                )
+            existing = self._server_local_ledger.get(ledger_key)
+            if existing is not None:
+                existing_tool_id, existing_fingerprint, existing_result = existing
+                if existing_tool_id != clean_tool_id:
+                    return ServerLocalBrokerResult(
+                        status="rejected",
+                        reason="invocation_id_tool_conflict",
+                    )
+                if existing_fingerprint != request_fingerprint:
+                    return ServerLocalBrokerResult(
+                        status="rejected",
+                        reason="invocation_id_request_conflict",
+                    )
+                if existing_result is None:
+                    return ServerLocalBrokerResult(
+                        status="running",
+                        reason="duplicate_invocation_in_progress",
+                    )
+                return existing_result
+            self._server_local_ledger[ledger_key] = (
+                clean_tool_id,
+                request_fingerprint,
+                None,
+            )
+            if len(self._server_local_ledger) > 512:
+                terminal = [
+                    (key, value)
+                    for key, value in self._server_local_ledger.items()
+                    if value[2] is not None
+                ]
+                self._server_local_ledger = dict(terminal[-384:])
+                self._server_local_ledger[ledger_key] = (
+                    clean_tool_id,
+                    request_fingerprint,
+                    None,
+                )
+
+        try:
+            raw_result = dispatch()
+            if raw_result is None:
+                result = ServerLocalBrokerResult(
+                    status="failed",
+                    reason="server_local_empty_result",
+                )
+            else:
+                result = ServerLocalBrokerResult(
+                    status="succeeded",
+                    result=raw_result,
+                )
+        except Exception:
+            result = ServerLocalBrokerResult(
+                status="execution_unknown",
+                reason="server_local_dispatch_failed",
+            )
+
+        ledger_result = result
+        if result.status == "succeeded" and not retain_result:
+            ledger_result = ServerLocalBrokerResult(status="succeeded", reason="completed")
+        with self._lock:
+            self._server_local_ledger[ledger_key] = (
+                clean_tool_id,
+                request_fingerprint,
+                ledger_result,
+            )
+        return result
 
     def execute(
         self,
@@ -1547,6 +1669,7 @@ class ExecutorBroker:
         invocation_id: str,
         arguments: Mapping[str, Any],
         timeout_seconds: float = 15.0,
+        ledger_scope: str = "",
     ) -> BrokerExecutionResult:
         receipt = ExecutionReceipt.from_mapping(receipt_value)
         if receipt is None:
@@ -1564,21 +1687,44 @@ class ExecutorBroker:
         clean_invocation_id = str(invocation_id or "").strip()
         if not clean_invocation_id:
             return BrokerExecutionResult(status="rejected", reason="missing_invocation_id")
+        ledger_key = (str(ledger_scope or "").strip(), clean_invocation_id)
+        request_fingerprint = _broker_request_fingerprint(
+            {
+                "tool_id": spec.capability_id,
+                "schema_hash": spec.schema_hash,
+                "instance_id": receipt.instance_id,
+                "arguments": dict(arguments),
+            }
+        )
         with self._lock:
-            if clean_invocation_id in self._ledger:
-                existing = self._ledger[clean_invocation_id]
-                if existing is None:
+            if ledger_key in self._server_local_ledger:
+                return BrokerExecutionResult(
+                    status="rejected",
+                    reason="invocation_id_executor_conflict",
+                )
+            if ledger_key in self._ledger:
+                existing_fingerprint, existing_result = self._ledger[ledger_key]
+                if existing_fingerprint != request_fingerprint:
+                    return BrokerExecutionResult(
+                        status="rejected",
+                        reason="invocation_id_request_conflict",
+                    )
+                if existing_result is None:
                     return BrokerExecutionResult(
                         status="running",
                         reason="duplicate_invocation_in_progress",
                         model_feedback="同一桌面动作已经在处理中，不会重复执行。",
                     )
-                return existing
-            self._ledger[clean_invocation_id] = None
+                return existing_result
+            self._ledger[ledger_key] = (request_fingerprint, None)
             if len(self._ledger) > 512:
-                terminal = [(key, value) for key, value in self._ledger.items() if value is not None]
+                terminal = [
+                    (key, value)
+                    for key, value in self._ledger.items()
+                    if value[1] is not None
+                ]
                 self._ledger = dict(terminal[-384:])
-                self._ledger[clean_invocation_id] = None
+                self._ledger[ledger_key] = (request_fingerprint, None)
         source = self.offer_source
         if source is None:
             result = BrokerExecutionResult(
@@ -1610,8 +1756,19 @@ class ExecutorBroker:
                         model_feedback="桌面动作的执行结果暂时无法确认，请不要声称网页已经打开。",
                     )
         with self._lock:
-            self._ledger[clean_invocation_id] = result
+            self._ledger[ledger_key] = (request_fingerprint, result)
         return result
+
+
+def _broker_request_fingerprint(value: Mapping[str, Any]) -> str:
+    payload = json.dumps(
+        dict(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -1659,6 +1816,7 @@ class CapabilitySelection:
     disclosures: tuple[CapabilityDisclosure, ...] = ()
     tool_specs: tuple[CapabilityToolSpec, ...] = ()
     execution_receipts: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    resolved_handlers: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -1749,9 +1907,10 @@ def _requests_external_browser_open(value: str) -> bool:
 
 
 # ── M66-E: Server-local offer index ─────────────────────────────────────────
-# Replaces ToolReadinessGate for server-local tools. Each registered handler
-# is probed via capability_status() with TTL caching. Tools absent from the
-# index are not gated (default behaviour is unchanged for ungated tools).
+# Replaces ToolReadinessGate for server-local tools. Every concrete handler is
+# registered. Handlers with a capability_status() probe are checked with TTL
+# caching; handlers without one are static in-process offers. Unknown tools are
+# rejected so a stale registry can never make a capability fail open.
 
 _SERVER_OFFER_READY_TTL: float = 15.0
 _SERVER_OFFER_UNAVAILABLE_TTL: float = 5.0
@@ -1775,7 +1934,7 @@ class ServerLocalOfferIndex:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._handlers: dict[str, Any] = {}
-        self._cache: dict[str, tuple[float, bool]] = {}  # tool_id → (expiry, offered)
+        self._cache: dict[tuple[str, str, str, str], tuple[float, bool]] = {}
         self._lock = threading.RLock()
         self._ready_ttl = max(1.0, float(ready_ttl_seconds))
         self._unavailable_ttl = max(1.0, float(unavailable_ttl_seconds))
@@ -1783,11 +1942,35 @@ class ServerLocalOfferIndex:
 
     def register(self, tool_id: str, handler: Any) -> None:
         tool_id = str(tool_id or "").strip()
-        if not tool_id or not callable(getattr(handler, "capability_status", None)):
+        if not tool_id or handler is None:
             return
         with self._lock:
             self._handlers[tool_id] = handler
-            self._cache.pop(tool_id, None)
+            self._cache = {
+                key: value
+                for key, value in self._cache.items()
+                if key[0] != tool_id
+            }
+
+    def replace_handlers(self, handlers: Mapping[str, Any]) -> None:
+        replacement = {
+            str(tool_id or "").strip(): handler
+            for tool_id, handler in dict(handlers or {}).items()
+            if str(tool_id or "").strip() and handler is not None
+        }
+        with self._lock:
+            changed = {
+                tool_id
+                for tool_id in set(self._handlers).union(replacement)
+                if self._handlers.get(tool_id) is not replacement.get(tool_id)
+            }
+            self._handlers = replacement
+            if changed:
+                self._cache = {
+                    key: value
+                    for key, value in self._cache.items()
+                    if key[0] not in changed
+                }
 
     def is_offered(
         self,
@@ -1800,19 +1983,25 @@ class ServerLocalOfferIndex:
         tool_id = str(tool_id or "").strip()
         if not tool_id:
             return False
+        cache_key = (
+            tool_id,
+            str(profile_user_id or ""),
+            str(session_id or ""),
+            str(client_mode or ""),
+        )
         with self._lock:
             handler = self._handlers.get(tool_id)
             if handler is None:
-                return True  # ungated — not registered, treat as offered
+                return False
             now = self._clock()
-            cached = self._cache.get(tool_id)
+            cached = self._cache.get(cache_key)
             if cached is not None and cached[0] > now:
                 return cached[1]
         # Probe outside the lock to avoid blocking other callers.
         offered = self._probe(handler, profile_user_id=profile_user_id, session_id=session_id, client_mode=client_mode)
         ttl = self._ready_ttl if offered else self._unavailable_ttl
         with self._lock:
-            self._cache[tool_id] = (self._clock() + ttl, offered)
+            self._cache[cache_key] = (self._clock() + ttl, offered)
         return offered
 
     def _probe(
@@ -1830,12 +2019,16 @@ class ServerLocalOfferIndex:
             import inspect
             sig = inspect.signature(fn)
             params = set(sig.parameters)
+            accepts_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in sig.parameters.values()
+            )
             kwargs: dict[str, Any] = {}
-            if "profile_user_id" in params:
+            if accepts_kwargs or "profile_user_id" in params:
                 kwargs["profile_user_id"] = profile_user_id
-            if "session_id" in params:
+            if accepts_kwargs or "session_id" in params:
                 kwargs["session_id"] = session_id
-            if "client_mode" in params:
+            if accepts_kwargs or "client_mode" in params:
                 kwargs["client_mode"] = client_mode
             result = fn(**kwargs)
         except Exception:
@@ -1843,11 +2036,11 @@ class ServerLocalOfferIndex:
         if isinstance(result, bool):
             return result
         if isinstance(result, Mapping):
-            if not bool(result.get("enabled", True)):
+            if result.get("enabled") is not True:
                 return False
-            status = str(result.get("status") or "ready").strip().lower()
+            status = str(result.get("status") or "").strip().lower()
             return status in _SERVER_OFFER_READY_STATUSES
-        return bool(result)
+        return False
 
 
 # ── End M66-E ServerLocalOfferIndex ─────────────────────────────────────────
@@ -1875,6 +2068,8 @@ class CapabilityRegistry:
         allowed_tool_names: tuple[str, ...] | None = None,
         hidden_tool_names: tuple[str, ...] = (),
         intent_text: str = "",
+        profile_user_id: str = "",
+        session_id: str = "",
     ) -> CapabilitySelection:
         hints: list[str] = []
         tools: list[str] = []
@@ -1901,55 +2096,82 @@ class CapabilityRegistry:
             if not module_tools:
                 continue
             hint = module.light_hint.strip()
-            if hint and hint not in seen_hints:
-                seen_hints.add(hint)
-                hints.append(hint)
             is_ready = module.trigger(snapshot)
-            if hint and (is_ready or module.activation_hint.strip()):
-                disclosures.append(
-                    CapabilityDisclosure(
-                        capability_id=module.name,
-                        state="ready" if is_ready else "latent",
-                        summary=hint,
-                        reason="" if is_ready else module.latent_reason.strip(),
-                        activation="" if is_ready else module.activation_hint.strip(),
-                        tool_names=module_tools,
-                        unavailable_reason=module.unavailable_reason.strip(),
-                        recovery_hint=module.recovery_hint.strip(),
-                    )
-                )
             if not is_ready:
+                if hint and module.activation_hint.strip() and hint not in seen_hints:
+                    seen_hints.add(hint)
+                    hints.append(hint)
+                if hint and module.activation_hint.strip():
+                    disclosures.append(
+                        CapabilityDisclosure(
+                            capability_id=module.name,
+                            state="latent",
+                            summary=hint,
+                            reason=module.latent_reason.strip(),
+                            activation=module.activation_hint.strip(),
+                            tool_names=module_tools,
+                            unavailable_reason=module.unavailable_reason.strip(),
+                            recovery_hint=module.recovery_hint.strip(),
+                        )
+                    )
                 continue
-            module_names.append(module.name)
-            layer = str(module.layer or "").strip()
-            if layer and layer not in seen_layers:
-                seen_layers.add(layer)
-                layer_names.append(layer)
+
+            ready_module_tools: list[str] = []
             for tool_name in module_tools:
                 if tool_name in seen_tools:
+                    ready_module_tools.append(tool_name)
                     continue
-                # M66-E: server-local offer gate. If the tool is registered in the
-                # offer index its capability_status() probe must pass. Unregistered
-                # tools (not in index) are always allowed through.
+                # Server-local offer gate. The index is synchronized with the
+                # current handler map before each selection and fails closed.
                 if self.server_offer_index is not None:
                     client_mode_val = str(
                         getattr(getattr(snapshot, "client_mode", ""), "value", snapshot.client_mode) or ""
                     )
-                    if not self.server_offer_index.is_offered(tool_name, client_mode=client_mode_val):
-                        # Emit a disclosure so the model knows the capability is
-                        # temporarily unavailable, without exposing provider details.
+                    if not self.server_offer_index.is_offered(
+                        tool_name,
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        client_mode=client_mode_val,
+                    ):
                         disclosures.append(
                             CapabilityDisclosure(
-                                capability_id=tool_name,
+                                capability_id=module.name,
                                 state="unavailable",
-                                summary=f"这项能力（{tool_name}）依赖的本地服务当前不可用。",
-                                reason="server_local_offer_unavailable",
+                                summary=f"这项能力（{tool_name}）当前不可用。",
+                                reason=(
+                                    module.unavailable_reason
+                                    or "这项能力依赖的本地组件或外部服务当前没有通过可用性检查。"
+                                ),
+                                activation=module.recovery_hint,
                                 tool_names=(tool_name,),
                             )
                         )
                         continue
                 seen_tools.add(tool_name)
                 tools.append(tool_name)
+                ready_module_tools.append(tool_name)
+
+            if not ready_module_tools:
+                continue
+            if hint and hint not in seen_hints:
+                seen_hints.add(hint)
+                hints.append(hint)
+            if hint:
+                disclosures.append(
+                    CapabilityDisclosure(
+                        capability_id=module.name,
+                        state="ready",
+                        summary=hint,
+                        tool_names=tuple(ready_module_tools),
+                        unavailable_reason=module.unavailable_reason.strip(),
+                        recovery_hint=module.recovery_hint.strip(),
+                    )
+                )
+            module_names.append(module.name)
+            layer = str(module.layer or "").strip()
+            if layer and layer not in seen_layers:
+                seen_layers.add(layer)
+                layer_names.append(layer)
         tool_specs: list[CapabilityToolSpec] = []
         execution_receipts: dict[str, Mapping[str, Any]] = {}
         if snapshot.client_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}:
@@ -1989,36 +2211,6 @@ class CapabilityRegistry:
                         tool_names=("open_browser",),
                     )
                 )
-            # M66-E: browser_page also requires an active satellite connection.
-            # When the satellite is online (open_browser receipt valid), the managed
-            # browser on the PC is reachable. When offline, browser_page must not
-            # appear in the schema — the cloud loopback cannot reach the user's PC.
-            bp_allowed = (
-                snapshot.client_mode == ClientMode.DESKTOP_PET
-                and "browser_page" not in hidden
-                and (allowed is None or "browser_page" in allowed)
-                and "browser_page" not in seen_tools
-            )
-            bp_satellite_receipt = receipt if receipt is not None else self._resolve_offer_receipt(OPEN_BROWSER_TOOL_SPEC)
-            if bp_allowed:
-                if bp_satellite_receipt is not None:
-                    tools.append("browser_page")
-                    seen_tools.add("browser_page")
-                    tool_specs.append(BROWSER_PAGE_TOOL_SPEC)
-                    if "desktop_managed_browser_satellite" not in module_names:
-                        module_names.append("desktop_managed_browser_satellite")
-                else:
-                    # Satellite offline — suppress browser_page from schema.
-                    disclosures.append(
-                        CapabilityDisclosure(
-                            capability_id="desktop_managed_browser_satellite",
-                            state="unavailable",
-                            summary="托管浏览器窗口操作需要桌面客户端在线。",
-                            reason="当前没有在线且已授权的桌面执行器。",
-                            activation="桌面客户端重新连接后，这项能力会自动恢复。",
-                            tool_names=("browser_page",),
-                        )
-                    )
         return CapabilitySelection(
             light_hints=tuple(hints),
             tool_names=tuple(tools),
@@ -2077,10 +2269,7 @@ class CapabilityRegistry:
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=DESKTOP_BROWSER_TOOL_NAMES,
                 light_hint="桌宠模式下，browser_page 会打开并操作 Akane 可见托管浏览器窗口，用于读取、滚动、按可见候选序号打开链接，以及经授权的点击/输入。不要接管用户手动打开的浏览器标签页，不要登录、下载、上传或访问私密/内网内容。",
-                # M66-E: trigger=_never so this module never fires through the static path.
-                # browser_page is now gated behind a satellite offer check in select();
-                # the module is kept for its light_hint and disclosure text only.
-                trigger=lambda _: False,
+                trigger=_always,
             ),
             CapabilityModule(
                 name="desktop_music_request",

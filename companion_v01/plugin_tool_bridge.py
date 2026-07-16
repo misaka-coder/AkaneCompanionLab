@@ -35,6 +35,12 @@ class _PluginHostInvocationProxy:
     def __init__(self, host: PluginHost) -> None:
         self._host = host
 
+    def is_live(self, capability_id: str = "") -> bool:
+        clean_capability_id = str(capability_id or "").strip()
+        if str(self._host.state or "").strip() not in {"active", "degraded"}:
+            return False
+        return bool(clean_capability_id and clean_capability_id in self._host.capability_ids)
+
     async def invoke(
         self,
         capability_id: str,

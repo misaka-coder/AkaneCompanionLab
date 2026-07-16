@@ -6052,6 +6052,7 @@ async function handleDesktopFileDeliveryEvent(event) {
     action,
     user_id: state.sessionId || "",
     session_id: state.sessionId || "",
+    real_user_id: getProfileUserId(),
     file_name: buildDesktopDeliveryFileName(fileRef) || "",
   };
 
@@ -6551,7 +6552,7 @@ async function playWorkspaceAudioItem(item) {
 
   try {
     setRuntimeStatus("正在从手边取音乐", { mode: "music" });
-    const path = await fetchWorkspaceItemLocation({ itemType, handle });
+    const path = await stageWorkspaceItem({ itemType, handle, title, format: value.format });
     const workspaceSourceId = buildWorkspaceAudioSourceId(itemType, handle);
     await addDroppedAudioFiles(
       [{ path, lyricPath: "", workspaceMetadata: { sourceId: workspaceSourceId, queueDedupeKey: workspaceSourceId, workspaceItemType: itemType, workspaceHandle: handle, displayName: title } }],
@@ -6564,14 +6565,30 @@ async function playWorkspaceAudioItem(item) {
   }
 }
 
-// M66-D: fetchWorkspaceItemLocation removed — the backend /location routes that
-// returned absolute paths have been deleted. File delivery now uses
-// open_workspace_item (handle-based) which downloads bytes from /content.
-// This stub is kept temporarily to fail fast if any caller was missed.
-async function fetchWorkspaceItemLocation({ itemType, handle }) {
-  throw new Error(
-    `fetchWorkspaceItemLocation is deprecated (M66-D): use open_workspace_item with handle=${handle}`
+async function stageWorkspaceItem({ itemType, handle, title = "", format = "" }) {
+  const sessionId = String(state.sessionId || "").trim();
+  if (!sessionId) throw new Error("会话还没准备好");
+  const cleanFormat = String(format || "").trim().replace(/^\.+/, "");
+  const cleanTitle = String(title || handle || "workspace-audio").trim();
+  const fileName = cleanFormat && !cleanTitle.toLowerCase().endsWith(`.${cleanFormat.toLowerCase()}`)
+    ? `${cleanTitle}.${cleanFormat}`
+    : cleanTitle;
+  const result = await tauriCall(
+    "open_workspace_item",
+    {
+      handle: String(handle || "").trim(),
+      item_type: itemType === "generated" ? "generated" : "attachments",
+      action: "stage",
+      user_id: sessionId,
+      session_id: sessionId,
+      real_user_id: getProfileUserId(),
+      file_name: fileName
+    },
+    { quiet: true }
   );
+  const localPath = String(result?.local_path || "").trim();
+  if (!localPath) throw new Error("手边音频暂存失败");
+  return localPath;
 }
 
 function summarizeWorkspaceImportSkipped(payload) {

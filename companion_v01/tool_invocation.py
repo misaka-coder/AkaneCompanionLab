@@ -47,6 +47,7 @@ class ToolInvocation:
     source: str = LEGACY_JSON
     id: str = ""
     execution_receipt: dict[str, Any] = field(default_factory=dict)
+    capability_selection: Any = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -97,6 +98,7 @@ def legacy_tool_call_to_invocation(
     *,
     source: str = LEGACY_JSON,
     invocation_id: str = "",
+    capability_selection: Any = None,
 ) -> ToolInvocation | None:
     """Wrap a legacy ``{"type": name, ...args}`` tool_call dict as a ToolInvocation.
 
@@ -112,6 +114,7 @@ def legacy_tool_call_to_invocation(
     embedded_source = str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip()
     embedded_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
     embedded_receipt = tool_call.get(TOOL_EXECUTION_RECEIPT_FIELD)
+    embedded_selection = tool_call.get(TOOL_CAPABILITY_SELECTION_FIELD)
     arguments = {key: value for key, value in tool_call.items() if key != "type" and not str(key).startswith("_tool_")}
     return ToolInvocation(
         name=name,
@@ -119,6 +122,7 @@ def legacy_tool_call_to_invocation(
         source=embedded_source or source,
         id=embedded_id or invocation_id,
         execution_receipt=dict(embedded_receipt) if isinstance(embedded_receipt, dict) else {},
+        capability_selection=capability_selection if capability_selection is not None else embedded_selection,
     )
 
 
@@ -139,6 +143,8 @@ def invocation_to_legacy_tool_call(
         tool_call[TOOL_INVOCATION_ID_FIELD] = str(invocation.id or "")
     if include_metadata and invocation.execution_receipt:
         tool_call[TOOL_EXECUTION_RECEIPT_FIELD] = dict(invocation.execution_receipt)
+    if include_metadata and invocation.capability_selection is not None:
+        tool_call[TOOL_CAPABILITY_SELECTION_FIELD] = invocation.capability_selection
     return tool_call
 
 
