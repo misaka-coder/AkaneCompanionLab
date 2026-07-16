@@ -195,6 +195,7 @@ if qq_channel_config.enabled:
     qq_gateway: NapCatQQGateway | None = NapCatQQGateway(
         state_path=runtime_layout.state_dir / "qq_gateway_state.json",
         channel_config=qq_channel_config,
+        default_character_pack_id=instance_context.character_pack_id,
     )
     qq_followup_tasks: AsyncTaskSupervisor | None = AsyncTaskSupervisor(name="qq-followups")
 else:

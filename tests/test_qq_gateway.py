@@ -608,6 +608,14 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(delivery_context["character_pack_id"], "reimu_demo")
         self.assertEqual(gateway.status()["character_pack_id"], "reimu_demo")
 
+    @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "legacy-default")
+    def test_bound_instance_character_pack_overrides_legacy_config(self) -> None:
+        gateway = NapCatQQGateway(default_character_pack_id="reimu")
+
+        self.assertEqual(gateway.default_character_pack_id, "reimu")
+        self.assertEqual(gateway.character_pack_id, "reimu")
+        self.assertEqual(gateway.status()["default_character_pack_id"], "reimu")
+
     @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "../bad")
     def test_turn_payload_omits_invalid_character_pack_id(self) -> None:
         gateway = NapCatQQGateway()

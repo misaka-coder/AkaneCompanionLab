@@ -87,6 +87,56 @@ class InstanceMigrationTests(unittest.TestCase):
             lease = bind_instance_runtime(context, data_root=target, explicit_data_root=True)
             lease.release()
 
+    def test_cloud_profile_copies_selected_character_and_starts_qq_and_plugins_fresh(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self._source_root(root)
+            extra = source / "characters" / "other"
+            extra.mkdir(parents=True)
+            (extra / "character.json").write_text("{}", encoding="utf-8")
+            target = root / "target"
+
+            result = migrate_instance(
+                source_root=source,
+                target_root=target,
+                instance_id="akane-cloud",
+                source_instance_id="finance-prod",
+                character_pack_id="akane_v1",
+                qq_profile_ref="akane-cloud-qq",
+                copy_qq_state=False,
+                copy_all_character_packs=False,
+                copy_plugin_state=False,
+                additional_character_pack_ids=("other",),
+            )
+
+            self.assertTrue(result["qq_enabled"])
+            self.assertEqual(
+                sorted(path.name for path in (target / "characters").iterdir()),
+                ["akane_v1", "other"],
+            )
+            self.assertFalse((target / "state" / "qq_gateway_state.json").exists())
+            self.assertFalse((target / "instances" / "akane-cloud" / "plugins").exists())
+            context = resolve_instance_context(data_root=target, selected_instance_id="akane-cloud")
+            self.assertTrue(context.channels.qq.enabled)
+            self.assertEqual(context.channels.qq.profile_ref, "akane-cloud-qq")
+
+    def test_missing_selected_character_is_rejected_before_target_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self._source_root(root)
+            target = root / "target"
+
+            with self.assertRaises(MigrationError) as raised:
+                migrate_instance(
+                    source_root=source,
+                    target_root=target,
+                    instance_id="akane-cloud",
+                    character_pack_id="missing",
+                )
+
+            self.assertEqual(raised.exception.reason, "source_character_pack_missing")
+            self.assertFalse(target.exists())
+
     def test_mid_migration_failure_marks_target_incomplete_and_blocks_start(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

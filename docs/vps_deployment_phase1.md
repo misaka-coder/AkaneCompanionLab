@@ -1,5 +1,7 @@
 # Akane 单机 VPS 部署准备包（Phase 1）
 
+> 这是一份早期通用 VPS 说明。需要迁移现有角色包、正式记忆并绑定新 QQ Bot 时，以 [cloud_bot_deployment_continuity_v1.md](cloud_bot_deployment_continuity_v1.md) 为准；不要直接复制本机 `.env` 或整个数据目录。
+
 这份文档按当前项目最适合的路线来写：
 
 - 单机 VPS

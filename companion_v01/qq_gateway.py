@@ -277,8 +277,12 @@ class NapCatQQGateway:
         *,
         state_path: str | Path | None = None,
         channel_config: QQChannelRuntimeConfig | None = None,
+        default_character_pack_id: str = "",
     ) -> None:
         self._channel_config = channel_config
+        self._bound_default_character_pack_id = _safe_character_pack_id(
+            default_character_pack_id
+        )
         self.group_follow_state: dict[str, dict[str, Any]] = {}
         self.recent_event_fingerprints: dict[str, float] = {}
         self.sender_label_cache: dict[str, str] = {}
@@ -645,6 +649,8 @@ class NapCatQQGateway:
 
     @property
     def default_character_pack_id(self) -> str:
+        if self._bound_default_character_pack_id:
+            return self._bound_default_character_pack_id
         return _safe_character_pack_id(getattr(config, "QQ_CHARACTER_PACK_ID", ""))
 
     @property

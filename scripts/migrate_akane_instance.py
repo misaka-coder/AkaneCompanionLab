@@ -12,7 +12,7 @@ import sqlite3
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 
 SCHEMA_VERSION = 1
@@ -36,6 +36,11 @@ def migrate_instance(
     source_instance_id: str = "",
     source_workspace: Path | None = None,
     care_enabled: bool = True,
+    qq_profile_ref: str = "",
+    copy_qq_state: bool = True,
+    copy_all_character_packs: bool = True,
+    copy_plugin_state: bool = True,
+    additional_character_pack_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
     target_id = _safe_id(instance_id, reason="invalid_instance_id")
     pack_id = _safe_id(character_pack_id, reason="invalid_character_pack_id")
@@ -43,7 +48,21 @@ def migrate_instance(
         source_instance_id or target_id,
         reason="invalid_source_instance_id",
     )
+    qq_ref = (
+        _safe_id(qq_profile_ref, reason="invalid_qq_profile_ref")
+        if str(qq_profile_ref or "").strip()
+        else ""
+    )
     source = _existing_real_directory(source_root, reason="source_root_unavailable")
+    selected_pack_ids = [pack_id]
+    for value in additional_character_pack_ids:
+        extra_id = _safe_id(value, reason="invalid_additional_character_pack_id")
+        if extra_id not in selected_pack_ids:
+            selected_pack_ids.append(extra_id)
+    selected_character_sources = {
+        selected_id: _verify_character_pack_source(source, selected_id)
+        for selected_id in selected_pack_ids
+    }
     target = _resolve_new_target(target_root)
     if source == target:
         raise MigrationError("source_and_target_must_differ")
@@ -86,10 +105,11 @@ def migrate_instance(
             engine_source / "user_assets",
             engine_target / "user_assets",
         )
-        copied_files += _copy_optional_file(
-            source / "state" / "qq_gateway_state.json",
-            target / "state" / "qq_gateway_state.json",
-        )
+        if copy_qq_state:
+            copied_files += _copy_optional_file(
+                source / "state" / "qq_gateway_state.json",
+                target / "state" / "qq_gateway_state.json",
+            )
 
         workspace_source = source_workspace or (source / "workspace")
         if workspace_source.exists():
@@ -103,15 +123,24 @@ def migrate_instance(
                     target / "workspace" / layer,
                 )
 
-        copied_files += _copy_optional_tree(
-            source / "instances" / old_instance_id / "plugins",
-            target / "instances" / target_id / "plugins",
-        )
-        copied_files += _copy_optional_tree(
-            source / "characters",
-            target / "characters",
-            skip_dir=lambda path: path.name == "_local",
-        )
+        if copy_plugin_state:
+            copied_files += _copy_optional_tree(
+                source / "instances" / old_instance_id / "plugins",
+                target / "instances" / target_id / "plugins",
+            )
+        if copy_all_character_packs:
+            copied_files += _copy_optional_tree(
+                source / "characters",
+                target / "characters",
+                skip_dir=lambda path: path.name == "_local",
+            )
+        else:
+            for selected_id in selected_pack_ids:
+                copied_files += _copy_optional_tree(
+                    selected_character_sources[selected_id],
+                    target / "characters" / selected_id,
+                    skip_dir=lambda path: path.name == "_local",
+                )
 
         _validate_sqlite_tree(target)
         _write_instance_manifest(
@@ -119,6 +148,7 @@ def migrate_instance(
             instance_id=target_id,
             character_pack_id=pack_id,
             care_enabled=care_enabled,
+            qq_profile_ref=qq_ref,
         )
         _atomic_json(
             target / BINDING_FILENAME,
@@ -129,6 +159,9 @@ def migrate_instance(
             "ok": True,
             "status": "completed",
             "instance_id": target_id,
+            "character_pack_id": pack_id,
+            "character_pack_ids": selected_pack_ids if not copy_all_character_packs else [],
+            "qq_enabled": bool(qq_ref),
             "copied_files": copied_files,
             "source_unchanged": True,
         }
@@ -169,6 +202,19 @@ def _resolve_new_target(value: Path) -> Path:
         return target
     except OSError as exc:
         raise MigrationError("target_parent_unavailable") from exc
+
+
+def _verify_character_pack_source(source: Path, character_pack_id: str) -> Path:
+    pack = source / "characters" / character_pack_id
+    descriptor = pack / "character.json"
+    try:
+        if pack.is_symlink() or not pack.is_dir():
+            raise MigrationError("source_character_pack_missing")
+        if descriptor.is_symlink() or not descriptor.is_file():
+            raise MigrationError("source_character_manifest_missing")
+        return pack.resolve(strict=True)
+    except OSError as exc:
+        raise MigrationError("source_character_pack_unavailable") from exc
 
 
 def _verify_source_binding(source: Path, expected_instance_id: str) -> None:
@@ -323,7 +369,9 @@ def _write_instance_manifest(
     instance_id: str,
     character_pack_id: str,
     care_enabled: bool,
+    qq_profile_ref: str = "",
 ) -> None:
+    qq_enabled = bool(str(qq_profile_ref or "").strip())
     content = (
         f"schema_version = {SCHEMA_VERSION}\n"
         f'instance_id = "{instance_id}"\n'
@@ -331,8 +379,8 @@ def _write_instance_manifest(
         "[features]\n"
         f"care = {'true' if care_enabled else 'false'}\n\n"
         "[channels.qq]\n"
-        "enabled = false\n"
-        'profile_ref = ""\n'
+        f"enabled = {'true' if qq_enabled else 'false'}\n"
+        f'profile_ref = "{qq_profile_ref}"\n'
     )
     path = target / "instances" / instance_id / "instance.toml"
     _atomic_text(path, content)
@@ -379,6 +427,32 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-instance-id", default="")
     parser.add_argument("--source-workspace", type=Path)
     parser.add_argument("--disable-care", action="store_true")
+    parser.add_argument(
+        "--qq-profile-ref",
+        default="",
+        help="Enable QQ in the target manifest with this deployment-owned profile reference.",
+    )
+    parser.add_argument(
+        "--fresh-qq-state",
+        action="store_true",
+        help="Do not copy source QQ delivery/idempotency state (recommended for a new Bot account).",
+    )
+    parser.add_argument(
+        "--selected-character-only",
+        action="store_true",
+        help="Copy only --character-pack-id instead of every character pack.",
+    )
+    parser.add_argument(
+        "--fresh-plugin-state",
+        action="store_true",
+        help="Do not copy source plugin state into the target instance.",
+    )
+    parser.add_argument(
+        "--include-character-pack",
+        action="append",
+        default=[],
+        help="With --selected-character-only, also copy this validated character pack (repeatable).",
+    )
     return parser
 
 
@@ -393,6 +467,11 @@ def main(argv: list[str] | None = None) -> int:
             source_instance_id=args.source_instance_id,
             source_workspace=args.source_workspace,
             care_enabled=not args.disable_care,
+            qq_profile_ref=args.qq_profile_ref,
+            copy_qq_state=not args.fresh_qq_state,
+            copy_all_character_packs=not args.selected_character_only,
+            copy_plugin_state=not args.fresh_plugin_state,
+            additional_character_pack_ids=args.include_character_pack,
         )
     except MigrationError as exc:
         print(json.dumps({"ok": False, "status": "failed", "reason": exc.reason}, sort_keys=True))
