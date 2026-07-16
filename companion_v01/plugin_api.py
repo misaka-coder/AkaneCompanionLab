@@ -25,6 +25,7 @@ PLUGIN_STORAGE_WRITE_PERMISSION = "storage.write"
 BACKGROUND_JOB_PERMISSION = "job.run"
 NOTIFICATION_SEND_PERMISSION = "notification.send"
 PLUGIN_QQ_COMMAND_PERMISSION = "qq.command.register"
+MODEL_REASONING_PERMISSION = "model.reasoning"
 MAX_MANAGED_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_PLUGIN_ID_LENGTH = 64
 MAX_CAPABILITY_ID_LENGTH = 128
@@ -215,6 +216,42 @@ class NotificationPort(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# Model reasoning port contracts
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PluginReasoningRequest:
+    """Bounded proactive reasoning request using the host's normal model/tool loop."""
+
+    trace_id: str
+    profile_user_id: str
+    session_id: str
+    message: str
+    extra_context: str = ""
+    character_pack_id: str = ""
+    timestamp: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PluginReasoningResult:
+    """Safe reasoning projection returned to a trusted plugin."""
+
+    ok: bool
+    status: str
+    text: str = ""
+    reason: str = ""
+    evidence_events: tuple[dict[str, Any], ...] = ()
+
+
+class PluginReasoningPort(Protocol):
+    """Host-owned access to Akane's model and registered read-only tools."""
+
+    async def analyze(self, request: PluginReasoningRequest) -> PluginReasoningResult:
+        """Run one bounded proactive turn; never expose raw Engine state."""
+        ...
+
+
+# ---------------------------------------------------------------------------
 # QQ command contracts
 # ---------------------------------------------------------------------------
 
@@ -248,6 +285,9 @@ class PluginQQCommandRequest:
     is_group: bool
     idempotency_key: str = ""
     sender_role: str = ""
+    profile_user_id: str = ""
+    session_id: str = ""
+    character_pack_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +352,16 @@ class PluginRegistrar(Protocol):
         """
         ...
 
+    def get_reasoning_port(self) -> "PluginReasoningPort":
+        """Return the host-owned model/tool reasoning port.
+
+        The plugin must declare ``model.reasoning``.  The port accepts bounded
+        proactive requests and returns only user-facing text plus sanitized
+        evidence metadata; it never exposes Engine, model credentials, or
+        local paths.
+        """
+        ...
+
     def add_qq_command(self, command: str, handler: "PluginQQCommandHandler") -> None:
         """Register one exact-match QQ slash command.
 
@@ -336,6 +386,7 @@ __all__ = [
     "DIAGNOSTICS_INVOKE_PERMISSION",
     "MANAGED_ARTIFACT_WRITE_PERMISSION",
     "MAX_MANAGED_ARTIFACT_BYTES",
+    "MODEL_REASONING_PERMISSION",
     "NETWORK_READ_PERMISSION",
     "NOTIFICATION_SEND_PERMISSION",
     "PLUGIN_QQ_COMMAND_PERMISSION",
@@ -352,6 +403,9 @@ __all__ = [
     "PluginQQCommandHandler",
     "PluginQQCommandRequest",
     "PluginQQCommandResult",
+    "PluginReasoningPort",
+    "PluginReasoningRequest",
+    "PluginReasoningResult",
     "PluginRegistrar",
     "PluginResultExperience",
     "PluginResultPayload",

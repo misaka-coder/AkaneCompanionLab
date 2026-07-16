@@ -34,6 +34,7 @@ from .plugin_host import PluginHost
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from .plugin_storage import InstancePluginStorageService
 from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
+from .plugin_reasoning import EnginePluginReasoningPort
 from .plugin_tool_bridge import PluginCapabilityToolBridge
 from .settings_overrides import SettingsOverrideStore, load_and_apply_saved_overrides
 from .public_guard import PublicThinkGuard
@@ -165,6 +166,7 @@ engine = AkaneMemoryEngine(
     qq_channel_config=qq_channel_config,
     capability_offer_source=desktop_satellite_service,
 )
+plugin_host.bind_reasoning_port(EnginePluginReasoningPort(engine))
 generated_file_service = engine._get_generated_file_service()
 if generated_file_service is not None:
     plugin_host.bind_managed_artifact_sink(

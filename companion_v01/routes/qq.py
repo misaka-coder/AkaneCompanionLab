@@ -1991,6 +1991,9 @@ def build_qq_router(
                         is_group=bool(context.is_group),
                         idempotency_key=_source_event_id,
                         sender_role=_qq_sender_role(event),
+                        profile_user_id=str(context.profile_user_id or ""),
+                        session_id=str(context.session_id or ""),
+                        character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
                     )
                     if _cmd_result.handled:
                         if _cmd_result.reply_text:

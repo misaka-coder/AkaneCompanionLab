@@ -30,6 +30,7 @@ from .plugin_api import (
     BACKGROUND_JOB_PERMISSION,
     MANAGED_ARTIFACT_WRITE_PERMISSION,
     MAX_MANAGED_ARTIFACT_BYTES,
+    MODEL_REASONING_PERMISSION,
     NOTIFICATION_SEND_PERMISSION,
     PLUGIN_QQ_COMMAND_PERMISSION,
     PLUGIN_STORAGE_WRITE_PERMISSION,
@@ -45,6 +46,7 @@ from .plugin_jobs import _HostJobController, run_supervised_job
 from .plugin_managed_artifacts import ManagedArtifactError, ManagedArtifactSink
 from .plugin_notifications import _NotificationDeliveryLedger, _PluginScopedNotificationPort
 from .plugin_qq_commands import PluginQQCommandBroker, _PluginCommandRegistration
+from .plugin_reasoning import PluginScopedReasoningPort
 from .plugin_storage import PluginStorageService
 from .plugin_result_projection import sanitize_capability_result
 from .plugin_result_experience import (
@@ -120,6 +122,8 @@ class _StagedRegistrar(PluginRegistrar):
         self._job_permission: bool = False
         self._notification_port: Any = None  # NotificationPort | None
         self._notification_permission: bool = False
+        self._reasoning_port: Any = None  # PluginReasoningPort | None
+        self._reasoning_permission: bool = False
         self._qq_commands: list[_PluginCommandRegistration] = []
         self._qq_command_permission: bool = False
 
@@ -161,6 +165,13 @@ class _StagedRegistrar(PluginRegistrar):
             raise RuntimeError("notification_permission_required")
         return self._notification_port
 
+    def get_reasoning_port(self) -> Any:
+        if self._sealed:
+            raise RuntimeError("plugin_registrar_sealed")
+        if not self._reasoning_permission or self._reasoning_port is None:
+            raise RuntimeError("reasoning_permission_required")
+        return self._reasoning_port
+
     def add_qq_command(self, command: str, handler: Any) -> None:
         if self._sealed:
             raise RuntimeError("plugin_registrar_sealed")
@@ -196,6 +207,10 @@ class _StagedRegistrar(PluginRegistrar):
     def _set_notification_port(self, port: Any) -> None:
         self._notification_port = port
         self._notification_permission = port is not None
+
+    def _set_reasoning_port(self, port: Any) -> None:
+        self._reasoning_port = port
+        self._reasoning_permission = port is not None
 
     def _set_qq_command_permission(self, allowed: bool) -> None:
         self._qq_command_permission = allowed
@@ -262,6 +277,7 @@ class PluginHost:
         self._managed_artifact_sink: ManagedArtifactSink | None = None
         self._storage_service: PluginStorageService | None = None
         self._notification_port: Any = None  # NotificationPort | None
+        self._reasoning_port: Any = None  # PluginReasoningPort | None
         self._notification_ledger = _NotificationDeliveryLedger()
         self._job_tasks: dict[str, tuple[Any, _HostJobController, asyncio.Task]] = {}
         self._job_statuses: dict[str, dict[str, str]] = {}
@@ -362,6 +378,15 @@ class PluginHost:
         if not callable(getattr(port, "send", None)):
             raise TypeError("invalid_notification_port")
         self._notification_port = port
+
+    def bind_reasoning_port(self, port: Any) -> None:
+        """Bind host-owned model/tool reasoning before restart-only startup."""
+
+        if self._state != "created":
+            raise RuntimeError("plugin_host_already_started")
+        if not callable(getattr(port, "analyze", None)):
+            raise TypeError("invalid_reasoning_port")
+        self._reasoning_port = port
 
     def build_qq_command_broker(self) -> PluginQQCommandBroker:
         """Build an immutable command broker from all activated plugin QQ commands.
@@ -797,6 +822,15 @@ class PluginHost:
                         plugin_id=selection.plugin_id,
                         delegate=self._notification_port,
                         ledger=self._notification_ledger,
+                        availability_provider=lambda: self._state in _HOST_AVAILABLE_STATES,
+                    )
+                )
+            if MODEL_REASONING_PERMISSION in manifest.permissions:
+                if self._reasoning_port is None:
+                    raise _ActivationFailure("reasoning_port_unavailable")
+                registrar._set_reasoning_port(
+                    PluginScopedReasoningPort(
+                        delegate=self._reasoning_port,
                         availability_provider=lambda: self._state in _HOST_AVAILABLE_STATES,
                     )
                 )

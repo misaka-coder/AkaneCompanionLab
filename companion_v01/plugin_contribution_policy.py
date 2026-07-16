@@ -18,6 +18,7 @@ from .plugin_api import (
     CAPABILITY_PROMPT_INVOKE_PERMISSION,
     DIAGNOSTICS_INVOKE_PERMISSION,
     MANAGED_ARTIFACT_WRITE_PERMISSION,
+    MODEL_REASONING_PERMISSION,
     NETWORK_READ_PERMISSION,
     NOTIFICATION_SEND_PERMISSION,
     PLUGIN_QQ_COMMAND_PERMISSION,
@@ -135,8 +136,8 @@ class TrustedStatefulPluginContributionPolicy:
     Accepts any subset of the extended permission tuple where:
     - capability.prompt.invoke is required (plugin contributes prompt-visible capabilities)
     - network.read is required
-    - storage.write, job.run, notification.send, artifact.write, and
-      qq.command.register are optional individually
+    - storage.write, job.run, notification.send, artifact.write,
+      qq.command.register, and model.reasoning are optional individually
 
     The capability-level rules are identical to TrustedReadNetworkContributionPolicy.
     """
@@ -153,6 +154,7 @@ class TrustedStatefulPluginContributionPolicy:
             NOTIFICATION_SEND_PERMISSION,
             MANAGED_ARTIFACT_WRITE_PERMISSION,
             PLUGIN_QQ_COMMAND_PERMISSION,
+            MODEL_REASONING_PERMISSION,
         }
     )
 

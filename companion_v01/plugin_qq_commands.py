@@ -82,6 +82,9 @@ class PluginQQCommandBroker:
         is_group: bool,
         idempotency_key: str = "",
         sender_role: str = "",
+        profile_user_id: str = "",
+        session_id: str = "",
+        character_pack_id: str = "",
     ) -> PluginQQCommandResult:
         """Dispatch to the first matching plugin handler.
 
@@ -144,6 +147,9 @@ class PluginQQCommandBroker:
                 source_key=idempotency_key,
             ),
             sender_role=normalized_sender_role,
+            profile_user_id=_bounded_context_value(profile_user_id, maximum=200),
+            session_id=_bounded_context_value(session_id, maximum=200),
+            character_pack_id=_bounded_context_value(character_pack_id, maximum=120),
         )
         try:
             result = await asyncio.wait_for(
@@ -194,6 +200,13 @@ def _safe_reason(reason: object) -> str:
     if _SAFE_REASON_PATTERN.fullmatch(candidate) is None:
         return "plugin_reported_error"
     return candidate
+
+
+def _bounded_context_value(value: object, *, maximum: int) -> str:
+    text = str(value or "").strip()
+    if "\x00" in text:
+        return ""
+    return text[:maximum]
 
 
 def _make_idempotency_key(

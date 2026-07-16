@@ -207,6 +207,9 @@ class BrokerDispatchTests(unittest.IsolatedAsyncioTestCase):
             group_id=200,
             is_group=True,
             sender_role="ADMIN",
+            profile_user_id="profile:100",
+            session_id="session:200",
+            character_pack_id="akane_v1",
         )
 
         self.assertTrue(result.handled)
@@ -219,6 +222,9 @@ class BrokerDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(req.group_id, 200)
         self.assertTrue(req.is_group)
         self.assertEqual(req.sender_role, "admin")
+        self.assertEqual(req.profile_user_id, "profile:100")
+        self.assertEqual(req.session_id, "session:200")
+        self.assertEqual(req.character_pack_id, "akane_v1")
         self.assertEqual(len(req.idempotency_key), 32)
 
     # 3. handler exception → handled=True, reason="handler_exception"
