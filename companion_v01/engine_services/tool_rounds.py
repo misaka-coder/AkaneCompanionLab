@@ -260,6 +260,31 @@ def resolve_capability_selection(
     )
     if not dynamic_handlers:
         return selection
+    # M66-F: Filter dynamic (MCP/plugin/python adapter) handlers through their
+    # capability_status() probe. Handlers with no capability_status() auto-pass.
+    # This gates MCP tools when the session is disconnected and plugin tools
+    # when the plugin is unhealthy — without relying on ToolReadinessGate.
+    live_dynamic_handlers: dict[str, Any] = {}
+    for _name, _handler in dynamic_handlers.items():
+        _status_fn = getattr(_handler, "capability_status", None)
+        if not callable(_status_fn):
+            live_dynamic_handlers[_name] = _handler
+            continue
+        try:
+            _status = _status_fn()
+        except Exception:
+            continue  # probe threw → treat as unavailable
+        if isinstance(_status, bool):
+            if _status:
+                live_dynamic_handlers[_name] = _handler
+        elif isinstance(_status, dict):
+            if bool(_status.get("enabled", True)):
+                live_dynamic_handlers[_name] = _handler
+        else:
+            live_dynamic_handlers[_name] = _handler
+    dynamic_handlers = live_dynamic_handlers
+    if not dynamic_handlers:
+        return selection
     dynamic_tool_names = tuple(
         name
         for name in _filter_tool_names_with_policy_extensions(

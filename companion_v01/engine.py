@@ -405,6 +405,7 @@ class AkaneMemoryEngine:
             attachment_context_builder=self._build_task_worker_attachment_context,
             generated_context_builder=self._build_task_worker_generated_context,
             record_tool_artifacts=self._record_tool_result_artifacts_in_task_workspace,
+            engine_ref=self,  # M66-F: route worker tool calls through execute_tool_invocation
         )
         self.tool_handlers = self._build_tool_handlers()
         # M66-E: server-local offer index for tools with capability_status() probes.

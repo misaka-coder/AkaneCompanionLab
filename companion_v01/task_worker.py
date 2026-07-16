@@ -117,6 +117,7 @@ class TaskWorkerService:
         generated_context_builder: PromptContextBuilder,
         record_tool_artifacts: ToolArtifactRecorder,
         on_task_completed: TaskCompletionCallback | None = None,
+        engine_ref: Any = None,
     ) -> None:
         self.llm = llm
         self.task_workspace_service = task_workspace_service
@@ -126,6 +127,9 @@ class TaskWorkerService:
         self.generated_context_builder = generated_context_builder
         self.record_tool_artifacts = record_tool_artifacts
         self.on_task_completed = on_task_completed
+        # M66-F: engine reference for routing worker tool calls through
+        # execute_tool_invocation() instead of the direct normalize+execute path.
+        self._engine_ref = engine_ref
 
     def delegate_task(
         self,
@@ -503,6 +507,40 @@ class TaskWorkerService:
             "prepare_voice_dataset",
         }:
             safe_tool_call["send_to_user"] = False
+
+        # M66-F: Route through execute_tool_invocation() when engine_ref is available,
+        # so worker calls share the same validation, policy, and broker path as
+        # frontstage calls. Falls back to direct execute() when engine_ref is absent.
+        engine = self._engine_ref
+        if engine is not None:
+            try:
+                from .tool_invocation import ToolInvocation, legacy_tool_call_to_invocation
+                from . import tool_orchestration_engine as _toe
+                import uuid
+
+                normalized_call = handler.normalize_call(safe_tool_call)
+                if not normalized_call:
+                    return None
+                invocation = ToolInvocation(
+                    name=tool_type,
+                    arguments={k: v for k, v in normalized_call.items() if k != "type"},
+                    source="worker",
+                    id=f"worker_{task_id}_{tool_type}_{uuid.uuid4().hex[:8]}",
+                )
+                _result, envelope = _toe.execute_tool_invocation(
+                    engine,
+                    invocation=invocation,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    visual_payload={"_task_worker": True, "_task_id": task_id},
+                    now_ts=int(time.time()),
+                )
+                return _result
+            except Exception as exc:
+                logger.warning("worker_broker_execute_failed tool=%s: %s", tool_type, exc)
+                # Fall through to direct path on unexpected error.
+
+        # Direct execution path (local-default without engine_ref, or fallback).
         normalized = handler.normalize_call(safe_tool_call)
         if not normalized:
             return None
@@ -537,8 +575,18 @@ class TaskWorkerService:
             "",
             "【你当前可用的受限工具】",
         ]
-        for handler in handlers.values():
-            lines.append(handler.build_prompt_instruction())
+        for tool_id, handler in handlers.items():
+            # M66-F: Use canonical ToolSpec description; fall back to build_prompt_instruction()
+            # only when no spec is available (backward compat during migration window).
+            spec_getter = getattr(handler, "tool_spec", None)
+            spec = spec_getter() if callable(spec_getter) else None
+            if spec is not None and getattr(spec, "capability_id", None) and getattr(spec, "description", None):
+                lines.append(f"- {spec.capability_id}：{spec.description}")
+            else:
+                try:
+                    lines.append(handler.build_prompt_instruction())
+                except Exception:
+                    lines.append(f"- {tool_id}")
         lines.append("一次只调用一个工具；不要调用未列出的工具。")
         return "\n".join(lines)
 

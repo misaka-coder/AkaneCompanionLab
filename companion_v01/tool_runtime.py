@@ -910,7 +910,23 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         self.descriptor = descriptor
         self.config_base_dir = config_base_dir
 
-    def tool_metadata(self) -> ToolMetadata:
+    def capability_status(self) -> dict[str, Any]:
+        """M66-F: Gate MCP/plugin adapter tools via live session check.
+        Delegates to adapter.is_live() when available; falls back to enabled.
+        """
+        is_live_fn = getattr(self.adapter, "is_live", None)
+        if callable(is_live_fn):
+            try:
+                live = bool(is_live_fn())
+            except Exception:
+                return {"enabled": False, "status": "unavailable", "reason": "adapter_liveness_check_failed"}
+            return {
+                "enabled": live,
+                "status": "ready" if live else "unavailable",
+                "reason": "" if live else "mcp_session_not_live",
+            }
+        # Adapter has no liveness check — assume it's ready (backward compat).
+        return {"enabled": True, "status": "ready", "reason": "no_liveness_check"}
         risk = str(getattr(self.descriptor, "risk", "") or "medium").strip() or "medium"
         return ToolMetadata(
             family="adapter_capability",

@@ -87,6 +87,17 @@ class McpStdioCapabilityAdapter:
         descriptor = self._core.descriptor_for_tool(_tool_record(tool))
         return _with_akane_raw_metadata(descriptor, self.server_config)
 
+    def is_live(self) -> bool:
+        """M66-F: Return True when the MCP server is configured and considered reachable.
+        Uses a lightweight sync check: command must be present and server enabled.
+        The WebSearchToolHandler uses a deeper background probe for web_search;
+        for general MCP adapters this covers the common 'server disabled/removed' case.
+        """
+        if not bool(self.server_config.get("enabled")):
+            return False
+        command = str(self.server_config.get("command") or "").strip()
+        return bool(command)
+
     def _risk_and_confirm(self, tool: Mapping[str, Any]) -> tuple[str, str]:
         override = _tool_override(self.server_config, tool)
         return override.risk or "medium", override.confirm or "first_time"
