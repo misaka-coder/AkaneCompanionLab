@@ -322,16 +322,18 @@ Tauri/WebView2，并以 Windows 为主要验证平台。
 
 ## 测试
 
-推荐每次大改前先跑这条快速回归命令：
+仓库验证以 `scripts/verify_akane.ps1` 为唯一权威入口。日常修改先跑
+Quick；它不联网、不启动真实 Akane 后端，并在隔离的临时 env/data root
+中执行：
 
 ```powershell
-python -m unittest tests.quick_regression_suite
+.\scripts\verify_akane.ps1 -Tier Quick
 ```
 
-如果你在 Windows 上更习惯脚本入口，也可以直接跑：
+旧入口仍作为薄兼容适配器保留：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run_quick_regression.ps1
+.\run_quick_regression.ps1
 ```
 
 QQ 工坊能力和本机依赖自检：
@@ -342,8 +344,10 @@ powershell -ExecutionPolicy Bypass -File .\run_qq_workshop_self_check.ps1
 
 能力路网说明见 `docs/qq_workshop_capabilities_v1.md`。
 
-这组快速套件会优先检查：
+Quick 会优先检查：
 
+- M65 实例根、channel、写入关闭和桌宠缓存隔离
+- M66 Desktop Satellite 鉴权、offer lease、broker 与启动器边界
 - `tests/test_resource_visibility_contract.py`
   - 附件区 / 生成区 / 任务工作区边界
   - 图片视觉卡、媒体规格卡、端到端资源可见性链路
@@ -351,20 +355,23 @@ powershell -ExecutionPolicy Bypass -File .\run_qq_workshop_self_check.ps1
 - 生成文件歧义确认
 - 精确 handle 发送不会被歧义目标干扰
 
-完整回归仍然建议再跑一轮：
+提交前运行 Full。它和 Windows CI 使用同一入口，覆盖完整 Python、桌宠
+构建与 smoke、Tauri test/check/fmt、公开导出审计和 diff hygiene：
 
 ```powershell
-python -m unittest discover tests
+.\scripts\verify_akane.ps1 -Tier Full
 ```
 
-桌宠主线验证：
+涉及真实实例、端口或启动器生命周期时再显式运行 Acceptance；它在 Full
+之后额外执行 M65-E5 双实例验收：
 
 ```powershell
-npm --prefix desktop_pet_next ci
-npm --prefix desktop_pet_next run verify:control-center
-cargo check --manifest-path desktop_pet_next/src-tauri/Cargo.toml
-git diff --check
+.\scripts\verify_akane.ps1 -Tier Acceptance
 ```
+
+验证脚本不会安装依赖。首次运行 Full/Acceptance 前仍需执行
+`npm --prefix desktop_pet_next ci`；`-CheckOnly` 可只检查依赖并输出将要执行
+的有界阶段，`-Json` 可返回结构化计划或失败原因。
 
 ## 使用 AI 协助部署
 

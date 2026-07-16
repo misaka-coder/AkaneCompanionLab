@@ -28,16 +28,6 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install ruff
 
-      - name: Python correctness lint
-        run: python -m ruff check .
-
-      - name: Python tests
-        run: python -m unittest discover tests
-
-      - name: Check Windows bootstrap contract
-        shell: pwsh
-        run: ./scripts/bootstrap_akane_windows.ps1 -CheckOnly -Mode Web
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -48,22 +38,9 @@ jobs:
       - name: Install desktop dependencies
         run: npm --prefix desktop_pet_next ci
 
-      - name: Verify control center and Vite build
-        run: npm --prefix desktop_pet_next run verify:control-center
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Check Tauri Rust crate
-        run: cargo check --manifest-path desktop_pet_next/src-tauri/Cargo.toml
-
-      - name: Export and audit public Alpha snapshot
+      - name: Run canonical full verification
         shell: pwsh
-        run: |
-          $output = Join-Path $env:RUNNER_TEMP "AkaneCompanionLab-public-alpha"
-          ./scripts/export_public_alpha.ps1 -OutputPath $output
-          ./scripts/audit_public_release.ps1 -ReleaseRoot $output
-
-      - name: Diff hygiene
-        shell: pwsh
-        run: git diff --check
+        run: ./scripts/verify_akane.ps1 -Tier Full

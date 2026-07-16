@@ -1676,6 +1676,21 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
 
 // ---------- snapshot endpoint fallback ----------
 
+function withVerifiedBackendHealth(fetchImpl, instanceId = "local-default") {
+  return async (url, options) => {
+    const requestUrl = String(url);
+    if (new URL(requestUrl).pathname === "/health") {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({ status: "ok", instance_id: instanceId, root_binding: "valid" })
+      };
+    }
+    return fetchImpl(url, options);
+  };
+}
+
 // Valid snapshot: readSnapshot should use it (uses a fetch that returns all healthy data)
 {
   let snapshotUrl = "";
@@ -1686,7 +1701,7 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
     characterPackId: "akane_pack",
     outfit: "cat",
     emotion: "happy",
-    fetchImpl: async (url) => {
+    fetchImpl: withVerifiedBackendHealth(async (url) => {
       const requestUrl = String(url);
       if (requestUrl.includes("/control-center/snapshot")) {
         snapshotUrl = requestUrl;
@@ -1713,7 +1728,7 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
           }
         })
       };
-    }
+    })
   });
   const result = await okSource.readSnapshot();
   assert.ok(result, "snapshot with valid runtime should return data");
@@ -1733,7 +1748,7 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
 {
   const wrappedSource = createBackendControlCenterSource({
     baseUrl: "http://snapshot-wrapped-test",
-    fetchImpl: async () => ({
+    fetchImpl: withVerifiedBackendHealth(async () => ({
       ok: true,
       status: 200,
       headers: { get: () => "application/json" },
@@ -1751,51 +1766,54 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
           metrics: { ok: true, data: "cpu_percent 7\nmemory_percent 9" }
         }
       })
-    })
+    }))
   });
   const result = await wrappedSource.readSnapshot();
   assert.ok(result, "snapshot with wrapped field data should return data");
   assert.equal(result.advancedRuntime.systemStrip.CPU.value, "7%", "wrapped metrics should feed advanced CPU value");
 }
 
-// Snapshot 404: should fall back to null (no individual endpoints succeed either)
+// Snapshot 404: should fall back to the independently verified health response.
 {
   const emptySource = createBackendControlCenterSource({
     baseUrl: "http://snapshot-fallback-test",
-    fetchImpl: async () => ({
+    fetchImpl: withVerifiedBackendHealth(async () => ({
       ok: false,
       status: 404,
       headers: { get: () => "" }
-    })
+    }))
   });
   const result = await emptySource.readSnapshot();
-  assert.equal(result, null, "snapshot 404 should fall back and return null when all fallbacks also fail");
+  assert.ok(result, "snapshot 404 should retain verified backend health");
+  assert.equal(result.sourceKind, "backend", "snapshot 404 fallback should remain backend data");
+  assert.equal(result.controlCenterRuntime.health.data.instance_id, "local-default", "snapshot 404 fallback should keep verified instance identity");
 }
 
-// Snapshot bad structure (runtime missing): fallback (also ensure individual endpoints fail)
+// Snapshot bad structure (runtime missing): fallback to independently verified health.
 {
   let snapshotAttempted = false;
   const badSource = createBackendControlCenterSource({
     baseUrl: "http://snapshot-bad-test",
-    fetchImpl: async (url) => {
+    fetchImpl: withVerifiedBackendHealth(async (url) => {
       if (url.includes("/control-center/snapshot")) {
         snapshotAttempted = true;
         return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ ok: true, runtime: null }) };
       }
       // Make individual endpoints fail so fallback returns null
       return { ok: false, status: 404, headers: { get: () => "" } };
-    }
+    })
   });
   const result = await badSource.readSnapshot();
   assert.ok(snapshotAttempted, "snapshot endpoint should be attempted");
-  assert.equal(result, null, "snapshot with bad runtime should fall back");
+  assert.ok(result, "snapshot with bad runtime should retain verified backend health");
+  assert.equal(result.controlCenterRuntime.health.ok, true, "bad runtime fallback should retain verified health");
 }
 
-// Snapshot bad contract metadata or missing runtime fields: fallback.
+// Snapshot bad contract metadata or missing runtime fields: health-only fallback.
 {
   const badContractSource = createBackendControlCenterSource({
     baseUrl: "http://snapshot-bad-contract-test",
-    fetchImpl: async (url) => {
+    fetchImpl: withVerifiedBackendHealth(async (url) => {
       if (url.includes("/control-center/snapshot")) {
         return {
           ok: true,
@@ -1812,13 +1830,14 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
         };
       }
       return { ok: false, status: 404, headers: { get: () => "" } };
-    }
+    })
   });
   const result = await badContractSource.readSnapshot();
-  assert.equal(result, null, "snapshot with bad metadata or missing fields should fall back");
+  assert.ok(result, "snapshot with bad metadata should retain verified backend health");
+  assert.equal(result.controlCenterRuntime.health.ok, true, "bad metadata fallback should retain verified health");
 }
 
-// Snapshot all-unavailable: should fall back (no sub-field has ok:true), individual endpoints also fail
+// Snapshot all-unavailable: health verification remains the minimal backend fallback.
 {
   const allUnavailableResponse = {
     ok: true, status: 200, headers: { get: () => "application/json" },
@@ -1839,13 +1858,14 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
   };
   const unavailableSource = createBackendControlCenterSource({
     baseUrl: "http://snapshot-unavail-test",
-    fetchImpl: async (url) => {
+    fetchImpl: withVerifiedBackendHealth(async (url) => {
       if (url.includes("/control-center/snapshot")) return allUnavailableResponse;
       return { ok: false, status: 404, headers: { get: () => "" } };
-    }
+    })
   });
   const result = await unavailableSource.readSnapshot();
-  assert.equal(result, null, "snapshot all-unavailable should fall back");
+  assert.ok(result, "snapshot all-unavailable should retain verified backend health");
+  assert.equal(result.controlCenterRuntime.health.ok, true, "all-unavailable fallback should retain verified health");
 }
 
 // ---------- character resources runtime patch ----------
@@ -1946,7 +1966,7 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
   const degradedSource = createBackendControlCenterSource({
     baseUrl: "http://degraded-test",
     sessionId: "degraded-session",
-    fetchImpl: async (url) => {
+    fetchImpl: withVerifiedBackendHealth(async (url) => {
       if (url.includes("/control-center/snapshot")) {
         return {
           ok: true, status: 200, headers: { get: () => "application/json" },
@@ -1964,7 +1984,7 @@ assert.deepEqual(runtimeMusicContractSnapshot.recommendations, [], "runtime musi
         };
       }
       return { ok: false, status: 404, headers: { get: () => "" } };
-    }
+    })
   });
   const degradedResult = await degradedSource.readSnapshot();
   assert.ok(degradedResult, "degraded snapshot (health unavailable) should still return data");

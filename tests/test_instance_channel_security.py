@@ -441,6 +441,7 @@ class InstanceDeploymentTemplateTests(unittest.TestCase):
             "PORT=10001",
             "AKANE_ADMIN_TOKEN=replace-with",
             "QQ_CHANNEL_PROFILE_REF=finance-qq",
+            "QQ_BOT_QQ=replace-with-bot-qq-number",
             "QQ_WEBHOOK_SECRET=replace-with",
             "QQ_ONEBOT_ACCESS_TOKEN=replace-with",
         ):

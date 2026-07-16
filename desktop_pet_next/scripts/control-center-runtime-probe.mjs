@@ -260,6 +260,8 @@ function makeSnapshotFetch({
   capabilitiesBody = null,
   capabilitiesOk = true,
   capabilitiesStatus = 200,
+  healthOk = true,
+  healthInstanceId = "local-default",
 } = {}) {
   const requestedUrls = [];
   const fullCapabilitiesBody = capabilitiesBody || makeCapabilitiesCatalogBody();
@@ -361,6 +363,17 @@ function makeSnapshotFetch({
     fetchImpl: async (url) => {
       const requestUrl = String(url);
       requestedUrls.push(requestUrl);
+      if (new URL(requestUrl).pathname === "/health") {
+        if (!healthOk) {
+          return { ok: false, status: 404, headers: { get: () => "" } };
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => "application/json" },
+          json: async () => ({ status: "ok", instance_id: healthInstanceId, root_binding: "valid" }),
+        };
+      }
       if (requestUrl.includes("/control-center/snapshot")) {
         if (!snapshotOk) {
           return { ok: false, status: snapshotStatus, headers: { get: () => "" } };
@@ -828,7 +841,7 @@ function makeSnapshotFetch({
   // No fallback to legacy endpoints when snapshot succeeds (even partially)
   const snapshotUrls = requestedUrls.filter((u) => u.includes("/control-center/snapshot"));
   assert.ok(snapshotUrls.length >= 1, "2.9 degraded: snapshot endpoint should have been called");
-  const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot") && !u.includes("/capabilities"));
+  const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot") && !u.includes("/capabilities") && !u.includes("/health"));
   assert.equal(legacyUrls.length, 0, "2.10 degraded: legacy endpoints should NOT be called when snapshot returns usable data");
 }
 
@@ -873,7 +886,7 @@ function makeSnapshotFetch({
   assert.ok(snapshotUrls.length >= 1, "3.3 fallback: snapshot endpoint should have been attempted");
 
   // Verify legacy endpoints were called
-  const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot") && !u.includes("/capabilities"));
+  const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot") && !u.includes("/capabilities") && !u.includes("/health"));
   assert.ok(legacyUrls.length >= 1, "3.4 fallback: legacy endpoints should have been called after snapshot failed");
 
   const snapshot = createControlCenterSnapshot(raw);
@@ -882,7 +895,7 @@ function makeSnapshotFetch({
 }
 
 // ---------------------------------------------------------------------------
-// 4. All backend unavailable: both snapshot and legacy endpoints return 404.
+// 4. Public health unavailable: fail closed before snapshot or legacy reads.
 // ---------------------------------------------------------------------------
 
 {
@@ -891,6 +904,7 @@ function makeSnapshotFetch({
     snapshotStatus: 404,
     legacyOk: false,
     capabilitiesOk: false,
+    healthOk: false,
   });
   const source = createBackendControlCenterSource({
     baseUrl: "http://unavailable-test",
@@ -902,11 +916,13 @@ function makeSnapshotFetch({
   const raw = await source.readSnapshot();
   assert.equal(raw, null, "4.1 unavailable: readSnapshot should return null when all backends fail");
 
-  // Both snapshot and legacy were attempted
+  // Identity is not verified, so no instance-scoped endpoint may be read.
+  const healthUrls = requestedUrls.filter((u) => u.includes("/health"));
+  assert.ok(healthUrls.length >= 1, "4.2 unavailable: public health should have been attempted");
   const snapshotUrls = requestedUrls.filter((u) => u.includes("/control-center/snapshot"));
-  assert.ok(snapshotUrls.length >= 1, "4.2 unavailable: snapshot endpoint should have been attempted");
-  const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot") && !u.includes("/capabilities"));
-  assert.ok(legacyUrls.length >= 1, "4.3 unavailable: legacy endpoints should have been attempted");
+  assert.equal(snapshotUrls.length, 0, "4.3 unavailable: snapshot must not run before health verification");
+  const legacyUrls = requestedUrls.filter((u) => !u.includes("/control-center/snapshot") && !u.includes("/capabilities") && !u.includes("/health"));
+  assert.equal(legacyUrls.length, 0, "4.4 unavailable: legacy endpoints must not run before health verification");
 }
 
 // ---------------------------------------------------------------------------

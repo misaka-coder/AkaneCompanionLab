@@ -364,7 +364,17 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 
-settings = Settings()
+def _configured_env_file() -> str:
+    """Return the launcher-bound env file without falling back across instances."""
+
+    return str(os.environ.get("AKANE_ENV_FILE") or "").strip() or ".env"
+
+
+def _load_settings() -> Settings:
+    return Settings(_env_file=_configured_env_file())
+
+
+settings = _load_settings()
 
 
 def _normalize_web_identity_mode(value: str) -> str:
@@ -405,7 +415,7 @@ def _warn_unknown_env_keys(settings_obj: Settings) -> None:
     so a typo like ``VISION_ENABLD=true`` is invisible.  This function reads
     the env file manually and flags keys that are genuinely unknown.
     """
-    env_file = settings_obj.model_config.get("env_file", ".env")
+    env_file = _configured_env_file()
     env_path = Path(env_file)
     if not env_path.exists():
         return
@@ -763,6 +773,6 @@ _apply_settings(settings)
 # ---------------------------------------------------------------------------
 def reload_settings() -> None:
     global settings
-    settings = Settings()
+    settings = _load_settings()
     _warn_unknown_env_keys(settings)
     _apply_settings(settings)

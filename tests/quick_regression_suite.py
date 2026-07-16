@@ -9,6 +9,15 @@ QUICK_TESTS = [
     # === Repository hygiene ===
     "tests.test_repository_hygiene",
 
+    # === M65 instance isolation + M66 desktop satellite ===
+    "tests.test_instance_runtime",
+    "tests.test_instance_profile",
+    "tests.test_instance_channel_security",
+    "tests.test_instance_writer_shutdown",
+    "tests.test_desktop_pet_instance_isolation",
+    "tests.test_capability_fabric_m66",
+    "tests.test_verification_entrypoint",
+
     # === Full module 回归（已有，保留） ===
     # 资源可见性契约：材料工作台提示词、来源标签、生成文件工作台、任务工作区
     "tests.test_resource_visibility_contract",
@@ -25,9 +34,9 @@ QUICK_TESTS = [
     "tests.test_qq_gateway.QQGatewayTests.test_render_reply_messages_prefers_speech_segments",
     "tests.test_qq_gateway.QQGatewayTests.test_extracts_image_and_file_attachments_from_segments",
     "tests.test_qq_gateway.QQGatewayTests.test_extracts_raw_cq_attachment_fallbacks",
-    "tests.test_qq_gateway.QQGatewayTests.test_file_delivery_intent_respects_negative_request",
+    "tests.test_qq_gateway.QQGatewayTests.test_send_generated_files_trusts_current_structured_delivery_event",
     "tests.test_qq_gateway.QQGatewayTests.test_send_generated_files_uses_onebot_upload_action",
-    "tests.test_qq_gateway.QQGatewayTests.test_send_generated_files_blocks_without_current_delivery_intent",
+    "tests.test_qq_gateway.QQGatewayTests.test_send_generated_files_requires_structured_send_flag",
     "tests.test_qq_gateway.QQGatewayTests.test_send_generated_files_ignores_desktop_client_file_events",
     "tests.test_qq_gateway.QQGatewayTests.test_duplicate_message_id_is_ignored",
 
