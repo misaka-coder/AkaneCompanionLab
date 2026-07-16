@@ -2041,7 +2041,7 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
     def test_self_check_returns_connected_on_success(self) -> None:
         gateway = NapCatQQGateway()
 
-        class FakeResponse:
+        class LoginInfoResponse:
             status_code = 200
 
             def raise_for_status(self):
@@ -2053,7 +2053,16 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
                     "data": {"user_id": 12345678, "nickname": "阿卡内测试号"},
                 }
 
-        with patch("companion_v01.qq_gateway.requests.get", return_value=FakeResponse()):
+        class StatusResponse:
+            status_code = 200
+
+            def json(self):
+                return {"retcode": 0, "data": {"online": True, "good": True}}
+
+        with patch(
+            "companion_v01.qq_gateway.requests.get",
+            side_effect=[LoginInfoResponse(), StatusResponse()],
+        ) as mocked_get:
             result = gateway.self_check()
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "connected")
@@ -2062,7 +2071,10 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
         self.assertTrue(result["checks"]["bridge_enabled"])
         self.assertTrue(result["checks"]["url_reachable"])
         self.assertTrue(result["checks"]["login_info"])
+        self.assertTrue(result["checks"]["account_online"])
         self.assertEqual(result["checks"]["send_test"], "not_tested")
+        self.assertEqual(mocked_get.call_count, 2)
+        self.assertTrue(mocked_get.call_args_list[1].args[0].endswith("/get_status"))
         # 不能暴露 token/cookie/path
         result_str = str(result)
         self.assertNotIn("token", result_str.lower())
@@ -2070,11 +2082,38 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
 
     @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
     @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    def test_self_check_rejects_cached_login_info_when_account_is_offline(self) -> None:
+        gateway = NapCatQQGateway()
+
+        class LoginInfoResponse:
+            status_code = 200
+
+            def json(self):
+                return {"retcode": 0, "data": {"user_id": 12345678, "nickname": "缓存账号"}}
+
+        class StatusResponse:
+            status_code = 200
+
+            def json(self):
+                return {"retcode": 0, "data": {"online": False, "good": True}}
+
+        with patch(
+            "companion_v01.qq_gateway.requests.get",
+            side_effect=[LoginInfoResponse(), StatusResponse()],
+        ):
+            result = gateway.self_check()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "account_offline")
+        self.assertNotIn("12345678", str(result))
+
+    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
     def test_self_check_does_not_expose_sensitive_fields(self) -> None:
         """self_check 结果只暴露安全字段（user_id、nickname），不包含 token / cookie / 路径。"""
         gateway = NapCatQQGateway()
 
-        class FakeResponse:
+        class LoginInfoResponse:
             status_code = 200
 
             def raise_for_status(self):
@@ -2091,7 +2130,16 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
                     },
                 }
 
-        with patch("companion_v01.qq_gateway.requests.get", return_value=FakeResponse()):
+        class StatusResponse:
+            status_code = 200
+
+            def json(self):
+                return {"retcode": 0, "data": {"online": True, "good": True}}
+
+        with patch(
+            "companion_v01.qq_gateway.requests.get",
+            side_effect=[LoginInfoResponse(), StatusResponse()],
+        ):
             result = gateway.self_check()
         result_str = str(result)
         self.assertNotIn("should-not-leak", result_str)

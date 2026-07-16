@@ -431,7 +431,8 @@ class NapCatQQGateway:
         1. QQ bridge 是否已在配置里启用
         2. OneBot URL 格式是否合理
         3. /get_login_info 是否可达（连通性 + 鉴权）
-        4. 返回登录账号信息（安全字段：user_id/nickname）
+        4. /get_status 是否明确报告账号在线且状态健康
+        5. 返回登录账号信息（安全字段：user_id/nickname）
 
         不暴露 token、cookie 或本地绝对路径。
         """
@@ -520,6 +521,82 @@ class NapCatQQGateway:
                 "onebot_http_url": url,
             }
 
+        try:
+            status_response = requests.get(
+                f"{url}/get_status",
+                headers=self.onebot_headers,
+                timeout=5,
+            )
+        except requests.exceptions.Timeout:
+            return {
+                "ok": False,
+                "status": "status_timeout",
+                "reason": "已读取登录账号，但确认 QQ 在线状态时超时。",
+                "onebot_http_url": url,
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "status_unavailable",
+                "reason": f"已读取登录账号，但无法确认 QQ 在线状态：{type(exc).__name__}",
+                "onebot_http_url": url,
+            }
+
+        if status_response.status_code in {401, 403}:
+            return {
+                "ok": False,
+                "status": "auth_failed",
+                "reason": f"在线状态鉴权失败（HTTP {status_response.status_code}）：请检查 NapCat 访问令牌配置。",
+                "onebot_http_url": url,
+            }
+        if status_response.status_code != 200:
+            return {
+                "ok": False,
+                "status": "status_http_error",
+                "reason": f"OneBot 在线状态接口返回 HTTP {status_response.status_code}，预期 200。",
+                "onebot_http_url": url,
+            }
+        try:
+            status_payload = status_response.json()
+        except Exception:
+            return {
+                "ok": False,
+                "status": "invalid_status_response",
+                "reason": "OneBot 在线状态接口返回了非 JSON 响应。",
+                "onebot_http_url": url,
+            }
+        if not isinstance(status_payload, dict):
+            return {
+                "ok": False,
+                "status": "invalid_status_response",
+                "reason": "OneBot 在线状态响应格式不正确。",
+                "onebot_http_url": url,
+            }
+        status_retcode = status_payload.get("retcode", status_payload.get("status"))
+        status_data = status_payload.get("data") if isinstance(status_payload.get("data"), dict) else {}
+        if status_retcode not in (0, "ok"):
+            return {
+                "ok": False,
+                "status": "onebot_status_error",
+                "reason": f"OneBot 在线状态接口返回错误：retcode={status_retcode!r}",
+                "onebot_http_url": url,
+            }
+        online = status_data.get("online", status_data.get("is_online"))
+        if online is not True:
+            return {
+                "ok": False,
+                "status": "account_offline" if online is False else "account_status_unknown",
+                "reason": "QQ 账号当前不在线，请在 NapCat 中重新登录并确认未被下线。",
+                "onebot_http_url": url,
+            }
+        if status_data.get("good") is False:
+            return {
+                "ok": False,
+                "status": "account_unhealthy",
+                "reason": "QQ 账号在线，但 OneBot 报告运行状态异常。",
+                "onebot_http_url": url,
+            }
+
         return {
             "ok": True,
             "status": "connected",
@@ -530,6 +607,7 @@ class NapCatQQGateway:
                 "bridge_enabled": True,
                 "url_reachable": True,
                 "login_info": True,
+                "account_online": True,
                 "send_test": "not_tested",
             },
         }
