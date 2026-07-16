@@ -82,10 +82,8 @@ def build_compose_followup(
     handle = str(generated.get("generated_handle") or "").strip()
     title = str(generated.get("output_title") or "生成文件").strip()
     output_format = str(generated.get("output_format") or "").strip()
-    path = str(generated.get("absolute_path") or "").strip()
     lines = [
         f"你刚刚已经生成文件 {handle}《{title}》（{output_format}）。",
-        f"本地路径：{path}",
     ]
     if send_to_user:
         lines.append(
@@ -110,10 +108,8 @@ def build_revise_followup(
     new_handle = str(generated.get("generated_handle") or "").strip()
     title = str(generated.get("output_title") or "修改版").strip()
     output_format = str(generated.get("output_format") or "").strip()
-    path = str(generated.get("absolute_path") or "").strip()
     lines = [
         f"你刚刚已经基于 {original_handle} 生成了修改版 {new_handle}《{title}》（{output_format}）。",
-        f"本地路径：{path}",
         "旧版本没有被覆盖，之后仍可回看或继续修改。",
     ]
     if send_to_user:
@@ -135,10 +131,8 @@ def build_style_followup(
     new_handle = str(generated.get("generated_handle") or "").strip()
     title = str(generated.get("output_title") or "样式版").strip()
     output_format = str(generated.get("output_format") or "").strip()
-    path = str(generated.get("absolute_path") or "").strip()
     lines = [
         f"你刚刚已经基于 {source_handle or '原文件'} 生成了样式加工版 {new_handle}《{title}》（{output_format}）。",
-        f"本地路径：{path}",
         "这次只对已有文件做样式加工，尽量保留原内容，不需要你重新吐出全文。",
     ]
     if send_to_user:
@@ -160,10 +154,8 @@ def build_media_conversion_followup(
     source_handle = str(source.get("handle") or "").strip()
     new_handle = str(generated.get("generated_handle") or "").strip()
     title = str(generated.get("output_title") or "转换音频").strip()
-    path = str(generated.get("absolute_path") or "").strip()
     lines = [
         f"你刚刚已经把 {source_handle or '媒体文件'} 转换成 {new_handle}《{title}》（{output_format}）。",
-        f"本地路径：{path}",
     ]
     if send_to_user:
         lines.append("当前客户端如果支持发送文件，系统会尝试把转换后的媒体文件发给用户。")
@@ -190,7 +182,6 @@ def build_audio_separation_followup(
     for generated in generated_files:
         handle = str(generated.get("generated_handle") or "").strip()
         title = str(generated.get("output_title") or handle or "生成文件").strip()
-        absolute_path = str(generated.get("absolute_path") or "").strip()
         size_label = _format_size_from_item(service, generated)
         card = generated.get("content_card") if isinstance(generated.get("content_card"), dict) else {}
         separation = card.get("separation") if isinstance(card.get("separation"), dict) else {}
@@ -199,8 +190,6 @@ def build_audio_separation_followup(
             "人声" if stem_role == "vocals" else "伴奏" if stem_role == "instrumental" else (stem_role or "分离轨")
         )
         lines.append(f"- {role_label}：{handle}《{title}》" + (f"，大小：{size_label}" if size_label else ""))
-        if absolute_path:
-            lines.append(f"  本地路径：{absolute_path}")
     if send_to_user:
         lines.append("当前客户端如果支持发送文件，系统会尝试把这些分离结果发给用户。")
     else:
@@ -222,7 +211,6 @@ def build_voice_clean_followup(
     source_title = str(source.get("title") or "媒体文件").strip()
     handle = str(generated.get("generated_handle") or "").strip()
     title = str(generated.get("output_title") or handle or "净化结果").strip()
-    path = str(generated.get("absolute_path") or "").strip()
     size_label = _format_size_from_item(service, generated)
     mode_label = {
         "denoise": "降噪净化",
@@ -238,8 +226,6 @@ def build_voice_clean_followup(
     ]
     if size_label:
         lines.append(f"文件大小：{size_label}。")
-    if path:
-        lines.append(f"本地路径：{path}")
     if send_to_user:
         lines.append("当前客户端如果支持发送文件，系统会尝试把净化后的文件发给用户。")
     else:
@@ -258,7 +244,6 @@ def build_voice_dataset_followup(
 ) -> str:
     handle = str(generated.get("generated_handle") or "").strip()
     title = str(generated.get("output_title") or "语音训练集").strip()
-    path = str(generated.get("absolute_path") or "").strip()
     stats = manifest.get("stats") if isinstance(manifest.get("stats"), dict) else {}
     lines = [
         f"你刚刚已经生成语音训练素材批次 {handle}《{title}》（zip）。",
@@ -285,8 +270,6 @@ def build_voice_dataset_followup(
             ]
             if labels:
                 lines.append(f"{label}片段：{', '.join(labels)}。")
-    if path:
-        lines.append(f"本地路径：{path}")
     if send_to_user:
         lines.append("当前客户端如果支持发送文件，系统会尝试把训练集 zip 发给用户。")
     else:

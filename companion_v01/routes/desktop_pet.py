@@ -484,21 +484,9 @@ def build_desktop_pet_router(
             headers={"Cache-Control": "no-store"},
         )
 
-    @router.get("/desktop-pet/workspace/attachments/{attachment_handle}/location")
-    async def desktop_pet_workspace_attachment_location(request: Request, attachment_handle: str):
-        session_id, profile_user_id = resolve_identity_from_query(request)
-        resolved = engine.resolve_desktop_pet_attachment_file(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            target=attachment_handle,
-        )
-        if resolved is None:
-            raise HTTPException(status_code=404, detail="Attachment not found")
-        _item, path = resolved
-        return JSONResponse(
-            {"ok": True, "path": str(Path(path).resolve())},
-            headers={"Cache-Control": "no-store"},
-        )
+    # M66-D: /attachments/.../location and /generated/.../location routes removed.
+    # Absolute filesystem paths must not be returned to clients. Use the
+    # /content routes to transfer bytes, and ArtifactBroker handles for delivery.
 
     @router.get("/desktop-pet/workspace/generated/{generated_handle}/content")
     async def desktop_pet_workspace_generated_content(request: Request, generated_handle: str):
@@ -520,22 +508,6 @@ def build_desktop_pet_router(
             path,
             media_type=media_type,
             filename=filename,
-            headers={"Cache-Control": "no-store"},
-        )
-
-    @router.get("/desktop-pet/workspace/generated/{generated_handle}/location")
-    async def desktop_pet_workspace_generated_location(request: Request, generated_handle: str):
-        session_id, profile_user_id = resolve_identity_from_query(request)
-        resolved = engine.resolve_desktop_pet_generated_file(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            target=generated_handle,
-        )
-        if resolved is None:
-            raise HTTPException(status_code=404, detail="Generated file not found")
-        _item, path = resolved
-        return JSONResponse(
-            {"ok": True, "path": str(Path(path).resolve())},
             headers={"Cache-Control": "no-store"},
         )
 

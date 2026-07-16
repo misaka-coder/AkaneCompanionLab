@@ -6181,7 +6181,7 @@ class SendFileToolHandler(BaseToolHandler):
                     event["delivery_action"] = delivery_action
                     event["desktop_delivery"] = {
                         "action": delivery_action,
-                        "path": str(file_ref.get("absolute_path") or ""),
+                        # M66-D: path removed; use handle + /content route for byte transfer.
                         "name": str(file_ref.get("name") or file_ref.get("title") or ""),
                         "handle": str(file_ref.get("handle") or ""),
                     }
@@ -6243,7 +6243,7 @@ class SendGeneratedFileToolHandler(SendFileToolHandler):
                     event["delivery_action"] = delivery_action
                     event["desktop_delivery"] = {
                         "action": delivery_action,
-                        "path": str(generated.get("absolute_path") or ""),
+                        # M66-D: path removed; use handle + /content route for byte transfer.
                         "name": str(generated.get("output_title") or generated.get("generated_handle") or ""),
                         "handle": str(generated.get("generated_handle") or ""),
                     }
