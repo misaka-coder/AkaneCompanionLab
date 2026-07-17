@@ -169,6 +169,11 @@ class _FinalPromptProfile:
 class _CapturePromptBuilder:
     def __init__(self) -> None:
         self.kwargs: dict[str, object] = {}
+        self.persona = SimpleNamespace(
+            final_debug_mode_prompt="debug mode",
+            final_fast_mode_prompt="fast mode",
+            final_system_prompt="system prompt",
+        )
 
     def build_final_generation_context(self, **kwargs):
         self.kwargs = dict(kwargs)
@@ -1865,6 +1870,45 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["semantic_summary_text"], "")
         self.assertNotIn("LEGACY", repr(captured))
 
+    def test_plugin_proactive_prompt_context_skips_automatic_memory_layers(self) -> None:
+        memcore_manager = _PromptContextMemcoreManager(
+            {
+                "operation": "build_prompt_context",
+                "ok": True,
+                "status": "ok",
+                "raw_text": "MEMCORE RAW MUST STAY OUT",
+                "episodic_text": "MEMCORE EPISODIC MUST STAY OUT",
+                "semantic_text": "MEMCORE SEMANTIC MUST STAY OUT",
+            }
+        )
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="真实插件事件",
+                recent_raw=[{"role": "user", "content": "LEGACY RAW MUST STAY OUT", "timestamp": 1712400000}],
+                recent_episodic_summaries=[{"diary_summary": "LEGACY EPISODIC", "timestamp": 1712400000}],
+                recent_semantic_summaries=[{"semantic_summary": "LEGACY SEMANTIC", "timestamp": 1712400000}],
+                confirmed_snippets=["AUTOMATIC RETRIEVAL MUST STAY OUT"],
+                now_ts=1712400000,
+                character_pack_id="char",
+                extra_user_context="PLUGIN INSTRUCTION",
+                prompt_scope="plugin_proactive",
+            )
+
+        captured = engine.prompt_builder.kwargs
+        self.assertEqual(captured["raw_text"], "")
+        self.assertEqual(captured["episodic_summary_text"], "")
+        self.assertEqual(captured["semantic_summary_text"], "")
+        self.assertEqual(captured["memory_text"], "")
+        self.assertEqual(captured["prompt_scope"], "plugin_proactive")
+        self.assertEqual(result["prompt_scope"], "plugin_proactive")
+        self.assertEqual(memcore_manager.calls, [])
+        self.assertNotIn("MUST STAY OUT", repr(captured))
+
     def test_read_memory_timeline_tool_uses_memcore_adapter_in_memcore_mode(self) -> None:
         legacy = _TimelineLegacyService()
         memcore_manager = _TimelineMemcoreManager()
@@ -1985,6 +2029,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         }
         changed_state = dict(base, system_prompt=f"stable rules\n{CURRENT_ASSISTANT_STATE_MARKER}\nstate B")
         changed_tools = dict(base, native_tools=[{"type": "function", "function": {"name": "quote"}}])
+        changed_scope = dict(base, prompt_scope="plugin_proactive")
 
         self.assertEqual(
             AkaneMemoryEngine._final_prompt_cache_key(base),
@@ -1994,6 +2039,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
             AkaneMemoryEngine._final_prompt_cache_key(base),
             AkaneMemoryEngine._final_prompt_cache_key(changed_tools),
         )
+        self.assertNotEqual(
+            AkaneMemoryEngine._final_prompt_cache_key(base),
+            AkaneMemoryEngine._final_prompt_cache_key(changed_scope),
+        )
+        self.assertTrue(AkaneMemoryEngine._final_prompt_cache_key(changed_scope).startswith("chat:plugin_proactive:"))
+        self.assertEqual(AkaneMemoryEngine._final_response_max_attempts(changed_scope), 1)
 
 
 if __name__ == "__main__":

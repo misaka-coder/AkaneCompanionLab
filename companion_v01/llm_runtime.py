@@ -577,6 +577,10 @@ class LLMRuntime:
             "cache_creation_tokens": 0,
             "reported_input_tokens": 0,
             "reported_output_tokens": 0,
+            "plugin_proactive_cache_read_tokens": 0,
+            "plugin_proactive_cache_creation_tokens": 0,
+            "plugin_proactive_reported_input_tokens": 0,
+            "plugin_proactive_reported_output_tokens": 0,
             "chat_json_fallbacks": 0,
             "native_tool_decision_sent": 0,
             "native_tool_provider_unsupported": 0,
@@ -783,7 +787,7 @@ class LLMRuntime:
                     prompt_audit_sections=prompt_audit_sections,
                 ),
             )
-            self._record_cache_metrics(response)
+            self._record_cache_metrics(response, prompt_cache_key=prompt_cache_key)
             native_tool_calls = self._extract_native_tool_calls(response, native_tools=native_tools, bundle=bundle)
             if native_tool_calls:
                 self._record_metric("native_tool_call_extracted")
@@ -847,7 +851,7 @@ class LLMRuntime:
                 ),
             )
             for chunk in response:
-                self._record_cache_metrics(chunk)
+                self._record_cache_metrics(chunk, prompt_cache_key=prompt_cache_key)
                 text = self._extract_stream_text(chunk)
                 if not text:
                     continue
@@ -953,7 +957,7 @@ class LLMRuntime:
                 ),
             )
             for chunk in response:
-                self._record_cache_metrics(chunk)
+                self._record_cache_metrics(chunk, prompt_cache_key=prompt_cache_key)
                 self._collect_stream_native_tool_call_parts(chunk, native_tool_parts, bundle=bundle)
                 text = self._extract_stream_text(chunk)
                 if not text:
@@ -978,7 +982,7 @@ class LLMRuntime:
             self._record_metric("errors")
             self._capture_runtime_error(exc, phase="stream_chat_json")
         finally:
-            self._record_cache_metrics(response)
+            self._record_cache_metrics(response, prompt_cache_key=prompt_cache_key)
             self._close_stream(response)
 
         raw_text = "".join(raw_parts)
@@ -1438,7 +1442,7 @@ class LLMRuntime:
         if not bool(getattr(config, "LLM_PROMPT_AUDIT_ENABLED", False)):
             return False
         key = str(prompt_cache_key or "").strip()
-        if key == "chat:final" or key.startswith("chat:final:"):
+        if key == "chat:final" or key.startswith(("chat:final:", "chat:plugin_proactive:")):
             return True
         return bool(getattr(config, "LLM_PROMPT_AUDIT_INCLUDE_AUX", False))
 
@@ -1526,7 +1530,7 @@ class LLMRuntime:
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
 
-    def _record_cache_metrics(self, response: Any) -> None:
+    def _record_cache_metrics(self, response: Any, *, prompt_cache_key: str = "") -> None:
         try:
             usage = getattr(response, "usage", None)
             if usage is None and isinstance(response, dict):
@@ -1561,6 +1565,15 @@ class LLMRuntime:
                 self._record_metric("reported_input_tokens", reported_input)
             if reported_output:
                 self._record_metric("reported_output_tokens", reported_output)
+            if str(prompt_cache_key or "").startswith("chat:plugin_proactive:"):
+                if read:
+                    self._record_metric("plugin_proactive_cache_read_tokens", read)
+                if creation:
+                    self._record_metric("plugin_proactive_cache_creation_tokens", creation)
+                if reported_input:
+                    self._record_metric("plugin_proactive_reported_input_tokens", reported_input)
+                if reported_output:
+                    self._record_metric("plugin_proactive_reported_output_tokens", reported_output)
         except Exception:
             pass
 

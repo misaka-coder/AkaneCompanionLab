@@ -2588,7 +2588,9 @@ class AkaneMemoryEngine:
         payload.pop("finance_mode", None)
         payload.pop("prompt_scope", None)
         payload["domain_profile"] = turn_domain_profile_id
-        prompt_scope = ""
+        prompt_scope = (
+            "plugin_proactive" if str(payload.get("turn_kind") or "").strip().lower() == "plugin_proactive" else ""
+        )
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
@@ -3066,7 +3068,9 @@ class AkaneMemoryEngine:
         payload.pop("finance_mode", None)
         payload.pop("prompt_scope", None)
         payload["domain_profile"] = turn_domain_profile_id
-        prompt_scope = ""
+        prompt_scope = (
+            "plugin_proactive" if str(payload.get("turn_kind") or "").strip().lower() == "plugin_proactive" else ""
+        )
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
@@ -3730,7 +3734,7 @@ class AkaneMemoryEngine:
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
         )
-        max_attempts = max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
+        max_attempts = self._final_response_max_attempts(generation_context)
         prompt_cache_key = self._final_prompt_cache_key(generation_context)
         normalized: dict[str, Any] = {}
         for attempt in range(1, max_attempts + 1):
@@ -3782,6 +3786,12 @@ class AkaneMemoryEngine:
         return normalized
 
     @staticmethod
+    def _final_response_max_attempts(generation_context: dict[str, Any]) -> int:
+        if str(generation_context.get("prompt_scope") or "").strip() == "plugin_proactive":
+            return 1
+        return max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
+
+    @staticmethod
     def _final_prompt_cache_key(generation_context: dict[str, Any]) -> str:
         """Bucket prompts by stable routing identity and tool schema.
 
@@ -3800,11 +3810,13 @@ class AkaneMemoryEngine:
             "persona_active": str(persona.get("active") or "") if isinstance(persona, dict) else "",
             "prompt_profile": generation_context.get("prompt_profile") or {},
             "domain_profile": generation_context.get("domain_profile") or {},
+            "prompt_scope": str(generation_context.get("prompt_scope") or ""),
             "native_tools": list(generation_context.get("native_tools") or []),
         }
         canonical = json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(canonical.encode("utf-8", errors="ignore")).hexdigest()[:20]
-        return f"chat:final:{digest}"
+        key_family = "chat:plugin_proactive" if stable_payload["prompt_scope"] == "plugin_proactive" else "chat:final"
+        return f"{key_family}:{digest}"
 
     def _is_retryable_final_output(self, output: Any, *, parse_fallback: bool = False) -> bool:
         if not isinstance(output, dict):
@@ -3887,7 +3899,7 @@ class AkaneMemoryEngine:
             "type": "turn_start",
             "speaker": speaker_identity["assistant_name"],
         }
-        max_attempts = max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
+        max_attempts = self._final_response_max_attempts(generation_context)
         prompt_cache_key = self._final_prompt_cache_key(generation_context)
         normalized: dict[str, Any] = {}
         buffered_events: list[dict[str, Any]] = []

@@ -54,7 +54,11 @@ class EnginePluginReasoningPort:
             "client_turn_kind": "proactive",
             "transient_user_message": True,
             "transient_assistant_message": True,
-            "pre_retrieval_enabled": True,
+            # Proactive plugin requests already carry their bounded task
+            # context.  Keep ordinary memory available through explicit tools,
+            # but do not run the conversational pre-retrieval pipeline before
+            # the plugin has asked for it.
+            "pre_retrieval_enabled": False,
             "extra_context": request.extra_context.strip(),
         }
         if request.character_pack_id.strip():

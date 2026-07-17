@@ -51,7 +51,7 @@ class EnginePluginReasoningPortTests(unittest.IsolatedAsyncioTestCase):
         payload = engine.payloads[0]
         self.assertTrue(payload["transient_user_message"])
         self.assertTrue(payload["transient_assistant_message"])
-        self.assertTrue(payload["pre_retrieval_enabled"])
+        self.assertFalse(payload["pre_retrieval_enabled"])
         self.assertEqual(payload["character_pack_id"], "akane_v1")
 
     async def test_invalid_request_fails_without_calling_engine(self) -> None:

@@ -150,6 +150,7 @@ class PromptBuilder:
         domain_profile_context: str = "",
         system_prompt_override: str = "",
         mode_prompt_override: str = "",
+        prompt_scope: str = "",
         extra_context_audit_sections: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         fallback = {
@@ -237,23 +238,42 @@ class PromptBuilder:
 
         current_time_text = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M")
         tool_context_text = str(tool_prompt_context or "").strip() or "当前没有额外能力或工具说明。"
-        user_prompt = (
+        stable_user_intro = (
             f"debug_enabled={str(debug_enabled).lower()}\n"
             f"{self.persona.final_user_prompt_suffix}\n\n"
             "如果记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
             "回应时自然带着这份余温即可，不要把它当作用户事实，也不要生硬复述标签。\n\n"
             f"{ATTRIBUTION_RULES}\n\n"
-            f"{memory_context_prompt}"
-            f"当前会话中所有未总结的原始消息：\n{raw_text or '(无)'}\n\n"
-            f"可用回忆片段：\n{memory_text}\n\n"
-            f"{extra_context}\n\n"
-            f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
-            f"【本轮系统能力与工具上下文】\n{tool_context_text}\n\n"
-            "【本轮角色表达侧面参考】\n"
-            f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
-            f"用户原始消息：\n{current_message_text}\n\n"
-            f"当前时间：{current_time_text}\n"
         )
+        if str(prompt_scope or "").strip() == "plugin_proactive":
+            # Trusted proactive plugin turns carry their own bounded task
+            # context. Put the stable capability contract before event/tool
+            # results so provider prefix caching can reuse it across the real
+            # multi-round reasoning loop.
+            user_prompt = (
+                f"{stable_user_intro}"
+                f"【本轮系统能力与工具上下文】\n{tool_context_text}\n\n"
+                "【本轮角色表达侧面参考】\n"
+                f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
+                f"{extra_context}\n\n"
+                f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
+                f"用户原始消息：\n{current_message_text}\n\n"
+                f"当前时间：{current_time_text}\n"
+            )
+        else:
+            user_prompt = (
+                f"{stable_user_intro}"
+                f"{memory_context_prompt}"
+                f"当前会话中所有未总结的原始消息：\n{raw_text or '(无)'}\n\n"
+                f"可用回忆片段：\n{memory_text}\n\n"
+                f"{extra_context}\n\n"
+                f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
+                f"【本轮系统能力与工具上下文】\n{tool_context_text}\n\n"
+                "【本轮角色表达侧面参考】\n"
+                f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
+                f"用户原始消息：\n{current_message_text}\n\n"
+                f"当前时间：{current_time_text}\n"
+            )
         extra_context_subsections: list[dict[str, str]] = []
         for section in extra_context_audit_sections or []:
             if not isinstance(section, dict):

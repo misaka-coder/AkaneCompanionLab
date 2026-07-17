@@ -236,6 +236,24 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(runtime._metrics["reported_input_tokens"], 120)
         self.assertEqual(runtime._metrics["reported_output_tokens"], 9)
 
+    def test_plugin_proactive_cache_usage_is_recorded_separately(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        response = SimpleNamespace(
+            usage=SimpleNamespace(
+                input_tokens=120,
+                output_tokens=9,
+                input_tokens_details=SimpleNamespace(cached_tokens=96),
+            )
+        )
+
+        runtime._record_cache_metrics(response, prompt_cache_key="chat:plugin_proactive:stable")
+
+        self.assertEqual(runtime._metrics["plugin_proactive_cache_read_tokens"], 96)
+        self.assertEqual(runtime._metrics["plugin_proactive_reported_input_tokens"], 120)
+        self.assertEqual(runtime._metrics["plugin_proactive_reported_output_tokens"], 9)
+
     def test_chat_bundle_uses_chat_config_instead_of_aux_config(self) -> None:
         calls: list[dict[str, object]] = []
 
@@ -1102,7 +1120,7 @@ class LLMClientConfigTests(unittest.TestCase):
         runtime._metrics = {}
         runtime._build_completion_kwargs = lambda **_kwargs: {}
         runtime._create_completion = lambda **_kwargs: object()
-        runtime._record_cache_metrics = lambda _response: None
+        runtime._record_cache_metrics = lambda _response, **_kwargs: None
         runtime._extract_text = lambda _response: "我先查一下。"
         runtime._extract_native_tool_calls = lambda _response, **_kwargs: [
             {
@@ -1173,7 +1191,7 @@ class LLMClientConfigTests(unittest.TestCase):
         runtime._metrics_lock = threading.RLock()
         runtime._metrics = {}
         runtime._build_completion_kwargs = lambda **_kwargs: {}
-        runtime._record_cache_metrics = lambda _response: None
+        runtime._record_cache_metrics = lambda _response, **_kwargs: None
         runtime._close_stream = lambda _response: None
         runtime._extract_stream_text = lambda _chunk: "我先查一下。"
         runtime._create_completion = lambda **_kwargs: [

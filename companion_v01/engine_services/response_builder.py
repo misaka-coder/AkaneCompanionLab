@@ -84,7 +84,8 @@ def prepare_context(
     domain_profile_id: str = "",
     prompt_scope: str = "",
 ) -> dict[str, Any]:
-    del prompt_scope
+    normalized_prompt_scope = str(prompt_scope or "").strip().lower()
+    plugin_proactive_scope = normalized_prompt_scope == "plugin_proactive"
     client_context = client_context or engine._resolve_client_protocol_context({})
     care_status_getter = getattr(engine, "care_feature_status", None)
     care_status = care_status_getter() if callable(care_status_getter) else {"enabled": True}
@@ -97,6 +98,8 @@ def prepare_context(
                 client_context=client_context,
             )
         )
+    if plugin_proactive_scope:
+        care_enabled = False
     prompt_builder = engine._get_prompt_builder()
     prompt_profile = engine._get_prompt_profile_registry().resolve(client_context, care_enabled=care_enabled)
     domain_profile = DomainProfileRegistry().get(
@@ -137,16 +140,24 @@ def prepare_context(
     current_message_text = engine._render_current_message_line(
         current_user_record=current_record,
     )
-    memcore_prompt_context = _build_memcore_prompt_context(
-        engine,
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        character_pack_id=character_pack_id,
-        current_user_record=current_record,
-        now_ts=now_ts,
-        exclude_source_ids=list(excluded_prompt_sources),
+    memcore_prompt_context = (
+        None
+        if plugin_proactive_scope
+        else _build_memcore_prompt_context(
+            engine,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            current_user_record=current_record,
+            now_ts=now_ts,
+            exclude_source_ids=list(excluded_prompt_sources),
+        )
     )
-    if memcore_prompt_context is not None:
+    if plugin_proactive_scope:
+        raw_text = ""
+        episodic_summary_text = ""
+        semantic_summary_text = ""
+    elif memcore_prompt_context is not None:
         raw_text = str(memcore_prompt_context.get("raw_text") or "")
         episodic_summary_text = str(memcore_prompt_context.get("episodic_text") or "")
         semantic_summary_text = str(memcore_prompt_context.get("semantic_text") or "")
@@ -160,7 +171,7 @@ def prepare_context(
             recent_semantic_summaries,
             store=engine.store,
         )
-    memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
+    memory_text = "" if plugin_proactive_scope else ("\n\n".join(confirmed_snippets) if confirmed_snippets else "")
     extra_context = str(extra_user_context or "").strip()
     attachment_service = engine._get_attachment_inbox_service()
     attachment_focus_context = (
@@ -169,7 +180,8 @@ def prepare_context(
             session_id=session_id,
         )
         if (
-            attachment_service is not None
+            not plugin_proactive_scope
+            and attachment_service is not None
             and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
             and client_context.effective_mode in {ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET}
         )
@@ -184,7 +196,8 @@ def prepare_context(
             limit=8,
         )
         if (
-            generated_file_service is not None
+            not plugin_proactive_scope
+            and generated_file_service is not None
             and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
             and client_context.effective_mode in {ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET}
             and include_generated_file_context
@@ -198,7 +211,8 @@ def prepare_context(
             session_id=session_id,
         )
         if (
-            workspace_file_service is not None
+            not plugin_proactive_scope
+            and workspace_file_service is not None
             and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
             and client_context.effective_mode == ClientMode.DESKTOP_PET
         )
@@ -212,7 +226,8 @@ def prepare_context(
             now_ts=now_ts,
         )
         if (
-            task_workspace_service is not None
+            not plugin_proactive_scope
+            and task_workspace_service is not None
             and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
         )
         else ""
@@ -223,12 +238,16 @@ def prepare_context(
             session_id=session_id,
             limit=3,
         )
-        if prompt_profile.includes(PromptModule.PENDING_GIFTS)
+        if not plugin_proactive_scope and prompt_profile.includes(PromptModule.PENDING_GIFTS)
         else ""
     )
-    current_visual_context_payload = engine._resolve_current_visual_payload(
-        session_id=session_id,
-        current_visual_payload=current_visual_payload,
+    current_visual_context_payload = (
+        None
+        if plugin_proactive_scope
+        else engine._resolve_current_visual_payload(
+            session_id=session_id,
+            current_visual_payload=current_visual_payload,
+        )
     )
     current_character = (
         current_visual_context_payload.get("character")
@@ -245,6 +264,7 @@ def prepare_context(
             extra_character_outfits=user_character_outfits,
         )
         if engine.vision_service is not None
+        and not plugin_proactive_scope
         and prompt_profile.includes(PromptModule.SCENE_OBSERVATION)
         and not desktop_pet_character_only
         else ""
@@ -257,6 +277,7 @@ def prepare_context(
             extra_character_outfits=user_character_outfits,
         )
         if engine.vision_service is not None
+        and not plugin_proactive_scope
         and prompt_profile.includes(PromptModule.OUTFIT_OBSERVATION)
         and not desktop_pet_character_only
         else ""
@@ -267,7 +288,7 @@ def prepare_context(
             session_id=session_id,
             asset_id="",
         )
-        if prompt_profile.includes(PromptModule.FOCUSED_GIFT_OBSERVATION)
+        if not plugin_proactive_scope and prompt_profile.includes(PromptModule.FOCUSED_GIFT_OBSERVATION)
         else None
     )
     gift_observation_context = (
@@ -283,7 +304,12 @@ def prepare_context(
             session_id=session_id,
             visible_limit=5,
         )
-        if (profile_persona_enabled and persona_service is not None and prompt_profile.includes(PromptModule.PERSONA))
+        if (
+            not plugin_proactive_scope
+            and profile_persona_enabled
+            and persona_service is not None
+            and prompt_profile.includes(PromptModule.PERSONA)
+        )
         else {"system_context": "", "reference_context": "", "active_id": ""}
     )
     character_pack_persona_context = (
@@ -296,7 +322,7 @@ def prepare_context(
         if character_pack_persona_enabled and prompt_profile.includes(PromptModule.PERSONA)
         else {"system_context": "", "reference_context": "", "active_id": ""}
     )
-    if character_pack_persona_enabled and character_pack_id:
+    if character_pack_persona_enabled and character_pack_id and not plugin_proactive_scope:
         context_library_service = getattr(
             getattr(engine, "desktop_pet_character_resources", None),
             "context_libraries",
@@ -323,6 +349,9 @@ def prepare_context(
         character_pack_persona_context,
         persona_context,
     )
+    if plugin_proactive_scope:
+        persona_context = dict(persona_context)
+        persona_context["reference_context"] = ""
     visual_observation_sections = [
         text
         for text in [
@@ -340,7 +369,9 @@ def prepare_context(
         ),
         (
             "relationship",
-            engine._build_memory_relationship_context(
+            ""
+            if plugin_proactive_scope
+            else engine._build_memory_relationship_context(
                 profile_user_id=profile_user_id,
                 character_pack_id=character_pack_id,
                 now_ts=now_ts,
@@ -433,17 +464,21 @@ def prepare_context(
             else "当前没有额外的视觉资源。"
         )
     current_visual_context = (
-        engine._build_current_visual_context(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            current_visual_payload=current_visual_payload,
-            visual_payload=current_visual_context_payload,
-            runtime_projection=runtime_projection,
-            character_only=desktop_pet_character_only,
-            resource_manifest=resource_manifest,
+        "(受信插件主动推理不注入当前演出状态。)"
+        if plugin_proactive_scope
+        else (
+            engine._build_current_visual_context(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                current_visual_payload=current_visual_payload,
+                visual_payload=current_visual_context_payload,
+                runtime_projection=runtime_projection,
+                character_only=desktop_pet_character_only,
+                resource_manifest=resource_manifest,
+            )
+            if prompt_profile.includes(PromptModule.CURRENT_VISUAL_STATE)
+            else "(当前客户端模式不需要完整演出状态。)"
         )
-        if prompt_profile.includes(PromptModule.CURRENT_VISUAL_STATE)
-        else "(当前客户端模式不需要完整演出状态。)"
     )
     if visual_observation_sections:
         current_visual_context = "\n\n".join([current_visual_context, *visual_observation_sections])
@@ -530,6 +565,7 @@ def prepare_context(
         system_prompt_override = prompt_builder.persona.final_system_prompt
     if not care_enabled:
         system_prompt_override = strip_care_prompt_contract(system_prompt_override)
+
     def _build_generation_context() -> dict[str, Any]:
         return prompt_builder.build_final_generation_context(
             now_ts=now_ts,
@@ -552,6 +588,7 @@ def prepare_context(
             debug_enabled=debug_enabled,
             system_prompt_override=system_prompt_override,
             mode_prompt_override=mode_prompt_override,
+            prompt_scope=normalized_prompt_scope,
         )
 
     generation_context = _build_generation_context()
@@ -628,6 +665,7 @@ def prepare_context(
     generation_context["post_user_turns"] = list(post_user_turns) if post_user_turns else []
     generation_context["prompt_profile"] = prompt_profile.to_public_dict()
     generation_context["domain_profile"] = domain_profile.to_public_dict()
+    generation_context["prompt_scope"] = normalized_prompt_scope
     execution_receipts = getattr(capability_selection, "execution_receipts", {})
     if isinstance(execution_receipts, dict) and execution_receipts:
         generation_context[TOOL_EXECUTION_RECEIPTS_FIELD] = {

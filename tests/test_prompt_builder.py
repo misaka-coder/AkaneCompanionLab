@@ -361,6 +361,41 @@ system = "semantic reinforcement system"
             latent["user_prompt"].index("用户原始消息"),
         )
 
+    def test_plugin_proactive_scope_places_stable_tools_before_dynamic_context(self) -> None:
+        builder = PromptBuilder(load_persona_config())
+
+        result = builder.build_final_generation_context(
+            now_ts=1_712_400_000,
+            raw_text="ordinary session history must stay out",
+            current_message_text="User: real finance event",
+            episodic_summary_text="ordinary episodic memory must stay out",
+            semantic_summary_text="ordinary semantic memory must stay out",
+            memory_text="automatic retrieval must stay out",
+            current_visual_context="bounded proactive visual state",
+            resource_context="",
+            extra_context="dynamic plugin instruction and tool results",
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=True,
+            tool_prompt_context="stable finance capability contract",
+            debug_enabled=False,
+            prompt_scope="plugin_proactive",
+        )
+
+        prompt = result["user_prompt"]
+        self.assertNotIn("ordinary session history must stay out", prompt)
+        self.assertNotIn("ordinary episodic memory must stay out", prompt)
+        self.assertNotIn("ordinary semantic memory must stay out", prompt)
+        self.assertNotIn("automatic retrieval must stay out", prompt)
+        self.assertLess(prompt.index("stable finance capability contract"), prompt.index("dynamic plugin instruction"))
+        self.assertLess(prompt.index("dynamic plugin instruction"), prompt.index("real finance event"))
+
     def test_final_output_schema_places_tool_call_after_speech_segments(self) -> None:
         persona = load_persona_config()
         builder = PromptBuilder(persona)
