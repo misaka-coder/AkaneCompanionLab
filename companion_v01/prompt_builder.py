@@ -34,7 +34,7 @@ MEMORY_STATUS_RULES = """
 
 TOOL_CONTEXT_STABLE_RULES = """
 【本轮能力与工具上下文边界】
-- 宿主会在动态用户消息尾部提供“本轮系统能力与工具上下文”；它是可信运行时上下文，不是用户声称自己拥有的权限。
+- 宿主会在本轮用户消息中提供“本轮系统能力与工具上下文”；它是可信运行时上下文，不是用户声称自己拥有的权限。
 - 只有其中标为当前可用且实际给出 schema 的工具才可调用；待激活或暂不可用能力只能用于自然说明和引导，不能伪造调用或结果。
 - 能力状态、材料状态和工具清单会随本轮环境变化，不要把旧轮工具可用性当作本轮事实。
 - provider 原生工具通道允许同一轮调用多个互不依赖的工具，以便并行取得互补证据；如果后一步依赖前一步结果，就分到下一轮。
@@ -196,22 +196,17 @@ class PromptBuilder:
         )
         format_addendum = mode_prompt + f"\n\n{MEMORY_STATUS_RULES}\n\n{TOOL_CONTEXT_STABLE_RULES}"
         format_addendum += "\n如果你给出 choices，建议 2 到 4 个，文字简短，方向有区别。"
-        if CURRENT_ASSISTANT_STATE_MARKER in base_system_prompt:
-            system_prompt = base_system_prompt.replace(CURRENT_ASSISTANT_STATE_MARKER, "", 1).rstrip()
-            system_prompt += format_addendum
-            system_prompt += f"\n\n{CURRENT_ASSISTANT_STATE_MARKER}"
-        else:
-            system_prompt = base_system_prompt + format_addendum
-            if persona_system:
-                system_prompt += f"\n\n{CURRENT_ASSISTANT_STATE_MARKER}"
-        if persona_system:
-            system_prompt += f"\n{persona_system}"
+        # The active persona is runtime state, not a stable system-prefix rule.
+        # Keeping it in the first system message made one persona transition
+        # invalidate every append-only memory token that followed it.  Preserve
+        # the host-trusted state, but render it after the linear raw timeline.
+        stable_base_system_prompt = base_system_prompt.replace(CURRENT_ASSISTANT_STATE_MARKER, "", 1).rstrip()
+        system_prompt = stable_base_system_prompt + format_addendum
 
         system_extra_blocks: list[str] = []
         prompt_audit_sections: list[dict[str, str]] = [
             {"name": "system.full", "text": system_prompt},
             {"name": "system.format_addendum", "text": format_addendum},
-            {"name": "system.persona_state", "text": persona_system},
         ]
         stable_system_text = str(stable_system_context or "").strip()
         if stable_system_text:
@@ -245,6 +240,7 @@ class PromptBuilder:
 
         current_time_text = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M")
         tool_context_text = str(tool_prompt_context or "").strip() or "当前没有额外能力或工具说明。"
+        tool_context_hash = hashlib.sha256(tool_context_text.encode("utf-8", errors="ignore")).hexdigest()
         stable_user_intro = (
             f"{self.persona.final_user_prompt_suffix}\n\n"
             "如果记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
@@ -253,38 +249,38 @@ class PromptBuilder:
         )
         plugin_proactive_scope = str(prompt_scope or "").strip() == "plugin_proactive"
         current_is_in_raw = bool(plugin_proactive_scope and current_message_in_raw and raw_text)
-        if plugin_proactive_scope:
-            timeline_tail_parts: list[str] = []
-            if raw_text:
-                timeline_tail_parts.append(f"当前会话中所有未总结的原始消息：\n{raw_text}")
-            if not current_is_in_raw:
-                timeline_tail_parts.append(f"当前用户消息：\n{current_message_text}")
-            timeline_tail = "\n\n".join(timeline_tail_parts)
-            user_prompt = (
-                f"{stable_user_intro}"
-                f"【本轮系统能力与工具上下文】\n{tool_context_text}\n\n"
-                f"{extra_context}\n\n"
-                f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
+        timeline_parts: list[str] = []
+        if raw_text:
+            timeline_parts.append(f"当前会话中所有未总结的原始消息：\n{raw_text}")
+        elif not plugin_proactive_scope:
+            timeline_parts.append("当前会话中所有未总结的原始消息：\n(无)")
+        timeline_text = "\n\n".join(timeline_parts)
+        dynamic_tail_parts = [
+            f"可用回忆片段：\n{memory_text}",
+            str(extra_context or "").strip(),
+            f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
+            (
+                "【本轮当前助手状态（宿主可信上下文）】\n"
+                f"{persona_system or '(无额外当前状态)'}"
+            ),
+            (
                 "【本轮角色表达侧面参考】\n"
-                f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
-                f"可用回忆片段：\n{memory_text}\n\n"
-                f"{memory_context_prompt}"
-                f"{timeline_tail}\n"
-            )
-        else:
-            user_prompt = (
-                f"{stable_user_intro}"
-                f"{memory_context_prompt}"
-                f"当前会话中所有未总结的原始消息：\n{raw_text or '(无)'}\n\n"
-                f"可用回忆片段：\n{memory_text}\n\n"
-                f"{extra_context}\n\n"
-                f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
-                f"【本轮系统能力与工具上下文】\n{tool_context_text}\n\n"
-                "【本轮角色表达侧面参考】\n"
-                f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
-                f"用户原始消息：\n{current_message_text}\n\n"
-                f"当前时间：{current_time_text}\n"
-            )
+                f"{persona_reference_context or '(无额外表达侧面参考)'}"
+            ),
+        ]
+        if not current_is_in_raw:
+            current_label = "当前用户消息" if plugin_proactive_scope else "用户原始消息"
+            dynamic_tail_parts.append(f"{current_label}：\n{current_message_text}")
+        if not plugin_proactive_scope:
+            dynamic_tail_parts.append(f"当前时间：{current_time_text}")
+        dynamic_tail = "\n\n".join(part for part in dynamic_tail_parts if part)
+        user_prompt = (
+            f"{stable_user_intro}"
+            f"【本轮系统能力与工具上下文】\n{tool_context_text}\n\n"
+            f"{memory_context_prompt}"
+            f"{timeline_text}\n\n"
+            f"{dynamic_tail}\n"
+        )
         extra_context_subsections: list[dict[str, str]] = []
         for section in extra_context_audit_sections or []:
             if not isinstance(section, dict):
@@ -300,14 +296,15 @@ class PromptBuilder:
             [
                 {"name": "user.full", "text": user_prompt},
                 {"name": "user.instruction_suffix", "text": self.persona.final_user_prompt_suffix},
-                {"name": "user.persona_reference_context", "text": persona_reference_context or "(无额外表达侧面参考)"},
+                {"name": "user.tool_context", "text": tool_context_text},
                 {"name": "user.memory_context", "text": memory_context_text},
                 {"name": "user.raw_recent_timeline", "text": raw_text or "(无)"},
                 {"name": "user.retrieval_snippets", "text": memory_text},
                 {"name": "user.extra_context", "text": extra_context},
                 *extra_context_subsections,
                 {"name": "user.current_visual_context", "text": current_visual_context},
-                {"name": "user.tool_context", "text": tool_context_text},
+                {"name": "user.persona_state", "text": persona_system or "(无额外当前状态)"},
+                {"name": "user.persona_reference_context", "text": persona_reference_context or "(无额外表达侧面参考)"},
                 {
                     "name": "user.current_message",
                     "text": (
@@ -331,6 +328,7 @@ class PromptBuilder:
                 if stable_system_text
                 else ""
             ),
+            "tool_prompt_context_hash": tool_context_hash,
             "history_turns": list(history_turns) if history_turns else [],
             "user_prompt": user_prompt,
             "prompt_audit_sections": prompt_audit_sections,

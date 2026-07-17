@@ -113,7 +113,7 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
     def test_stream_chat_json_stops_on_tool_call_after_speech_segments(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime._build_completion_kwargs = lambda **_kwargs: {}
-        runtime._record_cache_metrics = lambda _response: None
+        runtime._record_cache_metrics = lambda _response, **_kwargs: None
         runtime._close_stream = lambda _response: None
 
         def chunk(text: str) -> SimpleNamespace:

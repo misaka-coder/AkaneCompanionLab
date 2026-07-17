@@ -575,12 +575,22 @@ class LLMRuntime:
             "errors": 0,
             "cache_read_tokens": 0,
             "cache_creation_tokens": 0,
+            "cache_usage_calls": 0,
+            "cache_hit_calls": 0,
             "reported_input_tokens": 0,
             "reported_output_tokens": 0,
+            "final_cache_read_tokens": 0,
+            "final_cache_creation_tokens": 0,
+            "final_reported_input_tokens": 0,
+            "final_reported_output_tokens": 0,
+            "final_cache_usage_calls": 0,
+            "final_cache_hit_calls": 0,
             "plugin_proactive_cache_read_tokens": 0,
             "plugin_proactive_cache_creation_tokens": 0,
             "plugin_proactive_reported_input_tokens": 0,
             "plugin_proactive_reported_output_tokens": 0,
+            "plugin_proactive_cache_usage_calls": 0,
+            "plugin_proactive_cache_hit_calls": 0,
             "chat_json_fallbacks": 0,
             "native_tool_decision_sent": 0,
             "native_tool_provider_unsupported": 0,
@@ -1273,7 +1283,7 @@ class LLMRuntime:
             prompt_audit_sections=prompt_audit_sections,
             stream=stream,
             json_mode=json_mode,
-            native_tool_count=len(normalized_tools),
+            native_tools=normalized_tools if should_send_native_tools else [],
         )
         self._enforce_prompt_token_limits(payload)
         return payload
@@ -1403,7 +1413,7 @@ class LLMRuntime:
         prompt_audit_sections: list[dict[str, Any]] | None,
         stream: bool,
         json_mode: bool,
-        native_tool_count: int,
+        native_tools: list[dict[str, Any]],
     ) -> None:
         if not self._should_record_prompt_audit(prompt_cache_key):
             return
@@ -1416,6 +1426,7 @@ class LLMRuntime:
                 user_prompt=user_prompt,
             )
             record = {
+                "record_type": "prompt",
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
                 "instance_id": str(getattr(self, "instance_id", "local-default") or "local-default"),
                 "prompt_cache_key": str(prompt_cache_key or ""),
@@ -1429,7 +1440,17 @@ class LLMRuntime:
                 "history_turn_count": len(history_turns or []),
                 "post_user_turn_count": len(post_user_turns or []),
                 "user_image_count": max(0, int(user_image_count or 0)),
-                "native_tool_count": max(0, int(native_tool_count or 0)),
+                "native_tool_count": len(native_tools),
+                "native_tool_schema": self._audit_text_section(
+                    "payload.native_tools",
+                    json.dumps(
+                        native_tools,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    ),
+                ),
                 "payload_totals": self._sum_audit_sections(payload_sections),
                 "payload_sections": payload_sections,
                 "source_sections": self._normalize_prompt_audit_sections(prompt_audit_sections),
@@ -1530,6 +1551,42 @@ class LLMRuntime:
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
 
+    def _append_prompt_usage_audit(
+        self,
+        *,
+        prompt_cache_key: str,
+        read_tokens: int,
+        creation_tokens: int,
+        input_tokens: int,
+        output_tokens: int,
+        response: Any,
+    ) -> None:
+        if not self._should_record_prompt_audit(prompt_cache_key):
+            return
+        model = ""
+        if isinstance(response, dict):
+            model = str(response.get("model") or "")
+        else:
+            model = str(getattr(response, "model", "") or "")
+        self._append_prompt_audit_record(
+            {
+                "record_type": "usage",
+                "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                "instance_id": str(getattr(self, "instance_id", "local-default") or "local-default"),
+                "prompt_cache_key": str(prompt_cache_key or ""),
+                "model": model,
+                "reported_input_tokens": max(0, int(input_tokens or 0)),
+                "reported_output_tokens": max(0, int(output_tokens or 0)),
+                "cache_read_tokens": max(0, int(read_tokens or 0)),
+                "cache_creation_tokens": max(0, int(creation_tokens or 0)),
+                "cache_hit_ratio": (
+                    round(max(0, int(read_tokens or 0)) / max(1, int(input_tokens or 0)), 6)
+                    if int(input_tokens or 0) > 0
+                    else 0.0
+                ),
+            }
+        )
+
     def _record_cache_metrics(self, response: Any, *, prompt_cache_key: str = "") -> None:
         try:
             usage = getattr(response, "usage", None)
@@ -1565,15 +1622,44 @@ class LLMRuntime:
                 self._record_metric("reported_input_tokens", reported_input)
             if reported_output:
                 self._record_metric("reported_output_tokens", reported_output)
-            if str(prompt_cache_key or "").startswith("chat:plugin_proactive:"):
+            if reported_input:
+                self._record_metric("cache_usage_calls")
+                if read:
+                    self._record_metric("cache_hit_calls")
+            normalized_cache_key = str(prompt_cache_key or "")
+            if normalized_cache_key.startswith("chat:final:") or normalized_cache_key == "chat:final":
+                if read:
+                    self._record_metric("final_cache_read_tokens", read)
+                if creation:
+                    self._record_metric("final_cache_creation_tokens", creation)
+                if reported_input:
+                    self._record_metric("final_reported_input_tokens", reported_input)
+                    self._record_metric("final_cache_usage_calls")
+                    if read:
+                        self._record_metric("final_cache_hit_calls")
+                if reported_output:
+                    self._record_metric("final_reported_output_tokens", reported_output)
+            if normalized_cache_key.startswith("chat:plugin_proactive:"):
                 if read:
                     self._record_metric("plugin_proactive_cache_read_tokens", read)
                 if creation:
                     self._record_metric("plugin_proactive_cache_creation_tokens", creation)
                 if reported_input:
                     self._record_metric("plugin_proactive_reported_input_tokens", reported_input)
+                    self._record_metric("plugin_proactive_cache_usage_calls")
+                    if read:
+                        self._record_metric("plugin_proactive_cache_hit_calls")
                 if reported_output:
                     self._record_metric("plugin_proactive_reported_output_tokens", reported_output)
+            if reported_input and self._should_record_prompt_audit(normalized_cache_key):
+                self._append_prompt_usage_audit(
+                    prompt_cache_key=normalized_cache_key,
+                    read_tokens=read,
+                    creation_tokens=creation,
+                    input_tokens=reported_input,
+                    output_tokens=reported_output,
+                    response=response,
+                )
         except Exception:
             pass
 

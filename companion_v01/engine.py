@@ -3863,11 +3863,13 @@ class AkaneMemoryEngine:
         persona = fallback.get("persona") if isinstance(fallback, dict) else None
         stable_payload = {
             "system_prefix": stable_system_prefix,
+            "conversation_scope": str(generation_context.get("prompt_cache_scope_hash") or ""),
             "persona_active": str(persona.get("active") or "") if isinstance(persona, dict) else "",
             "prompt_profile": generation_context.get("prompt_profile") or {},
             "domain_profile": generation_context.get("domain_profile") or {},
             "prompt_scope": str(generation_context.get("prompt_scope") or ""),
             "stable_system_context_hash": str(generation_context.get("stable_system_context_hash") or ""),
+            "tool_prompt_context_hash": str(generation_context.get("tool_prompt_context_hash") or ""),
             "native_tools": list(generation_context.get("native_tools") or []),
         }
         canonical = json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

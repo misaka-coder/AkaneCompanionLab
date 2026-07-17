@@ -797,3 +797,44 @@ git diff --check
 - 缓存随线性历史自然增长，压缩时只出现可解释的一次波动。
 
 仍需明确的外部风险只有一个：PinAI 当前 host/model 对 native tools 与 forced JSON 的真实兼容性。仓库已有探针，实施时必须以探针和真实 audit 为准，不能靠猜。
+
+## 12. Slice E 实测基线与实施记录（2026-07-17）
+
+### 12.1 云端旧版本真实缓存基线
+
+本轮没有用模拟消息推算命中率，而是读取两个实例重启后的 `/metrics` 累计 usage，
+并将连续真实请求与 `llm_prompt_audit` 的 section hash 对齐。Bot 中途掉线重启造成的空窗不计入连续样本。
+
+- personal 连续两次真实最终回复合计 reported input `55,240`、cached input `10,752`，命中率 `19.46%`；与用户在 provider 面板看到的约 20%一致。
+- finance 一次真实主动分析 reported input `15,239`、cached input `3,840`，命中率 `25.20%`。这是尚未部署 Slice A-D 的旧云端链路，不能作为修复后验收结果。
+- personal 当时累计为 cached `95,488` / input `723,494`，约 `13.20%`；说明跨轮平均值甚至低于最近两轮。
+- finance 当时 plugin proactive 累计为 cached `499,200` / input `1,960,389`，约 `25.46%`。
+
+真实 hash 序列确认了三个结构问题：
+
+1. `_final_prompt_cache_key()`没有用户/会话作用域；同一 key 的 31 次 personal 请求出现 6 套记忆前缀、2 套工具前缀和 29 套 raw，多个会话会争用一个 upstream cache bucket。
+2. personal 的工具说明约占 `8.7k`估算 tokens，通常稳定却位于 append-only raw 后；raw 每次追加后，这个大块必然重新计算，因此结构上无法达到高命中。
+3. 动态 persona state 位于第一条 system message；persona 内容变化时会在 raw 历史之前截断 provider 前缀。finance 旧链路还把 raw 保持为空，同一事件反复请求 2~3 次，并让 extra/tool context 每轮变化。
+
+### 12.2 缓存布局修复
+
+- cache key 加入不可逆的 `profile/session/character`作用域 hash，防止跨会话缓存桶互相覆盖；原始身份不进入 key、日志或 prompt。
+- cache key 加入 legacy tool prompt hash；工具形状变化时进入独立 bucket，不破坏同一工具形状的历史前缀。
+- 最终 prompt 顺序统一为：稳定 system/system extra -> 稳定用户说明和工具契约 -> 低频 semantic/episodic -> 线性 raw -> retrieval/extra/visual/persona/current message 等本轮动态尾部。
+- persona state 保留完整能力与内容，只从第一条 system 的早期动态位置移到 raw 后的“宿主可信上下文”，不关闭人设、视觉、检索或工具。
+- prompt audit 新增实际发送的 native tool schema hash/count；usage audit 为每次 final/plugin proactive 调用记录 reported/cached tokens 与命中率，不记录 prompt 或消息正文。
+- `/metrics`新增 final 与 plugin proactive 各自的 token/call 计数，避免 auxiliary 请求污染最终回复命中率。
+
+### 12.3 旧分析迁移准备
+
+云端只读 dry-run 时，旧 `analysis_history`已有 155 条；155/155 都能与 delivered outbox、完全一致的投递正文、可信 event payload 和完整 memcore namespace 一一对应。memcore 当时没有 `plugin-event:*` 或本迁移 source id，旧分析确实尚未进入唯一时间线。
+
+新增离线迁移工具 `scripts/migrate_finance_analysis_history.py`：
+
+- 默认只读 dry-run；`--apply`必须提供 backup 目录，并先用 SQLite backup API 备份 finance 与 memcore 两个数据库并跑 integrity check。
+- 事件复用线上 `plugin-event`幂等 source ID；历史分析使用稳定 `finance-history-analysis` source ID。
+- 只写 `event(user) -> 历史已投递分析(assistant)`，保留 published/delivered 时间戳；assistant 明确标注“仅代表当时判断，不是当前事实更新”。
+- 通过 `MemcoreManager.record_user_turn()` / `record_assistant_turn()`写入，不手改 memcore SQL；新增脱敏 `inspect_turn_source()`区分 missing、已有和跨 namespace 冲突。
+- 任一 inspect/write 失败即结构化停止；旧表不删除、不更新，重复执行只报告 already complete。
+
+当前本地缓存/迁移聚焦回归为 128 项通过，相关宿主宽回归为 308 项通过；云端 apply、部署后 cache usage 和最终条数仍需在停服备份后填写。

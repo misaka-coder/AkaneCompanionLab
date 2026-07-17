@@ -1,6 +1,7 @@
 """Final response context builder extracted from engine.py."""
 
 from __future__ import annotations
+import hashlib
 import json
 import logging
 import re
@@ -549,7 +550,7 @@ def prepare_context(
         current_message_visible_in_raw = bool(
             current_message_in_raw and current_content and current_content in raw_text
         )
-        return prompt_builder.build_final_generation_context(
+        generation_context = prompt_builder.build_final_generation_context(
             now_ts=now_ts,
             raw_text=raw_text,
             current_message_text=current_message_text,
@@ -574,6 +575,17 @@ def prepare_context(
             prompt_scope=normalized_prompt_scope,
             current_message_in_raw=current_message_visible_in_raw,
         )
+        cache_scope_material = "\x00".join(
+            (
+                str(profile_user_id or ""),
+                str(session_id or ""),
+                str(character_pack_id or ""),
+            )
+        )
+        generation_context["prompt_cache_scope_hash"] = hashlib.sha256(
+            cache_scope_material.encode("utf-8", errors="ignore")
+        ).hexdigest()
+        return generation_context
 
     generation_context = _build_generation_context()
     prompt_token_limit = max(0, int(getattr(mod_config, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 0) or 0))

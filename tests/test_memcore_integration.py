@@ -1002,6 +1002,31 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(source_ids.count("old-assistant"), 1)
             self.assertNotIn("other-profile", source_ids)
             self.assertNotIn("tool-turn", source_ids)
+            found = manager.inspect_turn_source(
+                "old-user",
+                profile_user_id="u1",
+                session_id="old-session",
+                character_pack_id="char",
+            )
+            missing = manager.inspect_turn_source(
+                "not-present",
+                profile_user_id="u1",
+                session_id="old-session",
+                character_pack_id="char",
+            )
+            conflict = manager.inspect_turn_source(
+                "old-user",
+                profile_user_id="u2",
+                session_id="old-session",
+                character_pack_id="char",
+            )
+            self.assertEqual(found["status"], "found")
+            self.assertTrue(found["exists"])
+            self.assertNotIn("content", found)
+            self.assertEqual(missing["status"], "missing")
+            self.assertFalse(missing["exists"])
+            self.assertEqual(conflict["status"], "conflict")
+            self.assertFalse(conflict["ok"])
             manager.close()
 
     def test_import_legacy_long_term_memory_preserves_old_summary_layers(self) -> None:
@@ -1823,7 +1848,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine = _PromptContextEngine(memcore_manager=memcore_manager)
 
         with patch.object(config, "MEMORY_BACKEND", "memcore"):
-            response_builder.prepare_context(
+            first = response_builder.prepare_context(
                 engine,
                 session_id="s1",
                 profile_user_id="u1",
@@ -1833,6 +1858,18 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 recent_semantic_summaries=[{"semantic_summary": "LEGACY SEMANTIC", "timestamp": 1712400000}],
                 confirmed_snippets=[],
                 now_ts=1712400000,
+                character_pack_id="char",
+            )
+            second = response_builder.prepare_context(
+                engine,
+                session_id="s2",
+                profile_user_id="u1",
+                user_message="另一个会话的问题",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=1712400001,
                 character_pack_id="char",
             )
 
@@ -1845,6 +1882,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(memcore_manager.calls[0]["session_id"], "s1")
         self.assertEqual(memcore_manager.calls[0]["character_pack_id"], "char")
         self.assertEqual(memcore_manager.calls[0]["current_user_record"]["source_id"], "current")
+        self.assertRegex(str(first["prompt_cache_scope_hash"]), r"^[0-9a-f]{64}$")
+        self.assertNotEqual(first["prompt_cache_scope_hash"], second["prompt_cache_scope_hash"])
 
     def test_final_prompt_context_does_not_fallback_to_legacy_when_memcore_fails(self) -> None:
         memcore_manager = _PromptContextMemcoreManager(
@@ -2106,7 +2145,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             value = response_builder._drop_oldest_prompt_lines(value)
         self.assertTrue(all(later < earlier for earlier, later in zip(lengths, lengths[1:])))
 
-    def test_final_prompt_cache_key_ignores_volatile_persona_state_but_partitions_tools(self) -> None:
+    def test_final_prompt_cache_key_ignores_volatile_persona_state_but_partitions_scope_and_tools(self) -> None:
         from companion_v01.prompt_blocks import CURRENT_ASSISTANT_STATE_MARKER
 
         base = {
@@ -2114,6 +2153,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
             "fallback": {"persona": {"active": "akane_v1"}},
             "prompt_profile": {"id": "qq_text"},
             "domain_profile": {"id": "default"},
+            "prompt_cache_scope_hash": "conversation-a",
+            "tool_prompt_context_hash": "tool-context-a",
             "native_tools": [{"type": "function", "function": {"name": "search"}}],
         }
         changed_state = dict(base, system_prompt=f"stable rules\n{CURRENT_ASSISTANT_STATE_MARKER}\nstate B")
@@ -2121,6 +2162,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         changed_scope = dict(base, prompt_scope="plugin_proactive")
         changed_dynamic_event = dict(base, user_prompt="a different finance event")
         changed_stable_system = dict(base, stable_system_context_hash="different-stable-system")
+        changed_conversation = dict(base, prompt_cache_scope_hash="conversation-b")
+        changed_tool_context = dict(base, tool_prompt_context_hash="tool-context-b")
 
         self.assertEqual(
             AkaneMemoryEngine._final_prompt_cache_key(base),
@@ -2141,6 +2184,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotEqual(
             AkaneMemoryEngine._final_prompt_cache_key(base),
             AkaneMemoryEngine._final_prompt_cache_key(changed_stable_system),
+        )
+        self.assertNotEqual(
+            AkaneMemoryEngine._final_prompt_cache_key(base),
+            AkaneMemoryEngine._final_prompt_cache_key(changed_conversation),
+        )
+        self.assertNotEqual(
+            AkaneMemoryEngine._final_prompt_cache_key(base),
+            AkaneMemoryEngine._final_prompt_cache_key(changed_tool_context),
         )
         self.assertTrue(AkaneMemoryEngine._final_prompt_cache_key(changed_scope).startswith("chat:plugin_proactive:"))
         self.assertEqual(AkaneMemoryEngine._final_response_max_attempts(changed_scope), 1)

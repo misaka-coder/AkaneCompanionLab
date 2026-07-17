@@ -236,6 +236,26 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(runtime._metrics["reported_input_tokens"], 120)
         self.assertEqual(runtime._metrics["reported_output_tokens"], 9)
 
+    def test_final_cache_usage_is_recorded_separately(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        response = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=200,
+                completion_tokens=11,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=150),
+            )
+        )
+
+        runtime._record_cache_metrics(response, prompt_cache_key="chat:final:conversation")
+
+        self.assertEqual(runtime._metrics["final_cache_read_tokens"], 150)
+        self.assertEqual(runtime._metrics["final_reported_input_tokens"], 200)
+        self.assertEqual(runtime._metrics["final_reported_output_tokens"], 11)
+        self.assertEqual(runtime._metrics["final_cache_usage_calls"], 1)
+        self.assertEqual(runtime._metrics["final_cache_hit_calls"], 1)
+
     def test_plugin_proactive_cache_usage_is_recorded_separately(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime._metrics_lock = threading.RLock()
@@ -425,7 +445,7 @@ class LLMClientConfigTests(unittest.TestCase):
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
             client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
-            model="deepseek-v4-flash",
+            model="deepseek-v4-pro",
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -450,6 +470,16 @@ class LLMClientConfigTests(unittest.TestCase):
                             {"name": "user.current_message", "text": "current private message"},
                             {"name": "user.raw_recent_timeline", "text": "raw private timeline"},
                         ],
+                        native_tools=[
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "private_tool_name",
+                                    "description": "private tool description",
+                                    "parameters": {"type": "object"},
+                                },
+                            }
+                        ],
                     )
 
             files = list((Path(temp_dir) / "llm_prompt_audit").glob("*.jsonl"))
@@ -457,8 +487,9 @@ class LLMClientConfigTests(unittest.TestCase):
             record = json.loads(files[0].read_text(encoding="utf-8").strip())
 
         self.assertEqual(record["prompt_cache_key"], "chat:final")
+        self.assertEqual(record["record_type"], "prompt")
         self.assertEqual(record["instance_id"], "finance-prod")
-        self.assertEqual(record["model"], "deepseek-v4-flash")
+        self.assertEqual(record["model"], "deepseek-v4-pro")
         self.assertTrue(record["stream"])
         self.assertEqual(record["history_turn_count"], 2)
         source_by_name = {section["name"]: section for section in record["source_sections"]}
@@ -470,7 +501,40 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertNotIn("history private turn", serialized)
         self.assertNotIn("semantic private block", serialized)
         self.assertNotIn("system private prompt", serialized)
+        self.assertNotIn("private tool description", serialized)
+        self.assertEqual(record["native_tool_count"], 1)
+        self.assertTrue(record["native_tool_schema"]["sha256_16"])
         self.assertGreater(record["payload_totals"]["estimated_tokens"], 0)
+
+    def test_llm_runtime_writes_per_call_cache_usage_audit(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        runtime.instance_id = "personal-prod"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime.log_dir = Path(temp_dir)
+            response = SimpleNamespace(
+                model="pin-model",
+                usage=SimpleNamespace(
+                    prompt_tokens=1_000,
+                    completion_tokens=25,
+                    prompt_tokens_details=SimpleNamespace(cached_tokens=800),
+                ),
+            )
+            with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch(
+                "config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False
+            ):
+                runtime._record_cache_metrics(response, prompt_cache_key="chat:final:conversation")
+
+            path = next((Path(temp_dir) / "llm_prompt_audit").glob("*.jsonl"))
+            record = json.loads(path.read_text(encoding="utf-8").strip())
+
+        self.assertEqual(record["record_type"], "usage")
+        self.assertEqual(record["reported_input_tokens"], 1_000)
+        self.assertEqual(record["cache_read_tokens"], 800)
+        self.assertEqual(record["cache_hit_ratio"], 0.8)
+        self.assertEqual(record["model"], "pin-model")
 
     def test_llm_runtime_prompt_audit_defaults_to_chat_final_only(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

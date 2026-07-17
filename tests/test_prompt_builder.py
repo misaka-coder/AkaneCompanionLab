@@ -262,9 +262,9 @@ system = "semantic reinforcement system"
             self.assertNotIn("- fake tool", result["system_prompt"])
             self.assertIn("本轮能力与工具上下文边界", result["system_prompt"])
             self.assertIn("- fake tool", result["user_prompt"])
-            self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", result["system_prompt"])
-            self.assertIn("persona state", result["system_prompt"])
-            self.assertLess(result["system_prompt"].index("debug mode"), result["system_prompt"].index("persona state"))
+            self.assertNotIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", result["system_prompt"])
+            self.assertNotIn("persona state", result["system_prompt"])
+            self.assertIn("persona state", result["user_prompt"])
             self.assertEqual(
                 result["system_extra_blocks"],
                 [
@@ -286,6 +286,10 @@ system = "semantic reinforcement system"
                 result["user_prompt"].index("最近可见的阶段摘要"),
                 result["user_prompt"].index("当前会话中所有未总结的原始消息"),
             )
+            self.assertLess(
+                result["user_prompt"].index("- fake tool"),
+                result["user_prompt"].index("较长期的语义记忆"),
+            )
             self.assertIn("extra", result["user_prompt"])
             self.assertIn("persona refs", result["user_prompt"])
             self.assertLess(result["user_prompt"].index("较长期的语义记忆"), result["user_prompt"].index("extra"))
@@ -293,6 +297,10 @@ system = "semantic reinforcement system"
                 result["user_prompt"].index("当前会话中所有未总结的原始消息"), result["user_prompt"].index("extra")
             )
             self.assertLess(result["user_prompt"].index("extra"), result["user_prompt"].index("当前演出状态"))
+            self.assertLess(
+                result["user_prompt"].index("当前会话中所有未总结的原始消息"),
+                result["user_prompt"].index("persona state"),
+            )
             self.assertLess(
                 result["user_prompt"].index("当前会话中所有未总结的原始消息"),
                 result["user_prompt"].index("persona refs"),
@@ -310,6 +318,7 @@ system = "semantic reinforcement system"
             self.assertIn("user.retrieval_snippets", audit_names)
             self.assertIn("user.current_visual_context", audit_names)
             self.assertIn("user.tool_context", audit_names)
+            self.assertIn("user.persona_state", audit_names)
             self.assertIn("user.current_message", audit_names)
             self.assertIn("user.extra_context.relationship", audit_names)
             self.assertIn("user.extra_context.turn_extra_context", audit_names)
@@ -353,13 +362,57 @@ system = "semantic reinforcement system"
         self.assertNotEqual(latent["user_prompt"], ready["user_prompt"])
         self.assertNotIn("上传音频后启用媒体处理", latent["system_prompt"])
         self.assertLess(
-            latent["user_prompt"].index("当前会话中所有未总结的原始消息"),
             latent["user_prompt"].index("【本轮系统能力与工具上下文】"),
+            latent["user_prompt"].index("当前会话中所有未总结的原始消息"),
         )
         self.assertLess(
-            latent["user_prompt"].index("【本轮系统能力与工具上下文】"),
+            latent["user_prompt"].index("当前会话中所有未总结的原始消息"),
             latent["user_prompt"].index("用户原始消息"),
         )
+        self.assertNotEqual(latent["tool_prompt_context_hash"], ready["tool_prompt_context_hash"])
+
+    def test_volatile_persona_state_stays_after_append_only_raw_prefix(self) -> None:
+        builder = PromptBuilder(load_persona_config())
+        common = {
+            "now_ts": 1_712_400_000,
+            "episodic_summary_text": "stable episode",
+            "semantic_summary_text": "stable semantic",
+            "memory_text": "dynamic retrieval",
+            "current_visual_context": "dynamic visual",
+            "resource_context": "stable resources",
+            "extra_context": "dynamic extra",
+            "visual_defaults": {
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            "allow_tool_call": True,
+            "tool_prompt_context": "stable tool contract",
+            "debug_enabled": False,
+            "persona_reference_context": "dynamic reference",
+        }
+        first = builder.build_final_generation_context(
+            **common,
+            raw_text="User: first event",
+            current_message_text="User: current A",
+            persona_system_context="persona state A",
+        )
+        second = builder.build_final_generation_context(
+            **common,
+            raw_text="User: first event\nAssistant: first answer",
+            current_message_text="User: current B",
+            persona_system_context="persona state B",
+        )
+
+        self.assertEqual(first["system_prompt"], second["system_prompt"])
+        self.assertNotIn("persona state A", first["system_prompt"])
+        self.assertLess(first["user_prompt"].index("stable tool contract"), first["user_prompt"].index("User: first event"))
+        self.assertLess(first["user_prompt"].index("User: first event"), first["user_prompt"].index("persona state A"))
+        first_event_end = first["user_prompt"].index("User: first event") + len("User: first event")
+        self.assertEqual(first["user_prompt"][:first_event_end], second["user_prompt"][:first_event_end])
 
     def test_plugin_proactive_scope_uses_stable_system_and_appends_memory_timeline_once(self) -> None:
         builder = PromptBuilder(load_persona_config())
@@ -402,10 +455,10 @@ system = "semantic reinforcement system"
         self.assertNotIn("当前时间：", prompt)
         self.assertNotIn("debug_enabled=", prompt)
         self.assertNotIn("debug_enabled=", result["system_prompt"])
-        self.assertLess(prompt.index("stable finance capability contract"), prompt.index("dynamic plugin instruction"))
-        self.assertLess(prompt.index("dynamic plugin instruction"), prompt.index("ordinary semantic memory"))
+        self.assertLess(prompt.index("stable finance capability contract"), prompt.index("ordinary semantic memory"))
         self.assertLess(prompt.index("ordinary semantic memory"), prompt.index("ordinary episodic memory"))
         self.assertLess(prompt.index("ordinary episodic memory"), prompt.index("Assistant: earlier analysis"))
+        self.assertLess(prompt.index("Assistant: earlier analysis"), prompt.index("dynamic plugin instruction"))
         self.assertTrue(result["stable_system_context_hash"])
 
     def test_plugin_proactive_scope_falls_back_to_current_message_when_raw_does_not_contain_it(self) -> None:
@@ -618,7 +671,8 @@ system = "semantic reinforcement system"
         )
 
         self.assertIn("desktop_pet 桌宠模式", result["system_prompt"])
-        self.assertIn("角色包身份：Mika", result["system_prompt"])
+        self.assertNotIn("角色包身份：Mika", result["system_prompt"])
+        self.assertIn("角色包身份：Mika", result["user_prompt"])
         self.assertIn("字段固定为 emotion, speech", result["system_prompt"])
         self.assertIn("memory_metadata", result["system_prompt"])
         self.assertIn("memory_metadata", result["fallback"])

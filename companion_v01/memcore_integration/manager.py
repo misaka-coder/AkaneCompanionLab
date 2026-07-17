@@ -220,6 +220,65 @@ class MemcoreManager:
             character_pack_id=character_pack_id,
         )
 
+    def inspect_turn_source(
+        self,
+        source_id: str,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
+        """Inspect one source id without projecting message content.
+
+        Maintenance migrations use this to distinguish an idempotent rerun from
+        a cross-namespace collision.  The public result deliberately omits raw
+        content, actor identity, paths, and namespace identifiers.
+        """
+
+        operation = "inspect_turn_source"
+        sid = str(source_id or "").strip()
+        if not sid:
+            return self._status(operation, False, "invalid_source", reason="source_id_required")
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None or self._store is None:
+            return self._status(operation, False, "unavailable", source_id=sid, reason=self._reason)
+        try:
+            record = self._store.get_record_by_source_id(sid)
+            if record is None:
+                return {
+                    **self._status(operation, True, "missing", source_id=sid),
+                    "exists": False,
+                }
+            namespace = getattr(system, "namespace", None)
+            if namespace is None or not self._record_belongs_to_namespace(record, namespace):
+                return {
+                    **self._status(
+                        operation,
+                        False,
+                        "conflict",
+                        source_id=sid,
+                        reason="source_id_owned_by_other_namespace",
+                    ),
+                    "exists": True,
+                }
+            return {
+                **self._status(operation, True, "found", source_id=sid),
+                "exists": True,
+                "role": str(record.get("role") or ""),
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, reason)
+            return {
+                **self._status(operation, False, "failed", source_id=sid, reason=reason),
+                "exists": False,
+            }
+
     def record_tool_exchange(
         self,
         *,
