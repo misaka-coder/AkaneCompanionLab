@@ -608,6 +608,18 @@ record_assistant_turn
 5. 保留 outbox 和可信字段投影。
 6. 构建 wheel 并做 source-blind installed-artifact smoke。
 
+2026-07-17 实施结果：
+
+- 私有插件提交 `af5ada1`（`akane-finance-plugin` 0.7.11）完成本切片。
+- 每个 due outbox delivery 只构造一个 `PluginReasoningRequest`；Engine 通用循环继续允许模型自主选择 0..N 个工具，插件不再套固定三次研究循环。
+- 精简金融原则进入 `stable_system_context`，不同事件保持完全相同；动态 message 只含当前可信事件字段，`extra_context`只保留 QQ 正文长度事实。
+- delivery outbox 的持久 `idempotency_key`原样进入 `memory_idempotency_key`；分析技术失败后的后续 outbox 重试复用同一键，不在 prompt 中暴露该键。
+- 删除固定来源数量门禁和中文进度短语猜测；evidence authority 数量仅保留为 diagnostics。模型可直接分析、按需使用任意数量工具或返回 `【不推送】`。
+- 插件不再读取最近 4 条 `analysis_history`，成功投递也不再新增该表；旧表仅保留一个 documented migration window，本切片未 DROP、未改写历史数据。
+- outbox 排序、失败退避、已生成正文的 QQ 重试、可信发布时间/原文链接投影以及正文/整条消息长度门禁保持不变。
+- 私有插件 Ruff、`git diff --check`、0.7.11 wheel 构建均通过；完整 47 项测试通过，其中 source-blind installed-artifact smoke 使用真实 Akane PluginHost 从隔离安装目录发现 wheel，并跑通主动推送闭环。
+- 本切片没有修改 memcore 压缩配置、宿主运行代码、云端数据或服务状态；finance 服务仍保持停用，pending outbox 未处理。
+
 ### Slice D：memcore trace 生命周期
 
 1. 先重新检查 memcore 用户未提交改动。
