@@ -1,6 +1,6 @@
 # 金融主动推送线性记忆与原生工具修复 V1
 
-状态：实现前代码勘探与交接文档，尚未实施
+状态：Slice A 已实施并完成宿主验证；Slice B 及后续切片尚未实施
 
 日期：2026-07-17
 
@@ -566,6 +566,17 @@ record_assistant_turn
 3. 给 legacy MemoryStore 增加安全的可选 source ID 幂等写。
 4. 修改 reasoning bridge 为持久 turn，并补结构化 incomplete 状态。
 5. 只跑宿主单测，不启动 finance job。
+
+2026-07-17 脱敏实测与实施结果：
+
+- 使用云端 finance 实例现有环境单独运行 A/B/C/D provider probe；finance systemd 实例全程保持 inactive。
+- PinAI 支持 OpenAI native tools，并支持 native tools 与 forced JSON 共存。
+- 四组探针无错误，prompt-only JSON 的无工具终态也通过。
+- 建议 allowlist 形态为 `host:model:json`；host、model、base URL、密钥和响应正文不写入本文。
+- `PluginReasoningRequest` 已增加稳定 system 与 memory 幂等字段；reasoning bridge 不再把插件主动轮固定为 transient，也不再固定关闭 pre-retrieval。
+- legacy `MemoryStore` 已支持 caller source ID 幂等：同 owner/角色/正文返回原记录，不同不可变身份结构化 collision。
+- Engine 同步与流式路径已使用同一脱敏确定性 user source ID，并在进入后续 turn 上下文前消费原始幂等键。
+- 本切片没有修改 prompt layout、金融插件研究循环、`analysis_history` 或 memcore 压缩策略，也没有处理 outbox pending delivery。
 
 ### Slice B：追加式 prompt 与 native 当前轮
 

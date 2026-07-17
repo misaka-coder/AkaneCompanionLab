@@ -12,6 +12,8 @@ from .plugin_api import PluginReasoningRequest, PluginReasoningResult
 
 MAX_REASONING_MESSAGE_CHARS = 12_000
 MAX_REASONING_CONTEXT_CHARS = 24_000
+MAX_REASONING_STABLE_SYSTEM_CHARS = 12_000
+MAX_REASONING_IDEMPOTENCY_KEY_CHARS = 240
 MAX_REASONING_OUTPUT_CHARS = 6_000
 MAX_REASONING_EVIDENCE_EVENTS = 24
 DEFAULT_REASONING_TIMEOUT_SECONDS = 120.0
@@ -52,14 +54,9 @@ class EnginePluginReasoningPort:
             "client_capabilities": ["speech_segments", "tool_actions"],
             "turn_kind": "plugin_proactive",
             "client_turn_kind": "proactive",
-            "transient_user_message": True,
-            "transient_assistant_message": True,
-            # Proactive plugin requests already carry their bounded task
-            # context.  Keep ordinary memory available through explicit tools,
-            # but do not run the conversational pre-retrieval pipeline before
-            # the plugin has asked for it.
-            "pre_retrieval_enabled": False,
             "extra_context": request.extra_context.strip(),
+            "plugin_stable_system_context": request.stable_system_context.strip(),
+            "memory_idempotency_key": request.memory_idempotency_key.strip(),
         }
         if request.character_pack_id.strip():
             payload["character_pack_id"] = request.character_pack_id.strip()
@@ -76,6 +73,8 @@ class EnginePluginReasoningPort:
             return PluginReasoningResult(ok=False, status="failed", reason="reasoning_failed")
         if not isinstance(frame, Mapping):
             return PluginReasoningResult(ok=False, status="failed", reason="invalid_reasoning_result")
+        if bool(frame.get("_transient_final_failure")):
+            return PluginReasoningResult(ok=False, status="failed", reason="incomplete_reasoning_result")
         text = _frame_text(frame)
         if not text:
             return PluginReasoningResult(ok=False, status="failed", reason="empty_reasoning_result")
@@ -130,6 +129,11 @@ def _validate_request(request: object) -> str:
         "session_id": (request.session_id, 200),
         "message": (request.message, MAX_REASONING_MESSAGE_CHARS),
         "extra_context": (request.extra_context, MAX_REASONING_CONTEXT_CHARS),
+        "stable_system_context": (request.stable_system_context, MAX_REASONING_STABLE_SYSTEM_CHARS),
+        "memory_idempotency_key": (
+            request.memory_idempotency_key,
+            MAX_REASONING_IDEMPOTENCY_KEY_CHARS,
+        ),
         "character_pack_id": (request.character_pack_id, 120),
     }
     for name, (raw, maximum) in fields.items():

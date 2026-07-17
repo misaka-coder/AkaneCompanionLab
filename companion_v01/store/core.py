@@ -17,6 +17,16 @@ CHARACTER_PACK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 logger = logging.getLogger("akane.store")
 
 
+class MessageSourceIdCollisionError(ValueError):
+    """A caller-owned message source ID points at different immutable content."""
+
+    status = "collision"
+    reason = "message_source_id_collision"
+
+    def __init__(self) -> None:
+        super().__init__(self.reason)
+
+
 def normalize_character_pack_id(value: Any) -> str:
     pack_id = str(value or "").strip()
     if not pack_id or not CHARACTER_PACK_ID_PATTERN.fullmatch(pack_id):
@@ -1400,21 +1410,39 @@ class MemoryStore:
         semantic_tags: list[str] | None = None,
         memory_metadata: dict[str, Any] | None = None,
         index_in_vector: bool = True,
+        source_id: str = "",
     ) -> dict[str, Any]:
         ts = int(timestamp or time.time())
         normalized_character_pack_id = normalize_character_pack_id(character_pack_id)
+        caller_source_id = str(source_id or "").strip()
+        normalized_source_id = caller_source_id or str(uuid.uuid4())
+        normalized_profile_user_id = str(profile_user_id)
+        normalized_session_id = str(session_id)
+        normalized_role = str(role)
+        normalized_content = str(content)
+        if caller_source_id:
+            existing = self._resolve_idempotent_message(
+                source_id=normalized_source_id,
+                profile_user_id=normalized_profile_user_id,
+                session_id=normalized_session_id,
+                character_pack_id=normalized_character_pack_id,
+                role=normalized_role,
+                content=normalized_content,
+            )
+            if existing is not None:
+                return existing
         record = {
-            "source_id": str(uuid.uuid4()),
-            "profile_user_id": str(profile_user_id),
-            "session_id": str(session_id),
+            "source_id": normalized_source_id,
+            "profile_user_id": normalized_profile_user_id,
+            "session_id": normalized_session_id,
             "character_pack_id": normalized_character_pack_id,
             "seq_no": self.next_seq_no(
                 session_id,
                 profile_user_id=profile_user_id,
                 character_pack_id=normalized_character_pack_id,
             ),
-            "role": str(role),
-            "content": str(content),
+            "role": normalized_role,
+            "content": normalized_content,
             "timestamp": ts,
             "date_label": str(date_label or timestamp_to_date_label(ts)),
             "time_of_day": str(time_of_day or infer_time_of_day(ts)),
@@ -1430,36 +1458,81 @@ class MemoryStore:
             character_pack_id=record["character_pack_id"],
             timestamp=record["timestamp"],
         )
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO chat_messages (
-                    source_id, profile_user_id, session_id, character_pack_id, seq_no, role, content,
-                    timestamp, date_label, time_of_day, semantic_tags_json,
-                    memory_metadata_json, index_in_vector, is_summarized, summary_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record["source_id"],
-                    record["profile_user_id"],
-                    record["session_id"],
-                    record["character_pack_id"],
-                    record["seq_no"],
-                    record["role"],
-                    record["content"],
-                    record["timestamp"],
-                    record["date_label"],
-                    record["time_of_day"],
-                    record["semantic_tags_json"],
-                    record["memory_metadata_json"],
-                    record["index_in_vector"],
-                    record["is_summarized"],
-                    record["summary_id"],
-                ),
-            )
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO chat_messages (
+                        source_id, profile_user_id, session_id, character_pack_id, seq_no, role, content,
+                        timestamp, date_label, time_of_day, semantic_tags_json,
+                        memory_metadata_json, index_in_vector, is_summarized, summary_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record["source_id"],
+                        record["profile_user_id"],
+                        record["session_id"],
+                        record["character_pack_id"],
+                        record["seq_no"],
+                        record["role"],
+                        record["content"],
+                        record["timestamp"],
+                        record["date_label"],
+                        record["time_of_day"],
+                        record["semantic_tags_json"],
+                        record["memory_metadata_json"],
+                        record["index_in_vector"],
+                        record["is_summarized"],
+                        record["summary_id"],
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            if caller_source_id:
+                existing = self._resolve_idempotent_message(
+                    source_id=normalized_source_id,
+                    profile_user_id=normalized_profile_user_id,
+                    session_id=normalized_session_id,
+                    character_pack_id=normalized_character_pack_id,
+                    role=normalized_role,
+                    content=normalized_content,
+                )
+                if existing is not None:
+                    return existing
+            raise
         message = self._row_to_message(record)
         self._notify_message_write(message)
         return message
+
+    def _resolve_idempotent_message(
+        self,
+        *,
+        source_id: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        role: str,
+        content: str,
+    ) -> dict[str, Any] | None:
+        existing = self.get_message_by_source_id(source_id)
+        if existing is None:
+            return None
+        immutable_identity = (
+            "profile_user_id",
+            "session_id",
+            "character_pack_id",
+            "role",
+            "content",
+        )
+        expected = {
+            "profile_user_id": profile_user_id,
+            "session_id": session_id,
+            "character_pack_id": character_pack_id,
+            "role": role,
+            "content": content,
+        }
+        if all(str(existing.get(field) or "") == str(expected[field]) for field in immutable_identity):
+            return existing
+        raise MessageSourceIdCollisionError()
 
     def update_message_semantic_tags(self, source_id: str, semantic_tags: list[str]) -> None:
         with self._connect() as conn:

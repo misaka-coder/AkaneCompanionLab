@@ -6,7 +6,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from companion_v01.store import MemoryStore
+from companion_v01.store import MessageSourceIdCollisionError, MemoryStore
 
 
 class MemoryStoreEvalTurnTests(unittest.TestCase):
@@ -185,6 +185,72 @@ class MemoryStoreEvalTurnTests(unittest.TestCase):
 
             self.assertEqual([item["seq_no"] for item in recent_messages], [3, 4, 5])
             self.assertEqual([item["content"] for item in recent_messages], ["message-3", "message-4", "message-5"])
+
+    def test_add_message_reuses_matching_caller_source_id_without_duplicate_notification(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            notifications: list[dict[str, object]] = []
+            store.set_message_write_callback(lambda message: notifications.append(message))
+            kwargs = {
+                "profile_user_id": "user_a",
+                "session_id": "session_a",
+                "character_pack_id": "akane_v1",
+                "role": "user",
+                "content": "同一条财经事件",
+                "source_id": "plugin-event:stable-source",
+            }
+
+            first = store.add_message(**kwargs, timestamp=100)
+            duplicate = store.add_message(**kwargs, timestamp=200)
+            messages = store.get_session_messages(
+                profile_user_id="user_a",
+                session_id="session_a",
+                character_pack_id="akane_v1",
+                limit=10,
+            )
+
+            self.assertEqual(first, duplicate)
+            self.assertEqual(duplicate["timestamp"], 100)
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(len(notifications), 1)
+
+    def test_add_message_rejects_caller_source_id_collision_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            original = store.add_message(
+                profile_user_id="user_a",
+                session_id="session_a",
+                character_pack_id="akane_v1",
+                role="user",
+                content="原始财经事件",
+                source_id="plugin-event:collision",
+                timestamp=100,
+            )
+            collisions = (
+                {"profile_user_id": "user_b"},
+                {"session_id": "session_b"},
+                {"character_pack_id": "other_character"},
+                {"role": "assistant"},
+                {"content": "被篡改的财经事件"},
+            )
+
+            for overrides in collisions:
+                kwargs = {
+                    "profile_user_id": "user_a",
+                    "session_id": "session_a",
+                    "character_pack_id": "akane_v1",
+                    "role": "user",
+                    "content": "原始财经事件",
+                    "source_id": "plugin-event:collision",
+                    **overrides,
+                }
+                with self.subTest(overrides=overrides):
+                    with self.assertRaises(MessageSourceIdCollisionError) as raised:
+                        store.add_message(**kwargs, timestamp=200)
+                    self.assertEqual(raised.exception.status, "collision")
+                    self.assertEqual(raised.exception.reason, "message_source_id_collision")
+
+            self.assertEqual(store.get_message_by_source_id("plugin-event:collision"), original)
 
     def test_memory_metadata_round_trips_across_memory_layers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

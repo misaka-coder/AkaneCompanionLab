@@ -230,6 +230,8 @@ class PluginReasoningRequest:
     extra_context: str = ""
     character_pack_id: str = ""
     timestamp: int = 0
+    stable_system_context: str = ""
+    memory_idempotency_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)

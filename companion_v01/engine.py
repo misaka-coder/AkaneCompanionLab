@@ -133,7 +133,7 @@ from .tool_runtime import (
 )
 from . import visual_context_engine
 from .vision_service import VisionObservationService
-from .store import MemoryStore
+from .store import MemoryStore, normalize_character_pack_id
 from .text_utils import (
     detect_time_of_day_from_text,
     extract_semantic_tags,
@@ -2328,6 +2328,32 @@ class AkaneMemoryEngine:
     def _should_persist_assistant_turn(payload: dict[str, Any]) -> bool:
         return not bool(payload.get("transient_assistant_message"))
 
+    @staticmethod
+    def _pop_user_memory_source_id(
+        payload: dict[str, Any],
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> str:
+        raw_idempotency_key = payload.pop("memory_idempotency_key", "")
+        if not isinstance(raw_idempotency_key, str) or not raw_idempotency_key.strip():
+            return ""
+        source_material = json.dumps(
+            {
+                "profile_user_id": str(profile_user_id),
+                "session_id": str(session_id),
+                "character_pack_id": normalize_character_pack_id(character_pack_id),
+                "memory_idempotency_key": raw_idempotency_key.strip(),
+                "role": "user",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(source_material.encode("utf-8", errors="ignore")).hexdigest()
+        return f"plugin-event:{digest}"
+
     def _build_transient_user_record(
         self,
         *,
@@ -2596,6 +2622,12 @@ class AkaneMemoryEngine:
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
         session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
         profile_user_id = str(payload.get("real_user_id") or session_id)
+        user_memory_source_id = self._pop_user_memory_source_id(
+            payload,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=turn_character_pack_id,
+        )
         user_message = str(payload.get("message") or "").strip()
         now_ts = int(payload.get("timestamp") or time.time())
         payload = self._prepare_care_context_for_turn(
@@ -2649,6 +2681,7 @@ class AkaneMemoryEngine:
                 date_label=date_label,
                 time_of_day=time_of_day,
                 semantic_tags=extract_semantic_tags(user_message),
+                source_id=user_memory_source_id,
             )
             if not self._memcore_owns_compaction():
                 self._schedule_summary_cycle(
@@ -3076,6 +3109,12 @@ class AkaneMemoryEngine:
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
         session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
         profile_user_id = str(payload.get("real_user_id") or session_id)
+        user_memory_source_id = self._pop_user_memory_source_id(
+            payload,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=turn_character_pack_id,
+        )
         user_message = str(payload.get("message") or "").strip()
         now_ts = int(payload.get("timestamp") or time.time())
         payload = self._prepare_care_context_for_turn(
@@ -3129,6 +3168,7 @@ class AkaneMemoryEngine:
                 date_label=date_label,
                 time_of_day=time_of_day,
                 semantic_tags=extract_semantic_tags(user_message),
+                source_id=user_memory_source_id,
             )
             if not self._memcore_owns_compaction():
                 self._schedule_summary_cycle(
