@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import threading
 from dataclasses import dataclass
@@ -31,6 +32,9 @@ from .tool_invocation import NATIVE_TOOL_CALLS_FIELD
 from .tool_invocation import TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
 from .tool_invocation import TOOL_SOURCE_FIELD
+
+
+logger = logging.getLogger("akane.llm_runtime")
 
 
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -806,7 +810,7 @@ class LLMRuntime:
             self._note_parse_fallback(content, phase="call_json")
         except Exception as exc:
             self._record_metric("errors")
-            self._record_error_detail(exc, phase="call_json")
+            self._capture_runtime_error(exc, phase="call_json")
         self._record_metric("chat_json_fallbacks")
         return dict(fallback)
 
@@ -884,6 +888,7 @@ class LLMRuntime:
         except Exception as exc:
             error = str(exc or "").strip()
             self._record_metric("errors")
+            self._capture_runtime_error(exc, phase="call_ndjson")
         finally:
             self._close_stream(response)
         elapsed_ms = round((time.perf_counter() - start_at) * 1000, 1)
@@ -971,6 +976,7 @@ class LLMRuntime:
         except Exception as exc:
             error = str(exc or "").strip()
             self._record_metric("errors")
+            self._capture_runtime_error(exc, phase="stream_chat_json")
         finally:
             self._record_cache_metrics(response)
             self._close_stream(response)
@@ -2312,6 +2318,18 @@ class LLMRuntime:
         }
         with lock:
             self._last_error = detail
+
+    def _capture_runtime_error(self, exc: Exception, *, phase: str) -> None:
+        """Record and log one bounded, secret-redacted provider failure."""
+
+        self._record_error_detail(exc, phase=phase)
+        detail = self.snapshot_last_error()
+        logger.warning(
+            "llm request failed phase=%s type=%s message=%s",
+            str(detail.get("phase") or phase),
+            str(detail.get("type") or exc.__class__.__name__),
+            str(detail.get("message") or "provider_request_failed"),
+        )
 
     def _note_truncation(self, response: Any, *, phase: str) -> None:
         """Surface silent length-truncation through the metric + last-error

@@ -286,6 +286,22 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertNotIn("sk-othersecret", detail["message"])
         self.assertIn("[redacted]", detail["message"])
 
+    def test_runtime_error_capture_logs_only_redacted_detail(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._last_error_lock = threading.RLock()
+        runtime._last_error = {}
+
+        with patch("companion_v01.llm_runtime.logger.warning") as warning:
+            runtime._capture_runtime_error(
+                RuntimeError("Authorization: Bearer sk-testsecret123456"),
+                phase="stream_chat_json",
+            )
+
+        rendered = " ".join(str(value) for value in warning.call_args.args)
+        self.assertNotIn("sk-testsecret123456", rendered)
+        self.assertIn("[redacted]", rendered)
+        self.assertEqual(runtime.snapshot_last_error()["phase"], "stream_chat_json")
+
     def test_llm_runtime_uses_json_mode_for_ollama_json_calls(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
