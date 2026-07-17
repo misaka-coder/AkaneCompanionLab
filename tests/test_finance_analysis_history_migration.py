@@ -11,6 +11,7 @@ from typing import Any
 from scripts.migrate_finance_analysis_history import (
     _plugin_event_source_id,
     build_timeline_facade,
+    compact_migrated_namespaces,
     create_backups,
     load_delivered_history,
     migrate_delivered_history,
@@ -43,6 +44,20 @@ class _FakeTimeline:
         self.records[source_id] = {**record, "role": role, "scope": dict(scope)}
         self.writes.append((role, dict(record)))
         return {"ok": True, "status": "recorded", "source_id": source_id}
+
+    def compact_due_sync(self, **scope: Any) -> dict[str, Any]:
+        del scope
+        return {
+            "ok": True,
+            "status": "completed",
+            "stats": {
+                "summaries_created": 2,
+                "semantic_created": 1,
+                "reinforced": 0,
+                "summary_retry_pending": 0,
+                "semantic_retry_pending": 0,
+            },
+        }
 
 
 class FinanceAnalysisHistoryMigrationTests(unittest.TestCase):
@@ -187,6 +202,25 @@ class FinanceAnalysisHistoryMigrationTests(unittest.TestCase):
         with closing(sqlite3.connect(memcore_path)) as connection:
             count = int(connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
         self.assertEqual(count, 2)
+
+    def test_compaction_reports_safe_aggregate_counts_and_stops_on_retry(self) -> None:
+        entries, _ = load_delivered_history(self.db_path)
+        timeline = _FakeTimeline()
+
+        completed = compact_migrated_namespaces(entries, timeline=timeline)
+        timeline.compact_due_sync = lambda **_scope: {
+            "ok": True,
+            "status": "completed",
+            "stats": {"summary_retry_pending": 1},
+        }
+        retry_pending = compact_migrated_namespaces(entries, timeline=timeline)
+
+        self.assertEqual(completed["namespaces"], 1)
+        self.assertEqual(completed["completed"], 1)
+        self.assertEqual(completed["summaries_created"], 2)
+        self.assertEqual(completed["semantic_created"], 1)
+        self.assertEqual(retry_pending["failed"], 1)
+        self.assertEqual(retry_pending["reason"], "compaction_retry_pending")
 
 
 if __name__ == "__main__":

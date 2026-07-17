@@ -48,6 +48,8 @@ class TimelineFacade(Protocol):
 
     def record_assistant_turn(self, record: dict[str, Any], **scope: Any) -> dict[str, Any]: ...
 
+    def compact_due_sync(self, **scope: Any) -> dict[str, Any]: ...
+
 
 def load_delivered_history(source_db: Path) -> tuple[list[LegacyDeliveredAnalysis], dict[str, Any]]:
     source = Path(source_db).resolve(strict=True)
@@ -190,6 +192,57 @@ def migrate_delivered_history(
     return report
 
 
+def compact_migrated_namespaces(
+    entries: Iterable[LegacyDeliveredAnalysis],
+    *,
+    timeline: TimelineFacade,
+) -> dict[str, Any]:
+    scopes = list(
+        dict.fromkeys(
+            (
+                entry.profile_user_id,
+                entry.session_id,
+                entry.character_pack_id,
+            )
+            for entry in entries
+        )
+    )
+    report = {
+        "namespaces": len(scopes),
+        "completed": 0,
+        "summaries_created": 0,
+        "semantic_created": 0,
+        "reinforced": 0,
+        "retry_pending": 0,
+        "failed": 0,
+        "reason": "",
+    }
+    for profile_user_id, session_id, character_pack_id in scopes:
+        result = timeline.compact_due_sync(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if not bool(result.get("ok")):
+            report["failed"] += 1
+            report["reason"] = str(result.get("reason") or result.get("status") or "compaction_failed")
+            return report
+        stats = result.get("stats") if isinstance(result.get("stats"), dict) else {}
+        report["summaries_created"] += max(0, int(stats.get("summaries_created") or 0))
+        report["semantic_created"] += max(0, int(stats.get("semantic_created") or 0))
+        report["reinforced"] += max(0, int(stats.get("reinforced") or 0))
+        retry_pending = max(0, int(stats.get("summary_retry_pending") or 0)) + max(
+            0, int(stats.get("semantic_retry_pending") or 0)
+        )
+        report["retry_pending"] += retry_pending
+        if retry_pending:
+            report["failed"] += 1
+            report["reason"] = "compaction_retry_pending"
+            return report
+        report["completed"] += 1
+    return report
+
+
 def create_backups(source_db: Path, memcore_db: Path, backup_dir: Path) -> dict[str, bool]:
     target_dir = Path(backup_dir).resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -211,18 +264,25 @@ def create_backups(source_db: Path, memcore_db: Path, backup_dir: Path) -> dict[
     return {"source": True, "memcore": True}
 
 
-def build_timeline_facade(memcore_db: Path) -> TimelineFacade:
+def build_timeline_facade(memcore_db: Path, *, enable_compaction: bool = False) -> TimelineFacade:
     import config
     from companion_v01.embedding_provider import HashedEmbeddingProvider
+    from companion_v01.llm_runtime import LLMRuntime
     from companion_v01.memcore_integration.manager import MemcoreManager
 
+    llm: Any = _UnavailableMigrationLLM()
+    if enable_compaction:
+        llm = LLMRuntime(
+            log_dir=Path(str(getattr(config, "LOG_DIR", "") or "logs")),
+            instance_id=str(getattr(config, "AKANE_INSTANCE_ID", "") or "finance-maintenance"),
+        )
     return MemcoreManager(
         backend="memcore",
         storage_path=Path(memcore_db).resolve(strict=True),
         visible_scope=str(getattr(config, "MEMCORE_VISIBLE_SCOPE", "user") or "user"),
         enable_flavor=bool(getattr(config, "MEMCORE_ENABLE_FLAVOR", True)),
         shadow_compare=False,
-        llm=_UnavailableMigrationLLM(),
+        llm=llm,
         embedding_provider=HashedEmbeddingProvider(),
     )
 
@@ -326,6 +386,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--memcore-db", type=Path, required=True)
     parser.add_argument("--backup-dir", type=Path)
     parser.add_argument("--apply", action="store_true", help="Create backups and write; default is read-only dry run")
+    parser.add_argument(
+        "--compact-after",
+        action="store_true",
+        help="After a successful apply, run one synchronous due-compaction pass per migrated namespace",
+    )
     return parser
 
 
@@ -339,12 +404,18 @@ def main() -> int:
             if args.backup_dir is None:
                 raise RuntimeError("backup_dir_required_for_apply")
             report["backups"] = create_backups(args.finance_db, args.memcore_db, args.backup_dir)
-            manager = build_timeline_facade(args.memcore_db)
+            manager = build_timeline_facade(args.memcore_db, enable_compaction=args.compact_after)
             if not bool(getattr(manager, "available", False)):
                 raise RuntimeError("memcore_facade_unavailable")
             migrated = migrate_delivered_history(entries, timeline=manager)
             report.update(migrated)
             report["status"] = "completed" if not migrated["failed"] else "failed"
+            if report["status"] == "completed" and args.compact_after:
+                compaction = compact_migrated_namespaces(entries, timeline=manager)
+                report["compaction"] = compaction
+                if compaction["failed"]:
+                    report["status"] = "failed"
+                    report["reason"] = compaction["reason"]
     except Exception as exc:
         report["status"] = "failed"
         report["reason"] = str(exc) or exc.__class__.__name__
