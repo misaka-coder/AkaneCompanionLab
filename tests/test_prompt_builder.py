@@ -361,19 +361,19 @@ system = "semantic reinforcement system"
             latent["user_prompt"].index("用户原始消息"),
         )
 
-    def test_plugin_proactive_scope_places_stable_tools_before_dynamic_context(self) -> None:
+    def test_plugin_proactive_scope_uses_stable_system_and_appends_memory_timeline_once(self) -> None:
         builder = PromptBuilder(load_persona_config())
 
         result = builder.build_final_generation_context(
             now_ts=1_712_400_000,
-            raw_text="ordinary session history must stay out",
+            raw_text="Assistant: earlier analysis\nUser: real finance event",
             current_message_text="User: real finance event",
-            episodic_summary_text="ordinary episodic memory must stay out",
-            semantic_summary_text="ordinary semantic memory must stay out",
-            memory_text="automatic retrieval must stay out",
+            episodic_summary_text="ordinary episodic memory",
+            semantic_summary_text="ordinary semantic memory",
+            memory_text="automatic retrieval evidence",
             current_visual_context="bounded proactive visual state",
             resource_context="",
-            extra_context="dynamic plugin instruction and tool results",
+            extra_context="dynamic plugin instruction",
             visual_defaults={
                 "major": "home",
                 "minor": "room",
@@ -386,15 +386,97 @@ system = "semantic reinforcement system"
             tool_prompt_context="stable finance capability contract",
             debug_enabled=False,
             prompt_scope="plugin_proactive",
+            stable_system_context="stable finance research principles",
+            current_message_in_raw=True,
         )
 
         prompt = result["user_prompt"]
-        self.assertNotIn("ordinary session history must stay out", prompt)
-        self.assertNotIn("ordinary episodic memory must stay out", prompt)
-        self.assertNotIn("ordinary semantic memory must stay out", prompt)
-        self.assertNotIn("automatic retrieval must stay out", prompt)
+        self.assertEqual(result["system_extra_blocks"][0], "stable finance research principles")
+        self.assertNotIn("stable finance research principles", prompt)
+        self.assertIn("ordinary episodic memory", prompt)
+        self.assertIn("ordinary semantic memory", prompt)
+        self.assertIn("automatic retrieval evidence", prompt)
+        self.assertIn("Assistant: earlier analysis", prompt)
+        self.assertEqual(prompt.count("real finance event"), 1)
+        self.assertNotIn("\n当前用户消息：\n", prompt)
+        self.assertNotIn("当前时间：", prompt)
+        self.assertNotIn("debug_enabled=", prompt)
+        self.assertNotIn("debug_enabled=", result["system_prompt"])
         self.assertLess(prompt.index("stable finance capability contract"), prompt.index("dynamic plugin instruction"))
-        self.assertLess(prompt.index("dynamic plugin instruction"), prompt.index("real finance event"))
+        self.assertLess(prompt.index("dynamic plugin instruction"), prompt.index("ordinary semantic memory"))
+        self.assertLess(prompt.index("ordinary semantic memory"), prompt.index("ordinary episodic memory"))
+        self.assertLess(prompt.index("ordinary episodic memory"), prompt.index("Assistant: earlier analysis"))
+        self.assertTrue(result["stable_system_context_hash"])
+
+    def test_plugin_proactive_scope_falls_back_to_current_message_when_raw_does_not_contain_it(self) -> None:
+        builder = PromptBuilder(load_persona_config())
+        result = builder.build_final_generation_context(
+            now_ts=1_712_400_000,
+            raw_text="Assistant: earlier analysis",
+            current_message_text="User: current finance event",
+            episodic_summary_text="",
+            semantic_summary_text="",
+            memory_text="",
+            current_visual_context="",
+            resource_context="",
+            extra_context="",
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=True,
+            tool_prompt_context="tools",
+            debug_enabled=False,
+            prompt_scope="plugin_proactive",
+            current_message_in_raw=False,
+        )
+
+        self.assertEqual(result["user_prompt"].count("current finance event"), 1)
+        self.assertIn("当前用户消息", result["user_prompt"])
+
+    def test_plugin_stable_system_hash_ignores_dynamic_finance_event(self) -> None:
+        builder = PromptBuilder(load_persona_config())
+        common = {
+            "now_ts": 1_712_400_000,
+            "episodic_summary_text": "",
+            "semantic_summary_text": "",
+            "memory_text": "",
+            "current_visual_context": "",
+            "resource_context": "",
+            "extra_context": "",
+            "visual_defaults": {
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            "allow_tool_call": True,
+            "tool_prompt_context": "tools",
+            "debug_enabled": False,
+            "prompt_scope": "plugin_proactive",
+            "stable_system_context": "stable finance research principles",
+            "current_message_in_raw": True,
+        }
+
+        first = builder.build_final_generation_context(
+            **common,
+            raw_text="User: finance event A",
+            current_message_text="User: finance event A",
+        )
+        second = builder.build_final_generation_context(
+            **common,
+            raw_text="User: finance event B",
+            current_message_text="User: finance event B",
+        )
+
+        self.assertEqual(first["stable_system_context_hash"], second["stable_system_context_hash"])
+        self.assertNotEqual(first["user_prompt"], second["user_prompt"])
 
     def test_final_output_schema_places_tool_call_after_speech_segments(self) -> None:
         persona = load_persona_config()

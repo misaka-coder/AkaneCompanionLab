@@ -84,7 +84,6 @@ debug_mode = '''
 system = '''
 [SYSTEM FORMAT REQUIREMENTS - STRICTLY FOLLOW; DO NOT EMBODY]
 你必须只输出一个合法 JSON 对象，不能输出任何额外解释、前后缀、代码块或 markdown。
-你会收到一个 debug_enabled 开关，必须严格遵守。
 当前模式对应的字段清单和输出示例会在后面单独给出，你必须严格按当前模式执行。
 请先完整输出 emotion，再输出 speech 和 speech_segments，紧接着输出 tool_call，再继续输出后面的字段。
 其中 speech 是兼容文本；单气泡回复直接填写 speech，并让 speech_segments 为空数组。
@@ -124,20 +123,18 @@ state_request 用于表达本轮互动对角色状态的影响，大多数对话
 [CURRENT ASSISTANT STATE - EMBODY THIS]
 '''
 fast_mode = '''
-当前模式：debug_enabled=false。
 字段固定为 emotion, speech, speech_segments, tool_call, code_snippet, status, choices, character, scene, persona, memory_metadata, state_request，禁止输出 thought。
 输出格式示例如下：
 {"emotion":"normal","speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"mood_tags":[],"importance":0.0,"confidence":0.0},"state_request":null}
 '''
 debug_mode = '''
-当前模式：debug_enabled=true。
 字段固定为 thought, emotion, speech, speech_segments, tool_call, code_snippet, status, choices, character, scene, persona, memory_metadata, state_request，且必须把 tool_call 放在 speech_segments 后面。
 输出格式示例如下：
 {"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"mood_tags":[],"importance":0.0,"confidence":0.0},"state_request":null}
 '''
 fallback_thought = "我先根据手头的上下文自然回应用户。"
 fallback_speech = "我在认真听你说，要不要再多告诉我一点？"
-user_prompt_suffix = "请根据这些内容，以当前前台角色的身份自然回复。再次强调：只输出 JSON 对象本身，字段必须与当前 debug_enabled 模式完全一致；choices 和 speech_segments 必须始终是数组；persona 必须是包含 active 字段的对象；memory_metadata 必须是对象；如果有代码示例请放进 code_snippet，不要放 markdown 代码块围栏。"
+user_prompt_suffix = "请根据这些内容，以当前前台角色的身份自然回复。再次强调：只输出 JSON 对象本身，字段必须与当前系统输出契约完全一致；choices 和 speech_segments 必须始终是数组；persona 必须是包含 active 字段的对象；memory_metadata 必须是对象；如果有代码示例请放进 code_snippet，不要放 markdown 代码块围栏。"
 
 [variants.default.summary]
 fallback_diary_template = "这段已整理的对话主要围绕：{tags}。"

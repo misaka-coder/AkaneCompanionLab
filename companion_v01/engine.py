@@ -2617,6 +2617,9 @@ class AkaneMemoryEngine:
         prompt_scope = (
             "plugin_proactive" if str(payload.get("turn_kind") or "").strip().lower() == "plugin_proactive" else ""
         )
+        plugin_stable_system_context = str(payload.pop("plugin_stable_system_context", "") or "").strip()
+        if prompt_scope != "plugin_proactive":
+            plugin_stable_system_context = ""
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
@@ -2753,6 +2756,7 @@ class AkaneMemoryEngine:
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=turn_domain_profile_id,
             prompt_scope=prompt_scope,
+            stable_system_context=plugin_stable_system_context,
         )
         recent_raw_for_turn = list(recent_raw)
         tool_turns: list[dict[str, Any]] = []
@@ -2817,6 +2821,7 @@ class AkaneMemoryEngine:
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
+                    stable_system_context=plugin_stable_system_context,
                 )
                 tool_round_index += 1
                 if allow_retry:
@@ -2870,6 +2875,7 @@ class AkaneMemoryEngine:
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
+                    stable_system_context=plugin_stable_system_context,
                 )
                 break
 
@@ -2955,6 +2961,7 @@ class AkaneMemoryEngine:
                 prompt_exclude_source_ids=prompt_exclude_source_ids,
                 domain_profile_id=turn_domain_profile_id,
                 prompt_scope=prompt_scope,
+                stable_system_context=plugin_stable_system_context,
             )
             tool_round_index += 1
 
@@ -3104,6 +3111,9 @@ class AkaneMemoryEngine:
         prompt_scope = (
             "plugin_proactive" if str(payload.get("turn_kind") or "").strip().lower() == "plugin_proactive" else ""
         )
+        plugin_stable_system_context = str(payload.pop("plugin_stable_system_context", "") or "").strip()
+        if prompt_scope != "plugin_proactive":
+            plugin_stable_system_context = ""
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
@@ -3240,6 +3250,7 @@ class AkaneMemoryEngine:
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=turn_domain_profile_id,
             prompt_scope=prompt_scope,
+            stable_system_context=plugin_stable_system_context,
         )
         recent_raw_for_turn = list(recent_raw)
         tool_turns: list[dict[str, Any]] = []
@@ -3315,6 +3326,7 @@ class AkaneMemoryEngine:
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
+                    stable_system_context=plugin_stable_system_context,
                 )
                 tool_round_index += 1
                 if allow_retry:
@@ -3368,6 +3380,7 @@ class AkaneMemoryEngine:
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
+                    stable_system_context=plugin_stable_system_context,
                 )
                 break
 
@@ -3466,6 +3479,7 @@ class AkaneMemoryEngine:
                 prompt_exclude_source_ids=prompt_exclude_source_ids,
                 domain_profile_id=turn_domain_profile_id,
                 prompt_scope=prompt_scope,
+                stable_system_context=plugin_stable_system_context,
             )
             tool_round_index += 1
 
@@ -3739,6 +3753,7 @@ class AkaneMemoryEngine:
         now_ts: int,
         current_visual_payload: Any = None,
         extra_user_context: str = "",
+        stable_system_context: str = "",
         client_context: ClientProtocolContext | None = None,
         resource_manifest: ResourceManifest | None = None,
         character_pack_id: str = "",
@@ -3762,6 +3777,7 @@ class AkaneMemoryEngine:
             current_visual_payload=current_visual_payload,
             profile_user_id=profile_user_id,
             extra_user_context=extra_user_context,
+            stable_system_context=stable_system_context,
             client_context=client_context,
             resource_manifest=resource_manifest,
             character_pack_id=character_pack_id,
@@ -3851,6 +3867,7 @@ class AkaneMemoryEngine:
             "prompt_profile": generation_context.get("prompt_profile") or {},
             "domain_profile": generation_context.get("domain_profile") or {},
             "prompt_scope": str(generation_context.get("prompt_scope") or ""),
+            "stable_system_context_hash": str(generation_context.get("stable_system_context_hash") or ""),
             "native_tools": list(generation_context.get("native_tools") or []),
         }
         canonical = json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -3896,6 +3913,7 @@ class AkaneMemoryEngine:
         now_ts: int,
         current_visual_payload: Any = None,
         extra_user_context: str = "",
+        stable_system_context: str = "",
         client_context: ClientProtocolContext | None = None,
         resource_manifest: ResourceManifest | None = None,
         character_pack_id: str = "",
@@ -3919,6 +3937,7 @@ class AkaneMemoryEngine:
             current_visual_payload=current_visual_payload,
             profile_user_id=profile_user_id,
             extra_user_context=extra_user_context,
+            stable_system_context=stable_system_context,
             client_context=client_context,
             resource_manifest=resource_manifest,
             character_pack_id=character_pack_id,
@@ -4065,6 +4084,7 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         current_visual_payload: Any = None,
         extra_user_context: str = "",
+        stable_system_context: str = "",
         client_context: ClientProtocolContext | None = None,
         resource_manifest: ResourceManifest | None = None,
         character_pack_id: str = "",
@@ -4091,6 +4111,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             current_visual_payload=current_visual_payload,
             extra_user_context=extra_user_context,
+            stable_system_context=stable_system_context,
             client_context=client_context,
             resource_manifest=resource_manifest,
             character_pack_id=character_pack_id,
@@ -4389,6 +4410,8 @@ class AkaneMemoryEngine:
         allow_more: bool,
         stop_reason: str = "",
     ) -> str:
+        if not any(str(item or "").strip() for item in tool_followups):
+            return str(turn_extra_user_context or "").strip()
         return self._merge_extra_user_context(
             turn_extra_user_context,
             self._build_multi_tool_followup_context(
@@ -4688,11 +4711,7 @@ class AkaneMemoryEngine:
             tool_result.followup_context,
             tool_type=tool_result.tool_type,
         )
-        if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI}:
-            tool_followups.append(
-                f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果已通过结构化 tool_result 提供。"
-            )
-        else:
+        if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() not in {NATIVE_ANTHROPIC, NATIVE_OPENAI}:
             tool_followups.append(f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n{shaped_followup}")
             if workspace_followup:
                 tool_followups.append(workspace_followup)

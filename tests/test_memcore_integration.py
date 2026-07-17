@@ -17,6 +17,7 @@ from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.engine_services import response_builder
 from companion_v01.memcore_integration.manager import MemcoreManager, normalize_memory_backend
 from companion_v01.memcore_integration.timeline import MemcoreTimelineToolService
+from companion_v01.prompt_profiles import PromptModule
 from companion_v01.retrieval_types import RetrievalPipelineResult
 from companion_v01 import retrieval_engine
 from companion_v01.tool_runtime import ReadMemoryTimelineToolHandler, ToolExecutionContext
@@ -227,11 +228,17 @@ class _PromptContextEngine:
             "extra_character_outfits": [],
         }
 
-    def _split_history_records(self, **_kwargs):
-        return [], {"source_id": "current", "role": "user", "content": "现在的问题", "timestamp": 1712400000}
+    def _split_history_records(self, **kwargs):
+        return [], {
+            "source_id": "current",
+            "role": "user",
+            "content": str(kwargs.get("user_message") or ""),
+            "timestamp": int(kwargs.get("now_ts") or 1712400000),
+        }
 
-    def _render_current_message_line(self, **_kwargs) -> str:
-        return "User: 现在的问题"
+    def _render_current_message_line(self, **kwargs) -> str:
+        record = kwargs.get("current_user_record") or {}
+        return f"User: {record.get('content') or ''}"
 
     def _get_attachment_inbox_service(self):
         return None
@@ -1870,15 +1877,16 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["semantic_summary_text"], "")
         self.assertNotIn("LEGACY", repr(captured))
 
-    def test_plugin_proactive_prompt_context_skips_automatic_memory_layers(self) -> None:
+    def test_plugin_proactive_prompt_context_uses_normal_visible_memory_layers(self) -> None:
         memcore_manager = _PromptContextMemcoreManager(
             {
                 "operation": "build_prompt_context",
                 "ok": True,
                 "status": "ok",
-                "raw_text": "MEMCORE RAW MUST STAY OUT",
-                "episodic_text": "MEMCORE EPISODIC MUST STAY OUT",
-                "semantic_text": "MEMCORE SEMANTIC MUST STAY OUT",
+                "raw": [{"source_id": "current", "role": "user", "content": "真实插件事件"}],
+                "raw_text": "MEMCORE RAW WITH CURRENT EVENT：真实插件事件",
+                "episodic_text": "MEMCORE EPISODIC",
+                "semantic_text": "MEMCORE SEMANTIC",
             }
         )
         engine = _PromptContextEngine(memcore_manager=memcore_manager)
@@ -1896,18 +1904,99 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 now_ts=1712400000,
                 character_pack_id="char",
                 extra_user_context="PLUGIN INSTRUCTION",
+                stable_system_context="STABLE PLUGIN SYSTEM",
                 prompt_scope="plugin_proactive",
             )
 
         captured = engine.prompt_builder.kwargs
-        self.assertEqual(captured["raw_text"], "")
-        self.assertEqual(captured["episodic_summary_text"], "")
-        self.assertEqual(captured["semantic_summary_text"], "")
-        self.assertEqual(captured["memory_text"], "")
+        self.assertEqual(captured["raw_text"], "MEMCORE RAW WITH CURRENT EVENT：真实插件事件")
+        self.assertEqual(captured["episodic_summary_text"], "MEMCORE EPISODIC")
+        self.assertEqual(captured["semantic_summary_text"], "MEMCORE SEMANTIC")
+        self.assertEqual(captured["memory_text"], "AUTOMATIC RETRIEVAL MUST STAY OUT")
+        self.assertEqual(captured["stable_system_context"], "STABLE PLUGIN SYSTEM")
+        self.assertTrue(captured["current_message_in_raw"])
         self.assertEqual(captured["prompt_scope"], "plugin_proactive")
         self.assertEqual(result["prompt_scope"], "plugin_proactive")
-        self.assertEqual(memcore_manager.calls, [])
-        self.assertNotIn("MUST STAY OUT", repr(captured))
+        self.assertEqual(len(memcore_manager.calls), 1)
+        self.assertNotIn("LEGACY RAW MUST STAY OUT", repr(captured))
+
+    def test_plugin_proactive_scope_keeps_normal_akane_modules_enabled(self) -> None:
+        memcore_manager = _PromptContextMemcoreManager(
+            {
+                "operation": "build_prompt_context",
+                "ok": True,
+                "status": "ok",
+                "raw": [{"source_id": "current", "role": "user", "content": "插件事件"}],
+                "raw_text": "PLUGIN EVENT RAW",
+                "episodic_text": "",
+                "semantic_text": "",
+            }
+        )
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+        enabled_modules = {
+            PromptModule.EXTRA_CONTEXT,
+            PromptModule.CURRENT_VISUAL_STATE,
+            PromptModule.PENDING_GIFTS,
+            PromptModule.PERSONA,
+        }
+        care_values: list[bool] = []
+        profile = SimpleNamespace(
+            supports_thought_debug=False,
+            system_prompt_override="",
+            includes=lambda module: module in enabled_modules,
+            mode_prompt_override=lambda **_kwargs: "",
+            to_public_dict=lambda: {"name": "enabled"},
+        )
+        engine._get_prompt_profile_registry = lambda: SimpleNamespace(
+            resolve=lambda _context, *, care_enabled: care_values.append(bool(care_enabled)) or profile
+        )
+        engine._get_task_workspace_service = lambda: SimpleNamespace(
+            build_prompt_context=lambda **_kwargs: "TASK WORKSPACE CONTEXT"
+        )
+        engine.gift_service = SimpleNamespace(
+            build_pending_prompt_context=lambda **_kwargs: "PENDING GIFT CONTEXT",
+            resolve_focus_asset=lambda **_kwargs: None,
+        )
+        engine._get_persona_card_service = lambda: SimpleNamespace(
+            build_prompt_context=lambda **_kwargs: {
+                "system_context": "PERSONA SYSTEM",
+                "reference_context": "PERSONA REFERENCE",
+                "active_id": "persona-1",
+            }
+        )
+        engine._merge_prompt_persona_contexts = lambda _character, persona: dict(persona)
+        engine._build_memory_relationship_context = lambda **_kwargs: "RELATIONSHIP CONTEXT"
+        engine._build_current_visual_context = lambda **_kwargs: "CURRENT VISUAL CONTEXT"
+        engine._build_extra_context_audit_sections = lambda candidates: [
+            {"name": str(name), "text": str(text)} for name, text in candidates if str(text).strip()
+        ]
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="插件事件",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=1712400000,
+                prompt_scope="plugin_proactive",
+                client_context=ClientProtocolContext(
+                    requested_mode=ClientMode.QQ_TEXT,
+                    effective_mode=ClientMode.QQ_TEXT,
+                ),
+            )
+
+        captured = engine.prompt_builder.kwargs
+        self.assertEqual(care_values, [True])
+        self.assertIn("RELATIONSHIP CONTEXT", captured["extra_context"])
+        self.assertIn("TASK WORKSPACE CONTEXT", captured["extra_context"])
+        self.assertIn("PENDING GIFT CONTEXT", captured["extra_context"])
+        self.assertEqual(captured["persona_system_context"], "PERSONA SYSTEM")
+        self.assertEqual(captured["persona_reference_context"], "PERSONA REFERENCE")
+        self.assertEqual(captured["current_visual_context"], "CURRENT VISUAL CONTEXT")
 
     def test_read_memory_timeline_tool_uses_memcore_adapter_in_memcore_mode(self) -> None:
         legacy = _TimelineLegacyService()
@@ -2030,6 +2119,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         changed_state = dict(base, system_prompt=f"stable rules\n{CURRENT_ASSISTANT_STATE_MARKER}\nstate B")
         changed_tools = dict(base, native_tools=[{"type": "function", "function": {"name": "quote"}}])
         changed_scope = dict(base, prompt_scope="plugin_proactive")
+        changed_dynamic_event = dict(base, user_prompt="a different finance event")
+        changed_stable_system = dict(base, stable_system_context_hash="different-stable-system")
 
         self.assertEqual(
             AkaneMemoryEngine._final_prompt_cache_key(base),
@@ -2042,6 +2133,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotEqual(
             AkaneMemoryEngine._final_prompt_cache_key(base),
             AkaneMemoryEngine._final_prompt_cache_key(changed_scope),
+        )
+        self.assertEqual(
+            AkaneMemoryEngine._final_prompt_cache_key(base),
+            AkaneMemoryEngine._final_prompt_cache_key(changed_dynamic_event),
+        )
+        self.assertNotEqual(
+            AkaneMemoryEngine._final_prompt_cache_key(base),
+            AkaneMemoryEngine._final_prompt_cache_key(changed_stable_system),
         )
         self.assertTrue(AkaneMemoryEngine._final_prompt_cache_key(changed_scope).startswith("chat:plugin_proactive:"))
         self.assertEqual(AkaneMemoryEngine._final_response_max_attempts(changed_scope), 1)

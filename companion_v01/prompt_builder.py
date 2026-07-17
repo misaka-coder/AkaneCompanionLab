@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from typing import Any
 
@@ -151,6 +152,8 @@ class PromptBuilder:
         system_prompt_override: str = "",
         mode_prompt_override: str = "",
         prompt_scope: str = "",
+        stable_system_context: str = "",
+        current_message_in_raw: bool = False,
         extra_context_audit_sections: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         fallback = {
@@ -210,6 +213,10 @@ class PromptBuilder:
             {"name": "system.format_addendum", "text": format_addendum},
             {"name": "system.persona_state", "text": persona_system},
         ]
+        stable_system_text = str(stable_system_context or "").strip()
+        if stable_system_text:
+            system_extra_blocks.append(stable_system_text)
+            prompt_audit_sections.append({"name": "system_extra.plugin_stable", "text": stable_system_text})
         domain_profile_text = str(domain_profile_context or "").strip()
         if domain_profile_text:
             system_extra_blocks.append(domain_profile_text)
@@ -239,26 +246,30 @@ class PromptBuilder:
         current_time_text = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M")
         tool_context_text = str(tool_prompt_context or "").strip() or "当前没有额外能力或工具说明。"
         stable_user_intro = (
-            f"debug_enabled={str(debug_enabled).lower()}\n"
             f"{self.persona.final_user_prompt_suffix}\n\n"
             "如果记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
             "回应时自然带着这份余温即可，不要把它当作用户事实，也不要生硬复述标签。\n\n"
             f"{ATTRIBUTION_RULES}\n\n"
         )
-        if str(prompt_scope or "").strip() == "plugin_proactive":
-            # Trusted proactive plugin turns carry their own bounded task
-            # context. Put the stable capability contract before event/tool
-            # results so provider prefix caching can reuse it across the real
-            # multi-round reasoning loop.
+        plugin_proactive_scope = str(prompt_scope or "").strip() == "plugin_proactive"
+        current_is_in_raw = bool(plugin_proactive_scope and current_message_in_raw and raw_text)
+        if plugin_proactive_scope:
+            timeline_tail_parts: list[str] = []
+            if raw_text:
+                timeline_tail_parts.append(f"当前会话中所有未总结的原始消息：\n{raw_text}")
+            if not current_is_in_raw:
+                timeline_tail_parts.append(f"当前用户消息：\n{current_message_text}")
+            timeline_tail = "\n\n".join(timeline_tail_parts)
             user_prompt = (
                 f"{stable_user_intro}"
                 f"【本轮系统能力与工具上下文】\n{tool_context_text}\n\n"
-                "【本轮角色表达侧面参考】\n"
-                f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
                 f"{extra_context}\n\n"
                 f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
-                f"用户原始消息：\n{current_message_text}\n\n"
-                f"当前时间：{current_time_text}\n"
+                "【本轮角色表达侧面参考】\n"
+                f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
+                f"可用回忆片段：\n{memory_text}\n\n"
+                f"{memory_context_prompt}"
+                f"{timeline_tail}\n"
             )
         else:
             user_prompt = (
@@ -297,8 +308,16 @@ class PromptBuilder:
                 *extra_context_subsections,
                 {"name": "user.current_visual_context", "text": current_visual_context},
                 {"name": "user.tool_context", "text": tool_context_text},
-                {"name": "user.current_message", "text": current_message_text},
-                {"name": "user.current_time", "text": current_time_text},
+                {
+                    "name": "user.current_message",
+                    "text": (
+                        "" if current_is_in_raw else current_message_text
+                    ),
+                },
+                {
+                    "name": "user.current_time",
+                    "text": "" if plugin_proactive_scope else current_time_text,
+                },
             ]
         )
         return {
@@ -307,6 +326,11 @@ class PromptBuilder:
             "fallback": fallback,
             "system_prompt": system_prompt,
             "system_extra_blocks": system_extra_blocks,
+            "stable_system_context_hash": (
+                hashlib.sha256(stable_system_text.encode("utf-8", errors="ignore")).hexdigest()
+                if stable_system_text
+                else ""
+            ),
             "history_turns": list(history_turns) if history_turns else [],
             "user_prompt": user_prompt,
             "prompt_audit_sections": prompt_audit_sections,

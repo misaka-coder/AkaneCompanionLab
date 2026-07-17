@@ -449,6 +449,77 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
             config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
 
+    def test_final_response_context_keeps_native_schema_when_tool_budget_is_closed(self) -> None:
+        original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
+        original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        try:
+            config.ENABLE_NATIVE_TOOL_DECISION = True
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = "retrieve_memory"
+            engine = build_native_context_engine(selected_tool_names=("retrieve_memory",))
+            common = {
+                "session_id": "s",
+                "profile_user_id": "u",
+                "user_message": "查一下记忆",
+                "recent_raw": [],
+                "recent_episodic_summaries": [],
+                "recent_semantic_summaries": [],
+                "confirmed_snippets": [],
+                "now_ts": 0,
+                "client_context": ClientProtocolContext(
+                    requested_mode=ClientMode.DESKTOP_PET,
+                    effective_mode=ClientMode.DESKTOP_PET,
+                ),
+                "enable_native_tools": True,
+            }
+            open_context = engine._prepare_final_response_context(**common, allow_tool_call=True)
+            native_history = [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "retrieve_memory", "arguments": '{"query":"test"}'},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "structured result"},
+            ]
+            context = engine._prepare_final_response_context(
+                **common,
+                allow_tool_call=False,
+                post_user_turns=native_history,
+            )
+
+            self.assertEqual(
+                [tool["function"]["name"] for tool in open_context["native_tools"]],
+                ["retrieve_memory"],
+            )
+            self.assertEqual(open_context["native_tool_choice"], "auto")
+            self.assertEqual(open_context["tool_prompt_context"], context["tool_prompt_context"])
+            self.assertEqual([tool["function"]["name"] for tool in context["native_tools"]], ["retrieve_memory"])
+            self.assertEqual(context["native_tool_choice"], "none")
+            self.assertFalse(context["allow_tool_call"])
+            self.assertEqual(context["post_user_turns"][-1]["role"], "user")
+            self.assertIn("宿主工具控制", context["post_user_turns"][-1]["content"])
+            self.assertEqual(len(native_history), 2)
+            payload = LLMRuntime()._build_completion_kwargs(
+                bundle=ModelBundle(
+                    client=FakeClient("openai", base_url="https://api.deepseek.com/v1"),
+                    model="deepseek-v4-flash",
+                ),
+                system_prompt="system",
+                user_prompt="user",
+                temperature=0.0,
+                native_tools=context["native_tools"],
+                native_tool_choice=context["native_tool_choice"],
+            )
+            self.assertEqual(payload["tool_choice"], "none")
+            self.assertEqual([tool["function"]["name"] for tool in payload["tools"]], ["retrieve_memory"])
+        finally:
+            config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
+
     def test_final_response_context_keeps_legacy_when_native_candidates_not_selected(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
@@ -968,7 +1039,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             [turn["tool_call_id"] for turn in native_history[1:]],
             ["call_1", "call_2"],
         )
-        self.assertTrue(all("result:" not in followup for followup in tool_followups))
+        self.assertEqual(tool_followups, [])
 
     def test_engine_parallel_batch_isolates_one_tool_exception(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -1379,6 +1450,17 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         self.assertIn("工具返回不可用或失败状态", context)
         self.assertIn("本轮不要再调用工具", context)
+
+    def test_structured_native_history_does_not_rewrite_original_extra_context(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        context = engine._build_tool_round_extra_context(
+            turn_extra_user_context="stable original event context",
+            tool_followups=[],
+            allow_more=False,
+            stop_reason="tool_budget_exhausted",
+        )
+
+        self.assertEqual(context, "stable original event context")
 
 
 class NativeDescriptionSanitizationTests(unittest.TestCase):

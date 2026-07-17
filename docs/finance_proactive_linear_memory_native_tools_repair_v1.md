@@ -1,6 +1,6 @@
 # 金融主动推送线性记忆与原生工具修复 V1
 
-状态：Slice A 已实施并完成宿主验证；Slice B 及后续切片尚未实施
+状态：Slice A、Slice B 已实施并完成宿主验证；Slice C 及后续切片尚未实施
 
 日期：2026-07-17
 
@@ -586,6 +586,18 @@ record_assistant_turn
 4. 原生工具结果不再改写初始 user prompt。
 5. tools schema 与 tool-choice 状态解耦。
 6. 删除模型可见 `debug_enabled=false`。
+
+2026-07-17 实施结果：
+
+- `plugin_stable_system_context` 已进入 provider system extra，并以内容 hash 参与 prompt cache key；prompt audit 仍只记录长度和 hash。
+- `plugin_proactive` 不再关闭 Care，也不再跳过关系、附件、工作区、礼物、视觉、persona reference、自动 retrieval 或 memcore 三层。
+- memcore raw 已含当前 source ID 时不再重复输出 current message/time；raw 不可用或当前 source 缺失时保留一次 current message 降级块。
+- 插件主动轮的 semantic、episodic 与未压缩 raw 按动态区尾部顺序输出；新增事件只在尾部追加。
+- native tool call/result 只经 `post_user_turns` 回给 provider；不再向原始 user prompt 追加“已通过结构化 tool_result 提供”的重复说明。
+- 工具预算结束后保留同一 native tools schema，使用 `tool_choice=none`，并在结构化 tool history 尾部追加简短宿主控制消息。
+- 最终回复 prompt 不再输出 `debug_enabled=false/true`；fast/debug 仍由宿主选择对应输出契约。
+- Slice B 聚焦与宽回归共 401 项通过。完整宿主 discover 运行 1471 项时另有 2 个可独立复现的既有失败：`test_llm_runtime_stream` 的旧 mock 不接受 `prompt_cache_key`，以及 `test_settings_catalog` 尚未登记 7 个既有 Settings 字段；本切片未修改对应运行文件或设置目录。
+- 本切片没有修改私有插件固定研究循环、authority 门禁、`analysis_history`、memcore `tool_trace` 压缩配置或云端服务状态。
 
 ### Slice C：私有插件简化
 

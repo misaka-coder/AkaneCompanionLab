@@ -200,6 +200,7 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
             "timestamp": 1_784_016_000,
             "turn_kind": "plugin_proactive",
             "memory_idempotency_key": "delivery:raw-secret-event-key",
+            "plugin_stable_system_context": "stable finance principles",
         }
 
         with self.assertRaises(self._StopAfterUserWrite):
@@ -215,6 +216,7 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
         self.assertNotIn("delivery:raw-secret-event-key", sync_source_id)
         self.assertEqual([call["role"] for call in store.calls], ["user", "user"])
         self.assertTrue(all("memory_idempotency_key" not in item for item in prepared_payloads))
+        self.assertTrue(all("plugin_stable_system_context" not in item for item in prepared_payloads))
 
     def test_hashed_user_source_id_changes_with_owner_scope(self) -> None:
         base_payload = {"memory_idempotency_key": "delivery:event-1"}
