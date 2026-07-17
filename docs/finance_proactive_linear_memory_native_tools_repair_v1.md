@@ -628,6 +628,17 @@ record_assistant_turn
 4. 更新 memcore README、AGENTS 和 trace compaction 文档的旧结论。
 5. 跑 memcore 全套测试、ruff、format check 和 build。
 
+2026-07-17 实施结果：
+
+- memcore 提交 `2cb929e`完成本切片；修改前后均保留用户已有的 8 个防串图/关闭任务相关未提交文件和 `.claude/`，未把它们夹入提交。
+- `raw_compaction_excluded_categories`默认值从 `("tool_trace", "material_trace")`改为 `("material_trace",)`；`tool_trace`现在参与 count trigger，纯工具时间线无需等待普通聊天也能进入摘要生命周期。
+- 新增稳定 `TRACE_CATEGORIES=("tool_trace", "material_trace")`；summary metadata 的 trace category/keywords/subject scopes 继承不再借用压缩排除配置判断。
+- `material_trace`仍默认不计入 count trigger，但位于 eligible batch 跨度内时继续进入 transcript、source IDs 和 summary metadata。
+- `retrieval_default_excluded_categories`保持 `("tool_trace", "material_trace")`；普通 retrieve 仍搜不到工具轨迹，显式 `categories=["tool_trace"]`仍可检索。
+- 未启用 token policy，未引入第二套压缩任务；正常 assistant turn 后的既有 `compact_due_background()`调度保持唯一生产路径。
+- memcore 完整 202 项测试通过，3 项可选 NumPy/Chroma 依赖测试跳过；Ruff lint、59 文件 format check、`git diff --check`、sdist 和 wheel 构建全部通过。
+- 本切片没有修改宿主运行代码、云端数据或服务状态；finance 服务仍保持停用，pending outbox 未处理。
+
 ### Slice E：停服数据维护与真实链路
 
 1. 备份 finance 数据库；不删除历史记录。
