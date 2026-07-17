@@ -530,28 +530,90 @@ def prepare_context(
         system_prompt_override = prompt_builder.persona.final_system_prompt
     if not care_enabled:
         system_prompt_override = strip_care_prompt_contract(system_prompt_override)
-    generation_context = prompt_builder.build_final_generation_context(
-        now_ts=now_ts,
-        raw_text=raw_text,
-        current_message_text=current_message_text,
-        episodic_summary_text=episodic_summary_text,
-        semantic_summary_text=semantic_summary_text,
-        memory_text=memory_text,
-        current_visual_context=current_visual_context,
-        resource_context=resource_context,
-        extra_context=merged_extra_context,
-        extra_context_audit_sections=extra_context_audit_sections,
-        persona_system_context=str(persona_context.get("system_context") or ""),
-        persona_reference_context=str(persona_context.get("reference_context") or ""),
-        persona_active_id=str(persona_context.get("active_id") or ""),
-        domain_profile_context=domain_profile_context,
-        visual_defaults=visual_defaults,
-        allow_tool_call=effective_allow_tool_call,
-        tool_prompt_context=tool_prompt_context,
-        debug_enabled=debug_enabled,
-        system_prompt_override=system_prompt_override,
-        mode_prompt_override=mode_prompt_override,
-    )
+    def _build_generation_context() -> dict[str, Any]:
+        return prompt_builder.build_final_generation_context(
+            now_ts=now_ts,
+            raw_text=raw_text,
+            current_message_text=current_message_text,
+            episodic_summary_text=episodic_summary_text,
+            semantic_summary_text=semantic_summary_text,
+            memory_text=memory_text,
+            current_visual_context=current_visual_context,
+            resource_context=resource_context,
+            extra_context=merged_extra_context,
+            extra_context_audit_sections=extra_context_audit_sections,
+            persona_system_context=str(persona_context.get("system_context") or ""),
+            persona_reference_context=str(persona_context.get("reference_context") or ""),
+            persona_active_id=str(persona_context.get("active_id") or ""),
+            domain_profile_context=domain_profile_context,
+            visual_defaults=visual_defaults,
+            allow_tool_call=effective_allow_tool_call,
+            tool_prompt_context=tool_prompt_context,
+            debug_enabled=debug_enabled,
+            system_prompt_override=system_prompt_override,
+            mode_prompt_override=mode_prompt_override,
+        )
+
+    generation_context = _build_generation_context()
+    prompt_token_limit = max(0, int(getattr(mod_config, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 0) or 0))
+    initial_prompt_tokens = _estimate_generation_context_tokens(generation_context, native_tools)
+    compact_attempted = False
+    if prompt_token_limit and initial_prompt_tokens > prompt_token_limit and memcore_prompt_context is not None:
+        manager = getattr(engine, "memcore_manager", None)
+        compact_sync = getattr(manager, "compact_due_sync", None)
+        if callable(compact_sync):
+            compact_attempted = True
+            compact_sync(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+            refreshed = _build_memcore_prompt_context(
+                engine,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                current_user_record=current_record,
+                now_ts=now_ts,
+                exclude_source_ids=list(excluded_prompt_sources),
+            )
+            if refreshed is not None and refreshed.get("ok"):
+                raw_text = str(refreshed.get("raw_text") or "")
+                episodic_summary_text = str(refreshed.get("episodic_text") or "")
+                semantic_summary_text = str(refreshed.get("semantic_text") or "")
+                generation_context = _build_generation_context()
+
+    # Emergency second boundary: compaction normally keeps these layers small,
+    # but a single oversized imported/tool trace must never make context grow
+    # without a bound. Drop oldest raw lines first, then oldest episodic lines;
+    # semantic memory and the current user message remain intact.
+    trimmed_layers: list[str] = []
+    if prompt_token_limit:
+        while _estimate_generation_context_tokens(generation_context, native_tools) > prompt_token_limit and raw_text:
+            reduced = _drop_oldest_prompt_lines(raw_text)
+            if reduced == raw_text:
+                raw_text = ""
+            else:
+                raw_text = reduced
+            if "raw" not in trimmed_layers:
+                trimmed_layers.append("raw")
+            generation_context = _build_generation_context()
+        while (
+            _estimate_generation_context_tokens(generation_context, native_tools) > prompt_token_limit
+            and episodic_summary_text
+        ):
+            reduced = _drop_oldest_prompt_lines(episodic_summary_text)
+            episodic_summary_text = "" if reduced == episodic_summary_text else reduced
+            if "episodic" not in trimmed_layers:
+                trimmed_layers.append("episodic")
+            generation_context = _build_generation_context()
+    generation_context["prompt_budget"] = {
+        "limit_tokens": prompt_token_limit,
+        "initial_estimated_tokens": initial_prompt_tokens,
+        "final_estimated_tokens": _estimate_generation_context_tokens(generation_context, native_tools),
+        "compact_attempted": compact_attempted,
+        "trimmed_layers": trimmed_layers,
+    }
     if not care_enabled:
         fallback_payload = generation_context.get("fallback")
         if isinstance(fallback_payload, dict):
@@ -587,6 +649,37 @@ def prepare_context(
             fallback_payload.pop("pet", None)
             fallback_payload.pop("activity", None)
     return generation_context
+
+
+def _estimate_generation_context_tokens(
+    generation_context: dict[str, Any],
+    native_tools: list[dict[str, Any]],
+) -> int:
+    parts = [
+        str(generation_context.get("system_prompt") or ""),
+        str(generation_context.get("user_prompt") or ""),
+        "\n".join(str(item or "") for item in generation_context.get("system_extra_blocks") or []),
+        json.dumps(native_tools or [], ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    ]
+    text = "\n".join(parts)
+    cjk_chars = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    non_cjk_chars = max(0, len(text) - cjk_chars)
+    return int(cjk_chars + ((non_cjk_chars + 3) // 4))
+
+
+def _drop_oldest_prompt_lines(text: str) -> str:
+    marker = "[更早内容已由上下文高水位保护省略]"
+    lines = [line for line in str(text or "").splitlines() if line.strip() != marker]
+    if not lines:
+        return ""
+    if len(lines) == 1:
+        raw = lines[0]
+        if len(raw) <= 256:
+            return ""
+        return marker + "\n" + raw[len(raw) // 2 :]
+    remove_count = max(1, len(lines) // 4)
+    remaining = lines[remove_count:]
+    return marker + "\n" + "\n".join(remaining)
 
 
 def _memory_backend() -> str:

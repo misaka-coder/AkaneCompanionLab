@@ -1955,6 +1955,46 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result.state_updates["memory_timeline"]["backend"], "memcore")
         self.assertEqual(result.state_updates["memory_timeline"]["status"], "unavailable")
 
+    def test_tool_trace_text_is_sanitized_and_bounded_before_memcore_write(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        source = "api_key=secret-value " + ("证据" * 900)
+        with patch.object(config, "MEMCORE_TOOL_TRACE_MAX_CHARS", 1000):
+            result = engine._sanitize_tool_trace_text(source)
+
+        self.assertNotIn("secret-value", result)
+        self.assertIn("tool_trace_truncated", result)
+        self.assertLess(len(result), 1100)
+
+    def test_prompt_layer_high_water_trimming_makes_monotonic_progress(self) -> None:
+        value = "\n".join(f"line-{index}" for index in range(20))
+        lengths = []
+        while value:
+            lengths.append(len(value))
+            value = response_builder._drop_oldest_prompt_lines(value)
+        self.assertTrue(all(later < earlier for earlier, later in zip(lengths, lengths[1:])))
+
+    def test_final_prompt_cache_key_ignores_volatile_persona_state_but_partitions_tools(self) -> None:
+        from companion_v01.prompt_blocks import CURRENT_ASSISTANT_STATE_MARKER
+
+        base = {
+            "system_prompt": f"stable rules\n{CURRENT_ASSISTANT_STATE_MARKER}\nstate A",
+            "fallback": {"persona": {"active": "akane_v1"}},
+            "prompt_profile": {"id": "qq_text"},
+            "domain_profile": {"id": "default"},
+            "native_tools": [{"type": "function", "function": {"name": "search"}}],
+        }
+        changed_state = dict(base, system_prompt=f"stable rules\n{CURRENT_ASSISTANT_STATE_MARKER}\nstate B")
+        changed_tools = dict(base, native_tools=[{"type": "function", "function": {"name": "quote"}}])
+
+        self.assertEqual(
+            AkaneMemoryEngine._final_prompt_cache_key(base),
+            AkaneMemoryEngine._final_prompt_cache_key(changed_state),
+        )
+        self.assertNotEqual(
+            AkaneMemoryEngine._final_prompt_cache_key(base),
+            AkaneMemoryEngine._final_prompt_cache_key(changed_tools),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,6 +47,195 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(str(client.base_url).rstrip("/"), "http://127.0.0.1:11434/v1")
         self.assertEqual(client.api_key, "ollama")
 
+    def test_responses_protocol_normalizes_base_url(self) -> None:
+        self.assertEqual(
+            normalize_base_url(protocol="responses", base_url="https://api.pinaic.com"),
+            "https://api.pinaic.com/v1",
+        )
+        client = build_llm_client(
+            api_key="test-key",
+            base_url="https://api.pinaic.com",
+            protocol="responses",
+            timeout=1.0,
+            max_retries=0,
+        )
+        self.assertEqual(str(client.base_url).rstrip("/"), "https://api.pinaic.com/v1")
+        self.assertEqual(client._akane_protocol, "responses")
+
+    def test_responses_payload_preserves_tools_history_and_privacy_controls(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="responses", base_url="https://api.pinaic.com/v1"),
+            model="gpt-5.6-sol",
+        )
+        with patch("config.LLM_REASONING_EFFORT", "max"), patch(
+            "config.LLM_DISABLE_RESPONSE_STORAGE", True
+        ), patch("config.PROMPT_CACHE_NAMESPACE", "akane"), patch("config.PROMPT_CACHE_RETENTION", "24h"):
+            chat_payload = runtime._build_completion_kwargs(
+                bundle=bundle,
+                system_prompt="stable instructions",
+                user_prompt="current question",
+                temperature=0.7,
+                json_mode=True,
+                prompt_cache_key="chat:final:reimu",
+                native_tools=[{
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search related evidence.",
+                        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+                    },
+                }],
+                post_user_turns=[
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"q":"Nikkei"}'},
+                        }],
+                    },
+                    {"role": "tool", "tool_call_id": "call_1", "content": "search result"},
+                ],
+            )
+            request = runtime._responses_payload_from_chat(chat_payload)
+
+        self.assertEqual(request["instructions"], "stable instructions")
+        self.assertEqual(request["reasoning"], {"effort": "max"})
+        self.assertFalse(request["store"])
+        self.assertNotIn("temperature", request)
+        self.assertEqual(request["prompt_cache_key"], "akane:chat:final:reimu")
+        self.assertEqual(request["prompt_cache_retention"], "24h")
+        # Native tool rounds keep JSON mode prompt-only so a function call can
+        # coexist with the eventual structured Akane answer.
+        self.assertNotIn("text", request)
+        self.assertTrue(request["parallel_tool_calls"])
+        self.assertEqual(request["tools"][0]["name"], "web_search")
+        self.assertIn("function_call", [item.get("type") for item in request["input"]])
+        self.assertIn("function_call_output", [item.get("type") for item in request["input"]])
+
+    def test_responses_reasoning_effort_can_differ_between_aux_and_chat(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        aux = SimpleNamespace(client=SimpleNamespace(_akane_protocol="responses", _akane_bundle_role="aux"))
+        chat = SimpleNamespace(client=SimpleNamespace(_akane_protocol="responses", _akane_bundle_role="chat"))
+        with patch("config.LLM_REASONING_EFFORT", "medium"), patch(
+            "config.LLM_AUX_REASONING_EFFORT", "low"
+        ), patch("config.LLM_CHAT_REASONING_EFFORT", "max"):
+            self.assertEqual(runtime._build_reasoning_control_kwargs(bundle=aux), {"reasoning": {"effort": "low"}})
+            self.assertEqual(runtime._build_reasoning_control_kwargs(bundle=chat), {"reasoning": {"effort": "max"}})
+
+    def test_pinai_responses_omits_unsupported_forced_json_wire_hint(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        pinai = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="responses", base_url="https://api.pinaic.com/v1"),
+            model="gpt-5.6-sol",
+        )
+        official = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="responses", base_url="https://api.openai.com/v1"),
+            model="gpt-5.4",
+        )
+        with patch("config.LLM_REASONING_EFFORT", "low"):
+            pinai_payload = runtime._build_completion_kwargs(
+                bundle=pinai,
+                system_prompt="Return JSON.",
+                user_prompt="Return one object.",
+                temperature=0.2,
+                json_mode=True,
+            )
+            official_payload = runtime._build_completion_kwargs(
+                bundle=official,
+                system_prompt="Return JSON.",
+                user_prompt="Return one object.",
+                temperature=0.2,
+                json_mode=True,
+            )
+
+        self.assertNotIn("response_format", pinai_payload)
+        self.assertEqual(official_payload["response_format"], {"type": "json_object"})
+
+    def test_responses_result_and_stream_adapt_to_existing_tool_pipeline(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        response = SimpleNamespace(
+            status="completed",
+            output_text="",
+            output=[SimpleNamespace(
+                type="function_call",
+                call_id="call_2",
+                name="web_search",
+                arguments='{"q":"rates"}',
+            )],
+            usage=SimpleNamespace(input_tokens=40, output_tokens=5),
+        )
+        adapted = runtime._adapt_responses_result(response)
+        self.assertEqual(adapted.choices[0].message.tool_calls[0]["id"], "call_2")
+        self.assertEqual(adapted.choices[0].message.tool_calls[0]["function"]["name"], "web_search")
+
+        from companion_v01.llm_runtime import _ResponsesStreamAdapter
+
+        usage = SimpleNamespace(input_tokens=100, input_tokens_details=SimpleNamespace(cached_tokens=64))
+        events = [
+            SimpleNamespace(type="response.output_item.added", output_index=0, item=SimpleNamespace(
+                type="function_call", call_id="call_3", name="web_search"
+            )),
+            SimpleNamespace(type="response.function_call_arguments.delta", output_index=0, delta='{"q":'),
+            SimpleNamespace(type="response.function_call_arguments.delta", output_index=0, delta='"oil"}'),
+            SimpleNamespace(type="response.output_text.delta", delta='{"speech":"checking"}'),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(usage=usage)),
+        ]
+        chunks = list(_ResponsesStreamAdapter(events))
+        parts: dict[object, dict[str, object]] = {}
+        for chunk in chunks:
+            runtime._collect_stream_native_tool_call_parts(chunk, parts)
+        calls = runtime._stream_native_tool_calls_from_parts(
+            parts,
+            native_tools=[{
+                "type": "function",
+                "function": {"name": "web_search", "parameters": {"type": "object"}},
+            }],
+        )
+        self.assertEqual(calls[0]["type"], "web_search")
+        self.assertEqual(calls[0]["q"], "oil")
+        self.assertEqual(calls[0][TOOL_INVOCATION_ID_FIELD], "call_3")
+        self.assertEqual("".join(runtime._extract_stream_text(chunk) for chunk in chunks), '{"speech":"checking"}')
+
+    def test_responses_failures_surface_bounded_structured_reasons(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        failed = SimpleNamespace(
+            status="failed",
+            error=SimpleNamespace(type="server_error", code="upstream_failed", message="do not echo this"),
+            output=[],
+        )
+        with self.assertRaisesRegex(RuntimeError, "responses_failed type=server_error code=upstream_failed"):
+            runtime._adapt_responses_result(failed)
+
+        from companion_v01.llm_runtime import _ResponsesStreamAdapter
+
+        events = [SimpleNamespace(
+            type="response.failed",
+            response=SimpleNamespace(error=SimpleNamespace(type="invalid_request_error", code="bad_input")),
+        )]
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "responses_stream_failed type=invalid_request_error code=bad_input",
+        ):
+            list(_ResponsesStreamAdapter(events))
+
+    def test_openai_nested_cached_tokens_are_recorded(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        response = SimpleNamespace(usage=SimpleNamespace(
+            input_tokens=120,
+            output_tokens=9,
+            input_tokens_details=SimpleNamespace(cached_tokens=96),
+        ))
+
+        runtime._record_cache_metrics(response)
+
+        self.assertEqual(runtime._metrics["cache_read_tokens"], 96)
+        self.assertEqual(runtime._metrics["reported_input_tokens"], 120)
+        self.assertEqual(runtime._metrics["reported_output_tokens"], 9)
+
     def test_chat_bundle_uses_chat_config_instead_of_aux_config(self) -> None:
         calls: list[dict[str, object]] = []
 

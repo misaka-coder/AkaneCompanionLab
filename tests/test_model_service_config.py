@@ -53,6 +53,17 @@ def build_config() -> SimpleNamespace:
 
 
 class ModelServiceConfigTests(unittest.TestCase):
+    def test_pinai_preset_selects_responses_protocol(self) -> None:
+        settings = settings_from_mapping(
+            {
+                "providerId": "pinai",
+                "apiKey": "pinai-secret",
+                "chatModel": "gpt-5.6-sol",
+            }
+        )
+        self.assertEqual(settings.protocol, "responses")
+        self.assertEqual(settings.base_url, "https://api.pinaic.com/v1")
+
     def test_store_preserves_secret_without_public_leak(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = ModelServiceConfigStore(Path(temp_dir) / "model_service.json")

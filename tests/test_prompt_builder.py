@@ -10,12 +10,16 @@ from companion_v01.prompt_blocks import (
     build_qq_text_system_prompt,
     strip_care_prompt_contract,
 )
-from companion_v01.prompt_builder import PromptBuilder
+from companion_v01.prompt_builder import PromptBuilder, TOOL_CONTEXT_STABLE_RULES
 from companion_v01.prompt_profiles import PromptProfileRegistry
 from companion_v01.client_protocol import ClientMode
 
 
 class PersonaConfigTomlTests(unittest.TestCase):
+    def test_stable_tool_rules_distinguish_parallel_native_from_single_legacy_field(self) -> None:
+        self.assertIn("多个互不依赖的工具", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("JSON `tool_call` 字段每轮仍只容纳一个", TOOL_CONTEXT_STABLE_RULES)
+
     def test_load_persona_config_supports_custom_variant_from_toml(self) -> None:
         toml_text = """
 [variants.custom.meta]
@@ -289,6 +293,13 @@ system = "semantic reinforcement system"
                 result["user_prompt"].index("当前会话中所有未总结的原始消息"), result["user_prompt"].index("extra")
             )
             self.assertLess(result["user_prompt"].index("extra"), result["user_prompt"].index("当前演出状态"))
+            self.assertLess(
+                result["user_prompt"].index("当前会话中所有未总结的原始消息"),
+                result["user_prompt"].index("persona refs"),
+            )
+            self.assertLess(
+                result["user_prompt"].index("persona refs"), result["user_prompt"].index("用户原始消息")
+            )
             audit_names = [section["name"] for section in result["prompt_audit_sections"]]
             self.assertIn("system.full", audit_names)
             self.assertIn("system_extra.resource_context", audit_names)

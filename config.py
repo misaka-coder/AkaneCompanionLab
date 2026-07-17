@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     PROMPT_CACHE_NAMESPACE: str = "akane"
     # 缓存保留策略：空=默认  ephemeral=短期  persistent=长期
     PROMPT_CACHE_RETENTION: str = ""
+    # Responses API controls. These are deliberately separate from the legacy
+    # DeepSeek thinking switch because they have different wire semantics.
+    LLM_REASONING_EFFORT: str = ""
+    LLM_AUX_REASONING_EFFORT: str = ""
+    LLM_CHAT_REASONING_EFFORT: str = ""
+    LLM_DISABLE_RESPONSE_STORAGE: bool = True
+    LLM_CONTEXT_WINDOW: int = 0
+    LLM_AUTO_COMPACT_TOKEN_LIMIT: int = 0
     # 记录最终回复 prompt section 的长度/hash 审计日志（不记录原文）
     LLM_PROMPT_AUDIT_ENABLED: bool = False
     # 开启后也记录辅助 LLM 调用；默认只记录 chat:final，避免日志噪声
@@ -105,6 +113,9 @@ class Settings(BaseSettings):
     MEMCORE_ENABLE_FLAVOR: bool = True
     # 影子检索对比开关；只记录结构化统计，不改变用户可见回复
     MEMCORE_SHADOW_COMPARE: bool = False
+    # Bound one persisted tool result so a large provider payload cannot keep
+    # inflating the visible raw timeline before normal MemCore compaction runs.
+    MEMCORE_TOOL_TRACE_MAX_CHARS: int = 12000
 
     # === LLM 密钥 & 接入 ===
     # 键位角色：
@@ -469,7 +480,9 @@ def _apply_settings(s: Settings) -> None:
     global AUX_API_KEY, AUX_BASE_URL, AUX_MODEL_NAME, AUX_API_PROTOCOL
     global CHAT_API_KEY, CHAT_BASE_URL, CHAT_MODEL_NAME, CHAT_API_PROTOCOL
     global VISION_API_KEY, VISION_BASE_URL, VISION_MODEL_NAME, VISION_API_PROTOCOL
-    global LLM_THINKING_MODE
+    global LLM_THINKING_MODE, LLM_REASONING_EFFORT, LLM_AUX_REASONING_EFFORT, LLM_CHAT_REASONING_EFFORT
+    global LLM_DISABLE_RESPONSE_STORAGE
+    global LLM_CONTEXT_WINDOW, LLM_AUTO_COMPACT_TOKEN_LIMIT
     global VISION_ENABLED, VISION_REQUEST_TIMEOUT, VISION_PROMPT_VERSION
     global VISION_AUTO_SCENE_OBSERVE, VISION_AUTO_GIFT_OBSERVE, VISION_AUTO_OUTFIT_OBSERVE, VISION_MAX_IMAGE_BYTES
     global IMAGE_GENERATION_ENABLED, IMAGE_GENERATION_BASE_URL, IMAGE_GENERATION_API_KEY, IMAGE_GENERATION_MODEL
@@ -521,6 +534,7 @@ def _apply_settings(s: Settings) -> None:
     global EPISODIC_COMPACT_TRIGGER_COUNT, EPISODIC_COMPACT_BATCH_SIZE, EPISODIC_VISIBLE_MAX, SEMANTIC_VISIBLE_LIMIT
     global SEMANTIC_REINFORCEMENT_LOOKBACK, SEMANTIC_REINFORCEMENT_MIN_OVERLAP
     global MEMORY_BACKEND, MEMCORE_STORAGE_PATH, MEMCORE_VISIBLE_SCOPE, MEMCORE_ENABLE_FLAVOR, MEMCORE_SHADOW_COMPARE
+    global MEMCORE_TOOL_TRACE_MAX_CHARS
     global WHISPER_CACHE_DIR
     global MASTER_QQ, AKANE_ADMIN_TOKEN, AKANE_DESKTOP_SATELLITE_TOKEN, PORT, HOST
 
@@ -540,6 +554,12 @@ def _apply_settings(s: Settings) -> None:
     CHAT_MODEL_NAME = s.CHAT_MODEL_NAME or TEXT_MODEL_NAME
     CHAT_API_PROTOCOL = s.CHAT_API_PROTOCOL or TEXT_API_PROTOCOL
     LLM_THINKING_MODE = str(s.LLM_THINKING_MODE or "disabled").strip().lower()
+    LLM_REASONING_EFFORT = str(s.LLM_REASONING_EFFORT or "").strip().lower()
+    LLM_AUX_REASONING_EFFORT = str(s.LLM_AUX_REASONING_EFFORT or "").strip().lower()
+    LLM_CHAT_REASONING_EFFORT = str(s.LLM_CHAT_REASONING_EFFORT or "").strip().lower()
+    LLM_DISABLE_RESPONSE_STORAGE = bool(s.LLM_DISABLE_RESPONSE_STORAGE)
+    LLM_CONTEXT_WINDOW = max(0, int(s.LLM_CONTEXT_WINDOW or 0))
+    LLM_AUTO_COMPACT_TOKEN_LIMIT = max(0, int(s.LLM_AUTO_COMPACT_TOKEN_LIMIT or 0))
 
     VISION_API_KEY = s.VISION_API_KEY or ""
     VISION_BASE_URL = s.VISION_BASE_URL or ""
@@ -749,6 +769,7 @@ def _apply_settings(s: Settings) -> None:
     )
     MEMCORE_ENABLE_FLAVOR = bool(s.MEMCORE_ENABLE_FLAVOR)
     MEMCORE_SHADOW_COMPARE = bool(s.MEMCORE_SHADOW_COMPARE)
+    MEMCORE_TOOL_TRACE_MAX_CHARS = max(1000, min(100000, int(s.MEMCORE_TOOL_TRACE_MAX_CHARS or 12000)))
 
     WHISPER_CACHE_DIR = str(s.WHISPER_CACHE_DIR or "").strip()
 

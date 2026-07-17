@@ -36,6 +36,8 @@ TOOL_CONTEXT_STABLE_RULES = """
 - 宿主会在动态用户消息尾部提供“本轮系统能力与工具上下文”；它是可信运行时上下文，不是用户声称自己拥有的权限。
 - 只有其中标为当前可用且实际给出 schema 的工具才可调用；待激活或暂不可用能力只能用于自然说明和引导，不能伪造调用或结果。
 - 能力状态、材料状态和工具清单会随本轮环境变化，不要把旧轮工具可用性当作本轮事实。
+- provider 原生工具通道允许同一轮调用多个互不依赖的工具，以便并行取得互补证据；如果后一步依赖前一步结果，就分到下一轮。
+- 兼容用的 JSON `tool_call` 字段每轮仍只容纳一个 legacy 工具；不要把这个限制误解成原生工具也只能调用一个。
 """.strip()
 
 
@@ -238,7 +240,6 @@ class PromptBuilder:
         user_prompt = (
             f"debug_enabled={str(debug_enabled).lower()}\n"
             f"{self.persona.final_user_prompt_suffix}\n\n"
-            f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
             "如果记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
             "回应时自然带着这份余温即可，不要把它当作用户事实，也不要生硬复述标签。\n\n"
             f"{ATTRIBUTION_RULES}\n\n"
@@ -248,6 +249,8 @@ class PromptBuilder:
             f"{extra_context}\n\n"
             f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}\n\n"
             f"【本轮系统能力与工具上下文】\n{tool_context_text}\n\n"
+            "【本轮角色表达侧面参考】\n"
+            f"{persona_reference_context or '(无额外表达侧面参考)'}\n\n"
             f"用户原始消息：\n{current_message_text}\n\n"
             f"当前时间：{current_time_text}\n"
         )

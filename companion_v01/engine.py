@@ -59,6 +59,7 @@ from .npc_runtime import GenericNPCRuntime
 from .output_adapters import OutputAdapterRegistry
 from .persona_config import PERSONA
 from .persona_system import PersonaCardService
+from .prompt_blocks import CURRENT_ASSISTANT_STATE_MARKER
 from .prompt_builder import PromptBuilder
 from .prompt_profiles import PromptModule, PromptProfileRegistry
 from . import final_output_engine
@@ -3730,7 +3731,7 @@ class AkaneMemoryEngine:
             prompt_scope=prompt_scope,
         )
         max_attempts = max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
-        prompt_cache_key = "chat:final"
+        prompt_cache_key = self._final_prompt_cache_key(generation_context)
         normalized: dict[str, Any] = {}
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
@@ -3779,6 +3780,31 @@ class AkaneMemoryEngine:
                 self.llm.record_metric("chat_final_response_retries")
         normalized["_transient_final_failure"] = True
         return normalized
+
+    @staticmethod
+    def _final_prompt_cache_key(generation_context: dict[str, Any]) -> str:
+        """Bucket prompts by stable routing identity and tool schema.
+
+        Persona reference/state text may change within one character as the
+        current message selects context-library material. Keep those volatile
+        suffixes out of the routing key so the provider can still reuse the
+        exact common prefix; content matching remains the provider's authority.
+        """
+
+        system_prompt = str(generation_context.get("system_prompt") or "")
+        stable_system_prefix = system_prompt.split(CURRENT_ASSISTANT_STATE_MARKER, 1)[0].rstrip()
+        fallback = generation_context.get("fallback")
+        persona = fallback.get("persona") if isinstance(fallback, dict) else None
+        stable_payload = {
+            "system_prefix": stable_system_prefix,
+            "persona_active": str(persona.get("active") or "") if isinstance(persona, dict) else "",
+            "prompt_profile": generation_context.get("prompt_profile") or {},
+            "domain_profile": generation_context.get("domain_profile") or {},
+            "native_tools": list(generation_context.get("native_tools") or []),
+        }
+        canonical = json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(canonical.encode("utf-8", errors="ignore")).hexdigest()[:20]
+        return f"chat:final:{digest}"
 
     def _is_retryable_final_output(self, output: Any, *, parse_fallback: bool = False) -> bool:
         if not isinstance(output, dict):
@@ -3862,7 +3888,7 @@ class AkaneMemoryEngine:
             "speaker": speaker_identity["assistant_name"],
         }
         max_attempts = max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
-        prompt_cache_key = "chat:final"
+        prompt_cache_key = self._final_prompt_cache_key(generation_context)
         normalized: dict[str, Any] = {}
         buffered_events: list[dict[str, Any]] = []
         stream_result: Any = None
@@ -4764,6 +4790,7 @@ class AkaneMemoryEngine:
             feedback = "\n\n".join(part for part in feedback_parts if part).strip()
             if not feedback:
                 feedback = tool_orchestration_engine.shape_tool_followup("", tool_type=tool_result.tool_type)
+            feedback = self._sanitize_tool_trace_text(feedback)
             result_block: dict[str, Any] = {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
@@ -4829,6 +4856,7 @@ class AkaneMemoryEngine:
             feedback = "\n\n".join(part for part in feedback_parts if part).strip()
             if not feedback:
                 feedback = tool_orchestration_engine.shape_tool_followup("", tool_type=tool_result.tool_type)
+            feedback = self._sanitize_tool_trace_text(feedback)
             tool_messages.append(
                 {
                     "role": "tool",
@@ -4955,6 +4983,10 @@ class AkaneMemoryEngine:
             text,
         )
         text = re.sub(r"(?<![\w/])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n,;|<>]*", "[local_path]", text)
+        max_chars = max(1000, min(100000, int(getattr(config, "MEMCORE_TOOL_TRACE_MAX_CHARS", 12000) or 12000)))
+        if len(text) > max_chars:
+            omitted = len(text) - max_chars
+            text = f"{text[:max_chars]}\n[tool_trace_truncated omitted_chars={omitted}]"
         return text
 
     def _tool_result_is_error(self, tool_result: ToolExecutionResult) -> bool:
@@ -5559,7 +5591,7 @@ class AkaneMemoryEngine:
             "重要：真正调用工具只能写在 tool_call 字段；不要在 speech 里写“工具调用：...”或“我调用工具了”来代替。"
             "如果 tool_call 为 null，系统不会执行任何工具，也不要声称工具已经调用或失败。"
         )
-        lines.append("如果不需要工具，tool_call 输出 null。一次只调用一个工具。")
+        lines.append("如果不需要工具，tool_call 输出 null。当前 JSON tool_call 字段一次只调用一个 legacy 工具。")
         return "\n".join(lines)
 
     def _build_native_tool_round_instruction(self, native_tools: list[dict[str, Any]] | None) -> str:

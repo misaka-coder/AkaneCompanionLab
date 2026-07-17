@@ -7,6 +7,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Generator
 from urllib.parse import urlparse
 
@@ -158,6 +159,131 @@ class ChatJSONStreamResult:
     native_preface_text: str = ""
     stopped_early: bool = False
     early_tool_call: dict[str, Any] | None = None
+
+
+def _responses_error_summary(value: Any) -> str:
+    """Return bounded provider failure metadata without echoing raw payloads."""
+
+    def _get(item: Any, key: str, default: Any = None) -> Any:
+        return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
+
+    nested = _get(value, "error")
+    error = nested if nested is not None else value
+    fields: list[str] = []
+    for key in ("type", "code"):
+        raw = str(_get(error, key, "") or "").strip()
+        if raw:
+            safe = re.sub(r"[^A-Za-z0-9_.:-]+", "_", raw)[:120]
+            fields.append(f"{key}={safe}")
+    return " ".join(fields) or "reason=provider_reported_failure"
+
+
+class _ResponsesStreamAdapter:
+    """Expose Responses streaming events through the small ChatCompletion
+    surface consumed by the existing Akane stream parser.
+
+    This keeps the rest of the engine provider-neutral while still preserving
+    function-call ids, incremental arguments and final usage telemetry.
+    """
+
+    def __init__(self, raw_stream: Any):
+        self._raw_stream = raw_stream
+        self.usage: Any = None
+        self._tool_indexes: dict[str, int] = {}
+        self._argument_deltas_seen: set[int] = set()
+
+    @staticmethod
+    def _get(value: Any, key: str, default: Any = None) -> Any:
+        return value.get(key, default) if isinstance(value, dict) else getattr(value, key, default)
+
+    def _tool_index(self, event: Any, item: Any = None) -> int:
+        raw = self._get(event, "output_index", None)
+        try:
+            return int(raw)
+        except Exception:
+            pass
+        identity = str(
+            self._get(item, "call_id", "")
+            or self._get(item, "id", "")
+            or self._get(event, "item_id", "")
+        ).strip()
+        if identity not in self._tool_indexes:
+            self._tool_indexes[identity] = len(self._tool_indexes)
+        return self._tool_indexes[identity]
+
+    @staticmethod
+    def _chunk(*, content: str = "", tool_calls: list[dict[str, Any]] | None = None, usage: Any = None,
+               finish_reason: str | None = None) -> Any:
+        delta = SimpleNamespace(content=content or None, tool_calls=tool_calls or None)
+        choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
+        return SimpleNamespace(choices=[choice], usage=usage)
+
+    def __iter__(self):
+        for event in self._raw_stream:
+            event_type = str(self._get(event, "type", "") or "")
+            if event_type == "response.output_text.delta":
+                delta = str(self._get(event, "delta", "") or "")
+                if delta:
+                    yield self._chunk(content=delta)
+                continue
+            if event_type == "response.output_item.added":
+                item = self._get(event, "item")
+                if str(self._get(item, "type", "") or "") != "function_call":
+                    continue
+                index = self._tool_index(event, item)
+                call_id = str(self._get(item, "call_id", "") or self._get(item, "id", "") or "")
+                name = str(self._get(item, "name", "") or "")
+                yield self._chunk(
+                    tool_calls=[{
+                        "index": index,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": ""},
+                    }]
+                )
+                continue
+            if event_type == "response.function_call_arguments.delta":
+                index = self._tool_index(event)
+                delta = str(self._get(event, "delta", "") or "")
+                if delta:
+                    self._argument_deltas_seen.add(index)
+                    yield self._chunk(
+                        tool_calls=[{
+                            "index": index,
+                            "type": "function",
+                            "function": {"arguments": delta},
+                        }]
+                    )
+                continue
+            if event_type == "response.output_item.done":
+                item = self._get(event, "item")
+                if str(self._get(item, "type", "") or "") != "function_call":
+                    continue
+                index = self._tool_index(event, item)
+                arguments = str(self._get(item, "arguments", "") or "")
+                if arguments and index not in self._argument_deltas_seen:
+                    yield self._chunk(
+                        tool_calls=[{
+                            "index": index,
+                            "type": "function",
+                            "function": {"arguments": arguments},
+                        }]
+                    )
+                continue
+            if event_type in {"error", "response.failed", "response.cancelled"}:
+                response = self._get(event, "response")
+                detail = response if response is not None else event
+                raise RuntimeError(f"responses_stream_failed {_responses_error_summary(detail)}")
+            if event_type in {"response.completed", "response.incomplete"}:
+                response = self._get(event, "response")
+                self.usage = self._get(response, "usage")
+                finish_reason = "length" if event_type == "response.incomplete" else "stop"
+                yield self._chunk(usage=self.usage, finish_reason=finish_reason)
+
+    def close(self) -> None:
+        close = getattr(self._raw_stream, "close", None)
+        if callable(close):
+            close()
 
 
 class _TopLevelJSONStreamTap:
@@ -479,6 +605,7 @@ class LLMRuntime:
             timeout=90.0,
             max_retries=0,
         )
+        setattr(client, "_akane_bundle_role", "aux")
         return ModelBundle(client=client, model=config.AUX_MODEL_NAME)
 
     def _build_chat_bundle(self) -> ModelBundle:
@@ -489,6 +616,7 @@ class LLMRuntime:
             timeout=120.0,
             max_retries=0,
         )
+        setattr(client, "_akane_bundle_role", "chat")
         return ModelBundle(client=client, model=config.CHAT_MODEL_NAME)
 
     def _chat_bundle_for_override(self, chat_model_override: str = "") -> ModelBundle:
@@ -1083,9 +1211,12 @@ class LLMRuntime:
                 messages.append(normalized_turn)
         payload: dict[str, Any] = {
             "model": bundle.model,
-            "temperature": temperature,
             "messages": messages,
         }
+        # Current OpenAI reasoning models reject sampling controls when explicit
+        # reasoning effort is selected. Keep temperature for all legacy paths.
+        if not (self._is_responses_protocol(bundle) and self._responses_reasoning_effort(bundle)):
+            payload["temperature"] = temperature
         if stream:
             payload["stream"] = True
             if self._supports_stream_usage(bundle):
@@ -1134,7 +1265,33 @@ class LLMRuntime:
             json_mode=json_mode,
             native_tool_count=len(normalized_tools),
         )
+        self._enforce_prompt_token_limits(payload)
         return payload
+
+    def _enforce_prompt_token_limits(self, payload: dict[str, Any]) -> None:
+        configured_limits = [
+            max(0, int(getattr(config, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 0) or 0)),
+            max(0, int(getattr(config, "LLM_CONTEXT_WINDOW", 0) or 0)),
+        ]
+        limits = [value for value in configured_limits if value > 0]
+        if not limits:
+            return
+        limit = min(limits)
+        serialized = json.dumps(
+            {
+                "messages": payload.get("messages") or [],
+                "tools": payload.get("tools") or [],
+                "system_extra_blocks": payload.get("system_extra_blocks") or [],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        estimated = self._estimate_prompt_tokens(serialized)
+        if estimated > limit:
+            self._record_metric("prompt_token_limit_exceeded")
+            raise ValueError(f"llm_prompt_token_limit_exceeded estimated={estimated} limit={limit}")
 
     def _normalize_message_content_for_payload(self, content: Any) -> str | list[dict[str, Any]]:
         if isinstance(content, list):
@@ -1212,7 +1369,14 @@ class LLMRuntime:
         protocol = str(getattr(client, "_akane_protocol", getattr(client, "protocol", "")) or "").strip().lower()
         return protocol == "anthropic"
 
+    def _is_responses_protocol(self, bundle: ModelBundle) -> bool:
+        client = getattr(bundle, "client", bundle)
+        protocol = str(getattr(client, "_akane_protocol", getattr(client, "protocol", "")) or "").strip().lower()
+        return protocol == "responses"
+
     def _supports_stream_usage(self, bundle: ModelBundle) -> bool:
+        if self._is_responses_protocol(bundle):
+            return False
         return self._supports_deepseek_thinking_control(bundle)
 
     def _record_prompt_audit_if_enabled(
@@ -1268,7 +1432,7 @@ class LLMRuntime:
         if not bool(getattr(config, "LLM_PROMPT_AUDIT_ENABLED", False)):
             return False
         key = str(prompt_cache_key or "").strip()
-        if key == "chat:final":
+        if key == "chat:final" or key.startswith("chat:final:"):
             return True
         return bool(getattr(config, "LLM_PROMPT_AUDIT_INCLUDE_AUX", False))
 
@@ -1371,6 +1535,12 @@ class LLMRuntime:
                 read = self._usage_int(usage, "prompt_cache_hit_tokens")
             if not creation:
                 creation = self._usage_int(usage, "prompt_cache_miss_tokens")
+            # OpenAI Responses and Chat Completions report cached input under
+            # nested detail objects rather than the Anthropic/DeepSeek fields.
+            if not read:
+                read = self._nested_usage_int(usage, "input_tokens_details", "cached_tokens")
+            if not read:
+                read = self._nested_usage_int(usage, "prompt_tokens_details", "cached_tokens")
             if read:
                 self._record_metric("cache_read_tokens", read)
             if creation:
@@ -1395,6 +1565,10 @@ class LLMRuntime:
         except Exception:
             return 0
 
+    def _nested_usage_int(self, usage: Any, parent: str, key: str) -> int:
+        nested = usage.get(parent) if isinstance(usage, dict) else getattr(usage, parent, None)
+        return self._usage_int(nested, key) if nested is not None else 0
+
     def _should_send_native_tools(self, bundle: ModelBundle) -> bool:
         return bool(self._native_tool_profile(bundle).supports_native_tools)
 
@@ -1409,6 +1583,14 @@ class LLMRuntime:
                 native_call_shape="anthropic_tool_use",
                 verified=True,
                 notes="Anthropic Messages API supports native tools/tool_use; forced JSON is not sent on this protocol.",
+            )
+        if protocol == "responses":
+            return ProviderToolProfile(
+                supports_native_tools=True,
+                native_tools_coexist_with_forced_json=False,
+                native_call_shape="responses_function_call",
+                verified=True,
+                notes="OpenAI Responses wire protocol with function_call/function_call_output items.",
             )
         if protocol != "openai":
             return DEFAULT_PROVIDER_TOOL_PROFILE
@@ -1698,6 +1880,9 @@ class LLMRuntime:
         return getattr(value, key, None)
 
     def _build_reasoning_control_kwargs(self, *, bundle: ModelBundle) -> dict[str, Any]:
+        if self._is_responses_protocol(bundle):
+            effort = self._responses_reasoning_effort(bundle)
+            return {"reasoning": {"effort": effort}} if effort else {}
         mode = str(getattr(config, "LLM_THINKING_MODE", "disabled") or "").strip().lower()
         if mode in {"", "default", "auto"}:
             return {}
@@ -1706,6 +1891,17 @@ class LLMRuntime:
         if not self._supports_deepseek_thinking_control(bundle):
             return {}
         return {"extra_body": {"thinking": {"type": mode}}}
+
+    def _responses_reasoning_effort(self, bundle: ModelBundle | None = None) -> str:
+        client = getattr(bundle, "client", bundle)
+        role = str(getattr(client, "_akane_bundle_role", "") or "").strip().lower()
+        role_setting = {
+            "aux": "LLM_AUX_REASONING_EFFORT",
+            "chat": "LLM_CHAT_REASONING_EFFORT",
+        }.get(role, "")
+        role_value = str(getattr(config, role_setting, "") or "").strip().lower() if role_setting else ""
+        value = role_value or str(getattr(config, "LLM_REASONING_EFFORT", "") or "").strip().lower()
+        return value if value in {"none", "minimal", "low", "medium", "high", "xhigh", "max"} else ""
 
     def _supports_deepseek_thinking_control(self, bundle: ModelBundle) -> bool:
         protocol = (
@@ -1745,7 +1941,14 @@ class LLMRuntime:
         protocol = (
             str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
         )
-        return protocol in {"ollama", "openai"}
+        if protocol == "responses" and self._bundle_base_host(bundle) == "api.pinaic.com":
+            # PinAI currently exposes the Responses endpoint, but its
+            # gpt-5.6-sol upstream returns HTTP 502 whenever
+            # text.format=json_object is present. Akane's prompts still carry
+            # the strict JSON contract and the normal parser/fallback remains
+            # authoritative; omit only this unsupported wire hint.
+            return False
+        return protocol in {"ollama", "openai", "responses"}
 
     def _ensure_json_keyword(self, messages: list[dict[str, Any]]) -> None:
         # OpenAI/DeepSeek reject response_format=json_object unless the messages
@@ -1789,8 +1992,10 @@ class LLMRuntime:
         protocol = (
             str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
         )
-        if protocol != "openai":
+        if protocol not in {"openai", "responses"}:
             return False
+        if protocol == "responses":
+            return True
         if bool(getattr(config, "PROMPT_CACHE_HINTS_FORCE", False)):
             return True
         base_url = str(getattr(bundle.client, "base_url", "") or "").strip()
@@ -1818,9 +2023,13 @@ class LLMRuntime:
 
     def _normalize_prompt_cache_retention(self, value: Any) -> str:
         raw = str(value or "").strip().lower()
-        return raw if raw in {"in_memory", "24h"} else ""
+        if raw in {"in_memory", "in-memory"}:
+            return "in-memory"
+        return raw if raw == "24h" else ""
 
     def _create_completion(self, *, bundle: ModelBundle, payload: dict[str, Any]) -> Any:
+        if self._is_responses_protocol(bundle):
+            return self._create_responses_completion(bundle=bundle, payload=payload)
         try:
             return bundle.client.chat.completions.create(**payload)
         except TypeError:
@@ -1834,6 +2043,153 @@ class LLMRuntime:
                 if stripped != payload:
                     return bundle.client.chat.completions.create(**stripped)
             raise
+
+    def _create_responses_completion(self, *, bundle: ModelBundle, payload: dict[str, Any]) -> Any:
+        request = self._responses_payload_from_chat(payload)
+        try:
+            response = bundle.client.responses.create(**request)
+        except TypeError:
+            stripped = self._without_prompt_cache_hints(request)
+            if stripped == request:
+                raise
+            response = bundle.client.responses.create(**stripped)
+        except Exception as exc:
+            if not self._should_retry_without_prompt_cache_hints(exc):
+                raise
+            stripped = self._without_prompt_cache_hints(request)
+            if stripped == request:
+                raise
+            response = bundle.client.responses.create(**stripped)
+        if bool(request.get("stream")):
+            return _ResponsesStreamAdapter(response)
+        return self._adapt_responses_result(response)
+
+    def _responses_payload_from_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = dict(payload)
+        messages = list(request.pop("messages", []) or [])
+        request.pop("stream_options", None)
+        system_text = ""
+        if messages and str(messages[0].get("role") or "").strip().lower() == "system":
+            system_text = self._flatten_message_content(messages.pop(0).get("content")).strip()
+        if system_text:
+            request["instructions"] = system_text
+        request["input"] = self._responses_input_from_messages(messages)
+        response_format = request.pop("response_format", None)
+        if isinstance(response_format, dict) and response_format.get("type") == "json_object":
+            request["text"] = {"format": {"type": "json_object"}}
+        tools = request.get("tools")
+        if isinstance(tools, list):
+            request["tools"] = self._responses_tools_from_chat(tools)
+            request["parallel_tool_calls"] = True
+        tool_choice = request.get("tool_choice")
+        if isinstance(tool_choice, dict):
+            function = tool_choice.get("function")
+            if isinstance(function, dict) and str(function.get("name") or "").strip():
+                request["tool_choice"] = {"type": "function", "name": str(function["name"]).strip()}
+        request["store"] = not bool(getattr(config, "LLM_DISABLE_RESPONSE_STORAGE", True))
+        if request.get("prompt_cache_retention") == "in_memory":
+            request["prompt_cache_retention"] = "in-memory"
+        return request
+
+    def _responses_input_from_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for message in messages:
+            role = str(message.get("role") or "").strip().lower()
+            if role == "assistant" and isinstance(message.get("tool_calls"), list):
+                content = self._flatten_message_content(message.get("content")).strip()
+                if content:
+                    items.append({"role": "assistant", "content": content})
+                for call in self._normalize_openai_history_tool_calls(message.get("tool_calls")):
+                    function = call["function"]
+                    items.append({
+                        "type": "function_call",
+                        "call_id": call["id"],
+                        "name": function["name"],
+                        "arguments": function["arguments"],
+                    })
+                continue
+            if role == "tool":
+                call_id = str(message.get("tool_call_id") or "").strip()
+                if call_id:
+                    items.append({
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": self._flatten_message_content(message.get("content")),
+                    })
+                continue
+            if role not in {"user", "assistant", "developer", "system"}:
+                continue
+            content = message.get("content")
+            items.append({"role": role, "content": self._responses_message_content(content)})
+        return items
+
+    def _responses_message_content(self, content: Any) -> Any:
+        if not isinstance(content, list):
+            return str(content or "")
+        blocks: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "")
+            if block_type == "text":
+                blocks.append({"type": "input_text", "text": str(block.get("text") or "")})
+            elif block_type == "image_url":
+                image_url = block.get("image_url")
+                url = image_url.get("url") if isinstance(image_url, dict) else image_url
+                if str(url or "").startswith("data:image/"):
+                    blocks.append({"type": "input_image", "image_url": str(url)})
+        return blocks or self._flatten_message_content(content)
+
+    def _responses_tools_from_chat(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for tool in tools:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if not isinstance(function, dict):
+                continue
+            item = {
+                "type": "function",
+                "name": str(function.get("name") or ""),
+                "description": str(function.get("description") or ""),
+                "parameters": function.get("parameters") or {"type": "object", "additionalProperties": True},
+            }
+            if "strict" in function:
+                item["strict"] = bool(function.get("strict"))
+            result.append(item)
+        return result
+
+    def _adapt_responses_result(self, response: Any) -> Any:
+        status = str(self._get_attr_or_key(response, "status") or "").strip().lower()
+        if status in {"failed", "cancelled"}:
+            raise RuntimeError(f"responses_{status} {_responses_error_summary(response)}")
+        output = self._get_attr_or_key(response, "output") or []
+        tool_calls: list[dict[str, Any]] = []
+        text_parts: list[str] = []
+        direct_text = str(self._get_attr_or_key(response, "output_text") or "")
+        if direct_text:
+            text_parts.append(direct_text)
+        for item in output:
+            item_type = str(self._get_attr_or_key(item, "type") or "")
+            if item_type == "function_call":
+                call_id = str(
+                    self._get_attr_or_key(item, "call_id")
+                    or self._get_attr_or_key(item, "id")
+                    or ""
+                )
+                tool_calls.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": str(self._get_attr_or_key(item, "name") or ""),
+                        "arguments": str(self._get_attr_or_key(item, "arguments") or "{}"),
+                    },
+                })
+            elif item_type == "message" and not direct_text:
+                for block in self._get_attr_or_key(item, "content") or []:
+                    if str(self._get_attr_or_key(block, "type") or "") == "output_text":
+                        text_parts.append(str(self._get_attr_or_key(block, "text") or ""))
+        message = SimpleNamespace(content="".join(text_parts), tool_calls=tool_calls)
+        choice = SimpleNamespace(message=message, finish_reason="length" if status == "incomplete" else "stop")
+        return SimpleNamespace(choices=[choice], usage=self._get_attr_or_key(response, "usage"), raw_response=response)
 
     def _without_prompt_cache_hints(self, payload: dict[str, Any]) -> dict[str, Any]:
         if "prompt_cache_key" not in payload and "prompt_cache_retention" not in payload:

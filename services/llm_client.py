@@ -12,7 +12,7 @@ ANTHROPIC_DEFAULT_MAX_TOKENS = 4096
 
 def normalize_api_protocol(protocol: str = "", base_url: str = "") -> str:
     explicit = str(protocol or "").strip().lower()
-    if explicit in {"openai", "anthropic", "ollama"}:
+    if explicit in {"openai", "responses", "anthropic", "ollama"}:
         return explicit
 
     lowered = str(base_url or "").strip().lower()
@@ -29,6 +29,8 @@ def normalize_base_url(*, protocol: str, base_url: str) -> str:
         normalized = normalized or "http://127.0.0.1:11434"
         if not normalized.endswith("/v1"):
             normalized = f"{normalized}/v1"
+    elif protocol == "responses" and normalized and not normalized.endswith("/v1"):
+        normalized = f"{normalized}/v1"
     return normalized
 
 

@@ -27,6 +27,14 @@ class ModelProviderPreset:
 
 PROVIDER_PRESETS: tuple[ModelProviderPreset, ...] = (
     ModelProviderPreset(
+        id="pinai",
+        label="PinAI Responses",
+        protocol="responses",
+        base_url="https://api.pinaic.com/v1",
+        api_key_required=True,
+        description="PinAI 的 OpenAI Responses API 兼容接口。",
+    ),
+    ModelProviderPreset(
         id="openai",
         label="OpenAI",
         protocol="openai",
@@ -205,6 +213,8 @@ def effective_settings_from_config(config_module: Any) -> ModelServiceSettings:
 
 def infer_provider_id(*, protocol: str, base_url: str) -> str:
     lowered = str(base_url or "").lower()
+    if "api.pinaic.com" in lowered:
+        return "pinai"
     if protocol == "ollama" or "11434" in lowered:
         return "ollama"
     if protocol == "anthropic" or "anthropic.com" in lowered:
@@ -308,6 +318,14 @@ def test_model_service(settings: ModelServiceSettings) -> str:
         timeout=float(settings.timeout_seconds),
         max_retries=0,
     )
+    if settings.protocol == "responses":
+        response = client.responses.create(
+            model=settings.chat_model,
+            input="Reply with only OK.",
+            max_output_tokens=8,
+            store=False,
+        )
+        return str(getattr(response, "output_text", "") or "").strip() or "OK"
     response = client.chat.completions.create(
         model=settings.chat_model,
         messages=[{"role": "user", "content": "Reply with only OK."}],
@@ -326,7 +344,7 @@ def validate_model_service_settings(
     *,
     require_model: bool = True,
 ) -> None:
-    if settings.protocol not in {"openai", "anthropic", "ollama"}:
+    if settings.protocol not in {"openai", "responses", "anthropic", "ollama"}:
         raise ValueError("model_service_protocol_invalid")
     if not settings.base_url.startswith(("http://", "https://")):
         raise ValueError("model_service_base_url_invalid")

@@ -107,7 +107,7 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                     text=(
                         "tool_call：当用户的意图只靠语言能力无法完成时，从后面的工具清单里选一个工具调用。\n"
                         "tool_call 必须放在 speech_segments 字段之后；不需要工具时输出 null。\n"
-                        "一次只调用一个工具。"
+                        "当前 JSON tool_call 字段一次只调用一个 legacy 工具；provider 原生工具可按系统规则同轮调用多个互不依赖的工具。"
                     ),
                 ),
                 PromptBlock(
