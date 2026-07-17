@@ -76,6 +76,7 @@ from .capability_registry import (
 )
 from .local_capability_config import get_mcp_server_runtime_config
 from .mcp_stdio_discoverer import McpStdioDiscoveryError, McpStdioToolCaller
+from .anysearch_rest_client import AnySearchRestClient, AnySearchRestError
 from .npc_runtime import GenericNPCRuntime
 from .store import MemoryStore
 from .task_workspace import TaskWorkspaceService
@@ -4101,6 +4102,7 @@ class WebSearchToolHandler(BaseToolHandler):
         server_id: str = "anysearch",
         mcp_tool_caller: Any = None,
         readiness_mcp_tool_caller: Any = None,
+        anysearch_rest_client: Any = None,
         readiness_ready_ttl_seconds: float = 30 * 60,
         readiness_failure_ttl_seconds: float = 60.0,
         readiness_probe_in_background: bool = True,
@@ -4113,6 +4115,9 @@ class WebSearchToolHandler(BaseToolHandler):
         )
         self.readiness_mcp_tool_caller = readiness_mcp_tool_caller or (
             mcp_tool_caller if mcp_tool_caller is not None else McpStdioToolCaller(timeout_seconds=5.0)
+        )
+        self.anysearch_rest_client = anysearch_rest_client or AnySearchRestClient(
+            timeout_seconds=float(getattr(config, "WEB_SEARCH_MCP_TIMEOUT_SECONDS", 35.0) or 35.0)
         )
         self._readiness_ready_ttl_seconds = max(30.0, float(readiness_ready_ttl_seconds))
         self._readiness_failure_ttl_seconds = max(5.0, float(readiness_failure_ttl_seconds))
@@ -4139,12 +4144,11 @@ class WebSearchToolHandler(BaseToolHandler):
             profile_user_id=runtime_profile_user_id,
             server_id=self.server_id,
         )
-        if not server:
-            return {"enabled": False, "status": "missing_config", "reason": "anysearch_config_missing"}
-        if not bool(server.get("enabled")):
+        if server and not bool(server.get("enabled")):
             return {"enabled": False, "status": "disabled", "reason": "anysearch_disabled"}
-        if not str(server.get("command") or "").strip():
-            return {"enabled": False, "status": "missing_command", "reason": "anysearch_command_missing"}
+
+        if not server or not str(server.get("command") or "").strip():
+            return self._rest_capability_status(runtime_profile_user_id)
 
         fingerprint = self._server_readiness_fingerprint(server)
         cache_key = (runtime_profile_user_id, fingerprint)
@@ -4169,6 +4173,55 @@ class WebSearchToolHandler(BaseToolHandler):
                     "cache_ttl_seconds": 1.0,
                 }
         return self._probe_readiness(cache_key=cache_key, server=server)
+
+    def _rest_capability_status(self, profile_user_id: str) -> dict[str, Any]:
+        endpoint = str(getattr(self.anysearch_rest_client, "endpoint", "anysearch-rest") or "anysearch-rest")
+        fingerprint = "rest:" + hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
+        cache_key = (profile_user_id, fingerprint)
+        now = float(self._readiness_clock())
+        with self._readiness_lock:
+            cached = self._readiness_cache.get(cache_key)
+            if cached is not None and cached[0] > now:
+                return dict(cached[1])
+            if self._readiness_probe_in_background:
+                if cache_key not in self._readiness_probes_inflight:
+                    self._readiness_probes_inflight.add(cache_key)
+                    threading.Thread(
+                        target=self._probe_rest_readiness_background,
+                        kwargs={"cache_key": cache_key},
+                        name="akane-anysearch-rest-readiness",
+                        daemon=True,
+                    ).start()
+                return {
+                    "enabled": False,
+                    "status": "checking",
+                    "reason": "anysearch_rest_probe_pending",
+                    "cache_ttl_seconds": 1.0,
+                }
+        return self._probe_rest_readiness(cache_key=cache_key)
+
+    def _probe_rest_readiness(self, *, cache_key: tuple[str, str]) -> dict[str, Any]:
+        try:
+            self.anysearch_rest_client.call(action="search", arguments={"query": "OpenAI", "max_results": 1})
+            status = {"enabled": True, "status": "ready", "reason": "", "transport": "rest"}
+        except AnySearchRestError as exc:
+            status = {"enabled": False, "status": "unavailable", "reason": exc.reason, "transport": "rest"}
+        except Exception:
+            status = {
+                "enabled": False,
+                "status": "unavailable",
+                "reason": "anysearch_rest_probe_failed",
+                "transport": "rest",
+            }
+        self._remember_readiness(cache_key, status)
+        return status
+
+    def _probe_rest_readiness_background(self, *, cache_key: tuple[str, str]) -> None:
+        try:
+            self._probe_rest_readiness(cache_key=cache_key)
+        finally:
+            with self._readiness_lock:
+                self._readiness_probes_inflight.discard(cache_key)
 
     def _probe_readiness(
         self,
@@ -4280,28 +4333,35 @@ class WebSearchToolHandler(BaseToolHandler):
             profile_user_id=runtime_profile_user_id,
             server_id=self.server_id,
         )
-        if not server:
-            return self._failure("missing_config", "AnySearch MCP 还没有配置。请先在能力面板保存 AnySearch 预设。")
-        if not bool(server.get("enabled")):
+        if server and not bool(server.get("enabled")):
             return self._failure("disabled", "AnySearch MCP 当前是关闭状态。")
-        if not str(server.get("command") or "").strip():
-            return self._failure("missing_command", "AnySearch MCP 缺少启动命令。")
 
         action = str(call.get("action") or "search").strip()
         arguments = self._build_mcp_arguments(call)
-        redaction_terms = self._redaction_terms_for_server(server)
+        use_mcp = bool(server and str(server.get("command") or "").strip())
+        redaction_terms = self._redaction_terms_for_server(server) if server else []
         try:
-            result = self._run_coro_blocking(self._call_mcp(server=server, tool_name=action, arguments=arguments))
+            if use_mcp:
+                result = self._run_coro_blocking(self._call_mcp(server=server, tool_name=action, arguments=arguments))
+            else:
+                result = self.anysearch_rest_client.call(action=action, arguments=arguments)
+        except AnySearchRestError as exc:
+            return self._failure(exc.reason, "AnySearch 官方 HTTPS 搜索调用失败。")
         except McpStdioDiscoveryError as exc:
-            self._remember_server_failure(runtime_profile_user_id, server, reason=str(exc) or "mcp_call_failed")
+            if use_mcp and server:
+                self._remember_server_failure(runtime_profile_user_id, server, reason=str(exc) or "mcp_call_failed")
             return self._failure(str(exc) or "mcp_call_failed", "AnySearch MCP 调用失败或超时。")
         except Exception:
-            self._remember_server_failure(runtime_profile_user_id, server, reason="mcp_call_failed")
-            return self._failure("mcp_call_failed", "AnySearch MCP 调用失败。")
+            if use_mcp and server:
+                self._remember_server_failure(runtime_profile_user_id, server, reason="mcp_call_failed")
+                return self._failure("mcp_call_failed", "AnySearch MCP 调用失败。")
+            return self._failure("anysearch_rest_failed", "AnySearch 官方 HTTPS 搜索调用失败。")
         if self._mcp_result_is_error(result):
-            self._remember_server_failure(runtime_profile_user_id, server, reason="mcp_result_error")
+            if use_mcp and server:
+                self._remember_server_failure(runtime_profile_user_id, server, reason="mcp_result_error")
             return self._failure("mcp_result_error", "AnySearch MCP 返回了错误状态。")
-        self._remember_server_ready(runtime_profile_user_id, server)
+        if use_mcp and server:
+            self._remember_server_ready(runtime_profile_user_id, server)
 
         followup = self._format_followup(
             action=action,
@@ -4652,7 +4712,16 @@ class WebSearchToolHandler(BaseToolHandler):
 
     def _failure(self, status: str, message: str) -> ToolExecutionResult:
         reason = str(status or "unavailable").strip()[:120]
-        transient = reason in {"mcp_tool_call_timeout", "mcp_call_failed", "mcp_result_error"}
+        transient = reason in {
+            "mcp_tool_call_timeout",
+            "mcp_call_failed",
+            "mcp_result_error",
+            "anysearch_network_unavailable",
+            "anysearch_rate_limited",
+            "anysearch_http_error",
+            "anysearch_upstream_error",
+            "anysearch_rest_failed",
+        }
         next_step = (
             "如果仍有工具预算和其它安全的只读路径，可以换查询词、拆小批次、换公开来源或改用其它检索工具继续核验；"
             "如果没有可用路径，再基于现有证据降级回答。"

@@ -22,6 +22,7 @@ from companion_v01.tool_runtime import (
     ToolExecutionContext,
     WebSearchToolHandler,
 )
+from companion_v01.anysearch_rest_client import AnySearchRestError
 
 
 class RetrieveMemoryToolHandlerTests(unittest.TestCase):
@@ -311,14 +312,26 @@ class WebSearchToolHandlerTests(unittest.TestCase):
         self.assertEqual(metadata.risk, "low")
         self.assertGreaterEqual(metadata.default_round_budget, 6)
 
-    def test_capability_status_hides_missing_config_without_starting_probe(self) -> None:
+    def test_capability_status_uses_direct_rest_when_mcp_config_is_missing(self) -> None:
+        class FakeRestClient:
+            endpoint = "https://api.anysearch.test/v1/search"
+
+            def call(self, *, action: str, arguments: dict) -> dict:
+                return {"results": []}
+
         with tempfile.TemporaryDirectory() as temp_dir:
-            handler = WebSearchToolHandler(config_base_dir=temp_dir, mcp_tool_caller=object())
+            handler = WebSearchToolHandler(
+                config_base_dir=temp_dir,
+                mcp_tool_caller=object(),
+                anysearch_rest_client=FakeRestClient(),
+                readiness_probe_in_background=False,
+            )
 
             status = handler.capability_status(profile_user_id="master", client_mode="desktop_pet")
 
-            self.assertFalse(status["enabled"])
-            self.assertEqual(status["status"], "missing_config")
+            self.assertTrue(status["enabled"])
+            self.assertEqual(status["status"], "ready")
+            self.assertEqual(status["transport"], "rest")
 
     def test_capability_status_actively_probes_anysearch_and_caches_success(self) -> None:
         class FakeCaller:
@@ -580,9 +593,19 @@ class WebSearchToolHandlerTests(unittest.TestCase):
             self.assertNotIn("Authorization: Bearer dotenv-secret", result.followup_context)
             self.assertNotIn(temp_dir, result.followup_context)
 
-    def test_execute_returns_structured_unavailable_when_anysearch_is_unconfigured(self) -> None:
+    def test_execute_returns_structured_unavailable_when_direct_anysearch_fails(self) -> None:
+        class FailingRestClient:
+            endpoint = "https://api.anysearch.test/v1/search"
+
+            def call(self, *, action: str, arguments: dict) -> dict:
+                raise AnySearchRestError("anysearch_network_unavailable", retryable=True)
+
         with tempfile.TemporaryDirectory() as temp_dir:
-            handler = WebSearchToolHandler(config_base_dir=temp_dir, mcp_tool_caller=object())
+            handler = WebSearchToolHandler(
+                config_base_dir=temp_dir,
+                mcp_tool_caller=object(),
+                anysearch_rest_client=FailingRestClient(),
+            )
             call = handler.normalize_call({"type": "web_search", "query": "今天的新闻"})
             self.assertIsNotNone(call)
             assert call is not None
@@ -591,7 +614,42 @@ class WebSearchToolHandlerTests(unittest.TestCase):
 
             self.assertEqual(result.state_updates["web_search_status"], "unavailable")
             self.assertIn("AnySearch 联网能力暂时不可用", result.followup_context)
-            self.assertIn("missing_config", result.followup_context)
+            self.assertIn("anysearch_network_unavailable", result.followup_context)
+
+    def test_execute_uses_direct_anysearch_without_node_or_saved_config(self) -> None:
+        class FakeRestClient:
+            endpoint = "https://api.anysearch.test/v1/search"
+
+            def __init__(self) -> None:
+                self.calls = []
+
+            def call(self, *, action: str, arguments: dict) -> dict:
+                self.calls.append((action, arguments))
+                return {
+                    "results": [
+                        {
+                            "title": "国内公开搜索结果",
+                            "url": "https://example.cn/news",
+                            "snippet": "无需本地 Node 或 MCP 代理。",
+                        }
+                    ]
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rest = FakeRestClient()
+            handler = WebSearchToolHandler(
+                config_base_dir=temp_dir,
+                mcp_tool_caller=object(),
+                anysearch_rest_client=rest,
+            )
+            call = handler.normalize_call({"type": "web_search", "query": "国内财经新闻", "max_results": 3})
+            assert call is not None
+
+            result = handler.execute(call=call, context=self._context())
+
+            self.assertEqual(rest.calls, [("search", {"query": "国内财经新闻", "max_results": 3})])
+            self.assertEqual(result.state_updates["web_search_status"], "ok")
+            self.assertIn("国内公开搜索结果", result.followup_context)
 
     def test_qq_search_uses_owner_capability_profile_by_default(self) -> None:
         class FakeCaller:
