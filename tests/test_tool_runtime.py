@@ -292,6 +292,35 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "ok")
         self.assertIn("done", result.followup_context)
 
+    def test_adapter_capability_projects_only_safe_provider_identity(self) -> None:
+        class FakeAdapter:
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                return CapabilityResult(
+                    is_error=False,
+                    content={"result": {"provider": "eastmoney_public_market"}},
+                    status="ok",
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_approval_policy_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                payload={"defaultMode": "trusted_auto_allow"},
+            )
+            handler = AdapterCapabilityToolHandler(
+                capability_id="akane.finance.quote_snapshot.v1",
+                adapter=FakeAdapter(),
+                descriptor=self._descriptor(risk="low", confirm="never"),
+                config_base_dir=temp_dir,
+            )
+
+            result = handler.execute(
+                call={"type": "akane.finance.quote_snapshot.v1", "arguments": {"text": "hello"}},
+                context=self._context(),
+            )
+
+        self.assertEqual(result.stream_events[0]["provider"], "eastmoney_public_market")
+
 
 class WebSearchToolHandlerTests(unittest.TestCase):
     def _context(self) -> ToolExecutionContext:

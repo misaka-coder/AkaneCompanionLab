@@ -1041,6 +1041,9 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             "capabilityId": self.tool_type,
             "status": status,
         }
+        provider = self._capability_result_provider(result)
+        if provider:
+            event["provider"] = provider
         state_updates = {
             "adapter_capability_status": status,
             "adapter_capability_id": self.tool_type,
@@ -1059,6 +1062,20 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             capability_result=result,
             context=context,
         )
+
+    def _capability_result_provider(self, result: Any) -> str:
+        content = getattr(result, "content", None)
+        if not isinstance(content, Mapping):
+            return ""
+        candidates = [content.get("provider")]
+        nested = content.get("result")
+        if isinstance(nested, Mapping):
+            candidates.append(nested.get("provider"))
+        for value in candidates:
+            provider = self._safe_public_text(value, limit=80).strip().lower()
+            if re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,79}", provider):
+                return provider
+        return ""
 
     def _finalize_execution_result(
         self,
