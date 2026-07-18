@@ -1548,7 +1548,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(stored_user["memory_metadata"]["keywords"], [])
             manager.close()
 
-    def test_dual_write_skips_user_turns_disabled_by_legacy_index_policy(self) -> None:
+    def test_dual_write_keeps_raw_user_turns_when_vector_index_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
                 backend="dual",
@@ -1572,9 +1572,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
 
             self.assertTrue(result["ok"])
-            self.assertEqual(result["status"], "skipped")
-            self.assertEqual(result["reason"], "legacy_index_disabled")
-            self.assertIsNone(manager._store.get_record_by_source_id("memory-query-turn"))
+            self.assertEqual(result["status"], "recorded")
+            self.assertEqual(result["index_status"], "skipped")
+            stored = manager._store.get_record_by_source_id("memory-query-turn")
+            self.assertIsNotNone(stored)
+            self.assertEqual(stored["content"], "你还记得我之前说过什么吗？")
+            self.assertEqual(stored["index_status"], "skipped")
             manager.close()
 
     def test_shadow_retrieve_returns_structural_hash_payload(self) -> None:

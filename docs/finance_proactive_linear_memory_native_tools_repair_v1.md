@@ -1,10 +1,10 @@
 # 金融主动推送线性记忆与原生工具修复 V1
 
-状态：Slice A、Slice B 已实施并完成宿主验证；Slice C 及后续切片尚未实施
+状态：Slice A-D 已实施并验证；Slice E 已完成停服迁移、离线压缩、finance 启服与真实缓存验收；当前补齐 memcore raw/vector 边界并准备双服务部署
 
 日期：2026-07-17
 
-当前分支基线：`aa3eb5d fix(llm): isolate proactive plugin prompt cache`
+当前分支基线：`9f595b9 feat(finance): compact migrated history offline`
 
 ## 1. 文档用途与当前边界
 
@@ -838,3 +838,50 @@ git diff --check
 - 任一 inspect/write 失败即结构化停止；旧表不删除、不更新，重复执行只报告 already complete。
 
 当前本地缓存/迁移聚焦回归为 128 项通过，相关宿主宽回归为 308 项通过；云端 apply、部署后 cache usage 和最终条数仍需在停服备份后填写。
+
+### 12.4 停服迁移、离线压缩与部署结果
+
+2026-07-17 的 Slice E 维护窗口内，finance 与 personal 共享宿主实例均先保持停止，避免在宿主文件和共享 venv 更新期间出现版本撕裂。部署前备份 ID 为
+`slice-e-8a9a15f-9f595b9`；备份包含原宿主运行文件、原插件与 memcore 包、finance 环境文件校验值，以及 finance/memcore 两库通过 SQLite backup API 生成并完成 integrity check 的副本。
+
+- 宿主运行文件已部署到提交 `9f595b9`，finance 插件为 `0.7.11`，memcore 为 `0.1.0`。
+- memcore wheel 从干净提交 `2cb929e` 的 archive 构建；没有夹带 memcore 工作区内用户未提交的其它改动。
+- PinAI 原生工具 allowlist 使用探针验证过的 `host:model:json` 精确项；本文不记录 host、model、密钥或环境文件正文。
+- 停服最终 dry-run 为 eligible/scanned `156/156`，没有 skipped 或 rejection。
+- apply 写入 `312` 个 turn，即 `156` 个 event(user) 与 `156` 个历史已投递分析(assistant)；`pairs_completed=156`，没有失败。
+- 同步 compaction 完成 `2/2` 个 namespace，新建 `27` 个 summary、`4` 个 semantic summary，并完成 `1` 次 reinforcement；没有 retry pending。
+- 第二次不带 compaction 的 apply 幂等复跑报告 `already_complete=156`、`turns_written=0`。
+- 维护后只读核对：`plugin-event:* = 156`、`finance-history-analysis:* = 156`、旧 `analysis_history = 156`；finance 与 memcore 两库 `PRAGMA integrity_check` 均为 `ok`。
+- 未摘要 raw 总数从迁移后压缩前的 `318` 降为 `138`；旧表、失败 outbox 和投递状态均未删除或伪造。
+
+finance 随后单独启动并通过启动层验收：
+
+- `/health` 返回 `status=ok`、`instance_id=finance`、`root_binding=valid`，10002 仅在 loopback 正常监听。
+- PluginHost 为 active，`akane.finance` 0.7.11 active；6 个 capability 与 1 个后台 job 已发布，job 为 running。
+- `/metrics` 已出现 final 与 plugin proactive 各自的 cache/read/input/output/call 指标；刚启动且尚无新模型调用时各项为 0，符合冷启动事实。
+- 启动时间窗没有 plugin activation、Traceback 或结构化启动失败。
+
+### 12.5 真实事件验收中的既有 outbox 顺序风险
+
+finance 启动后，真实新闻轮询和订阅匹配持续产生新候选，证明 job、新闻源和 durable outbox 已接通；旧 `analysis_history` 仍为 156，没有恢复写入。
+
+第一批新候选尚未进入模型调用，因为现有 outbox 的严格收件人顺序规则出现 head-of-line blocking：一条更早、已有正文的历史通知失败仍在退避期，`list_due_deliveries()` 的 earlier-row 门禁不考虑 earlier row 是否已到 `next_attempt_at`，因此它在不可重试期间仍阻塞同收件人的后续空正文候选。此时 PluginHost job 仍为 active，但精确查询没有可返回的 due delivery，所以 plugin proactive usage 保持 0。
+
+本维护窗口不通过清空失败项、提前修改 `next_attempt_at`、伪造 delivered 或直接调用 pending delivery 来制造验收成功。先观察状态机的自然重试；若要修复这项可用性风险，应作为独立的小切片设计并测试“通知退避、收件人顺序、15 分钟未分析过期”三者的语义，不能为了缓存实测直接放松顺序门禁。
+
+### 12.6 真实结构化缓存验收与 raw/vector 缺口（2026-07-18）
+
+部署 `9044a07 fix(cache): preserve provider message boundaries` 后，使用真实 finance proactive 链路而不是合成请求复测：
+
+- 一次 compaction/high-water pass 将可见 history 从 30 条收敛到 16 条；该次前缀变化造成一次可解释的短暂失配。
+- 随后的稳定 native-tool follow-up reported input `31,854`，cached input `29,184`，真实命中率 `91.62%`。
+- 该事件的 native schema 发送数为 `6`，实际提取调用数为 `3`，无工具决策 `2`，provider unsupported `0`；模型确实可以在同一通道自主选择 0..N 个工具。
+- proactive 聚合值为 cached `30,720` / input `95,264`（约 `32.25%`），因为包含冷启动轮和 compaction 轮；它不能覆盖稳定后续轮的 `91.62%`，也不应被当作单轮命中率。
+
+同一真实快照还发现一个与缓存无关但必须先修的 memcore 边界缺口：
+
+- legacy `plugin-event:*` 已有 `33` 条新事件，但 memcore 仍只有迁移时的 `156` 条；最新 legacy 事件缺失于 memcore，说明推送链路把 `index_in_vector=false` 误当成“不要写 raw”。
+- 正确语义是：`index_in_vector=false` 只禁止向量 upsert；SQLite raw 仍必须落库，状态标记为 `skipped`，不进入 pending outbox；metadata 回写、`reindex_pending()` 和 `reindex_all()` 都保留该 opt-out。
+- 修复已落在 memcore commit `99a1fa0`，宿主 `MemcoreManager` 不再提前返回 `legacy_index_disabled`，而是把路由标志传给公共 `MemorySystem.record_user_turn()`。相关 memcore 204 项、宿主 memcore 集成 46 项测试通过。
+
+这 33 条已经缺失的历史 user event 不在本切片直接用 SQL 重排或伪造回填；若要补回，必须另做“按真实发生顺序追加、工具/分析配对和当前 prompt 可见性影响”评估，避免为了补数量破坏唯一线性时间线。

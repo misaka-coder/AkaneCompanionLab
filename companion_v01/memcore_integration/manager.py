@@ -1200,14 +1200,6 @@ class MemcoreManager:
         source_id = str((record or {}).get("source_id") or "").strip()
         if not source_id:
             return self._status(operation, False, "invalid_record", reason="source_id_required")
-        if role == "user" and not bool((record or {}).get("index_in_vector", True)):
-            return self._status(
-                operation,
-                True,
-                "skipped",
-                source_id=source_id,
-                reason="legacy_index_disabled",
-            )
         system = self._get_system_or_none(
             operation=operation,
             profile_user_id=profile_user_id,
@@ -1238,6 +1230,7 @@ class MemcoreManager:
                     source_id=source_id,
                     timestamp=timestamp,
                     memory_metadata=memory_metadata,
+                    index_in_vector=bool((record or {}).get("index_in_vector", True)),
                 )
             return self._status(
                 operation,
