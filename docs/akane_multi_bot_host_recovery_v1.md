@@ -1,6 +1,6 @@
 # Akane 单 Host 多 Bot 收敛探查与实施报告 v1
 
-> 状态：产品与实施边界已冻结；Slice 0 契约测试完成，Slice 1 待执行
+> 状态：产品与实施边界已冻结；Slice 0、Slice 1 已完成，Slice 2 待执行
 >
 > 建档日期：2026-07-19
 >
@@ -1052,19 +1052,27 @@ npm run build
 
 ---
 
-## 8. 本轮探查验证记录
+## 8. 本轮实施与验证记录
 
-本轮没有修改运行代码。
+本轮完成 Slice 1，运行时代码只做单 Bot 装配归属迁移，没有引入多 Bot 请求分发或 per-Bot settings 覆盖。
 
-已验证：
+已完成：
 
-- Slice 0 新增 `tests/test_multi_bot_product_contract.py`，5 项产品契约测试通过。
-- Slice 0 相关宿主聚焦与回归共 126 项通过：多 Bot 产品契约、finance absence、instance profile、plugin engine bridge、backend routes、desktop pet backend contract。
-- 宿主核心相关 40 项测试通过：finance absence、plugin reasoning、plugin engine bridge、instance profile、desktop satellite local capabilities。
-- 金融插件真实宿主边界 47 项测试通过。
-- 两个仓库 `git diff --check` 通过。
-- 建档前主仓库工作区只有用户原有未跟踪 `.claude/`，未触碰；Slice 0 仅新增本文档与产品契约测试。
-- 云端 personal/finance 服务均在线；审计未输出密钥、QQ 身份或消息正文。
+- 新增 `companion_v01/bot_runtime.py`：统一拥有 context、root lease、deployment security、PluginHost、Engine、QQ Gateway、Satellite、TTS、metrics、public guard 和关闭顺序。
+- 新增 `companion_v01/bot_registry.py`：当前注册默认 Bot，拒绝不安全/重复 Bot id，为后续多 Bot 生命周期提供唯一注册入口。
+- `companion_v01/app.py` 改为通过唯一 `BotRuntimeFactory` 创建运行时；保留旧模块级名称作为兼容引用，不再直接构造 Engine/PluginHost/QQGateway/Satellite。
+- QQ 后台完成通知、插件 notification port、managed artifact sink、reasoning port 和 storage port 随 BotRuntime 一起装配。
+- `tests/test_bot_runtime.py` 新增 5 项生命周期/注册契约。
+- `tests/test_instance_channel_security.py` 的装配顺序断言迁移到新的唯一权威 `bot_runtime.py`。
+
+验证通过：
+
+- `tests.test_bot_runtime`：5 项。
+- `tests.test_instance_channel_security`：22 项，包含命名实例真实启动、QQ 安全和失败前置检查。
+- 路由、桌宠后端、插件 Host/通知/推理、writer shutdown 组合回归：142 项。
+- BotRuntime、instance runtime/profile、finance absence、plugin engine bridge 组合回归：39 项。
+- Ruff check、Ruff format check、py_compile、`git diff --check` 均通过。
+- 未修改云端部署、模型配置、MemCore 数据或桌宠前端；用户原有 `.claude/` 未触碰。
 
 ---
 
@@ -1072,12 +1080,12 @@ npm run build
 
 后续执行不应直接继续为 personal 单独接 GPT-SoVITS 或为 finance 单独复制视觉/Satellite 配置。
 
-Slice 0 已完成。下一步从 **Slice 1** 开始：
+Slice 0、Slice 1 已完成。下一步从 **Slice 2** 开始：
 
-1. 抽取 `BotRuntime`；
-2. 保持单 Bot 兼容表现；
-3. 让 `app.py` 不再直接拥有 Engine/PluginHost/QQGateway 构造细节；
-4. 验证后再进入 settings 去全局化。
+1. 引入不可变 `BotSettingsView`；
+2. 先迁移 Chat/Aux/vision/cache/context 等允许按 Bot 覆盖的配置读取；
+3. 保持当前单 Bot 兼容表现，并用两个 fake provider 验证不串线；
+4. 验证后再进入 Slice 3 的多 Bot 生命周期。
 
 当上下文被压缩时，恢复顺序：
 

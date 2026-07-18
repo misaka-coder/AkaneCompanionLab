@@ -141,12 +141,14 @@ class InstanceDeploymentSecurityTests(unittest.TestCase):
         self.assertTrue(security.admin.allow_loopback_without_token)
 
     def test_app_resolves_security_before_engine_construction(self) -> None:
-        source = (Path(__file__).resolve().parents[1] / "companion_v01" / "app.py").read_text(
-            encoding="utf-8"
-        )
+        root = Path(__file__).resolve().parents[1]
+        app_source = (root / "companion_v01" / "app.py").read_text(encoding="utf-8")
+        runtime_source = (root / "companion_v01" / "bot_runtime.py").read_text(encoding="utf-8")
+        self.assertIn("BotRuntimeFactory(", app_source)
+        self.assertNotIn("AkaneMemoryEngine(", app_source)
         self.assertLess(
-            source.index("resolve_instance_deployment_security(instance_context, config)"),
-            source.index("engine = AkaneMemoryEngine("),
+            runtime_source.index("resolve_instance_deployment_security("),
+            runtime_source.index("engine = AkaneMemoryEngine("),
         )
 
     def test_channel_and_admin_settings_are_deployment_owned_and_redacted(self) -> None:
@@ -156,11 +158,7 @@ class InstanceDeploymentSecurityTests(unittest.TestCase):
                 QQ_ONEBOT_ACCESS_TOKEN="must-not-leak-either",
             )
         )
-        entries = {
-            entry["key"]: entry
-            for group in catalog["categories"]
-            for entry in group["settings"]
-        }
+        entries = {entry["key"]: entry for group in catalog["categories"] for entry in group["settings"]}
         for key in (
             "AKANE_WORKSPACE_ROOT",
             "QQ_BRIDGE_ENABLED",
@@ -364,9 +362,7 @@ class QQIngressAndOutboundAuthorizationTests(unittest.TestCase):
         )
 
     def test_every_onebot_request_site_uses_bound_headers(self) -> None:
-        source = (
-            Path(__file__).resolve().parents[1] / "companion_v01" / "qq_gateway.py"
-        ).read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "companion_v01" / "qq_gateway.py").read_text(encoding="utf-8")
         request_sites = source.count("requests.get(") + source.count("requests.post(")
         self.assertGreater(request_sites, 0)
         self.assertEqual(request_sites, source.count("headers=self.onebot_headers"))
@@ -412,18 +408,14 @@ class InstanceDeploymentTemplateTests(unittest.TestCase):
         self.root = Path(__file__).resolve().parents[1]
 
     def test_systemd_template_is_instance_parameterized(self) -> None:
-        template = (self.root / "deploy" / "systemd" / "akane@.service.example").read_text(
-            encoding="utf-8"
-        )
+        template = (self.root / "deploy" / "systemd" / "akane@.service.example").read_text(encoding="utf-8")
         self.assertIn("EnvironmentFile=/etc/akane/instances/%i.env", template)
         self.assertIn("Environment=AKANE_INSTANCE_ID=%i", template)
         self.assertIn("SyslogIdentifier=akane-%i", template)
         self.assertFalse((self.root / "deploy" / "systemd" / "akane.service.example").exists())
 
     def test_nginx_template_separates_ingress_and_management(self) -> None:
-        template = (self.root / "deploy" / "nginx" / "akane.nginx.conf.example").read_text(
-            encoding="utf-8"
-        )
+        template = (self.root / "deploy" / "nginx" / "akane.nginx.conf.example").read_text(encoding="utf-8")
         self.assertIn("upstream akane_finance_prod", template)
         self.assertIn("akane-finance-prod.access.log", template)
         self.assertIn("location = /api/qq/napcat/event", template)
@@ -432,9 +424,7 @@ class InstanceDeploymentTemplateTests(unittest.TestCase):
         self.assertGreaterEqual(template.count("deny all;"), 5)
 
     def test_vps_environment_binds_one_instance_root_port_and_secret_set(self) -> None:
-        template = (self.root / "deploy" / "env" / ".env.vps.example").read_text(
-            encoding="utf-8"
-        )
+        template = (self.root / "deploy" / "env" / ".env.vps.example").read_text(encoding="utf-8")
         for expected in (
             "AKANE_INSTANCE_ID=finance-prod",
             "AKANE_DATA_ROOT=/var/lib/akane/finance-prod",

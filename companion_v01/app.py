@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 import time
 import tracemalloc
 from pathlib import Path
@@ -18,28 +17,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 import config
-from services.tts_client import EdgeTTSClient
-from .async_task_supervisor import AsyncTaskSupervisor
-from .engine import AkaneMemoryEngine
-from .desktop_pet_character_resources import DesktopPetCharacterResourceService
-from .desktop_satellite import DesktopSatelliteService
-from .deployment_security import resolve_instance_deployment_security
-from .instance_profile import resolve_instance_context
-from .instance_runtime import bind_instance_runtime
+from .bot_registry import BotRegistry
+from .bot_runtime import BotRuntimeFactory, log_runtime_start_status
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
-from .model_service_config import ModelServiceConfigStore, load_and_apply_saved_model_service
-from .plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
-from .plugin_host import PluginHost
-from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
-from .plugin_storage import InstancePluginStorageService
-from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
-from .plugin_reasoning import EnginePluginReasoningPort
-from .plugin_tool_bridge import PluginCapabilityToolBridge
-from .settings_overrides import SettingsOverrideStore, load_and_apply_saved_overrides
-from .public_guard import PublicThinkGuard
-from .qq_gateway import NapCatQQGateway
-from .resource_manifest import ResourceManifest
 from .routes.capabilities import build_capabilities_router
 from .routes.control_center import build_control_center_router, build_control_center_snapshot_runtime_providers
 from .routes.core import build_core_router
@@ -59,26 +40,6 @@ from .routes.web_static import build_web_static_router
 
 tracemalloc.start()
 logger = logging.getLogger("akane.app")
-
-
-class RuntimeMetrics:
-    def __init__(self) -> None:
-        self._lock = threading.RLock()
-        self._counters: dict[str, float] = {}
-
-    def incr(self, key: str, amount: float = 1.0) -> None:
-        with self._lock:
-            self._counters[key] = float(self._counters.get(key, 0.0)) + float(amount)
-
-    def observe_request(self, name: str, *, duration_ms: float, ok: bool) -> None:
-        status = "ok" if ok else "error"
-        self.incr(f"{name}_requests_total", 1)
-        self.incr(f"{name}_{status}_total", 1)
-        self.incr(f"{name}_duration_ms_total", float(duration_ms))
-
-    def snapshot(self) -> dict[str, float]:
-        with self._lock:
-            return dict(self._counters)
 
 
 app = FastAPI(title="Aihong Companion V0.1")
@@ -106,261 +67,52 @@ WEB_DIR = PROJECT_DIR / "web"
 ASSETS_DIR = WEB_DIR / "assets"
 MODULES_DIR = WEB_DIR / "modules"
 VENDOR_DIR = WEB_DIR / "vendor"
-instance_context = resolve_instance_context(
+bot_runtime_factory = BotRuntimeFactory(
+    config_module=config,
+    assets_dir=ASSETS_DIR,
+    logger=logger,
+)
+bot_runtime = bot_runtime_factory.create(
     data_root=Path(config.DATA_ROOT),
     selected_instance_id=getattr(config, "AKANE_INSTANCE_ID", ""),
-)
-instance_runtime = bind_instance_runtime(
-    instance_context,
-    data_root=Path(config.DATA_ROOT),
     explicit_data_root=bool(getattr(config, "AKANE_DATA_ROOT_EXPLICIT", False)),
 )
-app.state.akane_instance_context = instance_context
-app.state.akane_instance_runtime = instance_runtime
-runtime_layout = instance_runtime.layout
+bot_registry = BotRegistry(default_bot_id=bot_runtime.bot_id)
+bot_registry.add(bot_runtime, default=True)
+bot_runtime.bind_app_state(app)
+app.state.akane_bot_registry = bot_registry
+
+# Compatibility aliases: existing routers and deployment smoke tests still use
+# these names during Slice 1. They reference the single BotRuntime and are not
+# a second construction path.
+instance_context = bot_runtime.instance_context
+instance_runtime = bot_runtime.instance_runtime
+runtime_layout = bot_runtime.runtime_layout
 CREATOR_KIT_CHARACTERS_DIR = runtime_layout.characters_dir
-resources = ResourceManifest(ASSETS_DIR)
-desktop_pet_character_resources = DesktopPetCharacterResourceService(
-    characters_dir=CREATOR_KIT_CHARACTERS_DIR,
-)
-model_service_config_store = ModelServiceConfigStore(runtime_layout.config_dir / "model_service.json")
-load_and_apply_saved_model_service(
-    store=model_service_config_store,
-    config_module=config,
-    on_error=lambda exc: logger.warning("Model service config ignored: %s", exc),
-)
-settings_override_store = SettingsOverrideStore(runtime_layout.config_dir / "settings_overrides.json")
-load_and_apply_saved_overrides(
-    config,
-    settings_override_store,
-    on_error=lambda exc: logger.warning("Settings override ignored: %s", exc),
-)
-# Bind deployment-owned channel/account secrets before Engine opens any mutable
-# database.  Named instances fail closed here on an incomplete or mismatched
-# QQ/admin profile; local-default preserves the legacy loopback behavior.
-deployment_security = resolve_instance_deployment_security(instance_context, config)
-app.state.akane_deployment_security = deployment_security
-qq_channel_config = deployment_security.qq
-admin_write_auth = deployment_security.admin
-desktop_satellite_service = DesktopSatelliteService(
-    instance_id=instance_context.instance_id,
-    token=deployment_security.satellite.token,
-)
-app.state.akane_desktop_satellite = desktop_satellite_service
-plugin_host = PluginHost(
-    instance_context.plugins,
-    contribution_policy=TrustedStatefulPluginContributionPolicy(),
-)
-app.state.akane_plugin_host = plugin_host
-plugin_capability_source = PluginCapabilityToolBridge(
-    plugin_host,
-    config_base_dir=runtime_layout.users_data_dir,
-)
-engine = AkaneMemoryEngine(
-    runtime_layout.engine_dir,
-    resource_manifest=resources,
-    desktop_pet_character_resources=desktop_pet_character_resources,
-    instance_context=instance_context,
-    runtime_layout=runtime_layout,
-    plugin_capability_source=plugin_capability_source,
-    qq_channel_config=qq_channel_config,
-    capability_offer_source=desktop_satellite_service,
-)
-plugin_host.bind_reasoning_port(EnginePluginReasoningPort(engine))
-generated_file_service = engine._get_generated_file_service()
-if generated_file_service is not None:
-    plugin_host.bind_managed_artifact_sink(
-        GeneratedFileManagedArtifactSink(generated_file_service)
-    )
-plugin_host.bind_plugin_storage_service(
-    InstancePluginStorageService(
-        data_root=runtime_layout.data_root,
-        instance_id=instance_context.instance_id,
-    )
-)
-USER_ASSETS_DIR = engine.gift_assets.base_dir
-tts_client = EdgeTTSClient(
-    voice=getattr(config, "TTS_VOICE", "zh-CN-XiaoxiaoNeural"),
-    rate=getattr(config, "TTS_RATE", "+0%"),
-    volume=getattr(config, "TTS_VOLUME", "+0%"),
-    pitch=getattr(config, "TTS_PITCH", "+4Hz"),
-)
-runtime_metrics = RuntimeMetrics()
-public_guard = PublicThinkGuard(
-    enabled=bool(getattr(config, "PUBLIC_GUARD_ENABLED", False)),
-    max_concurrent_thinks=int(getattr(config, "MAX_CONCURRENT_THINKS", 2)),
-    daily_think_limit=int(getattr(config, "DAILY_THINK_LIMIT", 200)),
-    busy_message=str(getattr(config, "PUBLIC_BUSY_MESSAGE", "当前体验人数较多，请稍后再试。")),
-    daily_limit_message=str(getattr(config, "PUBLIC_DAILY_LIMIT_MESSAGE", "今日体验名额已满，明天再来看看吧。")),
-)
-if qq_channel_config.enabled:
-    qq_gateway: NapCatQQGateway | None = NapCatQQGateway(
-        state_path=runtime_layout.state_dir / "qq_gateway_state.json",
-        channel_config=qq_channel_config,
-        default_character_pack_id=instance_context.character_pack_id,
-    )
-    qq_followup_tasks: AsyncTaskSupervisor | None = AsyncTaskSupervisor(name="qq-followups")
-else:
-    qq_gateway = None
-    qq_followup_tasks = None
-
-def _install_qq_task_completion_notifications() -> None:
-    task_worker = getattr(engine, "task_worker_service", None)
-    if task_worker is None:
-        return
-
-    def _handle_completion(
-        *,
-        task_id: str,
-        profile_user_id: str,
-        session_id: str,
-        task: dict,
-        handoff: dict,
-    ) -> None:
-        if not bool(getattr(config, "QQ_BACKGROUND_COMPLETION_NOTIFY_ENABLED", True)):
-            return
-        task_service = getattr(engine, "task_workspace_service", None)
-        current_task = task_service.get_task(task_id) if task_service is not None else task
-        metadata = dict((current_task or task).get("metadata") or {})
-        delivery = metadata.get("delivery") if isinstance(metadata.get("delivery"), dict) else {}
-        if str(delivery.get("client") or "").strip() != "qq_text":
-            return
-        if delivery.get("completed_notified_at"):
-            return
-        context = qq_gateway.context_from_delivery_context(delivery)
-        if context is None:
-            return
-
-        delivery["completed_notified_at"] = int(time.time())
-        metadata["delivery"] = delivery
-        if task_service is not None:
-            task_service.update_task(task_id=task_id, metadata=metadata, timestamp=int(time.time()))
-
-        artifact_targets = _qq_completion_artifact_targets(current_task or task, handoff)
-        should_send = str((handoff or {}).get("next_action") or "").strip().lower() == "send_to_user"
-        if should_send and artifact_targets:
-            sent_count = _send_qq_completion_files(
-                context=context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                targets=artifact_targets,
-            )
-            if sent_count > 0:
-                qq_gateway.send_reply(context, f"做好啦，我把结果发给你了。")
-                return
-
-        labels = _qq_completion_artifact_labels(current_task or task, handoff)
-        if labels:
-            qq_gateway.send_reply(
-                context,
-                "做好啦。现在有这些结果可以发给你："
-                + "、".join(labels[:6])
-                + "。你要哪份就直接说“发给我”或告诉我编号。",
-            )
-        else:
-            qq_gateway.send_reply(context, "做好啦，后台任务已经处理完了。")
-
-    task_worker.on_task_completed = _handle_completion
-
-
-def _qq_completion_artifact_targets(task: dict, handoff: dict) -> list[str]:
-    targets: list[str] = []
-    raw_items = (handoff or {}).get("artifacts") if isinstance(handoff, dict) else []
-    if not isinstance(raw_items, list) or not raw_items:
-        raw_items = task.get("artifacts") if isinstance(task.get("artifacts"), list) else []
-    for item in raw_items:
-        if not isinstance(item, dict):
-            continue
-        for key in ("generated_handle", "generated_id", "id", "handle"):
-            value = str(item.get(key) or "").strip()
-            if value and value not in targets:
-                targets.append(value)
-                break
-    return targets[:8]
-
-
-def _qq_completion_artifact_labels(task: dict, handoff: dict) -> list[str]:
-    labels: list[str] = []
-    raw_items = (handoff or {}).get("artifacts") if isinstance(handoff, dict) else []
-    if not isinstance(raw_items, list) or not raw_items:
-        raw_items = task.get("artifacts") if isinstance(task.get("artifacts"), list) else []
-    for item in raw_items:
-        if isinstance(item, dict):
-            artifact_id = str(item.get("id") or item.get("generated_handle") or item.get("handle") or "").strip()
-            title = str(item.get("title") or "").strip()
-            kind = str(item.get("kind") or "").strip()
-            label = artifact_id or title
-            if title and artifact_id and title != artifact_id:
-                label = f"{artifact_id}({title})"
-            if kind and label:
-                label = f"{label}/{kind}"
-        else:
-            label = str(item or "").strip()
-        if label and label not in labels:
-            labels.append(label[:160])
-    return labels[:8]
-
-
-def _send_qq_completion_files(
-    *,
-    context,
-    profile_user_id: str,
-    session_id: str,
-    targets: list[str],
-) -> int:
-    generated_file_service = engine._get_generated_file_service()
-    if generated_file_service is None:
-        return 0
-    result = generated_file_service.send_file(
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        targets=targets,
-        timestamp=int(time.time()),
-    )
-    if not bool(result.get("ok")):
-        return 0
-    sent_count = 0
-    for file_ref in list(result.get("files") or []):
-        if not isinstance(file_ref, dict):
-            continue
-        send_result = qq_gateway.send_file(
-            context,
-            file_path=str(file_ref.get("absolute_path") or ""),
-            name=str(file_ref.get("name") or file_ref.get("title") or ""),
-        )
-        generated_id = str(file_ref.get("generated_id") or "").strip()
-        if generated_id:
-            engine.mark_generated_file_delivery(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                generated_id=generated_id,
-                delivery_status="sent" if send_result.get("ok") else "failed",
-                timestamp=int(time.time()),
-            )
-        if send_result.get("ok"):
-            sent_count += 1
-    return sent_count
-
-
-if qq_gateway is not None:
-    _install_qq_task_completion_notifications()
-
-if qq_gateway is not None:
-    plugin_host.bind_notification_port(QQTextNotificationPort(qq_gateway))
-else:
-    plugin_host.bind_notification_port(NullNotificationPort())
+resources = bot_runtime.resources
+desktop_pet_character_resources = bot_runtime.desktop_pet_character_resources
+model_service_config_store = bot_runtime.model_service_config_store
+settings_override_store = bot_runtime.settings_override_store
+deployment_security = bot_runtime.deployment_security
+qq_channel_config = bot_runtime.qq_channel_config
+admin_write_auth = bot_runtime.admin_write_auth
+desktop_satellite_service = bot_runtime.desktop_satellite_service
+plugin_host = bot_runtime.plugin_host
+plugin_capability_source = bot_runtime.plugin_capability_source
+engine = bot_runtime.engine
+USER_ASSETS_DIR = bot_runtime.user_assets_dir
+tts_client = bot_runtime.tts_client
+runtime_metrics = bot_runtime.runtime_metrics
+public_guard = bot_runtime.public_guard
+qq_gateway = bot_runtime.qq_gateway
+qq_followup_tasks = bot_runtime.qq_followup_tasks
 
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    plugin_status = await plugin_host.start()
-    if plugin_status.get("status") == "degraded":
-        logger.warning(
-            "Plugin host degraded: %s",
-            json.dumps(plugin_status, ensure_ascii=False, sort_keys=True),
-        )
-    # Build the plugin QQ command broker from activated command registrations
-    app.state.akane_plugin_command_broker = plugin_host.build_qq_command_broker()
+    startup_status = await bot_runtime.start()
+    log_runtime_start_status(bot_runtime, startup_status)
+    app.state.akane_plugin_command_broker = bot_runtime.plugin_command_broker
 
 
 if ASSETS_DIR.exists():
@@ -382,22 +134,13 @@ if USER_ASSETS_DIR.exists():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    try:
-        if qq_followup_tasks is not None:
-            followup_status = await qq_followup_tasks.close(timeout=10.0)
-            if followup_status.get("status") != "stopped":
-                logger.warning("QQ follow-up shutdown incomplete: %s", followup_status)
-        plugin_status = await plugin_host.stop()
-        if int(plugin_status.get("close_failure_count") or 0) > 0:
-            logger.warning(
-                "Plugin host adapter close failures: %s",
-                json.dumps(plugin_status, ensure_ascii=False, sort_keys=True),
-            )
-    finally:
-        app.state.akane_plugin_command_broker = None
-        engine_status = engine.close()
-        if engine_status.get("status") != "stopped":
-            logger.warning("Engine writer shutdown incomplete: %s", engine_status)
+    shutdown_status = await bot_runtime.stop()
+    if shutdown_status.get("status") != "stopped":
+        logger.warning(
+            "Bot runtime shutdown incomplete: %s",
+            json.dumps(shutdown_status, ensure_ascii=False, sort_keys=True),
+        )
+    app.state.akane_plugin_command_broker = None
     # Keep the root lease until process exit. Some legacy stores still release
     # native handles only when the interpreter exits; dropping the lock here
     # would let a replacement process overlap those final writers/handles.
@@ -556,9 +299,7 @@ app.include_router(
         workflow_runner=ComfyUiWorkflowRunner(config_base_dir=runtime_layout.users_data_dir),
     )
 )
-app.include_router(
-    build_plugins_router(plugin_host=plugin_host, admin_auth=admin_write_auth)
-)
+app.include_router(build_plugins_router(plugin_host=plugin_host, admin_auth=admin_write_auth))
 app.include_router(
     build_satellite_router(
         satellite_service=desktop_satellite_service,
