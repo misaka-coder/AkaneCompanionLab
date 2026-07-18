@@ -1314,9 +1314,10 @@ class LLMRuntime:
         return payload
 
     def _enforce_prompt_token_limits(self, payload: dict[str, Any]) -> None:
+        settings = self._settings_view()
         configured_limits = [
-            max(0, int(getattr(config, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 0) or 0)),
-            max(0, int(getattr(config, "LLM_CONTEXT_WINDOW", 0) or 0)),
+            settings.llm_auto_compact_token_limit,
+            settings.llm_context_window,
         ]
         limits = [value for value in configured_limits if value > 0]
         if not limits:
@@ -2115,7 +2116,7 @@ class LLMRuntime:
 
         payload: dict[str, Any] = {}
         normalized_key = self._normalize_prompt_cache_key(prompt_cache_key)
-        normalized_retention = self._normalize_prompt_cache_retention(getattr(config, "PROMPT_CACHE_RETENTION", ""))
+        normalized_retention = self._normalize_prompt_cache_retention(self._settings_view().prompt_cache_retention)
         if normalized_key:
             payload["prompt_cache_key"] = normalized_key
         if normalized_retention:
@@ -2123,7 +2124,8 @@ class LLMRuntime:
         return payload
 
     def _should_send_prompt_cache_hints(self, bundle: ModelBundle) -> bool:
-        if not bool(getattr(config, "PROMPT_CACHE_HINTS_ENABLED", True)):
+        settings = self._settings_view()
+        if not settings.prompt_cache_hints_enabled:
             return False
         protocol = (
             str(getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or "").strip().lower()
@@ -2132,7 +2134,7 @@ class LLMRuntime:
             return False
         if protocol == "responses":
             return True
-        if bool(getattr(config, "PROMPT_CACHE_HINTS_FORCE", False)):
+        if settings.prompt_cache_hints_force:
             return True
         base_url = str(getattr(bundle.client, "base_url", "") or "").strip()
         return self._looks_like_official_openai_base_url(base_url)
@@ -2154,7 +2156,7 @@ class LLMRuntime:
         raw = str(prompt_cache_key or "").strip().strip(":")
         if not raw:
             return ""
-        namespace = str(getattr(config, "PROMPT_CACHE_NAMESPACE", "akane") or "").strip().strip(":")
+        namespace = self._settings_view().prompt_cache_namespace.strip().strip(":")
         return f"{namespace}:{raw}" if namespace else raw
 
     def _normalize_prompt_cache_retention(self, value: Any) -> str:

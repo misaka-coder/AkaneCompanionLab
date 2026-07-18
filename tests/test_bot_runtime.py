@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -30,10 +31,15 @@ class _FakePluginHost:
 class _FakeEngine:
     def __init__(self) -> None:
         self.close_count = 0
+        self.reloaded_settings = None
 
     def close(self) -> dict[str, str]:
         self.close_count += 1
         return {"status": "stopped"}
+
+    def reload_model_services(self, *, settings) -> dict[str, str]:
+        self.reloaded_settings = settings
+        return {"status": "reloaded"}
 
 
 class _FakeFollowups:
@@ -100,6 +106,26 @@ class BotRegistryTests(unittest.TestCase):
 
 
 class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_model_reload_replaces_only_this_runtime_settings_snapshot(self) -> None:
+        runtime, _plugin_host, engine, _followups = _runtime()
+        original = runtime.settings
+        model_settings = SimpleNamespace(
+            api_key="bot-key",
+            base_url="https://bot.example/v1",
+            chat_model="bot-model",
+            protocol="responses",
+            use_for_vision=True,
+            vision_model="bot-vision",
+        )
+
+        result = runtime.reload_model_services(model_settings)
+
+        self.assertEqual(result["status"], "reloaded")
+        self.assertIsNot(runtime.settings, original)
+        self.assertEqual(runtime.settings.chat_model_name, "bot-model")
+        self.assertEqual(runtime.settings.vision_model_name, "bot-vision")
+        self.assertIs(engine.reloaded_settings, runtime.settings)
+
     async def test_start_and_stop_are_idempotent_and_keep_one_lifecycle_owner(self) -> None:
         runtime, plugin_host, engine, followups = _runtime()
 
@@ -149,6 +175,13 @@ class AppBootstrapContractTests(unittest.TestCase):
             "DesktopSatelliteService(",
         ):
             self.assertNotIn(constructor, source)
+
+    def test_bot_factory_captures_saved_model_settings_without_mutating_global_config(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "companion_v01" / "bot_runtime.py").read_text(encoding="utf-8")
+
+        self.assertIn("saved_model_settings = model_store.load()", source)
+        self.assertIn("settings.with_model_service(saved_model_settings)", source)
+        self.assertNotIn("load_and_apply_saved_model_service", source)
 
 
 if __name__ == "__main__":

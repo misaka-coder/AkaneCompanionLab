@@ -211,6 +211,32 @@ def effective_settings_from_config(config_module: Any) -> ModelServiceSettings:
     )
 
 
+def effective_settings_from_runtime_settings(settings: Any) -> ModelServiceSettings:
+    base_url = str(getattr(settings, "chat_base_url", "") or "").strip()
+    protocol = normalize_api_protocol(
+        protocol=str(getattr(settings, "chat_api_protocol", "auto") or "auto"),
+        base_url=base_url,
+    )
+    vision_model = str(getattr(settings, "vision_model_name", "") or "").strip()
+    return ModelServiceSettings(
+        provider_id=infer_provider_id(protocol=protocol, base_url=base_url),
+        protocol=protocol,
+        base_url=base_url,
+        api_key=str(getattr(settings, "chat_api_key", "") or "").strip(),
+        chat_model=str(getattr(settings, "chat_model_name", "") or "").strip(),
+        use_for_vision=bool(
+            getattr(settings, "vision_enabled", True)
+            and getattr(settings, "vision_api_key", "")
+            and getattr(settings, "vision_base_url", "")
+            and vision_model
+        ),
+        vision_model=vision_model,
+        timeout_seconds=int(
+            getattr(settings, "vision_request_timeout", DEFAULT_TIMEOUT_SECONDS) or DEFAULT_TIMEOUT_SECONDS
+        ),
+    )
+
+
 def infer_provider_id(*, protocol: str, base_url: str) -> str:
     lowered = str(base_url or "").lower()
     if "api.pinaic.com" in lowered:

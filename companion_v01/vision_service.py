@@ -15,6 +15,7 @@ import config
 from services.llm_client import build_llm_client
 
 from .resource_manifest import ResourceManifest
+from .runtime_settings import BotSettingsView
 from .store import MemoryStore
 
 
@@ -47,7 +48,11 @@ class VisionObservationService:
         gift_assets_dir: Path | None = None,
         analyze_image_fn: Callable[[VisionTarget], dict[str, Any]] | None = None,
         on_observation_ready: Callable[[VisionTarget, dict[str, Any]], None] | None = None,
+        settings: BotSettingsView | None = None,
+        config_module: Any = config,
     ) -> None:
+        self._config_module = config_module
+        self.settings = settings or BotSettingsView.from_config(config_module)
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.gift_assets_dir = Path(gift_assets_dir or base_dir)
@@ -75,13 +80,14 @@ class VisionObservationService:
         with self._lock:
             return not any(thread.is_alive() for thread in self._threads)
 
-    def reload_client(self) -> dict[str, Any]:
+    def reload_client(self, *, settings: BotSettingsView | None = None) -> dict[str, Any]:
+        self.settings = settings or BotSettingsView.from_config(self._config_module)
         client = self._build_client()
         with self._lock:
             self._client = client
         return {
             "status": "reloaded" if client is not None else "not_configured",
-            "model": str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
+            "model": self.settings.vision_model_name,
         }
 
     def build_scene_prompt_context(
@@ -106,9 +112,9 @@ class VisionObservationService:
             resource_fingerprint=target.resource_fingerprint,
             prompt_version=target.prompt_version,
         )
-        if (observation is None or self._should_retry_observation(observation)) and bool(
-            getattr(config, "VISION_AUTO_SCENE_OBSERVE", True)
-        ):
+        if (
+            observation is None or self._should_retry_observation(observation)
+        ) and self.settings.vision_auto_scene_observe:
             self.schedule_scene_observation(
                 visual_payload=visual_payload or {},
                 extra_bgm_tracks=extra_bgm_tracks,
@@ -145,9 +151,9 @@ class VisionObservationService:
             resource_fingerprint=target.resource_fingerprint,
             prompt_version=target.prompt_version,
         )
-        if (observation is None or self._should_retry_observation(observation)) and bool(
-            getattr(config, "VISION_AUTO_OUTFIT_OBSERVE", True)
-        ):
+        if (
+            observation is None or self._should_retry_observation(observation)
+        ) and self.settings.vision_auto_outfit_observe:
             self.schedule_outfit_observation(
                 visual_payload=visual_payload or {},
                 extra_bgm_tracks=extra_bgm_tracks,
@@ -244,9 +250,9 @@ class VisionObservationService:
             resource_fingerprint=target.resource_fingerprint,
             prompt_version=target.prompt_version,
         )
-        if (observation is None or self._should_retry_observation(observation)) and bool(
-            getattr(config, "VISION_AUTO_GIFT_OBSERVE", True)
-        ):
+        if (
+            observation is None or self._should_retry_observation(observation)
+        ) and self.settings.vision_auto_gift_observe:
             self.schedule_gift_observation(asset=asset)
             return ""
         if observation is None or str(observation.get("status") or "") != "ready":
@@ -309,7 +315,7 @@ class VisionObservationService:
         return {
             "status": "ready",
             "provider": self._provider_label(),
-            "model_name": str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
+            "model_name": self.settings.vision_model_name,
             "observation": observation,
         }
 
@@ -344,7 +350,7 @@ class VisionObservationService:
             )
 
         response = self._client.chat.completions.create(
-            model=str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
+            model=self.settings.vision_model_name,
             messages=[
                 {
                     "role": "system",
@@ -362,20 +368,20 @@ class VisionObservationService:
         return self._normalize_screen_clip_observation(payload)
 
     def _build_client(self) -> Any | None:
-        if not bool(getattr(config, "VISION_ENABLED", True)):
+        if not self.settings.vision_enabled:
             return None
-        if not str(getattr(config, "VISION_API_KEY", "") or "").strip():
+        if not self.settings.vision_api_key:
             return None
-        if not str(getattr(config, "VISION_BASE_URL", "") or "").strip():
+        if not self.settings.vision_base_url:
             return None
-        if not str(getattr(config, "VISION_MODEL_NAME", "") or "").strip():
+        if not self.settings.vision_model_name:
             return None
         try:
             return build_llm_client(
-                api_key=config.VISION_API_KEY,
-                base_url=config.VISION_BASE_URL,
-                protocol=getattr(config, "VISION_API_PROTOCOL", "auto"),
-                timeout=float(getattr(config, "VISION_REQUEST_TIMEOUT", 60.0) or 60.0),
+                api_key=self.settings.vision_api_key,
+                base_url=self.settings.vision_base_url,
+                protocol=self.settings.vision_api_protocol,
+                timeout=self.settings.vision_request_timeout,
                 max_retries=0,
             )
         except Exception as exc:
@@ -414,7 +420,7 @@ class VisionObservationService:
             status="pending",
             observation={},
             provider=self._provider_label(),
-            model_name=str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
+            model_name=self.settings.vision_model_name,
         )
         job_key = self._job_key(target)
         with self._lock:
@@ -460,7 +466,7 @@ class VisionObservationService:
         age_seconds = max(0, int(time.time()) - updated_at)
         if status == "pending":
             return age_seconds >= 15
-        running_stale_seconds = max(int(getattr(config, "VISION_REQUEST_TIMEOUT", 60.0) or 60.0) + 30, 180)
+        running_stale_seconds = max(int(self.settings.vision_request_timeout) + 30, 180)
         return age_seconds >= running_stale_seconds
 
     def _ensure_target(self, target: VisionTarget) -> dict[str, Any] | None:
@@ -509,7 +515,7 @@ class VisionObservationService:
                 status="running",
                 observation={},
                 provider=self._provider_label(),
-                model_name=str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
+                model_name=self.settings.vision_model_name,
             )
             observation = self._normalize_observation_card(
                 self._analyze_image_fn(target), observation_type=target.observation_type
@@ -519,7 +525,7 @@ class VisionObservationService:
                 status="ready",
                 observation=observation,
                 provider=self._provider_label(),
-                model_name=str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
+                model_name=self.settings.vision_model_name,
             )
             self._notify_observation_ready(target=target, observation=saved)
             return saved
@@ -531,7 +537,7 @@ class VisionObservationService:
                 observation={},
                 error_message=str(exc),
                 provider=self._provider_label(),
-                model_name=str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
+                model_name=self.settings.vision_model_name,
             )
             self._notify_observation_ready(target=target, observation=saved)
             return saved
@@ -811,14 +817,14 @@ class VisionObservationService:
             raise RuntimeError("视觉模型尚未配置。")
 
         image_bytes = target.source_path.read_bytes()
-        max_bytes = int(getattr(config, "VISION_MAX_IMAGE_BYTES", 8 * 1024 * 1024) or 8 * 1024 * 1024)
+        max_bytes = self.settings.vision_max_image_bytes
         if len(image_bytes) > max_bytes:
             raise RuntimeError(f"图像过大，当前限制为 {max_bytes} bytes。")
 
         media_type = self._guess_media_type(target.source_path)
         image_url = f"data:{media_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
         response = self._client.chat.completions.create(
-            model=str(getattr(config, "VISION_MODEL_NAME", "") or "").strip(),
+            model=self.settings.vision_model_name,
             messages=[
                 {
                     "role": "system",
@@ -984,7 +990,7 @@ class VisionObservationService:
         return "\n".join(lines)
 
     def _current_prompt_version(self) -> str:
-        base_version = str(getattr(config, "VISION_PROMPT_VERSION", "v1") or "v1").strip() or "v1"
+        base_version = self.settings.vision_prompt_version
         if base_version.endswith(f"-{PROMPT_STYLE_REVISION}"):
             return base_version
         return f"{base_version}-{PROMPT_STYLE_REVISION}"

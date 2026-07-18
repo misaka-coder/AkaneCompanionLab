@@ -328,7 +328,7 @@ class AkaneMemoryEngine:
             workspace_uri_resolver=self.workspace_file_service.resolve_file_uri,
             material_trace_recorder=self._record_attachment_material_trace,
         )
-        if getattr(config, "VISION_ENABLED", True):
+        if self.settings.vision_enabled:
             self.vision_observation_router: VisionObservationRouter | None = VisionObservationRouter(
                 store=self.store,
                 gift_service=self.gift_service,
@@ -364,7 +364,7 @@ class AkaneMemoryEngine:
             else Path(__file__).resolve().parent.parent / "web" / "assets"
         )
         self.sticker_assets = StickerAssetService(assets_dir=sticker_assets_dir)
-        if getattr(config, "VISION_ENABLED", True):
+        if self.settings.vision_enabled:
             self.vision_service: VisionObservationService | None = VisionObservationService(
                 self.base_dir / "vision_cache",
                 store=self.store,
@@ -373,6 +373,8 @@ class AkaneMemoryEngine:
                 on_observation_ready=(
                     self.vision_observation_router.handle if self.vision_observation_router is not None else None
                 ),
+                settings=self.settings,
+                config_module=config,
             )
             self.desktop_screen_vision: DesktopScreenVisionWorkspace | None = DesktopScreenVisionWorkspace(
                 vision_service=self.vision_service,
@@ -467,13 +469,18 @@ class AkaneMemoryEngine:
             self.desktop_screen_vision.reset()
         self.npc_runtime.reset()
 
-    def reload_model_services(self) -> dict[str, Any]:
+    def reload_model_services(
+        self,
+        *,
+        settings: BotSettingsView | None = None,
+    ) -> dict[str, Any]:
+        self.settings = settings or BotSettingsView.from_config(config)
         result: dict[str, Any] = {
-            "llm": self.llm.reload_from_config(),
+            "llm": self.llm.reload_from_config(settings=self.settings),
             "vision": {"status": "disabled"},
         }
         if self.vision_service is not None:
-            result["vision"] = self.vision_service.reload_client()
+            result["vision"] = self.vision_service.reload_client(settings=self.settings)
         return result
 
     def build_resource_manifest(
@@ -2543,16 +2550,17 @@ class AkaneMemoryEngine:
         )
 
     def native_chat_vision_status(self, *, chat_model_override: str = "") -> dict[str, Any]:
-        if not bool(getattr(config, "VISION_ENABLED", True)):
+        settings = self._runtime_settings_view()
+        if not settings.vision_enabled:
             return {"enabled": False, "reason": "vision_disabled"}
-        chat_key = str(getattr(config, "CHAT_API_KEY", "") or "").strip()
-        vision_key = str(getattr(config, "VISION_API_KEY", "") or "").strip()
-        chat_base = str(getattr(config, "CHAT_BASE_URL", "") or "").strip().rstrip("/")
-        vision_base = str(getattr(config, "VISION_BASE_URL", "") or "").strip().rstrip("/")
-        chat_protocol = str(getattr(config, "CHAT_API_PROTOCOL", "auto") or "auto").strip().lower()
-        vision_protocol = str(getattr(config, "VISION_API_PROTOCOL", "auto") or "auto").strip().lower()
-        chat_model = str(chat_model_override or getattr(config, "CHAT_MODEL_NAME", "") or "").strip()
-        vision_model = str(getattr(config, "VISION_MODEL_NAME", "") or "").strip()
+        chat_key = settings.chat_api_key
+        vision_key = settings.vision_api_key
+        chat_base = settings.chat_base_url.rstrip("/")
+        vision_base = settings.vision_base_url.rstrip("/")
+        chat_protocol = settings.chat_api_protocol.lower()
+        vision_protocol = settings.vision_api_protocol.lower()
+        chat_model = str(chat_model_override or settings.chat_model_name).strip()
+        vision_model = settings.vision_model_name
         if not all((chat_key, vision_key, chat_base, vision_base, chat_model, vision_model)):
             return {"enabled": False, "reason": "native_vision_not_configured"}
         if chat_key != vision_key or chat_base.lower() != vision_base.lower() or chat_protocol != vision_protocol:
@@ -2582,10 +2590,18 @@ class AkaneMemoryEngine:
             attachment_ids=attachment_ids,
             timeout_seconds=timeout_seconds,
             max_count=5,
-            max_bytes_per_image=int(getattr(config, "VISION_MAX_IMAGE_BYTES", 8 * 1024 * 1024) or 0),
+            max_bytes_per_image=self._runtime_settings_view().vision_max_image_bytes,
             max_total_bytes=20 * 1024 * 1024,
         )
         return {**dict(result or {}), "native_vision": native_status}
+
+    def _runtime_settings_view(self) -> BotSettingsView:
+        current = getattr(self, "settings", None)
+        if isinstance(current, BotSettingsView):
+            return current
+        current = BotSettingsView.from_config(config)
+        self.settings = current
+        return current
 
     def mark_generated_file_delivery(
         self,

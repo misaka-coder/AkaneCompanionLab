@@ -25,9 +25,11 @@ from companion_v01.routes.model_services import build_model_services_router
 class StubEngine:
     def __init__(self) -> None:
         self.reload_count = 0
+        self.last_settings = None
 
-    def reload_model_services(self) -> dict:
+    def reload_model_services(self, settings=None) -> dict:
         self.reload_count += 1
+        self.last_settings = settings
         return {"status": "reloaded"}
 
 
@@ -198,6 +200,7 @@ class ModelServiceConfigTests(unittest.TestCase):
                     store=store,
                     config_module=config,
                     engine=engine,
+                    reload_model_services=engine.reload_model_services,
                     model_probe=fake_probe,
                     connection_tester=fake_test,
                 )
@@ -242,7 +245,8 @@ class ModelServiceConfigTests(unittest.TestCase):
             )
             self.assertEqual(saved.json()["status"], "configured")
             self.assertEqual(engine.reload_count, 1)
-            self.assertEqual(config.CHAT_API_PROTOCOL, "ollama")
+            self.assertEqual(config.CHAT_API_PROTOCOL, "openai")
+            self.assertEqual(engine.last_settings.protocol, "ollama")
             self.assertNotIn("env-secret", saved.text)
 
 

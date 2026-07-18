@@ -13,7 +13,12 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..deployment_security import AdminWriteAuth, QQChannelRuntimeConfig
-from ..model_service_config import effective_settings_from_config, probe_model_ids, redact_provider_error
+from ..model_service_config import (
+    effective_settings_from_config,
+    effective_settings_from_runtime_settings,
+    probe_model_ids,
+    redact_provider_error,
+)
 from .voice import (
     GPT_SOVITS_PROVIDER_ID,
     _coerce_synthesized_audio,
@@ -1864,7 +1869,12 @@ def build_qq_router(
                 list_error = ""
                 if str(chat_model_command.get("action") or "") == "list":
                     try:
-                        settings = effective_settings_from_config(config_module)
+                        runtime_settings = getattr(engine, "settings", None)
+                        settings = (
+                            effective_settings_from_runtime_settings(runtime_settings)
+                            if runtime_settings is not None
+                            else effective_settings_from_config(config_module)
+                        )
                         available_models = await asyncio.to_thread(probe_model_ids, settings)
                     except Exception as exc:
                         list_error = redact_provider_error(exc)
@@ -1872,7 +1882,11 @@ def build_qq_router(
                 chat_model_command_result = qq_gateway.handle_chat_model_command(
                     context,
                     command=chat_model_command,
-                    default_model=str(getattr(config_module, "CHAT_MODEL_NAME", "") or ""),
+                    default_model=str(
+                        getattr(getattr(engine, "settings", None), "chat_model_name", "")
+                        or getattr(config_module, "CHAT_MODEL_NAME", "")
+                        or ""
+                    ),
                     available_models=available_models,
                     list_error=list_error,
                 )
@@ -1917,10 +1931,7 @@ def build_qq_router(
             _char_resources = getattr(engine, "desktop_pet_character_resources", None)
             _shop_items = (
                 _char_resources.load_care_shop_items(context.character_pack_id)
-                if _care_module is not None
-                and _care_module.enabled
-                and _char_resources
-                and context.character_pack_id
+                if _care_module is not None and _care_module.enabled and _char_resources and context.character_pack_id
                 else None
             )
             economy_command_result = qq_gateway.handle_economy_command(

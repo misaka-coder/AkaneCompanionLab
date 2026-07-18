@@ -10,13 +10,13 @@ from fastapi.responses import JSONResponse
 from ..deployment_security import AdminWriteAuth
 from ..model_service_config import (
     ModelServiceConfigStore,
+    ModelServiceSettings,
     effective_settings_from_config,
     probe_model_ids,
     public_model_service_snapshot,
     redact_provider_error,
     settings_from_mapping,
     test_model_service,
-    apply_model_service_settings,
 )
 
 
@@ -25,6 +25,7 @@ def build_model_services_router(
     store: ModelServiceConfigStore,
     config_module: Any,
     engine: Any,
+    reload_model_services: Callable[[ModelServiceSettings], dict[str, Any]] | None = None,
     runtime_metrics: Any = None,
     log_event: Callable[..., Any] | None = None,
     model_probe: Callable[..., list[str]] = probe_model_ids,
@@ -62,8 +63,9 @@ def build_model_services_router(
         try:
             settings = settings_from_mapping(payload, existing_api_key=existing)
             store.save(settings)
-            apply_model_service_settings(config_module, settings)
-            reload_result = engine.reload_model_services()
+            reload_result = (
+                reload_model_services(settings) if reload_model_services is not None else engine.reload_model_services()
+            )
         except Exception as exc:
             _observe(runtime_metrics, "model_service.save", started_at, False)
             _log(log_event, "model_service_save", status="failed", reason=exc.__class__.__name__)
@@ -209,9 +211,7 @@ def _load_existing_secret(
     except Exception:
         saved = None
     existing = saved or effective_settings_from_config(config_module)
-    requested_provider_id = str(
-        payload.get("providerId") or payload.get("provider_id") or existing.provider_id
-    ).strip()
+    requested_provider_id = str(payload.get("providerId") or payload.get("provider_id") or existing.provider_id).strip()
     if requested_provider_id != existing.provider_id:
         return ""
     return existing.api_key

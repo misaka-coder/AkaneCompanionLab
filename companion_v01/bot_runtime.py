@@ -19,7 +19,10 @@ from .desktop_satellite import DesktopSatelliteService
 from .engine import AkaneMemoryEngine
 from .instance_profile import InstanceContext, resolve_instance_context
 from .instance_runtime import InstanceRuntimeLease, bind_instance_runtime
-from .model_service_config import ModelServiceConfigStore, load_and_apply_saved_model_service
+from .model_service_config import (
+    ModelServiceConfigStore,
+    ModelServiceSettings,
+)
 from .plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
 from .plugin_host import PluginHost
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
@@ -99,6 +102,10 @@ class BotRuntime:
     def user_assets_dir(self) -> Path:
         return self.engine.gift_assets.base_dir
 
+    def reload_model_services(self, model_service_settings: ModelServiceSettings) -> dict[str, Any]:
+        self.settings = self.settings.with_model_service(model_service_settings)
+        return self.engine.reload_model_services(settings=self.settings)
+
     def bind_app_state(self, app: Any) -> None:
         app.state.akane_bot_runtime = self
         app.state.akane_instance_context = self.instance_context
@@ -106,7 +113,6 @@ class BotRuntime:
         app.state.akane_deployment_security = self.deployment_security
         app.state.akane_desktop_satellite = self.desktop_satellite_service
         app.state.akane_plugin_host = self.plugin_host
-        app.state.akane_bot_settings = self.settings
 
     async def start(self) -> dict[str, Any]:
         if self._stop_status is not None:
@@ -355,18 +361,21 @@ class BotRuntimeFactory:
                 characters_dir=runtime_layout.characters_dir,
             )
             model_store = ModelServiceConfigStore(runtime_layout.config_dir / "model_service.json")
-            load_and_apply_saved_model_service(
-                store=model_store,
-                config_module=self.config_module,
-                on_error=lambda exc: self.logger.warning("Model service config ignored: %s", type(exc).__name__),
-            )
+            try:
+                saved_model_settings = model_store.load()
+            except Exception as exc:
+                saved_model_settings = None
+                self.logger.warning("Model service config ignored: %s", type(exc).__name__)
             settings_store = SettingsOverrideStore(runtime_layout.config_dir / "settings_overrides.json")
             load_and_apply_saved_overrides(
                 self.config_module,
                 settings_store,
                 on_error=lambda exc: self.logger.warning("Settings override ignored: %s", type(exc).__name__),
             )
-            settings = BotSettingsView.from_config(self.config_module).overlay(settings_overrides)
+            settings = BotSettingsView.from_config(self.config_module)
+            if saved_model_settings is not None:
+                settings = settings.with_model_service(saved_model_settings)
+            settings = settings.overlay(settings_overrides)
 
             deployment_security = resolve_instance_deployment_security(
                 instance_context,
