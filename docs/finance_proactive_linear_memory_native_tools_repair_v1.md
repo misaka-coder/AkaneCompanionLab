@@ -1,6 +1,6 @@
 # 金融主动推送线性记忆与原生工具修复 V1
 
-状态：Slice A-D 已实施并验证；Slice E 已完成停服迁移、离线压缩、finance 启服与真实缓存验收；当前补齐 memcore raw/vector 边界并准备双服务部署
+状态：Slice A-D 已实施并验证；Slice E 已完成停服迁移、离线压缩、finance 启服、真实缓存验收与 raw/vector 边界部署
 
 日期：2026-07-17
 
@@ -885,3 +885,5 @@ finance 启动后，真实新闻轮询和订阅匹配持续产生新候选，证
 - 修复已落在 memcore commit `99a1fa0`，宿主 `MemcoreManager` 不再提前返回 `legacy_index_disabled`，而是把路由标志传给公共 `MemorySystem.record_user_turn()`。相关 memcore 204 项、宿主 memcore 集成 46 项测试通过。
 
 这 33 条已经缺失的历史 user event 不在本切片直接用 SQL 重排或伪造回填；若要补回，必须另做“按真实发生顺序追加、工具/分析配对和当前 prompt 可见性影响”评估，避免为了补数量破坏唯一线性时间线。
+
+部署后核对：memcore `99a1fa0` wheel 与宿主 `MemcoreManager` 修复已安装到共享 venv/源码目录；finance 与 personal `/health` 均为 `status=ok` 且实例绑定有效，两个 QQ self-check 均为 `connected`。NapCat 容器未重启，登录状态保持不变。自然轮询 30 秒没有新 due delivery，因此本轮没有新增可验证的 `plugin-event`；这属于外部样本未产生，不是通过清空或伪造状态得到的“成功”。
