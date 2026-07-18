@@ -6060,7 +6060,7 @@ class AkaneMemoryEngine:
                 content=content,
                 timestamp=rec.get("timestamp"),
             )
-            if role == "assistant":
+            if role == "assistant" or role.startswith("assistant."):
                 turns.append({"role": "assistant", "content": rendered_content})
             elif role.startswith("npc:"):
                 # npc: downgrade to user to avoid unsupported role in API

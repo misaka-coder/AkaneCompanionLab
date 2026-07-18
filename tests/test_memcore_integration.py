@@ -170,6 +170,7 @@ class _FinalPromptProfile:
 class _CapturePromptBuilder:
     def __init__(self) -> None:
         self.kwargs: dict[str, object] = {}
+        self.calls: list[dict[str, object]] = []
         self.persona = SimpleNamespace(
             final_debug_mode_prompt="debug mode",
             final_fast_mode_prompt="fast mode",
@@ -178,6 +179,7 @@ class _CapturePromptBuilder:
 
     def build_final_generation_context(self, **kwargs):
         self.kwargs = dict(kwargs)
+        self.calls.append(dict(kwargs))
         return {
             "system_prompt": "system",
             "user_prompt": "user",
@@ -539,6 +541,41 @@ def _tool_context() -> ToolExecutionContext:
 
 
 class MemcoreIntegrationTests(unittest.TestCase):
+    def test_prompt_token_estimate_counts_structured_history(self) -> None:
+        base = {
+            "system_prompt": "system",
+            "user_prompt": "current",
+            "system_extra_blocks": [],
+            "post_user_turns": [],
+        }
+        without_history = response_builder._estimate_generation_context_tokens(
+            {**base, "history_turns": []},
+            [],
+        )
+        with_history = response_builder._estimate_generation_context_tokens(
+            {**base, "history_turns": [{"role": "user", "content": "历史" * 200}]},
+            [],
+        )
+
+        self.assertGreater(with_history, without_history + 150)
+
+    def test_prompt_raw_trim_preserves_current_and_halves_large_oldest_record(self) -> None:
+        records = [
+            {"source_id": "old", "role": "tool.search call_1", "content": "x" * 1200},
+            {"source_id": "current", "role": "user", "content": "current"},
+        ]
+
+        changed = response_builder._trim_oldest_prompt_raw_record(
+            records,
+            current_source_id="current",
+            current_content="current",
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(records[-1]["source_id"], "current")
+        self.assertIn("更早内容已由上下文高水位保护省略", records[0]["content"])
+        self.assertLess(len(records[0]["content"]), 900)
+
     def test_tool_exchange_is_visible_in_memcore_raw_on_next_turn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -1837,6 +1874,23 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "operation": "build_prompt_context",
                 "ok": True,
                 "status": "ok",
+                "raw": [
+                    {"source_id": "u0", "role": "user", "content": "previous question", "timestamp": 1712399900},
+                    {"source_id": "a0", "role": "assistant", "content": "previous answer", "timestamp": 1712399901},
+                    {
+                        "source_id": "t0-use",
+                        "role": "assistant.tool_call search call_1",
+                        "content": "tool input",
+                        "timestamp": 1712399902,
+                    },
+                    {
+                        "source_id": "t0-result",
+                        "role": "tool.search call_1",
+                        "content": "tool result",
+                        "timestamp": 1712399903,
+                    },
+                    {"source_id": "current", "role": "user", "content": "现在的问题", "timestamp": 1712400000},
+                ],
                 "raw_text": "MEMCORE RAW",
                 "episodic_text": "MEMCORE EPISODIC",
                 "semantic_text": "MEMCORE SEMANTIC",
@@ -1873,7 +1927,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 character_pack_id="char",
             )
 
-        captured = engine.prompt_builder.kwargs
+        captured = engine.prompt_builder.calls[0]
         self.assertEqual(captured["raw_text"], "MEMCORE RAW")
         self.assertEqual(captured["episodic_summary_text"], "MEMCORE EPISODIC")
         self.assertEqual(captured["semantic_summary_text"], "MEMCORE SEMANTIC")
@@ -1882,6 +1936,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(memcore_manager.calls[0]["session_id"], "s1")
         self.assertEqual(memcore_manager.calls[0]["character_pack_id"], "char")
         self.assertEqual(memcore_manager.calls[0]["current_user_record"]["source_id"], "current")
+        self.assertEqual(
+            [turn["role"] for turn in captured["history_turns"]],
+            ["user", "assistant", "assistant", "user"],
+        )
+        self.assertNotIn("现在的问题", repr(captured["history_turns"]))
+        self.assertIn("tool input", repr(captured["history_turns"]))
+        self.assertIn("tool result", repr(captured["history_turns"]))
         self.assertRegex(str(first["prompt_cache_scope_hash"]), r"^[0-9a-f]{64}$")
         self.assertNotEqual(first["prompt_cache_scope_hash"], second["prompt_cache_scope_hash"])
 

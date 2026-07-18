@@ -14,7 +14,7 @@ from ..memory_rendering import render_semantic_summary_timeline, render_summary_
 from ..prompt_blocks import strip_care_prompt_contract
 from ..prompt_profiles import PromptModule
 from ..resource_manifest import ResourceManifest
-from ..text_utils import render_chat_timeline
+from ..text_utils import render_chat_line, render_chat_timeline
 from ..tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, TOOL_EXECUTION_RECEIPTS_FIELD
 
 logger = logging.getLogger("akane.response_builder")
@@ -166,10 +166,6 @@ def prepare_context(
             store=engine.store,
         )
     current_source_id = str(current_record.get("source_id") or "").strip()
-    current_message_in_raw = bool(
-        current_source_id
-        and any(str(record.get("source_id") or "").strip() == current_source_id for record in raw_records)
-    )
     memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
     extra_context = str(extra_user_context or "").strip()
     attachment_service = engine._get_attachment_inbox_service()
@@ -539,6 +535,11 @@ def prepare_context(
             ]
             if part
         )
+    effective_post_user_turns = [
+        dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)
+    ]
+    if native_tools and not effective_allow_tool_call and effective_post_user_turns:
+        _append_post_user_tool_control(effective_post_user_turns)
     system_prompt_override = prompt_profile.system_prompt_override
     if not care_enabled and not system_prompt_override:
         system_prompt_override = prompt_builder.persona.final_system_prompt
@@ -546,13 +547,39 @@ def prepare_context(
         system_prompt_override = strip_care_prompt_contract(system_prompt_override)
 
     def _build_generation_context() -> dict[str, Any]:
-        current_content = str(current_record.get("content") or "").strip()
         current_message_visible_in_raw = bool(
-            current_message_in_raw and current_content and current_content in raw_text
+            current_source_id
+            and any(str(record.get("source_id") or "").strip() == current_source_id for record in raw_records)
         )
+        if current_source_id:
+            history_records = [
+                record
+                for record in raw_records
+                if str(record.get("source_id") or "").strip() != current_source_id
+            ]
+        else:
+            history_records, _current = engine._split_history_records(
+                recent_raw=raw_records,
+                user_message=user_message,
+                now_ts=now_ts,
+            )
+        history_builder = getattr(engine, "_build_history_turns", None)
+        history_turns = (
+            history_builder(history_records)
+            if callable(history_builder)
+            else _build_structured_history_turns(history_records)
+        )
+        if not history_turns and raw_text and not raw_records:
+            history_turns = [
+                {
+                    "role": "user",
+                    "content": f"当前会话中所有未总结的原始消息：\n{raw_text}",
+                }
+            ]
         generation_context = prompt_builder.build_final_generation_context(
             now_ts=now_ts,
             raw_text=raw_text,
+            history_turns=history_turns,
             current_message_text=current_message_text,
             episodic_summary_text=episodic_summary_text,
             semantic_summary_text=semantic_summary_text,
@@ -585,6 +612,7 @@ def prepare_context(
         generation_context["prompt_cache_scope_hash"] = hashlib.sha256(
             cache_scope_material.encode("utf-8", errors="ignore")
         ).hexdigest()
+        generation_context["post_user_turns"] = [dict(turn) for turn in effective_post_user_turns]
         return generation_context
 
     generation_context = _build_generation_context()
@@ -611,6 +639,7 @@ def prepare_context(
                 exclude_source_ids=list(excluded_prompt_sources),
             )
             if refreshed is not None and refreshed.get("ok"):
+                raw_records = [dict(record) for record in list(refreshed.get("raw") or [])]
                 raw_text = str(refreshed.get("raw_text") or "")
                 episodic_summary_text = str(refreshed.get("episodic_text") or "")
                 semantic_summary_text = str(refreshed.get("semantic_text") or "")
@@ -622,12 +651,15 @@ def prepare_context(
     # semantic memory and the current user message remain intact.
     trimmed_layers: list[str] = []
     if prompt_token_limit:
-        while _estimate_generation_context_tokens(generation_context, native_tools) > prompt_token_limit and raw_text:
-            reduced = _drop_oldest_prompt_lines(raw_text)
-            if reduced == raw_text:
-                raw_text = ""
-            else:
-                raw_text = reduced
+        while (
+            _estimate_generation_context_tokens(generation_context, native_tools) > prompt_token_limit
+            and _trim_oldest_prompt_raw_record(
+                raw_records,
+                current_source_id=current_source_id,
+                current_content=str(current_record.get("content") or ""),
+            )
+        ):
+            raw_text = render_chat_timeline(raw_records)
             if "raw" not in trimmed_layers:
                 trimmed_layers.append("raw")
             generation_context = _build_generation_context()
@@ -660,9 +692,6 @@ def prepare_context(
     generation_context["native_tool_choice"] = (
         "auto" if native_tools and effective_allow_tool_call else "none" if native_tools else ""
     )
-    effective_post_user_turns = [dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)]
-    if native_tools and not effective_allow_tool_call and effective_post_user_turns:
-        _append_post_user_tool_control(effective_post_user_turns)
     generation_context["post_user_turns"] = effective_post_user_turns
     generation_context["prompt_profile"] = prompt_profile.to_public_dict()
     generation_context["domain_profile"] = domain_profile.to_public_dict()
@@ -698,6 +727,20 @@ def _estimate_generation_context_tokens(
         str(generation_context.get("system_prompt") or ""),
         str(generation_context.get("user_prompt") or ""),
         "\n".join(str(item or "") for item in generation_context.get("system_extra_blocks") or []),
+        json.dumps(
+            generation_context.get("history_turns") or [],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ),
+        json.dumps(
+            generation_context.get("post_user_turns") or [],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ),
         json.dumps(native_tools or [], ensure_ascii=False, sort_keys=True, separators=(",", ":")),
     ]
     text = "\n".join(parts)
@@ -731,6 +774,58 @@ def _drop_oldest_prompt_lines(text: str) -> str:
     remove_count = max(1, len(lines) // 4)
     remaining = lines[remove_count:]
     return marker + "\n" + "\n".join(remaining)
+
+
+def _build_structured_history_turns(records: list[dict[str, Any]]) -> list[dict[str, str]]:
+    turns: list[dict[str, str]] = []
+    for record in records:
+        raw_role = str(record.get("role") or "").strip()
+        role = raw_role.lower()
+        content = str(record.get("content") or "").strip()
+        if not content:
+            continue
+        rendered = render_chat_line(
+            role=raw_role,
+            content=content,
+            timestamp=record.get("timestamp"),
+        )
+        output_role = "assistant" if role == "assistant" or role.startswith("assistant.") else "user"
+        turns.append({"role": output_role, "content": rendered})
+    return turns
+
+
+def _trim_oldest_prompt_raw_record(
+    records: list[dict[str, Any]],
+    *,
+    current_source_id: str,
+    current_content: str,
+) -> bool:
+    """Trim one oldest history record while preserving the current user turn."""
+
+    current_sid = str(current_source_id or "").strip()
+    normalized_current = str(current_content or "").strip()
+    candidate_index = -1
+    for index, record in enumerate(records):
+        source_id = str(record.get("source_id") or "").strip()
+        role = str(record.get("role") or "").strip().lower()
+        content = str(record.get("content") or "").strip()
+        if current_sid and source_id == current_sid:
+            continue
+        if not current_sid and index == len(records) - 1 and role == "user" and content == normalized_current:
+            continue
+        candidate_index = index
+        break
+    if candidate_index < 0:
+        return False
+    candidate = dict(records[candidate_index])
+    content = str(candidate.get("content") or "")
+    marker = "[更早内容已由上下文高水位保护省略]"
+    if len(content) > 512:
+        candidate["content"] = marker + "\n" + content[len(content) // 2 :]
+        records[candidate_index] = candidate
+    else:
+        records.pop(candidate_index)
+    return True
 
 
 def _memory_backend() -> str:

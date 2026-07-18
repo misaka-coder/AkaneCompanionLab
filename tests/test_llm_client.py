@@ -23,6 +23,38 @@ from companion_v01.tool_invocation import (
 
 
 class LLMClientConfigTests(unittest.TestCase):
+    def test_openai_payload_preserves_stable_context_and_append_only_history_message_boundaries(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://gateway.example/v1"),
+            model="model",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="stable system",
+            user_prompt="dynamic current tail",
+            temperature=0.1,
+            history_turns=[
+                {"role": "user", "content": "stable tool context"},
+                {"role": "user", "content": "stable summaries"},
+                {"role": "user", "content": "first user turn"},
+                {"role": "assistant", "content": "first assistant turn"},
+            ],
+        )
+
+        self.assertEqual(
+            [(item["role"], item["content"]) for item in payload["messages"]],
+            [
+                ("system", "stable system"),
+                ("user", "stable tool context"),
+                ("user", "stable summaries"),
+                ("user", "first user turn"),
+                ("assistant", "first assistant turn"),
+                ("user", "dynamic current tail"),
+            ],
+        )
+
     def test_ollama_protocol_normalizes_to_openai_compatible_v1_endpoint(self) -> None:
         self.assertEqual(normalize_api_protocol(protocol="ollama", base_url=""), "ollama")
         self.assertEqual(normalize_api_protocol(protocol="auto", base_url="http://127.0.0.1:11434"), "ollama")

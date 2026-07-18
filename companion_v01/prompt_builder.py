@@ -236,7 +236,6 @@ class PromptBuilder:
         # instructions can still be reused across turns.
         memory_context_blocks = [block for block in [semantic_block, episodic_block] if block]
         memory_context_text = "\n\n".join(memory_context_blocks)
-        memory_context_prompt = f"{memory_context_text}\n\n" if memory_context_text else ""
 
         current_time_text = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M")
         tool_context_text = str(tool_prompt_context or "").strip() or "当前没有额外能力或工具说明。"
@@ -248,13 +247,20 @@ class PromptBuilder:
             f"{ATTRIBUTION_RULES}\n\n"
         )
         plugin_proactive_scope = str(prompt_scope or "").strip() == "plugin_proactive"
-        current_is_in_raw = bool(plugin_proactive_scope and current_message_in_raw and raw_text)
-        timeline_parts: list[str] = []
-        if raw_text:
-            timeline_parts.append(f"当前会话中所有未总结的原始消息：\n{raw_text}")
-        elif not plugin_proactive_scope:
-            timeline_parts.append("当前会话中所有未总结的原始消息：\n(无)")
-        timeline_text = "\n\n".join(timeline_parts)
+        stable_user_context = (
+            f"{stable_user_intro}"
+            f"【本轮系统能力与工具上下文】\n{tool_context_text}"
+        ).strip()
+        structured_history_turns: list[dict[str, Any]] = [
+            {"role": "user", "content": stable_user_context}
+        ]
+        if memory_context_text:
+            structured_history_turns.append(
+                {"role": "user", "content": memory_context_text}
+            )
+        structured_history_turns.extend(
+            dict(turn) for turn in list(history_turns or []) if isinstance(turn, dict)
+        )
         dynamic_tail_parts = [
             f"可用回忆片段：\n{memory_text}",
             str(extra_context or "").strip(),
@@ -268,19 +274,12 @@ class PromptBuilder:
                 f"{persona_reference_context or '(无额外表达侧面参考)'}"
             ),
         ]
-        if not current_is_in_raw:
-            current_label = "当前用户消息" if plugin_proactive_scope else "用户原始消息"
-            dynamic_tail_parts.append(f"{current_label}：\n{current_message_text}")
+        current_label = "当前用户消息" if plugin_proactive_scope else "用户原始消息"
+        dynamic_tail_parts.append(f"{current_label}：\n{current_message_text}")
         if not plugin_proactive_scope:
             dynamic_tail_parts.append(f"当前时间：{current_time_text}")
         dynamic_tail = "\n\n".join(part for part in dynamic_tail_parts if part)
-        user_prompt = (
-            f"{stable_user_intro}"
-            f"【本轮系统能力与工具上下文】\n{tool_context_text}\n\n"
-            f"{memory_context_prompt}"
-            f"{timeline_text}\n\n"
-            f"{dynamic_tail}\n"
-        )
+        user_prompt = f"{dynamic_tail}\n"
         extra_context_subsections: list[dict[str, str]] = []
         for section in extra_context_audit_sections or []:
             if not isinstance(section, dict):
@@ -296,6 +295,7 @@ class PromptBuilder:
             [
                 {"name": "user.full", "text": user_prompt},
                 {"name": "user.instruction_suffix", "text": self.persona.final_user_prompt_suffix},
+                {"name": "user.stable_context", "text": stable_user_context},
                 {"name": "user.tool_context", "text": tool_context_text},
                 {"name": "user.memory_context", "text": memory_context_text},
                 {"name": "user.raw_recent_timeline", "text": raw_text or "(无)"},
@@ -307,9 +307,7 @@ class PromptBuilder:
                 {"name": "user.persona_reference_context", "text": persona_reference_context or "(无额外表达侧面参考)"},
                 {
                     "name": "user.current_message",
-                    "text": (
-                        "" if current_is_in_raw else current_message_text
-                    ),
+                    "text": current_message_text,
                 },
                 {
                     "name": "user.current_time",
@@ -329,7 +327,7 @@ class PromptBuilder:
                 else ""
             ),
             "tool_prompt_context_hash": tool_context_hash,
-            "history_turns": list(history_turns) if history_turns else [],
+            "history_turns": structured_history_turns,
             "user_prompt": user_prompt,
             "prompt_audit_sections": prompt_audit_sections,
         }
