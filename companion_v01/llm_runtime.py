@@ -25,6 +25,7 @@ from capcore_provider_openai import (
 )
 from services.llm_client import build_llm_client
 from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
+from .runtime_settings import BotSettingsView
 from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD
@@ -207,17 +208,20 @@ class _ResponsesStreamAdapter:
         except Exception:
             pass
         identity = str(
-            self._get(item, "call_id", "")
-            or self._get(item, "id", "")
-            or self._get(event, "item_id", "")
+            self._get(item, "call_id", "") or self._get(item, "id", "") or self._get(event, "item_id", "")
         ).strip()
         if identity not in self._tool_indexes:
             self._tool_indexes[identity] = len(self._tool_indexes)
         return self._tool_indexes[identity]
 
     @staticmethod
-    def _chunk(*, content: str = "", tool_calls: list[dict[str, Any]] | None = None, usage: Any = None,
-               finish_reason: str | None = None) -> Any:
+    def _chunk(
+        *,
+        content: str = "",
+        tool_calls: list[dict[str, Any]] | None = None,
+        usage: Any = None,
+        finish_reason: str | None = None,
+    ) -> Any:
         delta = SimpleNamespace(content=content or None, tool_calls=tool_calls or None)
         choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
         return SimpleNamespace(choices=[choice], usage=usage)
@@ -238,12 +242,14 @@ class _ResponsesStreamAdapter:
                 call_id = str(self._get(item, "call_id", "") or self._get(item, "id", "") or "")
                 name = str(self._get(item, "name", "") or "")
                 yield self._chunk(
-                    tool_calls=[{
-                        "index": index,
-                        "id": call_id,
-                        "type": "function",
-                        "function": {"name": name, "arguments": ""},
-                    }]
+                    tool_calls=[
+                        {
+                            "index": index,
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": ""},
+                        }
+                    ]
                 )
                 continue
             if event_type == "response.function_call_arguments.delta":
@@ -252,11 +258,13 @@ class _ResponsesStreamAdapter:
                 if delta:
                     self._argument_deltas_seen.add(index)
                     yield self._chunk(
-                        tool_calls=[{
-                            "index": index,
-                            "type": "function",
-                            "function": {"arguments": delta},
-                        }]
+                        tool_calls=[
+                            {
+                                "index": index,
+                                "type": "function",
+                                "function": {"arguments": delta},
+                            }
+                        ]
                     )
                 continue
             if event_type == "response.output_item.done":
@@ -267,11 +275,13 @@ class _ResponsesStreamAdapter:
                 arguments = str(self._get(item, "arguments", "") or "")
                 if arguments and index not in self._argument_deltas_seen:
                     yield self._chunk(
-                        tool_calls=[{
-                            "index": index,
-                            "type": "function",
-                            "function": {"arguments": arguments},
-                        }]
+                        tool_calls=[
+                            {
+                                "index": index,
+                                "type": "function",
+                                "function": {"arguments": arguments},
+                            }
+                        ]
                     )
                 continue
             if event_type in {"error", "response.failed", "response.cancelled"}:
@@ -551,17 +561,20 @@ class _TopLevelJSONStreamTap:
 
 
 class LLMRuntime:
-    def __init__(self, *, log_dir: Path | str | None = None, instance_id: str = ""):
-        self.log_dir = (
-            Path(log_dir)
-            if log_dir is not None
-            else Path(str(getattr(config, "LOG_DIR", "") or "logs"))
-        )
+    def __init__(
+        self,
+        *,
+        log_dir: Path | str | None = None,
+        instance_id: str = "",
+        settings: BotSettingsView | None = None,
+        config_module: Any = config,
+    ):
+        self._config_module = config_module
+        self.settings = settings or BotSettingsView.from_config(config_module)
+        self.log_dir = Path(log_dir) if log_dir is not None else Path(str(getattr(config, "LOG_DIR", "") or "logs"))
         safe_instance_id = str(instance_id or "local-default").strip()
         self.instance_id = (
-            safe_instance_id
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", safe_instance_id)
-            else "unknown"
+            safe_instance_id if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", safe_instance_id) else "unknown"
         )
         self._bundle_lock = threading.RLock()
         self.aux = self._build_aux_bundle()
@@ -603,7 +616,8 @@ class LLMRuntime:
         self._last_error_lock = threading.RLock()
         self._last_error: dict[str, str] = {}
 
-    def reload_from_config(self) -> dict[str, str]:
+    def reload_from_config(self, *, settings: BotSettingsView | None = None) -> dict[str, str]:
+        self.settings = settings or BotSettingsView.from_config(self._config_module)
         aux = self._build_aux_bundle()
         chat = self._build_chat_bundle()
         with self._bundle_lock:
@@ -616,26 +630,37 @@ class LLMRuntime:
         }
 
     def _build_aux_bundle(self) -> ModelBundle:
+        settings = self._settings_view()
         client = build_llm_client(
-            api_key=config.AUX_API_KEY,
-            base_url=config.AUX_BASE_URL,
-            protocol=getattr(config, "AUX_API_PROTOCOL", "auto"),
+            api_key=settings.aux_api_key,
+            base_url=settings.aux_base_url,
+            protocol=settings.aux_api_protocol,
             timeout=90.0,
             max_retries=0,
         )
         setattr(client, "_akane_bundle_role", "aux")
-        return ModelBundle(client=client, model=config.AUX_MODEL_NAME)
+        return ModelBundle(client=client, model=settings.aux_model_name)
 
     def _build_chat_bundle(self) -> ModelBundle:
+        settings = self._settings_view()
         client = build_llm_client(
-            api_key=config.CHAT_API_KEY,
-            base_url=config.CHAT_BASE_URL,
-            protocol=getattr(config, "CHAT_API_PROTOCOL", "auto"),
+            api_key=settings.chat_api_key,
+            base_url=settings.chat_base_url,
+            protocol=settings.chat_api_protocol,
             timeout=120.0,
             max_retries=0,
         )
         setattr(client, "_akane_bundle_role", "chat")
-        return ModelBundle(client=client, model=config.CHAT_MODEL_NAME)
+        return ModelBundle(client=client, model=settings.chat_model_name)
+
+    def _settings_view(self) -> BotSettingsView:
+        current = getattr(self, "settings", None)
+        if isinstance(current, BotSettingsView):
+            return current
+        config_module = getattr(self, "_config_module", config)
+        current = BotSettingsView.from_config(config_module)
+        self.settings = current
+        return current
 
     def _chat_bundle_for_override(self, chat_model_override: str = "") -> ModelBundle:
         model_override = _safe_chat_model_override(chat_model_override)
@@ -1442,11 +1467,7 @@ class LLMRuntime:
                 "user_image_count": max(0, int(user_image_count or 0)),
                 "native_tool_count": len(native_tools),
                 "native_tool_names": [
-                    str(
-                        (item.get("function") or {}).get("name")
-                        or item.get("name")
-                        or ""
-                    ).strip()
+                    str((item.get("function") or {}).get("name") or item.get("name") or "").strip()
                     for item in native_tools[:64]
                     if isinstance(item, dict)
                     and str((item.get("function") or {}).get("name") or item.get("name") or "").strip()
@@ -2216,21 +2237,25 @@ class LLMRuntime:
                     items.append({"role": "assistant", "content": content})
                 for call in self._normalize_openai_history_tool_calls(message.get("tool_calls")):
                     function = call["function"]
-                    items.append({
-                        "type": "function_call",
-                        "call_id": call["id"],
-                        "name": function["name"],
-                        "arguments": function["arguments"],
-                    })
+                    items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": call["id"],
+                            "name": function["name"],
+                            "arguments": function["arguments"],
+                        }
+                    )
                 continue
             if role == "tool":
                 call_id = str(message.get("tool_call_id") or "").strip()
                 if call_id:
-                    items.append({
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": self._flatten_message_content(message.get("content")),
-                    })
+                    items.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": self._flatten_message_content(message.get("content")),
+                        }
+                    )
                 continue
             if role not in {"user", "assistant", "developer", "system"}:
                 continue
@@ -2285,19 +2310,17 @@ class LLMRuntime:
         for item in output:
             item_type = str(self._get_attr_or_key(item, "type") or "")
             if item_type == "function_call":
-                call_id = str(
-                    self._get_attr_or_key(item, "call_id")
-                    or self._get_attr_or_key(item, "id")
-                    or ""
+                call_id = str(self._get_attr_or_key(item, "call_id") or self._get_attr_or_key(item, "id") or "")
+                tool_calls.append(
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": str(self._get_attr_or_key(item, "name") or ""),
+                            "arguments": str(self._get_attr_or_key(item, "arguments") or "{}"),
+                        },
+                    }
                 )
-                tool_calls.append({
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": str(self._get_attr_or_key(item, "name") or ""),
-                        "arguments": str(self._get_attr_or_key(item, "arguments") or "{}"),
-                    },
-                })
             elif item_type == "message" and not direct_text:
                 for block in self._get_attr_or_key(item, "content") or []:
                     if str(self._get_attr_or_key(block, "type") or "") == "output_text":

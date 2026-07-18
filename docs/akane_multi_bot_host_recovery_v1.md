@@ -1,6 +1,6 @@
 # Akane 单 Host 多 Bot 收敛探查与实施报告 v1
 
-> 状态：产品与实施边界已冻结；Slice 0、Slice 1 已完成，Slice 2 待执行
+> 状态：产品与实施边界已冻结；Slice 0、Slice 1、Slice 2A 已完成，Slice 2B 待执行
 >
 > 建档日期：2026-07-19
 >
@@ -1054,7 +1054,7 @@ npm run build
 
 ## 8. 本轮实施与验证记录
 
-本轮完成 Slice 1，运行时代码只做单 Bot 装配归属迁移，没有引入多 Bot 请求分发或 per-Bot settings 覆盖。
+本轮完成 Slice 2A，运行时代码只迁移模型设置快照，没有引入多 Bot 请求分发或 UI 级 per-Bot settings 管理。
 
 已完成：
 
@@ -1064,6 +1064,10 @@ npm run build
 - QQ 后台完成通知、插件 notification port、managed artifact sink、reasoning port 和 storage port 随 BotRuntime 一起装配。
 - `tests/test_bot_runtime.py` 新增 5 项生命周期/注册契约。
 - `tests/test_instance_channel_security.py` 的装配顺序断言迁移到新的唯一权威 `bot_runtime.py`。
+- 新增 `companion_v01/runtime_settings.py`：不可变 `BotSettingsView`，带安全 public snapshot 和显式 overlay 校验。
+- `LLMRuntime` 的 Chat/Aux client 构造改为读取本地 settings snapshot；直接独立构造时才从旧 `config` 生成兼容快照。
+- `AkaneMemoryEngine` 与 `BotRuntimeFactory` 已注入同一份 Bot settings；后续 Bot 可在 factory 入口传入覆盖值，不需要切换全局 config。
+- `tests/test_runtime_settings.py` 新增双 runtime provider 隔离测试。
 
 验证通过：
 
@@ -1071,8 +1075,10 @@ npm run build
 - `tests.test_instance_channel_security`：22 项，包含命名实例真实启动、QQ 安全和失败前置检查。
 - 路由、桌宠后端、插件 Host/通知/推理、writer shutdown 组合回归：142 项。
 - BotRuntime、instance runtime/profile、finance absence、plugin engine bridge 组合回归：39 项。
+- LLM client 回归：63 项；插件/金融/native web 工具组合回归：92 项。
 - Ruff check、Ruff format check、py_compile、`git diff --check` 均通过。
-- 未修改云端部署、模型配置、MemCore 数据或桌宠前端；用户原有 `.claude/` 未触碰。
+- 尚未迁移 Vision、prompt cache、context/compact、TTS/ASR 或模型设置 UI；这些属于 Slice 2B，不能把当前快照误认为完整 per-Bot 配置管理。
+- 未修改云端部署、云端模型配置、MemCore 数据或桌宠前端；用户原有 `.claude/` 未触碰。
 
 ---
 
@@ -1080,11 +1086,11 @@ npm run build
 
 后续执行不应直接继续为 personal 单独接 GPT-SoVITS 或为 finance 单独复制视觉/Satellite 配置。
 
-Slice 0、Slice 1 已完成。下一步从 **Slice 2** 开始：
+Slice 0、Slice 1、Slice 2A 已完成。下一步进入 **Slice 2B**：
 
-1. 引入不可变 `BotSettingsView`；
-2. 先迁移 Chat/Aux/vision/cache/context 等允许按 Bot 覆盖的配置读取；
-3. 保持当前单 Bot 兼容表现，并用两个 fake provider 验证不串线；
+1. 迁移 Vision client 与 `native_chat_vision_status` 到 Bot settings；
+2. 迁移 prompt cache namespace/hints、context window/auto compact；
+3. 将模型设置 reload 绑定到目标 BotRuntime，而不是共享全局 config；
 4. 验证后再进入 Slice 3 的多 Bot 生命周期。
 
 当上下文被压缩时，恢复顺序：

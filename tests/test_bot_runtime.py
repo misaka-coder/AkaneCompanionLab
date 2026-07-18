@@ -7,6 +7,7 @@ from typing import Any
 
 from companion_v01.bot_registry import BotRegistry, BotRegistryError
 from companion_v01.bot_runtime import BotRuntime
+from companion_v01.runtime_settings import BotSettingsView
 
 
 class _FakePluginHost:
@@ -61,6 +62,7 @@ def _runtime(bot_id: str = "bot-a") -> tuple[BotRuntime, _FakePluginHost, _FakeE
         plugin_host=plugin_host,
         plugin_capability_source=SimpleNamespace(),
         engine=engine,
+        settings=BotSettingsView(),
         tts_client=SimpleNamespace(),
         runtime_metrics=SimpleNamespace(),
         public_guard=SimpleNamespace(),

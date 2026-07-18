@@ -100,6 +100,7 @@ desktop_satellite_service = bot_runtime.desktop_satellite_service
 plugin_host = bot_runtime.plugin_host
 plugin_capability_source = bot_runtime.plugin_capability_source
 engine = bot_runtime.engine
+bot_settings = bot_runtime.settings
 USER_ASSETS_DIR = bot_runtime.user_assets_dir
 tts_client = bot_runtime.tts_client
 runtime_metrics = bot_runtime.runtime_metrics

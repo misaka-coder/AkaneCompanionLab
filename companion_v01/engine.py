@@ -69,6 +69,7 @@ from .retrieval_service import RetrievalService
 from .retrieval_types import RetrievalPipelineResult
 from . import retrieval_engine
 from .resource_manifest import ResourceManifest
+from .runtime_settings import BotSettingsView
 from .sticker_assets import StickerAssetService
 from .task_workspace import TaskWorkspaceService
 from . import task_workspace_engine
@@ -80,7 +81,11 @@ from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
 from .tool_invocation import TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
-from .tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, TOOL_EXECUTION_RECEIPT_FIELD, TOOL_EXECUTION_RECEIPTS_FIELD
+from .tool_invocation import (
+    TOOL_CAPABILITY_SELECTION_FIELD,
+    TOOL_EXECUTION_RECEIPT_FIELD,
+    TOOL_EXECUTION_RECEIPTS_FIELD,
+)
 from .tool_invocation import TOOL_SOURCE_FIELD
 from .tool_runtime import (
     AdapterCapabilityToolHandler,
@@ -228,16 +233,14 @@ class AkaneMemoryEngine:
         plugin_capability_source: Any = None,
         qq_channel_config: QQChannelRuntimeConfig | None = None,
         capability_offer_source: Any = None,
+        settings: BotSettingsView | None = None,
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.instance_context = instance_context or build_local_default_instance_context()
         self.runtime_layout = runtime_layout
-        artifact_data_root = (
-            runtime_layout.data_root
-            if runtime_layout is not None
-            else self.base_dir.resolve().parent
-        )
+        self.settings = settings or BotSettingsView.from_config(config)
+        artifact_data_root = runtime_layout.data_root if runtime_layout is not None else self.base_dir.resolve().parent
         self.artifact_broker = ArtifactBroker(
             instance_id=self.instance_context.instance_id,
             data_root=artifact_data_root,
@@ -284,6 +287,8 @@ class AkaneMemoryEngine:
         self.llm = LLMRuntime(
             log_dir=self.logs_dir,
             instance_id=self.instance_context.instance_id,
+            settings=self.settings,
+            config_module=config,
         )
         self.memcore_manager = self._build_memcore_manager()
         self.gift_service = GiftSystemService(
@@ -1672,11 +1677,7 @@ class AkaneMemoryEngine:
         if not self.get_care_module().enabled:
             return False
         if client_context is not None and client_context.effective_mode == ClientMode.DESKTOP_PET:
-            return bool(
-                normalize_desktop_care_config(
-                    self._load_desktop_care_config(character_pack_id)
-                )["enabled"]
-            )
+            return bool(normalize_desktop_care_config(self._load_desktop_care_config(character_pack_id))["enabled"])
         return True
 
     def build_desktop_care_snapshot(
@@ -1872,9 +1873,7 @@ class AkaneMemoryEngine:
                 if turn_kind == "desktop_pet_care_feed"
                 else int(
                     desktop_config["decay"][
-                        "energy_per_proactive"
-                        if turn_kind == "desktop_pet_proactive"
-                        else "energy_per_reply"
+                        "energy_per_proactive" if turn_kind == "desktop_pet_proactive" else "energy_per_reply"
                     ]
                 )
             )
@@ -2922,11 +2921,9 @@ class AkaneMemoryEngine:
             tool_result = batch_results[-1] if batch_results else None
             turn_user_images = self._merge_tool_model_image_inputs(turn_user_images, batch_results)
 
-            stop_after_tool = (
-                self._should_stop_after_tool_events(
-                    _current_events,
-                    domain_profile_id=turn_domain_profile_id,
-                )
+            stop_after_tool = self._should_stop_after_tool_events(
+                _current_events,
+                domain_profile_id=turn_domain_profile_id,
             )
             allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = self._build_final_response(
@@ -3440,11 +3437,9 @@ class AkaneMemoryEngine:
             for stream_event in current_events:
                 yield stream_event
 
-            stop_after_tool = (
-                self._should_stop_after_tool_events(
-                    current_events,
-                    domain_profile_id=turn_domain_profile_id,
-                )
+            stop_after_tool = self._should_stop_after_tool_events(
+                current_events,
+                domain_profile_id=turn_domain_profile_id,
             )
             allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = yield from self._stream_final_response(
@@ -4137,9 +4132,7 @@ class AkaneMemoryEngine:
         if not isinstance(receipts, dict) or not receipts:
             return
         output[TOOL_EXECUTION_RECEIPTS_FIELD] = {
-            str(name): dict(receipt)
-            for name, receipt in receipts.items()
-            if isinstance(receipt, dict)
+            str(name): dict(receipt) for name, receipt in receipts.items() if isinstance(receipt, dict)
         }
 
     @staticmethod

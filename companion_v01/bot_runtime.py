@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from services.tts_client import EdgeTTSClient
 
@@ -30,6 +30,7 @@ from .plugin_tool_bridge import PluginCapabilityToolBridge
 from .public_guard import PublicThinkGuard
 from .qq_gateway import NapCatQQGateway
 from .resource_manifest import ResourceManifest
+from .runtime_settings import BotSettingsView
 from .settings_overrides import SettingsOverrideStore, load_and_apply_saved_overrides
 
 
@@ -66,6 +67,7 @@ class BotRuntime:
     plugin_host: PluginHost
     plugin_capability_source: PluginCapabilityToolBridge
     engine: AkaneMemoryEngine
+    settings: BotSettingsView
     tts_client: EdgeTTSClient
     runtime_metrics: RuntimeMetrics
     public_guard: PublicThinkGuard
@@ -104,6 +106,7 @@ class BotRuntime:
         app.state.akane_deployment_security = self.deployment_security
         app.state.akane_desktop_satellite = self.desktop_satellite_service
         app.state.akane_plugin_host = self.plugin_host
+        app.state.akane_bot_settings = self.settings
 
     async def start(self) -> dict[str, Any]:
         if self._stop_status is not None:
@@ -332,6 +335,7 @@ class BotRuntimeFactory:
         data_root: Path,
         selected_instance_id: str = "",
         explicit_data_root: bool = False,
+        settings_overrides: Mapping[str, Any] | None = None,
     ) -> BotRuntime:
         instance_context = resolve_instance_context(
             data_root=Path(data_root),
@@ -362,6 +366,7 @@ class BotRuntimeFactory:
                 settings_store,
                 on_error=lambda exc: self.logger.warning("Settings override ignored: %s", type(exc).__name__),
             )
+            settings = BotSettingsView.from_config(self.config_module).overlay(settings_overrides)
 
             deployment_security = resolve_instance_deployment_security(
                 instance_context,
@@ -388,6 +393,7 @@ class BotRuntimeFactory:
                 plugin_capability_source=plugin_capability_source,
                 qq_channel_config=deployment_security.qq,
                 capability_offer_source=satellite_service,
+                settings=settings,
             )
             plugin_host.bind_reasoning_port(EnginePluginReasoningPort(engine))
             generated_file_service = engine._get_generated_file_service()
@@ -427,6 +433,7 @@ class BotRuntimeFactory:
                 plugin_host=plugin_host,
                 plugin_capability_source=plugin_capability_source,
                 engine=engine,
+                settings=settings,
                 tts_client=EdgeTTSClient(
                     voice=getattr(self.config_module, "TTS_VOICE", "zh-CN-XiaoxiaoNeural"),
                     rate=getattr(self.config_module, "TTS_RATE", "+0%"),
