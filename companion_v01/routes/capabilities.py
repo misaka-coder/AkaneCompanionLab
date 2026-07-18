@@ -51,6 +51,7 @@ from ..local_capability_catalog import (
     build_local_workflow_catalog,
     probe_known_local_services,
 )
+from ..runtime_settings import runtime_setting
 
 
 LogEvent = Callable[..., None]
@@ -69,6 +70,7 @@ def build_capabilities_router(
     engine: Any,
     config_module: Any = None,
     tts_client: Any = None,
+    settings: Any = None,
     runtime_metrics: Any = None,
     log_event: LogEvent | None = None,
     resolve_identity_from_query: Callable[[Request], tuple[str, str]] | None = None,
@@ -115,6 +117,7 @@ def build_capabilities_router(
             engine=engine,
             config_module=config_module,
             tts_client=tts_client,
+            settings=settings,
             profile_user_id=profile_user_id,
             provider_configs=provider_config.get("providers", {}),
             workflow_configs=provider_config.get("workflows", {}),
@@ -876,6 +879,7 @@ def build_capabilities_router(
             provider_id=provider_id,
             payload=payload,
             config_module=config_module,
+            settings=settings,
             runner=provider_tts_test_runner,
         )
         ok = bool(result.get("ok"))
@@ -1046,6 +1050,7 @@ async def _run_provider_tts_test(
     provider_id: str,
     payload: dict[str, Any],
     config_module: Any = None,
+    settings: Any = None,
     runner: ProviderTtsTestRunner | None = None,
 ) -> dict[str, Any]:
     provider_id = str(provider_id or "").strip()
@@ -1105,21 +1110,31 @@ async def _run_provider_tts_test(
             if hasattr(result, "__await__"):
                 result = await result
         else:
-            timeout_seconds = float(getattr(config_module, "GPT_SOVITS_TTS_TIMEOUT_SECONDS", 45.0) or 45.0)
-            text_lang = str(getattr(config_module, "GPT_SOVITS_TEXT_LANG", "zh") or "zh")
-            media_type = str(getattr(config_module, "GPT_SOVITS_MEDIA_TYPE", "wav") or "wav")
+            timeout_seconds = float(
+                runtime_setting(settings, config_module, "gpt_sovits_tts_timeout_seconds", "GPT_SOVITS_TTS_TIMEOUT_SECONDS", 45.0)
+                or 45.0
+            )
+            text_lang = str(runtime_setting(settings, config_module, "gpt_sovits_text_lang", "GPT_SOVITS_TEXT_LANG", "zh") or "zh")
+            media_type = str(runtime_setting(settings, config_module, "gpt_sovits_media_type", "GPT_SOVITS_MEDIA_TYPE", "wav") or "wav")
             client = GptSovitsTTSClient(
                 endpoint,
                 timeout_seconds=timeout_seconds,
                 text_lang=text_lang,
                 media_type=media_type,
-                streaming_mode=bool(getattr(config_module, "GPT_SOVITS_STREAMING_MODE", False)),
-                parallel_infer=getattr(config_module, "GPT_SOVITS_PARALLEL_INFER", None),
-                split_bucket=getattr(config_module, "GPT_SOVITS_SPLIT_BUCKET", None),
-                batch_size=getattr(config_module, "GPT_SOVITS_BATCH_SIZE", None),
-                speed_factor=getattr(config_module, "GPT_SOVITS_SPEED_FACTOR", None),
-                fragment_interval=getattr(config_module, "GPT_SOVITS_FRAGMENT_INTERVAL", None),
-                text_split_method=str(getattr(config_module, "GPT_SOVITS_TEXT_SPLIT_METHOD", "") or ""),
+                streaming_mode=bool(
+                    runtime_setting(settings, config_module, "gpt_sovits_streaming_mode", "GPT_SOVITS_STREAMING_MODE", False)
+                ),
+                parallel_infer=runtime_setting(settings, config_module, "gpt_sovits_parallel_infer", "GPT_SOVITS_PARALLEL_INFER", None),
+                split_bucket=runtime_setting(settings, config_module, "gpt_sovits_split_bucket", "GPT_SOVITS_SPLIT_BUCKET", None),
+                batch_size=runtime_setting(settings, config_module, "gpt_sovits_batch_size", "GPT_SOVITS_BATCH_SIZE", None),
+                speed_factor=runtime_setting(settings, config_module, "gpt_sovits_speed_factor", "GPT_SOVITS_SPEED_FACTOR", None),
+                fragment_interval=runtime_setting(
+                    settings, config_module, "gpt_sovits_fragment_interval", "GPT_SOVITS_FRAGMENT_INTERVAL", None
+                ),
+                text_split_method=str(
+                    runtime_setting(settings, config_module, "gpt_sovits_text_split_method", "GPT_SOVITS_TEXT_SPLIT_METHOD", "")
+                    or ""
+                ),
             )
             result = await client.synthesize(text, voice_profile_id=voice_profile_id, profile=voice_profile)
         audio, media_type = _coerce_provider_tts_test_audio(result)

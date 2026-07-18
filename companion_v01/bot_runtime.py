@@ -444,10 +444,10 @@ class BotRuntimeFactory:
                 engine=engine,
                 settings=settings,
                 tts_client=EdgeTTSClient(
-                    voice=getattr(self.config_module, "TTS_VOICE", "zh-CN-XiaoxiaoNeural"),
-                    rate=getattr(self.config_module, "TTS_RATE", "+0%"),
-                    volume=getattr(self.config_module, "TTS_VOLUME", "+0%"),
-                    pitch=getattr(self.config_module, "TTS_PITCH", "+4Hz"),
+                    voice=settings.tts_voice,
+                    rate=settings.tts_rate,
+                    volume=settings.tts_volume,
+                    pitch=settings.tts_pitch,
                 ),
                 runtime_metrics=RuntimeMetrics(),
                 public_guard=PublicThinkGuard(

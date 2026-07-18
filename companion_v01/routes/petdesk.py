@@ -39,6 +39,7 @@ def build_petdesk_router(
     engine: Any,
     config_module: Any = None,
     tts_client: Any = None,
+    settings: Any = None,
     character_resources: Any = None,
     runtime_metrics: Any = None,
     public_guard: Any = None,
@@ -272,6 +273,7 @@ def build_petdesk_router(
             payload=payload,
             base_dir=provider_config_base_dir,
             config_module=config_module,
+            settings=settings,
             edge_tts_available=tts_client is not None,
             gpt_sovits_client_factory=gpt_sovits_client_factory,
         )

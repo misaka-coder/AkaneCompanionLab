@@ -9,11 +9,43 @@ from unittest.mock import patch
 
 from companion_v01.llm_runtime import LLMRuntime
 from companion_v01.runtime_settings import BotSettingsView
+from companion_v01.routes.voice import _default_gpt_sovits_client_factory
 from companion_v01.store import MemoryStore
 from companion_v01.vision_service import VisionObservationService
 
 
 class BotSettingsViewTests(unittest.TestCase):
+    def test_voice_snapshot_isolated_in_gpt_sovits_client_factory(self) -> None:
+        settings_a = BotSettingsView(
+            gpt_sovits_tts_timeout_seconds=11.0,
+            gpt_sovits_text_lang="zh",
+            gpt_sovits_media_type="wav",
+            gpt_sovits_streaming_mode=False,
+            gpt_sovits_speed_factor=0.8,
+            gpt_sovits_text_split_method="cut5",
+        )
+        settings_b = BotSettingsView(
+            gpt_sovits_tts_timeout_seconds=23.0,
+            gpt_sovits_text_lang="en",
+            gpt_sovits_media_type="mp3",
+            gpt_sovits_streaming_mode=True,
+            gpt_sovits_speed_factor=1.2,
+            gpt_sovits_text_split_method="cut0",
+        )
+
+        client_a = _default_gpt_sovits_client_factory(None, settings=settings_a)("http://127.0.0.1:18001")
+        client_b = _default_gpt_sovits_client_factory(None, settings=settings_b)("http://127.0.0.1:18002")
+
+        self.assertEqual(
+            (client_a.timeout_seconds, client_a.text_lang, client_a.media_type, client_a.streaming_mode, client_a.speed_factor),
+            (11.0, "zh", "wav", False, 0.8),
+        )
+        self.assertEqual(
+            (client_b.timeout_seconds, client_b.text_lang, client_b.media_type, client_b.streaming_mode, client_b.speed_factor),
+            (23.0, "en", "mp3", True, 1.2),
+        )
+        self.assertNotEqual(client_a.text_split_method, client_b.text_split_method)
+
     def test_config_snapshot_applies_effective_values_without_exposing_secrets(self) -> None:
         config_module = SimpleNamespace(
             TEXT_API_KEY="text-secret",

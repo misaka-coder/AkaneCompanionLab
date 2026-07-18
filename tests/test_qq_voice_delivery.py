@@ -11,6 +11,7 @@ from companion_v01.routes.qq import (
     _process_qq_turn_streaming,
     _synthesize_qq_voice_file,
 )
+from companion_v01.runtime_settings import BotSettingsView
 
 
 class FakeTTSClient:
@@ -378,6 +379,49 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertTrue(result["send_result"]["ok"])
         self.assertEqual(result["send_result"]["delivery"]["voice_reason"], "auto_voice_text_too_long")
         self.assertFalse(result["send_result"]["delivery"]["voice_enabled"])
+
+    def test_bot_settings_override_qq_voice_limit_without_mutating_config(self) -> None:
+        long_text = "这是一段偏长的回复。" * 10
+
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "voice",
+                        "speech": long_text,
+                        "speech_segments": [long_text],
+                        "tool_events": [],
+                    },
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            gateway = FakeQQGateway()
+            result = _process_qq_turn_streaming(
+                engine=FakeEngine(),
+                qq_gateway=gateway,
+                context=SimpleNamespace(
+                    session_id="qq_pri_1",
+                    profile_user_id="qq_1",
+                    character_pack_id="",
+                    reply_mode="auto",
+                ),
+                turn_payload={"message": "hi"},
+                config_module=SimpleNamespace(
+                    DATA_DIR=temp_dir,
+                    QQ_STREAM_REPLIES_ENABLED=True,
+                    QQ_STREAM_MAX_SEGMENTS=8,
+                    QQ_REPLY_MAX_SEGMENTS=8,
+                    QQ_VOICE_MAX_SEGMENTS=3,
+                    QQ_VOICE_MAX_TEXT_CHARS=280,
+                ),
+                settings=BotSettingsView(qq_voice_max_text_chars=40),
+                tts_client=FakeTTSClient(),
+            )
+
+        self.assertEqual(gateway.text_sends, [[long_text]])
+        self.assertEqual(gateway.voice_sends, [])
+        self.assertEqual(result["send_result"]["delivery"]["voice_reason"], "auto_voice_text_too_long")
 
     def test_failed_file_delivery_sends_truthful_feedback(self) -> None:
         class FailedGateway(FakeQQGateway):

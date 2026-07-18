@@ -24,6 +24,7 @@ from .voice import (
     _coerce_synthesized_audio,
     _resolve_tts_runtime_provider,
 )
+from ..runtime_settings import runtime_setting
 from ..qq_route_helpers import (
     apply_qq_current_outfit_visual as _apply_qq_current_outfit_visual,
     build_qq_resource_manifest_builder as _build_qq_resource_manifest_builder,
@@ -701,8 +702,10 @@ def _run_async_safely(awaitable: Any) -> Any:
     return asyncio.run(awaitable)
 
 
-def _resolve_qq_tts_profile_user_id(*, config_module: Any, context: Any) -> str:
-    raw_value = str(getattr(config_module, "QQ_TTS_PROFILE_USER_ID", "") or "").strip()
+def _resolve_qq_tts_profile_user_id(*, config_module: Any, context: Any, settings: Any = None) -> str:
+    raw_value = str(
+        runtime_setting(settings, config_module, "qq_tts_profile_user_id", "QQ_TTS_PROFILE_USER_ID", "") or ""
+    ).strip()
     if not raw_value:
         raw_value = str(getattr(config_module, "WEB_OWNER_PROFILE_USER_ID", "") or "master").strip()
     if raw_value.lower() in {"conversation", "context", "current"}:
@@ -752,6 +755,7 @@ def _synthesize_qq_voice_file(
     text: str,
     context: Any,
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
+    settings: Any = None,
 ) -> dict[str, Any]:
     clean_text = str(text or "").strip()
     if not clean_text:
@@ -759,7 +763,11 @@ def _synthesize_qq_voice_file(
 
     data_dir = Path(str(getattr(config_module, "DATA_DIR", "users_data") or "users_data"))
     base_dir = data_dir
-    tts_profile_user_id = _resolve_qq_tts_profile_user_id(config_module=config_module, context=context)
+    tts_profile_user_id = _resolve_qq_tts_profile_user_id(
+        config_module=config_module,
+        context=context,
+        settings=settings,
+    )
     payload = {
         "text": clean_text,
         "real_user_id": tts_profile_user_id,
@@ -771,6 +779,7 @@ def _synthesize_qq_voice_file(
         payload=payload,
         base_dir=base_dir,
         config_module=config_module,
+        settings=settings,
         edge_tts_available=tts_client is not None,
         gpt_sovits_client_factory=gpt_sovits_client_factory,
     )
@@ -822,6 +831,7 @@ def _send_qq_delivery(
     tts_client: Any = None,
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
     delivery_hint: str = "",
+    settings: Any = None,
 ) -> dict[str, Any]:
     plan = _resolve_delivery_medium(
         context=context,
@@ -840,10 +850,14 @@ def _send_qq_delivery(
 
     voice_reason = ""
     if voice_enabled:
-        max_segments = max(1, min(10, int(getattr(config_module, "QQ_VOICE_MAX_SEGMENTS", 3) or 3)))
+        max_segments = int(
+            runtime_setting(settings, config_module, "qq_voice_max_segments", "QQ_VOICE_MAX_SEGMENTS", 3) or 3
+        )
         voice_messages = [str(message or "").strip() for message in reply_messages if str(message or "").strip()]
         voice_text = "\n".join(voice_messages[:max_segments]).strip()
-        max_auto_chars = max(20, min(1200, int(getattr(config_module, "QQ_VOICE_MAX_TEXT_CHARS", 280) or 280)))
+        max_auto_chars = int(
+            runtime_setting(settings, config_module, "qq_voice_max_text_chars", "QQ_VOICE_MAX_TEXT_CHARS", 280) or 280
+        )
         if plan["reply_mode"] == "auto" and len(voice_text) > max_auto_chars:
             voice_enabled = False
             voice_reason = "auto_voice_text_too_long"
@@ -860,6 +874,7 @@ def _send_qq_delivery(
                     text=voice_text,
                     context=context,
                     gpt_sovits_client_factory=gpt_sovits_client_factory,
+                    settings=settings,
                 )
             except Exception as exc:
                 voice_file = {"ok": False, "reason": str(exc)[:200]}
@@ -989,6 +1004,7 @@ def _process_qq_turn_streaming(
     config_module: Any,
     tts_client: Any = None,
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
+    settings: Any = None,
 ) -> dict[str, Any]:
     pending_stage_messages: list[str] = []
     streamed_messages: list[str] = []
@@ -1115,6 +1131,7 @@ def _process_qq_turn_streaming(
         tts_client=tts_client,
         gpt_sovits_client_factory=gpt_sovits_client_factory,
         delivery_hint=delivery_hint,
+        settings=settings,
     )
     if streamed_messages:
         combined_results = [*stream_send_results, *list(send_result.get("results") or [])]
@@ -1304,6 +1321,7 @@ def build_qq_router(
     logger: Any,
     log_event: LogEvent,
     tts_client: Any = None,
+    settings: Any = None,
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
     async_task_supervisor: Any = None,
     channel_config: QQChannelRuntimeConfig | None = None,
@@ -1396,6 +1414,7 @@ def build_qq_router(
             turn_payload=turn_payload,
             config_module=config_module,
             tts_client=tts_client,
+            settings=settings,
             gpt_sovits_client_factory=gpt_sovits_client_factory,
         )
         file_send_result = dict(turn_result.get("file_send_result") or {"ok": True, "count": 0, "results": []})

@@ -1,6 +1,6 @@
 # Akane 单 Host 多 Bot 收敛探查与实施报告 v1
 
-> 状态：产品与实施边界已冻结；Slice 0、Slice 1、Slice 2A、Slice 2B-core 已完成，Slice 2C 待执行
+> 状态：产品与实施边界已冻结；Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C 已完成，Slice 3 待执行
 >
 > 建档日期：2026-07-19
 >
@@ -189,6 +189,31 @@ client_mode = qq_text
 ---
 
 ## 2. 当前单 Bot 绑定点代码地图
+
+### 2.0 Slice 2C 已落地：语音能力读取 Bot 快照
+
+Slice 2C 没有复制 personal/finance 语音代码，也没有切换全局 `config`。现在的链路是：
+
+```text
+BotRuntimeFactory
+  └─ BotSettingsView（TTS / ASR / GPT-SoVITS / QQ voice）
+       ├─ EdgeTTSClient
+       ├─ /asr 与 /tts
+       ├─ /pet/turn
+       ├─ QQ voice delivery
+       └─ capabilities provider tts-test / catalog
+```
+
+已纳入快照的配置包括：
+
+- Edge TTS 音色、语速、音量、音高与流式开关；
+- GPT-SoVITS 超时、语言、媒体类型、流式/并行/分桶/批大小、语速系数、片段间隔、切分方式；
+- OpenAI-compatible ASR 超时/模型，以及 faster-whisper 模型、设备、计算类型、语言、VAD、缓存目录和上传上限；
+- QQ TTS profile、最大合成文本长度、最大 segment 数。
+
+路由仍保留 `config_module` 兼容回退，因此现有直接构造路由的测试/旧集成不需要改；真实 `app.py` 装配已经显式传入 `bot_runtime.settings`。双快照测试已验证 GPT-SoVITS 参数和 QQ 语音长度限制不会串线。
+
+本切片尚未处理：控制中心 Bot 管理 UI、Host 级 QQ dispatcher、TTS/ASR 热更新和多 Bot 生命周期（Slice 3）。
 
 ### 2.1 `app.py` 是当前单例根因
 
@@ -1054,7 +1079,7 @@ npm run build
 
 ## 8. 本轮实施与验证记录
 
-本轮完成 Slice 2B-core，运行时代码迁移视觉、prompt cache、context/auto-compact 和目标 Bot 模型 reload；没有引入多 Bot 请求分发或完整 UI 级 per-Bot settings 管理。
+本轮完成 Slice 2C，运行时代码把语音配置迁移到 Bot settings；没有引入多 Bot 请求分发或完整 UI 级 per-Bot settings 管理。Slice 2B-core 的视觉、prompt cache、context/auto-compact 和目标 Bot 模型 reload 也继续保持在同一快照边界内。
 
 已完成：
 
@@ -1071,6 +1096,9 @@ npm run build
 - `VisionObservationService`、Engine native vision status、prompt cache hints/namespace、context/auto-compact token limits 均读取 Bot settings snapshot。
 - 模型服务保存通过目标 `BotRuntime.reload_model_services()` 更新 snapshot；不会再把 saved model settings 写回共享模块级 config。
 - QQ 模型查询使用当前 Engine settings，避免保存后仍显示旧全局模型。
+- `BotRuntimeFactory` 使用 Bot 快照构造 Edge TTS；Web voice、petdesk、QQ delivery 和 capabilities provider tts-test 均优先读取同一快照。
+- GPT-SoVITS、OpenAI-compatible ASR、faster-whisper、QQ TTS profile/长度/segment 参数已纳入快照；路由保留旧 `config_module` 回退。
+- `tests/test_runtime_settings.py` 新增双 GPT-SoVITS client 参数隔离测试；`tests/test_qq_voice_delivery.py` 新增 Bot 快照覆盖 QQ 语音限制测试。
 
 验证通过：
 
@@ -1081,7 +1109,7 @@ npm run build
 - LLM client 回归：63 项；插件/金融/native web 工具组合回归：92 项。
 - Vision、model-service、runtime-settings 组合回归：125 项；真实实例/QQ/路由/桌宠回归：117 项；插件/金融/实例组合回归：65 项。
 - Ruff check、Ruff format check、py_compile、`git diff --check` 均通过。
-- 尚未迁移 TTS/ASR、QQ voice 和完整模型设置 UI；这些属于 Slice 2C，不能把当前快照误认为完整 per-Bot 配置管理。
+- 尚未实现控制中心 Bot 管理 UI、TTS/ASR 热更新、Host 级 QQ dispatcher 和多 Bot 生命周期；这些属于 Slice 3 及后续切片，不能把当前快照误认为完整 per-Bot 管理面。
 - 未修改云端部署、云端模型配置、MemCore 数据或桌宠前端；用户原有 `.claude/` 未触碰。
 
 ---
@@ -1090,11 +1118,11 @@ npm run build
 
 后续执行不应直接继续为 personal 单独接 GPT-SoVITS 或为 finance 单独复制视觉/Satellite 配置。
 
-Slice 0、Slice 1、Slice 2A、Slice 2B-core 已完成。下一步进入 **Slice 2C**：
+Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C 已完成。下一步进入 **Slice 3**：
 
-1. 迁移 TTS/ASR、QQ voice provider 到 Bot settings；
-2. 把控制中心模型设置明确绑定到选中 Bot，并显示继承/覆盖来源；
-3. 验证后进入 Slice 3 的多 Bot 生命周期。
+1. 把控制中心模型/能力设置明确绑定到选中 Bot，并显示继承/覆盖来源；
+2. 实现多 Bot 生命周期与 Host 级启动/关闭；
+3. 验证后进入 Host 级 QQ dispatcher 和 DeviceExecutorHub。
 
 当上下文被压缩时，恢复顺序：
 

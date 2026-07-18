@@ -138,6 +138,7 @@ def build_local_capability_catalog(
     engine: Any,
     config_module: Any = None,
     tts_client: Any = None,
+    settings: Any = None,
     profile_user_id: str = "",
     provider_configs: Mapping[str, Any] | None = None,
     workflow_configs: Mapping[str, Any] | None = None,
@@ -148,7 +149,7 @@ def build_local_capability_catalog(
     entries = []
     entries.extend(_build_backend_tool_entries(getattr(engine, "tool_handlers", {}) or {}))
     entries.extend(_build_python_adapter_entries())
-    entries.extend(_build_provider_entries(config_module=config_module, tts_client=tts_client))
+    entries.extend(_build_provider_entries(config_module=config_module, tts_client=tts_client, settings=settings))
     configurable_provider_entries = _build_configurable_provider_entries(provider_configs or {})
     entries.extend(configurable_provider_entries)
     entries.extend(_build_workflow_entries(configurable_provider_entries, workflow_configs or {}))
@@ -287,7 +288,12 @@ def _build_python_adapter_entries() -> list[dict[str, Any]]:
     return [_project_catalog_entry(entry) for entry in entries]
 
 
-def _build_provider_entries(*, config_module: Any = None, tts_client: Any = None) -> list[dict[str, Any]]:
+def _build_provider_entries(
+    *,
+    config_module: Any = None,
+    tts_client: Any = None,
+    settings: Any = None,
+) -> list[dict[str, Any]]:
     ffmpeg_path = shutil.which("ffmpeg")
     ffprobe_path = shutil.which("ffprobe")
     faster_whisper_available = importlib.util.find_spec("faster_whisper") is not None
@@ -360,8 +366,10 @@ def _build_provider_entries(*, config_module: Any = None, tts_client: Any = None
             "requiresConfirmation": False,
             "usedBy": ["voice", "desktop_pet"],
             "config": {
-                "voice": _safe_config_value(config_module, "TTS_VOICE", "zh-CN-XiaoxiaoNeural"),
-                "streaming": bool(_safe_config_value(config_module, "STREAMING_TTS_ENABLED", True)),
+                "voice": _runtime_value(settings, config_module, "tts_voice", "TTS_VOICE", "zh-CN-XiaoxiaoNeural"),
+                "streaming": bool(
+                    _runtime_value(settings, config_module, "streaming_tts_enabled", "STREAMING_TTS_ENABLED", True)
+                ),
             },
         },
         {
@@ -426,12 +434,14 @@ def _build_provider_entries(*, config_module: Any = None, tts_client: Any = None
             "requiresConfirmation": False,
             "usedBy": ["voice", "workspace", "desktop_pet"],
             "config": {
-                "model": _safe_config_value(
+                "model": _runtime_value(
+                    settings,
                     config_module,
+                    "asr_whisper_model_size",
                     "ASR_WHISPER_MODEL_SIZE",
                     _safe_config_value(config_module, "WHISPER_MODEL_SIZE", "small"),
                 ),
-                "language": _safe_config_value(config_module, "ASR_LANGUAGE", "zh"),
+                "language": _runtime_value(settings, config_module, "asr_language", "ASR_LANGUAGE", "zh"),
             },
         },
         {
@@ -885,6 +895,13 @@ def _safe_config_value(config_module: Any, name: str, default: Any) -> Any:
     if value is None:
         return default
     return value
+
+
+def _runtime_value(settings: Any, config_module: Any, field_name: str, config_name: str, default: Any) -> Any:
+    if settings is not None and hasattr(settings, field_name):
+        value = getattr(settings, field_name)
+        return default if value is None else value
+    return _safe_config_value(config_module, config_name, default)
 
 
 def _incr(mapping: dict[str, int], key: str) -> None:

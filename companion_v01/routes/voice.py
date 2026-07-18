@@ -19,6 +19,7 @@ from ..local_capability_config import (
     get_voice_profile_runtime_config,
     load_capability_config,
 )
+from ..runtime_settings import runtime_setting
 from services.tts_client import GptSovitsTTSClient, SynthesizedAudio
 
 
@@ -32,6 +33,7 @@ def build_voice_router(
     tts_client: Any,
     runtime_metrics: Any,
     log_event: LogEvent,
+    settings: Any = None,
     capability_config_base_dir: str | Path | None = None,
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
     asr_adapter_factory: Callable[[str], Any] | None = None,
@@ -67,7 +69,7 @@ def build_voice_router(
             )
 
         audio_bytes = await upload.read()
-        max_bytes = int(float(getattr(config_module, "ASR_MAX_UPLOAD_MB", 20)) * 1024 * 1024)
+        max_bytes = int(float(runtime_setting(settings, config_module, "asr_max_upload_mb", "ASR_MAX_UPLOAD_MB", 20)) * 1024 * 1024)
         if len(audio_bytes) > max_bytes:
             runtime_metrics.observe_request("asr", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
             return JSONResponse(
@@ -85,6 +87,7 @@ def build_voice_router(
             base_dir=provider_config_base_dir,
             profile_user_id=profile_user_id,
             config_module=config_module,
+            settings=settings,
             asr_adapter_factory=asr_adapter_factory,
         )
         if asr_resolution.get("activeProviderId") == OPENAI_COMPAT_ASR_PROVIDER_ID:
@@ -123,6 +126,7 @@ def build_voice_router(
                 run_asr_transcription,
                 engine=engine,
                 config_module=config_module,
+                settings=settings,
                 audio_bytes=audio_bytes,
                 filename=filename,
                 language=language,
@@ -183,6 +187,7 @@ def build_voice_router(
             payload=payload,
             base_dir=provider_config_base_dir,
             config_module=config_module,
+            settings=settings,
             edge_tts_available=tts_client is not None,
             gpt_sovits_client_factory=gpt_sovits_client_factory,
         )
@@ -381,6 +386,7 @@ def _resolve_asr_runtime_provider(
     profile_user_id: str,
     config_module: Any,
     asr_adapter_factory: Callable[[str], Any] | None,
+    settings: Any = None,
 ) -> dict[str, Any]:
     resolution: dict[str, Any] = {
         "status": "default",
@@ -412,8 +418,26 @@ def _resolve_asr_runtime_provider(
             adapter = OpenAICompatASRAdapter(
                 provider_id=OPENAI_COMPAT_ASR_PROVIDER_ID,
                 endpoint=endpoint,
-                timeout_seconds=float(getattr(config_module, "OPENAI_COMPAT_ASR_TIMEOUT_SECONDS", 45.0) or 45.0),
-                model=str(getattr(config_module, "OPENAI_COMPAT_ASR_MODEL", "whisper-1") or "whisper-1"),
+                timeout_seconds=float(
+                    runtime_setting(
+                        settings,
+                        config_module,
+                        "openai_compat_asr_timeout_seconds",
+                        "OPENAI_COMPAT_ASR_TIMEOUT_SECONDS",
+                        45.0,
+                    )
+                    or 45.0
+                ),
+                model=str(
+                    runtime_setting(
+                        settings,
+                        config_module,
+                        "openai_compat_asr_model",
+                        "OPENAI_COMPAT_ASR_MODEL",
+                        "whisper-1",
+                    )
+                    or "whisper-1"
+                ),
             )
     except Exception:
         return {
@@ -440,6 +464,7 @@ def _resolve_tts_runtime_provider(
     config_module: Any,
     edge_tts_available: bool,
     gpt_sovits_client_factory: Callable[[str], Any] | None,
+    settings: Any = None,
 ) -> dict[str, Any]:
     payload_voice = _resolve_payload_voice_preference(payload)
     character_voice = payload_voice or _resolve_character_voice_preference(engine, payload)
@@ -489,7 +514,7 @@ def _resolve_tts_runtime_provider(
         )
 
     try:
-        factory = gpt_sovits_client_factory or _default_gpt_sovits_client_factory(config_module)
+        factory = gpt_sovits_client_factory or _default_gpt_sovits_client_factory(config_module, settings=settings)
         client = factory(endpoint)
     except Exception:
         return _with_edge_fallback(
@@ -515,17 +540,28 @@ def _resolve_tts_runtime_provider(
     return resolution
 
 
-def _default_gpt_sovits_client_factory(config_module: Any) -> Callable[[str], GptSovitsTTSClient]:
-    timeout_seconds = float(getattr(config_module, "GPT_SOVITS_TTS_TIMEOUT_SECONDS", 45.0) or 45.0)
-    text_lang = str(getattr(config_module, "GPT_SOVITS_TEXT_LANG", "zh") or "zh")
-    media_type = str(getattr(config_module, "GPT_SOVITS_MEDIA_TYPE", "wav") or "wav")
-    streaming_mode = bool(getattr(config_module, "GPT_SOVITS_STREAMING_MODE", False))
-    parallel_infer = getattr(config_module, "GPT_SOVITS_PARALLEL_INFER", None)
-    split_bucket = getattr(config_module, "GPT_SOVITS_SPLIT_BUCKET", None)
-    batch_size = getattr(config_module, "GPT_SOVITS_BATCH_SIZE", None)
-    speed_factor = getattr(config_module, "GPT_SOVITS_SPEED_FACTOR", None)
-    fragment_interval = getattr(config_module, "GPT_SOVITS_FRAGMENT_INTERVAL", None)
-    text_split_method = str(getattr(config_module, "GPT_SOVITS_TEXT_SPLIT_METHOD", "") or "")
+def _default_gpt_sovits_client_factory(
+    config_module: Any,
+    *,
+    settings: Any = None,
+) -> Callable[[str], GptSovitsTTSClient]:
+    timeout_seconds = float(
+        runtime_setting(settings, config_module, "gpt_sovits_tts_timeout_seconds", "GPT_SOVITS_TTS_TIMEOUT_SECONDS", 45.0)
+        or 45.0
+    )
+    text_lang = str(runtime_setting(settings, config_module, "gpt_sovits_text_lang", "GPT_SOVITS_TEXT_LANG", "zh") or "zh")
+    media_type = str(runtime_setting(settings, config_module, "gpt_sovits_media_type", "GPT_SOVITS_MEDIA_TYPE", "wav") or "wav")
+    streaming_mode = bool(
+        runtime_setting(settings, config_module, "gpt_sovits_streaming_mode", "GPT_SOVITS_STREAMING_MODE", False)
+    )
+    parallel_infer = runtime_setting(settings, config_module, "gpt_sovits_parallel_infer", "GPT_SOVITS_PARALLEL_INFER", None)
+    split_bucket = runtime_setting(settings, config_module, "gpt_sovits_split_bucket", "GPT_SOVITS_SPLIT_BUCKET", None)
+    batch_size = runtime_setting(settings, config_module, "gpt_sovits_batch_size", "GPT_SOVITS_BATCH_SIZE", None)
+    speed_factor = runtime_setting(settings, config_module, "gpt_sovits_speed_factor", "GPT_SOVITS_SPEED_FACTOR", None)
+    fragment_interval = runtime_setting(settings, config_module, "gpt_sovits_fragment_interval", "GPT_SOVITS_FRAGMENT_INTERVAL", None)
+    text_split_method = str(
+        runtime_setting(settings, config_module, "gpt_sovits_text_split_method", "GPT_SOVITS_TEXT_SPLIT_METHOD", "") or ""
+    )
 
     def factory(endpoint: str) -> GptSovitsTTSClient:
         return GptSovitsTTSClient(
@@ -773,6 +809,7 @@ def run_asr_transcription(
     *,
     engine: Any,
     config_module: Any,
+    settings: Any = None,
     audio_bytes: bytes,
     filename: str,
     language: str,
@@ -824,18 +861,37 @@ def run_asr_transcription(
             }
 
         model_size = service._normalize_whisper_model_size(
-            getattr(config_module, "ASR_WHISPER_MODEL_SIZE", getattr(config_module, "WHISPER_MODEL_SIZE", "small"))
+            runtime_setting(
+                settings,
+                config_module,
+                "asr_whisper_model_size",
+                "ASR_WHISPER_MODEL_SIZE",
+                getattr(config_module, "WHISPER_MODEL_SIZE", "small") if config_module is not None else "small",
+            )
         )
         device = service._normalize_whisper_device(
-            getattr(config_module, "ASR_WHISPER_DEVICE", getattr(config_module, "WHISPER_DEVICE", "auto"))
+            runtime_setting(
+                settings,
+                config_module,
+                "asr_whisper_device",
+                "ASR_WHISPER_DEVICE",
+                getattr(config_module, "WHISPER_DEVICE", "auto") if config_module is not None else "auto",
+            )
         )
         compute_type = service._normalize_whisper_compute_type(
-            getattr(config_module, "ASR_WHISPER_COMPUTE_TYPE", getattr(config_module, "WHISPER_COMPUTE_TYPE", "auto"))
+            runtime_setting(
+                settings,
+                config_module,
+                "asr_whisper_compute_type",
+                "ASR_WHISPER_COMPUTE_TYPE",
+                getattr(config_module, "WHISPER_COMPUTE_TYPE", "auto") if config_module is not None else "auto",
+            )
         )
         normalized_language = service._normalize_transcript_language(
-            language or getattr(config_module, "ASR_LANGUAGE", "zh")
+            language
+            or runtime_setting(settings, config_module, "asr_language", "ASR_LANGUAGE", "zh")
         )
-        whisper_cache_dir = getattr(config_module, "WHISPER_CACHE_DIR", None) or None
+        whisper_cache_dir = runtime_setting(settings, config_module, "whisper_cache_dir", "WHISPER_CACHE_DIR", "") or None
         model = service._load_faster_whisper_model(
             model_size=model_size,
             device=device,
@@ -855,7 +911,7 @@ def run_asr_transcription(
             },
             source_index=1,
             language=normalized_language,
-            vad_filter=bool(getattr(config_module, "ASR_VAD_FILTER", True)),
+            vad_filter=bool(runtime_setting(settings, config_module, "asr_vad_filter", "ASR_VAD_FILTER", True)),
         )
 
     if transcript.get("status") != "ready":

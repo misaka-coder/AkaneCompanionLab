@@ -1,8 +1,9 @@
 """Immutable per-Bot runtime settings snapshots.
 
 The process-level ``config`` module remains the boot/default source during the
-Slice 2 migration.  A BotRuntime captures the effective model settings once so
-the LLM client no longer reads mutable module globals during a request.
+Slice 2 migration.  A BotRuntime captures the effective model and speech
+settings once so request handlers no longer read mutable module globals during
+a request.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from typing import Any, Mapping
 
 @dataclass(frozen=True, slots=True)
 class BotSettingsView:
-    """Effective model settings for one BotRuntime.
+    """Effective model and speech settings for one BotRuntime.
 
     Secret fields are deliberately excluded from repr/public snapshots.  The
     view is immutable so a second Bot cannot be affected by another Bot's
@@ -49,6 +50,37 @@ class BotSettingsView:
     prompt_cache_retention: str = ""
     llm_context_window: int = 0
     llm_auto_compact_token_limit: int = 0
+
+    # Voice/runtime settings.  These belong to a BotRuntime rather than the
+    # process-wide config module so multiple Bots can use different voices and
+    # local speech providers without changing each other's requests.
+    tts_voice: str = "zh-CN-XiaoxiaoNeural"
+    tts_rate: str = "+6%"
+    tts_volume: str = "+0%"
+    tts_pitch: str = "+4Hz"
+    streaming_tts_enabled: bool = True
+    gpt_sovits_tts_timeout_seconds: float = 45.0
+    gpt_sovits_text_lang: str = "zh"
+    gpt_sovits_media_type: str = "wav"
+    gpt_sovits_streaming_mode: bool = False
+    gpt_sovits_parallel_infer: bool | None = None
+    gpt_sovits_split_bucket: bool | None = None
+    gpt_sovits_batch_size: int | None = None
+    gpt_sovits_speed_factor: float | None = None
+    gpt_sovits_fragment_interval: float | None = None
+    gpt_sovits_text_split_method: str = ""
+    asr_max_upload_mb: float = 20.0
+    openai_compat_asr_timeout_seconds: float = 45.0
+    openai_compat_asr_model: str = "whisper-1"
+    asr_whisper_model_size: str = "small"
+    asr_whisper_device: str = "auto"
+    asr_whisper_compute_type: str = "auto"
+    asr_language: str = "zh"
+    asr_vad_filter: bool = True
+    whisper_cache_dir: str = ""
+    qq_tts_profile_user_id: str = "master"
+    qq_voice_max_text_chars: int = 280
+    qq_voice_max_segments: int = 3
 
     @classmethod
     def from_config(cls, config_module: Any) -> "BotSettingsView":
@@ -91,6 +123,58 @@ class BotSettingsView:
                 0,
                 int(getattr(config_module, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 0) or 0),
             ),
+            tts_voice=_text(getattr(config_module, "TTS_VOICE", "zh-CN-XiaoxiaoNeural"))
+            or "zh-CN-XiaoxiaoNeural",
+            tts_rate=_text(getattr(config_module, "TTS_RATE", "+6%")) or "+6%",
+            tts_volume=_text(getattr(config_module, "TTS_VOLUME", "+0%")) or "+0%",
+            tts_pitch=_text(getattr(config_module, "TTS_PITCH", "+4Hz")) or "+4Hz",
+            streaming_tts_enabled=bool(getattr(config_module, "STREAMING_TTS_ENABLED", True)),
+            gpt_sovits_tts_timeout_seconds=max(
+                1.0, float(getattr(config_module, "GPT_SOVITS_TTS_TIMEOUT_SECONDS", 45.0) or 45.0)
+            ),
+            gpt_sovits_text_lang=_text(getattr(config_module, "GPT_SOVITS_TEXT_LANG", "zh")) or "zh",
+            gpt_sovits_media_type=_text(getattr(config_module, "GPT_SOVITS_MEDIA_TYPE", "wav")) or "wav",
+            gpt_sovits_streaming_mode=bool(getattr(config_module, "GPT_SOVITS_STREAMING_MODE", False)),
+            gpt_sovits_parallel_infer=_optional_bool(getattr(config_module, "GPT_SOVITS_PARALLEL_INFER", None)),
+            gpt_sovits_split_bucket=_optional_bool(getattr(config_module, "GPT_SOVITS_SPLIT_BUCKET", None)),
+            gpt_sovits_batch_size=_optional_int(getattr(config_module, "GPT_SOVITS_BATCH_SIZE", None)),
+            gpt_sovits_speed_factor=_optional_float(getattr(config_module, "GPT_SOVITS_SPEED_FACTOR", None)),
+            gpt_sovits_fragment_interval=_optional_float(
+                getattr(config_module, "GPT_SOVITS_FRAGMENT_INTERVAL", None)
+            ),
+            gpt_sovits_text_split_method=_text(getattr(config_module, "GPT_SOVITS_TEXT_SPLIT_METHOD", "")),
+            asr_max_upload_mb=max(0.1, float(getattr(config_module, "ASR_MAX_UPLOAD_MB", 20.0) or 20.0)),
+            openai_compat_asr_timeout_seconds=max(
+                1.0,
+                float(getattr(config_module, "OPENAI_COMPAT_ASR_TIMEOUT_SECONDS", 45.0) or 45.0),
+            ),
+            openai_compat_asr_model=_text(getattr(config_module, "OPENAI_COMPAT_ASR_MODEL", "whisper-1"))
+            or "whisper-1",
+            asr_whisper_model_size=_text(
+                getattr(config_module, "ASR_WHISPER_MODEL_SIZE", getattr(config_module, "WHISPER_MODEL_SIZE", "small"))
+            )
+            or "small",
+            asr_whisper_device=_text(
+                getattr(config_module, "ASR_WHISPER_DEVICE", getattr(config_module, "WHISPER_DEVICE", "auto"))
+            )
+            or "auto",
+            asr_whisper_compute_type=_text(
+                getattr(
+                    config_module,
+                    "ASR_WHISPER_COMPUTE_TYPE",
+                    getattr(config_module, "WHISPER_COMPUTE_TYPE", "auto"),
+                )
+            )
+            or "auto",
+            asr_language=_text(getattr(config_module, "ASR_LANGUAGE", "zh")) or "zh",
+            asr_vad_filter=bool(getattr(config_module, "ASR_VAD_FILTER", True)),
+            whisper_cache_dir=_text(getattr(config_module, "WHISPER_CACHE_DIR", "")),
+            qq_tts_profile_user_id=_safe_profile_id(
+                getattr(config_module, "QQ_TTS_PROFILE_USER_ID", "")
+                or getattr(config_module, "WEB_OWNER_PROFILE_USER_ID", "master")
+            ),
+            qq_voice_max_text_chars=max(20, min(1200, int(getattr(config_module, "QQ_VOICE_MAX_TEXT_CHARS", 280) or 280))),
+            qq_voice_max_segments=max(1, min(10, int(getattr(config_module, "QQ_VOICE_MAX_SEGMENTS", 3) or 3))),
         )
 
     def overlay(self, overrides: Mapping[str, Any] | None = None) -> "BotSettingsView":
@@ -126,6 +210,33 @@ class BotSettingsView:
             "prompt_cache_retention",
             "llm_context_window",
             "llm_auto_compact_token_limit",
+            "tts_voice",
+            "tts_rate",
+            "tts_volume",
+            "tts_pitch",
+            "streaming_tts_enabled",
+            "gpt_sovits_tts_timeout_seconds",
+            "gpt_sovits_text_lang",
+            "gpt_sovits_media_type",
+            "gpt_sovits_streaming_mode",
+            "gpt_sovits_parallel_infer",
+            "gpt_sovits_split_bucket",
+            "gpt_sovits_batch_size",
+            "gpt_sovits_speed_factor",
+            "gpt_sovits_fragment_interval",
+            "gpt_sovits_text_split_method",
+            "asr_max_upload_mb",
+            "openai_compat_asr_timeout_seconds",
+            "openai_compat_asr_model",
+            "asr_whisper_model_size",
+            "asr_whisper_device",
+            "asr_whisper_compute_type",
+            "asr_language",
+            "asr_vad_filter",
+            "whisper_cache_dir",
+            "qq_tts_profile_user_id",
+            "qq_voice_max_text_chars",
+            "qq_voice_max_segments",
         }
         unknown = sorted(str(key) for key in overrides if key not in allowed)
         if unknown:
@@ -218,6 +329,27 @@ class BotSettingsView:
                 "window": self.llm_context_window,
                 "auto_compact_token_limit": self.llm_auto_compact_token_limit,
             },
+            "voice": {
+                "voice": self.tts_voice,
+                "rate": self.tts_rate,
+                "volume": self.tts_volume,
+                "pitch": self.tts_pitch,
+                "streaming": self.streaming_tts_enabled,
+                "gpt_sovits": {
+                    "text_lang": self.gpt_sovits_text_lang,
+                    "media_type": self.gpt_sovits_media_type,
+                    "streaming_mode": self.gpt_sovits_streaming_mode,
+                },
+                "asr": {
+                    "model": self.asr_whisper_model_size,
+                    "language": self.asr_language,
+                },
+            },
+            "qq_voice": {
+                "profile_user_id": self.qq_tts_profile_user_id,
+                "max_text_chars": self.qq_voice_max_text_chars,
+                "max_segments": self.qq_voice_max_segments,
+            },
         }
 
 
@@ -237,6 +369,9 @@ def _overlay_value(key: str, value: Any) -> Any:
         "vision_auto_outfit_observe",
         "prompt_cache_hints_enabled",
         "prompt_cache_hints_force",
+        "streaming_tts_enabled",
+        "gpt_sovits_streaming_mode",
+        "asr_vad_filter",
     }:
         if not isinstance(value, bool):
             raise ValueError(f"bot_settings_boolean_required:{key}")
@@ -245,11 +380,38 @@ def _overlay_value(key: str, value: Any) -> Any:
         "vision_max_image_bytes",
         "llm_context_window",
         "llm_auto_compact_token_limit",
+        "qq_voice_max_text_chars",
+        "qq_voice_max_segments",
+        "gpt_sovits_batch_size",
     }:
+        if value is None and key == "gpt_sovits_batch_size":
+            return None
         parsed = int(value)
         if key == "vision_max_image_bytes":
             return max(128 * 1024, parsed)
+        if key == "qq_voice_max_text_chars":
+            return max(20, min(1200, parsed))
+        if key == "qq_voice_max_segments":
+            return max(1, min(10, parsed))
         return max(0, parsed)
+    if key in {
+        "vision_request_timeout",
+        "gpt_sovits_tts_timeout_seconds",
+        "asr_max_upload_mb",
+        "openai_compat_asr_timeout_seconds",
+        "gpt_sovits_speed_factor",
+        "gpt_sovits_fragment_interval",
+    }:
+        if value is None and key in {"gpt_sovits_speed_factor", "gpt_sovits_fragment_interval"}:
+            return None
+        parsed = float(value)
+        if key in {"vision_request_timeout", "gpt_sovits_tts_timeout_seconds", "openai_compat_asr_timeout_seconds"}:
+            return max(1.0, parsed)
+        return max(0.1, parsed) if key == "asr_max_upload_mb" else parsed
+    if key in {"gpt_sovits_parallel_infer", "gpt_sovits_split_bucket"}:
+        return _optional_bool(value)
+    if key == "qq_tts_profile_user_id":
+        return _safe_profile_id(value)
     if key == "vision_request_timeout":
         return max(1.0, float(value))
     text = _text(value)
@@ -262,4 +424,51 @@ def _overlay_value(key: str, value: Any) -> Any:
     return text
 
 
-__all__ = ["BotSettingsView"]
+def _optional_bool(value: Any) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError("bot_settings_boolean_required")
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
+def _safe_profile_id(value: Any) -> str:
+    import re
+
+    raw = _text(value)
+    if raw.lower() in {"conversation", "context", "current"}:
+        return raw.lower()
+    return raw if raw and re.fullmatch(r"[A-Za-z0-9_.-]+", raw) else "master"
+
+
+def runtime_setting(settings: Any, config_module: Any, field_name: str, config_name: str, default: Any) -> Any:
+    """Read a Bot-scoped setting with a legacy config fallback.
+
+    Route builders are still used directly by older tests and integrations,
+    so ``settings`` is optional during the migration.  A real BotRuntime
+    always supplies it and therefore never needs to mutate process globals.
+    """
+
+    if settings is not None and hasattr(settings, field_name):
+        return getattr(settings, field_name)
+    return getattr(config_module, config_name, default) if config_module is not None else default
+
+
+__all__ = ["BotSettingsView", "runtime_setting"]
