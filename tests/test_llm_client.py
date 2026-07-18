@@ -535,6 +535,7 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertNotIn("system private prompt", serialized)
         self.assertNotIn("private tool description", serialized)
         self.assertEqual(record["native_tool_count"], 1)
+        self.assertEqual(record["native_tool_names"], ["private_tool_name"])
         self.assertTrue(record["native_tool_schema"]["sha256_16"])
         self.assertGreater(record["payload_totals"]["estimated_tokens"], 0)
 

@@ -427,10 +427,16 @@ class CapabilityFabricM66Tests(unittest.TestCase):
         self.assertIn("cloud_satellite_instance_verification_failed", source)
         self.assertIn("cloud_satellite_token_required", source)
         self.assertIn("cloud_satellite_requires_https", source)
+        self.assertIn("Import-AkaneSatelliteTokenForInstance", source)
         self.assertIn("$env:AKANE_DESKTOP_SATELLITE_TOKEN = New-AkaneSatelliteToken", source)
         cloud_guard = source.index("if (-not $CloudSatellite -and -not $SkipBackend)")
         self.assertLess(cloud_guard, source.index("Stop-AkaneBackendProcess", cloud_guard))
         self.assertLess(cloud_guard, source.index("Starting backend with", cloud_guard))
+        build_guard = source.index("if ($shouldBuild)")
+        self.assertLess(
+            source.index("Stop-AkaneDesktopProcesses -ExePath $releaseExe", build_guard),
+            source.index("& npm run tauri -- build", build_guard),
+        )
 
     def test_cloud_launcher_real_smoke_verifies_remote_without_touching_local_port(self) -> None:
         powershell = shutil.which("powershell") or shutil.which("pwsh")

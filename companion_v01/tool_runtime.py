@@ -956,7 +956,11 @@ class DesktopSatelliteToolHandler(BaseToolHandler):
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
             return None
-        args = {key: item for key, item in value.items() if key != "type"}
+        args = {
+            key: item
+            for key, item in value.items()
+            if key != "type" and not str(key).startswith("_tool_")
+        }
         if self.tool_type in {"desktop_context_snapshot", "system_media_snapshot"}:
             return {"type": self.tool_type} if not args else None
         if self.tool_type == "system_media_control":

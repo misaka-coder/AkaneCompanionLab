@@ -1441,6 +1441,16 @@ class LLMRuntime:
                 "post_user_turn_count": len(post_user_turns or []),
                 "user_image_count": max(0, int(user_image_count or 0)),
                 "native_tool_count": len(native_tools),
+                "native_tool_names": [
+                    str(
+                        (item.get("function") or {}).get("name")
+                        or item.get("name")
+                        or ""
+                    ).strip()
+                    for item in native_tools[:64]
+                    if isinstance(item, dict)
+                    and str((item.get("function") or {}).get("name") or item.get("name") or "").strip()
+                ],
                 "native_tool_schema": self._audit_text_section(
                     "payload.native_tools",
                     json.dumps(

@@ -112,6 +112,26 @@ function New-AkaneSatelliteToken {
     return [Convert]::ToBase64String($bytes)
 }
 
+function Import-AkaneSatelliteTokenForInstance {
+    param([string]$InstanceId)
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$env:AKANE_DESKTOP_SATELLITE_TOKEN)) {
+        return
+    }
+    $suffix = ($InstanceId.ToUpperInvariant() -replace '[^A-Z0-9_]', '_')
+    foreach ($name in @("AKANE_DESKTOP_SATELLITE_TOKEN_$suffix", "AKANE_DESKTOP_SATELLITE_TOKEN")) {
+        $stored = [System.Environment]::GetEnvironmentVariable($name, "User")
+        if (-not [string]::IsNullOrWhiteSpace([string]$stored)) {
+            [System.Environment]::SetEnvironmentVariable(
+                "AKANE_DESKTOP_SATELLITE_TOKEN",
+                ([string]$stored).Trim(),
+                "Process"
+            )
+            return
+        }
+    }
+}
+
 function Test-AkaneBackendHealth {
     param(
         [object]$Health,
@@ -401,6 +421,7 @@ if ($CloudSatellite) {
     if ($expectedInstanceId -eq "local-default") { throw "cloud_satellite_requires_named_instance" }
     if (-not $PSBoundParameters.ContainsKey("BackendUrl")) { throw "cloud_satellite_backend_url_required" }
     $resolvedBackendUrl = Resolve-AkaneSatelliteBackendUrl -Value $BackendUrl
+    Import-AkaneSatelliteTokenForInstance -InstanceId $expectedInstanceId
     if ([string]::IsNullOrWhiteSpace([string]$env:AKANE_DESKTOP_SATELLITE_TOKEN)) {
         throw "cloud_satellite_token_required"
     }
@@ -536,6 +557,10 @@ if (-not $SkipDesktop) {
     }
 
     if ($shouldBuild) {
+        if ($releaseExists) {
+            Write-Host "[INFO] Stopping the running Akane Next app before replacing its release executable..."
+            Stop-AkaneDesktopProcesses -ExePath $releaseExe
+        }
         $buildReason = if (-not $releaseExists) {
             "找不到现成的桌宠 exe (首次启动)"
         } elseif ($Rebuild) {

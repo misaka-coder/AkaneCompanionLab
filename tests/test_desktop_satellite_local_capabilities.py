@@ -19,10 +19,17 @@ from companion_v01.deployment_security import AdminWriteAuth
 from companion_v01.desktop_satellite import DesktopSatelliteService
 from companion_v01.desktop_satellite_specs import DESKTOP_SATELLITE_TOOL_SPECS
 from companion_v01.routes.satellite import build_satellite_router
-from companion_v01.tool_invocation import ToolInvocation
+from companion_v01.tool_invocation import (
+    NATIVE_OPENAI,
+    TOOL_EXECUTION_RECEIPT_FIELD,
+    TOOL_INVOCATION_ID_FIELD,
+    TOOL_SOURCE_FIELD,
+    ToolInvocation,
+)
 from companion_v01.tool_orchestration_engine import (
     build_native_tool_schemas,
     execute_tool_invocation,
+    normalize_tool_invocation,
     validate_tool_invocation,
 )
 from companion_v01.tool_runtime import DesktopSatelliteToolHandler
@@ -137,6 +144,37 @@ class DesktopSatelliteLocalCapabilitiesTests(unittest.TestCase):
         rejected = validate_tool_invocation(engine, invalid)
         self.assertFalse(rejected.ok)
         self.assertEqual(rejected.code, "bad_args")
+
+    def test_native_invocation_metadata_is_not_treated_as_tool_arguments(self) -> None:
+        handler = DesktopSatelliteToolHandler(tool_id="desktop_context_snapshot")
+        normalized = handler.normalize_call(
+            {
+                "type": "desktop_context_snapshot",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_native_context",
+                TOOL_EXECUTION_RECEIPT_FIELD: {"offer_id": "offer-a"},
+            }
+        )
+        self.assertEqual(normalized, {"type": "desktop_context_snapshot"})
+
+    def test_generic_normalization_preserves_private_execution_receipt(self) -> None:
+        handler = DesktopSatelliteToolHandler(tool_id="desktop_context_snapshot")
+        receipt = {"offer_id": "offer-a", "lease_epoch": "lease-a"}
+        engine = SimpleNamespace(
+            _resolve_tool_handlers=lambda **_kwargs: {"desktop_context_snapshot": handler}
+        )
+        invocation = normalize_tool_invocation(
+            engine,
+            {
+                "type": "desktop_context_snapshot",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_native_context",
+                TOOL_EXECUTION_RECEIPT_FIELD: receipt,
+            },
+        )
+        self.assertIsNotNone(invocation)
+        assert invocation is not None
+        self.assertEqual(invocation.execution_receipt, receipt)
 
     def test_online_local_tools_project_to_native_schemas(self) -> None:
         handlers = {

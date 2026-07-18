@@ -329,8 +329,14 @@ def normalize_tool_invocation(
     handler = handlers.get(tool_type)
     if handler is None:
         return None
+    normalized = handler.normalize_call(value)
+    if normalized is None:
+        return None
+    receipt = value.get(TOOL_EXECUTION_RECEIPT_FIELD)
+    if isinstance(receipt, dict):
+        normalized[TOOL_EXECUTION_RECEIPT_FIELD] = dict(receipt)
     return legacy_tool_call_to_invocation(
-        handler.normalize_call(value),
+        normalized,
         source=source,
         invocation_id=invocation_id,
         capability_selection=frozen_selection,

@@ -1,6 +1,6 @@
 # Desktop Satellite 本地能力 V1
 
-状态：**第一批真实短任务能力已完成本地代码与自动化测试；尚未部署到云端 personal 实例。**
+状态：**第一批真实短任务能力已部署到云端 personal，并通过真实模型 → broker → 本机执行器 smoke；finance 未配置或复用 personal Satellite。**
 
 本文记录“云端 Akane 在用户电脑开着时调用本机能力”的当前真实边界，避免后续上下文压缩或接手时把协议、云端能力和本机执行器混为一谈。
 
@@ -47,10 +47,12 @@ desktop/QQ 本轮请求
 ## 4. 数据安全
 
 - 本机结果通过 serde JSON 返回，不传绝对路径、密钥、provider endpoint 或原始异常。
+- Prompt audit 只额外记录本轮实际发送的 canonical tool ID 列表，不记录工具描述、参数、返回数据或用户文本，用于区分“工具未进入 schema”和“模型自主未调用”。
 - 云端结果清洗递归过滤 `path`、`absolutePath`、`localPath`、`token`、`secret`、`password`、`authorization` 及其常见复合键。
 - 字符串、列表、对象大小和嵌套深度有界；未知对象不会原样进入 prompt。
 - `desktop_context_snapshot` 只返回前台窗口有限元数据；Windows 进程查询得到的完整可执行路径会先裁成文件名。
 - personal 与 finance 的 Satellite token、instance、lease 不共享。本轮只准备 personal 代码链，不自动把同一台电脑绑定给 finance。
+- Windows launcher 会先读取当前进程凭据，再读取用户环境中的实例专用 `AKANE_DESKTOP_SATELLITE_TOKEN_<INSTANCE>`，最后才兼容通用 token；读取后只注入当前桌宠进程，不打印值。这样 personal/finance 可分别保存凭据，不要求把 token 写进仓库或启动命令。
 
 ## 5. 已完成验证
 
@@ -81,11 +83,22 @@ cargo check --manifest-path desktop_pet_next/src-tauri/Cargo.toml
 git diff --check
 ```
 
+2026-07-18 personal 真实部署验收：
+
+- personal `/health` 精确为 `status=ok / instance_id=personal / root_binding=valid`，finance 全程保持原 PID。
+- 本机通过加密 SSH tunnel 暴露 loopback backend URL；应用层仍执行原有“远端 HTTPS、loopback 可用 HTTP/WS”的默认规则，没有新增私网明文例外。
+- personal 使用已通过 A/B/C/D provider probe 的 PinAI Responses 协议；prompt audit 从 `native_tool_count=0` 恢复为实际发送 canonical native schemas。
+- Satellite diagnostics 为 `online / connected=true / activeOfferCount=4`。
+- 有效 desktop-pet 协议请求的 native schema 实际包含 `open_browser`、`desktop_context_snapshot`、`system_media_snapshot`、`system_media_control`。
+- `desktop_context_snapshot` 真实事件为 `capability_execution_result / succeeded`。
+- `system_media_snapshot` 真实事件为 `capability_execution_result / succeeded`。
+- 没有自动执行 `system_media_control`，避免在验收时改变用户正在播放的媒体；其参数、协议和 Tauri executor 由自动化测试覆盖。
+
 ## 6. 尚未完成，不能对外宣称可用
 
 下面仍属于 M66-E 后续真实切片：
 
-- 云端 personal token 配置、同一 token 的本机安全注入，以及 personal 真实 WSS smoke。
+- SSH tunnel 当前是运行中的用户会话进程；系统重启后仍需由启动流程或用户重新建立。尚未把服务器地址/SSH 运维细节硬编码进产品 launcher。
 - 托管可见浏览器 `browser_page` 在用户电脑执行；当前云端 runner 不能冒充用户电脑浏览器。
 - 本地视觉模型/图片识别。现有 `/desktop-pet/vision/clip` 是截图上传后由后端视觉模型识别，不是本地视觉 executor；云端缺少 vision provider 配置时它仍不可用。
 - 本地 Whisper/ASR、GPT-SoVITS、RVC。

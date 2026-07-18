@@ -45,7 +45,7 @@ The repair pass completed shared foundations but does **not** close these phases
 - Bound control-center workflows also execute through the broker. A missing runner returns structured unavailable state and no longer creates a fake `queued-but-inert` job.
 - MCP prompt exposure requires a real `initialize` + `tools/list` probe with a bounded lease, rather than enabled/configured flags. Plugin exposure checks the live PluginHost state and registered capability ID. Missing liveness fails closed.
 - Worker tool descriptions come only from canonical ToolSpecs, and worker readiness uses the same instance/profile-scoped offer semantics.
-- The first M66-E short-task Satellite slice now has real Tauri executors for `desktop_context_snapshot`, `system_media_snapshot`, and `system_media_control`, in addition to `open_browser`. They are schema/lease gated and disappear while the PC is offline; see `desktop_satellite_local_capabilities_v1.md`.
+- The first M66-E short-task Satellite slice now has real Tauri executors for `desktop_context_snapshot`, `system_media_snapshot`, and `system_media_control`, in addition to `open_browser`. They are schema/lease gated, disappear while the PC is offline, and have passed a real personal-cloud model → broker → PC smoke; see `desktop_satellite_local_capabilities_v1.md`.
 
 M66-E still needs the remaining managed-browser, media-processing, vision, voice, and workflow executors plus durable broker long-job cancellation/uncertainty semantics. M66-F still needs plugin/workflow output bytes to converge fully on ArtifactBroker records and deletion of the remaining route-owned workflow job store. Those are real implementation tasks, not model-visible placeholders. M66-G starts only after both close.
 
