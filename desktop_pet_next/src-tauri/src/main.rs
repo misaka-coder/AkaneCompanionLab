@@ -76,13 +76,30 @@ const OPEN_BROWSER_SPEC_VERSION: &str = "1.0.0";
 const OPEN_BROWSER_SCHEMA_VERSION: u64 = 1;
 const OPEN_BROWSER_SCHEMA_HASH: &str =
     "sha256:e92907fe6f7b3309ab5c681f2b4cf2e0f676c5e3255141ab69d10bdc7aa310f5";
+const DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID: &str = "desktop_context_snapshot";
+const DESKTOP_CONTEXT_SNAPSHOT_SPEC_VERSION: &str = "1.0.0";
+const DESKTOP_CONTEXT_SNAPSHOT_SCHEMA_VERSION: u64 = 1;
+const DESKTOP_CONTEXT_SNAPSHOT_SCHEMA_HASH: &str =
+    "sha256:9f5b78b6381353be3f145341888682323c72dc0efa61edad246beb8c51a1011d";
+const SYSTEM_MEDIA_SNAPSHOT_TOOL_ID: &str = "system_media_snapshot";
+const SYSTEM_MEDIA_SNAPSHOT_SPEC_VERSION: &str = "1.0.0";
+const SYSTEM_MEDIA_SNAPSHOT_SCHEMA_VERSION: u64 = 1;
+const SYSTEM_MEDIA_SNAPSHOT_SCHEMA_HASH: &str =
+    "sha256:b21d05e8f80871ef9908f2e8d3daf2f6fbcd19d1fd57a20eba34d9f6807f8bd7";
+const SYSTEM_MEDIA_CONTROL_TOOL_ID: &str = "system_media_control";
+const SYSTEM_MEDIA_CONTROL_SPEC_VERSION: &str = "1.0.0";
+const SYSTEM_MEDIA_CONTROL_SCHEMA_VERSION: u64 = 1;
+const SYSTEM_MEDIA_CONTROL_SCHEMA_HASH: &str =
+    "sha256:70f940d83faeabbf820e2794ee3effa95015eb8f632490521ab26c24662c4906";
 const SATELLITE_LEDGER_LIMIT: usize = 512;
 static SATELLITE_INVOCATION_LEDGER: OnceLock<Mutex<SatelliteInvocationLedger>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 struct SatelliteTerminalResult {
-    status: &'static str,
-    reason: &'static str,
+    tool_id: String,
+    status: String,
+    reason: String,
+    data: serde_json::Value,
 }
 
 #[derive(Debug, Default)]
@@ -4902,12 +4919,32 @@ async fn run_desktop_satellite_session(
         "type": "register",
         "protocol_version": SATELLITE_PROTOCOL_VERSION,
         "instance_id": instance_id,
-        "offers": [{
-            "tool_id": OPEN_BROWSER_TOOL_ID,
-            "spec_version": OPEN_BROWSER_SPEC_VERSION,
-            "schema_version": OPEN_BROWSER_SCHEMA_VERSION,
-            "schema_hash": OPEN_BROWSER_SCHEMA_HASH,
-        }],
+        "offers": [
+            {
+                "tool_id": OPEN_BROWSER_TOOL_ID,
+                "spec_version": OPEN_BROWSER_SPEC_VERSION,
+                "schema_version": OPEN_BROWSER_SCHEMA_VERSION,
+                "schema_hash": OPEN_BROWSER_SCHEMA_HASH,
+            },
+            {
+                "tool_id": DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID,
+                "spec_version": DESKTOP_CONTEXT_SNAPSHOT_SPEC_VERSION,
+                "schema_version": DESKTOP_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+                "schema_hash": DESKTOP_CONTEXT_SNAPSHOT_SCHEMA_HASH,
+            },
+            {
+                "tool_id": SYSTEM_MEDIA_SNAPSHOT_TOOL_ID,
+                "spec_version": SYSTEM_MEDIA_SNAPSHOT_SPEC_VERSION,
+                "schema_version": SYSTEM_MEDIA_SNAPSHOT_SCHEMA_VERSION,
+                "schema_hash": SYSTEM_MEDIA_SNAPSHOT_SCHEMA_HASH,
+            },
+            {
+                "tool_id": SYSTEM_MEDIA_CONTROL_TOOL_ID,
+                "spec_version": SYSTEM_MEDIA_CONTROL_SPEC_VERSION,
+                "schema_version": SYSTEM_MEDIA_CONTROL_SCHEMA_VERSION,
+                "schema_hash": SYSTEM_MEDIA_CONTROL_SCHEMA_HASH,
+            },
+        ],
     });
     socket
         .send(Message::Text(registration.to_string().into()))
@@ -4927,14 +4964,26 @@ async fn run_desktop_satellite_session(
         .unwrap_or("")
         .trim()
         .to_string();
-    let offer_id = registered
+    let raw_offer_ids = registered
         .get("offer_ids")
         .and_then(serde_json::Value::as_object)
-        .and_then(|offers| offers.get(OPEN_BROWSER_TOOL_ID))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
+        .ok_or("satellite_register_mismatch")?;
+    let mut offer_ids = HashMap::new();
+    for tool_id in [
+        OPEN_BROWSER_TOOL_ID,
+        DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID,
+        SYSTEM_MEDIA_SNAPSHOT_TOOL_ID,
+        SYSTEM_MEDIA_CONTROL_TOOL_ID,
+    ] {
+        let offer_id = raw_offer_ids
+            .get(tool_id)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if !offer_id.is_empty() {
+            offer_ids.insert(tool_id.to_string(), offer_id.to_string());
+        }
+    }
     if registered.get("type").and_then(serde_json::Value::as_str) != Some("registered")
         || registered
             .get("protocol_version")
@@ -4945,7 +4994,7 @@ async fn run_desktop_satellite_session(
             .and_then(serde_json::Value::as_str)
             != Some(instance_id)
         || lease_epoch.is_empty()
-        || offer_id.is_empty()
+        || offer_ids.is_empty()
     {
         return Err("satellite_register_mismatch");
     }
@@ -4982,22 +5031,27 @@ async fn run_desktop_satellite_session(
                         if payload.get("type").and_then(serde_json::Value::as_str) != Some("invoke") {
                             continue;
                         }
-                        let Some((invocation_id, raw_url)) = validate_satellite_invocation(
+                        let Some((invocation_id, tool_id, arguments)) = validate_satellite_invocation(
                             &payload,
                             instance_id,
                             &lease_epoch,
-                            &offer_id,
+                            &offer_ids,
                         ) else {
+                            continue;
+                        };
+                        let Some(offer_id) = offer_ids.get(&tool_id) else {
                             continue;
                         };
                         let accepted = satellite_execution_message(
                             "accepted",
                             instance_id,
                             &lease_epoch,
-                            &offer_id,
+                            offer_id,
                             &invocation_id,
+                            &tool_id,
                             "",
                             "",
+                            None,
                         );
                         socket.send(Message::Text(accepted.to_string().into())).await
                             .map_err(|_| "satellite_accept_failed")?;
@@ -5005,22 +5059,30 @@ async fn run_desktop_satellite_session(
                             "running",
                             instance_id,
                             &lease_epoch,
-                            &offer_id,
+                            offer_id,
                             &invocation_id,
+                            &tool_id,
                             "",
                             "",
+                            None,
                         );
                         socket.send(Message::Text(running.to_string().into())).await
                             .map_err(|_| "satellite_running_failed")?;
-                        let result = execute_satellite_browser_once(&invocation_id, &raw_url);
+                        let result = execute_satellite_invocation_once(
+                            &invocation_id,
+                            &tool_id,
+                            &arguments,
+                        ).await;
                         let completed = satellite_execution_message(
                             "result",
                             instance_id,
                             &lease_epoch,
-                            &offer_id,
+                            offer_id,
                             &invocation_id,
-                            result.status,
-                            result.reason,
+                            &tool_id,
+                            &result.status,
+                            &result.reason,
+                            Some(&result.data),
                         );
                         socket.send(Message::Text(completed.to_string().into())).await
                             .map_err(|_| "satellite_result_send_failed")?;
@@ -5046,26 +5108,31 @@ fn validate_satellite_invocation(
     value: &serde_json::Value,
     instance_id: &str,
     lease_epoch: &str,
-    offer_id: &str,
-) -> Option<(String, String)> {
+    offer_ids: &HashMap<String, String>,
+) -> Option<(String, String, serde_json::Value)> {
+    let tool_id = value
+        .get("tool_id")
+        .and_then(serde_json::Value::as_str)?
+        .trim();
+    let (spec_version, schema_version, schema_hash) = satellite_tool_contract(tool_id)?;
+    let expected_offer_id = offer_ids.get(tool_id)?;
     if value
         .get("protocol_version")
         .and_then(serde_json::Value::as_u64)
         != Some(SATELLITE_PROTOCOL_VERSION)
         || value.get("instance_id").and_then(serde_json::Value::as_str) != Some(instance_id)
         || value.get("lease_epoch").and_then(serde_json::Value::as_str) != Some(lease_epoch)
-        || value.get("offer_id").and_then(serde_json::Value::as_str) != Some(offer_id)
-        || value.get("tool_id").and_then(serde_json::Value::as_str) != Some(OPEN_BROWSER_TOOL_ID)
+        || value.get("offer_id").and_then(serde_json::Value::as_str)
+            != Some(expected_offer_id.as_str())
         || value
             .get("spec_version")
             .and_then(serde_json::Value::as_str)
-            != Some(OPEN_BROWSER_SPEC_VERSION)
+            != Some(spec_version)
         || value
             .get("schema_version")
             .and_then(serde_json::Value::as_u64)
-            != Some(OPEN_BROWSER_SCHEMA_VERSION)
-        || value.get("schema_hash").and_then(serde_json::Value::as_str)
-            != Some(OPEN_BROWSER_SCHEMA_HASH)
+            != Some(schema_version)
+        || value.get("schema_hash").and_then(serde_json::Value::as_str) != Some(schema_hash)
     {
         return None;
     }
@@ -5081,14 +5148,60 @@ fn validate_satellite_invocation(
     {
         return None;
     }
-    let raw_url = value
-        .get("arguments")
-        .and_then(serde_json::Value::as_object)
-        .and_then(|arguments| arguments.get("url"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    Some((invocation_id.to_string(), raw_url))
+    let arguments = value.get("arguments")?.as_object()?;
+    let valid_arguments = match tool_id {
+        OPEN_BROWSER_TOOL_ID => {
+            arguments.len() == 1
+                && arguments
+                    .get("url")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+        }
+        DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID | SYSTEM_MEDIA_SNAPSHOT_TOOL_ID => arguments.is_empty(),
+        SYSTEM_MEDIA_CONTROL_TOOL_ID => {
+            arguments.len() == 1
+                && arguments
+                    .get("action")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|action| matches!(action, "play" | "pause" | "stop" | "previous" | "next"))
+                    .unwrap_or(false)
+        }
+        _ => false,
+    };
+    if !valid_arguments {
+        return None;
+    }
+    Some((
+        invocation_id.to_string(),
+        tool_id.to_string(),
+        serde_json::Value::Object(arguments.clone()),
+    ))
+}
+
+fn satellite_tool_contract(tool_id: &str) -> Option<(&'static str, u64, &'static str)> {
+    match tool_id {
+        OPEN_BROWSER_TOOL_ID => Some((
+            OPEN_BROWSER_SPEC_VERSION,
+            OPEN_BROWSER_SCHEMA_VERSION,
+            OPEN_BROWSER_SCHEMA_HASH,
+        )),
+        DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID => Some((
+            DESKTOP_CONTEXT_SNAPSHOT_SPEC_VERSION,
+            DESKTOP_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+            DESKTOP_CONTEXT_SNAPSHOT_SCHEMA_HASH,
+        )),
+        SYSTEM_MEDIA_SNAPSHOT_TOOL_ID => Some((
+            SYSTEM_MEDIA_SNAPSHOT_SPEC_VERSION,
+            SYSTEM_MEDIA_SNAPSHOT_SCHEMA_VERSION,
+            SYSTEM_MEDIA_SNAPSHOT_SCHEMA_HASH,
+        )),
+        SYSTEM_MEDIA_CONTROL_TOOL_ID => Some((
+            SYSTEM_MEDIA_CONTROL_SPEC_VERSION,
+            SYSTEM_MEDIA_CONTROL_SCHEMA_VERSION,
+            SYSTEM_MEDIA_CONTROL_SCHEMA_HASH,
+        )),
+        _ => None,
+    }
 }
 
 fn satellite_execution_message(
@@ -5097,8 +5210,10 @@ fn satellite_execution_message(
     lease_epoch: &str,
     offer_id: &str,
     invocation_id: &str,
+    tool_id: &str,
     status: &str,
     reason: &str,
+    data: Option<&serde_json::Value>,
 ) -> serde_json::Value {
     let mut value = serde_json::json!({
         "type": message_type,
@@ -5107,6 +5222,7 @@ fn satellite_execution_message(
         "lease_epoch": lease_epoch,
         "offer_id": offer_id,
         "invocation_id": invocation_id,
+        "tool_id": tool_id,
     });
     if !status.is_empty() {
         value["status"] = serde_json::Value::String(status.to_string());
@@ -5114,7 +5230,121 @@ fn satellite_execution_message(
     if !reason.is_empty() {
         value["reason"] = serde_json::Value::String(reason.to_string());
     }
+    if let Some(data) = data {
+        if data.is_object() {
+            value["data"] = data.clone();
+        }
+    }
     value
+}
+
+async fn execute_satellite_invocation_once(
+    invocation_id: &str,
+    tool_id: &str,
+    arguments: &serde_json::Value,
+) -> SatelliteTerminalResult {
+    if tool_id == OPEN_BROWSER_TOOL_ID {
+        let raw_url = arguments
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        return execute_satellite_browser_once(invocation_id, raw_url);
+    }
+
+    let ledger = SATELLITE_INVOCATION_LEDGER
+        .get_or_init(|| Mutex::new(SatelliteInvocationLedger::default()));
+    if let Ok(current) = ledger.lock() {
+        if let Some(existing) = current.get(invocation_id) {
+            if existing.tool_id == tool_id {
+                return existing;
+            }
+            return satellite_terminal_result(
+                tool_id,
+                "rejected",
+                "invocation_id_tool_conflict",
+                serde_json::Value::Null,
+            );
+        }
+    }
+
+    let result = match tool_id {
+        DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID => {
+            match serde_json::to_value(get_desktop_context_snapshot()) {
+                Ok(data) => satellite_terminal_result(tool_id, "succeeded", "", data),
+                Err(_) => satellite_terminal_result(
+                    tool_id,
+                    "failed",
+                    "result_serialization_failed",
+                    serde_json::Value::Null,
+                ),
+            }
+        }
+        SYSTEM_MEDIA_SNAPSHOT_TOOL_ID => {
+            match serde_json::to_value(get_current_system_media().await) {
+                Ok(data) => satellite_terminal_result(tool_id, "succeeded", "", data),
+                Err(_) => satellite_terminal_result(
+                    tool_id,
+                    "failed",
+                    "result_serialization_failed",
+                    serde_json::Value::Null,
+                ),
+            }
+        }
+        SYSTEM_MEDIA_CONTROL_TOOL_ID => {
+            let action = arguments
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if !matches!(action, "play" | "pause" | "stop" | "previous" | "next") {
+                satellite_terminal_result(
+                    tool_id,
+                    "rejected",
+                    "invalid_action",
+                    serde_json::Value::Null,
+                )
+            } else {
+                let control = control_system_media(action.to_string()).await;
+                let status = if control.ok { "succeeded" } else { "failed" };
+                let reason = if control.ok {
+                    String::new()
+                } else if control.reason.trim().is_empty() {
+                    "media_control_failed".to_string()
+                } else {
+                    control.reason.clone()
+                };
+                match serde_json::to_value(control) {
+                    Ok(data) => satellite_terminal_result(tool_id, status, &reason, data),
+                    Err(_) => satellite_terminal_result(
+                        tool_id,
+                        "failed",
+                        "result_serialization_failed",
+                        serde_json::Value::Null,
+                    ),
+                }
+            }
+        }
+        _ => {
+            satellite_terminal_result(tool_id, "rejected", "unknown_tool", serde_json::Value::Null)
+        }
+    };
+    if let Ok(mut current) = ledger.lock() {
+        current.insert(invocation_id.to_string(), result.clone());
+    }
+    result
+}
+
+fn satellite_terminal_result(
+    tool_id: &str,
+    status: &str,
+    reason: &str,
+    data: serde_json::Value,
+) -> SatelliteTerminalResult {
+    SatelliteTerminalResult {
+        tool_id: tool_id.to_string(),
+        status: status.to_string(),
+        reason: reason.to_string(),
+        data,
+    }
 }
 
 fn execute_satellite_browser_once(invocation_id: &str, raw_url: &str) -> SatelliteTerminalResult {
@@ -5133,23 +5363,37 @@ where
         .get_or_init(|| Mutex::new(SatelliteInvocationLedger::default()));
     if let Ok(current) = ledger.lock() {
         if let Some(existing) = current.get(invocation_id) {
-            return existing;
+            if existing.tool_id == OPEN_BROWSER_TOOL_ID {
+                return existing;
+            }
+            return satellite_terminal_result(
+                OPEN_BROWSER_TOOL_ID,
+                "rejected",
+                "invocation_id_tool_conflict",
+                serde_json::Value::Null,
+            );
         }
     }
     let result = match normalize_public_external_url(raw_url) {
         Ok(url) => match opener(&url) {
             Ok(()) => SatelliteTerminalResult {
-                status: "succeeded",
-                reason: "",
+                tool_id: OPEN_BROWSER_TOOL_ID.to_string(),
+                status: "succeeded".to_string(),
+                reason: String::new(),
+                data: serde_json::Value::Object(serde_json::Map::new()),
             },
             Err(_) => SatelliteTerminalResult {
-                status: "failed",
-                reason: "os_open_failed",
+                tool_id: OPEN_BROWSER_TOOL_ID.to_string(),
+                status: "failed".to_string(),
+                reason: "os_open_failed".to_string(),
+                data: serde_json::Value::Null,
             },
         },
         Err(_) => SatelliteTerminalResult {
-            status: "rejected",
-            reason: "unsafe_url",
+            tool_id: OPEN_BROWSER_TOOL_ID.to_string(),
+            status: "rejected".to_string(),
+            reason: "unsafe_url".to_string(),
+            data: serde_json::Value::Null,
         },
     };
     if let Ok(mut current) = ledger.lock() {
@@ -5724,6 +5968,7 @@ mod tests {
 
     #[test]
     fn satellite_invocation_rejects_instance_or_schema_mismatch() {
+        let offer_ids = HashMap::from([(OPEN_BROWSER_TOOL_ID.to_string(), "offer-a".to_string())]);
         let valid = serde_json::json!({
             "type": "invoke",
             "protocol_version": SATELLITE_PROTOCOL_VERSION,
@@ -5738,17 +5983,299 @@ mod tests {
             "arguments": {"url": "https://example.com"},
         });
         assert!(
-            validate_satellite_invocation(&valid, "instance-a", "lease-a", "offer-a").is_some()
+            validate_satellite_invocation(&valid, "instance-a", "lease-a", &offer_ids).is_some()
         );
         assert!(
-            validate_satellite_invocation(&valid, "instance-b", "lease-a", "offer-a").is_none()
+            validate_satellite_invocation(&valid, "instance-b", "lease-a", &offer_ids).is_none()
         );
         let mut wrong_schema = valid;
         wrong_schema["schema_hash"] = serde_json::Value::String("sha256:wrong".to_string());
         assert!(
-            validate_satellite_invocation(&wrong_schema, "instance-a", "lease-a", "offer-a")
+            validate_satellite_invocation(&wrong_schema, "instance-a", "lease-a", &offer_ids)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn satellite_invocation_validates_all_local_tool_contracts() {
+        let cases = [
+            (
+                DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID,
+                DESKTOP_CONTEXT_SNAPSHOT_SPEC_VERSION,
+                DESKTOP_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+                DESKTOP_CONTEXT_SNAPSHOT_SCHEMA_HASH,
+                serde_json::json!({}),
+            ),
+            (
+                SYSTEM_MEDIA_SNAPSHOT_TOOL_ID,
+                SYSTEM_MEDIA_SNAPSHOT_SPEC_VERSION,
+                SYSTEM_MEDIA_SNAPSHOT_SCHEMA_VERSION,
+                SYSTEM_MEDIA_SNAPSHOT_SCHEMA_HASH,
+                serde_json::json!({}),
+            ),
+            (
+                SYSTEM_MEDIA_CONTROL_TOOL_ID,
+                SYSTEM_MEDIA_CONTROL_SPEC_VERSION,
+                SYSTEM_MEDIA_CONTROL_SCHEMA_VERSION,
+                SYSTEM_MEDIA_CONTROL_SCHEMA_HASH,
+                serde_json::json!({"action": "pause"}),
+            ),
+        ];
+        for (tool_id, spec_version, schema_version, schema_hash, arguments) in cases {
+            let offer_id = format!("offer-{tool_id}");
+            let offer_ids = HashMap::from([(tool_id.to_string(), offer_id.clone())]);
+            let value = serde_json::json!({
+                "type": "invoke",
+                "protocol_version": SATELLITE_PROTOCOL_VERSION,
+                "instance_id": "instance-a",
+                "lease_epoch": "lease-a",
+                "offer_id": offer_id,
+                "invocation_id": format!("call_{tool_id}"),
+                "tool_id": tool_id,
+                "spec_version": spec_version,
+                "schema_version": schema_version,
+                "schema_hash": schema_hash,
+                "arguments": arguments,
+            });
+            let validated =
+                validate_satellite_invocation(&value, "instance-a", "lease-a", &offer_ids)
+                    .expect("canonical local invocation should validate");
+            assert_eq!(validated.1, tool_id);
+        }
+
+        let offer_ids = HashMap::from([(
+            SYSTEM_MEDIA_CONTROL_TOOL_ID.to_string(),
+            "offer-media".to_string(),
+        )]);
+        let invalid_action = serde_json::json!({
+            "type": "invoke",
+            "protocol_version": SATELLITE_PROTOCOL_VERSION,
+            "instance_id": "instance-a",
+            "lease_epoch": "lease-a",
+            "offer_id": "offer-media",
+            "invocation_id": "call_invalid_action",
+            "tool_id": SYSTEM_MEDIA_CONTROL_TOOL_ID,
+            "spec_version": SYSTEM_MEDIA_CONTROL_SPEC_VERSION,
+            "schema_version": SYSTEM_MEDIA_CONTROL_SCHEMA_VERSION,
+            "schema_hash": SYSTEM_MEDIA_CONTROL_SCHEMA_HASH,
+            "arguments": {"action": "volume_up"},
+        });
+        assert!(validate_satellite_invocation(
+            &invalid_action,
+            "instance-a",
+            "lease-a",
+            &offer_ids,
+        )
+        .is_none());
+
+        let unknown = serde_json::json!({
+            "type": "invoke",
+            "protocol_version": SATELLITE_PROTOCOL_VERSION,
+            "instance_id": "instance-a",
+            "lease_epoch": "lease-a",
+            "offer_id": "offer-unknown",
+            "invocation_id": "call_unknown",
+            "tool_id": "run_shell",
+            "spec_version": "1.0.0",
+            "schema_version": 1,
+            "schema_hash": "sha256:unknown",
+            "arguments": {},
+        });
+        assert!(validate_satellite_invocation(
+            &unknown,
+            "instance-a",
+            "lease-a",
+            &HashMap::from([("run_shell".to_string(), "offer-unknown".to_string())]),
+        )
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn satellite_context_result_is_serialized_and_idempotent() {
+        let first = execute_satellite_invocation_once(
+            "call_context_snapshot_rust",
+            DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID,
+            &serde_json::json!({}),
+        )
+        .await;
+        let second = execute_satellite_invocation_once(
+            "call_context_snapshot_rust",
+            DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID,
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(first.status, "succeeded");
+        assert!(first.data.get("foreground").is_some());
+        assert_eq!(first.data, second.data);
+    }
+
+    #[tokio::test]
+    async fn satellite_system_media_snapshot_calls_the_real_local_reader() {
+        let result = execute_satellite_invocation_once(
+            "call_system_media_snapshot_rust",
+            SYSTEM_MEDIA_SNAPSHOT_TOOL_ID,
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(result.status, "succeeded");
+        assert!(result.data.get("status").is_some());
+        assert!(result.data.get("platform").is_some());
+    }
+
+    #[tokio::test]
+    async fn satellite_wire_session_executes_real_context_snapshot() {
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test satellite listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should have an address");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("satellite client should connect");
+            let mut socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("satellite websocket should accept");
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "hello",
+                        "protocol_version": SATELLITE_PROTOCOL_VERSION,
+                        "instance_id": "instance-wire-test",
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .expect("hello should send");
+
+            let registration = satellite_message_json(
+                socket
+                    .next()
+                    .await
+                    .expect("registration should arrive")
+                    .expect("registration frame should be valid"),
+            )
+            .expect("registration should be JSON");
+            let offers = registration
+                .get("offers")
+                .and_then(serde_json::Value::as_array)
+                .expect("registration should contain offers");
+            assert_eq!(offers.len(), 4);
+            assert!(offers.iter().any(|offer| {
+                offer.get("tool_id").and_then(serde_json::Value::as_str)
+                    == Some(DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID)
+            }));
+
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "registered",
+                        "protocol_version": SATELLITE_PROTOCOL_VERSION,
+                        "instance_id": "instance-wire-test",
+                        "lease_epoch": "lease-wire-test",
+                        "offer_ids": {
+                            OPEN_BROWSER_TOOL_ID: "offer-wire-test",
+                            DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID: "offer-wire-test",
+                            SYSTEM_MEDIA_SNAPSHOT_TOOL_ID: "offer-wire-test",
+                            SYSTEM_MEDIA_CONTROL_TOOL_ID: "offer-wire-test",
+                        },
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .expect("registration result should send");
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "invoke",
+                        "protocol_version": SATELLITE_PROTOCOL_VERSION,
+                        "instance_id": "instance-wire-test",
+                        "lease_epoch": "lease-wire-test",
+                        "offer_id": "offer-wire-test",
+                        "invocation_id": "call_wire_context",
+                        "tool_id": DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID,
+                        "spec_version": DESKTOP_CONTEXT_SNAPSHOT_SPEC_VERSION,
+                        "schema_version": DESKTOP_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+                        "schema_hash": DESKTOP_CONTEXT_SNAPSHOT_SCHEMA_HASH,
+                        "arguments": {},
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .expect("invoke should send");
+
+            for expected_type in ["accepted", "running"] {
+                let message = satellite_message_json(
+                    socket
+                        .next()
+                        .await
+                        .expect("execution acknowledgement should arrive")
+                        .expect("execution acknowledgement should be valid"),
+                )
+                .expect("execution acknowledgement should be JSON");
+                assert_eq!(
+                    message.get("type").and_then(serde_json::Value::as_str),
+                    Some(expected_type)
+                );
+                assert_eq!(
+                    message.get("tool_id").and_then(serde_json::Value::as_str),
+                    Some(DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID)
+                );
+            }
+            let result = satellite_message_json(
+                socket
+                    .next()
+                    .await
+                    .expect("terminal result should arrive")
+                    .expect("terminal result should be valid"),
+            )
+            .expect("terminal result should be JSON");
+            assert_eq!(
+                result.get("type").and_then(serde_json::Value::as_str),
+                Some("result")
+            );
+            assert_eq!(
+                result.get("status").and_then(serde_json::Value::as_str),
+                Some("succeeded")
+            );
+            assert!(result
+                .get("data")
+                .and_then(|data| data.get("foreground"))
+                .is_some());
+            socket
+                .close(None)
+                .await
+                .expect("test websocket should close");
+        });
+
+        let backend_url = format!("http://{address}");
+        let client_result =
+            run_desktop_satellite_session(&backend_url, "instance-wire-test", "test-token").await;
+        server.await.expect("test satellite server should finish");
+        assert!(matches!(
+            client_result,
+            Err("satellite_closed") | Err("satellite_receive_failed")
+        ));
+    }
+
+    #[test]
+    fn satellite_media_results_serialize_without_local_paths() {
+        let media = system_media_unavailable("no_active_session", "private detail");
+        let data = serde_json::to_value(media).expect("media result should serialize");
+        assert_eq!(
+            data.get("reason").and_then(serde_json::Value::as_str),
+            Some("no_active_session")
+        );
+        let serialized = data.to_string().to_ascii_lowercase();
+        assert!(!serialized.contains("private detail"));
+        assert!(!serialized.contains("absolute_path"));
     }
 
     #[test]

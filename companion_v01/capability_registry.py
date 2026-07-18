@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping, Protocol
 from capcore import CapabilityToolSpec
 
 from .client_protocol import ClientMode
+from .desktop_satellite_specs import DESKTOP_SATELLITE_TOOL_SPECS
 
 
 DOCUMENT_ATTACHMENT_FORMATS = {
@@ -2211,6 +2212,32 @@ class CapabilityRegistry:
                         tool_names=("open_browser",),
                     )
                 )
+            for spec in DESKTOP_SATELLITE_TOOL_SPECS:
+                tool_name = spec.capability_id
+                if tool_name in hidden or (allowed is not None and tool_name not in allowed):
+                    continue
+                receipt = self._resolve_offer_receipt(spec)
+                if receipt is None:
+                    continue
+                if tool_name not in seen_tools:
+                    tools.append(tool_name)
+                    seen_tools.add(tool_name)
+                if spec.capability_id not in seen_layers:
+                    layer_names.append(spec.capability_id)
+                    seen_layers.add(spec.capability_id)
+                if spec.description not in seen_hints:
+                    hints.append(spec.description)
+                    seen_hints.add(spec.description)
+                disclosures.append(
+                    CapabilityDisclosure(
+                        capability_id=spec.capability_id,
+                        state="ready",
+                        summary=spec.description,
+                        tool_names=(tool_name,),
+                    )
+                )
+                tool_specs.append(spec)
+                execution_receipts[tool_name] = receipt.as_dict()
         return CapabilitySelection(
             light_hints=tuple(hints),
             tool_names=tuple(tools),

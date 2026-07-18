@@ -81,6 +81,7 @@ def _execution_message(
         "lease_epoch": registered["lease_epoch"],
         "offer_id": offer_ids[OPEN_BROWSER_TOOL_SPEC.capability_id],
         "invocation_id": invocation_id,
+        "tool_id": OPEN_BROWSER_TOOL_SPEC.capability_id,
     }
     if status:
         payload["status"] = status

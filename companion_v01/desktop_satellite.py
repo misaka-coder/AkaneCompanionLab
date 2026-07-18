@@ -14,6 +14,7 @@ from starlette.websockets import WebSocketDisconnect
 from capcore import CapabilityToolSpec
 
 from .capability_registry import BrokerExecutionResult, ExecutionReceipt, OPEN_BROWSER_TOOL_SPEC
+from .desktop_satellite_specs import desktop_satellite_spec
 
 
 SATELLITE_PROTOCOL_VERSION = 1
@@ -27,6 +28,7 @@ class _PendingInvocation:
     connection_id: str = ""
     lease_epoch: str = ""
     offer_id: str = ""
+    tool_id: str = ""
     event: threading.Event = field(default_factory=threading.Event)
     acknowledged: bool = False
     result: BrokerExecutionResult | None = None
@@ -114,7 +116,7 @@ class DesktopSatelliteService:
                 "protocol_version": SATELLITE_PROTOCOL_VERSION,
                 "instance_id": self.instance_id,
                 "lease_epoch": connection.lease_epoch,
-                "offer_ids": {OPEN_BROWSER_TOOL_SPEC.capability_id: connection.offer_id},
+                "offer_ids": {tool_id: connection.offer_id for tool_id in sorted(connection.tool_ids)},
                 "expires_at": connection.expires_at,
             }
         )
@@ -185,6 +187,7 @@ class DesktopSatelliteService:
                 connection_id=connection.connection_id,
                 lease_epoch=connection.lease_epoch,
                 offer_id=connection.offer_id,
+                tool_id=spec.capability_id,
             )
             self._pending[invocation_id] = pending
             payload = {
@@ -213,19 +216,19 @@ class DesktopSatelliteService:
                 return BrokerExecutionResult(
                     status="execution_unknown",
                     reason="executor_result_timeout",
-                    model_feedback="桌面动作的执行结果暂时无法确认，请不要声称网页已经打开。",
+                    model_feedback="本地能力的执行结果暂时无法确认，请不要声称操作已经完成。",
                 )
             return BrokerExecutionResult(
                 status="unavailable_before_dispatch",
                 reason="executor_ack_timeout",
-                model_feedback="桌面执行器没有接受这次操作，请直接说明网页没有打开。",
+                model_feedback="桌面执行器没有接受这次操作，请直接说明本地能力没有执行。",
             )
         with self._lock:
             self._pending.pop(invocation_id, None)
         return pending.result or BrokerExecutionResult(
             status="execution_unknown",
             reason="executor_result_missing",
-            model_feedback="桌面动作的执行结果暂时无法确认，请不要声称网页已经打开。",
+            model_feedback="本地能力的执行结果暂时无法确认，请不要声称操作已经完成。",
         )
 
     def diagnostics(self) -> dict[str, Any]:
@@ -280,6 +283,7 @@ class DesktopSatelliteService:
                 or str(message.get("instance_id") or "").strip() != self.instance_id
                 or str(message.get("lease_epoch") or "").strip() != pending.lease_epoch
                 or str(message.get("offer_id") or "").strip() != pending.offer_id
+                or str(message.get("tool_id") or "").strip() != pending.tool_id
             ):
                 return
             if message_type in {"accepted", "running"}:
@@ -289,22 +293,27 @@ class DesktopSatelliteService:
                 return
             raw_status = str(message.get("status") or "failed").strip().lower()
             reason = self._safe_reason(message.get("reason"))
+            data = self._safe_result_data(message.get("data"))
+            tool_id = str(message.get("tool_id") or "").strip()
             if raw_status == "succeeded":
                 pending.result = BrokerExecutionResult(
                     status="succeeded",
-                    model_feedback="已在用户绑定的电脑上真实打开该公开网页；不要声称读取了页面内容。",
+                    model_feedback=self._success_feedback(tool_id),
+                    data=data,
                 )
             elif raw_status == "rejected":
                 pending.result = BrokerExecutionResult(
                     status="failed",
                     reason=reason or "executor_rejected",
-                    model_feedback="用户的电脑拒绝了这次打开网页操作，请自然说明没有打开。",
+                    model_feedback=self._failure_feedback(tool_id, rejected=True),
+                    data=data,
                 )
             else:
                 pending.result = BrokerExecutionResult(
                     status="failed",
                     reason=reason or "executor_failed",
-                    model_feedback="用户的电脑没有成功打开网页，请自然说明这次操作失败。",
+                    model_feedback=self._failure_feedback(tool_id, rejected=False),
+                    data=data,
                 )
             pending.event.set()
 
@@ -322,14 +331,72 @@ class DesktopSatelliteService:
         for raw in raw_offers[:16]:
             if not isinstance(raw, dict):
                 continue
+            tool_id = str(raw.get("tool_id") or "").strip()
+            spec = (
+                OPEN_BROWSER_TOOL_SPEC
+                if tool_id == OPEN_BROWSER_TOOL_SPEC.capability_id
+                else desktop_satellite_spec(tool_id)
+            )
+            if spec is None:
+                continue
             if (
-                str(raw.get("tool_id") or "").strip() == OPEN_BROWSER_TOOL_SPEC.capability_id
-                and str(raw.get("spec_version") or "").strip() == OPEN_BROWSER_TOOL_SPEC.spec_version
-                and int(raw.get("schema_version") or 0) == OPEN_BROWSER_TOOL_SPEC.schema_version
-                and str(raw.get("schema_hash") or "").strip().lower() == OPEN_BROWSER_TOOL_SPEC.schema_hash
+                str(raw.get("spec_version") or "").strip() == spec.spec_version
+                and int(raw.get("schema_version") or 0) == spec.schema_version
+                and str(raw.get("schema_hash") or "").strip().lower() == spec.schema_hash
             ):
-                supported.add(OPEN_BROWSER_TOOL_SPEC.capability_id)
+                supported.add(spec.capability_id)
         return supported
+
+    @staticmethod
+    def _success_feedback(tool_id: str) -> str:
+        if tool_id == OPEN_BROWSER_TOOL_SPEC.capability_id:
+            return "已在用户绑定的电脑上真实打开该公开网页；不要声称读取了页面内容。"
+        spec = desktop_satellite_spec(tool_id)
+        if spec is not None:
+            return f"已从用户绑定电脑真实完成：{spec.display_name}。以下是执行器返回的实际结果。"
+        return "已从用户绑定电脑真实完成这次本地能力调用。"
+
+    @staticmethod
+    def _failure_feedback(tool_id: str, *, rejected: bool) -> str:
+        if tool_id == OPEN_BROWSER_TOOL_SPEC.capability_id:
+            return (
+                "用户的电脑拒绝了这次打开网页操作，请自然说明没有打开。"
+                if rejected
+                else "用户的电脑没有成功打开网页，请自然说明这次操作失败。"
+            )
+        spec = desktop_satellite_spec(tool_id)
+        operation = spec.display_name if spec is not None else "本地能力调用"
+        if rejected:
+            return f"用户的电脑拒绝了这次{operation}，请如实说明没有执行。"
+        return f"用户的电脑没有成功完成{operation}，请如实说明这次操作失败。"
+
+    @staticmethod
+    def _safe_result_data(value: Any) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            return {}
+        blocked = {"path", "absolutepath", "localpath", "token", "secret", "password", "authorization"}
+
+        def safe_key(value: Any) -> bool:
+            normalized = "".join(character for character in str(value).lower() if character.isalnum())
+            return not any(normalized == item or normalized.endswith(item) for item in blocked)
+
+        def clean(item: Any, depth: int = 0) -> Any:
+            if depth > 4:
+                return None
+            if isinstance(item, Mapping):
+                return {
+                    str(key): clean(raw, depth + 1)
+                    for key, raw in list(item.items())[:64]
+                    if safe_key(key)
+                }
+            if isinstance(item, list):
+                return [clean(raw, depth + 1) for raw in item[:32]]
+            if isinstance(item, (str, int, float, bool)) or item is None:
+                return item if not isinstance(item, str) else item[:1000]
+            return str(item)[:200]
+
+        result = clean(value)
+        return result if isinstance(result, dict) else {}
 
     def _install_connection(self, connection: _SatelliteConnection) -> bool:
         now = float(self._clock())
@@ -351,13 +418,13 @@ class DesktopSatelliteService:
                         pending.result = BrokerExecutionResult(
                             status="execution_unknown",
                             reason="executor_disconnected_after_accept",
-                            model_feedback="桌面执行器在操作过程中断开，结果无法确认；请不要声称网页已经打开。",
+                            model_feedback="桌面执行器在操作过程中断开，结果无法确认；请不要声称本地操作已经完成。",
                         )
                     else:
                         pending.result = BrokerExecutionResult(
                             status="unavailable_before_dispatch",
                             reason="executor_disconnected_before_accept",
-                            model_feedback="桌面执行器在接受操作前断开，这次没有执行网页打开。",
+                            model_feedback="桌面执行器在接受操作前断开，这次没有执行本地能力。",
                         )
                     pending.event.set()
 
@@ -382,7 +449,7 @@ class DesktopSatelliteService:
                         pending.result = BrokerExecutionResult(
                             status="unavailable_before_dispatch",
                             reason="executor_queue_unavailable",
-                            model_feedback="桌面执行器当前无法接受新操作，这次没有打开网页。",
+                            model_feedback="桌面执行器当前无法接受新操作，这次没有执行本地能力。",
                         )
                         pending.event.set()
 
@@ -412,6 +479,16 @@ class DesktopSatelliteService:
             "instance_mismatch",
             "lease_mismatch",
             "schema_mismatch",
+            "invalid_action",
+            "result_serialization_failed",
+            "media_control_failed",
+            "unsupported_platform",
+            "no_active_session",
+            "control_failed",
+            "read_failed",
+            "join_failed",
+            "invocation_id_tool_conflict",
+            "unknown_tool",
         }:
             return reason
         return "executor_failed"

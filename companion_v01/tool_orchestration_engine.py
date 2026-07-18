@@ -23,6 +23,7 @@ from .tool_invocation import legacy_tool_call_to_invocation
 from .native_tool_schema import build_openai_native_tool_specs
 from .tool_runtime import ToolExecutionContext, ToolExecutionResult
 from .capability_registry import ExecutorBroker, OPEN_BROWSER_TOOL_SPEC
+from .desktop_satellite_specs import desktop_satellite_spec
 
 
 @dataclass(frozen=True)
@@ -513,6 +514,18 @@ def validate_tool_invocation(
     if not tool_type:
         return ValidationResult.fail("missing_tool_type", "工具调用缺少 type 字段。")
 
+    satellite_spec = desktop_satellite_spec(tool_type)
+    if satellite_spec is not None:
+        handler = _resolved_handler_for_round(engine, tool_type, invocation.capability_selection)
+        if handler is None:
+            return ValidationResult.fail("unknown_tool", "当前桌面执行器没有提供这项能力。")
+        candidate_call = raw_tool_call if isinstance(raw_tool_call, dict) else invocation_to_legacy_tool_call(invocation)
+        if handler.normalize_call(candidate_call) is None:
+            return ValidationResult.fail("bad_args", "本地能力的参数不符合当前执行器契约。")
+        if not invocation.execution_receipt:
+            return ValidationResult.fail("missing_execution_receipt", "这次本地能力没有有效的执行凭据，不能执行。")
+        return ValidationResult.success()
+
     if tool_type == OPEN_BROWSER_TOOL_SPEC.capability_id:
         handler = _resolved_handler_for_round(engine, tool_type, invocation.capability_selection)
         if handler is None:
@@ -827,6 +840,15 @@ def execute_tool_invocation(
             profile_user_id=profile_user_id,
             session_id=session_id,
         )
+    satellite_spec = desktop_satellite_spec(invocation.name)
+    if satellite_spec is not None:
+        return _execute_satellite_with_broker(
+            engine,
+            spec=satellite_spec,
+            invocation=invocation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+        )
     handlers = engine._resolve_tool_handlers(
         client_context=client_context,
         profile_user_id=profile_user_id,
@@ -966,6 +988,71 @@ def _execute_open_browser_with_broker(
             "code": reason or status,
             "tool": OPEN_BROWSER_TOOL_SPEC.capability_id,
             "status": status,
+        },
+        events=[event],
+    )
+    return result, envelope
+
+
+def _execute_satellite_with_broker(
+    engine: Any,
+    *,
+    spec: Any,
+    invocation: ToolInvocation,
+    profile_user_id: str,
+    session_id: str,
+) -> tuple[ToolExecutionResult, ToolResultEnvelope]:
+    broker = getattr(engine, "executor_broker", None)
+    broker_result = (
+        broker.execute(
+            spec=spec,
+            receipt_value=invocation.execution_receipt,
+            invocation_id=invocation.id,
+            arguments=invocation.arguments,
+            ledger_scope=f"{profile_user_id}\x1f{session_id}",
+        )
+        if broker is not None
+        else None
+    )
+    status = str(getattr(broker_result, "status", "unavailable_before_dispatch") or "").strip()
+    reason = str(getattr(broker_result, "reason", "executor_broker_unavailable") or "").strip()
+    data = dict(getattr(broker_result, "data", {}) or {}) if broker_result is not None else {}
+    model_feedback = str(getattr(broker_result, "model_feedback", "") or "").strip()
+    if not model_feedback:
+        if status == "succeeded":
+            model_feedback = f"已从用户绑定电脑读取或执行了 {spec.display_name}，以下是实际返回结果。"
+        else:
+            model_feedback = f"当前无法使用用户电脑上的{spec.display_name}，请如实说明没有完成。"
+    if data and status == "succeeded":
+        model_feedback = f"{model_feedback}\n实际返回数据：{json.dumps(data, ensure_ascii=False, sort_keys=True)}"
+    event = {
+        "type": "capability_execution_result",
+        "tool_type": spec.capability_id,
+        "status": status,
+    }
+    if reason:
+        event["reason"] = reason
+    result = ToolExecutionResult(
+        tool_type=spec.capability_id,
+        stream_events=[event],
+        followup_context=model_feedback,
+        state_updates={
+            "capability_execution": {
+                "tool_type": spec.capability_id,
+                "status": status,
+                "reason": reason,
+            }
+        },
+    )
+    envelope = ToolResultEnvelope(
+        invocation_id=invocation.id,
+        status="ok" if status == "succeeded" else "error",
+        model_feedback=model_feedback,
+        data={
+            "code": reason or status,
+            "tool": spec.capability_id,
+            "status": status,
+            "result": data,
         },
         events=[event],
     )

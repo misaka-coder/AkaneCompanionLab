@@ -95,6 +95,7 @@ from .tool_runtime import (
     ClearAttachmentFocusToolHandler,
     ComposeFileToolHandler,
     ConvertMediaFileToolHandler,
+    DesktopSatelliteToolHandler,
     FetchMediaFromUrlToolHandler,
     FocusWorkspaceToolHandler,
     GenerateImageToolHandler,
@@ -5419,6 +5420,18 @@ class AkaneMemoryEngine:
                 config_base_dir=self.capability_config_base_dir,
             ),
             "open_browser": OpenBrowserToolHandler(),
+            "desktop_context_snapshot": DesktopSatelliteToolHandler(
+                tool_id="desktop_context_snapshot",
+                offer_source=self.capability_offer_source,
+            ),
+            "system_media_snapshot": DesktopSatelliteToolHandler(
+                tool_id="system_media_snapshot",
+                offer_source=self.capability_offer_source,
+            ),
+            "system_media_control": DesktopSatelliteToolHandler(
+                tool_id="system_media_control",
+                offer_source=self.capability_offer_source,
+            ),
             "open_music_search": OpenMusicSearchToolHandler(),
             "browser_page": BrowserPageToolHandler(),
         }

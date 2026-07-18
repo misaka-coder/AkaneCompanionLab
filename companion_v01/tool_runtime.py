@@ -75,6 +75,7 @@ from .capability_registry import (
     WEB_SEARCH_TOOL_SPEC,
 )
 from .local_capability_config import get_mcp_server_runtime_config
+from .desktop_satellite_specs import desktop_satellite_spec
 from .mcp_stdio_discoverer import McpStdioDiscoveryError, McpStdioToolCaller
 from .anysearch_rest_client import AnySearchRestClient, AnySearchRestError
 from .npc_runtime import GenericNPCRuntime
@@ -914,6 +915,74 @@ class BaseToolHandler:
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         raise NotImplementedError
+
+
+class DesktopSatelliteToolHandler(BaseToolHandler):
+    """Schema adapter for a reviewed tool executed by the bound PC satellite.
+
+    This handler never performs the local action itself. The invocation layer
+    validates the call and sends it through ExecutorBroker to the live offer.
+    """
+
+    policy_accepted_native_tool = True
+
+    def __init__(self, *, tool_id: str, offer_source: Any = None) -> None:
+        spec = desktop_satellite_spec(tool_id)
+        if spec is None:
+            raise ValueError(f"unknown desktop satellite tool: {tool_id}")
+        self.tool_type = spec.capability_id
+        self._spec = spec
+        self._offer_source = offer_source
+
+    def tool_spec(self):
+        return self._spec
+
+    def tool_metadata(self) -> ToolMetadata:
+        return ToolMetadata(
+            family="desktop_satellite",
+            operation="external",
+            risk=self._spec.risk,
+            default_round_budget=3,
+            input_schema=self._spec.input_schema,
+            requires_confirmation=self._spec.confirm != "never",
+        )
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            f"- {self._spec.capability_id}：{self._spec.description}"
+            f"调用参数遵循：{json.dumps(self._spec.input_schema, ensure_ascii=False, sort_keys=True)}"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        args = {key: item for key, item in value.items() if key != "type"}
+        if self.tool_type in {"desktop_context_snapshot", "system_media_snapshot"}:
+            return {"type": self.tool_type} if not args else None
+        if self.tool_type == "system_media_control":
+            action = str(args.get("action") or "").strip().lower()
+            if action not in {"play", "pause", "stop", "previous", "next"} or set(args) != {"action"}:
+                return None
+            return {"type": self.tool_type, "action": action}
+        return None
+
+    def capability_status(self, **_kwargs: Any) -> dict[str, Any]:
+        source = self._offer_source
+        if source is None:
+            return {"enabled": False, "status": "unavailable", "reason": "satellite_not_configured"}
+        try:
+            ready = source.resolve_receipt(self._spec) is not None
+        except Exception:
+            ready = False
+        return {
+            "enabled": ready,
+            "status": "ready" if ready else "unavailable",
+            "reason": "" if ready else "satellite_offline",
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        del call, context
+        raise RuntimeError("desktop_satellite_requires_executor_broker")
 
 
 class AdapterCapabilityToolHandler(BaseToolHandler):
