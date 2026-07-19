@@ -382,6 +382,22 @@ care_enabled = true
                     len({runtime.engine.capability_offer_source.instance_id for runtime in runtimes}),
                     3,
                 )
+                self.assertEqual(
+                    [runtime.desktop_pet_character_resources.public_prefix for runtime in runtimes],
+                    [
+                        "/api/bots/bot-a/desktop-pet-character-packs",
+                        "/api/bots/bot-b/desktop-pet-character-packs",
+                        "/api/bots/bot-c/desktop-pet-character-packs",
+                    ],
+                )
+                self.assertEqual(
+                    [runtime.engine.gift_service.public_prefix for runtime in runtimes],
+                    [
+                        "/api/bots/bot-a/user-assets",
+                        "/api/bots/bot-b/user-assets",
+                        "/api/bots/bot-c/user-assets",
+                    ],
+                )
 
                 async def run_lifecycle() -> tuple[dict[str, Any], dict[str, Any]]:
                     started = await registry.start_all(timeout_seconds=5.0)
@@ -414,6 +430,9 @@ class AppBootstrapContractTests(unittest.TestCase):
         self.assertIn("bot_runtime = host_bot_bootstrap.default_runtime", source)
         self.assertIn("runtime_config = bot_runtime.config_module", source)
         self.assertIn("app.state.akane_default_bot_id = bot_registry.default_bot_id", source)
+        self.assertIn("build_bot_runtime_routers(", source)
+        self.assertIn('route_prefix = f"/api/bots/{http_bot_runtime.bot_id}"', source)
+        self.assertIn("app.include_router(runtime_router, prefix=route_prefix)", source)
         self.assertEqual(source.count("config_module=config,"), 1)
         self.assertIn("await bot_registry.start_all()", source)
         self.assertIn("await bot_registry.stop_all()", source)

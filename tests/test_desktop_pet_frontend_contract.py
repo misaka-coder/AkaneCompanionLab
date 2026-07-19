@@ -408,7 +408,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("@tauri-apps/plugin-http", control_center_source)
         self.assertIn("function renderAdvancedPage()", control_center_source)
         self.assertIn("function renderAdvancedLogs()", control_center_source)
-        self.assertIn('buildBackendUrl(baseUrl, "/desktop-pet/diagnostics"', data_source)
+        self.assertIn('buildBackendUrl(botBaseUrl, "/desktop-pet/diagnostics"', data_source)
         self.assertIn("character_pack_id", data_source)
         self.assertIn("real_user_id", data_source)
         self.assertIn(".advanced-diagnostics-card", control_center_css)
@@ -902,6 +902,27 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("bound_bot_id: String", rust_source)
         self.assertIn('const BOUND_BOT_ID_ENV: &str = "AKANE_BOUND_BOT_ID"', rust_source)
         self.assertIn("normalize_pet_binding_ids(", rust_source)
+
+    def test_control_center_selects_one_bound_bot_for_all_desktop_surfaces(self) -> None:
+        main_source = _read("desktop_pet_next/src/main.js")
+        panel_source = _read("desktop_pet_next/src/panel.js")
+        workspace_source = _read("desktop_pet_next/src/workspace.js")
+        control_center_source = _read("desktop_pet_next/src/control-center-lab.js")
+        data_source = _read("desktop_pet_next/src/control-center/data-sources.js")
+        action_router = _read("desktop_pet_next/src/control-center/action-router.js")
+        bot_routing = _read("desktop_pet_next/src/bot-routing.js")
+
+        self.assertIn('case "setBoundBot"', main_source)
+        self.assertIn("await ensureBoundBotRegistered()", main_source)
+        self.assertIn("scopeBackendEndpointToBoundBot", main_source)
+        self.assertIn("botScopedPath(state.boundBotId", panel_source)
+        self.assertIn("botScopedPath(state?.boundBotId", workspace_source)
+        self.assertIn("data-bound-bot-select", control_center_source)
+        self.assertIn("readBotCatalog", data_source)
+        self.assertIn('settingsSelectBot: "settings.selectBot"', action_router)
+        self.assertIn('CONTROL_CENTER_ACTIONS.settingsSelectBot]: "setBoundBot"', data_source)
+        self.assertIn("export function botScopedPath", bot_routing)
+        self.assertIn('endpoint.startsWith("/api/qq/")', bot_routing)
 
     def test_next_care_runtime_uses_backend_authority_and_gates_shop_projection(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")

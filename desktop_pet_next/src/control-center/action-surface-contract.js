@@ -21,6 +21,7 @@ export const CONTROL_CENTER_CLIENT_HANDLED_ACTION_IDS = Object.freeze([
 const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);
 
 export const CONTROL_CENTER_ACTION_SURFACES = Object.freeze([
+  bridged("settings", CONTROL_CENTER_ACTIONS.settingsSelectBot, "settings-command", "setBoundBot"),
   bridged("overview", CONTROL_CENTER_ACTIONS.chatNew, "settings-command", "newSession"),
   bridged("overview", CONTROL_CENTER_ACTIONS.chatStop, "settings-command", "stopReply"),
   bridged("overview", CONTROL_CENTER_ACTIONS.workspaceOpen, "tauri-invoke", "open_workspace_window"),

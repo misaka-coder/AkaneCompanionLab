@@ -134,6 +134,9 @@ let settingsCatalog = null;
 let settingsCatalogStatus = "";
 let settingsSaveNote = "";
 let settingsSaveOk = true;
+let botCatalog = null;
+let botCatalogStatus = "";
+let botSelectionStatus = "";
 let { labMeta, navItems, backgroundAsset } = snapshot.shell;
 let {
   abilities: abilitiesPage,
@@ -211,14 +214,17 @@ function createControlCenterDataSourceOptions(overrides = {}) {
   const source = String(params.get("source") || "").trim().toLowerCase();
   const petState = overrides.petState && typeof overrides.petState === "object" ? overrides.petState : {};
   const instanceId = String(petState.instanceId || "").trim();
-  if (instanceId) bindInstanceStorage(instanceId);
+  const hostId = String(petState.hostId || instanceId).trim();
+  const boundBotId = String(petState.boundBotId || instanceId).trim();
+  if (hostId) bindInstanceStorage(hostId);
   if (source === CONTROL_CENTER_SOURCE_KIND.mock) {
     return { kind: CONTROL_CENTER_SOURCE_KIND.mock };
   }
   return {
     kind: CONTROL_CENTER_SOURCE_KIND.backend,
     baseUrl: (isTauriRuntime ? petState.backendUrl : params.get("backend") || params.get("backend_url")) || getInstanceStorageItem("controlCenter.backendUrl", { legacyKey: "akane.controlCenter.backendUrl" }) || DEFAULT_BACKEND_URL,
-    expectedInstanceId: instanceId,
+    expectedInstanceId: hostId,
+    botId: boundBotId,
     fetchImpl: isTauriRuntime ? instanceBoundFetch : typeof window.fetch === "function" ? window.fetch.bind(window) : undefined,
     sessionId: (isTauriRuntime ? petState.sessionId : params.get("session_id") || params.get("user_id")) || getInstanceStorageItem("controlCenter.sessionId", { legacyKey: "akane.controlCenter.sessionId" }) || "control-center-lab",
     profileUserId: (isTauriRuntime ? petState.profileUserId : params.get("real_user_id") || params.get("profile_user_id")) || getInstanceStorageItem("controlCenter.profileUserId", { legacyKey: "akane.controlCenter.profileUserId" }) || "master",
@@ -274,6 +280,7 @@ async function hydrateControlCenterSnapshot() {
     // run even if the snapshot is unavailable, or the settings page stays on
     // its "loading" placeholder forever.
     await hydrateSettingsCatalog();
+    await hydrateBotCatalog();
   } catch (error) {
     console.info("[control-center] keep mock snapshot:", formatError(error));
   }
@@ -323,6 +330,46 @@ async function hydrateSettingsCatalog() {
   }
 }
 
+async function hydrateBotCatalog() {
+  if (typeof dataSource?.readBotCatalog !== "function") {
+    botCatalog = null;
+    botCatalogStatus = "未能读取 Bot 列表";
+  } else {
+    try {
+      const payload = await dataSource.readBotCatalog();
+      if (payload && typeof payload === "object" && Array.isArray(payload.bots)) {
+        botCatalog = payload;
+        botCatalogStatus = "";
+      } else {
+        botCatalog = null;
+        botCatalogStatus = "未能读取 Bot 列表";
+      }
+    } catch (error) {
+      botCatalog = null;
+      botCatalogStatus = `读取 Bot 列表失败：${formatError(error)}`;
+    }
+  }
+  if (state.activePage === "settings") renderActivePage();
+}
+
+async function selectBoundBot(botId) {
+  const normalized = String(botId || "").trim();
+  if (!normalized || normalized === currentBoundBotId()) return;
+  botSelectionStatus = "正在请求切换…";
+  renderActivePage();
+  const result = await actionRouter.run(
+    CONTROL_CENTER_ACTIONS.settingsSelectBot,
+    { value: normalized, botId: normalized },
+    { source: "control-center-lab" }
+  );
+  if (botSelectionStatus === "正在请求切换…") {
+    botSelectionStatus = result?.ok
+      ? "切换请求已发送，正在加载对应记忆与能力。"
+      : `切换失败：${result?.status || "未知错误"}`;
+  }
+  renderActivePage();
+}
+
 async function saveSetting(key, rawValue) {
   if (typeof dataSource?.updateSetting !== "function") {
     settingsSaveOk = false;
@@ -364,10 +411,13 @@ async function createRuntimeDataSourceOptions() {
         ? launchBinding.backendUrl
         : persistedState?.backendUrl
     };
-    if (String(launchBinding?.instanceId || "") !== String(petState.instanceId || "")) {
+    if (
+      String(launchBinding?.instanceId || "") !== String(petState.instanceId || "") ||
+      String(launchBinding?.hostId || launchBinding?.instanceId || "") !== String(petState.hostId || petState.instanceId || "")
+    ) {
       throw new Error("client_instance_binding_mismatch");
     }
-    bindInstanceStorage(petState.instanceId);
+    bindInstanceStorage(petState.hostId || petState.instanceId);
     let availableCharacterPacks = [];
     try {
       availableCharacterPacks = await invoke("list_character_packs");
@@ -1128,6 +1178,12 @@ function bindEvents() {
   });
 
   root.addEventListener("change", (event) => {
+    const botSelect = event.target.closest("[data-bound-bot-select]");
+    if (botSelect) {
+      void selectBoundBot(botSelect.value);
+      return;
+    }
+
     const settingInput = event.target.closest("[data-setting-key]");
     if (settingInput) {
       const key = settingInput.dataset.settingKey;
@@ -1724,9 +1780,10 @@ function renderSettingsPage() {
       <p>「运行时」项可直接改、即时生效；标「需重启」的与密钥为只读。</p>
       ${note}
     </header>`;
+  const botBinding = renderBotBindingCard();
   if (!settingsCatalog || !Array.isArray(settingsCatalog.categories) || !settingsCatalog.categories.length) {
     const msg = settingsCatalogStatus || "正在读取设置目录…";
-    return `<section class="settings-page">${head}<article class="glass-card"><p class="settings-empty">${escapeHtml(msg)}</p></article></section>`;
+    return `<section class="settings-page">${head}${botBinding}<article class="glass-card"><p class="settings-empty">${escapeHtml(msg)}</p></article></section>`;
   }
   const categories = settingsCatalog.categories;
   const commonHtml = categories.filter((group) => group.tier !== "advanced").map(renderSettingsGroup).join("");
@@ -1741,7 +1798,39 @@ function renderSettingsPage() {
         <div class="settings-advanced-body">${advanced.map(renderSettingsGroup).join("")}</div>
       </details>`
     : "";
-  return `<section class="settings-page">${head}${commonHtml}${advancedHtml}</section>`;
+  return `<section class="settings-page">${head}${botBinding}${commonHtml}${advancedHtml}</section>`;
+}
+
+function renderBotBindingCard() {
+  const bots = Array.isArray(botCatalog?.bots) ? botCatalog.bots : [];
+  const current = currentBoundBotId();
+  const status = botSelectionStatus || botCatalogStatus;
+  const options = bots.map((item) => {
+    const botId = String(item?.botId || item?.bot_id || "").trim();
+    if (!botId) return "";
+    const name = String(item?.displayName || item?.display_name || botId).trim() || botId;
+    const selected = botId === current ? " selected" : "";
+    const disabled = item?.available === false && botId !== current ? " disabled" : "";
+    const suffix = item?.default ? " · 默认" : item?.available === false ? " · 不可用" : "";
+    return `<option value="${escapeAttr(botId)}"${selected}${disabled}>${escapeHtml(name + suffix)}</option>`;
+  }).join("");
+  return `
+    <article class="glass-card settings-bot-binding">
+      <div>
+        <h2>当前桌宠 Bot</h2>
+        <p>切换后，聊天、记忆、插件和文件空间随 Bot 切换；本机能力仍由同一台电脑共享。</p>
+      </div>
+      ${options
+        ? `<select data-bound-bot-select${isTauriRuntime ? "" : " disabled"}>${options}</select>`
+        : `<span class="settings-empty">${escapeHtml(botCatalogStatus || "正在读取 Bot 列表…")}</span>`}
+      ${status ? `<p class="settings-note">${escapeHtml(status)}</p>` : ""}
+    </article>`;
+}
+
+function currentBoundBotId() {
+  return String(
+    latestRuntimeSnapshot?.state?.boundBotId || dataSource?.botId || botCatalog?.defaultBotId || ""
+  ).trim();
 }
 
 function resolveInitialPage() {
@@ -4830,9 +4919,21 @@ async function bindSettingsSnapshotListener() {
   if (!isTauriRuntime) return;
   try {
     await listen(SETTINGS_SNAPSHOT_EVENT, (event) => {
+      const previousBoundBotId = String(latestRuntimeSnapshot?.state?.boundBotId || "").trim();
       latestRuntimeSnapshot = event.payload || null;
+      const nextBoundBotId = String(latestRuntimeSnapshot?.state?.boundBotId || "").trim();
+      const commandResult = latestRuntimeSnapshot?.settingsCommandResult;
+      if (commandResult?.command === "setBoundBot") {
+        botSelectionStatus = commandResult.ok
+          ? `已切换到 ${String(commandResult.boundBotId || nextBoundBotId || "目标 Bot")}。`
+          : `切换失败：${String(commandResult.reason || commandResult.status || "未知错误")}`;
+      }
       applySettingsSnapshotPatch(latestRuntimeSnapshot);
       refreshListeningTogetherCard().catch(() => {});
+      if (nextBoundBotId && previousBoundBotId && nextBoundBotId !== previousBoundBotId) {
+        botSelectionStatus = `已切换到 ${nextBoundBotId}。`;
+        void hydrateControlCenterSnapshot();
+      }
     });
     await emitSettingsCommand({ command: "requestSnapshot" });
   } catch {

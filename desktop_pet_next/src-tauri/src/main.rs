@@ -671,6 +671,11 @@ async fn backend_admin_request(
     if !same_backend_origin(&target, &backend) || !is_allowed_admin_path(target.path()) {
         return admin_failure("rejected", "admin_target_not_allowed", 403);
     }
+    if let Some(target_bot_id) = scoped_admin_bot_id(target.path()) {
+        if target_bot_id != state.bound_bot_id {
+            return admin_failure("rejected", "admin_target_bot_mismatch", 403);
+        }
+    }
 
     let binding = verify_backend_instance_url(&bound_backend_url).await;
     if !binding.ok {
@@ -5621,6 +5626,18 @@ fn same_backend_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
 }
 
 fn is_allowed_admin_path(path: &str) -> bool {
+    if let Some((_bot_id, bot_path)) = scoped_admin_bot_path(path) {
+        return [
+            "control-center/",
+            "capabilities/",
+            "qq/",
+            "admin/",
+            "plugins/",
+            "memcore/",
+        ]
+        .iter()
+        .any(|prefix| bot_path.starts_with(prefix));
+    }
     [
         "/control-center/",
         "/capabilities/",
@@ -5632,6 +5649,20 @@ fn is_allowed_admin_path(path: &str) -> bool {
     ]
     .iter()
     .any(|prefix| path.starts_with(prefix))
+}
+
+fn scoped_admin_bot_id(path: &str) -> Option<&str> {
+    scoped_admin_bot_path(path).map(|(bot_id, _bot_path)| bot_id)
+}
+
+fn scoped_admin_bot_path(path: &str) -> Option<(&str, &str)> {
+    let remainder = path.strip_prefix("/api/bots/")?;
+    let (bot_id, bot_path) = remainder.split_once('/')?;
+    if is_safe_instance_id(bot_id) {
+        Some((bot_id, bot_path))
+    } else {
+        None
+    }
 }
 
 fn point_in_polygon(points: &[HitPoint], x: i32, y: i32) -> bool {
@@ -5935,8 +5966,20 @@ mod tests {
             reqwest::Url::parse("http://127.0.0.1:9998/control-center/model-service").unwrap();
         assert!(!same_backend_origin(&backend, &external));
         assert!(is_allowed_admin_path("/control-center/model-service"));
+        assert!(is_allowed_admin_path(
+            "/api/bots/personal/control-center/model-service"
+        ));
+        assert!(!is_allowed_admin_path("/api/bots/personal/think"));
         assert!(is_allowed_admin_path("/api/qq/self-check"));
         assert!(!is_allowed_admin_path("/think"));
+        assert_eq!(
+            scoped_admin_bot_id("/api/bots/personal/control-center/model-service"),
+            Some("personal")
+        );
+        assert_eq!(
+            scoped_admin_bot_id("/api/bots/../control-center/model-service"),
+            None
+        );
     }
 
     #[test]

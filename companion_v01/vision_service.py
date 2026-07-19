@@ -46,6 +46,7 @@ class VisionObservationService:
         store: MemoryStore,
         resource_manifest: ResourceManifest | None = None,
         gift_assets_dir: Path | None = None,
+        gift_assets_public_prefix: str = "/user-assets",
         analyze_image_fn: Callable[[VisionTarget], dict[str, Any]] | None = None,
         on_observation_ready: Callable[[VisionTarget, dict[str, Any]], None] | None = None,
         settings: BotSettingsView | None = None,
@@ -56,6 +57,7 @@ class VisionObservationService:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.gift_assets_dir = Path(gift_assets_dir or base_dir)
+        self.gift_assets_public_prefix = "/" + str(gift_assets_public_prefix or "user-assets").strip("/")
         self.store = store
         self.resource_manifest = resource_manifest
         self._lock = threading.RLock()
@@ -744,8 +746,9 @@ class VisionObservationService:
             if not relative:
                 return None
             return self.resource_manifest.assets_dir / Path(relative)
-        if normalized.startswith("/user-assets/"):
-            relative = normalized.removeprefix("/user-assets/").strip("/")
+        gift_prefix = f"{self.gift_assets_public_prefix}/"
+        if normalized.startswith(gift_prefix):
+            relative = normalized.removeprefix(gift_prefix).strip("/")
             if not relative:
                 return None
             return self.gift_assets_dir / Path(relative)

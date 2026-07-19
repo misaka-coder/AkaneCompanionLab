@@ -7,6 +7,7 @@ import {
   isCareFeatureEnabled,
   resolveCareFeatureFromHealth,
 } from "./care-feature.js";
+import { botScopedPath } from "./bot-routing.js";
 import "./panel.css";
 
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
@@ -16,6 +17,7 @@ const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 // ── Runtime state ─────────────────────────────────────────────────────────────
 const state = {
   instanceId: "",
+  boundBotId: "",
   backendUrl: DEFAULT_BACKEND_URL,
   online: false,
   characterName: "Akane",
@@ -284,7 +286,7 @@ async function pollHealth() {
     if (!binding?.ok || String(binding.instanceId || "") !== state.instanceId) {
       throw new Error("instance_binding_rejected");
     }
-    const res = await tauriFetch(`${state.backendUrl}/desktop-pet/health`, {
+    const res = await tauriFetch(`${state.backendUrl}${botScopedPath(state.boundBotId, "/desktop-pet/health")}`, {
       method: "GET",
       connectTimeout: 3000,
     });
@@ -315,6 +317,7 @@ async function setupEventBridge() {
     let changed = false;
 
     if (s.instanceId) state.instanceId = String(s.instanceId);
+    if (s.boundBotId) state.boundBotId = String(s.boundBotId);
     if (s.backendUrl) state.backendUrl = String(s.backendUrl).replace(/\/+$/, "");
 
     if (s.characterName !== undefined && s.characterName !== state.characterName) {
@@ -490,6 +493,7 @@ async function init() {
       throw new Error("client_instance_binding_mismatch");
     }
     state.instanceId = String(petState?.instanceId || "");
+    state.boundBotId = String(petState?.boundBotId || petState?.instanceId || "");
     state.backendUrl = String(petState?.backendUrl || DEFAULT_BACKEND_URL).replace(/\/+$/, "");
     pollHealth();
     setInterval(pollHealth, 10_000);

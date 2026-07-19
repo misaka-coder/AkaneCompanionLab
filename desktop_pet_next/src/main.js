@@ -22,6 +22,7 @@ import {
   setRuntimeCharacterPacks
 } from "./character-profile.js";
 import { bindInstanceStorage } from "./instance-storage.js";
+import { botScopedPath, normalizeBotId } from "./bot-routing.js";
 import {
   attachDesktopCareContext,
   cloneCareState,
@@ -639,6 +640,7 @@ let pendingHitSyncForce = false;
 let lastHitRegionSignature = "";
 let settingsSnapshotTimer = 0;
 let settingsBridgeRegistered = false;
+let lastSettingsCommandResult = null;
 let characterActivationBridgeRegistered = false;
 let menuAnchor = null;
 let characterActivationTask = Promise.resolve();
@@ -723,6 +725,7 @@ let screenVisionActiveClipId = "";
 let backendRetryTimer = 0;
 let backendSwitchToken = 0;
 let backendSwitchPending = false;
+let validatedBotBindingKey = "";
 let workspaceTaskPollTimer = 0;
 let workspaceTaskWatchPrimed = false;
 let workspaceTaskStatusCache = new Map();
@@ -1738,6 +1741,16 @@ async function handleSettingsCommand(payload) {
     case "setBackendUrl":
       await updateBackendUrl(payload.value);
       break;
+    case "setBoundBot":
+      await updateBoundBot(payload.value);
+      lastSettingsCommandResult = {
+        command,
+        ok: true,
+        status: "completed",
+        boundBotId: state.boundBotId,
+        at: Date.now()
+      };
+      break;
     case "setOutfit":
       await updateOutfit(payload.value);
       break;
@@ -1910,9 +1923,18 @@ async function handleSettingsCommand(payload) {
   scheduleSettingsSnapshot();
 }
 
-function reportSettingsCommandFailure(_payload, error) {
+function reportSettingsCommandFailure(payload, error) {
   const message = formatError(error);
+  lastSettingsCommandResult = {
+    command: String(payload?.command || "").trim(),
+    ok: false,
+    status: "failed",
+    reason: message,
+    boundBotId: state.boundBotId,
+    at: Date.now()
+  };
   setStatus(`设置命令失败：${message}`);
+  scheduleSettingsSnapshot(0);
 }
 
 function applyCharacterChrome() {
@@ -1965,6 +1987,7 @@ function buildSettingsSnapshot() {
   const issues = buildResourceIssues(activeOutfit, emotions);
   return {
     character: buildCharacterSnapshot(),
+    settingsCommandResult: lastSettingsCommandResult ? { ...lastSettingsCommandResult } : null,
     state: {
       instanceId: state.instanceId,
       hostId: state.hostId,
@@ -3658,6 +3681,68 @@ async function updateBackendUrl(value) {
   }
 }
 
+async function updateBoundBot(value) {
+  const nextBotId = normalizeBotId(value);
+  const previousBotId = normalizeBotId(state.boundBotId);
+  if (!nextBotId) {
+    throw new Error("invalid_bound_bot_id");
+  }
+  if (nextBotId === previousBotId) {
+    setStatus("已经在使用这个 Bot。", { durationMs: 1800 });
+    return true;
+  }
+
+  await verifyBackendInstance(state.backendUrl);
+  const catalog = await fetchBotCatalog();
+  const target = catalog.bots.find((item) => item.botId === nextBotId);
+  if (!target) throw new Error("bot_not_registered");
+  if (!target.available) throw new Error(target.reason || "bot_runtime_unavailable");
+
+  setStatus(`正在切换到 ${target.displayName || nextBotId}。`, { durationMs: 2200 });
+  await resetInstanceBoundRuntimeForBackendSwitch();
+  state.boundBotId = nextBotId;
+  validatedBotBindingKey = `${state.backendUrl.replace(/\/+$/, "")}|${nextBotId}`;
+  try {
+    const healthy = await reloadCharacterResources({ userTriggered: false, silent: true });
+    if (!healthy) throw new Error(resourceState.healthMessage || "bot_route_unavailable");
+    const session = await ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
+    if (!session) throw new Error("bot_session_unavailable");
+    await saveNow();
+    setStatus(`已切换到 ${target.displayName || nextBotId}。`, { durationMs: 2600 });
+    await broadcastSettingsSnapshot();
+    return true;
+  } catch (error) {
+    state.boundBotId = previousBotId;
+    validatedBotBindingKey = "";
+    await reloadCharacterResources({ userTriggered: false, silent: true });
+    await saveNow();
+    throw error;
+  }
+}
+
+async function fetchBotCatalog() {
+  const url = new URL("/api/bots", `${state.backendUrl.replace(/\/+$/, "")}/`);
+  url.searchParams.set("t", String(Date.now()));
+  const response = await backendFetch(url.toString(), {
+    method: "GET",
+    cache: "no-store",
+    connectTimeout: 5000
+  });
+  if (!response.ok) throw new Error(`bot_catalog_http_${response.status}`);
+  const payload = await readJsonResponse(response);
+  const bots = Array.isArray(payload?.bots)
+    ? payload.bots
+        .map((item) => ({
+          botId: normalizeBotId(item?.botId || item?.bot_id),
+          displayName: String(item?.displayName || item?.display_name || item?.botId || "").trim(),
+          available: item?.available !== false,
+          reason: String(item?.reason || "").trim()
+        }))
+        .filter((item) => item.botId)
+    : [];
+  return { bots, defaultBotId: normalizeBotId(payload?.defaultBotId || payload?.default_bot_id) };
+}
+
 async function resetInstanceBoundRuntimeForBackendSwitch() {
   interruptReply({ announce: false });
   await cancelVoiceRecording();
@@ -3975,6 +4060,7 @@ function friendlyBackendBindingError(error) {
 async function checkBackendHealth() {
   try {
     await verifyBackendInstance(state.backendUrl);
+    await ensureBoundBotRegistered();
   } catch (error) {
     resourceState.health = "offline";
     resourceState.healthMessage = friendlyBackendBindingError(error);
@@ -3997,7 +4083,7 @@ async function checkBackendHealth() {
   });
 
   try {
-    const response = await backendFetch(`${state.backendUrl}${DESKTOP_HEALTH_PATH}?${query.toString()}`, {
+    const response = await backendFetch(buildBackendEndpointUrl("health", DESKTOP_HEALTH_PATH, query), {
       method: "GET",
       cache: "no-store",
       connectTimeout: 3500
@@ -4019,6 +4105,25 @@ async function checkBackendHealth() {
     updateConnectionStatus();
     return false;
   }
+}
+
+async function ensureBoundBotRegistered() {
+  const currentBotId = normalizeBotId(state.boundBotId);
+  const bindingKey = `${state.backendUrl.replace(/\/+$/, "")}|${currentBotId}`;
+  if (currentBotId && validatedBotBindingKey === bindingKey) return currentBotId;
+
+  const catalog = await fetchBotCatalog();
+  let target = catalog.bots.find((item) => item.botId === currentBotId);
+  if (!target) {
+    target = catalog.bots.find((item) => item.botId === catalog.defaultBotId);
+    if (!target) throw new Error("default_bot_not_registered");
+    state.boundBotId = target.botId;
+    scheduleSave(0);
+    scheduleSettingsSnapshot(0);
+  }
+  if (!target.available) throw new Error(target.reason || "bot_runtime_unavailable");
+  validatedBotBindingKey = `${state.backendUrl.replace(/\/+$/, "")}|${target.botId}`;
+  return target.botId;
 }
 
 function applyBackendHealthPayload(payload, { endpoint, contractSource } = {}) {
@@ -9005,7 +9110,7 @@ function backendFetch(input, init) {
 }
 
 function buildBackendEndpointUrl(name, fallbackPath, params = null) {
-  const endpoint = getBackendEndpoint(name, fallbackPath);
+  const endpoint = scopeBackendEndpointToBoundBot(getBackendEndpoint(name, fallbackPath));
   const base = `${state.backendUrl.replace(/\/+$/, "")}/`;
   const url = new URL(endpoint, base);
   const entries =
@@ -9018,6 +9123,10 @@ function buildBackendEndpointUrl(name, fallbackPath, params = null) {
     }
   }
   return url.toString();
+}
+
+function scopeBackendEndpointToBoundBot(endpoint) {
+  return botScopedPath(state.boundBotId, endpoint);
 }
 
 function getBackendEndpoint(name, fallbackPath) {

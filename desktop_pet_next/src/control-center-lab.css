@@ -7588,6 +7588,38 @@ button:disabled {
   margin: 0 0 12px;
   font-size: 15px;
 }
+.settings-bot-binding {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 260px);
+  align-items: center;
+  gap: 12px 18px;
+}
+.settings-bot-binding h2,
+.settings-bot-binding p {
+  margin: 0;
+}
+.settings-bot-binding p {
+  margin-top: 4px;
+  font-size: 12.5px;
+  opacity: 0.75;
+}
+.settings-bot-binding select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid rgb(120 120 140 / 0.3);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 0.9);
+  color: inherit;
+}
+.settings-bot-binding > .settings-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+@media (max-width: 720px) {
+  .settings-bot-binding {
+    grid-template-columns: 1fr;
+  }
+}
 .settings-empty {
   margin: 0;
   opacity: 0.75;

@@ -234,6 +234,7 @@ class AkaneMemoryEngine:
         qq_channel_config: QQChannelRuntimeConfig | None = None,
         capability_offer_source: Any = None,
         settings: BotSettingsView | None = None,
+        user_assets_public_prefix: str = "/user-assets",
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -295,6 +296,7 @@ class AkaneMemoryEngine:
             self.base_dir / "user_assets",
             store=self.store,
             llm=self.llm,
+            public_prefix=user_assets_public_prefix,
         )
         self.background_tasks = BackgroundTaskRunner(
             {
@@ -370,6 +372,7 @@ class AkaneMemoryEngine:
                 store=self.store,
                 resource_manifest=self.resource_manifest,
                 gift_assets_dir=self.base_dir / "user_assets",
+                gift_assets_public_prefix=user_assets_public_prefix,
                 on_observation_ready=(
                     self.vision_observation_router.handle if self.vision_observation_router is not None else None
                 ),

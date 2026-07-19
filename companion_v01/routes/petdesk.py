@@ -46,6 +46,7 @@ def build_petdesk_router(
     log_event: LogEvent | None = None,
     capability_config_base_dir: str | None = None,
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
+    route_prefix: str = "",
 ) -> APIRouter:
     # Transitional bridge for petdesk-runtime; see docs/petdesk_akane_bridge_m32.md before extending it.
     router = APIRouter()
@@ -66,6 +67,7 @@ def build_petdesk_router(
             minimum=1,
             maximum=500,
         ),
+        route_prefix=route_prefix,
     )
 
     def _character_resources() -> Any:
@@ -78,7 +80,11 @@ def build_petdesk_router(
     @router.get("/pet/health")
     async def pet_health(request: Request) -> JSONResponse:
         character_pack_id = _character_pack_id_from_request(request)
-        payload = build_petdesk_health_payload(_character_resources(), character_pack_id)
+        payload = build_petdesk_health_payload(
+            _character_resources(),
+            character_pack_id,
+            route_prefix=route_prefix,
+        )
         return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
     @router.get("/pet/snapshot")
@@ -213,6 +219,7 @@ def build_petdesk_router(
                         audio_manifest,
                         audio_handle=audio_handle,
                         url=audio_url,
+                        route_prefix=route_prefix,
                     ) and attach_petdesk_tts_audio(envelope, audio_handle=audio_handle):
                         runtime_manifest.update(audio_manifest)
                         yield serialize_petdesk_sse("resource_manifest", runtime_manifest)
@@ -403,9 +410,10 @@ class _PetdeskAudioItem:
 
 
 class _PetdeskAudioRegistry:
-    def __init__(self, *, ttl_seconds: int, max_items: int) -> None:
+    def __init__(self, *, ttl_seconds: int, max_items: int, route_prefix: str = "") -> None:
         self._ttl_seconds = ttl_seconds
         self._max_items = max_items
+        self._route_prefix = "/" + str(route_prefix or "").strip("/") if str(route_prefix or "").strip("/") else ""
         self._items: dict[str, _PetdeskAudioItem] = {}
         self._lock = threading.Lock()
 
@@ -422,7 +430,7 @@ class _PetdeskAudioRegistry:
             self._prune_locked(now)
             self._items[token] = item
             self._prune_locked(now)
-        return f"akane/tts/{token}", f"/audio/petdesk/{token}"
+        return f"akane/tts/{token}", f"{self._route_prefix}/audio/petdesk/{token}"
 
     def get(self, token: str) -> _PetdeskAudioItem | None:
         if not _safe_audio_token(token):

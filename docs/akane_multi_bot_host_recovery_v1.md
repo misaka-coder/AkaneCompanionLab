@@ -1202,7 +1202,10 @@ npm run build
 - 修复 QQ 角色表情图片的远端 OneBot 传输：NapCat 与 Host 文件系统隔离时，本地 `file://`/绝对路径即使收到 HTTP 200，OneBot 仍可能以 `status=failed`、非零 `retcode` 报告业务失败；Gateway 现在检查业务状态，并在图片不超过 8 MiB 时回退为 `base64://`，不再把 HTTP 200 误记为发送成功。
 - 表情图片修复以不可变 release `8424087` 上线统一 Host；personal 与 finance 的 bot-scoped QQ self-check 均为 `connected`，两个既有数据根 bind mount 保持 active，`NRestarts=0`。finance 原有关闭表情图片的配置未改变。
 - 多 Bot 模式的默认 Bot 现在先构造并创建唯一 `DesktopSatelliteService`，其余 BotRuntime 复用同一 Host 设备连接；每个 Engine 只持有 Bot/记忆空间作用域的 offer source，receipt 不能跨 Bot 复用，wire invocation id 使用固定长度哈希隔离，因此不要求每个 QQ Bot 各连一台电脑。
-- next 桌宠 `PetState` 与 launch binding 已加入 `hostId + boundBotId`，旧 `instanceId` 保留为 Host 兼容别名；旧状态会安全回填到当前默认 Bot，非法 Bot id 与部署环境强绑定冲突会 fail-closed。此步只完成状态迁移边界，尚未把桌宠 HTTP routes 改成按 `boundBotId` dispatch。
+- next 桌宠 `PetState` 与 launch binding 已加入 `hostId + boundBotId`，旧 `instanceId` 保留为 Host 兼容别名；旧状态会安全回填，非法 Bot id 与部署环境强绑定冲突会 fail-closed。
+- 本地 Slice 5B 已完成桌宠 HTTP dispatch：`app.py` 对每个 Registry runtime 复用注册 `/api/bots/{bot_id}` 下的 think/session/vision/TTS/ASR/workspace/capabilities/control-center/`pet` 等同一组 Router，旧无前缀地址只作为默认 Bot 兼容别名，不存在 personal/finance 两套实现。
+- Host 公开 `GET /api/bots` 只返回安全 Bot id、显示名与生命周期状态；控制中心唯一实现 `control-center-lab.html` 已加入当前 Bot 选择器，选择通过既有 settings-command bridge 写入 `boundBotId`。主窗口、侧面板、工作区和控制中心数据源均使用共享 `bot-routing.js` 生成 Bot-scoped URL。
+- 每 Bot 角色包、petdesk 资源、TTS 临时音频与 `user-assets` 使用相同 Bot URL namespace；Rust 管理代理只允许访问当前 `boundBotId` 的 management 子路径，拒绝跨 Bot 或借管理代理调用普通 `/think`。
 
 验证通过：
 
@@ -1223,8 +1226,9 @@ npm run build
 - release `8424087` 上线后 `/health` 为 `personal / valid`，服务监听 Host 配置端口 10001；部署探针必须读取 Host 实际端口，不能沿用仓库默认端口 9999。一次错误端口探测已按预案回滚，确认原因后重新切换成功，未修改记忆、NapCat 登录或 OneBot token。
 - Host 级共享设备连接以 release `605068a` 上线；149 项 Satellite/能力织网/Runtime/安全/路由回归通过，远端聚焦测试通过，Host `NRestarts=0`。上线时设备真实状态为 `offline`，所以尚不能声称双 Bot 本地调用已完成表现验收；personal QQ 为 `connected`，finance NapCat 独立报告 `account_offline`，需要恢复该 QQ 登录后继续验收。
 - 桌宠绑定状态迁移通过 18 项 Rust 测试、37 项前端契约、Vite 生产构建和 60 项桌宠/实例安全组合回归；未启动桌宠、未改本机状态文件，也未在金融 QQ 换号期间触碰云端部署。
+- 桌宠 Bot dispatch 本地验收通过：195 项后端/路由/桌宠/实例组合测试、18 项 Rust 测试、控制中心 action/runtime/UX 三组 smoke、共享 Bot URL Node smoke、Vite 生产构建、Ruff/py_compile 与 `git diff --check`。真实测试确认 personal/finance 同一 URL 结构分别进入各自 Engine，旧地址只进入 personal/default，金融视觉、能力和 `/pet` 路由存在，未知 Bot 不会成功。
 - 尚未完成真实群聊双唤醒词、QQ 附件/语音/文件/后台通知的双 Bot 用户表现验收、DeviceExecutorHub 客户端绑定与真实在线验收、控制中心 Bot 管理 UI；不能用合成群消息污染真实记忆来假装表现验收。
-- 未合并/复制 MemCore 数据，未修改 NapCat 登录、OneBot access token 或桌宠前端；用户原有 `.claude/` 未触碰。
+- 本切片未合并/复制 MemCore 数据，未修改 NapCat 登录、OneBot access token、QQ profile 或云端进程；用户原有 `.claude/` 未触碰。控制中心当前只负责选择已配置 Bot，新增/编辑 Bot profile 的完整管理页仍未实现。
 
 ---
 
@@ -1232,14 +1236,14 @@ npm run build
 
 后续执行不应直接继续为 personal 单独接 GPT-SoVITS 或为 finance 单独复制视觉/Satellite 配置。
 
-Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B、Slice 4A、Slice 4B 与 Slice 5A（Host 共享设备连接服务端）已完成。下一步继续 **真实表现验收与 Slice 5B**：
+Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B、Slice 4A、Slice 4B、Slice 5A（Host 共享设备连接服务端）以及 Slice 5B 本地代码已完成。下一步继续 **部署与真实表现验收**：
 
 1. 在两个 Bot 同在的真实群发送 `Akane ...`，确认只有 personal 回复；发送 `金融助手 ...`，确认只有 finance 回复；
 2. 各自连续普通对话，确认 personal 不再出现“正常回复 + 我在认真听你说”双尾句，finance 插件命令只由 finance 处理；
 3. 继续补齐图片、语音、文件和后台通知的双 Bot 真实链验收；
 4. 本地电脑重新连接后，让 personal/finance 分别真实调用同一 `desktop_context_snapshot`，确认结果与审计不串 Bot；
-5. 让桌宠 HTTP routes 按已落地的 `host_id + bound_bot_id` 解析目标 BotRuntime，并补默认 Bot selector 与记忆绑定验收；
-6. 增加控制中心 Bot 管理面，后续新增 Bot 只注册 QQ/profile/config，不再写代码或 systemd unit。
+5. 等金融换号任务完成后再部署 Slice 5B；打开控制中心分别选择 personal/finance，各发送一轮真实桌宠消息，确认恢复的是各自既有记忆，识图、GPT-SoVITS、文件与本地执行器都走所选 Bot 且不串资产；
+6. 后续增加 Host 级 Bot profile 管理面；当前“选择已注册 Bot”已无需新增代码，但“从 UI 新增/编辑 Bot 配置”尚未实现。
 
 当上下文被压缩时，恢复顺序：
 

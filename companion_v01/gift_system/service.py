@@ -15,11 +15,19 @@ from .processors.image_processor import ImageGiftProcessor
 
 
 class GiftSystemService:
-    def __init__(self, base_dir: Path, *, store: MemoryStore, llm: Any | None = None) -> None:
+    def __init__(
+        self,
+        base_dir: Path,
+        *,
+        store: MemoryStore,
+        llm: Any | None = None,
+        public_prefix: str = "/user-assets",
+    ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.store = store
         self.llm = llm
+        self.public_prefix = "/" + str(public_prefix or "user-assets").strip("/")
         self.repository = GiftRepository(store=store)
         self.processors: dict[str, BaseGiftProcessor] = {
             "audio": AudioGiftProcessor(base_dir=self.base_dir),
@@ -533,7 +541,7 @@ class GiftSystemService:
 
     def _build_public_path(self, storage_relpath: str) -> str:
         normalized = str(storage_relpath or "").strip().replace("\\", "/").lstrip("/")
-        return f"/user-assets/{normalized}" if normalized else ""
+        return f"{self.public_prefix}/{normalized}" if normalized else ""
 
     def _suggest_image_metadata(
         self,

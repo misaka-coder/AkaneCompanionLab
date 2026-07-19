@@ -1,4 +1,5 @@
 import * as mockData from "./mock-data.js";
+import { buildBotBackendBaseUrl, normalizeBotId } from "../bot-routing.js";
 import {
   CONTROL_CENTER_ACTIONS,
   CONTROL_CENTER_BRIDGED_ACTION_IDS,
@@ -35,6 +36,7 @@ const tauriInvokeOnlyActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter
 ]);
 const settingsCommandByActionId = Object.freeze({
+  [CONTROL_CENTER_ACTIONS.settingsSelectBot]: "setBoundBot",
   [CONTROL_CENTER_ACTIONS.chatNew]: "newSession",
   [CONTROL_CENTER_ACTIONS.chatStop]: "stopReply",
   [CONTROL_CENTER_ACTIONS.workspaceOpen]: "openWorkspace",
@@ -157,6 +159,9 @@ export function createMockControlCenterSource(data = mockData) {
     async readSettingsCatalog() {
       return null;
     },
+    async readBotCatalog() {
+      return null;
+    },
     async updateSetting() {
       return { ok: false, status: "not-available" };
     },
@@ -211,6 +216,9 @@ export function createTauriControlCenterSource(options = {}) {
     async readSettingsCatalog() {
       return null;
     },
+    async readBotCatalog() {
+      return null;
+    },
     async updateSetting() {
       return { ok: false, status: "not-available" };
     },
@@ -231,6 +239,8 @@ export function createBackendControlCenterSource(options = {}) {
   const outfit = options.outfit || "";
   const emotion = options.emotion || "";
   const petState = options.petState && typeof options.petState === "object" ? options.petState : {};
+  const boundBotId = normalizeBotId(options.botId || petState.boundBotId || petState.instanceId);
+  const botBaseUrl = buildBotBackendBaseUrl(baseUrl, boundBotId);
   const availableCharacterPacks = Array.isArray(options.availableCharacterPacks) ? options.availableCharacterPacks : [];
   const musicSnapshot = options.musicSnapshot && typeof options.musicSnapshot === "object" ? options.musicSnapshot : null;
   let lastFallbackReason = null;
@@ -278,6 +288,7 @@ export function createBackendControlCenterSource(options = {}) {
     kind: CONTROL_CENTER_SOURCE_KIND.backend,
     backendUrl: baseUrl,
     instanceId: expectedInstanceId,
+    botId: boundBotId,
     get fallbackReason() {
       return lastFallbackReason;
     },
@@ -304,7 +315,7 @@ export function createBackendControlCenterSource(options = {}) {
       if (!health) return null;
 
       // Try unified snapshot endpoint first
-      const snapshotResult = await tryReadUnifiedSnapshot(fetchImpl, baseUrl, {
+      const snapshotResult = await tryReadUnifiedSnapshot(fetchImpl, botBaseUrl, {
         requestParams: commonParams,
         petState,
         musicSnapshot,
@@ -320,13 +331,13 @@ export function createBackendControlCenterSource(options = {}) {
 
       setFallbackReason("unified-snapshot-unavailable");
       const [diagnostics, workspace, resourceManifest, metrics, capabilitiesCatalog, voiceProfilesCatalog, approvalRequestsCatalog] = await Promise.all([
-        fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/desktop-pet/diagnostics", commonParams)),
-        fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/desktop-pet/workspace/summary", commonParams)),
-        fetchJson(fetchImpl, buildBackendUrl(baseUrl, "/resource-manifest", commonParams)),
-        fetchText(fetchImpl, buildBackendUrl(baseUrl, "/metrics", { t: commonParams.t })),
-        readCapabilitiesCatalog(fetchImpl, baseUrl, commonParams),
-        readVoiceProfilesCatalog(fetchImpl, baseUrl, commonParams),
-        readApprovalRequestsCatalog(fetchImpl, baseUrl, commonParams)
+        fetchJson(fetchImpl, buildBackendUrl(botBaseUrl, "/desktop-pet/diagnostics", commonParams)),
+        fetchJson(fetchImpl, buildBackendUrl(botBaseUrl, "/desktop-pet/workspace/summary", commonParams)),
+        fetchJson(fetchImpl, buildBackendUrl(botBaseUrl, "/resource-manifest", commonParams)),
+        fetchText(fetchImpl, buildBackendUrl(botBaseUrl, "/metrics", { t: commonParams.t })),
+        readCapabilitiesCatalog(fetchImpl, botBaseUrl, commonParams),
+        readVoiceProfilesCatalog(fetchImpl, botBaseUrl, commonParams),
+        readApprovalRequestsCatalog(fetchImpl, botBaseUrl, commonParams)
       ]);
       if (![health, diagnostics, workspace, resourceManifest, metrics, capabilitiesCatalog, voiceProfilesCatalog, approvalRequestsCatalog].some((item) => item.ok)) {
         setFallbackReason("all-backend-endpoints-failed");
@@ -409,7 +420,7 @@ export function createBackendControlCenterSource(options = {}) {
       if (!(await ensureVerifiedBackend())) return null;
       const result = await fetchJson(
         fetchImpl,
-        buildBackendUrl(baseUrl, "/control-center/model-service", { t: String(Date.now()) })
+        buildBackendUrl(botBaseUrl, "/control-center/model-service", { t: String(Date.now()) })
       );
       return result.ok && result.data && typeof result.data === "object" ? result.data : null;
     },
@@ -418,7 +429,16 @@ export function createBackendControlCenterSource(options = {}) {
       if (!(await ensureVerifiedBackend())) return null;
       const result = await fetchJson(
         fetchImpl,
-        buildBackendUrl(baseUrl, "/control-center/settings-catalog", { t: String(Date.now()) })
+        buildBackendUrl(botBaseUrl, "/control-center/settings-catalog", { t: String(Date.now()) })
+      );
+      return result.ok && result.data && typeof result.data === "object" ? result.data : null;
+    },
+    async readBotCatalog() {
+      if (typeof fetchImpl !== "function") return null;
+      if (!(await ensureVerifiedBackend())) return null;
+      const result = await fetchJson(
+        fetchImpl,
+        buildBackendUrl(baseUrl, "/api/bots", { t: String(Date.now()) })
       );
       return result.ok && result.data && typeof result.data === "object" ? result.data : null;
     },
@@ -426,7 +446,7 @@ export function createBackendControlCenterSource(options = {}) {
       if (typeof fetchImpl !== "function") return { ok: false, status: "not-available" };
       try {
         const response = await fetchImpl(
-          buildBackendUrl(baseUrl, `/control-center/settings-catalog/${encodeURIComponent(key)}`),
+          buildBackendUrl(botBaseUrl, `/control-center/settings-catalog/${encodeURIComponent(key)}`),
           {
             method: "POST",
             headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -447,7 +467,7 @@ export function createBackendControlCenterSource(options = {}) {
       const actionPath = actionId === "save" ? "" : `/${encodeURIComponent(actionId)}`;
       try {
         const response = await fetchImpl(
-          buildBackendUrl(baseUrl, `/control-center/model-service${actionPath}`),
+          buildBackendUrl(botBaseUrl, `/control-center/model-service${actionPath}`),
           {
             method: "POST",
             headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -503,7 +523,7 @@ export function createBackendControlCenterSource(options = {}) {
               : qqBackendActionIds.has(normalizedActionId)
                 ? runQqBackendAction
                 : runApprovalPolicyBackendAction;
-        return routeAction(fetchImpl, baseUrl, normalizedActionId, payload, {
+        return routeAction(fetchImpl, botBaseUrl, normalizedActionId, payload, {
           user_id: sessionId,
           real_user_id: profileUserId,
           client,
@@ -523,7 +543,7 @@ export function createBackendControlCenterSource(options = {}) {
         return createNotImplementedActionResult(normalizedActionId);
       }
       try {
-        const response = await fetchImpl(buildBackendUrl(baseUrl, `/control-center/actions/${encodeURIComponent(normalizedActionId)}`), {
+        const response = await fetchImpl(buildBackendUrl(botBaseUrl, `/control-center/actions/${encodeURIComponent(normalizedActionId)}`), {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
           body: JSON.stringify(payload)
@@ -583,7 +603,7 @@ async function runQqBackendAction(fetchImpl, baseUrl, actionId, payload = {}, pa
   // abilities.qq.selfCheck → POST /api/qq/self-check
   // 不暴露 token/cookie/本地路径；结果里敏感字段由后端过滤
   try {
-    const response = await fetchImpl(buildBackendUrl(baseUrl, "/api/qq/self-check", params), {
+    const response = await fetchImpl(buildBackendUrl(baseUrl, qqSelfCheckPath(baseUrl), params), {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({}),
@@ -3007,7 +3027,7 @@ function toBackendAssetUrl(baseUrl, value) {
   if (!raw) return "";
   if (/^(https?:|data:|blob:)/i.test(raw)) return raw;
   const base = `${String(baseUrl || DEFAULT_BACKEND_URL).replace(/\/+$/, "")}/`;
-  return new URL(raw.replace(/^\/+/, ""), base).toString();
+  return new URL(raw, base).toString();
 }
 
 function buildRecentOutputsPatch(workspace) {
@@ -3103,6 +3123,16 @@ function buildBackendUrl(baseUrl, endpoint, params = null) {
     }
   }
   return url.toString();
+}
+
+function qqSelfCheckPath(baseUrl) {
+  try {
+    return /^\/api\/bots\/[^/]+\/?$/.test(new URL(baseUrl).pathname)
+      ? "/qq/self-check"
+      : "/api/qq/self-check";
+  } catch {
+    return "/api/qq/self-check";
+  }
 }
 
 function normalizeBackendBaseUrl(value) {

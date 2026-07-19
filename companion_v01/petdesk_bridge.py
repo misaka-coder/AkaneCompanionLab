@@ -109,6 +109,8 @@ def build_petdesk_resource_bundle(character_resources: Any, character_pack_id: A
     first_handle = ""
     static_images: dict[str, dict[str, str]] = {}
     pack_segment = safe_handle_segment(pack_id, "pack")
+    character_prefix = _character_resource_prefix(character_resources)
+    petdesk_prefix = _petdesk_resource_prefix(character_resources)
 
     characters = old_runtime.get("characters") if isinstance(old_runtime, dict) else {}
     outfits = characters.get("outfits") if isinstance(characters, dict) else []
@@ -130,7 +132,12 @@ def build_petdesk_resource_bundle(character_resources: Any, character_pack_id: A
             emotion_id = clean_text(emotion.get("id") or emotion.get("name") or defaults["emotion"])
             if not emotion_id:
                 continue
-            url = normalize_petdesk_resource_url(emotion.get("path"), pack_id=pack_id)
+            url = normalize_petdesk_resource_url(
+                emotion.get("path"),
+                pack_id=pack_id,
+                character_prefix=character_prefix,
+                petdesk_prefix=petdesk_prefix,
+            )
             if not url:
                 continue
             emotion_segment = safe_handle_segment(emotion_id, "emotion")
@@ -227,10 +234,11 @@ def add_petdesk_audio_resource(
     audio_handle: str,
     url: str,
     source: str = "akane_tts",
+    route_prefix: str = "",
 ) -> bool:
     if not is_safe_petdesk_handle(audio_handle):
         return False
-    normalized_url = normalize_petdesk_audio_url(url)
+    normalized_url = normalize_petdesk_audio_url(url, route_prefix=route_prefix)
     if not normalized_url:
         return False
 
@@ -265,7 +273,13 @@ def attach_petdesk_tts_audio(envelope: dict[str, Any], *, audio_handle: str) -> 
     return True
 
 
-def build_petdesk_health_payload(character_resources: Any, character_pack_id: Any = "") -> dict[str, Any]:
+def build_petdesk_health_payload(
+    character_resources: Any,
+    character_pack_id: Any = "",
+    *,
+    route_prefix: str = "",
+) -> dict[str, Any]:
+    normalized_route_prefix = _normalize_route_prefix(route_prefix)
     pack_id = resolve_petdesk_character_pack_id(character_resources, character_pack_id)
     bundle = build_petdesk_resource_bundle(character_resources, pack_id)
     packs = _list_character_packs(character_resources)
@@ -273,21 +287,22 @@ def build_petdesk_health_payload(character_resources: Any, character_pack_id: An
         "ok": True,
         "status": "ready",
         "version": PETDESK_BRIDGE_VERSION,
-        "snapshot": "/pet/snapshot",
-        "turn": "/pet/turn",
+        "snapshot": f"{normalized_route_prefix}/pet/snapshot",
+        "turn": f"{normalized_route_prefix}/pet/turn",
         "resourceManifest": {
-            "endpoint": "/pet/resource-manifest",
+            "endpoint": f"{normalized_route_prefix}/pet/resource-manifest",
             "staticImageCount": len(bundle.runtime_manifest.get("staticImages") or {}),
             "characterPackId": bundle.character_pack_id,
-            "prefix": PETDESK_CHARACTER_PACK_PREFIX,
+            "prefix": _petdesk_resource_prefix(character_resources),
         },
         "characterPacks": packs,
         "defaultCharacterPackId": pack_id,
-        "runtimeEnv": build_petdesk_runtime_env(),
+        "runtimeEnv": build_petdesk_runtime_env(route_prefix=normalized_route_prefix),
     }
 
 
-def build_petdesk_runtime_env() -> dict[str, str]:
+def build_petdesk_runtime_env(*, route_prefix: str = "") -> dict[str, str]:
+    normalized_route_prefix = _normalize_route_prefix(route_prefix)
     return {
         "VITE_PETDESK_INTERACTION_PROFILE": "default",
         "VITE_PETDESK_INTERACTION_PROFILE_JSON": json.dumps(
@@ -295,7 +310,7 @@ def build_petdesk_runtime_env() -> dict[str, str]:
             ensure_ascii=False,
             separators=(",", ":"),
         ),
-        "VITE_PETDESK_RESOURCE_MANIFEST_URL": "/pet/resource-manifest",
+        "VITE_PETDESK_RESOURCE_MANIFEST_URL": f"{normalized_route_prefix}/pet/resource-manifest",
     }
 
 
@@ -359,18 +374,26 @@ def serialize_petdesk_sse(event: str, payload: Any) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
 
-def normalize_petdesk_resource_url(raw_value: Any, *, pack_id: str) -> str:
+def normalize_petdesk_resource_url(
+    raw_value: Any,
+    *,
+    pack_id: str,
+    character_prefix: str = LEGACY_CHARACTER_PACK_PREFIX,
+    petdesk_prefix: str = PETDESK_CHARACTER_PACK_PREFIX,
+) -> str:
     value = clean_text(raw_value).replace("\\", "/")
     if not value or _looks_like_url(value) or re.match(r"^[A-Za-z]:", value):
         return ""
     if "?" in value or "#" in value or value.startswith("//"):
         return ""
 
-    legacy_prefix = f"{LEGACY_CHARACTER_PACK_PREFIX}/{pack_id}/"
-    petdesk_prefix = f"{PETDESK_CHARACTER_PACK_PREFIX}/{pack_id}/"
+    normalized_character_prefix = "/" + str(character_prefix or "").strip("/")
+    normalized_petdesk_prefix = "/" + str(petdesk_prefix or "").strip("/")
+    legacy_prefix = f"{normalized_character_prefix}/{pack_id}/"
+    pack_petdesk_prefix = f"{normalized_petdesk_prefix}/{pack_id}/"
     if value.startswith(legacy_prefix):
-        value = f"{PETDESK_CHARACTER_PACK_PREFIX}/{pack_id}/{value[len(legacy_prefix) :]}"
-    if not value.startswith(petdesk_prefix):
+        value = f"{normalized_petdesk_prefix}/{pack_id}/{value[len(legacy_prefix) :]}"
+    if not value.startswith(pack_petdesk_prefix):
         return ""
 
     path = value.lstrip("/")
@@ -380,19 +403,37 @@ def normalize_petdesk_resource_url(raw_value: Any, *, pack_id: str) -> str:
     return "/" + "/".join(quote(segment, safe="-._~%") for segment in segments)
 
 
-def normalize_petdesk_audio_url(raw_value: Any) -> str:
+def normalize_petdesk_audio_url(raw_value: Any, *, route_prefix: str = "") -> str:
     value = clean_text(raw_value).replace("\\", "/")
     if not value or _looks_like_url(value) or re.match(r"^[A-Za-z]:", value):
         return ""
     if "?" in value or "#" in value or value.startswith("//"):
         return ""
-    if not value.startswith("/audio/"):
+    expected_prefix = f"{_normalize_route_prefix(route_prefix)}/audio/"
+    if not value.startswith(expected_prefix):
         return ""
     path = value.lstrip("/")
     segments = path.split("/")
     if any(not segment or segment in {".", ".."} for segment in segments):
         return ""
     return "/" + "/".join(quote(segment, safe="-._~%") for segment in segments)
+
+
+def _character_resource_prefix(character_resources: Any) -> str:
+    value = clean_text(getattr(character_resources, "public_prefix", ""))
+    return "/" + value.strip("/") if value else LEGACY_CHARACTER_PACK_PREFIX
+
+
+def _petdesk_resource_prefix(character_resources: Any) -> str:
+    character_prefix = _character_resource_prefix(character_resources)
+    if character_prefix.endswith(LEGACY_CHARACTER_PACK_PREFIX):
+        return f"{character_prefix[: -len(LEGACY_CHARACTER_PACK_PREFIX)]}{PETDESK_CHARACTER_PACK_PREFIX}"
+    return PETDESK_CHARACTER_PACK_PREFIX
+
+
+def _normalize_route_prefix(value: Any) -> str:
+    normalized = clean_text(value).strip("/")
+    return f"/{normalized}" if normalized else ""
 
 
 def is_safe_petdesk_handle(value: Any) -> bool:

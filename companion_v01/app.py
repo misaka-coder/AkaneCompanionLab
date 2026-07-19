@@ -17,25 +17,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 import config
+from .bot_http_routes import build_bot_runtime_routers
 from .bot_runtime import BotRuntimeFactory
 from .host_bot_bootstrap import build_host_bot_registry
-from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
-from .mcp_stdio_discoverer import McpStdioToolDiscoverer
-from .routes.capabilities import build_capabilities_router
-from .routes.control_center import build_control_center_router, build_control_center_snapshot_runtime_providers
-from .routes.core import build_core_router
-from .routes.desktop_pet import build_desktop_pet_router
-from .routes.gifts import build_gifts_router
-from .routes.model_services import build_model_services_router
-from .routes.petdesk import build_petdesk_router
-from .routes.plugins import build_plugins_router
+from .routes.bots import build_bots_router
 from .routes.qq import build_qq_router
-from .routes.reminders import build_reminders_router
-from .routes.sessions import build_sessions_router
 from .routes.satellite import build_satellite_router
-from .routes.system import build_system_router
-from .routes.think import build_think_router
-from .routes.voice import build_voice_router
 from .routes.web_static import build_web_static_router
 
 tracemalloc.start()
@@ -85,9 +72,8 @@ app.state.akane_bot_registry = bot_registry
 app.state.akane_default_bot_id = bot_registry.default_bot_id
 app.state.akane_host_bot_bootstrap = host_bot_bootstrap.public_snapshot()
 
-# Default-channel aliases: existing Web/desktop routes bind the Registry's
-# explicit default Bot until route dispatch is generalized. These aliases are
-# not a second construction path and never select a non-default Bot implicitly.
+# Compatibility aliases remain references to the Registry default runtime.
+# Route construction below no longer depends on them.
 instance_context = bot_runtime.instance_context
 instance_runtime = bot_runtime.instance_runtime
 runtime_layout = bot_runtime.runtime_layout
@@ -125,6 +111,27 @@ async def startup_event() -> None:
 
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
+for static_bot_runtime in bot_registry.values():
+    static_prefix = f"/api/bots/{static_bot_runtime.bot_id}"
+    characters_dir = static_bot_runtime.runtime_layout.characters_dir
+    if characters_dir.exists():
+        app.mount(
+            f"{static_prefix}/desktop-pet-character-packs",
+            StaticFiles(directory=str(characters_dir)),
+            name=f"bot_{static_bot_runtime.bot_id}_desktop_pet_character_packs",
+        )
+        app.mount(
+            f"{static_prefix}/petdesk-character-packs",
+            StaticFiles(directory=str(characters_dir)),
+            name=f"bot_{static_bot_runtime.bot_id}_petdesk_character_packs",
+        )
+    user_assets_dir = static_bot_runtime.user_assets_dir
+    if user_assets_dir.exists():
+        app.mount(
+            f"{static_prefix}/user-assets",
+            StaticFiles(directory=str(user_assets_dir)),
+            name=f"bot_{static_bot_runtime.bot_id}_user_assets",
+        )
 if CREATOR_KIT_CHARACTERS_DIR.exists():
     app.mount(
         "/desktop-pet-character-packs",
@@ -182,65 +189,21 @@ def _resolve_identity_from_payload(payload: dict) -> tuple[str, str]:
     return session_id, profile_user_id
 
 
-app.include_router(
-    build_core_router(
-        engine=engine,
-        config_module=runtime_config,
-        instance_runtime=instance_runtime,
-        resolve_identity_from_query=_resolve_identity_from_query,
-        runtime_metrics=runtime_metrics,
-        public_guard=public_guard,
-    )
-)
-app.include_router(
-    build_system_router(
-        engine=engine,
-        runtime_metrics=runtime_metrics,
-        public_guard=public_guard,
-        log_event=_log_event,
-        admin_auth=admin_write_auth,
-    )
-)
-app.include_router(
-    build_think_router(
-        engine=engine,
-        public_guard=public_guard,
-        runtime_metrics=runtime_metrics,
-        log_event=_log_event,
-    )
-)
-app.include_router(
-    build_desktop_pet_router(
-        engine=engine,
-        config_module=runtime_config,
-        runtime_metrics=runtime_metrics,
-        log_event=_log_event,
+app.include_router(build_bots_router(bot_registry=bot_registry))
+for http_bot_runtime in bot_registry.values():
+    route_prefix = f"/api/bots/{http_bot_runtime.bot_id}"
+    runtime_routers = build_bot_runtime_routers(
+        runtime=http_bot_runtime,
+        route_prefix=route_prefix,
         resolve_identity_from_query=_resolve_identity_from_query,
         resolve_identity_from_payload=_resolve_identity_from_payload,
+        log_event=_bot_log_event(http_bot_runtime.bot_id),
     )
-)
-app.include_router(
-    build_petdesk_router(
-        engine=engine,
-        config_module=runtime_config,
-        tts_client=tts_client,
-        settings=bot_runtime.settings,
-        character_resources=desktop_pet_character_resources,
-        runtime_metrics=runtime_metrics,
-        public_guard=public_guard,
-        log_event=_log_event,
-        capability_config_base_dir=runtime_layout.users_data_dir,
-    )
-)
-app.include_router(
-    build_gifts_router(
-        engine=engine,
-        runtime_metrics=runtime_metrics,
-        log_event=_log_event,
-        resolve_identity_from_query=_resolve_identity_from_query,
-        resolve_identity_from_payload=_resolve_identity_from_payload,
-    )
-)
+    for runtime_router in runtime_routers:
+        app.include_router(runtime_router, prefix=route_prefix)
+        if http_bot_runtime.bot_id == bot_registry.default_bot_id:
+            app.include_router(runtime_router)
+
 for qq_bot_runtime in bot_registry.values():
     if qq_bot_runtime.qq_gateway is None:
         continue
@@ -272,69 +235,6 @@ for qq_bot_runtime in bot_registry.values():
             )
         )
 app.include_router(
-    build_sessions_router(
-        engine=engine,
-        runtime_metrics=runtime_metrics,
-        log_event=_log_event,
-        resolve_identity_from_query=_resolve_identity_from_query,
-        resolve_identity_from_payload=_resolve_identity_from_payload,
-    )
-)
-app.include_router(
-    build_voice_router(
-        engine=engine,
-        config_module=runtime_config,
-        tts_client=tts_client,
-        settings=bot_runtime.settings,
-        runtime_metrics=runtime_metrics,
-        log_event=_log_event,
-        capability_config_base_dir=runtime_layout.users_data_dir,
-    )
-)
-app.include_router(
-    build_control_center_router(
-        runtime_metrics=runtime_metrics,
-        log_event=_log_event,
-        resolve_identity_from_query=_resolve_identity_from_query,
-        snapshot_runtime_providers=build_control_center_snapshot_runtime_providers(
-            engine=engine,
-            config_module=runtime_config,
-            runtime_metrics=runtime_metrics,
-            public_guard=public_guard,
-        ),
-        settings_override_store=settings_override_store,
-        config_module=runtime_config,
-        admin_auth=admin_write_auth,
-    )
-)
-app.include_router(
-    build_model_services_router(
-        store=model_service_config_store,
-        config_module=runtime_config,
-        engine=engine,
-        reload_model_services=bot_runtime.reload_model_services,
-        runtime_metrics=runtime_metrics,
-        log_event=_log_event,
-        admin_auth=admin_write_auth,
-    )
-)
-app.include_router(
-    build_capabilities_router(
-        engine=engine,
-        config_module=runtime_config,
-        tts_client=tts_client,
-        settings=bot_runtime.settings,
-        runtime_metrics=runtime_metrics,
-        log_event=_log_event,
-        resolve_identity_from_query=_resolve_identity_from_query,
-        background_tasks=getattr(engine, "background_tasks", None),
-        mcp_tool_discoverer=McpStdioToolDiscoverer(),
-        capability_config_base_dir=runtime_layout.users_data_dir,
-        workflow_runner=ComfyUiWorkflowRunner(config_base_dir=runtime_layout.users_data_dir),
-    )
-)
-app.include_router(build_plugins_router(plugin_host=plugin_host, admin_auth=admin_write_auth))
-app.include_router(
     build_satellite_router(
         satellite_service=desktop_satellite_service,
         admin_auth=admin_write_auth,
@@ -345,14 +245,5 @@ app.include_router(
         web_dir=WEB_DIR,
         modules_dir=MODULES_DIR,
         vendor_dir=VENDOR_DIR,
-    )
-)
-app.include_router(
-    build_reminders_router(
-        engine=engine,
-        runtime_metrics=runtime_metrics,
-        log_event=_log_event,
-        resolve_identity_from_query=_resolve_identity_from_query,
-        resolve_identity_from_payload=_resolve_identity_from_payload,
     )
 )

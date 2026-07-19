@@ -16,6 +16,21 @@ def _ps_quote(value: Path | str) -> str:
 
 
 class DesktopPetInstanceIsolationTests(unittest.TestCase):
+    def test_bound_bot_urls_share_one_fail_closed_router(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is unavailable")
+        result = subprocess.run(
+            [node, str(ROOT / "desktop_pet_next" / "scripts" / "bot-routing-smoke.mjs")],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("bot routing smoke: ok", result.stdout)
+
     def test_instance_storage_keeps_equal_ids_in_separate_namespaces(self) -> None:
         node = shutil.which("node")
         if not node:

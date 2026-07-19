@@ -89,6 +89,28 @@ class PetdeskBridgeTests(unittest.TestCase):
         serialized = json.dumps(bundle.runtime_manifest, ensure_ascii=False)
         self.assertNotIn(str(self.characters_dir), serialized)
 
+    def test_scoped_runtime_keeps_petdesk_routes_and_assets_in_one_bot_namespace(self) -> None:
+        resources = DesktopPetCharacterResourceService(
+            characters_dir=self.characters_dir,
+            public_prefix="/api/bots/finance/desktop-pet-character-packs",
+        )
+        bundle = build_petdesk_resource_bundle(resources, "mika_pack")
+        health = build_petdesk_health_payload(
+            resources,
+            "mika_pack",
+            route_prefix="/api/bots/finance",
+        )
+
+        urls = [item["url"] for item in bundle.runtime_manifest["staticImages"].values()]
+        self.assertTrue(urls)
+        self.assertTrue(all(url.startswith("/api/bots/finance/petdesk-character-packs/") for url in urls))
+        self.assertEqual(health["snapshot"], "/api/bots/finance/pet/snapshot")
+        self.assertEqual(health["turn"], "/api/bots/finance/pet/turn")
+        self.assertEqual(
+            health["runtimeEnv"]["VITE_PETDESK_RESOURCE_MANIFEST_URL"],
+            "/api/bots/finance/pet/resource-manifest",
+        )
+
     def test_display_envelope_preserves_labels_but_uses_safe_asset_handle(self) -> None:
         bundle = build_petdesk_resource_bundle(self.resources, "mika_pack")
         manifest = self.resources.get_manifest("mika_pack")

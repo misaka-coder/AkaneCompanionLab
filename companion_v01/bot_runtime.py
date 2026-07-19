@@ -379,8 +379,10 @@ class BotRuntimeFactory:
             )
             runtime_layout = instance_runtime.layout
             resources = ResourceManifest(self.assets_dir)
+            route_prefix = f"/api/bots/{effective_bot_config.bot_id}"
             character_resources = DesktopPetCharacterResourceService(
                 characters_dir=runtime_layout.characters_dir,
+                public_prefix=f"{route_prefix}/desktop-pet-character-packs",
             )
             model_store = ModelServiceConfigStore(runtime_layout.config_dir / "model_service.json")
             try:
@@ -453,6 +455,7 @@ class BotRuntimeFactory:
                 qq_channel_config=deployment_security.qq,
                 capability_offer_source=satellite_offer_source,
                 settings=settings,
+                user_assets_public_prefix=f"{route_prefix}/user-assets",
             )
             plugin_host.bind_reasoning_port(EnginePluginReasoningPort(engine))
             generated_file_service = engine._get_generated_file_service()

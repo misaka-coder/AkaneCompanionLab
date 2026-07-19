@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { botScopedPath } from "./bot-routing.js";
 
 import "./workspace.css";
 
@@ -148,6 +149,7 @@ function stateIdentityKey(value) {
   if (!value) return "";
   return [
     String(value.instanceId || ""),
+    String(value.boundBotId || ""),
     normalizeBackendUrl(value.backendUrl || DEFAULT_BACKEND_URL),
     String(value.profileUserId || PROFILE_USER_ID),
     String(value.sessionId || "")
@@ -204,6 +206,7 @@ async function refreshWorkspace({ reload = true } = {}) {
 
     const payload = await fetchWorkspaceSummary({
       backendUrl: state?.backendUrl || DEFAULT_BACKEND_URL,
+      boundBotId: state?.boundBotId || state?.instanceId || "",
       profileUserId: state?.profileUserId || PROFILE_USER_ID,
       sessionId
     });
@@ -222,14 +225,14 @@ async function refreshWorkspace({ reload = true } = {}) {
   }
 }
 
-async function fetchWorkspaceSummary({ backendUrl, profileUserId, sessionId }) {
+async function fetchWorkspaceSummary({ backendUrl, boundBotId, profileUserId, sessionId }) {
   const query = new URLSearchParams({
     user_id: String(sessionId || ""),
     real_user_id: String(profileUserId || PROFILE_USER_ID),
     limit: String(SUMMARY_LIMIT),
     t: String(Date.now())
   });
-  const response = await workspaceFetch(`${normalizeBackendUrl(backendUrl)}/desktop-pet/workspace/summary?${query}`, {
+  const response = await workspaceFetch(`${normalizeBackendUrl(backendUrl)}${botScopedPath(boundBotId, "/desktop-pet/workspace/summary")}?${query}`, {
     method: "GET",
     cache: "no-store",
     connectTimeout: 5000
@@ -701,7 +704,7 @@ async function clearWorkspaceFiles() {
 async function postWorkspaceAction(payload) {
   const sessionId = String(state?.sessionId || "").trim();
   if (!sessionId) throw new Error("会话还没准备好");
-  const response = await workspaceFetch(`${normalizeBackendUrl(state?.backendUrl || DEFAULT_BACKEND_URL)}/desktop-pet/workspace/action`, {
+  const response = await workspaceFetch(`${normalizeBackendUrl(state?.backendUrl || DEFAULT_BACKEND_URL)}${botScopedPath(state?.boundBotId || state?.instanceId, "/desktop-pet/workspace/action")}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",

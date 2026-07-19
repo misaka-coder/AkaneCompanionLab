@@ -27,8 +27,10 @@ def build_core_router(
     instance_runtime: Any = None,
     runtime_metrics: Any = None,
     public_guard: Any = None,
+    route_prefix: str = "",
 ) -> APIRouter:
     router = APIRouter()
+    endpoint_prefix = "/" + str(route_prefix or "").strip("/") if str(route_prefix or "").strip("/") else ""
 
     @router.get("/health")
     async def health() -> dict[str, object]:
@@ -51,14 +53,16 @@ def build_core_router(
         session_id, profile_user_id = resolve_identity_from_query(request)
         care_status_getter = getattr(engine, "care_feature_status", None)
         care_feature = care_status_getter() if callable(care_status_getter) else {"enabled": True}
+        payload = build_desktop_pet_health_payload(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            streaming_tts_enabled=bool(getattr(config_module, "STREAMING_TTS_ENABLED", True)),
+            yt_dlp_available=importlib.util.find_spec("yt_dlp") is not None,
+            care_feature=care_feature,
+        )
+        _prefix_desktop_contract_endpoints(payload, endpoint_prefix)
         return JSONResponse(
-            build_desktop_pet_health_payload(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                streaming_tts_enabled=bool(getattr(config_module, "STREAMING_TTS_ENABLED", True)),
-                yt_dlp_available=importlib.util.find_spec("yt_dlp") is not None,
-                care_feature=care_feature,
-            ),
+            payload,
             headers={"Cache-Control": "no-store"},
         )
 
@@ -137,9 +141,29 @@ def build_core_router(
                     getattr(config_module, "WEB_OWNER_PROFILE_USER_ID", "master") or "master"
                 ),
                 "desktop_pet_contract_version": DESKTOP_PET_CONTRACT_VERSION,
-                "desktop_pet_health_url": "/desktop-pet/health",
+                "desktop_pet_health_url": f"{endpoint_prefix}/desktop-pet/health",
             },
             headers={"Cache-Control": "no-store"},
         )
 
     return router
+
+
+def _prefix_desktop_contract_endpoints(payload: dict[str, Any], route_prefix: str) -> None:
+    if not route_prefix:
+        return
+    endpoints = payload.get("endpoints")
+    if isinstance(endpoints, dict):
+        for key, value in tuple(endpoints.items()):
+            endpoints[key] = _prefix_endpoint(value, route_prefix)
+    for key in ("tts", "asr", "resource_manifest"):
+        section = payload.get(key)
+        if isinstance(section, dict) and "endpoint" in section:
+            section["endpoint"] = _prefix_endpoint(section.get("endpoint"), route_prefix)
+
+
+def _prefix_endpoint(value: Any, route_prefix: str) -> str:
+    endpoint = str(value or "").strip()
+    if not endpoint or endpoint.startswith(("http://", "https://", route_prefix + "/")):
+        return endpoint
+    return f"{route_prefix}/{endpoint.lstrip('/')}"
