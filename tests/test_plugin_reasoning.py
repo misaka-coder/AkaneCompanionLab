@@ -58,6 +58,12 @@ class EnginePluginReasoningPortTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["plugin_stable_system_context"], "长期稳定的金融分析原则")
         self.assertEqual(payload["memory_idempotency_key"], "delivery:stable-event-1")
         self.assertEqual(payload["character_pack_id"], "akane_v1")
+        self.assertEqual(
+            payload["message"],
+            "【当前待处理的插件主动事件（不是用户发言）】\n"
+            "外部市场事件\n"
+            "请按系统约定的 JSON 最终答复格式完成本次处理。",
+        )
 
     async def test_transient_final_failure_is_structured_instead_of_returned_as_analysis(self) -> None:
         class IncompleteEngine:
@@ -234,6 +240,20 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
         )
 
         self.assertNotEqual(first, second)
+
+    def test_transient_final_failure_is_not_persisted_as_an_assistant_turn(self) -> None:
+        self.assertFalse(
+            AkaneMemoryEngine._should_persist_completed_assistant(
+                True,
+                {"speech": "我在认真听你说", "_transient_final_failure": True},
+            )
+        )
+        self.assertTrue(
+            AkaneMemoryEngine._should_persist_completed_assistant(
+                True,
+                {"speech": "完成的真实分析"},
+            )
+        )
 
 
 if __name__ == "__main__":

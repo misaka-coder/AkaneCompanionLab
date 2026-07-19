@@ -2344,6 +2344,13 @@ class AkaneMemoryEngine:
         return not bool(payload.get("transient_assistant_message"))
 
     @staticmethod
+    def _should_persist_completed_assistant(
+        persist_requested: bool,
+        final_output: dict[str, Any],
+    ) -> bool:
+        return bool(persist_requested) and not bool(final_output.get("_transient_final_failure"))
+
+    @staticmethod
     def _pop_user_memory_source_id(
         payload: dict[str, Any],
         *,
@@ -3051,6 +3058,10 @@ class AkaneMemoryEngine:
                 session_id=session_id,
             )
 
+        persist_assistant_turn = self._should_persist_completed_assistant(
+            persist_assistant_turn,
+            final_output,
+        )
         if persist_assistant_turn:
             assistant_record = self.store.add_message(
                 profile_user_id=profile_user_id,
@@ -3569,6 +3580,10 @@ class AkaneMemoryEngine:
 
         ui_final_payload = dict(final_output)
 
+        persist_assistant_turn = self._should_persist_completed_assistant(
+            persist_assistant_turn,
+            final_output,
+        )
         if persist_assistant_turn:
             assistant_record = self.store.add_message(
                 profile_user_id=profile_user_id,

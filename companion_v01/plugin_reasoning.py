@@ -17,6 +17,8 @@ MAX_REASONING_IDEMPOTENCY_KEY_CHARS = 240
 MAX_REASONING_OUTPUT_CHARS = 6_000
 MAX_REASONING_EVIDENCE_EVENTS = 24
 DEFAULT_REASONING_TIMEOUT_SECONDS = 120.0
+_PROACTIVE_MESSAGE_HEADER = "【当前待处理的插件主动事件（不是用户发言）】"
+_PROACTIVE_RESPONSE_DIRECTIVE = "请按系统约定的 JSON 最终答复格式完成本次处理。"
 _EVIDENCE_FIELDS = (
     "type",
     "status",
@@ -44,10 +46,13 @@ class EnginePluginReasoningPort:
         error = _validate_request(request)
         if error:
             return PluginReasoningResult(ok=False, status="invalid_request", reason=error)
+        persistent_message = _render_persistent_proactive_message(request.message)
+        if len(persistent_message) > MAX_REASONING_MESSAGE_CHARS:
+            return PluginReasoningResult(ok=False, status="invalid_request", reason="invalid_message")
         payload = {
             "user_id": request.session_id,
             "real_user_id": request.profile_user_id,
-            "message": request.message.strip(),
+            "message": persistent_message,
             "timestamp": max(1, int(request.timestamp or time.time())),
             "trace_id": request.trace_id.strip(),
             "client_mode": "qq_text",
@@ -154,6 +159,18 @@ def _frame_text(frame: Mapping[str, Any]) -> str:
     if not isinstance(segments, (list, tuple)):
         return ""
     return "\n".join(str(item or "").strip() for item in segments if str(item or "").strip())
+
+
+def _render_persistent_proactive_message(message: str) -> str:
+    """Keep the actionable event cue inside the append-only memory turn.
+
+    The exact string sent to the model is also what the engine persists.  A
+    later request can therefore reuse the previous user-input cache boundary
+    without reconstructing a different wrapper around the event.
+    """
+
+    clean = str(message or "").strip()
+    return f"{_PROACTIVE_MESSAGE_HEADER}\n{clean}\n{_PROACTIVE_RESPONSE_DIRECTIVE}"
 
 
 def _project_evidence_events(raw_events: object) -> tuple[dict[str, Any], ...]:
