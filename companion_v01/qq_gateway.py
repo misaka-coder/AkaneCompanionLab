@@ -66,7 +66,7 @@ QQ_CHARACTER_SWITCH_PATTERNS = (
     re.compile(r"^(?:切换到|切到|换成)[:：\s]+([A-Za-z0-9_.-]+)$", re.IGNORECASE),
     re.compile(r"^character[:：\s]+(.+)$", re.IGNORECASE),
 )
-QQ_WAKE_WORD_RE = re.compile(r"(^|[^A-Za-z0-9])akane([^A-Za-z0-9]|$)", re.IGNORECASE)
+QQ_DEFAULT_WAKE_WORDS = ("Akane",)
 QQ_OUTFIT_LIST_COMMANDS = {
     "服装列表",
     "可用服装",
@@ -103,6 +103,36 @@ QQ_REPLY_MODE_LABELS = {
     "both": "双发模式",
     "auto": "自动模式",
 }
+
+
+def _normalize_qq_wake_words(value: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
+    raw_items = list(value) if isinstance(value, (tuple, list)) else list(QQ_DEFAULT_WAKE_WORDS)
+    if not raw_items or len(raw_items) > 8:
+        raise ValueError("invalid_qq_wake_words")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_item in raw_items:
+        if not isinstance(raw_item, str):
+            raise ValueError("invalid_qq_wake_words")
+        item = raw_item.strip()
+        key = item.casefold()
+        if item != raw_item or not item or len(item) > 32 or key in seen or any(ord(char) < 32 for char in item):
+            raise ValueError("invalid_qq_wake_words")
+        seen.add(key)
+        normalized.append(item)
+    return tuple(normalized)
+
+
+def _compile_qq_wake_word_search(wake_words: tuple[str, ...]) -> re.Pattern[str]:
+    alternatives = "|".join(re.escape(item) for item in sorted(wake_words, key=len, reverse=True))
+    return re.compile(rf"(?<![A-Za-z0-9])(?:{alternatives})(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def _compile_qq_wake_word_prefix(wake_words: tuple[str, ...]) -> re.Pattern[str]:
+    alternatives = "|".join(re.escape(item) for item in sorted(wake_words, key=len, reverse=True))
+    return re.compile(rf"^(?:{alternatives})(?:[\s,，:：;；、-]+|$)", re.IGNORECASE)
+
+
 QQ_REPLY_MODE_CURRENT_COMMANDS = {
     "当前回复模式",
     "回复模式",
@@ -278,11 +308,13 @@ class NapCatQQGateway:
         state_path: str | Path | None = None,
         channel_config: QQChannelRuntimeConfig | None = None,
         default_character_pack_id: str = "",
+        wake_words: tuple[str, ...] | list[str] | None = None,
     ) -> None:
         self._channel_config = channel_config
-        self._bound_default_character_pack_id = _safe_character_pack_id(
-            default_character_pack_id
-        )
+        self._bound_default_character_pack_id = _safe_character_pack_id(default_character_pack_id)
+        self._wake_words = _normalize_qq_wake_words(wake_words)
+        self._wake_word_search_re = _compile_qq_wake_word_search(self._wake_words)
+        self._wake_word_prefix_re = _compile_qq_wake_word_prefix(self._wake_words)
         self.group_follow_state: dict[str, dict[str, Any]] = {}
         self.recent_event_fingerprints: dict[str, float] = {}
         self.sender_label_cache: dict[str, str] = {}
@@ -1603,7 +1635,7 @@ class NapCatQQGateway:
         text = str(message or "").strip()
         if not text:
             return ""
-        match = re.match(r"^akane(?:[\s,，:：;；、-]+|$)", text, flags=re.IGNORECASE)
+        match = self._wake_word_prefix_re.match(text)
         if not match:
             return text
         return text[match.end() :].strip()
@@ -2162,7 +2194,7 @@ class NapCatQQGateway:
         return False
 
     def message_mentions_wake_word(self, clean_message: str) -> bool:
-        return bool(QQ_WAKE_WORD_RE.search(str(clean_message or "")))
+        return bool(self._wake_word_search_re.search(str(clean_message or "")))
 
     def _is_poke_notice(self, event: dict[str, Any]) -> bool:
         post_type = str(event.get("post_type") or "").strip().lower()

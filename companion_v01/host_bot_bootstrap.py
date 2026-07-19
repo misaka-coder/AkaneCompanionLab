@@ -10,6 +10,7 @@ from typing import Any
 
 from .bot_profile import BOT_PROFILE_FILENAME, load_bot_host_profile, resolve_bot_data_root
 from .bot_registry import BotRegistry, BotRegistryError
+from .qq_channel_profiles import QQ_CHANNEL_PROFILES_RELATIVE_PATH, load_qq_channel_profiles
 
 
 _SAFE_REASON_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -80,6 +81,10 @@ def build_host_bot_registry(
         )
 
     profile = load_bot_host_profile(profile_path)
+    qq_profiles = load_qq_channel_profiles(
+        data_root / QQ_CHANNEL_PROFILES_RELATIVE_PATH,
+        missing_ok=True,
+    )
     registry = BotRegistry(default_bot_id=profile.default_bot_id)
     failures: list[dict[str, str]] = []
     for bot_config in profile.enabled_bots:
@@ -88,6 +93,7 @@ def build_host_bot_registry(
             runtime = factory.create(
                 data_root=bot_root,
                 bot_config=bot_config,
+                qq_channel_profile=(qq_profiles.get(bot_config.qq.profile_ref) if bot_config.qq.enabled else None),
                 explicit_data_root=True,
             )
         except Exception as exc:  # noqa: BLE001 - one configured Bot must not abort its siblings

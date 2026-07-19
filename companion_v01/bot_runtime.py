@@ -32,6 +32,7 @@ from .plugin_reasoning import EnginePluginReasoningPort
 from .plugin_storage import InstancePluginStorageService
 from .plugin_tool_bridge import PluginCapabilityToolBridge
 from .public_guard import PublicThinkGuard
+from .qq_channel_profiles import QQChannelDeploymentProfile
 from .qq_gateway import NapCatQQGateway
 from .resource_manifest import ResourceManifest
 from .runtime_settings import BotSettingsView
@@ -351,6 +352,7 @@ class BotRuntimeFactory:
         *,
         data_root: Path,
         bot_config: BotConfig | None = None,
+        qq_channel_profile: QQChannelDeploymentProfile | None = None,
         selected_instance_id: str = "",
         explicit_data_root: bool = False,
         settings_overrides: Mapping[str, Any] | None = None,
@@ -398,7 +400,14 @@ class BotRuntimeFactory:
                     settings_store,
                     on_error=lambda exc: self.logger.warning("Settings override ignored: %s", type(exc).__name__),
                 )
-                runtime_config = RuntimeConfigView(self.config_module, saved_overrides)
+                runtime_config = RuntimeConfigView(
+                    self.config_module,
+                    {
+                        **saved_overrides,
+                        "DATA_DIR": str(runtime_layout.data_root),
+                        "DATA_ROOT": str(runtime_layout.data_root),
+                    },
+                )
             settings = BotSettingsView.from_config(runtime_config)
             if saved_model_settings is not None:
                 settings = settings.with_model_service(saved_model_settings)
@@ -407,6 +416,7 @@ class BotRuntimeFactory:
             deployment_security = resolve_instance_deployment_security(
                 instance_context,
                 runtime_config,
+                qq_channel_profile=qq_channel_profile,
             )
             satellite_service = DesktopSatelliteService(
                 instance_id=instance_context.instance_id,
@@ -449,6 +459,7 @@ class BotRuntimeFactory:
                     state_path=runtime_layout.state_dir / "qq_gateway_state.json",
                     channel_config=deployment_security.qq,
                     default_character_pack_id=instance_context.character_pack_id,
+                    wake_words=effective_bot_config.wake_words,
                 )
                 qq_followup_tasks = AsyncTaskSupervisor(name=f"qq-followups:{instance_context.instance_id}")
                 plugin_host.bind_notification_port(QQTextNotificationPort(qq_gateway))

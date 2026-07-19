@@ -131,6 +131,27 @@ enabled = true
                 self.assertEqual(raised.exception.field, field)
                 self.assertNotIn("secret", str(raised.exception))
 
+    def test_enabled_qq_bots_require_non_overlapping_wake_words(self) -> None:
+        overlapping = _profile_payload()
+        overlapping["bots"][0]["wake_words"] = ["Akane"]
+        overlapping["bots"][1]["channels"] = {"qq": {"enabled": True, "profile_ref": "qq.bot-b"}}
+        overlapping["bots"][1]["wake_words"] = ["Akane Finance"]
+
+        with self.assertRaises(BotProfileError) as raised:
+            parse_bot_host_profile(overlapping)
+
+        self.assertEqual(raised.exception.reason, "overlapping_qq_wake_word")
+        self.assertEqual(raised.exception.field, "bots.1.wake_words")
+
+        non_overlapping = _profile_payload()
+        non_overlapping["bots"][0]["wake_words"] = ["Akane"]
+        non_overlapping["bots"][1]["channels"] = {"qq": {"enabled": True, "profile_ref": "qq.bot-b"}}
+        non_overlapping["bots"][1]["wake_words"] = ["Akane218"]
+        profile = parse_bot_host_profile(non_overlapping)
+
+        self.assertEqual(profile.require("bot-a").wake_words, ("Akane",))
+        self.assertEqual(profile.require("bot-b").wake_words, ("Akane218",))
+
     def test_default_bot_must_exist_and_be_enabled(self) -> None:
         payload = _profile_payload()
         payload["bots"][0]["enabled"] = False

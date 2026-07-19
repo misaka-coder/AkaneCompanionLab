@@ -27,6 +27,7 @@ _BOT_FIELDS = frozenset(
         "bot_id",
         "enabled",
         "display_name",
+        "wake_words",
         "character_pack_id",
         "memory_space_id",
         "model_profile_ref",
@@ -84,6 +85,7 @@ class BotConfig:
     care_enabled: bool
     qq: BotQQChannelConfig
     plugins: tuple[BotPluginSelection, ...]
+    wake_words: tuple[str, ...] = ()
     source: str = "bot_profile"
 
     def __post_init__(self) -> None:
@@ -92,6 +94,9 @@ class BotConfig:
         _safe_id(self.bot_id, field="bot_id")
         _bool(self.enabled, field="enabled")
         _display_name(self.display_name, field="display_name")
+        if not self.wake_words:
+            object.__setattr__(self, "wake_words", (self.display_name,))
+        object.__setattr__(self, "wake_words", _wake_words(self.wake_words, field="wake_words"))
         _optional_safe_id(self.character_pack_id, field="character_pack_id")
         _safe_id(self.memory_space_id, field="memory_space_id")
         _safe_id(self.model_profile_ref, field="model_profile_ref")
@@ -121,6 +126,7 @@ class BotConfig:
             "bot_id": self.bot_id,
             "enabled": self.enabled,
             "display_name": self.display_name,
+            "wake_words": list(self.wake_words),
             "character_pack_id": self.character_pack_id,
             "memory_space_id": self.memory_space_id,
             "model_profile_ref": self.model_profile_ref,
@@ -158,6 +164,10 @@ def parse_bot_config(payload: Any, *, field_prefix: str = "bot") -> BotConfig:
     bot_id = _safe_id(payload.get("bot_id"), field=f"{field_prefix}.bot_id")
     enabled = _bool(payload.get("enabled", True), field=f"{field_prefix}.enabled")
     display_name = _display_name(payload.get("display_name", bot_id), field=f"{field_prefix}.display_name")
+    wake_words = _wake_words(
+        payload.get("wake_words", [display_name]),
+        field=f"{field_prefix}.wake_words",
+    )
     character_pack_id = _optional_safe_id(
         payload.get("character_pack_id", ""),
         field=f"{field_prefix}.character_pack_id",
@@ -229,6 +239,7 @@ def parse_bot_config(payload: Any, *, field_prefix: str = "bot") -> BotConfig:
         care_enabled=care_enabled,
         qq=BotQQChannelConfig(enabled=qq_enabled, profile_ref=qq_profile_ref),
         plugins=tuple(plugins),
+        wake_words=wake_words,
     )
 
 
@@ -253,6 +264,7 @@ def parse_bot_host_profile(payload: Any) -> BotHostProfile:
     bots = tuple(parse_bot_config(item, field_prefix=f"bots.{index}") for index, item in enumerate(raw_bots))
     bot_ids: set[str] = set()
     memory_spaces: set[str] = set()
+    qq_wake_words: list[tuple[str, str]] = []
     for index, bot in enumerate(bots):
         if bot.bot_id in bot_ids:
             _fail("duplicate_bot_id", field=f"bots.{index}.bot_id")
@@ -260,6 +272,13 @@ def parse_bot_host_profile(payload: Any) -> BotHostProfile:
             _fail("duplicate_memory_space_id", field=f"bots.{index}.memory_space_id")
         bot_ids.add(bot.bot_id)
         memory_spaces.add(bot.memory_space_id)
+        if bot.enabled and bot.qq.enabled:
+            for wake_word in bot.wake_words:
+                normalized_wake_word = wake_word.casefold()
+                for _other_bot_id, other_wake_word in qq_wake_words:
+                    if _qq_wake_words_overlap(normalized_wake_word, other_wake_word):
+                        _fail("overlapping_qq_wake_word", field=f"bots.{index}.wake_words")
+                qq_wake_words.append((bot.bot_id, normalized_wake_word))
 
     enabled_ids = {bot.bot_id for bot in bots if bot.enabled}
     if not enabled_ids:
@@ -333,6 +352,7 @@ def bot_config_from_instance_context(context: Any) -> BotConfig:
             )
             for item in raw_plugins
         ),
+        wake_words=("Akane",),
         source="instance_adapter",
     )
 
@@ -371,6 +391,42 @@ def _display_name(value: Any, *, field: str) -> str:
     if not normalized or normalized != value or len(normalized) > 80 or any(ord(char) < 32 for char in normalized):
         _fail("invalid_display_name", field=field)
     return normalized
+
+
+def _wake_words(value: Any, *, field: str) -> tuple[str, ...]:
+    if isinstance(value, tuple):
+        raw_items = list(value)
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        _fail("wake_words_must_be_array", field=field)
+    if not raw_items or len(raw_items) > 8:
+        _fail("invalid_wake_words", field=field)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw_items):
+        if not isinstance(item, str):
+            _fail("wake_word_must_be_string", field=f"{field}.{index}")
+        wake_word = item.strip()
+        if wake_word != item or not wake_word or len(wake_word) > 32 or any(ord(char) < 32 for char in wake_word):
+            _fail("invalid_wake_word", field=f"{field}.{index}")
+        key = wake_word.casefold()
+        if key in seen:
+            _fail("duplicate_wake_word", field=f"{field}.{index}")
+        seen.add(key)
+        normalized.append(wake_word)
+    return tuple(normalized)
+
+
+def _qq_wake_words_overlap(left: str, right: str) -> bool:
+    def searches(wake_word: str, text: str) -> bool:
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9]){re.escape(wake_word)}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+        return pattern.search(text) is not None
+
+    return searches(left, right) or searches(right, left)
 
 
 def _fail(reason: str, *, field: str = "", status: str = "invalid_config") -> None:

@@ -163,6 +163,13 @@ def _log_event(event: str, **fields: object) -> None:
     logger.info(json.dumps(payload, ensure_ascii=False))
 
 
+def _bot_log_event(bot_id: str):
+    def emit(event: str, **fields: object) -> None:
+        _log_event(event, bot_id=bot_id, **fields)
+
+    return emit
+
+
 def _resolve_identity_from_query(request: Request) -> tuple[str, str]:
     session_id = str(request.query_params.get("user_id") or request.query_params.get("session_id") or "default_session")
     profile_user_id = str(request.query_params.get("real_user_id") or session_id)
@@ -234,22 +241,36 @@ app.include_router(
         resolve_identity_from_payload=_resolve_identity_from_payload,
     )
 )
-if qq_gateway is not None:
+for qq_bot_runtime in bot_registry.values():
+    if qq_bot_runtime.qq_gateway is None:
+        continue
+    qq_route_kwargs = {
+        "engine": qq_bot_runtime.engine,
+        "config_module": qq_bot_runtime.config_module,
+        "qq_gateway": qq_bot_runtime.qq_gateway,
+        "runtime_metrics": qq_bot_runtime.runtime_metrics,
+        "logger": logger,
+        "log_event": _bot_log_event(qq_bot_runtime.bot_id),
+        "tts_client": qq_bot_runtime.tts_client,
+        "settings": qq_bot_runtime.settings,
+        "async_task_supervisor": qq_bot_runtime.qq_followup_tasks,
+        "channel_config": qq_bot_runtime.qq_channel_config,
+        "admin_auth": qq_bot_runtime.admin_write_auth,
+        "plugin_command_broker_provider": lambda runtime=qq_bot_runtime: runtime.plugin_command_broker,
+    }
     app.include_router(
         build_qq_router(
-            engine=engine,
-            config_module=runtime_config,
-            qq_gateway=qq_gateway,
-            runtime_metrics=runtime_metrics,
-            logger=logger,
-            log_event=_log_event,
-            tts_client=tts_client,
-            settings=bot_runtime.settings,
-            async_task_supervisor=qq_followup_tasks,
-            channel_config=qq_channel_config,
-            admin_auth=admin_write_auth,
+            **qq_route_kwargs,
+            route_base=f"/api/bots/{qq_bot_runtime.bot_id}/qq",
         )
     )
+    if qq_bot_runtime.bot_id == bot_registry.default_bot_id:
+        app.include_router(
+            build_qq_router(
+                **qq_route_kwargs,
+                route_base="/api/qq",
+            )
+        )
 app.include_router(
     build_sessions_router(
         engine=engine,

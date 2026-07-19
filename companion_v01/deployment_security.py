@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .instance_profile import InstanceContext
+from .qq_channel_profiles import QQChannelDeploymentProfile
 
 
 class DeploymentSecurityError(RuntimeError):
@@ -131,6 +132,8 @@ class InstanceDeploymentSecurity:
 def resolve_instance_deployment_security(
     instance_context: InstanceContext,
     config_module: Any,
+    *,
+    qq_channel_profile: QQChannelDeploymentProfile | None = None,
 ) -> InstanceDeploymentSecurity:
     """Bind manifest selections to deployment secrets before Engine startup."""
 
@@ -143,30 +146,37 @@ def resolve_instance_deployment_security(
         require_token=bool(admin_token),
         allow_loopback_without_token=compatibility and not admin_token,
     )
-    satellite = DesktopSatelliteAuth(
-        token=_clean(getattr(config_module, "AKANE_DESKTOP_SATELLITE_TOKEN", ""))
-    )
+    satellite = DesktopSatelliteAuth(token=_clean(getattr(config_module, "AKANE_DESKTOP_SATELLITE_TOKEN", "")))
 
     manifest_qq = instance_context.channels.qq
-    enabled = (
-        bool(getattr(config_module, "QQ_BRIDGE_ENABLED", False))
-        if compatibility
-        else manifest_qq.enabled
-    )
-    configured_profile_ref = _clean(
-        getattr(config_module, "QQ_CHANNEL_PROFILE_REF", "")
-    )
+    canonical_bot_config = instance_context.source == "bot_config_adapter"
+    enabled = bool(getattr(config_module, "QQ_BRIDGE_ENABLED", False)) if compatibility else manifest_qq.enabled
+    configured_profile_ref = _clean(getattr(config_module, "QQ_CHANNEL_PROFILE_REF", ""))
     profile_ref = configured_profile_ref if compatibility else manifest_qq.profile_ref
-    bot_id = _clean(getattr(config_module, "QQ_BOT_QQ", ""))
-    onebot_http_url = _clean(
-        getattr(config_module, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
-    ).rstrip("/") or "http://127.0.0.1:3001"
-    webhook_secret = _clean(getattr(config_module, "QQ_WEBHOOK_SECRET", ""))
-    onebot_access_token = _clean(
-        getattr(config_module, "QQ_ONEBOT_ACCESS_TOKEN", "")
-    )
+    if enabled and canonical_bot_config:
+        if qq_channel_profile is None:
+            _fail("qq_channel_profile_unavailable", field_name="channels.qq.profile_ref")
+        if qq_channel_profile.profile_ref != manifest_qq.profile_ref:
+            _fail("qq_channel_profile_mismatch", field_name="channels.qq.profile_ref")
+        bot_id = qq_channel_profile.bot_qq
+        onebot_http_url = qq_channel_profile.onebot_http_url
+        webhook_secret = qq_channel_profile.webhook_secret
+        onebot_access_token = qq_channel_profile.onebot_access_token
+    elif canonical_bot_config:
+        bot_id = ""
+        onebot_http_url = "http://127.0.0.1:3001"
+        webhook_secret = ""
+        onebot_access_token = ""
+    else:
+        bot_id = _clean(getattr(config_module, "QQ_BOT_QQ", ""))
+        onebot_http_url = (
+            _clean(getattr(config_module, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")).rstrip("/")
+            or "http://127.0.0.1:3001"
+        )
+        webhook_secret = _clean(getattr(config_module, "QQ_WEBHOOK_SECRET", ""))
+        onebot_access_token = _clean(getattr(config_module, "QQ_ONEBOT_ACCESS_TOKEN", ""))
 
-    if enabled and not compatibility:
+    if enabled and not compatibility and not canonical_bot_config:
         if not configured_profile_ref:
             _fail(
                 "qq_channel_profile_ref_required",
@@ -206,9 +216,7 @@ def resolve_instance_deployment_security(
 
 
 def is_loopback_request(request: Any) -> bool:
-    host = str(
-        getattr(getattr(request, "client", None), "host", "") or ""
-    ).strip().lower()
+    host = str(getattr(getattr(request, "client", None), "host", "") or "").strip().lower()
     return host in {"127.0.0.1", "::1", "localhost", "testclient"}
 
 

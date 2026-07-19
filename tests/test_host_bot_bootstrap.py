@@ -35,6 +35,51 @@ memory_space_id = "memory-disabled"
 care_enabled = true
 """
 
+QQ_BOT_PROFILE = """\
+schema_version = 1
+default_bot_id = "bot-a"
+
+[[bots]]
+bot_id = "bot-a"
+enabled = true
+display_name = "Akane"
+wake_words = ["Akane"]
+memory_space_id = "memory-a"
+
+[bots.channels.qq]
+enabled = true
+profile_ref = "qq.bot-a"
+
+[[bots]]
+bot_id = "bot-b"
+enabled = true
+display_name = "Finance"
+wake_words = ["金融助手"]
+memory_space_id = "memory-b"
+
+[bots.channels.qq]
+enabled = true
+profile_ref = "qq.bot-b"
+"""
+
+QQ_PROFILES = """\
+schema_version = 1
+
+[[profiles]]
+profile_ref = "qq.bot-a"
+bot_qq = "10000001"
+onebot_http_url = "http://127.0.0.1:3001"
+webhook_secret = "webhook-a"
+onebot_access_token = "token-a"
+
+[[profiles]]
+profile_ref = "qq.bot-b"
+bot_qq = "10000002"
+onebot_http_url = "http://127.0.0.1:3002"
+webhook_secret = "webhook-b"
+onebot_access_token = "token-b"
+"""
+
 
 class _FakeRuntime:
     def __init__(self, bot_id: str, data_root: Path) -> None:
@@ -113,6 +158,31 @@ class HostBotBootstrapTests(unittest.IsolatedAsyncioTestCase):
 
             started = await result.registry.start_all(timeout_seconds=1.0)
             self.assertEqual(started["status"], "active")
+
+    async def test_host_selects_each_bot_qq_profile_from_secret_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            root.joinpath("bots.toml").write_text(QQ_BOT_PROFILE, encoding="utf-8")
+            secrets_dir = root / "secrets"
+            secrets_dir.mkdir()
+            secrets_dir.joinpath("qq_profiles.toml").write_text(QQ_PROFILES, encoding="utf-8")
+            factory = _FakeFactory()
+
+            result = build_host_bot_registry(factory=factory, host_data_root=root)
+
+        self.assertEqual(result.runtime_count, 2)
+        selected = [call["qq_channel_profile"] for call in factory.calls]
+        self.assertEqual([item.profile_ref for item in selected], ["qq.bot-a", "qq.bot-b"])
+        self.assertEqual([item.bot_qq for item in selected], ["10000001", "10000002"])
+        self.assertEqual(
+            [item.onebot_http_url for item in selected],
+            [
+                "http://127.0.0.1:3001",
+                "http://127.0.0.1:3002",
+            ],
+        )
+        self.assertNotIn("webhook-a", repr(selected[0]))
+        self.assertNotIn("token-b", repr(selected[1]))
 
     async def test_non_default_construction_failure_is_visible_but_does_not_abort_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

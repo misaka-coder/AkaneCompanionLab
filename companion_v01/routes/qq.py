@@ -39,6 +39,15 @@ if TYPE_CHECKING:
 
 
 LogEvent = Callable[..., None]
+_QQ_ROUTE_BASE_RE = re.compile(r"^/api(?:/[A-Za-z0-9._-]+)+$")
+
+
+def _normalize_qq_route_base(value: Any) -> str:
+    normalized = str(value or "").strip().rstrip("/")
+    if _QQ_ROUTE_BASE_RE.fullmatch(normalized) is None:
+        raise ValueError("invalid_qq_route_base")
+    return normalized
+
 
 QQ_REPLY_OBJECT_TERMS = ("工作台", "文件", "结果", "成果", "产物", "音频", "视频", "人声", "伴奏", "任务")
 QQ_REPLY_ACTION_TERMS = (
@@ -1326,8 +1335,11 @@ def build_qq_router(
     async_task_supervisor: Any = None,
     channel_config: QQChannelRuntimeConfig | None = None,
     admin_auth: AdminWriteAuth | None = None,
+    route_base: str = "/api/qq",
+    plugin_command_broker_provider: Callable[[], Any] | None = None,
 ) -> APIRouter:
     router = APIRouter()
+    qq_route_base = _normalize_qq_route_base(route_base)
     diagnostic_auth = admin_auth or AdminWriteAuth.local_compatibility()
 
     def schedule_followup(coroutine: Any) -> Any:
@@ -1507,7 +1519,7 @@ def build_qq_router(
                 duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
             )
 
-    @router.get("/api/qq/napcat/status")
+    @router.get(f"{qq_route_base}/napcat/status")
     async def qq_napcat_status(request: Request) -> JSONResponse:
         authorization = diagnostic_auth.authorize(request)
         if not authorization.ok:
@@ -1518,7 +1530,7 @@ def build_qq_router(
         data = dict(qq_gateway.status())
         return JSONResponse({"status": "ok", "data": data})
 
-    @router.post("/api/qq/self-check")
+    @router.post(f"{qq_route_base}/self-check")
     async def qq_self_check(request: Request) -> JSONResponse:
         """QQ / NapCat 连通性自检。主动测试 OneBot HTTP API 可达性和鉴权，返回结构化诊断。"""
         authorization = diagnostic_auth.authorize(request)
@@ -1530,7 +1542,7 @@ def build_qq_router(
         result = qq_gateway.self_check()
         return JSONResponse({"status": "ok", "data": result})
 
-    @router.post("/api/qq/napcat/event")
+    @router.post(f"{qq_route_base}/napcat/event")
     async def qq_napcat_event(request: Request) -> JSONResponse:
         started_at = time.perf_counter()
         event: dict = {}
@@ -1998,7 +2010,11 @@ def build_qq_router(
                     )
 
             # Plugin QQ command dispatch — checked after all built-in commands
-            _plugin_command_broker = getattr(request.app.state, "akane_plugin_command_broker", None)
+            _plugin_command_broker = (
+                plugin_command_broker_provider()
+                if plugin_command_broker_provider is not None
+                else getattr(request.app.state, "akane_plugin_command_broker", None)
+            )
             if _plugin_command_broker is not None and context.clean_message.startswith("/"):
                 _cmd_text = context.clean_message.strip()
                 _cmd_token, _, _cmd_args = _cmd_text.partition(" ")

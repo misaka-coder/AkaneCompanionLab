@@ -1,6 +1,6 @@
 # Akane 单 Host 多 Bot 收敛探查与实施报告 v1
 
-> 状态：产品与实施边界已冻结；Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B 已完成，Slice 4 待执行
+> 状态：产品与实施边界已冻结；Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B、Slice 4A 已完成，Slice 4B 与云端迁移验收待执行
 >
 > 建档日期：2026-07-19
 >
@@ -254,7 +254,32 @@ bots.toml 不存在
 
 真实测试已覆盖 `bots.toml → Host bootstrap → 三个真实 BotRuntime → 三个独立 data root/settings override → Registry start_all/stop_all`。Slice 3B 只完成生命周期与默认频道绑定；非默认 QQ Bot 的 canonical webhook 路由、secret/self_id 分发仍属于 Slice 4，不能把“runtime online”误报为“QQ 已接收消息”。
 
-### 2.1 `app.py` 是当前单例根因
+### 2.0.3 Slice 4A 已落地：多 QQ 账号身份、路由和唤醒词隔离
+
+Host 现在从 `<AKANE_DATA_ROOT>/secrets/qq_profiles.toml` 按 BotConfig 的安全 `profile_ref` 选择 QQ 账号、OneBot endpoint、webhook secret 与 access token。secret 文件不进入 Bot 配置、公开 snapshot、repr 或 prompt；同一 Host 中两个 profile 不能绑定同一个 QQ 号。
+
+真实 webhook 路由为：
+
+```text
+/api/bots/{bot_id}/qq/napcat/event
+  → 目标 Bot 的 webhook secret
+  → 目标 Bot 的 event self_id
+  → 目标 BotRuntime 的 Engine / Gateway / OneBot token / PluginHost
+```
+
+旧 `/api/qq/napcat/event` 只作为默认 Bot 的薄别名，两条路径共享同一个 Gateway duplicate ledger；同一事件同时投递到新旧地址时只产生一次 Engine turn 和一次出站回复。非默认 Bot 不注册旧地址。
+
+每个启用 QQ 的 Bot 现在有独立 `wake_words`。Host 配置会拒绝按真实 QQ 匹配边界发生重叠的唤醒词，例如 `Akane` 与 `Akane Finance`；`Akane` 不会误匹配账号名或普通文本中的 `Akane218`。因此同群两个 Bot 可以分别使用 `Akane`、`金融助手`，角色切换等命令只进入被唤醒 Bot。
+
+本切片只能阻止同一新 Host 内串线，不能跨进程去重。若用户看到“一次消息先收到正常模型回复，随后又收到‘我在认真听你说……’兜底”，而新 Host 的单 Gateway 已证明只处理一次，首要排查项是：
+
+1. 旧 personal/finance systemd 进程仍在运行；
+2. NapCat 同时保留旧 webhook 与新 Host webhook；
+3. 旧进程仍读取另一套模型/API 配置并在解析失败后发送人设兜底。
+
+云端迁移必须先保存回滚点，再停旧进程、删除旧 webhook、只配置 bot-scoped endpoint，最后用带 `bot_id` 的安全日志核对一条事件只进入一个 Runtime。仅修改本地代码或重启其中一个 Bot 不能完成这一步。
+
+### 2.1 `app.py` 曾是单例根因
 
 文件：`companion_v01/app.py`
 
@@ -282,9 +307,9 @@ bots.toml 不存在
 - `qq_gateway = NapCatQQGateway(...)`
 - `build_qq_router(engine=engine, qq_gateway=qq_gateway, ...)`
 
-这意味着当前 FastAPI 进程天然只能服务一个 Bot。
+Slice 1-4A 已把这些对象收进可重复创建的 `BotRuntime` 并由 Registry 持有；默认 Web/桌宠路由仍显式绑定默认 Bot，QQ 路由已经能绑定所有启用 QQ 的 Bot。
 
-### 2.2 QQ Router 当前捕获单个 Engine/Gateway
+### 2.2 QQ Router 继续复用单 Bot handler，但由 Host 按 Bot 装配
 
 文件：`companion_v01/routes/qq.py`
 
@@ -299,17 +324,17 @@ bots.toml 不存在
 
 `/api/qq/napcat/event` 先用唯一 `channel_config` 校验 webhook，再校验事件 `self_id`，随后始终调用唯一 `qq_gateway` 与唯一 `engine`。
 
-多 Bot 后不能继续为每个 Bot 注册一份同路径 router。目标是一个 Host 级 QQ dispatcher：
+Slice 4A 没有复制 QQ 业务实现，也没有为 personal/finance 各写一套 handler。Host 使用同一个 `build_qq_router()` 工厂，为每个 Runtime 注册不同的 bot-scoped path：
 
 ```text
-request path / event self_id
+request path / webhook secret / event self_id
         ↓
-BotRegistry.resolve_channel(...)
+目标 BotRuntime
         ↓
-BotRuntime
-        ↓
-复用现有单 Bot QQ turn handler
+同一个 QQ turn handler 实现
 ```
+
+这种装配保留了每 Bot 独立 Gateway 状态，又避免在请求期间切换共享全局对象。后续只有当 Bot 热增删要求动态路由时，才需要把静态 router 装配进一步收敛为 Registry dispatcher；不能为了形式再保留第二套 handler。
 
 ### 2.3 QQ 身份当前没有 Bot namespace
 
@@ -1118,7 +1143,7 @@ npm run build
 
 ## 8. 本轮实施与验证记录
 
-本轮完成 Slice 3B：`bots.toml` 已进入真实 Host bootstrap，默认 Web/桌宠 routes 明确绑定 Registry 默认 Bot；没有引入 QQ 多账号请求分发或完整 UI 级 per-Bot settings 管理。Slice 2B/2C 的模型、视觉、cache 和语音快照继续保持在同一边界内。
+本轮完成 Slice 4A：`bots.toml` 下的多个 Bot 已可分别绑定 QQ deployment profile、bot-scoped webhook、唤醒词、Engine/Gateway 与插件命令 broker；默认 Web/桌宠 routes 仍明确绑定 Registry 默认 Bot。Slice 2B/2C 的模型、视觉、cache 和语音快照继续保持在同一 Runtime 边界内。
 
 已完成：
 
@@ -1146,6 +1171,11 @@ npm run build
 - 新增 `companion_v01/host_bot_bootstrap.py`：有 `bots.toml` 时批量构造 enabled Bot，无文件时保留原 `AKANE_INSTANCE_ID` 单实例路径；非默认构造失败隔离，默认构造失败 fail-closed 并清理已构造 sibling。
 - `app.py` 从 Host bootstrap 取得 Registry/default runtime，所有现有默认频道 route 使用该 runtime 的 `RuntimeConfigView`；不会因构造顺序误绑其他 Bot。
 - 新增 `deploy/bots.example.toml`，示例不包含密钥/路径，并明确 QQ 多账号分发尚未接通。
+- 新增 `companion_v01/qq_channel_profiles.py` 与 `deploy/qq_profiles.example.toml`：QQ endpoint/账号/token 从 Host secret 文件按安全 profile ref 选择，公开状态与 repr 不泄漏凭据。
+- `app.py` 为每个启用 QQ 的 Runtime 注册 `/api/bots/{bot_id}/qq/napcat/event`；旧 `/api/qq/napcat/event` 只绑定默认 Bot。
+- `routes/qq.py` 支持安全 route base 与 per-Runtime plugin command broker provider；请求不会偷用默认 Bot 的金融插件 broker。
+- `qq_gateway.py` 使用每 Bot `wake_words`；账号名 `Akane218` 不会误触发 `Akane`，同群 Bot 的重叠唤醒词在配置加载时 fail-closed。
+- canonical BotRuntime 的 `DATA_DIR/DATA_ROOT` 固定为自己的 runtime root，QQ profile、模型配置、记忆、Gateway 状态和插件存储不会回落到另一个 Bot 的共享路径。
 
 验证通过：
 
@@ -1158,8 +1188,10 @@ npm run build
 - Vision、model-service、runtime-settings 组合回归：125 项；真实实例/QQ/路由/桌宠回归：117 项；插件/金融/实例组合回归：65 项。
 - Slice 3A 与 multi-Bot product/finance absence/instance/route 组合回归：164 项。
 - Slice 3B 与 instance security/backend routes/product/finance/settings 组合回归：149 项。
+- Slice 4A QQ profile/双 Bot 分发聚焦测试：8 项；覆盖 secret/self_id/Engine/OneBot token、唤醒词、默认别名去重和插件 broker 隔离。
+- Slice 4A 与 backend routes/QQ Gateway/instance security/Host bootstrap/BotRuntime/product contract/finance absence 组合回归：223 项。
 - Ruff check、Ruff format check、py_compile、`git diff --check` 均通过。
-- 尚未实现 Host 级 QQ dispatcher、每 Bot QQ deployment secret profile、控制中心 Bot 管理 UI 和 DeviceExecutorHub；这些属于 Slice 4 及后续切片，不能把当前 online runtime 误认为多个 QQ 账号已经能接收事件。
+- 尚未完成云端旧进程与旧 webhook 下线、两个真实 NapCat 账号 smoke、QQ 附件/语音/文件/后台通知的双 Bot 实机验收、控制中心 Bot 管理 UI 和 DeviceExecutorHub；不能把本地 4A 测试通过误报成云端双答已经消失。
 - 未修改云端部署、云端模型配置、MemCore 数据或桌宠前端；用户原有 `.claude/` 未触碰。
 
 ---
@@ -1168,11 +1200,12 @@ npm run build
 
 后续执行不应直接继续为 personal 单独接 GPT-SoVITS 或为 finance 单独复制视觉/Satellite 配置。
 
-Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B 已完成。下一步进入 **Slice 4**：
+Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B、Slice 4A 已完成。下一步进入 **Slice 4B 与云端迁移验收**：
 
-1. 抽取现有 QQ 单 Bot event handler，新增 canonical `/api/bots/{bot_id}/qq/napcat/event` dispatcher；
-2. 按 Bot 解析 webhook secret / self_id / OneBot token，旧 `/api/qq/napcat/event` 仅保留到 default Bot 的薄兼容转发；
-3. 用两个 fake NapCat 账号验证附件、语音、文件、插件命令和后台通知不串 Bot，再进入控制中心管理面与 DeviceExecutorHub。
+1. 在云端生成不入库的 `bots.toml` 与 `secrets/qq_profiles.toml`，保存旧部署回滚点；
+2. 停止旧 personal/finance 常驻进程，清除两套 NapCat 的旧 webhook，只保留各自 bot-scoped endpoint；
+3. 用两个真实 NapCat 账号验证普通回复、同群独立唤醒、角色切换、插件命令与一条事件一次回复；
+4. 继续补齐附件、语音、文件和后台通知的双 Bot 真实链验收，再进入控制中心管理面与 DeviceExecutorHub。
 
 当上下文被压缩时，恢复顺序：
 

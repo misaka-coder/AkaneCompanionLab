@@ -1,0 +1,18 @@
+# Copy to <AKANE_DATA_ROOT>/secrets/qq_profiles.toml.
+# This is a deployment secret file: never commit the populated copy.
+
+schema_version = 1
+
+[[profiles]]
+profile_ref = "qq.akane-personal"
+bot_qq = "10000001"
+onebot_http_url = "http://127.0.0.1:3001"
+webhook_secret = "replace-with-personal-webhook-secret"
+onebot_access_token = "replace-with-personal-onebot-token"
+
+[[profiles]]
+profile_ref = "qq.akane-finance"
+bot_qq = "10000002"
+onebot_http_url = "http://127.0.0.1:3002"
+webhook_secret = "replace-with-finance-webhook-secret"
+onebot_access_token = "replace-with-finance-onebot-token"

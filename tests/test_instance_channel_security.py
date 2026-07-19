@@ -18,12 +18,15 @@ from companion_v01.deployment_security import (
     QQChannelRuntimeConfig,
     resolve_instance_deployment_security,
 )
+from companion_v01.bot_profile import parse_bot_host_profile
 from companion_v01.attachment_ingest import AttachmentIngestService
 from companion_v01.instance_profile import (
     InstanceContext,
     build_local_default_instance_context,
+    instance_context_from_bot_config,
     parse_instance_manifest,
 )
+from companion_v01.qq_channel_profiles import QQChannelDeploymentProfile
 from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 from companion_v01.routes.control_center import build_control_center_router
 from companion_v01.routes.model_services import build_model_services_router
@@ -125,6 +128,63 @@ class InstanceDeploymentSecurityTests(unittest.TestCase):
         self.assertEqual(security.qq.bot_id, "123456")
         self.assertNotIn("hook-secret", repr(security))
         self.assertNotIn("onebot-token", repr(security))
+
+    def test_canonical_bot_uses_only_its_selected_qq_profile(self) -> None:
+        profile = parse_bot_host_profile(
+            {
+                "schema_version": 1,
+                "default_bot_id": "bot-a",
+                "bots": [
+                    {
+                        "bot_id": "bot-a",
+                        "display_name": "Akane",
+                        "memory_space_id": "memory-a",
+                        "channels": {"qq": {"enabled": True, "profile_ref": "qq.bot-a"}},
+                    }
+                ],
+            }
+        )
+        context = instance_context_from_bot_config(profile.require("bot-a"))
+        selected = QQChannelDeploymentProfile(
+            profile_ref="qq.bot-a",
+            bot_qq="10000001",
+            onebot_http_url="http://127.0.0.1:3101",
+            webhook_secret="selected-webhook",
+            onebot_access_token="selected-token",
+        )
+        security = resolve_instance_deployment_security(
+            context,
+            _config(
+                QQ_CHANNEL_PROFILE_REF="qq.other",
+                QQ_BOT_QQ="99999999",
+                QQ_ONEBOT_HTTP_URL="http://127.0.0.1:3999",
+                QQ_WEBHOOK_SECRET="other-webhook",
+                QQ_ONEBOT_ACCESS_TOKEN="other-token",
+            ),
+            qq_channel_profile=selected,
+        )
+
+        self.assertEqual(security.qq.profile_ref, "qq.bot-a")
+        self.assertEqual(security.qq.bot_id, "10000001")
+        self.assertEqual(security.qq.onebot_http_url, "http://127.0.0.1:3101")
+        self.assertEqual(security.qq.webhook_secret, "selected-webhook")
+        self.assertEqual(security.qq.onebot_access_token, "selected-token")
+        self.assertNotIn("other-webhook", repr(security))
+
+        mismatched = QQChannelDeploymentProfile(
+            profile_ref="qq.other",
+            bot_qq="10000002",
+            onebot_http_url="http://127.0.0.1:3102",
+            webhook_secret="mismatched-webhook",
+            onebot_access_token="mismatched-token",
+        )
+        with self.assertRaises(DeploymentSecurityError) as raised:
+            resolve_instance_deployment_security(
+                context,
+                _config(),
+                qq_channel_profile=mismatched,
+            )
+        self.assertEqual(raised.exception.reason, "qq_channel_profile_mismatch")
 
     def test_local_default_preserves_optional_secret_compatibility(self) -> None:
         security = resolve_instance_deployment_security(
