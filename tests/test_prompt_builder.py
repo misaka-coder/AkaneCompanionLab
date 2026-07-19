@@ -310,8 +310,9 @@ system = "semantic reinforcement system"
             self.assertNotIn("extra", result["user_prompt"])
             self.assertNotIn("persona refs", result["user_prompt"])
             self.assertLess(provider_text.index("较长期的语义记忆"), provider_text.index("extra"))
-            self.assertLess(history_text.index("extra"), history_text.index("当前演出状态"))
+            self.assertLess(history_text.index("extra"), history_text.index("persona refs"))
             self.assertLess(history_text.index("persona refs"), history_text.index("User: hi"))
+            self.assertLess(provider_text.index("User: hi"), provider_text.index("当前演出状态"))
             audit_names = [section["name"] for section in result["prompt_audit_sections"]]
             self.assertIn("system.full", audit_names)
             self.assertIn("system_extra.resource_context", audit_names)
@@ -421,6 +422,7 @@ system = "semantic reinforcement system"
         self.assertNotIn("persona state A", first["user_prompt"])
         self.assertNotIn("dynamic extra", first["user_prompt"])
         self.assertNotIn("dynamic reference", first["user_prompt"])
+        self.assertIn("dynamic visual", first["user_prompt"])
         self.assertIn("User: current A", first["user_prompt"])
         first_event_end = first_history.index("User: first event") + len("User: first event")
         self.assertEqual(first_history[:first_event_end], second_history[:first_event_end])
@@ -428,6 +430,60 @@ system = "semantic reinforcement system"
             first["history_turns"],
             second["history_turns"][: len(first["history_turns"])],
         )
+
+    def test_per_turn_context_stays_after_append_only_history(self) -> None:
+        builder = PromptBuilder(load_persona_config())
+        common = {
+            "now_ts": 1_712_400_000,
+            "raw_text": "User: first event",
+            "episodic_summary_text": "stable episode",
+            "semantic_summary_text": "stable semantic",
+            "memory_text": "",
+            "resource_context": "",
+            "extra_context": "stable runtime context",
+            "visual_defaults": {
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            "allow_tool_call": True,
+            "tool_prompt_context": "stable tool contract",
+            "debug_enabled": False,
+            "persona_system_context": "stable persona state",
+            "persona_reference_context": "stable persona reference",
+        }
+        first = builder.build_final_generation_context(
+            **common,
+            history_turns=[{"role": "user", "content": "User: first event"}],
+            current_message_text="User: current A",
+            current_visual_context="visual A",
+            volatile_extra_context="turn context A",
+        )
+        second = builder.build_final_generation_context(
+            **common,
+            history_turns=[
+                {"role": "user", "content": "User: first event"},
+                {"role": "assistant", "content": "Assistant: first answer"},
+            ],
+            current_message_text="User: current B",
+            current_visual_context="visual B",
+            volatile_extra_context="turn context B",
+        )
+
+        self.assertEqual(
+            first["history_turns"],
+            second["history_turns"][: len(first["history_turns"])],
+        )
+        self.assertNotIn("turn context A", _history_text(first))
+        self.assertNotIn("visual A", _history_text(first))
+        self.assertIn("turn context A", first["user_prompt"])
+        self.assertIn("visual A", first["user_prompt"])
+        audit = {section["name"]: section["text"] for section in first["prompt_audit_sections"]}
+        self.assertEqual(audit["user.stable_extra_context"], "stable runtime context")
+        self.assertEqual(audit["user.volatile_extra_context"], "turn context A")
 
     def test_plugin_proactive_scope_uses_stable_system_and_appends_memory_timeline_once(self) -> None:
         builder = PromptBuilder(load_persona_config())

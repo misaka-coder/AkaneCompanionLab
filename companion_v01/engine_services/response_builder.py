@@ -341,12 +341,16 @@ def prepare_context(
         ]
         if text
     ]
+    # The last flag is a placement contract, not a Bot-specific exception:
+    # per-turn transport/event material changes on every request and must stay
+    # after append-only history, while durable runtime context can precede it.
     extra_context_candidates = [
         (
             "client_mode",
             engine._build_client_mode_prompt_context(client_context)
             if prompt_profile.includes(PromptModule.CLIENT_MODE)
             else "",
+            False,
         ),
         (
             "relationship",
@@ -355,21 +359,42 @@ def prepare_context(
                 character_pack_id=character_pack_id,
                 now_ts=now_ts,
             ),
+            False,
         ),
-        ("task_workspace", task_workspace_context),
-        ("workspace_files", workspace_file_context),
-        ("attachment_focus", attachment_focus_context),
-        ("generated_files", generated_file_context),
-        ("pending_gifts", pending_gift_context),
-        ("gift_observation", gift_observation_context),
+        ("task_workspace", task_workspace_context, False),
+        ("workspace_files", workspace_file_context, False),
+        ("attachment_focus", attachment_focus_context, False),
+        ("generated_files", generated_file_context, False),
+        ("pending_gifts", pending_gift_context, False),
+        ("gift_observation", gift_observation_context, False),
         (
             "turn_extra_context",
             extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",
+            True,
         ),
     ]
-    extra_context_audit_sections = engine._build_extra_context_audit_sections(extra_context_candidates)
-    extra_context_sections = [section["text"] for section in extra_context_audit_sections]
-    merged_extra_context = "\n\n".join(extra_context_sections) if extra_context_sections else "(无额外上下文)"
+    extra_context_audit_sections = engine._build_extra_context_audit_sections(
+        [(name, text) for name, text, _volatile in extra_context_candidates]
+    )
+    volatile_names = {
+        name for name, _text, volatile in extra_context_candidates if volatile
+    }
+    stable_extra_context_sections = [
+        section["text"]
+        for section in extra_context_audit_sections
+        if str(section.get("name") or "") not in volatile_names
+    ]
+    volatile_extra_context_sections = [
+        section["text"]
+        for section in extra_context_audit_sections
+        if str(section.get("name") or "") in volatile_names
+    ]
+    merged_extra_context = (
+        "\n\n".join(stable_extra_context_sections)
+        if stable_extra_context_sections
+        else "(无额外上下文)"
+    )
+    merged_volatile_extra_context = "\n\n".join(volatile_extra_context_sections)
     visual_defaults = (
         resource_manifest.build_runtime_manifest(
             extra_bgm_tracks=user_bgm_tracks,
@@ -600,6 +625,7 @@ def prepare_context(
             current_visual_context=current_visual_context,
             resource_context=resource_context,
             extra_context=merged_extra_context,
+            volatile_extra_context=merged_volatile_extra_context,
             extra_context_audit_sections=extra_context_audit_sections,
             stable_system_context=stable_system_context,
             persona_system_context=str(persona_context.get("system_context") or ""),

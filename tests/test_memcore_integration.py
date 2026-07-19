@@ -269,8 +269,12 @@ class _PromptContextEngine:
     def _build_memory_relationship_context(self, **_kwargs) -> str:
         return ""
 
-    def _build_extra_context_audit_sections(self, _candidates) -> list[dict[str, str]]:
-        return []
+    def _build_extra_context_audit_sections(self, candidates) -> list[dict[str, str]]:
+        return [
+            {"name": str(name), "text": str(text)}
+            for name, text in candidates
+            if str(name).strip() and str(text).strip()
+        ]
 
     def _build_tool_prompt_context(self, **_kwargs) -> str:
         return ""
@@ -2086,6 +2090,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 confirmed_snippets=[],
                 now_ts=1712400000,
                 prompt_scope="plugin_proactive",
+                extra_user_context="TURN CONTEXT",
                 client_context=ClientProtocolContext(
                     requested_mode=ClientMode.QQ_TEXT,
                     effective_mode=ClientMode.QQ_TEXT,
@@ -2097,6 +2102,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("RELATIONSHIP CONTEXT", captured["extra_context"])
         self.assertIn("TASK WORKSPACE CONTEXT", captured["extra_context"])
         self.assertIn("PENDING GIFT CONTEXT", captured["extra_context"])
+        self.assertNotIn("TURN CONTEXT", captured["extra_context"])
+        self.assertEqual(captured["volatile_extra_context"], "TURN CONTEXT")
         self.assertEqual(captured["persona_system_context"], "PERSONA SYSTEM")
         self.assertEqual(captured["persona_reference_context"], "PERSONA REFERENCE")
         self.assertEqual(captured["current_visual_context"], "CURRENT VISUAL CONTEXT")

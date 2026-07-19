@@ -141,6 +141,7 @@ class PromptBuilder:
         current_visual_context: str,
         resource_context: str,
         extra_context: str,
+        volatile_extra_context: str = "",
         visual_defaults: dict[str, Any],
         allow_tool_call: bool,
         tool_prompt_context: str,
@@ -258,9 +259,8 @@ class PromptBuilder:
             structured_history_turns.append(
                 {"role": "user", "content": memory_context_text}
             )
-        runtime_context_parts = [] if plugin_proactive_scope else [
+        stable_runtime_context_parts = [] if plugin_proactive_scope else [
             str(extra_context or "").strip(),
-            f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
             (
                 "【本轮当前助手状态（宿主可信上下文）】\n"
                 f"{persona_system or '(无额外当前状态)'}"
@@ -270,7 +270,7 @@ class PromptBuilder:
                 f"{persona_reference_context or '(无额外表达侧面参考)'}"
             ),
         ]
-        runtime_context_text = "\n\n".join(part for part in runtime_context_parts if part)
+        runtime_context_text = "\n\n".join(part for part in stable_runtime_context_parts if part)
         if runtime_context_text:
             structured_history_turns.append(
                 {"role": "user", "content": runtime_context_text}
@@ -280,12 +280,13 @@ class PromptBuilder:
         )
         dynamic_tail_parts = [
             f"可用回忆片段：\n{memory_text}",
+            str(volatile_extra_context or "").strip(),
+            f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
         ]
         if plugin_proactive_scope:
             dynamic_tail_parts.extend(
                 [
                     str(extra_context or "").strip(),
-                    f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
                     (
                         "【本轮当前助手状态（宿主可信上下文）】\n"
                         f"{persona_system or '(无额外当前状态)'}"
@@ -321,9 +322,21 @@ class PromptBuilder:
                 {"name": "user.tool_context", "text": tool_context_text},
                 {"name": "user.memory_context", "text": memory_context_text},
                 {"name": "user.runtime_context", "text": runtime_context_text},
+                {
+                    "name": "user.extra_context",
+                    "text": "\n\n".join(
+                        part
+                        for part in [
+                            str(extra_context or "").strip(),
+                            str(volatile_extra_context or "").strip(),
+                        ]
+                        if part
+                    ),
+                },
+                {"name": "user.stable_extra_context", "text": extra_context},
+                {"name": "user.volatile_extra_context", "text": volatile_extra_context},
                 {"name": "user.raw_recent_timeline", "text": raw_text or "(无)"},
                 {"name": "user.retrieval_snippets", "text": memory_text},
-                {"name": "user.extra_context", "text": extra_context},
                 *extra_context_subsections,
                 {"name": "user.current_visual_context", "text": current_visual_context},
                 {"name": "user.persona_state", "text": persona_system or "(无额外当前状态)"},
