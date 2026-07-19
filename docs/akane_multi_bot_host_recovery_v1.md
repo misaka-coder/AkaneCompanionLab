@@ -1,6 +1,6 @@
 # Akane 单 Host 多 Bot 收敛探查与实施报告 v1
 
-> 状态：产品与实施边界已冻结；Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C 已完成，Slice 3 待执行
+> 状态：产品与实施边界已冻结；Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A 已完成，Slice 3B 待执行
 >
 > 建档日期：2026-07-19
 >
@@ -214,6 +214,24 @@ BotRuntimeFactory
 路由仍保留 `config_module` 兼容回退，因此现有直接构造路由的测试/旧集成不需要改；真实 `app.py` 装配已经显式传入 `bot_runtime.settings`。双快照测试已验证 GPT-SoVITS 参数和 QQ 语音长度限制不会串线。
 
 本切片尚未处理：控制中心 Bot 管理 UI、Host 级 QQ dispatcher、TTS/ASR 热更新和多 Bot 生命周期（Slice 3）。
+
+### 2.0.1 Slice 3A 已落地：BotConfig 与 Host 生命周期基础
+
+Slice 3A 新增 canonical `BotConfig` / `BotHostProfile`，配置只允许安全 id、显示名、继承 profile 引用、Care、QQ profile 引用和插件选择；API Key、token、绝对数据路径等未知字段会 fail-closed。数据根由 Host 根与 `memory_space_id` 计算，配置本身不保存路径。
+
+现有 `InstanceManifest` 只通过 `bot_config_from_instance_context()` 进入兼容适配；canonical 路径则由 `instance_context_from_bot_config()` 投影给尚未迁移的 Engine/PluginHost 入口，避免出现两套并行产品配置。
+
+`BotRegistry` 现在拥有：
+
+- `registered → starting → online/degraded → stopping → stopped` 状态；
+- 重复 Bot id 和重复数据根拒绝；
+- `start_all()` 启动失败隔离；
+- `stop_all()` 逐 Bot 有界关闭；
+- 不包含路径、异常正文、token 的安全公开快照。
+
+canonical `BotRuntimeFactory.create(bot_config=...)` 使用 per-Bot `RuntimeConfigView` 加载保存的 runtime overrides，不再写回进程全局 `config`；旧单实例兼容入口暂时保留原有 replay 行为。自动测试已用真实 factory 在同一进程构造、启动和关闭三个独立数据根的 `BotRuntime`，并验证三份 settings override 不串线。
+
+`app.py` 的 startup/shutdown 已改由 `BotRegistry.start_all()/stop_all()` 统一拥有；当前 bootstrap 仍只注册兼容默认 Bot。读取 `bots.toml` 并批量创建配置 Bot 属于 Slice 3B，QQ 多账号 webhook 分发仍属于 Slice 4。
 
 ### 2.1 `app.py` 是当前单例根因
 
@@ -1079,7 +1097,7 @@ npm run build
 
 ## 8. 本轮实施与验证记录
 
-本轮完成 Slice 2C，运行时代码把语音配置迁移到 Bot settings；没有引入多 Bot 请求分发或完整 UI 级 per-Bot settings 管理。Slice 2B-core 的视觉、prompt cache、context/auto-compact 和目标 Bot 模型 reload 也继续保持在同一快照边界内。
+本轮完成 Slice 3A：建立 canonical BotConfig、Host 生命周期和真实三 BotRuntime 构造/启停基础；没有引入 QQ 多账号请求分发或完整 UI 级 per-Bot settings 管理。Slice 2B/2C 的模型、视觉、cache 和语音快照继续保持在同一边界内。
 
 已完成：
 
@@ -1099,17 +1117,23 @@ npm run build
 - `BotRuntimeFactory` 使用 Bot 快照构造 Edge TTS；Web voice、petdesk、QQ delivery 和 capabilities provider tts-test 均优先读取同一快照。
 - GPT-SoVITS、OpenAI-compatible ASR、faster-whisper、QQ TTS profile/长度/segment 参数已纳入快照；路由保留旧 `config_module` 回退。
 - `tests/test_runtime_settings.py` 新增双 GPT-SoVITS client 参数隔离测试；`tests/test_qq_voice_delivery.py` 新增 Bot 快照覆盖 QQ 语音限制测试。
+- 新增 `companion_v01/bot_profile.py`：`BotConfig` / `BotHostProfile` 安全解析、唯一 default、Bot/memory space 去重、配置字段 fail-closed 和 Host-owned data root 解析。
+- `instance_profile.py` 降为兼容读适配；canonical BotConfig 可投影到现有 InstanceContext，不复制 Engine/PluginHost 实现。
+- `BotRegistry` 增加线程安全生命周期状态、批量启停、失败隔离、超时和安全公开快照；`app.py` startup/shutdown 改由 Registry 统一拥有。
+- canonical factory 路径使用 `RuntimeConfigView`，三份保存的 Bot runtime overrides 不再写回或污染进程全局 config。
+- `tests/test_bot_profile.py` 覆盖配置校验/未知 secret/path/重复 root/default；`tests/test_bot_runtime.py` 使用真实 factory 构造并运行三个独立 BotRuntime。
 
 验证通过：
 
-- `tests.test_bot_runtime`：5 项。
+- Slice 3A `test_bot_profile + test_bot_runtime + test_settings_overrides`：26 项，包含真实三 BotRuntime factory/override/root/lifecycle 验证。
 - `tests.test_instance_channel_security`：22 项，包含命名实例真实启动、QQ 安全和失败前置检查。
 - 路由、桌宠后端、插件 Host/通知/推理、writer shutdown 组合回归：142 项。
 - BotRuntime、instance runtime/profile、finance absence、plugin engine bridge 组合回归：39 项。
 - LLM client 回归：63 项；插件/金融/native web 工具组合回归：92 项。
 - Vision、model-service、runtime-settings 组合回归：125 项；真实实例/QQ/路由/桌宠回归：117 项；插件/金融/实例组合回归：65 项。
+- Slice 3A 与 multi-Bot product/finance absence/instance/route 组合回归：164 项。
 - Ruff check、Ruff format check、py_compile、`git diff --check` 均通过。
-- 尚未实现控制中心 Bot 管理 UI、TTS/ASR 热更新、Host 级 QQ dispatcher 和多 Bot 生命周期；这些属于 Slice 3 及后续切片，不能把当前快照误认为完整 per-Bot 管理面。
+- 尚未让 `app.py` 从 `bots.toml` 批量注册配置 Bot，也未实现控制中心 Bot 管理 UI、Host 级 QQ dispatcher 和 DeviceExecutorHub；这些属于 Slice 3B 及后续切片，不能把当前基础误认为已经能让多个 QQ 账号接收事件。
 - 未修改云端部署、云端模型配置、MemCore 数据或桌宠前端；用户原有 `.claude/` 未触碰。
 
 ---
@@ -1118,11 +1142,11 @@ npm run build
 
 后续执行不应直接继续为 personal 单独接 GPT-SoVITS 或为 finance 单独复制视觉/Satellite 配置。
 
-Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C 已完成。下一步进入 **Slice 3**：
+Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A 已完成。下一步进入 **Slice 3B**：
 
-1. 把控制中心模型/能力设置明确绑定到选中 Bot，并显示继承/覆盖来源；
-2. 实现多 Bot 生命周期与 Host 级启动/关闭；
-3. 验证后进入 Host 级 QQ dispatcher 和 DeviceExecutorHub。
+1. 让 Host bootstrap 读取 `bots.toml`，按 `memory_space_id` 批量创建 enabled Bot，并保留没有配置文件时的单 Bot 兼容路径；
+2. 让默认桌宠/Web routes 明确绑定 `default_bot_id`，而不是隐含模块单例；
+3. 验证后进入 Host 级 QQ dispatcher，再做控制中心 Bot 管理面和 DeviceExecutorHub。
 
 当上下文被压缩时，恢复顺序：
 

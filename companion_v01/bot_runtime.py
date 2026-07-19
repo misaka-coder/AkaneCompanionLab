@@ -13,11 +13,12 @@ from typing import Any, Mapping
 from services.tts_client import EdgeTTSClient
 
 from .async_task_supervisor import AsyncTaskSupervisor
+from .bot_profile import BotConfig, bot_config_from_instance_context
 from .deployment_security import InstanceDeploymentSecurity, resolve_instance_deployment_security
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .desktop_satellite import DesktopSatelliteService
 from .engine import AkaneMemoryEngine
-from .instance_profile import InstanceContext, resolve_instance_context
+from .instance_profile import InstanceContext, instance_context_from_bot_config, resolve_instance_context
 from .instance_runtime import InstanceRuntimeLease, bind_instance_runtime
 from .model_service_config import (
     ModelServiceConfigStore,
@@ -34,7 +35,12 @@ from .public_guard import PublicThinkGuard
 from .qq_gateway import NapCatQQGateway
 from .resource_manifest import ResourceManifest
 from .runtime_settings import BotSettingsView
-from .settings_overrides import SettingsOverrideStore, load_and_apply_saved_overrides
+from .settings_overrides import (
+    RuntimeConfigView,
+    SettingsOverrideStore,
+    load_and_apply_saved_overrides,
+    load_saved_overrides,
+)
 
 
 class RuntimeMetrics:
@@ -59,6 +65,7 @@ class RuntimeMetrics:
 
 @dataclass(slots=True)
 class BotRuntime:
+    bot_config: BotConfig
     instance_context: InstanceContext
     instance_runtime: InstanceRuntimeLease
     deployment_security: InstanceDeploymentSecurity
@@ -84,7 +91,11 @@ class BotRuntime:
 
     @property
     def bot_id(self) -> str:
-        return self.instance_context.instance_id
+        return self.bot_config.bot_id
+
+    @property
+    def display_name(self) -> str:
+        return self.bot_config.display_name
 
     @property
     def runtime_layout(self) -> Any:
@@ -339,14 +350,22 @@ class BotRuntimeFactory:
         self,
         *,
         data_root: Path,
+        bot_config: BotConfig | None = None,
         selected_instance_id: str = "",
         explicit_data_root: bool = False,
         settings_overrides: Mapping[str, Any] | None = None,
     ) -> BotRuntime:
-        instance_context = resolve_instance_context(
-            data_root=Path(data_root),
-            selected_instance_id=selected_instance_id,
-        )
+        if bot_config is None:
+            instance_context = resolve_instance_context(
+                data_root=Path(data_root),
+                selected_instance_id=selected_instance_id,
+            )
+            effective_bot_config = bot_config_from_instance_context(instance_context)
+        else:
+            if selected_instance_id:
+                raise ValueError("bot_config_and_selected_instance_id_are_mutually_exclusive")
+            instance_context = instance_context_from_bot_config(bot_config)
+            effective_bot_config = bot_config
         instance_runtime: InstanceRuntimeLease | None = None
         engine: AkaneMemoryEngine | None = None
         try:
@@ -367,19 +386,27 @@ class BotRuntimeFactory:
                 saved_model_settings = None
                 self.logger.warning("Model service config ignored: %s", type(exc).__name__)
             settings_store = SettingsOverrideStore(runtime_layout.config_dir / "settings_overrides.json")
-            load_and_apply_saved_overrides(
-                self.config_module,
-                settings_store,
-                on_error=lambda exc: self.logger.warning("Settings override ignored: %s", type(exc).__name__),
-            )
-            settings = BotSettingsView.from_config(self.config_module)
+            if bot_config is None:
+                load_and_apply_saved_overrides(
+                    self.config_module,
+                    settings_store,
+                    on_error=lambda exc: self.logger.warning("Settings override ignored: %s", type(exc).__name__),
+                )
+                runtime_config = self.config_module
+            else:
+                saved_overrides = load_saved_overrides(
+                    settings_store,
+                    on_error=lambda exc: self.logger.warning("Settings override ignored: %s", type(exc).__name__),
+                )
+                runtime_config = RuntimeConfigView(self.config_module, saved_overrides)
+            settings = BotSettingsView.from_config(runtime_config)
             if saved_model_settings is not None:
                 settings = settings.with_model_service(saved_model_settings)
             settings = settings.overlay(settings_overrides)
 
             deployment_security = resolve_instance_deployment_security(
                 instance_context,
-                self.config_module,
+                runtime_config,
             )
             satellite_service = DesktopSatelliteService(
                 instance_id=instance_context.instance_id,
@@ -431,6 +458,7 @@ class BotRuntimeFactory:
                 plugin_host.bind_notification_port(NullNotificationPort())
 
             runtime = BotRuntime(
+                bot_config=effective_bot_config,
                 instance_context=instance_context,
                 instance_runtime=instance_runtime,
                 deployment_security=deployment_security,
@@ -451,19 +479,19 @@ class BotRuntimeFactory:
                 ),
                 runtime_metrics=RuntimeMetrics(),
                 public_guard=PublicThinkGuard(
-                    enabled=bool(getattr(self.config_module, "PUBLIC_GUARD_ENABLED", False)),
-                    max_concurrent_thinks=int(getattr(self.config_module, "MAX_CONCURRENT_THINKS", 2)),
-                    daily_think_limit=int(getattr(self.config_module, "DAILY_THINK_LIMIT", 200)),
+                    enabled=bool(getattr(runtime_config, "PUBLIC_GUARD_ENABLED", False)),
+                    max_concurrent_thinks=int(getattr(runtime_config, "MAX_CONCURRENT_THINKS", 2)),
+                    daily_think_limit=int(getattr(runtime_config, "DAILY_THINK_LIMIT", 200)),
                     busy_message=str(
                         getattr(
-                            self.config_module,
+                            runtime_config,
                             "PUBLIC_BUSY_MESSAGE",
                             "当前体验人数较多，请稍后再试。",
                         )
                     ),
                     daily_limit_message=str(
                         getattr(
-                            self.config_module,
+                            runtime_config,
                             "PUBLIC_DAILY_LIMIT_MESSAGE",
                             "今日体验名额已满，明天再来看看吧。",
                         )
@@ -471,7 +499,7 @@ class BotRuntimeFactory:
                 ),
                 qq_gateway=qq_gateway,
                 qq_followup_tasks=qq_followup_tasks,
-                config_module=self.config_module,
+                config_module=runtime_config,
                 logger=self.logger,
             )
             runtime.install_qq_task_completion_notifications()

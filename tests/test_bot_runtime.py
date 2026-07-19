@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import config
 from companion_v01.bot_registry import BotRegistry, BotRegistryError
-from companion_v01.bot_runtime import BotRuntime
+from companion_v01.bot_profile import BotConfig, BotQQChannelConfig
+from companion_v01.bot_runtime import BotRuntime, BotRuntimeFactory
+from companion_v01.instance_profile import instance_context_from_bot_config
+from companion_v01.instance_runtime import bind_instance_runtime
 from companion_v01.runtime_settings import BotSettingsView
+from companion_v01.settings_overrides import RuntimeConfigView, SettingsOverrideStore
 
 
 class _FakePluginHost:
@@ -57,8 +64,21 @@ def _runtime(bot_id: str = "bot-a") -> tuple[BotRuntime, _FakePluginHost, _FakeE
     engine = _FakeEngine()
     followups = _FakeFollowups()
     runtime = BotRuntime(
+        bot_config=BotConfig(
+            schema_version=1,
+            bot_id=bot_id,
+            enabled=True,
+            display_name=bot_id,
+            character_pack_id="",
+            memory_space_id=bot_id,
+            model_profile_ref="default",
+            capability_profile_ref="default",
+            care_enabled=True,
+            qq=BotQQChannelConfig(),
+            plugins=(),
+        ),
         instance_context=SimpleNamespace(instance_id=bot_id),
-        instance_runtime=SimpleNamespace(layout=SimpleNamespace()),
+        instance_runtime=SimpleNamespace(layout=SimpleNamespace(data_root=Path("test-roots") / bot_id)),
         deployment_security=SimpleNamespace(),
         resources=SimpleNamespace(),
         desktop_pet_character_resources=SimpleNamespace(),
@@ -80,6 +100,50 @@ def _runtime(bot_id: str = "bot-a") -> tuple[BotRuntime, _FakePluginHost, _FakeE
     return runtime, plugin_host, engine, followups
 
 
+def _leased_runtime(root: Path, bot_id: str) -> tuple[BotRuntime, _FakePluginHost, _FakeEngine, _FakeFollowups]:
+    config = BotConfig(
+        schema_version=1,
+        bot_id=bot_id,
+        enabled=True,
+        display_name=f"Akane {bot_id}",
+        character_pack_id="",
+        memory_space_id=bot_id,
+        model_profile_ref="default",
+        capability_profile_ref="default",
+        care_enabled=True,
+        qq=BotQQChannelConfig(),
+        plugins=(),
+    )
+    context = instance_context_from_bot_config(config)
+    lease = bind_instance_runtime(context, data_root=root, explicit_data_root=True)
+    plugin_host = _FakePluginHost()
+    engine = _FakeEngine()
+    followups = _FakeFollowups()
+    runtime = BotRuntime(
+        bot_config=config,
+        instance_context=context,
+        instance_runtime=lease,
+        deployment_security=SimpleNamespace(),
+        resources=SimpleNamespace(),
+        desktop_pet_character_resources=SimpleNamespace(),
+        model_service_config_store=SimpleNamespace(),
+        settings_override_store=SimpleNamespace(),
+        desktop_satellite_service=SimpleNamespace(),
+        plugin_host=plugin_host,
+        plugin_capability_source=SimpleNamespace(),
+        engine=engine,
+        settings=BotSettingsView(),
+        tts_client=SimpleNamespace(),
+        runtime_metrics=SimpleNamespace(),
+        public_guard=SimpleNamespace(),
+        qq_gateway=None,
+        qq_followup_tasks=followups,
+        config_module=SimpleNamespace(),
+        logger=logging.getLogger(f"test.bot_runtime.{bot_id}"),
+    )
+    return runtime, plugin_host, engine, followups
+
+
 class BotRegistryTests(unittest.TestCase):
     def test_registry_has_one_default_authority_and_rejects_duplicate_ids(self) -> None:
         registry = BotRegistry()
@@ -96,13 +160,66 @@ class BotRegistryTests(unittest.TestCase):
 
     def test_registry_rejects_unsafe_ids_before_registration(self) -> None:
         registry = BotRegistry()
-        runtime, *_ = _runtime("../escape")
+        runtime = SimpleNamespace(
+            bot_id="../escape",
+            runtime_layout=SimpleNamespace(data_root=Path("test-roots") / "unsafe"),
+        )
 
         with self.assertRaises(BotRegistryError) as raised:
             registry.add(runtime)
 
         self.assertEqual(raised.exception.reason, "invalid_bot_id")
         self.assertEqual(len(registry), 0)
+
+    def test_registry_rejects_two_bots_bound_to_the_same_data_root(self) -> None:
+        registry = BotRegistry()
+        first, *_ = _runtime("bot-a")
+        second, *_ = _runtime("bot-b")
+        second.instance_runtime.layout.data_root = first.instance_runtime.layout.data_root
+
+        registry.add(first)
+        with self.assertRaises(BotRegistryError) as raised:
+            registry.add(second)
+
+        self.assertEqual(raised.exception.reason, "duplicate_data_root")
+
+
+class BotRegistryLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_three_bot_runtimes_use_independent_roots_and_start_failure_is_isolated(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            runtimes = [_leased_runtime(base / bot_id, bot_id) for bot_id in ("bot-a", "bot-b", "bot-c")]
+            registry = BotRegistry(default_bot_id="bot-a")
+            for runtime, *_ in runtimes:
+                registry.add(runtime, default=runtime.bot_id == "bot-a")
+
+            async def failed_start() -> dict[str, Any]:
+                raise RuntimeError("synthetic startup failure with secret/path")
+
+            runtimes[1][1].start = failed_start  # type: ignore[method-assign]
+            try:
+                start_status = await registry.start_all(timeout_seconds=2.0)
+
+                self.assertEqual(start_status["status"], "degraded")
+                self.assertEqual(
+                    {item["bot_id"]: item["state"] for item in start_status["bots"]},
+                    {"bot-a": "online", "bot-b": "degraded", "bot-c": "online"},
+                )
+                self.assertEqual(
+                    {runtime.runtime_layout.data_root for runtime, *_ in runtimes},
+                    {(base / bot_id).resolve() for bot_id in ("bot-a", "bot-b", "bot-c")},
+                )
+                public = registry.public_snapshot()
+                self.assertEqual(public["count"], 3)
+                self.assertNotIn(temp_dir, str(public))
+                self.assertNotIn("synthetic startup failure", str(public))
+
+                stop_status = await registry.stop_all(timeout_seconds=2.0)
+                self.assertEqual(stop_status["status"], "stopped")
+                self.assertTrue(all(item["state"] == "stopped" for item in stop_status["bots"]))
+            finally:
+                for runtime, *_ in runtimes:
+                    runtime.instance_runtime.release()
 
 
 class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -160,6 +277,83 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(followups.close_count, 1)
 
 
+class BotRuntimeFactoryMultiBotTests(unittest.TestCase):
+    def test_factory_constructs_and_runs_three_bots_without_override_cross_talk(self) -> None:
+        original_max_tool_rounds = config.MAX_TOOL_ROUNDS
+        runtime_config = RuntimeConfigView(
+            config,
+            {
+                "AKANE_ADMIN_TOKEN": "test-admin-token",
+                "AKANE_DESKTOP_SATELLITE_TOKEN": "",
+                "QQ_BRIDGE_ENABLED": False,
+                "QQ_CHANNEL_PROFILE_REF": "",
+                "QQ_BOT_QQ": "",
+                "QQ_WEBHOOK_SECRET": "",
+                "QQ_ONEBOT_ACCESS_TOKEN": "",
+            },
+        )
+        factory = BotRuntimeFactory(
+            config_module=runtime_config,
+            assets_dir=Path(__file__).resolve().parents[1] / "web" / "assets",
+        )
+        registry = BotRegistry(default_bot_id="bot-a")
+        runtimes: list[BotRuntime] = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            try:
+                for index, bot_id in enumerate(("bot-a", "bot-b", "bot-c"), start=3):
+                    bot_root = root / bot_id
+                    SettingsOverrideStore(bot_root / "users_data" / "_local" / "settings_overrides.json").save(
+                        {"MAX_TOOL_ROUNDS": index}
+                    )
+                    bot_config = BotConfig(
+                        schema_version=1,
+                        bot_id=bot_id,
+                        enabled=True,
+                        display_name=bot_id,
+                        character_pack_id="",
+                        memory_space_id=bot_id,
+                        model_profile_ref="default",
+                        capability_profile_ref="default",
+                        care_enabled=True,
+                        qq=BotQQChannelConfig(),
+                        plugins=(),
+                    )
+                    runtime = factory.create(
+                        data_root=bot_root,
+                        bot_config=bot_config,
+                        explicit_data_root=True,
+                    )
+                    runtimes.append(runtime)
+                    registry.add(runtime, default=bot_id == "bot-a")
+
+                self.assertEqual(
+                    [runtime.config_module.MAX_TOOL_ROUNDS for runtime in runtimes],
+                    [3, 4, 5],
+                )
+                self.assertEqual(config.MAX_TOOL_ROUNDS, original_max_tool_rounds)
+                self.assertEqual(len({runtime.runtime_layout.data_root for runtime in runtimes}), 3)
+
+                async def run_lifecycle() -> tuple[dict[str, Any], dict[str, Any]]:
+                    started = await registry.start_all(timeout_seconds=5.0)
+                    stopped = await registry.stop_all(timeout_seconds=5.0)
+                    return started, stopped
+
+                start_status, stop_status = asyncio.run(run_lifecycle())
+                self.assertEqual(start_status["status"], "active")
+                self.assertTrue(all(item["state"] == "online" for item in start_status["bots"]))
+                self.assertEqual(stop_status["status"], "stopped")
+            finally:
+
+                async def stop_remaining() -> None:
+                    for item in reversed(runtimes):
+                        await item.stop()
+
+                asyncio.run(stop_remaining())
+                for runtime in reversed(runtimes):
+                    runtime.instance_runtime.release()
+
+
 class AppBootstrapContractTests(unittest.TestCase):
     def test_app_has_one_runtime_factory_and_no_direct_bot_constructors(self) -> None:
         source = (  # noqa: PTH123 - repository source under test
@@ -168,6 +362,8 @@ class AppBootstrapContractTests(unittest.TestCase):
 
         self.assertIn("BotRuntimeFactory(", source)
         self.assertIn("bot_registry = BotRegistry", source)
+        self.assertIn("await bot_registry.start_all()", source)
+        self.assertIn("await bot_registry.stop_all()", source)
         for constructor in (
             "AkaneMemoryEngine(",
             "PluginHost(",

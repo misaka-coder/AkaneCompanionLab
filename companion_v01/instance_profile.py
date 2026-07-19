@@ -13,15 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from .bot_profile import BotConfig
 from .plugin_api import is_valid_plugin_id
 
 
 INSTANCE_MANIFEST_SCHEMA_VERSION = 1
 LOCAL_DEFAULT_INSTANCE_ID = "local-default"
 _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-_ROOT_FIELDS = frozenset(
-    {"schema_version", "instance_id", "character_pack_id", "features", "channels", "plugins"}
-)
+_ROOT_FIELDS = frozenset({"schema_version", "instance_id", "character_pack_id", "features", "channels", "plugins"})
 _FEATURE_FIELDS = frozenset({"care"})
 _CHANNEL_FIELDS = frozenset({"qq"})
 _QQ_CHANNEL_FIELDS = frozenset({"enabled", "profile_ref"})
@@ -258,9 +257,7 @@ def parse_instance_manifest(payload: Any, *, selected_instance_id: str) -> Insta
         instance_id=manifest_instance_id,
         character_pack_id=character_pack_id,
         features=FeatureSnapshot(care=care),
-        channels=ChannelSnapshot(
-            qq=QQChannelSelection(enabled=qq_enabled, profile_ref=qq_profile_ref)
-        ),
+        channels=ChannelSnapshot(qq=QQChannelSelection(enabled=qq_enabled, profile_ref=qq_profile_ref)),
         plugins=tuple(plugins),
     )
 
@@ -298,6 +295,31 @@ def resolve_instance_context(*, data_root: Path, selected_instance_id: str | Non
     manifest_path = _resolve_manifest_path(Path(data_root), instance_id)
     manifest = load_instance_manifest(manifest_path, selected_instance_id=instance_id)
     return InstanceContext(manifest=manifest, source="manifest")
+
+
+def instance_context_from_bot_config(bot_config: BotConfig) -> InstanceContext:
+    """Project the canonical BotConfig into the legacy runtime adapter."""
+
+    if not isinstance(bot_config, BotConfig):
+        _fail("bot_config_invalid", field="bot_config")
+    return InstanceContext(
+        manifest=InstanceManifest(
+            schema_version=INSTANCE_MANIFEST_SCHEMA_VERSION,
+            instance_id=bot_config.bot_id,
+            character_pack_id=bot_config.character_pack_id,
+            features=FeatureSnapshot(care=bot_config.care_enabled),
+            channels=ChannelSnapshot(
+                qq=QQChannelSelection(
+                    enabled=bot_config.qq.enabled,
+                    profile_ref=bot_config.qq.profile_ref,
+                )
+            ),
+            plugins=tuple(
+                PluginSelection(plugin_id=item.plugin_id, enabled=item.enabled) for item in bot_config.plugins
+            ),
+        ),
+        source="bot_config_adapter",
+    )
 
 
 def instance_context_from_request(request: Any) -> InstanceContext:

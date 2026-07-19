@@ -59,22 +59,33 @@ class SettingsOverrideStoreTests(unittest.TestCase):
         finally:
             config.MAX_TOOL_ROUNDS = original
 
+    def test_runtime_config_view_keeps_bot_override_out_of_process_globals(self) -> None:
+        store = _temp_store()
+        store.save({"MAX_TOOL_ROUNDS": 5, "TEXT_API_KEY": "secret"})
+        original = config.MAX_TOOL_ROUNDS
+
+        loaded = so.load_saved_overrides(store)
+        view = so.RuntimeConfigView(config, loaded)
+
+        self.assertEqual(loaded, {"MAX_TOOL_ROUNDS": 5})
+        self.assertEqual(view.MAX_TOOL_ROUNDS, 5)
+        self.assertEqual(config.MAX_TOOL_ROUNDS, original)
+        view.MAX_TOOL_ROUNDS = 4
+        self.assertEqual(view.MAX_TOOL_ROUNDS, 4)
+        self.assertEqual(config.MAX_TOOL_ROUNDS, original)
+
 
 class SettingsUpdateEndpointTests(unittest.TestCase):
     def _client(self, store) -> TestClient:
         app = FastAPI()
-        app.include_router(
-            build_control_center_router(settings_override_store=store, config_module=config)
-        )
+        app.include_router(build_control_center_router(settings_override_store=store, config_module=config))
         return TestClient(app)
 
     def test_post_applies_editable_key(self) -> None:
         store = _temp_store()
         original = config.MAX_TOOL_ROUNDS
         try:
-            resp = self._client(store).post(
-                "/control-center/settings-catalog/MAX_TOOL_ROUNDS", json={"value": 5}
-            )
+            resp = self._client(store).post("/control-center/settings-catalog/MAX_TOOL_ROUNDS", json={"value": 5})
             self.assertEqual(resp.status_code, 200)
             body = resp.json()
             self.assertTrue(body["ok"])
@@ -84,9 +95,7 @@ class SettingsUpdateEndpointTests(unittest.TestCase):
             config.MAX_TOOL_ROUNDS = original
 
     def test_post_rejects_secret_key(self) -> None:
-        resp = self._client(_temp_store()).post(
-            "/control-center/settings-catalog/TEXT_API_KEY", json={"value": "leak"}
-        )
+        resp = self._client(_temp_store()).post("/control-center/settings-catalog/TEXT_API_KEY", json={"value": "leak"})
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["status"], "not_editable")
 

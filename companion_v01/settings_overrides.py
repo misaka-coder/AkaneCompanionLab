@@ -17,6 +17,7 @@ Hard gates (mirrors settings_catalog.is_runtime_editable):
 Editing is intentionally NOT for secrets, restart-scoped settings, or fields
 managed elsewhere; those stay read-only in the catalog with a link to the owner.
 """
+
 from __future__ import annotations
 
 import json
@@ -62,6 +63,29 @@ class SettingsOverrideStore:
             encoding="utf-8",
         )
         os.replace(temp_path, self.path)
+
+
+class RuntimeConfigView:
+    """Per-Bot config overlay with process defaults as a read-only fallback."""
+
+    def __init__(self, base_config: Any, overrides: dict[str, Any] | None = None) -> None:
+        object.__setattr__(self, "_base_config", base_config)
+        object.__setattr__(self, "_overrides", dict(overrides or {}))
+
+    def __getattr__(self, name: str) -> Any:
+        overrides = object.__getattribute__(self, "_overrides")
+        if name in overrides:
+            return overrides[name]
+        return getattr(object.__getattribute__(self, "_base_config"), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+            return
+        object.__getattribute__(self, "_overrides")[name] = value
+
+    def local_overrides(self) -> dict[str, Any]:
+        return dict(object.__getattribute__(self, "_overrides"))
 
 
 def _base_kind(key: str) -> tuple[str, bool]:
@@ -145,9 +169,24 @@ def load_and_apply_saved_overrides(
     """At startup, re-apply saved overrides over the .env-loaded config. Skips
     any key that is no longer runtime-editable (catalog may have changed) or
     fails coercion — those are reported via on_error, never crash startup."""
+    overrides = load_saved_overrides(store, on_error=on_error)
+    applied: dict[str, Any] = {}
+    for key, coerced in overrides.items():
+        setattr(config_module, key, coerced)
+        applied[key] = coerced
+    return applied
+
+
+def load_saved_overrides(
+    store: SettingsOverrideStore,
+    *,
+    on_error: Callable[[Exception], None] | None = None,
+) -> dict[str, Any]:
+    """Load and validate saved overrides without mutating a config module."""
+
     try:
         overrides = store.load()
-    except Exception as exc:  # noqa: BLE001 - never let a bad store crash startup
+    except Exception as exc:  # noqa: BLE001 - a bad store must not crash startup
         if on_error is not None:
             on_error(exc)
         return {}
@@ -156,11 +195,8 @@ def load_and_apply_saved_overrides(
         if not settings_catalog.is_runtime_editable(key):
             continue
         try:
-            coerced = coerce_value(key, value)
+            applied[key] = coerce_value(key, value)
         except SettingOverrideError as exc:
             if on_error is not None:
                 on_error(exc)
-            continue
-        setattr(config_module, key, coerced)
-        applied[key] = coerced
     return applied

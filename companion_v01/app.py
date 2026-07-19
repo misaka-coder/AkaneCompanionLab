@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 from .bot_registry import BotRegistry
-from .bot_runtime import BotRuntimeFactory, log_runtime_start_status
+from .bot_runtime import BotRuntimeFactory
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
 from .routes.capabilities import build_capabilities_router
@@ -110,8 +110,12 @@ qq_followup_tasks = bot_runtime.qq_followup_tasks
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    startup_status = await bot_runtime.start()
-    log_runtime_start_status(bot_runtime, startup_status)
+    startup_status = await bot_registry.start_all()
+    if startup_status.get("status") == "degraded":
+        logger.warning(
+            "Bot registry startup degraded: %s",
+            json.dumps(startup_status, ensure_ascii=False, sort_keys=True),
+        )
     app.state.akane_plugin_command_broker = bot_runtime.plugin_command_broker
 
 
@@ -134,14 +138,14 @@ if USER_ASSETS_DIR.exists():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    shutdown_status = await bot_runtime.stop()
+    shutdown_status = await bot_registry.stop_all()
     if shutdown_status.get("status") != "stopped":
         logger.warning(
-            "Bot runtime shutdown incomplete: %s",
+            "Bot registry shutdown incomplete: %s",
             json.dumps(shutdown_status, ensure_ascii=False, sort_keys=True),
         )
     app.state.akane_plugin_command_broker = None
-    # Keep the root lease until process exit. Some legacy stores still release
+    # Keep root leases until process exit. Some legacy stores still release
     # native handles only when the interpreter exits; dropping the lock here
     # would let a replacement process overlap those final writers/handles.
 
