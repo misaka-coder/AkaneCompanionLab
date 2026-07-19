@@ -2365,6 +2365,23 @@ class LLMRuntime:
 
     def _responses_input_from_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
+
+        def append_plain_message(role: str, content: Any) -> None:
+            if (
+                role in {"user", "assistant"}
+                and isinstance(content, str)
+                and content
+                and items
+                and isinstance(items[-1], dict)
+                and str(items[-1].get("role") or "") == role
+                and isinstance(items[-1].get("content"), str)
+                and items[-1].get("content")
+                and set(items[-1]).issubset({"role", "content"})
+            ):
+                items[-1]["content"] = f"{items[-1]['content']}\n\n{content}"
+                return
+            items.append({"role": role, "content": content})
+
         for message in messages:
             role = str(message.get("role") or "").strip().lower()
             if role == "assistant" and isinstance(message.get("tool_calls"), list):
@@ -2396,7 +2413,7 @@ class LLMRuntime:
             if role not in {"user", "assistant", "developer", "system"}:
                 continue
             content = message.get("content")
-            items.append({"role": role, "content": self._responses_message_content(content)})
+            append_plain_message(role, self._responses_message_content(content))
         return items
 
     def _responses_message_content(self, content: Any) -> Any:

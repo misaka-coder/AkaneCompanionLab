@@ -261,6 +261,29 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(calls[0][TOOL_INVOCATION_ID_FIELD], "call_3")
         self.assertEqual("".join(runtime._extract_stream_text(chunk) for chunk in chunks), '{"speech":"checking"}')
 
+    def test_responses_input_coalesces_adjacent_plain_messages_for_stable_stream_cache_prefix(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        messages = [
+            {"role": "user", "content": "stable tool context"},
+            {"role": "user", "content": "stable memory context"},
+            {"role": "assistant", "content": "first assistant fragment"},
+            {"role": "assistant", "content": "second assistant fragment"},
+            {"role": "user", "content": [{"type": "text", "text": "multimodal text"}]},
+            {"role": "user", "content": "plain text after structured content"},
+        ]
+
+        result = runtime._responses_input_from_messages(messages)
+
+        self.assertEqual(
+            result,
+            [
+                {"role": "user", "content": "stable tool context\n\nstable memory context"},
+                {"role": "assistant", "content": "first assistant fragment\n\nsecond assistant fragment"},
+                {"role": "user", "content": [{"type": "input_text", "text": "multimodal text"}]},
+                {"role": "user", "content": "plain text after structured content"},
+            ],
+        )
+
     def test_responses_failures_surface_bounded_structured_reasons(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         failed = SimpleNamespace(
