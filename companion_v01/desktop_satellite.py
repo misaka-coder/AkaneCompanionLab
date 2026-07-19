@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
+import re
 import threading
 import time
 import uuid
@@ -21,6 +23,7 @@ SATELLITE_PROTOCOL_VERSION = 1
 SATELLITE_HEARTBEAT_SECONDS = 10
 SATELLITE_LEASE_TTL_SECONDS = 30
 SATELLITE_REGISTER_TIMEOUT_SECONDS = 8
+_SAFE_DEVICE_SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 @dataclass
@@ -68,6 +71,13 @@ class DesktopSatelliteService:
     @property
     def enabled(self) -> bool:
         return bool(self._token)
+
+    def for_bot(self, *, bot_id: str, memory_space_id: str) -> "BotScopedDesktopSatelliteOfferSource":
+        return BotScopedDesktopSatelliteOfferSource(
+            service=self,
+            bot_id=bot_id,
+            memory_space_id=memory_space_id,
+        )
 
     async def handle_websocket(self, websocket: WebSocket) -> None:
         if not self._authorize_headers(websocket.headers):
@@ -492,3 +502,84 @@ class DesktopSatelliteService:
         }:
             return reason
         return "executor_failed"
+
+
+class BotScopedDesktopSatelliteOfferSource:
+    """Bot-isolated receipt and invocation view over one Host device connection."""
+
+    def __init__(
+        self,
+        *,
+        service: DesktopSatelliteService,
+        bot_id: str,
+        memory_space_id: str,
+    ) -> None:
+        self.service = service
+        self.bot_id = self._safe_scope_id(bot_id, field="bot_id")
+        self.memory_space_id = self._safe_scope_id(memory_space_id, field="memory_space_id")
+        self.instance_id = f"{service.instance_id}:bot:{self.bot_id}:memory:{self.memory_space_id}"
+
+    def resolve_receipt(self, spec: CapabilityToolSpec) -> ExecutionReceipt | None:
+        receipt = self.service.resolve_receipt(spec)
+        if receipt is None:
+            return None
+        return ExecutionReceipt(
+            instance_id=self.instance_id,
+            tool_id=receipt.tool_id,
+            offer_id=receipt.offer_id,
+            lease_epoch=receipt.lease_epoch,
+            offer_expires_at=receipt.offer_expires_at,
+            spec_version=receipt.spec_version,
+            schema_version=receipt.schema_version,
+            schema_hash=receipt.schema_hash,
+        )
+
+    def validate_receipt(self, spec: CapabilityToolSpec, receipt: ExecutionReceipt) -> str:
+        if receipt.instance_id != self.instance_id:
+            return "receipt_instance_mismatch"
+        return self.service.validate_receipt(spec, self._host_receipt(receipt))
+
+    def dispatch(
+        self,
+        *,
+        spec: CapabilityToolSpec,
+        receipt: ExecutionReceipt,
+        invocation_id: str,
+        arguments: Mapping[str, Any],
+        timeout_seconds: float,
+    ) -> BrokerExecutionResult:
+        reason = self.validate_receipt(spec, receipt)
+        if reason:
+            return BrokerExecutionResult(status="unavailable_before_dispatch", reason=reason)
+        return self.service.dispatch(
+            spec=spec,
+            receipt=self._host_receipt(receipt),
+            invocation_id=self._wire_invocation_id(invocation_id),
+            arguments=arguments,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _wire_invocation_id(self, invocation_id: str) -> str:
+        digest = hashlib.sha256(
+            f"{self.bot_id}\0{self.memory_space_id}\0{str(invocation_id or '').strip()}".encode("utf-8")
+        ).hexdigest()
+        return f"inv_{digest}"
+
+    def _host_receipt(self, receipt: ExecutionReceipt) -> ExecutionReceipt:
+        return ExecutionReceipt(
+            instance_id=self.service.instance_id,
+            tool_id=receipt.tool_id,
+            offer_id=receipt.offer_id,
+            lease_epoch=receipt.lease_epoch,
+            offer_expires_at=receipt.offer_expires_at,
+            spec_version=receipt.spec_version,
+            schema_version=receipt.schema_version,
+            schema_hash=receipt.schema_hash,
+        )
+
+    @staticmethod
+    def _safe_scope_id(value: Any, *, field: str) -> str:
+        normalized = str(value or "").strip()
+        if _SAFE_DEVICE_SCOPE_ID.fullmatch(normalized) is None:
+            raise ValueError(f"invalid_{field}")
+        return normalized

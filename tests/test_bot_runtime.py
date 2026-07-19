@@ -356,6 +356,32 @@ care_enabled = true
                 )
                 self.assertEqual(bootstrap.default_runtime.bot_id, "bot-a")
                 self.assertEqual(bootstrap.mode, "bot_profile")
+                shared_satellite_service = runtimes[0].desktop_satellite_service
+                self.assertTrue(
+                    all(runtime.desktop_satellite_service is shared_satellite_service for runtime in runtimes)
+                )
+                self.assertTrue(
+                    all(
+                        runtime.engine.capability_offer_source.service is shared_satellite_service
+                        for runtime in runtimes
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        runtime.engine.capability_registry.offer_source is runtime.engine.capability_offer_source
+                        for runtime in runtimes
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        runtime.engine.executor_broker.offer_source is runtime.engine.capability_offer_source
+                        for runtime in runtimes
+                    )
+                )
+                self.assertEqual(
+                    len({runtime.engine.capability_offer_source.instance_id for runtime in runtimes}),
+                    3,
+                )
 
                 async def run_lifecycle() -> tuple[dict[str, Any], dict[str, Any]]:
                     started = await registry.start_all(timeout_seconds=5.0)

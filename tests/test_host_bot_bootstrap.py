@@ -82,9 +82,10 @@ onebot_access_token = "token-b"
 
 
 class _FakeRuntime:
-    def __init__(self, bot_id: str, data_root: Path) -> None:
+    def __init__(self, bot_id: str, data_root: Path, *, desktop_satellite_service: Any = None) -> None:
         self.bot_id = bot_id
         self.display_name = bot_id
+        self.desktop_satellite_service = desktop_satellite_service or object()
         self.runtime_layout = SimpleNamespace(data_root=Path(data_root).resolve())
         self.engine = SimpleNamespace(close=self._close_engine)
         self.instance_runtime = SimpleNamespace(release=self._release_lease)
@@ -116,7 +117,11 @@ class _FakeFactory:
         bot_id = str(getattr(bot_config, "bot_id", "legacy-default"))
         if bot_id in self.fail_bot_ids:
             raise RuntimeError(f"private failure at {kwargs['data_root']}")
-        runtime = _FakeRuntime(bot_id, Path(kwargs["data_root"]))
+        runtime = _FakeRuntime(
+            bot_id,
+            Path(kwargs["data_root"]),
+            desktop_satellite_service=kwargs.get("desktop_satellite_service"),
+        )
         self.runtimes.append(runtime)
         return runtime
 
@@ -155,9 +160,35 @@ class HostBotBootstrapTests(unittest.IsolatedAsyncioTestCase):
                 [(root / "bots" / "memory-a").resolve(), (root / "bots" / "memory-b").resolve()],
             )
             self.assertTrue(all(call["explicit_data_root"] for call in factory.calls))
+            self.assertIs(factory.runtimes[0].desktop_satellite_service, factory.runtimes[1].desktop_satellite_service)
+            self.assertIsNone(factory.calls[0]["desktop_satellite_service"])
+            self.assertIs(
+                factory.calls[1]["desktop_satellite_service"],
+                factory.runtimes[0].desktop_satellite_service,
+            )
 
             started = await result.registry.start_all(timeout_seconds=1.0)
             self.assertEqual(started["status"], "active")
+
+    async def test_default_bot_constructs_first_and_owns_shared_desktop_satellite(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            root.joinpath("bots.toml").write_text(
+                BOT_PROFILE.replace('default_bot_id = "bot-a"', 'default_bot_id = "bot-b"'),
+                encoding="utf-8",
+            )
+            factory = _FakeFactory()
+
+            result = build_host_bot_registry(factory=factory, host_data_root=root)
+
+        self.assertEqual(result.default_runtime.bot_id, "bot-b")
+        self.assertEqual([call["bot_config"].bot_id for call in factory.calls], ["bot-b", "bot-a"])
+        self.assertIsNone(factory.calls[0]["desktop_satellite_service"])
+        self.assertIs(
+            factory.calls[1]["desktop_satellite_service"],
+            factory.runtimes[0].desktop_satellite_service,
+        )
+        self.assertIs(factory.runtimes[0].desktop_satellite_service, factory.runtimes[1].desktop_satellite_service)
 
     async def test_host_selects_each_bot_qq_profile_from_secret_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

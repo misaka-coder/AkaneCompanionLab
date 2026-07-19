@@ -87,13 +87,19 @@ def build_host_bot_registry(
     )
     registry = BotRegistry(default_bot_id=profile.default_bot_id)
     failures: list[dict[str, str]] = []
-    for bot_config in profile.enabled_bots:
+    enabled_bots = profile.enabled_bots
+    construction_order = tuple(
+        bot_config for bot_config in enabled_bots if bot_config.bot_id == profile.default_bot_id
+    ) + tuple(bot_config for bot_config in enabled_bots if bot_config.bot_id != profile.default_bot_id)
+    shared_desktop_satellite_service: Any = None
+    for bot_config in construction_order:
         bot_root = resolve_bot_data_root(data_root, bot_config)
         try:
             runtime = factory.create(
                 data_root=bot_root,
                 bot_config=bot_config,
                 qq_channel_profile=(qq_profiles.get(bot_config.qq.profile_ref) if bot_config.qq.enabled else None),
+                desktop_satellite_service=shared_desktop_satellite_service,
                 explicit_data_root=True,
             )
         except Exception as exc:  # noqa: BLE001 - one configured Bot must not abort its siblings
@@ -107,6 +113,8 @@ def build_host_bot_registry(
             failures.append({"bot_id": bot_config.bot_id, "reason": reason})
             continue
         registry.add(runtime, default=bot_config.bot_id == profile.default_bot_id)
+        if bot_config.bot_id == profile.default_bot_id:
+            shared_desktop_satellite_service = getattr(runtime, "desktop_satellite_service", None)
 
     try:
         default_runtime = registry.default()

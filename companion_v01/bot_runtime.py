@@ -353,6 +353,7 @@ class BotRuntimeFactory:
         data_root: Path,
         bot_config: BotConfig | None = None,
         qq_channel_profile: QQChannelDeploymentProfile | None = None,
+        desktop_satellite_service: DesktopSatelliteService | None = None,
         selected_instance_id: str = "",
         explicit_data_root: bool = False,
         settings_overrides: Mapping[str, Any] | None = None,
@@ -422,9 +423,17 @@ class BotRuntimeFactory:
                 runtime_config,
                 qq_channel_profile=qq_channel_profile,
             )
-            satellite_service = DesktopSatelliteService(
-                instance_id=instance_context.instance_id,
-                token=deployment_security.satellite.token,
+            satellite_service = (
+                desktop_satellite_service
+                if desktop_satellite_service is not None
+                else DesktopSatelliteService(
+                    instance_id=instance_context.instance_id,
+                    token=deployment_security.satellite.token,
+                )
+            )
+            satellite_offer_source = satellite_service.for_bot(
+                bot_id=effective_bot_config.bot_id,
+                memory_space_id=effective_bot_config.memory_space_id,
             )
             plugin_host = PluginHost(
                 instance_context.plugins,
@@ -442,7 +451,7 @@ class BotRuntimeFactory:
                 runtime_layout=runtime_layout,
                 plugin_capability_source=plugin_capability_source,
                 qq_channel_config=deployment_security.qq,
-                capability_offer_source=satellite_service,
+                capability_offer_source=satellite_offer_source,
                 settings=settings,
             )
             plugin_host.bind_reasoning_port(EnginePluginReasoningPort(engine))

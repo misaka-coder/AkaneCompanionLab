@@ -124,6 +124,82 @@ class DesktopSatelliteLocalCapabilitiesTests(unittest.TestCase):
                         self.assertEqual(receipt["schema_hash"], spec.schema_hash)
                         self.assertEqual(receipt["instance_id"], "instance-a")
 
+    def test_one_host_connection_dispatches_isolated_invocations_for_two_bots(self) -> None:
+        service = DesktopSatelliteService(instance_id="host-a", token="device-secret")
+        bot_a_source = service.for_bot(bot_id="bot-a", memory_space_id="memory-a")
+        bot_b_source = service.for_bot(bot_id="bot-b", memory_space_id="memory-b")
+        spec = next(item for item in DESKTOP_SATELLITE_TOOL_SPECS if item.capability_id == "system_media_snapshot")
+        results: dict[str, BrokerExecutionResult] = {}
+
+        with TestClient(self._app(service)) as client:
+            with client.websocket_connect(
+                "/capabilities/satellite/ws",
+                headers={"Authorization": "Bearer device-secret"},
+            ) as websocket:
+                websocket.receive_json()
+                websocket.send_json(_registration("host-a"))
+                registered = websocket.receive_json()
+                receipt_a = bot_a_source.resolve_receipt(spec)
+                receipt_b = bot_b_source.resolve_receipt(spec)
+                self.assertIsNotNone(receipt_a)
+                self.assertIsNotNone(receipt_b)
+                assert receipt_a is not None
+                assert receipt_b is not None
+                self.assertNotEqual(receipt_a.instance_id, receipt_b.instance_id)
+                self.assertEqual(bot_a_source.validate_receipt(spec, receipt_a), "")
+                self.assertEqual(
+                    bot_b_source.validate_receipt(spec, receipt_a),
+                    "receipt_instance_mismatch",
+                )
+
+                wire_invocation_ids: list[str] = []
+                for result_key, source, receipt in (
+                    ("bot-a", bot_a_source, receipt_a),
+                    ("bot-b", bot_b_source, receipt_b),
+                ):
+                    broker = ExecutorBroker(source)
+
+                    def execute(
+                        *,
+                        key: str = result_key,
+                        active_broker: ExecutorBroker = broker,
+                        active_receipt=receipt,
+                    ) -> None:
+                        results[key] = active_broker.execute(
+                            spec=spec,
+                            receipt_value=active_receipt.as_dict(),
+                            invocation_id="call_shared",
+                            arguments={},
+                        )
+
+                    worker = threading.Thread(target=execute, daemon=True)
+                    worker.start()
+                    invoke = websocket.receive_json()
+                    self.assertEqual(invoke["instance_id"], "host-a")
+                    wire_invocation_id = str(invoke["invocation_id"])
+                    wire_invocation_ids.append(wire_invocation_id)
+                    self.assertTrue(wire_invocation_id.startswith("inv_"))
+                    self.assertEqual(len(wire_invocation_id), 68)
+                    websocket.send_json(
+                        _execution_message(
+                            "result",
+                            registered,
+                            wire_invocation_id,
+                            spec.capability_id,
+                            status="succeeded",
+                            data={"ok": True, "bot": result_key},
+                        )
+                    )
+                    worker.join(timeout=5)
+                    self.assertFalse(worker.is_alive())
+
+                self.assertNotEqual(wire_invocation_ids[0], wire_invocation_ids[1])
+
+        self.assertEqual(results["bot-a"].status, "succeeded")
+        self.assertEqual(results["bot-b"].status, "succeeded")
+        self.assertEqual(results["bot-a"].data["bot"], "bot-a")
+        self.assertEqual(results["bot-b"].data["bot"], "bot-b")
+
     def test_invalid_arguments_fail_before_broker_dispatch(self) -> None:
         handlers = {
             spec.capability_id: DesktopSatelliteToolHandler(tool_id=spec.capability_id)
