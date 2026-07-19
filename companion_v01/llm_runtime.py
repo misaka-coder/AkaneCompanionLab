@@ -118,6 +118,31 @@ CONFIG_ALLOWLISTED_PROVIDER_TOOL_PROFILE = ProviderToolProfile(
 )
 PROVIDER_TOOL_PROFILES: dict[tuple[str, str], ProviderToolProfile] = {
     (
+        "api.pinaic.com",
+        "gpt-5.6-sol",
+    ): ProviderToolProfile(
+        supports_native_tools=True,
+        native_tools_coexist_with_forced_json=False,
+        verified=True,
+        notes=(
+            "Live PinAI Chat Completions probe: plain structured replies, auto single-tool calls, "
+            "parallel two-tool calls, and tool-result follow-up all passed. Keep forced JSON off "
+            "when tools are present."
+        ),
+    ),
+    (
+        "api.pinaic.com",
+        "gpt-5.6-luna",
+    ): ProviderToolProfile(
+        supports_native_tools=True,
+        native_tools_coexist_with_forced_json=False,
+        verified=True,
+        notes=(
+            "Live PinAI Chat Completions probe: parallel two-tool calls passed with provider ids. "
+            "Keep forced JSON off when tools are present."
+        ),
+    ),
+    (
         "api.deepseek.com",
         "deepseek-v4-flash",
     ): ProviderToolProfile(

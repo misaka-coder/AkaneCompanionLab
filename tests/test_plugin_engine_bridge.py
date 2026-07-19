@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import config
@@ -268,6 +270,68 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.stream_events[0]["reason"], "provider_rate_limited")
         self.assertEqual(result.state_updates["adapter_capability_status"], "rate_limited")
         self.assertIn("rate_limited/provider_rate_limited", result.followup_context)
+
+    async def test_native_plugin_followup_replays_provider_call_and_returns_failure_to_model(self) -> None:
+        self.adapter.result = CapabilityResult(
+            is_error=True,
+            status="not_found",
+            reason="security_not_found",
+            content={"candidates": []},
+        )
+        native_call = {
+            "type": CAPABILITY_ID,
+            "query": "601717",
+            TOOL_SOURCE_FIELD: "native_openai",
+            TOOL_INVOCATION_ID_FIELD: "call_finance_1",
+            TOOL_MODEL_NAME_FIELD: "akane_test_read_lookup_v1",
+        }
+
+        handlers = self.engine._resolve_tool_handlers()
+        normalized = AkaneMemoryEngine._normalize_tool_call(
+            self.engine,
+            native_call,
+            client_context=ClientProtocolContext(
+                requested_mode=ClientMode.QQ_TEXT,
+                effective_mode=ClientMode.QQ_TEXT,
+            ),
+            profile_user_id="user-42",
+            session_id="session-7",
+            capability_selection=SimpleNamespace(
+                tool_names=tuple(handlers),
+                resolved_handlers=handlers,
+            ),
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["arguments"], {"query": "601717"})
+        self.assertEqual(normalized[TOOL_MODEL_NAME_FIELD], "akane_test_read_lookup_v1")
+        handler = self.engine._resolve_tool_handlers()[CAPABILITY_ID]
+        result = await asyncio.to_thread(
+            handler.execute,
+            call=normalized,
+            context=ToolExecutionContext(
+                profile_user_id="user-42",
+                session_id="session-7",
+                now_ts=1_720_000_000,
+                visual_payload={},
+                client_mode="qq_text",
+            ),
+        )
+        history: list[dict[str, Any]] = []
+        native_engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        native_engine._append_native_tool_history_batch(
+            native_tool_history_turns=history,
+            items=[(normalized, result, result.followup_context, "")],
+        )
+
+        self.assertEqual([turn["role"] for turn in history], ["assistant", "tool"])
+        assistant_call = history[0]["tool_calls"][0]
+        self.assertEqual(assistant_call["id"], "call_finance_1")
+        self.assertEqual(assistant_call["function"]["name"], "akane_test_read_lookup_v1")
+        self.assertEqual(json.loads(assistant_call["function"]["arguments"]), {"query": "601717"})
+        self.assertEqual(history[1]["tool_call_id"], "call_finance_1")
+        self.assertIn("not_found/security_not_found", history[1]["content"])
 
     async def test_structured_experience_becomes_akane_owned_model_feedback(self) -> None:
         self.adapter.result = CapabilityResult(

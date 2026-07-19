@@ -735,6 +735,42 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
         self.assertEqual(payload["tool_choice"], "auto")
 
+    def test_llm_runtime_adds_native_tools_for_verified_pinai_chat_profiles(self) -> None:
+        for model in ("gpt-5.6-sol", "gpt-5.6-luna"):
+            with self.subTest(model=model):
+                runtime = LLMRuntime.__new__(LLMRuntime)
+                runtime._metrics_lock = threading.RLock()
+                runtime._metrics = {}
+                bundle = SimpleNamespace(
+                    client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.pinaic.com/v1"),
+                    model=model,
+                )
+
+                with patch("config.NATIVE_TOOL_PROVIDER_ALLOWLIST", ""):
+                    payload = runtime._build_completion_kwargs(
+                        bundle=bundle,
+                        system_prompt="system",
+                        user_prompt="user",
+                        temperature=0.1,
+                        json_mode=True,
+                        native_tools=[
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "web_search",
+                                    "description": "Search the public web.",
+                                    "parameters": {"type": "object"},
+                                },
+                            }
+                        ],
+                        native_tool_choice="auto",
+                    )
+
+                self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+                self.assertEqual(payload["tool_choice"], "auto")
+                self.assertNotIn("response_format", payload)
+                self.assertEqual(runtime.snapshot_metrics()["native_tool_forced_json_suppressed"], 1)
+
     def test_llm_runtime_strips_internal_native_tool_mapping_from_payload(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(

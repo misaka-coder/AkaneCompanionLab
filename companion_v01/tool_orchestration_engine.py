@@ -14,6 +14,7 @@ from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
 from .tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD
 from .tool_invocation import TOOL_EXECUTION_RECEIPT_FIELD
+from .tool_invocation import TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_SOURCE_FIELD
 from .tool_invocation import ToolInvocation
 from .tool_invocation import ToolResultEnvelope
@@ -264,7 +265,15 @@ def normalize_tool_call(
     )
     if invocation is None:
         return None
-    return invocation_to_legacy_tool_call(invocation, include_metadata=True)
+    normalized = invocation_to_legacy_tool_call(invocation, include_metadata=True)
+    # Provider-safe aliases (for example a dotted plugin capability projected
+    # to an underscore-only OpenAI function name) are wire context, not tool
+    # arguments. Preserve the alias across handler normalization so the native
+    # follow-up can reproduce the assistant tool_call exactly.
+    model_name = str(value.get(TOOL_MODEL_NAME_FIELD) or "").strip()
+    if model_name:
+        normalized[TOOL_MODEL_NAME_FIELD] = model_name
+    return normalized
 
 
 def normalize_tool_invocation(

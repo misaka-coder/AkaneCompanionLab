@@ -161,6 +161,26 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "validation_error")
         self.assertEqual(result.stream_events[0]["reason"], "unknown_argument")
 
+    def test_adapter_capability_does_not_treat_native_wire_metadata_as_arguments(self) -> None:
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp.demo.echo",
+            adapter=object(),
+            descriptor=self._descriptor(),
+            config_base_dir="unused",
+        )
+
+        call = handler.normalize_call(
+            {
+                "type": "mcp.demo.echo",
+                "text": "hello",
+                "_tool_source": "native_openai",
+                "_tool_invocation_id": "call_native_1",
+                "_tool_model_name": "mcp_demo_echo_abcd123456",
+            }
+        )
+
+        self.assertEqual(call, {"type": "mcp.demo.echo", "arguments": {"text": "hello"}})
+
     def test_adapter_capability_prompt_schema_uses_capcore_projection(self) -> None:
         descriptor = self._descriptor(
             inputs=(

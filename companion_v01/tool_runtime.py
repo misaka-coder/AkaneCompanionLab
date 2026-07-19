@@ -1063,7 +1063,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         source = value.get("arguments") if isinstance(value.get("arguments"), Mapping) else value
         for key, item in dict(source or {}).items():
             clean_key = str(key or "").strip()
-            if clean_key == "type":
+            if clean_key == "type" or clean_key.startswith("_tool_"):
                 continue
             args[clean_key] = self._safe_arg_value(item)
         return {"type": self.tool_type, "arguments": args}

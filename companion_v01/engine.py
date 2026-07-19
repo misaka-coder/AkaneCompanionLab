@@ -4880,11 +4880,7 @@ class AkaneMemoryEngine:
             )
             if not model_name:
                 continue
-            tool_input = {
-                str(key): value
-                for key, value in tool_call.items()
-                if key != "type" and not str(key).startswith("_tool_")
-            }
+            tool_input = self._tool_call_model_arguments(tool_call)
             use_blocks.append(
                 {
                     "type": "tool_use",
@@ -4941,11 +4937,7 @@ class AkaneMemoryEngine:
             )
             if not model_name:
                 continue
-            tool_input = {
-                str(key): value
-                for key, value in tool_call.items()
-                if key != "type" and not str(key).startswith("_tool_")
-            }
+            tool_input = self._tool_call_model_arguments(tool_call)
             try:
                 arguments = json.dumps(tool_input, ensure_ascii=False, separators=(",", ":"))
             except (TypeError, ValueError):
@@ -4982,6 +4974,35 @@ class AkaneMemoryEngine:
                 ]
             )
 
+    @staticmethod
+    def _tool_call_model_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
+        """Recover the arguments the provider originally saw.
+
+        Adapter/plugin handlers use an internal ``arguments`` envelope for
+        CapCore validation. Provider-native schemas do not expose that envelope,
+        so replaying it would change the assistant tool_call and break strict
+        continuation gateways such as PinAI. Only unwrap mapped native calls;
+        ordinary tools and legacy calls retain their existing shape.
+        """
+
+        payload = {
+            str(key): value
+            for key, value in dict(tool_call or {}).items()
+            if key != "type" and not str(key).startswith("_tool_")
+        }
+        wrapped = payload.get("arguments")
+        if (
+            str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip()
+            and len(payload) == 1
+            and isinstance(wrapped, dict)
+        ):
+            return {
+                str(key): value
+                for key, value in wrapped.items()
+                if not str(key).startswith("_tool_")
+            }
+        return payload
+
     def _record_memcore_tool_exchange(
         self,
         *,
@@ -5008,9 +5029,7 @@ class AkaneMemoryEngine:
             if trace_key in recorded_tool_call_ids:
                 return []
             recorded_tool_call_ids.add(trace_key)
-        tool_input = self._sanitize_tool_trace_value(
-            {str(key): value for key, value in tool_call.items() if key != "type" and not str(key).startswith("_tool_")}
-        )
+        tool_input = self._sanitize_tool_trace_value(self._tool_call_model_arguments(tool_call))
         feedback = "\n\n".join(
             part for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()] if part
         )
