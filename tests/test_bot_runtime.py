@@ -291,6 +291,7 @@ class BotRuntimeFactoryMultiBotTests(unittest.TestCase):
                 "QQ_BOT_QQ": "",
                 "QQ_WEBHOOK_SECRET": "",
                 "QQ_ONEBOT_ACCESS_TOKEN": "",
+                "PROMPT_CACHE_NAMESPACE": "host-cache",
             },
         )
         factory = BotRuntimeFactory(
@@ -345,6 +346,14 @@ care_enabled = true
                 )
                 self.assertEqual(config.MAX_TOOL_ROUNDS, original_max_tool_rounds)
                 self.assertEqual(len({runtime.runtime_layout.data_root for runtime in runtimes}), 3)
+                self.assertEqual(
+                    [runtime.settings.prompt_cache_namespace for runtime in runtimes],
+                    [
+                        "host-cache:bot:bot-a",
+                        "host-cache:bot:bot-b",
+                        "host-cache:bot:bot-c",
+                    ],
+                )
                 self.assertEqual(bootstrap.default_runtime.bot_id, "bot-a")
                 self.assertEqual(bootstrap.mode, "bot_profile")
 

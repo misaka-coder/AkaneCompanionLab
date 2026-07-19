@@ -412,6 +412,10 @@ class BotRuntimeFactory:
             if saved_model_settings is not None:
                 settings = settings.with_model_service(saved_model_settings)
             settings = settings.overlay(settings_overrides)
+            if bot_config is not None:
+                settings = settings.overlay(
+                    {"prompt_cache_namespace": (f"{settings.prompt_cache_namespace}:bot:{effective_bot_config.bot_id}")}
+                )
 
             deployment_security = resolve_instance_deployment_security(
                 instance_context,
