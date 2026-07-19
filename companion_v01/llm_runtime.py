@@ -1466,6 +1466,9 @@ class LLMRuntime:
                 "record_type": "prompt",
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
                 "instance_id": str(getattr(self, "instance_id", "local-default") or "local-default"),
+                "runtime_object_id": f"{id(self):x}",
+                "client_object_id": f"{id(bundle.client):x}",
+                "bundle_role": str(getattr(bundle.client, "_akane_bundle_role", "") or ""),
                 "prompt_cache_key": str(prompt_cache_key or ""),
                 "model": str(getattr(bundle, "model", "") or ""),
                 "protocol": str(
