@@ -1308,6 +1308,7 @@ class LLMRuntime:
         self._record_prompt_audit_if_enabled(
             bundle=bundle,
             prompt_cache_key=prompt_cache_key,
+            request_payload=payload,
             messages=messages,
             system_extra_blocks=filtered_system_extra_blocks if self._is_anthropic_protocol(bundle) else [],
             history_turns=history_turns,
@@ -1439,6 +1440,7 @@ class LLMRuntime:
         *,
         bundle: ModelBundle,
         prompt_cache_key: str,
+        request_payload: dict[str, Any],
         messages: list[dict[str, Any]],
         system_extra_blocks: list[str],
         history_turns: list[dict[str, Any]] | None,
@@ -1492,6 +1494,42 @@ class LLMRuntime:
                         default=str,
                     ),
                 ),
+                "request_field_order": [str(name) for name in request_payload],
+                "request_field_fingerprints": [
+                    self._audit_text_section(
+                        f"payload.field.{name}",
+                        json.dumps(
+                            value,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            default=str,
+                        ),
+                    )
+                    for name, value in request_payload.items()
+                    if name != "messages"
+                ],
+                "message_fingerprints": [
+                    {
+                        "index": index,
+                        "role": str(message.get("role") or "").strip().lower(),
+                        **{
+                            key: value
+                            for key, value in self._audit_text_section(
+                                f"payload.messages.{index}",
+                                json.dumps(
+                                    message,
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                    default=str,
+                                ),
+                            ).items()
+                            if key != "name"
+                        },
+                    }
+                    for index, message in enumerate(messages)
+                ],
                 "payload_totals": self._sum_audit_sections(payload_sections),
                 "payload_sections": payload_sections,
                 "source_sections": self._normalize_prompt_audit_sections(prompt_audit_sections),

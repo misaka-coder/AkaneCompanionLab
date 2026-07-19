@@ -101,9 +101,12 @@ class LLMClientConfigTests(unittest.TestCase):
             client=SimpleNamespace(_akane_protocol="responses", base_url="https://api.pinaic.com/v1"),
             model="gpt-5.6-sol",
         )
-        with patch("config.LLM_REASONING_EFFORT", "max"), patch(
-            "config.LLM_DISABLE_RESPONSE_STORAGE", True
-        ), patch("config.PROMPT_CACHE_NAMESPACE", "akane"), patch("config.PROMPT_CACHE_RETENTION", "24h"):
+        with (
+            patch("config.LLM_REASONING_EFFORT", "max"),
+            patch("config.LLM_DISABLE_RESPONSE_STORAGE", True),
+            patch("config.PROMPT_CACHE_NAMESPACE", "akane"),
+            patch("config.PROMPT_CACHE_RETENTION", "24h"),
+        ):
             chat_payload = runtime._build_completion_kwargs(
                 bundle=bundle,
                 system_prompt="stable instructions",
@@ -111,22 +114,26 @@ class LLMClientConfigTests(unittest.TestCase):
                 temperature=0.7,
                 json_mode=True,
                 prompt_cache_key="chat:final:reimu",
-                native_tools=[{
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "description": "Search related evidence.",
-                        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
-                    },
-                }],
+                native_tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search related evidence.",
+                            "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+                        },
+                    }
+                ],
                 post_user_turns=[
                     {
                         "role": "assistant",
-                        "tool_calls": [{
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {"name": "web_search", "arguments": '{"q":"Nikkei"}'},
-                        }],
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "web_search", "arguments": '{"q":"Nikkei"}'},
+                            }
+                        ],
                     },
                     {"role": "tool", "tool_call_id": "call_1", "content": "search result"},
                 ],
@@ -151,9 +158,11 @@ class LLMClientConfigTests(unittest.TestCase):
         runtime = LLMRuntime.__new__(LLMRuntime)
         aux = SimpleNamespace(client=SimpleNamespace(_akane_protocol="responses", _akane_bundle_role="aux"))
         chat = SimpleNamespace(client=SimpleNamespace(_akane_protocol="responses", _akane_bundle_role="chat"))
-        with patch("config.LLM_REASONING_EFFORT", "medium"), patch(
-            "config.LLM_AUX_REASONING_EFFORT", "low"
-        ), patch("config.LLM_CHAT_REASONING_EFFORT", "max"):
+        with (
+            patch("config.LLM_REASONING_EFFORT", "medium"),
+            patch("config.LLM_AUX_REASONING_EFFORT", "low"),
+            patch("config.LLM_CHAT_REASONING_EFFORT", "max"),
+        ):
             self.assertEqual(runtime._build_reasoning_control_kwargs(bundle=aux), {"reasoning": {"effort": "low"}})
             self.assertEqual(runtime._build_reasoning_control_kwargs(bundle=chat), {"reasoning": {"effort": "max"}})
 
@@ -204,12 +213,14 @@ class LLMClientConfigTests(unittest.TestCase):
         response = SimpleNamespace(
             status="completed",
             output_text="",
-            output=[SimpleNamespace(
-                type="function_call",
-                call_id="call_2",
-                name="web_search",
-                arguments='{"q":"rates"}',
-            )],
+            output=[
+                SimpleNamespace(
+                    type="function_call",
+                    call_id="call_2",
+                    name="web_search",
+                    arguments='{"q":"rates"}',
+                )
+            ],
             usage=SimpleNamespace(input_tokens=40, output_tokens=5),
         )
         adapted = runtime._adapt_responses_result(response)
@@ -220,9 +231,11 @@ class LLMClientConfigTests(unittest.TestCase):
 
         usage = SimpleNamespace(input_tokens=100, input_tokens_details=SimpleNamespace(cached_tokens=64))
         events = [
-            SimpleNamespace(type="response.output_item.added", output_index=0, item=SimpleNamespace(
-                type="function_call", call_id="call_3", name="web_search"
-            )),
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item=SimpleNamespace(type="function_call", call_id="call_3", name="web_search"),
+            ),
             SimpleNamespace(type="response.function_call_arguments.delta", output_index=0, delta='{"q":'),
             SimpleNamespace(type="response.function_call_arguments.delta", output_index=0, delta='"oil"}'),
             SimpleNamespace(type="response.output_text.delta", delta='{"speech":"checking"}'),
@@ -236,10 +249,12 @@ class LLMClientConfigTests(unittest.TestCase):
             runtime._collect_stream_native_tool_call_parts(chunk, parts)
         calls = runtime._stream_native_tool_calls_from_parts(
             parts,
-            native_tools=[{
-                "type": "function",
-                "function": {"name": "web_search", "parameters": {"type": "object"}},
-            }],
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {"name": "web_search", "parameters": {"type": "object"}},
+                }
+            ],
         )
         self.assertEqual(calls[0]["type"], "web_search")
         self.assertEqual(calls[0]["q"], "oil")
@@ -258,10 +273,12 @@ class LLMClientConfigTests(unittest.TestCase):
 
         from companion_v01.llm_runtime import _ResponsesStreamAdapter
 
-        events = [SimpleNamespace(
-            type="response.failed",
-            response=SimpleNamespace(error=SimpleNamespace(type="invalid_request_error", code="bad_input")),
-        )]
+        events = [
+            SimpleNamespace(
+                type="response.failed",
+                response=SimpleNamespace(error=SimpleNamespace(type="invalid_request_error", code="bad_input")),
+            )
+        ]
         with self.assertRaisesRegex(
             RuntimeError,
             "responses_stream_failed type=invalid_request_error code=bad_input",
@@ -272,11 +289,13 @@ class LLMClientConfigTests(unittest.TestCase):
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime._metrics_lock = threading.RLock()
         runtime._metrics = {}
-        response = SimpleNamespace(usage=SimpleNamespace(
-            input_tokens=120,
-            output_tokens=9,
-            input_tokens_details=SimpleNamespace(cached_tokens=96),
-        ))
+        response = SimpleNamespace(
+            usage=SimpleNamespace(
+                input_tokens=120,
+                output_tokens=9,
+                input_tokens_details=SimpleNamespace(cached_tokens=96),
+            )
+        )
 
         runtime._record_cache_metrics(response)
 
@@ -554,6 +573,16 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(record["native_tool_names"], ["private_tool_name"])
         self.assertTrue(record["native_tool_schema"]["sha256_16"])
         self.assertGreater(record["payload_totals"]["estimated_tokens"], 0)
+        self.assertIn("messages", record["request_field_order"])
+        self.assertIn("tools", record["request_field_order"])
+        self.assertEqual(
+            [item["role"] for item in record["message_fingerprints"]],
+            ["system", "user", "assistant", "user"],
+        )
+        self.assertTrue(all(item["sha256_16"] for item in record["message_fingerprints"]))
+        field_names = {item["name"] for item in record["request_field_fingerprints"]}
+        self.assertIn("payload.field.model", field_names)
+        self.assertIn("payload.field.tools", field_names)
 
     def test_llm_runtime_writes_per_call_cache_usage_audit(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
@@ -571,9 +600,7 @@ class LLMClientConfigTests(unittest.TestCase):
                     prompt_tokens_details=SimpleNamespace(cached_tokens=800),
                 ),
             )
-            with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch(
-                "config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False
-            ):
+            with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch("config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False):
                 runtime._record_cache_metrics(response, prompt_cache_key="chat:final:conversation")
 
             path = next((Path(temp_dir) / "llm_prompt_audit").glob("*.jsonl"))
