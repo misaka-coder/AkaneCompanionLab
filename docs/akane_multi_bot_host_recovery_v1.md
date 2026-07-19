@@ -1199,6 +1199,8 @@ npm run build
 - canonical BotRuntime 的 `DATA_DIR/DATA_ROOT` 固定为自己的 runtime root，QQ profile、模型配置、记忆、Gateway 状态和插件存储不会回落到另一个 Bot 的共享路径。
 - `LLMRuntime` 对流式 JSON 尾部损坏执行完成字段恢复；QQ transport 对“已发送正常流式文本 + transient final failure”执行第二道兜底抑制，不再出现正常回复后追加“我在认真听你说”。
 - canonical factory 基于同一 Host 默认 namespace 为每个 Bot 派生独立 prompt-cache scope，避免多 Bot 共用 cache 安全域或统计串线。
+- 修复 QQ 角色表情图片的远端 OneBot 传输：NapCat 与 Host 文件系统隔离时，本地 `file://`/绝对路径即使收到 HTTP 200，OneBot 仍可能以 `status=failed`、非零 `retcode` 报告业务失败；Gateway 现在检查业务状态，并在图片不超过 8 MiB 时回退为 `base64://`，不再把 HTTP 200 误记为发送成功。
+- 表情图片修复以不可变 release `8424087` 上线统一 Host；personal 与 finance 的 bot-scoped QQ self-check 均为 `connected`，两个既有数据根 bind mount 保持 active，`NRestarts=0`。finance 原有关闭表情图片的配置未改变。
 
 验证通过：
 
@@ -1216,6 +1218,7 @@ npm run build
 - 流式字段恢复与 QQ 兜底抑制聚焦回归：73 项；LLM/native tool/QQ/route/plugin reasoning 组合回归：289 项。
 - Ruff check、Ruff format check、py_compile、`git diff --check` 均通过。
 - 云端旧双进程与旧 finance webhook upstream 已下线，新单 Host 与两条 bot-scoped QQ runtime 已通过健康、鉴权、self_id、出站 self-check、restart 和 root-lock smoke。
+- release `8424087` 上线后 `/health` 为 `personal / valid`，服务监听 Host 配置端口 10001；部署探针必须读取 Host 实际端口，不能沿用仓库默认端口 9999。一次错误端口探测已按预案回滚，确认原因后重新切换成功，未修改记忆、NapCat 登录或 OneBot token。
 - 尚未完成真实群聊双唤醒词、QQ 附件/语音/文件/后台通知的双 Bot 用户表现验收、控制中心 Bot 管理 UI 和 DeviceExecutorHub；不能用合成群消息污染真实记忆来假装表现验收。
 - 未合并/复制 MemCore 数据，未修改 NapCat 登录、OneBot access token 或桌宠前端；用户原有 `.claude/` 未触碰。
 
