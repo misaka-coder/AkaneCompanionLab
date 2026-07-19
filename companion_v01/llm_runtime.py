@@ -1045,9 +1045,13 @@ class LLMRuntime:
         else:
             parsed = self._extract_json(raw_text)
         if not isinstance(parsed, dict):
-            self._record_metric("chat_json_fallbacks")
-            self._note_parse_fallback(raw_text, phase="stream_chat_json")
-            parsed = dict(fallback)
+            recovered = self._recover_partial_chat_json(raw_text, fallback=fallback)
+            if isinstance(recovered, dict):
+                parsed = recovered
+            else:
+                self._record_metric("chat_json_fallbacks")
+                self._note_parse_fallback(raw_text, phase="stream_chat_json")
+                parsed = dict(fallback)
         else:
             parsed = dict(parsed)
 

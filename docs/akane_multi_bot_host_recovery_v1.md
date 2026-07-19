@@ -279,6 +279,15 @@ Host 现在从 `<AKANE_DATA_ROOT>/secrets/qq_profiles.toml` 按 BotConfig 的安
 
 云端迁移必须先保存回滚点，再停旧进程、删除旧 webhook、只配置 bot-scoped endpoint，最后用带 `bot_id` 的安全日志核对一条事件只进入一个 Runtime。仅修改本地代码或重启其中一个 Bot 不能完成这一步。
 
+2026-07-19 对当前云端进行了不读取 secret/正文的实机复核：QQ `2184046306` 对应 personal；它的 Chat/Aux 均为同一 PinAI Responses 模型并使用同一 API key，且不存在保存的 model-service 覆盖。personal 与 finance 的 Chat key 不同，因此“personal 偷用两把 API”不成立。服务器上另有一个因 unit 名末尾混入回车而形成的 `personal\x0d` 幽灵服务；它没有 MainPID、绑定错误 env、累计自动重启 8832 次，已被精确停止，正常 personal/finance 未中断。
+
+“正常回复后追加人设兜底”另有一条同进程可复现根因：流式 JSON 的 `speech` 字段完整时，QQ 会在 `assistant_stage_decision` 先发送正常文本；若 JSON 尾部随后损坏，`LLMRuntime` 原来会把最终对象替换成人设 fallback，QQ 又把这个不同文本当作新增尾句发送。修复后：
+
+- `LLMRuntime` 在完整对象解析失败时先从已完成的顶层流式字段恢复 speech/emotion/reply medium；
+- 已发送有效流式文本且最终帧为 transient failure 时，QQ transport 不再追加通用 fallback；
+- 空的待发送消息列表不会再调用 OneBot send API；
+- 正常恢复的 speech 成为最终帧与记忆内容，不再把兜底误存为实际回复。
+
 ### 2.1 `app.py` 曾是单例根因
 
 文件：`companion_v01/app.py`
@@ -1170,12 +1179,13 @@ npm run build
 - `tests/test_bot_profile.py` 覆盖配置校验/未知 secret/path/重复 root/default；`tests/test_bot_runtime.py` 使用真实 factory 构造并运行三个独立 BotRuntime。
 - 新增 `companion_v01/host_bot_bootstrap.py`：有 `bots.toml` 时批量构造 enabled Bot，无文件时保留原 `AKANE_INSTANCE_ID` 单实例路径；非默认构造失败隔离，默认构造失败 fail-closed 并清理已构造 sibling。
 - `app.py` 从 Host bootstrap 取得 Registry/default runtime，所有现有默认频道 route 使用该 runtime 的 `RuntimeConfigView`；不会因构造顺序误绑其他 Bot。
-- 新增 `deploy/bots.example.toml`，示例不包含密钥/路径，并明确 QQ 多账号分发尚未接通。
+- 新增 `deploy/bots.example.toml`，示例不包含密钥/路径，并提供互不重叠的 Bot 唤醒词配置。
 - 新增 `companion_v01/qq_channel_profiles.py` 与 `deploy/qq_profiles.example.toml`：QQ endpoint/账号/token 从 Host secret 文件按安全 profile ref 选择，公开状态与 repr 不泄漏凭据。
 - `app.py` 为每个启用 QQ 的 Runtime 注册 `/api/bots/{bot_id}/qq/napcat/event`；旧 `/api/qq/napcat/event` 只绑定默认 Bot。
 - `routes/qq.py` 支持安全 route base 与 per-Runtime plugin command broker provider；请求不会偷用默认 Bot 的金融插件 broker。
 - `qq_gateway.py` 使用每 Bot `wake_words`；账号名 `Akane218` 不会误触发 `Akane`，同群 Bot 的重叠唤醒词在配置加载时 fail-closed。
 - canonical BotRuntime 的 `DATA_DIR/DATA_ROOT` 固定为自己的 runtime root，QQ profile、模型配置、记忆、Gateway 状态和插件存储不会回落到另一个 Bot 的共享路径。
+- `LLMRuntime` 对流式 JSON 尾部损坏执行完成字段恢复；QQ transport 对“已发送正常流式文本 + transient final failure”执行第二道兜底抑制，不再出现正常回复后追加“我在认真听你说”。
 
 验证通过：
 
@@ -1190,9 +1200,10 @@ npm run build
 - Slice 3B 与 instance security/backend routes/product/finance/settings 组合回归：149 项。
 - Slice 4A QQ profile/双 Bot 分发聚焦测试：8 项；覆盖 secret/self_id/Engine/OneBot token、唤醒词、默认别名去重和插件 broker 隔离。
 - Slice 4A 与 backend routes/QQ Gateway/instance security/Host bootstrap/BotRuntime/product contract/finance absence 组合回归：223 项。
+- 流式字段恢复与 QQ 兜底抑制聚焦回归：73 项；LLM/native tool/QQ/route/plugin reasoning 组合回归：289 项。
 - Ruff check、Ruff format check、py_compile、`git diff --check` 均通过。
 - 尚未完成云端旧进程与旧 webhook 下线、两个真实 NapCat 账号 smoke、QQ 附件/语音/文件/后台通知的双 Bot 实机验收、控制中心 Bot 管理 UI 和 DeviceExecutorHub；不能把本地 4A 测试通过误报成云端双答已经消失。
-- 未修改云端部署、云端模型配置、MemCore 数据或桌宠前端；用户原有 `.claude/` 未触碰。
+- 未部署新 Host 代码，未修改云端模型配置、合法 personal/finance unit、NapCat、MemCore 数据或桌宠前端；只停止了无 MainPID 且反复失败的 malformed `personal\x0d` unit。用户原有 `.claude/` 未触碰。
 
 ---
 

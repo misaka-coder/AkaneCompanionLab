@@ -854,7 +854,7 @@ def _send_qq_delivery(
     text_send_result = {"ok": True, "count": 0, "results": []}
     voice_send_result = {"ok": True, "count": 0, "results": []}
 
-    if text_enabled:
+    if text_enabled and unsent_reply_messages:
         text_send_result = qq_gateway.send_replies(context, unsent_reply_messages)
 
     voice_reason = ""
@@ -1127,7 +1127,14 @@ def _process_qq_turn_streaming(
 
     final_reply_messages = qq_gateway.render_reply_messages(frame)
     reply_messages = final_reply_messages
-    unsent_reply_messages = _filter_unsent_reply_messages(reply_messages, streamed_messages)
+    if streamed_messages and bool(frame.get("_transient_final_failure")):
+        # A complete speech field may already have reached QQ before a malformed
+        # JSON tail forces the final frame to its generic persona fallback. The
+        # delivered speech is authoritative; never append that fallback as a
+        # second, contradictory bubble.
+        unsent_reply_messages = []
+    else:
+        unsent_reply_messages = _filter_unsent_reply_messages(reply_messages, streamed_messages)
     send_result = _send_qq_delivery(
         engine=engine,
         qq_gateway=qq_gateway,

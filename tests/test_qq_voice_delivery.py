@@ -264,6 +264,46 @@ class QQVoiceDeliveryTests(unittest.TestCase):
 
         self.assertEqual(_filter_unsent_reply_messages([final], streamed), ["这是最终阶段新增的结论"])
 
+    def test_streamed_normal_reply_does_not_append_transient_persona_fallback(self) -> None:
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "speech_segment", "text": "这是模型已经正常生成并发出的回复。"}
+                yield {"type": "assistant_stage_decision", "has_tool_call": False}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "speech": "我在认真听你说，要不要再多告诉我一点？",
+                        "speech_segments": ["我在认真听你说，要不要再多告诉我一点？"],
+                        "tool_events": [],
+                        "_transient_final_failure": True,
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_1",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "继续说"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(gateway.text_sends, [["这是模型已经正常生成并发出的回复。"]])
+        self.assertEqual(result["reply_messages"], ["这是模型已经正常生成并发出的回复。"])
+        self.assertEqual(result["send_result"]["deferred_count"], 0)
+        self.assertNotIn("我在认真听你说", repr(gateway.text_sends))
+
     def test_group_voice_uses_owner_tts_profile_scope(self) -> None:
         captured_payload: dict = {}
 
