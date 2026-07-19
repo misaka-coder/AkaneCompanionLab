@@ -1,0 +1,172 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+from companion_v01.host_bot_bootstrap import HostBotBootstrapError, build_host_bot_registry
+
+
+BOT_PROFILE = """\
+schema_version = 1
+default_bot_id = "bot-a"
+
+[[bots]]
+bot_id = "bot-a"
+enabled = true
+display_name = "Akane A"
+memory_space_id = "memory-a"
+care_enabled = true
+
+[[bots]]
+bot_id = "bot-b"
+enabled = true
+display_name = "Akane B"
+memory_space_id = "memory-b"
+care_enabled = true
+
+[[bots]]
+bot_id = "bot-disabled"
+enabled = false
+display_name = "Disabled"
+memory_space_id = "memory-disabled"
+care_enabled = true
+"""
+
+
+class _FakeRuntime:
+    def __init__(self, bot_id: str, data_root: Path) -> None:
+        self.bot_id = bot_id
+        self.display_name = bot_id
+        self.runtime_layout = SimpleNamespace(data_root=Path(data_root).resolve())
+        self.engine = SimpleNamespace(close=self._close_engine)
+        self.instance_runtime = SimpleNamespace(release=self._release_lease)
+        self.engine_close_count = 0
+        self.lease_release_count = 0
+
+    def _close_engine(self) -> None:
+        self.engine_close_count += 1
+
+    def _release_lease(self) -> None:
+        self.lease_release_count += 1
+
+    async def start(self) -> dict[str, str]:
+        return {"status": "active", "reason": ""}
+
+    async def stop(self) -> dict[str, str]:
+        return {"status": "stopped", "reason": ""}
+
+
+class _FakeFactory:
+    def __init__(self, *, fail_bot_ids: set[str] | None = None) -> None:
+        self.fail_bot_ids = set(fail_bot_ids or set())
+        self.calls: list[dict[str, Any]] = []
+        self.runtimes: list[_FakeRuntime] = []
+
+    def create(self, **kwargs: Any) -> _FakeRuntime:
+        self.calls.append(dict(kwargs))
+        bot_config = kwargs.get("bot_config")
+        bot_id = str(getattr(bot_config, "bot_id", "legacy-default"))
+        if bot_id in self.fail_bot_ids:
+            raise RuntimeError(f"private failure at {kwargs['data_root']}")
+        runtime = _FakeRuntime(bot_id, Path(kwargs["data_root"]))
+        self.runtimes.append(runtime)
+        return runtime
+
+
+class HostBotBootstrapTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_bots_toml_preserves_legacy_single_bot_bootstrap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            factory = _FakeFactory()
+            result = build_host_bot_registry(
+                factory=factory,
+                host_data_root=Path(temp_dir),
+                selected_instance_id="legacy-personal",
+                explicit_data_root=True,
+            )
+
+        self.assertEqual(result.mode, "legacy_single")
+        self.assertEqual(result.default_runtime.bot_id, "legacy-default")
+        self.assertEqual(len(factory.calls), 1)
+        self.assertEqual(factory.calls[0]["selected_instance_id"], "legacy-personal")
+        self.assertNotIn("bot_config", factory.calls[0])
+
+    async def test_bots_toml_constructs_enabled_bots_under_host_owned_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            root.joinpath("bots.toml").write_text(BOT_PROFILE, encoding="utf-8")
+            factory = _FakeFactory()
+            result = build_host_bot_registry(factory=factory, host_data_root=root)
+
+            self.assertEqual(result.mode, "bot_profile")
+            self.assertEqual(result.configured_count, 2)
+            self.assertEqual(result.runtime_count, 2)
+            self.assertEqual(result.default_runtime.bot_id, "bot-a")
+            self.assertEqual([call["bot_config"].bot_id for call in factory.calls], ["bot-a", "bot-b"])
+            self.assertEqual(
+                [Path(call["data_root"]) for call in factory.calls],
+                [(root / "bots" / "memory-a").resolve(), (root / "bots" / "memory-b").resolve()],
+            )
+            self.assertTrue(all(call["explicit_data_root"] for call in factory.calls))
+
+            started = await result.registry.start_all(timeout_seconds=1.0)
+            self.assertEqual(started["status"], "active")
+
+    async def test_non_default_construction_failure_is_visible_but_does_not_abort_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            root.joinpath("bots.toml").write_text(BOT_PROFILE, encoding="utf-8")
+            result = build_host_bot_registry(
+                factory=_FakeFactory(fail_bot_ids={"bot-b"}),
+                host_data_root=root,
+            )
+
+            self.assertEqual(result.default_runtime.bot_id, "bot-a")
+            self.assertEqual(result.runtime_count, 1)
+            self.assertEqual(
+                result.construction_failures, ({"bot_id": "bot-b", "reason": "bot_runtime_construction_failed"},)
+            )
+            public = result.public_snapshot()
+            self.assertNotIn(temp_dir, str(public))
+            self.assertNotIn("private failure", str(public))
+            states = {item["bot_id"]: item["state"] for item in public["registry"]["bots"]}
+            self.assertEqual(states, {"bot-a": "registered", "bot-b": "degraded"})
+
+            started = await result.registry.start_all(timeout_seconds=1.0)
+            self.assertEqual(started["status"], "degraded")
+            self.assertEqual(result.registry.require("bot-a").bot_id, "bot-a")
+
+    async def test_default_construction_failure_closes_sibling_runtimes_and_fails_host(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            root.joinpath("bots.toml").write_text(BOT_PROFILE, encoding="utf-8")
+            factory = _FakeFactory(fail_bot_ids={"bot-a"})
+
+            with self.assertRaises(HostBotBootstrapError) as raised:
+                build_host_bot_registry(factory=factory, host_data_root=root)
+
+        self.assertEqual(raised.exception.reason, "default_bot_runtime_unavailable")
+        self.assertEqual(len(factory.runtimes), 1)
+        self.assertEqual(factory.runtimes[0].bot_id, "bot-b")
+        self.assertEqual(factory.runtimes[0].engine_close_count, 1)
+        self.assertEqual(factory.runtimes[0].lease_release_count, 1)
+        self.assertNotIn(temp_dir, str(raised.exception))
+
+    async def test_bots_toml_rejects_legacy_instance_selector_ambiguity(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            root.joinpath("bots.toml").write_text(BOT_PROFILE, encoding="utf-8")
+            with self.assertRaises(HostBotBootstrapError) as raised:
+                build_host_bot_registry(
+                    factory=_FakeFactory(),
+                    host_data_root=root,
+                    selected_instance_id="legacy-personal",
+                )
+
+        self.assertEqual(raised.exception.reason, "bot_profile_and_instance_selector_conflict")
+
+
+if __name__ == "__main__":
+    unittest.main()

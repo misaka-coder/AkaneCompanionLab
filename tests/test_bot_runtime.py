@@ -12,6 +12,7 @@ import config
 from companion_v01.bot_registry import BotRegistry, BotRegistryError
 from companion_v01.bot_profile import BotConfig, BotQQChannelConfig
 from companion_v01.bot_runtime import BotRuntime, BotRuntimeFactory
+from companion_v01.host_bot_bootstrap import build_host_bot_registry
 from companion_v01.instance_profile import instance_context_from_bot_config
 from companion_v01.instance_runtime import bind_instance_runtime
 from companion_v01.runtime_settings import BotSettingsView
@@ -296,36 +297,47 @@ class BotRuntimeFactoryMultiBotTests(unittest.TestCase):
             config_module=runtime_config,
             assets_dir=Path(__file__).resolve().parents[1] / "web" / "assets",
         )
-        registry = BotRegistry(default_bot_id="bot-a")
         runtimes: list[BotRuntime] = []
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             try:
+                root.joinpath("bots.toml").write_text(
+                    """\
+schema_version = 1
+default_bot_id = "bot-a"
+
+[[bots]]
+bot_id = "bot-a"
+enabled = true
+display_name = "bot-a"
+memory_space_id = "bot-a"
+care_enabled = true
+
+[[bots]]
+bot_id = "bot-b"
+enabled = true
+display_name = "bot-b"
+memory_space_id = "bot-b"
+care_enabled = true
+
+[[bots]]
+bot_id = "bot-c"
+enabled = true
+display_name = "bot-c"
+memory_space_id = "bot-c"
+care_enabled = true
+""",
+                    encoding="utf-8",
+                )
                 for index, bot_id in enumerate(("bot-a", "bot-b", "bot-c"), start=3):
-                    bot_root = root / bot_id
+                    bot_root = root / "bots" / bot_id
                     SettingsOverrideStore(bot_root / "users_data" / "_local" / "settings_overrides.json").save(
                         {"MAX_TOOL_ROUNDS": index}
                     )
-                    bot_config = BotConfig(
-                        schema_version=1,
-                        bot_id=bot_id,
-                        enabled=True,
-                        display_name=bot_id,
-                        character_pack_id="",
-                        memory_space_id=bot_id,
-                        model_profile_ref="default",
-                        capability_profile_ref="default",
-                        care_enabled=True,
-                        qq=BotQQChannelConfig(),
-                        plugins=(),
-                    )
-                    runtime = factory.create(
-                        data_root=bot_root,
-                        bot_config=bot_config,
-                        explicit_data_root=True,
-                    )
-                    runtimes.append(runtime)
-                    registry.add(runtime, default=bot_id == "bot-a")
+
+                bootstrap = build_host_bot_registry(factory=factory, host_data_root=root)
+                registry = bootstrap.registry
+                runtimes.extend(registry.values())
 
                 self.assertEqual(
                     [runtime.config_module.MAX_TOOL_ROUNDS for runtime in runtimes],
@@ -333,6 +345,8 @@ class BotRuntimeFactoryMultiBotTests(unittest.TestCase):
                 )
                 self.assertEqual(config.MAX_TOOL_ROUNDS, original_max_tool_rounds)
                 self.assertEqual(len({runtime.runtime_layout.data_root for runtime in runtimes}), 3)
+                self.assertEqual(bootstrap.default_runtime.bot_id, "bot-a")
+                self.assertEqual(bootstrap.mode, "bot_profile")
 
                 async def run_lifecycle() -> tuple[dict[str, Any], dict[str, Any]]:
                     started = await registry.start_all(timeout_seconds=5.0)
@@ -361,7 +375,11 @@ class AppBootstrapContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("BotRuntimeFactory(", source)
-        self.assertIn("bot_registry = BotRegistry", source)
+        self.assertIn("build_host_bot_registry(", source)
+        self.assertIn("bot_runtime = host_bot_bootstrap.default_runtime", source)
+        self.assertIn("runtime_config = bot_runtime.config_module", source)
+        self.assertIn("app.state.akane_default_bot_id = bot_registry.default_bot_id", source)
+        self.assertEqual(source.count("config_module=config,"), 1)
         self.assertIn("await bot_registry.start_all()", source)
         self.assertIn("await bot_registry.stop_all()", source)
         for constructor in (

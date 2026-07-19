@@ -1,6 +1,6 @@
 # Akane 单 Host 多 Bot 收敛探查与实施报告 v1
 
-> 状态：产品与实施边界已冻结；Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A 已完成，Slice 3B 待执行
+> 状态：产品与实施边界已冻结；Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B 已完成，Slice 4 待执行
 >
 > 建档日期：2026-07-19
 >
@@ -231,7 +231,28 @@ Slice 3A 新增 canonical `BotConfig` / `BotHostProfile`，配置只允许安全
 
 canonical `BotRuntimeFactory.create(bot_config=...)` 使用 per-Bot `RuntimeConfigView` 加载保存的 runtime overrides，不再写回进程全局 `config`；旧单实例兼容入口暂时保留原有 replay 行为。自动测试已用真实 factory 在同一进程构造、启动和关闭三个独立数据根的 `BotRuntime`，并验证三份 settings override 不串线。
 
-`app.py` 的 startup/shutdown 已改由 `BotRegistry.start_all()/stop_all()` 统一拥有；当前 bootstrap 仍只注册兼容默认 Bot。读取 `bots.toml` 并批量创建配置 Bot 属于 Slice 3B，QQ 多账号 webhook 分发仍属于 Slice 4。
+`app.py` 的 startup/shutdown 已改由 `BotRegistry.start_all()/stop_all()` 统一拥有。
+
+### 2.0.2 Slice 3B 已落地：bots.toml 进入真实 Host bootstrap
+
+Host 启动现在按以下兼容顺序执行：
+
+```text
+<AKANE_DATA_ROOT>/bots.toml 存在
+  → 校验 BotHostProfile
+  → enabled Bot 按 memory_space_id 解析到 Host-owned data root
+  → BotRuntimeFactory.create(bot_config=...)
+  → BotRegistry 批量注册
+
+bots.toml 不存在
+  → 原 AKANE_INSTANCE_ID / 单 Bot 启动路径保持不变
+```
+
+一个非默认 Bot 构造失败会在 Registry 中保留为 `degraded/unavailable`，不会中止其他 Bot；默认 Bot 构造失败时 Host fail-closed，因为当前 Web/桌宠 routes 必须有明确默认绑定。构造失败状态只保留安全 reason，不返回异常正文或数据路径。
+
+`app.py` 的 Web、桌宠、voice、capabilities、model-service 和现有兼容 QQ route 现在显式使用 `host_bot_bootstrap.default_runtime` 及其 `RuntimeConfigView`，不再从“最后构造的 Bot”或共享全局配置隐式选取。示例配置位于 `deploy/bots.example.toml`。
+
+真实测试已覆盖 `bots.toml → Host bootstrap → 三个真实 BotRuntime → 三个独立 data root/settings override → Registry start_all/stop_all`。Slice 3B 只完成生命周期与默认频道绑定；非默认 QQ Bot 的 canonical webhook 路由、secret/self_id 分发仍属于 Slice 4，不能把“runtime online”误报为“QQ 已接收消息”。
 
 ### 2.1 `app.py` 是当前单例根因
 
@@ -1097,7 +1118,7 @@ npm run build
 
 ## 8. 本轮实施与验证记录
 
-本轮完成 Slice 3A：建立 canonical BotConfig、Host 生命周期和真实三 BotRuntime 构造/启停基础；没有引入 QQ 多账号请求分发或完整 UI 级 per-Bot settings 管理。Slice 2B/2C 的模型、视觉、cache 和语音快照继续保持在同一边界内。
+本轮完成 Slice 3B：`bots.toml` 已进入真实 Host bootstrap，默认 Web/桌宠 routes 明确绑定 Registry 默认 Bot；没有引入 QQ 多账号请求分发或完整 UI 级 per-Bot settings 管理。Slice 2B/2C 的模型、视觉、cache 和语音快照继续保持在同一边界内。
 
 已完成：
 
@@ -1122,18 +1143,23 @@ npm run build
 - `BotRegistry` 增加线程安全生命周期状态、批量启停、失败隔离、超时和安全公开快照；`app.py` startup/shutdown 改由 Registry 统一拥有。
 - canonical factory 路径使用 `RuntimeConfigView`，三份保存的 Bot runtime overrides 不再写回或污染进程全局 config。
 - `tests/test_bot_profile.py` 覆盖配置校验/未知 secret/path/重复 root/default；`tests/test_bot_runtime.py` 使用真实 factory 构造并运行三个独立 BotRuntime。
+- 新增 `companion_v01/host_bot_bootstrap.py`：有 `bots.toml` 时批量构造 enabled Bot，无文件时保留原 `AKANE_INSTANCE_ID` 单实例路径；非默认构造失败隔离，默认构造失败 fail-closed 并清理已构造 sibling。
+- `app.py` 从 Host bootstrap 取得 Registry/default runtime，所有现有默认频道 route 使用该 runtime 的 `RuntimeConfigView`；不会因构造顺序误绑其他 Bot。
+- 新增 `deploy/bots.example.toml`，示例不包含密钥/路径，并明确 QQ 多账号分发尚未接通。
 
 验证通过：
 
 - Slice 3A `test_bot_profile + test_bot_runtime + test_settings_overrides`：26 项，包含真实三 BotRuntime factory/override/root/lifecycle 验证。
+- Slice 3B `test_host_bot_bootstrap + test_bot_runtime + test_bot_profile`：23 项，包含 bots.toml 真实三 Bot 链、legacy fallback、默认/非默认构造失败边界。
 - `tests.test_instance_channel_security`：22 项，包含命名实例真实启动、QQ 安全和失败前置检查。
 - 路由、桌宠后端、插件 Host/通知/推理、writer shutdown 组合回归：142 项。
 - BotRuntime、instance runtime/profile、finance absence、plugin engine bridge 组合回归：39 项。
 - LLM client 回归：63 项；插件/金融/native web 工具组合回归：92 项。
 - Vision、model-service、runtime-settings 组合回归：125 项；真实实例/QQ/路由/桌宠回归：117 项；插件/金融/实例组合回归：65 项。
 - Slice 3A 与 multi-Bot product/finance absence/instance/route 组合回归：164 项。
+- Slice 3B 与 instance security/backend routes/product/finance/settings 组合回归：149 项。
 - Ruff check、Ruff format check、py_compile、`git diff --check` 均通过。
-- 尚未让 `app.py` 从 `bots.toml` 批量注册配置 Bot，也未实现控制中心 Bot 管理 UI、Host 级 QQ dispatcher 和 DeviceExecutorHub；这些属于 Slice 3B 及后续切片，不能把当前基础误认为已经能让多个 QQ 账号接收事件。
+- 尚未实现 Host 级 QQ dispatcher、每 Bot QQ deployment secret profile、控制中心 Bot 管理 UI 和 DeviceExecutorHub；这些属于 Slice 4 及后续切片，不能把当前 online runtime 误认为多个 QQ 账号已经能接收事件。
 - 未修改云端部署、云端模型配置、MemCore 数据或桌宠前端；用户原有 `.claude/` 未触碰。
 
 ---
@@ -1142,11 +1168,11 @@ npm run build
 
 后续执行不应直接继续为 personal 单独接 GPT-SoVITS 或为 finance 单独复制视觉/Satellite 配置。
 
-Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A 已完成。下一步进入 **Slice 3B**：
+Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B 已完成。下一步进入 **Slice 4**：
 
-1. 让 Host bootstrap 读取 `bots.toml`，按 `memory_space_id` 批量创建 enabled Bot，并保留没有配置文件时的单 Bot 兼容路径；
-2. 让默认桌宠/Web routes 明确绑定 `default_bot_id`，而不是隐含模块单例；
-3. 验证后进入 Host 级 QQ dispatcher，再做控制中心 Bot 管理面和 DeviceExecutorHub。
+1. 抽取现有 QQ 单 Bot event handler，新增 canonical `/api/bots/{bot_id}/qq/napcat/event` dispatcher；
+2. 按 Bot 解析 webhook secret / self_id / OneBot token，旧 `/api/qq/napcat/event` 仅保留到 default Bot 的薄兼容转发；
+3. 用两个 fake NapCat 账号验证附件、语音、文件、插件命令和后台通知不串 Bot，再进入控制中心管理面与 DeviceExecutorHub。
 
 当上下文被压缩时，恢复顺序：
 

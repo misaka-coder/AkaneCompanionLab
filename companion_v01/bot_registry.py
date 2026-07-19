@@ -31,7 +31,8 @@ class BotRegistryError(RuntimeError):
 
 @dataclass(slots=True)
 class _RegistryEntry:
-    runtime: Any
+    runtime: Any | None
+    display_name: str
     state: str = "registered"
     reason: str = ""
     last_status: str = "registered"
@@ -60,7 +61,41 @@ class BotRegistry:
                 raise BotRegistryError(status="conflict", reason="duplicate_bot_id", bot_id=bot_id)
             if root_identity is not None and root_identity in self._root_identities:
                 raise BotRegistryError(status="conflict", reason="duplicate_data_root", bot_id=bot_id)
-            self._entries[bot_id] = _RegistryEntry(runtime=runtime, root_identity=root_identity)
+            self._entries[bot_id] = _RegistryEntry(
+                runtime=runtime,
+                display_name=self._safe_display_name(getattr(runtime, "display_name", ""), fallback=bot_id),
+                root_identity=root_identity,
+            )
+            if root_identity is not None:
+                self._root_identities.add(root_identity)
+            if default or not self._default_bot_id:
+                self._default_bot_id = bot_id
+
+    def add_unavailable(
+        self,
+        bot_config: Any,
+        *,
+        reason: str,
+        data_root: Path | None = None,
+        default: bool = False,
+    ) -> None:
+        """Record a configured Bot whose runtime could not be constructed."""
+
+        bot_id = self._require_safe_bot_id(getattr(bot_config, "bot_id", ""))
+        root_identity = Path(data_root).resolve() if data_root is not None else None
+        with self._guard:
+            if bot_id in self._entries:
+                raise BotRegistryError(status="conflict", reason="duplicate_bot_id", bot_id=bot_id)
+            if root_identity is not None and root_identity in self._root_identities:
+                raise BotRegistryError(status="conflict", reason="duplicate_data_root", bot_id=bot_id)
+            self._entries[bot_id] = _RegistryEntry(
+                runtime=None,
+                display_name=self._safe_display_name(getattr(bot_config, "display_name", ""), fallback=bot_id),
+                state="degraded",
+                reason=self._safe_reason(reason) or "bot_runtime_unavailable",
+                last_status="unavailable",
+                root_identity=root_identity,
+            )
             if root_identity is not None:
                 self._root_identities.add(root_identity)
             if default or not self._default_bot_id:
@@ -70,7 +105,7 @@ class BotRegistry:
         normalized = self._require_safe_bot_id(bot_id)
         with self._guard:
             entry = self._entries.get(normalized)
-            return entry.runtime if entry is not None else None
+            return entry.runtime if entry is not None and entry.runtime is not None else None
 
     def require(self, bot_id: str) -> Any:
         normalized = self._require_safe_bot_id(bot_id)
@@ -78,6 +113,8 @@ class BotRegistry:
             entry = self._entries.get(normalized)
             if entry is None:
                 raise BotRegistryError(status="not_found", reason="bot_not_registered", bot_id=normalized)
+            if entry.runtime is None:
+                raise BotRegistryError(status="unavailable", reason="bot_runtime_unavailable", bot_id=normalized)
             return entry.runtime
 
     def default(self) -> Any:
@@ -89,7 +126,7 @@ class BotRegistry:
 
     def values(self) -> tuple[Any, ...]:
         with self._guard:
-            return tuple(entry.runtime for entry in self._entries.values())
+            return tuple(entry.runtime for entry in self._entries.values() if entry.runtime is not None)
 
     def public_snapshot(self) -> dict[str, Any]:
         with self._guard:
@@ -108,6 +145,8 @@ class BotRegistry:
             entry = self._entries.get(normalized)
             if entry is None:
                 raise BotRegistryError(status="not_found", reason="bot_not_registered", bot_id=normalized)
+            if entry.runtime is None:
+                return self._entry_snapshot(normalized, entry)
             if entry.state in {"starting", "online", "degraded", "stopping", "stopped"}:
                 return self._entry_snapshot(normalized, entry)
             entry.state = "starting"
@@ -143,6 +182,11 @@ class BotRegistry:
             entry = self._entries.get(normalized)
             if entry is None:
                 raise BotRegistryError(status="not_found", reason="bot_not_registered", bot_id=normalized)
+            if entry.runtime is None:
+                entry.state = "stopped"
+                entry.reason = "not_started"
+                entry.last_status = "stopped"
+                return self._entry_snapshot(normalized, entry)
             if entry.state == "stopped":
                 return self._entry_snapshot(normalized, entry)
             if entry.state == "stopping":
@@ -216,12 +260,9 @@ class BotRegistry:
         return iter(self.values())
 
     def _entry_snapshot(self, bot_id: str, entry: _RegistryEntry) -> dict[str, Any]:
-        display_name = str(getattr(entry.runtime, "display_name", "") or bot_id).strip()
-        if not display_name or len(display_name) > 80 or any(ord(char) < 32 for char in display_name):
-            display_name = bot_id
         return {
             "bot_id": bot_id,
-            "display_name": display_name,
+            "display_name": entry.display_name,
             "default": bot_id == self._default_bot_id,
             "state": entry.state,
             "status": entry.last_status,
@@ -245,6 +286,13 @@ class BotRegistry:
         if not normalized:
             return ""
         return normalized if _SAFE_REASON_PATTERN.fullmatch(normalized) is not None else "runtime_failed"
+
+    @staticmethod
+    def _safe_display_name(value: Any, *, fallback: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized or len(normalized) > 80 or any(ord(char) < 32 for char in normalized):
+            return fallback
+        return normalized
 
     @staticmethod
     def _require_safe_bot_id(value: Any) -> str:

@@ -17,8 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 import config
-from .bot_registry import BotRegistry
 from .bot_runtime import BotRuntimeFactory
+from .host_bot_bootstrap import build_host_bot_registry
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .mcp_stdio_discoverer import McpStdioToolDiscoverer
 from .routes.capabilities import build_capabilities_router
@@ -72,19 +72,22 @@ bot_runtime_factory = BotRuntimeFactory(
     assets_dir=ASSETS_DIR,
     logger=logger,
 )
-bot_runtime = bot_runtime_factory.create(
-    data_root=Path(config.DATA_ROOT),
+host_bot_bootstrap = build_host_bot_registry(
+    factory=bot_runtime_factory,
+    host_data_root=Path(config.DATA_ROOT),
     selected_instance_id=getattr(config, "AKANE_INSTANCE_ID", ""),
     explicit_data_root=bool(getattr(config, "AKANE_DATA_ROOT_EXPLICIT", False)),
 )
-bot_registry = BotRegistry(default_bot_id=bot_runtime.bot_id)
-bot_registry.add(bot_runtime, default=True)
+bot_registry = host_bot_bootstrap.registry
+bot_runtime = host_bot_bootstrap.default_runtime
 bot_runtime.bind_app_state(app)
 app.state.akane_bot_registry = bot_registry
+app.state.akane_default_bot_id = bot_registry.default_bot_id
+app.state.akane_host_bot_bootstrap = host_bot_bootstrap.public_snapshot()
 
-# Compatibility aliases: existing routers and deployment smoke tests still use
-# these names during Slice 1. They reference the single BotRuntime and are not
-# a second construction path.
+# Default-channel aliases: existing Web/desktop routes bind the Registry's
+# explicit default Bot until route dispatch is generalized. These aliases are
+# not a second construction path and never select a non-default Bot implicitly.
 instance_context = bot_runtime.instance_context
 instance_runtime = bot_runtime.instance_runtime
 runtime_layout = bot_runtime.runtime_layout
@@ -106,6 +109,7 @@ runtime_metrics = bot_runtime.runtime_metrics
 public_guard = bot_runtime.public_guard
 qq_gateway = bot_runtime.qq_gateway
 qq_followup_tasks = bot_runtime.qq_followup_tasks
+runtime_config = bot_runtime.config_module
 
 
 @app.on_event("startup")
@@ -174,7 +178,7 @@ def _resolve_identity_from_payload(payload: dict) -> tuple[str, str]:
 app.include_router(
     build_core_router(
         engine=engine,
-        config_module=config,
+        config_module=runtime_config,
         instance_runtime=instance_runtime,
         resolve_identity_from_query=_resolve_identity_from_query,
         runtime_metrics=runtime_metrics,
@@ -201,7 +205,7 @@ app.include_router(
 app.include_router(
     build_desktop_pet_router(
         engine=engine,
-        config_module=config,
+        config_module=runtime_config,
         runtime_metrics=runtime_metrics,
         log_event=_log_event,
         resolve_identity_from_query=_resolve_identity_from_query,
@@ -211,7 +215,7 @@ app.include_router(
 app.include_router(
     build_petdesk_router(
         engine=engine,
-        config_module=config,
+        config_module=runtime_config,
         tts_client=tts_client,
         settings=bot_runtime.settings,
         character_resources=desktop_pet_character_resources,
@@ -234,7 +238,7 @@ if qq_gateway is not None:
     app.include_router(
         build_qq_router(
             engine=engine,
-            config_module=config,
+            config_module=runtime_config,
             qq_gateway=qq_gateway,
             runtime_metrics=runtime_metrics,
             logger=logger,
@@ -258,7 +262,7 @@ app.include_router(
 app.include_router(
     build_voice_router(
         engine=engine,
-        config_module=config,
+        config_module=runtime_config,
         tts_client=tts_client,
         settings=bot_runtime.settings,
         runtime_metrics=runtime_metrics,
@@ -273,19 +277,19 @@ app.include_router(
         resolve_identity_from_query=_resolve_identity_from_query,
         snapshot_runtime_providers=build_control_center_snapshot_runtime_providers(
             engine=engine,
-            config_module=config,
+            config_module=runtime_config,
             runtime_metrics=runtime_metrics,
             public_guard=public_guard,
         ),
         settings_override_store=settings_override_store,
-        config_module=config,
+        config_module=runtime_config,
         admin_auth=admin_write_auth,
     )
 )
 app.include_router(
     build_model_services_router(
         store=model_service_config_store,
-        config_module=config,
+        config_module=runtime_config,
         engine=engine,
         reload_model_services=bot_runtime.reload_model_services,
         runtime_metrics=runtime_metrics,
@@ -296,7 +300,7 @@ app.include_router(
 app.include_router(
     build_capabilities_router(
         engine=engine,
-        config_module=config,
+        config_module=runtime_config,
         tts_client=tts_client,
         settings=bot_runtime.settings,
         runtime_metrics=runtime_metrics,

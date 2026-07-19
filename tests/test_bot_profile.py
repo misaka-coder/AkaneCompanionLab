@@ -51,6 +51,16 @@ def _profile_payload() -> dict:
 
 
 class BotProfileTests(unittest.TestCase):
+    def test_deploy_example_is_a_valid_two_bot_profile(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "deploy" / "bots.example.toml"
+
+        profile = load_bot_host_profile(path)
+
+        self.assertEqual(profile.default_bot_id, "akane-personal")
+        self.assertEqual([bot.bot_id for bot in profile.enabled_bots], ["akane-personal", "akane-finance"])
+        self.assertFalse(profile.require("akane-personal").qq.enabled)
+        self.assertTrue(profile.require("akane-finance").plugins[0].enabled)
+
     def test_toml_file_loads_config_only_bot_registration(self) -> None:
         text = """\
 schema_version = 1

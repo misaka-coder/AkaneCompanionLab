@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+/bots.toml
 
 # Tool/eval run artifacts (run_tool_decision_eval, acceptance smoke output)
 reports/
